@@ -2,6 +2,10 @@
   "compilerOptions": {
     "target": "ES2020",
     "lib": ["ES2020", "DOM", "DOM.Iterable"],
+    // For the *.test.ts files, which run under `bun test` (the repo's only JS
+    // test runner — no vitest/jest to install). @types/bun is what makes the
+    // "bun:test" import typecheck; it adds nothing to the shipped bundle.
+    "types": ["bun"],
     "module": "ESNext",
     "moduleResolution": "bundler",
     "resolveJsonModule": true,

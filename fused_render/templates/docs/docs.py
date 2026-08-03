@@ -3,12 +3,13 @@
 # ///
 """Backend for the docs preview template (fused-render).
 
-The document is one user file — a Microsoft Word .docx file — converted
-to/from the editor's HTML by pandoc. Everything the editor offers is limited
-to what pandoc's HTML<->docx round-trip genuinely preserves, so the .docx is
-the single source of truth: text, headings, lists, tables, images, math, and
-comments (written as native Word comments via pandoc's comment-start/
-comment-end spans). Version history lives in the file's JSON sidecar
+The document is one user file — a Microsoft Word .docx or OpenDocument .odt
+file — converted to/from the editor's HTML by pandoc. Everything the editor
+offers is limited to what pandoc's HTML<->docx/odt round-trip genuinely
+preserves, so the file on disk is the single source of truth: text, headings,
+lists, tables, images, math, and comments (written as native Word/ODT
+comments via pandoc's comment-start/comment-end spans). Version history lives
+in the file's JSON sidecar
 (<file>.json under the "docs" key). This script only holds what genuinely
 needs Python: pandoc conversion, PDF via the typst compiler, and browsing the
 filesystem for "Save a copy…". Params arrive as strings; annotate.
@@ -129,6 +130,16 @@ def _typst_install():
     return _typst_status()
 
 
+SOURCE_EXTS = ("docx", "odt")
+
+
+def _source_fmt(file: str) -> str:
+    """docx or odt, keyed off the file's own extension — the format we read
+    from and write back to in place."""
+    ext = file.rsplit(".", 1)[-1].lower()
+    return ext if ext in SOURCE_EXTS else "docx"
+
+
 def _editability(file: str):
     """Editability verdict for the reader (SPEC RO-4): fold fs writability into
     editable + readonly_message (badge) + readonly_tooltip (hover)."""
@@ -245,7 +256,7 @@ def main(action: str = "export", file: str = "", html: str = "", title: str = ""
                     continue
                 if ent.get("is_dir"):
                     dirs.append(nm)
-                elif nm.lower().endswith(".docx"):
+                elif nm.lower().endswith((".docx", ".odt")):
                     files.append(nm)
         else:
             if not os.path.isdir(base):
@@ -255,7 +266,7 @@ def main(action: str = "export", file: str = "", html: str = "", title: str = ""
                     continue
                 if os.path.isdir(os.path.join(base, nm)):
                     dirs.append(nm)
-                elif nm.lower().endswith(".docx"):
+                elif nm.lower().endswith((".docx", ".odt")):
                     files.append(nm)
         dirs.sort(key=str.lower)
         files.sort(key=str.lower)
@@ -270,7 +281,7 @@ def main(action: str = "export", file: str = "", html: str = "", title: str = ""
         if not file or not os.path.isfile(file):
             raise FileNotFoundError(f"file not found: {file}")
         editable, ro_msg, ro_tip = _editability(file)
-        out = _pandoc(["-f", "docx", "-t", "html+tex_math_dollars", "--mathjax",
+        out = _pandoc(["-f", _source_fmt(file), "-t", "html+tex_math_dollars", "--mathjax",
                        "--track-changes=all", "--embed-resources",
                        "--wrap=none", file])
         return {"html": out.decode("utf-8", "replace"), "mtime": os.path.getmtime(file),
@@ -326,7 +337,7 @@ def main(action: str = "export", file: str = "", html: str = "", title: str = ""
                 return {"conflict": True, "mtime": on_disk}
         tmp = file + ".tmp"
         try:
-            _pandoc(["-f", HTML_FROM, "-t", "docx", "--wrap=none",
+            _pandoc(["-f", HTML_FROM, "-t", _source_fmt(file), "--wrap=none",
                      "--standalone", "-o", tmp], input_text=html)
             os.replace(tmp, file)
         finally:

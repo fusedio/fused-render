@@ -22,6 +22,7 @@ the real grammar, and tests/test_markdown_graph.py covers what a link IS and
 where it points, against the Python that decides both.
 """
 import os
+import re
 
 import pytest
 
@@ -147,10 +148,15 @@ def test_the_mode_is_the_same_two_facets_the_unwritable_path_uses(source):
 
 def test_the_mode_lives_in_a_param_so_it_survives_a_refresh(source):
     # The same shape `graph` and `depth` use (MD-20), so the mode is
-    # refresh-proof and the URL is shareable. Editing is the default: an absent
-    # param must not silently make notes read-only.
-    assert 'fused.params.get("edit") !== "0"' in source
+    # refresh-proof and the URL is shareable. Read-only is the default: an absent
+    # param opens the note locked, and only an explicit "1" grants editing, so a
+    # stray keystroke on a note you opened to READ cannot rewrite it.
+    assert 'fused.params.get("edit") === "1"' in source
     assert 'fused.params.set("edit", next)' in source
+    # Every other reader of the param agrees on that default, or a fresh load
+    # would disagree with the first onChange about which mode it is in.
+    assert 'lastEdit = fused.params.get("edit") || "0";' in source
+    assert 'const edit = params.edit || "0";' in source
 
 
 def test_the_mode_toggle_is_a_corner_button_not_a_toolbar(source):
@@ -160,12 +166,14 @@ def test_the_mode_toggle_is_a_corner_button_not_a_toolbar(source):
     assert 'aria-pressed' in source[source.index('id="toggle-edit"'):][:400]
 
 
-def test_the_accent_marks_read_only_not_the_default(source):
-    # Editing is the default (MD-1a), so accenting it would leave the corner
-    # permanently lit and say nothing. `aria-pressed` tracks read-only, and the
-    # glyph follows: pencil while editing, padlock when locked.
-    assert 'editToggleEl.setAttribute("aria-pressed", String(!on));' in source
-    assert '#toggle-edit[aria-pressed="true"] .icon-edit { display: none; }' in source
+def test_the_accent_marks_editing_not_the_default(source):
+    # Read-only is the default (MD-1a), so accenting it would leave the corner
+    # permanently lit and say nothing. `aria-pressed` tracks EDITING, and the
+    # glyph names the current mode: padlock while locked, pencil while editing.
+    assert 'editToggleEl.setAttribute("aria-pressed", String(on));' in source
+    assert '#toggle-edit .icon-edit { display: none; }' in source
+    assert '#toggle-edit[aria-pressed="true"] .icon-edit { display: block; }' in source
+    assert '#toggle-edit[aria-pressed="true"] .icon-lock { display: none; }' in source
     assert 'class="icon-lock"' in source
 
 
@@ -419,7 +427,7 @@ def test_resolving_a_path_leaves_a_windows_drive_root_alone(source):
         assert 'return "/" + out.join("/");' not in text, where
 
 
-def test_the_create_path_reads_the_ghost_target_not_its_label(source, canvas_source):
+def test_the_create_path_reads_the_ghost_target_not_its_label(canvas_source):
     # `label` is a display string (a real note's is its title). Driving a write
     # off it is fragile by construction.
     assert 'found.node.kind === "ghost" && found.node.target' in canvas_source
@@ -482,6 +490,99 @@ def test_the_formatting_keys_are_toggles(source):
     assert "pre === marker && post === marker" in body
 
 
+def test_strikethrough_and_inline_code_toggle_the_way_bold_does(source):
+    """Two more markers through the same marker-agnostic toggleWrap.
+
+    Both already render in Live Preview (`Strikethrough` and `InlineCode`,
+    MD-18a), so neither needs a decoration — which is exactly why `==` highlight
+    is NOT here: the vendored grammar has no rule for it, so the markers would
+    stay bare on the page (D189).
+    """
+    assert 'key: "Mod-Shift-x", run: whenWritable((v) => toggleWrap(v, "~~"))' \
+        in " ".join(source.split())
+    assert 'key: "Mod-Shift-e", run: whenWritable((v) => toggleWrap(v, "`"))' \
+        in " ".join(source.split())
+    assert 'toggleWrap(v, "==")' not in source
+    # And no binding collides with another: one key, one entry.
+    keymap = source[source.index("const editorKeymap = ["):]
+    keymap = keymap[:keymap.index("\n    ];")]
+    keys = re.findall(r'key: "([^"]+)"', keymap)
+    assert sorted(keys) == sorted(set(keys)), keys
+
+
+def test_a_toggle_with_no_selection_wraps_the_word_under_the_caret(source):
+    """Obsidian's ⌘B with nothing selected bolds the word, not nothing.
+
+    The expansion is also what makes the unwrap reachable from a bare caret, and
+    the word comes from CM's own `wordAt` so this template holds no second
+    definition of a word. Where there is none — whitespace, an empty line — the
+    old empty-pair-with-the-caret-inside behaviour is still right.
+    """
+    body = source[source.index("function toggleWrap"):]
+    body = body[:body.index("\n    }")]
+    assert "let { from, to } = state.selection.main;" in body
+    assert "if (from === to) {" in body
+    assert "const word = state.wordAt(from);" in body
+    assert "if (word) {" in body
+
+
+def test_cmd_k_inside_an_existing_link_edits_its_target(source):
+    """⌘K on a caret inside `[a](b)` must not nest a second link.
+
+    Which ranges are links comes from `syntaxTree` (MD-3), but the tree alone is
+    a trap: the vendored grammar wraps a `[[wikilink]]`'s brackets in
+    `Link`/`Image` nodes too (MD-18a), so the enclosing node must ALSO parse as a
+    plain inline link — the same second test the decoration builder applies
+    before it draws a link widget, not a second rule (D189).
+    """
+    body = source[source.index("function enclosingLinkTarget"):]
+    body = body[:body.index("\n    }\n")]
+    assert "CM.syntaxTree(state)" in body
+    assert 'if (node.name !== "Link") continue;' in body
+    # The plain-inline-link test, character for character the builder's.
+    assert r"/^\[([^\]]*)\]\(([^()\s]*)\)$/" in body
+    assert r"/^(!?)\[([^\]]*)\]\(([^()\s]*)\)$/" in source, "the builder's own"
+    assert "if (!match) continue;" in body
+    # And ⌘K selects that target rather than rewriting anything.
+    link = source[source.index("function insertLink"):]
+    link = link[:link.index("\n    }\n")]
+    assert "const existing = enclosingLinkTarget(editorView.state, to);" in link
+    assert "selection: { anchor: existing.from, head: existing.to }" in link
+
+
+def test_tab_takes_an_open_completion_before_it_indents(source):
+    # CM's completionKeymap binds only Enter to acceptCompletion, and a
+    # Tab-completing habit reaches for Tab. acceptCompletion returns false with
+    # no popup open, so indenting stays Tab's ordinary meaning.
+    assert "CM.acceptCompletion(v) || CM.indentMore(v)" in source
+    entry = os.path.join(
+        os.path.dirname(TEMPLATE), "..", "..", "..", "scripts",
+        "vendor-codemirror", "entry.js")
+    with open(entry, encoding="utf-8") as handle:
+        entry_source = handle.read()
+    # MD-13: anything not re-exported is tree-shaken, so the gate is entry.js.
+    assert "acceptCompletion" in entry_source
+    bundle = os.path.join(
+        os.path.dirname(TEMPLATE), "..", "vendor", "codemirror.bundle.js")
+    with open(bundle, encoding="utf-8") as handle:
+        assert "acceptCompletion" in handle.read(), "bundle not rebuilt"
+
+
+def test_no_new_binding_can_write_to_a_read_only_buffer(source):
+    """MD-1a/MD-15: read-only mode is the two facets, and neither filters a
+    hand-built dispatch — which is all these commands make.
+
+    `editable.of(false)` is what stops the key being delivered at all, but that
+    is a property of the view, so each writing command asks the state as well.
+    """
+    assert "editorView.state.readOnly ? true : command(editorView)" in source
+    keymap = source[source.index("const editorKeymap = ["):]
+    keymap = keymap[:keymap.index("\n    ];")]
+    runs = re.findall(r"(?:run|shift): (.+?),?\n", keymap)
+    for run in runs:
+        assert run.startswith("whenWritable("), run
+
+
 def test_pasting_a_url_over_a_selection_makes_a_link(source):
     body = source[source.index("const pasteHandler"):]
     body = body[:body.index("\n    });")]
@@ -490,7 +591,7 @@ def test_pasting_a_url_over_a_selection_makes_a_link(source):
 
 
 def test_the_popup_offers_notes_and_headings_from_the_same_scan(source):
-    body = source[source.index("async function markdownCompletions"):]
+    body = source[source.index("async function wikilinkCompletions"):]
     body = body[:body.index("\n    function editorExtensions")]
     assert "/\\[\\[([^\\[\\]\\n]*)$/" in body      # `[[` and `![[`
     assert "headingOptions(headings, notePart)" in body
@@ -498,9 +599,265 @@ def test_the_popup_offers_notes_and_headings_from_the_same_scan(source):
 
 
 def test_the_popup_inserts_the_form_graph_py_says_resolves(source):
-    # `note.link` is _link_form's output, which is verified against resolve_link
-    # itself in tests/test_markdown_graph.py — the page must not compute its own.
-    assert "label: note.link" in source
+    # `note.link` / `note.embed` are _link_form's output, which is verified
+    # against resolve_link itself in tests/test_markdown_graph.py — the page must
+    # not compute its own, and must not insert a form that is absent.
+    body = source[source.index("async function wikilinkCompletions"):]
+    body = body[:body.index("\n    // ---- `](…`")]
+    assert "const form = embedding ? note.embed : note.link;" in body
+    assert "if (form) options.push({ label: form" in body
+    # And the note it is inserted INTO is sent, because tier 1 of resolution is
+    # relative to that note's folder (MD-14).
+    assert 'action: "candidates", root, file' in source
+
+
+def test_an_embed_can_complete_an_asset_and_a_plain_wikilink_cannot(source):
+    # `![[image.png]]` is the common Obsidian embed and an embed resolves through
+    # the ASSET index, so the assets the payload already carries belong in the
+    # popup — but only when the `!` is there.
+    body = source[source.index("async function wikilinkCompletions"):]
+    body = body[:body.index("\n    // ---- `](…`")]
+    assert 'const embedding = before[wiki.index - 1] === "!";' in body
+    assert "for (const asset of data.assets)" in body
+    # The asset's own resolver-validated form, never the bare path: graph.py runs
+    # every candidate form through `resolve_link` against the index the embed
+    # resolver uses, and a page-side shortening rule is the divergence MD-14
+    # exists to prevent. No form at all is `null`, and a null row is DROPPED
+    # rather than inserted as a path that resolves elsewhere.
+    assert "if (asset.embed) {" in body
+    assert 'label: asset.embed, detail: "embed"' in body
+    assert "label: rel" not in body
+
+
+def test_an_inline_link_target_completes_from_notes_and_assets(source):
+    body = source[source.index("async function inlinePathCompletions"):]
+    body = body[:body.index("\n    // ---- `](#…`")]
+    assert "/(!?)\\[[^\\]\\n]*\\]\\(([^)\\s]*)$/" in body
+    assert "pathOptions(data, dir, inline[1] === \"!\")" in body
+    # Local filtering, so typing does not re-run the source per keystroke.
+    assert "validFor: /^[^)\\s]*$/" in body
+    options = source[source.index("function pathOptions"):]
+    options = options[:options.index("\n    }")]
+    # Every note plus every asset — and only images where only an image renders.
+    # An asset row is `{rel, embed}` now; this context computes its own relative
+    # form, so it reads `rel` and ignores the wikilink form entirely.
+    assert "const assetRels = data.assets.map((asset) => asset.rel);" in options
+    assert "assetRels.filter((rel) => IMAGE_EXT_RE.test(rel))" in options
+    assert "data.notes.map((note) => note.rel).concat(assetRels)" in options
+
+
+def test_a_completed_path_is_relative_to_the_note_and_percent_encoded(source):
+    # `[x](my file.png)` is not a link to the GFM parser at all, so the readable
+    # form is displayed and the encoded form is what lands in the document.
+    options = source[source.index("function pathOptions"):]
+    options = options[:options.index("\n    }")]
+    assert "label: encodeTarget(readable)," in options
+    assert "displayLabel: readable," in options
+    assert "const readable = relativeTarget(dir, rel);" in options
+    encode = source[source.index("function encodeTarget"):]
+    encode = encode[:encode.index("\n    }")]
+    assert "encodeURIComponent(segment)" in encode
+    # A parenthesis closes the target early, and encodeURIComponent leaves both.
+    assert '.replace(/\\(/g, "%28").replace(/\\)/g, "%29")' in encode
+    relative = source[source.index("function relativeTarget"):]
+    relative = relative[:relative.index("\n    }")]
+    # A sibling is `img.png`, never `../folder/img.png`: `../` only where the
+    # target really is above the note.
+    assert '"../".repeat(from.length - shared)' in relative
+    # Pure string work, and it never rebuilds an absolute path — the Windows
+    # drive form `C:/…` must not gain the leading slash resolvePath documents.
+    vault = source[source.index("function vaultRelDir"):]
+    vault = vault[:vault.index("\n    }")]
+    assert "file.startsWith(base + \"/\")" in vault
+    for forbidden in ("readFile", "runPython", "await "):
+        assert forbidden not in vault + relative + encode
+
+
+def test_an_inline_link_can_complete_an_anchor_in_this_note(source):
+    body = source[source.index("async function headingAnchorCompletions"):]
+    body = body[:body.index("\n    function editorExtensions")]
+    assert "/\\]\\((#[^)\\s]*)$/" in body
+    # The same headings `[[#` offers, encoded — `](#My Heading)` is not a link.
+    assert 'headingOptions(notes.headings, "", true)' in body
+    assert "validFor: /^#[^)\\s]*$/" in body
+    # And the path source must not also claim this context.
+    inline = source[source.index("async function inlinePathCompletions"):]
+    assert 'if (typed.startsWith("#")) return null;' in inline[:inline.index("\n    }")]
+
+
+def test_a_scan_that_never_ran_says_so_instead_of_showing_no_matches(source):
+    # MD-11a: unknown is not missing. Returning null looked exactly like an empty
+    # vault on the one path where the scan cannot succeed (a mount-backed root,
+    # which graph.py refuses, MD-11).
+    notice = source[source.index("function scanNoticeOptions"):]
+    notice = notice[:notice.index("\n    }")]
+    assert "filter: false," in notice           # cannot be typed away
+    assert "apply: () => {}," in notice         # and cannot be inserted
+    assert "message || candidatesNotice || UNRESOLVED_HERE" in notice
+    ensure = source[source.index("async function ensureCandidates"):]
+    ensure = ensure[:ensure.index("\n    // One informational row")]
+    # graph.py's own words, so a mount refusal reads as itself.
+    assert "candidatesNotice = data.message || UNRESOLVED_HERE;" in ensure
+    # The failure is cached as hard as a success: one run per TTL, not per
+    # keystroke, on a root that can never answer.
+    assert "if (Date.now() - candidatesAt < CANDIDATES_TTL_MS) return candidates;" in ensure
+    assert "candidatesAt = Date.now();" in ensure
+    for name in ("wikilinkCompletions", "inlinePathCompletions"):
+        body = source[source.index("async function " + name):]
+        body = body[:body.index("\n    // ---- ")]
+        assert "if (!data) return scanNoticeOptions(from);" in body
+
+
+def test_the_popup_is_themed_through_the_editor_so_a_theme_flip_keeps_it(source):
+    """The popup's look is a CM theme extension, not page CSS.
+
+    An appearance flip dispatches `StateEffect.reconfigure` over the extension
+    array (MD-14, and the reconfigure test above), so a theme extension in that
+    array is reinstalled with everything else; a page rule would instead have to
+    keep out-specifying whatever oneDark reinstates. And because every colour is
+    a var() token read off <html>, one theme is correct in both palettes — there
+    is no dark copy of these rules to drift.
+    """
+    theme = source[source.index("const completionTheme = CM.EditorView.theme({"):]
+    theme = theme[:theme.index("\n    });")]
+    # It rides in the SAME array the reconfigure rebuilds from.
+    extensions = source[source.index("function editorExtensions"):]
+    extensions = extensions[:extensions.index("\n    function buildEditor")]
+    assert "completionTheme," in extensions
+    # Tokens, never literal colours — the flip works by var() resolving again.
+    for token in ("var(--bg-alt)", "var(--border)", "var(--fg)", "var(--accent)",
+                  "var(--fg-muted)"):
+        assert token in theme
+    # And the full-bleed accent bar this replaced is gone from the page style.
+    style = source[source.index("<style>"):source.index("</style>")]
+    assert "cm-tooltip-autocomplete" not in style
+    assert "background: var(--accent);\n    color: var(--on-accent);" not in style
+    # The generic tooltip shell stays a page rule (the search panel's tooltip is
+    # one too), which is exactly why the popup's rules out-specify it.
+    assert ".cm-editor .cm-tooltip {" in style
+
+
+def test_a_row_shows_a_dimmed_detail_column_beside_its_label(source):
+    # `docs/other.mddocs/other.md` and `a.pngembed` were the label and the detail
+    # rendered with nothing between them. The detail is a column of its own now:
+    # pushed right, dimmed and smaller, so it qualifies the row instead of
+    # extending it.
+    theme = source[source.index("const completionTheme = CM.EditorView.theme({"):]
+    theme = theme[:theme.index("\n    });")]
+    detail = theme[theme.index(".cm-completionDetail"):]
+    detail = detail[:detail.index("},")]
+    assert 'marginLeft: "auto"' in detail
+    assert 'color: "var(--fg-muted)"' in detail
+    assert 'fontStyle: "normal"' in detail        # CM's base italicises it
+    # The label is the flexible half and clips rather than wrapping, and its
+    # leading spaces survive: a heading row indents by nesting depth, the same
+    # rule the sidebar outline uses (MD-19b's language).
+    label = theme[theme.index(".cm-completionLabel"):]
+    label = label[:label.index("},")]
+    assert 'whiteSpace: "pre"' in label
+    assert 'textOverflow: "ellipsis"' in label
+    headings = source[source.index("function headingOptions"):]
+    headings = headings[:headings.index("\n    }")]
+    assert '"  ".repeat(h.depth) + h.text' in headings
+    assert 'detail: "H" + h.level' in headings
+    # Not the literal hashes it used to print into the label.
+    assert '"#".repeat(h.level)' not in headings
+
+
+def test_the_typed_substring_is_emphasised_in_every_row(source):
+    # These lists are every note plus every asset in the vault, so the matched
+    # characters are the only thing saying why a row is still in the list. CM
+    # marks them with `.cm-completionMatchedText` and styles them not at all.
+    theme = source[source.index("const completionTheme = CM.EditorView.theme({"):]
+    theme = theme[:theme.index("\n    });")]
+    matched = theme[theme.index(".cm-completionMatchedText"):]
+    matched = matched[:matched.index("},")]
+    assert 'color: "var(--accent)"' in matched
+    assert 'fontWeight: "700"' in matched
+    # The selected row is not colour alone: an accent left edge and bold weight,
+    # in a border slot that is transparent when the row is not selected so
+    # selecting it does not shift the text.
+    selected = theme[theme.index("> ul > li[aria-selected]"):]
+    selected = selected[:selected.index("},")]
+    assert 'borderLeftColor: "var(--accent)"' in selected
+    assert 'fontWeight: "600"' in selected
+    assert 'borderLeft: "2px solid transparent"' in theme
+    # And the emphasis has to be MAPPED, not assumed: CM matches against `label`
+    # and refuses to guess where those characters landed in a `displayLabel`
+    # (`sortOptions` hands an empty match to any option that has one), which is
+    # every path row and every heading row here — so every result that displays a
+    # form of its own supplies `getMatch`. Found here by driving the live page:
+    # without it the popup rendered no matched span at all.
+    match = source[source.index("function displayMatch"):]
+    match = match[:match.index("\n    }")]
+    assert "const shown = completion.displayLabel;" in match
+    assert "lower.indexOf(ch.toLowerCase(), at)" in match
+    # A character the display drops (a heading's `#`) is skipped, never fudged
+    # into a range over the wrong letters.
+    assert "if (found === -1) continue;" in match
+    assert source.count("getMatch: displayMatch") == 3
+
+
+def test_a_completed_path_carries_no_detail_that_repeats_its_own_label(source):
+    # `pathOptions` set `detail: rel` while the label displayed the same path
+    # relative to the note — identical for any target in or under the note's own
+    # folder, which is most of them, so the row read the path twice. The readable
+    # form is still DISPLAYED and the percent-encoded form is still what inserts
+    # (MD-14): that pair is load-bearing and must not be touched by presentation.
+    options = source[source.index("function pathOptions"):]
+    options = options[:options.index("\n    }")]
+    assert "detail:" not in options
+    assert "label: encodeTarget(readable)," in options
+    assert "displayLabel: readable," in options
+    # The one context whose detail says something the label does not keeps it.
+    wiki = source[source.index("async function wikilinkCompletions"):]
+    wiki = wiki[:wiki.index("\n    // ---- `](…`")]
+    assert 'label: asset.embed, detail: "embed"' in wiki
+
+
+def test_the_popup_has_no_icon_column(source):
+    """CM's glyph for a `text` completion is the literal string "abc".
+
+    It appeared on every path row, naming nothing. The row already says its kind
+    — an extension, an indented heading, an `embed` detail — and with two `type`
+    values across four contexts an icon could only repeat that or blur it (D192).
+    `icons: false` removes the element rather than hiding it, so no empty column
+    is left holding width in a popup that is already narrow.
+    """
+    extensions = source[source.index("function editorExtensions"):]
+    extensions = extensions[:extensions.index("\n    function buildEditor")]
+    assert "icons: false," in extensions
+
+
+def test_the_popup_is_shaped_like_the_sidebar_next_to_it(source):
+    # Prose font (not CM's monospace), the sidebar's radius, a real shadow, and a
+    # capped height so a vault-sized list scrolls instead of filling the window.
+    theme = source[source.index("const completionTheme = CM.EditorView.theme({"):]
+    theme = theme[:theme.index("\n    });")]
+    shell = theme[theme.index('".cm-tooltip.cm-tooltip-autocomplete": {'):]
+    shell = shell[:shell.index("},")]
+    assert 'borderRadius: "8px"' in shell
+    assert "boxShadow:" in shell
+    listing = theme[theme.index('> ul": {'):]
+    listing = listing[:listing.index("},")]
+    assert 'fontFamily: "inherit"' in listing
+    assert 'maxHeight: "16em"' in listing
+    assert 'overflow: "hidden auto"' in listing
+    # A row is a row of prose, not CM's 1px-padded line.
+    row = theme[theme.index('> ul > li": {'):]
+    row = row[:row.index("},")]
+    assert 'padding: "4px 7px"' in row
+    assert 'borderRadius: "5px"' in row
+
+
+def test_each_completion_context_is_its_own_source(source):
+    # One function per context rather than one with a chain of regexes, still
+    # overriding CM's own sources at high precedence.
+    extensions = source[source.index("function editorExtensions"):]
+    extensions = extensions[:extensions.index("\n    function buildEditor")]
+    assert "CM.Prec.high(CM.autocompletion({" in extensions
+    assert ("override: [\n            wikilinkCompletions, inlinePathCompletions, "
+            "headingAnchorCompletions,\n          ],") in extensions
 
 
 def test_a_checkbox_writes_back_and_is_locked_when_read_only(source):
@@ -560,6 +917,123 @@ def test_backlinks_and_the_graph_are_one_sidebar_behind_one_toggle(source):
     body = body[:body.index("\n    }")]
     assert 'sideEl.classList.toggle("on", on)' in body
     assert 'toggleEl.setAttribute("aria-pressed", String(on))' in body
+
+
+def test_the_outline_is_a_section_of_the_one_sidebar_not_a_second_panel(source):
+    # MD-19b/MD-19a: one right sidebar behind one toggle, and MD-2a forbids the
+    # toolbar row that a second control would want. The outline is the first
+    # section of the panel that already exists, so it must also be the one
+    # clearing the floating corner cluster.
+    assert 'id="outline-head"' in source and 'id="outline"' in source
+    assert source.index('id="outline"') < source.index('id="links"')
+    assert "  #outline-head { padding-right: 72px; }" in source
+    assert "#links-head { padding-right: 72px; }" not in source
+    # No toggle and no param of its own: the outline has no state to keep, so
+    # MD-20 has nothing to carry (a second toggle would break MD-19a anyway).
+    assert "toggle-outline" not in source
+    assert 'params.get("outline")' not in source
+    # Sized like #links and for the same reason: it must not starve the canvas.
+    outline = source[source.index("  #outline {"):]
+    outline = outline[:outline.index("\n")]
+    assert "flex: none" in outline and "max-height:" in outline
+    assert "overflow: auto" in outline and "min-height: 0" in outline
+
+
+def test_the_outline_reads_the_live_document_not_the_saved_payload(source):
+    # The payload only re-parses on save (MD-9), so an outline fed by
+    # `notes.headings` would lag every heading typed by up to one autosave
+    # interval. It reads the doc, on the docChanged the editor already reports —
+    # and nothing here polls (MD-17's stat-storm lesson).
+    body = source[source.index("function documentHeadings"):]
+    body = body[:body.index("\n    // The last outline drawn")]
+    assert "view.state.doc" in body
+    assert "notes.headings" not in body
+    render = source[source.index("function renderOutline"):]
+    render = render[:render.index("\n    }")]
+    for forbidden in ("setInterval", "setTimeout", "notes.headings", "runPython"):
+        assert forbidden not in render + body
+    listener = source[source.index("CM.EditorView.updateListener.of((update) => {"):]
+    listener = listener[:listener.index("\n        }),")]
+    assert "if (!update.docChanged) return;" in listener
+    assert "renderOutline();" in listener
+    # And every path that swaps the whole document redraws it.
+    build = source[source.index("function buildEditor"):]
+    build = build[:build.index("\n      themeObserver?.disconnect();")]
+    assert "outlineKey = null;" in build and "renderOutline();" in build
+    assert "renderOutline();" in source[source.index("function applySidebar"):]
+
+
+def test_the_outline_masks_code_the_way_graph_py_does(source):
+    # A `# not a heading` inside a fenced block is in no other heading surface
+    # (the `[[#` popup, the graph payload), so it must not be in this one:
+    # graph.py's `_mask_code` rule, same fence and frontmatter handling, and ATX
+    # only — which is all `_HEADING` and `scrollToHeading` know.
+    body = source[source.index("function documentHeadings"):]
+    body = body[:body.index("\n    // The last outline drawn")]
+    assert "/^ {0,3}(`{3,}|~{3,})/" in body
+    assert "/^(---|\\.\\.\\.)[ \\t]*$/" in body
+    assert "/^(#{1,6})[ \\t]+(.+?)[ \\t]*#*[ \\t]*$/" in body
+    # Not the syntax tree: `syntaxTree(state)` is only parsed as far as CM has
+    # got, so a long note would silently lose its tail headings.
+    assert "syntaxTree" not in body
+
+
+def test_an_outline_row_scrolls_to_its_own_line_and_reads_when_locked(source):
+    # It built the row from that line, so it scrolls to that line: matching by
+    # text would hand a second `## Notes` to the first one. And the whole thing
+    # is a reading affordance, so it goes through the one delegated click handler
+    # and never asks whether the buffer is editable (MD-1a).
+    render = source[source.index("function renderOutline"):]
+    render = render[:render.index("\n    }")]
+    assert 'data-line="${row.line}"' in render
+    assert "--ol-depth: ${row.depth}" in render
+    # Nesting depth from the levels present, not from the hash count — and it
+    # comes from the shared rule, not a copy of it (see the popup's test).
+    assert "withDepth(rows)" in render
+    # Same voice as the backlinks empty state, and the same row class, so one
+    # panel has one row style.
+    assert '<div class="bl-empty">No headings in this note.</div>' in render
+    assert 'class="bl ol"' in render
+    for forbidden in ("editing()", "writable", "readOnly"):
+        assert forbidden not in render
+    click = source[source.index('const outlined = event.target.closest("[data-line]");'):]
+    click = click[:click.index("const create = ")]
+    assert 'scrollToLine(parseInt(outlined.getAttribute("data-line"), 10));' in click
+
+
+def test_an_unclosed_frontmatter_block_is_not_frontmatter(source):
+    # Reported in review. The scan used to set a flag on a first-line `---` and
+    # skip every line until a closer, so from the keystroke that opened the block
+    # to the one that closed it the whole outline was empty — while graph.py's
+    # `_frontmatter_span` (no closer, no span) and the decoration scan above (which
+    # looks for the end BEFORE it dims anything) both kept those headings. Three
+    # surfaces for one note's headings, so it is one rule: find the closer first.
+    body = source[source.index("function documentHeadings"):]
+    body = body[:body.index("\n    // The last outline drawn")]
+    opened = body.index("let frontmatterEnd = 0;")
+    loop = body.index("for (let n = frontmatterEnd + 1; n <= doc.lines; n++) {")
+    assert opened < loop, "the closer must be found before any line is skipped"
+    # No standing flag can outlive the block any more.
+    assert "let frontmatter = false;" not in body
+    assert "frontmatter = true" not in body
+
+
+def test_the_popup_indents_a_heading_by_the_same_rule_as_the_outline(source):
+    # Reported in review: the popup indented by raw level while the outline
+    # indented by nesting depth, so a note starting at `##` — or one that skips a
+    # level — was drawn two ways, against what MD-14 says. One function now, used
+    # by both, which is the only version of "they match" that stays true.
+    depth = source[source.index("function withDepth(headings) {"):]
+    depth = depth[:depth.index("\n    }")]
+    assert "while (stack.length && stack[stack.length - 1] >= h.level) stack.pop();" in depth
+    options = source[source.index("function headingOptions(headings, prefix, encode) {"):]
+    options = options[:options.index("\n    }")]
+    assert "withDepth(headings)" in options
+    assert '"  ".repeat(h.depth)' in options
+    # The raw level survives only as the dimmed marker, where it is the point.
+    assert 'detail: "H" + h.level' in options
+    assert "h.level - 1" not in options
+    assert source.count("stack[stack.length - 1] >=") == 1, "one rule, not two"
 
 
 def test_the_graph_gets_the_panel_s_leftover_space_not_the_backlinks(source):
@@ -768,5 +1242,308 @@ def test_an_arriving_heading_scrolls_without_moving_the_caret(source):
     # its markup the instant you arrived.
     body = source[source.index("function scrollToHeading"):]
     body = body[:body.index("\n    }")]
-    assert "CM.EditorView.scrollIntoView(" in body
-    assert "selection" not in body
+    assert "scrollToLine(n);" in body
+    # One place owns the rule, so the outline's rows obey it too (MD-19b).
+    jump = source[source.index("function scrollToLine"):]
+    jump = jump[:jump.index("\n    }")]
+    assert "CM.EditorView.scrollIntoView(" in jump
+    assert "selection" not in body + jump
+
+
+# --------------------------------------------- pasted and dropped media (MD-23)
+
+
+@pytest.fixture(scope="module")
+def media_helper(source):
+    """`insertMediaFiles`, the one path both paste and drop go through."""
+    body = source[source.index("async function insertMediaFiles("):]
+    return body[:body.index("\n    }\n")]
+
+
+@pytest.fixture(scope="module")
+def paste_handler(source):
+    body = source[source.index("const pasteHandler = CM.EditorView.domEventHandlers("):]
+    return body[:body.index("\n    });")]
+
+
+def test_paste_takes_the_bytes_off_the_clipboard(paste_handler):
+    # Browser "Copy image" puts image BYTES on the clipboard, not a file
+    # reference, so this is the ordinary paste event's `files` list — there is
+    # nothing to read off a path and no file picker involved.
+    assert "event.clipboardData" in paste_handler
+    assert ".files" in paste_handler
+    assert "insertMediaFiles(" in paste_handler
+
+
+def test_pasting_media_is_a_no_op_on_a_read_only_note(paste_handler):
+    # Same posture as whenWritable (MD-1a/MD-15): bail and return false so the
+    # paste falls through to the browser default untouched, rather than
+    # half-running and failing at the write.
+    assert "state.readOnly" in paste_handler
+
+
+def test_media_lands_in_an_assets_folder_beside_the_note(media_helper):
+    # A shared assets/ next to the note, created on demand. The 409 "exists"
+    # from the second paste onwards is the expected case, not an error.
+    assert '"/assets"' in media_helper
+    assert "fused.mkdir(" in media_helper
+    assert 'err.type !== "exists"' in media_helper
+
+
+def test_the_file_name_is_a_timestamp_so_pastes_never_collide(source, media_helper):
+    # Timestamps mean no directory scan and no prompt before a paste lands.
+    name = source[source.index("function mediaName("):]
+    name = name[:name.index("\n    }")]
+    assert '"pasted-" + stamp' in name
+    # The stamp is only the STARTING point — see the collision test below for
+    # what makes it actually unique.
+    assert "freeMediaName(" in media_helper
+
+
+def test_the_upload_is_awaited_before_the_link_is_inserted(media_helper):
+    # Order is the contract: inserting first would leave a link pointing at a
+    # file that failed to write.
+    upload_at = media_helper.index("await fused.uploadFile(")
+    assert "dispatch(" not in media_helper[:upload_at]
+    assert "dispatch(" in media_helper[upload_at:]
+
+
+def test_a_failed_upload_surfaces_instead_of_vanishing(media_helper):
+    # Reported through mediaNotice — the template's existing error surface,
+    # the same one a failed save uses — never a silently swallowed catch.
+    assert "mediaNotice(" in media_helper
+
+
+def test_media_is_inserted_as_ordinary_markdown_at_the_given_position(media_helper):
+    # `![](…)` and a normal dispatch, so undo removes it in one step and every
+    # other markdown tool can still read the note.
+    assert "![](" in media_helper
+    assert "dispatch(" in media_helper
+    # The position is a PARAMETER, not the selection: drop passes the drop
+    # point. Reading the selection in here would silently ignore it. `to` is a
+    # parameter for the same reason — a paste replaces the selection, a drop
+    # must not, and only the caller knows which gesture it is.
+    assert "function insertMediaFiles(view, files, pos, to)" in media_helper
+    # The selection is read in exactly one place: the recovery path for a
+    # document that changed under the upload (see the test below). Anywhere else
+    # would mean the caller's position was quietly ignored.
+    assert media_helper.count("state.selection") == 1
+    reads_selection = media_helper.index("state.selection")
+    assert media_helper.index("if (view.state.doc !== measuredAgainst)") \
+        < reads_selection
+
+
+def test_a_media_paste_replaces_the_selection_but_a_drop_does_not(source, media_helper):
+    # Found in review. The dispatch set only `from`, so a media paste over a
+    # selection left the selected text sitting beside the new image link —
+    # unlike every other paste, including the URL-over-a-selection branch in the
+    # same handler.
+    assert "changes: { from: pos, to: replaceTo, insert }" in media_helper
+    # The paste hands over the selection's whole range…
+    paste = source[source.index("if (media.length)"):]
+    assert "insertMediaFiles(target, media, sel.from, sel.to)" in paste[:400]
+    # …and the drop hands over one point, so `to` defaults to it and nothing is
+    # replaced. Both call sites are checked, since the whole bug was one of them
+    # passing the wrong thing.
+    calls = re.findall(r"insertMediaFiles\([^)]*\)", source)
+    assert calls == [
+        "insertMediaFiles(view, files, pos, to)",   # the definition
+        "insertMediaFiles(target, media, sel.from, sel.to)",   # paste
+        "insertMediaFiles(target, media, pos)",   # drop
+    ], calls
+
+
+def test_a_paste_never_deletes_text_typed_while_the_upload_was_in_flight(
+        media_helper):
+    # Found in review, and the sharp edge of the fix above: `to` turned the
+    # dispatch into a delete, while `pos`/`replaceTo` are measured BEFORE the
+    # awaited mkdir and upload. The editor stays live across those awaits, so a
+    # slow upload plus any typing meant the paste deleted a range that no longer
+    # meant anything.
+    #
+    # The guard is Text identity — CodeMirror documents are persistent, so an
+    # unchanged doc is the same object. This is a source assertion because the
+    # race needs a real editor, a real upload and real typing between them; the
+    # probe has none of the three.
+    assert "let measuredAgainst = view.state.doc;" in media_helper
+    guard = media_helper.index("if (view.state.doc !== measuredAgainst)")
+    assert guard < media_helper.index("view.dispatch(")
+    # Re-measured after each insert, or the second file of a multi-file paste
+    # would compare against a document its own predecessor invalidated.
+    assert "measuredAgainst = view.state.doc;" in media_helper[guard:]
+
+
+def test_dragover_prevents_default_or_the_drop_never_happens(source, paste_handler):
+    """Without preventDefault on dragover the browser refuses the drop.
+
+    It then navigates the webview to the dropped file instead, which looks
+    exactly like the editor vanishing. Gated to a drag CARRYING FILES so
+    CodeMirror's own text drag-and-drop is untouched.
+    """
+    dragover = paste_handler[paste_handler.index("dragover("):]
+    dragover = dragover[:dragover.index("\n      }")]
+    assert "preventDefault()" in dragover
+    assert "dragHasFiles(event)" in dragover
+    # `Files` in the type list is the only thing askable this early —
+    # dataTransfer.files is empty during a dragover — and drop asks the SAME
+    # question, so the two cannot disagree about which drags are ours.
+    helper = source[source.index("function dragHasFiles("):]
+    helper = helper[:helper.index("\n    }")]
+    assert '"Files"' in helper and "dataTransfer" in helper
+
+
+def test_drop_reads_the_files_and_reuses_the_paste_pipeline(paste_handler):
+    drop = paste_handler[paste_handler.index("\n      drop("):]
+    assert "event.dataTransfer" in drop
+    assert "insertMediaFiles(" in drop
+    # No second copy of the ensure-dir/upload/insert work.
+    assert "fused.uploadFile(" not in drop
+
+
+def test_a_drop_lands_at_the_pointer_not_at_the_caret(paste_handler):
+    # Dropping into the middle of a note should insert where the pointer is;
+    # posAtCoords returns null for a drop outside any line, which falls back
+    # to the caret.
+    drop = paste_handler[paste_handler.index("\n      drop("):]
+    assert "posAtCoords(" in drop
+    assert "clientX" in drop and "clientY" in drop
+    assert "state.selection.main.head" in drop
+
+
+def test_dropping_media_is_a_no_op_on_a_read_only_note(paste_handler):
+    drop = paste_handler[paste_handler.index("\n      drop("):]
+    assert "state.readOnly" in drop
+
+
+def test_every_file_drop_prevents_default_whatever_it_carried(paste_handler):
+    """A PDF dropped on a note must not navigate the webview away.
+
+    `dragover` commits to owning EVERY drag carrying files — per-file MIME is
+    not readable that early, so it cannot be choosier. CodeMirror only calls
+    preventDefault for a handler returning true, so a `return false` in `drop`
+    hands the event back to the browser, whose default action for a file drop
+    is to navigate to the file: the editor vanishes, taking any edits since the
+    last autosave with it. So `drop` prevents FIRST and asks questions after.
+    """
+    drop = paste_handler[paste_handler.index("\n      drop("):]
+    prevent = drop.index("event.preventDefault()")
+    # Nothing is allowed to return before the preventDefault except the
+    # not-a-file-drag fall-through.
+    before = drop[:prevent]
+    assert "dragHasFiles(event)" in before
+    assert "mediaFiles(" not in before, "the media filter must come AFTER"
+    assert "readOnly" not in before, "the read-only bail must come AFTER"
+
+
+def test_a_text_drag_still_falls_through_to_codemirror(paste_handler):
+    # Dragging selected text within the note is CM's own behaviour and must be
+    # untouched — the question is whether the drag carried FILES, never whether
+    # media matched.
+    drop = paste_handler[paste_handler.index("\n      drop("):]
+    head = drop[:drop.index("event.preventDefault()")]
+    assert "if (!dragHasFiles(event)) return false;" in head
+
+
+def test_a_non_media_file_drop_says_so_instead_of_doing_nothing(paste_handler):
+    drop = paste_handler[paste_handler.index("\n      drop("):]
+    tail = drop[drop.index("event.preventDefault()"):]
+    assert tail.count("mediaNotice(") >= 2, (
+        "both refusals — read-only, and nothing droppable in the drag — report")
+    assert "Only images and video" in tail
+
+
+def test_the_notice_is_the_same_surface_a_failed_save_uses(source):
+    notice = source[source.index("function mediaNotice("):]
+    notice = notice[:notice.index("\n    }")]
+    assert "saveStateEl.textContent" in notice
+    assert 'saveStateEl.classList.add("error")' in notice
+
+
+def test_two_pastes_in_the_same_second_do_not_overwrite_each_other(source, media_helper):
+    """The timestamp alone is not unique.
+
+    Two pastes within one second produce the same name, and the upload does an
+    unconditional os.replace — so the first file would be silently destroyed.
+    The name is probed for existence and bumped until it is free, which covers
+    the several-files-in-one-gesture case as well (each upload is awaited, so
+    file 1 is already on disk when file 2 is named).
+    """
+    assert "await freeMediaName(" in media_helper
+    free = source[source.index("async function freeMediaName("):]
+    free = free[:free.index("\n    }")]
+    assert "mediaExists(" in free
+    # Bounded: a stat that always answers "yes" must not spin forever.
+    assert "n < 100" in free
+    exists = source[source.index("async function mediaExists("):]
+    exists = exists[:exists.index("\n    }")]
+    assert "fused.stat(" in exists
+
+
+def test_every_video_mime_maps_to_an_extension_the_widget_plays(source):
+    """The trap: `video/x-m4v` fell through to the MIME subtype and produced
+    `pasted-….x-m4v`, which VIDEO_EXT does not match — so the clip rendered as
+    a broken <img>. The two tables have to agree, for every entry."""
+    table = source[source.index("const MEDIA_EXT = {"):]
+    table = table[:table.index("};")]
+    video_ext = re.search(r"const VIDEO_EXT = /\\\.\(([a-z0-9|]+)\)\$/i", source)
+    assert video_ext, "VIDEO_EXT should still be an extension alternation"
+    playable = set(video_ext.group(1).split("|"))
+    mapped = re.findall(r'"video/[^"]+": "([a-z0-9]+)"', table)
+    assert mapped
+    assert set(mapped) <= playable, set(mapped) - playable
+    assert '"video/x-m4v"' in table
+
+
+def test_an_unmapped_x_prefixed_mime_does_not_become_the_extension(source):
+    # `image/x-foo` must not produce `name.x-foo`; the fallback strips the
+    # `x-` vendor prefix so an unmapped type still lands with a usable name.
+    name = source[source.index("function mediaName("):]
+    name = name[:name.index("\n    }")]
+    assert 'replace(/^x-/, "")' in name
+
+
+# ---- ordered-list renumbering (MD-25) --------------------------------------
+# The behaviour itself is tested by running it, in tests/test_markdown_renumber.py.
+# What only the source can say is that the filter is actually installed in the
+# editor the page builds — the probe there constructs its own extension list, so
+# it would happily pass on a filter that no real editor ever sees.
+
+
+def test_the_renumber_filter_is_installed_in_the_editor(source):
+    extensions = source[source.index("function editorExtensions()"):]
+    extensions = extensions[:extensions.index("\n    }")]
+    assert "renumberFilter," in extensions
+
+
+def test_renumbering_excludes_undo_so_it_cannot_fight_the_history(source):
+    # Undoing back to a deliberately odd numbering must not be corrected right
+    # back. The filter opts IN to the user events it handles rather than
+    # excluding undo by name, so this pins the allow-list.
+    body = source[source.index("const renumberFilter ="):]
+    body = body[:body.index("\n    });")]
+    assert re.findall(r'isUserEvent\("(\w+)"\)', body) == ["input", "delete", "move"]
+    # Appended to the same transaction, not dispatched after it, so one undo
+    # takes back the edit and its renumbering together.
+    assert "sequential: true" in body
+
+
+def test_no_line_decoration_ever_carries_a_vertical_margin(source):
+    """Margin on a `.cm-line` desynchronises CodeMirror's height map.
+
+    CM measures each line from its bounding rect. Padding is inside that rect;
+    margin is outside it, and adjacent margins collapse besides. A margin
+    therefore makes CM believe a line is shorter than the space it occupies, and
+    every coordinate-based operation reading that map — `posAtCoords`, so mouse
+    clicks and arrow up/down both — lands on the wrong line, drifting further
+    with each spaced block above it.
+
+    This shipped once, in the first draft of MD-26, and the editor became
+    unusable below the first heading. It is invisible in a screenshot and no
+    probe can see it (the probe has no layout), so the guard is here.
+    """
+    css = source[source.index("/* ---- vertical rhythm (MD-26)"):]
+    css = css[:css.index("/* Faint (--text-faint)")]
+    offenders = re.findall(r"^\s*[^/*\n]*\bmargin[-a-z]*\s*:.*$", css, re.M)
+    assert offenders == [], offenders
+    # And the rules are really there — an empty block would pass the above.
+    assert "padding-top" in css

@@ -232,6 +232,11 @@ def _is_big(nrows, ncols):
 
 # ---------- parquet cache ----------
 
+# In-flight cache builds live under this prefix, deliberately NOT starting with
+# a cache key, so _clean_stale's "{hash}-" match can never sweep a live build.
+_TMP_PREFIX = ".build-"
+
+
 def _cache_dir(file):
     import hashlib
 
@@ -242,58 +247,142 @@ def _cache_dir(file):
 def _clean_stale(keep_dir):
     if not os.path.isdir(CACHE_ROOT):
         return
+    import shutil
+    import time
+
     prefix = os.path.basename(keep_dir).split("-")[0]
     for n in os.listdir(CACHE_ROOT):
         p = os.path.join(CACHE_ROOT, n)
+        # Skip in-flight builds (_TMP_PREFIX): another process may be writing
+        # one right now, and wiping it would break its atomic-rename claim.
+        # Old ones (a builder killed mid-run) are safe to sweep by age.
+        if n.startswith(_TMP_PREFIX):
+            try:
+                if time.time() - os.path.getmtime(p) > 3600:
+                    shutil.rmtree(p, ignore_errors=True)
+            except OSError:
+                pass
+            continue
         if n.startswith(prefix + "-") and p != keep_dir:
-            import shutil
-
             shutil.rmtree(p, ignore_errors=True)
 
 
+def _load_meta(meta_path):
+    """A published cache's metadata, or None if it isn't readable.
+
+    None covers both "not there" and "there but unreadable": a concurrent
+    builder can rename a winner aside between an existence check and the open,
+    and _rekey_cache rewrites meta.json in place, so a reader can catch a
+    partial file. Callers treat None as "no winner yet" and retry.
+    """
+    try:
+        with open(meta_path) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return None
+
+
 def _ensure_cache(file):
-    """Build (or reuse) the parquet cache + metadata for a workbook."""
+    """Build (or reuse) the parquet cache + metadata for a workbook.
+
+    Each call runs in its own fresh subprocess (excel/reader.py isn't on the
+    in-process allowlist — see executor.py), so a plain threading.Lock can't
+    stop two concurrent cold-open requests for the same file from both
+    building the cache at once. Build into a private per-process tmp dir and
+    claim the real cache dir with one atomic os.rename: only one builder
+    wins, and a loser discards its (redundant but harmless) work and reads
+    the winner's meta.json instead of two writers racing on the same
+    parquet/meta paths.
+    """
     file = os.path.abspath(file)
     d = _cache_dir(file)
     meta_path = os.path.join(d, "meta.json")
-    if os.path.exists(meta_path):
-        with open(meta_path) as f:
-            return json.load(f)
+    cached = _load_meta(meta_path)
+    if cached is not None:
+        return cached
     _clean_stale(d)
-    os.makedirs(d, exist_ok=True)
-    ext = os.path.splitext(file)[1].lower()
-    sheets = []
-    if ext in (".xlsx", ".xlsm"):
-        for i, (name, nr, nc) in enumerate(_xlsx_dims(file)):
-            entry = {"name": name, "kind": "xlsx", "big": _is_big(nr, nc),
-                     "nrows": nr, "ncols": nc, "header": None}
-            if entry["big"]:
-                pq = os.path.join(d, f"s{i}.parquet")
-                nr2, nc2 = _xlsx_sheet_to_parquet(file, name, pq)
-                entry.update(nrows=nr2, ncols=nc2, parquet=os.path.basename(pq))
-            sheets.append(entry)
-    elif ext == ".csv":
-        con = _duck()
-        pq = os.path.join(d, "s0.parquet")
-        nr, nc, _ = _copy_to_parquet(
-            con, f"SELECT * FROM read_csv({_q(file)}, header=false, all_varchar=true, null_padding=true)", pq
-        )
-        sheets.append({"name": os.path.splitext(os.path.basename(file))[0], "kind": "csv",
-                       "big": _is_big(nr, nc), "nrows": nr, "ncols": nc, "header": None,
-                       "parquet": "s0.parquet"})
-    elif ext == ".parquet":
-        con = _duck()
-        pq = os.path.join(d, "s0.parquet")
-        nr, nc, cols = _copy_to_parquet(con, f"SELECT * FROM read_parquet({_q(file)})", pq)
-        sheets.append({"name": os.path.splitext(os.path.basename(file))[0], "kind": "parquet",
-                       "big": _is_big(nr, nc), "nrows": nr, "ncols": nc, "header": cols,
-                       "parquet": "s0.parquet"})
-    else:
-        raise ValueError(f"unsupported file type {ext!r}")
-    meta = {"file": file, "mtime": os.path.getmtime(file), "sheets": sheets}
-    with open(meta_path, "w") as f:
-        json.dump(meta, f)
-    return meta
+    import shutil
+    import time
+    import uuid
+
+    tmp_d = os.path.join(
+        CACHE_ROOT, f"{_TMP_PREFIX}{os.getpid()}-{uuid.uuid4().hex[:8]}")
+    os.makedirs(tmp_d, exist_ok=True)
+    try:
+        ext = os.path.splitext(file)[1].lower()
+        sheets = []
+        if ext in (".xlsx", ".xlsm"):
+            for i, (name, nr, nc) in enumerate(_xlsx_dims(file)):
+                entry = {"name": name, "kind": "xlsx", "big": _is_big(nr, nc),
+                         "nrows": nr, "ncols": nc, "header": None}
+                if entry["big"]:
+                    pq = os.path.join(tmp_d, f"s{i}.parquet")
+                    nr2, nc2 = _xlsx_sheet_to_parquet(file, name, pq)
+                    entry.update(nrows=nr2, ncols=nc2, parquet=os.path.basename(pq))
+                sheets.append(entry)
+        elif ext == ".csv":
+            con = _duck()
+            pq = os.path.join(tmp_d, "s0.parquet")
+            nr, nc, _ = _copy_to_parquet(
+                con, f"SELECT * FROM read_csv({_q(file)}, header=false, all_varchar=true, null_padding=true)", pq
+            )
+            sheets.append({"name": os.path.splitext(os.path.basename(file))[0], "kind": "csv",
+                           "big": _is_big(nr, nc), "nrows": nr, "ncols": nc, "header": None,
+                           "parquet": "s0.parquet"})
+        elif ext == ".parquet":
+            con = _duck()
+            pq = os.path.join(tmp_d, "s0.parquet")
+            nr, nc, cols = _copy_to_parquet(con, f"SELECT * FROM read_parquet({_q(file)})", pq)
+            sheets.append({"name": os.path.splitext(os.path.basename(file))[0], "kind": "parquet",
+                           "big": _is_big(nr, nc), "nrows": nr, "ncols": nc, "header": cols,
+                           "parquet": "s0.parquet"})
+        else:
+            raise ValueError(f"unsupported file type {ext!r}")
+        meta = {"file": file, "mtime": os.path.getmtime(file), "sheets": sheets}
+        with open(os.path.join(tmp_d, "meta.json"), "w") as f:
+            json.dump(meta, f)
+        # Claim `d` with one atomic rename. If it fails, `d` already exists:
+        # either a concurrent builder won (meta.json present — use theirs), or
+        # it's a half-built leftover from an interrupted earlier run, which we
+        # must clear or every future open keeps failing on the same debris.
+        # Debris is never deleted in place: between the meta.json check and the
+        # cleanup another process could publish a complete cache into `d`, and
+        # an rmtree there would destroy it (possibly under a live reader).
+        # Instead the leftover is renamed aside to a _TMP_PREFIX name — atomic,
+        # and if it turns out we moved a just-published winner, our own
+        # equivalent build claims `d` on the next pass so readers still find a
+        # complete cache there. On Windows the rename-aside also fails while
+        # any process holds files inside `d` open, so a cache in active use
+        # can't be yanked away; we just retry and end up adopting it.
+        # Adopting is committed to only once a winner's metadata is actually in
+        # hand: our own complete build is still sitting in tmp_d, so a winner
+        # that vanishes mid-read (renamed aside by yet another builder) means
+        # go round again, never fail.
+        for _ in range(10):
+            try:
+                os.rename(tmp_d, d)
+                return meta
+            except OSError:
+                pass
+            won = _load_meta(meta_path)
+            if won is not None:
+                shutil.rmtree(tmp_d, ignore_errors=True)
+                return won
+            junk = os.path.join(CACHE_ROOT, f"{_TMP_PREFIX}junk-{os.getpid()}-{uuid.uuid4().hex[:8]}")
+            try:
+                os.rename(d, junk)
+            except OSError:
+                time.sleep(0.1)
+                continue
+            shutil.rmtree(junk, ignore_errors=True)
+        won = _load_meta(meta_path)
+        if won is not None:
+            shutil.rmtree(tmp_d, ignore_errors=True)
+            return won
+        raise RuntimeError(f"could not claim cache dir {d!r}")
+    except BaseException:
+        shutil.rmtree(tmp_d, ignore_errors=True)
+        raise
 
 
 def _rekey_cache(file):
@@ -310,14 +399,19 @@ def _rekey_cache(file):
             if n.startswith(prefix + "-"):
                 shutil.move(os.path.join(CACHE_ROOT, n), new_dir)
                 meta_path = os.path.join(new_dir, "meta.json")
-                try:
-                    with open(meta_path) as f:
-                        meta = json.load(f)
+                meta = _load_meta(meta_path)
+                if meta is not None:
                     meta["mtime"] = os.path.getmtime(file)
-                    with open(meta_path, "w") as f:
-                        json.dump(meta, f)
-                except OSError:
-                    pass
+                    # Swap the rewrite in atomically: readers resolve this file
+                    # concurrently, and rewriting in place lets one of them see
+                    # a half-written meta.json.
+                    tmp = meta_path + ".new"
+                    try:
+                        with open(tmp, "w") as f:
+                            json.dump(meta, f)
+                        os.replace(tmp, meta_path)
+                    except OSError:
+                        pass
                 return
 
 

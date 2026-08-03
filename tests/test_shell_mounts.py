@@ -718,7 +718,7 @@ def test_attach_win32_removes_stale_empty_leaf(home, rcd, monkeypatch):
     monkeypatch.setattr(mounts_mod, "_winfsp_available", lambda: True, raising=False)
     c = mounts_mod.add_mount("data", "remote:bucket")
     mp = mounts_mod.mountpoint(c)
-    mounts_mod.os.makedirs(mp)  # stale empty leaf
+    mounts_mod.os.makedirs(mp, exist_ok=True)  # stale empty leaf
     assert mounts_mod.os.path.isdir(mp)
     assert mounts_mod.attach_mount(c) is None
     # we removed the stale leaf and did NOT recreate it (WinFsp would),
@@ -734,7 +734,7 @@ def test_attach_win32_refuses_nonempty_leaf(home, rcd, monkeypatch):
     monkeypatch.setattr(mounts_mod, "_winfsp_available", lambda: True, raising=False)
     c = mounts_mod.add_mount("data", "remote:bucket")
     mp = mounts_mod.mountpoint(c)
-    mounts_mod.os.makedirs(mp)
+    mounts_mod.os.makedirs(mp, exist_ok=True)
     keep = mounts_mod.os.path.join(mp, "keep.txt")
     with open(keep, "w") as f:
         f.write("x")
@@ -752,7 +752,7 @@ def test_attach_win32_stale_leaf_raced_delete_proceeds(home, rcd, monkeypatch):
     monkeypatch.setattr(mounts_mod, "_winfsp_available", lambda: True)
     c = mounts_mod.add_mount("data", "remote:bucket")
     mp = mounts_mod.mountpoint(c)
-    mounts_mod.os.makedirs(mp)  # isdir(mp) True so we enter the rmdir branch
+    mounts_mod.os.makedirs(mp, exist_ok=True)  # isdir(mp) True so we enter the rmdir branch
 
     def raise_fnf(_p):
         raise FileNotFoundError(_errno.ENOENT, "raced away")
@@ -769,7 +769,7 @@ def test_attach_win32_stale_leaf_nonempty_reports_not_empty(home, rcd, monkeypat
     monkeypatch.setattr(mounts_mod, "_winfsp_available", lambda: True)
     c = mounts_mod.add_mount("data", "remote:bucket")
     mp = mounts_mod.mountpoint(c)
-    mounts_mod.os.makedirs(mp)
+    mounts_mod.os.makedirs(mp, exist_ok=True)
 
     def raise_notempty(_p):
         raise OSError(_errno.ENOTEMPTY, "directory not empty")
@@ -788,7 +788,7 @@ def test_attach_win32_stale_leaf_other_oserror_reports_exception(home, rcd, monk
     monkeypatch.setattr(mounts_mod, "_winfsp_available", lambda: True)
     c = mounts_mod.add_mount("data", "remote:bucket")
     mp = mounts_mod.mountpoint(c)
-    mounts_mod.os.makedirs(mp)
+    mounts_mod.os.makedirs(mp, exist_ok=True)
 
     def raise_perm(_p):
         raise PermissionError(_errno.EACCES, "access is denied")
@@ -1360,7 +1360,7 @@ def test_mounted_paths_merges_listmounts(home, rcd, monkeypatch):
 
     c = mounts_mod.add_mount("data", "remote:bucket")
     mp = mounts_mod.mountpoint(c)
-    os.makedirs(mp)
+    os.makedirs(mp, exist_ok=True)
     rcd.responses["mount/listmounts"] = {"mountPoints": [{"Fs": c["remote"], "MountPoint": mp}]}
     monkeypatch.setattr(mounts_mod.os.path, "ismount", lambda p: p == mp)
     assert mp in mounts_mod.mounted_paths()
@@ -2073,7 +2073,7 @@ def _wedge(monkeypatch, mp, *, also_mounted=None):
 
 def test_mount_wedged_detects_enotconn(tmp_path, monkeypatch):
     mp = str(tmp_path / "mnt")
-    _os.makedirs(mp)
+    _os.makedirs(mp, exist_ok=True)
     _wedge(monkeypatch, mp)
     assert mounts_mod._mount_wedged(mp) is True
     # ...and _is_mounted sees it even though the bare predicate does not.
@@ -2395,7 +2395,7 @@ def test_force_unmount_reports_failure_when_path_still_wedged(tmp_path, monkeypa
     # and were vacuously true for a wedged path, so this reported None — reconnect
     # then walked on into attach_mount with the mountpoint still unusable.
     mp = str(tmp_path / "mnt")
-    _os.makedirs(mp)
+    _os.makedirs(mp, exist_ok=True)
     _wedge(monkeypatch, mp)
     ran = []
 
@@ -2932,7 +2932,7 @@ def test_stat_marks_mount_backed_files_remote(client, home, rcd):
     rcd.responses["operations/stat"] = {"item": {"Size": 2}}
     c = mounts_mod.add_mount("data", "remote:bucket")  # a real record for _mount_for
     mp = mounts_mod.mountpoint(c)
-    os.makedirs(mp)
+    os.makedirs(mp, exist_ok=True)
     f = os.path.join(mp, "x.parquet")
     open(f, "wb").write(b"pq")
     assert client.get("/api/fs/stat", params={"path": f}).json()["remote"] is True
@@ -2954,7 +2954,7 @@ def test_fs_raw_proxies_range_from_mount_serve(client, home, rcd):
 
     c = mounts_mod.add_mount("data", "remote:bucket")
     mp = mounts_mod.mountpoint(c)
-    os.makedirs(mp)
+    os.makedirs(mp, exist_ok=True)
     f = os.path.join(mp, "x.bin")
     open(f, "wb").write(b"LOCAL-BYTES")  # what a (dead-mount) local read would see
     rcd.responses["operations/list"] = {"list": [
@@ -3004,7 +3004,7 @@ def test_fs_raw_directory_404s_not_listing(client, home, rcd):
 
     c = mounts_mod.add_mount("data", "remote:bucket")
     mp = mounts_mod.mountpoint(c)
-    os.makedirs(mp)
+    os.makedirs(mp, exist_ok=True)
     d = os.path.join(mp, "subdir")
     os.makedirs(d)
     open(os.path.join(d, "x.bin"), "wb").write(b"CHUNK")
@@ -3047,7 +3047,7 @@ def test_fs_raw_serve_dead_returns_503_never_kernel_reads_mount(client, home):
 
     c = mounts_mod.add_mount("data", "remote:bucket")
     mp = mounts_mod.mountpoint(c)
-    os.makedirs(mp)
+    os.makedirs(mp, exist_ok=True)
     f = os.path.join(mp, "x.bin")
     open(f, "wb").write(b"LOCAL-BYTES")
     with socket.socket() as s:
@@ -3069,7 +3069,7 @@ def test_fs_raw_proxy_error_keeps_range_headers(client, home, monkeypatch):
 
     c = mounts_mod.add_mount("data", "remote:bucket")
     mp = mounts_mod.mountpoint(c)
-    os.makedirs(mp)
+    os.makedirs(mp, exist_ok=True)
     f = os.path.join(mp, "x.bin")
     open(f, "wb").write(b"LOCAL-BYTES")
     # The warm-read fallthrough resolves a mount-backed path's shape through the
@@ -3799,7 +3799,7 @@ def test_fs_raw_redirects_cold_native_range_reads(client, home, rcd, fresh_upstr
     rcd.responses["operations/publiclink"] = {"url": "https://signed.example/x"}
     c = mounts_mod.add_mount("data", "remote:bucket")
     mp = mounts_mod.mountpoint(c)
-    os.makedirs(mp)
+    os.makedirs(mp, exist_ok=True)
     f = os.path.join(mp, "x.bin")
     open(f, "wb").write(b"LOCAL-BYTES")
     # A live-looking serve entry; the serve itself is never reached by the
@@ -3848,7 +3848,7 @@ def test_api_run_rewrites_raw_source_url_to_direct(
     rcd.responses["operations/publiclink"] = {"url": "https://signed.example/x"}
     c = mounts_mod.add_mount("data", "remote:bucket")
     mp = mounts_mod.mountpoint(c)
-    os.makedirs(mp)
+    os.makedirs(mp, exist_ok=True)
     f = os.path.join(mp, "x.parquet")
     open(f, "wb").write(b"PAR1")
     storage.write_json(mounts_mod.serves_path(), {mp: "http://127.0.0.1:1"})

@@ -32,6 +32,7 @@ TIER_ONE_TEMPLATES = (
     "claude",
     "code",
     "duckdb",
+    "git",
     "graph",
     "history",
     "log_studio",
@@ -42,6 +43,7 @@ TIER_ONE_TEMPLATES = (
     "text",
     "tree",
     "vector",
+    "versions",
     "xlsx",
     "zip",
 )
@@ -77,7 +79,6 @@ DEFERRED_TEMPLATES = (
     "pdf",
     "photos",
     "pmtiles",
-    "preview",
     "reader",
     "tar",
     "zarr_aoi",

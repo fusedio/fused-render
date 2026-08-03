@@ -56,6 +56,23 @@ def home_dir() -> str:
     return os.environ.get("FUSED_RENDER_HOME") or os.path.expanduser("~/.fused-render")
 
 
+def workspace_dir() -> str:
+    """The user's Fused workspace (~/Documents/Fused), where app folders live
+    two levels down (<workspace>/<tag>/<name>).
+
+    `FUSED_RENDER_WORKSPACE_DIR` is exported by the server ALREADY RESOLVED —
+    the output of `shell.seed.fused_dir()`. The fallback mirrors that function
+    for a template running standalone: the same `FUSED_RENDER_DIR` override
+    tests use, else the default location.
+    """
+    d = os.environ.get("FUSED_RENDER_WORKSPACE_DIR")
+    if d:
+        return d
+    return os.path.abspath(
+        os.path.expanduser(os.environ.get("FUSED_RENDER_DIR") or "~/Documents/Fused")
+    )
+
+
 def mounts_dir() -> str:
     """The dir holding one subdir per mounted remote.
 

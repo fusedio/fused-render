@@ -423,6 +423,13 @@ export interface Deployment {
   // Optional — records written before this feature omit them (read as []).
   include?: string[];
   exclude?: string[];
+  // Whether viewers may download this page's source bundle. Persisted like the
+  // caching choice, but the MOUNT is the authority — reopening the modal
+  // reconciles this against `share list` (ShareMount.allow_clone) so a posture
+  // changed elsewhere isn't masked by a stale local value. Optional: records
+  // written before the feature omit it and read as false (fail closed — a page's
+  // source must never look downloadable because a field was missing).
+  allow_clone?: boolean;
   // The caching choice this deployment was published with — "0s" (off) or a
   // duration like "5m"/"1h" (fused/agent_core/caching.py's cache_max_age format).
   // Reopening the modal reloads it, same as include/exclude. Optional — records
@@ -466,6 +473,8 @@ export interface ShareMount {
   status: string;
   type: string | null;
   url: string | null;
+  // The mount's LIVE clone posture — what the Deploy modal reconciles against.
+  allow_clone: boolean;
   page: string | null;
 }
 
@@ -528,6 +537,11 @@ export function deployPage(
   include: string[],
   exclude: string[],
   cacheMaxAge: string,
+  // May viewers download this page's source bundle? Always sent explicitly (the
+  // server states it to the CLI either way), because the toggle in the dialog is
+  // a definite statement — omitting it on a redeploy would silently preserve
+  // whatever the mount had, so unticking the box would not turn it off.
+  allowClone: boolean,
   forceNew?: boolean,
   // A chosen link name for a FRESH `share create` (see deploy.py's
   // deploy_page) — omit for the default auto-generated opaque token. Ignored
@@ -540,6 +554,7 @@ export function deployPage(
     include,
     exclude,
     cache_max_age: cacheMaxAge,
+    allow_clone: allowClone,
     force_new: forceNew ?? false,
     ...(token ? { token } : {}),
   });
@@ -555,6 +570,52 @@ export function revokeDeployment(fsPath: string): Promise<Deployment> {
 // setting.
 export function clearCacheDeployment(fsPath: string): Promise<CacheClearResult> {
   return postJson<CacheClearResult>("/api/deploy/clear-cache", { page: fsPath });
+}
+
+// -- cloning a DEPLOYED page (app_clone.py) ---------------------------------
+// Distinct from the GitHub deep-link clone (deeplink.py): no git, no identity, no
+// update-in-place — every clone lands in a fresh folder under ~/Documents/Fused.
+
+export interface ClonePreviewFile {
+  path: string;
+  bytes: number | null;
+}
+
+export interface ClonePreview {
+  // The canonical `…/<token>/_clone` URL derived from what the user pasted.
+  url: string;
+  name: string;
+  files: ClonePreviewFile[];
+  // Uncompressed total across the archive's members.
+  bytes: number | null;
+  // What the download actually costs (base64 of the compressed archive). Null on
+  // an older serve path that doesn't report it — show nothing rather than a guess.
+  download_bytes: number | null;
+  dest: string;
+  folder: string;
+  // True when `folder` had to be suffixed because something already occupies the
+  // page's own name — surfaced so the confirm step can say so up front.
+  renamed: boolean;
+}
+
+export interface CloneResult {
+  dest: string;
+  folder: string;
+  page: string;
+  // The /view path to open the cloned page at.
+  view: string;
+  files: number;
+}
+
+export function cloneAppInfo(src: string): Promise<ClonePreview> {
+  return getJson<ClonePreview>(`/api/clone-app/info?src=${encodeURIComponent(src)}`);
+}
+
+// `folder` is the destination the preview showed, passed back so the clone lands where the
+// user was told it would. Omitted, the backend derives it — the response is authoritative
+// either way.
+export function cloneApp(src: string, folder?: string): Promise<CloneResult> {
+  return postJson<CloneResult>("/api/clone-app", { src, folder });
 }
 
 export function installFused(): Promise<void> {
@@ -896,6 +957,29 @@ export function renameEntry(src: string, dst: string, overwrite = false): Promis
 // rule as rename; a directory copied into itself/a descendant is a 400.
 export function copyEntry(src: string, dst: string, overwrite = false): Promise<StatResult> {
   return postJson<StatResult>("/api/fs/copy", { src, dst, overwrite });
+}
+
+// -- OS clipboard bridge (server/routers/clipboard.py) -----------------
+// The webview can't read or write the native file flavors Finder/Explorer/
+// Nautilus use, so the local backend does it for us and we trade in absolute
+// paths. `token` is a content fingerprint of the ordered path list — the
+// caller keeps the last one it SAW so an untouched clipboard never clobbers a
+// pending in-app cut. `supported: false` means this machine has no bridge
+// (no pyobjc, no xclip, a sandbox); it is a normal 200, not an error.
+export interface OsClipboard {
+  paths: string[];
+  token: string;
+  supported: boolean;
+}
+
+export function readOsClipboard(): Promise<OsClipboard> {
+  return getJson<OsClipboard>("/api/clipboard/files");
+}
+
+export function writeOsClipboard(
+  paths: string[]
+): Promise<{ token: string; supported: boolean }> {
+  return postJson<{ token: string; supported: boolean }>("/api/clipboard/files", { paths });
 }
 
 // -- Mounts (shell/mounts.py) ------------------------------------------
@@ -1311,4 +1395,59 @@ export function createTemplate(name: string, extensions: string[]): Promise<NewT
 // hands it to Claude Code's registered scheme handler.
 export function openTemplateInClaude(name: string): Promise<{ url: string }> {
   return postJson<{ url: string }>("/api/templates/open-in-claude", { name });
+}
+
+// -- Apps (GET /api/apps, POST /api/apps/new) ---------------------------------
+// An app folder two levels under the workspace: <fused_dir>/<tag>/<name>/.
+// `tag` is just the top-level folder's name — any folder qualifies, there is
+// no fixed tag set. `entry_html` is the app's "/" route entry file (absolute
+// path), null when the folder has no single resolvable .html entry; `title`
+// comes from that file's <title>, null falls back to the folder name in the
+// UI.
+export interface AppInfo {
+  name: string;
+  tag: string;
+  path: string;
+  entry_html: string | null;
+  title: string | null;
+  // Last-modified time, epoch seconds. Optional/null for servers that don't
+  // report it (older backends) — those sort last in the Home grid.
+  updated_at?: number | null;
+}
+
+export function getApps(): Promise<{ apps: AppInfo[] }> {
+  return getJson<{ apps: AppInfo[] }>("/api/apps");
+}
+
+// Scaffold a new app folder and (optionally) kick off a Claude session seeded
+// with `prompt`. 409 = name collision, 400 = bad name — both surface via the
+// thrown HttpError's message for inline display.
+export interface NewAppResult {
+  path: string;
+  entry_html: string;
+  // Whether a Claude session was actually kicked off for the prompt.
+  session_started: boolean;
+  // The live run, for attaching to the session that was just started; null
+  // when no prompt was given or the spawn failed.
+  run_id: string | null;
+  // Why the session did not start (claude CLI missing, spawn failure). The
+  // app itself was created either way — surface this so a prompt that went
+  // nowhere isn't silent. Null when it started, or when there was no prompt.
+  session_error: string | null;
+}
+
+export function createApp(name: string, prompt: string): Promise<NewAppResult> {
+  return postJson<NewAppResult>("/api/apps/new", { name, prompt });
+}
+
+// -- AI completion (POST /api/ai) ---------------------------------------------
+// The fused.ai relay: one non-streaming completion through the server's warm
+// Claude Code CLI instance (server/ai.py). Model defaults to haiku server-side;
+// the shell uses this for small utility completions (e.g. naming a new app
+// from its prompt on Home), not for anything conversational.
+export function aiComplete(prompt: string, system_prompt?: string): Promise<string> {
+  return postJson<{ ok: boolean; result: { text: string } }>("/api/ai", {
+    prompt,
+    ...(system_prompt ? { system_prompt } : {}),
+  }).then((r) => r.result.text);
 }

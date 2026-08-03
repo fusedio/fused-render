@@ -6,7 +6,7 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
-from fastapi import APIRouter, Body, Header, Request
+from fastapi import APIRouter, Body, File, Form, Header, Request, UploadFile
 from fastapi.responses import (
     FileResponse,
     HTMLResponse,
@@ -16,6 +16,7 @@ from fastapi.responses import (
     StreamingResponse,
 )
 
+from fused_render import app_commit_queue, app_git
 from fused_render import calls as shell_calls
 from fused_render.server.common import _error, _require_fused
 from fused_render.server.mount import _invalidate_stat_cache, _mount_probe, _mount_stat_payload, _mutation_result_payload, _probe_path, _stat_payload, _writable
@@ -34,6 +35,31 @@ def _is_under_sidecar_root(path: str) -> bool:
     root = os.path.abspath(os.path.join(shell_storage.home_dir(), "sidecar"))
     ap = os.path.abspath(path)
     return ap == root or ap.startswith(root + os.sep)
+
+
+def _commit_mutation(result, verb: str, *paths) -> None:
+    """Record a successful mutation for commit in the app repo it touched.
+
+    App folders (<workspace>/<tag>/<name>) are version-controlled from
+    creation (app_git); editor-driven changes get the same history as Claude
+    turns. The commit itself is debounced and serialized through
+    app_commit_queue's single worker, so a burst of autosaves becomes one
+    commit and two saves can never race
+    each other on the repo's index.lock. A refused mutation (any JSONResponse
+    error status) commits nothing, and everything downstream is best-effort
+    and hard-scoped to app dirs — a git failure never fails the mutation that
+    already landed, and nothing outside an app dir is ever committed to."""
+    if getattr(result, "status_code", 200) != 200:
+        return
+    done = set()
+    for p in paths:
+        if not isinstance(p, str) or not p:
+            continue
+        app_dir = app_git.app_dir_for(p)
+        if app_dir is None or app_dir in done:
+            continue
+        done.add(app_dir)
+        app_commit_queue.mark(p, verb)
 
 
 def _fs_write(body: dict, x_fused: str | None):
@@ -175,6 +201,94 @@ def _fs_write(body: dict, x_fused: str | None):
         return _error(f"cannot write {path}: {e}", status=400)
 
     return _stat_payload(path, False)
+
+
+def _fs_upload(path: str | None, data: bytes, x_fused: str | None):
+    # The binary sibling of _fs_write. _fs_write's contract is "content is a
+    # string" (it encodes UTF-8 on the way out), so there was no way to land
+    # arbitrary bytes — a pasted screenshot or video — on disk. Rather than
+    # fork that function down the middle with a binary mode (its callers depend
+    # on the optimistic lock and create-exclusive semantics, neither of which
+    # means anything for a fresh pasted blob), this reuses the same guard
+    # sequence and drops the text-only parts.
+    #
+    # Like _fs_write it does NOT create intermediate directories: a missing
+    # parent is a 404, and the caller does its own mkdir first.
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+
+    if not path or not os.path.isabs(path):
+        return _error("'path' must be an absolute filesystem path")
+    parent = os.path.dirname(path)
+
+    # Mount-backed target: read-only refusal first, then existence/shape via the
+    # rclone rcd — never a kernel probe (see _fs_write's mount branch for why a
+    # cold negative os.stat here is the call that wedges the mount).
+    from fused_render.shell import mounts as shell_mounts
+    if shell_mounts.is_mount_backed(path):
+        if shell_mounts.mount_read_only(path):
+            return JSONResponse({"error": "readonly"}, status_code=403)
+        try:
+            pr = _mount_probe(path)
+        except (shell_mounts.RcListUnavailable, shell_mounts.RcListTimeout) as e:
+            return _mount_list_error_response(parent, e)  # indeterminate -> 503
+        if pr.exists and pr.is_dir:
+            return _error(f"path is a directory: {path}")
+        if not pr.parent_is_dir:
+            return _error(f"parent directory does not exist: {parent}", status=404)
+        written = _write_bytes_atomically(path, parent, data, mode=None)
+        if written is not None:
+            return written
+        # Re-read size/mtime from the rcd (never a kernel stat); fall back to
+        # what we just wrote if the rcd can't answer, exactly as _fs_write does.
+        try:
+            after = _mount_probe(path)
+        except (shell_mounts.RcListUnavailable, shell_mounts.RcListTimeout):
+            after = None
+        size = after.size if after and after.exists else len(data)
+        mtime = after.mtime if after and after.exists else None
+        return _mount_stat_payload(path, False, size, mtime)
+
+    if os.path.isdir(path):
+        return _error(f"path is a directory: {path}")
+    if not os.path.isdir(parent):
+        return _error(f"parent directory does not exist: {parent}", status=404)
+    # Read-only guard, same "readonly" wire contract as _fs_write: the atomic
+    # replace below goes through the PARENT, so without this a chmod -w file
+    # would be silently overwritten.
+    if not _writable(path):
+        return JSONResponse({"error": "readonly"}, status_code=403)
+
+    exists = os.path.exists(path)
+    mode = stat_mod.S_IMODE(os.stat(path).st_mode) if exists else None
+    written = _write_bytes_atomically(path, parent, data, mode)
+    if written is not None:
+        return written
+    return _stat_payload(path, False)
+
+
+def _write_bytes_atomically(path: str, parent: str, data: bytes, mode: int | None):
+    # Land the bytes in a temp file beside the target, fsync, then os.replace,
+    # so a reader never sees a half-written file and a crash leaves the
+    # original intact. Returns None on success, or the error response to
+    # return — the two callers above differ only in the payload they build.
+    fd, tmp = tempfile.mkstemp(dir=parent)
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+            f.flush()
+            os.fsync(f.fileno())
+        if mode is not None:
+            os.chmod(tmp, mode)
+        os.replace(tmp, path)
+    except OSError as e:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        return _error(f"cannot write {path}: {e}", status=400)
+    return None
 
 
 def _fs_mkdir(body: dict, x_fused: str | None):
@@ -599,6 +713,35 @@ def api_fs_write(request: Request, body: dict = Body(...),
         # so there is still one rule (it allocates nothing when it passes).
         unauthorized=_require_fused(x_fused) is not None,
     )
+    _commit_mutation(result, "Edit", body.get("path"))
+    return result
+
+@router.post("/api/fs/upload")
+async def api_fs_upload(request: Request, file: UploadFile = File(...),
+                        path: str = Form(...),
+                        x_fused: str | None = Header(default=None)):
+    # Multipart rather than base64-in-JSON: base64 inflates a payload by a
+    # third, which is irrelevant for a screenshot and very relevant for a
+    # pasted video. python-multipart is already a core dependency and
+    # templates_api.api_import_templates is the existing UploadFile precedent.
+    data = await file.read()
+    result = _fs_upload(path, data, x_fused)
+    _invalidate_stat_cache(path)
+    # A binary write is a write: it belongs in the call log for the same reason
+    # /api/fs/write does — "what did my page put on disk" is a real question,
+    # and a pasted screenshot would otherwise be the one mutation that leaves
+    # no trace. Path and byte count only, never the bytes (calls.py). Refusals
+    # are read off the response object, since the helper answers a stat payload
+    # on success and a JSONResponse on every refusal.
+    shell_calls.enrich_write(
+        getattr(request.state, "fused_call", None),
+        path=path if isinstance(path, str) else "",
+        content=data,
+        status=getattr(result, "status_code", 200),
+        # Both refusals are 403; only a read-only target is `readonly`.
+        unauthorized=_require_fused(x_fused) is not None,
+    )
+    _commit_mutation(result, "Upload", path)
     return result
 
 @router.post("/api/fs/mkdir")
@@ -611,6 +754,7 @@ def api_fs_mkdir(body: dict = Body(...), x_fused: str | None = Header(default=No
 def api_fs_delete(body: dict = Body(...), x_fused: str | None = Header(default=None)):
     result = _fs_delete(body, x_fused)
     _invalidate_stat_cache(body.get("path"))
+    _commit_mutation(result, "Delete", body.get("path"))
     return result
 
 @router.post("/api/fs/rename")
@@ -618,6 +762,8 @@ def api_fs_rename(body: dict = Body(...), x_fused: str | None = Header(default=N
     result = _fs_rename(body, x_fused)
     # A move changes both ends: src disappears, dst appears.
     _invalidate_stat_cache(body.get("src"), body.get("dst"))
+    # Both ends: a cross-app move changes two repos (dedup'd when same app).
+    _commit_mutation(result, "Rename", body.get("dst"), body.get("src"))
     return result
 
 @router.post("/api/fs/copy")
@@ -625,4 +771,5 @@ def api_fs_copy(body: dict = Body(...), x_fused: str | None = Header(default=Non
     result = _fs_copy(body, x_fused)
     # A copy only writes dst; src is untouched, so its cached stat stays valid.
     _invalidate_stat_cache(body.get("dst"))
+    _commit_mutation(result, "Add", body.get("dst"))
     return result

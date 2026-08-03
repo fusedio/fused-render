@@ -137,7 +137,7 @@
   #status a { color: var(--accent); }
 
   /* ---- the editor IS the document (MD-18a) ------------------------------
-     One surface, always editable. No line numbers, no fold gutter and no
+     One surface, editable or not (MD-1a). No line numbers, no fold gutter and no
      active-line stripe: this is prose, and the chrome a code editor wants is
      exactly what a Live Preview must not show. */
   .cm-editor { height: 100%; font-size: 16px; }
@@ -169,10 +169,12 @@
     background: var(--bg-alt);
     color: var(--fg);
   }
-  .cm-editor .cm-tooltip-autocomplete > ul > li[aria-selected] {
-    background: var(--accent);
-    color: var(--on-accent);
-  }
+  /* The completion popup's own presentation is NOT here — it is a CM theme
+     extension (`completionTheme`, MD-14), so it rides through the
+     `StateEffect.reconfigure` theme swap with the rest of the extension array
+     instead of racing oneDark's rules from the page. This slot used to hold a
+     full-bleed `background: var(--accent)` selected row, which was the loudest
+     thing on screen; see D192. */
 
   /* oneDark also colours markdown SYNTAX like source code: headings red, every
      `#`/`*`/`>` marker green, URLs cyan. Obsidian does none of that — a heading
@@ -239,6 +241,63 @@
     padding-left: 12px;
     color: var(--fg-muted);
   }
+
+  /* ---- vertical rhythm (MD-26) ------------------------------------------
+     Spacing lives on LINE decorations, and every one of them is applied whether
+     or not the caret is on the line. That is the whole rule here: this editor
+     un-renders the line the caret is on, so any spacing that differed between
+     the rendered and the revealed state would make the document jump under the
+     cursor on every arrow-down.
+
+     The other constraint is that markdown's own blank separator line is already
+     a full line-height of space. So the bottom side is small or absent — the
+     blank line after a heading does that job — and these rules mostly add the
+     space markdown has no way to express: above a heading, and around a block.
+
+     PADDING, NEVER MARGIN. This is not a style preference, it is the one way
+     these rules can be written at all. CodeMirror keeps its own height map and
+     measures each line from the element's bounding rect, which padding is
+     inside of and margin is outside of — and adjacent margins additionally
+     collapse into each other. A margin therefore makes CM believe a line is
+     shorter than the space it occupies, and every coordinate-based operation
+     built on that map (`posAtCoords`, so mouse clicks AND arrow up/down) lands
+     on the wrong line, further off with each heading further down the note.
+     That is exactly what shipped in the first draft of MD-26 and had to be
+     reverted to padding.
+
+     Specificity is deliberate: `.cm-editor .cm-line` sets `padding: 0 2px`, and
+     a bare `.lp-*` class would lose to it. The longhands used here leave that
+     horizontal padding alone. */
+  /* On the block's EDGES, not on every line of it: a Setext heading is two
+     lines (its text and its `===` underline), and top space on the second
+     would split the underline away from what it underlines. */
+  .cm-editor .lp-h1-line-top, .cm-editor .lp-h2-line-top { padding-top: 1.6em; }
+  .cm-editor .lp-h3-line-top, .cm-editor .lp-h4-line-top { padding-top: 1.3em; }
+  .cm-editor .lp-h5-line-top, .cm-editor .lp-h6-line-top { padding-top: 1.1em; }
+  .cm-editor .lp-h1-line-bot, .cm-editor .lp-h2-line-bot,
+  .cm-editor .lp-h3-line-bot, .cm-editor .lp-h4-line-bot,
+  .cm-editor .lp-h5-line-bot, .cm-editor .lp-h6-line-bot {
+    padding-bottom: 0.15em;
+  }
+  /* A note that opens on a heading should not open with a gap above it. */
+  .cm-editor .cm-content > .cm-line:first-child { padding-top: 0; }
+
+  /* Padding only where the block starts and ends, so the tint is one panel
+     rather than a stack of tinted rows with gaps. Note that for the fence this
+     also means the space is INSIDE the tint — which is the panel look wanted
+     here, and the separation from the prose above comes from the blank line
+     markdown already requires before a fence. */
+  .cm-editor .lp-fence-line-top {
+    padding-top: 0.5em; border-radius: 6px 6px 0 0;
+  }
+  .cm-editor .lp-fence-line-bot {
+    padding-bottom: 0.5em; border-radius: 0 0 6px 6px;
+  }
+  .cm-editor .lp-quote-line-top { padding-top: 0.35em; }
+  .cm-editor .lp-quote-line-bot { padding-bottom: 0.35em; }
+  /* The list is spaced as a block; the rows stay tight against each other. */
+  .cm-editor .lp-list-line-top { padding-top: 0.6em; }
+  .cm-editor .lp-list-line-bot { padding-bottom: 0.6em; }
   /* Faint (--text-faint), not a dimmed muted grey: at 0.6 opacity on top of a
      muted grey these were all but invisible in the dark, and a marker you cannot
      see is a marker you cannot tell you are about to edit. */
@@ -254,6 +313,10 @@
     vertical-align: middle;
   }
   .lp-img { max-width: 100%; border-radius: 4px; vertical-align: middle; }
+  /* A player, not a poster: it needs a floor height or an unloaded clip
+     collapses to nothing, and a ceiling so it cannot fill the note. */
+  .lp-video { max-width: 100%; max-height: 60vh; min-height: 3rem;
+    border-radius: 4px; vertical-align: middle; }
   .lp-task { vertical-align: middle; margin: 0 6px 0 0; accent-color: var(--accent); }
   .lp-table {
     border-collapse: collapse;
@@ -330,9 +393,13 @@
   }
   .corner-btn:disabled:hover { color: var(--fg-muted); border-color: var(--border); }
   .corner-btn svg { width: 14px; height: 14px; display: block; }
-  #toggle-edit .icon-lock { display: none; }
-  #toggle-edit[aria-pressed="true"] .icon-edit { display: none; }
-  #toggle-edit[aria-pressed="true"] .icon-lock { display: block; }
+  /* `aria-pressed` tracks EDITING — the non-default state now that a note opens
+     read-only — so the accent marks the surface you can actually change. The
+     glyph names the CURRENT mode either way: padlock while read-only, pencil
+     while editing. */
+  #toggle-edit .icon-edit { display: none; }
+  #toggle-edit[aria-pressed="true"] .icon-edit { display: block; }
+  #toggle-edit[aria-pressed="true"] .icon-lock { display: none; }
   #side {
     position: relative;
     width: 21rem;
@@ -378,7 +445,13 @@
     color: var(--fg-muted);
   }
   .side-head .spacer { flex: 1; }
-  #links-head { padding-right: 72px; } /* clear of the floating corner cluster */
+  /* Whichever section is FIRST has to clear the floating corner cluster, and
+     that is the outline now (MD-19b). */
+  #outline-head { padding-right: 72px; }
+  /* Content-sized and scrolling, exactly as #links is and for the same reason:
+     a fifty-heading note must not push the canvas out of the panel. The two
+     caps together still leave #graph-sec its min-height. */
+  #outline { flex: none; max-height: 30%; min-height: 0; overflow: auto; padding: 8px; }
   /* Sized by its content, not by the leftover space: a handful of backlinks
      should not reserve half the panel while the graph's labels collide. The
      cap keeps a long list scrolling here instead of starving #graph-sec, so
@@ -427,6 +500,13 @@
      path — it qualifies the row, it is not the row. */
   .bl-count { flex: none; color: var(--fg-muted); font-size: 11px; }
   .bl-empty { color: var(--fg-muted); font-size: 12px; }
+  /* An outline row IS a backlink row (it carries `bl` as well) — one row style
+     for one panel — plus the indent that carries the nesting. Declared after
+     `.bl` so its padding-left wins, and the step comes from the depth the
+     renderer computed rather than from the heading level, so a note whose
+     headings all start at `##` is not a uniformly indented note. */
+  .ol { padding-left: calc(7px + var(--ol-depth, 0) * 13px); }
+  .ol-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   #notice {
     margin: 12px 0 0;
     padding: 8px 10px;
@@ -516,12 +596,13 @@
       <div id="editor-wrap"></div>
     </div>
     <div id="corner">
-      <!-- `aria-pressed` tracks READ-ONLY, not editing: editing is the default
+      <!-- `aria-pressed` tracks EDITING, not read-only: a note opens read-only
            (MD-1a), and accenting the default would leave the corner permanently
-           lit and say nothing. The accent marks the state worth noticing, and
-           the glyph changes with it — pencil while editing, padlock when not. -->
+           lit and say nothing. The accent marks the state worth noticing — the
+           file is writable right now — and the glyph names the current mode:
+           padlock while read-only, pencil while editing. -->
       <button id="toggle-edit" class="corner-btn" aria-pressed="false"
-              aria-label="Read-only" title="Editing — click to read only">
+              aria-label="Editing" title="Read-only — click to edit">
         <svg class="icon-edit" viewBox="0 0 16 16" fill="none" stroke="currentColor"
              stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"
              aria-hidden="true">
@@ -552,6 +633,13 @@
     </div>
     <aside id="side">
       <button id="side-grip" type="button" aria-label="Resize side panel"></button>
+      <!-- The outline goes at the TOP of the one right sidebar (MD-19b): it is
+           about the note in front of you, while backlinks and the graph are
+           about the rest of the vault, so it sits nearest the document — which
+           is also where Obsidian puts it. Not a second panel and not a second
+           toggle: MD-19a forbids the first and MD-2a the second. -->
+      <div class="side-head" id="outline-head">Outline</div>
+      <div id="outline"></div>
       <div class="side-head" id="links-head">Backlinks</div>
       <div id="links" hidden>
         <div id="bl-list"></div>
@@ -659,14 +747,16 @@
     // A mode, not a second surface: the SAME decorations over the same document,
     // with CM's two read-only facets on or off. It changes writability and
     // nothing about appearance — no different typography, no second render
-    // pipeline. A note is editable by default, as in Obsidian.
+    // pipeline. A note OPENS READ-ONLY: opening a note is a read, and a stray
+    // keystroke on a freshly opened file must not silently rewrite it — editing
+    // is one click away and stays in the URL once asked for.
     //
     // The preference lives in a param, like `graph` and `depth` (MD-20), so it
     // survives a refresh and travels in a shared URL. It is layered ON TOP of
     // the file's real writability and can never override it: an unwritable file
     // (MD-15) is read-only whatever the param says, which is also why a
     // read-only file and read-only mode are one mechanism rather than two.
-    function editWanted() { return fused.params.get("edit") !== "0"; }
+    function editWanted() { return fused.params.get("edit") === "1"; }
     function editing() { return writable && editWanted(); }
 
     // ---- shell navigation ---------------------------------------------------
@@ -755,6 +845,7 @@
       ATXHeading4: 4, ATXHeading5: 5, ATXHeading6: 6,
       SetextHeading1: 1, SetextHeading2: 2,
     };
+    const LISTS = { BulletList: true, OrderedList: true };
     const EMPHASIS = {
       StrongEmphasis: "lp-bold",
       Emphasis: "lp-italic",
@@ -780,12 +871,21 @@
       ignoreEvent() { return this.opaque; }
     }
 
-    function lineClass(state, from, to, cls) {
+    // `edges` also tags the first and last line of the range with `cls-top` and
+    // `cls-bot`, which is what lets a multi-line block carry padding and a
+    // rounded corner only where it actually begins and ends (MD-26). A single
+    // decoration per line carrying both classes, rather than two decorations:
+    // CM keeps line decorations separate and a second one would have to be
+    // merged by hand anyway.
+    function lineClass(state, from, to, cls, edges) {
       const out = [];
       const first = state.doc.lineAt(from).number;
       const last = state.doc.lineAt(Math.min(to, state.doc.length)).number;
       for (let n = first; n <= last; n++) {
-        out.push(CM.Decoration.line({ class: cls }).range(state.doc.line(n).from));
+        let name = cls;
+        if (edges && n === first) name += " " + cls + "-top";
+        if (edges && n === last) name += " " + cls + "-bot";
+        out.push(CM.Decoration.line({ class: name }).range(state.doc.line(n).from));
       }
       return out;
     }
@@ -941,16 +1041,40 @@
     // `![alt](src)`. Click-to-edit rather than opaque: the caret lands in the
     // source so the path can be fixed, which is the only way to edit it now
     // that there is no separate source mode.
+    // A dropped or pasted video is written as `![](clip.mp4)` too (MD-23) —
+    // markdown has no video syntax, and emitting a raw <video> tag would show
+    // as literal text in every other markdown tool. So the ELEMENT is chosen
+    // off the extension here: without this a clip renders as an <img> with a
+    // source no browser can decode, i.e. a broken-image icon.
+    // Every extension MEDIA_EXT can produce for a `video/*` blob must be in
+    // here, or a pasted clip renders as a broken <img>. A container the
+    // browser cannot decode (mkv) still belongs: a player reporting it cannot
+    // play the file says far more than a broken-image icon.
+    const VIDEO_EXT = /\.(mp4|webm|mov|m4v|ogv|mkv)$/i;
+
     function imageWidget(alt, src) {
       const key = "im:" + alt + "|" + src;
       return new DomWidget(key, () => {
-        const img = document.createElement("img");
-        img.className = "lp-img";
-        img.alt = alt;
-        if (/^[a-z][a-z0-9+.-]*:/i.test(src)) img.src = src;   // http:, data:, file:
-        else if (src.startsWith("/")) img.src = fused.rawUrl(src);
-        else img.src = fused.rawUrl(resolvePath(noteDir(), decodeMaybe(src)));
-        return img;
+        // The extension is read off the source BEFORE the scheme/absolute
+        // branching below, so a `file:` URL or an absolute path to a clip
+        // picks the player just as a relative one does.
+        const isVideo = VIDEO_EXT.test(src.split(/[?#]/)[0]);
+        const el = document.createElement(isVideo ? "video" : "img");
+        if (isVideo) {
+          el.className = "lp-video";
+          // controls so it is playable in place; preload="metadata" so a note
+          // full of clips fetches poster frames, not whole videos.
+          el.controls = true;
+          el.muted = true;
+          el.preload = "metadata";
+        } else {
+          el.className = "lp-img";
+          el.alt = alt;
+        }
+        if (/^[a-z][a-z0-9+.-]*:/i.test(src)) el.src = src;   // http:, data:, file:
+        else if (src.startsWith("/")) el.src = fused.rawUrl(src);
+        else el.src = fused.rawUrl(resolvePath(noteDir(), decodeMaybe(src)));
+        return el;
       }, false);
     }
 
@@ -1067,6 +1191,32 @@
       }
       const isBlocked = (from, to) => blocked.some(([a, b]) => from < b && to > a);
 
+      // A bare `https://…` or the inside of an angle `<https://…>` (MD-24).
+      // A MARK carrying its own `<a>`, not a replacement widget: the range's
+      // display text ALREADY equals its target, so a widget would replace those
+      // characters with an element rendering the identical characters — no
+      // visible gain, and the caret loses the ability to sit inside the URL and
+      // edit it. Nothing is rewritten on disk either (D200), which is what makes
+      // this repair URLs in notes that were written long before it existed.
+      function pushUrl(from, to) {
+        const raw = state.doc.sliceString(from, to);
+        // GFM's autolink extension matches three shapes, and only one of them
+        // is already a URL: `www.x.com` and `me@x.com` are URL nodes too, and
+        // an href of "www.x.com" resolves against this page rather than the web.
+        // `www.` is tested BEFORE the `@`: a www autolink may carry an `@` in
+        // its path or query (`www.x.com/u@h`), and treating that as an address
+        // would hand it to a mail client instead of a browser.
+        const href = /^[a-z][a-z0-9+.-]*:/i.test(raw) ? raw
+          : /^www\./i.test(raw) ? "https://" + raw
+          : raw.includes("@") ? "mailto:" + raw
+          : "https://" + raw;
+        out.push(CM.Decoration.mark({
+          class: "lp-link",
+          tagName: "a",
+          attributes: { href, target: "_blank", rel: "noopener" },
+        }).range(from, to));
+      }
+
       // Frontmatter is not part of the vendored grammar, and what the grammar
       // makes of it instead is actively wrong: `---` opens as a HorizontalRule
       // and `title: x\n---` closes as a SetextHeading2, so a YAML block would
@@ -1098,6 +1248,16 @@
 
           if (HEADINGS[name]) {
             pushMark(node.from, node.to, "lp-h" + HEADINGS[name]);
+            // The size is an inline mark, but space above and below is not
+            // something an inline mark can carry — a line decoration is the only
+            // place vertical margin can live (MD-26). Unconditional, like the
+            // size mark beside it: spacing that appeared when the caret arrived
+            // would shift the document under the cursor as you arrow through it.
+            // `edges`, because a Setext heading spans TWO lines — its title and
+            // its `===` underline — and a top margin on both would split the
+            // underline away from the text it underlines.
+            out.push(...lineClass(
+              state, node.from, node.to, "lp-h" + HEADINGS[name] + "-line", true));
             return true; // descend: the HeaderMark child is hidden below
           }
           if (name === "HeaderMark") {
@@ -1135,11 +1295,27 @@
             return false;
           }
           if (name === "FencedCode" || name === "CodeBlock") {
-            out.push(...lineClass(state, node.from, node.to, "lp-fence-line"));
+            out.push(...lineClass(
+              state, node.from, node.to, "lp-fence-line", true));
             return true; // let the embedded language highlight inside
           }
           if (name === "Blockquote") {
-            out.push(...lineClass(state, node.from, node.to, "lp-quote-line"));
+            out.push(...lineClass(
+              state, node.from, node.to, "lp-quote-line", true));
+            return true;
+          }
+          // A list is spaced as one block, not per row: margin on every item
+          // would space the rows apart from each other, which is the opposite of
+          // how a list should read (MD-26). Only the outermost list is tagged —
+          // a nested one is inside its parent's range and must not add a second
+          // gap — which `LISTS[parent]` below is checking for.
+          if (LISTS[name]) {
+            const parent = node.node.parent;
+            const nested = parent && (LISTS[parent.name] || parent.name === "ListItem");
+            if (!nested) {
+              out.push(...lineClass(
+                state, node.from, node.to, "lp-list-line", true));
+            }
             return true;
           }
           if (name === "QuoteMark") {
@@ -1183,6 +1359,40 @@
             pushWidget(node.from, node.to, match[1]
               ? imageWidget(match[2], match[3])
               : markdownLinkWidget(match[2], match[3]));
+            return false;
+          }
+          if (name === "URL") {
+            // A `[lbl](target)` link's URL is markup INSIDE a node the branch
+            // above owns — either replaced whole by the link widget (and then
+            // never reached, since that branch returns false) or deliberately
+            // left as source, as for a titled or reference link. Decorating it
+            // here would be asserting a second time about the same range.
+            const parent = node.node.parent;
+            if (parent && (parent.name === "Link" || parent.name === "Image")) {
+              return false;
+            }
+            // The grammar does not emit a URL node inside a fence or a code
+            // span, so this guard is belt-and-braces — but it is the SAME
+            // narrow code-node set the wikilink pass uses (MD-3), rather than a
+            // new "is this code?" rule, because the last one of those silently
+            // stopped every wikilink from rendering.
+            if (within(tree, node.from + 1, CODE_NODES)) return false;
+            // No `open` check: a bare URL hides nothing, so there is nothing for
+            // the caret to reveal. Its own text stays exactly as typed either
+            // way, and un-styling it under the caret would only make the line
+            // flicker. An Autolink's brackets DO hide, and they reveal below.
+            pushUrl(node.from, node.to);
+            return false;
+          }
+          if (name === "LinkMark") {
+            // Only an angle autolink's `<`/`>` vanish. A `[lbl](target)` link's
+            // marks belong to a node already replaced whole, and a wikilink's
+            // inner brackets belong to the regex pass — hiding either here would
+            // put a replacement inside a replacement.
+            const parent = node.node.parent;
+            if (!parent || parent.name !== "Autolink") return false;
+            if (open) pushMark(node.from, node.to, "lp-mark");
+            else pushHide(node.from, node.to);
             return false;
           }
           return true;
@@ -1411,7 +1621,21 @@
     // code Obsidian's own editor runs.
     function toggleWrap(editorView, marker) {
       const state = editorView.state;
-      const { from, to } = state.selection.main;
+      let { from, to } = state.selection.main;
+      // Obsidian's ⌘B with nothing selected wraps the WORD under the caret, not
+      // an empty pair of markers, and that expansion is also what makes the
+      // unwrap below reachable without a selection: the caret sits inside the
+      // word it wrapped a moment ago. `state.wordAt` is the language's own idea
+      // of a word, so there is no second definition of one here; it answers null
+      // on whitespace and on an empty line, and there the empty pair with the
+      // caret between them is still the right thing to type into.
+      if (from === to) {
+        const word = state.wordAt(from);
+        if (word) {
+          from = word.from;
+          to = word.to;
+        }
+      }
       const pre = state.sliceDoc(Math.max(0, from - marker.length), from);
       const post = state.sliceDoc(to, Math.min(state.doc.length, to + marker.length));
       if (pre === marker && post === marker) {
@@ -1431,8 +1655,37 @@
       return true;
     }
 
+    // ⌘K with the caret already inside `[label](target)` has to EDIT that link,
+    // not nest a second one inside it. Which ranges are links comes from the
+    // tree (MD-3: no second parser here) — but the tree alone is not enough, and
+    // this is the grammar trap that already bit the link layer once: the
+    // vendored grammar wraps a `[[wikilink]]`'s brackets in `Link`/`Image` nodes
+    // too (MD-18a). So the enclosing node must ALSO parse as a plain inline
+    // link, which is the same second test the Live Preview builder applies
+    // before it draws a link widget — a reference link, a titled link and a
+    // wikilink all fail it and are left to be typed over as before.
+    function enclosingLinkTarget(state, pos) {
+      const tree = CM.syntaxTree(state);
+      for (let node = tree.resolveInner(pos, 0); node; node = node.parent) {
+        if (node.name !== "Link") continue;
+        const raw = state.doc.sliceString(node.from, node.to);
+        const match = /^\[([^\]]*)\]\(([^()\s]*)\)$/.exec(raw);
+        if (!match) continue;
+        const start = node.from + match[1].length + 3;
+        return { from: start, to: start + match[2].length };
+      }
+      return null;
+    }
+
     function insertLink(editorView) {
       const { from, to } = editorView.state.selection.main;
+      const existing = enclosingLinkTarget(editorView.state, to);
+      if (existing) {
+        // Selecting the target rather than rewriting anything: the next
+        // keystroke replaces the URL, which is what "⌘K edits the link" is.
+        editorView.dispatch({ selection: { anchor: existing.from, head: existing.to } });
+        return true;
+      }
       const selected = editorView.state.sliceDoc(from, to);
       const isUrl = /^[a-z][a-z0-9+.-]*:\/\/\S*$/i.test(selected);
       const inserted = isUrl ? `[](${selected})` : `[${selected}]()`;
@@ -1465,18 +1718,399 @@
       return true;
     }
 
+    // MD-1a/MD-15: read-only is the `readOnly` + `editable` facets, and
+    // `editable.of(false)` is what keeps these keys from being delivered at all —
+    // but neither facet FILTERS a hand-built dispatch, and every command above
+    // builds its own. So each writing command asks the state instead of trusting
+    // that, and swallows the key (returns true) so no browser default fires on a
+    // buffer that is supposed to be inert.
+    const whenWritable = (command) => (editorView) =>
+      editorView.state.readOnly ? true : command(editorView);
+
     const editorKeymap = [
-      { key: "Tab", run: CM.indentMore, shift: CM.indentLess },
-      { key: "Mod-b", run: (v) => toggleWrap(v, "**") },
-      { key: "Mod-i", run: (v) => toggleWrap(v, "*") },
-      { key: "Mod-k", run: insertLink },
-      { key: "Mod-Enter", run: toggleCheckbox },
+      // Tab accepts an open completion FIRST: CM's own completionKeymap binds
+      // only Enter to acceptCompletion, and Tab is what a Tab-completing habit
+      // reaches for. `acceptCompletion` returns false with no popup open, so
+      // indenting the list item stays Tab's ordinary meaning.
+      {
+        key: "Tab",
+        run: whenWritable((v) => CM.acceptCompletion(v) || CM.indentMore(v)),
+        shift: whenWritable(CM.indentLess),
+      },
+      { key: "Mod-b", run: whenWritable((v) => toggleWrap(v, "**")) },
+      { key: "Mod-i", run: whenWritable((v) => toggleWrap(v, "*")) },
+      // Obsidian ships no default hotkey for either of these, so there is none
+      // to match; both are the marker-agnostic toggleWrap, and both already
+      // render in Live Preview (Strikethrough and InlineCode, MD-18a), so
+      // neither costs a decoration. ⌘⇧X and ⌘⇧E are free of markdownKeymap,
+      // basicSetup's default/search/closeBrackets keymaps and the completion
+      // keymap. `==` highlight is deliberately absent: the grammar has no rule
+      // for it and Live Preview would leave the `==` bare on the page.
+      { key: "Mod-Shift-x", run: whenWritable((v) => toggleWrap(v, "~~")) },
+      { key: "Mod-Shift-e", run: whenWritable((v) => toggleWrap(v, "`")) },
+      { key: "Mod-k", run: whenWritable(insertLink) },
+      { key: "Mod-Enter", run: whenWritable(toggleCheckbox) },
     ];
 
+    // ---- ordered-list renumbering (MD-25) ----------------------------------
+    // `markdownKeymap` renumbers on Enter only — `insertNewlineContinueMarkup`
+    // calls the grammar package's own `renumberList`, which is not exported, so
+    // it cannot be reused. Every OTHER way of changing a list leaves the numbers
+    // stale: Backspace (`deleteMarkupBackward` does not renumber), selecting a
+    // row and deleting it, ⌘X, ⌘⇧K, a paste in the middle. That is most of them,
+    // which is why this hangs off a transactionFilter rather than more keys —
+    // one place that sees every edit, whatever produced it.
+    //
+    // Text, not the syntax tree. A filter runs before the new state exists and
+    // `tr.state` would force one to be built and then possibly discarded; the
+    // shape being matched here (marker at the start of a line) is one the tree
+    // adds nothing to. Fenced code is the one place digits-then-dot is not a
+    // list, so fences are tracked explicitly below.
+    const ORDERED_ITEM = /^([ \t]*)(\d{1,9})([.)])([ \t]|$)/;
+    const BULLET_ITEM = /^([ \t]*)[-*+]([ \t]|$)/;
+    const FENCE_LINE = /^ {0,3}(`{3,}|~{3,})/;
+    const BLANK_LINE = /^[ \t]*$/;
+
+    // Which lines sit inside a fenced block, by line number. One pass over the
+    // document, because a region can start anywhere and "am I in a fence?" is
+    // only answerable from the top.
+    function fencedLines(doc) {
+      const fenced = new Set();
+      let open = null;
+      for (let n = 1; n <= doc.lines; n++) {
+        const text = doc.line(n).text;
+        const match = FENCE_LINE.exec(text);
+        if (open === null) {
+          if (match) { open = match[1][0]; fenced.add(n); }
+        } else {
+          fenced.add(n);
+          // A fence closes only on its OWN character: ``` does not close ~~~.
+          if (match && match[1][0] === open) open = null;
+        }
+      }
+      return fenced;
+    }
+
+    // A line belongs to the list around it if it is an item, an indented
+    // continuation of one, or a blank line between two of those. Anything at
+    // column zero that is not a marker ends the list, which is also CommonMark's
+    // rule for a paragraph interrupting one.
+    function listLine(text) {
+      if (BLANK_LINE.test(text)) return "blank";
+      if (ORDERED_ITEM.test(text) || BULLET_ITEM.test(text)) return "item";
+      return /^[ \t]/.test(text) ? "continuation" : "other";
+    }
+
+    // Walk out from the edited lines to the whole list they sit in, so that
+    // renumbering starts from the list's real first item — the number that item
+    // carries is the start of the sequence and is deliberately preserved (a list
+    // written `3.` `4.` `5.` stays that way).
+    function listRegion(doc, fromLine, toLine, fenced) {
+      const partOfList = (n) => {
+        if (n < 1 || n > doc.lines || fenced.has(n)) return false;
+        return listLine(doc.line(n).text) !== "other";
+      };
+      // Is there a list item on this side of line `n`, blanks skipped?
+      const itemBeyond = (n, step) => {
+        for (let i = n + step; partOfList(i); i += step) {
+          if (listLine(doc.line(i).text) !== "blank") return true;
+        }
+        return false;
+      };
+      // What may ANCHOR a region is narrower than what may extend one. A blank
+      // line is two different things: the inside of a loose list, and the gap
+      // that separates a list from the prose beside it. Anchoring on every blank
+      // lets an edit in that gap renumber a list it is not in; anchoring on none
+      // misses the loose-list interior — clearing an item's text leaves a blank,
+      // and the items below it have to follow. Items on BOTH sides tells them
+      // apart: only the interior blank has one.
+      const anchors = (n) => {
+        if (!partOfList(n)) return false;
+        if (listLine(doc.line(n).text) !== "blank") return true;
+        return itemBeyond(n, -1) && itemBeyond(n, 1);
+      };
+      // A trailing blank line is not part of the list, so a blank only extends
+      // the region when a list line follows it.
+      const extend = (n, step) => {
+        let last = n;
+        for (let i = n + step; partOfList(i); i += step) {
+          if (listLine(doc.line(i).text) !== "blank") last = i;
+        }
+        return last;
+      };
+      // The edit has to have landed ON the list. An earlier version walked to the
+      // neighbouring line when it had not, which meant typing in a paragraph
+      // directly above a list renumbered that list — surprising in itself, and
+      // against MD-25's "only the list the edit landed in", since those changes
+      // then sit in an undo step the user never made.
+      let start = -1;
+      let end = -1;
+      for (let n = Math.max(1, fromLine); n <= Math.min(toLine, doc.lines); n++) {
+        if (!anchors(n)) continue;
+        if (start === -1) start = n;
+        end = n;
+      }
+      if (start === -1) return null;
+      return { start: extend(start, -1), end: extend(end, 1) };
+    }
+
+    // The whole feature, as a pure function of the document: the changes that
+    // make every ordered list overlapping [fromLine, toLine] count correctly.
+    // Returns [] when they already do, which is the common case and the reason
+    // this can run on every keystroke.
+    function renumberOrderedLists(doc, fromLine, toLine) {
+      const fenced = fencedLines(doc);
+      const region = listRegion(doc, fromLine, toLine, fenced);
+      if (!region) return [];
+      const changes = [];
+      // One counter per indent depth. A deeper item pushes, a shallower one pops
+      // — so `1.` `1.` `2.` nested under it restarts at the outer level's next.
+      const levels = [];
+      for (let n = region.start; n <= region.end; n++) {
+        const line = doc.line(n);
+        const bullet = BULLET_ITEM.exec(line.text);
+        if (bullet) {
+          // A bullet at this depth ends any ordered run at or below it: the two
+          // are different lists even when they touch.
+          while (levels.length && levels[levels.length - 1].indent >= bullet[1].length) levels.pop();
+          continue;
+        }
+        const item = ORDERED_ITEM.exec(line.text);
+        if (!item) continue;
+        const [, indentText, digits, delim] = item;
+        const indent = indentText.length;
+        const number = Number(digits);
+        while (levels.length && levels[levels.length - 1].indent > indent) levels.pop();
+        const top = levels[levels.length - 1];
+        let expected;
+        if (top && top.indent === indent && top.delim === delim) {
+          expected = top.next;
+          top.next += 1;
+        } else {
+          // A new list — either a deeper level, or the same level with the other
+          // delimiter, which CommonMark also treats as a new list. Its first
+          // item's own number is the start, so it is never rewritten.
+          if (top && top.indent === indent) levels.pop();
+          levels.push({ indent, delim, next: number + 1 });
+          expected = number;
+        }
+        if (expected !== number) {
+          changes.push({
+            from: line.from + indent,
+            to: line.from + indent + digits.length,
+            insert: String(expected),
+          });
+        }
+      }
+      return changes;
+    }
+
+    // Only edits the user made. Undo and redo are excluded on purpose — undoing
+    // back to a deliberately odd numbering must not be corrected right back —
+    // and so is every programmatic dispatch (a reload, a lock rebuild), which
+    // carries no user event at all.
+    const renumberFilter = CM.EditorState.transactionFilter.of((tr) => {
+      if (!tr.docChanged) return tr;
+      if (!(tr.isUserEvent("input") || tr.isUserEvent("delete")
+        || tr.isUserEvent("move"))) return tr;
+      const doc = tr.newDoc;
+      let low = Infinity;
+      let high = -1;
+      tr.changes.iterChangedRanges((_fromA, _toA, fromB, toB) => {
+        low = Math.min(low, fromB);
+        high = Math.max(high, toB);
+      });
+      if (high < 0) return tr;
+      const changes = renumberOrderedLists(
+        doc,
+        doc.lineAt(Math.min(low, doc.length)).number,
+        doc.lineAt(Math.min(high, doc.length)).number,
+      );
+      if (!changes.length) return tr;
+      // Appended to the same transaction, not dispatched after it: one undo step
+      // takes the edit and its renumbering back together, and the selection maps
+      // through the digit rewrites for free.
+      return [tr, { changes, sequential: true }];
+    });
+
+    // ---- pasted and dropped media (MD-23) ----------------------------------
+    // "Copy image" in a browser puts the image BYTES on the clipboard, not a
+    // path, so a paste and a drag from Finder arrive the same way: a FileList,
+    // on `clipboardData.files` or `dataTransfer.files`. The only difference is
+    // where the link lands — the caret for a paste, the pointer for a drop —
+    // which is why the helper below takes `pos` as a parameter rather than
+    // reading the selection itself.
+
+    // A blob's own MIME type is what the clipboard gives us (a pasted
+    // screenshot has no filename at all), so the extension is derived from it.
+    // Only the formats a browser can actually display are mapped; anything
+    // else falls back to the file's own name, then to the MIME subtype, so an
+    // unusual-but-valid type still lands on disk with a plausible extension
+    // instead of none.
+    // Every `video/*` value here MUST also satisfy VIDEO_EXT, or the widget
+    // renders the clip as an <img> and the user gets a broken-image icon —
+    // which is exactly what `video/x-m4v` did before it was mapped, falling
+    // through to the subtype and producing `pasted-….x-m4v`. A source test
+    // pins that agreement for every entry rather than trusting this comment.
+    const MEDIA_EXT = {
+      "image/png": "png", "image/jpeg": "jpg", "image/gif": "gif",
+      "image/webp": "webp", "image/svg+xml": "svg", "image/avif": "avif",
+      "image/bmp": "bmp", "image/tiff": "tif", "image/x-icon": "ico",
+      "video/mp4": "mp4", "video/webm": "webm", "video/quicktime": "mov",
+      "video/ogg": "ogv", "video/x-m4v": "m4v", "video/x-matroska": "mkv",
+    };
+
+    // Images and video only. A drag from Finder can carry anything, and a paste
+    // from another app often carries an `image/*` blob ALONGSIDE the text
+    // flavour — filtering here is what keeps a plain-text paste plain.
+    function mediaFiles(list) {
+      return Array.prototype.filter.call(
+        list || [], (f) => /^(image|video)\//.test(f.type || ""));
+    }
+
+    // Did this drag carry FILES, as opposed to text being dragged within the
+    // note? `dataTransfer.files` is empty during a dragover, so the type list
+    // is the only thing askable that early — and `drop` has to ask the SAME
+    // question, or the two disagree about which events the browser still owns.
+    function dragHasFiles(event) {
+      const types = (event.dataTransfer || {}).types;
+      return !!types && Array.prototype.indexOf.call(types, "Files") !== -1;
+    }
+
+    // pasted-YYYYMMDD-HHMMSS.ext, in local time — the name before it is checked
+    // for collisions (freeMediaName does that). The extension comes from the
+    // MIME type first because a pasted screenshot has no filename at all; the
+    // `x-` strip keeps an unmapped vendor type (`image/x-foo`) from producing
+    // a literal `.x-foo`.
+    function mediaName(file) {
+      const pad = (n) => String(n).padStart(2, "0");
+      const d = new Date();
+      const stamp = String(d.getFullYear()) + pad(d.getMonth() + 1) + pad(d.getDate())
+        + "-" + pad(d.getHours()) + pad(d.getMinutes()) + pad(d.getSeconds());
+      const named = /\.([a-z0-9]+)$/i.exec(file.name || "");
+      const ext = MEDIA_EXT[file.type] || (named && named[1].toLowerCase())
+        || (file.type || "").split("/")[1].replace(/^x-/, "") || "bin";
+      return "pasted-" + stamp + "." + ext;
+    }
+
+    async function mediaExists(path) {
+      try {
+        await fused.stat(path);
+        return true;
+      } catch (err) {
+        // stat rejects for a path that is not there, which is the answer we
+        // want rather than a failure. Any other cause (the server being down)
+        // also reads as "not there" — and the upload right behind this will
+        // fail loudly on its own, so nothing is hidden by being optimistic.
+        return false;
+      }
+    }
+
+    // The first free `pasted-…` name in `assets`.
+    //
+    // The timestamp alone is NOT unique: two pastes inside the same second
+    // produce the same name and the upload does an unconditional replace, so
+    // the first file would be silently destroyed. Probing and bumping also
+    // covers several files in one gesture — each upload is awaited, so file 1
+    // is already on disk by the time file 2 is named.
+    async function freeMediaName(assets, file) {
+      const base = mediaName(file);
+      const dot = base.lastIndexOf(".");
+      const stem = base.slice(0, dot);
+      const ext = base.slice(dot);
+      let name = base;
+      // Bounded: a stat that answers "yes" to everything must not spin.
+      for (let n = 2; n < 100; n++) {
+        if (!(await mediaExists(assets + "/" + name))) return name;
+        name = stem + "-" + n + ext;
+      }
+      return name;
+    }
+
+    // One place says why a paste or a drop did not land — the same status
+    // element a failed save writes to, so there is a single error surface.
+    function mediaNotice(message) {
+      saveStateEl.textContent = message;
+      saveStateEl.classList.add("error");
+    }
+
+    // Write the blobs beside the note and link them in at `pos`.
+    // `to` defaults to `pos`, which is the difference between the two gestures:
+    // a PASTE replaces whatever was selected, exactly as pasting text does and
+    // as the URL-over-a-selection branch below already did, while a DROP lands
+    // at the pointer and must leave a selection elsewhere in the note alone.
+    async function insertMediaFiles(view, files, pos, to) {
+      const dir = noteDir();
+      if (!dir) return;
+      let replaceTo = to === undefined ? pos : to;
+      // The uploads below are awaited and the editor stays live while they run,
+      // so by the time a link is dispatched these offsets may describe a
+      // document that no longer exists — and `to` makes the dispatch a DELETE,
+      // which would eat whatever the user typed meanwhile. Every insert first
+      // checks the doc is still the one they were measured against (Text
+      // identity, the same check doSave uses). If it is not, the link goes in at
+      // the caret and replaces nothing: a paste landing in a slightly odd place
+      // is recoverable, one that deletes unrelated text is not.
+      let measuredAgainst = view.state.doc;
+      // A shared assets/ next to the note, created on demand: the endpoint
+      // deliberately never creates intermediate directories (same contract as
+      // /api/fs/write), so the second paste onwards gets a typed "exists" back,
+      // which is the expected case rather than a failure.
+      const assets = dir + "/assets";
+      try {
+        try {
+          await fused.mkdir(assets);
+        } catch (err) {
+          if (err.type !== "exists") throw err;
+        }
+        for (let i = 0; i < files.length; i++) {
+          const name = await freeMediaName(assets, files[i]);
+          // Awaited BEFORE the insert, deliberately: a link inserted first
+          // could end up pointing at a file that never made it to disk. The
+          // cost is that a large video takes a while to appear — typing during
+          // it is fine, which is exactly why the offsets need re-checking below.
+          await fused.uploadFile(assets + "/" + name, files[i]);
+          if (view.state.doc !== measuredAgainst) {
+            pos = view.state.selection.main.head;
+            replaceTo = pos;
+          }
+          // Ordinary markdown through an ordinary dispatch, so undo removes it
+          // in one step and every other markdown tool can still read the note.
+          // Video gets the same `![](…)` — markdown has no video syntax, and
+          // the live-preview widget picks the element off the extension.
+          const insert = "![](assets/" + name + ")" + (files.length > 1 ? "\n" : "");
+          view.dispatch({
+            changes: { from: pos, to: replaceTo, insert },
+            selection: { anchor: pos + insert.length },
+          });
+          pos += insert.length;
+          // Only the FIRST file of a multi-file gesture consumes the selection;
+          // the rest append after it.
+          replaceTo = pos;
+          measuredAgainst = view.state.doc;
+        }
+      } catch (err) {
+        // Never swallowed: a paste that silently did nothing is
+        // indistinguishable from a broken editor.
+        mediaNotice("Could not add the file: " + (err.message || ""));
+      }
+    }
+
     // Pasting a URL over a selection makes a link out of it, rather than
-    // replacing the words the user just chose.
+    // replacing the words the user just chose. Pasting or dropping an image or
+    // a video writes it into assets/ and links it in (MD-23).
     const pasteHandler = CM.EditorView.domEventHandlers({
       paste(event, target) {
+        const media = mediaFiles(event.clipboardData && event.clipboardData.files);
+        if (media.length) {
+          // Read-only: fall through untouched, the same posture whenWritable
+          // takes for every writing key (MD-1a/MD-15).
+          if (target.state.readOnly) return false;
+          event.preventDefault();
+          const sel = target.state.selection.main;
+          void insertMediaFiles(target, media, sel.from, sel.to);
+          return true;
+        }
         const url = ((event.clipboardData || {}).getData
           ? event.clipboardData.getData("text/plain") : "").trim();
         if (!/^[a-z][a-z0-9+.-]*:\/\/\S+$/i.test(url)) return false;
@@ -1490,75 +2124,443 @@
         });
         return true;
       },
+
+      // Not optional and easy to miss: without preventDefault here the browser
+      // never fires `drop` at all and instead NAVIGATES the webview to the
+      // dropped file, which looks like the whole editor vanishing. Gated to a
+      // drag carrying files so CodeMirror's own text drag-and-drop is
+      // untouched. It deliberately does NOT check readOnly: refusing here
+      // would hand a file drop on a read-only note straight back to the
+      // browser, and navigating away is not what "read-only" should mean.
+      dragover(event) {
+        if (!dragHasFiles(event)) return false;
+        event.preventDefault();
+        return false;   // not "handled": CM still draws its own drop cursor
+      },
+
+      drop(event, target) {
+        // A text drag stays CodeMirror's — it moves the text, and this handler
+        // must not touch it. The question is whether the drag carried FILES,
+        // never whether media matched: dragover already committed to owning
+        // every file drag (per-file MIME is not readable that early), so drop
+        // has to honour that for all of them.
+        if (!dragHasFiles(event)) return false;
+        // Prevent FIRST, ask questions after. CM only calls preventDefault for
+        // a handler that returns true, so any `return false` below this line
+        // would hand the event back to the browser, whose default action for a
+        // file drop is to navigate the webview to the dropped file — the
+        // editor disappears, taking every edit since the last autosave with it
+        // (pagehide fires a best-effort save that may not land).
+        event.preventDefault();
+        if (target.state.readOnly) {
+          mediaNotice("This note is read-only, so files can't be added to it.");
+          return true;
+        }
+        const media = mediaFiles(event.dataTransfer.files);
+        if (!media.length) {
+          mediaNotice("Only images and video can be added to a note.");
+          return true;
+        }
+        // The one real difference from paste: dropping into the middle of a
+        // note lands where the POINTER is, not where the caret happens to be.
+        // posAtCoords answers null for a drop past the last line, which falls
+        // back to the caret.
+        const at = target.posAtCoords({ x: event.clientX, y: event.clientY });
+        const pos = at === null || at === undefined
+          ? target.state.selection.main.head : at;
+        void insertMediaFiles(target, media, pos);
+        return true;
+      },
     });
 
-    // ---- the [[ popup (MD-14) ----------------------------------------------
-    // Candidates come from the same scan the graph reads, so the popup is free
+    // ---- the completion popups (MD-14) -------------------------------------
+    // Candidates come from the same scan the graph reads, so the popups are free
     // once the index exists and can never offer a note the graph disagrees
     // about. Cached briefly so a fast typist does not spawn a run per keystroke.
     let candidates = null;
     let candidatesAt = 0;
+    let candidatesPending = null;
+    let candidatesNotice = "";  // why there are none, when there are none
     const CANDIDATES_TTL_MS = 5000;
 
+    // A failed or absent scan is cached exactly as hard as a successful one, and
+    // the REASON is kept. Both matter: an uncached null re-ran the action on
+    // every keystroke down the one path where it can never succeed (a
+    // mount-backed root, which graph.py refuses by design, MD-11), and a
+    // reasonless null left every source silently bailing — which the popup drew
+    // as "no matches" (MD-11a: unknown is not missing).
     async function ensureCandidates() {
-      if (candidates && Date.now() - candidatesAt < CANDIDATES_TTL_MS) return candidates;
-      const root = notes ? notes.root : (fused.params.get("root") || "");
-      if (!root) return null;
-      try {
-        const data = await fused.runPython("./graph.py",
-          { action: "candidates", root }, { key: "md-candidates" });
-        if (data.error) return null;
-        candidates = data;
+      if (Date.now() - candidatesAt < CANDIDATES_TTL_MS) return candidates;
+      if (candidatesPending) return candidatesPending;
+      candidatesPending = (async () => {
+        candidates = null;
+        candidatesNotice = "";
+        const root = notes ? notes.root : (fused.params.get("root") || "");
+        if (!root) {
+          candidatesNotice = UNRESOLVED_HERE;
+        } else {
+          try {
+            // `file` is sent so graph.py can validate every inserted form from
+            // THIS note (MD-14): resolution tier 1 is relative to the containing
+            // note's folder, so a form validated from the root is not validated
+            // for a note in a subfolder.
+            const data = await fused.runPython("./graph.py",
+              { action: "candidates", root, file }, { key: "md-candidates" });
+            if (data.error) candidatesNotice = data.message || UNRESOLVED_HERE;
+            else candidates = data;
+          } catch (err) {
+            candidatesNotice = "The folder scan failed: " + (err.message || String(err));
+          }
+        }
         candidatesAt = Date.now();
         return candidates;
-      } catch (err) {
-        return null;
-      }
+      })();
+      try { return await candidatesPending; } finally { candidatesPending = null; }
     }
 
-    function headingOptions(headings, prefix) {
-      return headings.map((h) => ({
-        label: prefix + "#" + h.text,
-        displayLabel: "#".repeat(h.level) + " " + h.text,
+    // One informational row instead of an empty popup, in graph.py's own words
+    // where it had any — so a mount refusal, a note outside its root and a
+    // crashed scan each read as themselves, exactly as the sidebar does.
+    // Non-selectable: `apply` deliberately inserts nothing, and `filter: false`
+    // keeps the row from being typed away into an empty list again.
+    function scanNoticeOptions(from, message) {
+      return {
+        from,
+        filter: false,
+        options: [{
+          label: message || candidatesNotice || UNRESOLVED_HERE,
+          type: "text",
+          apply: () => {},
+        }],
+      };
+    }
+
+    // Where a row DISPLAYS something other than what it inserts, CM refuses to
+    // guess where the typed characters landed and highlights nothing at all
+    // (`sortOptions`: a `displayLabel` with no `getMatch` gets an empty match) —
+    // which on these lists silenced the one signal that says why a row survived
+    // the filter, since every path row and every heading row displays a form of
+    // its own. So the mapping is supplied: the characters CM matched IN THE
+    // LABEL, found again as a subsequence of what the row shows. A character the
+    // display deliberately drops (a heading's `#`, a `%20`'s escape) is skipped
+    // rather than fudged, so the emphasis is always on real matched text or
+    // absent — never a range slid sideways over the wrong letters.
+    function displayMatch(completion, matched) {
+      const shown = completion.displayLabel;
+      // No display form of its own, or nothing matched (an unfiltered list calls
+      // this with no ranges at all): the label's own ranges are already right.
+      if (!shown || !matched) return matched || [];
+      const lower = shown.toLowerCase();
+      let typed = "";
+      for (let i = 0; i < matched.length; i += 2) {
+        typed += completion.label.slice(matched[i], matched[i + 1]);
+      }
+      const out = [];
+      let at = 0;
+      for (const ch of typed) {
+        const found = lower.indexOf(ch.toLowerCase(), at);
+        if (found === -1) continue;
+        if (out.length && out[out.length - 1] === found) out[out.length - 1] = found + 1;
+        else out.push(found, found + 1);
+        at = found + 1;
+      }
+      return out;
+    }
+
+    // NESTING depth over the levels actually present, not the raw level: a note
+    // that starts at `##` is not an indented note, and `#` → `###` is one step in
+    // rather than two. Shared by the two surfaces that draw the same note's
+    // headings — the completion popup and the sidebar outline — because "the popup
+    // indents the way the outline does" (MD-14) is only true if it is one rule and
+    // not two that agree on the notes we happened to look at.
+    function withDepth(headings) {
+      const stack = [];
+      return headings.map((h) => {
+        while (stack.length && stack[stack.length - 1] >= h.level) stack.pop();
+        stack.push(h.level);
+        return { ...h, depth: stack.length - 1 };
+      });
+    }
+
+    // A heading row says its nesting the way the SIDEBAR's outline says it —
+    // indentation, plus the level as a dimmed marker in the detail column (MD-14,
+    // MD-19b). Printing `### ` into the label was a third visual language for the
+    // one thing this template already renders twice: the same note's headings.
+    function headingOptions(headings, prefix, encode) {
+      return withDepth(headings).map((h) => ({
+        label: prefix + "#" + (encode ? encodeTarget(h.text) : h.text),
+        displayLabel: "  ".repeat(h.depth) + h.text,
+        detail: "H" + h.level,
         type: "text",
       }));
     }
 
-    async function markdownCompletions(context) {
+    // ---- a path, as the target of an inline link (MD-14) -------------------
+    // The candidates payload already carries every note AND every non-note file
+    // under the root, both root-relative POSIX, so path completion needs no new
+    // Python action — only the string work below. `resolvePath` goes the other
+    // way (join to an fs-absolute path) and so has nothing reusable here; this
+    // stays pure string manipulation for the same reason it does, and it never
+    // rebuilds a path from segments, so the Windows drive form `C:/…` (which
+    // must NOT gain a leading slash) passes through untouched.
+
+    // The open note's own folder, root-relative, "" when it sits at the root —
+    // and null when the note is not under the root at all, which is a thing to
+    // say rather than an empty popup.
+    function vaultRelDir(root) {
+      const base = (root || "").replace(/\/+$/, "");
+      if (!file || !base || !file.startsWith(base + "/")) return null;
+      const rel = file.slice(base.length + 1);
+      const cut = rel.lastIndexOf("/");
+      return cut === -1 ? "" : rel.slice(0, cut);
+    }
+
+    // `rel` (root-relative) as written from `dir` (root-relative). A file beside
+    // the note comes out as `img.png` and one below it as `sub/img.png`; `../`
+    // appears only where the target really is above the note, because climbing
+    // to the root and back down is noise nobody would type.
+    function relativeTarget(dir, rel) {
+      const from = dir ? dir.split("/") : [];
+      const to = rel.split("/");
+      let shared = 0;
+      while (shared < from.length && shared < to.length - 1
+             && from[shared] === to[shared]) shared++;
+      return "../".repeat(from.length - shared) + to.slice(shared).join("/");
+    }
+
+    // `[x](my file.png)` is not a link to the GFM parser at all, so the
+    // human-readable path is the one thing that must NOT be inserted: it would
+    // put a target in the document that Live Preview cannot render and the click
+    // handler never sees. Encoded per segment so `/` and `..` survive, and
+    // parentheses go too since one of them closes the target early. The readable
+    // form is what the row DISPLAYS (`displayLabel`), so the escapes only ever
+    // exist in the document — where MD-4a's widget decodes them again.
+    function encodeTarget(path) {
+      return path.split("/")
+        .map((segment) => (segment === ".." || segment === "."
+          ? segment
+          : encodeURIComponent(segment).replace(/\(/g, "%28").replace(/\)/g, "%29")))
+        .join("/");
+    }
+
+    // Only an image renders in `![…](…)`, so that trigger offers only images.
+    const IMAGE_EXT_RE = /\.(png|jpe?g|gif|webp|svg|avif|bmp|ico)$/i;
+
+    // Relative to the note's own folder, which is `resolve_link`'s FIRST tier
+    // (MD-4) — so the form the popup inserts is the form the graph follows back
+    // to this exact file, with no basename ambiguity to lose to. It is also a
+    // real relative path, which is what the shell navigates by (MD-4a) even
+    // where no scan ever ran.
+    function pathOptions(data, dir, imagesOnly) {
+      // An asset row is `{ rel, embed }`; only `rel` matters here, because this
+      // context's form is computed as a relative path below rather than taken
+      // from the payload.
+      const assetRels = data.assets.map((asset) => asset.rel);
+      const rels = imagesOnly
+        ? assetRels.filter((rel) => IMAGE_EXT_RE.test(rel))
+        : data.notes.map((note) => note.rel).concat(assetRels);
+      return rels.map((rel) => {
+        const readable = relativeTarget(dir, rel);
+        return {
+          label: encodeTarget(readable),
+          displayLabel: readable,
+          // No `detail`: it carried `rel`, which for the common case (a target
+          // in or under the note's own folder) is the readable path the row
+          // already shows — the row read `docs/other.mddocs/other.md`. The
+          // detail column is for something the label does not say, and here
+          // there is nothing (MD-14).
+          type: isNote(rel) ? "class" : "text",
+        };
+      });
+    }
+
+    const OUTSIDE_ROOT =
+      "Paths are not offered here — this note is not under the scanned folder.";
+
+    // ---- `[[…` and `![[…` --------------------------------------------------
+    async function wikilinkCompletions(context) {
       const before = context.state.doc.sliceString(
         Math.max(0, context.pos - 240), context.pos);
-
-      // `[[…` and `![[…` — the same popup; the `!` only changes what the link
-      // means, not what can be linked to.
       const wiki = /\[\[([^\[\]\n]*)$/.exec(before);
-      if (wiki) {
-        const typed = wiki[1];
-        const from = context.pos - typed.length;
-        const data = await ensureCandidates();
-        if (!data) return null;
-        const hash = typed.indexOf("#");
-        if (hash === -1) {
-          return {
-            from,
-            options: data.notes.map((note) => ({
-              label: note.link, detail: note.title, type: "class",
-            })),
-            validFor: /^[^\[\]#\n]*$/,
-          };
+      if (!wiki) return null;
+      const typed = wiki[1];
+      const from = context.pos - typed.length;
+      const data = await ensureCandidates();
+      if (!data) return scanNoticeOptions(from);
+      const hash = typed.indexOf("#");
+      if (hash === -1) {
+        // `![[image.png]]` is the common Obsidian embed, and an embed resolves
+        // through the ASSET index while a plain `[[…]]` resolves through the note
+        // index (graph.py `_resolved_links`). So the two contexts read two
+        // different validated forms off the same rows: `embed` here, `link`
+        // there. A row whose form is **null** has no form that resolves back to
+        // it from this note, and is dropped rather than inserted as a path the
+        // resolver would read as a ghost or as another file — the page still
+        // invents no form of its own (MD-3/MD-14).
+        const embedding = before[wiki.index - 1] === "!";
+        const options = [];
+        for (const note of data.notes) {
+          const form = embedding ? note.embed : note.link;
+          if (form) options.push({ label: form, detail: note.title, type: "class" });
         }
-        const notePart = typed.slice(0, hash);
-        const headings = notePart
-          ? ((data.notes.find((n) => n.link.toLowerCase() === notePart.toLowerCase())
-              || {}).headings || [])
-          : (notes ? notes.headings : []);
-        return { from, options: headingOptions(headings, notePart) };
+        if (embedding) {
+          for (const asset of data.assets) {
+            if (asset.embed) {
+              options.push({ label: asset.embed, detail: "embed", type: "text" });
+            }
+          }
+        }
+        return { from, options, validFor: /^[^\[\]#\n]*$/ };
       }
-
-      return null;
+      const notePart = typed.slice(0, hash);
+      // Matched against BOTH forms: whichever popup offered the note is the form
+      // sitting in the document now, and `[[a/B#` must find B's headings either
+      // way. Null forms simply never match.
+      const headings = notePart
+        ? ((data.notes.find((n) => [n.link, n.embed].some(
+              (form) => form && form.toLowerCase() === notePart.toLowerCase()))
+            || {}).headings || [])
+        : (notes ? notes.headings : []);
+      return { from, options: headingOptions(headings, notePart), getMatch: displayMatch };
     }
+
+    // ---- `](…` — an inline link's or image's target -------------------------
+    async function inlinePathCompletions(context) {
+      const before = context.state.doc.sliceString(
+        Math.max(0, context.pos - 240), context.pos);
+      const inline = /(!?)\[[^\]\n]*\]\(([^)\s]*)$/.exec(before);
+      if (!inline) return null;
+      const typed = inline[2];
+      if (typed.startsWith("#")) return null;  // headingAnchorCompletions' case
+      const from = context.pos - typed.length;
+      const data = await ensureCandidates();
+      if (!data) return scanNoticeOptions(from);
+      const dir = vaultRelDir(data.root);
+      if (dir === null) return scanNoticeOptions(from, OUTSIDE_ROOT);
+      return {
+        from,
+        options: pathOptions(data, dir, inline[1] === "!"),
+        // Keystrokes filter the list locally instead of re-running the source —
+        // the same reason `[[` carries one.
+        validFor: /^[^)\s]*$/,
+        // The row displays the readable path and inserts the encoded one, so the
+        // typed-substring emphasis needs the mapping between them.
+        getMatch: displayMatch,
+      };
+    }
+
+    // ---- `](#…` — an anchor inside this note --------------------------------
+    // The same headings `[[#` offers, from the note payload, so this context
+    // needs no candidate scan of its own — but it does need the note payload,
+    // and where that failed the answer is graph.py's reason, not an empty list.
+    async function headingAnchorCompletions(context) {
+      const before = context.state.doc.sliceString(
+        Math.max(0, context.pos - 240), context.pos);
+      const anchor = /\]\((#[^)\s]*)$/.exec(before);
+      if (!anchor) return null;
+      const from = context.pos - anchor[1].length;
+      if (!notes) return scanNoticeOptions(from, scanNotice || UNRESOLVED_HERE);
+      return {
+        from,
+        options: headingOptions(notes.headings, "", true),
+        validFor: /^#[^)\s]*$/,
+        getMatch: displayMatch,
+      };
+    }
+
+    // ---- the popup's presentation (MD-14) ----------------------------------
+    // Through CM's OWN theme mechanism, not page CSS, for one concrete reason:
+    // an appearance flip dispatches `StateEffect.reconfigure` over the extension
+    // array (buildEditor), so a theme extension IN that array is reinstalled with
+    // everything else, while a page rule has to keep out-specifying whatever
+    // oneDark reinstates. And every colour is a var() token read off <html> at
+    // paint time, so ONE theme is right in both palettes — there is no dark copy
+    // of these rules to keep in sync (D192).
+    // The list is long by nature (every note plus every asset in the vault), so
+    // the shape is the SIDEBAR's list, not a code editor's: prose font, one row
+    // per line, a dimmed right-hand detail column, and a selected row that reads
+    // like `.bl:hover` (--bg on the --bg-alt panel) plus an accent left edge and
+    // bold weight — two non-colour signals, so the selection survives without it.
+    const completionTheme = CM.EditorView.theme({
+      // `.cm-tooltip.cm-tooltip-autocomplete` rather than the single class: the
+      // page's generic `.cm-editor .cm-tooltip` rule is equal-specificity and
+      // earlier in <head> (StyleModule mounts first), so the popup's own rules
+      // have to out-specify it rather than tie with it.
+      ".cm-tooltip.cm-tooltip-autocomplete": {
+        border: "1px solid var(--border)",
+        borderRadius: "8px",
+        background: "var(--bg-alt)",
+        color: "var(--fg)",
+        boxShadow: "0 6px 24px rgba(0, 0, 0, 0.28)",
+        overflow: "hidden",
+      },
+      ".cm-tooltip.cm-tooltip-autocomplete > ul": {
+        margin: "0",
+        padding: "4px",
+        // Not monospace: these rows are paths and heading text, which is what the
+        // rest of this view sets in the body font.
+        fontFamily: "inherit",
+        fontSize: "13px",
+        minWidth: "16em",
+        maxWidth: "34em",
+        // Tidy scrolling for a vault-sized list instead of a popup the height of
+        // the window.
+        maxHeight: "16em",
+        overflow: "hidden auto",
+        scrollbarWidth: "thin",
+      },
+      ".cm-tooltip.cm-tooltip-autocomplete > ul > li": {
+        display: "flex",
+        alignItems: "baseline",
+        columnGap: "8px",
+        padding: "4px 7px",
+        borderRadius: "5px",
+        // The accent edge's slot, transparent until the row is the selected one,
+        // so selecting a row does not shift its text.
+        borderLeft: "2px solid transparent",
+        lineHeight: "1.35",
+        cursor: "pointer",
+      },
+      ".cm-tooltip.cm-tooltip-autocomplete > ul > li[aria-selected]": {
+        background: "var(--bg)",
+        color: "var(--fg)",
+        borderLeftColor: "var(--accent)",
+        fontWeight: "600",
+      },
+      ".cm-tooltip.cm-tooltip-autocomplete > ul > li:hover:not([aria-selected])": {
+        background: "var(--bg)",
+      },
+      // `white-space: pre` is load-bearing: a heading row says its level with
+      // leading spaces, and HTML would collapse them.
+      ".cm-tooltip-autocomplete .cm-completionLabel": {
+        flex: "0 1 auto",
+        minWidth: "0",
+        overflow: "hidden",
+        textOverflow: "ellipsis",
+        whiteSpace: "pre",
+      },
+      // The typed substring. Emphasised, because in a list this long the matched
+      // characters are the only thing telling you why a row is still here.
+      ".cm-tooltip-autocomplete .cm-completionMatchedText": {
+        textDecoration: "none",
+        color: "var(--accent)",
+        fontWeight: "700",
+      },
+      // Its own dimmed column, pushed right — `docs/other.mddocs/other.md` and
+      // `a.pngembed` were the label and the detail with nothing between them.
+      ".cm-tooltip-autocomplete .cm-completionDetail": {
+        marginLeft: "auto",
+        flex: "none",
+        paddingLeft: "12px",
+        fontStyle: "normal",
+        fontSize: "11px",
+        color: "var(--fg-muted)",
+      },
+    });
 
     function editorExtensions() {
       const base = [
+        completionTheme,
         CM.basicSetup,
         ...(wantsDark() ? [CM.oneDark] : []),
         CM.markdown({ base: CM.markdownLanguage }),
@@ -1566,13 +2568,32 @@
         // Above basicSetup's default keymap: Enter must continue the list
         // marker rather than plain-indent, and Tab must indent the list item.
         CM.Prec.high(CM.keymap.of(CM.markdownKeymap.concat(editorKeymap))),
-        CM.Prec.high(CM.autocompletion({ override: [markdownCompletions] })),
+        renumberFilter,
+        // One source per context, not one function with a chain of regexes: CM
+        // runs every source and merges what they return, so each stays a single
+        // trigger with a single answer. `override` still replaces the default
+        // sources wholesale, and still at high precedence.
+        CM.Prec.high(CM.autocompletion({
+          override: [
+            wikilinkCompletions, inlinePathCompletions, headingAnchorCompletions,
+          ],
+          // No icon column (D192). CM renders the `type` field as a glyph, and
+          // its glyph for `text` is the literal string "abc" — on every path
+          // row, which is not what any of these rows are. The row itself already
+          // names its kind (an extension, `.md` or not; an indented heading; the
+          // `embed` detail), so the column could only spend width to repeat it —
+          // or, with two type values across four contexts, to blur it.
+          icons: false,
+        })),
         pasteHandler,
         livePreviewField,
         CM.EditorView.updateListener.of((update) => {
           if (!update.docChanged) return;
           setDirty(true);
           armAutosave();
+          // The outline's only trigger: headings change as you type, and this is
+          // the event that says the document did (MD-19b — no timer, no poll).
+          renderOutline();
         }),
       ];
       if (!editing()) {
@@ -1601,6 +2622,11 @@
       const at = Math.min(selection, view.state.doc.length);
       view.dispatch({ selection: { anchor: at } });
       view.scrollDOM.scrollTop = scroll;
+      // Every path that replaces the document comes through here — the first
+      // load, an external reload, switching note, switching mode — and each of
+      // them can change the headings, so the outline is redrawn from the new doc.
+      outlineKey = null;
+      renderOutline();
 
       // A live appearance change reconfigures the RUNNING view — rebuilding it
       // would throw away unsaved edits, the caret and the scroll position.
@@ -1649,12 +2675,106 @@
       for (let n = 1; n <= doc.lines; n++) {
         const match = /^#{1,6}\s+(.*)$/.exec(doc.line(n).text);
         if (match && match[1].trim().toLowerCase() === wanted) {
-          view.dispatch({
-            effects: CM.EditorView.scrollIntoView(doc.line(n).from, { y: "start" }),
-          });
+          scrollToLine(n);
           return;
         }
       }
+    }
+
+    // MD-4b's rule in one place, so every heading jump obeys it: scroll the line
+    // into view and leave the caret alone. The outline (below) scrolls by LINE
+    // rather than by text because it built the row from that line — matching by
+    // text would re-search the document and hand the second `## Notes` to the
+    // first one.
+    function scrollToLine(n) {
+      if (!view || !(n >= 1) || n > view.state.doc.lines) return;
+      view.dispatch({
+        effects: CM.EditorView.scrollIntoView(view.state.doc.line(n).from, { y: "start" }),
+      });
+    }
+
+    // ---- the outline, in the same sidebar (MD-19b) --------------------------
+    // Read from the LIVE document, never from `notes.headings`: the payload only
+    // re-parses on save (MD-9), so a payload-fed outline would lag every heading
+    // you type by up to one autosave interval — and a stale outline is the one
+    // thing an outline may not be. The document is already the index for
+    // `?heading=` (MD-4b), so this is the same source of truth read the same way,
+    // and it needs no timer: the editor's existing docChanged listener is the
+    // only trigger this has (nothing in this template polls — MD-17).
+    //
+    // Frontmatter and fenced code are masked exactly as graph.py's `_mask_code`
+    // masks them, because `# not a heading` inside a fenced block appears in no
+    // other heading surface (the `[[#` popup, the graph payload) and must not
+    // appear here either. ATX only, which is all `_HEADING` and `scrollToHeading`
+    // know. Not the syntax tree, tempting as it is: `syntaxTree(state)` is parsed
+    // only as far as CM has got, so on a long note the tail headings would
+    // silently be missing from the outline.
+    function documentHeadings() {
+      if (!view) return [];
+      const doc = view.state.doc;
+      const rows = [];
+      let fence = null;         // the opening run while inside a fenced block
+      // The closer is found BEFORE anything is skipped, which is the whole point:
+      // an UNCLOSED `---` is not frontmatter, it is a horizontal rule someone is
+      // still typing under. Marking it open and skipping to the end of the
+      // document blanked the entire outline from the keystroke that opened the
+      // block until the one that closed it, while graph.py's `_frontmatter_span`
+      // and the decoration scan above both kept those headings — three surfaces
+      // for the same note disagreeing (MD-19b, and MD-18a for the same rule).
+      let frontmatterEnd = 0;
+      if (doc.lines > 1 && doc.line(1).text.trim() === "---") {
+        for (let n = 2; n <= doc.lines; n++) {
+          if (/^(---|\.\.\.)[ \t]*$/.test(doc.line(n).text)) { frontmatterEnd = n; break; }
+        }
+      }
+      for (let n = frontmatterEnd + 1; n <= doc.lines; n++) {
+        const text = doc.line(n).text;
+        const opener = /^ {0,3}(`{3,}|~{3,})/.exec(text);
+        if (fence !== null) {
+          // Inside a fence everything is code, including the closing line.
+          if (opener && opener[1][0] === fence[0] && opener[1].length >= fence.length) {
+            fence = null;
+          }
+          continue;
+        }
+        if (opener) { fence = opener[1]; continue; }
+        const match = /^(#{1,6})[ \t]+(.+?)[ \t]*#*[ \t]*$/.exec(text);
+        if (match) rows.push({ level: match[1].length, text: match[2], line: n });
+      }
+      return rows;
+    }
+
+    // The last outline drawn, so an unchanged one is not redrawn. Load-bearing,
+    // not an optimisation: this runs on every keystroke, and rewriting the list's
+    // innerHTML while someone types inside a heading would reset the outline's
+    // own scroll position and drop the row under their pointer.
+    let outlineKey = null;
+
+    function renderOutline() {
+      const listEl = document.getElementById("outline");
+      const headEl = document.getElementById("outline-head");
+      if (!graphOn()) {
+        // The panel is closed; there is nothing to draw and this is the hot path.
+        outlineKey = null;
+        return;
+      }
+      const rows = documentHeadings();
+      const key = rows.map((r) => `${r.line}:${r.level}:${r.text}`).join("\n");
+      if (key === outlineKey) return;
+      outlineKey = key;
+
+      const drawn = withDepth(rows);
+
+      headEl.textContent = rows.length ? `Outline (${rows.length})` : "Outline";
+      listEl.innerHTML = drawn.length
+        ? drawn.map((row) => `
+            <button class="bl ol" style="--ol-depth: ${row.depth}"
+                    data-line="${row.line}" title="${escapeHtml(row.text)}">
+              <span class="ol-text">${escapeHtml(row.text)}</span>
+            </button>`).join("")
+        // Same voice as the backlinks empty state: state the absence as a fact
+        // about this note, rather than hiding the section.
+        : `<div class="bl-empty">No headings in this note.</div>`;
     }
 
     // ---- backlinks, in the sidebar ------------------------------------------
@@ -1816,6 +2936,14 @@
       if (anchor) {
         event.preventDefault();
         scrollToHeading(anchor.getAttribute("data-anchor"));
+        return;
+      }
+      // An outline row: it knows the line it was built from, so it scrolls to
+      // that line instead of re-finding the heading by text (see scrollToLine).
+      const outlined = event.target.closest("[data-line]");
+      if (outlined) {
+        event.preventDefault();
+        scrollToLine(parseInt(outlined.getAttribute("data-line"), 10));
         return;
       }
       const create = event.target.closest("[data-create]");
@@ -2009,8 +3137,8 @@
     // invisible.
     function applyEditMode(rebuild) {
       const on = editing();
-      // Pressed = READ-ONLY, the non-default state (see the button's markup).
-      editToggleEl.setAttribute("aria-pressed", String(!on));
+      // Pressed = EDITING, the non-default state (see the button's markup).
+      editToggleEl.setAttribute("aria-pressed", String(on));
       editToggleEl.disabled = !writable;
       editToggleEl.title = writable
         ? (on ? "Editing — click to read only" : "Read-only — click to edit")
@@ -2032,6 +3160,9 @@
         const stored = storedSideWidth();
         if (stored) applySideWidth(stored, false);
         canvas.nudge(); // the canvas had zero size while the panel was hidden
+        // renderOutline draws nothing while the panel is closed, so opening it is
+        // the moment to draw what the document says now.
+        renderOutline();
         void loadGraph();
       }
     }
@@ -2079,7 +3210,7 @@
       // refreshLinks re-decorates once it lands.
       await refreshLinks();
       lastGraph = (fused.params.get("graph") || "0") + "/" + (fused.params.get("depth") || "1");
-      lastEdit = fused.params.get("edit") || "1";
+      lastEdit = fused.params.get("edit") || "0";
       applySidebar();
     }
 
@@ -2094,7 +3225,7 @@
         lastGraph = key;
         applySidebar();
       }
-      const edit = params.edit || "1";
+      const edit = params.edit || "0";
       if (edit !== lastEdit) {
         lastEdit = edit;
         applyEditMode(true);

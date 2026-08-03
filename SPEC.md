@@ -70,10 +70,37 @@ The differentiating feature is the **renderable HTML** system: HTML files can ca
 - **FS-2** Breadcrumb navigation. *(tree pane, keyboard nav: follow-up)*
 - **FS-3** **DECIDED:** the explorer browses the **entire computer** — there is no root-scoping concept. The CLI may take a *start directory* (`--start-dir`, default home) but it is only the initial UI location, not a restriction.
 - **FS-4** v1 shows all files including dotfiles. *(hide/toggle: follow-up)*
-- **FS-5** Selecting a file opens its preview (§5). Selecting a directory navigates into it.
+- **FS-5** Selecting a file opens its preview (§5). Selecting a directory navigates into it. **With the split preview pane on this changes** — the plain single click selects and drives the pane instead of opening, and double-click opens; see FS-15.
 - **FS-6** The current directory/file is reflected in the URL path so browser back/forward and refresh work: `http://localhost:1777/view/<url-encoded-path>`.
 - **FS-7** **DONE (M14):** in-folder filename search over a streamed recursive walk — see §22.
 - **FS-8** "Open raw" escape hatch for any file: streams bytes with correct MIME type (used for download and by templates for images/video/pdf).
+
+### Split preview pane (D185)
+
+The listing may show the selected entry's preview beside the list — Finder's list view. This is the one feature the deleted `preview` directory template had and the shell did not (D185); it lives here so it inherits the listing's watch (LS-1), file operations (§24), multi-select, streaming search (§22) and theming (§30) instead of re-implementing them.
+
+- **FS-9** **Default OFF.** With the pane hidden the listing is exactly the listing FS-1..FS-8 describes — no layout change, no extra fetch, no selection semantics change. The pane is opt-in per folder, so nothing about a plain folder view moves for a user who never asks for it.
+- **FS-10** **Toggle** — a button in the listing's **search row** (beside the in-folder search input, FS-7/§22.3), showing the pane's current state. It is the whole affordance: there is no separate mode, no `_mode` value, and no registry entry for "listing with a pane" — the pane is a property of *how this folder is being viewed*, not a different view of it (which is precisely the distinction the `preview` template got wrong).
+- **FS-11** **Selection-driven content.** The pane renders whatever the currently selected row is:
+  - a **file** → its default template mode (PT-8/PT-9) in an **iframe**, `/render?path=<template>&_file=<file>`, exactly as the preview view builds it (PT-2) — one code path, so a file previews identically in the pane and full-screen. No mode switcher in the pane; the pane shows the default, and full-screen is a double-click on the row (FS-15). "Default" means PT-9's rule in full, including its tail: the first **unconditional** entry renders immediately (CT-12 — no waiting on a gate), and an **all-conditional** list resolves its gates and shows the first **allowed** one, so the pane never claims "no preview" for a file that opens fine full-screen. A file with no usable entry at all (empty list, or every gate denied/broken — fail closed) gets the metadata card below.
+  - a **directory** → a **folder peek**, which is *not* a recursive listing-with-a-pane: a folder holding exactly one app entry (D124's `isAppEntry`) embeds that app, and any other folder shows a **read-only mini child list** (names + icons, no sort, no file ops, no search, not navigable). Read-only is deliberate — two live listings on screen means two watch sockets, two selection models and an ambiguous target for a delete, and the pane exists to answer "what is in here" before you commit to going in.
+  - **nothing selected** → an empty-state placeholder, not a stale previous preview.
+- **FS-12** **Draggable divider** between list and pane, **min 220 px** list width and **max 65 %** pane width. The list is the primary surface: the clamp keeps the pane from being dragged to a sliver (useless) or over the list (the thing being browsed). **Default width is 50 % of the split container**, measured pre-paint (a layout effect, so the pane never paints at one width and jumps to another) and run through the same clamps; a fixed pixel default (it was 420 px) is wrong on both a laptop and a wide monitor, and 420 px survives only as the fallback for a container that cannot be measured. The measurement is a **one-time default**, not a live binding: once resolved the pane keeps that pixel width for the mount and does **not** re-track the container as the window resizes (owner call — a pane that resized itself under a browser resize would fight a user who had already sized it, and the remount-per-folder keying re-measures often enough in practice). Only a **dragged** width persists (FS-13); the measured default is never written to `panew`, so re-opening a folder re-measures against its *current* container rather than replaying an old window's arithmetic. **The 220 px floor is the LIST's, and it is a second, independent ceiling on the pane** — the 65 % fraction alone does not enforce it (on a 600 px container, 65 % leaves the list 210 px), so the pane's width is capped at `min(65 %, container − 220 px)` and the list also carries a CSS `min-width` for the case a window resize narrows the container under an already-sized pane. Both clamps live in one `clampPaneWidth` helper that the drag and the measured default share, so they cannot disagree. In the degenerate case — a container too small for both minimums — the pane keeps its own 220 px floor and the list scrolls, matching what the deleted template's `min-width` did.
+- **FS-13** **Visibility rides the URL; width does not.** The two halves of pane state are persisted differently on purpose, because they answer different questions.
+  - **Visibility → `?preview=true` on the shell URL** (that literal spelling), *plus* the per-folder view state. Toggling writes the param (`replaceSearch`, D8 mechanics); a pane restored from a folder's view state **reflects itself into the URL** so the two never disagree on screen; and on mount the **URL wins** — `?preview` present is authoritative, view state is consulted only in its absence. So the pane is shareable and bookmarkable (SB-2 captures the URL verbatim, and now captures the pane with it) and survives a refresh or a Back into that entry.
+  - **Width → per-folder view state only** (`lib/viewstate.ts`, alongside the folder's sort `?sort`/`&order`), never the URL: a bookmark should reproduce *that there is a pane*, not one machine's pixel drag on one window size. Two sibling folders keep independent widths. Only a **dragged** width is stored (FS-12) — an untouched pane persists nothing, so it stays proportional. **`pane` and `panew` are independent keys:** turning the pane off clears `pane` but *keeps* `panew`, so closing the pane and then leaving the folder (or refreshing) does not throw away a width the user dragged — the next open restores it instead of re-measuring the default.
+
+  **The param is sticky, and only across directories.** `navigate()` carries `preview` onto **directory** targets so moving between folders never silently opens or closes the pane; it is otherwise never changed automatically, and the breadcrumb's `_mode`-preserving branch carries it identically (a hop out of a `graph`-moded folder must not drop the pane). It is deliberately **not** carried onto **file** targets: `preview` is an *unreserved* param name and the runtime's ancestor-climb (D72) exposes shell-URL params to a template iframe as global fallbacks, so a file URL carrying `preview` would shadow a user template's own param of that name. **Residual caveat, stated rather than fixed:** while the pane itself is open the shell listing URL *does* carry `preview`, so a template rendered **inside the pane** (FS-11) sees it through that same climb — a pane-hosted template using `preview` as its own param name is the one live collision, of a piece with PT-9's documented "template params can collide" quirk.
+
+  View state stays best-effort `localStorage`, silent on failure, same posture as the rest of viewstate and AP-1.
+- **FS-14** **Skeleton shimmer** while the pane's content loads (the iframe's first paint, a peek's child fetch) — the pane occupies real width the moment it opens, so an empty rectangle would read as "this folder has no preview" rather than "loading". The list never blocks on the pane: a slow or failing pane leaves the listing fully interactive.
+- **FS-15** **The pane owns the single click.** A row's plain click means one of two things, decided by the pane:
+  - **pane OFF** (the default) — **select and open**, unchanged from FS-5 and from every version of this explorer. Nothing about the classic click model moves for a user who never opens the pane.
+  - **pane ON** — **select only**, for **files and directories alike**; the click's whole job is to drive the pane's preview (FS-11), and **double-click** is what opens (navigates into a folder, opens a file full-screen). A folder is deliberately not special-cased: the pane can peek into it, so a single click that navigated would make the peek unreachable for exactly the rows it is most useful on.
+
+  **`Enter` opens either way** — the keyboard model does not change with the pane, so there is always one binding that opens regardless of pane state. **Shift+click** (contiguous range) and **Mod+click** (toggle + re-anchor) are untouched by all of this: they build a selection and have never navigated.
+
+  **No single/double-click delay timer.** Distinguishing the two clicks by waiting would put a deliberate ~250 ms lag on the pane preview — the one interaction the pane exists to make fast. Instead the first click of a double-click just selects, which is harmless: the pane fetch it starts is superseded (the row's navigation unmounts the listing), so the cost of the extra click is a request that nobody reads, not a wrong view or a flash of one.
 
 ### Sidebar & Bookmarks (M2)
 
@@ -88,6 +115,18 @@ Left sidebar in the shell, always visible:
 - **SB-7** **DECIDED: bookmark create/update is mirrored into the target file's `.html.json` sidecar** (D83) as `bookmarkHistory` — the same per-file sidecar the `claude` chat template owns via `claudeSessions` (§7). `POST /api/bookmarks/history` upserts an entry by bookmark `id`; the frontend calls it fire-and-forget right after `addBookmark`/`updateBookmarkUrl` commit. A bookmark targeting a layout/tab sentinel or a path no longer on disk records nothing. **Delete never touches the sidecar** — history is permanent, independent of the bookmark's current lifetime.
 - **SB-8** **Save to disk**: a per-bookmark button writes a portable `<name>.bookmark` JSON file (format v1: `{version, name, icon?, kind: single|panel|tab, path?, search}`, D98) next to the file(s) the bookmark points at — a single bookmark into its target's own directory (`path` relative to it), a panel/tab bookmark into the deepest common ancestor directory of all `_layout` leaves, each leaf path rewritten relative to that dir (grammar, nesting, per-leaf queries and global params untouched). The button's hover title shows the exact destination path before the click; it is disabled (greyed, explanatory title) when no save target exists — a leaf without an absolute fs path, or no common root. Frontend computes `{dir, filename, content}` (`lib/bookmark-file.ts`); `POST /api/bookmarks/export` validates and writes, overwrite allowed (a re-save refreshes the snapshot).
 - **SB-9** **Double-click open** (macOS): the packaged app registers `.bookmark` as an Owner document type (D99); Finder-opening one routes to the `/view/_bookmark?file=<abs path>` sentinel, which reads the file (`GET /api/bookmark-file`), resolves its relative paths against the file's own directory (`lib/bookmark-file.ts` `bookmarkOpenUrl`, the inverse of SB-8's relativize) and `location.replace()`s to the described view — single, panel or tab. Browsing to a `.bookmark` file in the explorer opens it the same way (never a preview). Malformed / unsupported-version files render a readable error, no redirect.
+
+### OS clipboard interop (D203)
+
+⌘/Ctrl+C in the explorer and in the native file manager mean the same thing. The bridge is the **local Python backend** — the server always binds `127.0.0.1` (D2/D3), so it is necessarily on the user's own machine — reached over `GET`/`POST /api/clipboard/files` (`server/routers/clipboard.py`) and implemented behind a platform-agnostic contract in `fused_render/shell/pasteboard/`: `read_files() -> (paths, token, supported)`, `write_files(paths) -> (token, supported)`. Only the three leaf backends know what OS they are on.
+
+- **CB-1** **Copy out.** An in-app **copy** also publishes its absolute paths to the system clipboard as real *file references*, so ⌘V in Finder / Explorer / Nautilus / Dolphin pastes the actual files while a paste into a terminal or editor yields the paths. One hook in `setClipboard` (`lib/fs-clipboard.ts`) covers every Copy call site. It is **fire-and-forget**: the in-app copy has already happened, and a failed or unsupported write must leave behaviour exactly as it was rather than break the gesture (same posture as `copyToClipboard`).
+- **CB-2** **Paste in.** Files copied in the native file manager become the app's clipboard on the next **return to the app** (`useRefreshOnReturn`, plus one read on mount since that hook skips mount), so Paste drops them into the current directory. The adopted clipboard is written into the **existing module clipboard store** as a second writer — every Paste site, `disabled: !clipboard` check and cut-dimming keeps working untouched — and the paste itself is the unchanged server-side `/api/fs/copy`: no bytes cross the browser, folders included, instant at any file size. A copy made while the app is already focused is not seen until the next focus change.
+- **CB-3** **The token is a content fingerprint** of the ordered path list (sha256 of the NUL-joined paths), identical on all three platforms — macOS has `changeCount` and Windows `GetClipboardSequenceNumber`, but Linux has no analog. The frontend tracks it as **last seen**, not last written, so an untouched system clipboard never clobbers a pending in-app **cut**. Re-copying an identical selection in the file manager is therefore not detected as a new event, which is harmless (adopting the same paths is idempotent). Adoption never echoes back out to the OS, and neither does **bookkeeping** — `clearClipboardIfDeleted` and `remapClipboardPath` repair the app's own reference after a delete or a rename and keep `op: "copy"`, but the system clipboard belongs to whoever last wrote it, so an unrelated file operation must not rewrite it. Both places that touch the clipboard across an `await` (the reconcile's read, the mirror-write's response) capture a **clipboard epoch** first and discard their result if it moved — otherwise a slow read overwrites a copy or cut made while it was in flight, and a late write restores a token the next reconcile then reads as unchanged and skips.
+- **CB-4** **Cut is in-app only, both directions.** No platform exposes a reliable cut-vs-copy flag on read, so honouring one would mean deleting source files on a guess; the GNOME format's `cut` verb is parsed and ignored, and an in-app cut is never published.
+- **CB-5** **Per-platform mechanism.** macOS: `public.file-url` on the general `NSPasteboard` via pyobjc, written alongside the newline-joined plain-text paths. Windows: `CF_HDROP` via `ctypes` (a wide-char `DROPFILES` block on globally-allocated memory), plus `CF_UNICODETEXT`; paths are backslashed for the OS and returned in the shell's canonical forward-slash form. Linux: `wl-copy`/`wl-paste`, else `xclip`. No new dependencies — pyobjc already ships in the `[app]` extra, `ctypes` is stdlib, and Linux shells out to tools it detects rather than requiring.
+- **CB-6** **Documented Linux limitation.** X11/Wayland have no OS-owned clipboard: a live process must own the selection, GNOME (`x-special/gnome-copied-files`) and KDE (`text/uri-list`) disagree on the format, and `xclip`/`wl-copy` publish only one target per invocation. **Reading tries both**, so pasting *into* fused-render works on either desktop; **writing serves whichever family `XDG_CURRENT_DESKTOP` reports**. A resident GTK/Qt owner process offering both targets at once is the documented upgrade.
+- **CB-7** **Everything degrades identically.** Missing pyobjc, a hardened sandbox, no `xclip`/`wl-clipboard`, or a failed request all surface as `supported: false` — a normal 200, not an error — and the app keeps today's in-app-only clipboard.
 
 ### Server FS API (shape, not final contract)
 
@@ -357,7 +396,7 @@ const page = await fused.runPython("./reader.py",
 | `.csv .tsv` | `duckdb`, `code` | paged table + SQL over the file |
 | `.xlsx` | `xlsx` | sheet select + paged table |
 | `.json .geojson` | `tree`, `code` | collapsible tree |
-| `.md` | `markdown`, `code` | rendered markdown |
+| `.md` | `markdown`, `code`, `claude`, `git` | notes editor (§32) + raw source + chat about the note + this note's git history (§33) |
 | `.svg` | `image`, `code` | `<img>` via raw endpoint; svg source is text |
 | `.png .jpg .jpeg .gif .webp` | `image` | `<img>` via raw endpoint |
 | `.pdf` | `pdf` | browser-native embed |
@@ -368,7 +407,7 @@ const page = await fused.runPython("./reader.py",
 | `.tif .tiff` | `geotiff` | GeoTIFF/COG via vendored geotiff (in-browser decode, no reader.py); full metadata + dump, photometric routing (RGB/palette/YCbCr), band select + RGB stretch + colormaps, histogram, hover. Small files full-fetched; >32 MiB range-request `fromUrl` |
 | `.nc .nc4 .cdf` | `netcdf` | NetCDF-3 via vendored netcdfjs (HDF5/NetCDF-4 → graceful card); leading-dim sliders, colormaps + stretch, histogram, hover |
 | `.zarr/` (directory) | `zarr_aoi`, `_listing` | Zarr v2/v3 store — a *directory*, bound by the trailing-`/` directory key (PT-13). `zarr_aoi` is the server-side AOI tile-streaming map viewer (opened via zarr-python, tiles streamed as PNG); it ships a `condition.py` store-detection gate (CT-12), so it is a conditional peer rather than the immediate default — the built-in `_listing` (PT-12) shows first and the map joins the switcher when the background gate confirms the store. `_listing` also stays reachable as the raw member listing, replacing the old "Browse contents" escape hatch (D81) |
-| `/` (any directory) | `_listing` | The **universal directory key** (CT-3) — the built-in default for *every* folder. `_listing` is a sentinel (PT-12), not a template folder: the shell's built-in directory listing (sortable columns, in-folder search, FS-1). Zero segments, so any dot-anchored directory key (`.zarr/`) beats it (D81) |
+| `/` (any directory) | `_listing`, `git`, `graph`, `zarr_aoi` | The **universal directory key** (CT-3) — the built-in default for *every* folder. `_listing` is a sentinel (PT-12), not a template folder: the shell's built-in directory listing (sortable columns, in-folder search, file ops, and the optional split preview pane — FS-1, FS-9..FS-15). Zero segments, so any dot-anchored directory key (`.zarr/`) beats it (D81). `git` (§33), `graph` (MD-2) and `zarr_aoi` are all `condition.py`-gated peers (CT-12) — the AOI map here is the same viewer the `.zarr/` row describes, offered to *any* folder its store-detection gate confirms — so `_listing` stays the immediate default and each joins the switcher only where its background gate allows. `git` is listed FIRST among the gated peers because the switcher reads left to right and its gate is the one that says yes most often (GT-2). The `preview` folder-preview template that also sat here is **deleted** — its split pane is now `_listing`'s (D185) |
 | `.html .htm` | `_render`, `code` | defaults shipped in the built-in registry like any other key — user-rebindable since D73 (CT-4 revised); `_render` is a shell sentinel (PT-12) rendering the file itself live (§4) |
 | unknown | shell fallback | metadata + raw/download link (built into shell, not a template) |
 
@@ -378,10 +417,10 @@ const page = await fused.runPython("./reader.py",
 - **PT-11** **Icons:** a template folder may ship `icon.svg` — **monochrome** (single fill; the shell tints it via CSS `mask-image` + `currentColor`, so only alpha matters), square viewBox (24×24 suggested), legible at 16px. `icon` in the stat entry is the abs path of the `icon.svg` sitting next to the *resolved* `template.html` (the user folder's icon when a user template resolved), or `null`. The shell loads it through the existing `/api/fs/raw` endpoint — no new routes. Every built-in folder ships one. Sentinel modes (`_render`, `_listing`) have no folder, so the shell bakes their icons in (PT-12).
 - **PT-12** **Sentinel modes:** a mode name starting with `_` is a **shell sentinel** — no template folder backs it; the shell knows what it means. Server resolution special-cases sentinels: the stat entry is emitted as `{"mode": "_<name>", "path": null, "icon": null}` without touching the filesystem. The `_` prefix matches the reserved-param convention (`_mode`, `_file`). The sentinel namespace is **shell-owned**; since D73 the server keeps a **known-sentinel set** (`KNOWN_SENTINELS = {"_render", "_listing"}`, D81) and a name in that set is referenceable from **any** registry list, built-in or user — any other `_`-prefixed name is invalid (dropped + `template_error`, CT-6). Two sentinels exist:
   - **`_render`** — "render the file itself" — the default mode of the built-in `.html`/`.htm` list `["_render", "code"]`. Shell handling: iframe src `/render?path=<the file itself>` (no `_file`), shell-baked eye icon.
-  - **`_listing`** — "the shell's built-in directory listing" (sortable columns + in-folder search, FS-1/§13.4) — the default of the universal `/` directory key (PT-13, D81), and a peer mode of `.zarr/`'s `["zarr_aoi", "_listing"]`. It backs no folder and takes no `_file`: when it is the active mode the shell **mounts its Listing component in place of the preview iframe** (no iframe at all). Shell-baked list icon.
+  - **`_listing`** — "the shell's built-in directory listing" (sortable columns + in-folder search, FS-1/§13.4, plus the optional split preview pane, FS-9..FS-15) — the default of the universal `/` directory key (PT-13, D81), and a peer mode of `.zarr/`'s `["zarr_aoi", "_listing"]`. It backs no folder and takes no `_file`: when it is the active mode the shell **mounts its Listing component in place of the preview iframe** (no iframe at all). Shell-baked list icon.
 
   Users **can** rebind any registry key — including `.html`/`.htm` (CT-4 revised, D73) and the directory keys (D81) — dropping a sentinel, then listing it explicitly brings it back. Unknown sentinel entries (path `null`, mode not in the set) are filtered out defensively. Non-sentinel entries in the same list (e.g. `code`, `zarr_aoi`) work exactly like any template mode. Future modes are added to the server-side registry and flow through the framework normally.
-- **PT-13** **Directory views (D65, revised by D73 and D81):** a preview target may be a **directory**. Directories resolve through the **same registry** as files (PT-7, CT-3): a key with a **trailing `/`** binds a directory's basename, and the **universal `/` key** (zero segments, CT-3) matches *every* directory at lowest specificity. The built-in registry ships `"/": ["_listing", "preview", "zarr_aoi"]` and `".zarr/": ["zarr_aoi", "_listing"]` — so **every** directory carries a non-empty `templates` list (≥ `["_listing"]`), and dispatch is uniform: a directory previews its default mode exactly like a file. The built-in **listing is itself a mode** — the `_listing` sentinel (PT-12) — so it rides the ordinary mode switcher (PT-10) and `_mode` selection (PT-9): a plain folder's single-mode `["_listing"]` shows the listing with no switcher; a `.zarr` store shows the listing by default with the `zarr_aoi` map joining as a `condition.py`-gated peer (CT-12) once its background verdict confirms the store (`_mode=zarr_aoi` selects it). This replaces D65's one-way `?listing=1` "Browse contents" escape hatch, which is **removed** (D81) — the only way to the listing is now the `_listing` mode. In **embed** (the preview header, hence the switcher, is hidden), a corner chip toggles the `_listing` mode (writing/deleting `_mode`) so an embedded directory preview can still reach its members. Annotate (§17) is not offered for `_listing` (no iframe to overlay). A directory resolves to an **empty** list only when a `null` binding disables it (CT-2); the shell then falls back to the built-in listing regardless (a folder must always render something). Users bind directory views like any other key — `"/": ["_listing", "gallery"]` lists the built-in listing plus a gallery mode for every folder (built-in names are listed explicitly — there is no splice, D94); dropping `_listing` from a list forgoes the file listing for those directories (owner call, same "user can shoot themselves" posture as D73's `.html` rebind). Accepted break: old `?listing=1` bookmarks ignore the dropped param — a plain folder still lists (its default), and a `.zarr` bookmark also lists by default now (the `zarr_aoi` map is a gated peer reached via `_mode=zarr_aoi`, not the default).
+- **PT-13** **Directory views (D65, revised by D73 and D81):** a preview target may be a **directory**. Directories resolve through the **same registry** as files (PT-7, CT-3): a key with a **trailing `/`** binds a directory's basename, and the **universal `/` key** (zero segments, CT-3) matches *every* directory at lowest specificity. The built-in registry ships `"/": ["_listing", "git", "graph", "zarr_aoi"]` (D185 removed `preview`; `graph` per MD-2; `git` per §33/D193) and `".zarr/": ["zarr_aoi", "_listing"]` — so **every** directory carries a non-empty `templates` list (≥ `["_listing"]`), and dispatch is uniform: a directory previews its default mode exactly like a file. The built-in **listing is itself a mode** — the `_listing` sentinel (PT-12) — so it rides the ordinary mode switcher (PT-10) and `_mode` selection (PT-9): a plain folder's single-mode `["_listing"]` shows the listing with no switcher; a `.zarr` store shows the listing by default with the `zarr_aoi` map joining as a `condition.py`-gated peer (CT-12) once its background verdict confirms the store (`_mode=zarr_aoi` selects it). This replaces D65's one-way `?listing=1` "Browse contents" escape hatch, which is **removed** (D81) — the only way to the listing is now the `_listing` mode. In **embed** (the preview header, hence the switcher, is hidden), a corner chip toggles the `_listing` mode (writing/deleting `_mode`) so an embedded directory preview can still reach its members. Annotate (§17) is not offered for `_listing` (no iframe to overlay). A directory resolves to an **empty** list only when a `null` binding disables it (CT-2); the shell then falls back to the built-in listing regardless (a folder must always render something). Users bind directory views like any other key — `"/": ["_listing", "gallery"]` lists the built-in listing plus a gallery mode for every folder (built-in names are listed explicitly — there is no splice, D94); dropping `_listing` from a list forgoes the file listing for those directories (owner call, same "user can shoot themselves" posture as D73's `.html` rebind). Accepted break: old `?listing=1` bookmarks ignore the dropped param — a plain folder still lists (its default), and a `.zarr` bookmark also lists by default now (the `zarr_aoi` map is a gated peer reached via `_mode=zarr_aoi`, not the default). Accepted break (D185): the `preview` folder-preview template is **deleted** and gone from this key, and the two ways a leftover reference surfaces are **different mechanisms** — a **`?_mode=preview` URL or bookmark** is an unknown `_mode` value, so it falls back to the default (`_listing`) **silently, with no error** per PT-9 (and lands on the listing that now carries the split pane, FS-9..FS-15, which is what such a URL was asking for); a **user registry** still listing `"preview"` is instead a dangling name per CT-6/D95 — dropped from the mode list with `template_error` naming it on the stat payload and a broken (`exists:false`) row in the Templates view (§23).
 - **PT-5** **User overrides:** DECIDED and specced as §16 (M7, extended by M8) — user template folders under `~/.fused-render/templates/` bound to extensions by `~/.fused-render/templates/registry.json`, replacing or extending the built-in mode list, using the exact same mechanism.
 
 ---
@@ -505,7 +544,7 @@ Write surfaces are decentralized (the code editor via `/api/fs/write`; the sqlit
 
 - **RO-1** `/api/fs/stat` (and `/api/fs/write`'s stat-shaped response) carries `writable`: an existing path needs `W_OK` on itself, a not-yet-existing file needs `W_OK` on its parent. The flag means exactly "`/api/fs/write` would accept this path" — the two must never disagree.
 - **RO-2** `/api/fs/write` refuses a non-writable target with `403 {"error": "readonly"}`. This closes the atomic-write loophole: temp-file + `os.replace` goes through the parent directory and would otherwise silently overwrite a `chmod -w` file. `runtime.js` `writeFile` surfaces the refusal as a typed error (`err.type === "readonly"`), mirroring the 409 `"conflict"` case — the backstop for a template that never checked the flag.
-- **RO-3** Any template-side Python **writer** applies the same gate itself (`os.access(file, W_OK)` → `PermissionError`) before writing, for the same reason: writers that rewrite via `os.replace` (duckdb, annotate's sidecar) bypass the read-only bit, and ones that don't (sqlite) fail late with an unhelpful mid-transaction error.
+- **RO-3** Any template-side Python **writer** applies the same gate itself (`os.access(file, W_OK)` → `PermissionError`) before writing, for the same reason: writers that rewrite via `os.replace` (duckdb, annotate's sidecar, `shared/file_history.py`'s revert — §34/FH-7) bypass the read-only bit, and ones that don't (sqlite) fail late with an unhelpful mid-transaction error. The two `os.replace` writers that also consult the mount flag through `shared/appenv` (annotate's `_sidecar_writable`, `file_history.file_writable`) are the exception RO-8's known gap notes; `file_writable` additionally requires `W_OK` on the **directory**, since that is where mkstemp and the replace both land.
 - **RO-4** Template **readers** fold fs writability into the editability verdict they already return — `editable` + `readonly_message` (short badge text) + `readonly_tooltip` (hover explanation). Filesystem read-onlyness is just one more reason alongside content-level ones ("View", "No rowid", "JSON"); the fs gate wins over a content-level "editable".
 - **RO-5** UI treatment is shared: `/template-shared/ro-badge.js` (`fusedRoBadge.update(el, message, tooltip)`) renders the identical badge in every template with an edit surface. The code editor derives its verdict from `stat.writable` (no Python reader) and locks the CodeMirror buffer; the grids disable editing per their reader's verdict.
 - **RO-6** Read-only never blocks *viewing*, and a template whose write target differs from the viewed file gates on ITS target: annotate checks the `<file>.json` sidecar (a `status` action), keeps commenting fully functional (the URL is the live store), and only warns that history won't be recorded.
@@ -657,6 +696,25 @@ put annotation-aware code inside view templates. Accepted trade-off: annotate
 cannot ask a view whether a row is truly gone from the data, so a comment
 past the data's end keeps its "row N" chip instead of turning "detached".
 
+**Which anchor strategy a view gets** is decided inside the annotate template
+alone (the containment invariant above), and the rule is **a lineNumbers gutter
+that is actually laid out** (`getBoundingClientRect().height > 0`), not "is this
+CodeMirror" and not merely "does `.cm-lineNumbers` exist": the gutter is the only
+place the line number can be read from, and `cmVisibleLines` pairs only gutter
+elements with real height, so the probe must make the same measurement. The
+markdown notes view ships `basicSetup` — the gutter element is there — but hides
+`.cm-gutters` outright, being prose (MD-18a), so it takes the ordinary
+element-path/quote anchors instead. Getting that wrong is silent by construction:
+both gesture handlers `preventDefault()` before resolving and bail on an
+unresolvable anchor, so the mis-detected view swallowed every click, dropped
+every selection and painted no stored comment, with nothing logged anywhere
+(fixed 2026-07-31). In a gutterless editor a quote anchor's container is hoisted
+to `.cm-content`, because the `.cm-line` div the selection actually sits in is
+remounted on scroll and its structural path drifts onto another line; the quote
+plus its occurrence index locates the span within the stable content element, and
+off-screen text simply has no pin until it scrolls back in — off-screen, not
+detached, as with code anchors.
+
 **Comment focus deep link:** an ordinary `comment` template param carries an
 id-only deep link (the history→annotate contract, HV-8; mirrors the claude
 `session_id` resume precedent — the id is the whole contract and is never
@@ -683,6 +741,98 @@ subset, so a missing id means "not in this review", not "deleted". The live URL
 hydration for a deep link whose id is absent from the live set, not a live-store
 sync back from the sidecar. An unreadable/unparseable sidecar or a missing id
 fails silently (no error UI, no focus).
+
+**Send to Claude is a ROUND TRIP, and each comment rides it once** (fixed
+2026-07-31; it was previously a one-way trip that re-sent the whole review every
+time). The handoff sends only the comments that are neither `resolved` nor
+`sent` — `sent: 1` is an ordinary per-comment field, stamped on exactly the
+comments in the payload and `save()`d *before* the mode switch so it lands in the
+`comments` URL param and, through annotate.py's verbatim field merge, in the
+`<file>.json` log. The flag is a bare truthy `1` because the URL store's ~6 KB
+budget is the binding constraint and the sidecar's own `updated_at` already dates
+the write. The flag is stripped from what the agent sees (the payload is
+serialized before stamping) — it is bookkeeping for the URL store, not something
+`formatComments` should hand the model to reason about. A comment **being sent
+right now is off-limits to eviction**: the save that stamps `sent` is the save that
+can evict on it, and since the stamp is what pushes the list over budget the
+payload is then the whole sent tier — so the payload's ids are passed to `save()`
+as protected, and an over-budget write is preferred over dropping a comment from
+the live review to make room for a flag (the "removed" bar note explaining it
+would be destroyed by the navigation milliseconds later, making that loss silent).
+Eviction is not annihilation — the same `save()` mirrors every comment into the
+`<file>.json` log, where absence never deletes, so an evicted comment stays
+recoverable through the history view (§24); what it leaves is the **live** store,
+the rail and pins and the shared URL, which for a comment mid-send is loss enough.
+A sent card shows a "sent ↗" chip so its exclusion is visible — but **not** on a
+resolved card, which is the terminal state, already explains the exclusion, and
+takes the stronger dim (`.card.resolved.sent` encodes that precedence in
+specificity, because the equal-specificity pair it replaced handed the win to
+whichever rule was written second). The
+**Reopen** action clears the flag, which is the one way to hand a comment over
+again; and when nothing is sendable the button writes the inline bar note instead
+of navigating. The URL budget's eviction order gains a second tier — oldest
+`resolved` first, then oldest `sent` (already in a chat transcript), never an
+open unsent comment. `sent` is deliberately **not** surfaced in the history
+timeline (§24): the sidecar is a write-only log where absence never deletes, so
+the un-send that Reopen performs (the key simply leaves the URL) cannot be
+represented there, and a label that can go stale is worse than no label.
+
+The return leg is the chat's: annotate sets `claudeReturn=<mode>` alongside
+`claudeComments` (and re-asserts `view`, the param naming which sibling view is
+framed), the claude template captures both into memory at boot and strips both
+from the shell URL in the same `replaceState` (a Back entry must not re-attach a
+review that was already sent), and the *one* run whose message actually carried
+attached comments navigates the shell back to that mode when it reports `done`
+without an error. The ticket is **threaded, not latched** — it travels as an
+argument from `composeAndSend` → `sendMessage` → `pollLoop`, so it is bound to one
+message and, past `start`, to one run id. A module-scoped flag was the first
+attempt and leaked: a failed `start` never reaches `pollLoop`, so the flag stayed
+armed and the user's next unrelated question navigated the shell away mid-thread,
+for a run that carried no comments. A later turn in the same session therefore
+stays in the chat, an errored or aborted run stays put (there is nothing new to
+look at, and leaving would hide the error), and a run re-attached on a fresh boot
+never returns. A `start` that fails **hands the comment chips back** (`attached`
+is restored and the user is told), because annotate has already stamped those
+comments `sent` and nothing else would ever offer them again; past `start` the
+agent has the message, so restoring would send them twice.
+This is necessary because the chat calls `fused.autoReload(false)`
+and owns the viewport — nothing else would ever bring the reviewer back to the
+edited file. Both directions are **deliberate standard-breaks** documented in the
+template comments: `_mode` is a reserved param name that `fused.params.set`
+refuses, and in a pane the shell URL sits above the param boundary (D72), so a
+top-level URL write is the only mechanism; the navigation reuses the history
+template's `navigateShell` idiom (pushState + a `fused:navigate` event, with a
+`location.href` fallback), and both sides excise and reattach the balanced
+`_layout=(…)` span byte-for-byte before `URLSearchParams` sees the query.
+
+Both legs read `window.top`'s search **raw**, so both must reckon with the
+runtime's coalesced history write (D99): a param this page just set may still be
+at its pre-click value in that string, and copying it forward silently reverts it.
+Annotate sweeps every key the top URL already carries against
+`fused.params.getAll()` (which reads through the pending overlay) before writing
+its own — that covers the `sent` stamps, and `offset`/`sheet` from a reveal inside
+the coalescing window, without pushing a pane-local param onto the shell URL; it
+then re-asserts `comments` from what `save()` actually persisted, which the sweep
+cannot know. The return leg fires `pagehide` — the runtime's own documented flush
+hook — before reading the URL and pushing its entry, so a pending write neither
+goes missing from the copy nor lands *after* the push and `replaceState` the
+pre-return search over it. Known gap: the return discards whatever the user had
+typed into the chat input when it fires.
+
+**Revert + version timeline** (§34, D194) is the one surface in this template
+that is not about comments: a footer block in the sidebar offering "Revert last
+change" plus an expandable list of every checkpoint Claude Code holds for the
+target, each individually restorable behind a confirm sheet. It is its own footer
+rather than part of `#sidefoot`, which is hidden wherever the file has no
+`claude` mode — reverting has nothing to do with whether a chat view exists.
+`annotate.py` gains three actions (`history`, `revert_plan`, `revert`) over
+`../shared/file_history.py`; all the store semantics, the safety gates and the
+degradation rules live in §34, and everything there is deliberately
+annotate-agnostic so `claude` and `history` can adopt the same reader. Its own
+panel state (disclosure, last outcome) deliberately stays OUT of the URL
+(§34/FH-15), which is also why the round-trip's D99 staleness sweep above has
+nothing of the revert panel's to carry forward or revert: the two features share
+this template's sidebar but not one byte of its param surface.
 
 ## 18. Export — Portable Bundles for Hosted Serving (M10)
 
@@ -1019,6 +1169,17 @@ the product gains network access.
   `infra teardown`) → fresh `create`. Deploying to a **different** env always
   creates fresh there and repoints the pointer — the old env's mount stays
   live, and the modal says so inline.
+- **DP-20** The deployed app is **named after the page**, stated explicitly as
+  `--name` on create *and* repoint (`deploy.app_name_for`: the page's stem, or its
+  folder's name when the stem names nothing by itself like `index.html`, sanitized
+  to the same conservative set a clone folder is; empty after that leaves the CLI's
+  own default). `share create`/`repoint` otherwise derive the name from the source
+  directory they are handed, and what this module hands them is a throwaway
+  `tempfile.mkdtemp(prefix="fused-render-deploy-")` — so pages published as
+  `fused-render-deploy-pabxq903`, which is the name the deployments list shows, the
+  name the clone inventory reports, and therefore the folder name a viewer's clone
+  inherits (§35 CL-1). Repoint restates it because repoint re-derives it too;
+  deriving from the page path keeps it stable across redeploys.
 - **DP-11** CLI output is parsed defensively (`token`/`id`/`url`/`status`
   only): the managed backend returns the URL on create/repoint/recreate; an
   AWS env prints token+path only, so `url` may stay null — the last-known URL
@@ -1128,6 +1289,21 @@ the product gains network access.
   ends in its own token reveals the base for all the rest (`_serve_base_url`).
   With no recorded link to derive from (e.g. only AWS deploys so far), URLs
   stay null and the cell says why on hover.
+- **DP-19** *Source code* (§35): a collapsible section beside Caching and Link, headed
+  **Source code** — the heading names what is at stake ("is my Python readable?") to a
+  publisher who has never used the viewer-side flow, where "Cloning" named our mechanism and
+  gave them no reason to open it. Its "Let viewers clone this app" toggle rides
+  `POST /api/deploy` as `allow_clone` and becomes `--allow-clone` on `share create` /
+  `--allow-clone`/`--no-allow-clone` on `share repoint`. Persisted on the pointer record
+  like `cache_max_age`, but the MOUNT is the authority: `GET /api/deploy/status?reconcile=1`
+  refreshes it from `share list` on the same read that reconciles `status`, so a posture
+  changed from a terminal shows through instead of being re-sent stale. Repoint states it
+  explicitly in both directions — the CLI preserves an omitted flag, which is right for a
+  CLI and wrong for a dialog whose toggle is always a definite statement.
+  The posture is only ever read from **deployment metadata** — the mount record, or our pointer
+  record as its cache — and never inferred from what happens to be on disk or from which route
+  the user came in through. That is what makes create / repoint / recreate predictable: the
+  decision is carried, not recomputed, so the same source published twice cannot flip it.
 - **DP-14** Endpoints (`fused_render/deploy.py`, an APIRouter like
   shell/bookmarks): `GET /api/deploy/config`, `GET /api/deploy/status`,
   `GET /api/deploy/preview`, `GET /api/deploy/shares`, `POST /api/deploy`,
@@ -1136,6 +1312,141 @@ the product gains network access.
   `X-Fused` guard (D36). CLI failures surface their last stderr line verbatim
   (click's `Error: ` prefix stripped) — the fused CLI's messages already name
   the fix (`fused cloud login`, `fused infra serve`, …).
+
+## 35. Open a Deployed App — Clone a Page Back from its URL (D196)
+
+The viewer half of app cloning; the publisher half is the Deploy dialog's toggle (DP-19).
+Paste a deployed page's URL, and if its publisher allowed cloning, download its export
+bundle and unpack it into `~/Documents/Fused` as an ordinary local page.
+
+**Our side of a three-party boundary.** The contract is `fused`'s
+`spec/serve/clone-protocol.md`: *a deployed app may expose an authorized, versioned clone
+artifact; importing it is deterministic and does not require reconstructing deployment state.*
+`fused` owns the artifact — its layout, path rules, byte assembly, size limits, and the
+`protocol` version that states compatibility. The host serving it owns **authorization** only.
+**This repo owns safe local import**, and nothing else: fetch, verify, unpack, atomically claim
+a destination. So we read the protocol fields, use the advisory hints to place files and to
+describe the download, and treat the archive's interior as opaque — a second copy of the bundle
+schema on this side of the boundary would only drift from the one that defines it. What we do
+*not* delegate is validating the two manifest path fields we consume (CL-5): they arrive over
+the network and become paths on the user's machine, so checking them here is the trust boundary
+working, not a second opinion about the format.
+
+- **CL-1** Two steps, mirroring §26's confirm page: `GET /api/clone-app/info` previews
+  (read-only — the file list, the size, and the exact destination folder, all of it advisory
+  metadata the host may omit, in which case the confirm step simply shows less) and
+  `POST /api/clone-app` performs it. The preview names the folder the clone actually uses:
+  the client passes that folder back on the second call and the clone honours it while it is
+  free, so a page appearing in the workspace in between can't invalidate what the user was
+  shown. Carry-through rather than a lock — reserving the name would mean creating a
+  directory during a preview the user has not confirmed — so in the race the clone's own
+  response names where it landed, which is what the success view shows. The commit **claims
+  the name by renaming** (`zip_import.move_into_new_dir`), never `shutil.move`: move onto an
+  existing directory moves the payload *inside* it, which would report success with the page
+  a level below where `view` points, so a taken destination fails the rename and the next
+  name is tried. Running out of names is a stated refusal at both steps, not a 500.
+  The preview's file list names the paths the clone will
+  **create**, not the archive's member names: a v2 archive holds `manifest.json` plus
+  `<root>/<key>`, while the clone makes the payload dir *become* the page folder and keeps
+  nothing else — so echoing the inventory verbatim listed `files/sine.py` and `manifest.json`,
+  neither of which ever appears, under copy promising otherwise. The bundle's `manifest.json`
+  is read during the import (for `root`/`page`) and then **dropped with staging**: an earlier
+  build kept it in the page folder as a dotfile "so a re-export could reproduce the bundle",
+  but nothing read it back — `export_page` recomputes the manifest from the page's own files —
+  so it was write-only clutter, one more path the confirm step had to predict, and a second
+  move on the commit path that needed its own rollback. The commit is now a single rename.
+  The folder is named after the **link**, falling back to the **app name**: a deployed page's
+  URL ends in its token, which is either a name the publisher chose (`share create --token
+  my-solar-map`) or a random opaque one, and a chosen name is the best name available — it is
+  what the link the user followed says, what the publisher calls the deployment, and it is
+  stable across redeploys (a repoint keeps the token). An opaque token (lowercased base32, 26+
+  chars — `app_clone._OPAQUE_TOKEN`, mirroring fused's `mounts.is_opaque_token`; a shape check
+  used for naming only, never as a gate) names nothing, so the app name wins there — which is
+  why the publisher side states `--name` explicitly (DP-20) instead of letting the export's
+  temp directory name the app. Both are reduced to a conservative allow-list before becoming a
+  path, since both arrive from outside. The app name still heads the confirm step; only the
+  folder prefers the link. The same order applies on the commit path, which may run with no
+  preview at all. The confirm button says
+  **Clone to local**, not "Clone to <folder>": the body above it already names the
+  destination, and a generated folder name in a button label is noise. The modal is
+  **undismissable during the write** (`Modal`'s `busy`, so Esc / backdrop / ✕ are all
+  shut off, not just the Cancel button): the request keeps running, so an exit taken
+  mid-clone lands files in the workspace while dropping the only delivery of the
+  result — no success state, no navigation, and a folder the user has to find for
+  themselves. The preview step stays dismissable, since it writes nothing. Opposite
+  call from DeployModal, which stays closeable because its action completes
+  server-side and the dialog reports on it afterwards.
+  **Two triggers, one flow** (`CloneAppHost` at the shell, `CloneModal.tsx`): pasting an
+  `https://` link into the **path bar**, which previously answered "can't open https:// URLs
+  in the explorer" — true and useless — and hands the link to the confirm step rather than
+  pre-judging it; and an **Open deployed app** entry on the **Apps page**, shown only while
+  the PF-8 Deploy-apps toggle is on, since with deploying off the surface that produces
+  these links is hidden and an import entry would advertise a feature the user has turned
+  away from. The path-bar route is deliberately NOT gated: refusing a URL the user
+  explicitly pasted is a worse failure than one extra button. It is mounted at the shell
+  rather than in the sidebar — where it briefly lived — because Home and Apps render without
+  a sidebar, so an entry there is unreachable from the page that should host it. The modal
+  navigates to the cloned page on success.
+- **CL-2** **Not §26's git flow, and deliberately not folded into it.** That flow relies on
+  `.git` for identity, which is what lets it safely *update* an existing clone. An archive
+  carries no provenance we can verify, so there is no update branch here: every clone lands
+  in a fresh folder (`zip_import.unique_dir` → `name`, `name-2`, …) and can never overwrite
+  or merge into an existing one. `fused_render/app_clone.py` — a separate module and
+  separate routes (`/api/clone-app*`, not §26's `/api/clone`).
+- **CL-3** **URL contract.** HTTPS only (`http://` refused, never upgraded — silently
+  "fixing" it would hide that the user's link was insecure). The `_clone` URL is rebuilt
+  from parsed components, accepting the shapes a page is served at (`…/<token>`, `/`,
+  `_shell`, `_clone`) while dropping query and fragment; userinfo is **refused**, not
+  stripped, since quietly removing it would clone from a different origin than the URL
+  appears to name. No credentials are ever sent (CL-6).
+- **CL-4** **The archive is hostile, and the fetch is boundary-hardened.** Two separate
+  things, in order of importance. The *archive* is untrusted regardless of where it came from
+  (CL-5), and the download is verified. Compatibility is checked **twice, from one table**
+  (`_PROTOCOL_BUNDLE_VERSION`): the inventory's `protocol` gives an early refusal before
+  megabytes move, and the archive's own declared bundle version is the **enforcing** gate — a
+  bare `POST /api/clone-app` fetches no inventory, so a check that lived only there would be no
+  gate at all. The bytes are then checked against the digest the host published as the
+  download's **quoted** `ETag` (`"sha256:<hex>"`, RFC 9110 §8.8.3) — parsed, not string-matched,
+  because matching the bare form against a compliant quoted value reads as "no digest" and skips
+  the check silently; an unparseable tag (a proxy's opaque rewrite) means *cannot verify* rather
+  than *failed*, so it does not block valid clones — bytes that arrive complete but wrong are the one failure a length check
+  cannot see, and this makes "importing is deterministic" something we confirm instead of
+  assume. An absent or unrecognised digest is a weaker guarantee, not an error. Separately, the
+  *fetch* gets modest hardening because only a URL the user pasted is ever fetched and this
+  process sits inside the user's LAN beside `169.254.169.254`: one seam
+  (`_validated_address` + `_get`) resolves the host, refuses it unless **every** answer is
+  public, dials the validated address while keeping the hostname for `Host`/SNI (so the check
+  cannot be undone by re-resolution), follows no redirects, and caps on bytes actually
+  received rather than on `Content-Length`. Deliberately centralized and small — it is a
+  boundary control on a local app, not the architecture of this feature.
+- **CL-5** **One unpacker, shared with §23's template import** (`fused_render/zip_import.py`).
+  Shared *within this repo* — `fused`'s own validators cannot be reused here because the viewer
+  must work with no `fused` installed at all (the deploy feature installs it as a pinned wheel
+  into a separate environment and drives it as a CLI, so there is nothing importable in
+  process). What crosses the boundary is therefore the **format contract**, not the code:
+  entry validation before any write, symlink refusal, path-escape refusal, per-entry and
+  total caps enforced on bytes actually decompressed (the declared sizes are attacker
+  controlled), staging-then-move. A second extractor "just for clones" is how a hardened
+  path and an unhardened one end up side by side. The manifest's own `root`/`page` get the
+  same containment check the entries do — the entries can all be safe while a manifest field
+  points outside the bundle, and `root` is what gets moved.
+- **CL-6** **Public pages only, for now.** A gated page needs a token whose audience
+  satisfies that mount's gate, and neither a query string nor a deep link is an acceptable
+  place to carry one (both leak through history and logs). A `401`/`403` says so plainly. A
+  `404` is deliberately ambiguous at the source — the serve gate must not confirm whether a
+  mount exists or whether cloning is on — so the message names both possibilities rather
+  than guessing one. Every refusal is **shown verbatim in the modal**, so it reads as a
+  sentence: `app_clone._error` capitalizes at that one boundary rather than at each of the two
+  dozen raise sites, because most of those messages are f-strings or `zip_import` refusals
+  passed straight through — a per-raise fix covers the literals and misses the rest. A first
+  word that is a URL or a path is left alone: those are verbatim tokens the user is meant to
+  recognise, and "Https://…" would look like our mistake.
+- **CL-7** **A `fused-render://open?app=<page URL>` deep link is DEFERRED to its own change.**
+  §26's `?app=` sibling is the natural entry (`deeplink.py` already reserves new payload
+  *params* on the same `open` action as the extension point), but it needs its own confirm
+  surface and supervisor dispatch, and nothing routes one today. `CloneModal` takes an
+  `initialSrc` and auto-previews it, which is the seam that entry will use — it is not
+  evidence the link works.
 
 ## 20. Preferences — Shell Settings Page (M12)
 
@@ -2039,7 +2350,13 @@ provisioning stays a documented terminal flow.
   signed out → sign-in (waiting + Cancel while connecting; a sign-in
   started elsewhere — Deploy modal, another tab — is adopted read-only with
   its own Cancel); signed in → account summary (probe orgs/roles table,
-  not-admitted note), the environments management table (default marker,
+  not-admitted note, and — when the probe FAILED — a **Sign in again** action
+  inside that note, because `logged_in` is presence-only: stored credentials the
+  identity provider no longer accepts (an expired, revoked or rotated refresh
+  token, surfaced as the CLI's own `403 … invalid refresh token`) leave a state
+  that *looks* signed in and cannot be retried out of, so the remedy has to be
+  reachable from where the error appears rather than only from the CLI. It reuses
+  the one sign-in path — see AC-8b for why completion is not presence), the environments management table (default marker,
   with make-default and forget-with-confirm behind a per-row overflow
   ("⋯") menu — one quiet control per row instead of a button pair), and
   the setup panel — presented
@@ -2063,6 +2380,23 @@ provisioning stays a documented terminal flow.
   false in this tab — the cache must not show the prior account's orgs). All
   return-to-tab refreshes ride the shared `useRefreshOnReturn` hook
   (lib/hooks.ts), which coalesces the double focus+visibilitychange firing.
+- **AC-8b** **A sign-in completes on FRESH CREDENTIALS, not on their presence.**
+  `useFusedLogin` captures `creds_stamp` before spawning the child and finishes
+  only once the poll reports `logged_in` **and** a stamp different from that
+  baseline. Presence alone is the wrong signal for a **re**-authentication: the
+  credentials file already exists, so `logged_in` is already true and the first
+  poll tick would declare success before the browser round-trip had happened —
+  reporting a fixed account while the probe still fails. For a signed-out start
+  the baseline is null and the condition collapses to the original presence
+  check, so that path is byte-for-byte unchanged. If the pre-flight read of the
+  baseline fails the hook degrades to presence — eager for a re-auth, correct for
+  a fresh sign-in — rather than refusing to complete at all.
+  **Cancel's reconcile applies the same test** (one shared `isFreshLogin`, not two
+  copies of the rule). Cancel re-reads the status because the sign-in may have landed
+  in the gap before the cancel took effect, and that read must ask the same question
+  the poll asks: testing presence there meant that on the re-auth path — credentials
+  present, merely rejected — pressing Cancel announced a completed sign-in that never
+  happened and dismissed the note that had asked the user to sign in again.
 - **AC-11** The page also hosts the **Deployments** section — the env-wide
   `fused share list` view with per-mount Revoke that PF-6 previously placed
   on Preferences (semantics unchanged: `/api/deploy/shares` joined to local
@@ -2190,6 +2524,21 @@ lists the last files opened in the app, each carrying the params it last had.
   so 3 valid rows survive RC-7 filtering.
 - **RC-7** Entries whose file no longer exists are **hidden silently** from
   the GET response — never deleted from disk (the file may come back).
+- **RC-12** A **delete or Move-to-Bin drops the row immediately**, without
+  waiting for RC-7. RC-7 only bites on a GET, and deleting a file triggers none —
+  so the row used to sit in the sidebar pointing at a file that no longer existed
+  until the user's next navigation happened to refresh the cache. Every delete /
+  trash site instead calls **one** function with the path that went away
+  (`fs-actions.notePathDeleted`, which also prunes the clipboard — one call so the
+  next thing that needs to hear about a delete is added there rather than hunted
+  for across the views), and `recents.dropRecentsFor` drops that path plus
+  anything under it (prefix + `/`, since deleting a folder takes its contents).
+  **Local, no request**: the store runs deeper than the three displayed rows
+  (RC-6's buffer), so the freed slot refills from the cache already held, by the
+  same RC-11 arithmetic a vanished-on-refresh entry gets. A re-GET would be the
+  wrong tool — RC-7's existence check fails *open* on an indeterminate answer, so
+  a row the user just deleted could come straight back. Nothing is written to the
+  store, so a file restored from the Bin reappears in Recents as RC-7 intends.
 - **RC-8** API (`fused_render/shell/recents.py`): `GET /api/recents`
   (unguarded read, filtered per RC-7), `POST /api/recents/open {url}` and
   `PUT /api/recents/collapsed {collapsed}` (both X-Fused-guarded, D36). The
@@ -2293,8 +2642,12 @@ not by choice.
 - **AP-12** **Deferred** — the media, geospatial and studio/tool groups keep
   today's appearance in both modes until a later pass: `image`, `photos`,
   `media`, `pdf`, `glb`, `canvas`, `geotiff`, `pmtiles`, `h3`, `zarr_aoi`,
-  `netcdf`, `las`, `geometry_editor`, `preview`, `reader`, `tar`. Accepted
-  consequence: in Light mode these render dark inside a light shell. (`history`,
+  `netcdf`, `las`, `geometry_editor`, `reader`, `tar`. Accepted
+  consequence: in Light mode these render dark inside a light shell. (`preview`
+  left this list by being **deleted** — D185 folded its split pane into the
+  shell's own listing, which follows the app setting like the rest of the shell,
+  so the one dark-only folder view is simply gone rather than converted.)
+  (`history`,
   `annotate` and `zip` left this list in D157 — they are ordinary DOM chrome
   with no canvas or map underneath, which is what made them cheap to convert;
   `annotate`'s *stage* is still whatever the framed view chose to be.)
@@ -2753,10 +3106,19 @@ behaviour copied from Obsidian rather than invented. Design + rationale:
   in `selectedLines`, because a browser text selection inside a non-editable view
   still reaches the state's selection and would un-render whatever was swiped
   over; the guard makes the mode deterministic rather than dependent on that.
-  **Editing is the default** — Obsidian's default, and a note must never silently
-  open read-only. The preference lives in `fused.params` under `edit`
-  (`"0"`/`"1"`), like `graph` and `depth` (MD-20), so it survives a refresh and
-  travels in a shared URL. It is layered **on top of** the file's real
+  **A note opens READ-ONLY** (owner call 2026-07-31, reversing the earlier
+  Obsidian-matching "editing is the default"): opening a file in an explorer is a
+  read, and on the always-editable surface a stray keystroke on a note you opened
+  to look at rewrites it — editing is one click away and, once asked for, stays
+  in the URL. It also makes the view a better annotate stage (§17): the framed
+  document takes no edits and reveals no markers under the reviewer's clicks.
+  The preference lives in `fused.params` under
+  `edit` (`"0"`/`"1"`), like `graph` and `depth` (MD-20), so it survives a refresh
+  and travels in a shared URL; an absent param is read-only, and only an explicit
+  `"1"` grants editing. `aria-pressed` on the corner button therefore tracks
+  **editing** — the non-default state, so the accent marks the surface you can
+  change — while the glyph names the current mode (padlock read-only, pencil
+  editing). It is layered **on top of** the file's real
   writability and can never override it: for a genuinely unwritable file (MD-15)
   the toggle is *disabled* with a title saying why. Switching to read-only
   flushes pending edits first (`await save()`), for the same reason navigation
@@ -2775,15 +3137,22 @@ behaviour copied from Obsidian rather than invented. Design + rationale:
   buttons — the read-only/editing mode (MD-1a) and the sidebar toggle (MD-19).
   The sidebar's glyph is a **panel**, not a graph: the panel holds backlinks and
   the graph together, and its accessible name says so.
-- **MD-2** **Registry.** `.md`/`.markdown` keep `["markdown", "code", "reader",
-  "annotate"]` — `markdown` now supersedes `code` for notes, and `code` stays
-  **unchanged** as the raw-source escape hatch. Two editors for one extension
+- **MD-2** **Registry.** `.md`/`.markdown` are `["markdown", "code", "claude",
+  "reader", "annotate"]` — `markdown` now supersedes `code` for notes, and `code`
+  stays **unchanged** as the raw-source escape hatch. `claude` sits where it sits
+  on `.html` (after the editors, before the trailing meta-modes): the chat
+  template is file-type agnostic — it works off `_file` and its own `<file>.json`
+  sidecar — and binding it here is what gives a note the chat mode AND turns on
+  annotate's **Send to Claude** handoff, which hides itself wherever the target's
+  mode list has no `claude` to hand the review to (§17, owner call 2026-07-31). Two editors for one extension
   with two save models is accepted rather than reconciled: `code` is the
   generic text editor and keeps AS-1 (250 ms autosave, Save button), `markdown`
   is the notes editor and keeps MD-16 (2 s idle, no button). A user who picks
   `code` for a `.md` asked for code behaviour. The universal `/` directory key
   gains `graph`:
-  `["_listing", "graph", "preview", "zarr_aoi"]`. `graph` ships a `condition.py`
+  `["_listing", "git", "graph", "zarr_aoi"]` (as of D185, which removed
+  `preview`, and D193, which added `git` — §33).
+  `graph` ships a `condition.py`
   (CT-12), so `_listing` remains the immediate default and the graph joins the
   switcher only where the background gate allows it (PT-8).
 - **MD-3** **What a link is.** Parsed from the source with **code elided**:
@@ -2972,17 +3341,97 @@ behaviour copied from Obsidian rather than invented. Design + rationale:
   `@codemirror/lang-markdown` (GFM base), `@codemirror/autocomplete` and
   `@codemirror/commands`, and re-exports `WidgetType`/`ViewPlugin`/
   `MatchDecorator`/`keymap`, `EditorSelection`/`RangeSetBuilder`/`Prec`,
-  `syntaxTree`, `autocompletion`, `indentMore`/`indentLess` and
+  `syntaxTree`, `autocompletion`/`acceptCompletion`, `indentMore`/`indentLess` and
   `markdown`/`markdownLanguage`/`markdownKeymap`. Anything not re-exported is
   tree-shaken, so `entry.js` is the whole gate on what the template can reach.
-- **MD-14** **Link authoring.** `[[`, `![[`, `[[#` and `[[note#` complete from a
-  `candidates` action off the **same scan the graph reads**, so
-  the popup is free once the index exists and can never offer a note the graph
-  disagrees about; cached ~5 s so a fast typist does not spawn a run per
-  keystroke. What it inserts is the **shortest form that `resolve_link` itself
-  resolves back to that note** (each candidate form is run through the resolver
-  to pick it) — Obsidian's "shortest path when possible", made correct by
-  construction rather than by a parallel rule, and pinned by a property test.
+- **MD-14** **Link authoring: every place a target can be typed completes.** All
+  of it comes from one `candidates` action off the **same scan the graph reads**,
+  so the popups are free once the index exists and can never offer a note the
+  graph disagrees about; cached ~5 s so a fast typist does not spawn a run per
+  keystroke. Six contexts, registered as **separate sources** in one
+  `autocompletion({ override })` (CM runs them all and merges, so each is a
+  single trigger with a single answer instead of one function branching through a
+  chain of regexes):
+  * `[[` — notes. What it inserts is the **shortest form that `resolve_link`
+    itself resolves back to that note** (each candidate form is run through the
+    resolver to pick it) — Obsidian's "shortest path when possible", made correct
+    by construction rather than by a parallel rule, and pinned by a property
+    test.
+  * `![[` — the same notes **plus every asset**, because `![[image.png]]` is the
+    common Obsidian embed and an embed resolves through the asset index (MD-4).
+    An asset carries **the same run-it-through-the-resolver guarantee a note
+    does** (D191), which takes three things the earlier root-relative-and-
+    unshortened form did not have. **The index has to be the embed resolver's**:
+    `_resolved_links` sends a non-note embed target through notes *plus* assets
+    and everything else through notes alone, so a row carries **two** validated
+    forms — `link` for `[[`, `embed` for `![[` — and one field could only ever be
+    right for one of the two popups. **The note it will be inserted into has to
+    be known**: tier 1 of resolution is the linking note's own folder, so
+    `![[img/a.png]]` written in `docs/` binds to `docs/img/a.png` the moment that
+    exists, and a form validated from the root is not validated at all for a note
+    in a subfolder — the `candidates` action therefore takes the open `file` and
+    validates every form from it (which fixes the same hole for `[[` notes), with
+    a **`../` form** as the last one tried, for the case where the note's own
+    folder shadows every suffix of the target. **And "no form" has to be
+    sayable**: on a stem-key collision (an asset `img/a.png` beside a note
+    `img/a.png.md`) nothing resolves back to either, so `_link_form` returns
+    `None`, the payload ships `null`, and the popup **drops that row** instead of
+    inserting a path the resolver reads as a ghost or as another file. The page
+    still invents no form of its own — a shortening rule reimplemented in JS is
+    exactly the divergence MD-3 and this rule exist to prevent. The per-candidate
+    resolver work is bounded by memoising resolution's third tier
+    (`_suffix_index`): ~1.9s of `endswith` at both caps became a ~40ms payload,
+    with an equivalence test pinning the memo to the scan's own answers.
+  * `[[#` and `[[note#` — headings, of this note or of the named one.
+  * `](` — **path completion**, the same list of notes and assets, each written
+    **relative to the open note's own folder** (a sibling as `img.png`, a child
+    as `sub/img.png`, `../` only where the target really is above the note).
+    Relative-to-own-folder is `resolve_link`'s first tier, so that form resolves
+    back to that exact file with no basename ambiguity to lose to, and it is also
+    a real relative path — which is what the shell navigates by (MD-4a) even
+    where nothing was scanned. The target is **percent-encoded on insert**
+    (spaces, and parentheses, which close the target early): `[x](my file.png)`
+    is not a link to the GFM parser at all, so the readable path is *displayed*
+    (`displayLabel`) while the encoded one lands in the document, where MD-4a's
+    widget decodes it again. This is pure string work — no filesystem call, and
+    no path rebuilt from segments, so the Windows drive form `C:/…` never gains
+    the leading slash `resolvePath` warns about.
+  * `![](` — the same, filtered to **image extensions**, because only an image
+    renders there.
+  * `](#` — this note's own headings, mirroring `[[#`, encoded the same way.
+
+  Each source sets `validFor`, so keystrokes filter the list locally instead of
+  re-running the source. **Two structural caveats, stated rather than absorbed:**
+  on a **mount-backed root** the `candidates` action refuses by design (MD-11),
+  so path completion is *structurally absent* there — and a **truncated walk**
+  (MD-10) yields a partial candidate list, so a target past the cap is simply not
+  offered. Neither may look like an empty vault: a failed or absent scan shows
+  **one non-selectable informational row** carrying graph.py's own reason, so a
+  mount refusal, a note outside its root and a crashed scan each read as
+  themselves — the popup's version of MD-11a's rule that unknown is not missing.
+  The failure is cached exactly as hard as a success, so a root that can never
+  answer costs one run per TTL rather than one per keystroke.
+
+  **What a row shows.** The **label is the readable form and the inserted form is
+  the encoded one** — `displayLabel` for the eye, `label` for the document — which
+  is a correctness rule, not a nicety: an un-encoded space is not a link to the
+  GFM parser at all. Beside it, a **dimmed right-hand `detail` column** carries
+  only what the label does not already say: a note's title, `embed` for an asset,
+  `H2` for a heading. Nothing repeats the label (the path source used to set the
+  root-relative path as its detail, which for a target under the note's own
+  folder is the label verbatim). A heading row says its nesting by **indentation
+  plus that level marker**, matching the sidebar outline (MD-19b) rather than
+  printing `### ` into the label. **No icon column**: CM's glyph for these `type`
+  values is the literal `abc`, and the row already names its kind (D192). The
+  whole popup is styled through **the editor's own `theme` extension**, so it
+  survives the appearance flip's `StateEffect.reconfigure`, in this view's tokens
+  and at the sidebar's density — with the selected row marked by weight and an
+  accent edge as well as fill. The typed substring is emphasised, since the list
+  is every note plus every asset: that takes each result's **`getMatch`**, because
+  CM matches the label and will not guess where those characters sit in a
+  `displayLabel` — it hands such a row an empty match, so without the mapping
+  every row that displays its own form (which is all of them here) drew no
+  emphasis at all.
 - **MD-15** **Read-only comes from the shell's persisted flag**, read off
   `stat.writable` (`server._writable`, which consults `mounts.mount_read_only`),
   never `os.access`: on an rclone mount with `CacheMode=full` a doomed write
@@ -3015,9 +3464,32 @@ behaviour copied from Obsidian rather than invented. Design + rationale:
   continuation are `markdownKeymap` — the same code Obsidian's own editor runs —
   not a hand-rolled copy; auto-pairing comes from `basicSetup`'s
   `closeBrackets`. On top: `Tab`/`⇧Tab` indent and outdent list items, `⌘B`/`⌘I`/
-  `⌘K` as **toggles**, `⌘⏎` cycling a line through task states, pasting a URL
+  `⌘⇧X` (strikethrough) / `⌘⇧E` (inline code) / `⌘K` as **toggles**, `⌘⏎` cycling
+  a line through task states, pasting a URL
   over a selection making a link of it, and the caret position remembered per
-  file. There is no `⌘E`: with one surface there is nothing to toggle to (MD-1).
+  file. The four wrapping toggles are one marker-agnostic function, and the
+  markers stop there: `==` highlight is **deliberately absent**, because the
+  vendored grammar has no rule for it and Live Preview would leave the `==` bare
+  on the page (D189). Obsidian ships no default hotkey for strikethrough or
+  inline code, so `⌘⇧X`/`⌘⇧E` match nothing and were chosen for being free of
+  `markdownKeymap`, `basicSetup`'s default/search/close-brackets keymaps and the
+  completion keymap. `⌘E` specifically is left unbound: the read-only↔editing
+  mode (MD-1a) is the corner button only, by owner call.
+  Two behaviours are Obsidian's rather than the naive form. A toggle with **no
+  selection wraps the word under the caret** — `state.wordAt`, so there is no
+  second definition of a word here — and toggles it off again from the same bare
+  caret; only where there is no word (whitespace, an empty line) does it fall
+  back to an empty pair of markers with the caret between them. And `⌘K` with the
+  caret **inside an existing `[label](target)` selects the target**, so it edits
+  that link instead of nesting a second one; the enclosing node comes from
+  `syntaxTree` and must *also* parse as a plain inline link, because the grammar
+  wraps a `[[wikilink]]`'s brackets in `Link`/`Image` nodes too (MD-18a, D189).
+  `Tab` **accepts an open completion** before it indents (MD-14's popups), since
+  CM's own `completionKeymap` binds only `⏎` to `acceptCompletion`; with no popup
+  open it is `indentMore` as before. Every one of these commands builds its own
+  dispatch, and neither read-only facet filters a dispatch, so each checks
+  `state.readOnly` and swallows the key rather than relying on `editable=false`
+  keeping the key away from the view (MD-1a/MD-15).
   A **rendered checkbox** is clickable and writes back, disabled on a read-only
   file; its position comes from `posAtDOM` at click time rather than from a
   count of markers in the source, so an edit between render and click cannot
@@ -3062,9 +3534,8 @@ behaviour copied from Obsidian rather than invented. Design + rationale:
   embedded note renders as a link, which avoids a second parse and a
   recursion); inline markup **inside a table cell**, which a decoration cannot
   reach because it cannot span into a widget's DOM (clicking the table shows the
-  source, which is where a cell is edited); and paste-or-drop of an image —
-  `fused.writeFile` takes UTF-8 text only, so a binary attachment write needs a
-  runtime change first.
+  source, which is where a cell is edited). Paste-or-drop of an image *was*
+  listed here as blocked on a binary write; it is now built (MD-23).
 - **MD-19a** **Backlinks and the graph are one right sidebar**, as they are in
   Obsidian, behind the single 26px toggle (MD-2a) — not a footer under the
   document, which a full-height editor has no room for. Backlinks scroll in the
@@ -3076,6 +3547,48 @@ behaviour copied from Obsidian rather than invented. Design + rationale:
   URL should reproduce (MD-20), and how wide someone dragged their panel is
   window furniture that a link must not carry. Each resize `nudge()`s the canvas,
   which is a fixed-size bitmap and does not otherwise learn that its box moved.
+- **MD-19b** **The outline is the sidebar's TOP section, and it reads the live
+  document** (D190). The open note's headings get a nested, click-to-scroll list —
+  the navigation aid a long note needs, which the panel had headings for
+  everywhere (`[[#`, `](#`, `?heading=`) except on screen. It is a **section of
+  the one right sidebar**, not a panel and not a second toggle: MD-19a allows
+  exactly one right sidebar behind one 26px toggle and MD-2a forbids the toolbar
+  row a second control would want. It sits **above** backlinks because the
+  ordering is by subject rather than by size — the outline is about the note in
+  front of you, backlinks and the graph are about the rest of the vault, so the
+  section describing the open document is nearest it, as in Obsidian. Being first
+  it is also the section that clears the floating corner cluster. Sized like the
+  backlinks list (content-sized, scrolling, capped) so neither list can starve
+  the canvas.
+  **It reads `view.state.doc`, never the payload.** `notes.headings` re-parses
+  only on save (MD-9), so a payload-fed outline would lag every heading typed by
+  up to one autosave interval, and a stale outline sends you to the wrong place —
+  worse than none. Reading the document is the same move MD-4b already makes.
+  **No timer**: the editor's existing `docChanged` listener is the only trigger,
+  and this template stays poll-free (MD-17). The heading scan mirrors graph.py's
+  `_mask_code` — frontmatter and fenced code masked, ATX only — so a
+  `# not a heading` inside a fenced block is as absent here as it is from every
+  other heading surface. Mirroring it includes the case that bites while typing:
+  an **unclosed** `---` is not frontmatter (`_frontmatter_span` returns no span,
+  and MD-18a's decoration scan finds the end before it dims anything), so the
+  closer is found before any line is skipped. A standing "in frontmatter" flag
+  emptied the whole outline from the keystroke that opened the block to the one
+  that closed it, while the other two surfaces kept those headings — caught in
+  review. Indentation is **nesting depth over the levels present**, and the
+  `[[#` popup calls the same function rather than a matching copy (MD-14), since
+  a note that starts at `##` or skips a level is where two copies diverge. Not the syntax tree, tempting though it is: it is parsed
+  only as far as CM has got, so a long note would silently lose its tail
+  headings. Rows scroll by **line**, not by heading text (they were built from
+  that line; matching by text hands the second `## Notes` to the first one), and
+  MD-4b's caret rule lives in the one `scrollToLine` both paths call. Indent is by
+  **nesting depth over the levels present**, so a note that starts at `##` is not
+  an indented note. **No state, therefore no param** (MD-20 carries what a shared
+  URL must reproduce; a section that is always drawn with its panel has nothing
+  to carry), and an unchanged heading list is not redrawn — which is what keeps
+  the list's own scroll position while you type inside a heading. Empty says
+  so, in the backlinks list's voice. Fully functional read-only (MD-1a): an
+  outline is a reading affordance first, its rows are buttons outside the editor
+  on the one delegated click handler, and a scroll is not an edit.
 - **MD-19** **Rendering the graph.** One implementation, in
   `templates/shared/graph-canvas.js`, served from the `/template-shared/` mount
   and used by both graph surfaces — extracted the moment the second one
@@ -3114,9 +3627,13 @@ behaviour copied from Obsidian rather than invented. Design + rationale:
   folders are different places), ordered by depth then name, with the
   folderless ghost nodes in a trailing `unresolved` band rather than lumped
   into the root's. Band names are drawn in **screen space** at the left edge, so
-  the legend stays readable and on-screen at any zoom or pan; the name is drawn
-  even for a single band, because "these are all in `x/`" is the answer the
-  layout exists to give; alternate bands carry a whisper of foreground fill,
+  the legend stays readable and on-screen at any zoom or pan; **names (and the
+  left gutter they reserve) appear only where there is more than one band** —
+  with a single band the vertical axis distinguishes nothing, so the legend is
+  one folder name repeated down the edge of a panel it labels in whole, which
+  the breadcrumb already does; dropping it hands the gutter's width back to the
+  lane layout (owner call 2026-07-31, reversing the earlier "draw it even for one
+  band"); alternate bands carry a whisper of foreground fill,
   because a fill says "this strip is one folder" everywhere the strip is where
   a lone separator hairline read as a stray edge. `y` belongs to the layout,
   except for a node the user dragged, which keeps the position they chose.
@@ -3171,3 +3688,816 @@ behaviour copied from Obsidian rather than invented. Design + rationale:
   links needs a hook on the explorer's rename plus a multi-file write, and
   vault-wide search / a quick-switcher are shell surfaces. Both belong to the
   shell, later, elsewhere.
+- **MD-23** **Pasting or dropping an image or a video writes it beside the note
+  and links it in** (D199). Two entry points, one pipeline. "Copy image" in a
+  browser puts the image *bytes* on the clipboard rather than a file reference,
+  so ⌘V is the ordinary `paste` event's `clipboardData.files`; a drag from
+  Finder is the same `FileList` on `dataTransfer.files`. Both filter to
+  `image/*` and `video/*` — a plain-text paste and a drag carrying no media
+  fall through untouched, so CodeMirror's own text drag-and-drop still moves
+  text — and both then run the *same* helper: ensure `assets/` next to the note
+  (`fused.mkdir`, whose `exists` 409 from the second paste onwards is the
+  expected case), upload each blob, insert `![](assets/<name>)`. The insert is
+  an ordinary dispatch, so **undo removes it in one step**.
+  - **Names are timestamps**, `pasted-YYYYMMDD-HHMMSS.<ext>` in local time.
+    A timestamp is not by itself unique — two pastes inside one second, and
+    every file of a multi-file gesture, produce the same name, and the upload
+    replaces unconditionally — so the name is **probed with `fused.stat` and
+    bumped** (`-2`, `-3`, bounded) until it is free. Losing the first file to a
+    silent overwrite is not an acceptable cost for a tidy name. The extension
+    comes from the blob's MIME type, since a pasted screenshot has no filename
+    at all; an unmapped vendor type has its `x-` prefix stripped, and every
+    `video/*` mapping is pinned to produce an extension the video widget
+    recognises (`video/x-m4v` once produced `.x-m4v`, which rendered as a
+    broken image).
+  - **A drop lands at the POINTER**, `posAtCoords` at the drop coordinates,
+    falling back to the caret where that answers null (a drop past the last
+    line). A paste lands at the caret. That difference is the only one, which
+    is why the shared helper takes the position as a parameter rather than
+    reading the selection.
+  - `dragover` **must** `preventDefault` for a drag carrying files, or the
+    browser never fires `drop` and instead navigates the webview to the dropped
+    file — indistinguishable from the editor vanishing. Gated on
+    `dataTransfer.types` containing `Files`, which is the only thing askable
+    that early (`dataTransfer.files` is empty during a dragover).
+  - **`drop` therefore prevents the default for EVERY file drag**, before it
+    filters for media and before it checks read-only. CodeMirror only calls
+    `preventDefault` for a handler that returns **true**, so returning false
+    for a dropped PDF would hand the event back to the browser — which
+    navigates the webview to the file, losing every edit since the last
+    autosave (`pagehide`'s save is best-effort and may not land). `dragover`
+    committed to owning file drags; `drop` honours that for all of them, and a
+    drop it cannot use **says so** ("Only images and video can be added to a
+    note") rather than doing nothing. Only a genuine *text* drag falls through
+    to CodeMirror — the test is whether the drag carried files, never whether
+    media matched.
+  - **A read-only note never gains media.** A *paste* falls through untouched,
+    the same posture `whenWritable` takes for every writing key (MD-1a/MD-15).
+    A *drop* still prevents the default — the editor must not navigate away —
+    and reports that the note is read-only.
+  - **The upload is awaited before the link is inserted**, so a link can never
+    point at a file that failed to write; a failure surfaces through the same
+    status element a failed save uses, never silently. The cost is that a very
+    large video briefly stalls the editor — accepted for a first cut.
+  - **Video renders as a player.** Markdown has no video syntax, so a clip is
+    written as `![](…)` too (what Obsidian writes, and it degrades to a
+    recognisable broken image elsewhere) and the live-preview widget picks
+    `<video controls muted preload="metadata">` over `<img>` off the
+    extension. Removing the link does **not** delete the file: unreferenced-media
+    collection is its own feature, and Obsidian behaves the same way.
+  - The binary write itself is **`POST /api/fs/upload`** (multipart) behind
+    `fused.uploadFile(path, blob)` — `/api/fs/write` takes a string only. It
+    reuses `_fs_write`'s guard sequence exactly (X-Fused, the mount-backed /
+    `mount_read_only` branch before any kernel probe, `_writable`, the `readonly`
+    403 of RO-2) and, like it, never creates intermediate directories. It is
+    logged like `/api/fs/write` — path and byte count, never the payload — so
+    pasted media is not the one mutation that leaves no trace (CL-*).
+- **MD-24** **A bare URL is a link in Live Preview, and the document is not
+  rewritten to make it one** (D200). The vendored GFM grammar already parses
+  `https://example.com` as a `URL` node and `<https://example.com>` as an
+  `Autolink`; the decoration builder simply named neither, so a typed or pasted
+  URL rendered as unclickable grey prose beside an explicit `[lbl](url)` that
+  rendered as a link.
+  - **A bare URL gets a MARK, not a replacement widget.** The mark carries
+    `tagName: "a"` plus `href`/`target`/`rel`, so the range *becomes* an anchor
+    with the existing `lp-link` styling — bare and explicit links look and
+    behave alike. A widget would replace the URL's characters with an element
+    rendering the identical characters (its display text already equals its
+    target), buying nothing while taking away the caret's ability to sit inside
+    the URL and edit it.
+  - **An angle autolink hides its brackets** under the ordinary reveal rule:
+    `<` and `>` are markup, so they are replaced away and come back dimmed as
+    `lp-mark` on the caret's line, exactly as `**` and `# ` do. A bare URL
+    hides nothing and therefore has nothing to reveal — it stays marked
+    wherever the caret is, rather than flickering when a line is entered.
+  - **Nothing is written.** No paste or edit converts a URL into `[url](url)`,
+    so the note on disk still says what its author typed — which is also what
+    makes this repair every URL in notes written before the rule existed. The
+    ⌘K and paste-over-a-selection behaviours (`[selected](url)`) are unchanged.
+  - **A URL inside a fence or a code span stays plain text**, the same line MD-3
+    draws for what counts as an edge. The grammar does not emit a `URL` node
+    inside code at all, so the guard is the narrow `CODE_NODES` set the wikilink
+    pass already uses rather than a new "is this code?" rule — an over-broad one
+    of those once silently stopped every wikilink from rendering.
+  - **A `[lbl](target)` link's own `URL` child is left alone**, since it belongs
+    to a node the link branch already replaced whole (or deliberately left as
+    source, as for a titled or reference link).
+  - GFM autolinks three shapes, and two are not URLs yet: `www.x.com` gets an
+    `https://` scheme and `me@x.com` a `mailto:` one, or the href would resolve
+    against `/render?path=…` (MD-4a's trap).
+
+- **MD-25** **Editing an ordered list renumbers it — every way of editing it,
+  not just Enter** (D201). `markdownKeymap`'s `insertNewlineContinueMarkup`
+  already renumbered on Enter, and nothing else did: Backspace
+  (`deleteMarkupBackward`), selecting a row and deleting it, ⌘X, ⌘⇧K, and a
+  paste in the middle all left the numbers below the edit stale. The grammar
+  package's `renumberList` is internal and unexported, so this is our own pass.
+  - **It hangs off a transaction filter, not more key bindings.** One place sees
+    every edit whatever produced it, which is the only way the list of gestures
+    above stops needing to be enumerated.
+  - **Only the list the edit landed in** — and the edit has to have landed *on*
+    it. A blank line always extends a list's region (it separates the items of a
+    loose list) but anchors one only when list items sit on **both** sides of it,
+    because a blank line is also what separates a list from the prose beside it.
+    Anchoring on every blank means typing in a paragraph next to a list
+    renumbers that list, putting changes into an undo step the user never made;
+    anchoring on none means clearing an item's text — which leaves a blank line
+    inside the list — stops the items below it following.
+  - **The first item's number anchors the sequence.** A list written `3.` `4.`
+    `5.` stays that way, and deleting the head of `1.` `2.` `3.` leaves `2.`
+    `3.` — the two cases are identical text, and anchoring is what
+    `markdownKeymap`'s own Enter renumbering does, so Enter and Backspace agree.
+  - **Undo and redo are excluded**, along with every programmatic dispatch (a
+    reload, a read-only rebuild): the filter opts in to `input`, `delete` and
+    `move` user events. Undoing back to a deliberately odd numbering must not be
+    corrected straight back.
+  - **The renumbering rides in the same transaction** as the edit that caused
+    it, so one undo takes back both and the selection maps through the digit
+    rewrites for free.
+  - **Digits inside a fenced block are left alone** — the one place
+    digits-then-dot at the start of a line is not a list item.
+
+- **MD-26** **Vertical spacing is a line decoration, and it does not change when
+  the caret arrives** (D202). Headings had a size and a weight but no space
+  around them, because `.lp-h1`…`.lp-h6` are *inline marks* and an inline mark
+  cannot carry a vertical margin. Blocks — fences, quotes, lists — ran flush
+  against the prose above and below them.
+  - **Spacing lives on `Decoration.line`**, the same mechanism `lp-fence-line`
+    already used, applied to headings (`lp-h1-line`…), fences, blockquotes and
+    lists.
+  - **Every spacing decoration is unconditional.** This editor un-renders the
+    line the caret is on, so a margin that appeared or vanished with the caret
+    would shift everything below it on every arrow-down. The heading *size* mark
+    is already caret-independent for the same reason, and the spacing matches it.
+  - **A block is padded at its two edges, not per line**, via `-top`/`-bot`
+    classes on the first and last line of the range — which headings need too,
+    since a Setext heading spans its text *and* its `===` underline and a top
+    margin on both would split the two apart — otherwise a fence renders
+    as a stack of separated tinted rows, and a list's rows get spaced apart from
+    each other rather than the list being spaced from its surroundings. A nested
+    list is skipped, since it lies inside its parent's range.
+  - **Padding, never margin.** CodeMirror keeps its own height map and measures
+    each line from its bounding rect — padding is inside it, margin is outside
+    it and collapses besides. A margin makes CM believe a line is shorter than
+    the space it occupies, so `posAtCoords` (mouse clicks *and* arrow up/down)
+    lands on the wrong line, drifting further with each spaced block above it.
+    The first draft of this used margins and made the editor unusable below the
+    first heading; a source guard now refuses one.
+  - **The bottom side stays small.** Markdown's own blank separator line is
+    already a full line-height of space; these rules add what markdown cannot
+    express — the space *above* a heading, and the gap around a block.
+
+## 33. Git View — Repository History Scoped to the Open Path (D193)
+
+A `git` view template answers one question for whatever the user currently has
+open: **what happened here?** Not "what happened in this repository" — a repo-wide
+log is what a terminal is for — but what happened to *this folder* or *this file*:
+its uncommitted changes, its commits, and the diff of any of them restricted to
+that path. Offered for **both** directories and text-ish files, always as a
+`condition.py`-gated companion mode, never as a default.
+
+- **GT-1** An ordinary view template (`fused_render/templates/git/`) —
+  `template.html`, `log.py` (the reader), `condition.py` (the gate) and
+  `icon.svg`. No shell or server code: everything is the ordinary template
+  contract (`_file`, `fused.runPython`, params-as-state).
+- **GT-2** **Registry bindings.** The universal `/` directory key becomes
+  `["_listing", "git", "graph", "zarr_aoi"]` — `_listing` stays the default (it is
+  the only unconditional entry, PT-8), and `git` is listed **first among the gated
+  peers** because the switcher reads left to right and its gate is the one that
+  says yes most often on a working machine. On the file side `git` is appended,
+  **before the trailing meta-modes** (`reader`, `annotate`, `history`, so RD's
+  `reader`-immediately-before-`annotate` invariant is untouched), to the
+  hand-authored source / config / prose / log keys: code (`.py .js .ts .tsx .jsx
+  .cjs .mjs .cts .mts .sh .zsh .fish .ps1 .csh .zsh-theme .vim .css .html .htm`),
+  config (`.yaml .yml .toml .ini .cfg .conf .tf .hcl .json .plist`), prose (`.md
+  .markdown .tex .ltx .latex`) and text/logs (`.txt .log`). It is deliberately
+  **absent** from record streams (`.jsonl`/`.ndjson`), tabular data, geo data,
+  images, media, 3D, archives, PDFs and generated tool files: a scoped commit log
+  over a data blob says nothing a diff can render, and those lists are left alone
+  rather than churned. `.json` in / `.jsonl` out is the same line drawn twice —
+  `.json` is the dominant hand-authored config format, `.jsonl` is an append-only
+  stream.
+- **GT-3** **The gate (`condition.py`, CT-12) is `git rev-parse
+  --is-inside-work-tree`, one bounded subprocess — never a search of the tree.**
+  A directory asks about itself; a file asks from its parent (handing git a file
+  as `-C` is an ENOTDIR, not an answer). It **never enumerates** (`os.listdir`,
+  `os.scandir`, `glob`, recursion) and never walks, the CT-12 rule
+  `zarr_aoi/condition.py` documents and doubly binding here because this gate runs
+  on every directory AND every text-ish file the user opens; the tests make
+  enumeration **fatal**, so a listing added later fails rather than ships. A
+  `.git` stat fast path was considered and **dropped**: `.git` exists only at the
+  repository ROOT, so a probe would have to ascend to answer a nested path
+  (`repo/pkg/` has no `.git` of its own), and the two shapes it would then need to
+  know about — a `.git` *directory* in a clone, a `.git` *file* in a linked
+  worktree or submodule — are exactly what a hand-rolled probe gets wrong.
+  `rev-parse` answers all of them from any depth in one fork, and git's own ascent
+  is O(depth) stats, never a descent. True for an **empty** repository
+  (initialized, no commits — it IS a repo, and GT-9 gives it a real state);
+  **False** for a bare repository and for anything under `.git`, where there is no
+  work tree, hence no `git status` and no path to scope history to — not offered
+  beats offered-then-broken. Fails closed on a missing binary, a timeout, a
+  non-zero exit, stdout that is not literally `true`, or any exception.
+- **GT-4** **Mount-backed → refused, before any subprocess.** The same refusal
+  `graph/condition.py` makes and for the same shape of reason, worse here: the
+  reader runs `git status` / `git log` on the path, and git over an rclone-NFS
+  mount stats and lists its way through the work tree — the pattern that wedges a
+  flat million-key prefix. The detector is the app's own rule via
+  `shared/appenv.is_mount_backed` (PY-15), not a second copy; an unavailable
+  detector means "cannot tell", which reads as "refuse". The ORDER is part of the
+  requirement: a refusal that still forked git at the mount would have paid the
+  cost the refusal exists to avoid. And the refusal is repeated in **`log.py`**,
+  because a hand-written `?_mode=git` URL bypasses the switcher entirely — the
+  gate is the UX, the module is the guarantee (MD-11).
+- **GT-5** **The reader (`log.py`) shells out to git and parses machine formats;
+  it reimplements nothing.** Not what a repository is, not what "dirty" means, not
+  rename detection, not "3 months ago" (that is `%ar`, a human string passed
+  through verbatim rather than re-derived). Four ops: `overview` (header +
+  scoped uncommitted changes + the first page of the scoped log, one round trip),
+  `log` (a later page), `commit` (metadata + a diff restricted to the scope) and
+  `worktree` (working tree vs HEAD for one uncommitted entry).
+- **GT-6** **Every invocation is pinned, hardened and bounded.** `-C <repo root>`
+  and `--no-pager` on all of them — the root is resolved **once** by `rev-parse
+  --show-toplevel`, the single call deliberately pinned to the target rather than
+  the root, and everything after is pinned to the root so a relative pathspec
+  means one thing. **argv lists only, never a shell string**, and `--` before
+  every pathspec, wrapped in `:(literal)` so a filename holding `*`, `?`, `[` or a
+  leading `:` matches itself instead of becoming a glob or pathspec magic. A `sha`
+  arrives from a URL param and is validated as a hex object name **before any argv
+  is built**, so an option-shaped value cannot cause even one fork. Containment of a
+  working-tree **entry** is two checks in two places, and which place matters: the
+  entry's realpath must resolve under the repository root — for EVERY entry, before
+  any git call, since that also catches an ordinary file reached through a symlinked
+  parent directory — while the refusal of a **symlinked entry** belongs only on the
+  **untracked** branches, because those are the ones that read bytes off a resolved
+  name (`git diff --no-index` renders the target under the link's name, and
+  `os.path.isdir` follows a link into the untracked-directory listing). A **tracked**
+  symlink must diff normally: `git diff HEAD -- <rel>` treats it as a symlink,
+  diffing the link's target *path text* without reading through it — so putting that
+  refusal one level too early refuses every symlink row, including the safe one.
+  Residual, accepted and stated: a tracked symlink whose target is outside the repo
+  is refused by the realpath check even though its branch would be safe, because
+  containment stays ONE rule for the whole op rather than varying by a trackedness we
+  only learn from a git call. Log records
+  are `%x00`-delimited fields, one commit per line (every field in the format is
+  single-line by construction, so the newline is an unambiguous record separator);
+  status is `--porcelain=v1 -z`, whose rename form puts the NEW path first.
+  Non-interactive by environment (`GIT_TERMINAL_PROMPT=0`,
+  `GIT_OPTIONAL_LOCKS=0`, no pager, no askpass, no LFS smudge) with a timeout on
+  every call. The user's git config is **left alone** — no
+  `GIT_CONFIG_GLOBAL=/dev/null` — because `safe.directory` lives there and a repo
+  the user marked safe must keep working; only the knobs that could corrupt
+  parsing are overridden per command with `-c`, plus `--no-ext-diff` as a **flag**
+  (clearing `diff.external` tells git to run the empty program, which is a hard
+  failure).
+- **GT-7** **One unscoped `git status`, filtered to the scope in Python.** The
+  header's clean/dirty light describes the **repository** (that is what the word
+  means) while the list below it describes the **scope**, and both facts come out
+  of the same walk of the index this way rather than out of two calls.
+  **Measured, not assumed** (2026-07-31, this machine, the exact argv the reader
+  uses; first run then warm median of five):
+
+  | repo | tracked | worktree files | first | warm |
+  |---|---|---|---|---|
+  | superset | 6,535 | 6,558 | **254 ms** | 111 ms |
+  | fusedudfs | 5,331 | 5,759 | 72 ms | 31 ms |
+  | application | 4,096 | **572,320** | 36 ms | 8 ms |
+  | fused-render | 651 | 126,373 | 2 ms | 1 ms |
+  | synthetic, 100k tracked, clean | 100,000 | 100,000 | 38 ms | 38 ms |
+  | synthetic, 100k tracked, ALL modified | 100,000 | 100,000 | **160 ms** | 160 ms |
+  | synthetic, 40k untracked non-ignored | 1 | 40,001 | 9 ms | 7 ms |
+
+  Three things that table settles. **Cost tracks TRACKED files, not worktree
+  size** — the 572k-file checkout is the second *fastest*, because a
+  directory-ignored `node_modules` is pruned without descending, and 40k untracked
+  files collapse to 400 `dir/` entries under `--untracked-files=normal` (which is
+  precisely the ancestor case `_in_scope` handles). **The worst number here is
+  254 ms against `TIMEOUT_S = 12.0`** — a 47x margin, and the view paints its
+  skeleton first regardless, so this is not on any critical path a user perceives.
+  **And the two-call alternative is measurably worse, not better:** on superset a
+  scoped status is 2.1 ms but the cheapest repo-wide dirty probe,
+  `git diff --quiet HEAD`, is 100.2 ms — 102 ms total against 111 ms for the single
+  unscoped call, an ~8% saving — while on the 100k-all-modified synthetic that
+  probe (171 ms) is *slower* than the whole status (160 ms). It is also less
+  correct: `diff --quiet HEAD` cannot see untracked files, so a repo dirty only by
+  untracked files would report clean. So one unscoped call stands, on evidence.
+  Revisit only if a repository an order of magnitude past 100k tracked files shows
+  up; the bound that catches it is already there (`TIMEOUT_S`, refused as a calm
+  empty state, GT-9). The filter
+  reproduces git's own pathspec semantics including the case a naive prefix test
+  gets wrong: with `--untracked-files=normal` git collapses a wholly-untracked
+  directory to `dir/`, so an entry can be an *ancestor* of the scope rather than a
+  descendant, and the scope is still dirty because of it. Entries carry the raw
+  `XY` letters (`M`/`A`/`D`/`R`/`??`…) plus derived
+  `staged`/`unstaged`/`untracked` flags and, for a rename, both paths.
+  **Both sides of a rename are scope-tested**, and the entry is listed when EITHER
+  matches: testing only the new path dropped a file moved *out* of the open folder
+  from the list entirely, which is precisely the change a scoped view exists to
+  show. This is also the concrete reason the filter is ours rather than git's —
+  verified, not assumed: `git status --porcelain -- pkg` omits `R outside/gone.py`
+  ← `pkg/leaving.py`, so delegating the scope to a pathspec would reintroduce the
+  same defect. A rename with only one side in scope is a **move relative to that
+  scope**, a different fact from a rename, so the direction is reported
+  (`moved: "in" | "out" | null`) and labelled rather than flattened; nothing is
+  "moved" relative to the repository root, where both sides are always in scope.
+- **GT-8** **Nothing is unbounded, and every bound is VISIBLE.** The log grows a
+  **window** (`limit = PAGE_SIZE * pages`, one call, so a restored URL costs one
+  round trip) rather than paging with client-side accumulation, and `limit + 1` per
+  request is the `has_more` probe, so "load more" needs no count-everything call.
+  Because the window grows, the ceiling on it (`MAX_LOG_LIMIT`, 500 commits for one
+  path) is reported as its own field — **`capped`** — and never applied as a silent
+  `min()`: `has_more` answers "git had more records than we returned" and stays
+  honestly true once the clamp bites, so a UI driven by `has_more` alone offered a
+  "load more" that refetched the identical rows forever. `has_more and not capped`
+  is the only state in which another click can achieve anything; `has_more and
+  capped` is the terminal state the UI states as "showing the most recent N commits
+  for this path"; `not has_more` is the end of history. `capped` is also
+  independent of the malformed-record guard — `has_more` counts the records **git
+  emitted**, not the ones that survived parsing, because counting survivors let one
+  dropped record on a full page report the end of history one page early. The two
+  defects sit on one expression and are opposite in direction (premature "end of
+  history" vs endless "load more"), so both signals are needed and neither may be
+  derived from the other. Diffs **stream** through a byte cap AND a line
+  cap, whichever hits first, with a watchdog that kills the process: streamed
+  rather than captured because `subprocess.run` would buffer the whole
+  hundred-megabyte diff into memory before it could be trimmed, and a manual read
+  loop has no `timeout=`. Truncation is **reported in the UI**, never silent. The
+  change list is capped too (a build tree can hold 100k untracked files).
+- **GT-9** **Every awkward state is a first-class state, and refusal is a
+  PAYLOAD** (`{ok: false, reason, message}`) rather than an exception: not a
+  repository, missing path, mount-backed, no git binary, timeout, empty repository
+  (no commits yet), detached HEAD (reported by short sha, `branch: null`), a path
+  with no history, a path outside the repository, binary files (git's own "Binary
+  files … differ", never dumped), renames. **An untracked DIRECTORY is one of those
+  states, not a diff:** `--untracked-files=normal` collapses a wholly untracked
+  directory to a single `dir/` row, and a directory has no patch — so the entry
+  answers with what is *inside* it (`kind: "untracked-dir"`, each file clickable
+  through to its own whole-file diff) instead of an empty pane wearing the
+  commit-oriented sentence, which was wrong twice over since it is not a commit and
+  the path IS in scope. The listing is `git ls-files --others --exclude-standard`,
+  i.e. "what `git add` would pick up here" with .gitignore and nested excludes
+  already honoured rather than reimplemented, read through the same streamed byte
+  cap as `git status` and capped again by entry count — never an `os.walk`, which
+  would be an unbounded recursion inside a template. Every empty state names its
+  OWN situation: a worktree entry that diffs to nothing says its contents match
+  HEAD, which is not the sentence for a commit that missed the scope. The view
+  renders a calm empty state
+  from the payload — a folder without git is an ordinary situation, so even a
+  reader crash is caught into that state rather than the red traceback overlay,
+  which is a debugging affordance for a view's own bug.
+- **GT-10** **The view.** `data-fused-theme="shell"` with both palettes defining
+  the same token set and no colour literal in any rule (AP-9, tier 1).
+
+  **A template has NO header of its own** — owner ruling 2026-07-31: *"a template
+  is not the same as app, it does not require any headers."* A template renders
+  inside the shell's chrome — breadcrumb, preview header, mode switcher — so
+  app-like furniture of its own is duplication at best and competing chrome at
+  worst: a heading naming the path is the page's loudest element spent restating
+  what sits directly above it, and it pushes the lists that ARE the subject below
+  the fold. The general rule is therefore stronger than "state it smaller": the
+  shell owns identity, and a template ships content. (This supersedes an earlier
+  one-line-status-header compromise, which was the same argument stopped halfway.)
+
+  What survives is the facts that are **data rather than chrome**, folded onto the
+  **section labels** — labels being content:
+
+  ```
+  UNCOMMITTED 2 · main
+  HISTORY 30
+  ```
+
+  Nothing here repeats the shell: no repo-name title (the breadcrumb has it) and no
+  scope line (the breadcrumb is the scope). The **branch** stays because it is the
+  one fact the shell cannot supply, and it rides the `UNCOMMITTED` label. A
+  **detached HEAD** reads `detached at <short sha>` in the branch's place, and an
+  **unborn branch** appends `· no commits yet` — both are properties of the HEAD
+  being named, so they belong beside it rather than in a band of their own. There is
+  **no clean/dirty light**: `UNCOMMITTED n` already carries that, and a count is a
+  strictly better signal than a lamp. The one case a count cannot carry honestly is
+  a truncated read (GT-8's status byte cap, where `dirty` is forced true and `n` is
+  a floor rather than a total) — which the label states as **`n+`**, with the list's
+  own truncation note below it, rather than by reintroducing a light. All UI
+  state in URL-synced params — `pages` (how much log is loaded), `sel` (selected
+  commit) and `wt` (selected uncommitted entry), the last two **mutually
+  exclusive** so there is at most one diff target — hence a refresh or a bookmark
+  reproduces the view with its diff pane already open. Every row is a real
+  `<button>`, so tab/enter work natively; Escape closes the pane. The skeleton is
+  laid out at the real thing's dimensions and a selection change repaints from the
+  last good snapshot, so nothing jumps and the lists never blank while a diff
+  loads (a serial guard drops a stale response). The diff is the one wide thing on
+  the page, so it scrolls inside its **own** container and the page body never
+  scrolls horizontally. Stacked (narrow) the diff pane sits **above** the lists,
+  because appending it below thirty commit rows puts the response to a click below
+  the fold, which reads as nothing having happened.
+- **GT-11** **Read-only, always.** The view never stages, commits, checks out,
+  fetches or writes anything. `GIT_OPTIONAL_LOCKS=0` says so to git as well: it
+  will not even take a lock to answer a question. Anything that mutates a
+  repository belongs to a terminal.
+
+**See also §34** (`file_history`), the other history view. It is complementary
+rather than an alternative: this one reads the repository's commit graph and never
+writes; that one reads Claude Code's per-edit checkpoints — which exist for files
+in no repository at all, and for edits made since the last commit — and can put
+content back. FH-1 states the split from the other side.
+
+## 34. File History — Revert from Claude Code's Checkpoints (D194, D195)
+
+Goal: give a template view an **undo for the agent's edits**, with no version
+control involved. Claude Code already writes a full copy of every file it is
+about to change; this reads that store, presents the file's version timeline,
+and restores from it. Wired into `annotate` first (§17); the reader is shared so
+`claude` and `history` can adopt it.
+
+**Two history views, and which one answers your question.** §33's `git` view and
+this one sit next to each other in the mode list and are **complementary, not
+alternatives** — the distinction is *whose* history you are asking about. `git`
+answers "what happened to this path in this repository": commits, uncommitted
+changes, diffs, everything a human or a tool ever committed, over the whole
+recorded life of the file — and it is read-only, by design (GT-11). This one
+answers "what did this file look like before the agent last touched it", which is
+a strictly narrower and much younger window, and it is the only one of the two
+that can put content BACK. So they differ on both axes: scope (a repository's
+commit graph vs one agent's per-edit checkpoints) and capability (read vs
+restore). Two consequences worth stating, because they are the reason neither
+subsumes the other: `git` has nothing to say about a directory that is not a
+repository, or about edits made since the last commit — which is exactly the
+window this feature exists for; and this one has nothing to say about anything
+Claude Code did not do, including the user's own saves (FH-6), which is exactly
+what `git` is for. A reviewer wanting "undo the agent" wants this; a reviewer
+wanting "what has this file been through" wants §33.
+
+- **FH-1** **The store, and why it is the authority instead of git.** Content
+  lives at
+  `<claude-config-dir>/file-history/<sessionId>/<sha256(abspath)[:16]>@v<N>`,
+  where each `@vN` is a **full copy** of the file at a checkpoint, never a diff.
+  `<claude-config-dir>` is `CLAUDE_CONFIG_DIR` when set, else `~/.claude`,
+  resolved through `expanduser` on a `join` rather than a literal `"~/.claude"`
+  (this package ships a `windows/` dir, and a hardcoded forward slash survives
+  `expanduser` unchanged there and then never matches a normalized path). Git
+  answers "what did the last commit say"; this answers "what did this file look
+  like before the agent touched it", which is the question a reviewer sitting in
+  a view actually asks — and it has an answer in a directory that is not a
+  repository at all, which git does not. The two are complementary, not
+  alternatives; a separate git-backed template is its own work.
+- **FH-2** **Enumeration is filesystem-only, because the filename key is a pure
+  function of the path.** The hash is verified as `sha256` of the **absolute**
+  path truncated to 16 hex chars (13/13 files of a real session), so one file's
+  entire timeline is `<history-root>/*/<hash>@v*` — no transcript parsing on the
+  render path. That is the whole reason this is cheap enough to call on a view
+  boot: the session transcripts reach **5 MB+** each and reading one per render
+  would be a performance trap. `abspath` is load-bearing, not cosmetic: a
+  relative path hashes to something the store never heard of, so the lookup
+  would silently find nothing rather than fail.
+- **FH-3** **Versions are checkpoints, not per-edit pre-images, and undo is
+  POSITIONAL: find where disk sits in the chain, then step backwards.** Two
+  wrong rules were ruled out, in order, and both matter.
+
+  *"Restore the highest `@vN`"* is wrong roughly half the time. Measured on a
+  real session: 6 of 13 files matched their highest version, 7 did not, because
+  the file moved on after the last checkpoint. Restoring the highest N would
+  frequently be a no-op that reads as a broken button.
+
+  *"The newest version whose content differs from disk"* replaced it, and is the
+  sharper lesson: it reads as obviously correct, survived two reviews, and
+  **oscillates on the second press**.
+
+      disk == v3  ->  v3 differs=False, v2 differs=True  ->  target v2
+      disk == v2  ->  v3 differs=True and is newest      ->  target v3
+
+  ...for ever, with v1 unreachable at any point. It answers "which checkpoint is
+  most recent and isn't what I have", which is not what undo means.
+
+  The rule is therefore positional-then-differs, over the newest-first list:
+  **(1)** `position` = index of the **newest** entry whose content equals disk
+  (newest, not oldest: with duplicate content on both sides of a real checkpoint,
+  walking from the oldest match steps straight over it). **(2)** target = the
+  first entry **older** than `position` that still **differs** from disk — the
+  differs-check stays inside the walk rather than taking `position + 1`, because
+  identical adjacent versions are common and restoring one writes the same bytes
+  back. **(3)** `position == -1` (disk is in no checkpoint at all) means the first
+  step back is "discard to the most recent checkpoint": target = entry 0. This is
+  the same index that yields `unique_current`, derived once so the two can never
+  disagree. **(4)** no such older entry ⇒ `at_earliest`, a distinct terminal state
+  that DISABLES the button and says why — falling back to something newer is
+  exactly what made the previous rule a toggle. Result: `v3 → v2 → v1 → delete →
+  disabled`, monotonic, whole chain reachable. "Redo" needs no new UI, because
+  the timeline already lets the user click a newer row explicitly; that asymmetry
+  is right for a button labelled "Revert last change".
+
+  `differs` is a byte comparison per version. An ABSENT file makes every content
+  version differ — which is what gives "the agent deleted my file" an undo — while
+  making a did-not-exist boundary MATCH, so the walk terminates there instead of
+  offering a delete that would do nothing.
+
+  Presentation follows the rule but does not duplicate it: the dot column has
+  exactly **two** states — `●` in the neutral foreground for the current position,
+  `○` muted for everything else — and the revert target is **row treatment** (an
+  accent left-stripe plus wash, with the stripe's width reserved as a transparent
+  border on every row so marking nothing reflows nothing). Three glyphs over three
+  colours was the first attempt and read as noise: `◉` and `●` are barely
+  distinguishable at 11px, and the two facts are unrelated — the dot answers
+  "where are you", the stripe answers "what does the button do", so they belong in
+  different visual channels. It also means `at_earliest` needs no fourth marker:
+  `revert` is null, so no row is striped, and "no accent anywhere" already reads
+  as "nothing to go back to". The position row is exempted from the
+  identical-to-disk dimming, since dimming the one row the marker exists to
+  emphasise defeats it.
+
+  `at_earliest` may only be claimed by an **enriched** scan (FH-5). The boot
+  timeline skips the transcripts, cannot see the creation boundary, and so reports
+  it one step early; a view that believed it disabled the button on a file whose
+  remaining step back was a delete the plan would have offered. The unenriched
+  answer is provisional (`enriched: false` on the payload) and the click asks
+  `revert_plan`, which always enriches and is the authority.
+- **FH-4** **Chains are per-session and version numbers collide, so the timeline
+  merges on TIME.** A path edited across several sessions has a separate chain
+  under each `<sessionId>/`, and N **restarts**: two sessions both holding a
+  `@v2` for one path is ordinary, not an edge case. Order is the backup file's
+  mtime, with N only as a tiebreak *within* a session, never across. A version is
+  therefore identified by the **pair**, surfaced as one opaque id
+  (`"<session>@v<N>"`), and the row's tooltip names the session because that is
+  the only thing distinguishing two rows that both say `v2`.
+- **FH-5** **A null `backupFileName` means the file did not exist, so reverting
+  across it is a DELETE.** Not a restore of empty content, which would leave a
+  zero-byte file the agent never created. The filesystem cannot represent "no
+  content", so this fact lives only in the transcript
+  (`<config>/projects/<cwd with / -> ->/<sessionId>.jsonl`, records of type
+  `file-history-delta` / `file-history-snapshot`) and arrives only through
+  **opt-in enrichment**: the view's boot call does not read transcripts, and only
+  an expanded History panel pays for one. Three guards keep that affordable and
+  quiet — a byte cap checked by `stat` before anything opens; a per-line
+  **substring prefilter** so `json.loads` runs on the handful of candidate lines
+  rather than the file (a 5 MB transcript becomes a 5 MB `in` scan); and a
+  blanket except per transcript, so corrupt/truncated/half-written degrades to
+  "no extra rows", never to an error. Transcripts are reached by a **glob** on
+  `projects/*/<sessionId>.jsonl`, not by deriving the slug: the slug is the cwd
+  with separators replaced, which is lossy (a directory name containing `-` is
+  indistinguishable from a separator) and was never evidence of anything.
+
+  **Attribution is an identity test on the record's absolute `realParentDir`, not
+  a path suffix** — `join(realParentDir, basename(trackingPath)) ==
+  abspath(target)` — and this is the sharpest correctness rule in the feature.
+  `trackingPath` is repo-relative and this code has no idea what the repo root is,
+  so the original suffix match had no project attribution at all: `src/main.py`,
+  `README.md` and `index.ts` recur across every checkout on the disk, so an
+  unrelated project that CREATED its own `src/main.py` injected a boundary row
+  into this file's timeline — and since boundary rows sort by the transcript's own
+  timestamp it was typically the newest entry, hence the revert target, turning
+  "Revert last change" into a **DELETE of a file the agent never created**, behind
+  a confirm sheet asserting "Claude created it" about a file it had never seen. A
+  record with no usable `realParentDir` is **refused**, never guessed: the cost of
+  refusing is one missing row, the cost of guessing is deleting the wrong file.
+  Such a row carries its own record's timestamp —
+  never a neighbouring row's; verified on a real chain where the creation
+  boundary's `backupTime` is nine minutes before the next checkpoint's and only
+  *looked* duplicated at display granularity — and when that stamp will not parse
+  the view renders "time unknown" rather than 1970. It also wears its own version
+  number (the creation boundary is `version: 1` in a real store), so it is
+  numbered like every row below it with "did not exist" as the annotation
+  explaining what restoring it does; a dash appears only for a record with no
+  usable number, since `v0` would invent a version the store never wrote. Its id
+  is `"<session>@none<N>"`, which keeps it distinct from a content `@vN` that
+  shares the number.
+- **FH-6** **Strictly read-only with respect to the Claude config dir.** Nothing
+  writes, moves or unlinks anything under it, ever: it is the user's live edit
+  history and this is a guest in it. Asserted as a **whole-tree byte snapshot**
+  across every action rather than per call, so a write added anywhere later trips
+  the test. A corollary accepted deliberately: the user's own annotate saves are
+  not checkpointed by anyone, so they are **not revertible** — this reverts the
+  agent's edits, and only those.
+- **FH-7** **The one write is to the target, gated and atomic.** `file_writable`
+  is the same three-part gate as `annotate.py::_sidecar_writable` (RO-3, RO-6):
+  the read-only-mount check FIRST, through `shared/appenv`'s env contract, because
+  `os.access(W_OK)` **lies** under a read-only mount with CacheMode=full — the
+  write lands in the local VFS cache and only 403s at the async upload; then W_OK
+  on the **directory** (mkstemp and the replace both land there — this half the
+  sidecar's gate does not need and a replace does); then W_OK on the file itself
+  when it exists, since `os.replace` goes through the directory and would
+  otherwise blow past a `chmod -w`. The write is mkstemp + `os.replace` in the
+  target's own directory — atomic, never cross-device — and carries an existing
+  file's mode onto the replacement, because a fresh mkstemp is 0600 and a revert
+  has no business changing permissions.
+- **FH-8** **Path confinement is a matching problem, not a sanitizing one.** The
+  selector a client sends is an **opaque id matched against the enumerated
+  timeline** and never joined into a path, so an id carrying `..`, separators or
+  an absolute prefix has nothing to traverse — it simply resolves to no entry.
+  Every path opened is one this code built itself from (history root, a session
+  dir it listed, a hash it derived). And a restore may only touch a path the
+  store **already has a version for**, which is the only target guard available
+  to a module that cannot see the view: a crafted `file` param reaches nothing
+  the agent never edited. Directory targets are refused outright, and so are
+  **symlinks**: `os.replace` swaps the LINK for a regular file rather than
+  writing through it, so a "successful" revert left the real file untouched with
+  its pre-revert content while the stash captured a file that was never
+  overwritten. Refusing is chosen over `realpath`-ing first, deliberately — the
+  store's key is the sha256 of the path the VIEW opened, so following a link
+  would revert a path whose own timeline is a different chain, and silently
+  editing a file the user did not name is worse than declining to.
+- **FH-9** **A confirm step is mandatory, because the content it overwrites is
+  often the only copy.** Current on-disk bytes are frequently in NO checkpoint
+  (FH-3), so a naive restore vaporizes work with no undo — the sharpest hazard in
+  the feature. The plan payload reports `unique_current` (no version holds what is
+  on disk) and the view gates an explicit warning on it, alongside byte counts,
+  line counts and the line delta, before any write.
+
+  **The plan also reports whether a stash will actually be kept** (`stash`,
+  `stash_note`), computed by the same predicate the write runs — a stat, a decode
+  and an access, so there is no reason for the sheet not to know. Without it the
+  sheet carried a permanent hedge ("a copy is kept ... unless too large or not
+  text"), which made the one genuinely unrecoverable combination —
+  `unique_current` AND no stash — read exactly like the safe case; the write then
+  destroyed the only copy and the user learned about it in the past tense, beside
+  "Reverted to v3". That combination now gets **stronger wording plus a button that
+  says what it does** ("Overwrite permanently" / "Delete permanently") rather than
+  merely "Revert". It briefly also required a tick-to-confirm before the button
+  enabled; the owner removed that as friction, so the confirm button is enabled
+  unconditionally and the escalated warning is the **only** thing between the
+  click and unrecoverable loss — which is why it carries real visual weight in
+  that case instead of reading as a footnote. Note this is a UI-side signal only:
+  the bridge's `confirm_unique` token below is a separate mechanism, derived from
+  the plan and never from any widget state, so removing the tick did not weaken
+  the programmatic guard at all.
+
+  **The bridge enforces the gate too, not just the page.** `revert` requires the
+  plan's `id` echoed back (also a freshness check — a plan built against one disk
+  state and applied against another is how a user confirms one diff and gets
+  another) and an explicit `confirm_unique` when the plan set `unique_current`,
+  refusing as data otherwise. The previous guard was a source grep asserting one
+  `action: "revert"` call site, which pins today's template rather than the bridge,
+  so any future second caller inherited an unguarded file-destroying entry point.
+
+  The delta is stated as **what
+  the restore does** — lines it introduces, lines it takes away — because that is
+  the number a confirm step has to show; the reverse framing reads identically on
+  symmetric edits and lies on every asymmetric one. Above a byte cap, or for
+  content that is not UTF-8, the delta degrades to net counts (or none) and
+  **says it is inexact** rather than implying a diff nobody computed: difflib is
+  quadratic in the worst case and a timeline renders every version.
+- **FH-10** **Second line of defence: the pre-restore content is stashed in the
+  target's own `<file>.json` sidecar**, under `revertStash`, through the same
+  read-merge-write `annotate.py` already uses — so `claudeSessions`,
+  `bookmarkHistory`, `comments` and every other unowned key round-trip. Never
+  into the Claude dir (FH-6). Bounded to a few entries and skipped above a byte
+  cap or for non-text content, because the sidecar is a small JSON file three
+  other writers rewrite constantly, not a version store — `file_history` already
+  is one. A skip is **reported** (FH-9) so the confirm step can escalate rather
+  than silently losing the net, and a revert the user confirmed — having been told
+  whether a copy would be kept — is never then blocked by a sidecar that could
+  not be written.
+
+  The stash is **byte-faithful**: the target is read in BINARY and decoded
+  explicitly, and the recorded `size` is the byte count. Text mode applied
+  universal-newline translation, so a CRLF file stashed as LF — the recovered
+  content was not the bytes that were destroyed, and it disagreed with the `size`
+  stored beside it. This package ships a `windows/` dir, so CRLF is a live case,
+  not a hypothetical. Each of the three refusals (too large, unreadable, not
+  UTF-8) is reported separately and truthfully; folding an EACCES into "not UTF-8
+  text", or a `getsize` failure into "nothing on disk to stash" (which reads as
+  "the file is absent"), describes a fixable machine problem as a fact about the
+  content.
+- **FH-11** **Every failure crosses the bridge as data.** Anything raised out of
+  a template's `main` becomes the red traceback overlay, and "no store on this
+  machine", "no versions for this file", "already matches the latest checkpoint",
+  "read-only mount", "stale version id" are all ordinary states of this surface.
+  So each is an `{"error": ...}` or `{"ok": false, "error": ...}` dict, and the
+  timeline payload carries its own `note` for the empty states. A missing store
+  entirely hides the panel — that is "this feature does not apply here", not an
+  empty state worth chrome — while a store that exists and holds nothing for
+  *this* file gets a line of text, because there the absence is a fact about the
+  file. Unreadable session dirs, stray non-directories in the history root and
+  malformed `@vN` filenames are skipped, never fatal; only the exact decimal form
+  the store writes is accepted, so `@v01` stays invisible rather than becoming a
+  second, ambiguous "version 1".
+
+  Two distinctions inside that, both of which were collapsed at first. An
+  **unreadable** store or session dir is NOT the same as an empty one: it is
+  reported with its path and errno, because `chmod` is actionable and "no versions
+  for this file" sends the user looking at the wrong thing. And a **missing**
+  `appenv` degrades to the pure `os.access` rule (there is no flag to consult),
+  while a read-only-mount probe that RAISES fails **closed** — a blanket
+  `except Exception` around the call re-opened exactly the incident the probe
+  exists for, letting a malformed `FUSED_RENDER_RO_MOUNTS` fall through to the lie,
+  report `ok: true`, and surface the 403 later at an async upload this UI never
+  sees.
+- **FH-12** **It lives in `templates/shared/file_history.py`, stdlib-only, and
+  is reached by `sys.path`, not by importing the package.** Same reason
+  `appenv.py` sits beside it: a template child under the fused engine has **no
+  PYTHONPATH**, so `import fused_render...` always fails there — which is exactly
+  why `annotate.py` reaches appenv this way. A `fused_render/file_history.py`
+  would be unreachable from the only place that needs it. A copy of a template
+  folder taken without its `shared/` sibling degrades to "revert not offered",
+  the same shape appenv already has.
+- **FH-13** **Non-goals.** No writing to the store, no restoring the store
+  itself, no per-hunk revert, and no reconstruction of what an individual edit
+  changed — the store holds checkpoints, not edits (FH-3), so a per-edit undo is
+  not derivable from it. The `claude` and `history` templates adopting the reader
+  is later work; nothing here is annotate-specific except the UI.
+- **FH-14** **A dropped version is surfaced, and it BLOCKS the automatic choice.**
+  A version that cannot be read (or stat'd) is excluded from the timeline, and
+  under the positional rule an exclusion moves both where the walk starts and
+  where it lands — so it cannot be a silent `continue`. Every drop is recorded in
+  `skipped` with its path, reason and errno and named in the payload's `note`; and
+  when a skip sits at or newer than the chosen target (or its own time is unknown,
+  so its place in the chain is unknowable), `revert_plan` **refuses** rather than
+  walking to a different point in history and presenting it as "the last change".
+  Older skips are deliberately harmless *when a target exists*: one unreadable
+  ancient checkpoint must not cost the user their undo. An **explicitly chosen**
+  row is never blocked — the user named that version, so there is nothing to guess.
+
+  When there is **no** target, every skip blocks, and that is not the same
+  situation wearing the same message. "No target" means the walk found nothing
+  older that differs — and a version it could not read is precisely a candidate for
+  the older differing entry it did not find, so there is no subset of skips that
+  could not matter. Claiming `at_earliest` from a scan with a hole in it would
+  assert terminality that cannot be proved, the same class of error as the
+  oscillating rule: a confident answer from an incomplete read. So the state is
+  reported as **`unconfirmed`**, distinct from `at_earliest` and mutually exclusive
+  with it — the first is a fact ("there is nothing older"), the second an admission
+  ("whether there is anything older is unknown") — and it gets its own wording
+  rather than the misleading "the last change cannot be identified", which
+  describes the target-exists case. Both are equally terminal for the button:
+  `unconfirmed` is a STABLE state that would refuse identically on every press, so
+  the panel disables the button and shows the reason instead of leaving a live
+  control whose only behaviour is to reproduce the same error. One `_selection`
+  helper computes position, target, `at_earliest`, `unconfirmed` and the blocking
+  set for both `timeline` and `revert_plan`, so the panel and the plan cannot
+  disagree about what the button will do.
+- **FH-15** **The panel's disclosure state and the last outcome survive the
+  post-revert reload, through `sessionStorage` keyed by the target path.** A
+  successful revert changes the file, so the shell's own fs-event watch reboots the
+  whole preview — which left the panel collapsed with the outcome discarded, so a
+  revert that worked looked like nothing had happened. Not a URL param, and the
+  reason is this template's own contract: `comments` lives in the URL *precisely*
+  so a review can be shared, whereas whether a disclosure widget is open is a
+  workspace habit (the same argument that kept pane geometry out of the URL in
+  D185), and a transient "Reverted to v2" carried in a bookmark would be a lie the
+  moment it was opened.
+
+  The disclosure state is sticky; the outcome is a **carry slot** with exactly one
+  writer and two readers that both clear it — `carryOutcome` (called once, before
+  the refresh, because the fs event is already racing by then: written after, it is
+  lost exactly when the reload is fastest), `takeCarriedOutcome` (boot:
+  read-and-clear) and `dropCarriedOutcome` (in-page: spent, because it was
+  displayed here). **Nothing writes after a read**, which is the entire lifetime
+  rule and the thing the earlier version could not express: clearing only on boot
+  meant a reload that never arrived — an unwatched mount-backed file, the user
+  navigating away, the race simply lost — left the note behind for the NEXT open of
+  the file to present as fresh news, and a failing refresh on a dying page could
+  write a composed message back after a newer boot had already consumed it. Only a
+  SUCCESSFUL revert is carried: a failure changed nothing on disk, so there is no
+  reload to bridge and no reason to greet a later visit with it. This mechanism
+  produced three separate defects (ordering, the count/enrich jump, lifetime), so
+  the third fix was a restructure rather than a fourth guard. A restored-expanded panel
+  boots ENRICHED, or its row count would disagree with the list it labels; the
+  refresh observes the post-revert file (the write completed before the call
+  resolved), so the position marker points at the version just restored; and the
+  carried message is applied *after* the refresh and through the same composer as
+  everywhere else, so a failed refresh is never hidden behind a carried success.
+  A hostile `sessionStorage` (private mode throwing on `setItem`, a corrupt value)
+  degrades to "the panel does not persist" — persistence is a nicety here, never a
+  dependency.
+- **FH-16** **An unwritable target never reaches the confirm sheet, and the
+  reason travels with the verdict.** `writable` is a FIELD on a perfectly
+  successful plan, not an error — so gating only on `plan.ok` let a read-only file
+  open a destructive confirm sheet that could then fail only server-side, while the
+  main button had already gone correctly dead. Both layers are closed: rows are
+  inert when the target is unwritable, AND `revert_plan`'s verdict is checked
+  before the sheet is shown. The plan-level check is the one that matters, because
+  it closes the class rather than one entry point — the same reasoning that made
+  the bridge, not the page, the authority for the confirm token. The payload also
+  carries `writable_reason`, because "it cannot be reverted" with no cause is a
+  dead end across three genuinely different situations the module already
+  distinguishes in order to reach its answer: a read-only MOUNT (nothing local to
+  fix — the remote rejects the write, and `os.access` cannot see it), a `chmod -w`
+  FILE (fixable), and an unwritable DIRECTORY (fixable, and a different fix).
+- **FH-17** **ONE authority answers "may this action be offered, and if not
+  why" — `offer_reason` — and the panel, the rows, the confirm sheet and the
+  bridge all read it.** This exists because THREE findings had a single root
+  cause: a guard living below the layer that decides whether to offer the action.
+  The read-only verdict was enforced in `apply_revert` but invisible to the plan,
+  so the sheet opened on a doomed target (FH-16). A symlink was refused the same
+  way and one layer lower still, so the sidecar stash ran first — and read
+  *through* the link, leaving the wrong file's content in `revertStash` for a
+  revert that then failed. And the blocking-skips refusal was computed inside
+  `revert_plan` while the timeline went on publishing a striped target and an
+  enabled button whose only possible outcome was that refusal. Each was a
+  different symptom of the same missing seam, so the fix is the seam: `timeline`
+  publishes `offer` (may the button be pressed) and `offer_reason` (the sentence
+  the plan would refuse with, already on screen so no press is needed to discover
+  it), `revert` names a row only when that row is genuinely actionable, and the
+  bridge re-reads the verdict *before* `_stash` — which must be gated rather than
+  merely followed by a raise, because it runs first by design and there is nothing
+  left to copy afterwards. `writable_reason` absorbs the directory and symlink
+  refusals for the same reason: they are answers to "can this be reverted", and
+  keeping them somewhere else is precisely what made them invisible to the caller
+  that needed them.
+
+  Two deliberate asymmetries inside it. **An explicitly chosen version is not
+  subject to the automatic refusals** — "revert the last change" is a question
+  this module answers and may decline to answer from an incomplete scan, whereas
+  "revert to THIS version" is the user naming the target, where nothing is left to
+  guess; it is still gated on writability, which no amount of naming fixes. And a
+  refusal is **provisional** in exactly one case: FH-3's unenriched terminality,
+  where the scan cannot see the creation boundary, so the button stays live and the
+  click asks the always-enriched plan. That case is why `offer` is a field of its
+  own rather than being inferred from `revert` — there is no target to name there,
+  and the click is still the right thing to allow.

@@ -109,6 +109,15 @@ _IMPORT_TO_DIST = {
     # it maps a name nothing provides — harmless, and listing it is what keeps
     # `test_the_import_map_covers_everything_the_app_ships` honest either way.
     "tomli": "tomli",
+    # AppKit, for the macOS clipboard bridge (shell/pasteboard/_darwin.py).
+    # Only installed on darwin, so on Linux and Windows these map names nothing
+    # provides — the same harmless shape as `tomli` above, and listing them is
+    # what keeps `test_the_import_map_covers_everything_the_app_ships` honest on
+    # every platform. One distribution, three import names: pyobjc splits its
+    # frameworks across packages, and Cocoa is the one that carries all three.
+    "AppKit": "pyobjc-framework-cocoa",
+    "Foundation": "pyobjc-framework-cocoa",
+    "Cocoa": "pyobjc-framework-cocoa",
     # The engine itself (a `[bundled]` requirement so the macOS force-list
     # derives it — see pyproject and setup_py2app.py). Mapped, so
     # `test_the_import_map_covers_everything_the_app_ships` stays satisfied, but

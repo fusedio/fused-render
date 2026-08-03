@@ -69,35 +69,43 @@ if [[ -z "${FUSED_RENDER_BRANCH+x}" ]]; then
 fi
 
 # Python: active venv first, then the repo-local .venv. With neither, bootstrap
-# a repo-local .venv (with the `fused` + `bundled` extras) so a fresh worktree is
-# self-contained. Without this the fallback was bare `python3` on PATH, whose
-# fused_render resolves to whatever global/editable install happens to be there
-# (often the main checkout's) and whose site-packages lack the sci deps the
-# map/geotiff/zarr daemons need — a fresh worktree would silently run the wrong
-# code or fail at daemon spawn. `-e` keeps the install pointed at this worktree's
-# source. Uses uv when present (fast, no ensurepip dance), else stdlib venv+pip.
+# a repo-local .venv (with the `dev` + `fused` + `bundled` extras) so a fresh
+# worktree is self-contained. Without this the fallback was bare `python3` on
+# PATH, whose fused_render resolves to whatever global/editable install happens
+# to be there (often the main checkout's) and whose site-packages lack the sci
+# deps the map/geotiff/zarr daemons need — a fresh worktree would silently run
+# the wrong code or fail at daemon spawn. `-e` keeps the install pointed at this
+# worktree's source. Uses uv when present (fast, no ensurepip dance), else
+# stdlib venv+pip.
+#
+# `dev` is in the list even though this script only ever *runs* the server, not
+# the suite: it carries the platform bindings the server itself needs to light
+# up its OS-facing features (on macOS, the pyobjc that the clipboard bridge
+# reads NSPasteboard through). Leaving it out is how the Finder-paste bridge
+# came to report `supported: false` on every dev machine while the tests that
+# would have caught it skipped for the same missing dependency.
 if [[ -n "${VIRTUAL_ENV:-}" ]]; then
   PY="$VIRTUAL_ENV/bin/python"
 elif [[ -x "$REPO_ROOT/.venv/bin/python" ]]; then
   PY="$REPO_ROOT/.venv/bin/python"
 else
-  echo "==> no venv found — creating $REPO_ROOT/.venv with the [fused,bundled] extras"
+  echo "==> no venv found — creating $REPO_ROOT/.venv with the [dev,fused,bundled] extras"
   # Run the install from REPO_ROOT with the `.[extras]` form: uv rejects an
   # absolute path carrying extras (parses it as a PEP508 requirement).
   if command -v uv >/dev/null 2>&1; then
     uv venv "$REPO_ROOT/.venv"
-    (cd "$REPO_ROOT" && uv pip install --python "$REPO_ROOT/.venv/bin/python" -e ".[fused,bundled]")
+    (cd "$REPO_ROOT" && uv pip install --python "$REPO_ROOT/.venv/bin/python" -e ".[dev,fused,bundled]")
   else
     python3 -m venv "$REPO_ROOT/.venv"
     "$REPO_ROOT/.venv/bin/python" -m pip install --upgrade pip
-    (cd "$REPO_ROOT" && "$REPO_ROOT/.venv/bin/python" -m pip install -e ".[fused,bundled]")
+    (cd "$REPO_ROOT" && "$REPO_ROOT/.venv/bin/python" -m pip install -e ".[dev,fused,bundled]")
   fi
   PY="$REPO_ROOT/.venv/bin/python"
 fi
 
 command -v npm >/dev/null || { echo "npm not found — the dev loop needs Node 22"; exit 1; }
 "$PY" -c "import fused_render" 2>/dev/null || {
-  echo "fused_render not importable from $PY — run: pip install -e \".[fused,bundled]\""
+  echo "fused_render not importable from $PY — run: pip install -e \".[dev,fused,bundled]\""
   exit 1
 }
 

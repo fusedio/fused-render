@@ -1008,6 +1008,71 @@
     });
   }
 
+  // Write BYTES to a file, returning the fresh stat object. `blob` is a Blob or
+  // File — the thing a paste/drop event hands you — and the bytes land on disk
+  // unchanged, which writeFile cannot do: it takes UTF-8 text only, so a PNG
+  // round-tripped through it comes back mangled.
+  //
+  // Multipart, not base64 in JSON: base64 inflates the payload by a third,
+  // irrelevant for a screenshot and very relevant for a pasted video. The
+  // FormData is handed to fetch WITHOUT a Content-Type header on purpose — the
+  // browser generates `multipart/form-data; boundary=…`, and setting the header
+  // by hand drops the boundary and makes the body unparseable.
+  //
+  // Like writeFile, a read-only refusal (403 {"error":"readonly"}) becomes
+  // `type: "readonly"` so callers branch on the type, not the message. There is
+  // no optimistic lock and no `create`: a freshly pasted blob has no prior
+  // version to conflict with.
+  function uploadFile(path, blob) {
+    const form = new FormData();
+    form.append("path", path);
+    form.append("file", blob);
+    return fetch("/api/fs/upload", {
+      method: "POST",
+      headers: callHeaders({ "X-Fused": "1" }),
+      body: form,
+    })
+      .then((res) => res.json().then((data) => ({ res, data })))
+      .then(({ res, data }) => {
+        if (res.status === 403 && data && data.error === "readonly") {
+          const err = new Error("file is read-only");
+          err.type = "readonly";
+          throw err;
+        }
+        if (!res.ok) throw new Error((data && data.error) || "HTTP " + res.status);
+        return data;
+      });
+  }
+
+  // Create a single directory, returning its stat object. Parents are NOT
+  // auto-created (the server's contract, not this wrapper's).
+  //
+  // An existing path is typed `"exists"`, matching writeFile's create-409 and
+  // for the same reason: "it is already there" is a different fact from "it
+  // changed", and an ensure-this-directory caller wants to treat it as success.
+  function mkdir(path) {
+    return fetch("/api/fs/mkdir", {
+      method: "POST",
+      headers: callHeaders({ "Content-Type": "application/json", "X-Fused": "1" }),
+      body: JSON.stringify({ path: path }),
+    })
+      .then((res) => res.json().then((data) => ({ res, data })))
+      .then(({ res, data }) => {
+        if (res.status === 409) {
+          const err = new Error("directory already exists");
+          err.type = "exists";
+          throw err;
+        }
+        if (res.status === 403 && data && data.error === "readonly") {
+          const err = new Error("directory is read-only");
+          err.type = "readonly";
+          throw err;
+        }
+        if (!res.ok) throw new Error((data && data.error) || "HTTP " + res.status);
+        return data;
+      });
+  }
+
   // Ask an AI model: the shell runs the claude (Claude Code) CLI locally
   // (server.py /api/ai). Resolves with {text, model, usage}; rejects with an
   // Error carrying `.type` ("bad_request" | "ai_unavailable" | "ai_error" |
@@ -1273,6 +1338,8 @@
     writeFile,
     sidecarPath,
     targetPathFromSidecarPath,
+    uploadFile,
+    mkdir,
     ai,
     autoReload,
     params: { get, getAll, set, onChange },

@@ -58,6 +58,7 @@ if "__file__" not in globals():
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(HERE), "shared"))
+from appenv import workspace_dir as _workspace_dir
 from procutil import pid_alive as _pid_alive
 
 def _runs_root() -> str:
@@ -705,7 +706,8 @@ _DETACH = (
 
 
 def _start(file: str, message: str, session_id: str, model: str,
-           effort: str, permission_mode: str = "") -> dict:
+           effort: str, permission_mode: str = "",
+           message_via_stdin: bool = False) -> dict:
     file = os.path.abspath(file)
     if not os.path.isfile(file):
         return {"error": f"target file not found: {file}"}
@@ -724,7 +726,24 @@ def _start(file: str, message: str, session_id: str, model: str,
         else DEFAULT_PERMISSION_MODE
     cli_mode = PERMISSION_MODES[mode]
 
-    cmd = [_claude_bin(), "-p", message,
+    # `message_via_stdin` keeps the user's text out of argv entirely: the
+    # message is written to a file in the run dir as one stream-json user
+    # line, and the detached process reads it as its stdin (EOF after the one
+    # message, so -p still exits after the turn). The apps API uses this — it
+    # runs inside the server process, where argv is visible to every local
+    # user via `ps`, unlike the template path where the message came from the
+    # page's own runPython call.
+    if message_via_stdin:
+        with _private_open(os.path.join(run_dir, "stdin.jsonl")) as f:
+            json.dump({"type": "user", "message": {
+                "role": "user",
+                "content": [{"type": "text", "text": message}]}}, f)
+            f.write("\n")
+        message_argv = ["-p", "--input-format", "stream-json"]
+    else:
+        message_argv = ["-p", message]
+
+    cmd = [_claude_bin(), *message_argv,
            "--output-format", "stream-json",
            "--verbose", "--include-partial-messages",
            "--append-system-prompt", _system_prompt(file),
@@ -755,15 +774,76 @@ def _start(file: str, message: str, session_id: str, model: str,
         json.dump({"file": file, "message": message,
                    "resumed_from": session_id, "mode": mode}, f)
 
-    with _private_open(os.path.join(run_dir, "out.jsonl")) as out, \
-         _private_open(os.path.join(run_dir, "err.log")) as err:
-        proc = subprocess.Popen(cmd, stdout=out, stderr=err,
-                                cwd=os.path.dirname(file),
-                                stdin=subprocess.DEVNULL,
-                                **_DETACH)
+    stdin_path = os.path.join(run_dir, "stdin.jsonl")
+    stdin_fh = open(stdin_path, "rb") if message_via_stdin else None
+    try:
+        with _private_open(os.path.join(run_dir, "out.jsonl")) as out, \
+             _private_open(os.path.join(run_dir, "err.log")) as err:
+            proc = subprocess.Popen(cmd, stdout=out, stderr=err,
+                                    cwd=os.path.dirname(file),
+                                    stdin=stdin_fh or subprocess.DEVNULL,
+                                    **_DETACH)
+    finally:
+        if stdin_fh is not None:
+            stdin_fh.close()
     with _private_open(os.path.join(run_dir, "pid")) as f:
         f.write(str(proc.pid))
     return {"run_id": run_id}
+
+
+def _app_dir_for(path: str) -> str:
+    """The app folder containing `path`, or "" when it is not inside one.
+    An app dir is exactly <workspace>/<tag>/<name> under the Fused workspace
+    (appenv.workspace_dir). Mirrors fused_render/app_git.py:app_dir_for —
+    keep the two in step (templates must not import fused_render, D166)."""
+    root = _workspace_dir()
+    ap = os.path.abspath(path)
+    if not ap.startswith(root + os.sep):
+        return ""
+    parts = os.path.relpath(ap, root).split(os.sep)
+    if len(parts) < 2 or parts[0].startswith(".") or parts[1].startswith("."):
+        return ""
+    return os.path.join(root, parts[0], parts[1])
+
+
+def _commit_turn(file: str, message: str) -> None:
+    """FALLBACK sweep: commit whatever a finished turn left UNcommitted in
+    the target's APP repo.
+
+    App folders are version-controlled from creation (fused_render/app_git.py)
+    and the app's CLAUDE.md instructs claude to commit its own work in small
+    chunks as it goes — when it did, the tree is clean and this is a no-op.
+    This sweep only catches the turns where that instruction was not honoured,
+    so no turn's work is ever left outside history. Hard-scoped: a
+    target outside an app dir, or an app dir without a `.git`, commits nothing
+    — this template also chats about files in arbitrary folders, and silently
+    committing into a user's real repository is the one wrong move.
+
+    Best-effort throughout: no git, index.lock contention, nothing staged —
+    all mean "no commit", never a poll error. Identity rides per-invocation
+    (`-c user.*`) so a machine with no git config still commits, and `git -C`
+    replaces cwd= to keep Popen on the posix_spawn path (see apps.py)."""
+    app_dir = _app_dir_for(file)
+    if not app_dir or not os.path.isdir(os.path.join(app_dir, ".git")):
+        return
+    subject = " ".join((message or "").split())
+    subject = "Claude: " + (subject[:60] + "…" if len(subject) > 60 else subject) \
+        if subject else "Claude turn"
+
+    def git(*args):
+        return subprocess.run(
+            ["git", "-C", app_dir, "-c", "user.name=Fused",
+             "-c", "user.email=apps@fused.io", *args],
+            capture_output=True, text=True, timeout=30, close_fds=False)
+
+    try:
+        if git("add", "-A").returncode != 0:
+            return
+        if git("diff", "--cached", "--quiet").returncode == 0:
+            return  # nothing to commit (turn changed no files)
+        git("commit", "-q", "-m", subject)
+    except Exception:
+        pass
 
 
 def _alive(run_dir: str) -> bool:
@@ -893,6 +973,25 @@ def _poll(run_id: str) -> dict:
             meta = {}
     except (OSError, json.JSONDecodeError):
         meta = {}
+
+    # First poll that sees the run finished CLEANLY sweeps anything left
+    # uncommitted into the app's repo (one-shot via a marker, like the
+    # sidecar record below). This is a FALLBACK: the app's CLAUDE.md tells
+    # claude to commit as it works and end every turn with a clean tree, so
+    # when it honoured that this add -A finds nothing and no commit happens.
+    # Errored turns are skipped — a crash mid-edit is not a state worth
+    # enshrining; the next clean turn's sweep picks the survivors up. The
+    # marker is claimed BEFORE the commit so a racing concurrent poll can't
+    # double-commit.
+    commit_marker = os.path.join(run_dir, "committed")
+    if done and not error and "file" in meta \
+            and not os.path.exists(commit_marker):
+        try:
+            fd = os.open(commit_marker, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            os.close(fd)
+            _commit_turn(meta["file"], meta.get("message", ""))
+        except OSError:
+            pass  # another poll claimed it, or the run dir is going away
 
     # First poll that sees the session id writes it to the sidecar (marker
     # file keeps the write one-shot across the remaining polls).

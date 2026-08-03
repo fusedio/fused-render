@@ -30,7 +30,7 @@ import {
   freeDuplicatePath,
   freePastePath,
   copyToClipboard,
-  clearClipboardIfDeleted,
+  notePathDeleted,
   remapClipboardPath,
   pruneDescendantPaths,
   trashEntry,
@@ -50,6 +50,8 @@ import { pushToast } from "../lib/toast";
 import ContextMenu, { type MenuEntry, type MenuItem } from "../components/ContextMenu";
 import { MenuIcons } from "../components/MenuIcons";
 import { PromptDialog, ConfirmDialog, nameError } from "../components/FsDialogs";
+import { SplitRightIcon } from "../components/SplitIcons";
+import ListingPreviewPane from "../components/ListingPreviewPane";
 
 // A right-clicked row, normalized so both listing rows (name relative to the
 // listed folder) and search-result rows (a `rel` path into a subtree) drive the
@@ -131,8 +133,86 @@ function resolveSort(fsPath: string): { sort: SortKey; order: SortOrder } {
   return { sort, order };
 }
 
+// The preview pane's per-folder state. Visibility follows the sort's model:
+// an explicit `?preview` in the URL wins (and rides along on directory
+// navigation — see lib/router navigate, which carries it so the pane is
+// sticky between folders), otherwise this folder's saved viewstate (keys
+// `pane`/`panew` alongside `sort`/`order`). Width is viewstate-only — a pixel
+// width isn't something a shared link should impose. A folder with no saved
+// width opens the pane at HALF the split container (width null until the
+// measuring effect resolves it; PANE_FALLBACK_W covers the pre-paint frame
+// and the unmeasurable edge). Default off — a folder never toggled shows the
+// plain listing exactly as before. `pane` and `panew` are independent: turning
+// the pane off keeps a dragged width, so re-opening the folder restores it.
+const PANE_MIN_W = 220;
+const LIST_MIN_W = 220;
+const PANE_MAX_FRAC = 0.65;
+const PANE_DEFAULT_FRAC = 0.5;
+const PANE_FALLBACK_W = 420;
+
+// The one place the FS-12 clamps live, so the drag and the measured default
+// cannot disagree. Two independent ceilings: the 65 % fraction (the list stays
+// the primary surface) and the LIST_MIN_W floor the list needs in pixels — on
+// a narrow window 65 % of the container leaves the list well under 220 px, so
+// the pixel ceiling is the binding one there. PANE_MIN_W is applied last: in
+// the degenerate case (a container too small to satisfy both minimums) the
+// pane keeps its floor and the list scrolls, which is what the old template's
+// `min-width` did.
+function clampPaneWidth(containerW: number, width: number): number {
+  return Math.max(PANE_MIN_W, Math.min(containerW * PANE_MAX_FRAC, containerW - LIST_MIN_W, width));
+}
+
+function resolvePane(fsPath: string): { on: boolean; width: number | null } {
+  const s = new URLSearchParams(getViewState(fsPath));
+  const url = new URLSearchParams(location.search);
+  // `preview=true` exactly — the owner's literal format (any other value
+  // reads as absent, falling back to the saved state).
+  const on = url.get("preview") !== null ? url.get("preview") === "true" : s.get("pane") === "1";
+  const w = parseInt(s.get("panew") || "", 10);
+  return { on, width: Number.isFinite(w) && w >= PANE_MIN_W ? w : null };
+}
+
+// Merge the pane keys into this folder's saved state without touching a saved
+// sort (and vice versa — setSort merges the same way). A null width (still at
+// the measured-default half) isn't persisted — only a dragged width is a
+// choice worth remembering. The two keys are INDEPENDENT: `panew` outlives a
+// toggle-off, so closing the pane and coming back to the folder re-opens at
+// the width that was dragged rather than re-measuring the default.
+function savePaneState(fsPath: string, on: boolean, width: number | null): void {
+  const s = new URLSearchParams(getViewState(fsPath));
+  if (on) s.set("pane", "1");
+  else s.delete("pane");
+  if (width !== null) s.set("panew", String(Math.round(width)));
+  else s.delete("panew");
+  const qs = s.toString();
+  setViewState(fsPath, qs ? "?" + qs : "");
+}
+
 function currentQuery(): string {
   return new URLSearchParams(location.search).get("q") || "";
+}
+
+// Shimmering placeholder rows shown while the listing fetch is in flight —
+// same column shape as the real rows (icon + name + size + mtime), just with
+// shimmer bars instead of text so the table never reads as "frozen". The
+// width cycles make the bars ragged like real filenames.
+const SKEL_NAME_W = [70, 45, 82, 38, 60, 50, 74, 42, 66, 34];
+const SKEL_SIZE_W = [34, 28, 40, 24, 36, 30, 26, 38, 32, 22];
+function skeletonRows(n: number): React.ReactNode {
+  return Array.from({ length: n }, (_, i) => (
+    <tr key={i} className="skel-row">
+      <td className="name">
+        <span className="skel-bar icon-skel" />
+        <span className="skel-bar" style={{ width: `${SKEL_NAME_W[i % SKEL_NAME_W.length]}%` }} />
+      </td>
+      <td className="size">
+        <span className="skel-bar" style={{ width: SKEL_SIZE_W[i % SKEL_SIZE_W.length] }} />
+      </td>
+      <td className="mtime">
+        <span className="skel-bar" style={{ width: 84 }} />
+      </td>
+    </tr>
+  ));
 }
 
 // A dot-leading query segment is explicit intent to SEE hidden entries.
@@ -367,12 +447,26 @@ export default function Listing({
   // (not navigate) so the view doesn't remount.
   useEffect(() => {
     if (new URLSearchParams(location.search).get("sort")) return; // URL is authoritative
-    const saved = getViewState(fsPath);
-    if (!saved) return; // nothing stored → leave default sort + clean URL
-    const s = new URLSearchParams(saved);
+    const s = new URLSearchParams(getViewState(fsPath));
+    // No stored SORT → leave default sort + clean URL. (The stored string may
+    // still carry pane keys — those never ride the URL.)
+    if (!s.get("sort")) return;
     const params = new URLSearchParams(location.search);
     params.set("sort", s.get("sort") || "name");
     params.set("order", s.get("order") === "desc" ? "desc" : "asc");
+    replaceSearch(location.pathname + "?" + params.toString());
+  }, [fsPath]);
+  // Same URL reflection for a pane restored from saved viewstate (URL carried
+  // no `preview`): put `preview=true` on the address bar so refresh, bookmarks
+  // and onward navigation (which carries the param) all see the shown state.
+  // Only ever ADDS the param — a URL without it and a folder without saved
+  // pane state keep the clean URL, and an explicit `?preview=false` stays
+  // authoritative (resolvePane already read it as off).
+  useEffect(() => {
+    if (new URLSearchParams(location.search).get("preview") !== null) return; // URL is authoritative
+    if (!new URLSearchParams(getViewState(fsPath)).get("pane")) return;
+    const params = new URLSearchParams(location.search);
+    params.set("preview", "true");
     replaceSearch(location.pathname + "?" + params.toString());
   }, [fsPath]);
   const [refresh, setRefresh] = useState(0); // bumped by the dir watch socket
@@ -414,6 +508,77 @@ export default function Listing({
   const selectedPath = sel.lead;
   // A Load more fetch (next page of a truncated listing) is in flight.
   const [loadingMore, setLoadingMore] = useState(false);
+
+  // --- Preview pane (right-hand split) ---------------------------------------
+  // Visibility restores URL-first (resolvePane: `?preview=true` wins, then the
+  // folder's saved viewstate); width is viewstate-only. Toggling writes BOTH:
+  // the URL (replaceSearch, like setSort — on sets `preview=true`, off deletes
+  // it; navigate() then carries the param between folders, making the pane
+  // sticky) and the viewstate (so a folder re-opened from a clean URL
+  // remembers). Width is clamped live during the divider drag; the max
+  // fraction is enforced against the split container's current size.
+  const [pane, setPane] = useState<{ on: boolean; width: number | null }>(() => resolvePane(fsPath));
+  const splitRef = useRef<HTMLDivElement>(null);
+  // Is `pane.width` a width the USER chose (restored from `panew`, or dragged
+  // this session), as opposed to the measured half-container default? Only a
+  // chosen width is persisted — the measuring effect below fills `pane.width`
+  // in, which would otherwise make the default indistinguishable from a drag
+  // and let a later toggle write it to `panew`.
+  const paneSized = useRef(pane.width !== null);
+  // No saved width: default to half the split container, measured at first
+  // open (layout effect — before paint, so the pane never flashes another
+  // width). The clamps still apply; the fallback constant only covers the
+  // unmeasurable edge (ref not mounted yet).
+  useLayoutEffect(() => {
+    if (!pane.on || pane.width !== null) return;
+    const w = splitRef.current?.getBoundingClientRect().width;
+    const half = w ? clampPaneWidth(w, w * PANE_DEFAULT_FRAC) : PANE_FALLBACK_W;
+    setPane((prev) => (prev.width === null ? { ...prev, width: half } : prev));
+  }, [pane.on, pane.width]);
+  const togglePane = () => {
+    setPane((prev) => {
+      const next = { ...prev, on: !prev.on };
+      const params = new URLSearchParams(location.search);
+      if (next.on) params.set("preview", "true");
+      else params.delete("preview");
+      const qs = params.toString();
+      replaceSearch(location.pathname + (qs ? "?" + qs : ""));
+      savePaneState(fsPath, next.on, paneSized.current ? next.width : null);
+      return next;
+    });
+  };
+  // The divider drag: pointer capture keeps the drag alive when the cursor
+  // crosses into the pane's iframe (which would otherwise swallow mousemove).
+  const onDividerPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    const divider = e.currentTarget;
+    divider.setPointerCapture(e.pointerId);
+    divider.classList.add("dragging");
+    let width = pane.width;
+    let moved = false;
+    const onMove = (ev: PointerEvent) => {
+      const rect = splitRef.current?.getBoundingClientRect();
+      if (!rect) return;
+      moved = true;
+      // The pane is the right side: its width is the distance from the cursor
+      // to the container's right edge, run through the shared FS-12 clamps.
+      width = clampPaneWidth(rect.width, rect.right - ev.clientX);
+      setPane((prev) => (prev.width === width ? prev : { ...prev, width }));
+    };
+    const onUp = () => {
+      divider.classList.remove("dragging");
+      divider.removeEventListener("pointermove", onMove);
+      divider.removeEventListener("pointerup", onUp);
+      divider.removeEventListener("pointercancel", onUp);
+      // Only a drag that actually moved the divider is a chosen width; a bare
+      // click on it leaves the measured default unpersisted.
+      if (moved) paneSized.current = true;
+      savePaneState(fsPath, true, paneSized.current ? width : null);
+    };
+    divider.addEventListener("pointermove", onMove);
+    divider.addEventListener("pointerup", onUp);
+    divider.addEventListener("pointercancel", onUp);
+  };
 
   // --- Context-menu / file-operation state ----------------------------------
   // The open context menu (position + items) and the open modal, both local to
@@ -895,7 +1060,11 @@ export default function Listing({
     setSortState(next);
     // Remember this folder's choice so returning to it later restores this sort.
     // Only sort/order are persisted — the in-folder search `q` stays transient.
-    setViewState(fsPath, "?sort=" + next.sort + "&order=" + next.order);
+    // Merged into the saved string so the pane keys (resolvePane) survive.
+    const saved = new URLSearchParams(getViewState(fsPath));
+    saved.set("sort", next.sort);
+    saved.set("order", next.order);
+    setViewState(fsPath, "?" + saved.toString());
   };
 
   const setSearchSortKey = (key: SortKey) => {
@@ -1431,7 +1600,7 @@ export default function Listing({
           try {
             for (const row of rows) {
               await deleteEntry(row.path, row.isDir);
-              clearClipboardIfDeleted(row.path);
+              notePathDeleted(row.path);
               deleted++;
             }
           } catch (e) {
@@ -1465,7 +1634,7 @@ export default function Listing({
         const r = await trashEntry(row.path, row.isDir);
         if (r.status === "trashed") {
           trashed.push(row);
-          clearClipboardIfDeleted(row.path);
+          notePathDeleted(row.path);
         } else if (r.status === "unsupported") {
           unsupported.push(row);
         } else if (failed === null) {
@@ -1586,10 +1755,14 @@ export default function Listing({
   // Mouse selection on a row:
   //   • Shift+click  — select the contiguous range anchor..row (rendered order);
   //   • Mod+click    — toggle this row in/out and re-anchor on it;
-  //   • plain click  — select only this row AND open it, which is what a single
-  //     click has always done in this explorer (it's the primary way to browse,
-  //     so multi-select doesn't take it away; the modified clicks are the ones
-  //     that build a selection instead of navigating).
+  //   • plain click  — depends on the preview pane. Pane OFF (the default):
+  //     select AND open, what a single click has always done in this explorer.
+  //     Pane ON: select only — the click's job is to drive the pane preview
+  //     (files and folders both), and double-click is what opens. Enter still
+  //     opens either way (the keyboard model doesn't change with the pane).
+  // No single/double-click delay timer: with the pane on, the first click of a
+  // double-click selects (harmless — the pane fetch is superseded/unmounted by
+  // the navigation the second click triggers).
   // Native text selection is suppressed in onRowMouseDown, not here — see there.
   const onRowClick = (e: React.MouseEvent, path: string, row: RowCtx) => {
     if (e.shiftKey && !isMod(e)) {
@@ -1603,7 +1776,14 @@ export default function Listing({
       return;
     }
     selectOnly(path);
-    navigate(row.path, { isDir: row.isDir });
+    if (!pane.on) navigate(row.path, { isDir: row.isDir });
+  };
+
+  // Double-click opens when the pane owns the single click. Pane off: the
+  // single click already navigated, so this is a no-op (navigation unmounts
+  // the listing before a second click can land anyway).
+  const onRowDoubleClick = (row: RowCtx) => {
+    if (pane.on) navigate(row.path, { isDir: row.isDir });
   };
 
   // Kill the browser's own text selection for Shift/Mod+click, on MOUSEDOWN —
@@ -1795,6 +1975,14 @@ export default function Listing({
                       parentDir: dirname(childPath),
                     })
                   }
+                  onDoubleClick={() =>
+                    onRowDoubleClick({
+                      path: childPath,
+                      name: entry.rel.split("/").pop() ?? entry.rel,
+                      isDir: entry.is_dir,
+                      parentDir: dirname(childPath),
+                    })
+                  }
                   onMouseDown={onRowMouseDown}
                   onContextMenu={(e) =>
                     openRowMenu(e, {
@@ -1852,25 +2040,15 @@ export default function Listing({
       );
     }
   } else if (state.status === "loading") {
-    body = (
-      <tr>
-        <td colSpan={3} className="status-message">
-          Loading…
-        </td>
-      </tr>
-    );
+    body = skeletonRows(8);
   } else if (state.status === "error") {
     // In the provisional scaffold phase a list failure is most likely a stale
     // dir hint pointing at a file (its /api/fs/list 404s); suppress the hard
-    // error and show neutral loading — stat is still resolving and will replace
-    // this scaffold with the correct file view. Post-stat (committed render),
-    // a genuine list failure surfaces normally.
+    // error and show the neutral loading skeleton — stat is still resolving and
+    // will replace this scaffold with the correct file view. Post-stat
+    // (committed render), a genuine list failure surfaces normally.
     body = provisional ? (
-      <tr>
-        <td colSpan={3} className="status-message">
-          Loading…
-        </td>
-      </tr>
+      skeletonRows(8)
     ) : (
       <tr>
         <td colSpan={3} className="status-message error">
@@ -1893,6 +2071,14 @@ export default function Listing({
           }
           onClick={(e) =>
             onRowClick(e, childPath, {
+              path: childPath,
+              name: entry.name,
+              isDir: entry.is_dir,
+              parentDir: base,
+            })
+          }
+          onDoubleClick={() =>
+            onRowDoubleClick({
               path: childPath,
               name: entry.name,
               isDir: entry.is_dir,
@@ -1974,71 +2160,112 @@ export default function Listing({
   return (
     <div className="listing">
       <div className="listing-search">
-        <input
-          ref={searchInputRef}
-          type="search"
-          className="listing-search-input"
-          placeholder="Start typing to search…"
-          value={query}
-          onFocus={prefetchWalk}
-          onChange={(e) => setQuery(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Escape") {
-              e.preventDefault();
-              setQuery("");
-              e.currentTarget.blur();
-            }
-          }}
-        />
-        {searching && (validWalk.status === "idle" || validWalk.status === "streaming") && (
-          <span className="listing-search-spinner" aria-hidden="true" />
-        )}
-        {searchCount !== null && (
-          <span className="listing-search-count" title={searchCountTitle}>
-            {searchCount}
-          </span>
-        )}
-        {/* Multi-selection readout — a single selected row needs no count. */}
-        {sel.paths.length > 1 && (
-          <span className="listing-search-count">{sel.paths.length} selected</span>
-        )}
+        {/* The box wraps input + pinned chips so the pane toggle can sit to
+            their right without disturbing the chips' inside-the-input pin. */}
+        <div className="listing-search-box">
+          <input
+            ref={searchInputRef}
+            type="search"
+            className="listing-search-input"
+            placeholder="Start typing to search…"
+            value={query}
+            onFocus={prefetchWalk}
+            onChange={(e) => setQuery(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Escape") {
+                e.preventDefault();
+                setQuery("");
+                e.currentTarget.blur();
+              }
+            }}
+          />
+          {searching && (validWalk.status === "idle" || validWalk.status === "streaming") && (
+            <span className="listing-search-spinner" aria-hidden="true" />
+          )}
+          {searchCount !== null && (
+            <span className="listing-search-count" title={searchCountTitle}>
+              {searchCount}
+            </span>
+          )}
+          {/* Multi-selection readout — a single selected row needs no count. */}
+          {sel.paths.length > 1 && (
+            <span className="listing-search-count">{sel.paths.length} selected</span>
+          )}
+        </div>
+        <button
+          type="button"
+          className={"listing-pane-toggle" + (pane.on ? " active" : "")}
+          title={pane.on ? "Hide preview pane" : "Show preview pane"}
+          aria-pressed={pane.on}
+          onClick={togglePane}
+        >
+          <SplitRightIcon />
+        </button>
       </div>
-      <div
-        className={"listing-scroll" + (isStale ? " listing-stale" : "")}
-        onContextMenu={openBackgroundMenu}
-      >
-        <table className="listing-table">
-          <thead>
-            <tr>
-              {(Object.entries(SORT_KEYS) as [SortKey, string][]).map(([key, label]) =>
-                searching ? (
-                  // While searching, headers sort the results; no active arrow
-                  // means relevance (fuzzy-rank) order.
-                  <th
-                    key={key}
-                    className={"sortable" + (searchSort?.sort === key ? " sorted" : "")}
-                    onClick={() => setSearchSortKey(key)}
-                  >
-                    {label}
-                    {searchSort?.sort === key && (
-                      <span className="sort-arrow">{searchSort.order === "asc" ? "▲" : "▼"}</span>
-                    )}
-                  </th>
-                ) : (
-                  <th
-                    key={key}
-                    className={"sortable" + (key === sort ? " sorted" : "")}
-                    onClick={() => setSort(key)}
-                  >
-                    {label}
-                    {key === sort && <span className="sort-arrow">{order === "asc" ? "▲" : "▼"}</span>}
-                  </th>
-                )
-              )}
-            </tr>
-          </thead>
-          <tbody>{body}</tbody>
-        </table>
+      <div className="listing-split" ref={splitRef}>
+        <div
+          className={"listing-scroll" + (isStale ? " listing-stale" : "")}
+          onContextMenu={openBackgroundMenu}
+        >
+          <table className="listing-table">
+            <thead>
+              <tr>
+                {(Object.entries(SORT_KEYS) as [SortKey, string][]).map(([key, label]) =>
+                  searching ? (
+                    // While searching, headers sort the results; no active arrow
+                    // means relevance (fuzzy-rank) order.
+                    <th
+                      key={key}
+                      className={"sortable" + (searchSort?.sort === key ? " sorted" : "")}
+                      onClick={() => setSearchSortKey(key)}
+                    >
+                      {label}
+                      {searchSort?.sort === key && (
+                        <span className="sort-arrow">{searchSort.order === "asc" ? "▲" : "▼"}</span>
+                      )}
+                    </th>
+                  ) : (
+                    <th
+                      key={key}
+                      className={"sortable" + (key === sort ? " sorted" : "")}
+                      onClick={() => setSort(key)}
+                    >
+                      {label}
+                      {key === sort && <span className="sort-arrow">{order === "asc" ? "▲" : "▼"}</span>}
+                    </th>
+                  )
+                )}
+              </tr>
+            </thead>
+            <tbody>{body}</tbody>
+          </table>
+        </div>
+        {pane.on && (
+          <>
+            <div
+              className="listing-divider"
+              onPointerDown={onDividerPointerDown}
+              role="separator"
+              aria-orientation="vertical"
+            />
+            <div
+              className="listing-pane-slot"
+              // Null width = first open with nothing saved: half the container
+              // as a flex percentage until the measuring layout effect pins a
+              // pixel value (same visual, so no flash either way).
+              style={{ flexBasis: pane.width ?? `${PANE_DEFAULT_FRAC * 100}%` }}
+            >
+              {/* Keyed on the previewed path: switching rows remounts the pane,
+                  so a stale iframe never lingers a frame while the new row's
+                  stat/list resolves. */}
+              <ListingPreviewPane
+                key={sel.paths.length === 1 && leadRow ? leadRow.path : "none"}
+                row={sel.paths.length === 1 && leadRow ? leadRow : null}
+                selCount={sel.paths.length}
+              />
+            </div>
+          </>
+        )}
       </div>
 
       {menu && (

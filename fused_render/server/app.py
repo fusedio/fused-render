@@ -17,12 +17,14 @@ import os
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
+from fused_render import app_commit_queue
 from fused_render import calls as shell_calls
 from fused_render.account import router as account_router
 from fused_render.deploy import router as deploy_router
 from fused_render.shell.bookmarks import router as bookmarks_router
 from fused_render.shell.prefs import router as prefs_router
 from fused_render.shell.recents import router as recents_router
+from fused_render.user_skills import sync_user_skills
 
 from fused_render.server.ai import prewarm_ai, router as ai_router, shutdown_ai_session
 from fused_render.server.common import (
@@ -33,6 +35,8 @@ from fused_render.server.common import (
     unhandled_exception,
     _forced_engine,
 )
+from fused_render.server.routers.apps import router as apps_router
+from fused_render.server.routers.clipboard import router as clipboard_router
 from fused_render.server.routers.config import router as config_router
 from fused_render.server.routers.env import router as env_router
 from fused_render.server.routers.export import router as export_router
@@ -89,10 +93,14 @@ def export_app_env() -> None:
     refreshed on every store write, not just at startup.
     """
     from fused_render.shell import mounts as shell_mounts
+    from fused_render.shell import seed as shell_seed
     from fused_render.shell import storage as shell_storage
 
     os.environ["FUSED_RENDER_HOME_DIR"] = shell_storage.home_dir()
     os.environ["FUSED_RENDER_MOUNTS_DIR"] = shell_mounts.mounts_dir()
+    # Where app folders live — the claude template commits a finished turn
+    # into the containing app's repo, and scopes that to this workspace.
+    os.environ["FUSED_RENDER_WORKSPACE_DIR"] = shell_seed.fused_dir()
     shell_mounts.export_ro_mounts_env()
     _export_bundled_uv_path()
 
@@ -175,9 +183,31 @@ def create_app(start_dir: str) -> FastAPI:
     async def _startup_prewarm_ai():
         prewarm_ai()
 
+    # User-level skill sync (D185): install/refresh the canonical fused-render
+    # skills in Claude Code's skills dir so app/template sessions can invoke
+    # them by name. A startup event (not create_app body) on purpose — tests
+    # build the app without running lifespan, so they never write outside the
+    # redirected dirs.
+    @app.on_event("startup")
+    async def _startup_sync_user_skills():
+        sync_user_skills()
+
     @app.on_event("shutdown")
     async def _startup_shutdown_ai():
         await shutdown_ai_session()
+
+    # Debounced app-repo committer (app_commit_queue): the /api/fs mutation
+    # hooks mark apps dirty, this one worker turns each editing burst into a
+    # single commit. Startup event on purpose — tests that build the app
+    # without lifespan queue marks and flush() them explicitly. Shutdown
+    # flushes so a pending commit is not dropped by a dev-server reload.
+    @app.on_event("startup")
+    async def _startup_commit_queue():
+        app_commit_queue.start()
+
+    @app.on_event("shutdown")
+    async def _shutdown_commit_queue():
+        await app_commit_queue.stop()
 
     app.exception_handler(Exception)(unhandled_exception)
 
@@ -248,12 +278,23 @@ def create_app(start_dir: str) -> FastAPI:
     # /api/desktop/shutdown — a generic app-info/control grab-bag that doesn't
     # map to any single fs/template/ai concern (_server_config.py).
     app.include_router(config_router)
+    # The Home view's apps backend (routers/apps.py): list workspace app
+    # folders + scaffold new ones from the app starter kit.
+    app.include_router(apps_router)
     # GitHub deep links (SPEC §26, D110): GET /clone confirm page +
     # POST /api/clone sparse-clone into ~/Documents/Fused. deeplink.py never
     # imports server, so the include stays acyclic like shell/*.
     from fused_render.deeplink import router as deeplink_router
 
     app.include_router(deeplink_router)
+    # Cloning a DEPLOYED page (app_clone.py) — GET /api/clone-app/info previews a pasted
+    # page URL, POST /api/clone-app downloads + validates + unpacks it into
+    # ~/Documents/Fused. Distinct from deeplink's git clone above: no `.git`, no identity,
+    # no update-in-place — every clone lands in a fresh folder. Like shell/*, it imports no
+    # server module, so the include stays acyclic.
+    from fused_render.app_clone import router as app_clone_router
+
+    app.include_router(app_clone_router)
     # Deploy (hosted publish through the fused CLI) — export + `fused share`
     # orchestration and the per-page deployment pointer store (deploy.py).
     app.include_router(deploy_router)
@@ -285,5 +326,9 @@ def create_app(start_dir: str) -> FastAPI:
     app.include_router(env_router)
     app.include_router(ai_router)
     app.include_router(export_router)
+    # The OS clipboard bridge (routers/clipboard.py): /api/clipboard/files, the
+    # local-machine seam that lets a Copy here paste in Finder/Explorer and a
+    # copy there paste here (SPEC §3).
+    app.include_router(clipboard_router)
 
     return app

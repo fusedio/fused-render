@@ -9,6 +9,7 @@
 import { listDir, deleteEntry, statPath, resolveConditions } from "./api";
 import type { TemplateEntry } from "./api";
 import { getClipboard, setClipboard } from "./fs-clipboard";
+import { dropRecentsFor } from "./recents";
 import type { MenuItem } from "../components/ContextMenu";
 import { KNOWN_SENTINEL_MODES, modeTitle, templateModeIcon } from "../components/ModeSwitcher";
 
@@ -174,19 +175,35 @@ export function pruneDescendantPaths(paths: string[]): string[] {
   return paths.filter((p) => !paths.some((other) => other !== p && p.startsWith(other + "/")));
 }
 
-// After a successful delete/trash, drop the module clipboard if it points at
-// the removed entry — either the exact path, or something inside it when a
-// directory was deleted (prefix + separator). Otherwise a later Paste of that
-// cut/copy would target a source that no longer exists.
+// The ONE call every delete/trash site makes with the path that went away, so
+// the shell's references to it cannot rot. Two of them today:
+//
+//   * the clipboard, if a cut/copy pointed at it (a later Paste would target a
+//     source that no longer exists), and
+//   * Recents, whose row would otherwise sit in the sidebar pointing at a
+//     deleted file until some later navigation refreshed the list (RC-7 hides
+//     it on the next GET, but a delete triggers no GET).
+//
+// One function rather than two adjacent calls at four sites: the next thing that
+// needs to hear about a delete gets added here, not hunted for across the views.
+export function notePathDeleted(deleted: string): void {
+  clearClipboardIfDeleted(deleted);
+  dropRecentsFor(deleted);
+}
+
+// Drop the module clipboard if it points at the removed entry — either the exact
+// path, or something inside it when a directory was deleted (prefix + separator).
 // A multi-entry clipboard only drops the paths that were removed; it clears
 // entirely once nothing it referenced survives (the empty-list state is spelled
 // null — see the Clipboard invariant).
-export function clearClipboardIfDeleted(deleted: string): void {
+function clearClipboardIfDeleted(deleted: string): void {
   const clip = getClipboard();
   if (!clip) return;
   const kept = clip.paths.filter((p) => p !== deleted && !p.startsWith(deleted + "/"));
   if (kept.length === clip.paths.length) return;
-  setClipboard(kept.length ? { ...clip, paths: kept } : null);
+  // Not mirrored to the OS: this is repairing our own reference after a
+  // delete, not the user copying something. See setClipboard's mirrorToOs.
+  setClipboard(kept.length ? { ...clip, paths: kept } : null, false);
 }
 
 // After a successful rename/move, repoint the module clipboard if it was
@@ -211,7 +228,9 @@ export function remapClipboardPath(oldPath: string, newPath: string): void {
     }
     return p;
   });
-  if (changed) setClipboard({ ...clip, paths });
+  // Not mirrored, for the same reason as clearClipboardIfDeleted: a rename is
+  // not a copy gesture, and the OS clipboard belongs to whoever last wrote it.
+  if (changed) setClipboard({ ...clip, paths }, false);
 }
 
 // Turn a raw fs-action failure into a human sentence for the toast. The server

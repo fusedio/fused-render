@@ -2,6 +2,7 @@
 // Rendered by every view: path crumbs for listing/preview, a static label for
 // the layout modes (LM-11 / TM-9 — ★/update still operate on currentUrl()).
 import React, { useEffect, useRef, useState } from "react";
+import { requestCloneApp } from "../lib/cloneApp";
 import { navigate, navigateUrl, urlForFsPath, currentUrl, IS_EMBED } from "../lib/router";
 import { basename } from "../lib/format";
 import { isMod } from "../lib/platform";
@@ -198,14 +199,25 @@ function enterPanel(fsPath: string, dir: "row" | "col"): void {
   navigateUrl(panelUrl(seg + (dir === "row" ? "," : ";") + seg, null));
 }
 
-// Carry the active `_mode` (e.g. a folder viewed in "preview") across top-bar
+// Carry the active `_mode` (e.g. a folder viewed as "graph") across top-bar
 // navigation so moving between folders preserves the chosen view. Other query
-// params are dropped — a fresh path is a fresh view — and an unknown `_mode`
-// on the target silently falls back to its default (Preview.activeTemplate).
+// params are dropped — a fresh path is a fresh view — except the listing's
+// sticky `preview` (pane visibility), which navigate() itself carries for
+// directory targets; the `_mode` branch here must carry it the same way or a
+// breadcrumb hop out of a moded folder would silently close the pane. An
+// unknown `_mode` on the target silently falls back to its default
+// (Preview.activeTemplate).
 function navigatePreservingMode(target: string): void {
-  const mode = new URLSearchParams(location.search).get("_mode");
-  if (mode) navigateUrl(urlForFsPath(target, "?_mode=" + encodeURIComponent(mode)));
-  else navigate(target, { isDir: true }); // breadcrumb targets are always dirs
+  const url = new URLSearchParams(location.search);
+  const mode = url.get("_mode");
+  if (mode) {
+    const params = new URLSearchParams({ _mode: mode });
+    const preview = url.get("preview");
+    if (preview !== null) params.set("preview", preview);
+    navigateUrl(urlForFsPath(target, "?" + params.toString()));
+  } else {
+    navigate(target, { isDir: true }); // breadcrumb targets are always dirs
+  }
 }
 
 // Open a URL typed/pasted into the path bar. Every failure is an error toast
@@ -231,6 +243,15 @@ async function openUrl(url: string, scheme: string): Promise<void> {
       // s3://<bucket> — add one from the Mounts page in the sidebar").
       pushToast({ msg: (e as Error).message, tone: "error" });
     }
+    return;
+  }
+  if (scheme === "https") {
+    // A deployed Fused Render page (SPEC §35). The path bar is where a user naturally
+    // pastes a link someone sent them, and "Can't open https:// URLs in the explorer" was
+    // both true and useless. The flow's own confirm step vets the URL and reports why if it
+    // is not a clonable page, so this hands the link over rather than pre-judging it here —
+    // one place decides what a clone URL is.
+    requestCloneApp(url);
     return;
   }
   pushToast({ msg: `Can't open ${scheme}:// URLs in the explorer`, tone: "error" });

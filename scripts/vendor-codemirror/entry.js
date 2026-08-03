@@ -16,7 +16,9 @@ import { EditorState, StateField, StateEffect, RangeSet } from "@codemirror/stat
 import { WidgetType, ViewPlugin, MatchDecorator, keymap } from "@codemirror/view";
 import { EditorSelection, RangeSetBuilder, Prec } from "@codemirror/state";
 import { syntaxTree } from "@codemirror/language";
-import { autocompletion } from "@codemirror/autocomplete";
+// `acceptCompletion` because Tab has to take the open completion before it
+// indents (MD-18): CM's own completionKeymap binds only Enter to it.
+import { autocompletion, acceptCompletion } from "@codemirror/autocomplete";
 import { indentMore, indentLess } from "@codemirror/commands";
 // GFM is what `markdownLanguage` adds over the CommonMark base (tables, task
 // lists, strikethrough, autolinks), so the template passes it as the base.
@@ -59,6 +61,7 @@ export {
   Prec,
   syntaxTree,
   autocompletion,
+  acceptCompletion,
   indentMore,
   indentLess,
   markdown,
