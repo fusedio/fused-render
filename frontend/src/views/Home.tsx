@@ -665,10 +665,11 @@ function Doorway({
 }
 
 // One row in the Recent list: name, tag, last-used — no icon. Same open
-// behavior as the /apps cards: entry HTML if present, else the folder.
+// behavior as the /apps cards: the app FOLDER in the claude_split view when
+// an entry exists, else the plain folder.
 function RecentRow({ app }: { app: AppInfo }) {
   const open = () => {
-    if (app.entry_html) navigate(app.entry_html, { isDir: false });
+    if (app.entry_html) navigate(app.path, { isDir: true, mode: "claude_split" });
     else navigate(app.path, { isDir: true });
   };
   const title = app.title || app.name;
