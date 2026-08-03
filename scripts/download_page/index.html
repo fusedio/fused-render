@@ -1,193 +1,569 @@
 <!doctype html>
-<!-- The download page served at the root of the fused-render CDN
+<!-- The landing + download page served at the root of the fused-render CDN
      (render.fused.io). Published to s3://fused-render/index.html by
      .github/workflows/release.yml on every release, alongside latest.json
      (written by write_manifest.py), which this page reads to fill in the
      current version and artifact links, and og-image.png (the social-preview
-     card referenced by the Open Graph/Twitter tags below). The page renders
-     self-contained: no external assets, the only network call at load is the
-     same-origin /latest.json fetch — og-image.png is fetched only by social
-     crawlers building link previews, never by the page itself. -->
+     card referenced by the Open Graph/Twitter tags below). Screenshots live
+     under /assets/ next to this page and must be published with it.
+     The only network calls at load are same-origin: /latest.json and the
+     /assets/ images. -->
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Fused Render — download</title>
-<meta name="description" content="A local file explorer with Python-powered interactive HTML views — browse any directory in the browser, preview your data, and author pages that call local Python. Download for macOS, Windows, and Linux.">
+<title>Fused Render — see your files</title>
+<meta name="description" content="A local file explorer that renders your data in the browser: parquet, maps, 3D, PDFs and 40+ formats. Runs on 127.0.0.1. Nothing else to install.">
 <meta name="theme-color" content="#141414">
-<link rel="canonical" href="https://render.fused.io/">
-
-<!-- Social preview (Open Graph + Twitter Card). Absolute URLs use the public
-     render.fused.io home (see the page comment above); og-image.png is
-     published to s3://fused-render/og-image.png next to this page by
-     release.yml. Keep these in sync with <title>/description if they change. -->
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="Fused Render">
 <meta property="og:title" content="Fused Render">
-<meta property="og:description" content="A local file explorer with Python-powered interactive HTML views — browse any directory in the browser, preview your data, and author pages that call local Python.">
+<meta property="og:description" content="Browse any folder in the browser. Every file just opens. 100% local.">
 <meta property="og:url" content="https://render.fused.io/">
 <meta property="og:image" content="https://render.fused.io/og-image.png">
 <meta property="og:image:type" content="image/png">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
-<meta property="og:image:alt" content="Fused Render — a local file explorer with Python-powered interactive HTML views">
+<meta property="og:image:alt" content="Fused Render — a local file explorer that renders your files in the browser">
 <meta name="twitter:card" content="summary_large_image">
-<meta name="twitter:title" content="Fused Render">
-<meta name="twitter:description" content="A local file explorer with Python-powered interactive HTML views — browse any directory in the browser, preview your data, and author pages that call local Python.">
-<meta name="twitter:image" content="https://render.fused.io/og-image.png">
-<meta name="twitter:image:alt" content="Fused Render — a local file explorer with Python-powered interactive HTML views">
+<script type="application/fused-bundle">
+{ "include": ["about.html", "assets/*.jpg"] }
+</script>
 <style>
   /* Dark-only, matching the Fused Render app (its learn/ surface + app icon:
-     the #E5FF44 sparkle on near-black). A light theme washed the page out and
-     did not match the product. */
+     the #E5FF44 sparkle on near-black). */
   :root {
     --bg: #141414;
-    --panel: #1c1c1e;
-    --border: #333333;
+    --panel: #1b1b1d;
+    --border: #2e2e31;
     --text: #ffffff;
-    --muted: #a6a6ab;
+    --muted: #b9b9bf;
     --code-bg: #0f0f10;
     --accent: #e5ff44;
+    --accent-dim: rgba(229, 255, 68, 0.14);
     --accent-text: #141414;
     color-scheme: dark;
   }
   * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
   body {
     margin: 0;
-    font: 16px/1.55 system-ui, -apple-system, "Segoe UI", sans-serif;
+    font: 16px/1.6 system-ui, -apple-system, "Segoe UI", sans-serif;
     background: var(--bg);
     color: var(--text);
-    display: flex;
-    min-height: 100vh;
-    flex-direction: column;
+    -webkit-font-smoothing: antialiased;
   }
-  main { width: min(680px, 92vw); margin: 0 auto; flex: 1; }
-  header { padding: 56px 0 8px; }
-  .brand { display: flex; align-items: baseline; gap: 10px; }
-  .brand .spark { color: var(--accent); font-size: 28px; }
-  h1 { font-size: 28px; margin: 0; letter-spacing: -0.02em; }
+  a { color: inherit; }
+  img { max-width: 100%; display: block; }
+  .wrap { width: min(1080px, 92vw); margin: 0 auto; }
+  code, pre, .mono {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+
+  /* ---------- top bar ---------- */
+  .top {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 22px 0 0;
+  }
+  .brand { display: flex; align-items: center; gap: 9px; font-weight: 600; }
+  .brand .spark { color: var(--accent); font-size: 22px; line-height: 1; }
   .version {
-    font: 13px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+    font: 12px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
     color: var(--muted);
     border: 1px solid var(--border);
     border-radius: 999px;
     padding: 4px 10px;
   }
-  .tagline { color: var(--muted); margin: 10px 0 0; max-width: 54ch; }
-  section {
-    background: var(--panel);
-    border: 1px solid var(--border);
-    border-radius: 12px;
-    padding: 20px 22px;
-    margin: 18px 0;
+  .top nav { display: flex; gap: 22px; font-size: 14px; color: var(--muted); }
+  .top nav a { text-decoration: none; }
+  .top nav a:hover { color: var(--text); }
+
+  /* ---------- hero ---------- */
+  .hero {
+    display: grid;
+    grid-template-columns: minmax(0, 5fr) minmax(0, 6fr);
+    gap: clamp(28px, 5vw, 64px);
+    align-items: center;
+    padding: clamp(48px, 9vh, 96px) 0 clamp(40px, 7vh, 72px);
   }
-  h2 { font-size: 15px; margin: 0 0 10px; letter-spacing: 0.01em; }
-  p { margin: 8px 0; }
-  .muted { color: var(--muted); font-size: 14px; }
+  h1 {
+    font-size: clamp(2.5rem, 5.6vw, 4rem);
+    line-height: 1.04;
+    letter-spacing: -0.03em;
+    margin: 0;
+    text-wrap: balance;
+  }
+  h1 .lit { color: var(--accent); }
+  .sub-points {
+    list-style: none;
+    padding: 0;
+    margin: 22px 0 28px;
+    color: var(--muted);
+    font-size: 17px;
+  }
+  .sub-points li { display: flex; gap: 10px; align-items: baseline; margin: 8px 0; }
+  .sub-points li::before { content: "✦"; color: var(--accent); font-size: 12px; }
+  .sub-points strong { color: var(--text); font-weight: 600; }
+  .cta-row { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
   .btn {
     display: inline-block;
     background: var(--accent);
     color: var(--accent-text);
+    font-weight: 650;
+    font-size: 15px;
+    text-decoration: none;
+    padding: 12px 22px;
+    border-radius: 10px;
+    transition: transform 0.18s cubic-bezier(0.22, 1, 0.36, 1),
+                box-shadow 0.18s cubic-bezier(0.22, 1, 0.36, 1);
+  }
+  .btn:hover { transform: translateY(-2px); box-shadow: 0 6px 24px var(--accent-dim); }
+  .btn-ghost {
+    display: inline-block;
+    color: var(--text);
+    font-size: 15px;
+    text-decoration: none;
+    padding: 12px 18px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    transition: border-color 0.18s ease-out;
+  }
+  .btn-ghost:hover { border-color: var(--muted); }
+  .fineprint { font-size: 13px; color: var(--muted); margin-top: 14px; }
+
+  /* hero screenshot rotator, framed as a browser window */
+  .window {
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    background: var(--panel);
+    overflow: hidden;
+    box-shadow: 0 24px 80px rgba(0, 0, 0, 0.55), 0 0 0 1px rgba(229, 255, 68, 0.05);
+  }
+  .window-bar {
+    display: flex; align-items: center; gap: 8px;
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--border);
+  }
+  .dot { width: 10px; height: 10px; border-radius: 50%; background: #3a3a3e; }
+  .url {
+    flex: 1;
+    font: 12px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+    color: var(--muted);
+    background: var(--code-bg);
+    border-radius: 6px;
+    padding: 6px 10px;
+    margin-left: 6px;
+    white-space: nowrap; overflow: hidden;
+    position: relative; height: 24px;
+  }
+  .url span {
+    position: absolute; inset: 6px 10px;
+    opacity: 0;
+    transition: opacity 0.3s ease-out;
+  }
+  .url span.active { opacity: 1; }
+  .shots { position: relative; aspect-ratio: 1400 / 813; }
+  .shots a {
+    position: absolute; inset: 0;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.5s ease-out;
+  }
+  .shots a.active { opacity: 1; pointer-events: auto; }
+  .shots img { width: 100%; height: 100%; object-fit: cover; }
+  .hero-dots { display: flex; gap: 10px; justify-content: center; padding-top: 16px; }
+  .nav-dot {
+    appearance: none; border: none; padding: 0; cursor: pointer;
+    width: 9px; height: 9px; border-radius: 50%;
+    background: #3a3a3e;
+    transition: background 0.2s ease-out, transform 0.2s ease-out;
+  }
+  .nav-dot:hover { background: var(--muted); }
+  .nav-dot.active { background: var(--accent); transform: scale(1.25); }
+
+  /* ---------- format ticker ---------- */
+  .ticker-block { padding: clamp(36px, 6vh, 64px) 0; border-top: 1px solid var(--border); }
+  .ticker-block h2 { margin: 0 0 6px; }
+  .ticker-block p { color: var(--muted); margin: 0 0 26px; }
+  h2 {
+    font-size: clamp(1.5rem, 2.6vw, 2rem);
+    letter-spacing: -0.02em;
+    line-height: 1.15;
+    text-wrap: balance;
+  }
+  .ticker {
+    overflow: hidden;
+    -webkit-mask-image: linear-gradient(90deg, transparent, #000 8%, #000 92%, transparent);
+    mask-image: linear-gradient(90deg, transparent, #000 8%, #000 92%, transparent);
+  }
+  .ticker-run { display: flex; gap: 12px; padding-right: 12px; }
+  .ticker-inner {
+    display: flex; width: max-content;
+    animation: scroll 46s linear infinite;
+  }
+  .ticker:hover .ticker-inner { animation-play-state: paused; }
+  @keyframes scroll { to { transform: translateX(-50%); } }
+  .ext {
+    font: 14px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+    color: var(--muted);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 9px 13px;
+    white-space: nowrap;
+  }
+  .ext.hot { color: var(--accent); border-color: rgba(229, 255, 68, 0.35); }
+  .ext.build {
+    color: var(--accent-text);
+    background: var(--accent);
+    border-color: var(--accent);
     font-weight: 600;
     text-decoration: none;
-    border-radius: 8px;
-    padding: 10px 18px;
-    margin: 6px 0 2px;
   }
-  pre {
+
+  /* ---------- three truths ---------- */
+  .truths {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    gap: clamp(24px, 4vw, 56px);
+    padding: clamp(36px, 6vh, 64px) 0;
+    border-top: 1px solid var(--border);
+  }
+  .truths p { margin: 0; color: var(--muted); font-size: 15.5px; text-wrap: pretty; }
+  @media (min-width: 900px) {
+    .truths { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .truths p + p { border-left: 1px solid var(--border); padding-left: clamp(24px, 3vw, 48px); }
+  }
+  @media (max-width: 899px) {
+    .truths p + p { border-top: 1px solid var(--border); padding-top: 22px; }
+  }
+  .truths strong { display: block; color: var(--text); font-size: 19px; letter-spacing: -0.01em; margin-bottom: 6px; }
+
+  /* ---------- gallery ---------- */
+  .gallery { padding: clamp(36px, 6vh, 64px) 0; border-top: 1px solid var(--border); }
+  .gallery-head { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; flex-wrap: wrap; margin-bottom: 26px; }
+  .gallery-head h2 { margin: 0; }
+  .gallery-head a { color: var(--muted); font-size: 14px; text-decoration: none; }
+  .gallery-head a:hover { color: var(--accent); }
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(min(300px, 100%), 1fr));
+    gap: 18px;
+  }
+  .grid figure {
+    margin: 0;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    overflow: hidden;
+    background: var(--panel);
+    transition: transform 0.22s cubic-bezier(0.22, 1, 0.36, 1),
+                border-color 0.22s ease-out;
+  }
+  .grid figure:hover { transform: translateY(-4px); border-color: rgba(229, 255, 68, 0.4); }
+  .grid img { aspect-ratio: 1400 / 813; object-fit: cover; }
+  .grid figcaption { padding: 12px 14px; font-size: 13.5px; color: var(--muted); }
+  .grid figcaption b { color: var(--text); font-weight: 600; }
+
+  /* ---------- how ---------- */
+  .how { padding: clamp(36px, 6vh, 64px) 0; border-top: 1px solid var(--border); }
+  .how h2 { margin: 0 0 22px; }
+  .steps { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 18px; }
+  .steps li { list-style: none; color: var(--muted); font-size: 15.5px; }
+  .steps { padding: 0; margin: 0; counter-reset: step; }
+  .steps li::before {
+    counter-increment: step;
+    content: counter(step);
+    display: block;
+    font: 600 13px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+    color: var(--accent);
+    border: 1px solid rgba(229, 255, 68, 0.35);
+    border-radius: 6px;
+    width: 24px; height: 24px;
+    display: grid; place-items: center;
+    margin-bottom: 10px;
+  }
+  .steps b { color: var(--text); }
+  .how .dev { margin: 26px 0 0; color: var(--muted); font-size: 14.5px; }
+  .how .dev code { background: var(--code-bg); border: 1px solid var(--border); border-radius: 5px; padding: 2px 6px; font-size: 13px; }
+
+  /* ---------- downloads ---------- */
+  .downloads { padding: clamp(36px, 6vh, 64px) 0; border-top: 1px solid var(--border); }
+  .downloads h2 { margin: 0 0 22px; }
+  .tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--border); flex-wrap: wrap; }
+  .tab {
+    appearance: none; background: none; border: none;
+    font: 600 14px/1 system-ui, -apple-system, "Segoe UI", sans-serif;
+    color: var(--muted);
+    padding: 12px 16px;
+    margin-bottom: -1px;
+    border-bottom: 2px solid transparent;
+    cursor: pointer;
+    transition: color 0.15s ease-out;
+  }
+  .tab:hover { color: var(--text); }
+  .tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+  .dl {
+    display: none;
+    padding: 28px 2px 4px;
+  }
+  .dl.active { display: block; }
+  .dl > :first-child { margin-top: 0; }
+  .dl p { max-width: 62ch; }
+  .dl pre { max-width: 560px; }
+  .dl p { margin: 10px 0 0; font-size: 13.5px; color: var(--muted); }
+  .dl pre {
     background: var(--code-bg);
     border: 1px solid var(--border);
     border-radius: 8px;
     padding: 10px 12px;
     overflow-x: auto;
-    font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 12.5px;
+    line-height: 1.5;
     color: var(--text);
-    margin: 8px 0;
+    margin: 10px 0 0;
   }
-  a { color: inherit; }
-  .hero-gif {
-    display: block;
-    width: 100%;
-    border-radius: 8px;
-    border: 1px solid var(--border);
-    margin: 2px 0 12px;
-  }
+
   footer {
     text-align: center;
     color: var(--muted);
     font-size: 13px;
-    padding: 24px 0 32px;
+    padding: 36px 0 32px;
+    margin-top: 32px;
+    border-top: 1px solid var(--border);
+  }
+  footer a { text-decoration: none; }
+  footer a:hover { color: var(--accent); }
+
+  @media (max-width: 820px) {
+    .hero { grid-template-columns: 1fr; }
+    .top nav { display: none; }
+  }
+  a:focus-visible, .btn:focus-visible, .tab:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 3px;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    html { scroll-behavior: auto; }
+    .shots a, .url span, .nav-dot { transition: none; }
+    .ticker-inner { animation: none; flex-wrap: wrap; width: auto; }
+    .ticker-run { flex-wrap: wrap; }
+    .ticker-run + .ticker-run { display: none; }
+    .btn, .btn-ghost, .grid figure { transition: none; }
   }
 </style>
 </head>
 <body>
-<main>
-  <header>
+<div class="wrap">
+
+  <div class="top">
     <div class="brand">
       <span class="spark" aria-hidden="true">✦</span>
-      <h1>Fused Render</h1>
+      Fused Render
       <span class="version" id="version" hidden></span>
     </div>
-    <p class="tagline">A local file explorer with Python-powered interactive
-    HTML views — browse any directory in the browser, preview your data, and
-    author pages that call local Python. Runs entirely on your computer.</p>
-  </header>
-
-  <section>
-    <h2>macOS</h2>
-    <!-- Usable before/without latest.json: falls back to the releases page,
-         upgraded to the direct DMG link once the manifest loads. -->
-    <p><a class="btn" id="dmg" href="https://github.com/fusedio/fused-render/releases">Download for macOS</a></p>
-    <p class="muted">Signed and notarized app, macOS 11+.</p>
-    <p class="muted">Or with Homebrew:</p>
-    <pre>brew install --cask fusedio/tap/fused-render</pre>
-  </section>
-
-  <section>
-    <h2>Windows</h2>
-    <!-- Usable before/without latest.json: falls back to the releases page,
-         upgraded to the direct installer link once the manifest loads. -->
-    <p><a class="btn" id="windows-exe" href="https://github.com/fusedio/fused-render/releases">Download for Windows</a></p>
-    <p class="muted">Installer (.exe), Windows 10+.</p>
-  </section>
-
-  <section>
-    <h2>Linux</h2>
-    <!-- Usable before/without latest.json: falls back to the releases page,
-         upgraded to the direct AppImage link once the manifest loads. -->
-    <p><a class="btn" id="linux-appimage" href="https://github.com/fusedio/fused-render/releases">Download for Linux</a></p>
-    <p class="muted">AppImage (x86_64) — make it executable and run.</p>
-  </section>
-
-  <section>
-    <h2>Python package (macOS, Windows, Linux)</h2>
-    <p class="muted">Requires Python 3.10+. Install the wheel, then run
-    <code>fused-render</code>:</p>
-    <pre id="pip">pip install &lt;wheel-url&gt;  # copy the wheel URL from the latest release</pre>
-    <p class="muted">On Windows, <code>fused-render-open --register</code> adds
-    Explorer "Open with" integration for every format it previews.</p>
-  </section>
+    <nav>
+      <a href="#gallery">Examples</a>
+      <a href="#how">How it works</a>
+      <a href="about.html">Why we built it</a>
+    </nav>
+  </div>
 
   <section class="hero">
-    <!-- Same demo GIF as the README's hero: right-click a file in Explorer,
-         pick "Open with" → fused-render, and it opens in the browser.
-         Served straight from the main branch so this page never drifts
-         from the README's copy and doesn't need a release-pipeline upload. -->
-    <img class="hero-gif" alt="fused-render: right-click a file in Explorer, pick &quot;Open with&quot; → fused-render, and it opens in the browser" src="https://raw.githubusercontent.com/fusedio/fused-render/main/learn/assets/open_with_right_click.gif">
-    <p class="muted">Right-click a file in Explorer → <strong>Open with</strong> →
-    fused-render, and it opens in your browser, ready to preview.</p>
-    <p><a href="https://github.com/fusedio/fused-render-examples">Browse example views →</a>
-    <span class="muted">copy any of them into your own install and run them as-is.</span></p>
+    <div>
+      <h1>Your files,<br><span class="lit">rendered.</span></h1>
+      <ul class="sub-points">
+        <li>Browse any folder in your browser</li>
+        <li>Parquet, maps, 3D, PDFs — <strong>everything just opens</strong></li>
+        <li>No cloud, no account, no setup</li>
+      </ul>
+      <div class="cta-row">
+        <a class="btn" href="#downloads">Download</a>
+        <a class="btn-ghost" href="#gallery">See it in action</a>
+      </div>
+    </div>
+    <div class="hero-media">
+      <div class="window" aria-label="Fused Render example screenshots">
+        <div class="window-bar">
+          <span class="dot"></span><span class="dot"></span><span class="dot"></span>
+          <span class="url">
+            <span class="active">127.0.0.1:8765/data/buildings.parquet</span>
+            <span>127.0.0.1:8765/maps/storm_response.html</span>
+            <span>127.0.0.1:8765/rasters/satellite.tif</span>
+            <span>127.0.0.1:8765/notes/tasks.parquet</span>
+          </span>
+        </div>
+        <div class="shots">
+          <a class="active" href="https://github.com/fusedio/fused-render-examples/tree/main/geospatial/hexagon_lab" target="_blank" rel="noopener">
+            <img src="assets/hexagon_lab.jpg" alt="Interactive 3D hexagon map rendered from a parquet file — open the Hexagon lab example on GitHub" fetchpriority="high">
+          </a>
+          <a href="https://github.com/fusedio/fused-render-examples/tree/main/geospatial/disaster_response_dashboard" target="_blank" rel="noopener" aria-hidden="true" tabindex="-1">
+            <img src="assets/disaster_response_dashboard.jpg" alt="Disaster response dashboard fusing satellite imagery and building footprints — open the example on GitHub">
+          </a>
+          <a href="https://github.com/fusedio/fused-render-examples/tree/main/geospatial/cog_overview_pyramid" target="_blank" rel="noopener" aria-hidden="true" tabindex="-1">
+            <img src="assets/cog_overview_pyramid.jpg" alt="Satellite GeoTIFF resolution pyramid in 3D — open the example on GitHub">
+          </a>
+          <a href="https://github.com/fusedio/fused-render-examples/tree/main/local-tools/notion_db" target="_blank" rel="noopener" aria-hidden="true" tabindex="-1">
+            <img src="assets/notion_db.jpg" alt="Task tracker rendered from local parquet files — open the example on GitHub">
+          </a>
+        </div>
+      </div>
+      <div class="hero-dots">
+        <button class="nav-dot active" type="button" aria-label="Show Hexagon lab screenshot"></button>
+        <button class="nav-dot" type="button" aria-label="Show disaster response dashboard screenshot"></button>
+        <button class="nav-dot" type="button" aria-label="Show satellite GeoTIFF pyramid screenshot"></button>
+        <button class="nav-dot" type="button" aria-label="Show task tracker screenshot"></button>
+      </div>
+    </div>
+  </section>
+
+  <section class="ticker-block">
+    <h2>Point it at a folder. Everything opens.</h2>
+    <p>40+ formats render instantly. No notebooks, no plugins, no converters.</p>
+    <div class="ticker">
+      <div class="ticker-inner" aria-hidden="true">
+        <div class="ticker-run"><span class="ext hot">.parquet</span><span class="ext">.csv</span><span class="ext hot">.geotiff</span><span class="ext">.duckdb</span><span class="ext">.pdf</span><span class="ext hot">.glb</span><span class="ext">.xlsx</span><span class="ext">.zarr</span><span class="ext">.las</span><span class="ext hot">.pmtiles</span><span class="ext">.sqlite</span><span class="ext">.netcdf</span><span class="ext">.md</span><span class="ext">.usd</span><span class="ext hot">.h3</span><span class="ext">.tar</span><span class="ext">.plist</span><span class="ext">.svg</span><span class="ext">.png</span><span class="ext">.mp4</span><a class="ext build" tabindex="-1" href="about.html#templates">+ build your own</a></div>
+        <div class="ticker-run" aria-hidden="true"><span class="ext hot">.parquet</span><span class="ext">.csv</span><span class="ext hot">.geotiff</span><span class="ext">.duckdb</span><span class="ext">.pdf</span><span class="ext hot">.glb</span><span class="ext">.xlsx</span><span class="ext">.zarr</span><span class="ext">.las</span><span class="ext hot">.pmtiles</span><span class="ext">.sqlite</span><span class="ext">.netcdf</span><span class="ext">.md</span><span class="ext">.usd</span><span class="ext hot">.h3</span><span class="ext">.tar</span><span class="ext">.plist</span><span class="ext">.svg</span><span class="ext">.png</span><span class="ext">.mp4</span><a class="ext build" tabindex="-1" href="about.html#templates">+ build your own</a></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="truths">
+    <p><strong>Local by design.</strong> Runs on 127.0.0.1. Your data never
+    leaves your machine: no uploads, no accounts, no telemetry.</p>
+    <p><strong>Zero setup.</strong> The app bundles Python and the fused CLI.
+    Download, open, browse. Works offline.</p>
+    <p><strong>Make it yours.</strong> A <span class="mono">.py</span> +
+    <span class="mono">.html</span> pair is a live local app. Build dashboards
+    over your own files in minutes.</p>
+  </section>
+
+  <section class="how" id="how">
+    <h2>Three steps, no terminal</h2>
+    <ol class="steps">
+      <li><b>Download the app.</b> It ships with everything it needs.</li>
+      <li><b>Point it at a folder.</b> Your files appear in the browser.</li>
+      <li><b>Click anything.</b> Data, maps, models and docs just render.</li>
+    </ol>
+    <p class="dev">For developers: drop a <code>.py</code> next to an
+    <code>.html</code> and you have a live page that calls local Python.
+    Params sync to the URL, so every view is bookmarkable and shareable.</p>
+  </section>
+
+  <section class="downloads" id="downloads">
+    <h2>Get Fused Render</h2>
+    <div class="tabs" role="tablist">
+      <button class="tab active" data-os="mac" role="tab">macOS</button>
+      <button class="tab" data-os="win" role="tab">Windows</button>
+      <button class="tab" data-os="linux" role="tab">Linux</button>
+    </div>
+    <div class="dl active" data-os="mac">
+      <!-- Usable before/without latest.json: falls back to the releases page,
+           upgraded to the direct DMG link once the manifest loads. -->
+      <a class="btn" id="dmg" href="https://github.com/fusedio/fused-render/releases">Download for macOS</a>
+      <p>Signed and notarized, macOS 11+. Bundles Python, the fused CLI and rclone.</p>
+      <pre>brew install --cask fusedio/tap/fused-render</pre>
+    </div>
+    <div class="dl" data-os="win">
+      <!-- Usable before/without latest.json: falls back to the releases page,
+           upgraded to the direct installer link once the manifest loads. -->
+      <a class="btn" id="windows-exe" href="https://github.com/fusedio/fused-render/releases">Download for Windows</a>
+      <p>Installer (.exe), Windows 10+. Bundles Python and the fused CLI.</p>
+    </div>
+    <div class="dl" data-os="linux">
+      <!-- Usable before/without latest.json: falls back to the releases page,
+           upgraded to the direct AppImage link once the manifest loads. -->
+      <a class="btn" id="linux-appimage" href="https://github.com/fusedio/fused-render/releases">Download for Linux</a>
+      <p>AppImage (x86_64): make it executable and run. Bundles Python and the fused CLI.</p>
+    </div>
+  </section>
+
+  <section class="gallery" id="gallery">
+    <div class="gallery-head">
+      <h2>Built with Fused Render</h2>
+      <a href="https://github.com/fusedio/fused-render-examples">All examples on GitHub →</a>
+    </div>
+    <div class="grid">
+      <figure>
+        <img src="assets/buildings_to_hexagons.jpg" loading="lazy" alt="2.6 billion buildings rendered as hexagons">
+        <figcaption><b>2.6B buildings</b>: Earth's buildings as interactive hexagons</figcaption>
+      </figure>
+      <figure>
+        <img src="assets/forest_carbon_monitor.jpg" loading="lazy" alt="Deforestation monitor over protected areas">
+        <figcaption><b>Forest carbon</b>: deforestation tracking in protected parks</figcaption>
+      </figure>
+      <figure>
+        <img src="assets/locker_network_simulator.jpg" loading="lazy" alt="Parcel locker placement with live route optimization">
+        <figcaption><b>Locker network</b>: courier routes re-optimized live</figcaption>
+      </figure>
+      <figure>
+        <img src="assets/store_site_selection.jpg" loading="lazy" alt="Census-based store site selection map">
+        <figcaption><b>Site selection</b>: where to open the next store, by the numbers</figcaption>
+      </figure>
+      <figure>
+        <img src="assets/disk_usage.jpg" loading="lazy" alt="Treemap of local disk usage">
+        <figcaption><b>Disk usage</b>: a treemap of your own machine</figcaption>
+      </figure>
+      <figure>
+        <img src="assets/pytop.jpg" loading="lazy" alt="Live CPU and process monitor">
+        <figcaption><b>pytop</b>: live CPU, memory and processes in the browser</figcaption>
+      </figure>
+    </div>
   </section>
 
   <footer>
-    <a href="https://github.com/fusedio/fused-render">GitHub</a>
-    · <a href="https://github.com/fusedio/fused-render/releases">All releases</a>
-    · <a href="https://github.com/fusedio/fused-render-examples">Examples</a>
-    · <a href="https://www.fused.io">fused.io</a>
+    <a href="about.html">Why we built it</a>
+    · <a rel="noopener" href="https://github.com/fusedio/fused-render/releases">All releases</a>
+    · <a rel="noopener" href="https://github.com/fusedio/fused-render-examples">Examples</a>
+    · <a rel="noopener" href="https://www.fused.io">fused.io</a>
   </footer>
-</main>
+</div>
+
 <script>
+  // Inside Fused Render (local app or a deployed share), relative image and
+  // cross-page link paths don't resolve against the page; route images through
+  // the injected fused.rawUrl and point about.html links at the right route.
+  // When about.html is the deployed entry instead, this page is served via
+  // <mount>/_asset?name=index.html with NO injected runtime — rewrite images
+  // to sibling _asset URLs and about.html links back to the mount root.
+  // No-op on plain static hosting.
+  const assetMode = location.pathname.match(/^(.*)\/_asset$/);
+  if (assetMode && new URLSearchParams(location.search).get("name") === "index.html") {
+    document.querySelectorAll("img[src]").forEach((img) => {
+      const src = img.getAttribute("src");
+      if (src && !/^(?:[a-z]+:)?\//i.test(src)) img.src = assetMode[0] + "?name=" + encodeURIComponent(src);
+    });
+    document.querySelectorAll('a[href^="about.html"]').forEach((a) => {
+      a.href = (assetMode[1] || "/") + a.getAttribute("href").slice("about.html".length);
+    });
+  } else if (window.fused && window.fused.rawUrl) {
+    document.querySelectorAll("img[src]").forEach((img) => {
+      const src = img.getAttribute("src");
+      if (src && !/^(?:[a-z]+:)?\//i.test(src)) img.src = window.fused.rawUrl(src);
+    });
+    const ownPath = new URLSearchParams(location.search).get("path");
+    document.querySelectorAll('a[href^="about.html"]').forEach((a) => {
+      const hash = a.getAttribute("href").slice("about.html".length);
+      if (window.fused.env === "local" && ownPath) {
+        const dir = ownPath.replace(/\/[^/]*$/, "").replace(/^\//, "")
+          .split("/").map(encodeURIComponent).join("/");
+        a.href = "/view/" + dir + "/about.html" + hash;
+        a.target = "_top";
+      } else {
+        a.href = window.fused.rawUrl("about.html") + hash;
+      }
+    });
+  }
+
+  // The shell iframes this page via /render?path=... with no hash; honor a
+  // #section deep link on the parent /view URL (same-origin) by scrolling here.
+  if (window.fused && window.fused.env === "local" && window.parent !== window) {
+    try {
+      const h = window.parent.location.hash;
+      const t = h && document.querySelector(h);
+      if (t) t.scrollIntoView();
+    } catch (e) { /* cross-origin parent: not the shell */ }
+  }
+
+  // Fill version + direct artifact links from the release manifest.
   fetch("/latest.json", { cache: "no-cache" })
     .then((r) => { if (!r.ok) throw new Error(String(r.status)); return r.json(); })
     .then((m) => {
@@ -196,20 +572,57 @@
         v.textContent = "v" + m.version;
         v.hidden = false;
       }
-      if (m.dmg_url) {
-        document.getElementById("dmg").href = m.dmg_url;
-      }
-      if (m.windows_url) {
-        document.getElementById("windows-exe").href = m.windows_url;
-      }
-      if (m.linux_url) {
-        document.getElementById("linux-appimage").href = m.linux_url;
-      }
-      if (m.wheel_url) {
-        document.getElementById("pip").textContent = "pip install " + m.wheel_url;
-      }
+      if (m.dmg_url) document.getElementById("dmg").href = m.dmg_url;
+      if (m.windows_url) document.getElementById("windows-exe").href = m.windows_url;
+      if (m.linux_url) document.getElementById("linux-appimage").href = m.linux_url;
     })
-    .catch(() => { /* button + footer already point at the releases page */ });
+    .catch(() => { /* buttons + footer already point at the releases page */ });
+
+  // Hero rotator: auto-shuffle by default; a dot click jumps to that
+  // screenshot and stops the shuffle. Slides link to their example on GitHub.
+  (function () {
+    const slides = document.querySelectorAll(".shots a");
+    const urls = document.querySelectorAll(".url span");
+    const dots = document.querySelectorAll(".nav-dot");
+    let idx = 0;
+    let timer = null;
+    function show(i) {
+      idx = i;
+      slides.forEach((el, n) => {
+        const on = n === i;
+        el.classList.toggle("active", on);
+        el.setAttribute("aria-hidden", String(!on));
+        el.tabIndex = on ? 0 : -1;
+      });
+      urls.forEach((el, n) => el.classList.toggle("active", n === i));
+      dots.forEach((el, n) => el.classList.toggle("active", n === i));
+    }
+    dots.forEach((d, i) => d.addEventListener("click", () => {
+      if (timer) { clearInterval(timer); timer = null; }
+      show(i);
+    }));
+    show(0);
+    if (!matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      timer = setInterval(() => show((idx + 1) % slides.length), 5000);
+    }
+  })();
+
+  // Download tabs: click to switch; auto-select the visitor's OS.
+  (function () {
+    function activate(os) {
+      document.querySelectorAll(".tab, .dl").forEach((el) => {
+        el.classList.toggle("active", el.dataset.os === os);
+      });
+    }
+    document.querySelectorAll(".tab").forEach((t) => {
+      t.addEventListener("click", () => activate(t.dataset.os));
+    });
+    const ua = navigator.userAgent;
+    const mobile = /iPhone|iPad|iPod|Android/.test(ua) || (/Mac/.test(ua) && navigator.maxTouchPoints > 1);
+    const os = mobile ? null : /Mac/.test(ua) ? "mac" : /Win/.test(ua) ? "win" : /Linux|X11/.test(ua) ? "linux" : null;
+    if (!os) return;
+    activate(os);
+  })();
 </script>
 </body>
 </html>
