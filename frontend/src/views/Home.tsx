@@ -701,14 +701,8 @@ export default function Home({ config }: { config: Config }) {
             fused-render
           </div>
           <h1 className="home-hero-title">
-            Build your next
-            <br />
-            <span className="home-hero-accent">local app</span>
+            Build your next <span className="home-hero-accent">local app</span>
           </h1>
-          <p className="home-hero-sub">
-            Describe an app and Claude builds it in your workspace — or explore your files
-            with interactive templates. Everything lives as plain folders you own.
-          </p>
           {/* The hero's only verb, prompt-first: describe the app right here
               and a named, scaffolded folder + claude session comes back. The
               structured (name-it-yourself) NewAppPanel lives on /apps now,
