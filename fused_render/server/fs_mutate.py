@@ -16,7 +16,7 @@ from fastapi.responses import (
     StreamingResponse,
 )
 
-from fused_render import app_git
+from fused_render import app_commit_queue, app_git
 from fused_render import calls as shell_calls
 from fused_render.server.common import _error, _require_fused
 from fused_render.server.mount import _invalidate_stat_cache, _mount_probe, _mount_stat_payload, _mutation_result_payload, _probe_path, _stat_payload, _writable
@@ -26,15 +26,17 @@ router = APIRouter()
 
 
 def _commit_mutation(result, verb: str, *paths) -> None:
-    """Record a successful mutation as a commit in the app repo it touched.
+    """Record a successful mutation for commit in the app repo it touched.
 
     App folders (<workspace>/<tag>/<name>) are version-controlled from
-    creation (app_git); every editor-driven change to one becomes its own
-    small commit so manual edits get the same history as Claude turns. A
-    refused mutation (any JSONResponse error status) commits nothing.
-    app_git.commit is best-effort and hard-scoped to app dirs — everywhere
-    else on disk this is a no-op, and a git failure never fails the mutation
-    that already landed."""
+    creation (app_git); editor-driven changes get the same history as Claude
+    turns. The commit itself is debounced and serialized through
+    app_commit_queue's single worker (inline fallback when it isn't running),
+    so a burst of autosaves becomes one commit and two saves can never race
+    each other on the repo's index.lock. A refused mutation (any JSONResponse
+    error status) commits nothing, and everything downstream is best-effort
+    and hard-scoped to app dirs — a git failure never fails the mutation that
+    already landed, and nothing outside an app dir is ever committed to."""
     if getattr(result, "status_code", 200) != 200:
         return
     done = set()
@@ -45,7 +47,7 @@ def _commit_mutation(result, verb: str, *paths) -> None:
         if app_dir is None or app_dir in done:
             continue
         done.add(app_dir)
-        app_git.commit(p, f"{verb} {os.path.basename(p.rstrip(os.sep))}")
+        app_commit_queue.mark(p, verb)
 
 
 

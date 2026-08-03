@@ -4,7 +4,8 @@ Every app scaffolded by POST /api/apps/new ships with a git repo and a single
 boilerplate commit; after that, every change lands as its own small commit —
 each completed Claude turn (templates/claude/agent.py mirrors the commit
 helper here, since templates must not import fused_render, D166) and every
-manual mutation made through the editor's /api/fs endpoints (fs_mutate.py).
+manual mutation made through the editor's /api/fs endpoints (fs_mutate.py,
+debounced/serialized through app_commit_queue's single worker).
 
 Everything here is BEST-EFFORT: git may be missing, the folder may not be a
 repo (pre-feature apps, hand-made folders), a concurrent commit may hold
