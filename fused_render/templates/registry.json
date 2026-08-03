@@ -59,6 +59,10 @@
     "reader",
     "annotate"
   ],
+  ".ipynb": [
+    "notebook",
+    "annotate"
+  ],
   ".calls.jsonl": [
     "log_studio",
     "code"

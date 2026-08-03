@@ -30,6 +30,8 @@ logger = logging.getLogger(__name__)
 DAEMON_STATE_FILES = (
     os.path.expanduser("~/.cache/fused-render-geotiff-v2/daemon.json"),
     os.path.expanduser("~/.cache/fused-render-gridv2/daemon.json"),
+    # the notebook daemon nests under the app home (kernel.py _cache_dir)
+    os.path.join(storage.home_dir(), "cache", "notebook-daemon", "daemon.json"),
 )
 
 
