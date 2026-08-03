@@ -297,7 +297,42 @@ def _load_sidecar(file: str) -> dict:
         data = {}
     if not isinstance(data.get("claudeSessions"), list):
         data["claudeSessions"] = []
+    if os.path.isdir(file):
+        _merge_file_scoped_sessions(file, data)
     return data
+
+
+def _merge_file_scoped_sessions(dir_path: str, data: dict) -> None:
+    """Fold the `claude` template's per-file session sidecars into a folder
+    target's list.
+
+    App creation starts the scaffolding chat against the entry html through
+    the `claude` template, which records it in `<file>.json` (e.g.
+    `index.html.json`) — and any pre-existing file-scoped chats live there
+    too. Without this merge, opening the folder in claude_split shows an
+    empty recent-chats list and the scaffolding conversation can't be
+    resumed. Read-only import, deduped by session id; the merged list is
+    persisted to `.claude-split.json` on the next save.
+    """
+    seen = {e.get("id") for e in data["claudeSessions"]}
+    try:
+        names = os.listdir(dir_path)
+    except OSError:
+        return
+    for name in sorted(names):
+        if not name.lower().endswith((".html.json", ".htm.json")):
+            continue
+        try:
+            with open(os.path.join(dir_path, name), encoding="utf-8") as fh:
+                legacy = json.load(fh)
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(legacy, dict):
+            continue
+        for entry in legacy.get("claudeSessions") or []:
+            if isinstance(entry, dict) and entry.get("id") and entry["id"] not in seen:
+                seen.add(entry["id"])
+                data["claudeSessions"].append(entry)
 
 
 def _save_sidecar(file: str, data: dict) -> None:
