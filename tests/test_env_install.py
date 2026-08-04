@@ -25,6 +25,7 @@ What these tests are really protecting:
 """
 import errno
 import json
+import logging
 import os
 import signal
 import subprocess
@@ -556,6 +557,73 @@ def test_reset_venv_validation_cache_clears_the_rebuild_bound(tmp_path, monkeypa
     envinstall.reset_venv_validation_cache()
     assert envinstall.is_installed(reqs) is False, "a new process retries the repair"
     assert not marker.exists()
+
+
+@requires_fused
+def test_a_caller_that_LOSES_the_unmark_race_reports_not_installed(
+    tmp_path, monkeypatch
+):
+    """The bound must be consulted against a marker that is still THERE.
+
+    "stat the marker -> probe -> consult the bound -> unlink" is not atomic, and
+    the endpoints run in FastAPI's threadpool, so two pre-flights genuinely
+    interleave: A passes the marker check, probes, records the attempt and unlinks;
+    B passed the marker check BEFORE A's unlink but reaches the bound AFTER A's
+    add. B would then see `already_tried`, announce that a rebuild had already been
+    tried (it had not — A's rebuild has not even been requested yet) and return
+    True, executing a venv known to be broken instead of joining the install A just
+    asked for.
+
+    Driven deterministically rather than with threads and sleeps: the probe unlinks
+    the marker as its side effect, which is exactly A's unlink landing inside B's
+    window. With the marker re-checked inside the critical section, B answers False
+    and joins the install.
+    """
+    reqs = ["some-dist"]
+    venv_dir = _marked_venv(tmp_path, monkeypatch, reqs)  # no interpreter at all
+    marker = venv_dir / envinstall.READY_MARKER
+
+    # "A, earlier in this process": one definite failure, so the venv dir is in the
+    # rebuild set — the precondition the racing branch needs.
+    assert envinstall.is_installed(reqs) is False
+    marker.write_text("{}")  # what the install worker leaves behind
+
+    def _probe_that_loses_the_race(venv):
+        os.unlink(os.path.join(venv, envinstall.READY_MARKER))  # A's unlink lands
+        return False
+
+    monkeypatch.setattr(envinstall, "_venv_runs", _probe_that_loses_the_race)
+    assert envinstall.is_installed(reqs) is False, "join the install, do not run"
+    assert not marker.exists()
+
+
+@requires_fused
+def test_the_bound_warns_ONCE_per_venv_however_many_requests_arrive(
+    tmp_path, monkeypatch, caplog
+):
+    """The log has to stay readable for the incident it exists to diagnose.
+
+    Once the bound engages, `is_installed` answers from the cached verdict on every
+    subsequent call — every page reload, every `watchPath` auto-reload, every param
+    change — so warning each time would repeat the same multi-line message forever
+    and bury the one occurrence that matters. Warn on the transition, debug after.
+    The user-facing behaviour is unchanged: still True, still marker in place.
+    """
+    reqs = ["some-dist"]
+    venv_dir = _marked_venv(tmp_path, monkeypatch, reqs)
+    marker = venv_dir / envinstall.READY_MARKER
+
+    assert envinstall.is_installed(reqs) is False  # the one rebuild it gets
+    marker.write_text("{}")  # the rebuild reproduced the same breakage
+
+    needle = "still cannot run its own python after a rebuild"
+    with caplog.at_level(logging.WARNING, logger="fused_render.envinstall"):
+        caplog.clear()
+        for _ in range(4):
+            assert envinstall.is_installed(reqs) is True
+    warnings = [r for r in caplog.records if needle in r.getMessage()]
+    assert len(warnings) == 1, [r.getMessage() for r in caplog.records]
+    assert marker.exists()
 
 
 # --- /api/run's pre-flight ----------------------------------------------------

@@ -124,7 +124,15 @@ _VALIDATED: dict[str, bool] = {}
 # would mean the bound could never engage at all.
 _REBUILD_ATTEMPTED: set[str] = set()
 
-# Guards both of the above together: they are read and written as one decision.
+# venv directories whose bound has already been announced, so the warning is
+# emitted once per venv per process instead of once per request. Kept separate from
+# `_REBUILD_ATTEMPTED` because they answer different questions — "may I still
+# repair this" vs "have I already said this out loud" — and folding the second into
+# the first would make the log line depend on the repair policy.
+_BOUND_LOGGED: set[str] = set()
+
+# Guards all three of the above together: they are read and written as one
+# decision, and (since the fix for the unmark race) so is the marker's existence.
 _validated_lock = threading.Lock()
 
 # The probe is `<venv>/bin/python -c ""` on the local filesystem: a working
@@ -309,13 +317,16 @@ def reset_venv_validation_cache() -> None:
 
     A test seam (mirroring `engine.reset_app_interpreter_cache`). Nothing in the
     server needs it: the verdict cache self-invalidates through the marker, and the
-    rebuild bound is meant to last exactly as long as the process. Both are cleared
-    together on purpose — resetting only the verdicts would leave a bound that
-    silently suppresses the repair the re-probe just asked for.
+    rebuild bound is meant to last exactly as long as the process. All three sets
+    are cleared together on purpose — resetting only the verdicts would leave a
+    bound that silently suppresses the repair the re-probe just asked for, and
+    leaving `_BOUND_LOGGED` behind would silence the announcement of a bound that
+    can now engage again.
     """
     with _validated_lock:
         _VALIDATED.clear()
         _REBUILD_ATTEMPTED.clear()
+        _BOUND_LOGGED.clear()
 
 
 def is_installed(requirements: list[str]) -> bool:
@@ -344,7 +355,8 @@ def is_installed(requirements: list[str]) -> bool:
     if not requirements:
         return True  # nothing to install; the bare/interpreter paths handle it
     venv_dir = venv_dir_for(requirements)
-    if not os.path.exists(os.path.join(venv_dir, READY_MARKER)):
+    marker = os.path.join(venv_dir, READY_MARKER)
+    if not os.path.exists(marker):
         # No claim, so nothing to validate — and the common case by count (every
         # first open of a PEP 723 script), which stays a single stat rather than a
         # spawn. Also the ONE place a cached verdict is dropped: a marker that is
@@ -384,15 +396,50 @@ def is_installed(requirements: list[str]) -> bool:
     # a fixed DMG gets a fresh server, hence an empty set, hence one rebuild that
     # actually works.
     with _validated_lock:
+        # Re-stat the marker HERE, inside the critical section, before the bound is
+        # consulted. "stat the marker -> probe -> consult the bound -> unlink" is not
+        # atomic, and the endpoints are sync `def` running in FastAPI's threadpool,
+        # so two pre-flights for the same script genuinely interleave: A passes the
+        # marker check, probes, records the attempt and unlinks, while B — which
+        # passed the marker check BEFORE A's unlink — arrives here AFTER A's add. B
+        # would then read `already_tried`, announce that a rebuild had already been
+        # tried (it had not; A's rebuild has not even been requested yet), and return
+        # True, running a venv known to be broken instead of joining the install A
+        # just asked for.
+        #
+        # A marker that is gone now means someone else has un-marked this venv, so
+        # the honest answer is the same one they gave: not installed. The caller
+        # joins their install (`start()` is idempotent and joins rather than
+        # duplicating). The bound question only makes sense against a marker that is
+        # still there — it asks "did the rebuild of THIS marked venv already fail",
+        # and with no marker there is no such venv to ask about.
+        #
+        # Deliberately not a cross-process lock: this module's only mutual exclusion
+        # is `threading.Lock`, a file lock would need a stale-lock policy, and the
+        # race being closed is between threads of one server.
+        if not os.path.exists(marker):
+            _VALIDATED.pop(venv_dir, None)  # that generation is over
+            return False
         already_tried = venv_dir in _REBUILD_ATTEMPTED
         _REBUILD_ATTEMPTED.add(venv_dir)
-        if not already_tried:
+        if already_tried:
+            # Warn on the TRANSITION only. Past this point `is_installed` answers
+            # from the cached verdict on every call — every page reload, every
+            # `watchPath` auto-reload, every param change — so warning each time
+            # would repeat this multi-line message forever and bury the one
+            # occurrence that matters in the log of exactly the incident it exists
+            # to diagnose. Demoted to debug afterwards rather than dropped: the
+            # state is still abnormal, and a debug run should still show it.
+            first_bound_hit = venv_dir not in _BOUND_LOGGED
+            _BOUND_LOGGED.add(venv_dir)
+        else:
+            first_bound_hit = False
             # See the marker-absent branch above: the verdict must not outlive the
             # generation it judged. Kept on the already-tried path, so repeated
             # calls answer from the cache instead of spawning a probe apiece.
             _VALIDATED.pop(venv_dir, None)
     if already_tried:
-        logger.warning(
+        (logger.warning if first_bound_hit else logger.debug)(
             "script venv %s still cannot run its own python after a rebuild, so "
             "the ready marker is being LEFT in place: rebuilding it again cannot "
             "help (the interpreter it was built from is the problem). The script "
@@ -414,7 +461,7 @@ def is_installed(requirements: list[str]) -> bool:
     # generation, and the directory that appears under the same key next is a
     # different venv that has to be judged on its own.)
     try:
-        os.unlink(os.path.join(venv_dir, READY_MARKER))
+        os.unlink(marker)
         logger.warning(
             "discarded the ready marker of script venv %s: its interpreter does "
             "not run, so the venv will be rebuilt on the next install", venv_dir,
