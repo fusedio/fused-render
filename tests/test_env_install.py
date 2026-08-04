@@ -56,7 +56,7 @@ def _isolated_install_state(tmp_path, monkeypatch):
     requirement set (several here use `["pip"]`) would otherwise share one
     progress record and one claim file, and pass or fail depending on order.
 
-    Also drops the per-process venv-validation memo (D206). That cache is keyed by
+    Also drops the per-process venv-validation memo (D212). That cache is keyed by
     venv DIRECTORY, and `venvs_path` is monkeypatched per test to a tmp dir, so
     real collisions are unlikely — but a memo that outlives the directory it
     describes is exactly the thing these tests are about, and a leaked verdict
@@ -245,7 +245,7 @@ def test_the_ready_marker_is_the_index_of_readiness_not_the_directory(
 
     Renamed (was `..._follows_the_ready_marker_not_the_directory`): the marker is
     still the INDEX — the only thing consulted to find a venv, and its absence is
-    still final — but since D206 it is a *claim* that is verified once per process
+    still final — but since D212 it is a *claim* that is verified once per process
     rather than proof on its own. So this test now supplies a venv whose
     interpreter actually runs, and the marker-is-not-enough half lives in
     `test_a_marked_venv_that_cannot_run_...` below. Its original intent (a
@@ -265,7 +265,7 @@ def test_the_ready_marker_is_the_index_of_readiness_not_the_directory(
     assert envinstall.is_installed(reqs)
 
 
-# --- a marker is a claim, and the claim is verified once (D206) ----------------
+# --- a marker is a claim, and the claim is verified once (D212) ----------------
 #
 # The macOS DMG shipped an interpreter that could not self-locate without
 # PYTHONHOME, and `python_compute` strips PYTHONHOME from every child — so a venv
@@ -401,7 +401,7 @@ def test_a_rebuilt_venv_is_not_stuck_on_the_earlier_failed_verdict(
     assert envinstall.is_installed(reqs)
 
 
-# --- the probe has THREE answers, and the rebuild is bounded (D206) ------------
+# --- the probe has THREE answers, and the rebuild is bounded (D212) ------------
 #
 # Both of these came out of review, and both are about the same thing: the
 # deletion at the end of `is_installed` destroys a venv the user paid a
@@ -503,7 +503,7 @@ def test_only_ONE_rebuild_is_attempted_per_venv_per_process(tmp_path, monkeypatc
     which is invariant under rebuild, and the venv key folds in only that
     interpreter's path and version, both constants inside the bundle. Without a
     bound, every page reload, every `watchPath` auto-reload and every param change
-    would pay another multi-hundred-MB download, guaranteed futile; before D206
+    would pay another multi-hundred-MB download, guaranteed futile; before D212
     that cohort got one instant permanent error, so an unbounded rebuild would be
     a regression.
 
@@ -1257,7 +1257,7 @@ def test_the_worker_builds_the_venv_the_server_will_look_for(tmp_path, monkeypat
     )
 
 
-# --- the worker's heartbeat (D207) --------------------------------------------
+# --- the worker's heartbeat (D213) --------------------------------------------
 #
 # `ensure_requirements_venv` runs uv behind `capture_output=True`, so between the
 # `install` record and the terminal one NOTHING was emitted — minutes on a cold
@@ -1441,6 +1441,40 @@ def test_a_late_heartbeat_cannot_undo_the_terminal_record(tmp_path, monkeypatch)
     worker.install("k", d, str(tmp_path / "venvs"), ["pandas"])
     assert _record(d)["done"] is True, "a late heartbeat put done:false back on the wire"
     assert _record(d)["stage"] == "done"
+
+
+def test_a_failed_terminal_write_does_not_latch_out_the_error_record(tmp_path, monkeypatch):
+    """The latch closes on evidence the record landed, not on the attempt.
+
+    If it engaged before `_write` returned, a terminal `done` write that FAILED
+    would still shut the file, and the `except` path's error record — the only one
+    carrying the reason — would no-op. The wire would keep the last heartbeat's
+    `done: false` forever: the same stuck poll the latch exists to prevent, reached
+    from the other side.
+    """
+    worker = _worker_module()
+    d = str(tmp_path / "prog")
+    real_write = worker._write
+
+    def _fail_the_done_record(progress_dir, stage, pct, detail="", done=False, error=None):
+        if stage == "done":
+            raise OSError(28, "No space left on device")
+        return real_write(progress_dir, stage, pct, detail, done, error)
+
+    monkeypatch.setattr(worker, "_write", _fail_the_done_record)
+    monkeypatch.setattr(
+        worker, "_build",
+        lambda venvs_path, requirements, python_executable: "/x/venv/bin/python",
+    )
+    with pytest.raises(OSError):
+        worker.install("k", d, str(tmp_path / "venvs"), ["pandas"])
+
+    rec = _record(d)
+    assert rec["done"] is True, "the failed done-write latched the error record out"
+    assert rec["stage"] == "error"
+    assert "No space left on device" in rec["error"], (
+        "the error record must name the real failure, not the install it was reporting"
+    )
 
 
 def test_the_heartbeat_thread_does_not_outlive_the_install(tmp_path, monkeypatch):
@@ -1793,7 +1827,7 @@ def test_start_is_a_no_op_once_the_venv_is_installed(tmp_path, monkeypatch):
     reqs = ["pip"]
     venv_dir = os.path.join(str(tmp_path / "venvs"), envinstall.venv_key_for(reqs))
     os.makedirs(venv_dir, exist_ok=True)
-    # A runnable interpreter, not just the marker: since D206 `is_installed`
+    # A runnable interpreter, not just the marker: since D212 `is_installed`
     # verifies the claim once, and a marker over an empty directory now reads
     # (correctly) as "not installed" — which is a different test than this one.
     _runnable_venv_python(venv_dir)

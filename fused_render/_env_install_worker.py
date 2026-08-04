@@ -48,7 +48,7 @@ import time
 _CREATE_PCT = 10
 _INSTALL_PCT = 25
 
-# How often the install stage re-writes its record while uv runs (D207). The whole
+# How often the install stage re-writes its record while uv runs (D213). The whole
 # download happens inside ONE `ensure_requirements_venv` call behind
 # `capture_output=True`, so nothing about its internals is observable from here;
 # what this buys is proof of LIFE. The client polls every 500ms, so ~2s is well
@@ -118,9 +118,16 @@ def install(key, progress_dir, venvs_path, requirements, python_executable=None)
         with write_lock:
             if finished:
                 return  # a terminal record is already on disk; nothing may follow it
+            _write(progress_dir, stage, pct, detail, done, error)
+            # Latched only once the record is actually ON DISK. Latching before the
+            # write would make a FAILED terminal write shut the file anyway, and the
+            # `except` path's error record — the one carrying the reason — would
+            # silently no-op, leaving `done: false` on the wire forever: the same
+            # stuck poll this whole mechanism exists to prevent, reached by the
+            # opposite route. The lock is what keeps this safe: `_write` and the
+            # latch are one atomic step, so no beat can slip between them.
             if done:
                 finished.append(True)
-            _write(progress_dir, stage, pct, detail, done, error)
 
     try:
         # `create` and `install` are reported as one call because that is the
