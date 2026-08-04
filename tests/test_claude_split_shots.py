@@ -2014,3 +2014,53 @@ def test_the_rollback_releases_the_thumbnails_it_just_removed(html):
     branch = html[start:html.index("\n    }\n", start)]
     assert "receipt.remove()" in branch
     assert "annRevokeThumbs(shots)" in branch
+
+
+# ------------------ the pane-shot toggle wears the composer's own clothes
+
+def _viewshot_buttons(html):
+    """Both composers' pane-shot buttons, markup and all."""
+    out = []
+    for id_ in ("viewshot", "hviewshot"):
+        i = html.index('<button id="%s"' % id_)
+        out.append(html[i:html.index("</button>", i) + len("</button>")])
+    return out
+
+
+def test_the_pane_shot_toggle_is_drawn_like_the_pills_beside_it(html):
+    """It was a colour emoji (🖼) in a row whose other four controls are quiet
+    monochrome text — the one saturated thing in the composer, and it read as an
+    unstyled glyph someone dropped in. `.pill` paints only `color`, so the fix is
+    an icon that INHERITS it: an inline svg on `currentColor`, exactly like the
+    send button one gap away. That also makes the icon follow the hover colour and
+    the pressed accent for free, which an emoji could never do."""
+    for btn in _viewshot_buttons(html):
+        assert "🖼" not in btn, "the colour emoji is what looked out of place: " + btn
+        assert "<svg" in btn, btn
+        # inherits the pill's colour rather than carrying its own
+        assert 'stroke="currentColor"' in btn or 'fill="currentColor"' in btn, btn
+        assert "#" not in btn.split("<svg")[1], "no colour literals in the icon"
+        # still a pill, so its box still matches its neighbours
+        assert 'class="pill viewshot"' in btn, btn
+
+
+def test_the_pane_shot_toggle_still_says_what_it_is_and_whether_it_is_armed(html):
+    """The visible content is now an icon, so the name has to live in the a11y
+    tree; and the pressed state is a receipt BEFORE the fact — the only thing
+    telling the user this send will carry a picture. Losing either would make a
+    per-message, self-clearing feature silent."""
+    for btn in _viewshot_buttons(html):
+        assert 'aria-pressed="false"' in btn, btn
+        assert "aria-label=" in btn, "icon-only needs a real name: " + btn
+        assert "screenshot" in btn, "the title still explains it: " + btn
+    css = _between(html, '.viewshot[aria-pressed="true"] {', "}")
+    assert "var(--accent)" in css and "var(--on-accent)" in css, css
+
+
+def test_both_composers_draw_the_toggle_identically(html):
+    """D146: the home card and the chat composer each carry their own copy of this
+    control, and one variable drives both — so a restyle that touched only one
+    would show the user two different buttons for one state. Asserted, not
+    commented."""
+    chat, home = _viewshot_buttons(html)
+    assert chat.replace('id="viewshot"', "ID") == home.replace('id="hviewshot"', "ID")
