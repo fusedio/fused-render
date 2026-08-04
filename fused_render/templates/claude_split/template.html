@@ -78,8 +78,29 @@
   code, pre, .mono { font-family: "SF Mono", Menlo, Monaco, "Cascadia Mono", monospace; }
 
   /* ── split layout ─────────────────────────────── */
-  #left { position: relative; min-width: 200px; }
-  #left iframe {
+  #left { position: relative; min-width: 200px; display: flex; flex-direction: column; }
+  /* The pane's control strip. Deliberately a LAYOUT row, not an overlay: the app
+     below is full-bleed with no chrome of its own, so a floating control sat on
+     top of the app's own corner and made it unclickable — and the annotate button
+     grows when active, so it covered more of the app at exactly the moment the
+     user was trying to click things. Trading ~28px of app height for a pane where
+     nothing is hidden is the better deal, and it gives future pane controls a home
+     that is outside the iframe (so outside every capture). */
+  #lefttools {
+    flex-shrink: 0;
+    height: 28px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 0 8px;
+    background: var(--panel);
+    border-bottom: 1px solid var(--border);
+  }
+  /* The iframe's box. `min-height: 0` because a flex child's default
+     `min-height: auto` would let the iframe refuse to shrink and push the strip
+     off the top. */
+  #leftview { position: relative; flex: 1; min-height: 0; }
+  #leftview iframe {
     position: absolute;
     inset: 0;
     width: 100%;
@@ -96,23 +117,21 @@
   }
 
   /* ── annotation layer over the left iframe ─────── */
+  /* In the strip, so no shadow and no absolute placement — it is a toolbar
+     control now, not something hovering over the app. */
   #annbtn {
-    position: absolute;
-    top: 10px;
-    right: 10px;
-    z-index: 4;
     display: flex;
     align-items: center;
     gap: 6px;
     font: inherit;
-    font-size: 12px;
-    padding: 5px 12px;
+    font-size: 11.5px;
+    line-height: 1;
+    padding: 3px 10px;
     border: 1px solid var(--border);
     border-radius: 999px;
-    background: var(--panel);
+    background: var(--bg);
     color: var(--dim);
     cursor: pointer;
-    box-shadow: 0 2px 8px var(--shadow);
     transition: color .12s, border-color .12s, background .12s;
   }
   #annbtn:hover { color: var(--fg); border-color: var(--border-strong); }
@@ -221,7 +240,7 @@
   }
   .annchip button:hover { color: var(--fg); }
   #divider:hover, body.dragging #divider { background: var(--handle-hover); }
-  body.dragging #left iframe { pointer-events: none; }
+  body.dragging #leftview iframe { pointer-events: none; }
   #msg { margin: auto; color: var(--dim); text-align: center; padding: 24px; }
 
   /* ── chat pane ─────────────────────────────── */
@@ -668,14 +687,24 @@
 </head>
 <body>
   <div id="left">
-    <iframe id="leftframe" title="File preview"></iframe>
-    <div id="annhl"></div>
-    <div id="annpins"></div>
-    <button id="annbtn" type="button" aria-pressed="false" title="Annotate the app, then send the notes to Claude">✎ Annotate</button>
-    <div id="annpop">
-      <textarea rows="2" placeholder="What about this element?" spellcheck="false"></textarea>
-      <div class="hint">Enter to save · Esc to cancel <button id="anndel" type="button" hidden>Delete</button></div>
+    <!-- A slim strip for the pane's own controls. It SHRINKS the iframe rather
+         than covering it: the app is full-bleed with no chrome, so a floating
+         button made the corner underneath it unannotatable. Outside the iframe, so
+         it can never appear in a capture. -->
+    <div id="lefttools">
+      <button id="annbtn" type="button" aria-pressed="false" title="Annotate the app, then send the notes to Claude">✎ Annotate</button>
     </div>
+    <!-- The iframe's own box, and the offset parent for every overlay that is
+         positioned in FRAME viewport coordinates (pins, highlight, composer). -->
+    <div id="leftview">
+      <iframe id="leftframe" title="File preview"></iframe>
+      <div id="annhl"></div>
+      <div id="annpins"></div>
+      <div id="annpop">
+        <textarea rows="2" placeholder="What about this element?" spellcheck="false"></textarea>
+        <div class="hint">Enter to save · Esc to cancel <button id="anndel" type="button" hidden>Delete</button></div>
+      </div>
+    </div><!-- /leftview -->
   </div>
   <div id="divider" role="separator" aria-orientation="vertical" aria-label="Resize panels"></div>
 
@@ -1180,7 +1209,7 @@ function appStateBlock(state) {
     appEntry = entry;
     document.getElementById("leftframe").src = "/render?path=" + encodeURIComponent(entry);
   } catch (err) {
-    // Swap only the iframe for the message — #left also hosts the annotation
+    // Swap only the iframe for the message — #leftview also hosts the annotation
     // layer (button, pins, highlight, popover), and wiping it would leave JS
     // driving detached nodes. No app, nothing to annotate: hide the toggle.
     document.getElementById("leftframe").remove();
@@ -1188,7 +1217,7 @@ function appStateBlock(state) {
     const d = document.createElement("div");
     d.id = "msg";
     d.textContent = "Could not open preview: " + err.message;
-    document.getElementById("left").prepend(d);
+    document.getElementById("leftview").prepend(d);
     // Tell Claude too: "the pane is showing an error instead of your app" is the
     // most important thing the state channel can carry, and from here the iframe
     // is gone (appWindow returns null forever) so nothing else will report it.
@@ -1209,7 +1238,7 @@ document.getElementById("divider").addEventListener("mousedown", (e) => {
   document.body.classList.add("dragging");
   const move = (ev) => {
     leftEl.style.width = clampPct((ev.clientX / window.innerWidth) * 100) + "%";
-    renderAnn();  // pins are positioned in #left coordinates — track the drag
+    renderAnn();  // pins are positioned in #leftview coordinates — track the drag
   };
   const up = (ev) => {
     document.body.classList.remove("dragging");
@@ -1313,8 +1342,9 @@ function annContentBox(el) {
   const w = nat.w * s, h = nat.h * s;
   return { left: r.left + (r.width - w) / 2, top: r.top + (r.height - h) / 2, width: w, height: h };
 }
-// Element rect in #left coordinates: iframe fills #left, so the element's
-// viewport rect inside the frame is already the stage rect.
+// Element rect in #leftview coordinates: the iframe fills #leftview, so the
+// element's viewport rect inside the frame is already the stage rect. (The control
+// strip is a sibling ABOVE #leftview, so it does not enter this coordinate space.)
 function annStageRect(el) {
   const r = el.getBoundingClientRect();
   return { left: r.left, top: r.top, width: r.width, height: r.height };
@@ -1330,7 +1360,10 @@ function renderAnn() {
   // pins over the frame
   annPins.innerHTML = "";
   const doc = annFrame.contentDocument;
-  const host = document.getElementById("left");
+  // #leftview, not #left: pins are placed in FRAME viewport coordinates, so their
+  // host must be the box the iframe fills — #left also holds the control strip,
+  // and measuring that would put every pin the strip's height too high.
+  const host = document.getElementById("leftview");
   annotations.forEach((c, i) => {
     const el = doc ? annResolve(c, doc) : null;
     if (!el) return;  // detached / frame not loaded: the chip still shows it
@@ -1395,7 +1428,7 @@ function renderAnn() {
 
 const annDelBtn = document.getElementById("anndel");
 function annPlacePop(x, y) {
-  const host = document.getElementById("left");
+  const host = document.getElementById("leftview");   // see renderAnn
   annPop.style.display = "block";
   annPop.style.left = Math.min(host.clientWidth - 292, Math.max(0, x + 10)) + "px";
   annPop.style.top = Math.min(host.clientHeight - 110, Math.max(0, y + 10)) + "px";
@@ -1481,7 +1514,10 @@ annBtn.addEventListener("click", () => {
   annOn = !annOn;
   annBtn.classList.toggle("on", annOn);
   annBtn.setAttribute("aria-pressed", String(annOn));
-  annBtn.textContent = annOn ? "✎ Annotating — click an element" : "✎ Annotate";
+  // Names BOTH ways out while active: the strip keeps the button visible and
+  // pressed-styled, and Escape already exits, but only the label can say so.
+  annBtn.textContent = annOn ? "✎ Annotating — click an element · Esc or click here to stop"
+                             : "✎ Annotate";
   if (!annOn) { annHl.style.display = "none"; annCloseComposer(); }
 });
 

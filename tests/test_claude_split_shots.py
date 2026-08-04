@@ -1921,6 +1921,74 @@ console.log(JSON.stringify({on: on, off: viewShotWanted, pressed: pressed}));
     assert body.index("const wantView = viewShotWanted") < body.index("setViewShot(false)")
 
 
+# ------------------ the left pane's controls live in a strip, not over the app
+
+def _between(html, start, end):
+    i = html.index(start)
+    return html[i:html.index(end, i)]
+
+
+def test_the_annotate_control_does_not_float_over_the_app(html):
+    """`#left` is a full-bleed iframe with no chrome, so an absolutely-positioned
+    button sat on top of the app's own top-right corner and made whatever is under
+    it unannotatable — you cannot click through a control. Worst exactly when in
+    use, because the active label is longer, so the button GREW over the app at the
+    moment the user was trying to click things.
+
+    Now it lives in a strip that shrinks the iframe instead of covering it:
+    occlusion becomes layout, and nothing is hidden."""
+    css = _between(html, "#annbtn {", "}")
+    assert "position: absolute" not in css, css
+    assert "top:" not in css and "right:" not in css, css
+    # in the strip, in the DOM
+    tools = _between(html, '<div id="lefttools"', "</div>")
+    assert 'id="annbtn"' in tools, tools
+
+
+def test_the_strip_sits_outside_the_frame_so_it_cannot_be_captured(html):
+    """The strip must not appear in a crop or the pane shot. Structural, not
+    hopeful: `shotPane` rasterises `appWindow().document.body` — the FRAMED
+    document — so anything in the parent document is unreachable by construction.
+    This pins the arrangement that makes that argument true: the strip is a sibling
+    ABOVE the view box, never inside it."""
+    left = _between(html, '<div id="left">', '<div id="annpop">')
+    assert left.index('id="lefttools"') < left.index('id="leftview"')
+    view = _between(html, '<div id="leftview"', "<!-- /leftview -->")
+    assert 'id="leftframe"' in view
+    assert 'id="lefttools"' not in view
+    # and the capture still reads the frame, not the pane
+    assert "appWindow()" in _between(html, "async function shotPane(", "\n}\n")
+
+
+def test_the_overlays_share_the_frames_box_so_pin_coordinates_still_line_up(html):
+    """The reason for a `#leftview` wrapper rather than putting the strip straight
+    into `#left`: pins, the highlight and the composer are positioned in FRAME
+    viewport coordinates (annStageRect is just getBoundingClientRect inside the
+    frame). Their offset parent therefore has to be the box the iframe fills, or
+    every pin would sit the strip's height too high."""
+    view = _between(html, '<div id="leftview"', "<!-- /leftview -->")
+    for overlay in ("annhl", "annpins", "annpop"):
+        assert 'id="%s"' % overlay in view, overlay
+    assert "#leftview { position: relative" in html
+    # and the two places that measure the host measure THAT box
+    assert 'getElementById("left")' not in \
+        _between(html, "function renderAnn()", "\n}\n")
+    assert 'getElementById("left")' not in \
+        _between(html, "function annPlacePop(", "\n}\n")
+
+
+def test_turning_annotate_mode_off_stays_findable(html):
+    """A control that moves must not lose its exit. The button stays visible and
+    pressed-styled in the strip, and its active label now names both ways out."""
+    click = _between(html, "annBtn.addEventListener(\"click\"", "\n});")
+    assert 'aria-pressed' in click
+    assert 'classList.toggle("on", annOn)' in click
+    label = click[click.index("annBtn.textContent"):]
+    assert "Esc" in label or "esc" in label, \
+        "the active label should say how to get out: " + label
+    assert "#annbtn.on {" in html, "and the pressed state is still visibly distinct"
+
+
 def test_a_rolled_back_send_releases_its_thumbnails(html):
     """The receipt's removal detaches the only <img> holding each thumbnail's blob
     URL; an unrevoked one pins its Blob for the life of the page, and a retried
