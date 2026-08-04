@@ -26,6 +26,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 
+from _thread_scoped import this_thread_only
+
 NETCDF_DIR = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
     "fused_render", "templates", "netcdf")
@@ -156,7 +158,12 @@ class _ScandirTrap:
                     f"scandir on chunk dir {ap} — would drop the mount")
             return self._real(path)
 
-        monkeypatch.setattr(Z.os, "scandir", fake)
+        # Thread-scoped: `Z.os` is the real `os` module, so this patch is
+        # process-wide, and under the fused-engine job another package's
+        # background thread polls its own directory with glob (see
+        # _thread_scoped.py). Recording ITS scandir made `scanned` a list of
+        # paths this code never touched.
+        monkeypatch.setattr(Z.os, "scandir", this_thread_only(self._real, fake))
 
 
 # --------------------------------------------------------------------------
@@ -221,7 +228,7 @@ def test_chunk_stats_remote_skips_scandir(tmp_path, monkeypatch):
     def boom(path):
         raise AssertionError("os.scandir called for a remote chunk_stats")
 
-    monkeypatch.setattr(Z.os, "scandir", boom)
+    monkeypatch.setattr(Z.os, "scandir", this_thread_only(os.scandir, boom))
     za = {"shape": [100, 100], "chunks": [10, 10]}
     present, total = Z._chunk_stats(store, "temperature", za, remote=True)
     assert present is None

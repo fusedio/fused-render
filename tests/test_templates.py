@@ -7,6 +7,8 @@ import os
 
 import pytest
 
+from _thread_scoped import this_thread_only
+
 from fused_render.server import templates as server
 
 
@@ -789,8 +791,9 @@ def test_zarr_condition_never_lists_directory(tmp_path, monkeypatch):
     def boom(*a, **k):
         raise AssertionError("zarr_aoi condition must not list the directory")
 
-    monkeypatch.setattr(os, "listdir", boom)
-    monkeypatch.setattr(os, "scandir", boom)
+    # Thread-scoped (tests/_thread_scoped.py) — see test_browse_mount.
+    monkeypatch.setattr(os, "listdir", this_thread_only(os.listdir, boom))
+    monkeypatch.setattr(os, "scandir", this_thread_only(os.scandir, boom))
 
     named = tmp_path / "s.zarr"
     named.mkdir()
