@@ -4736,8 +4736,8 @@ select.field-control:has(option[value=""]:checked) {
 .mount-provider {
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  align-items: flex-start;
+  gap: 6px;
+  align-items: stretch;
   text-align: left;
   padding: 12px 14px;
   border: 1px solid var(--border);
@@ -4745,6 +4745,23 @@ select.field-control:has(option[value=""]:checked) {
   background: var(--bg-alt);
   cursor: pointer;
   font: inherit;
+}
+
+/* Icon and name share a baseline row so the names line up across the grid
+   regardless of glyph height. */
+.mount-provider-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.mount-provider-icon {
+  flex: none;
+  color: var(--fg-muted);
+}
+
+.mount-provider:hover .mount-provider-icon {
+  color: var(--accent, var(--fg));
 }
 
 .mount-provider:hover {
@@ -4761,8 +4778,15 @@ select.field-control:has(option[value=""]:checked) {
 }
 
 /* The setup COST, stated up front — "one click" and "go create a Google Cloud
-   project" are very different asks and the user picks knowing which. */
+   project" are very different asks and the user picks knowing which.
+
+   margin-top:auto is the alignment: grid rows stretch every card to the tallest
+   in the row, and the cost lines wrap to one or two lines depending on the
+   provider, so without this the cost text floats at a different height in each
+   card and the row reads as ragged. Pinning it to the bottom lines the cost
+   blocks up against each other and keeps the names on their own shared row. */
 .mount-provider-cost {
+  margin-top: auto;
   font-size: 0.8em;
   color: var(--fg-muted);
   line-height: 1.4;

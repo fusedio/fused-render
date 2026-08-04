@@ -42,6 +42,7 @@ import { hasDrainingUploads, uploadNotice } from "../lib/uploads";
 import { Modal } from "../components/modal/Modal";
 import { ErrorBanner } from "../components/ErrorBanner";
 import { Field, Select, TextInput } from "../components/field/fields";
+import { ProviderIcon } from "../components/ProviderIcons";
 
 // Files written to this mount that haven't reached the remote yet (D207).
 // Worth its own line because a mount caches writes locally and uploads them
@@ -443,7 +444,7 @@ function AddMount({
       <p className="deploy-muted">
         Surface a remote as a local folder. Pick a remote you created, one under{" "}
         <b>Detected credentials</b> (from your AWS / gcloud config — no keys stored), or{" "}
-        <b>Public buckets</b> for anonymous access to open data (no credentials needed).
+        <b>Public datasets</b> for anonymous access to open data (no credentials needed).
       </p>
       <div className="mount-paste">
         <Field label="Paste a link">
@@ -500,7 +501,7 @@ function AddMount({
               </optgroup>
             )}
             {suggested.some((s) => s.kind === "public") && (
-              <optgroup label="Public buckets (no credentials)">
+              <optgroup label="Public datasets (no credentials)">
                 {suggested
                   .filter((s) => s.kind === "public")
                   .map((s) => (
@@ -1329,10 +1330,14 @@ const STORAGE_OPTIONS: { key: SetupKey; name: string; cost: string; title: strin
     title: "Add an S3-compatible remote",
   },
   {
+    // "Public buckets" described the MECHANISM (an anonymous, unsigned bucket
+    // read) rather than what anyone would come here wanting. These are open
+    // datasets published to be read without an account — AWS Open Data,
+    // public GCS collections — so the card is named for that instead.
     key: "public",
-    name: "Public buckets",
-    cost: "No credentials needed",
-    title: "Browse public buckets",
+    name: "Public datasets",
+    cost: "Open S3/GCS data — no account needed",
+    title: "Browse public datasets",
   },
 ];
 
@@ -1352,7 +1357,10 @@ function AddStorage({ onPick }: { onPick: (key: SetupKey) => void }) {
             className="mount-provider"
             onClick={() => onPick(o.key)}
           >
-            <span className="mount-provider-name">{o.name}</span>
+            <span className="mount-provider-head">
+              <ProviderIcon provider={o.key} />
+              <span className="mount-provider-name">{o.name}</span>
+            </span>
             <span className="mount-provider-cost">{o.cost}</span>
           </button>
         ))}
