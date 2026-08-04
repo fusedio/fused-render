@@ -55,6 +55,30 @@ def app_entry(dir_path: str) -> str | None:
     return os.path.abspath(os.path.join(dir_path, htmls[0]))
 
 
+def app_dict(path: str, name: str, tag: str, source: str) -> dict:
+    """One app's listing entry. The single place the shape is built, so the
+    three sources cannot drift in what they report."""
+    try:
+        entry_html = app_entry(path)
+    except OSError:
+        entry_html = None  # unreadable/racing: it still lists, as a folder
+    return {
+        "name": name,
+        "tag": tag,
+        "path": os.path.abspath(path),
+        # `entry` is the file a card opens and previews. For an app of this
+        # shape that is exactly its entry HTML — the second key exists for
+        # sources whose entry may be a figure or a table (claude_science.py),
+        # and both are reported by every source so the shell needs no
+        # per-source branch.
+        "entry": entry_html,
+        "entry_html": entry_html,
+        "title": entry_title(entry_html) if entry_html else None,
+        "updated_at": dir_updated_at(path),
+        "source": source,
+    }
+
+
 def two_level_apps(root: str, source: str) -> list[dict]:
     """Every app in a Fused-shaped folder: `<root>/<tag>/<name>/`.
 
@@ -93,24 +117,9 @@ def two_level_apps(root: str, source: str) -> list[dict]:
             try:
                 if not os.path.isdir(path):
                     continue
-                entry_html = app_entry(path)
             except OSError:
                 continue  # unreadable/racing entry: skip, never fail the listing
-            apps.append({
-                "name": name,
-                "tag": tag,
-                "path": os.path.abspath(path),
-                # `entry` is the file a card opens and previews. For an app of
-                # this shape that is exactly its entry HTML — the second key
-                # exists for sources whose entry may be a figure or a table
-                # (claude_science.py), and both are reported by every source so
-                # the shell needs no per-source branch.
-                "entry": entry_html,
-                "entry_html": entry_html,
-                "title": entry_title(entry_html) if entry_html else None,
-                "updated_at": dir_updated_at(path),
-                "source": source,
-            })
+            apps.append(app_dict(path, name, tag, source))
     return apps
 
 

@@ -14,26 +14,24 @@ exact list. What it does not carry is a timestamp per project, so nothing here
 orders anything: recency comes from the filesystem, exactly as it does for the
 workspace.
 
-**The rule for what counts as an app inside a discovered root is the workspace
-rule, unchanged** (owner's call): `<root>/<tag>/<name>/` with the single
-non-hidden direct-child `.html` as the entry (`app_listing.two_level_apps`, the
-same function the workspace listing calls). No new notion of an app, and no
-guessing at one.
+**What counts as an app inside a discovered root is decided by the folder's
+SHAPE, not by the repository it lives in** — a positive test that replaced the
+original filter, which skipped any root inside a git repository.
 
-That rule is only meaningful in a folder whose PURPOSE is holding apps, which
-is why the load-bearing filter here is `_is_workspace_like`: **a root that is
-inside a git repository is skipped**. Claude Code's project list is
-overwhelmingly source checkouts, and the two-level rule finds junk in those —
-measured on this repo, it reports 7 "apps", of which 3 are internal
-(`app_starter`, `static`, `template_starter`) and 4 are `examples_seed/*`
-duplicates of what the user already has seeded. A Fused workspace, by contrast,
-is *not* a repo at its root: `init_repo` runs per app dir
-(`<workspace>/<tag>/<name>`), never on the workspace itself. So "has no
-repository above it" separates the two populations almost perfectly, for a
-handful of stats per root. The accepted miss: a user who git-inits their whole
-workspace is not discovered. Their primary workspace still lists through
-`fused_dir()`, and the alternative — trusting the two-level rule inside every
-checkout on the disk — is the noise this exists to avoid.
+That filter was justified on one measurement and generalised badly. In this
+repo's own checkout the bare two-level rule reports 7 "apps" (3 internal, 4
+duplicates of the seeded examples), which looked like proof that "a checkout is
+not a workspace". Run against a real project list it said the opposite: 17
+roots, 14 of them checkouts, **0 apps listed**. People keep folders of little
+apps inside repositories; version control says nothing about whether a
+directory holds apps.
+
+So a folder is a TAG FOLDER when most of its subdirectories are app-shaped —
+`MIN_TAG_APPS` of them and `MIN_TAG_SHARE` of the total (`_tag_apps`). Measured
+on the same trees that motivated the old filter: a user's sandbox 9/9 (100%),
+this repo's `fused_render/` 3/8 (38%), its root 2/10 (20%). Each root is tried
+at both depths — as a tag folder itself, and as a holder of tag folders —
+because which folder a user opens Claude Code in is theirs to choose.
 
 Read-only, like the Claude Science source (D205): nothing here writes to,
 scaffolds into or commits to a discovered folder. Unlike that one, a discovered
@@ -60,10 +58,24 @@ SOURCE = "claude-code"
 MAX_ROOTS = 200
 MAX_APPS = 500
 
-#: How far up to look for a `.git` before calling a root repo-free. Bounded so
-#: a deep path costs a bounded number of stats; anything deeper than this from
-#: a repo root is not a checkout anyone is working in.
-_ANCESTOR_LIMIT = 40
+#: What makes a folder a TAG FOLDER rather than an ordinary directory that
+#: happens to contain a page: most of its subdirectories are app-shaped. Both
+#: bounds matter. The count stops a directory with one lone `index.html` child
+#: from becoming a "workspace"; the share is what rejects a source tree, where
+#: a handful of app-shaped dirs sit among many that are not. Calibrated on real
+#: trees rather than taste — see `_tag_apps`.
+MIN_TAG_APPS = 2
+MIN_TAG_SHARE = 0.5
+
+#: Never descended when scanning an unknown root. `IGNORED_CHILDREN` covers
+#: what is never an app; this adds the directories that are merely EXPENSIVE to
+#: list — a `node_modules` alone can be tens of thousands of entries, and this
+#: source walks repositories it knows nothing about, on every Home render.
+#: Mirrors `server/walk.WALK_IGNORE_DIRS` (SR-2a) without importing the server
+#: layer into a top-level module.
+SKIP_DIRS = frozenset(app_listing.IGNORED_CHILDREN | {
+    "node_modules", "venv", ".venv", "site-packages", "dist", "build", "target",
+})
 
 
 def config_path() -> str | None:
@@ -133,31 +145,6 @@ def project_roots() -> list[str]:
     return roots
 
 
-def _in_git_repo(path: str) -> bool:
-    """Whether `path` is inside a git repository — the filter this module turns on.
-
-    Walks up looking for `.git`, which covers a root that is a checkout AND a
-    root that is a SUBDIRECTORY of one (running Claude Code in `~/repo/service`
-    is ordinary). Stats only: `git rev-parse` per root would be a subprocess per
-    Home render for an answer the filesystem already has.
-
-    `.git` is matched as either a dir or a file, since a worktree or submodule
-    records it as a file pointing elsewhere — both mean "inside a repository".
-    """
-    current = path
-    for _ in range(_ANCESTOR_LIMIT):
-        try:
-            if os.path.exists(os.path.join(current, ".git")):
-                return True
-        except OSError:
-            return True  # unreadable: assume repo, i.e. skip. Quieter is safer.
-        parent = os.path.dirname(current)
-        if parent == current:
-            break
-        current = parent
-    return False
-
-
 def _under(path: str, base: str) -> bool:
     return path == base or path.startswith(base + os.sep)
 
@@ -165,7 +152,7 @@ def _under(path: str, base: str) -> bool:
 def _is_workspace_like(root: str, exclude: str) -> bool:
     """Whether `root` should be scanned for apps at all.
 
-    Four refusals, in cost order:
+    Two refusals, in cost order:
 
     * it belongs to a source that already lists it — the workspace being listed
       (`exclude`), or the Claude Science store. Both would otherwise be walked a
@@ -179,16 +166,67 @@ def _is_workspace_like(root: str, exclude: str) -> bool:
       version-stacked, read-only path D205 special-cases claude-science to
       avoid. Reachable only if the user has run Claude Code cwd'd inside that
       store, which is unlikely and cheap to rule out.
-    * it is a hidden directory;
-    * it is inside a git repository (see the module docstring — this is what
-      keeps source checkouts out).
+    * it is a hidden directory.
+
+    What it deliberately does NOT check is whether the root is a git
+    repository — see `_tag_apps` for what replaced that and why.
     """
     for owned in (exclude, claude_science.claude_science_dir()):
         if _under(root, owned):
             return False
-    if os.path.basename(root).startswith("."):
+    return not os.path.basename(root).startswith(".")
+
+
+def _app_shaped(path: str) -> bool:
+    """A directory holding exactly one non-hidden top-level `.html` — the shape
+    of an app. Cheap: one listdir, no recursion."""
+    try:
+        return os.path.isdir(path) and app_listing.app_entry(path) is not None
+    except OSError:
         return False
-    return not _in_git_repo(root)
+
+
+def _child_dirs(folder: str) -> list[str]:
+    try:
+        return [c for c in sorted(os.listdir(folder))
+                if not c.startswith(".") and c not in SKIP_DIRS
+                and os.path.isdir(os.path.join(folder, c))]
+    except OSError:
+        return []
+
+
+def _tag_apps(folder: str, tag: str, source: str) -> list[dict]:
+    """The apps in `folder` if it is a TAG FOLDER, else [].
+
+    A tag folder is one whose children are mostly apps — at least
+    `MIN_TAG_APPS` of them, and at least `MIN_TAG_SHARE` of its subdirectories.
+    That is a positive test for what the folder is FOR, and it replaced the
+    original filter, which asked whether the root was inside a git repository.
+
+    That filter was wrong, and it is worth recording why rather than just
+    deleting it. It was justified on one measurement — this repo's own
+    checkout, where the bare two-level rule reports 7 "apps", 3 internal and 4
+    duplicates of the seeded examples — and the inference drawn from it ("a
+    checkout is not a workspace") does not survive contact with a real machine.
+    Run against a user's actual project list: 17 roots, 14 of them checkouts,
+    0 apps listed. People keep folders of little apps INSIDE repositories,
+    which is normal and none of our business; version control says nothing
+    about whether a directory holds apps.
+
+    Density does, and it separates the same two populations that motivated the
+    filter, measured on the same trees: a user's sandbox scored 9/9 (100%)
+    while this repo's `fused_render/` scored 3/8 (38%) and its root 2/10 (20%).
+    `examples_seed/` scores 4/5 and is accepted — correctly; those are example
+    apps.
+    """
+    children = _child_dirs(folder)
+    if len(children) < MIN_TAG_APPS:
+        return []
+    shaped = [c for c in children if _app_shaped(os.path.join(folder, c))]
+    if len(shaped) < MIN_TAG_APPS or len(shaped) < MIN_TAG_SHARE * len(children):
+        return []
+    return [app_listing.app_dict(os.path.join(folder, c), c, tag, source)
+            for c in shaped]
 
 
 def list_apps(exclude_root: str) -> list[dict]:
@@ -199,8 +237,17 @@ def list_apps(exclude_root: str) -> list[dict]:
     Empty when Claude Code isn't installed, which is the common case and not a
     condition worth reporting.
 
+    Each root is tried at BOTH depths, because the folder a user opens Claude
+    Code in is theirs to choose and neither depth is more correct: the root
+    itself may be a tag folder (`<root>/<name>/one.html`, the shape of a folder
+    of little apps — the observed common case) or it may hold tag folders
+    (`<root>/<tag>/<name>/one.html`, the workspace shape). `_tag_apps` decides
+    each candidate on its own density, so trying both costs one extra listdir
+    per root and cannot turn a rejected folder into an accepted one.
+
     Deduplicated by app path: two project entries can nest (a workspace and a
-    folder inside it), and the same app must not become two cards.
+    folder inside it), the two depths can overlap, and the same app must not
+    become two cards.
     """
     exclude = os.path.abspath(exclude_root)
     apps: list[dict] = []
@@ -209,7 +256,10 @@ def list_apps(exclude_root: str) -> list[dict]:
     for root in project_roots():
         if not _is_workspace_like(root, exclude):
             continue
-        for app in app_listing.two_level_apps(root, SOURCE):
+        found = _tag_apps(root, os.path.basename(root), SOURCE)
+        for tag in _child_dirs(root):
+            found += _tag_apps(os.path.join(root, tag), tag, SOURCE)
+        for app in found:
             if app["path"] in seen:
                 continue
             if len(apps) >= MAX_APPS:

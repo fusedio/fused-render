@@ -37,15 +37,26 @@ def config(tmp_path, monkeypatch):
     return write
 
 
-def _workspace(root, tag="local", name="demo", entry="index.html"):
-    """A Fused-shaped folder: <root>/<tag>/<name>/<entry>. No .git at the root —
-    that is what makes it a workspace rather than a checkout (init_repo runs per
-    app dir, never on the workspace)."""
-    app = root / tag / name
-    app.mkdir(parents=True)
+def _app(parent, name, entry="index.html"):
+    """One app folder: <parent>/<name>/<entry>."""
+    app = parent / name
+    app.mkdir(parents=True, exist_ok=True)
     if entry:
         (app / entry).write_text("<title>Demo</title>", encoding="utf-8")
     return app
+
+
+def _workspace(root, tag="local", names=("demo", "other"), entry="index.html"):
+    """A Fused-shaped folder: <root>/<tag>/<name>/<entry>.
+
+    TWO apps by default, because one is not enough to make a tag folder: the
+    rule is a density test (`MIN_TAG_APPS`/`MIN_TAG_SHARE`), so a lone app-shaped
+    directory reads as an ordinary folder that happens to hold a page — which is
+    what a `docs/` or a `site/` in a source tree is. A workspace with exactly one
+    app in it is the accepted cost, pinned by its own test below."""
+    for name in names:
+        _app(root / tag, name, entry)
+    return root / tag / names[0]
 
 
 def _names(apps):
@@ -177,45 +188,77 @@ def test_the_root_cap_is_logged_not_silent(tmp_path, config, monkeypatch, caplog
 
 # ------------------------------------------------------------ what is refused
 
-def test_a_git_checkout_is_skipped_entirely(tmp_path, config):
-    """The filter this module turns on.
+def test_a_folder_of_apps_inside_a_git_checkout_IS_listed(tmp_path, config):
+    """The reversal, and the reason this module stopped asking about git.
 
-    Measured on fused-render's own checkout, the two-level rule reports 7
-    "apps": 3 internal (`app_starter`, `static`, `template_starter`) and 4
-    `examples_seed/*` duplicates of what the user already has. A workspace has
-    no repo at its root; a checkout does.
+    The first version skipped any root inside a repository, on the strength of
+    one measurement (this repo's checkout, where the bare two-level rule finds
+    7 junk "apps"). Against a real project list that rule said the opposite:
+    17 roots, 14 of them checkouts, 0 apps listed. People keep folders of little
+    apps inside repositories — the shape of the folder is the signal, not the
+    presence of a `.git` above it.
     """
-    checkout = tmp_path / "repo"
-    _workspace(checkout, tag="examples_seed", name="sine", entry="sine.html")
-    (checkout / ".git").mkdir()
-    config([checkout])
-
-    assert claude_projects.list_apps(str(tmp_path / "ws")) == []
-
-
-def test_a_subdirectory_of_a_checkout_is_skipped_too(tmp_path, config):
-    """Running Claude Code in `~/repo/service` is ordinary, and the project list
-    records that subdirectory — so the check has to look UP, not just at the
-    root itself."""
-    checkout = tmp_path / "repo"
+    checkout = tmp_path / "sandbox"
     (checkout / ".git").mkdir(parents=True)
-    inner = checkout / "service"
-    _workspace(inner)
-    config([inner])
-
-    assert claude_projects.list_apps(str(tmp_path / "ws")) == []
-
-
-def test_a_git_worktree_pointer_file_counts_as_a_repo(tmp_path, config):
-    """A worktree or submodule records `.git` as a FILE pointing elsewhere. It
-    is still inside a repository, and `isdir` alone would have missed it."""
-    checkout = tmp_path / "worktree"
-    _workspace(checkout)
-    (checkout / ".git").write_text("gitdir: /elsewhere/.git/worktrees/x\n",
-                                   encoding="utf-8")
+    for name in ("soccer", "spectrogram", "sysdebug"):
+        _app(checkout / "render", name, f"{name}.html")
     config([checkout])
 
+    assert _names(claude_projects.list_apps(str(tmp_path / "ws"))) == [
+        "soccer", "spectrogram", "sysdebug"]
+
+
+def test_a_source_tree_is_refused_by_density(tmp_path, config):
+    """What the git filter was really reaching for, done as a positive test.
+
+    Modelled on this repo, where the old rule's 7 false positives came from: a
+    package directory with a few app-shaped children among many that are not.
+    3 of 8 is 38%, under `MIN_TAG_SHARE`, so the whole folder is refused rather
+    than contributing its `app_starter`/`static`/`template_starter` lookalikes.
+    """
+    repo = tmp_path / "checkout"
+    pkg = repo / "fused_render"
+    for name in ("app_starter", "static", "template_starter"):
+        _app(pkg, name)                       # app-shaped, but not apps
+    for name in ("server", "shell", "templates", "windows", "app_seed"):
+        (pkg / name).mkdir(parents=True)      # ordinary source dirs
+    config([repo])
+
     assert claude_projects.list_apps(str(tmp_path / "ws")) == []
+
+
+def test_one_app_alone_is_not_a_workspace(tmp_path, config):
+    """The accepted cost of the density rule, pinned so it cannot drift.
+
+    A single app-shaped directory is indistinguishable from a `docs/` or a
+    `site/` that happens to hold an index.html, which is the commonest false
+    positive there is. `MIN_TAG_APPS` is what rules it out — at the price of not
+    discovering a folder that genuinely has exactly one app in it.
+    """
+    lonely = tmp_path / "project"
+    _app(lonely / "docs", "site")
+    config([lonely])
+
+    assert claude_projects.list_apps(str(tmp_path / "ws")) == []
+
+
+def test_a_root_that_is_itself_the_tag_folder_is_listed(tmp_path, config):
+    """The depth that the shipped version missed entirely.
+
+    A user's real sandbox: they open Claude Code in the folder that HOLDS the
+    apps, not in its parent, so the apps are at `<root>/<name>/one.html`. The
+    two-level-only rule found none of them (and, before the __pycache__ fix,
+    found seven bytecode directories instead). The root's own basename becomes
+    the tag.
+    """
+    root = tmp_path / "render"
+    for name in ("local_chat", "soccer", "spectrogram"):
+        _app(root, name, f"{name}.html")
+    config([root])
+
+    apps = claude_projects.list_apps(str(tmp_path / "ws"))
+    assert _names(apps) == ["local_chat", "soccer", "spectrogram"]
+    assert {a["tag"] for a in apps} == {"render"}
 
 
 def test_the_workspace_itself_and_anything_under_it_is_left_to_its_own_source(
@@ -223,7 +266,7 @@ def test_the_workspace_itself_and_anything_under_it_is_left_to_its_own_source(
     """Otherwise every app in the real workspace would be listed twice — once by
     the workspace walk and once here."""
     ws = tmp_path / "Fused"
-    _workspace(ws, name="mine")
+    _workspace(ws)
     inner = ws / "local"          # a tag dir inside the workspace
     config([ws, inner])
 
@@ -269,12 +312,13 @@ def test_a_second_workspace_is_listed_with_the_workspace_rule(tmp_path, config):
     """The whole point: a Fused-shaped folder somewhere else, reported with the
     same shape as a workspace app so the shell needs no special case."""
     other = tmp_path / "OnADrive"
-    _workspace(other, tag="work", name="dashboard", entry="dashboard.html")
+    _workspace(other, tag="work", names=("dashboard", "sidekick"),
+               entry="dashboard.html")
     config([other])
 
     apps = claude_projects.list_apps(str(tmp_path / "Fused"))
-    assert len(apps) == 1
-    app = apps[0]
+    assert _names(apps) == ["dashboard", "sidekick"]
+    app = next(a for a in apps if a["name"] == "dashboard")
     assert app["name"] == "dashboard"
     assert app["tag"] == "work"
     assert app["path"] == str(other / "work" / "dashboard")
@@ -285,30 +329,42 @@ def test_a_second_workspace_is_listed_with_the_workspace_rule(tmp_path, config):
     assert isinstance(app["updated_at"], float)
 
 
-def test_an_ambiguous_folder_still_lists_but_opens_as_a_directory(tmp_path, config):
-    """Zero or several top-level .html is the workspace rule's "no entry" case,
-    and it must behave identically here."""
+def test_only_app_shaped_siblings_are_listed_from_a_discovered_folder(
+        tmp_path, config):
+    """A deliberate asymmetry with the workspace source, worth stating.
+
+    `two_level_apps` lists a folder with zero or several top-level `.html` too —
+    it just reports `entry_html: None` and the card opens as a directory. That
+    is right for YOUR workspace, where everything in it is yours to see. It is
+    wrong for a folder we merely found: `notes/`, `data/` and every other
+    ordinary subdirectory would become an entry-less card. So a discovered tag
+    folder contributes only the children that are actually apps.
+    """
     other = tmp_path / "Other"
-    app = _workspace(other, name="twofiles")
-    (app / "second.html").write_text("<p>2</p>", encoding="utf-8")
-    _workspace(other, tag="local", name="empty", entry=None)
+    for name in ("alpha", "beta", "gamma"):
+        _app(other / "work", name)
+    (other / "work" / "notes").mkdir()                      # no page at all
+    two = other / "work" / "twofiles"
+    two.mkdir()
+    (two / "a.html").write_text("<p>1</p>", encoding="utf-8")
+    (two / "b.html").write_text("<p>2</p>", encoding="utf-8")  # ambiguous entry
     config([other])
 
-    apps = {a["name"]: a for a in claude_projects.list_apps(str(tmp_path / "ws"))}
-    assert _names(apps.values()) == ["empty", "twofiles"]
-    assert apps["twofiles"]["entry_html"] is None
-    assert apps["empty"]["entry_html"] is None
+    apps = claude_projects.list_apps(str(tmp_path / "ws"))
+    assert _names(apps) == ["alpha", "beta", "gamma"]
+    assert all(a["entry_html"] for a in apps), "every discovered app has an entry"
 
 
 def test_the_same_app_reached_by_two_roots_is_one_card(tmp_path, config):
     """Project entries nest — a workspace and a folder inside it are both
     ordinary things to have run Claude Code in."""
     other = tmp_path / "Other"
-    _workspace(other, tag="local", name="demo")
+    _workspace(other, tag="local")
     config([other, other / "local"])   # the tag dir is itself a listed project
 
     apps = claude_projects.list_apps(str(tmp_path / "ws"))
-    assert _names(apps) == ["demo"], "a nested root must not duplicate the app"
+    assert _names(apps) == ["demo", "other"], \
+        "a nested root must not duplicate the apps"
 
 
 def test_an_unreadable_root_is_skipped_not_fatal(tmp_path, config):
@@ -317,11 +373,12 @@ def test_an_unreadable_root_is_skipped_not_fatal(tmp_path, config):
     gone = tmp_path / "gone"
     gone.mkdir()
     live = tmp_path / "live"
-    _workspace(live, name="survivor")
+    _workspace(live, names=("survivor", "second"))
     config([gone, live])
     gone.rmdir()
 
-    assert _names(claude_projects.list_apps(str(tmp_path / "ws"))) == ["survivor"]
+    assert _names(claude_projects.list_apps(str(tmp_path / "ws"))) == [
+        "second", "survivor"]
 
 
 # ------------------------------------------------------------- through the API
@@ -338,14 +395,15 @@ def workspace(tmp_path, monkeypatch):
 def test_api_apps_merges_the_discovered_workspace_with_the_real_one(
         tmp_path, workspace, config):
     other = tmp_path / "Elsewhere"
-    _workspace(other, tag="work", name="report", entry="report.html")
+    _workspace(other, tag="work", names=("report", "sidekick"),
+               entry="report.html")
     config([other, workspace])   # the real workspace is listed too — and skipped
 
     client = TestClient(create_app(start_dir=str(tmp_path)))
     apps = client.get("/api/apps", headers={"X-Fused": "1"}).json()["apps"]
 
     by_name = {a["name"]: a for a in apps}
-    assert sorted(by_name) == ["report", "wsapp"]
+    assert sorted(by_name) == ["report", "sidekick", "wsapp"]
     assert by_name["wsapp"]["source"] == "workspace"
     assert by_name["report"]["source"] == "claude-code"
     # Sorted as one list, by (tag, name) — the sources are merged, not appended.

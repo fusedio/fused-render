@@ -157,7 +157,7 @@ Runtime features and settings live in [docs/usage.md](docs/usage.md):
   and in the Apps hub (read-only, nothing to configure).
 - [Other Fused folders](docs/usage.md#other-fused-folders) — a second workspace
   outside `~/Documents/Fused`, found from the folders Claude Code has been
-  opened in (git checkouts are skipped).
+  opened in (any folder whose subdirectories are mostly apps).
 - [Export for hosted serving](docs/usage.md#export-for-hosted-serving) — the
   programmatic `POST /api/export` bundle format behind the Deploy button.
 

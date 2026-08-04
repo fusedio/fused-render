@@ -153,13 +153,20 @@ opened Claude Code in it once. Nothing is copied and nothing is written: a
 discovered app is an ordinary Fused app in a folder you own, and it opens the
 same way as any other.
 
-The rule for what counts as an app inside one is the same everywhere:
-`<folder>/<tag>/<name>/` with a single `.html` inside. **Folders inside a git
-repository are skipped** — a source checkout is not a workspace, and scanning
-one turns build output and example directories into app cards. The consequence
-worth knowing: if you `git init` your whole Fused folder, it stops being
-discovered this way. Your main workspace is unaffected — that one is always
-listed.
+A folder counts as holding apps when **most of its subdirectories are apps** —
+at least two of them, each with a single `.html` inside. That shape test is what
+separates a folder of little apps from a source tree that happens to contain a
+page, and it is checked both on the folder you opened and one level below it, so
+either `render/soccer/soccer.html` or `workspace/local/soccer/soccer.html`
+is found. Being inside a git repository makes no difference: plenty of app
+folders live in one.
+
+Two consequences worth knowing. A folder with exactly **one** app in it is not
+discovered — a lone `docs/index.html` is indistinguishable from a real
+workspace, and guessing wrong fills Home with directories that aren't apps. And
+only the subdirectories that really are apps are listed; a `notes/` or `data/`
+beside them is not turned into a card, unlike in your own workspace where
+everything shows.
 
 Set `FUSED_RENDER_CLAUDE_CONFIG` to point at a different config file, or at a
 path that does not exist to turn the whole thing off.
