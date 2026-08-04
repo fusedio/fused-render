@@ -105,6 +105,24 @@ _SPAWNED: set[int] = set()
 # `test_the_backend_attributes_this_module_reads_still_exist` can pin them.
 BACKEND_ATTRS = ("_venvs_path", "_python_executable")
 
+# venv directory -> "does its own python actually run" (D206). Populated by
+# `_venv_is_usable`, which is the ONLY reader/writer, and dropped by
+# `is_installed` when the marker goes away. In-process and never persisted: the
+# thing it remembers is a property of THIS machine's filesystem as it is right
+# now, and a persisted verdict would need its own invalidation story to avoid
+# becoming the very stale-forever fact the marker already was.
+_VALIDATED: dict[str, bool] = {}
+_validated_lock = threading.Lock()
+
+# The probe is `<venv>/bin/python -c ""` on the local filesystem: a working
+# interpreter answers in well under a second, and a broken one fails immediately.
+# Small on purpose — it is paid on the request path of the first PEP 723 run in a
+# process, so a generous budget would turn a pathological interpreter (one that
+# hangs rather than exits) into a page that looks hung. Same 5s, and the same
+# reasoning, as `engine._PROBE_TIMEOUT_S`: cold start on a slow volume is why it
+# is not 1s, not why it would be 60.
+_VENV_PROBE_TIMEOUT_S = 5
+
 
 def _backend_attr(name: str):
     """Read `name` off the live backend, or fail saying what broke.
@@ -160,11 +178,152 @@ def venv_dir_for(requirements: list[str]) -> str:
     return os.path.join(os.path.expanduser(venvs_path()), venv_key_for(requirements))
 
 
+def _venv_python(venv_dir: str) -> str:
+    """Where a venv keeps its own interpreter, on this OS."""
+    if os.name == "nt":
+        return os.path.join(venv_dir, "Scripts", "python.exe")
+    return os.path.join(venv_dir, "bin", "python")
+
+
+def _venv_runs(venv_dir: str) -> bool:
+    """Can this venv's own interpreter start at all? One subprocess, no imports.
+
+    `-c ""` deliberately: the question is not "are the requirements importable"
+    (that is upstream's job and would cost a real import) but the far more basic
+    "does this interpreter reach the point of executing a program". A venv whose
+    `home`/base prefix no longer exists dies before that — in the DMG case with
+    `ModuleNotFoundError: No module named 'encodings'` or a bare fatal error — so
+    the emptiest possible program is a complete test of the property that broke.
+
+    Run with `PYTHONHOME`/`PYTHONPATH`/`VIRTUAL_ENV`/`PYTHONSTARTUP` scrubbed,
+    borrowed from `engine._child_env()` rather than restated here: that is derived
+    from `python_compute._STRIPPED_ENV_VARS` when fused is importable, so the probe
+    cannot drift from the environment the child actually gets. Running it with OUR
+    env is the whole reason the bug was invisible — inside the .app, PYTHONHOME is
+    set and makes a broken venv look fine (build_dmg.sh's smokes made the same
+    mistake, which is why one of them now strips the env too).
+    """
+    exe = _venv_python(venv_dir)
+    try:
+        from fused_render.engine import _child_env
+
+        proc = subprocess.run(
+            [exe, "-c", ""],
+            capture_output=True, text=True,
+            timeout=_VENV_PROBE_TIMEOUT_S, env=_child_env(),
+        )
+    except (OSError, subprocess.SubprocessError) as e:
+        logger.warning("script venv %s cannot run its own python: %s", venv_dir, e)
+        return False
+    if proc.returncode != 0:
+        logger.warning(
+            "script venv %s cannot run its own python (exit %s): %s",
+            venv_dir, proc.returncode, (proc.stderr or proc.stdout or "").strip(),
+        )
+        return False
+    return True
+
+
+def _venv_is_usable(venv_dir: str) -> bool:
+    """`_venv_runs`, memoized per venv directory **per process**.
+
+    The ceiling this guarantees: at most ONE probe per venv per server process,
+    and NEVER one per request. `/api/run`'s pre-flight calls `is_installed` on
+    every run of every PEP 723 script, so an unmemoized probe would put a
+    subprocess spawn on the request path of the app's hottest execution path —
+    which is precisely the cost the install loader exists to remove.
+
+    The lock is held ACROSS the probe, the same shape as
+    `engine._app_interpreter_lock`: the endpoints are sync `def` and run in
+    FastAPI's threadpool, so two concurrent first-runs of the same script would
+    otherwise both spawn. The probe is a local `-c ""` measured in milliseconds,
+    so serializing it costs nothing worth reclaiming.
+
+    Negative verdicts are cached too — and `is_installed` drops the entry whenever
+    the marker is absent, which is what stops a cached "no" from outliving the
+    venv it judged. See the comment there.
+    """
+    with _validated_lock:
+        cached = _VALIDATED.get(venv_dir)
+        if cached is None:
+            cached = _VALIDATED[venv_dir] = _venv_runs(venv_dir)
+        return cached
+
+
+def reset_venv_validation_cache() -> None:
+    """Forget every venv verdict so the next `is_installed` re-probes.
+
+    A test seam (mirroring `engine.reset_app_interpreter_cache`). Nothing in the
+    server needs it: the cache self-invalidates through the marker.
+    """
+    with _validated_lock:
+        _VALIDATED.clear()
+
+
 def is_installed(requirements: list[str]) -> bool:
-    """True iff the venv for `requirements` exists AND is complete."""
+    """True iff the venv for `requirements` exists, is complete AND can run.
+
+    The ready marker is the INDEX of installed venvs — the only thing consulted to
+    find one, and its absence is final — but since D206 it is treated as a *claim*
+    that gets verified once per process rather than as proof. The macOS DMG is why:
+    its bundled interpreter could not self-locate without PYTHONHOME, which
+    `python_compute` strips from every child, so a venv built from it recorded a
+    base prefix that does not exist on the user's machine and every child of that
+    venv died. And the venv cache key folds in only the interpreter's path and
+    version — both constants inside the .app — so upgrading the app did not change
+    the key, nothing ever revalidated, and the breakage was permanent with no
+    repair action anywhere in the UI. `Contents/lib -> Resources/lib`
+    (`scripts/build_dmg.sh`) stops NEW venvs from being built that way; this stops
+    an EXISTING bad one from being trusted forever.
+    """
     if not requirements:
         return True  # nothing to install; the bare/interpreter paths handle it
-    return os.path.exists(os.path.join(venv_dir_for(requirements), READY_MARKER))
+    venv_dir = venv_dir_for(requirements)
+    if not os.path.exists(os.path.join(venv_dir, READY_MARKER)):
+        # No claim, so nothing to validate — and the common case by count (every
+        # first open of a PEP 723 script), which stays a single stat rather than a
+        # spawn. Also the ONE place a cached verdict is dropped: a marker that is
+        # absent now means the directory is being (or is about to be) rebuilt, and
+        # the rebuild must not inherit the failed verdict of what stood there
+        # before. Without this, deleting the marker below would trade a permanently
+        # bad venv for a permanently negative answer — the loader would install
+        # successfully and `is_installed` would still say no, forever.
+        with _validated_lock:
+            _VALIDATED.pop(venv_dir, None)
+        return False
+    if _venv_is_usable(venv_dir):
+        return True
+    # The marker MUST go before we answer False, and this is not tidying up.
+    # Upstream's `ensure_requirements_venv`/`ensure_bare_venv` short-circuit on
+    # `if marker.exists(): return` — rebuilding only when it is ABSENT. So a
+    # "not installed" answer with the marker left in place would make `/api/run`
+    # reply `needs_install`, the page POST /api/env/install, the worker call
+    # upstream, upstream see the marker and return without doing anything, and the
+    # page be told to install again: a loop with no exit, against an unchanged
+    # `fused`. Removing the marker is what makes upstream rmtree the directory and
+    # build it again, which is the actual repair.
+    #
+    # The cached verdict goes with it, in the same breath: deleting the marker ends
+    # this venv's generation, and the directory that appears under the same key
+    # next is a different venv that has to be judged on its own. (The marker-absent
+    # branch above drops it too, for a rebuild we did not trigger ourselves — an
+    # upstream rmtree, a user deleting the venv — but that branch is only reached on
+    # a LATER call, so it cannot cover a re-marked directory within one call chain.)
+    with _validated_lock:
+        _VALIDATED.pop(venv_dir, None)
+    try:
+        os.unlink(os.path.join(venv_dir, READY_MARKER))
+        logger.warning(
+            "discarded the ready marker of script venv %s: its interpreter does "
+            "not run, so the venv will be rebuilt on the next install", venv_dir,
+        )
+    except OSError as e:
+        # Only worth saying out loud. A marker we cannot delete (read-only volume,
+        # a race with the rebuild that already removed it) leaves the caller's
+        # answer correct — this venv is not usable — and the next call re-reads
+        # the filesystem, so nothing here is latched.
+        logger.warning("could not remove the ready marker of %s: %s", venv_dir, e)
+    return False
 
 
 def valid_key(key) -> bool:

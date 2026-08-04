@@ -52,8 +52,15 @@ def _isolated_install_state(tmp_path, monkeypatch):
     which conftest sets ONCE for the whole session — so two tests using the same
     requirement set (several here use `["pip"]`) would otherwise share one
     progress record and one claim file, and pass or fail depending on order.
+
+    Also drops the per-process venv-validation memo (D206). That cache is keyed by
+    venv DIRECTORY, and `venvs_path` is monkeypatched per test to a tmp dir, so
+    real collisions are unlikely — but a memo that outlives the directory it
+    describes is exactly the thing these tests are about, and a leaked verdict
+    would make a later test pass or fail on ordering.
     """
     monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
+    envinstall.reset_venv_validation_cache()
 
 
 # --- the venv key must be the backend's own -----------------------------------
@@ -224,12 +231,23 @@ def test_a_stale_uv_override_is_ignored(tmp_path, monkeypatch):
 
 
 @requires_fused
-def test_readiness_follows_the_ready_marker_not_the_directory(tmp_path, monkeypatch):
+def test_the_ready_marker_is_the_index_of_readiness_not_the_directory(
+    tmp_path, monkeypatch
+):
     """A half-built venv (no marker) must read as NOT ready.
 
     `ensure_requirements_venv` deletes and rebuilds a marker-less directory, so
     treating "the directory exists" as installed would skip the loader and hand
     the request the very build it was meant to move off the request path.
+
+    Renamed (was `..._follows_the_ready_marker_not_the_directory`): the marker is
+    still the INDEX — the only thing consulted to find a venv, and its absence is
+    still final — but since D206 it is a *claim* that is verified once per process
+    rather than proof on its own. So this test now supplies a venv whose
+    interpreter actually runs, and the marker-is-not-enough half lives in
+    `test_a_marked_venv_that_cannot_run_...` below. Its original intent (a
+    directory is not readiness) is unchanged and still pinned by the middle
+    assertion.
     """
     monkeypatch.setattr(envinstall, "venvs_path", lambda: str(tmp_path))
     reqs = ["some-dist"]
@@ -239,7 +257,144 @@ def test_readiness_follows_the_ready_marker_not_the_directory(tmp_path, monkeypa
     venv_dir.mkdir()
     assert not envinstall.is_installed(reqs), "a marker-less dir is half-built"
 
+    _runnable_venv_python(str(venv_dir))
     (venv_dir / ".openfused-ready").write_text("{}")
+    assert envinstall.is_installed(reqs)
+
+
+# --- a marker is a claim, and the claim is verified once (D206) ----------------
+#
+# The macOS DMG shipped an interpreter that could not self-locate without
+# PYTHONHOME, and `python_compute` strips PYTHONHOME from every child — so a venv
+# built from it recorded a base prefix that does not exist on the user's machine
+# and every child of that venv died with `ModuleNotFoundError`. The venv cache key
+# folds in only the interpreter path and version, both constants inside the .app,
+# so an app upgrade did not change the key and nothing ever revalidated: the
+# marker was permanent and so was the breakage. These tests pin the two halves of
+# the fix — the probe, and the marker deletion that lets upstream rebuild.
+
+
+def _runnable_venv_python(venv_dir: str) -> str:
+    """Put a genuinely runnable interpreter where a venv keeps its own.
+
+    A symlink to THIS interpreter rather than a stub script: the probe is a real
+    `-c ""` spawn, so the thing being validated has to be a real python — a stub
+    that exits 0 would pass a probe that had regressed into `os.path.exists`.
+    """
+    exe = envinstall._venv_python(venv_dir)
+    os.makedirs(os.path.dirname(exe), exist_ok=True)
+    os.symlink(sys.executable, exe)
+    return exe
+
+
+@requires_fused
+def test_a_marked_venv_that_cannot_run_is_not_installed_and_loses_its_marker(
+    tmp_path, monkeypatch
+):
+    """The DMG bug, reduced: a marker over a venv whose python does not work.
+
+    Deleting the marker is load-bearing, not tidying. Upstream's
+    `ensure_requirements_venv` returns immediately when the marker exists, so
+    reporting "not installed" while leaving it in place would make `/api/run`
+    answer `needs_install`, the loader run the install worker, the worker find the
+    marker and do nothing, and the page ask to install again — forever. The
+    missing marker is what makes upstream rmtree and rebuild.
+    """
+    monkeypatch.setattr(envinstall, "venvs_path", lambda: str(tmp_path))
+    reqs = ["some-dist"]
+    venv_dir = tmp_path / envinstall.venv_key_for(reqs)
+    marker = venv_dir / envinstall.READY_MARKER
+    venv_dir.mkdir()
+    marker.write_text("{}")
+    # No interpreter at all is the cheapest unrunnable venv and the one shape that
+    # behaves the same on every OS; the exits-nonzero shape is covered below.
+    assert not envinstall.is_installed(reqs)
+    assert not marker.exists(), "the marker must go, or upstream will not rebuild"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="needs a POSIX #! stub interpreter")
+@requires_fused
+def test_a_marked_venv_whose_python_FAILS_is_not_installed(tmp_path, monkeypatch):
+    """Present but broken, which is what the real bug looked like.
+
+    The DMG's venv python existed and was executable; it died on startup because
+    its recorded base prefix was gone. So "the file is there" is not the question
+    the probe asks — it has to actually run something.
+    """
+    monkeypatch.setattr(envinstall, "venvs_path", lambda: str(tmp_path))
+    reqs = ["some-dist"]
+    venv_dir = tmp_path / envinstall.venv_key_for(reqs)
+    exe = envinstall._venv_python(str(venv_dir))
+    os.makedirs(os.path.dirname(exe), exist_ok=True)
+    with open(exe, "w", encoding="utf-8") as fh:
+        fh.write("#!/bin/sh\necho \"No module named 'encodings'\" >&2\nexit 1\n")
+    os.chmod(exe, 0o755)
+    (venv_dir / envinstall.READY_MARKER).write_text("{}")
+
+    assert not envinstall.is_installed(reqs)
+    assert not (venv_dir / envinstall.READY_MARKER).exists()
+
+
+@requires_fused
+def test_the_venv_probe_runs_at_most_once_per_venv_per_process(tmp_path, monkeypatch):
+    """The cost ceiling. A probe per request would be a subprocess per request.
+
+    `/api/run`'s pre-flight calls `is_installed` on every run of every PEP 723
+    script, so the validation has to be memoized per venv directory per process —
+    the same shape as `engine.app_interpreter()`'s one-probe-per-process cache.
+    """
+    monkeypatch.setattr(envinstall, "venvs_path", lambda: str(tmp_path))
+    reqs = ["some-dist"]
+    venv_dir = tmp_path / envinstall.venv_key_for(reqs)
+    venv_dir.mkdir()
+    _runnable_venv_python(str(venv_dir))
+    (venv_dir / envinstall.READY_MARKER).write_text("{}")
+
+    probes = []
+    real = envinstall._venv_runs
+    monkeypatch.setattr(
+        envinstall, "_venv_runs", lambda d: (probes.append(d), real(d))[1]
+    )
+    for _ in range(5):
+        assert envinstall.is_installed(reqs)
+    assert probes == [str(venv_dir)]
+
+
+@requires_fused
+def test_a_missing_marker_never_probes(tmp_path, monkeypatch):
+    """Nothing to validate: the marker's absence is already the whole answer.
+
+    Also the common case by count — every first open of a PEP 723 script — so it
+    must stay a single stat, not a spawn.
+    """
+    monkeypatch.setattr(envinstall, "venvs_path", lambda: str(tmp_path))
+    probes = []
+    monkeypatch.setattr(envinstall, "_venv_runs", lambda d: probes.append(d) or True)
+    assert not envinstall.is_installed(["some-dist"])
+    assert probes == []
+
+
+@requires_fused
+def test_a_rebuilt_venv_is_not_stuck_on_the_earlier_failed_verdict(
+    tmp_path, monkeypatch
+):
+    """The other half of "never loop forever".
+
+    A negative verdict cached for the life of the process would be just as
+    permanent as the marker it deleted: the worker would rebuild the venv
+    correctly and `is_installed` would keep saying no. The memo is dropped
+    whenever the marker is absent, so a rebuild is judged on its own merits.
+    """
+    monkeypatch.setattr(envinstall, "venvs_path", lambda: str(tmp_path))
+    reqs = ["some-dist"]
+    venv_dir = tmp_path / envinstall.venv_key_for(reqs)
+    marker = venv_dir / envinstall.READY_MARKER
+    venv_dir.mkdir()
+    marker.write_text("{}")
+    assert not envinstall.is_installed(reqs)  # no interpreter -> marker removed
+
+    _runnable_venv_python(str(venv_dir))  # what the rebuild leaves behind
+    marker.write_text("{}")
     assert envinstall.is_installed(reqs)
 
 
@@ -952,6 +1107,10 @@ def test_start_is_a_no_op_once_the_venv_is_installed(tmp_path, monkeypatch):
     reqs = ["pip"]
     venv_dir = os.path.join(str(tmp_path / "venvs"), envinstall.venv_key_for(reqs))
     os.makedirs(venv_dir, exist_ok=True)
+    # A runnable interpreter, not just the marker: since D206 `is_installed`
+    # verifies the claim once, and a marker over an empty directory now reads
+    # (correctly) as "not installed" — which is a different test than this one.
+    _runnable_venv_python(venv_dir)
     with open(os.path.join(venv_dir, ".openfused-ready"), "w") as f:
         f.write("{}")
     spawned = []
