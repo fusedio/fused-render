@@ -1542,12 +1542,15 @@ function shotDirPath() {
   return shotDirPromise;
 }
 
-// The path separator the SERVER uses, read off the directory it handed back:
-// this string goes into the message and into agent.py's Read rule, so it has to
-// be the platform's own shape rather than a guess.
+// Always "/", never a guessed platform separator: agent.py hands this directory
+// back through `_wire_path`, which spells it with forward slashes on every
+// platform, and spells the `Read(//.../**)` allow-rule from the SAME
+// normalisation. The CLI matches that rule as text, so a path this function
+// joined with a backslash on Windows would sit outside its own pre-approval and
+// card every crop. Windows takes "/" for both the upload and a Read, so one
+// spelling covers all three.
 function shotJoin(dir, name) {
-  const sep = dir.indexOf("\\") >= 0 && dir.indexOf("/") < 0 ? "\\" : "/";
-  return dir + sep + name;
+  return dir.replace(/[\\/]+$/, "") + "/" + name;
 }
 
 // `<style>` rules do not travel with a serialized element, so every computed

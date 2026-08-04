@@ -565,6 +565,28 @@ def _private_open(path: str):
 
 # ---------------------------------------------------- annotation screenshots
 
+def _wire_path(path: str) -> str:
+    """The ONE spelling of a shots path: forward slashes, on every platform.
+
+    Two places name this directory and they have to name it identically — the
+    `Read(//…/**)` rule on the spawn line, and the crop paths the page puts in
+    the annotation JSON — because the CLI matches a rule as TEXT, not as a
+    resolved path (see `_read_rule`). On POSIX they agreed by accident. On
+    Windows `SHOTS` comes off `os.path.join`, so the rule (which has always
+    normalised) said `C:/Users/a/shots` while the page, joining with the
+    separator it read off the directory, produced `C:\\Users\\a\\shots\\x.png`:
+    the rule matched nothing, every crop raised a card, and the whole
+    pre-approval was defeated.
+
+    Forward slashes is the form that wins rather than backslashes because the
+    crop is WRITTEN through `/api/fs/upload`, whose only requirement on the path
+    is `os.path.isabs` — and Windows' `ntpath` accepts either separator, as does
+    `open`. So one spelling satisfies both the rule and the write, and the page
+    can join with a plain `/` instead of guessing a platform.
+    """
+    return path.replace("\\", "/")
+
+
 def _read_rule(path: str) -> str:
     """A `Read(...)` permission rule scoped to everything under `path`.
 
@@ -580,8 +602,10 @@ def _read_rule(path: str) -> str:
     matches the text, not the resolved inode: a rule spelled with macOS'
     `/private/var/...` does not match a read of `/var/...` even though they are
     one directory. `tempfile.gettempdir()` is where both come from, so they
-    agree by construction."""
-    return "Read(//%s/**)" % path.replace("\\", "/").lstrip("/")
+    agree by construction — and `_wire_path` is the single normalisation both
+    this rule and the path handed to the page go through, so the separator
+    cannot differ between them either."""
+    return "Read(//%s/**)" % _wire_path(path).lstrip("/")
 
 
 def _prune_shots() -> None:
@@ -655,7 +679,9 @@ def _shots_dir() -> dict:
         except OSError as e:
             return {"error": "could not prepare the screenshot directory: %s" % e}
     _prune_shots()
-    return {"dir": SHOTS}
+    # `_wire_path`, not the raw join: this string is what the page joins crop
+    # names onto, and it has to be spelled the way the Read rule spells it.
+    return {"dir": _wire_path(SHOTS)}
 
 
 def _write_mcp_config(run_dir: str) -> str:

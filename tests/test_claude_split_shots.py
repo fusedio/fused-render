@@ -85,6 +85,54 @@ def test_the_read_rule_uses_the_double_slash_the_cli_needs(agent):
     assert agent._read_rule(r"C:\Users\a\shots") == "Read(//C:/Users/a/shots/**)"
 
 
+def test_the_rule_and_the_page_spell_a_windows_shots_path_the_same_way(agent, html):
+    """D146, and the reason `_wire_path` exists at all.
+
+    The CLI matches an allow-rule as TEXT, not as a resolved path (see
+    `_read_rule`), so the path inside `Read(//…/**)` and the path the page puts
+    in the annotation JSON have to be the SAME STRING or every crop raises a card
+    and the whole pre-approval is defeated. On POSIX they agreed by accident; on
+    Windows `SHOTS` comes off `os.path.join`, so the rule said
+    `C:/Users/a/shots` while the page joined `C:\\Users\\a\\shots\\x.png`.
+    One normalisation on the python side is what makes them agree."""
+    win = r"C:\Users\a\AppData\Local\Temp\fr\shots"
+    handed = agent._wire_path(win)          # what the page is given
+    rule = agent._read_rule(win)            # what the spawn line pre-approves
+    assert handed == "C:/Users/a/AppData/Local/Temp/fr/shots"
+    assert rule == "Read(//C:/Users/a/AppData/Local/Temp/fr/shots/**)"
+    # The page's own join, run for real: the crop path has to sit under the
+    # rule's prefix textually, which is the only way the CLI compares them.
+    crop = _node(["function shotJoin("],
+                 "console.log(JSON.stringify(shotJoin(%s, 'x.png')));"
+                 % json.dumps(handed), html)
+    assert "\\" not in crop, crop
+    assert crop.lstrip("/").startswith(rule[len("Read(//"):-len("**)")]), crop
+
+
+def test_the_directory_handed_to_the_page_is_the_one_the_rule_names(
+        agent, tmp_path, monkeypatch):
+    """The other half of the agreement: `_shots_dir` must hand out the wire
+    spelling, not the raw `os.path.join` one, or the normalisation in the rule
+    has nothing to agree with."""
+    shots = tmp_path / "fr" / "shots"
+    monkeypatch.setattr(agent, "SHOTS", str(shots))
+    assert agent._shots_dir() == {"dir": agent._wire_path(str(shots))}
+
+
+def test_a_forward_slash_windows_path_is_still_writable_by_the_upload(agent):
+    """Why forward slashes are the form that WINS rather than backslashes: the
+    crop is written through `/api/fs/upload`, whose only path shape requirement
+    is `os.path.isabs`. Windows' `ntpath` treats both separators as separators,
+    so the one spelling the allow-rule can name is also a path the server
+    writes — checked against ntpath directly, since this suite cannot run on
+    Windows."""
+    import ntpath
+    p = agent._wire_path(r"C:\Users\a\shots") + "/x.png"
+    assert ntpath.isabs(p)
+    assert ntpath.dirname(p) == "C:/Users/a/shots"
+    assert ntpath.basename(p) == "x.png"
+
+
 def test_the_spawn_line_pre_approves_reading_a_crop_and_nothing_else(
         agent, tmp_path, monkeypatch):
     """The user attached the screenshot deliberately; carding a read of it would
