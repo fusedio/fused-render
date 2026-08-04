@@ -4401,7 +4401,11 @@ select.field-control:has(option[value=""]:checked) {
   border-radius: 4px;
   padding: 1px 5px;
   font-size: 12px;
-  word-break: break-all;
+  /* `anywhere`, not `word-break: break-all`: both stop a long path or client ID
+     from overflowing, but break-all also split short tokens that would have fit
+     on the next line — "env_auth" rendered as "en / v_auth" mid-sentence in the
+     detected-credentials panel. */
+  overflow-wrap: anywhere;
 }
 
 .prefs-section button {
@@ -4867,6 +4871,12 @@ select.field-control:has(option[value=""]:checked) {
   gap: 6px;
   font-size: 0.9em;
   line-height: 1.5;
+}
+
+/* A step's sentence, kept as ONE flex item. Loose text and <b> directly under
+   .mount-step-body each became their own row (see the comment at its use). */
+.mount-step-lead {
+  margin: 0;
 }
 
 .mount-step-actions {

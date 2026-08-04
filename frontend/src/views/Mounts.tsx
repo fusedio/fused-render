@@ -687,6 +687,12 @@ function AddRemote({
           </button>
         </Field>
       </form>
+      {/* Same closing line as the other setup panels: a remote is not a mount,
+          and the modal simply vanishing gave no clue where to go next. */}
+      <p className="deploy-muted" style={{ fontSize: "0.8em", margin: 0 }}>
+        Creating a remote doesn’t mount anything yet. This closes and pre-selects it under{" "}
+        <b>Remote</b> in “Add mount” — type the bucket/prefix there and add the mount.
+      </p>
       {error && <ErrorBanner>{error}</ErrorBanner>}
     </div>
   );
@@ -781,8 +787,14 @@ function GoogleClientSetup({
       <ol className="mount-steps">
         <li>
           <div className="mount-step-body">
-            <b>Create or pick a Google Cloud project.</b> Any project works; a free one is
-            fine.
+            {/* Wrapped, not loose: .mount-step-body is a flex column, so every
+                inline node — each <b> and each run of text between them — was
+                becoming its own row. Steps 3 and 4 rendered as a stack of
+                fragments ("— pick" / "External" / ", fill in…"). */}
+            <p className="mount-step-lead">
+              <b>Create or pick a Google Cloud project.</b> Any project works; a free one
+              is fine.
+            </p>
             <div className="mount-step-actions">
               <button
                 type="button"
@@ -803,7 +815,9 @@ function GoogleClientSetup({
         </li>
         <li>
           <div className="mount-step-body">
-            <b>Enable the Google Drive API</b> for that project, then press Enable.
+            <p className="mount-step-lead">
+              <b>Enable the Google Drive API</b> for that project, then press Enable.
+            </p>
             <div className="mount-step-actions">
               <button
                 type="button"
@@ -817,8 +831,10 @@ function GoogleClientSetup({
         </li>
         <li>
           <div className="mount-step-body">
-            <b>Configure the consent screen</b> — pick <b>External</b>, fill in the
-            required name/email, and set publishing status to <b>In production</b>.
+            <p className="mount-step-lead">
+              <b>Configure the consent screen</b> — pick <b>External</b>, fill in the
+              required name/email, and set publishing status to <b>In production</b>.
+            </p>
             <div className="mount-step-actions">
               <button
                 type="button"
@@ -845,8 +861,10 @@ function GoogleClientSetup({
         </li>
         <li>
           <div className="mount-step-body">
-            <b>Create an OAuth client</b> of type <b>Desktop app</b>, then download its
-            JSON.
+            <p className="mount-step-lead">
+              <b>Create an OAuth client</b> of type <b>Desktop app</b>, then download its
+              JSON.
+            </p>
             <div className="mount-step-actions">
               <button
                 type="button"
@@ -1215,6 +1233,13 @@ function OAuthSignIn({
       )}
       {!connecting && nameError && trimmed !== "" && (
         <p className="deploy-muted mount-paste-hint warn">{nameError}</p>
+      )}
+      {!connecting && (
+        <p className="deploy-muted" style={{ fontSize: "0.8em", margin: 0 }}>
+          Signing in doesn’t mount anything yet. This closes and pre-selects the remote
+          under <b>Remote</b> in “Add mount” — type the folder to surface there and add the
+          mount.
+        </p>
       )}
       {error && <ErrorBanner>{error}</ErrorBanner>}
     </div>
