@@ -420,12 +420,12 @@ pdfjs.GlobalWorkerOptions.workerSrc = "/template-assets/pdfjs.worker.bundle.mjs"
   // home_dir()/sidecar/<mapped path>.json now, not beside mainAbs (D83-reversal).
   async function loadSidecarOpen() {
     try {
-      const data = JSON.parse(await fused.readFile(await fused.sidecarPath(S.mainAbs)));
+      const data = JSON.parse(await fused.readFile(await window._fusedSidecarPath(S.mainAbs)));
       return (data && data.latex && typeof data.latex.open === "string") ? data.latex.open : "";
     } catch (e) { return ""; }
   }
   async function saveSidecarOpen(rel) {
-    const sidecar = await fused.sidecarPath(S.mainAbs);
+    const sidecar = await window._fusedSidecarPath(S.mainAbs);
     let data = {};
     try { data = JSON.parse(await fused.readFile(sidecar)); } catch (e) { /* absent or unreadable — start fresh */ }
     if (typeof data !== "object" || data === null || Array.isArray(data)) data = {};

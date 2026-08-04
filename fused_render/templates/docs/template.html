@@ -747,7 +747,7 @@
   // last-used author name for comments.
   async function loadSidecar() {
     let data;
-    try { data = JSON.parse(await fused.readFile(await fused.sidecarPath(FILE))); } catch (e) { data = null; }
+    try { data = JSON.parse(await fused.readFile(await window._fusedSidecarPath(FILE))); } catch (e) { data = null; }
     if (!data || typeof data !== "object") data = {};
     if (!data.docs || typeof data.docs !== "object") data.docs = {};
     const d = data.docs;
@@ -764,7 +764,7 @@
     sidecarChain = sidecarChain.then(async () => {
       const data = await loadSidecar();
       mutate(data.docs);
-      await fused.writeFile(await fused.sidecarPath(FILE), JSON.stringify(data));
+      await fused.writeFile(await window._fusedSidecarPath(FILE), JSON.stringify(data));
     }).catch((e) => console.warn("docs sidecar write failed:", e));
     return sidecarChain;
   }

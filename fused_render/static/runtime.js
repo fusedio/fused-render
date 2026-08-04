@@ -14,19 +14,24 @@
  *     usage names, NOT OpenAI's prompt_tokens/completion_tokens. opts:
  *     systemPrompt, model, effort ("low"|"medium"|"high"|"xhigh"),
  *     onChunk. Local-only — not available on hosted/exported pages.
- *   fused.sidecarPath(file) -> Promise<string>
- *     The `<file>.json` sidecar's location for an absolute `file` path, now
- *     homed under ~/.fused-render/sidecar/ instead of beside the file
- *     (D83-reversal). Async: mirrors shell/storage.py's sidecar_path, but the
- *     mapping needs a server-provided root fetched once from /api/config.
- *   fused.targetPathFromSidecarPath(path) -> Promise<string | null>
- *     Inverse of sidecarPath — the target file a sidecar path belongs to, or
- *     null if `path` isn't under the sidecar root.
  *   fused.params.get(key) / getAll() / set(key, value) / onChange(cb) -> unsubscribe
  *   fused.env -> "local" — the runtime identity. This is the local fused-render app;
  *                the hosted/exported runtime (fused wheel) sets "hosted" instead, so a
  *                page can branch on where it runs and gate any local-only behaviour
  *                when deployed. See docs/EXPORT.md.
+ *
+ * `window.fused` is the DOCUMENTED public bridge (docs/EXPORT.md's portable-subset
+ * table) — every user-authored template writes against it, so anything added here
+ * is a contract kept forever, mirrored by the separate hosted stub (the `fused`
+ * wheel's own copy of this file). The per-file sidecar's location mapping
+ * (window._fusedSidecarPath / window._fusedTargetPathFromSidecarPath, below) is
+ * deliberately NOT on `fused`: it is app-internal bookkeeping — the exact JSON file
+ * five other built-in features read-merge-write (claudeSessions/bookmarkHistory/
+ * comments/...) — not a general-purpose "store a file next to mine" feature, and a
+ * third-party template calling writeFile on it directly would clobber that file
+ * wholesale instead of merging. Built-in templates reach it as a plain global
+ * because they run in the same window this script is injected into; it is not
+ * present in the hosted runtime and is not meant to be.
  *
  * Same-origin iframe model: this script talks to an ancestor window's URL
  * directly (no postMessage bridge — see DECISIONS.md D3/D4). The param target
@@ -946,6 +951,10 @@
   }
 
   // ---- sidecar path mapping (D83-reversal) ---------------------------------
+  // INTERNAL ONLY — see the file header for why this is not on `window.fused`.
+  // Reached by built-in templates as window._fusedSidecarPath /
+  // window._fusedTargetPathFromSidecarPath, assigned alongside window.fused
+  // below.
   //
   // Every per-file sidecar now lives under sidecarRoot (~/.fused-render/
   // sidecar/<mapped path>.json) instead of beside the target file. Mirrors
@@ -1339,14 +1348,17 @@
     stat,
     readFile,
     writeFile,
-    sidecarPath,
-    targetPathFromSidecarPath,
     uploadFile,
     mkdir,
     ai,
     autoReload,
     params: { get, getAll, set, onChange },
   };
+
+  // Internal-only sidecar bridge for built-in templates — deliberately not on
+  // `window.fused` (see the file header). Not present in the hosted runtime.
+  window._fusedSidecarPath = sidecarPath;
+  window._fusedTargetPathFromSidecarPath = targetPathFromSidecarPath;
 
   // Error overlay: shows for unhandled runPython rejections the page didn't
   // catch itself (identified by carrying a `.traceback`).

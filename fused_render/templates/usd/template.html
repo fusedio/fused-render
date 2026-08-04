@@ -458,12 +458,12 @@
   let pendingCamera = null;
   let initialCameraApplied = false;
 
-  // Resolved once (fused.sidecarPath needs a round trip the first time) and
+  // Resolved once (window._fusedSidecarPath needs a round trip the first time) and
   // cached — every sidecar function below awaits this instead of a plain
   // constant.
   let _sidecarLoc = null;
   async function resolvedSidecarPath() {
-    if (_sidecarLoc === null) _sidecarLoc = FILE ? await fused.sidecarPath(FILE) : "";
+    if (_sidecarLoc === null) _sidecarLoc = FILE ? await window._fusedSidecarPath(FILE) : "";
     return _sidecarLoc;
   }
 
@@ -1097,7 +1097,7 @@
     catch (e) { setOverlay("Inspect failed", e.message, 0); removeScene(s); return; }
     if (token !== loadToken) { removeScene(s); return; }
     if (info.error) { setOverlay("Cannot load", info.error, 0); removeScene(s); return; }
-    // Only the target file's inspect speaks for the sidecar (fused.sidecarPath(FILE))
+    // Only the target file's inspect speaks for the sidecar (window._fusedSidecarPath(FILE))
     // — extra imported scenes don't gate settings persistence.
     if (file === FILE && info.sidecar_writable === false) await markSidecarReadonly();
     s.kind = info.kind;

@@ -570,7 +570,7 @@
     // as the record call below.
     fused.runPython("./annotate.py", { action: "status", file }, { key: null }).then(async (st) => {
       if (st && st.writable === false) {
-        const sidecarName = (await fused.sidecarPath(file)).split("/").pop();
+        const sidecarName = (await window._fusedSidecarPath(file)).split("/").pop();
         fusedRoBadge.update(document.getElementById("ro"), "History not saved",
           "The file's sidecar (" + sidecarName + ") isn't " +
           "writable, so this review lives only in this URL and won't be " +
@@ -1263,7 +1263,7 @@
         // once (re-records — a harmless upsert no-op). If the wanted id isn't
         // logged at all, import nothing and skip silently.
         try {
-          const sidecar = JSON.parse(await fused.readFile(await fused.sidecarPath(file)));
+          const sidecar = JSON.parse(await fused.readFile(await window._fusedSidecarPath(file)));
           const log = Array.isArray(sidecar.comments) ? sidecar.comments : [];
           const wantedEntry = log.find((x) => x && x.id === wanted);
           if (wantedEntry && !wantedEntry.deleted_at) {

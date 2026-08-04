@@ -672,18 +672,18 @@
 
   // Role resolution (HV-3): the mode is reachable from both the target and
   // the sidecar itself. Exact now (D83-reversal): a sidecar path is anything
-  // actually under the sidecar root (fused.targetPathFromSidecarPath resolves
+  // actually under the sidecar root (window._fusedTargetPathFromSidecarPath resolves
   // it), rather than the old same-directory `<name>.<ext>.json` shape guess —
   // sidecars no longer share a directory with anything, so the real
   // filesystem location IS the test.
   let sidecarPath, targetPath;
-  const maybeTarget = await fused.targetPathFromSidecarPath(file);
+  const maybeTarget = await window._fusedTargetPathFromSidecarPath(file);
   if (maybeTarget !== null) {
     sidecarPath = file;
     targetPath = maybeTarget;
   } else {
     targetPath = file;
-    sidecarPath = await fused.sidecarPath(file);
+    sidecarPath = await window._fusedSidecarPath(file);
   }
   // targetPath can come back Windows-shaped (backslashes) from
   // targetPathFromSidecarPath's reverse mapping, so split on either
