@@ -2445,7 +2445,17 @@ async function saveScripts(scripts) {
 async function openScriptEditor() {
   if (!book) return;
   const scripts = await loadScripts();
-  const sidecarName = (await window._fusedSidecarPath(currentFile())).split("/").pop();
+  // _fusedSidecarPath rejects when sidecarRoot never resolved (a failed
+  // /api/config fetch) — this is a click handler with nothing above it to
+  // catch a rejection, so it silently "did nothing" instead of the status
+  // toast every other failure in this file gets (Bugbot).
+  let sidecarName;
+  try {
+    sidecarName = (await window._fusedSidecarPath(currentFile())).split("/").pop();
+  } catch (e) {
+    setStatus("Could not open the script editor — " + ((e && e.message) || "unknown error"), "err");
+    return;
+  }
   openModal("Script editor", `
     <div class="srow">
       <select id="scriptSel"></select>

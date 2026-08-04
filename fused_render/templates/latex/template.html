@@ -425,7 +425,17 @@ pdfjs.GlobalWorkerOptions.workerSrc = "/template-assets/pdfjs.worker.bundle.mjs"
     } catch (e) { return ""; }
   }
   async function saveSidecarOpen(rel) {
-    const sidecar = await window._fusedSidecarPath(S.mainAbs);
+    // _fusedSidecarPath rejects when sidecarRoot never resolved (a failed
+    // /api/config fetch); callers fire this without awaiting it (best-effort,
+    // like the writeFile below), so an unhandled rejection here would
+    // otherwise surface as a bare console error instead of the silent
+    // best-effort skip every other failure in this function gets (Bugbot).
+    let sidecar;
+    try {
+      sidecar = await window._fusedSidecarPath(S.mainAbs);
+    } catch (e) {
+      return;  // best-effort — losing this preference must not break editing
+    }
     let data = {};
     try { data = JSON.parse(await fused.readFile(sidecar)); } catch (e) { /* absent or unreadable — start fresh */ }
     if (typeof data !== "object" || data === null || Array.isArray(data)) data = {};

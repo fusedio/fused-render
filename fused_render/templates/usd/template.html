@@ -463,7 +463,18 @@
   // constant.
   let _sidecarLoc = null;
   async function resolvedSidecarPath() {
-    if (_sidecarLoc === null) _sidecarLoc = FILE ? await window._fusedSidecarPath(FILE) : "";
+    if (_sidecarLoc === null) {
+      // _fusedSidecarPath rejects when sidecarRoot never resolved (a
+      // failed/pending /api/config fetch) — the boot's `await loadSidecar()`
+      // has no catch of its own, so an uncaught rejection here used to crash
+      // the whole viewer instead of just leaving settings/camera unremembered
+      // (RO-6's own posture: a missing sidecar never blocks viewing) (Bugbot).
+      try {
+        _sidecarLoc = FILE ? await window._fusedSidecarPath(FILE) : "";
+      } catch (e) {
+        _sidecarLoc = "";
+      }
+    }
     return _sidecarLoc;
   }
 

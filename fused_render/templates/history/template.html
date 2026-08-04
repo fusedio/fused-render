@@ -676,14 +676,33 @@
   // it), rather than the old same-directory `<name>.<ext>.json` shape guess —
   // sidecars no longer share a directory with anything, so the real
   // filesystem location IS the test.
+  function bareErrorPage(message) {
+    // Used only before `header()` can be built at all (the role-resolution
+    // failure below) — no name/stem to show yet, so this skips straight to
+    // the same error-page markup fullPage()'s callers use.
+    root.innerHTML = "";
+    root.appendChild(el('<div class="error-page">' + esc(message) + "</div>"));
+  }
+
   let sidecarPath, targetPath;
-  const maybeTarget = await window._fusedTargetPathFromSidecarPath(file);
-  if (maybeTarget !== null) {
-    sidecarPath = file;
-    targetPath = maybeTarget;
-  } else {
-    targetPath = file;
-    sidecarPath = await window._fusedSidecarPath(file);
+  try {
+    // Both _fusedTargetPathFromSidecarPath and _fusedSidecarPath reject when
+    // sidecarRoot never resolved (a failed/pending /api/config fetch) — this
+    // used to reach neither catch below it and crash the whole boot with an
+    // unhandled rejection instead of the graceful states this view already
+    // has for a real sidecar-read failure (Bugbot).
+    const maybeTarget = await window._fusedTargetPathFromSidecarPath(file);
+    if (maybeTarget !== null) {
+      sidecarPath = file;
+      targetPath = maybeTarget;
+    } else {
+      targetPath = file;
+      sidecarPath = await window._fusedSidecarPath(file);
+    }
+  } catch (e) {
+    bareErrorPage("Could not resolve the sidecar location — " +
+      ((e && e.message) || "unknown error"));
+    return;
   }
   // targetPath can come back Windows-shaped (backslashes) from
   // targetPathFromSidecarPath's reverse mapping, so split on either
