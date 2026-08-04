@@ -626,6 +626,94 @@ def test_the_bound_warns_ONCE_per_venv_however_many_requests_arrive(
     assert marker.exists()
 
 
+@requires_fused
+def test_concurrent_callers_still_pay_no_probe_per_request(tmp_path, monkeypatch):
+    """The ceiling, under threads: probes are per venv, not per call.
+
+    The endpoints are sync `def` and run in FastAPI's threadpool, so this is the
+    real shape of the traffic. A handful of duplicate probes in the initial race is
+    accepted by design (see `_venv_is_usable`: the probe runs OUTSIDE the lock now,
+    and a duplicated read-only `-c ""` is a far better trade than a global stall) —
+    what must never happen is a probe per call, which is what an unmemoized or
+    wrongly-invalidated cache would give.
+    """
+    reqs = ["some-dist"]
+    venv_dir = _marked_venv(tmp_path, monkeypatch, reqs, runnable=True)
+
+    probes = []
+    probe_lock = threading.Lock()
+    real = envinstall._venv_runs
+
+    def _counting(d):
+        with probe_lock:
+            probes.append(d)
+        return real(d)
+
+    monkeypatch.setattr(envinstall, "_venv_runs", _counting)
+
+    results = []
+    def _hammer():
+        for _ in range(20):
+            results.append(envinstall.is_installed(reqs))
+
+    threads = [threading.Thread(target=_hammer) for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=30)
+    assert all(results) and len(results) == 160
+    racing = len(probes)
+    assert racing <= len(threads), f"{racing} probes for one venv across 8 threads"
+
+    # Steady state: once a verdict is stored, further calls must add nothing.
+    for _ in range(10):
+        assert envinstall.is_installed(reqs) is True
+    assert len(probes) == racing, "a probe per request in the steady state"
+
+
+@requires_fused
+def test_a_stalled_probe_of_one_venv_does_not_block_another(tmp_path, monkeypatch):
+    """One wedged venv must not freeze `is_installed` for every other venv.
+
+    The probe budget is 5s and a venv can live on a wedged network mount — a
+    failure mode this repo fights elsewhere. With the module-global lock held
+    ACROSS the probe, that one stalled probe blocked EVERY `is_installed`,
+    including cached hits for venvs that are perfectly fine; combined with the
+    pre-flight running on the event loop, one stuck venv froze the whole app.
+
+    Driven by an `Event` rather than by timing, so there is no race to lose: the
+    probe of A parks inside the critical region for as long as this test says, and
+    the answer for B has to arrive anyway.
+    """
+    reqs_a, reqs_b = ["dist-a"], ["dist-b"]
+    _marked_venv(tmp_path, monkeypatch, reqs_a, runnable=True)
+    _marked_venv(tmp_path, monkeypatch, reqs_b, runnable=True)
+    assert envinstall.is_installed(reqs_b) is True  # B's verdict is now cached
+
+    in_probe, release = threading.Event(), threading.Event()
+
+    def _stall(venv_dir):
+        in_probe.set()
+        release.wait(timeout=30)
+        return True
+
+    monkeypatch.setattr(envinstall, "_venv_runs", _stall)
+
+    stalled = threading.Thread(target=envinstall.is_installed, args=(reqs_a,))
+    stalled.start()
+    try:
+        assert in_probe.wait(timeout=10), "the probe of A never started"
+        answered = []
+        b = threading.Thread(target=lambda: answered.append(
+            envinstall.is_installed(reqs_b)))
+        b.start()
+        b.join(timeout=10)
+        assert answered == [True], "B waited on A's stalled probe"
+    finally:
+        release.set()
+        stalled.join(timeout=30)
+
+
 # --- /api/run's pre-flight ----------------------------------------------------
 
 

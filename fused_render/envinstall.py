@@ -285,11 +285,21 @@ def _venv_is_usable(venv_dir: str) -> bool | None:
     subprocess spawn on the request path of the app's hottest execution path —
     which is precisely the cost the install loader exists to remove.
 
-    The lock is held ACROSS the probe, the same shape as
-    `engine._app_interpreter_lock`: the endpoints are sync `def` and run in
-    FastAPI's threadpool, so two concurrent first-runs of the same script would
-    otherwise both spawn. The probe is a local `-c ""` measured in milliseconds,
-    so serializing it costs nothing worth reclaiming.
+    Double-checked locking: read the cache under the lock, probe OUTSIDE it, then
+    re-acquire to store. The lock is module-global, so holding it across the probe
+    (as this first did, copying `engine._app_interpreter_lock`'s shape) serialized
+    the first probes of completely UNRELATED venvs — and with a 5s budget, one venv
+    whose directory sits on a wedged network mount then blocked every
+    `is_installed` in the process for up to five seconds, cached hits for healthy
+    venvs included. Clicking through eight PEP 723 pages is eight first-probes, and
+    the tail is what hurts, not the ~15-30ms each.
+
+    The cost of the looser lock is that two threads racing on the SAME venv can
+    both probe. That is accepted deliberately: the probe is a read-only `-c ""`
+    with no side effects, so a duplicate costs one extra spawn in a rare race —
+    a much better trade than a global stall. If the other thread stored a verdict
+    while we were probing, theirs wins and ours is discarded, so every caller in
+    the race still sees ONE answer.
 
     Negative verdicts are cached too — and `is_installed` drops the entry whenever
     the marker is absent, which is what stops a cached "no" from outliving the
@@ -303,12 +313,26 @@ def _venv_is_usable(venv_dir: str) -> bool | None:
     """
     with _validated_lock:
         cached = _VALIDATED.get(venv_dir)
-        if cached is not None:
-            return cached
-        verdict = _venv_runs(venv_dir)
-        if verdict is not None:
-            _VALIDATED[venv_dir] = verdict
-        return verdict
+    if cached is not None:
+        return cached
+    verdict = _venv_runs(venv_dir)
+    if verdict is None:
+        return None  # inconclusive: nothing to store, nothing to agree about
+    with _validated_lock:
+        # Prefer whatever landed while we were probing — `setdefault` makes
+        # "store only if still absent, and tell me which won" one atomic step, so
+        # every caller in a race returns the SAME verdict rather than each its own.
+        #
+        # The one thing this cannot distinguish is "nobody has stored yet" from
+        # "someone stored and `is_installed` then popped it" (which it does when it
+        # discards a marker), so a concurrent discard can leave our now-historical
+        # verdict behind. Bounded on purpose rather than solved with a generation
+        # counter: the very next `is_installed` either finds the marker absent — and
+        # pops the entry again, by the same branch that popped it — or finds a
+        # rebuilt, re-marked venv, where a stale `False` costs at most the one
+        # rebuild `_REBUILD_ATTEMPTED` already allows. Neither outcome is
+        # permanent, and neither is worth a generation counter here.
+        return _VALIDATED.setdefault(venv_dir, verdict)
 
 
 def reset_venv_validation_cache() -> None:
