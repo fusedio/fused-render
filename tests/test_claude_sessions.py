@@ -103,6 +103,26 @@ def test_lists_viewable_files_a_session_wrote(store, tmp_path):
         assert app["path"] == app["entry"], "a FILE source: path IS the file"
 
 
+def test_notebook_edits_are_seen_despite_their_own_path_key(store, tmp_path):
+    """NotebookEdit names its target `notebook_path`, not `file_path` (raised
+    in review) — with only the latter scanned, notebook edits were invisible
+    to every pivot: the prefilter skipped the line before the parse could."""
+    nb = _saved(tmp_path, "analysis.ipynb", "{}")
+    _transcript(store, "s1", [
+        _user_line(tmp_path / "work", "run the notebook"),
+        json.dumps({
+            "type": "assistant", "timestamp": "2026-08-04T10:05:00.000Z",
+            "message": {"role": "assistant", "content": [
+                {"type": "tool_use", "name": "NotebookEdit", "id": "t1",
+                 "input": {"notebook_path": str(nb), "new_source": "…"}},
+            ]},
+        }),
+    ])
+    files = claude_sessions.session_files("s1")["files"]
+    assert [f["path"] for f in files] == [str(nb)]
+    assert claude_sessions.sessions_for_file(str(nb))[0]["writes"] == 1
+
+
 def test_checkpoint_deltas_count_too_not_just_write_tools(store, tmp_path):
     """A file-history-delta names a file changed by ANY tool — a session that
     edited a page through some future tool still gets its card."""
@@ -298,6 +318,22 @@ def test_uploads_list_with_the_hex_prefix_stripped(store, tmp_path):
 
 def test_uploads_absent_store_is_the_normal_empty(store):
     assert claude_uploads.list_apps() == []
+
+
+def test_uploads_cap_keeps_the_NEWEST_not_the_alphabetically_first(
+        store, tmp_path, monkeypatch):
+    """Raised in review: an islice over the name-ordered walk kept whichever
+    attachments sorted first and dropped the ones pasted yesterday. The cap's
+    job is recency, so it trims after the walk, newest kept — and says so."""
+    up = store / "uploads" / "s1"
+    up.mkdir(parents=True)
+    for i, name in enumerate(["aaa-old.png", "mmm-mid.png", "zzz-new.png"]):
+        f = up / name
+        f.write_text("x", encoding="utf-8")
+        os.utime(f, (1_000_000 + i, 1_000_000 + i))  # zzz is the newest
+    monkeypatch.setattr(claude_uploads, "MAX_UPLOADS", 2)
+    kept = {a["name"] for a in claude_uploads.list_apps()}
+    assert kept == {"zzz-new.png", "mmm-mid.png"}
 
 
 # ------------------------------------------------------------------ the API

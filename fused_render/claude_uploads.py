@@ -19,10 +19,9 @@ one — an attachment's session id means nothing to a person, and one chip that
 gathers all of them is how the hub can filter them in or out at a glance.
 
 The walk is exactly two levels (session dirs → files), skips whatever it
-cannot read, and is capped with the same islice-plus-lookahead pattern every
-discovered source uses, so the cap stops the work and is never silent.
+cannot read, and is capped keeping the NEWEST files — see `list_apps` for why
+this source trims after the walk where the others islice during it.
 """
-import itertools
 import logging
 import os
 import re
@@ -96,12 +95,24 @@ def _iter_apps():
 
 
 def list_apps() -> list[dict]:
-    """Every viewable attachment in the store, as app dicts. Unsorted — the
-    caller merges and sorts once. Empty when there is no store."""
-    stream = _iter_apps()
-    apps = list(itertools.islice(stream, MAX_UPLOADS))
-    if next(stream, None) is not None:
-        logger.warning("claude-upload: listing capped at %d files; the store "
-                       "holds more and the walk stopped there (store: %s)",
-                       MAX_UPLOADS, uploads_dir())
+    """Every viewable attachment in the store, as app dicts (order not part of
+    the contract — the caller merges and sorts once). Empty when there is no
+    store.
+
+    The cap keeps the NEWEST `MAX_UPLOADS`, which means walking the whole
+    store before trimming — deliberately NOT the islice pattern the other
+    sources use. Their caps exist to stop unbounded work (foreign repository
+    trees, multi-MB transcripts); this walk is two scandir levels of a store
+    Claude Code owns, one stat per file, so there is no expensive tail for a
+    cap to save — but an islice over the name-ordered walk kept whichever
+    attachments SORTED first and dropped the ones pasted yesterday (raised in
+    review). Recency is what the cap must preserve; the warning stays so a
+    trim is never silent."""
+    apps = list(_iter_apps())
+    if len(apps) > MAX_UPLOADS:
+        logger.warning("claude-upload: listing capped at %d of %d files; the "
+                       "newest are kept (store: %s)",
+                       MAX_UPLOADS, len(apps), uploads_dir())
+        apps.sort(key=lambda a: a["updated_at"] or 0.0, reverse=True)
+        apps = apps[:MAX_UPLOADS]
     return apps

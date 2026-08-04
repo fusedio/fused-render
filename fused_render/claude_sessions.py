@@ -16,8 +16,8 @@ The evidence is the session transcripts::
 Each line is one JSON record. Two kinds carry a file the session touched:
 
 * an ``assistant`` record whose ``message.content`` holds a ``tool_use`` block
-  for one of the writing tools (``Write``/``Edit``/``MultiEdit``/
-  ``NotebookEdit``) — ``input.file_path`` is the file, verbatim and absolute;
+  for one of the writing tools — ``input.file_path`` is the file, verbatim and
+  absolute (``NotebookEdit`` alone calls it ``notebook_path``);
 * a ``file-history-delta`` record — Claude Code's own checkpoint bookkeeping,
   written whenever it is about to change a file. ``backup.realParentDir`` (an
   absolute directory) plus ``trackingPath``'s basename names the file; the
@@ -295,7 +295,14 @@ def _scan_record(rec: dict, idx: dict) -> None:
                     and block.get("name") in WRITE_TOOLS):
                 payload = block.get("input")
                 if isinstance(payload, dict):
-                    _note_file(idx["files"], payload.get("file_path"), ts)
+                    # NotebookEdit names its target `notebook_path`, not
+                    # `file_path` (raised in review — with only the latter,
+                    # notebook edits were invisible to every pivot unless a
+                    # checkpoint delta happened to cover them). The prefilter
+                    # above carries the same pair.
+                    _note_file(idx["files"],
+                               payload.get("file_path")
+                               or payload.get("notebook_path"), ts)
     elif kind == "file-history-delta":
         # Checkpoint bookkeeping — covers a change made by ANY tool, and it is
         # attributed exactly the way file_history._ghost_from attributes a
@@ -327,6 +334,7 @@ def _parse(path: str) -> dict:
         with open(path, encoding="utf-8", errors="replace") as fh:
             for line in fh:
                 if not ('"file_path"' in line
+                        or '"notebook_path"' in line
                         or '"file-history-delta"' in line
                         or (idx["cwd"] is None and '"cwd"' in line)
                         # Both encodings: the store writes compact JSON today,
