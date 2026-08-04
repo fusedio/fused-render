@@ -846,6 +846,12 @@ export interface Prefs {
   // Whether the Reader (listen-to-files) accessibility mode is offered (opt-in,
   // default off).
   reader: { enabled: boolean };
+  // The optional sources GET /api/apps merges beside the workspace (D209).
+  // Both default ON — they surface work the user already has rather than
+  // adding an affordance, so opt-out is the honest default. `available` says
+  // whether the source is installed at all, which is what lets the page
+  // distinguish "switched off" from "nothing to find".
+  discovery: Record<DiscoverySource, { enabled: boolean; available: boolean }>;
   // The app call log (fused_render/calls.py): capture state, how much of a
   // run's params is kept, retention window, and where the store lives.
   calls: CallsPrefs;
@@ -887,6 +893,24 @@ export function putEnginePref(engine: "builtin" | "fused"): Promise<Prefs> {
 
 export function putDeployEnabled(enabled: boolean): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { deploy_enabled: enabled });
+}
+
+//: The switchable app-discovery sources, in the order the page lists them.
+//: Keyed off the same strings the backend stores (`discover_<source>`) and the
+//: listing tags apps with, so the three cannot drift apart.
+export const DISCOVERY_SOURCES = ["claude_science", "claude_code"] as const;
+export type DiscoverySource = (typeof DISCOVERY_SOURCES)[number];
+
+export const DISCOVERY_LABELS: Record<DiscoverySource, string> = {
+  claude_science: "Claude Science artifacts",
+  claude_code: "Other Fused folders",
+};
+
+export function putDiscoveryEnabled(
+  source: DiscoverySource,
+  enabled: boolean,
+): Promise<Prefs> {
+  return putJson<Prefs>("/api/prefs", { [`discover_${source}`]: enabled });
 }
 
 export function putReaderEnabled(enabled: boolean): Promise<Prefs> {

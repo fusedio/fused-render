@@ -464,3 +464,67 @@ def test_the_suite_never_reads_the_developers_real_config():
     assert configured, "conftest must redirect the Claude Code config"
     assert not os.path.exists(configured)
     assert claude_projects.config_path() == os.path.abspath(configured)
+
+
+# --------------------------------------------------- the Preferences switch
+
+@pytest.fixture()
+def own_prefs(tmp_path, monkeypatch):
+    """A private prefs.json for tests that WRITE one.
+
+    conftest points FUSED_RENDER_HOME at one throwaway dir for the whole run,
+    not per test — fine for the suites that only read prefs, poison for these:
+    a stored `discover_claude_code: false` leaked forward and emptied the
+    discovered source in every later test in the file.
+    """
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(home))
+    return home
+
+
+def test_a_source_switched_off_is_not_listed_and_is_not_walked(
+        tmp_path, workspace, config, own_prefs, monkeypatch):
+    """Preferences → App discovery (D209).
+
+    Two assertions, and the second is the one worth having: an off source must
+    cost NOTHING, not merely produce nothing. Turning discovery off is largely
+    about not walking other people's folders on every Home render, so the pref
+    is read before the call rather than filtering its result.
+    """
+    other = tmp_path / "Elsewhere"
+    _workspace(other, tag="work", names=("report", "sidekick"))
+    config([other])
+
+    scanned = []
+    real = claude_projects._tag_apps
+    monkeypatch.setattr(claude_projects, "_tag_apps",
+                        lambda f, t, s: (scanned.append(f), real(f, t, s))[1])
+
+    client = TestClient(create_app(start_dir=str(tmp_path)))
+    names = sorted(a["name"] for a in
+                   client.get("/api/apps", headers={"X-Fused": "1"}).json()["apps"])
+    assert names == ["report", "sidekick", "wsapp"]
+    assert scanned, "the source ran while switched on"
+
+    scanned.clear()
+    assert client.put("/api/prefs", json={"discover_claude_code": False},
+                      headers={"X-Fused": "1"}).status_code == 200
+
+    names = sorted(a["name"] for a in
+                   client.get("/api/apps", headers={"X-Fused": "1"}).json()["apps"])
+    assert names == ["wsapp"], "the workspace is untouched; the source is gone"
+    assert scanned == [], "an off source must not be walked at all"
+
+
+def test_the_workspace_survives_both_sources_being_off(
+        tmp_path, workspace, config, own_prefs):
+    """There is deliberately no switch for the workspace itself — a toggle that
+    could empty Home of the user's own work is a footgun, not a preference."""
+    client = TestClient(create_app(start_dir=str(tmp_path)))
+    for key in ("discover_claude_code", "discover_claude_science"):
+        client.put("/api/prefs", json={key: False}, headers={"X-Fused": "1"})
+
+    apps = client.get("/api/apps", headers={"X-Fused": "1"}).json()["apps"]
+    assert [a["name"] for a in apps] == ["wsapp"]
+    assert apps[0]["source"] == "workspace"

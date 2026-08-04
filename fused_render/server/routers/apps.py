@@ -22,12 +22,14 @@ apart:
   is simply its ``entry_html``.
 * ``claude-code`` — apps in *other* Fused-shaped folders, found by reading the
   absolute paths in Claude Code's ``~/.claude.json`` project list
-  (``claude_projects.py``). Same two-level rule, applied to a root the user has
-  worked in; roots inside a git repository are skipped, which is what keeps
-  ordinary source checkouts out of Home.
+  (``claude_projects.py``). A folder contributes when most of its
+  subdirectories are apps (D208), which is what keeps ordinary source trees out
+  of Home.
 
 The discovered sources are read-only — nothing here scaffolds, commits or
-deploys into them.
+deploys into them — and each is switchable off from Preferences (D209,
+``prefs.discovery_enabled``), checked per request so a toggle applies to the
+next listing and an off source is never walked at all.
 
 POST /api/apps/new scaffolds ``<workspace>/local/<name>/`` from the packaged
 app starter kit (``fused_render/app_starter/`` — an ``index.html`` entry view
@@ -56,6 +58,7 @@ from fastapi import APIRouter, Body, Header
 
 from fused_render import app_listing, claude_projects, claude_science
 from fused_render.server.common import _error, _require_fused
+from fused_render.shell import prefs
 from fused_render.shell.seed import fused_dir
 
 logger = logging.getLogger("fused_render")
@@ -98,8 +101,15 @@ def api_apps():
     # rather than short-circuiting: the other sources may still have something,
     # and discarding it would make Home emptier than the machine is.
     apps = app_listing.two_level_apps(root, "workspace")
-    apps += _from("Claude Science", claude_science.list_apps)
-    apps += _from("Claude Code project", lambda: claude_projects.list_apps(root))
+    # The two discovered sources are switchable from Preferences (D209). The
+    # check is per request, like the engine pref: a toggle takes effect on the
+    # next listing with no restart. Reading it BEFORE the call is the point —
+    # a source that is off costs no walk at all, which is most of why someone
+    # would turn one off.
+    if prefs.discovery_enabled("claude_science"):
+        apps += _from("Claude Science", claude_science.list_apps)
+    if prefs.discovery_enabled("claude_code"):
+        apps += _from("Claude Code project", lambda: claude_projects.list_apps(root))
     apps.sort(key=lambda a: (a["tag"].lower(), a["name"].lower()))
     return {"apps": apps}
 

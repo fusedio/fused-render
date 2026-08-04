@@ -557,3 +557,70 @@ def test_forced_by_flags_track_the_writers_override_resolvers(tmp_path, monkeypa
         expected_retention = retention if call_log.retention_days_override() is not None else None
         assert calls["enabled_forced_by"] == expected_capture, (capture, retention)
         assert calls["retention_forced_by"] == expected_retention, (capture, retention)
+
+
+# ------------------------------------------------- app discovery (D209)
+
+def test_discovery_defaults_ON_and_toggles(tmp_path, monkeypatch):
+    """Opposite default to deploy/reader, and the reason is the point.
+
+    Those add an affordance a user who doesn't want it should never see.
+    These only surface work the user already has, in a listing they already
+    look at — off by default would mean a folder of Claude Code apps shows
+    nothing until the user finds a setting telling them the feature exists.
+    """
+    client, home = _client(tmp_path, monkeypatch)
+    body = client.get("/api/prefs").json()
+    assert body["discovery"]["claude_science"]["enabled"] is True
+    assert body["discovery"]["claude_code"]["enabled"] is True
+
+    body = client.put("/api/prefs", json={"discover_claude_code": False},
+                      headers=FUSED).json()
+    assert body["discovery"]["claude_code"]["enabled"] is False
+    assert body["discovery"]["claude_science"]["enabled"] is True, "sources are independent"
+    stored = json.loads((home / "prefs.json").read_text(encoding="utf-8"))
+    assert stored["discover_claude_code"] is False
+    assert client.get("/api/prefs").json()["discovery"]["claude_code"]["enabled"] is False
+
+    assert client.put("/api/prefs", json={"discover_claude_code": True},
+                      headers=FUSED).json()["discovery"]["claude_code"]["enabled"] is True
+
+
+def test_discovery_reports_whether_each_source_exists(tmp_path, monkeypatch):
+    """`available` beside `enabled`, the same shape the engine block uses.
+
+    Without it a toggle for a source that isn't installed changes nothing
+    visible, and the user cannot tell "off" from "nothing to find"."""
+    client, _ = _client(tmp_path, monkeypatch)
+    monkeypatch.setenv("FUSED_RENDER_CLAUDE_SCIENCE_DIR", str(tmp_path / "absent"))
+    monkeypatch.setenv("FUSED_RENDER_CLAUDE_CONFIG", str(tmp_path / "absent.json"))
+    body = client.get("/api/prefs").json()["discovery"]
+    assert body["claude_science"]["available"] is False
+    assert body["claude_code"]["available"] is False
+
+    (tmp_path / "store").mkdir()
+    (tmp_path / "cfg.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setenv("FUSED_RENDER_CLAUDE_SCIENCE_DIR", str(tmp_path / "store"))
+    monkeypatch.setenv("FUSED_RENDER_CLAUDE_CONFIG", str(tmp_path / "cfg.json"))
+    body = client.get("/api/prefs").json()["discovery"]
+    assert body["claude_science"]["available"] is True
+    assert body["claude_code"]["available"] is True
+
+
+def test_discovery_toggle_is_independent_of_other_prefs(tmp_path, monkeypatch):
+    client, _ = _client(tmp_path, monkeypatch)
+    monkeypatch.setattr(prefs_mod, "fused_engine_available", lambda: True)
+    client.put("/api/prefs", json={"engine": "fused"}, headers=FUSED)
+    client.put("/api/prefs", json={"deploy_enabled": True}, headers=FUSED)
+    body = client.put("/api/prefs", json={"discover_claude_science": False},
+                      headers=FUSED).json()
+    assert body["engine"]["selected"] == "fused"
+    assert body["deploy"]["enabled"] is True
+    assert body["discovery"]["claude_science"]["enabled"] is False
+
+
+def test_put_rejects_bad_discovery_value(tmp_path, monkeypatch):
+    client, home = _client(tmp_path, monkeypatch)
+    assert client.put("/api/prefs", json={"discover_claude_code": "no"},
+                      headers=FUSED).status_code == 400
+    assert not (home / "prefs.json").exists(), "a rejected PUT writes nothing"

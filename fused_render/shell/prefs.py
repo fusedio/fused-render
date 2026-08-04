@@ -115,6 +115,29 @@ def reader_enabled() -> bool:
     return read_prefs().get("reader_enabled") is True
 
 
+#: The optional sources `GET /api/apps` merges alongside the workspace, each
+#: with the pref key that switches it off and the label the page shows. The
+#: workspace itself is deliberately absent: it is what the app IS, not a source
+#: to discover, and a toggle that could empty Home of the user's own work is
+#: not a preference — it's a footgun.
+DISCOVERY_SOURCES = ("claude_science", "claude_code")
+
+
+def discovery_enabled(source: str) -> bool:
+    """Whether an optional app-discovery source contributes to `GET /api/apps`.
+
+    **Default ON**, unlike deploy/reader — those add an affordance that a user
+    who doesn't want it should never see, whereas these only surface work the
+    user already has, in a listing they already look at. Off-by-default would
+    mean a user with a folder of Claude Code apps sees nothing until they find
+    a setting telling them the feature exists (D209).
+
+    Any non-`false` stored value (including missing) reads as on, matching
+    `calls_enabled` — the on-by-default reading, not the opt-in one.
+    """
+    return read_prefs().get(f"discover_{source}") is not False
+
+
 def calls_enabled() -> bool:
     """Whether the app call log records anything (default ON — see calls.py).
 
@@ -210,6 +233,11 @@ def _prefs_response() -> dict:
         "deploy": {"enabled": deploy_enabled()},
         # Whether the Reader (listen-to-files) accessibility mode is offered (opt-in).
         "reader": {"enabled": reader_enabled()},
+        # The optional sources GET /api/apps merges (D209). `available` is the
+        # derived fact beside the stored one, the same shape the engine block
+        # uses: a toggle for something that isn't installed would otherwise
+        # look broken rather than inapplicable.
+        "discovery": _discovery_state(),
         # The app call log (calls.py): capture state, param redaction, retention.
         # `dir` lets the page reveal the store through the existing
         # /api/fs/reveal, exactly as `log.path` does.
@@ -222,6 +250,34 @@ def _prefs_response() -> dict:
             "retention_days": calls_retention_days(),
             **_calls_store(),
             **_calls_effective(),
+        },
+    }
+
+
+def _discovery_state() -> dict:
+    """Each optional source's stored switch plus whether it is installed at all.
+
+    `available` is two cheap stats, deliberately done on a GET the page already
+    makes: without it a user whose Claude Science store doesn't exist sees a
+    toggle that changes nothing, and has no way to tell "off" from "nothing to
+    find". Imported inside the function to keep this module's import graph as
+    small as it was — the same reason `calls` is imported lazily in `put_prefs`.
+    """
+    from fused_render import claude_projects, claude_science
+
+    return {
+        "claude_science": {
+            "enabled": discovery_enabled("claude_science"),
+            "available": os.path.isdir(claude_science.claude_science_dir()),
+        },
+        "claude_code": {
+            "enabled": discovery_enabled("claude_code"),
+            # `isfile`, not `config_path() is not None`: an explicit
+            # FUSED_RENDER_CLAUDE_CONFIG override is returned verbatim whether
+            # or not it exists (pointing it at a missing path is how a run
+            # turns the source off), so the presence of a path says nothing
+            # about the presence of a config.
+            "available": os.path.isfile(claude_projects.config_path() or ""),
         },
     }
 
@@ -326,6 +382,15 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
             return JSONResponse({"error": "'reader_enabled' must be a boolean"}, status_code=400)
         prefs["reader_enabled"] = value
         changed = True
+    for source in DISCOVERY_SOURCES:
+        key = f"discover_{source}"
+        if key in body:
+            value = body.get(key)
+            if not isinstance(value, bool):
+                return JSONResponse({"error": f"'{key}' must be a boolean"},
+                                    status_code=400)
+            prefs[key] = value
+            changed = True
     if "calls_enabled" in body:
         value = body.get("calls_enabled")
         if not isinstance(value, bool):
@@ -353,7 +418,8 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
     if not changed:
         return JSONResponse(
             {"error": "no known preference in request (expected 'engine', "
-                      "'deploy_enabled', 'reader_enabled', 'calls_enabled', "
+                      "'deploy_enabled', 'reader_enabled', 'discover_claude_science', "
+                      "'discover_claude_code', 'calls_enabled', "
                       "'calls_params' and/or 'calls_retention_days')"},
             status_code=400,
         )

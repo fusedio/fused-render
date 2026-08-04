@@ -55,6 +55,12 @@ The gear at the sidebar's bottom-left opens **Preferences**:
   buttons. **Your own `.html` views are never touched** — their CSS stays
   entirely yours; see the authoring skill for how to follow the desktop
   preference if you want to.
+- **App discovery** — which optional sources Home and the Apps hub list beside
+  your workspace: Claude Science artifacts, and other Fused folders found from
+  Claude Code. Both on by default; your workspace is always listed and has no
+  switch. Turning one off skips it entirely — it isn't scanned, so nothing is
+  read from it. A source that isn't installed says so rather than offering a
+  toggle that changes nothing.
 - **Deploy to Fused account** — the opt-in toggle for the preview header's
   Deploy button.
 - **Call log** — whether the app records the API calls your pages make, how
@@ -138,7 +144,8 @@ application owns and shows them to you. To iterate on an artifact as your own
 app, copy it into your workspace first.
 
 `FUSED_RENDER_CLAUDE_SCIENCE_DIR` overrides the store location (default
-`~/.claude-science`) for a Claude Science installed somewhere else.
+`~/.claude-science`) for a Claude Science installed somewhere else. To stop
+listing these entirely, switch them off in **Preferences → App discovery**.
 
 ## Other Fused folders
 
@@ -168,8 +175,9 @@ only the subdirectories that really are apps are listed; a `notes/` or `data/`
 beside them is not turned into a card, unlike in your own workspace where
 everything shows.
 
-Set `FUSED_RENDER_CLAUDE_CONFIG` to point at a different config file, or at a
-path that does not exist to turn the whole thing off.
+To stop listing these, switch them off in **Preferences → App discovery**.
+`FUSED_RENDER_CLAUDE_CONFIG` points at a different config file, and pointing it
+at a path that does not exist turns the source off for that process.
 
 ## Export for hosted serving
 
