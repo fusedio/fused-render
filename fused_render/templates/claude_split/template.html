@@ -944,12 +944,19 @@ function annOpenComposer(x, y, anchor) {
 // and can't be recalled — its pin is inert). The anchor stays as captured;
 // only the text is editable.
 function annOpenEditor(c, x, y) {
+  // Toggle: clicking the same note's marker while its editor is open closes it.
+  if (annEditing === c.id && annPop.style.display === "block") {
+    annCloseComposer();
+    return;
+  }
   annDraft = null;
   annEditing = c.id;
   annDelBtn.hidden = false;
   annTa.value = c.content;
   annPlacePop(x, y);
-  annTa.select();
+  // Cursor at the end, nothing selected — a stray keypress must append, not
+  // wipe the note.
+  annTa.setSelectionRange(annTa.value.length, annTa.value.length);
 }
 function annCloseComposer() {
   annPop.style.display = "none";
