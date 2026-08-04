@@ -1150,8 +1150,9 @@ async function openDoc(path) {
     "This PDF has no text layer (likely scanned) — page operations work, text editing won't find anything to edit.";
   fused.params.set("doc", info.path);
   updateUndoUi();
-  await refreshLib();
+  renderDocList();
   await renderAll();
+  refreshLib().catch(() => {});
 }
 
 function clearOpenDoc() {
