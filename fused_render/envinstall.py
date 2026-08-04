@@ -112,6 +112,19 @@ BACKEND_ATTRS = ("_venvs_path", "_python_executable")
 # now, and a persisted verdict would need its own invalidation story to avoid
 # becoming the very stale-forever fact the marker already was.
 _VALIDATED: dict[str, bool] = {}
+
+# venv directories whose ready marker this process has already discarded once
+# (D206). The bound on the repair: one rebuild per venv per process, because for
+# the cohort this whole mechanism exists for the rebuild is guaranteed to reproduce
+# the same breakage, and re-downloading hundreds of MB on every page reload is
+# worse than the error it is trying to avoid. See `is_installed`.
+#
+# Deliberately NOT cleared when the marker goes absent — the marker's absence is
+# the *expected* state immediately after we unlink it, so clearing the bound there
+# would mean the bound could never engage at all.
+_REBUILD_ATTEMPTED: set[str] = set()
+
+# Guards both of the above together: they are read and written as one decision.
 _validated_lock = threading.Lock()
 
 # The probe is `<venv>/bin/python -c ""` on the local filesystem: a working
@@ -185,8 +198,26 @@ def _venv_python(venv_dir: str) -> str:
     return os.path.join(venv_dir, "bin", "python")
 
 
-def _venv_runs(venv_dir: str) -> bool:
+def _venv_runs(venv_dir: str) -> bool | None:
     """Can this venv's own interpreter start at all? One subprocess, no imports.
+
+    THREE answers, not two, because the caller destroys state on a False:
+
+      True  — the probe completed and the interpreter exited 0.
+      False — DEFINITE evidence there is no usable interpreter here: the probe
+              completed with a non-zero exit, or the spawn failed on the exe
+              itself (`FileNotFoundError`/`PermissionError`/`NotADirectoryError`).
+      None  — INCONCLUSIVE: we could not complete the probe. A timeout, or any
+              other `OSError` — `EAGAIN` (cannot fork under load), `EMFILE` (the
+              server is out of descriptors), `EINTR`. None of those are facts
+              about the venv, and the caller must not act on them.
+
+    The two-valued version of this was a real hazard, not a hypothetical:
+    `subprocess.TimeoutExpired` IS a `SubprocessError` and the budget is 5s, so a
+    handful of concurrent `/api/run` calls on a loaded machine was enough to
+    unlink the ready marker of a perfectly healthy venv and charge the user a full
+    uv re-download for it. `engine._probe` is the precedent — it reports a failed
+    probe and destroys nothing.
 
     `-c ""` deliberately: the question is not "are the requirements importable"
     (that is upstream's job and would cost a real import) but the far more basic
@@ -212,9 +243,22 @@ def _venv_runs(venv_dir: str) -> bool:
             capture_output=True, text=True,
             timeout=_VENV_PROBE_TIMEOUT_S, env=_child_env(),
         )
-    except (OSError, subprocess.SubprocessError) as e:
+    except (FileNotFoundError, PermissionError, NotADirectoryError) as e:
+        # About the PATH we asked to execute, so evidence about the venv. Listed
+        # before the generic OSError below, which they are all subclasses of.
         logger.warning("script venv %s cannot run its own python: %s", venv_dir, e)
         return False
+    except (OSError, subprocess.SubprocessError) as e:
+        # Deliberately distinct wording from every "cannot run its own python"
+        # message above: an operator reading the log has to be able to tell "the
+        # venv is broken" (state was destroyed, a rebuild is coming) apart from
+        # "we never got an answer" (nothing was touched).
+        logger.warning(
+            "could not complete the readiness probe of script venv %s (%s: %s) — "
+            "leaving it alone; the run will surface any real failure itself",
+            venv_dir, type(e).__name__, e,
+        )
+        return None
     if proc.returncode != 0:
         logger.warning(
             "script venv %s cannot run its own python (exit %s): %s",
@@ -224,7 +268,7 @@ def _venv_runs(venv_dir: str) -> bool:
     return True
 
 
-def _venv_is_usable(venv_dir: str) -> bool:
+def _venv_is_usable(venv_dir: str) -> bool | None:
     """`_venv_runs`, memoized per venv directory **per process**.
 
     The ceiling this guarantees: at most ONE probe per venv per server process,
@@ -242,22 +286,36 @@ def _venv_is_usable(venv_dir: str) -> bool:
     Negative verdicts are cached too — and `is_installed` drops the entry whenever
     the marker is absent, which is what stops a cached "no" from outliving the
     venv it judged. See the comment there.
+
+    An INCONCLUSIVE probe (`None`) is deliberately not cached: it says nothing
+    about the venv, so there is nothing to remember, and caching it would turn one
+    unlucky fork under load into a permanently unvalidated venv. `_VALIDATED` maps
+    to real booleans only, which is also why `.get()` returning None can safely
+    mean "not probed yet".
     """
     with _validated_lock:
         cached = _VALIDATED.get(venv_dir)
-        if cached is None:
-            cached = _VALIDATED[venv_dir] = _venv_runs(venv_dir)
-        return cached
+        if cached is not None:
+            return cached
+        verdict = _venv_runs(venv_dir)
+        if verdict is not None:
+            _VALIDATED[venv_dir] = verdict
+        return verdict
 
 
 def reset_venv_validation_cache() -> None:
-    """Forget every venv verdict so the next `is_installed` re-probes.
+    """Forget every venv verdict AND every rebuild attempt, so the next
+    `is_installed` re-probes and is willing to repair again.
 
     A test seam (mirroring `engine.reset_app_interpreter_cache`). Nothing in the
-    server needs it: the cache self-invalidates through the marker.
+    server needs it: the verdict cache self-invalidates through the marker, and the
+    rebuild bound is meant to last exactly as long as the process. Both are cleared
+    together on purpose — resetting only the verdicts would leave a bound that
+    silently suppresses the repair the re-probe just asked for.
     """
     with _validated_lock:
         _VALIDATED.clear()
+        _REBUILD_ATTEMPTED.clear()
 
 
 def is_installed(requirements: list[str]) -> bool:
@@ -275,6 +333,13 @@ def is_installed(requirements: list[str]) -> bool:
     repair action anywhere in the UI. `Contents/lib -> Resources/lib`
     (`scripts/build_dmg.sh`) stops NEW venvs from being built that way; this stops
     an EXISTING bad one from being trusted forever.
+
+    Two guarantees bound what that costs when it is wrong, both pinned by tests:
+    the probe is three-valued, so an INCONCLUSIVE result (`_venv_runs` -> None:
+    a timeout, a fork that failed under load) answers True and touches nothing;
+    and the repair is attempted at most ONCE per venv per process, so a venv that
+    cannot be fixed by rebuilding stops asking to be rebuilt. Both are contracts,
+    not defensive padding — see the comments at each branch below.
     """
     if not requirements:
         return True  # nothing to install; the bare/interpreter paths handle it
@@ -291,7 +356,48 @@ def is_installed(requirements: list[str]) -> bool:
         with _validated_lock:
             _VALIDATED.pop(venv_dir, None)
         return False
-    if _venv_is_usable(venv_dir):
+    verdict = _venv_is_usable(venv_dir)
+    if verdict is True:
+        return True
+    if verdict is None:
+        # The probe could not be completed (a timeout, a fork that failed under
+        # load). That is a fact about this server at this instant, not about the
+        # venv, so the marker's claim stands unexamined and the answer is yes: the
+        # run proceeds and surfaces whatever really happens, exactly as it did
+        # before any of this validation existed. Destroying a multi-hundred-MB venv
+        # requires evidence, and "I could not look" is not evidence.
+        return True
+    # A definite failure — but the repair is allowed exactly ONCE per venv dir per
+    # process. Beyond that, the download is known-futile: for the cohort D206 exists
+    # for (a pre-symlink `.app`) the rebuild reproduces the identical breakage,
+    # because the property that failed is the bundled interpreter's own base prefix
+    # and the venv key folds in only that interpreter's path and version — both
+    # constants inside the bundle. `runtime.js` bounds the retry WITHIN one
+    # `runPython` call, but nothing bounded it across calls, so every page reload,
+    # every `watchPath` auto-reload and every param change would pay another full
+    # download. Before this validation existed that cohort got one instant permanent
+    # error; an unbounded rebuild would be strictly worse than the bug.
+    #
+    # So the second and later failures leave the marker in place and report
+    # installed: the script runs and the user sees the interpreter's own stderr,
+    # which is the truthful outcome. Per PROCESS, deliberately — a user who installs
+    # a fixed DMG gets a fresh server, hence an empty set, hence one rebuild that
+    # actually works.
+    with _validated_lock:
+        already_tried = venv_dir in _REBUILD_ATTEMPTED
+        _REBUILD_ATTEMPTED.add(venv_dir)
+        if not already_tried:
+            # See the marker-absent branch above: the verdict must not outlive the
+            # generation it judged. Kept on the already-tried path, so repeated
+            # calls answer from the cache instead of spawning a probe apiece.
+            _VALIDATED.pop(venv_dir, None)
+    if already_tried:
+        logger.warning(
+            "script venv %s still cannot run its own python after a rebuild, so "
+            "the ready marker is being LEFT in place: rebuilding it again cannot "
+            "help (the interpreter it was built from is the problem). The script "
+            "will run and report the interpreter's own error.", venv_dir,
+        )
         return True
     # The marker MUST go before we answer False, and this is not tidying up.
     # Upstream's `ensure_requirements_venv`/`ensure_bare_venv` short-circuit on
@@ -303,14 +409,10 @@ def is_installed(requirements: list[str]) -> bool:
     # `fused`. Removing the marker is what makes upstream rmtree the directory and
     # build it again, which is the actual repair.
     #
-    # The cached verdict goes with it, in the same breath: deleting the marker ends
-    # this venv's generation, and the directory that appears under the same key
-    # next is a different venv that has to be judged on its own. (The marker-absent
-    # branch above drops it too, for a rebuild we did not trigger ourselves — an
-    # upstream rmtree, a user deleting the venv — but that branch is only reached on
-    # a LATER call, so it cannot cover a re-marked directory within one call chain.)
-    with _validated_lock:
-        _VALIDATED.pop(venv_dir, None)
+    # (The cached verdict was dropped just above, for the same reason the
+    # marker-absent branch drops it: deleting the marker ends this venv's
+    # generation, and the directory that appears under the same key next is a
+    # different venv that has to be judged on its own.)
     try:
         os.unlink(os.path.join(venv_dir, READY_MARKER))
         logger.warning(

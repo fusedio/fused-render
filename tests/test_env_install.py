@@ -23,6 +23,7 @@ What these tests are really protecting:
     of making this visible; folding it into a generic message would leave the
     user exactly where they started.
 """
+import errno
 import json
 import os
 import signal
@@ -396,6 +397,165 @@ def test_a_rebuilt_venv_is_not_stuck_on_the_earlier_failed_verdict(
     _runnable_venv_python(str(venv_dir))  # what the rebuild leaves behind
     marker.write_text("{}")
     assert envinstall.is_installed(reqs)
+
+
+# --- the probe has THREE answers, and the rebuild is bounded (D206) ------------
+#
+# Both of these came out of review, and both are about the same thing: the
+# deletion at the end of `is_installed` destroys a venv the user paid a
+# multi-hundred-MB download for, so it may only ever happen on *definite*
+# evidence, and it may only ever happen once per venv per process.
+
+
+def _marked_venv(tmp_path, monkeypatch, reqs, *, runnable=False):
+    """A venv dir carrying a ready marker, with or without a working python."""
+    monkeypatch.setattr(envinstall, "venvs_path", lambda: str(tmp_path))
+    venv_dir = tmp_path / envinstall.venv_key_for(reqs)
+    venv_dir.mkdir(exist_ok=True)
+    if runnable:
+        _runnable_venv_python(str(venv_dir))
+    (venv_dir / envinstall.READY_MARKER).write_text("{}")
+    return venv_dir
+
+
+@requires_fused
+def test_a_probe_that_TIMES_OUT_destroys_nothing_and_reports_installed(
+    tmp_path, monkeypatch
+):
+    """An inconclusive probe is not permission to destroy state.
+
+    `TimeoutExpired` is a `SubprocessError`, and the budget is 5s: several
+    concurrent `/api/run` calls on a loaded machine can produce one without the
+    venv being wrong about anything. Treating that as corruption would unlink the
+    marker of a HEALTHY venv and cost the user a full uv re-download. So the
+    verdict is `None`, nothing is cached (a timeout says nothing worth
+    remembering), and `is_installed` says yes so the run proceeds and surfaces
+    whatever really happens — the same policy as `engine._probe`, which reports a
+    failed probe and destroys nothing.
+    """
+    reqs = ["some-dist"]
+    venv_dir = _marked_venv(tmp_path, monkeypatch, reqs, runnable=True)
+
+    def _timeout(*a, **k):
+        raise subprocess.TimeoutExpired(cmd="python", timeout=5)
+
+    monkeypatch.setattr(envinstall.subprocess, "run", _timeout)
+    assert envinstall.is_installed(reqs) is True
+    assert (venv_dir / envinstall.READY_MARKER).exists()
+    assert str(venv_dir) not in envinstall._VALIDATED
+
+
+@requires_fused
+def test_a_probe_that_cannot_be_SPAWNED_destroys_nothing_and_reports_installed(
+    tmp_path, monkeypatch
+):
+    """EAGAIN/EMFILE/EINTR are facts about the SERVER, not about the venv.
+
+    `OSError` covers "could not fork under load" and "out of file descriptors"
+    just as much as "no such interpreter", and only the last of those is evidence
+    about the venv. So the generic `OSError` is inconclusive; the exe-specific
+    ones are classified as definite by the test below.
+    """
+    reqs = ["some-dist"]
+    venv_dir = _marked_venv(tmp_path, monkeypatch, reqs, runnable=True)
+
+    def _eagain(*a, **k):
+        raise OSError(errno.EAGAIN, "Resource temporarily unavailable")
+
+    monkeypatch.setattr(envinstall.subprocess, "run", _eagain)
+    assert envinstall.is_installed(reqs) is True
+    assert (venv_dir / envinstall.READY_MARKER).exists()
+    assert str(venv_dir) not in envinstall._VALIDATED
+
+
+@requires_fused
+def test_a_missing_or_unexecutable_interpreter_IS_definite_corruption(
+    tmp_path, monkeypatch
+):
+    """The exe-specific OSErrors keep their old meaning.
+
+    `FileNotFoundError`/`PermissionError`/`NotADirectoryError` out of the spawn
+    are about the path we asked to execute, so they are evidence about the venv —
+    and making the inconclusive case safe must not accidentally make the definite
+    case a no-op, which would leave the DMG bug unfixed.
+    """
+    for exc in (FileNotFoundError(), PermissionError(), NotADirectoryError()):
+        reqs = [f"some-dist-{type(exc).__name__}"]
+        venv_dir = _marked_venv(tmp_path, monkeypatch, reqs, runnable=True)
+
+        def _raise(*a, _exc=exc, **k):
+            raise _exc
+
+        monkeypatch.setattr(envinstall.subprocess, "run", _raise)
+        assert envinstall.is_installed(reqs) is False
+        assert not (venv_dir / envinstall.READY_MARKER).exists()
+        monkeypatch.undo()  # restore subprocess.run (and venvs_path) per iteration
+
+
+@requires_fused
+def test_only_ONE_rebuild_is_attempted_per_venv_per_process(tmp_path, monkeypatch):
+    """The bound that stops a futile download loop across runs.
+
+    For a user on a pre-symlink `.app` the rebuild reproduces the identical
+    breakage — the property that failed is the interpreter's own base prefix,
+    which is invariant under rebuild, and the venv key folds in only that
+    interpreter's path and version, both constants inside the bundle. Without a
+    bound, every page reload, every `watchPath` auto-reload and every param change
+    would pay another multi-hundred-MB download, guaranteed futile; before D206
+    that cohort got one instant permanent error, so an unbounded rebuild would be
+    a regression.
+
+    So the SECOND definite failure for the same venv dir leaves the marker alone
+    and reports installed: the run goes ahead and the user sees the interpreter's
+    own stderr instead of another download. And no further probe is spawned —
+    `is_installed` is called on every run of every PEP 723 script.
+    """
+    reqs = ["some-dist"]
+    venv_dir = _marked_venv(tmp_path, monkeypatch, reqs)  # no interpreter at all
+    marker = venv_dir / envinstall.READY_MARKER
+
+    probes = []
+    real = envinstall._venv_runs
+    monkeypatch.setattr(
+        envinstall, "_venv_runs", lambda d: (probes.append(d), real(d))[1]
+    )
+
+    assert envinstall.is_installed(reqs) is False
+    assert not marker.exists(), "the first failure earns one rebuild"
+
+    # What the install worker leaves behind on a bundle that cannot be fixed by
+    # rebuilding: the same broken venv, re-marked ready.
+    marker.write_text("{}")
+    assert envinstall.is_installed(reqs) is True, "no second rebuild"
+    assert marker.exists(), "the marker must survive, or the loader downloads again"
+
+    for _ in range(3):
+        assert envinstall.is_installed(reqs) is True
+    assert len(probes) == 2, probes
+
+
+@requires_fused
+def test_reset_venv_validation_cache_clears_the_rebuild_bound(tmp_path, monkeypatch):
+    """A fresh process gets a fresh rebuild — that is what heals a fixed DMG.
+
+    The bound is per PROCESS on purpose: a user who installs a build with the
+    `Contents/lib` symlink starts a new server, hence an empty set, hence exactly
+    one rebuild, which this time works. `reset_venv_validation_cache` is the test
+    seam for that lifecycle, so it has to clear the bound as well as the verdicts —
+    otherwise it would only half-reset and every test after it would inherit the
+    other half.
+    """
+    reqs = ["some-dist"]
+    venv_dir = _marked_venv(tmp_path, monkeypatch, reqs)
+    marker = venv_dir / envinstall.READY_MARKER
+
+    assert envinstall.is_installed(reqs) is False
+    marker.write_text("{}")
+    assert envinstall.is_installed(reqs) is True  # bound engaged
+
+    envinstall.reset_venv_validation_cache()
+    assert envinstall.is_installed(reqs) is False, "a new process retries the repair"
+    assert not marker.exists()
 
 
 # --- /api/run's pre-flight ----------------------------------------------------

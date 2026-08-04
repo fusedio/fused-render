@@ -462,11 +462,16 @@ echo "    pruned; app now $(du -sh "$APP_DIR" | cut -f1)"
 #     Zero runtime cost: no probe, no wrapper, no extra subprocess — the symlink
 #     is resolved by the interpreter's own startup path search.
 #
-#     Placement: AFTER the pruning/staging steps that rewrite
-#     `Contents/Resources/lib/python3.12` (nothing there can clobber a link that
-#     lives one level up, but keeping the order explicit means a future prune
-#     cannot), and BEFORE the smoke tests and the codesign sweep (step 5) so the
-#     link is sealed into the signature rather than added to a signed bundle.
+#     Placement, exactly as it stands: AFTER the pruning in 4a, and BEFORE the
+#     smoke tests and the codesign sweep (step 5) so the link is sealed into the
+#     signature rather than added to a signed bundle. Note that package staging
+#     (4a-bis) still runs AFTER this step despite coming later in the numbering —
+#     that is fine and is the whole reason to be precise here: every one of those
+#     steps writes INSIDE `Contents/Resources/lib/python3.12`, and this link lives
+#     one level up at `Contents/lib`, so none of them can clobber it whichever
+#     order they run in. What would break the link is a step that replaced
+#     `Contents/Resources/lib` itself or wrote its own `Contents/lib`; there is no
+#     such step today, and a future one must run before this line.
 #     Both sweeps that enumerate files by magic bytes — the Mach-O-as-.py sanity
 #     check and the signing loop — use `find <dir> -type f`, and `find` does not
 #     follow symlinks without `-L`, so the link is neither signed as nested code
