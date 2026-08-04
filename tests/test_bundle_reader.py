@@ -304,6 +304,181 @@ def test_cloning_into_a_read_only_directory_is_refused(reader, repo, tmp_path):
         os.chmod(holder, 0o755)
 
 
+# ------------------------------------------------------- a chosen destination
+
+# `dest` is the one piece of CLIENT input that decides where bytes land, so it
+# is validated like any other write target: absolute, parent present and
+# writable, never onto something that already exists, never onto a mount, and
+# never inside the temp scratch tree this module rmtree's. The last two rules
+# below are the load-bearing ones — the failure path deletes `dest`, so it must
+# be impossible for `dest` to name anything the call did not create.
+
+@pytest.fixture
+def bundle(repo, tmp_path):
+    out = str(tmp_path / "project.bundle")
+    git(repo, "bundle", "create", out, "--all")
+    return out
+
+
+def test_clone_into_a_chosen_directory(reader, bundle, tmp_path):
+    chosen = tmp_path / "elsewhere"
+    chosen.mkdir()
+    dest = str(chosen / "project")
+    out = reader.main(bundle, action="clone", dest=dest)
+    assert out["ok"] is True and out["dest"] == dest
+    assert os.path.isfile(os.path.join(dest, "README.md"))
+
+
+def test_clone_with_an_overridden_name(reader, bundle, tmp_path):
+    dest = str(tmp_path / "my own name")
+    out = reader.main(bundle, action="clone", dest=dest)
+    assert out["ok"] is True
+    assert out["name"] == "my own name"
+    assert os.path.isdir(os.path.join(dest, ".git"))
+
+
+def test_clone_still_derives_a_default_when_no_dest_is_given(reader, bundle, tmp_path):
+    out = reader.main(bundle, action="clone")
+    assert out["ok"] is True
+    assert out["dest"] == str(tmp_path / "project")
+
+
+@pytest.mark.parametrize("dest", ["   ", "relative/dir", "~/somewhere", 7])
+def test_a_dest_that_is_not_an_absolute_path_is_refused(reader, bundle, dest):
+    out = reader.main(bundle, action="clone", dest=dest)
+    assert out["ok"] is False
+    assert out["reason"] == "bad-dest"
+
+
+@pytest.mark.parametrize("dest", ["", None])
+def test_an_absent_dest_means_the_derived_default_not_a_refusal(reader, bundle, dest, tmp_path):
+    # "" is the parameter's own default — an omitted `dest`, not a bad one — so
+    # it keeps the pre-picker behaviour of deriving the sibling name.
+    out = reader.main(bundle, action="clone", dest=dest)
+    assert out["ok"] is True
+    assert out["dest"] == str(tmp_path / "project")
+
+
+def test_a_dest_that_already_exists_is_refused_and_left_alone(reader, bundle, tmp_path):
+    taken = tmp_path / "taken"
+    taken.mkdir()
+    (taken / "keep.txt").write_text("do not touch me\n")
+    out = reader.main(bundle, action="clone", dest=str(taken))
+    assert out["ok"] is False
+    assert out["reason"] == "exists"
+    assert (taken / "keep.txt").read_text() == "do not touch me\n"
+
+
+def test_a_dest_whose_parent_is_missing_is_refused(reader, bundle, tmp_path):
+    out = reader.main(bundle, action="clone", dest=str(tmp_path / "gone" / "here"))
+    assert out["ok"] is False
+    assert out["reason"] == "missing-parent"
+
+
+def test_a_dest_whose_parent_is_a_file_is_refused(reader, bundle, tmp_path):
+    f = tmp_path / "afile"
+    f.write_text("x")
+    out = reader.main(bundle, action="clone", dest=str(f / "under"))
+    assert out["ok"] is False
+    assert out["reason"] == "missing-parent"
+
+
+def test_a_dest_in_a_read_only_parent_is_refused(reader, bundle, tmp_path):
+    if hasattr(os, "geteuid") and os.geteuid() == 0:
+        pytest.skip("read-only bits are ignored when running as root")
+    holder = tmp_path / "ro"
+    holder.mkdir()
+    os.chmod(holder, 0o555)
+    try:
+        out = reader.main(bundle, action="clone", dest=str(holder / "here"))
+        assert out["ok"] is False
+        assert out["reason"] == "readonly"
+    finally:
+        os.chmod(holder, 0o755)
+
+
+def test_a_mount_backed_dest_is_refused(reader, bundle, tmp_path, monkeypatch):
+    # Same reasoning as /api/fs/compress: a clone's write pattern through the
+    # rclone VFS is pathological, so it is refused rather than attempted.
+    mnt = tmp_path / "mounts"
+    mnt.mkdir()
+    monkeypatch.setenv("FUSED_RENDER_MOUNTS_DIR", str(mnt))
+    out = reader.main(bundle, action="clone", dest=str(mnt / "remote" / "here"))
+    assert out["ok"] is False
+    assert out["reason"] == "mount-unsupported"
+    assert not (mnt / "remote").exists()
+
+
+def test_a_dest_inside_the_scratch_tree_is_refused(reader, bundle, tmp_path, monkeypatch):
+    # The scratch repo is rmtree'd when the call ends, so a clone placed inside
+    # it would be deleted the moment it succeeded.
+    scratch_root = tmp_path / "tmp"
+    scratch_root.mkdir()
+    monkeypatch.setattr(reader.tempfile, "gettempdir", lambda: str(scratch_root))
+    seen = {}
+    real_enter = reader._Scratch.__enter__
+
+    def spy(self):
+        seen["root"] = real_enter(self)
+        return seen["root"]
+
+    monkeypatch.setattr(reader._Scratch, "__enter__", spy)
+    # Resolve the scratch path the same way the reader will, by running one
+    # call first to learn it, then aiming the next clone inside it.
+    reader.main(bundle, action="overview")
+    out = reader.main(bundle, action="clone",
+                      dest=os.path.join(seen["root"], "sneaky"))
+    assert out["ok"] is False
+    assert out["reason"] == "bad-dest"
+
+
+def test_a_failed_clone_never_removes_a_directory_it_did_not_create(
+        reader, bundle, tmp_path, monkeypatch):
+    # The failure path rmtree's `dest`. If validation ever let a pre-existing
+    # path through, that cleanup would delete the user's data — so the deletion
+    # is guarded on this call having created the directory itself.
+    victim = tmp_path / "precious"
+    victim.mkdir()
+    (victim / "data.txt").write_text("irreplaceable\n")
+
+    real_run = reader._run
+
+    def fail_clone(args, cwd, **kw):
+        if args and args[0] == "clone":
+            # git "fails" without touching the destination at all.
+            return "", "fatal: simulated failure", 128
+        return real_run(args, cwd, **kw)
+
+    monkeypatch.setattr(reader, "_run", fail_clone)
+    out = reader.main(bundle, action="clone", dest=str(victim))
+    assert out["ok"] is False
+    assert (victim / "data.txt").read_text() == "irreplaceable\n"
+
+
+def test_a_failed_clone_removes_the_partial_directory_it_did_create(
+        reader, bundle, tmp_path, monkeypatch):
+    dest = tmp_path / "half"
+    real_run = reader._run
+
+    def fail_clone(args, cwd, **kw):
+        if args and args[0] == "clone":
+            os.makedirs(os.path.join(str(dest), ".git"), exist_ok=True)
+            return "", "fatal: simulated failure", 128
+        return real_run(args, cwd, **kw)
+
+    monkeypatch.setattr(reader, "_run", fail_clone)
+    out = reader.main(bundle, action="clone", dest=str(dest))
+    assert out["ok"] is False and out["reason"] == "git-failed"
+    assert not dest.exists()
+
+
+def test_a_thin_bundle_is_refused_before_the_dest_is_touched(reader, thin_bundle, tmp_path):
+    dest = tmp_path / "never"
+    out = reader.main(thin_bundle, action="clone", dest=str(dest))
+    assert out["ok"] is False and out["reason"] == "prerequisites"
+    assert not dest.exists()
+
+
 # ------------------------------------------------------------------ wiring
 
 # The template only ever runs if the registry binds the extension to it and the

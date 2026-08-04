@@ -135,6 +135,11 @@ def _first_line(text):
     return ""
 
 
+# Marks every throwaway repo this module creates, so a destination can be
+# recognised as sitting inside one (see _check_dest) even across calls.
+_SCRATCH_PREFIX = "fused-render-bundle-"
+
+
 class _Scratch:
     """A throwaway git repository, for the length of one call.
 
@@ -144,7 +149,7 @@ class _Scratch:
     prerequisite report — see the module docstring."""
 
     def __enter__(self):
-        self.root = tempfile.mkdtemp(prefix="fused-render-bundle-")
+        self.root = tempfile.mkdtemp(prefix=_SCRATCH_PREFIX)
         _run(["init", "-q"], cwd=self.root)
         return self.root
 
@@ -363,23 +368,108 @@ def _free_dest(file):
     return candidate
 
 
-def _clone(file, scratch):
+def _is_mount_backed(path):
+    """Whether `path` sits under the app's mounts dir, via shared/appenv — the
+    one home for the mount rule, the same bridge git/condition.py uses (a
+    template must not import fused_render, SPEC PY-15).
+
+    Fails CLOSED: if appenv cannot be imported we cannot tell, and the safe
+    answer for a write target is to refuse rather than to write."""
+    shared = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "shared")
+    if shared not in sys.path:
+        sys.path.insert(0, shared)
+    try:
+        from appenv import is_mount_backed
+    except Exception as exc:  # noqa: BLE001 — cannot tell -> refuse
+        raise _Refused("mount-unsupported",
+                       "Can't tell whether that folder is on a mount, so the "
+                       "clone was not attempted.") from exc
+    return is_mount_backed(path)
+
+
+def _within(root, target):
+    """True when `target` is `root` or sits inside it, compared canonically so
+    a symlink or a /var -> /private/var alias can't slip past."""
+    root = os.path.normcase(os.path.realpath(root))
+    target = os.path.normcase(os.path.realpath(target))
+    return target == root or target.startswith(root + os.sep)
+
+
+def _check_dest(dest, scratch):
+    """Validate a caller-supplied clone destination.
+
+    `dest` used to be entirely server-derived; it is now client input that
+    decides where bytes land, so it gets the same treatment as any other write
+    target. The rules are ordered cheapest-and-most-fundamental first, and the
+    last two exist because the failure path DELETES `dest`: it must be
+    impossible for `dest` to name anything this call did not create."""
+    if not dest or not isinstance(dest, str) or not dest.strip():
+        raise _Refused("bad-dest", "No destination folder was chosen.")
+    dest = os.path.normpath(dest)
+    if not os.path.isabs(dest):
+        raise _Refused("bad-dest", "The destination must be an absolute path.")
+
+    # Before any filesystem probe of the destination, like _fs_compress's mount
+    # branch: a clone into the rclone VFS means writing a whole working tree
+    # and object store through the cache, which is exactly the pattern that
+    # wedges a mount.
+    if _is_mount_backed(dest):
+        raise _Refused("mount-unsupported",
+                       "That folder is on a mounted location; cloning there "
+                       "isn't supported.")
+
+    # Nothing may land in a throwaway scratch tree — they are rmtree'd the
+    # moment their call returns, so a clone placed inside one would be deleted
+    # exactly when it succeeded. Scoped to OUR scratch dirs (this call's, and
+    # any concurrent call's, by their shared prefix) rather than to the whole
+    # system temp dir: `/tmp/somewhere` is a perfectly ordinary place to want a
+    # clone, and pytest's own tmp_path lives under temp too.
+    if _within(scratch, dest) or any(
+            part.startswith(_SCRATCH_PREFIX) for part in dest.split(os.sep)):
+        raise _Refused("bad-dest",
+                       "That folder is inside a temporary working directory "
+                       "that gets cleaned up; choose somewhere else.")
+
+    parent = os.path.dirname(dest)
+    if not os.path.isdir(parent):
+        raise _Refused("missing-parent",
+                       f"{parent} doesn't exist, so there is nowhere to clone into.")
+    if os.path.exists(dest):
+        raise _Refused("exists",
+                       f"{os.path.basename(dest)} already exists — pick another "
+                       "name or another folder.")
+    # The same writability question the server asks of any new entry: a new
+    # directory needs W_OK (and X_OK to traverse) on its PARENT.
+    if not os.access(parent, os.W_OK | os.X_OK):
+        raise _Refused("readonly",
+                       f"{os.path.basename(parent) or parent} is read-only, so "
+                       "the clone can't be written there.")
+    return dest, parent
+
+
+def _clone(file, scratch, dest):
     complete, prereqs, _ = _verify(file, scratch)
     if not complete:
         raise _Refused("prerequisites",
                        "This bundle can't be cloned on its own: it needs "
                        f"{len(prereqs)} commit(s) it doesn't carry. Fetch it into "
                        "a repository that already has them instead.")
-    dest = _free_dest(file)
-    parent = os.path.dirname(dest)
-    if not os.access(parent, os.W_OK | os.X_OK):
-        raise _Refused("readonly",
-                       f"{os.path.basename(parent)} is read-only, so there is "
-                       "nowhere beside this bundle to clone into.")
+    # No destination chosen (an older caller, or the page's own default): fall
+    # back to the sibling _free_dest still names for the clone_command.
+    dest, parent = _check_dest(dest or _free_dest(file), scratch)
+
+    # _check_dest has just established that `dest` does not exist, so anything
+    # standing there afterwards was created by THIS clone — which is the whole
+    # licence for the rmtree below. Re-read it here rather than trusting the
+    # check from a distance: the cleanup is destructive and the invariant it
+    # rests on should be visible at the point it is used.
+    preexisting = os.path.exists(dest)
     _, err, code = _run(["clone", "-q", file, dest], cwd=parent,
                         timeout=CLONE_TIMEOUT_S, allow=(0, 128))
     if code != 0:
-        shutil.rmtree(dest, ignore_errors=True)
+        if not preexisting and os.path.isdir(dest):
+            shutil.rmtree(dest, ignore_errors=True)
         raise _Refused("git-failed", _first_line(err) or f"git clone exited {code}.")
     return {"ok": True, "dest": dest, "name": os.path.basename(dest)}
 
@@ -387,7 +477,8 @@ def _clone(file, scratch):
 # ---------------------------------------------------------------------- entry
 
 
-def main(file: str, action: str = "overview", ref: str = "", limit: int = 50) -> dict:
+def main(file: str, action: str = "overview", ref: str = "", limit: int = 50,
+         dest: str = "") -> dict:
     try:
         _check_file(file)
         if action not in ("overview", "history", "clone"):
@@ -397,7 +488,7 @@ def main(file: str, action: str = "overview", ref: str = "", limit: int = 50) ->
                 return _overview(file, scratch)
             if action == "history":
                 return _history(file, scratch, ref, limit)
-            return _clone(file, scratch)
+            return _clone(file, scratch, dest)
     except _Refused as refused:
         return refused.payload
     except OSError as exc:
