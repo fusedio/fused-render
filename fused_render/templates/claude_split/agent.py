@@ -632,6 +632,19 @@ def _shots_dir() -> dict:
     """
     if os.path.isdir(SHOTS):
         _require_private(SHOTS)
+        # `_require_private` refuses a directory others can WRITE to, which is the
+        # right test for a parent we did not create. It is not enough for this
+        # leaf: a crop is a picture of the user's screen, so others must not be
+        # able to READ it either. Tightened rather than refused because we own it
+        # (that is what _require_private just established) and it holds nothing
+        # but our own crops — the argument that stops us chmod'ing the temp root
+        # does not apply to our own directory.
+        try:
+            mode = stat.S_IMODE(os.lstat(SHOTS).st_mode)
+            if mode & ~0o700:
+                os.chmod(SHOTS, 0o700)
+        except OSError:
+            pass
     else:
         try:
             _private_dir(SHOTS)

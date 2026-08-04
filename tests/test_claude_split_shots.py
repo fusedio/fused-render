@@ -143,6 +143,21 @@ def test_a_shots_dir_anyone_can_write_to_is_refused(agent, tmp_path, monkeypatch
         agent._shots_dir()
 
 
+@pytest.mark.skipif(not hasattr(os, "geteuid"), reason="POSIX mode bits")
+def test_an_adopted_shots_dir_is_tightened_to_owner_only(agent, tmp_path,
+                                                         monkeypatch):
+    """`_require_private` only refuses a directory others can WRITE to, which is
+    the right test for a parent. It is not enough for this leaf: a crop is a
+    picture of the user's screen, so a merely world-READABLE directory (one an
+    earlier version, or a stray mkdir, left at 0755) has to be tightened."""
+    shots = tmp_path / "fr" / "shots"
+    shots.mkdir(parents=True)
+    os.chmod(shots, 0o755)
+    monkeypatch.setattr(agent, "SHOTS", str(shots))
+    assert agent._shots_dir() == {"dir": str(shots)}
+    assert stat.S_IMODE(os.lstat(shots).st_mode) == 0o700
+
+
 def test_a_shots_dir_that_cannot_be_made_is_an_error_not_a_crash(
         agent, tmp_path, monkeypatch):
     """No directory means no screenshots, which the page degrades to sending the
