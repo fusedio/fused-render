@@ -1,0 +1,406 @@
+<!DOCTYPE html>
+<html data-fused-theme="shell">
+<head>
+<meta charset="utf-8" />
+<title>Git bundle</title>
+<style>
+  /* Tokens mirror the app shell (shell.css) so the bundle viewer reads as a
+     native part of the explorer, like the zip browser does — including its
+     light palette (SPEC §30/AP-9, D134). `data-theme` is written onto <html>
+     by the injected runtime, which acts only because this document opted in
+     via `data-fused-theme` on <html> (fused_render/static/runtime.js); dark
+     stays the CSS default.
+     --warn/--ok are this view's own two extra roles: "needs prerequisites"
+     and "self-contained". Everything tinted with them (the badges, the
+     prerequisite panel) derives its border and wash from the same token via
+     color-mix, so neither theme needs a hand-picked translucent literal. */
+  :root {
+    color-scheme: dark;
+    --fg: #e8eaed;
+    --fg-muted: #9aa0a6;
+    --border: #2a2d33;
+    --bg: #131417;
+    --bg-alt: #1b1d21;
+    --accent: #E5FF44;
+    --error: #ff6b6b;
+    --warn: #ffc14d;
+    --ok: #6ee7a8;
+  }
+  :root[data-theme="light"] {
+    color-scheme: light;
+    --fg: #1f2023;
+    --fg-muted: #61656c;
+    --border: #d8dade;
+    --bg: #ffffff;
+    --bg-alt: #f4f5f7;
+    /* The brand lime is invisible on white; shell.css's same-hue deep olive
+       clears 4.5:1 as text, which is the only role it plays here. */
+    --accent: #5f7300;
+    --error: #c62828;
+    --warn: #8a5a00;
+    --ok: #16794a;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    font-size: 13px;
+    color: var(--fg);
+    background: var(--bg);
+    display: flex;
+    flex-direction: column;
+  }
+  .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+
+  .header {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 10px 16px;
+    border-bottom: 1px solid var(--border);
+  }
+  .title { display: flex; align-items: center; gap: 8px; min-width: 0; }
+  .title .name { font-size: 14px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .title .sub { color: var(--fg-muted); white-space: nowrap; }
+  .badge {
+    flex: 0 0 auto;
+    padding: 3px 8px;
+    border-radius: 999px;
+    border: 1px solid var(--border);
+    font-size: 11.5px;
+    white-space: nowrap;
+  }
+  .badge.ok { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 45%, transparent); }
+  .badge.warn { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 45%, transparent); }
+
+  /* Clone bar: how a bundle is actually consumed, kept in view. */
+  .clone {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 16px;
+    border-bottom: 1px solid var(--border);
+    background: var(--bg-alt);
+  }
+  .clone code {
+    flex: 1 1 auto;
+    overflow-x: auto;
+    white-space: nowrap;
+    padding: 5px 8px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--bg);
+    color: var(--fg);
+    font-size: 12.5px;
+  }
+  button {
+    font: inherit;
+    padding: 5px 10px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--bg);
+    color: var(--fg);
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  button:hover:not(:disabled) { background: var(--bg-alt); }
+  button:disabled { opacity: 0.5; cursor: default; }
+
+  #notice {
+    flex: 0 0 auto;
+    display: none;
+    padding: 8px 16px;
+    border-bottom: 1px solid var(--border);
+    background: var(--bg-alt);
+    color: var(--fg-muted);
+    font-size: 12.5px;
+  }
+  #notice.error { color: var(--error); }
+
+  .cols { flex: 1 1 auto; display: flex; min-height: 0; }
+  .refs {
+    flex: 0 0 260px;
+    border-right: 1px solid var(--border);
+    overflow: auto;
+    padding: 8px 0;
+  }
+  .refs .group {
+    padding: 8px 16px 4px;
+    color: var(--fg-muted);
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+  }
+  .ref {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 6px 16px;
+    cursor: pointer;
+  }
+  .ref:hover { background: var(--bg-alt); }
+  .ref.active { background: var(--bg-alt); box-shadow: inset 2px 0 0 var(--accent); }
+  .ref .sha { color: var(--fg-muted); font-size: 11.5px; }
+  .main { flex: 1 1 auto; overflow: auto; }
+
+  .prereq {
+    margin: 12px 16px;
+    padding: 10px 12px;
+    border: 1px solid color-mix(in srgb, var(--warn) 40%, transparent);
+    border-radius: 8px;
+    background: color-mix(in srgb, var(--warn) 8%, transparent);
+  }
+  .prereq h3 { margin: 0 0 6px; font-size: 12.5px; color: var(--warn); }
+  .prereq p { margin: 0 0 8px; color: var(--fg-muted); }
+  .prereq li { list-style: none; }
+  .prereq ul { margin: 0; padding: 0; }
+  /* A full sha and an absolute path are both longer than a narrow preview
+     pane; let them wrap rather than run out past the panel's edge. */
+  .prereq p, .prereq li, .prereq code { overflow-wrap: anywhere; word-break: break-word; }
+
+  /* Fixed layout: auto layout hands the surplus to every column equally, so
+     the subject — the only column that actually needs room — ends up wrapping
+     to three lines beside empty space. Pinning the three narrow columns gives
+     the rest to the subject. */
+  table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+  th:nth-child(1) { width: 92px; }
+  th:nth-child(3) { width: 150px; }
+  th:nth-child(4) { width: 132px; }
+  td.subject { overflow-wrap: anywhere; }
+  th, td {
+    text-align: left;
+    padding: 6px 16px;
+    border-bottom: 1px solid var(--border);
+    vertical-align: baseline;
+  }
+  th { color: var(--fg-muted); font-weight: 500; font-size: 11.5px; position: sticky; top: 0; background: var(--bg); }
+  td.sha { color: var(--fg-muted); white-space: nowrap; }
+  td.when { color: var(--fg-muted); white-space: nowrap; }
+  /* The subject takes the slack. The rule has to name the HEADER cell too:
+     with auto table layout the header row's widths win, so styling only the
+     body cell leaves the subject squeezed into a three-line column beside
+     empty space. */
+  .empty { padding: 32px 16px; color: var(--fg-muted); text-align: center; }
+  .empty strong { display: block; color: var(--fg); margin-bottom: 6px; font-size: 14px; }
+  .more { padding: 10px 16px; }
+</style>
+</head>
+<body>
+  <div class="header">
+    <div class="title">
+      <span class="name" id="name">…</span>
+      <span class="sub" id="sub"></span>
+    </div>
+    <span class="badge" id="badge" style="display:none"></span>
+  </div>
+  <div class="clone" id="clonebar" style="display:none">
+    <code class="mono" id="clonecmd"></code>
+    <button id="copy">Copy</button>
+    <button id="clone">Clone here</button>
+  </div>
+  <div id="notice"></div>
+  <div class="cols">
+    <div class="refs" id="refs"></div>
+    <div class="main" id="main"></div>
+  </div>
+
+<script>
+  const nameEl = document.getElementById("name");
+  const subEl = document.getElementById("sub");
+  const badgeEl = document.getElementById("badge");
+  const cloneBar = document.getElementById("clonebar");
+  const cloneCmdEl = document.getElementById("clonecmd");
+  const noticeEl = document.getElementById("notice");
+  const refsEl = document.getElementById("refs");
+  const mainEl = document.getElementById("main");
+
+  const FILE = fused.params.get("_file");
+
+  let OVERVIEW = null;
+  let currentRef = "";
+  let limit = 50;
+
+  function esc(s) {
+    return String(s === null || s === undefined ? "" : s)
+      .replace(/&/g, "&amp;").replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  }
+  function fmtBytes(n) {
+    if (n === null || n === undefined) return "";
+    if (n < 1024) return n + " B";
+    const units = ["KB", "MB", "GB", "TB"];
+    let v = n / 1024, i = 0;
+    while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }
+    return (v < 10 ? v.toFixed(1) : Math.round(v)) + " " + units[i];
+  }
+  function notify(msg, isError) {
+    noticeEl.textContent = msg;
+    noticeEl.className = isError ? "error" : "";
+    noticeEl.style.display = "block";
+  }
+  function clearNotice() { noticeEl.style.display = "none"; }
+
+  // Every reader refusal is a payload, not a throw — so an unreadable bundle
+  // renders an explanation here instead of the runtime's traceback overlay.
+  function renderRefusal(data) {
+    refsEl.innerHTML = "";
+    // Hide the whole ref column, not just its contents: an empty 260px panel
+    // beside the explanation reads as something that failed to load.
+    refsEl.style.display = "none";
+    cloneBar.style.display = "none";
+    badgeEl.style.display = "none";
+    mainEl.innerHTML =
+      '<div class="empty"><strong>' + esc(headlineFor(data.reason)) + "</strong>" +
+      esc(data.message || "") + "</div>";
+  }
+  function headlineFor(reason) {
+    switch (reason) {
+      case "not-a-bundle": return "Not a git bundle";
+      case "empty": return "Nothing in this file";
+      case "missing": return "File not found";
+      case "no-git": return "git isn't available";
+      case "timeout": return "git didn't answer in time";
+      case "prerequisites": return "Incomplete bundle";
+      default: return "Can't read this bundle";
+    }
+  }
+
+  function refGroups(refs) {
+    return [
+      ["Branches", refs.filter((r) => r.kind === "branch")],
+      ["Tags", refs.filter((r) => r.kind === "tag")],
+      ["Other", refs.filter((r) => r.kind !== "branch" && r.kind !== "tag")],
+    ].filter(([, list]) => list.length);
+  }
+
+  function renderRefs() {
+    const parts = [];
+    for (const [title, list] of refGroups(OVERVIEW.refs)) {
+      parts.push('<div class="group">' + esc(title) + "</div>");
+      for (const r of list) {
+        parts.push(
+          '<div class="ref' + (r.name === currentRef ? " active" : "") +
+          '" data-ref="' + esc(r.name) + '">' +
+          "<span>" + esc(r.short_name) + "</span>" +
+          '<span class="sha mono">' + esc(r.short_sha) + "</span></div>"
+        );
+      }
+    }
+    refsEl.innerHTML = parts.join("") ||
+      '<div class="group">This bundle carries no refs</div>';
+    for (const el of refsEl.querySelectorAll(".ref")) {
+      el.onclick = () => { limit = 50; selectRef(el.dataset.ref); };
+    }
+  }
+
+  function prereqHtml() {
+    if (OVERVIEW.complete) return "";
+    const rows = OVERVIEW.prerequisites.map(
+      (p) => '<li class="mono">' + esc(p.sha) + (p.note ? " " + esc(p.note) : "") + "</li>"
+    ).join("");
+    return '<div class="prereq"><h3>Needs commits it doesn\'t carry</h3><p>' +
+      esc(OVERVIEW.message) +
+      " Fetch it into a repository that already has them: <code class=\"mono\">git fetch " +
+      esc(OVERVIEW.file) + "</code></p><ul>" + rows + "</ul></div>";
+  }
+
+  function renderHeader() {
+    nameEl.textContent = OVERVIEW.name;
+    subEl.textContent = fmtBytes(OVERVIEW.size) + " · " + OVERVIEW.refs.length +
+      (OVERVIEW.refs.length === 1 ? " ref" : " refs");
+    badgeEl.style.display = "";
+    badgeEl.className = "badge " + (OVERVIEW.complete ? "ok" : "warn");
+    badgeEl.textContent = OVERVIEW.complete ? "Self-contained" : "Incomplete";
+    cloneCmdEl.textContent = OVERVIEW.clone_command;
+    cloneBar.style.display = "";
+    // A bundle that needs prerequisites cannot be cloned on its own; the reader
+    // refuses it, so don't offer the button as if it might work.
+    document.getElementById("clone").disabled = !OVERVIEW.complete;
+  }
+
+  async function selectRef(ref) {
+    currentRef = ref;
+    renderRefs();
+    mainEl.innerHTML = prereqHtml() + '<div class="empty">Reading history…</div>';
+    const data = await fused.runPython(
+      "./reader.py", { file: FILE, action: "history", ref, limit }, { key: null });
+    if (!data.ok) {
+      mainEl.innerHTML = prereqHtml() +
+        '<div class="empty"><strong>' + esc(headlineFor(data.reason)) + "</strong>" +
+        esc(data.message) + "</div>";
+      return;
+    }
+    const rows = data.commits.map((c) =>
+      "<tr>" +
+      '<td class="sha mono">' + esc(c.short) + "</td>" +
+      '<td class="subject">' + esc(c.subject) + "</td>" +
+      "<td>" + esc(c.author) + "</td>" +
+      '<td class="when" title="' + esc(c.date) + '">' + esc(c.relative) + "</td>" +
+      "</tr>"
+    ).join("");
+    mainEl.innerHTML = prereqHtml() +
+      "<table><thead><tr><th>Commit</th><th>Subject</th><th>Author</th><th>When</th></tr></thead>" +
+      "<tbody>" + rows + "</tbody></table>" +
+      (data.has_more ? '<div class="more"><button id="more">Show more</button></div>' : "");
+    const more = document.getElementById("more");
+    if (more) more.onclick = () => { limit = Math.min(limit * 2, data.max_limit); selectRef(ref); };
+  }
+
+  document.getElementById("copy").onclick = async () => {
+    try {
+      await navigator.clipboard.writeText(OVERVIEW.clone_command);
+      notify("Clone command copied.", false);
+    } catch {
+      notify("The browser blocked the copy — select the command and copy it manually.", true);
+    }
+  };
+
+  // A real clone, not just the command: git unpacks a local bundle in one
+  // synchronous shot, so it needs no job system — the button just waits.
+  document.getElementById("clone").onclick = async (e) => {
+    const btn = e.currentTarget;
+    btn.disabled = true;
+    notify("Cloning…", false);
+    try {
+      const data = await fused.runPython(
+        "./reader.py", { file: FILE, action: "clone" }, { key: null });
+      if (data.ok) {
+        // The clone consumed the name the header was offering, so re-read the
+        // overview before saying so — otherwise the command on screen still
+        // proposes a directory that now exists.
+        const fresh = await fused.runPython(
+          "./reader.py", { file: FILE, action: "overview" }, { key: null });
+        if (fresh.ok) { OVERVIEW = fresh; renderHeader(); }
+        notify("Cloned into " + data.dest, false);
+      } else {
+        notify(data.message, true);
+      }
+    } finally {
+      btn.disabled = !OVERVIEW || !OVERVIEW.complete;
+    }
+  };
+
+  async function load() {
+    clearNotice();
+    const data = await fused.runPython(
+      "./reader.py", { file: FILE, action: "overview" }, { key: null });
+    if (!data.ok) { renderRefusal(data); return; }
+    OVERVIEW = data;
+    renderHeader();
+    if (data.default_ref) {
+      await selectRef(data.default_ref);
+    } else {
+      renderRefs();
+      mainEl.innerHTML = prereqHtml() +
+        '<div class="empty"><strong>No refs</strong>This bundle carries no branches or tags.</div>';
+    }
+  }
+
+  load();
+</script>
+</body>
+</html>

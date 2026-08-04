@@ -70,7 +70,8 @@ _ICON_VARIANT_FOR_TOKEN = {
     ),
     # archives
     **dict.fromkeys(
-        "zip jar whl egg tar tgz tbz2 txz gz bz2 xz zst twbx tdsx".split(), "archive"
+        "zip jar whl egg tar tgz tbz2 txz gz bz2 xz zst twbx tdsx bundle".split(),
+        "archive",
     ),
     # databases
     **dict.fromkeys("sqlite sqlite3 db duckdb ddb".split(), "db"),
