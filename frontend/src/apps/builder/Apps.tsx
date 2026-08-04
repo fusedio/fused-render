@@ -14,6 +14,7 @@ import { useDeployEnabled } from "@platform/lib/prefs";
 import { navigateUrl } from "@platform/lib/router";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { AppPreviewCard } from "@apps/builder/AppPreviewCard";
+import { HomeHero } from "./HomeHero";
 import { NewAppPanel } from "./NewAppPanel";
 import { SkeletonLines } from "@platform/ui/Skeleton";
 
@@ -92,6 +93,10 @@ export default function Apps() {
             Every app detected in your workspace — search by name or narrow by tag.
           </p>
         </header>
+
+        {/* Same hero as Home: prompt composer that names, scaffolds, and lands
+            in the new app's claude chat. Creating from here refreshes the grid. */}
+        <HomeHero onCreated={() => setNonce((n) => n + 1)} />
 
         <div className="apps-toolbar">
           <div className="apps-search">
