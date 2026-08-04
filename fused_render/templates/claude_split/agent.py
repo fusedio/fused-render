@@ -35,9 +35,12 @@ Actions:
       -> {"text": ..., "done": bool, "session_id": ..., "error": ..., "tokens": N,
           "phase": ..., "message": <the run's first message, for re-attach>,
           "permissions": [{"id", "tool", "input", "decision", "scope"}, ...],
+          "app_state": [{"id", "reason", "created_at"}, ...]  (unanswered only),
           "mode": <the mode this run is RUNNING in, not the picker's>}
   main(action="decide", run_id=..., request_id=..., decision="allow"|"deny",
        scope="once"|"session")        -> {"decided": ..., "decision": ...}
+  main(action="app_state", run_id=..., request_id=..., state=<json string>)
+                                      -> {"answered": ...}
   main(action="sessions", file=...)   -> {"sessions": [...]}   (sidecar only)
   main(action="history", file=..., session_id=...) -> {"turns": [...]}
   main(action="cancel", run_id=...)   -> {"cancelled": ...}
@@ -120,6 +123,18 @@ _POSIX_CANDIDATES = ("~/.local/bin/claude", "/opt/homebrew/bin/claude",
 # an MCP tool as mcp__<server>__<tool>, so neither half may contain "__".
 PERMISSION_SERVER = "fused_approvals"
 PERMISSION_TOOL = "approve"
+# The same server's second tool, which the MODEL calls: "what is the app in the
+# left pane doing right now". Pre-allowed on the spawn line (see _start) —
+# carding a read of the page the user is already looking at would be a prompt
+# with no decision in it, once per edit.
+APP_STATE_TOOL = "app_state"
+# The delimiters the PAGE wraps its send-time snapshot in. Stripped from every
+# user-facing copy of a message (the run's `meta.json`, hence the sidecar
+# preview, the commit subject and a re-attach match — plus the restored
+# transcript in `_history`), because the user typed the message, not the block.
+# Duplicated in template.html, which writes it; a test asserts the two agree
+# (D146: a duplicated rule needs a test, not a comment).
+APP_STATE_TAG = "live-app-state"
 
 
 _DEFAULT_WAIT = 3600
@@ -247,6 +262,31 @@ def _system_prompt(file: str) -> str:
         "assets it directly references) unless the user explicitly asks for "
         "something broader. This is guidance, not a hard rule: follow "
         "explicit user instructions even when they go beyond the file."
+    )
+
+
+def _split_system_prompt() -> str:
+    """The DIRECTORY target's prompt, and it says one thing only: the app-state
+    tool exists.
+
+    A tool the model is never told about is a tool it never calls, and the
+    tool's own description is not enough on its own — nothing in an ordinary
+    session suggests that the page being edited can be read back. Deliberately
+    nothing else in here: the split view is a whole project and the file-scoping
+    prompt above is exactly what the directory branch of `_start` exists to
+    avoid (see the comment there).
+    """
+    tool = "mcp__%s__%s" % (PERMISSION_SERVER, APP_STATE_TOOL)
+    return (
+        "This session is a split view: the user is looking at this project's "
+        f"app rendered live beside the chat. The `{tool}` tool reports what "
+        "that page is doing right now — console errors, its URL params and an "
+        "outline of its DOM. Call it after changing anything that affects the "
+        "rendered page (the page reloads itself, so this is how you find out "
+        "whether the change worked), and whenever the user reports something "
+        "visibly wrong. The user's message may also arrive with a "
+        f"<{APP_STATE_TAG}> block: that is the same snapshot, taken the moment "
+        "they hit send, and it is stale as soon as you edit anything."
     )
 
 
@@ -389,6 +429,15 @@ def _perm_dir(run_dir: str) -> str:
     return os.path.join(run_dir, "perm")
 
 
+def _state_dir(run_dir: str) -> str:
+    """Where `app_state` requests park — a SIBLING of `perm/`, never inside it.
+
+    The page renders every request file in the perm dir as an approval card,
+    and a snapshot read is not something to click: sharing the directory would
+    put a card with no decision in it on screen once per edit."""
+    return os.path.join(run_dir, "appstate")
+
+
 def _within_our_tree(path: str) -> bool:
     """Whether `path` is our runs root or something under it — i.e. a
     directory we are responsible for, rather than the system's temp root."""
@@ -495,7 +544,9 @@ def _private_open(path: str):
 
 def _write_mcp_config(run_dir: str) -> str:
     """The one-server MCP config that makes the chat window the permission
-    prompt, written into the run dir. Returns its path (for --mcp-config).
+    prompt AND the app's own eyes (`app_state`), written into the run dir.
+    Returns its path (for --mcp-config). Each channel gets its own directory in
+    argv — see _state_dir for why they are not one.
 
     The server path comes off HERE, not a fresh `__file__` read: under the
     optional fused engine (D69) this module is `exec`'d into a namespace that
@@ -509,7 +560,7 @@ def _write_mcp_config(run_dir: str) -> str:
             # sys.executable, matching how the app spawns every other helper
             # (executor.py): in the packaged .app that is the bundled python.
             "command": sys.executable,
-            "args": [server, _perm_dir(run_dir)],
+            "args": [server, _perm_dir(run_dir), _state_dir(run_dir)],
             "env": {"FUSED_RENDER_PERMISSION_TIMEOUT": str(PERMISSION_WAIT)},
             # Hard per-call ceiling for this server, and a permission card is a
             # tool call that lasts as long as the user takes to look at it. Set
@@ -708,11 +759,101 @@ def _live_mode(meta: dict, permissions: list) -> str:
 
 def _deny_pending(run_dir: str, reason: str) -> None:
     """Release every unanswered request so the blocked claude subprocess stops
-    waiting on a window that is not coming back."""
+    waiting on a window that is not coming back.
+
+    Both kinds: an `app_state` read blocks the subprocess exactly like an
+    approval does, so releasing only the approvals leaves a cancelled run
+    parked for the app-state timeout with nobody left to answer it."""
     for perm in _permissions(run_dir):
         if not perm["decision"]:
             _write_decision(_perm_dir(run_dir), perm["id"],
                             {"decision": "deny", "reason": reason})
+    _expire_app_state(run_dir, reason)
+
+
+# --------------------------------------------------------- live app state
+# The split view's second channel: the agent asks the page what the app in the
+# left pane is doing (console errors, params, a DOM outline) through the same
+# request-file round trip approvals use. Requests land in `appstate/`, the page
+# answers them from its poll loop, and there is no card — this is a read of the
+# user's own screen for the agent they are already talking to.
+
+_APP_STATE_BLOCK = re.compile(
+    r"<%s>.*?</%s>\s*" % (APP_STATE_TAG, APP_STATE_TAG), re.DOTALL)
+
+
+def _strip_app_state(text: str) -> str:
+    """`text` without any pushed app-state block. Non-greedy and anchored on
+    the closing tag, so text that merely mentions the tag survives intact."""
+    return _APP_STATE_BLOCK.sub("", text or "").strip()
+
+
+def _app_state_requests(run_dir: str) -> list:
+    """The app-state requests still waiting for an answer.
+
+    UNLIKE `_permissions`, only the unanswered ones: there is no card to
+    rebuild, so a re-attaching page has nothing to learn from an answered
+    request — and replaying it would invite a second answer to a request whose
+    latch is already closed."""
+    state_dir = _state_dir(run_dir)
+    try:
+        names = sorted(n for n in os.listdir(state_dir) if n.endswith(".req.json"))
+    except OSError:
+        return []
+    out = []
+    for name in names:
+        try:
+            with open(os.path.join(state_dir, name), encoding="utf-8") as fh:
+                req = json.load(fh)
+        except (OSError, json.JSONDecodeError):
+            continue  # half-written; the next poll gets it
+        if not isinstance(req, dict) or _bad_id(str(req.get("id") or "")):
+            continue
+        if _read_decision(state_dir, req["id"]):
+            continue
+        out.append({"id": req["id"],
+                    "reason": str(req.get("reason") or ""),
+                    "created_at": req.get("created_at") or 0})
+    return out
+
+
+def _answer_app_state(run_id: str, request_id: str, state: str) -> dict:
+    """Hand the page's snapshot to the waiting tool call.
+
+    Same first-writer-wins latch as a decision (`_write_decision` writes the
+    `.res.json` either way), because the same two races apply: the server's own
+    timeout may have landed first, and a re-attaching page may answer twice.
+    """
+    run_dir = os.path.join(RUNS, run_id)
+    if _bad_id(run_id) or not os.path.isdir(run_dir):
+        return {"error": "unknown run_id"}
+    if _bad_id(request_id):
+        return {"error": "unknown app-state request"}
+    state_dir = _state_dir(run_dir)
+    if not os.path.isfile(os.path.join(state_dir, request_id + ".req.json")):
+        return {"error": "unknown app-state request"}
+    try:
+        snapshot = json.loads(state) if state else None
+    except (TypeError, ValueError):
+        snapshot = None
+    if isinstance(snapshot, dict):
+        payload = {"state": snapshot}
+    else:
+        # An empty snapshot would read as a page with nothing wrong with it,
+        # which is the one wrong answer here: say the read failed instead.
+        payload = {"error": "the window could not read the app's state"}
+    _write_decision(state_dir, request_id, payload)
+    return {"answered": request_id}
+
+
+def _expire_app_state(run_dir: str, reason: str) -> None:
+    """Release every unanswered app-state request. Called when the run is
+    cancelled and when a poll first sees it finished: the page's poll loop stops
+    with the run, so from that moment nothing will ever answer one."""
+    for req in _app_state_requests(run_dir):
+        _write_decision(_state_dir(run_dir), req["id"],
+                        {"error": "the reply ended before the window answered "
+                                  "(%s)" % reason})
 
 
 # ----------------------------------------------------------------- start/poll
@@ -743,6 +884,7 @@ def _start(file: str, message: str, session_id: str, model: str,
     run_dir = os.path.join(RUNS, run_id)
     _private_dir(run_dir)
     _private_dir(_perm_dir(run_dir))
+    _private_dir(_state_dir(run_dir))
 
     # An unknown mode falls back to the strictest of the three rather than
     # erroring: a mangled param must not quietly buy more auto-approval than
@@ -778,13 +920,26 @@ def _start(file: str, message: str, session_id: str, model: str,
            # ExitPlanMode, which the CLI otherwise disables in headless mode.
            # This chat renders neither a question picker nor a plan dialog, so
            # keep them off: the change is about tool approvals and nothing else.
-           "--disallowed-tools", "AskUserQuestion,ExitPlanMode"]
-    # A FILE target gets the scoping system prompt. A DIRECTORY target (the
-    # claude_split app template) deliberately does NOT: the session should be
-    # plain Claude Code in that project — the user's own system prompt,
-    # CLAUDE.md, skills and tools — with cwd (_workdir) as the only scoping.
-    if not os.path.isdir(file):
-        cmd += ["--append-system-prompt", _system_prompt(file)]
+           "--disallowed-tools", "AskUserQuestion,ExitPlanMode",
+           # Reading the app the user is looking at is pre-allowed, and it is
+           # the ONLY thing that is: an MCP tool otherwise raises a card, so
+           # every app-state read would put a prompt on screen with no decision
+           # in it — for a read of the user's own screen, by the agent they are
+           # already talking to. Narrow by construction (one fully-qualified
+           # tool name), and the prompt bridge stays wired for everything else.
+           "--allowed-tools", f"mcp__{PERMISSION_SERVER}__{APP_STATE_TOOL}"]
+    # BOTH targets get an --append-system-prompt here, and they get different
+    # ones. A FILE target gets the scoping prompt. A DIRECTORY target (the
+    # claude_split app template) still does NOT get that one — the session
+    # should be plain Claude Code in that project, with the user's own system
+    # prompt, CLAUDE.md, skills and tools, and cwd (_workdir) as the only
+    # scoping — but it does get a narrow prompt of its own, whose entire job is
+    # to name the app_state tool. That is the exception to the rule this comment
+    # used to state absolutely: an un-announced tool does not get called, and
+    # the split view is the one target where seeing the running app is the point.
+    cmd += ["--append-system-prompt",
+            _split_system_prompt() if os.path.isdir(file)
+            else _system_prompt(file)]
     if cli_mode:
         cmd += ["--permission-mode", cli_mode]
     if session_id:
@@ -800,8 +955,14 @@ def _start(file: str, message: str, session_id: str, model: str,
     # because nothing else can reconstruct it: the picker's URL param is what
     # the *next* turn will use, so reading that back mid-turn describes a
     # session that does not exist yet. See `_live_mode`.
+    # `message` here is the USER-FACING one: the page prepends a live-app-state
+    # block for the model, and everything fed from meta.json is a copy of what
+    # the user said — the sidecar preview, the commit subject, and the message a
+    # re-attaching page compares against the bubble on screen (which shows the
+    # typed text only, so an unstripped copy silently stopped matching). Stripped
+    # here, once, rather than at each of those three readers.
     with _private_open(os.path.join(run_dir, "meta.json")) as f:
-        json.dump({"file": file, "message": message,
+        json.dump({"file": file, "message": _strip_app_state(message),
                    "resumed_from": session_id, "mode": mode}, f)
 
     stdin_path = os.path.join(run_dir, "stdin.jsonl")
@@ -916,7 +1077,7 @@ def _poll(run_id: str) -> dict:
     run_dir = os.path.join(RUNS, run_id)
     if _bad_id(run_id) or not os.path.isdir(run_dir):
         return {"text": "", "done": True, "session_id": "", "error": "unknown run_id",
-                "permissions": []}
+                "permissions": [], "app_state": []}
 
     text_parts = []
     result_text = None
@@ -1013,6 +1174,17 @@ def _poll(run_id: str) -> dict:
         # doing: the run is not thinking, it is waiting on the user.
         phase = "awaiting"
 
+    # App-state reads, same shape but a different audience: nobody is asked
+    # anything, so they never set `phase`. Released once the run is over for the
+    # same reason a leftover card is expired — the page's poll loop stops with
+    # the run, so from here on no answer can arrive and the blocked subprocess
+    # (if it somehow outlives us) would wait out the full app-state timeout.
+    if done:
+        _expire_app_state(run_dir, "the run finished")
+        app_state = []
+    else:
+        app_state = _app_state_requests(run_dir)
+
     # The run's own first message rides back on every poll so a re-attaching
     # page (mode switch / reload killed the poll loop, subprocess kept going)
     # can restore the user turn it never saw.
@@ -1065,7 +1237,7 @@ def _poll(run_id: str) -> dict:
     return {"text": text, "done": done, "session_id": new_session, "error": error,
             "tokens": tokens_done + tokens_current, "phase": phase,
             "message": meta.get("message", ""), "permissions": permissions,
-            "mode": _live_mode(meta, permissions)}
+            "app_state": app_state, "mode": _live_mode(meta, permissions)}
 
 
 # ------------------------------------------------------- sessions & history
@@ -1113,6 +1285,11 @@ def _history(file: str, session_id: str) -> dict:
             else:
                 text = "\n".join(b.get("text", "") for b in content
                                  if isinstance(b, dict) and b.get("type") == "text")
+            # The transcript holds what claude was SENT, so a pushed app-state
+            # block comes back on every restore. The user never typed it and
+            # never saw it — showing them a screenful of JSON they don't
+            # recognise is the whole reason it is stripped here.
+            text = _strip_app_state(text)
             if text.strip() and not text.startswith(("<local-command", "<command-name")):
                 turns.append({"role": "user", "text": text})
         elif role == "assistant" and isinstance(content, list):
@@ -1168,7 +1345,8 @@ def _cancel(run_id: str) -> dict:
 def main(action: str = "start", file: str = "", message: str = "",
          session_id: str = "", model: str = "", effort: str = "",
          run_id: str = "", request_id: str = "", decision: str = "",
-         scope: str = "once", permission_mode: str = "", mode: str = "") -> dict:
+         scope: str = "once", permission_mode: str = "", mode: str = "",
+         state: str = "") -> dict:
     if action == "start":
         if not file:
             return {"error": "missing target file (no _file param?)"}
@@ -1179,6 +1357,11 @@ def main(action: str = "start", file: str = "", message: str = "",
         return _poll(run_id)
     if action == "decide":
         return _decide(run_id, request_id, decision, scope, mode)
+    if action == "app_state":
+        # `state` arrives as a JSON string, not a nested object: params reach
+        # main() through the URL/param binder (str-shaped), and the snapshot is
+        # the page's own structure — nothing here reads inside it.
+        return _answer_app_state(run_id, request_id, state)
     if action == "sessions":
         if not file:
             return {"error": "missing target file (no _file param?)"}
