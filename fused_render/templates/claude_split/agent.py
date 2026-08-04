@@ -90,6 +90,27 @@ def _runs_root() -> str:
 
 RUNS = _runs_root()
 
+# Where annotation screenshots land: a SIBLING of `runs`, not a child of a run
+# dir. The ordering is what forces it — annotations are captured and uploaded as
+# part of composing the outgoing message, and the run dir does not exist until
+# `_start` runs, which is strictly after. A per-run directory would mean either
+# writing the crops somewhere else first and moving them, or splitting `_start`
+# in two; a stable directory the page can ask for at any time is neither.
+#
+# Under our own 0700 root (never the user's project — a screenshot is not their
+# file), so the same privacy argument as the run dir covers it: another local
+# account cannot read the pixels of the app on this user's screen.
+SHOTS = os.path.join(os.path.dirname(RUNS), "shots")
+
+# How long a crop is kept, and how many are kept at all. Both are cleanup, not
+# a quota: the page names the file it writes and the ONLY reader is the agent
+# reading a path out of one turn's message, so a crop stops mattering when its
+# conversation does. The TTL is generously longer than a session anyone would
+# keep scrolling back through, and the count is the backstop for a machine that
+# never idles long enough for the TTL to fire.
+SHOTS_TTL = 12 * 3600
+SHOTS_KEEP = 200
+
 # Claude Code's own data dir, and it must be the SAME one the CLI itself uses —
 # reading the wrong dir loses history and resume. CLAUDE_CONFIG_DIR wins where
 # it is set, which now means only where the user set it: the supervisor no
@@ -542,6 +563,88 @@ def _private_open(path: str):
         "w", encoding="utf-8")
 
 
+# ---------------------------------------------------- annotation screenshots
+
+def _read_rule(path: str) -> str:
+    """A `Read(...)` permission rule scoped to everything under `path`.
+
+    The DOUBLE slash is load-bearing and is the whole reason this is a function
+    with a comment rather than an f-string at the call site: the CLI reads a
+    rule path as relative unless it starts with `//`, so `Read(/tmp/x/**)`
+    silently matches nothing and every crop raises a card. Verified against
+    claude 2.1.221 — `Read(//<abs>/**)` allows a read under it and a sibling
+    directory is still refused.
+
+    The rule has to name the path in the SAME form the agent will be handed
+    (this is the dir string the page puts in the message), because the CLI
+    matches the text, not the resolved inode: a rule spelled with macOS'
+    `/private/var/...` does not match a read of `/var/...` even though they are
+    one directory. `tempfile.gettempdir()` is where both come from, so they
+    agree by construction."""
+    return "Read(//%s/**)" % path.replace("\\", "/").lstrip("/")
+
+
+def _prune_shots() -> None:
+    """Drop crops nobody will read again. Best-effort throughout: this is
+    housekeeping on a temp directory, and no failure here is worth refusing the
+    user a screenshot over."""
+    try:
+        names = os.listdir(SHOTS)
+    except OSError:
+        return
+    now = time.time()
+    aged = []
+    for name in names:
+        path = os.path.join(SHOTS, name)
+        try:
+            mtime = os.lstat(path).st_mtime
+        except OSError:
+            continue
+        aged.append((mtime, path))
+    stale = [p for m, p in aged if now - m > SHOTS_TTL]
+    # Oldest first, so what survives the count cap is the recent conversation.
+    aged.sort()
+    excess = [p for _m, p in aged[:max(0, len(aged) - SHOTS_KEEP)]]
+    for path in set(stale) | set(excess):
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+
+
+def _shots_dir() -> dict:
+    """Ensure the screenshot directory exists and hand its path to the page.
+
+    Unlike a run dir this one is SHARED and long-lived, so an existing directory
+    is adopted rather than refused — but only after `_require_private` vouches
+    for it, which is the same check `_private_dir` runs on the parents it did not
+    create. A directory another account planted here would otherwise let them
+    read every crop, and the crops are pictures of the user's screen.
+
+    Two failure shapes, deliberately different:
+
+      a REFUSAL (`_require_private` raising) propagates. Somebody else's
+        directory is here, and that is worth failing loudly over — an attacker
+        who plants it can deny the user screenshots, which is not a disclosure.
+      an ordinary OSError becomes an error DICT. A full disk or a file in the way
+        means no screenshots, and the page degrades to sending the annotations
+        without them. It must never mean no message.
+    """
+    if os.path.isdir(SHOTS):
+        _require_private(SHOTS)
+    else:
+        try:
+            _private_dir(SHOTS)
+        except FileExistsError:
+            # Another page asked at the same moment. Theirs is fine if it is
+            # ours; _require_private is what decides that (and raises if not).
+            _require_private(SHOTS)
+        except OSError as e:
+            return {"error": "could not prepare the screenshot directory: %s" % e}
+    _prune_shots()
+    return {"dir": SHOTS}
+
+
 def _write_mcp_config(run_dir: str) -> str:
     """The one-server MCP config that makes the chat window the permission
     prompt AND the app's own eyes (`app_state`), written into the run dir.
@@ -921,13 +1024,24 @@ def _start(file: str, message: str, session_id: str, model: str,
            # This chat renders neither a question picker nor a plan dialog, so
            # keep them off: the change is about tool approvals and nothing else.
            "--disallowed-tools", "AskUserQuestion,ExitPlanMode",
-           # Reading the app the user is looking at is pre-allowed, and it is
-           # the ONLY thing that is: an MCP tool otherwise raises a card, so
-           # every app-state read would put a prompt on screen with no decision
-           # in it — for a read of the user's own screen, by the agent they are
-           # already talking to. Narrow by construction (one fully-qualified
-           # tool name), and the prompt bridge stays wired for everything else.
-           "--allowed-tools", f"mcp__{PERMISSION_SERVER}__{APP_STATE_TOOL}"]
+           # Two pre-allowances, and they are the only ones — everything else
+           # still raises a card. Both are the same thing in different clothes:
+           # looking at the app the user is looking at.
+           #
+           #   the app_state tool — an MCP tool otherwise raises a card, so every
+           #     app-state read would put a prompt on screen with no decision in
+           #     it, for a read of the user's own screen by the agent they are
+           #     already talking to.
+           #   Read of the SHOTS dir — an annotation carries the path of a PNG
+           #     crop of the element the user pointed at. The user attached it
+           #     deliberately; carding it would make them approve their own
+           #     screenshot. Scoped to that one directory, which holds nothing
+           #     else and is not the user's project.
+           #
+           # Narrow by construction: one fully-qualified tool name and one
+           # directory, and the prompt bridge stays wired for everything else.
+           "--allowed-tools",
+           f"mcp__{PERMISSION_SERVER}__{APP_STATE_TOOL}," + _read_rule(SHOTS)]
     # BOTH targets get an --append-system-prompt here, and they get different
     # ones. A FILE target gets the scoping prompt. A DIRECTORY target (the
     # claude_split app template) still does NOT get that one — the session
@@ -1370,6 +1484,10 @@ def main(action: str = "start", file: str = "", message: str = "",
         if not file:
             return {"error": "missing target file (no _file param?)"}
         return _history(file, session_id)
+    if action == "shots_dir":
+        # Asked for by the page BEFORE it composes a message, because that is
+        # when it has crops to upload — see SHOTS for why this is not a run dir.
+        return _shots_dir()
     if action == "cancel":
         return _cancel(run_id)
     return {"error": f"unknown action: {action}"}

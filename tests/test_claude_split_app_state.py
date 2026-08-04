@@ -336,7 +336,11 @@ def test_reading_the_users_own_screen_does_not_raise_a_card(agent, tmp_path,
     project.mkdir()
     cmd, _run_dir = _spawn(agent, monkeypatch, project)
     tool = "mcp__%s__%s" % (agent.PERMISSION_SERVER, agent.APP_STATE_TOOL)
-    assert cmd[cmd.index("--allowed-tools") + 1] == tool
+    allowed = cmd[cmd.index("--allowed-tools") + 1].split(",")
+    assert tool in allowed
+    # The only OTHER pre-allowance is reading an annotation's screenshot, and it
+    # is scoped to the one directory those live in (test_claude_split_shots.py).
+    assert allowed == [tool, agent._read_rule(agent.SHOTS)]
     # The bridge itself stays wired: everything else still has to be answerable.
     assert "--permission-prompt-tool" in cmd
 
