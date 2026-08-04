@@ -8,6 +8,9 @@ a whole app to observe one `except OSError`. They were uncovered while the code
 lived in the route handler, for exactly that reason.
 """
 import os
+import time
+
+import pytest
 
 from fused_render import app_listing
 
@@ -93,16 +96,36 @@ def test_recency_of_a_directory_that_is_not_there_is_none(tmp_path):
 def test_a_child_that_vanishes_mid_scan_does_not_lose_the_folder(tmp_path,
                                                                 monkeypatch):
     """The documented racing-delete case: a file listed by scandir is gone by the
-    time it is stat'd. That child contributes nothing and the folder still
-    reports the newest time among what survived — the alternative, letting the
-    OSError out, would drop the app from the listing entirely."""
-    (tmp_path / "keep.html").write_text("<html></html>", encoding="utf-8")
+    time it is stat'd. That child contributes nothing, and the scan CONTINUES —
+    letting the OSError out instead would abandon the remaining children and
+    report the folder as last touched whenever its own mtime says.
+
+    Two details are what keep this from asserting nothing, both learned the hard
+    way (the first version of this test passed with the per-child handler
+    deleted):
+
+    * `keep.html` is stamped in the FUTURE, so it is strictly newer than the
+      directory's own mtime. Against a sentinel older than the directory, the
+      assertion is satisfied by the directory alone — which is precisely what
+      the outer handler falls back to, so removing the inner one changes
+      nothing.
+    * the vanishing child is scanned FIRST. `os.scandir` order is arbitrary; if
+      the survivor came first its mtime would already be in `latest` when the
+      exception escaped, and the outer handler would return the right answer for
+      the wrong reason.
+    """
+    keep = tmp_path / "keep.html"
+    keep.write_text("<html></html>", encoding="utf-8")
     (tmp_path / "racing.html").write_text("<html></html>", encoding="utf-8")
-    os.utime(tmp_path / "keep.html", (10_000, 10_000))
+    future = time.time() + 10_000
+    os.utime(keep, (future, future))
 
     real_scandir = os.scandir
 
     class _Vanishing:
+        """A DirEntry whose stat fails, standing in for a file deleted between
+        the readdir that listed it and the stat that reads it."""
+
         def __init__(self, entry):
             self._entry = entry
             self.name = entry.name
@@ -117,7 +140,10 @@ def test_a_child_that_vanishes_mid_scan_does_not_lose_the_folder(tmp_path,
             self._it = real_scandir(path)
 
         def __enter__(self):
-            return (_Vanishing(e) for e in self._it.__enter__())
+            entries = [_Vanishing(e) for e in self._it.__enter__()]
+            # Vanished first, survivors after — see the docstring.
+            entries.sort(key=lambda e: e.name != "racing.html")
+            return iter(entries)
 
         def __exit__(self, *exc):
             return self._it.__exit__(*exc)
@@ -126,7 +152,5 @@ def test_a_child_that_vanishes_mid_scan_does_not_lose_the_folder(tmp_path,
 
     updated = app_listing.dir_updated_at(str(tmp_path))
 
-    assert updated is not None
-    # The surviving child's mtime is in the running, and the vanished one did not
-    # take the answer down with it.
-    assert updated >= 10_000
+    # The survivor's mtime, reached only by continuing past the vanished child.
+    assert updated == pytest.approx(future, abs=1)
