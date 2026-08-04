@@ -1967,6 +1967,21 @@ def test_drive_oauth_cancel_terminates_the_child(client, rcd, monkeypatch):
     assert not any(c[0] == "config/create" for c in rcd.calls)
 
 
+def test_drive_oauth_cancel_after_success_reports_canceled_false(client, rcd, monkeypatch):
+    """The race the client reconciles against: cancel arriving after the
+    round-trip already landed. The server must report canceled=false (nothing
+    was live to kill) while status still says ok — otherwise the UI would
+    discard a remote that now exists and tell the user nothing."""
+    _drive_ready(monkeypatch, rcd)
+    _spawn_python(monkeypatch, f'print("{AUTHORIZE_OK}")')
+    client.post("/api/mounts/remotes/oauth", json={"name": "gdrive"}, headers=FUSED)
+    assert _wait_oauth(client)["ok"] is True
+
+    r = client.post("/api/mounts/remotes/oauth/cancel", headers=FUSED)
+    assert r.status_code == 200 and r.json()["canceled"] is False
+    assert client.get("/api/mounts/remotes/oauth/status").json()["ok"] is True
+
+
 def test_drive_oauth_cancel_with_nothing_in_flight_is_a_no_op(client):
     r = client.post("/api/mounts/remotes/oauth/cancel", headers=FUSED)
     assert r.status_code == 200 and r.json()["canceled"] is False

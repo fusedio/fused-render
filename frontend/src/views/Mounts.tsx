@@ -19,12 +19,15 @@ import {
   startRemoteOAuth,
 } from "../lib/api";
 import type {
+  DriveOAuthStatus,
   Mount,
   MountsResult,
   MountUploads,
   RcloneRemote,
   RemoteSuggestion,
 } from "../lib/api";
+import { oauthCancelOutcome, oauthTick } from "../lib/drive-oauth";
+import type { OAuthDecision } from "../lib/drive-oauth";
 import { useRefreshOnReturn } from "../lib/hooks";
 import { navigate } from "../lib/router";
 import { hasDrainingUploads, uploadNotice } from "../lib/uploads";
@@ -693,6 +696,11 @@ function DriveSignIn({
   const [connecting, setConnecting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const timer = useRef<number | null>(null);
+  // Bounds on the poll, so a status endpoint that stops answering ends the
+  // wait instead of leaving the modal on "Waiting…" forever (the server's own
+  // timeout can't rescue us — reading it needs the fetch that is failing).
+  const failures = useRef(0);
+  const startedAt = useRef(0);
 
   const stopPolling = () => {
     if (timer.current !== null) {
@@ -709,6 +717,24 @@ function DriveSignIn({
     setError(err);
   };
 
+  // Carry out a decision from lib/drive-oauth.ts (which owns the "when do we
+  // stop waiting" rules and is tested there).
+  const apply = (decision: OAuthDecision) => {
+    switch (decision.kind) {
+      case "wait":
+        return;
+      case "connected":
+        finish(null);
+        onConnected();
+        return;
+      case "cancelled":
+        finish(null);
+        return;
+      case "failed":
+        finish(decision.message);
+    }
+  };
+
   const trimmed = name.trim();
   const collides = taken.has(trimmed);
   const nameError = !trimmed
@@ -723,6 +749,8 @@ function DriveSignIn({
     setError(null);
     setConnecting(true);
     onBusyChange?.(true);
+    failures.current = 0;
+    startedAt.current = Date.now();
     try {
       await startRemoteOAuth(trimmed, replace);
     } catch (e) {
@@ -731,33 +759,50 @@ function DriveSignIn({
     }
     stopPolling();
     timer.current = window.setInterval(async () => {
-      let status;
+      let status: DriveOAuthStatus | null = null;
       try {
         status = await getRemoteOAuthStatus();
+        failures.current = 0;
       } catch {
-        return; // transient (server restart, network blip) — keep polling
+        failures.current++; // a null status; oauthTick decides when that's fatal
       }
       if (timer.current === null) return; // canceled while the fetch was in flight
-      if (status.in_flight) return;
-      // in_flight has dropped: either the remote exists now, or the attempt
-      // failed — including the child that produced no token at all, whose
-      // message already says to try again.
-      if (status.ok) {
-        finish(null);
-        onConnected();
-      } else {
-        finish(status.error ?? "The Google sign-in did not complete. Try again.");
-      }
+      apply(
+        oauthTick(status, {
+          consecutiveFailures: failures.current,
+          elapsedMs: Date.now() - startedAt.current,
+        })
+      );
     }, OAUTH_POLL_MS);
   };
 
   const cancel = async () => {
-    finish(null);
+    // Stop polling first so an in-flight tick can't race this, but do NOT
+    // report "ready" until the server confirms the child is gone: returning to
+    // an enabled button while the child still holds port 53682 means the next
+    // click 409s on a sign-in the user believes they cancelled.
+    stopPolling();
+    let canceled = false;
     try {
-      await cancelRemoteOAuth();
+      ({ canceled } = await cancelRemoteOAuth());
     } catch {
-      // Best-effort: the child is killed by its own timeout regardless.
+      // Unreachable server: the child is killed by its own timeout regardless.
+      finish(null);
+      return;
     }
+    // `canceled: false` is not "nothing happened" — it usually means the
+    // sign-in COMPLETED in the gap before the click landed, so the result is
+    // reconciled rather than discarded (lib/account.ts does the same, for the
+    // same reason).
+    let status: DriveOAuthStatus | null = null;
+    if (!canceled) {
+      try {
+        status = await getRemoteOAuthStatus();
+      } catch {
+        status = null;
+      }
+    }
+    apply(oauthCancelOutcome(canceled, status));
   };
 
   return (
