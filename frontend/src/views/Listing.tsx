@@ -20,13 +20,16 @@ import {
   deleteEntry,
   renameEntry,
   copyEntry,
+  compressEntry,
+  gitRepoInfo,
   statPath,
 } from "../lib/api";
-import type { FsEntry, WalkEntry } from "../lib/api";
+import type { ArchiveFormat, FsEntry, WalkEntry } from "../lib/api";
 import {
   dirname,
   normDir,
   join,
+  freeArchivePath,
   freeDuplicatePath,
   freePastePath,
   copyToClipboard,
@@ -36,6 +39,7 @@ import {
   trashEntry,
   resolveOpenWithModes,
   buildOpenWithItems,
+  buildCompressItems,
   friendlyFsError,
   claudeDeepLink,
 } from "../lib/fs-actions";
@@ -1688,6 +1692,37 @@ export default function Listing({
     });
   };
 
+  // Compress a folder into a sibling archive. In-flight guard for the same
+  // reason Duplicate has one: two quick picks would race freeArchivePath to the
+  // same free name and 409 the second. The new archive is selected on success,
+  // matching what Duplicate does with its copy.
+  const compressInFlight = useRef(false);
+  const doCompress = (row: RowCtx, format: ArchiveFormat, ext: string) => {
+    if (compressInFlight.current) return;
+    compressInFlight.current = true;
+    run(async () => {
+      const dst = await freeArchivePath(row.parentDir, row.name, ext);
+      await compressEntry(row.path, format, dst);
+      pendingSelectRef.current = dst;
+    }, { verb: "compress", name: row.name }).finally(() => {
+      compressInFlight.current = false;
+    });
+  };
+
+  // Lazy loader for the Compress submenu. The git-repo probe is a subprocess on
+  // the server, so it runs here — once, on hover — rather than on every
+  // right-click; a failed probe just drops the git entries (fail closed, like
+  // the Open With condition gate).
+  const loadCompress = (row: RowCtx) => async (): Promise<MenuEntry[]> => {
+    let isRepoRoot = false;
+    try {
+      isRepoRoot = (await gitRepoInfo(row.path)).is_repo_root;
+    } catch {
+      isRepoRoot = false;
+    }
+    return buildCompressItems(isRepoRoot, (format, ext) => doCompress(row, format, ext));
+  };
+
   const doReveal = (path: string) => {
     revealPath(path).catch((e) =>
       pushToast({ msg: friendlyFsError(e, { verb: "reveal", name: basename(path) }), tone: "error" })
@@ -1916,6 +1951,11 @@ export default function Listing({
       "separator",
       { label: "Rename…", icon: MenuIcons.rename, onClick: () => startRename(row) },
       { label: "Duplicate", icon: MenuIcons.duplicate, onClick: () => doDuplicate([row]) },
+      // Folders only, in Finder's position (after Duplicate, before Cut/Copy).
+      // Not on the multi-select or background menus: one archive per folder.
+      ...(row.isDir
+        ? [{ label: "Compress", icon: MenuIcons.compress, submenu: loadCompress(row) } as MenuEntry]
+        : []),
       "separator",
       { label: "Cut", icon: MenuIcons.cut, onClick: () => setClipboard({ paths: [row.path], op: "cut" }) },
       { label: "Copy", icon: MenuIcons.copy, onClick: () => setClipboard({ paths: [row.path], op: "copy" }) },
