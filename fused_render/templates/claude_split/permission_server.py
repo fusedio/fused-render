@@ -1,4 +1,4 @@
-"""Minimal stdio MCP server whose one tool is "ask the browser".
+"""Minimal stdio MCP server whose tools are "ask the browser" and "read the page".
 
 Claude Code runs headless in this template (`claude -p`), so the CLI has no
 terminal to put a permission prompt on: anything the session's rules don't
@@ -9,9 +9,19 @@ prompting, and this file is that tool. Each request is written to a file in the
 run's `perm/` directory and the call blocks until `agent.py` drops a decision
 next to it — that decision being the user's click in the chat UI.
 
+The second tool is the same trick pointed the other way. This template is the
+SPLIT view: the left pane renders the app the user is looking at, and the agent
+edits it blind — after an edit it cannot see whether the page came back or
+threw. `app_state` parks a request the same way, and the page answers it with a
+snapshot of that iframe (console errors, params, a bounded DOM outline). It is
+a read of the user's own screen for the agent they are already talking to, so
+it raises no card; `agent.py` pre-allows it.
+
 Spawned by `claude`, never by the app: stdlib only, no `fused_render` import,
-no assumption about cwd. The perm directory arrives as argv[1] (a tmp path, not
-a secret).
+no assumption about cwd. Two directories arrive as argv (tmp paths, not
+secrets): argv[1] holds the permission round trip, argv[2] the app-state one.
+Separate directories on purpose — the page renders every file in the perm dir
+as an approval card, and a snapshot request is not something to click.
 
 Wire contract (Claude Code CLI, verified against 2.1.220):
 
@@ -37,6 +47,7 @@ import time
 PROTOCOL_VERSION = "2025-06-18"
 SERVER_NAME = "fused_approvals"
 TOOL_NAME = "approve"
+APP_STATE_TOOL = "app_state"
 
 # How long a request may sit unanswered before it denies itself. The chat frame
 # can die (mode switch, reload) while a card is on screen; without a ceiling the
@@ -45,6 +56,13 @@ TOOL_NAME = "approve"
 # the run dir's `timeout` in mcp.json is set above this so THIS deny wins and
 # the user gets a sentence instead of an MCP timeout error.
 WAIT_TIMEOUT = float(os.environ.get("FUSED_RENDER_PERMISSION_TIMEOUT", "3600"))
+# The app-state wait is a different order of magnitude because there is no human
+# in it: the page's poll loop answers within a tick (400 ms) for as long as the
+# turn is running, so anything past a few seconds means the chat frame is gone
+# (mode switch, reload) and no amount of waiting will produce an answer. Kept
+# far below the permission wait, since the per-server MCP `timeout` in the run
+# dir's mcp.json is sized for that one.
+APP_STATE_TIMEOUT = float(os.environ.get("FUSED_RENDER_APP_STATE_TIMEOUT", "20"))
 POLL_INTERVAL = 0.15
 # How long a decision file that exists but has not parsed is treated as a write
 # in flight rather than as no answer. Mirrors agent.py's DECISION_WRITE_WINDOW.
@@ -54,6 +72,7 @@ DECISION_WRITE_WINDOW = 2.0
 SWITCHABLE_MODES = frozenset({"acceptEdits", "auto"})
 
 PERM_DIR = os.path.abspath(sys.argv[1]) if len(sys.argv) > 1 else ""
+STATE_DIR = os.path.abspath(sys.argv[2]) if len(sys.argv) > 2 else ""
 
 _stdout_lock = threading.Lock()
 _id_lock = threading.Lock()
@@ -119,31 +138,35 @@ def _await_written(res_path: str, window: float) -> dict:
         time.sleep(POLL_INTERVAL)
 
 
-def _await_decision(req_id: str) -> dict:
-    """Block until agent.py writes the decision file, or we give up."""
-    res_path = os.path.join(PERM_DIR, req_id + ".res.json")
-    timeout = {"decision": "deny", "reason": "timeout"}
-    deadline = time.monotonic() + WAIT_TIMEOUT
+def _await_answer(res_path: str, timeout: float, fallback: dict) -> dict:
+    """Block until the page writes its answer next to the request, or give up.
+
+    ONE mechanism for both tools — an approval and an app-state read are the
+    same round trip with different payloads, and a second copy of this is a
+    second place for the latch rules below to be got wrong.
+
+    `fallback` is what the caller gets when nobody answered, and it is also
+    RECORDED, so the request stops reading as "still waiting for you" on disk.
+    Same first-writer-wins rule agent.py uses: if the create loses, an answer
+    landed in this very instant and that answer is the truth — waited out
+    rather than guessed, because its JSON may still be in flight.
+    """
+    deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        decision = _read_decision(res_path)
-        if decision:
-            return decision
+        answer = _read_decision(res_path)
+        if answer:
+            return answer
         time.sleep(POLL_INTERVAL)
 
-    # Nobody answered. Record the deny rather than just returning it, so the
-    # request stops reading as "still waiting for you" on disk. Same
-    # first-writer-wins rule agent.py uses: if the create loses, a click landed
-    # in this very instant and that click is the answer — waited out rather
-    # than guessed, because its JSON may still be in flight.
     try:
         fd = os.open(res_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     except FileExistsError:
-        return _await_written(res_path, DECISION_WRITE_WINDOW) or timeout
+        return _await_written(res_path, DECISION_WRITE_WINDOW) or fallback
     except OSError:
-        return timeout
+        return fallback
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            json.dump(timeout, fh)
+            json.dump(fallback, fh)
     except OSError:
         # Deliberately NOT the unlink agent.py's writer does on the same
         # failure. There the write is the only thing that happened and nobody
@@ -154,7 +177,13 @@ def _await_decision(req_id: str) -> dict:
         # claim costs a card that ends up reading "could not record that
         # decision", which is the truth.
         pass
-    return timeout
+    return fallback
+
+
+def _await_decision(req_id: str) -> dict:
+    """Block until agent.py writes the decision file, or we give up."""
+    return _await_answer(os.path.join(PERM_DIR, req_id + ".res.json"),
+                         WAIT_TIMEOUT, {"decision": "deny", "reason": "timeout"})
 
 
 def _permission_result(tool_name: str, tool_input: dict, decision: dict) -> dict:
@@ -207,6 +236,14 @@ def _permission_result(tool_name: str, tool_input: dict, decision: dict) -> dict
             "decisionClassification": "user_reject"}
 
 
+def _text(payload: dict) -> dict:
+    """A tool result the way both tools return one: a single text block whose
+    text is JSON. Anything else and the CLI raises "Permission prompt tool
+    returned an invalid result"; the app-state tool matches it because the
+    model reads that text and JSON is the shape it parses best."""
+    return {"content": [{"type": "text", "text": json.dumps(payload)}]}
+
+
 def _handle_approve(args: dict) -> dict:
     tool_name = args.get("tool_name") or "(unknown tool)"
     tool_input = args.get("input")
@@ -221,10 +258,37 @@ def _handle_approve(args: dict) -> dict:
         "tool_use_id": args.get("tool_use_id") or "",
         "created_at": time.time(),
     })
-    result = _permission_result(tool_name, tool_input, _await_decision(req_id))
-    # A single text block holding JSON — anything else and the CLI raises
-    # "Permission prompt tool returned an invalid result".
-    return {"content": [{"type": "text", "text": json.dumps(result)}]}
+    return _text(_permission_result(tool_name, tool_input,
+                                    _await_decision(req_id)))
+
+
+def _handle_app_state(args: dict) -> dict:
+    """Ask the page for a snapshot of the app it is rendering.
+
+    Always one text block holding JSON, whatever happened: either
+    {"state": ...} as the page described it, or {"error": ...}. Never a
+    JSON-RPC error — a model can act on a sentence saying the window did not
+    answer, and cannot act on a tool that appears broken (it retries, or gives
+    up on looking at all, which is the whole feature).
+    """
+    if not STATE_DIR:
+        return _text({"error": "this session has no app-state channel"})
+    reason = args.get("reason")
+    req_id = _request_id()
+    _write_atomic(os.path.join(STATE_DIR, req_id + ".req.json"), {
+        "id": req_id,
+        "reason": str(reason or ""),
+        "created_at": time.time(),
+    })
+    answer = _await_answer(
+        os.path.join(STATE_DIR, req_id + ".res.json"), APP_STATE_TIMEOUT,
+        {"error": "the fused-render window did not answer within %d seconds — "
+                  "it may have been closed or navigated away, so nothing is "
+                  "known about the live app right now" % APP_STATE_TIMEOUT})
+    if "state" in answer:
+        return _text({"state": answer["state"]})
+    return _text({"error": str(answer.get("error")
+                              or "the window could not read the app")})
 
 
 TOOL_SCHEMA = {
@@ -244,6 +308,30 @@ TOOL_SCHEMA = {
     },
 }
 
+APP_STATE_SCHEMA = {
+    "name": APP_STATE_TOOL,
+    "description": (
+        "Read the live state of the app the user is looking at — console "
+        "errors and warnings, the page's URL params, and an outline of its "
+        "DOM — as it is rendering right now in the left pane. Call this after "
+        "making an edit that affects the rendered page: the page live-reloads "
+        "itself, so this is how you find out whether your change worked, and "
+        "whether it threw. Cheap and read-only; it does not touch the app."
+    ),
+    "inputSchema": {
+        "type": "object",
+        # No required field: the agent must never be blocked from looking
+        # because it did not phrase a reason.
+        "properties": {
+            "reason": {
+                "type": "string",
+                "description": "Optionally, what you are checking — shown to "
+                               "the user in the chat as a one-line note.",
+            },
+        },
+    },
+}
+
 
 def _dispatch(method: str, params: dict) -> dict:
     if method == "initialize":
@@ -258,12 +346,15 @@ def _dispatch(method: str, params: dict) -> dict:
             "serverInfo": {"name": SERVER_NAME, "version": "1"},
         }
     if method == "tools/list":
-        return {"tools": [TOOL_SCHEMA]}
+        return {"tools": [TOOL_SCHEMA, APP_STATE_SCHEMA]}
     if method == "tools/call":
-        if params.get("name") != TOOL_NAME:
-            raise LookupError("unknown tool: %s" % params.get("name"))
+        name = params.get("name")
+        if name not in (TOOL_NAME, APP_STATE_TOOL):
+            raise LookupError("unknown tool: %s" % name)
         args = params.get("arguments")
-        return _handle_approve(args if isinstance(args, dict) else {})
+        args = args if isinstance(args, dict) else {}
+        return _handle_approve(args) if name == TOOL_NAME \
+            else _handle_app_state(args)
     if method == "ping":
         return {}
     raise LookupError("unknown method: %s" % method)
@@ -285,14 +376,21 @@ def main() -> int:
     if not PERM_DIR:
         _log("permission_server.py: missing perm-dir argument")
         return 2
-    try:
-        # 0700 for the same reason the files are 0600 — agent.py normally
-        # created this already, but the mode must not depend on who got here
-        # first (and `mode` reaches the leaf only, which is all we make).
-        os.makedirs(PERM_DIR, mode=0o700, exist_ok=True)
-    except OSError as exc:
-        _log("permission_server.py: cannot use %s (%s)" % (PERM_DIR, exc))
-        return 2
+    for path in (PERM_DIR, STATE_DIR):
+        if not path:
+            # A session without an app-state dir still does approvals: the tool
+            # says so per call (_handle_app_state) rather than the whole server
+            # refusing to start, because approvals are the load-bearing half.
+            _log("permission_server.py: no app-state directory given")
+            continue
+        try:
+            # 0700 for the same reason the files are 0600 — agent.py normally
+            # created these already, but the mode must not depend on who got
+            # here first (and `mode` reaches the leaf only, which is all we make).
+            os.makedirs(path, mode=0o700, exist_ok=True)
+        except OSError as exc:
+            _log("permission_server.py: cannot use %s (%s)" % (path, exc))
+            return 2
 
     for line in sys.stdin:
         line = line.strip()
