@@ -148,6 +148,21 @@
   .error { color: var(--error); }
   .error::before { content: "✗ "; }
 
+  /* the "Open preview" hop offered under a successful reply — brand orange,
+     same accent as the banner and permission cards */
+  .viewout { margin: -8px 0 14px 20px; }
+  .viewout button {
+    font: inherit;
+    font-size: 12px;
+    padding: 3px 10px;
+    border: 1px solid var(--orange);
+    border-radius: 5px;
+    background: transparent;
+    color: var(--orange);
+    cursor: pointer;
+  }
+  .viewout button:hover { background: var(--orange); color: var(--on-orange); }
+
   /* ── permission cards (the approval bridge) ─────────────────── */
   /* Claude runs headless here, so a tool the session's rules don't already
      allow becomes one of these instead of a terminal prompt. Bordered in the
@@ -742,24 +757,30 @@ function formatComments(arr) {
 // Claude" sets these same top params the same way.
 const HANDOFF_PARAMS = ["claudeComments", "claudeReturn"];
 
+// Split a raw shell query string into the balanced `_layout=(…)` span — whose
+// `&` is literal, so URLSearchParams must never see it — and the rest. Every
+// caller reattaches the span byte-for-byte after editing the rest.
+function spliceLayoutSpan(full) {
+  const m = /(^|&)_layout=\(/.exec(full);
+  if (!m) return { span: null, rest: full };
+  const start = m.index + m[1].length;
+  let i = start + "_layout=(".length, depth = 1;
+  while (i < full.length && depth > 0) {
+    if (full[i] === "(") depth++;
+    else if (full[i] === ")") depth--;
+    i++;
+  }
+  return {
+    span: full.slice(start, i),
+    rest: (full.slice(0, m.index) + full.slice(i)).replace(/^&|&$/g, ""),
+  };
+}
+
 function clearTopClaudeComments() {
   let top;
   try { top = window.top; void top.location.href; } catch (e) { return; }  // cross-origin
   const full = (top.location.search || "").replace(/^\?/, "");
-  const m = /(^|&)_layout=\(/.exec(full);
-  let span = null;
-  let rest = full;
-  if (m) {
-    const start = m.index + m[1].length;
-    let i = start + "_layout=(".length, depth = 1;
-    while (i < full.length && depth > 0) {
-      if (full[i] === "(") depth++;
-      else if (full[i] === ")") depth--;
-      i++;
-    }
-    span = full.slice(start, i);
-    rest = (full.slice(0, m.index) + full.slice(i)).replace(/^&|&$/g, "");
-  }
+  const { span, rest } = spliceLayoutSpan(full);
   const params = new URLSearchParams(rest);
   if (!HANDOFF_PARAMS.some((k) => params.has(k))) return;
   HANDOFF_PARAMS.forEach((k) => params.delete(k));
@@ -803,22 +824,12 @@ function returnToMode(mode) {
   // early is exactly what it is for.
   try { window.dispatchEvent(new Event("pagehide")); } catch (e) { /* best-effort */ }
   const full = (top.location.search || "").replace(/^\?/, "");
-  const m = /(^|&)_layout=\(/.exec(full);
-  let span = null;
-  let rest = full;
-  if (m) {
-    const start = m.index + m[1].length;
-    let i = start + "_layout=(".length, depth = 1;
-    while (i < full.length && depth > 0) {
-      if (full[i] === "(") depth++;
-      else if (full[i] === ")") depth--;
-      i++;
-    }
-    span = full.slice(start, i);
-    rest = (full.slice(0, m.index) + full.slice(i)).replace(/^&|&$/g, "");
-  }
+  const { span, rest } = spliceLayoutSpan(full);
   const params = new URLSearchParams(rest);
-  params.set("_mode", mode);
+  // An empty mode means the file's DEFAULT view: `_mode` absent is how the
+  // shell spells that, and `_mode=` would be a distinct (broken) mode name.
+  if (mode) params.set("_mode", mode);
+  else params.delete("_mode");
   // `run` marks a chat run as in-flight and is what the next boot re-attaches
   // to (resumeRun). The run we are returning FROM has finished, so carrying the
   // id back would make a later hop into chat re-poll a dead run.
@@ -881,6 +892,40 @@ function addError(text) {
   const d = document.createElement("div");
   d.className = "turn error";
   d.textContent = text;
+  log.appendChild(d);
+  log.scrollTop = log.scrollHeight;
+}
+
+// Whether the "Open preview" hop under a reply would actually go anywhere:
+// a same-origin shell whose top-level URL carries `_mode` (this chat was
+// opened as a mode over the file). In a pane whose mode lives inside the
+// `_layout` span — or with no shell at all — deleting top `_mode` is a no-op,
+// so the button is not offered rather than shown dead.
+function canOpenPreview() {
+  try {
+    const { rest } = spliceLayoutSpan((window.top.location.search || "").replace(/^\?/, ""));
+    return new URLSearchParams(rest).has("_mode");
+  } catch (e) { return false; }  // cross-origin
+}
+
+// Offered once per transcript, under the LATEST successful reply. The hop
+// always shows the file's CURRENT state, so an older turn's row would be a
+// second button doing exactly the same thing — earlier rows are removed
+// instead of accumulating.
+function addViewOutput() {
+  if (!canOpenPreview()) return;
+  log.querySelectorAll(".viewout").forEach((el) => el.remove());
+  const d = document.createElement("div");
+  d.className = "turn viewout";
+  const b = document.createElement("button");
+  b.type = "button";
+  b.textContent = "Open preview →";
+  b.title = "See " + BASENAME + " in its default view";
+  // Same guard as #back: navigating mid-turn would orphan the streaming run's
+  // UI (the run itself survives via the `run` param, but the half-drawn turn
+  // would be abandoned without the teardown the error paths do).
+  b.onclick = () => { if (!sending) returnToMode(""); };
+  d.appendChild(b);
   log.appendChild(d);
   log.scrollTop = log.scrollHeight;
 }
@@ -1299,6 +1344,12 @@ async function pollLoop(run_id, handoff) {
   // The return ticket for THIS run only (see composeAndSend). Undefined for a
   // plain turn and for a run re-attached at boot (resumeRun) — neither returns.
   const returnTo = (handoff && handoff.mode) || "";
+  // Any "Open preview" row on screen belongs to a FINISHED turn; with a run
+  // now streaming it is stale. sendMessage already stripped its own, but the
+  // resumeRun re-attach path reaches here with a history-restored row that
+  // its non-matching branch never trims — an error finish would then leave
+  // that button stranded mid-transcript. The finish below re-adds on success.
+  log.querySelectorAll(".viewout").forEach((el) => el.remove());
   const w = addWorking();
   let reply = null;
   let typer = null;
@@ -1338,6 +1389,12 @@ async function pollLoop(run_id, handoff) {
         // a run that failed or was aborted has changed nothing to go back and
         // look at, and navigating away would hide the error message.
         if (returnTo && !data.error) returnToMode(returnTo);
+        // A clean finish with no auto-return earns the manual hop instead: a
+        // button back to the file's default preview, so the user can see what
+        // the reply changed without hunting the mode switcher. Never on the
+        // error path — nothing new to look at, and the button would read as
+        // "see the result" of a turn that produced none.
+        else if (!data.error) addViewOutput();
         break;
       }
       await sleep(400);
@@ -1358,6 +1415,10 @@ async function pollLoop(run_id, handoff) {
 async function sendMessage(message, handoff) {
   if (sending) return;
   sending = true;
+  // The previous turn's "Open preview" goes away with the new send: `sending`
+  // makes it a dead button for the whole turn, and the finish that matters is
+  // the new turn's own (which re-adds it on success).
+  log.querySelectorAll(".viewout").forEach((el) => el.remove());
   addUser(message);
   // Until `start` hands back a run id, nothing has received the message — so a
   // failure up to that point must not consume the attached comments.
@@ -1434,11 +1495,13 @@ async function resumeRun(run_id) {
       if (matches) {
         while (lastUser.nextElementSibling) lastUser.nextElementSibling.remove();
         if (probe.text) addAssistant("").lastChild.innerHTML = renderMd(probe.text);
+        addViewOutput();  // clean finish, just seen late — same hop as a live one
       } else if (!users.length && probe.message) {
         // frame died before the transcript had any rows AND the run finished
         // while away: rebuild the whole turn
         addUser(probe.message);
         if (probe.text) addAssistant("").lastChild.innerHTML = renderMd(probe.text);
+        addViewOutput();
       }
       log.scrollTop = log.scrollHeight;
       return;
@@ -1532,6 +1595,13 @@ async function loadHistory(session_id) {
       if (t.role === "user") addUser(t.text);
       else addAssistant("").lastChild.innerHTML = renderMd(t.text);
     }
+    // The hop survives leaving and coming back: a restored transcript that
+    // ends on an assistant reply is a conversation whose last turn finished
+    // cleanly (errored turns never reach the transcript as assistant rows),
+    // so it earns the same button the live finish drew. Without this the
+    // button existed only for the turn's first viewing — hop to the preview,
+    // hop back, gone.
+    if (turns.length && turns[turns.length - 1].role === "assistant") addViewOutput();
     log.scrollTop = log.scrollHeight;
   } catch (err) {
     log.innerHTML = "";  // drop the skeleton, mirror the original blank fallback
