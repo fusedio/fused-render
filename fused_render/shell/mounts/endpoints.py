@@ -1,5 +1,6 @@
 """The /api/mounts/* FastAPI surface: CRUD, mount/unmount/reconnect,
-restart, remote-credential detection, and the Google Drive sign-in endpoints."""
+restart, remote-credential detection, and the OAuth sign-in endpoints
+(Google Drive, Dropbox, Box)."""
 
 import collections
 import dataclasses
@@ -287,9 +288,9 @@ def create_remote(body: dict = Body(...), x_fused: str | None = Header(default=N
     return {"ok": True, "name": name + ":"}
 
 
-# -- Google Drive sign-in (D205) -------------------------------------------------
+# -- OAuth sign-in: Google Drive, Dropbox, Box (D205, D209) ----------------------
 #
-# `rclone authorize "drive"` runs its OWN loopback callback server on
+# `rclone authorize "<backend>"` runs its OWN loopback callback server on
 # 127.0.0.1:53682, opens the system browser, and prints the OAuth token JSON on
 # stdout when the user approves. We spawn it as one tracked child, poll it, and
 # on a clean exit create the remote through the rc daemon.
@@ -318,6 +319,64 @@ OAUTH_TIMEOUT = 300.0
 # Grace for a terminated authorize child before it is SIGKILLed.
 OAUTH_KILL_GRACE = 3.0
 OAUTH_RC_TIMEOUT = 30.0
+
+
+# Every browser-consent backend we offer, in ONE table — the whole flow below
+# (spawn, poll, cancel, create, error wording) reads its per-provider facts
+# from here rather than hardcoding "drive" the way it originally did.
+#
+#   backend      the name `rclone authorize <backend>` takes, which is also the
+#                remote's `type` for all three (they coincide; kept as its own
+#                key so a future provider where they diverge has somewhere to go)
+#   label        what the USER calls it, for every error string
+#   needs_client whether the user must supply their own OAuth client (below)
+#   params       extra config/create parameters beyond the token
+#
+# Only Drive sets `needs_client`. Google is retiring rclone's built-in shared
+# client ID — rclone was notified that Google will begin charging for API
+# requests made with it later in 2026, after 90 days' notice, and rclone's plan
+# is warn → disable → remove — so a Drive remote that does not carry the user's
+# own client ID is on a countdown. Dropbox and Box are NOT affected: rclone's
+# config prompts still say "Leave blank normally" for both, and asking for a
+# client there would invent setup work that does not exist (explicit decision;
+# do not "make it consistent").
+_OAUTH_PROVIDERS: dict[str, dict] = {
+    "drive": {
+        "backend": "drive",
+        "label": "Google Drive",
+        "needs_client": True,
+        # Full read-write `drive`: read-write is the requirement, and the only
+        # non-restricted alternative (drive.file) can only ever see files this
+        # app itself created, which is useless behind a mount. skip_gdocs
+        # because Docs/Sheets have no byte representation — without it they
+        # surface as ordinary-looking files whose saves silently fail to
+        # round-trip.
+        "params": {"scope": "drive", "skip_gdocs": "true"},
+    },
+    "dropbox": {
+        "backend": "dropbox",
+        "label": "Dropbox",
+        "needs_client": False,
+        "params": {},
+    },
+    "box": {
+        "backend": "box",
+        "label": "Box",
+        "needs_client": False,
+        "params": {},
+    },
+}
+
+# The 400 a Drive sign-in without a client gets. Deliberately not a bare
+# validation message: the user has real work to do in the Google Cloud console
+# before a retry can succeed, so the reason has to travel with the refusal.
+_CLIENT_REQUIRED_MSG = (
+    "Google Drive needs your own Google API client ID and secret. rclone's "
+    "built-in shared client ID is being retired — Google will start charging "
+    "for API requests made with it later in 2026 — so every user must now "
+    "supply their own. Create an OAuth client of type \"Desktop app\" in the "
+    "Google Cloud console, then paste its client ID and secret."
+)
 
 # The success frame rclone wraps the token in (fs/config/authorize.go, verified
 # against v1.74.4). Matched when present, but not depended on — the fallback
@@ -349,8 +408,14 @@ class _ActiveAuthorize:
     """
 
     name: str
+    provider: str  # key into _OAUTH_PROVIDERS — the label and params come from it
     backend: str
     proc: subprocess.Popen
+    # Held only until the remote is created, then CLEARED by _watch_authorize —
+    # the same bounded-lifetime discipline as the token in `out`, and for the
+    # same reason: this record deliberately outlives the attempt.
+    client_id: str = ""
+    client_secret: str = ""
     # The caller explicitly asked to overwrite an EXISTING remote. Recorded at
     # spawn time because it decides whether a failed create may be rolled back:
     # deleting is only safe for a remote we ourselves brought into existence.
@@ -375,21 +440,54 @@ _authorize: _ActiveAuthorize | None = None
 
 def _authorize_argv(bin_: str, backend: str) -> list[str]:
     """The authorize command line. Nothing sensitive on argv: the backend name
-    is a constant and the token only ever comes back on stdout (and then goes
-    out over the rc daemon, never as an argument — see create_remote)."""
+    is a constant, the OAuth client id/secret travel in the ENVIRONMENT (see
+    _client_credential_env), and the token only ever comes back on stdout (and
+    then goes out over the rc daemon, never as an argument — see
+    create_remote)."""
     return [bin_, "authorize", backend]
 
 
-def _spawn_authorize(bin_: str, backend: str) -> subprocess.Popen:
+def _client_credential_env(backend: str, client_id: str,
+                           client_secret: str) -> dict[str, str]:
+    """The RCLONE_<BACKEND>_CLIENT_ID / _SECRET overlay for an authorize child,
+    or {} when the provider supplies no client of its own.
+
+    ENVIRONMENT, NOT ARGV — and that is a security decision, not a style one.
+    `rclone authorize <backend> <client_id> <client_secret>` accepts them only
+    POSITIONALLY, which would put the secret on the command line, and
+    /proc/<pid>/cmdline is mode -r--r--r-- — readable by every other local user,
+    the exact invariant _authorize_argv exists to hold (and the same one the S3
+    secret key and the rcd auth secret are kept off argv for).
+    /proc/<pid>/environ is mode -r-------- (owner only), so the environment
+    preserves the property.
+
+    Verified empirically against rclone v1.74.4: with
+    RCLONE_DRIVE_CLIENT_ID=TESTID12345 exported, the OAuth redirect carried
+    client_id=TESTID12345; with nothing exported it fell back to rclone's shared
+    202264815644.apps.googleusercontent.com — the client ID being retired. Do
+    not "simplify" this back onto argv."""
+    if not client_id and not client_secret:
+        return {}
+    prefix = f"RCLONE_{backend.upper()}"
+    return {f"{prefix}_CLIENT_ID": client_id,
+            f"{prefix}_CLIENT_SECRET": client_secret}
+
+
+def _spawn_authorize(bin_: str, backend: str,
+                     env_extra: dict[str, str] | None = None) -> subprocess.Popen:
     """Start the authorize child. The one seam the tests replace — everything
     above it (pumps, watcher, kill escalation, parsing, the rc call) is
-    exercised for real against the substituted child."""
+    exercised for real against the substituted child.
+
+    `env_extra` OVERLAYS os.environ rather than replacing it: the child still
+    needs PATH/HOME (and on macOS the browser-opening plumbing) to run at all."""
     return subprocess.Popen(
         _authorize_argv(bin_, backend),
         stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
+        env={**os.environ, **(env_extra or {})},
     )
 
 
@@ -449,18 +547,23 @@ def _authorize_failure_detail(job: _ActiveAuthorize) -> str:
     return "\n".join(job.tail)[-400:]
 
 
-def _create_drive_remote(name: str, token: str) -> None:
-    """Create the Drive remote from a fresh token. Raises RuntimeError.
+def _create_oauth_remote(job: _ActiveAuthorize, token: str) -> None:
+    """Create the remote for a finished sign-in, from a fresh token. Raises
+    RuntimeError.
 
     Through the rc daemon (JSON over loopback HTTP), NOT `rclone config create`:
     an OAuth token on argv is visible to any other local user via `ps` — the
-    identical reasoning as the S3 secret key in create_remote above.
+    identical reasoning as the S3 secret key in create_remote above, and it is
+    why the client secret rides in the environment rather than on argv too (see
+    _client_credential_env).
 
-    `scope` is full read-write `drive`: read-write is the requirement, and the
-    only non-restricted alternative (drive.file) can only ever see files this
-    app itself created, which is useless behind a mount. `skip_gdocs` because
-    Docs/Sheets have no byte representation — without it they surface as
-    ordinary-looking files whose saves silently fail to round-trip.
+    The provider's extra params (Drive's scope/skip_gdocs; nothing for
+    Dropbox/Box) come from _OAUTH_PROVIDERS. A user-supplied client id/secret is
+    PERSISTED into the remote's config, which is not optional bookkeeping:
+    rclone refreshes the access token with the same client that minted it, so a
+    remote carrying only a token would work until the first refresh and then
+    stop. It also makes the remote itself a legitimate place to read the
+    client back from on a later sign-in.
 
     Deliberately NOT probed afterwards, unlike create_detected_remote's `lsd`.
     That probe exists because a detected credential was found sitting in a
@@ -470,10 +573,15 @@ def _create_drive_remote(name: str, token: str) -> None:
     the user is watching. Recorded as a choice, not an oversight: if signed-in
     but broken Drive remotes ever turn up, this is where the probe goes."""
     from fused_render.shell.mounts import _rc, ensure_rcd
+    spec = _OAUTH_PROVIDERS[job.provider]
+    parameters = {"token": token, **spec["params"]}
+    if job.client_id:
+        parameters["client_id"] = job.client_id
+    if job.client_secret:
+        parameters["client_secret"] = job.client_secret
     port = ensure_rcd()
     _rc(port, "config/create",
-        {"name": name, "type": "drive",
-         "parameters": {"token": token, "scope": "drive", "skip_gdocs": "true"}},
+        {"name": job.name, "type": spec["backend"], "parameters": parameters},
         timeout=OAUTH_RC_TIMEOUT)
 
 
@@ -491,11 +599,16 @@ def _delete_remote(name: str) -> bool:
 
 def _authorize_outcome(job: _ActiveAuthorize) -> str | None:
     """Finish the attempt: the error message, or None when the remote was
-    created. Runs on the watcher thread — the endpoint is long gone."""
+    created. Runs on the watcher thread — the endpoint is long gone.
+
+    Every user-visible string names the PROVIDER's label (D209): these read
+    "the Google sign-in …" for all three backends before the registry, which
+    was simply wrong for a Dropbox or Box user."""
+    label = _OAUTH_PROVIDERS[job.provider]["label"]
     if job.canceled:
-        return "the Google sign-in was canceled"
+        return f"the {label} sign-in was canceled"
     if job.timed_out:
-        return (f"the Google sign-in was not completed within "
+        return (f"the {label} sign-in was not completed within "
                 f"{int(OAUTH_TIMEOUT // 60)} minutes — try again")
     if job.proc.returncode != 0:
         detail = _authorize_failure_detail(job)
@@ -514,11 +627,11 @@ def _authorize_outcome(job: _ActiveAuthorize) -> str | None:
         # consent was never granted. Retryable, and it must SAY so — this is the
         # state the client sees as in_flight dropping without success.
         detail = _authorize_failure_detail(job)
-        return ("the Google sign-in did not complete — no account was connected "
+        return (f"the {label} sign-in did not complete — no account was connected "
                 "(the browser tab was closed, or approval was not granted). "
                 "Try again." + (f" Last output: {detail}" if detail else ""))
     try:
-        _create_drive_remote(job.name, token)
+        _create_oauth_remote(job, token)
     except RuntimeError as e:
         # Whatever happened, the config may have CHANGED before it failed —
         # drop the memoized view either way, or a later read could serve a
@@ -558,22 +671,36 @@ def _watch_authorize(job: _ActiveAuthorize, pumps: list[threading.Thread]) -> No
         _ensure_dead_child(job.proc)
     for pump in pumps:
         pump.join(2.0)  # both pipes at EOF, so the output is complete
+    label = _OAUTH_PROVIDERS[job.provider]["label"]
     try:
         job.error = _authorize_outcome(job)
     except Exception as e:  # never strand the client polling a stuck in_flight
-        logger.exception("drive sign-in failed unexpectedly")
-        job.error = f"the Google sign-in failed unexpectedly: {e}"
+        logger.exception("%s sign-in failed unexpectedly", label)
+        job.error = f"the {label} sign-in failed unexpectedly: {e}"
+    finally:
+        # Consumed. Bounded here rather than by the record's lifetime, exactly
+        # like the token in `out` — `_authorize` outlives the attempt so the
+        # status endpoint can report the last outcome, and a client secret left
+        # reachable for the life of the process is what turns a later crash
+        # dump or an added diagnostic into a real credential leak. In `finally`
+        # because every branch above must clear it, including the failures.
+        job.client_id = job.client_secret = ""
     job.ok = job.error is None
     job.done.set()
 
 
-def _start_authorize(bin_: str, name: str, backend: str,
-                     replacing: bool = False) -> _ActiveAuthorize:
+def _start_authorize(bin_: str, name: str, provider: str,
+                     replacing: bool = False, client_id: str = "",
+                     client_secret: str = "") -> _ActiveAuthorize:
     """Spawn the authorize child and start its pumps + exit watcher.
 
     Raises OSError when the command can't start (caller maps it to a 502)."""
-    proc = _spawn_authorize(bin_, backend)
-    job = _ActiveAuthorize(name=name, backend=backend, proc=proc, replacing=replacing)
+    backend = _OAUTH_PROVIDERS[provider]["backend"]
+    env_extra = _client_credential_env(backend, client_id, client_secret)
+    proc = _spawn_authorize(bin_, backend, env_extra)
+    job = _ActiveAuthorize(name=name, provider=provider, backend=backend,
+                           proc=proc, replacing=replacing,
+                           client_id=client_id, client_secret=client_secret)
     pumps = [
         threading.Thread(target=_pump_authorize, args=(proc.stdout, job.out), daemon=True),
         threading.Thread(target=_pump_authorize, args=(proc.stderr, job.tail), daemon=True),
@@ -602,9 +729,14 @@ def _cancel_active_authorize() -> bool:
 
 @router.post("/api/mounts/remotes/oauth")
 def start_remote_oauth(body: dict = Body(...), x_fused: str | None = Header(default=None)):
-    """Begin the Google Drive sign-in: spawn `rclone authorize "drive"`, which
-    opens the system browser. Returns as soon as the child is running; the
-    client polls GET .../oauth/status for the outcome."""
+    """Begin a browser sign-in: spawn `rclone authorize "<backend>"`, which opens
+    the system browser. Returns as soon as the child is running; the client polls
+    GET .../oauth/status for the outcome.
+
+    `provider` selects the backend from _OAUTH_PROVIDERS and defaults to "drive"
+    for backwards compatibility with the pre-registry client. `client_id` /
+    `client_secret` are the user's own OAuth client — REQUIRED for Drive, and
+    accepted-but-unnecessary for Dropbox/Box."""
     from fused_render.shell.mounts import rclone_bin
     guard = _require_fused(x_fused)
     if guard is not None:
@@ -615,6 +747,26 @@ def start_remote_oauth(body: dict = Body(...), x_fused: str | None = Header(defa
     name = (body.get("name") or "").strip()
     if not name or ":" in name or "/" in name:
         return JSONResponse({"error": "invalid remote name"}, status_code=400)
+    provider = body.get("provider") or "drive"
+    if not isinstance(provider, str) or provider not in _OAUTH_PROVIDERS:
+        return JSONResponse(
+            {"error": f"unknown storage provider {provider!r} — expected one of "
+                      f"{', '.join(sorted(_OAUTH_PROVIDERS))}"},
+            status_code=400)
+    spec = _OAUTH_PROVIDERS[provider]
+    client_id = body.get("client_id") or ""
+    client_secret = body.get("client_secret") or ""
+    if not isinstance(client_id, str) or not isinstance(client_secret, str):
+        return JSONResponse(
+            {"error": "'client_id' and 'client_secret' must be strings"},
+            status_code=400)
+    client_id, client_secret = client_id.strip(), client_secret.strip()
+    # Drive without a client is not a request we can fulfil at all: rclone's
+    # shared client ID is being retired, so refuse HERE rather than open a
+    # browser onto a flow that is on a countdown. The message carries the
+    # reason because the fix is work in the Google Cloud console, not a retry.
+    if spec["needs_client"] and not (client_id and client_secret):
+        return JSONResponse({"error": _CLIENT_REQUIRED_MSG}, status_code=400)
     # Strict bool, like add_mount's read_only: a truthy string from a sloppy
     # caller must not be able to authorize destroying an existing remote.
     replace = body.get("replace", False)
@@ -646,11 +798,13 @@ def start_remote_oauth(body: dict = Body(...), x_fused: str | None = Header(defa
                 {"error": "a sign-in is already in progress — finish or cancel it first"},
                 status_code=409)
         try:
-            _authorize = _start_authorize(bin_, name, "drive", replacing=replace)
+            _authorize = _start_authorize(bin_, name, provider, replacing=replace,
+                                          client_id=client_id,
+                                          client_secret=client_secret)
         except OSError as e:
             return JSONResponse({"error": f"could not run rclone ({bin_}): {e}"},
                                 status_code=502)
-    return {"ok": True, "name": name, "in_flight": True}
+    return {"ok": True, "name": name, "provider": provider, "in_flight": True}
 
 
 @router.get("/api/mounts/remotes/oauth/status")
@@ -664,12 +818,13 @@ def remote_oauth_status():
     with _AUTH_LOCK:
         job = _authorize
     if job is None:
-        return {"in_flight": False, "name": None, "backend": None,
-                "ok": None, "error": None}
+        return {"in_flight": False, "name": None, "provider": None,
+                "backend": None, "ok": None, "error": None}
     in_flight = not job.done.is_set()
     return {
         "in_flight": in_flight,
         "name": job.name,
+        "provider": job.provider,
         "backend": job.backend,
         "ok": None if in_flight else job.ok,
         "error": None if in_flight else job.error,

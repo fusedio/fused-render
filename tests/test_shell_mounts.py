@@ -1696,13 +1696,17 @@ AUTHORIZE_OK = (
 
 
 def _spawn_python(monkeypatch, script, record=None):
-    """Point the authorize spawn seam at a real `python -c` child."""
+    """Point the authorize spawn seam at a real `python -c` child.
+
+    `record` collects (bin_, backend, env_extra) so a test can assert BOTH the
+    argv the child would have had and the environment the client id/secret
+    travel in (D209) — the two halves of "no secret on argv"."""
     import subprocess
     import sys
 
-    def spawn(bin_, backend):
+    def spawn(bin_, backend, env_extra=None):
         if record is not None:
-            record.append((bin_, backend))
+            record.append((bin_, backend, env_extra))
         return subprocess.Popen(
             [sys.executable, "-c", script],
             stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
@@ -1711,9 +1715,22 @@ def _spawn_python(monkeypatch, script, record=None):
     monkeypatch.setattr(mounts_mod.endpoints, "_spawn_authorize", spawn)
 
 
+# Drive now REQUIRES a user-supplied OAuth client (D205 as rewritten): rclone's
+# shared client ID is being retired, so every Drive request below carries one.
+DRIVE_BODY = {"name": "gdrive", "client_id": "cid.apps.googleusercontent.com",
+              "client_secret": "csecret"}
+
+
 def _drive_ready(monkeypatch, rcd_stub):
-    """rclone present + rcd answering config/create."""
-    monkeypatch.setattr(mounts_mod, "rclone_bin", lambda: "/usr/bin/rclone")
+    """rclone present (with NO remotes yet) + rcd answering config/create.
+
+    _fake_rclone, not a bare rclone_bin stub: the name-collision check calls
+    `rclone listremotes` for real, so on a developer machine that genuinely has
+    a `gdrive:` remote every sign-in test 409'd on the tester's own config. The
+    stub makes the starting remote set an input to the test instead of a
+    property of the machine — a test that wants a collision asks for one by
+    calling _fake_rclone(..., existing_remotes=(…)) after this."""
+    _fake_rclone(monkeypatch, existing_remotes=())
     rcd_stub.responses["config/create"] = {}
 
 
@@ -1768,7 +1785,7 @@ def test_parse_authorize_token_rejects_output_without_a_token():
 
 
 def test_drive_oauth_writes_require_fused_header(client):
-    assert client.post("/api/mounts/remotes/oauth", json={"name": "gdrive"}).status_code == 403
+    assert client.post("/api/mounts/remotes/oauth", json=DRIVE_BODY).status_code == 403
     assert client.post("/api/mounts/remotes/oauth/cancel").status_code == 403
 
 
@@ -1783,14 +1800,14 @@ def test_drive_oauth_rejects_bad_name_before_probing_rclone(client, monkeypatch)
 
 def test_drive_oauth_502_when_rclone_missing(client, monkeypatch):
     monkeypatch.setattr(mounts_mod, "rclone_bin", lambda: None)
-    r = client.post("/api/mounts/remotes/oauth", json={"name": "gdrive"}, headers=FUSED)
+    r = client.post("/api/mounts/remotes/oauth", json=DRIVE_BODY, headers=FUSED)
     assert r.status_code == 502
 
 
 def test_drive_oauth_status_idle_before_any_attempt(client):
     s = client.get("/api/mounts/remotes/oauth/status").json()
-    assert s == {"in_flight": False, "name": None, "backend": None,
-                 "ok": None, "error": None}
+    assert s == {"in_flight": False, "name": None, "provider": None,
+                 "backend": None, "ok": None, "error": None}
 
 
 def test_drive_oauth_creates_the_remote_over_rcd(client, rcd, monkeypatch):
@@ -1799,13 +1816,13 @@ def test_drive_oauth_creates_the_remote_over_rcd(client, rcd, monkeypatch):
     _drive_ready(monkeypatch, rcd)
     seen = []
     _spawn_python(monkeypatch, f'print("{AUTHORIZE_OK}")', record=seen)
-    r = client.post("/api/mounts/remotes/oauth", json={"name": "gdrive"}, headers=FUSED)
+    r = client.post("/api/mounts/remotes/oauth", json=DRIVE_BODY, headers=FUSED)
     assert r.status_code == 200, r.text
     assert r.json()["name"] == "gdrive"
 
     s = _wait_oauth(client)
     assert s["ok"] is True and s["error"] is None and s["name"] == "gdrive"
-    assert seen == [("/usr/bin/rclone", "drive")]
+    assert [(b, backend) for b, backend, _ in seen] == [("/usr/bin/rclone", "drive")]
 
     method, body = next(c for c in rcd.calls if c[0] == "config/create")
     assert body["name"] == "gdrive"
@@ -1813,8 +1830,12 @@ def test_drive_oauth_creates_the_remote_over_rcd(client, rcd, monkeypatch):
     # Full read-write drive scope (drive.readonly can't write; drive.file only
     # ever sees files this app created), and skip_gdocs because Docs/Sheets have
     # no byte representation and would look editable but never round-trip.
+    # The client id/secret are persisted with the remote so rclone can refresh
+    # the token later — its shared client ID is being retired (D205).
     assert body["parameters"] == {
-        "token": DRIVE_TOKEN, "scope": "drive", "skip_gdocs": "true"}
+        "token": DRIVE_TOKEN, "scope": "drive", "skip_gdocs": "true",
+        "client_id": DRIVE_BODY["client_id"],
+        "client_secret": DRIVE_BODY["client_secret"]}
 
 
 def test_drive_oauth_invalidates_upstream_caches(client, rcd, monkeypatch):
@@ -1823,7 +1844,7 @@ def test_drive_oauth_invalidates_upstream_caches(client, rcd, monkeypatch):
     calls = []
     monkeypatch.setattr(mounts_mod.endpoints, "_invalidate_upstream_caches",
                         lambda: calls.append(1))
-    client.post("/api/mounts/remotes/oauth", json={"name": "gdrive"}, headers=FUSED)
+    client.post("/api/mounts/remotes/oauth", json=DRIVE_BODY, headers=FUSED)
     assert _wait_oauth(client)["ok"] is True
     assert calls == [1]
 
@@ -1835,7 +1856,7 @@ def test_drive_oauth_child_exiting_without_a_token_is_a_retryable_error(
     # rather than leaving the page spinning forever.
     _drive_ready(monkeypatch, rcd)
     _spawn_python(monkeypatch, "pass")
-    client.post("/api/mounts/remotes/oauth", json={"name": "gdrive"}, headers=FUSED)
+    client.post("/api/mounts/remotes/oauth", json=DRIVE_BODY, headers=FUSED)
     s = _wait_oauth(client)
     assert s["ok"] is False
     assert "try again" in s["error"].lower()
@@ -1848,17 +1869,17 @@ def test_drive_oauth_reports_the_child_failure(client, rcd, monkeypatch):
         monkeypatch,
         'import sys; sys.stderr.write("Failed to configure token: oauth2: denied\\n");'
         ' sys.exit(1)')
-    client.post("/api/mounts/remotes/oauth", json={"name": "gdrive"}, headers=FUSED)
+    client.post("/api/mounts/remotes/oauth", json=DRIVE_BODY, headers=FUSED)
     s = _wait_oauth(client)
     assert s["ok"] is False
     assert "oauth2: denied" in s["error"]
 
 
 def test_drive_oauth_reports_an_rc_failure(client, rcd, monkeypatch):
-    monkeypatch.setattr(mounts_mod, "rclone_bin", lambda: "/usr/bin/rclone")
+    _fake_rclone(monkeypatch, existing_remotes=())
     rcd.responses["config/create"] = (500, {"error": "couldn't decode token"})
     _spawn_python(monkeypatch, f'print("{AUTHORIZE_OK}")')
-    client.post("/api/mounts/remotes/oauth", json={"name": "gdrive"}, headers=FUSED)
+    client.post("/api/mounts/remotes/oauth", json=DRIVE_BODY, headers=FUSED)
     s = _wait_oauth(client)
     assert s["ok"] is False
     assert "couldn't decode token" in s["error"]
@@ -1873,7 +1894,7 @@ def test_drive_oauth_does_not_retain_the_token_after_using_it(client, rcd, monke
     credential leak."""
     _drive_ready(monkeypatch, rcd)
     _spawn_python(monkeypatch, f'print("{AUTHORIZE_OK}")')
-    client.post("/api/mounts/remotes/oauth", json={"name": "gdrive"}, headers=FUSED)
+    client.post("/api/mounts/remotes/oauth", json=DRIVE_BODY, headers=FUSED)
     assert _wait_oauth(client)["ok"] is True
 
     job = mounts_mod.endpoints._authorize
@@ -1886,7 +1907,7 @@ def test_drive_oauth_clears_stdout_even_when_no_token_arrived(client, rcd, monke
     dropped once it has been parsed, so nothing half-token-shaped lingers."""
     _drive_ready(monkeypatch, rcd)
     _spawn_python(monkeypatch, 'print("some unexpected stdout")')
-    client.post("/api/mounts/remotes/oauth", json={"name": "gdrive"}, headers=FUSED)
+    client.post("/api/mounts/remotes/oauth", json=DRIVE_BODY, headers=FUSED)
     assert _wait_oauth(client)["ok"] is False
     assert list(mounts_mod.endpoints._authorize.out) == []
 
@@ -1901,7 +1922,7 @@ def test_drive_oauth_rolls_back_a_half_created_remote(client, rcd, monkeypatch):
     rcd.responses["config/create"] = (500, {"error": "timed out"})
     rcd.responses["config/delete"] = {}
     _spawn_python(monkeypatch, f'print("{AUTHORIZE_OK}")')
-    client.post("/api/mounts/remotes/oauth", json={"name": "gdrive"}, headers=FUSED)
+    client.post("/api/mounts/remotes/oauth", json=DRIVE_BODY, headers=FUSED)
     s = _wait_oauth(client)
     assert s["ok"] is False
     deleted = [b for meth, b in rcd.calls if meth == "config/delete"]
@@ -1916,7 +1937,7 @@ def test_drive_oauth_says_so_when_the_rollback_also_fails(client, rcd, monkeypat
     rcd.responses["config/create"] = (500, {"error": "timed out"})
     rcd.responses["config/delete"] = (500, {"error": "nope"})
     _spawn_python(monkeypatch, f'print("{AUTHORIZE_OK}")')
-    client.post("/api/mounts/remotes/oauth", json={"name": "gdrive"}, headers=FUSED)
+    client.post("/api/mounts/remotes/oauth", json=DRIVE_BODY, headers=FUSED)
     s = _wait_oauth(client)
     assert s["ok"] is False
     err = s["error"].lower()
@@ -1933,7 +1954,7 @@ def test_drive_oauth_does_not_roll_back_over_a_replaced_remote(client, rcd, monk
     rcd.responses["config/delete"] = {}
     _spawn_python(monkeypatch, f'print("{AUTHORIZE_OK}")')
     client.post("/api/mounts/remotes/oauth",
-                json={"name": "gdrive", "replace": True}, headers=FUSED)
+                json={**DRIVE_BODY, "replace": True}, headers=FUSED)
     s = _wait_oauth(client)
     assert s["ok"] is False
     assert not any(meth == "config/delete" for meth, _ in rcd.calls)
@@ -1948,7 +1969,7 @@ def test_drive_oauth_never_leaks_the_token_into_an_error(client, rcd, monkeypatc
         monkeypatch,
         f'print("{AUTHORIZE_OK}");'
         ' import sys; sys.stderr.write("boom\\n"); sys.exit(1)')
-    client.post("/api/mounts/remotes/oauth", json={"name": "gdrive"}, headers=FUSED)
+    client.post("/api/mounts/remotes/oauth", json=DRIVE_BODY, headers=FUSED)
     s = _wait_oauth(client)
     assert s["ok"] is False
     assert "ya29.tok" not in s["error"] and "1//ref" not in s["error"]
@@ -1963,7 +1984,7 @@ def test_drive_oauth_refuses_to_overwrite_an_existing_remote(client, rcd, monkey
     _fake_rclone(monkeypatch, existing_remotes=("gdrive:",))
     spawned = []
     _spawn_python(monkeypatch, "pass", record=spawned)
-    r = client.post("/api/mounts/remotes/oauth", json={"name": "gdrive"}, headers=FUSED)
+    r = client.post("/api/mounts/remotes/oauth", json=DRIVE_BODY, headers=FUSED)
     assert r.status_code == 409
     assert "already" in r.json()["error"].lower()
     # Refused BEFORE the browser is opened — not after the user consents.
@@ -1975,7 +1996,7 @@ def test_drive_oauth_overwrites_only_when_replace_is_explicit(client, rcd, monke
     _fake_rclone(monkeypatch, existing_remotes=("gdrive:",))
     _spawn_python(monkeypatch, f'print("{AUTHORIZE_OK}")')
     r = client.post("/api/mounts/remotes/oauth",
-                    json={"name": "gdrive", "replace": True}, headers=FUSED)
+                    json={**DRIVE_BODY, "replace": True}, headers=FUSED)
     assert r.status_code == 200
     assert _wait_oauth(client)["ok"] is True
     assert any(c[0] == "config/create" for c in rcd.calls)
@@ -1987,7 +2008,7 @@ def test_drive_oauth_replace_must_be_a_real_boolean(client, rcd, monkeypatch):
     _drive_ready(monkeypatch, rcd)
     _fake_rclone(monkeypatch, existing_remotes=("gdrive:",))
     r = client.post("/api/mounts/remotes/oauth",
-                    json={"name": "gdrive", "replace": "yes"}, headers=FUSED)
+                    json={**DRIVE_BODY, "replace": "yes"}, headers=FUSED)
     assert r.status_code == 400
 
 
@@ -1997,9 +2018,10 @@ def test_drive_oauth_rejects_a_second_sign_in_while_one_is_in_flight(
     # fail to bind, so the single-flight rejection is the honest answer.
     _drive_ready(monkeypatch, rcd)
     _spawn_python(monkeypatch, "import time; time.sleep(30)")
-    assert client.post("/api/mounts/remotes/oauth", json={"name": "gdrive"},
+    assert client.post("/api/mounts/remotes/oauth", json=DRIVE_BODY,
                        headers=FUSED).status_code == 200
-    r = client.post("/api/mounts/remotes/oauth", json={"name": "other"}, headers=FUSED)
+    r = client.post("/api/mounts/remotes/oauth",
+                    json={**DRIVE_BODY, "name": "other"}, headers=FUSED)
     assert r.status_code == 409
     assert client.get("/api/mounts/remotes/oauth/status").json()["in_flight"] is True
 
@@ -2007,7 +2029,7 @@ def test_drive_oauth_rejects_a_second_sign_in_while_one_is_in_flight(
 def test_drive_oauth_cancel_terminates_the_child(client, rcd, monkeypatch):
     _drive_ready(monkeypatch, rcd)
     _spawn_python(monkeypatch, "import time; time.sleep(30)")
-    client.post("/api/mounts/remotes/oauth", json={"name": "gdrive"}, headers=FUSED)
+    client.post("/api/mounts/remotes/oauth", json=DRIVE_BODY, headers=FUSED)
     r = client.post("/api/mounts/remotes/oauth/cancel", headers=FUSED)
     assert r.status_code == 200 and r.json()["canceled"] is True
     s = _wait_oauth(client)
@@ -2022,7 +2044,7 @@ def test_drive_oauth_cancel_after_success_reports_canceled_false(client, rcd, mo
     discard a remote that now exists and tell the user nothing."""
     _drive_ready(monkeypatch, rcd)
     _spawn_python(monkeypatch, f'print("{AUTHORIZE_OK}")')
-    client.post("/api/mounts/remotes/oauth", json={"name": "gdrive"}, headers=FUSED)
+    client.post("/api/mounts/remotes/oauth", json=DRIVE_BODY, headers=FUSED)
     assert _wait_oauth(client)["ok"] is True
 
     r = client.post("/api/mounts/remotes/oauth/cancel", headers=FUSED)
@@ -2033,6 +2055,185 @@ def test_drive_oauth_cancel_after_success_reports_canceled_false(client, rcd, mo
 def test_drive_oauth_cancel_with_nothing_in_flight_is_a_no_op(client):
     r = client.post("/api/mounts/remotes/oauth/cancel", headers=FUSED)
     assert r.status_code == 200 and r.json()["canceled"] is False
+
+
+# -- the provider registry: Drive, Dropbox, Box (D209) ---------------------------
+#
+# The same authorize child for all three; what differs is the rclone backend
+# type, the extra config params, and — for Drive alone — a user-supplied OAuth
+# client. Dropbox and Box must NEVER be asked for a client id/secret: rclone
+# still says "Leave blank normally" for both, and only Google's shared client
+# ID is being retired.
+
+
+def test_oauth_provider_registry_covers_the_three_backends():
+    reg = mounts_mod.endpoints._OAUTH_PROVIDERS
+    assert set(reg) == {"drive", "dropbox", "box"}
+    assert reg["drive"]["needs_client"] is True
+    # The explicit user decision: no client id/secret UI for these two.
+    assert reg["dropbox"]["needs_client"] is False
+    assert reg["box"]["needs_client"] is False
+    assert reg["drive"]["params"] == {"scope": "drive", "skip_gdocs": "true"}
+    assert reg["dropbox"]["params"] == {} and reg["box"]["params"] == {}
+
+
+def test_oauth_rejects_an_unknown_provider(client, rcd, monkeypatch):
+    _drive_ready(monkeypatch, rcd)
+    spawned = []
+    _spawn_python(monkeypatch, "pass", record=spawned)
+    r = client.post("/api/mounts/remotes/oauth",
+                    json={"name": "x", "provider": "onedrive"}, headers=FUSED)
+    assert r.status_code == 400
+    assert "onedrive" in r.json()["error"]
+    assert spawned == []
+
+
+def test_oauth_defaults_to_drive_for_a_body_without_a_provider(client, rcd,
+                                                              monkeypatch):
+    # Backwards compatibility: the pre-registry client sent no `provider`.
+    _drive_ready(monkeypatch, rcd)
+    _spawn_python(monkeypatch, f'print("{AUTHORIZE_OK}")')
+    client.post("/api/mounts/remotes/oauth", json=DRIVE_BODY, headers=FUSED)
+    assert _wait_oauth(client)["ok"] is True
+    _, body = next(c for c in rcd.calls if c[0] == "config/create")
+    assert body["type"] == "drive"
+
+
+def test_oauth_drive_requires_a_client_id_and_secret(client, rcd, monkeypatch):
+    """rclone's shared Google client ID is being retired, so Drive cannot be
+    signed into without the user's own. The 400 must EXPLAIN that rather than
+    read as a bare validation slip — the user has real work to do in the Google
+    Cloud console before they can retry."""
+    _drive_ready(monkeypatch, rcd)
+    spawned = []
+    _spawn_python(monkeypatch, "pass", record=spawned)
+    for body in ({"name": "gdrive"},
+                 {"name": "gdrive", "client_id": "cid"},
+                 {"name": "gdrive", "client_secret": "sec"},
+                 {"name": "gdrive", "client_id": " ", "client_secret": "sec"}):
+        r = client.post("/api/mounts/remotes/oauth", json=body, headers=FUSED)
+        assert r.status_code == 400, body
+        msg = r.json()["error"].lower()
+        assert "client id" in msg and "retir" in msg
+    assert spawned == []  # refused before the browser is opened
+
+
+def test_oauth_drive_client_id_must_be_a_string(client, rcd, monkeypatch):
+    _drive_ready(monkeypatch, rcd)
+    r = client.post("/api/mounts/remotes/oauth",
+                    json={"name": "gdrive", "client_id": {"a": 1},
+                          "client_secret": "sec"}, headers=FUSED)
+    assert r.status_code == 400
+
+
+def test_oauth_client_credentials_travel_in_the_env_not_argv(client, rcd,
+                                                             monkeypatch):
+    """D209. `rclone authorize drive <id> <secret>` takes them POSITIONALLY,
+    and /proc/<pid>/cmdline is world-readable (-r--r--r--) while
+    /proc/<pid>/environ is owner-only (-r--------). So the secret goes in the
+    environment; argv must stay exactly what it was."""
+    _drive_ready(monkeypatch, rcd)
+    seen = []
+    _spawn_python(monkeypatch, f'print("{AUTHORIZE_OK}")', record=seen)
+    client.post("/api/mounts/remotes/oauth", json=DRIVE_BODY, headers=FUSED)
+    assert _wait_oauth(client)["ok"] is True
+    bin_, backend, env_extra = seen[0]
+    assert env_extra == {
+        "RCLONE_DRIVE_CLIENT_ID": DRIVE_BODY["client_id"],
+        "RCLONE_DRIVE_CLIENT_SECRET": DRIVE_BODY["client_secret"]}
+    # The argv builder never sees them at all.
+    argv = mounts_mod.endpoints._authorize_argv(bin_, backend)
+    assert argv == ["/usr/bin/rclone", "authorize", "drive"]
+    assert not any(DRIVE_BODY["client_secret"] in a for a in argv)
+
+
+def test_spawn_authorize_overlays_the_env_onto_os_environ(monkeypatch):
+    """The child still needs PATH/HOME to run at all, so the extras are an
+    OVERLAY on os.environ, not a replacement."""
+    captured = {}
+
+    class _P:
+        def __init__(self, *a, **kw):
+            captured.update(kw)
+
+    monkeypatch.setattr(mounts_mod.endpoints.subprocess, "Popen", _P)
+    monkeypatch.setenv("FUSED_TEST_MARKER", "present")
+    mounts_mod.endpoints._spawn_authorize(
+        "/usr/bin/rclone", "drive", {"RCLONE_DRIVE_CLIENT_ID": "cid"})
+    env = captured["env"]
+    assert env["FUSED_TEST_MARKER"] == "present"
+    assert env["RCLONE_DRIVE_CLIENT_ID"] == "cid"
+
+
+@pytest.mark.parametrize("provider,label", [("dropbox", "Dropbox"), ("box", "Box")])
+def test_oauth_non_drive_providers_need_no_client_credentials(
+        client, rcd, monkeypatch, provider, label):
+    _drive_ready(monkeypatch, rcd)
+    seen = []
+    _spawn_python(monkeypatch, f'print("{AUTHORIZE_OK}")', record=seen)
+    r = client.post("/api/mounts/remotes/oauth",
+                    json={"name": provider, "provider": provider}, headers=FUSED)
+    assert r.status_code == 200, r.text
+    assert _wait_oauth(client)["ok"] is True
+    assert seen[0][1] == provider
+    # No client id/secret means NO env overlay — rclone falls back to its own
+    # built-in client, which is exactly right for these two.
+    assert seen[0][2] == {}
+    _, body = next(c for c in rcd.calls if c[0] == "config/create")
+    assert body["type"] == provider
+    assert body["parameters"] == {"token": DRIVE_TOKEN}
+
+
+@pytest.mark.parametrize("provider,label", [
+    ("drive", "Google Drive"), ("dropbox", "Dropbox"), ("box", "Box")])
+def test_oauth_error_strings_name_the_provider(client, rcd, monkeypatch,
+                                               provider, label):
+    # The user-visible text used to hardcode "Google" for every backend.
+    _drive_ready(monkeypatch, rcd)
+    _spawn_python(monkeypatch, "import time; time.sleep(30)")
+    body = {"name": "r", "provider": provider}
+    if provider == "drive":
+        body |= {"client_id": "cid", "client_secret": "sec"}
+    client.post("/api/mounts/remotes/oauth", json=body, headers=FUSED)
+    client.post("/api/mounts/remotes/oauth/cancel", headers=FUSED)
+    s = _wait_oauth(client)
+    assert s["error"] == f"the {label} sign-in was canceled"
+    assert s["provider"] == provider
+
+
+def test_oauth_status_reports_the_provider(client, rcd, monkeypatch):
+    _drive_ready(monkeypatch, rcd)
+    _spawn_python(monkeypatch, f'print("{AUTHORIZE_OK}")')
+    client.post("/api/mounts/remotes/oauth",
+                json={"name": "db", "provider": "dropbox"}, headers=FUSED)
+    s = _wait_oauth(client)
+    assert s["provider"] == "dropbox" and s["backend"] == "dropbox"
+    assert client.get("/api/mounts/remotes/oauth/status").json()["provider"] == "dropbox"
+
+
+def test_oauth_does_not_retain_the_client_secret_after_using_it(client, rcd,
+                                                                monkeypatch):
+    """Same discipline as the token: `_authorize` outlives the attempt (the
+    status endpoint reads the last outcome from it), so the secret's lifetime
+    has to be bounded explicitly rather than by the record's."""
+    _drive_ready(monkeypatch, rcd)
+    _spawn_python(monkeypatch, f'print("{AUTHORIZE_OK}")')
+    client.post("/api/mounts/remotes/oauth", json=DRIVE_BODY, headers=FUSED)
+    assert _wait_oauth(client)["ok"] is True
+    job = mounts_mod.endpoints._authorize
+    assert job.client_id == "" and job.client_secret == ""
+
+
+def test_oauth_never_leaks_the_client_secret_into_an_error(client, rcd,
+                                                           monkeypatch):
+    _drive_ready(monkeypatch, rcd)
+    _spawn_python(
+        monkeypatch,
+        'import sys; sys.stderr.write("oauth2: denied\\n"); sys.exit(1)')
+    client.post("/api/mounts/remotes/oauth", json=DRIVE_BODY, headers=FUSED)
+    s = _wait_oauth(client)
+    assert s["ok"] is False
+    assert DRIVE_BODY["client_secret"] not in (s["error"] or "")
 
 
 # -- credential auto-detection (keyless env_auth remotes) ------------------------
