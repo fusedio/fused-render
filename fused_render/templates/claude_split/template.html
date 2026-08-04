@@ -175,7 +175,18 @@
     resize: none;
     outline: none;
   }
-  #annpop .hint { color: var(--faint); font-size: 11px; margin-top: 5px; }
+  #annpop .hint { color: var(--faint); font-size: 11px; margin-top: 5px; display: flex; align-items: center; }
+  #anndel {
+    margin-left: auto;
+    border: 0;
+    background: transparent;
+    color: var(--error);
+    font: inherit;
+    font-size: 11px;
+    cursor: pointer;
+    padding: 0 2px;
+  }
+  .annpin:not(.sent) { cursor: pointer; }
 
   /* pending-annotation chips above the composer */
   .annchips { display: flex; flex-wrap: wrap; gap: 6px; }
@@ -597,7 +608,7 @@
     <button id="annbtn" type="button" aria-pressed="false" title="Annotate the app, then send the notes to Claude">✎ Annotate</button>
     <div id="annpop">
       <textarea rows="2" placeholder="What about this element?" spellcheck="false"></textarea>
-      <div class="hint">Enter to add · Esc to cancel</div>
+      <div class="hint">Enter to save · Esc to cancel <button id="anndel" type="button" hidden>Delete</button></div>
     </div>
   </div>
   <div id="divider" role="separator" aria-orientation="vertical" aria-label="Resize panels"></div>
@@ -770,7 +781,8 @@ const annChipsEls = [
 const annFrame = document.getElementById("leftframe");
 
 let annOn = false;
-let annDraft = null;  // anchor of the note being composed
+let annDraft = null;    // anchor of a NEW note being composed
+let annEditing = null;  // id of an existing pending note being edited
 
 function annLoad() {
   try {
@@ -875,7 +887,8 @@ function renderAnn() {
     pin.style.left = Math.min(host.clientWidth - 14, Math.max(14, x)) + "px";
     pin.style.top = Math.max(14, y) + "px";
     pin.textContent = c.sent ? "✓" : annLabelFor(i);
-    pin.title = c.content;
+    pin.title = c.sent ? "Sent to Claude: " + c.content : c.content + " — click to edit";
+    if (!c.sent) pin.onclick = () => annOpenEditor(c, parseFloat(pin.style.left), parseFloat(pin.style.top));
     annPins.appendChild(pin);
   });
   // pending chips above both composers
@@ -892,7 +905,15 @@ function renderAnn() {
       const txt = document.createElement("span");
       txt.className = "txt";
       txt.textContent = c.content;
-      txt.title = c.content;
+      txt.title = c.content + " — click to edit";
+      txt.style.cursor = "pointer";
+      // Edit from the chip too: the popup lives over the left pane, so place
+      // it at the note's pin when it resolves, else roughly centered.
+      txt.onclick = () => {
+        const el2 = annFrame.contentDocument ? annResolve(c, annFrame.contentDocument) : null;
+        const r = el2 && el2.getBoundingClientRect();
+        annOpenEditor(c, r ? r.right : host.clientWidth / 3, r ? r.top : host.clientHeight / 3);
+      };
       const x = document.createElement("button");
       x.type = "button";
       x.setAttribute("aria-label", "Remove annotation");
@@ -904,19 +925,42 @@ function renderAnn() {
   });
 }
 
-function annOpenComposer(x, y, anchor) {
-  annDraft = anchor;
+const annDelBtn = document.getElementById("anndel");
+function annPlacePop(x, y) {
   const host = document.getElementById("left");
   annPop.style.display = "block";
   annPop.style.left = Math.min(host.clientWidth - 292, Math.max(0, x + 10)) + "px";
   annPop.style.top = Math.min(host.clientHeight - 110, Math.max(0, y + 10)) + "px";
-  annTa.value = "";
   annTa.focus();
+}
+function annOpenComposer(x, y, anchor) {
+  annDraft = anchor;
+  annEditing = null;
+  annDelBtn.hidden = true;
+  annTa.value = "";
+  annPlacePop(x, y);
+}
+// Reopen a PENDING note for editing (a sent one is already in the transcript
+// and can't be recalled — its pin is inert). The anchor stays as captured;
+// only the text is editable.
+function annOpenEditor(c, x, y) {
+  annDraft = null;
+  annEditing = c.id;
+  annDelBtn.hidden = false;
+  annTa.value = c.content;
+  annPlacePop(x, y);
+  annTa.select();
 }
 function annCloseComposer() {
   annPop.style.display = "none";
   annDraft = null;
+  annEditing = null;
 }
+annDelBtn.addEventListener("click", () => {
+  if (annEditing) annotations = annotations.filter((a) => a.id !== annEditing);
+  annSave();
+  annCloseComposer();
+});
 annTa.addEventListener("keydown", (e) => {
   if (e.key === "Escape") annCloseComposer();
   if (e.key === "Enter" && !e.shiftKey) {
@@ -925,6 +969,9 @@ annTa.addEventListener("keydown", (e) => {
     if (content && annDraft) {
       annotations.push({ id: crypto.randomUUID(), content, createdAt: Date.now(), ...annDraft });
       annSave();
+    } else if (content && annEditing) {
+      const c = annotations.find((a) => a.id === annEditing);
+      if (c && !c.sent) { c.content = content; annSave(); }
     }
     annCloseComposer();
   }
