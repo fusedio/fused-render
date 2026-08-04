@@ -23,6 +23,7 @@ import type {
   MountsResult,
   MountUploads,
   RcloneRemote,
+  RemoteKind,
   RemoteOAuthStatus,
   RemoteSuggestion,
 } from "../lib/api";
@@ -304,6 +305,23 @@ export function mountRootForLink(path: string): string {
   return key.length > 1 ? `${bucket}/${key[0]}` : bucket;
 }
 
+// The Remote dropdown's groups, in display order.
+//
+// Grouped by HOW A REMOTE IS REACHED, never by whether it has been created yet.
+// Created-ness used to be the axis — one "Remotes" group plus two groups of
+// not-yet-created suggestions — which is an implementation detail no user
+// thinks in, and it degenerated badly at both ends: create everything and the
+// two labelled groups vanish, leaving one flat list where an anonymous
+// read-only remote sits between two credentialed ones, distinguishable only by
+// reading to the end of its label. A suggestion and the remote it becomes now
+// live in the same group; the "+" prefix on its option is the only difference,
+// since picking it costs a creation round-trip.
+const REMOTE_GROUPS: { kind: RemoteKind; label: string }[] = [
+  { kind: "other", label: "Your remotes" },
+  { kind: "detected", label: "Detected credentials (no keys stored)" },
+  { kind: "public", label: "Public datasets (no credentials)" },
+];
+
 function AddMount({
   remotes,
   suggested,
@@ -364,44 +382,44 @@ function AddMount({
     pathRef.current?.focus();
   }, [preselect, remotes]);
 
-  // Classify an available remote/suggestion so a pasted link can pick a matching
-  // one: which cloud, and whether it's a public (no-credentials) remote. Names +
-  // labels are the only client-side signal (e.g. "aws:" + "AWS S3 — default
-  // profile", or "aws-open:" + "… public datasets (no credentials)").
-  const classify = (nameRaw: string, labelRaw: string) => {
-    const n = nameRaw.toLowerCase();
-    const l = labelRaw.toLowerCase();
-    const provider =
-      n.startsWith("gcs") || l.includes("google cloud")
-        ? "gcs"
-        : n.startsWith("aws") || l.includes("s3")
-          ? "s3"
-          : "other";
-    const isPublic =
-      n.includes("open") ||
-      l.includes("public") ||
-      l.includes("no credentials") ||
-      l.includes("anon");
-    return { provider, isPublic };
-  };
+  // Everything the Remote picker can offer, as one list. A remote the user has
+  // (value = its verbatim rclone spec) and a suggestion that becomes one on
+  // submit (value = "suggest:<id>") differ only in `creates`; `kind` and
+  // `provider` come from the SERVER for both, classified from the stored rclone
+  // config rather than sniffed out of names and label substrings on this side.
+  const choices = [
+    ...remotes.map((r) => ({
+      value: r.name,
+      label: r.label,
+      kind: r.kind,
+      provider: r.provider,
+      creates: false,
+    })),
+    ...offerable.map((s) => ({
+      value: `suggest:${s.id}`,
+      label: s.label,
+      kind: s.kind,
+      provider: s.provider,
+      creates: true,
+    })),
+  ];
 
-  // The <option> value (a raw remote spec or "suggest:<id>") to select for a
-  // pasted link's provider: prefer a PUBLIC (anonymous) remote over a
-  // credentialed one — pasted links are usually to open/public data, and an
-  // anonymous request works even when creds are absent or expired; the user can
-  // switch to their own remote for a private bucket. undefined when nothing
-  // matches — the link still fills Path/Name and the user picks.
-  const pickRemote = (provider: "s3" | "gcs"): string | undefined => {
-    const candidates = [
-      ...remotes.map((r) => ({ value: r.name, ...classify(r.name, r.label) })),
-      ...offerable.map((s) => ({
-        value: `suggest:${s.id}`,
-        ...classify(s.remote_name, s.label),
-        isPublic: s.kind === "public",
-      })),
-    ].filter((c) => c.provider === provider);
-    return (candidates.find((c) => c.isPublic) ?? candidates[0])?.value;
-  };
+  // The <option> value to select for a pasted link's provider. Order of
+  // preference: a PUBLIC (anonymous) remote first — pasted links are usually to
+  // open data, and an unsigned request works even when creds are absent or
+  // expired — then a detected credential source, and only then one of the
+  // user's own (which for an s3:// link may well be a MinIO/R2 endpoint that
+  // cannot serve it). Within a tier, one that already EXISTS beats one that
+  // would cost a creation round-trip. undefined when nothing matches — the link
+  // still fills Path/Name and the user picks.
+  const KIND_RANK: Record<RemoteKind, number> = { public: 0, detected: 1, other: 2 };
+  const pickRemote = (provider: "s3" | "gcs"): string | undefined =>
+    choices
+      .filter((c) => c.provider === provider)
+      .sort(
+        (a, b) =>
+          KIND_RANK[a.kind] - KIND_RANK[b.kind] || Number(a.creates) - Number(b.creates),
+      )[0]?.value;
 
   const parsedLink = parseStorageUrl(link);
 
@@ -465,9 +483,10 @@ function AddMount({
     <section className="prefs-section">
       <h2>Add mount</h2>
       <p className="deploy-muted">
-        Surface a remote as a local folder. Pick a remote you created, one under{" "}
-        <b>Detected credentials</b> (from your AWS / gcloud config — no keys stored), or{" "}
-        <b>Public datasets</b> for anonymous access to open data (no credentials needed).
+        Surface a remote as a local folder. The <b>Remote</b> list groups by how each one is
+        reached — your own remotes, credentials detected on this machine, and public data
+        that needs none. An entry marked <b>+</b> isn’t set up yet; picking it creates the
+        remote as part of adding the mount.
       </p>
       <div className="mount-paste">
         <Field label="Paste a link">
@@ -512,39 +531,21 @@ function AddMount({
         <Field label="Remote" required>
           <Select value={remote} onChange={(e) => setRemote(e.target.value)}>
             <option value="">— remote —</option>
-            {remotes.length > 0 && (
-              <optgroup label="Remotes">
-                {remotes.map((r) => (
-                  // value is the raw rclone spec (add() and the live preview
-                  // mount against r.name); only the shown text is the label.
-                  <option key={r.name} value={r.name}>
-                    {r.label}
-                  </option>
-                ))}
-              </optgroup>
-            )}
-            {offerable.some((s) => s.kind === "public") && (
-              <optgroup label="Public datasets (no credentials)">
-                {offerable
-                  .filter((s) => s.kind === "public")
-                  .map((s) => (
-                    <option key={s.id} value={`suggest:${s.id}`}>
-                      {s.label}
+            {REMOTE_GROUPS.map((g) => {
+              const items = choices.filter((c) => c.kind === g.kind);
+              if (items.length === 0) return null;
+              return (
+                <optgroup key={g.kind} label={g.label}>
+                  {items.map((c) => (
+                    // value is the raw rclone spec — or "suggest:<id>", which
+                    // add() materializes first; only the shown text differs.
+                    <option key={c.value} value={c.value}>
+                      {c.creates ? `+ ${c.label}` : c.label}
                     </option>
                   ))}
-              </optgroup>
-            )}
-            {offerable.some((s) => s.kind === "detected") && (
-              <optgroup label="Detected credentials">
-                {offerable
-                  .filter((s) => s.kind === "detected")
-                  .map((s) => (
-                    <option key={s.id} value={`suggest:${s.id}`}>
-                      {s.label}
-                    </option>
-                  ))}
-              </optgroup>
-            )}
+                </optgroup>
+              );
+            })}
           </Select>
         </Field>
         <Field label="Path">

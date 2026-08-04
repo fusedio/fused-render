@@ -2393,13 +2393,14 @@ def test_suggestions_view_flags_already_materialized(monkeypatch):
         {"id": "aws-env", "label": "L", "remote_name": "aws-env",
          "backend": "s3", "params": {"provider": "AWS", "env_auth": "true"}},
     ])
-    # kind defaults to "detected" for entries that don't set it.
+    # kind defaults to "detected" for entries that don't set it; provider comes
+    # from the rclone backend, the same way a materialized remote's does.
     assert mounts_mod._suggestions_view([]) == [
         {"id": "aws-env", "label": "L", "remote_name": "aws-env",
-         "kind": "detected", "exists": False}]
+         "kind": "detected", "provider": "s3", "exists": False}]
     assert mounts_mod._suggestions_view(["aws-env:"]) == [
         {"id": "aws-env", "label": "L", "remote_name": "aws-env",
-         "kind": "detected", "exists": True}]
+         "kind": "detected", "provider": "s3", "exists": True}]
 
 
 def test_public_bucket_suggestion_always_present(monkeypatch):
@@ -2443,37 +2444,56 @@ _AWS_OPEN_SUGG = {
 }
 
 
-def test_remote_label_matches_suggestion():
+def test_remote_view_matches_suggestion():
     """A remote whose stored config matches a suggestion's backend+params reuses
-    that suggestion's friendly label — one stable human name across its lifecycle."""
+    that suggestion's friendly label AND its kind — one stable human name, and
+    one stable dropdown group, across its whole lifecycle."""
     configs = {"aws-open": {"type": "s3", "provider": "AWS", "env_auth": "false"}}
-    assert (mounts_mod._remote_label("aws-open:", [_AWS_OPEN_SUGG], configs)
-            == "AWS S3 — public datasets (no credentials)")
+    assert mounts_mod._remote_view("aws-open:", [_AWS_OPEN_SUGG], configs) == {
+        "name": "aws-open:",
+        "label": "AWS S3 — public datasets (no credentials)",
+        "kind": "public", "provider": "s3"}
 
 
-def test_remote_label_falls_back_to_bare_name():
+def test_remote_view_falls_back_to_bare_name():
     """An unknown/custom remote (no matching suggestion) keeps its bare rclone
-    name as the label."""
-    assert mounts_mod._remote_label("myminio:", [], {}) == "myminio:"
+    name as the label and groups as the user's own."""
+    assert mounts_mod._remote_view("myminio:", [], {}) == {
+        "name": "myminio:", "label": "myminio:", "kind": "other",
+        "provider": "other"}
 
 
-def test_remote_label_ignores_name_collision():
+def test_remote_view_labels_oauth_backend():
+    """A browser-connected remote showed as a bare "gdrive:" with no hint of
+    which service it was. The backend `type` names it — and it is the ONLY key
+    read from these configs, the rest of which is the OAuth token."""
+    configs = {"gdrive": {"type": "drive", "token": "SECRET"}}
+    view = mounts_mod._remote_view("gdrive:", [], configs)
+    assert view == {"name": "gdrive:", "label": "Google Drive — gdrive",
+                    "kind": "other", "provider": "other"}
+    assert "SECRET" not in json.dumps(view)
+
+
+def test_remote_view_ignores_name_collision():
     """Provenance, not name: a user's own remote merely named `aws` whose config
-    differs from the default-profile suggestion must NOT inherit that label —
-    the dropdown would otherwise claim the wrong credential source for the mount."""
+    differs from the default-profile suggestion must NOT inherit that label or
+    its kind — the dropdown would otherwise claim the wrong credential source
+    for the mount and file it under Detected credentials."""
     sugg = {"id": "aws-profile:default", "label": "AWS S3 — default profile",
             "remote_name": "aws", "backend": "s3",
             "params": {"provider": "AWS", "env_auth": "true", "profile": "default"}}
     # a custom MinIO remote that just happens to be named "aws"
     configs = {"aws": {"type": "s3", "provider": "Minio",
                        "endpoint": "http://localhost:9000"}}
-    assert mounts_mod._remote_label("aws:", [sugg], configs) == "aws:"
+    assert mounts_mod._remote_view("aws:", [sugg], configs) == {
+        "name": "aws:", "label": "aws:", "kind": "other", "provider": "s3"}
 
 
 def test_rclone_state_labels_materialized_remote(monkeypatch):
-    """_rclone_state exposes remotes as {name,label}: a materialized suggestion
-    (aws-open:, config matches) carries its friendly label, a custom remote
-    (myminio:) its bare name. The name stays the verbatim rclone mount base."""
+    """_rclone_state exposes remotes as {name,label,kind,provider}: a
+    materialized suggestion (aws-open:, config matches) carries its friendly
+    label and its kind, a custom remote (myminio:) its bare name under 'other'.
+    The name stays the verbatim rclone mount base."""
     monkeypatch.setattr(mounts_mod, "_credential_suggestions",
                         lambda: [_AWS_OPEN_SUGG])
     _fake_rclone(monkeypatch, existing_remotes=("aws-open:", "myminio:"),
@@ -2483,8 +2503,10 @@ def test_rclone_state_labels_materialized_remote(monkeypatch):
 
     state = mounts_mod._rclone_state()
     assert state["remotes"] == [
-        {"name": "aws-open:", "label": "AWS S3 — public datasets (no credentials)"},
-        {"name": "myminio:", "label": "myminio:"},
+        {"name": "aws-open:", "label": "AWS S3 — public datasets (no credentials)",
+         "kind": "public", "provider": "s3"},
+        {"name": "myminio:", "label": "myminio:", "kind": "other",
+         "provider": "s3"},
     ]
     # the materialized aws-open stays in the suggestions, flagged exists (it
     # also shows under Remotes); the client filters it out of what it offers.

@@ -119,28 +119,57 @@ def _rclone_config_dump(bin_: str) -> dict:
         return {}
 
 
-def _remote_label(remote: str, suggestions: list[dict], configs: dict) -> str:
-    """Friendly label for a materialized rclone remote, so it presents under the
-    SAME human name the suggestion used across its whole lifecycle (e.g. the
-    built-in public option shows as "AWS S3 — public datasets…", not the cryptic
-    "aws-open:" it materializes into). Match against the FULL suggestion set —
-    including ones already materialized (_suggestions_view flags those
-    `exists`, and this is the label they show under).
+# rclone backend type → the coarse cloud the client groups a pasted s3://
+# or gs:// link by. Everything else is "other".
+_BACKEND_PROVIDERS = {"s3": "s3", "google cloud storage": "gcs"}
+
+# Backends reached by signing in rather than by credentials on disk, mapped to
+# the name the user knows them by — a browser-connected remote would otherwise
+# show as a bare "gdrive:" with no clue which account or service it is.
+# `type` is the ONLY config key read for these: the rest of their stored config
+# is the OAuth token, which must never reach a client payload.
+_OAUTH_BACKENDS = {"drive": "Google Drive", "dropbox": "Dropbox", "box": "Box"}
+
+
+def _remote_view(remote: str, suggestions: list[dict], configs: dict) -> dict:
+    """{name, label, kind, provider} for a materialized rclone remote.
+
+    `label` presents it under the SAME human name its suggestion used across its
+    whole lifecycle (the built-in public option shows as "AWS S3 — public
+    datasets…", not the cryptic "aws-open:" it materializes into). Match against
+    the FULL suggestion set — including ones already materialized
+    (_suggestions_view flags those `exists`, and this is the label they show
+    under).
 
     Matching is by PROVENANCE, not name alone: the remote's stored config (from
     `rclone config dump`, keyed by bare name) must match the suggestion's backend
     and every param it was created with. A user's own remote that merely happens
     to be named `aws`/`gcs` therefore keeps its bare name instead of inheriting a
     credential-source label it never came from. Values compare case-insensitively
-    (rclone normalizes booleans). No match (e.g. "myminio:") → the bare string."""
+    (rclone normalizes booleans).
+
+    `kind` and `provider` exist so the client can group and match remotes on
+    PROVENANCE too. It used to sniff both out of the name and label ("starts
+    with aws", "label contains 'public'"), which mis-sorted anyone's own remote
+    named `aws-something` — and, worse, made created-ness the grouping axis,
+    since only suggestions carried a real kind. `kind` is the matched
+    suggestion's ('public' / 'detected') or 'other' for a remote the user
+    brought themselves; `provider` comes from the rclone backend type."""
     cfg = configs.get(remote.rstrip(":"), {})
+    backend = str(cfg.get("type", "")).lower()
+    provider = _BACKEND_PROVIDERS.get(backend, "other")
     for s in suggestions:
         if (f'{s["remote_name"]}:' == remote
-                and str(cfg.get("type", "")).lower() == s["backend"].lower()
+                and backend == s["backend"].lower()
                 and all(str(cfg.get(k, "")).lower() == str(v).lower()
                         for k, v in s["params"].items())):
-            return s["label"]
-    return remote
+            return {"name": remote, "label": s["label"],
+                    "kind": s.get("kind", "detected"), "provider": provider}
+    bare = remote.rstrip(":")
+    label = (f"{_OAUTH_BACKENDS[backend]} — {bare}" if backend in _OAUTH_BACKENDS
+             else remote)
+    return {"name": remote, "label": label, "kind": "other",
+            "provider": provider}
 
 
 def _suggestions_view(remotes: list[str]) -> list[dict]:
@@ -155,12 +184,18 @@ def _suggestions_view(remotes: list[str]) -> list[dict]:
 
     Consumers that CREATE from a suggestion (the Add-mount Remote dropdown,
     which submits `suggest:<id>`) must filter on `exists` themselves — offering
-    an existing one would 409 or duplicate. `kind` groups them in the dropdown:
-    'public' vs the default 'detected'."""
+    an existing one would 409 or duplicate.
+
+    `kind` ('public' vs the default 'detected') and `provider` are the SAME
+    fields _remote_view puts on a materialized remote, and mean the same thing:
+    the dropdown groups a suggestion and the remote it becomes into one group,
+    because created-ness is an implementation detail and not something a user
+    thinks in."""
     from fused_render.shell.mounts import _credential_suggestions
     return [
         {"id": s["id"], "label": s["label"], "remote_name": s["remote_name"],
          "kind": s.get("kind", "detected"),
+         "provider": _BACKEND_PROVIDERS.get(s["backend"].lower(), "other"),
          "exists": f'{s["remote_name"]}:' in remotes}
         for s in _credential_suggestions()
     ]
@@ -170,21 +205,22 @@ def _rclone_state_view(version: str | None, names: list[str],
                        bin_: str | None) -> dict:
     """Assemble the available:True payload from a version string and the remote
     names (each carrying its verbatim rclone spec, incl trailing ':', used
-    unchanged as the mount base). Each remote also gets a friendly `label` so it
-    reads under one stable human name whatever its lifecycle stage. Compute the
-    suggestion set and the config dump once, then label every remote against them
-    (both do I/O, so a per-remote call would be O(N)). `bin_` may be None when a
-    live daemon vouched for rclone but the binary didn't resolve on PATH — the
-    config dump is then skipped and labels degrade to bare names."""
+    unchanged as the mount base). Each remote also gets a friendly `label`, plus
+    the `kind`/`provider` the client groups and matches on — see _remote_view.
+    Compute the suggestion set and the config dump once, then classify every
+    remote against them (both do I/O, so a per-remote call would be O(N)).
+    `bin_` may be None when a live daemon vouched for rclone but the binary
+    didn't resolve on PATH — the config dump is then skipped, so every remote
+    degrades to a bare name under kind 'other'."""
     from fused_render.shell.mounts import (
         _credential_suggestions,
         _rclone_config_dump,
+        _remote_view,
         _suggestions_view,
     )
     suggestions = _credential_suggestions()
     configs = _rclone_config_dump(bin_) if bin_ else {}
-    remotes = [{"name": n, "label": _remote_label(n, suggestions, configs)}
-               for n in names]
+    remotes = [_remote_view(n, suggestions, configs) for n in names]
     return {"available": True, "version": version, "remotes": remotes,
             "suggested": _suggestions_view(names)}
 

@@ -1041,6 +1041,16 @@ export type MountUploads =
     }
   | { unknown: true; reason: string };
 
+// How a remote is reached, which is what the Remote dropdown groups by:
+// "public" = anonymous, no credentials at all; "detected" = the user's own
+// AWS/gcloud credentials, read where they already live; "other" = a remote the
+// user set up themselves (only a materialized remote can be this).
+export type RemoteKind = "public" | "detected" | "other";
+
+// The cloud behind a remote, from its rclone backend type — used to match a
+// pasted s3:// or gs:// link to a remote that can actually serve it.
+export type RemoteProvider = "s3" | "gcs" | "other";
+
 // A remote we can offer from credentials already present in the user's
 // dotfiles (AWS profiles/env, gcloud ADC). Materialized on first use into a
 // keyless env_auth remote; `id` identifies the source to the detect endpoint.
@@ -1048,9 +1058,8 @@ export interface RemoteSuggestion {
   id: string;
   label: string;
   remote_name: string;
-  // "public" = anonymous, no-credentials remote (public buckets); "detected" =
-  // materialized from the user's own AWS/gcloud credentials. Groups the dropdown.
-  kind: "public" | "detected";
+  kind: RemoteKind;
+  provider: RemoteProvider;
   // Whether `remote_name` has ALREADY been materialized. The server returns
   // every suggestion either way, so the setup panels can show what is possible;
   // anything that CREATES from a suggestion (the "suggest:<id>" options in Add
@@ -1064,6 +1073,13 @@ export interface RemoteSuggestion {
 export interface RcloneRemote {
   name: string;
   label: string;
+  // Same two fields a RemoteSuggestion carries, meaning the same thing: the
+  // server classifies a remote by PROVENANCE (its stored rclone config matched
+  // against the suggestion that would have created it), so the client groups
+  // and link-matches on facts rather than sniffing names and label substrings.
+  // "other" = a remote the user brought themselves (custom S3, an OAuth account).
+  kind: RemoteKind;
+  provider: RemoteProvider;
 }
 
 export interface MountsResult {
