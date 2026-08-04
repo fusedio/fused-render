@@ -901,7 +901,7 @@ async def run_python(path: str, params: dict) -> dict:
         # to be READ reached the user as the literal word `undefined`.
         #
         # Off the event loop, for the same reason `app_interpreter` above is: since
-        # D206 this is not a single `os.path.exists` any more — the first call for a
+        # D212 this is not a single `os.path.exists` any more — the first call for a
         # given venv probes its interpreter with `subprocess.run(..., timeout=5)`.
         # /api/run awaits this coroutine directly (`routers/run.py`), so inline that
         # stalls the entire server — websockets, watcher, every other request — for

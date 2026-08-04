@@ -105,7 +105,7 @@ _SPAWNED: set[int] = set()
 # `test_the_backend_attributes_this_module_reads_still_exist` can pin them.
 BACKEND_ATTRS = ("_venvs_path", "_python_executable")
 
-# venv directory -> "does its own python actually run" (D206). Populated by
+# venv directory -> "does its own python actually run" (D212). Populated by
 # `_venv_is_usable`, which is the ONLY reader/writer, and dropped by
 # `is_installed` when the marker goes away. In-process and never persisted: the
 # thing it remembers is a property of THIS machine's filesystem as it is right
@@ -126,7 +126,7 @@ _VALIDATED: dict[str, bool] = {}
 # up answering a question nobody asked it and nothing ever re-asks.
 #
 # Deliberately not leaning on `_REBUILD_ATTEMPTED` to absorb that instead: the
-# rebuild budget is a POLICY (D206 records it as one, and policies get tuned), and
+# rebuild budget is a POLICY (D212 records it as one, and policies get tuned), and
 # quietly making it double as the staleness backstop means a later change to the
 # budget resurfaces staleness somewhere unrelated to the change that caused it.
 _GENERATION: dict[str, int] = {}
@@ -138,7 +138,7 @@ _GENERATION: dict[str, int] = {}
 _EPOCH = 0
 
 # venv directories whose ready marker this process has already discarded once
-# (D206). The bound on the repair: one rebuild per venv per process, because for
+# (D212). The bound on the repair: one rebuild per venv per process, because for
 # the cohort this whole mechanism exists for the rebuild is guaranteed to reproduce
 # the same breakage, and re-downloading hundreds of MB on every page reload is
 # worse than the error it is trying to avoid. See `is_installed`.
@@ -443,7 +443,7 @@ def is_installed(requirements: list[str]) -> bool:
     """True iff the venv for `requirements` exists, is complete AND can run.
 
     The ready marker is the INDEX of installed venvs — the only thing consulted to
-    find one, and its absence is final — but since D206 it is treated as a *claim*
+    find one, and its absence is final — but since D212 it is treated as a *claim*
     that gets verified once per process rather than as proof. The macOS DMG is why:
     its bundled interpreter could not self-locate without PYTHONHOME, which
     `python_compute` strips from every child, so a venv built from it recorded a
@@ -510,7 +510,7 @@ def is_installed(requirements: list[str]) -> bool:
     # places to get the identity comparison subtly different.
     #
     # A definite failure means the repair is allowed exactly ONCE per venv dir per
-    # process. Beyond that, the download is known-futile: for the cohort D206 exists
+    # process. Beyond that, the download is known-futile: for the cohort D212 exists
     # for (a pre-symlink `.app`) the rebuild reproduces the identical breakage,
     # because the property that failed is the bundled interpreter's own base prefix
     # and the venv key folds in only that interpreter's path and version — both

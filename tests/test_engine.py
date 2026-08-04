@@ -666,7 +666,7 @@ def test_a_header_is_the_complete_requirement_list(monkeypatch, tmp_path):
 def test_the_install_preflight_does_not_run_on_the_event_loop(monkeypatch, tmp_path):
     """`is_installed` can spawn a subprocess, so it must not block the loop.
 
-    Since D206 the pre-flight is not a single `os.path.exists` any more: the first
+    Since D212 the pre-flight is not a single `os.path.exists` any more: the first
     call for a venv probes its interpreter with `subprocess.run(..., timeout=5)`.
     `/api/run` awaits this coroutine directly (`routers/run.py`), so running that
     inline stalls the ENTIRE server — websockets, the file watcher, every other

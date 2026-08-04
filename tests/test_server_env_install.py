@@ -334,7 +334,7 @@ function makeEl() {
 }
 // `head` + getElementById because the indeterminate bar needs keyframes, which
 // inline styles cannot express — so the loader injects one <style> ONCE and finds
-// it by id on every call after that (D207).
+// it by id on every call after that (D213).
 globalThis.document = {
   createElement: () => makeEl(),
   body: makeEl(),
@@ -517,7 +517,7 @@ console.log(JSON.stringify({ afterFirst, afterSecond: installUi.mounted }));
     assert result["afterSecond"] is False, "the overlay must go once the last one ends"
 
 
-# --- the install stage has no percentage, so the bar must not claim one (D207) --
+# --- the install stage has no percentage, so the bar must not claim one (D213) --
 #
 # The worker parks at pct 25 for the entire download (there is nothing to measure
 # behind uv's captured output), so a bar sitting at 25% for four minutes reads as

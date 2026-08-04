@@ -577,7 +577,7 @@
   // single entry that the first call to settle deletes.
   const installing = new Map();
 
-  // The indeterminate bar (D207). The worker parks at pct 25 for the WHOLE download
+  // The indeterminate bar (D213). The worker parks at pct 25 for the WHOLE download
   // — `ensure_requirements_venv` runs uv behind captured output, so there is no
   // per-package progress to report — and a bar sitting at 25% for four minutes reads
   // as frozen, which is what users reported. An indeterminate bar says the true
