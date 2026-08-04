@@ -3,6 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <title>Git bundle</title>
+<script src="/template-shared/folder-picker.js"></script>
 <style>
   /* Tokens mirror the app shell (shell.css) so the bundle viewer reads as a
      native part of the explorer, like the zip browser does — including its
@@ -164,13 +165,20 @@
 
   /* Fixed layout: auto layout hands the surplus to every column equally, so
      the subject — the only column that actually needs room — ends up wrapping
-     to three lines beside empty space. Pinning the three narrow columns gives
-     the rest to the subject. */
-  table { width: 100%; border-collapse: collapse; table-layout: fixed; }
-  th:nth-child(1) { width: 92px; }
-  th:nth-child(3) { width: 150px; }
-  th:nth-child(4) { width: 132px; }
+     to three lines beside empty space. Pinning the other three gives the rest
+     to the subject.
+     The pins are PERCENTAGES, not pixels: this view is usually a narrow
+     preview pane (~330px of table), and three fixed columns summing to more
+     than that squeezed the subject to zero width and wrapped the author one
+     letter per line. A min-width keeps the row legible when even the
+     percentages get tight, and .main scrolls rather than the page. */
+  table { width: 100%; min-width: 300px; border-collapse: collapse; table-layout: fixed; }
+  th:nth-child(1) { width: 20%; }
+  th:nth-child(3) { width: 20%; }
+  th:nth-child(4) { width: 24%; }
   td.subject { overflow-wrap: anywhere; }
+  /* In a genuinely narrow pane the author is the first thing worth dropping:
+     the commit, what it did and when it happened still tell the story. */
   th, td {
     text-align: left;
     padding: 6px 16px;
@@ -180,6 +188,23 @@
   th { color: var(--fg-muted); font-weight: 500; font-size: 11.5px; position: sticky; top: 0; background: var(--bg); }
   td.sha { color: var(--fg-muted); white-space: nowrap; }
   td.when { color: var(--fg-muted); white-space: nowrap; }
+
+  /* Keyed on the VIEWPORT while the table sits beside a 260px ref column, so
+     the threshold is the pane width plus that column: under ~640px the table
+     has less than 380px to work with, which is where the author starts
+     costing the subject more than it is worth. */
+  @media (max-width: 640px) {
+    th:nth-child(3), td:nth-child(3) { display: none; }
+    /* Tighter gutters, and a wider commit column: the sha is nowrap, so at
+       narrow widths it overflowed its cell and made the pane scroll
+       sideways even though the table itself fitted. */
+    th, td { padding: 6px 10px; }
+    th:nth-child(1) { width: 27%; }
+    /* "37 minutes ago" is wider than its column here and the cell is nowrap,
+       so it was the last thing still pushing the pane sideways. Let it wrap;
+       a two-line relative date costs nothing. */
+    td.when { white-space: normal; }
+  }
   /* The subject takes the slack. The rule has to name the HEADER cell too:
      with auto table layout the header row's widths win, so styling only the
      body cell leaves the subject squeezed into a three-line column beside
@@ -200,7 +225,7 @@
   <div class="clone" id="clonebar" style="display:none">
     <code class="mono" id="clonecmd"></code>
     <button id="copy">Copy</button>
-    <button id="clone">Clone here</button>
+    <button id="clone">Clone…</button>
   </div>
   <div id="notice"></div>
   <div class="cols">
@@ -361,17 +386,38 @@
 
   // A real clone, not just the command: git unpacks a local bundle in one
   // synchronous shot, so it needs no job system — the button just waits.
+  // Where it lands is the user's choice (the shared folder picker), seeded at
+  // the bundle's own folder with the name the server would have derived, so
+  // the default is one Enter away and anything else is two clicks.
   document.getElementById("clone").onclick = async (e) => {
     const btn = e.currentTarget;
+    const dest = OVERVIEW.clone_dest || "";
+    const choice = await fusedFolderPicker.open({
+      start: dest.slice(0, dest.lastIndexOf("/")) || "/",
+      title: "Clone this bundle into…",
+      name: dest.slice(dest.lastIndexOf("/") + 1),
+      confirmLabel: "Clone",
+    });
+    if (!choice) return;  // cancelled: nothing written, nothing changed
     btn.disabled = true;
     notify("Cloning…", false);
     try {
-      const data = await fused.runPython(
-        "./reader.py", { file: FILE, action: "clone" }, { key: null });
+      // A REJECTED runPython (not a refusal payload — an exception inside the
+      // reader) has to land here too, or the page sits on "Cloning…" forever
+      // while the runtime logs a traceback nobody sees. Caught rather than
+      // left to the overlay: a failed clone is a normal thing to report.
+      let data;
+      try {
+        data = await fused.runPython(
+          "./reader.py", { file: FILE, action: "clone", dest: choice.path }, { key: null });
+      } catch (err) {
+        notify("Clone failed: " + (err && err.message ? err.message : err), true);
+        return;
+      }
       if (data.ok) {
-        // The clone consumed the name the header was offering, so re-read the
-        // overview before saying so — otherwise the command on screen still
-        // proposes a directory that now exists.
+        // The clone may have consumed the name the header was offering, so
+        // re-read the overview before saying so — otherwise the command on
+        // screen still proposes a directory that now exists.
         const fresh = await fused.runPython(
           "./reader.py", { file: FILE, action: "overview" }, { key: null });
         if (fresh.ok) { OVERVIEW = fresh; renderHeader(); }

@@ -23,6 +23,7 @@ What is pinned here beyond the happy path:
 import importlib.util
 import os
 import subprocess
+import sys
 
 import pytest
 
@@ -472,6 +473,29 @@ def test_a_failed_clone_removes_the_partial_directory_it_did_create(
     assert not dest.exists()
 
 
+def test_clone_works_when_the_host_does_not_set_dunder_file(bundle, tmp_path):
+    # The fused engine execs a reader with its own directory first on sys.path
+    # but NO __file__. The mount check hops to `../shared` from this module's
+    # location, so without rebuilding __file__ the first clone attempt died with
+    # a bare NameError — which the page showed as a stuck "Cloning…". Found by
+    # running the real app, so it gets a test that reproduces the host.
+    src = open(READER, encoding="utf-8").read()
+    module = {"__name__": "bundle_reader_no_file"}
+    saved = list(sys.path)
+    sys.path.insert(0, os.path.dirname(os.path.abspath(READER)))
+    try:
+        # Compiled under the REAL filename, as the engine does — the udf shim at
+        # the bottom of the reader calls inspect.getsource(main), which needs the
+        # code object to point at a file that exists. What the engine does NOT
+        # give it is `__file__`, which is the whole point of this test.
+        exec(compile(src, os.path.abspath(READER), "exec"), module)  # noqa: S102
+        out = module["main"](bundle, action="clone", dest=str(tmp_path / "engine-clone"))
+    finally:
+        sys.path[:] = saved
+    assert out["ok"] is True, out
+    assert os.path.isdir(str(tmp_path / "engine-clone" / ".git"))
+
+
 def test_a_thin_bundle_is_refused_before_the_dest_is_touched(reader, thin_bundle, tmp_path):
     dest = tmp_path / "never"
     out = reader.main(thin_bundle, action="clone", dest=str(dest))
@@ -512,6 +536,29 @@ def test_the_page_calls_the_reader_for_every_action_it_offers():
     for action in ("overview", "history", "clone"):
         assert f'action: "{action}"' in page
     assert "fused.runPython(" in page and '"./reader.py"' in page
+
+
+def test_the_page_asks_where_to_clone_through_the_shared_picker():
+    # The picker is loaded from the /template-shared/ mount (never copied into
+    # the template), and the folder it returns is what `dest` is built from —
+    # without that the reader would silently fall back to its own sibling.
+    page = _repo_path("fused_render", "templates", "bundle", "template.html")
+    with open(page, encoding="utf-8") as fh:
+        html = fh.read()
+    assert '<script src="/template-shared/folder-picker.js">' in html
+    assert "fusedFolderPicker.open(" in html
+    assert "dest: choice.path" in html
+
+
+def test_the_shared_picker_ships_and_exports_its_api():
+    js_path = _repo_path("fused_render", "templates", "shared", "folder-picker.js")
+    assert os.path.isfile(js_path)
+    with open(js_path, encoding="utf-8") as fh:
+        js = fh.read()
+    assert "window.fusedFolderPicker" in js
+    # Listing goes through the server, never a local scan — the rule that keeps
+    # a mount-backed directory from being walked by the kernel.
+    assert "/api/fs/list" in js
 
 
 def test_the_listing_shows_an_archive_icon_for_dot_bundle():

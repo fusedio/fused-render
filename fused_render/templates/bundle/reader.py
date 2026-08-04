@@ -40,6 +40,16 @@ import subprocess
 import sys
 import tempfile
 
+# The fused engine execs this script without setting __file__; it puts the
+# script's own directory first on sys.path, so rebuild __file__ from it. Under
+# the built-in executor __file__ is already set, so this is a no-op. (The
+# markdown/graph.py and git/log.py pattern — without it the `../shared` hop in
+# _is_mount_backed raises NameError the first time a clone is attempted.)
+if "__file__" not in globals():
+    __file__ = os.path.join(sys.path[0], "reader.py")
+
+_HERE = os.path.dirname(os.path.abspath(__file__))
+
 # Every git call is bounded. A bundle is a local file, so nothing here should
 # take seconds — but a corrupt pack can make git spin, and an unbounded
 # subprocess in a preview would park a request forever.
@@ -375,8 +385,7 @@ def _is_mount_backed(path):
 
     Fails CLOSED: if appenv cannot be imported we cannot tell, and the safe
     answer for a write target is to refuse rather than to write."""
-    shared = os.path.join(
-        os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "shared")
+    shared = os.path.join(os.path.dirname(_HERE), "shared")
     if shared not in sys.path:
         sys.path.insert(0, shared)
     try:
