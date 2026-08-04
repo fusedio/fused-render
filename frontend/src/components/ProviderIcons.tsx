@@ -1,5 +1,5 @@
 // Per-provider icons for the Mounts page's "Add storage" picker. Same house
-// style as FileIcons/FinderIcon: 16x16, viewBox 0 0 24 24, fill none, stroke
+// style as FileIcons/FinderIcon: viewBox 0 0 24 24, fill none, stroke
 // currentColor, round caps/joins — hand-written paths, no npm dependency.
 //
 // Deliberately MONOCHROME rather than brand-coloured. Three reasons: it matches
@@ -14,13 +14,18 @@
 // and a globe for open public data.
 import type { ReactNode } from "react";
 
+// 22px, not the 16px the file-type icons use. These sit on a picker card as the
+// card's own mark rather than inline beside a filename, so at 16 they read as
+// specks next to a 600-weight name. Stroke drops to 1.75 to compensate: the
+// glyphs are drawn in a 24-unit box, so scaling up thickens every line, and
+// holding 2 here made them look heavier than the shell's other iconography.
 const svgProps = {
-  width: 16,
-  height: 16,
+  width: 22,
+  height: 22,
   viewBox: "0 0 24 24",
   fill: "none",
   stroke: "currentColor",
-  strokeWidth: 2,
+  strokeWidth: 1.75,
   strokeLinecap: "round",
   strokeLinejoin: "round",
   "aria-hidden": true,
