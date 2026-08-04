@@ -17,7 +17,7 @@ import os
 import pytest
 from fastapi.testclient import TestClient
 
-from fused_render import claude_projects
+from fused_render import claude_projects, claude_science
 from fused_render.server import create_app
 
 
@@ -50,6 +50,66 @@ def _workspace(root, tag="local", name="demo", entry="index.html"):
 
 def _names(apps):
     return sorted(a["name"] for a in apps)
+
+
+# ------------------------------------------------------- locating the config
+
+@pytest.fixture()
+def unset_override(tmp_path, monkeypatch):
+    """Drop the test override so the DEFAULT resolution runs.
+
+    Everything else in this suite (and conftest, for the whole run) points
+    CONFIG_ENV at a file — which means the code path every real machine
+    actually takes is the one path a test never exercises unless it says so
+    here. `HOME` is redirected too, so `~` resolves inside tmp_path.
+    """
+    monkeypatch.delenv(claude_projects.CONFIG_ENV, raising=False)
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr(os.path, "expanduser",
+                        lambda p: p.replace("~", str(tmp_path), 1) if p.startswith("~") else p)
+    return tmp_path
+
+
+def test_the_default_location_is_the_home_dir_sibling(unset_override):
+    home = unset_override
+    assert claude_projects.config_path() is None, "nothing there yet"
+
+    (home / ".claude.json").write_text('{"projects": {}}', encoding="utf-8")
+    assert claude_projects.config_path() == str(home / ".claude.json")
+
+
+def test_a_relocated_config_dir_is_preferred_when_it_holds_the_file(
+        unset_override, monkeypatch):
+    """`CLAUDE_CONFIG_DIR` moves the config *directory*, and some installs put
+    the JSON inside it rather than beside it — so both are tried, in that
+    order. Without this the override would silently read the wrong machine's
+    project list."""
+    home = unset_override
+    relocated = home / "elsewhere"
+    relocated.mkdir()
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(relocated))
+
+    # Neither exists yet.
+    assert claude_projects.config_path() is None
+
+    # The home sibling alone is still found.
+    (home / ".claude.json").write_text("{}", encoding="utf-8")
+    assert claude_projects.config_path() == str(home / ".claude.json")
+
+    # ...but the relocated one wins once it exists.
+    (relocated / ".claude.json").write_text("{}", encoding="utf-8")
+    assert claude_projects.config_path() == str(relocated / ".claude.json")
+
+
+def test_an_override_is_returned_even_when_it_does_not_exist(tmp_path, monkeypatch):
+    """The override is an explicit instruction, not a candidate: pointing it at
+    a path that does not exist is how a run turns the source OFF, and the read
+    handles the absence. (conftest relies on exactly this.)"""
+    absent = tmp_path / "nope.json"
+    monkeypatch.setenv(claude_projects.CONFIG_ENV, str(absent))
+    assert claude_projects.config_path() == str(absent)
+    assert claude_projects.project_roots() == []
 
 
 # --------------------------------------------------------------- reading roots
@@ -174,6 +234,32 @@ def test_a_hidden_directory_is_not_a_workspace(tmp_path, config):
     hidden = tmp_path / ".cache"
     _workspace(hidden)
     config([hidden])
+    assert claude_projects.list_apps(str(tmp_path / "ws")) == []
+
+
+def test_a_root_inside_the_claude_science_store_is_refused(tmp_path, config,
+                                                           monkeypatch):
+    """Found in review. The store's own dir is hidden and so already refused,
+    but a project root INSIDE it is not — `.../orgs/<org>/artifacts` has an
+    ordinary basename, and the two-level rule reads it as
+    `<project-id>/<artifact-uuid>/`.
+
+    The artifact folder below has exactly one `.html` version, which is what
+    makes this bite: `entry_html` gets set, so the card would open via
+    claude_split — the version-stacked read-only path D205 special-cases the
+    claude-science source to avoid. It is also a duplicate of a card that
+    source already produced.
+    """
+    store = tmp_path / ".claude-science"
+    monkeypatch.setenv(claude_science.DIR_ENV, str(store))
+    artifacts = store / "orgs" / "26f4" / "artifacts"
+    artifact = artifacts / "proj_a1b2" / "cd5e48e0-1111"
+    artifact.mkdir(parents=True)
+    (artifact / "v6f4b965a_report.html").write_text("<title>R</title>", encoding="utf-8")
+
+    # Every level a user could plausibly have run Claude Code in.
+    config([store, store / "orgs", store / "orgs" / "26f4", artifacts])
+
     assert claude_projects.list_apps(str(tmp_path / "ws")) == []
 
 

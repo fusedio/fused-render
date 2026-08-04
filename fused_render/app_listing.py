@@ -20,6 +20,19 @@ HTML_SUFFIXES = (".html", ".htm")
 
 _TITLE_RE = re.compile(rb"<title[^>]*>(.*?)</title>", re.IGNORECASE | re.DOTALL)
 
+#: Machine bookkeeping, never the user's work. Two consumers, same reason: a
+#: name here is not an app (`two_level_apps`), and its mtime is not an edit
+#: (`dir_updated_at`). `__pycache__` is why the set exists — the executor used
+#: to write one on every run, so an app you merely OPENED reported as
+#: touched-just-now and displaced one you had actually edited from the top of
+#: Recent, and a folder of .pyc files listed as a card of its own. Nothing
+#: writes it any more (`_child.py`, `engine.build_code`), but an app can still
+#: acquire one from a terminal or an editor, and folders that already have one
+#: must stop lying. `.git` is here for the same reason: a commit — including
+#: the automatic one after a Claude turn — rewrites it, and the edit that
+#: triggered that commit has already moved a real file's mtime.
+IGNORED_CHILDREN = frozenset({"__pycache__", ".git"})
+
 
 def is_html(path: str) -> bool:
     """Whether `path` names a renderable HTML page (by extension alone — no I/O)."""
@@ -59,7 +72,7 @@ def two_level_apps(root: str, source: str) -> list[dict]:
     except OSError:
         return apps
     for tag in sorted(tag_names):
-        if tag.startswith("."):
+        if tag.startswith(".") or tag in IGNORED_CHILDREN:
             continue
         tag_path = os.path.join(root, tag)
         try:
@@ -69,7 +82,12 @@ def two_level_apps(root: str, source: str) -> list[dict]:
         except OSError:
             continue  # unreadable/racing tag dir: skip, never fail the listing
         for name in sorted(names):
-            if name.startswith("."):
+            # A machine-written directory is never an app, at either level.
+            # Hidden names already go (that covers `.git`); `__pycache__` does
+            # not start with a dot and did not, so a folder of .pyc files came
+            # back as an entry-less card — seen for real on a user's tree, where
+            # `render/soccer/__pycache__` listed as the app `soccer/__pycache__`.
+            if name.startswith(".") or name in IGNORED_CHILDREN:
                 continue
             path = os.path.join(tag_path, name)
             try:
@@ -109,19 +127,6 @@ def entry_title(entry_html: str) -> str | None:
         return None
     title = html.unescape(match.group(1).decode("utf-8", "replace"))
     return " ".join(title.split()) or None
-
-
-#: Children that are machine bookkeeping, not the user's work — their mtimes
-#: are excluded from `dir_updated_at`. `__pycache__` was the one that showed:
-#: the executor used to write one on every run, so an app you merely OPENED
-#: reported as touched-just-now and displaced one you had actually edited from
-#: the top of Recent. Nothing writes it any more (`_child.py`,
-#: `engine.build_code`), but an app can still acquire one from a terminal or an
-#: editor, and the folders that already have one must stop lying. `.git` is
-#: here for the same reason: a commit — including the automatic one after a
-#: Claude turn — rewrites it, and the edit that triggered the commit has
-#: already moved a real file's mtime.
-IGNORED_CHILDREN = frozenset({"__pycache__", ".git"})
 
 
 def dir_updated_at(dir_path: str) -> float | None:

@@ -44,7 +44,7 @@ import json
 import logging
 import os
 
-from fused_render import app_listing
+from fused_render import app_listing, claude_science
 
 logger = logging.getLogger("fused_render")
 
@@ -158,17 +158,34 @@ def _in_git_repo(path: str) -> bool:
     return False
 
 
+def _under(path: str, base: str) -> bool:
+    return path == base or path.startswith(base + os.sep)
+
+
 def _is_workspace_like(root: str, exclude: str) -> bool:
     """Whether `root` should be scanned for apps at all.
 
-    Three refusals, in cost order: it is the workspace already being listed (or
-    inside it) — those apps are reported by the workspace source and would
-    otherwise appear twice; it is a hidden directory; it is inside a git
-    repository (see the module docstring — this is what keeps source checkouts
-    out).
+    Four refusals, in cost order:
+
+    * it belongs to a source that already lists it — the workspace being listed
+      (`exclude`), or the Claude Science store. Both would otherwise be walked a
+      second time by a rule that does not fit them. The science store is the
+      sharper case and the reason this is a list rather than one path: its own
+      directory is hidden and so caught below, but a project root INSIDE it is
+      not (`.../orgs/<org>/artifacts` has an ordinary basename), and the
+      two-level rule reads that as `<project-id>/<artifact-uuid>/` — so an
+      artifact whose newest version happens to be its only `.html` would come
+      back as a `claude-code` app and open via claude_split, the exact
+      version-stacked, read-only path D205 special-cases claude-science to
+      avoid. Reachable only if the user has run Claude Code cwd'd inside that
+      store, which is unlikely and cheap to rule out.
+    * it is a hidden directory;
+    * it is inside a git repository (see the module docstring — this is what
+      keeps source checkouts out).
     """
-    if root == exclude or root.startswith(exclude + os.sep):
-        return False
+    for owned in (exclude, claude_science.claude_science_dir()):
+        if _under(root, owned):
+            return False
     if os.path.basename(root).startswith("."):
         return False
     return not _in_git_repo(root)

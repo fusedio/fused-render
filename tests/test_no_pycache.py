@@ -254,6 +254,26 @@ def test_a_commit_does_not_make_an_app_look_recently_edited(tmp_path):
     assert app_listing.dir_updated_at(str(app)) == pytest.approx(old, abs=2)
 
 
+def test_a_pycache_is_never_an_app_card(tmp_path):
+    """A folder of .pyc files is not an app, at either level of the walk.
+
+    Hidden names were already skipped, which covers `.git` — but `__pycache__`
+    does not start with a dot, so it came back as an entry-less card. Seen for
+    real on a user's tree: `render/soccer/__pycache__` listed as the app
+    `soccer/__pycache__`, and with `render` as the root that junk was ALL the
+    listing contained.
+    """
+    root = tmp_path / "ws"
+    (root / "local" / "sine").mkdir(parents=True)
+    (root / "local" / "sine" / "index.html").write_text("<p>x</p>", encoding="utf-8")
+    (root / "local" / "__pycache__").mkdir()          # a cache beside an app
+    (root / "__pycache__" / "nested").mkdir(parents=True)  # ...and as a tag
+
+    apps = app_listing.two_level_apps(str(root), "workspace")
+
+    assert [(a["tag"], a["name"]) for a in apps] == [("local", "sine")]
+
+
 def test_a_real_edit_still_registers(tmp_path):
     """The other half — the exclusions must not have made the whole signal inert.
 
