@@ -1780,11 +1780,33 @@ function shotPaneNote(pane) {
     case "mutated":
       return "the app re-rendered while the capture was running, so this picture "
         + "may not match what was on screen: some elements are missing their "
-        + "styling and the layout may be a blend of before and after. Trust the "
-        + "anchor and the DOM outline over this crop";
+        + "styling and the layout may be a blend of before and after";
     default:
       return "";
   }
+}
+
+// The closing instruction a caveated shot carries: what to DO about the doubt, as
+// against shotPaneNote's description of what went wrong. Two jobs, two functions —
+// saying "trust the anchor over this crop" in both put one rule in two places.
+//
+// Chosen by the WORST doubt present, because a reader takes the caveats as ONE
+// instruction. The two kinds are genuinely different:
+//   a blank WebGL region is BOUNDED — shotBlankRegions names its rectangles — so
+//     "ignore that area, the rest is the app" is exactly right.
+//   anything the style walk reports is UNBOUNDED: it could be any element, and a
+//     `mutated` capture can look perfectly plausible while being a blend of two
+//     moments. Closing THAT with "the rest of the crop is what the user saw" told
+//     the agent to distrust the picture and to trust it in the same breath, which
+//     cancels to nothing and leaves it acting on a blended image.
+// Hence: bounded doubt keeps the reassurance, unbounded doubt replaces it with
+// corroboration. Used by both the crop note and the pane-shot note so one capture
+// cannot ask for two different levels of trust in its two attachments.
+function shotTrustLine(incomplete) {
+  return incomplete
+    ? "Do not act on this image alone — check anything you read from it against "
+      + "the element's anchor and the DOM outline first."
+    : "The rest of the image is what the user saw.";
 }
 
 // Whether a canvas read back nothing we can use.
@@ -2135,7 +2157,10 @@ async function annCaptureShots(pending, deadline, wantView) {
         out.view = { view: path };
         // Never suppressed, only annotated — the divergence from a crop, and the
         // same shotNote-beside-a-real-shot contract crops already use.
-        if (caveats.length) out.view.viewNote = caveats.join("; ") + ".";
+        if (caveats.length) {
+          out.view.viewNote = caveats.join("; ") + ". "
+            + shotTrustLine(pane.incomplete);
+        }
         out.viewThumb = URL.createObjectURL(blob);
       }
     } catch (err) {
@@ -2194,8 +2219,8 @@ async function annCaptureShots(pending, deadline, wantView) {
       }
       if (paneNote) caveats.push(paneNote);
       if (caveats.length) {
-        out.shots[c.id].shotNote = caveats.join("; ")
-          + ". The rest of the crop is what the user saw.";
+        out.shots[c.id].shotNote = caveats.join("; ") + ". "
+          + shotTrustLine(pane.incomplete);
       }
       out.thumbs[c.id] = URL.createObjectURL(blob);
       made++;

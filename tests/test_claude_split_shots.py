@@ -658,7 +658,8 @@ BLANKS.push(cv);
 # a mutable binding) because rasterising is exactly the part node cannot do —
 # what is under test is which annotations get a crop and what the others are told.
 _CAPTURE_FNS = _CAPS + _BLANK_FNS + ["const SHOT_VIEW_EDGE", "const SHOT_VIEW_BYTES",
-                        "function shotPaneNote(", "function shotBlankRegions(",
+                        "function shotPaneNote(", "function shotTrustLine(",
+                        "function shotBlankRegions(",
                         "function shotExt(", "function shotCropRect(",
                         "function shotFit(", "function annLabelFor(",
                         "const APP_STATE_UNREADABLE",
@@ -1192,6 +1193,109 @@ annotations = [a];
 
     mutated = cap("mutated")
     assert "while the capture was running" in mutated["note"]
+
+
+# ------------------------- how much of a caveated shot the agent should trust
+
+def test_a_re_render_warning_does_not_also_call_the_crop_trustworthy(html):
+    """The finding-2 contract biting from the other side. `shotNote` may ride a
+    real `shot` — but only if the note and its closing line agree about HOW MUCH
+    to trust. A `mutated` capture's note says the picture may not match the screen,
+    and the standard closer said "the rest of the crop is what the user saw": one
+    instruction to distrust and one to trust, which cancel to nothing."""
+    out = _node(_CAPTURE_FNS, _CAPTURE_STUBS + """
+shotPane = async () => ({canvas: {}, width: 800, height: 600, blanks: [],
+                        styled: 3000, incomplete: "mutated"});
+shotEncode = async () => ({size: 10});
+const a = {id: "a", el: {name: "a", contains: () => false}};
+annotations = [a];
+(async () => {
+  annApplyShots([a], await annCaptureShots([a]));
+  console.log(JSON.stringify({note: a.shotNote, shot: a.shot}));
+})();
+""", html)
+    assert out["shot"], "the crop is still sent — this is about the wording"
+    assert "what the user saw" not in out["note"], out["note"]
+    # an unbounded doubt earns "corroborate", not "ignore that corner"
+    assert "anchor" in out["note"] and "DOM outline" in out["note"]
+
+
+def test_a_bounded_blank_region_still_says_the_rest_is_the_app(html):
+    """The other kind of doubt, and why one closer cannot serve both: a blank
+    WebGL region is spatially BOUNDED — the note names its rectangle — so "ignore
+    that area, the rest is the app" is exactly right and must survive."""
+    out = _capture(html, """
+const el = {name: "panel", contains: () => false};
+const cv = {name: "cv"};
+RECTS.panel = {left: 300, top: 0, width: 400, height: 400};
+RECTS.cv = {left: 0, top: 0, width: 400, height: 600};
+const a = {id: "a", el: el};
+annotations = [a];
+BLANKS.push(cv);
+(async () => {
+  annApplyShots([a], await annCaptureShots([a]));
+  console.log(JSON.stringify({note: a.shotNote, shot: a.shot}));
+})();
+""")
+    assert out["shot"]
+    assert "what the user saw" in out["note"], out["note"]
+
+
+def test_the_worst_doubt_decides_the_closing_instruction(html):
+    """Both at once: a blank region AND a re-render. The caveats are read as one
+    instruction, so the closer follows the WORST of them — an unbounded doubt is
+    not cancelled by a bounded one also being present."""
+    out = _node(_CAPTURE_FNS, _CAPTURE_STUBS + """
+shotPane = async () => ({canvas: {}, width: 800, height: 600, blanks: [{name: "cv"}],
+                        styled: 3000, incomplete: "mutated"});
+shotEncode = async () => ({size: 10});
+RECTS.panel = {left: 300, top: 0, width: 400, height: 400};
+RECTS.cv = {left: 0, top: 0, width: 400, height: 600};
+const a = {id: "a", el: {name: "panel", contains: () => false}};
+annotations = [a];
+(async () => {
+  annApplyShots([a], await annCaptureShots([a]));
+  console.log(JSON.stringify({note: a.shotNote}));
+})();
+""", html)
+    assert "WebGL" in out["note"], "the bounded caveat is still reported"
+    assert "what the user saw" not in out["note"], out["note"]
+
+
+def test_the_crop_and_the_pane_shot_close_with_the_same_instruction(html):
+    """D146: two notes, one rule about trust. If they diverged, an agent would be
+    told to weigh the same capture's crop and its pane shot differently."""
+    out = _node(_CAPTURE_FNS, _CAPTURE_STUBS + """
+shotPane = async () => ({canvas: {}, width: 800, height: 600, blanks: [],
+                        styled: 3000, incomplete: "mutated"});
+shotEncode = async () => ({size: 10});
+const a = {id: "a", el: {name: "a", contains: () => false}};
+annotations = [a];
+(async () => {
+  const r = await annCaptureShots([a], undefined, true);
+  annApplyShots([a], r);
+  console.log(JSON.stringify({crop: a.shotNote, view: r.view.viewNote,
+                              line: shotTrustLine("mutated"),
+                              clean: shotTrustLine("")}));
+})();
+""", html)
+    assert out["line"] and out["clean"] and out["line"] != out["clean"]
+    assert out["crop"].endswith(out["line"]), out["crop"]
+    assert out["view"].endswith(out["line"]), out["view"]
+
+
+def test_the_mutated_note_states_the_problem_without_prescribing_twice(html):
+    """The description of what went wrong and the instruction about what to do are
+    separate jobs: shotPaneNote owns the first, shotTrustLine the second. Saying
+    "trust the anchor over this crop" in both put the same rule in two places."""
+    out = _node(["function shotPaneNote(", "function shotTrustLine("], """
+console.log(JSON.stringify({note: shotPaneNote({styled: 9, incomplete: "mutated"}),
+                            line: shotTrustLine("mutated")}));
+""", html)
+    assert "re-render" in out["note"]
+    assert "anchor" not in out["note"], \
+        "the note describes; only shotTrustLine prescribes"
+    assert "anchor" in out["line"]
 
 
 # ----------------------------- the opt-in full-pane shot: a picture of the LAYOUT
