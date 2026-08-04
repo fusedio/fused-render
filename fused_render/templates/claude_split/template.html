@@ -2474,6 +2474,10 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // tool call is BLOCKED until it is answered. The one-line note is the whole
 // transparency story, and it is the right size for it.
 const answeredStates = new Set();  // ids already answered; poll replays the list
+// Ids whose note is already in the log. Separate from `answeredStates` because
+// that one is RELEASED when an attempt fails so the next poll retries — and a
+// retry must not append a second "read app state" line for one read.
+const notedStates = new Set();
 // Polls a request may see an empty snapshot before we stop waiting and answer
 // with appStatePull's explicit sentence instead. The poll loop is 400 ms, so
 // this is ~2 s — comfortably longer than a live-reload of the left pane, and far
@@ -2481,6 +2485,15 @@ const answeredStates = new Set();  // ids already answered; poll replays the lis
 // backstop and a much worse answer for the model.
 const APP_STATE_NULL_POLLS = 5;
 const nullStatePolls = new Map();  // req.id -> polls seen with nothing to report
+// Cap on all three of the above. One entry per app_state call for the page's
+// lifetime is bounded in practice and unbounded in principle; dropping the oldest
+// is safe because agent.py only ever lists UNANSWERED requests, so a forgotten id
+// cannot come back — and if it somehow did, the on-disk latch makes a second
+// answer a no-op.
+const APP_STATE_MEMO_MAX = 200;
+function appStateTrim(memo) {
+  while (memo.size > APP_STATE_MEMO_MAX) memo.delete(memo.keys().next().value);
+}
 
 async function answerAppState(list, run_id, working) {
   for (const req of list || []) {
@@ -2496,15 +2509,25 @@ async function answerAppState(list, run_id, working) {
       // call as an error it cannot retry (see appStatePull).
       const seen = (nullStatePolls.get(req.id) || 0) + 1;
       nullStatePolls.set(req.id, seen);
+      appStateTrim(nullStatePolls);
       if (seen <= APP_STATE_NULL_POLLS) continue;
       // Still nothing: this is not a reload, it is a project with no app to
       // read. Fall through and answer, so the model is told that instead of
       // waiting out the tool timeout for the same news.
     }
     answeredStates.add(req.id);   // claimed before the await: polls overlap
-    addNote(req.reason ? "read app state — " + req.reason : "read app state", working);
+    appStateTrim(answeredStates);
+    // Once per REQUEST, not once per attempt: the claim above is released again
+    // when an attempt fails, and a retry appending another line would make the
+    // log read as several reads of the app for one tool call.
+    if (!notedStates.has(req.id)) {
+      notedStates.add(req.id);
+      appStateTrim(notedStates);
+      addNote(req.reason ? "read app state — " + req.reason : "read app state", working);
+    }
+    let res = null;
     try {
-      await fused.runPython(AGENT, {
+      res = await fused.runPython(AGENT, {
         action: "app_state", run_id, request_id: req.id,
         // A JSON string, not a nested object: params cross into python
         // string-shaped, and nothing on that side reads inside the snapshot.
@@ -2517,7 +2540,14 @@ async function answerAppState(list, run_id, working) {
       // the id and let the next poll (400 ms) have another go. Its own timeout
       // is the backstop if this keeps failing.
       answeredStates.delete(req.id);
+      continue;
     }
+    // A RESOLVED error is the same news as a throw when it says so. agent.py
+    // flags which of its errors could ever be helped by another go: a write that
+    // did not reach disk can (the window is alive, the tool is still blocked),
+    // an unknown run or request never will — and retrying that one every 400 ms
+    // until the run ends is worse than letting the tool's timeout settle it.
+    if (res && res.error && res.retry) answeredStates.delete(req.id);
   }
 }
 

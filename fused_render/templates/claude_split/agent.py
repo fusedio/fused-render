@@ -965,15 +965,22 @@ def _answer_app_state(run_id: str, request_id: str, state: str) -> dict:
     Same first-writer-wins latch as a decision (`_write_decision` writes the
     `.res.json` either way), because the same two races apply: the server's own
     timeout may have landed first, and a re-attaching page may answer twice.
+
+    Every error carries `retry`, saying whether trying again could ever help —
+    the page keys on that flag rather than on the wording. A write that did not
+    reach disk is worth another poll (the window is alive and willing, the tool
+    call is still blocked); an unknown run or request never will be, and a page
+    retrying one every 400 ms until the run ends is strictly worse than a page
+    that lets the tool's own timeout settle it.
     """
     run_dir = os.path.join(RUNS, run_id)
     if _bad_id(run_id) or not os.path.isdir(run_dir):
-        return {"error": "unknown run_id"}
+        return {"error": "unknown run_id", "retry": False}
     if _bad_id(request_id):
-        return {"error": "unknown app-state request"}
+        return {"error": "unknown app-state request", "retry": False}
     state_dir = _state_dir(run_dir)
     if not os.path.isfile(os.path.join(state_dir, request_id + ".req.json")):
-        return {"error": "unknown app-state request"}
+        return {"error": "unknown app-state request", "retry": False}
     try:
         snapshot = json.loads(state) if state else None
     except (TypeError, ValueError):
@@ -984,7 +991,13 @@ def _answer_app_state(run_id: str, request_id: str, state: str) -> dict:
         # An empty snapshot would read as a page with nothing wrong with it,
         # which is the one wrong answer here: say the read failed instead.
         payload = {"error": "the window could not read the app's state"}
-    _write_decision(state_dir, request_id, payload)
+    # Never claim an answer the tool cannot read. `_write_decision` reports False
+    # for a write that raised and left nothing behind (a full disk being the
+    # ordinary cause), and discarding that told the page "answered" while the
+    # tool call stayed blocked for its whole timeout — the same bug `_decide`
+    # avoids by reading its verdict back instead of trusting the write.
+    if not _write_decision(state_dir, request_id, payload):
+        return {"error": "could not record the window's answer", "retry": True}
     return {"answered": request_id}
 
 

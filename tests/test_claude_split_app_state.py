@@ -942,7 +942,9 @@ def test_reading_the_app_state_is_noted_in_the_log_not_carded(html):
 # ------------------------------ an empty snapshot: null means two things
 
 _PULL_FNS = _STATE_FNS + ["function appStatePull(", "const answeredStates",
+                          "const notedStates",
                           "const APP_STATE_NULL_POLLS", "const nullStatePolls",
+                          "const APP_STATE_MEMO_MAX", "function appStateTrim(",
                           "async function answerAppState("]
 
 # `fused.runPython` and the on-screen note, recorded rather than performed. The
@@ -1037,6 +1039,96 @@ def test_the_push_and_the_pull_read_one_snapshot_and_disagree_about_null(html):
     assert out["pull"]["unreadable"] == out["sentence"]
     # the one thing we DO know without reading the window
     assert out["pull"]["entry"] == "/p/index.html"
+
+
+def test_a_failed_answer_is_retried_and_a_refused_one_is_not(html):
+    """The page's half of the same gap. It only ever un-claimed on a THROW, so a
+    resolved `{error: ...}` — the shape a write that did not reach disk now
+    returns — left the id claimed forever: no later poll retried it and the tool
+    call blocked for its full timeout. A throw and a retryable error are the same
+    news; a refusal ("no such request") is not, and spinning on it every 400 ms
+    until the run ends would be the wrong answer."""
+    out = _node(_PULL_FNS, _DOM + _FRAME + """
+var AGENT = "./agent.py";
+var sentStates = [];
+var noted = [];
+function addNote(text, working) { noted.push(text); }
+var replies = [null,                                     // a throw
+               {error: "could not record", retry: true}, // transient
+               {error: "unknown app-state request"}];    // permanent
+var fused = {runPython: async (a, p) => {
+  sentStates.push(p.state);
+  const r = replies.shift();
+  if (r === null) throw new Error("bridge down");
+  return r || {};
+}};
+let annFrame = {isConnected: true, contentWindow: fakeWin(docOf(BODY))};
+(async () => {
+  const req = [{id: "r1", reason: "why"}];
+  const claims = [];
+  for (let i = 0; i < 4; i++) {
+    await answerAppState(req, "run", null);
+    claims.push([sentStates.length, answeredStates.has("r1")]);
+  }
+  console.log(JSON.stringify({claims: claims, noted: noted}));
+})();
+""", html)
+    # attempt 1 threw and 2 came back retryable, so each was tried again; 3 was a
+    # refusal, so attempt 4 never left the page.
+    assert out["claims"] == [[1, False], [2, False], [3, True], [3, True]]
+    # ONE line in the log for one request, however many attempts it took: the note
+    # is the transparency story for the read, not a tally of the bridge's health.
+    assert out["noted"] == ["read app state — why"]
+
+
+def test_the_per_request_bookkeeping_is_capped(html):
+    """`answeredStates` and friends hold one entry per app_state call for the
+    page's lifetime. Bounded in practice; capped anyway, oldest first — a request
+    answered hundreds of calls ago can never be polled again, since agent.py only
+    ever lists the unanswered ones."""
+    out = _node(_PULL_FNS, _DOM + _FRAME + _PULL_STUBS + """
+let annFrame = {isConnected: true, contentWindow: fakeWin(docOf(BODY))};
+(async () => {
+  for (let i = 0; i < APP_STATE_MEMO_MAX + 25; i++) {
+    await answerAppState([{id: "r" + i}], "run", null);
+  }
+  console.log(JSON.stringify({answered: answeredStates.size, noted: notedStates.size,
+                              cap: APP_STATE_MEMO_MAX, sent: sentStates.length}));
+})();
+""", html)
+    assert out["sent"] == out["cap"] + 25, "every request still gets answered"
+    assert out["answered"] <= out["cap"]
+    assert out["noted"] <= out["cap"]
+
+
+def test_an_answer_that_did_not_reach_disk_is_reported_as_retryable(
+        agent, run_dir, monkeypatch):
+    """The write can fail (a full disk is the ordinary one), and the return value
+    used to be discarded — so the action claimed `{"answered": ...}` with nothing
+    on disk, the page kept the id claimed forever, and the tool call sat blocked
+    for its whole timeout before telling the model the window never answered.
+    While the window was alive and willing. Same treatment as `_decide`."""
+    agent.RUNS = str(run_dir.parent)
+    (run_dir / "appstate" / "abc.req.json").write_text(json.dumps({"id": "abc"}))
+    monkeypatch.setattr(agent, "_write_decision", lambda *a, **k: False)
+    out = agent.main(action="app_state", run_id="run", request_id="abc",
+                     state=json.dumps({"title": "t"}))
+    assert "answered" not in out
+    assert out.get("error")
+    # The flag, not the wording, is what the page keys on: this one is worth
+    # another go in 400 ms, unlike the two "unknown" refusals below.
+    assert out.get("retry") is True
+
+
+def test_an_answer_to_a_request_that_does_not_exist_is_not_retried(agent, run_dir):
+    """The other errors this action can return. Neither improves by being tried
+    again — there is no such request, or no such run — so they must NOT carry the
+    retry flag, or the page would spin on them until the run ends."""
+    agent.RUNS = str(run_dir.parent)
+    gone = agent.main(action="app_state", run_id="nope", request_id="abc", state="{}")
+    unknown = agent.main(action="app_state", run_id="run", request_id="abc", state="{}")
+    for out in (gone, unknown):
+        assert out.get("error") and not out.get("retry"), out
 
 
 def test_a_null_snapshot_on_the_wire_is_the_hard_error_the_page_now_avoids(
