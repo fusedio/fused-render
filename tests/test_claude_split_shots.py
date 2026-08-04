@@ -657,7 +657,8 @@ BLANKS.push(cv);
 # performed. `shotPane` and `shotEncode` are reassigned (a function declaration is
 # a mutable binding) because rasterising is exactly the part node cannot do —
 # what is under test is which annotations get a crop and what the others are told.
-_CAPTURE_FNS = _CAPS + _BLANK_FNS + ["function shotPaneNote(",
+_CAPTURE_FNS = _CAPS + _BLANK_FNS + ["const SHOT_VIEW_EDGE", "const SHOT_VIEW_BYTES",
+                        "function shotPaneNote(", "function shotBlankRegions(",
                         "function shotExt(", "function shotCropRect(",
                         "function shotFit(", "function annLabelFor(",
                         "const APP_STATE_UNREADABLE",
@@ -681,8 +682,12 @@ function shotDirPath() { return Promise.resolve("/tmp/fr/shots"); }
 """
 
 _CAPTURE_TAIL = """
+var LAST_ENCODE = {};
 shotPane = async () => PANE;
-shotEncode = async (pane, rect) => ({size: 10, rect: rect});
+shotEncode = async (pane, rect, limits) => {
+  LAST_ENCODE = {rect: rect, limits: limits};
+  return {size: 10, rect: rect};
+};
 """
 
 
@@ -1189,6 +1194,154 @@ annotations = [a];
     assert "while the capture was running" in mutated["note"]
 
 
+# ----------------------------- the opt-in full-pane shot: a picture of the LAYOUT
+
+def test_the_pane_shot_is_the_whole_bitmap_at_its_own_cap(html):
+    """A crop answers "what does THIS element look like" and cannot answer "the
+    whole layout is wrong" / "these two panels overlap" / "everything shifted
+    down" — none of which has a single element as its subject, and for which a crop
+    actively hides the answer. It is one extra encode of a bitmap shotPane already
+    made, so it costs no second rasterisation.
+
+    Its own edge cap, emphatically NOT SHOT_MAX_EDGE: a whole pane squeezed into
+    640px is unreadable, which defeats the only reason to send one."""
+    out = _capture(html, """
+(async () => {
+  const r = await annCaptureShots([], undefined, true);
+  console.log(JSON.stringify({view: r.view, rect: LAST_ENCODE.rect,
+                              limits: LAST_ENCODE.limits,
+                              paneW: PANE.width, paneH: PANE.height,
+                              cropEdge: SHOT_MAX_EDGE, viewEdge: SHOT_VIEW_EDGE}));
+})();
+""")
+    assert out["rect"] == {"left": 0, "top": 0,
+                           "width": out["paneW"], "height": out["paneH"]}
+    assert out["limits"]["maxEdge"] == out["viewEdge"]
+    assert out["viewEdge"] > out["cropEdge"], "640px of whole pane is unreadable"
+    assert out["view"]["view"].endswith("-view.png")
+
+
+def test_a_message_with_no_annotations_can_still_carry_a_pane_shot(html):
+    """The case the feature exists for: "the whole layout is broken" often has
+    nothing to click. So this is not an annotations-only feature and must not be
+    gated on pending.length."""
+    out = _capture(html, """
+(async () => {
+  const withView = await annCaptureShots([], undefined, true);
+  const without = await annCaptureShots([], undefined, false);
+  console.log(JSON.stringify({
+    on: {view: !!(withView.view && withView.view.view), thumb: !!withView.viewThumb,
+         shots: Object.keys(withView.shots)},
+    off: {view: without.view === undefined, uploads: uploaded.length}}));
+})();
+""")
+    assert out["on"]["view"] is True
+    assert out["on"]["shots"] == [], "no annotations means no crops, and that is fine"
+    assert out["on"]["thumb"] is True, "nothing is attached invisibly"
+    # toggle off: not a null field, no field at all
+    assert out["off"]["view"] is True
+    assert out["off"]["uploads"] == 1, "only the one view was ever uploaded"
+
+
+def test_the_pane_shot_is_never_suppressed_only_annotated(html):
+    """Divergence from a crop, and the reason for it: suppressing a blank crop
+    leaves the OTHER crops, while suppressing the pane leaves nothing at all. So a
+    pane over unreadable WebGL ships WITH a note naming the blank regions — the
+    same shotNote-beside-a-real-shot contract crops already use."""
+    out = _capture(html, """
+const cv = {name: "cv"};
+RECTS.cv = {left: 20, top: 40, width: 400, height: 300};
+BLANKS.push(cv);
+(async () => {
+  const r = await annCaptureShots([], undefined, true);
+  console.log(JSON.stringify({view: r.view, uploaded: uploaded}));
+})();
+""")
+    assert out["view"]["view"], "a pane shot is never withheld for blank pixels"
+    assert out["uploaded"] == [out["view"]["view"]]
+    note = out["view"]["viewNote"]
+    assert "WebGL" in note
+    # it says WHERE, so the agent knows which part of the layout it cannot judge
+    assert "400" in note and "300" in note and "20" in note and "40" in note
+    assert "preserveDrawingBuffer" in note
+
+
+def test_an_unreadable_pane_says_so_instead_of_a_view(html):
+    out = _node(_CAPTURE_FNS, _CAPTURE_STUBS + """
+shotPane = async () => null;
+shotEncode = async () => ({size: 10});
+(async () => {
+  const r = await annCaptureShots([], undefined, true);
+  console.log(JSON.stringify({view: r.view, sentence: APP_STATE_UNREADABLE,
+                              uploaded: uploaded}));
+})();
+""", html)
+    assert out["view"]["view"] is None
+    assert out["sentence"] in out["view"]["viewNote"]
+    assert out["uploaded"] == []
+
+
+def test_a_pane_shot_over_budget_is_a_note_not_a_missing_field(html):
+    """Same rule as a crop that will not fit: the agent is told why there is no
+    picture rather than left to wonder whether one was meant to be there."""
+    out = _node(_CAPTURE_FNS, _CAPTURE_STUBS + _CAPTURE_TAIL + """
+shotEncode = async () => null;
+(async () => {
+  const r = await annCaptureShots([], undefined, true);
+  console.log(JSON.stringify({view: r.view, bytes: SHOT_VIEW_BYTES}));
+})();
+""", html)
+    assert out["view"]["view"] is None
+    assert str(out["bytes"]) in out["view"]["viewNote"]
+
+
+def test_a_pane_shot_carries_an_incomplete_captures_reason_too(html):
+    """It comes out of the same bitmap as the crops, so the same caveat applies:
+    a capture whose style walk was cut short is partly unstyled wherever you look
+    at it."""
+    out = _node(_CAPTURE_FNS, _CAPTURE_STUBS + """
+shotPane = async () => ({canvas: {}, width: 800, height: 600, blanks: [],
+                        styled: 3000, incomplete: "mutated"});
+shotEncode = async () => ({size: 10});
+(async () => {
+  const r = await annCaptureShots([], undefined, true);
+  console.log(JSON.stringify({note: r.view.viewNote, path: r.view.view}));
+})();
+""", html)
+    assert out["path"], "still sent — the note is what makes it honest"
+    assert "while the capture was running" in out["note"]
+
+
+def test_a_webp_pane_shot_is_named_like_one(html):
+    """D146: the crop path and the view path are named by the same rule, so a
+    silent WebP fallback cannot produce a working crop and a broken view."""
+    out = _capture(html, """
+shotEncode = async () => ({size: 10, type: "image/webp"});
+const a = {id: "a", el: {name: "a", contains: () => false}};
+annotations = [a];
+(async () => {
+  const r = await annCaptureShots([a], undefined, true);
+  annApplyShots([a], r);
+  console.log(JSON.stringify({crop: a.shot, view: r.view.view}));
+})();
+""")
+    assert out["crop"].endswith(".webp") and out["view"].endswith(".webp")
+
+
+def test_the_view_is_captured_before_the_crops(html):
+    """The user ticked the box for THIS message, so if the budget dies half way
+    the thing they explicitly asked for is the thing that made it."""
+    out = _capture(html, """
+const a = {id: "a", el: {name: "a", contains: () => false}};
+annotations = [a];
+(async () => {
+  await annCaptureShots([a], undefined, true);
+  console.log(JSON.stringify({order: uploaded.map((p) => p.slice(-9))}));
+})();
+""")
+    assert out["order"][0].endswith("view.png")
+
+
 # --------------------------------------- a failed capture never fails the send
 
 def test_a_thrown_capture_degrades_to_sending_the_annotations_without_shots(html):
@@ -1247,6 +1400,57 @@ const a = {id: "a"};
 """, html)
     assert out == {"shots": {}, "thumbs": {}, "shot": True, "finished": False}
     assert "const SHOT_TIMEOUT_MS" in html, "the real cap still has to exist"
+
+
+def test_a_view_only_send_survives_a_thrown_capture(html):
+    """The non-negotiable rule, now for a message whose ONLY attachment is the
+    pane shot: if the capture throws there is no view and no annotations — and the
+    send still has to go. Losing the user's words because a screenshot failed is
+    not a trade this feature makes, and a view-only send is the case where there is
+    nothing else to fall back on."""
+    out = _node([n for n in _CAPTURE_FNS if n != "const SHOT_TIMEOUT_MS"]
+                + ["function formatAnnotations(", "const PANE_SHOT_TAG",
+                   "function paneShotBlock(", "function stripPaneBlock(",
+                   "function stripAnnBlock(", "function stripAppStateBlock(",
+                   "const APP_STATE_TAG", "function appStateBlock(",
+                   "function stripBlocks(", "function composeOutgoing("],
+                "var SHOT_TIMEOUT_MS = 50;\n" + _CAPTURE_STUBS + """
+var console2 = console;
+console = {warn: () => {}};
+annCaptureShots = async () => { throw new Error("canvas exploded"); };
+(async () => {
+  const r = await annShots([], true);
+  const outgoing = composeOutgoing("everything shifted down", [], null, r.view);
+  console2.log(JSON.stringify({view: r.view === undefined, outgoing: outgoing,
+                               stripped: stripBlocks(outgoing)}));
+})();
+""", html)
+    assert out["view"] is True, "no view field at all, rather than a broken one"
+    assert out["outgoing"] == "everything shifted down", "the message still goes"
+    assert out["stripped"] == "everything shifted down"
+
+
+def test_a_view_whose_budget_died_is_dropped_not_half_sent(html):
+    """The timeout path. The pane shot shares the crops' one budget deliberately,
+    so it degrades the same way: no view rather than no message."""
+    out = _node([n for n in _CAPTURE_FNS if n != "const SHOT_TIMEOUT_MS"],
+                "var SHOT_TIMEOUT_MS = 20;\n" + _CAPTURE_STUBS + """
+var revoked = [];
+URL.revokeObjectURL = (u) => revoked.push(u);
+annCaptureShots = async () => {
+  await new Promise((r) => setTimeout(r, 80));
+  return {shots: {}, thumbs: {}, view: {view: "/tmp/late-view.png"},
+          viewThumb: "blob:late-view"};
+};
+(async () => {
+  const r = await annShots([], true);
+  await new Promise((res) => setTimeout(res, 140));   // outlive the abandoned one
+  console.log(JSON.stringify({view: r.view === undefined, revoked: revoked}));
+})();
+""", html)
+    assert out["view"] is True
+    # and the abandoned capture's pane thumbnail is released like any other
+    assert out["revoked"] == ["blob:late-view"]
 
 
 def test_an_abandoned_capture_cannot_reject_unhandled(html):
@@ -1316,7 +1520,8 @@ console.log(JSON.stringify({keys: Object.keys(a).sort()}));
 _WIRE_FNS = ["function formatAnnotations(", "function stripAnnBlock(",
              "function stripAppStateBlock(", "function stripBlocks(",
              "const APP_STATE_TAG", "function appStateBlock(",
-             "function composeOutgoing("]
+             "const PANE_SHOT_TAG", "function paneShotBlock(",
+             "function stripPaneBlock(", "function composeOutgoing("]
 
 
 def _wire(html, body):
@@ -1400,6 +1605,113 @@ const a = {id: "x", content: "here", anchorId: "hdr",
 console.log(JSON.stringify({stripped: stripBlocks(composeOutgoing("", [a], null))}));
 """)
     assert out["stripped"] == "\U0001f4cc annotations"
+
+
+def test_the_pane_shot_rides_as_a_sibling_of_the_annotations_not_inside_one(html):
+    """`shot`/`shotNote` are per-anchor; the pane belongs to no anchor, so hanging
+    it off one annotation would be a category error (and would have to be repeated
+    on all of them). Its own block, tag-delimited like the app-state one so the
+    strip is position-independent, and it can exist with no annotations at all."""
+    out = _wire(html, """
+const a = {id: "x", content: "misaligned", anchorId: "hdr", tag: "header",
+           shot: "/tmp/fr/shots/A.png"};
+const view = {view: "/tmp/fr/shots/S-view.png"};
+console.log(JSON.stringify({
+  both: composeOutgoing("fix this", [a], null, view),
+  viewOnly: composeOutgoing("everything shifted", [], null, view),
+  neither: composeOutgoing("just words", [], null, null),
+}));
+""")
+    # the two blocks are siblings in the message, and neither is nested in the other
+    assert "/tmp/fr/shots/S-view.png" in out["both"]
+    assert "The user annotated " in out["both"]
+    # a view with no annotations composes the view block and nothing about anchors
+    assert "/tmp/fr/shots/S-view.png" in out["viewOnly"]
+    assert "The user annotated " not in out["viewOnly"]
+    assert out["viewOnly"].endswith("everything shifted")
+    # and the toggle off changes nothing at all
+    assert out["neither"] == "just words"
+
+
+def test_a_pane_shot_path_never_reaches_the_transcript_the_user_reads(html, agent):
+    """Same requirement as a crop path: the path is for the model. Checked for
+    every combination, because the strip order is what makes it work — the
+    annotation block is only recognised at position zero."""
+    out = _wire(html, """
+const a = {id: "x", content: "here", anchorId: "hdr", shot: "/tmp/fr/shots/A.png"};
+const view = {view: "/tmp/fr/shots/S-view.png", viewNote: "part is blank"};
+const st = {entry: "/p/index.html"};
+const cases = {
+  all: composeOutgoing("fix this", [a], st, view),
+  viewAndState: composeOutgoing("fix this", [], st, view),
+  viewOnly: composeOutgoing("fix this", [], null, view),
+  viewNoWords: composeOutgoing("", [], null, view),
+  annAndViewNoWords: composeOutgoing("", [a], null, view),
+};
+const stripped = {};
+for (const k of Object.keys(cases)) stripped[k] = stripBlocks(cases[k]);
+console.log(JSON.stringify({cases: cases, stripped: stripped}));
+""")
+    for key, wire in out["cases"].items():
+        assert "/tmp/fr/shots/S-view.png" in wire, key
+        assert "S-view.png" not in out["stripped"][key], key
+        assert "part is blank" not in out["stripped"][key], key
+    assert out["stripped"]["all"] == "fix this"
+    assert out["stripped"]["viewAndState"] == "fix this"
+    assert out["stripped"]["viewOnly"] == "fix this"
+    # nothing typed: the bubble names what the turn DID carry rather than being
+    # empty, and names BOTH when both rode along
+    assert out["stripped"]["viewNoWords"] == "\U0001f5bc pane screenshot"
+    assert out["stripped"]["annAndViewNoWords"] == \
+        "\U0001f4cc annotations + \U0001f5bc pane screenshot"
+    # agent.py's half: it strips the app-state block for meta.json and leaves the
+    # rest, exactly as it does for the annotation block — but a path must not be
+    # what a user reads, so the page's strip is the one that has to cover this.
+    meta = agent._strip_app_state(out["cases"]["viewAndState"])
+    assert not meta.startswith("<%s>" % agent.APP_STATE_TAG)
+
+
+def test_the_agent_cannot_ask_for_a_pane_shot(html, agent):
+    """Deliberately out of the app_state tool's reach. Letting the model request
+    pixels every turn is the cost this design avoids: app_state already answers
+    "did my edit land" symbolically, and a picture is the user's to offer."""
+    server = open(os.path.join(TEMPLATE_DIR, "permission_server.py"),
+                  encoding="utf-8").read()
+    for word in ("pane_shot", "paneShot", "screenshot", "view_shot"):
+        assert word not in server, word
+    # the toggle is a composer control, not a tool
+    assert "viewShotWanted" in html
+
+
+def test_the_pane_toggle_is_per_message_not_sticky(html):
+    """Explicitly rejected as sticky: a screenshot that stays on quietly becomes
+    an always-on cost on every later send — a rasterise, an encode and a file per
+    turn for a picture asked for once. Two halves, both asserted: the setter really
+    clears the flag, and the send really calls it."""
+    out = _node(["let viewShotWanted", "const viewShotButtons",
+                 "function setViewShot("], """
+var pressed = [];
+var document = {getElementById: (id) => ({
+  setAttribute: (k, v) => pressed.push([id, v]),
+  addEventListener: () => {},
+})};
+setViewShot(true);
+const on = viewShotWanted;
+setViewShot(false);
+console.log(JSON.stringify({on: on, off: viewShotWanted, pressed: pressed}));
+""", html)
+    assert out["on"] is True and out["off"] is False
+    # both composers follow the one variable, so the home and chat pills agree
+    assert [id_ for id_, _v in out["pressed"]] == \
+        ["viewshot", "hviewshot", "viewshot", "hviewshot"]
+    assert [v for _id, v in out["pressed"]] == ["true", "true", "false", "false"]
+
+    body = html[html.index("async function sendMessage("):]
+    body = body[:body.index("\n}\n")]
+    assert "setViewShot(false)" in body, \
+        "sendMessage has to clear the toggle, or it is sticky"
+    # and it is read into a local BEFORE that clear, or the send loses the request
+    assert body.index("const wantView = viewShotWanted") < body.index("setViewShot(false)")
 
 
 def test_a_rolled_back_send_releases_its_thumbnails(html):

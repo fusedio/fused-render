@@ -332,6 +332,15 @@
   /* The push channel's receipt: this message carried a description of the app
      the user is looking at, and they should be able to see that it did. */
   .user .attach { margin-top: 4px; font-size: 11px; color: var(--faint); }
+  /* The per-message pane-shot toggle. Pressed state has to be unmistakable: it
+     resets after every send, so a user who cannot see whether it is on will
+     either not use it or expect it to have stayed on. */
+  .viewshot { cursor: pointer; line-height: 1; padding: 4px 7px; }
+  .viewshot[aria-pressed="true"] {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: var(--on-accent);
+  }
   .user .bubble {
     background: var(--bubble-user);
     border-radius: 18px 18px 4px 18px;
@@ -690,6 +699,8 @@
             <select id="model" class="pill model-sel" title="Model"></select>
             <select id="effort" class="pill effort-sel" title="Effort"></select>
             <select id="perm" class="pill perm-sel" title="How much Claude may do without asking"></select>
+            <button id="viewshot" class="pill viewshot" type="button" aria-pressed="false"
+                    title="Attach a screenshot of the whole app pane to this message (for layout problems that are not about one element)">🖼</button>
             <span class="spacer"></span>
             <button class="send" type="submit" aria-label="Send">
               <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
@@ -715,6 +726,8 @@
             <select id="hmodel" class="pill model-sel" title="Model"></select>
             <select id="heffort" class="pill effort-sel" title="Effort"></select>
             <select id="hperm" class="pill perm-sel" title="How much Claude may do without asking"></select>
+            <button id="hviewshot" class="pill viewshot" type="button" aria-pressed="false"
+                    title="Attach a screenshot of the whole app pane to this message (for layout problems that are not about one element)">🖼</button>
             <span class="spacer"></span>
             <button class="send" type="submit" aria-label="Send">
               <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
@@ -827,6 +840,19 @@ const SHOT_MAX_ELEMENTS = 3000;
 // for the whole capture. Small enough that a frame is never missed by much, large
 // enough that the yields themselves are not the cost.
 const SHOT_STYLE_CHUNK = 200;
+// ── the opt-in full-pane shot ──
+// A crop answers "what does THIS element look like". It cannot answer "the whole
+// layout is wrong", "these two panels overlap", "everything shifted down" — none
+// of which has a single element as its subject, and for which a crop actively hides
+// the answer. So the composer has a per-message toggle for a picture of the whole
+// visible pane, which is ONE extra encode of a bitmap shotPane already made.
+//
+// Its own caps, and the edge cap is emphatically not SHOT_MAX_EDGE: a whole pane
+// squeezed into 640px is unreadable, which defeats the only reason to send one.
+// 1600 is ~6x the pixels of a 640px crop, which is why WebP's quality dial matters
+// here more than anywhere else (see shotEncode).
+const SHOT_VIEW_EDGE = 1600;
+const SHOT_VIEW_BYTES = 900 * 1024;
 // Fraction of an annotated element's own area that may sit over an unreadable
 // canvas before the crop is suppressed instead of annotated. Half is the line
 // between "a picture of the thing, with a hole in a corner" (worth sending, with
@@ -838,6 +864,14 @@ const SHOT_BLANK_BLOCK = 0.5;
 // three together, because a drift is invisible until the chat starts showing
 // the user a screenful of JSON they never typed (D146).
 const APP_STATE_TAG = "live-app-state";
+// The pane shot's own block delimiter. A separate, tag-delimited block rather than
+// a field on the annotation JSON for two reasons: `shot`/`shotNote` are per-anchor
+// and the pane belongs to no anchor (hanging it off one annotation would be a
+// category error, and repeating it on all of them a lie), and a pane shot can ride
+// a message with NO annotations, where there is no annotation block to put it in.
+// Tag-delimited like the app-state block so its strip is position-independent —
+// the annotation block's is not, and only one such fragile strip is affordable.
+const PANE_SHOT_TAG = "pane-shot";
 // Why there is nothing to say about the app. ONE const because two callers say
 // it: the snapshot itself, and the pull channel's fallback answer (appStatePull)
 // — a divergence there would tell the model two different stories about the same
@@ -2018,22 +2052,52 @@ function shotBackdrop(win) {
   }
 }
 
+// Where the blank WebGL regions ARE, in pane-bitmap coordinates, as prose. A crop
+// can be suppressed because the other crops survive it; a pane shot cannot —
+// suppressing it leaves nothing at all — so it ships WITH a note saying which
+// rectangles of the picture are the app's backdrop rather than what was drawn.
+// Naming the regions is what lets the agent judge the rest of the layout and not
+// the parts it must not.
+function shotBlankRegions(pane) {
+  const rects = [];
+  for (const cv of (pane && pane.blanks) || []) {
+    const r = shotCropRect(annStageRect(cv), pane.width, pane.height);
+    if (r) rects.push(Math.round(r.width) + "x" + Math.round(r.height)
+                      + " at (" + Math.round(r.left) + "," + Math.round(r.top) + ")");
+  }
+  if (!rects.length) return "";
+  return "the following region" + (rects.length === 1 ? " is" : "s are")
+    + " a WebGL canvas whose pixels could not be read back, so "
+    + (rects.length === 1 ? "it shows" : "they show") + " the app's background "
+    + "instead of what was drawn there: " + rects.join(", ")
+    + ". A map/3D library (maplibre, deck.gl) creates its context with "
+    + "preserveDrawingBuffer:false, which is why — the app is very likely drawing "
+    + "fine, so judge the layout around those regions and not inside them";
+}
+
 // One crop per pending annotation, uploaded, as {shots: {id: {shot, shotNote}},
-// thumbs: {id: objectUrl}}.
+// thumbs: {id: objectUrl}} — plus, when `wantView`, one picture of the whole pane
+// as {view: {view, viewNote}, viewThumb}.
 //
 // Deliberately does NOT mutate the annotations: the caller races this against a
 // timeout, and a half-applied capture would leave some notes carrying paths from
 // a capture that never finished. The caller applies the result or nothing.
-async function annCaptureShots(pending, deadline) {
+async function annCaptureShots(pending, deadline, wantView) {
   const out = { shots: {}, thumbs: {} };
-  if (!pending || !pending.length) return out;
+  // NOT gated on pending.length: "the whole layout is broken" often has nothing to
+  // click, which is exactly the case the pane shot exists for.
+  if (!wantView && (!pending || !pending.length)) return out;
   const dir = await shotDirPath();
   const pane = await shotPane(deadline === undefined
                               ? Date.now() + SHOT_TIMEOUT_MS : deadline);
   if (!pane) {
-    for (const c of pending) {
+    for (const c of pending || []) {
       out.shots[c.id] = { shot: null,
         shotNote: "no crop: " + APP_STATE_UNREADABLE };
+    }
+    if (wantView) {
+      out.view = { view: null,
+                   viewNote: "no pane screenshot: " + APP_STATE_UNREADABLE };
     }
     return out;
   }
@@ -2045,8 +2109,41 @@ async function annCaptureShots(pending, deadline) {
   // and says WHICH: silence would present a half-CSS render as "the element as
   // the user saw it", the same class of misread as shipping a blank canvas.
   const paneNote = shotPaneNote(pane);
+  // The pane shot goes FIRST, before any crop: the user ticked the box for this
+  // message, so if the budget dies half way through, the thing they explicitly
+  // asked for is the thing that made it. It does not count toward SHOT_MAX_COUNT —
+  // that cap bounds how many crops one message may carry, and this is not a crop.
+  if (wantView) {
+    const caveats = [];
+    const blanks = shotBlankRegions(pane);
+    if (blanks) caveats.push(blanks);
+    if (paneNote) caveats.push(paneNote);
+    const say = (why) => {
+      out.view = { view: null, viewNote: why };
+    };
+    try {
+      const blob = await shotEncode(pane, { left: 0, top: 0,
+                                            width: pane.width, height: pane.height },
+                                   { maxEdge: SHOT_VIEW_EDGE,
+                                     maxBytes: SHOT_VIEW_BYTES });
+      if (!blob) {
+        say("no pane screenshot: it did not fit the " + SHOT_VIEW_BYTES
+            + "-byte budget");
+      } else {
+        const path = shotJoin(dir, stamp + "-view" + shotExt(blob));
+        await fused.uploadFile(path, blob);
+        out.view = { view: path };
+        // Never suppressed, only annotated — the divergence from a crop, and the
+        // same shotNote-beside-a-real-shot contract crops already use.
+        if (caveats.length) out.view.viewNote = caveats.join("; ") + ".";
+        out.viewThumb = URL.createObjectURL(blob);
+      }
+    } catch (err) {
+      say("no pane screenshot: it could not be saved (" + err.message + ")");
+    }
+  }
   let made = 0;
-  for (const c of pending) {
+  for (const c of pending || []) {
     const note = (why) => { out.shots[c.id] = { shot: null, shotNote: why }; };
     if (made >= SHOT_MAX_COUNT) {
       note("no crop: this message already carries " + SHOT_MAX_COUNT
@@ -2131,13 +2228,15 @@ async function annCaptureShots(pending, deadline) {
 //     the only handles to them — so each pins its Blob for the page's lifetime.
 // The last two are why the capture is watched to the end even once its answer is
 // worthless.
-function annShots(pending) {
+function annShots(pending, wantView) {
   let timer = null;
   let abandoned = false;
   const budget = new Promise((res) => {
     timer = setTimeout(() => { abandoned = true; res(null); }, SHOT_TIMEOUT_MS);
   });
-  const capture = annCaptureShots(pending, Date.now() + SHOT_TIMEOUT_MS);
+  // The pane shot shares this one budget rather than getting its own: it must
+  // degrade exactly as crops do — no view rather than no message.
+  const capture = annCaptureShots(pending, Date.now() + SHOT_TIMEOUT_MS, wantView);
   // Attached to the capture ITSELF, not to the race: the race's own handlers stop
   // caring the moment the timeout wins, so everything after that point — a late
   // rasterise failure, a late upload error, a late blob URL — belongs to nobody.
@@ -2171,11 +2270,19 @@ function annApplyShots(pending, result) {
 // transcript keeps it for the session. Empties the map so a second call is a
 // no-op.
 function annRevokeThumbs(result) {
-  const thumbs = result && result.thumbs;
-  if (!thumbs) return;
-  for (const id of Object.keys(thumbs)) {
+  if (!result) return;
+  const thumbs = result.thumbs;
+  for (const id of Object.keys(thumbs || {})) {
     try { URL.revokeObjectURL(thumbs[id]); } catch (err) { /* already gone */ }
     delete thumbs[id];
+  }
+  // The pane shot's own thumbnail. Kept out of `thumbs` (which is keyed by
+  // annotation id) rather than under a reserved key, so no id can ever collide
+  // with it — but released by the same call, since it is pinning a Blob just the
+  // same.
+  if (result.viewThumb) {
+    try { URL.revokeObjectURL(result.viewThumb); } catch (err) { /* already gone */ }
+    result.viewThumb = "";
   }
 }
 
@@ -2195,17 +2302,35 @@ function formatAnnotations(arr) {
     "instructions:\n\n```json\n" + JSON.stringify(wire, null, 2) + "\n```"
   );
 }
+// The pane shot's block: what the picture is, and when to reach for it INSTEAD of
+// an annotation's own crop. Delimited and labelled for the same reason the
+// app-state block is — the model must be able to tell the user's words from a
+// machine-written description of their screen.
+function paneShotBlock(view) {
+  if (!view) return "";
+  return "<" + PANE_SHOT_TAG + ">\n"
+    + "The user attached a picture of the WHOLE visible app pane, deliberately, "
+    + "for this message only. `view` is its path: read it when the question is "
+    + "about the layout as a whole — panels overlapping, everything shifted, the "
+    + "page just looking wrong — which no single-element crop can show. `viewNote` "
+    + "is what the picture does NOT show; read it before trusting the pixels. For "
+    + "a question about one element, that element's own `shot` is the better "
+    + "picture.\n"
+    + JSON.stringify(view) + "\n</" + PANE_SHOT_TAG + ">";
+}
+
 // Everything the page prepends to the typed message, composed in ONE place so
-// stripBlocks below can be its exact inverse. Two blocks can ride along —
-// the app-state snapshot and the annotation notes — in any combination, and the
-// ORDER is fixed here rather than at the call site: stripAnnBlock recognises its
-// preamble only at the START of the text, so an app-state block wedged in front
-// of it (or between it and the message) turns that strip into a silent no-op and
-// leaks raw JSON into the transcript. State first, notes closest to the words
-// they annotate, message last.
-function composeOutgoing(message, pending, state) {
+// stripBlocks below can be its exact inverse. Three blocks can ride along — the
+// app-state snapshot, the pane shot and the annotation notes — in any combination,
+// and the ORDER is fixed here rather than at the call site: stripAnnBlock
+// recognises its preamble only at the START of the text, so anything wedged in
+// front of it (or between it and the message) turns that strip into a silent no-op
+// and leaks raw JSON into the transcript. State first, then the whole-pane picture,
+// then the notes closest to the words they annotate, message last.
+function composeOutgoing(message, pending, state, view) {
   const parts = [];
   if (state) parts.push(appStateBlock(state));
+  if (view) parts.push(paneShotBlock(view));
   if (pending && pending.length) parts.push(formatAnnotations(pending));
   if (message) parts.push(message);
   return parts.join("\n\n");
@@ -2224,27 +2349,68 @@ function stripAppStateBlock(text) {
   return (text || "").replace(re, "").trim();
 }
 
+// The pane-shot block, removed from wherever it sits. Same position-independent
+// shape as stripAppStateBlock, and it runs BEFORE stripAnnBlock so the annotation
+// preamble is at position zero by the time that one looks for it.
+function stripPaneBlock(text) {
+  const re = new RegExp("<" + PANE_SHOT_TAG + ">[\\s\\S]*?</" + PANE_SHOT_TAG
+                        + ">\\s*", "g");
+  return (text || "").replace(re, "").trim();
+}
+
 // The inverse of composeOutgoing: hand back exactly what the user typed. Used by
 // BOTH readers of a wire message (the run re-attach probe and the history
 // restore) so they cannot disagree about what a turn said.
+//
+// The fallback marker is decided HERE rather than inside each stripper, because it
+// depends on what the WHOLE message carried: a send with no typed words is a real
+// thing (annotations alone, or a pane shot alone, or both), and the bubble has to
+// name what went out rather than render empty.
 function stripBlocks(text) {
-  return stripAnnBlock(stripAppStateBlock(text));
+  const noState = stripAppStateBlock(text);
+  const noPane = stripPaneBlock(noState);
+  const bare = stripAnnBlock(noPane);
+  if (bare) return bare;
+  const carried = [];
+  if (bare !== noPane) carried.push("📌 annotations");
+  if (noPane !== noState) carried.push("🖼 pane screenshot");
+  return carried.join(" + ");
 }
 
 // History restore and run re-attach hand back the composed wire text; peel
 // the annotation preamble + JSON block off so the transcript shows what the
-// user actually typed (annotation-only sends collapse to a small marker).
-// Runs AFTER stripAppStateBlock, never before — see composeOutgoing.
+// user actually typed. Runs AFTER stripAppStateBlock and stripPaneBlock, never
+// before — see composeOutgoing. Returns "" when the message was nothing but
+// annotations; stripBlocks is what turns that into a marker, because only it knows
+// what else the turn carried.
 function stripAnnBlock(text) {
   if (!text.startsWith("The user annotated ")) return text;
   const i = text.indexOf("\n```json\n");
   if (i === -1) return text;
   const j = text.indexOf("\n```", i + 9);
   if (j === -1) return text;
-  return text.slice(j + 4).replace(/^\n+/, "") || "📌 annotations";
+  return text.slice(j + 4).replace(/^\n+/, "");
 }
 // Called when a run that carried annotations finishes cleanly: everything
 // stamped `sent` is now handled — auto-resolve (drop) it.
+// ── the pane-shot toggle ───────────────────────────────────────
+// PER MESSAGE, never sticky. A screenshot that stays on quietly becomes an
+// always-on cost on every later send — a rasterise, an encode and a file per turn,
+// for a picture the user asked for once. So sendMessage clears it, and both
+// composers show the same state because there is one variable behind them.
+let viewShotWanted = false;
+const viewShotButtons = () =>
+  [document.getElementById("viewshot"), document.getElementById("hviewshot")]
+    .filter(Boolean);
+
+function setViewShot(on) {
+  viewShotWanted = !!on;
+  for (const b of viewShotButtons()) b.setAttribute("aria-pressed", String(viewShotWanted));
+}
+for (const b of viewShotButtons()) {
+  b.addEventListener("click", () => setViewShot(!viewShotWanted));
+}
+
 function annResolveSent() {
   if (!annotations.some((c) => c.sent)) return;
   annotations = annotations.filter((c) => !c.sent);
@@ -2984,7 +3150,12 @@ async function sendMessage(message) {
   // If the start below never launches a run, the stamp (and the receipt) are
   // rolled back so the notes stay editable and re-sendable.
   const pending = annPending();
-  if (!message && !pending.length) { sending = false; return; }
+  // Read and CLEARED here, at the top: the toggle is per-message, and clearing it
+  // before the awaits below means a second send cannot inherit it even if the user
+  // fires one while this capture is still running.
+  const wantView = viewShotWanted;
+  setViewShot(false);
+  if (!message && !pending.length && !wantView) { sending = false; return; }
   // Both composer entry points come through here, so the snapshot is taken in
   // exactly one place — at SEND time, which is the moment whose state the user is
   // describing when they type.
@@ -2996,29 +3167,60 @@ async function sendMessage(message) {
   if (message) {
     addUser(message);
   } else {
-    // annotation-only send: a bubble-less user turn to hang the receipt on
+    // annotation- or view-only send: a bubble-less user turn to hang the receipt on
     bareTurn = document.createElement("div");
     bareTurn.className = "turn user";
     log.appendChild(bareTurn);
   }
-  // Crop each annotated element out of one capture of the left pane. Awaited
-  // because composeOutgoing needs the paths — and bounded and swallowing, because
-  // no screenshot is worth losing the user's message over (see annShots).
-  const shots = await annShots(pending);
+  // Crop each annotated element out of one capture of the left pane, and — when the
+  // user asked for it — one picture of the whole pane out of the same capture.
+  // Awaited because composeOutgoing needs the paths, and bounded and swallowing,
+  // because no screenshot is worth losing the user's message over (see annShots).
+  const shots = await annShots(pending, wantView);
   annApplyShots(pending, shots);
-  const outgoing = composeOutgoing(message, pending, state);
+  // The view is NOT folded into the annotations: it is not an anchor's property, it
+  // is never persisted to the annotations param, and so it has no stale-path case
+  // to clear — it lives exactly as long as this send.
+  const outgoing = composeOutgoing(message, pending, state, shots && shots.view);
   if (pending.length) {
     for (const c of pending) c.sent = 1;
     annSave();
   }
-  // Subtle receipt under the bubble: which annotations rode this message.
+  // Subtle receipt under the bubble: which annotations rode this message, and
+  // whether a picture of the whole pane did. Built whenever there is EITHER, since
+  // a view-only send attaches a file too and nothing is attached invisibly.
   let receipt = null;
-  if (pending.length) {
+  if (pending.length || (shots && shots.view)) {
     const turns = log.querySelectorAll(".turn.user");
     const turn = turns[turns.length - 1];
     const sum = document.createElement("div");
     receipt = sum;
     sum.className = "annsum";
+    // The pane shot's own row, first — it is the widest claim the message makes.
+    if (shots && shots.view) {
+      const row = document.createElement("div");
+      row.className = "annsum-row";
+      const lbl = document.createElement("span");
+      lbl.className = "annsum-lbl";
+      lbl.textContent = "🖼";
+      const txt = document.createElement("span");
+      txt.className = "annsum-txt";
+      // Says which it was, because "no picture, and here is why" is a different
+      // fact from "here is your picture" and the user is owed both.
+      txt.textContent = shots.view.view ? "whole pane attached"
+                                        : "no pane screenshot";
+      txt.title = shots.view.viewNote || shots.view.view || "";
+      row.append(lbl, txt);
+      if (shots.viewThumb) {
+        const img = document.createElement("img");
+        img.className = "annsum-shot";
+        img.src = shots.viewThumb;
+        img.alt = "screenshot of the whole app pane";
+        img.title = shots.view.view || "";
+        row.appendChild(img);
+      }
+      sum.appendChild(row);
+    }
     pending.forEach((c) => {
       const row = document.createElement("div");
       row.className = "annsum-row";
@@ -3095,13 +3297,18 @@ async function sendMessage(message) {
       if (pending.length) {
         for (const c of pending) c.sent = 0;
         annSave();
-        if (receipt) receipt.remove();
-        if (bareTurn) bareTurn.remove();  // no bubble either — drop the ghost row
-        // Removing the receipt detaches the only <img> holding each thumbnail's
-        // blob URL, and an unrevoked one pins its Blob for the life of the page.
-        // A retried send captures fresh crops anyway, so nothing here is reusable.
-        annRevokeThumbs(shots);
       }
+      // Outside the pending check: a view-only send has a receipt and a ghost row
+      // to clean up too, and a thumbnail to release, with no annotations at all.
+      if (receipt) receipt.remove();
+      if (bareTurn) bareTurn.remove();  // no bubble either — drop the ghost row
+      // Removing the receipt detaches the only <img> holding each thumbnail's
+      // blob URL, and an unrevoked one pins its Blob for the life of the page.
+      // A retried send captures fresh crops anyway, so nothing here is reusable.
+      annRevokeThumbs(shots);
+      // The toggle was cleared at the top of the send; a send that never launched
+      // should not silently drop the user's request for a picture.
+      if (wantView) setViewShot(true);
     }
     addError(err.message);
   } finally {
@@ -3174,7 +3381,8 @@ async function resumeRun(run_id) {
 function submitChat() {
   if (sending) return;
   const message = box.value.trim();
-  if (!message && !annPending().length) return;  // notes alone are sendable
+  // notes alone are sendable, and so is a bare request for a picture of the pane
+  if (!message && !annPending().length && !viewShotWanted) return;
   box.value = "";
   growBox();
   sendMessage(message);
@@ -3189,7 +3397,8 @@ document.getElementById("card").onsubmit = (e) => {
   e.preventDefault();
   if (sending) return;
   const message = homebox.value.trim();
-  if (!message && !annPending().length) return;  // notes alone are sendable
+  // notes alone are sendable, and so is a bare request for a picture of the pane
+  if (!message && !annPending().length && !viewShotWanted) return;
   homebox.value = "";
   growHome();
   enterChat();

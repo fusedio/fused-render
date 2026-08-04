@@ -858,6 +858,11 @@ def test_the_wrapper_calls_through_so_the_apps_own_logging_still_happens(html):
 _WIRE_FNS = ["const APP_STATE_TAG", "function appStateBlock(",
              "function formatAnnotations(", "function composeOutgoing(",
              "function stripAppStateBlock(", "function stripBlocks(",
+             # The pane shot is a third block on the same wire (see
+             # test_claude_split_shots.py); these two are what stripBlocks needs to
+             # be its exact inverse, whether or not a given message carries one.
+             "const PANE_SHOT_TAG", "function paneShotBlock(",
+             "function stripPaneBlock(",
              "function stripAnnBlock("]
 
 _PENDING = ('[{"id": "1", "sent": 0, "createdAt": 5, "anchorId": "reset",'
