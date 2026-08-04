@@ -277,6 +277,11 @@ def create_remote(body: dict = Body(...), x_fused: str | None = Header(default=N
 # stdout when the user approves. We spawn it as one tracked child, poll it, and
 # on a clean exit create the remote through the rc daemon.
 #
+# Verified against rclone v1.74.4: the token is the ONLY thing on stdout —
+# every NOTICE ("Please go to the following link", "Waiting for code...") goes
+# to stderr — and the child waits indefinitely for the callback, which is why
+# the OAUTH_TIMEOUT backstop below is ours to enforce, not rclone's.
+#
 # The whole child lifecycle — dataclass record, stdout/stderr pump threads, an
 # exit watcher, SIGTERM->SIGKILL escalation, poll-don't-push completion — is
 # lifted from account.py's `fused cloud login` flow deliberately: that pattern is
