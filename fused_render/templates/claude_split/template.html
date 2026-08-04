@@ -948,7 +948,13 @@ function renderAnn() {
       x.type = "button";
       x.setAttribute("aria-label", "Remove annotation");
       x.textContent = "✕";
-      x.onclick = () => { annotations = annotations.filter((a) => a.id !== c.id); annSave(); };
+      x.onclick = () => {
+        // If this note's editor is open, close it — otherwise the popover
+        // lingers with annEditing pointing at a deleted id.
+        if (annEditing === c.id) annCloseComposer();
+        annotations = annotations.filter((a) => a.id !== c.id);
+        annSave();
+      };
       chip.append(lbl, txt, x);
       box.appendChild(chip);
     });
