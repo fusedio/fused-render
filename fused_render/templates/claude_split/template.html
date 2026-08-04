@@ -773,6 +773,7 @@ document.getElementById("divider").addEventListener("mousedown", (e) => {
   document.body.classList.add("dragging");
   const move = (ev) => {
     leftEl.style.width = clampPct((ev.clientX / window.innerWidth) * 100) + "%";
+    renderAnn();  // pins are positioned in #left coordinates — track the drag
   };
   const up = (ev) => {
     document.body.classList.remove("dragging");
@@ -848,7 +849,8 @@ function annResolve(c, doc) {
     if (!m) return null;
     let count = 0, found = null;
     for (const child of node.children) {
-      if (child.tagName === m[1].toUpperCase() && ++count === parseInt(m[2], 10)) { found = child; break; }
+      // case-insensitive: HTML tagNames are uppercase, SVG ones stay lowercase
+      if (child.tagName.toLowerCase() === m[1].toLowerCase() && ++count === parseInt(m[2], 10)) { found = child; break; }
     }
     if (!found) return null;
     node = found;
@@ -1195,7 +1197,7 @@ syncSelects();
 
 // The split param changes on drag too — applySplit on every change is cheap
 // and idempotent.
-fused.params.onChange(() => { applySplit(); });
+fused.params.onChange(() => { applySplit(); renderAnn(); });
 
 function showSession() {
   const id = fused.params.get("session_id");
@@ -1671,13 +1673,14 @@ async function sendMessage(message) {
     for (const c of pending) c.sent = 1;
     annSave();
   }
+  let bareTurn = null;
   if (message) {
     addUser(message);
   } else {
     // annotation-only send: a bubble-less user turn to hang the receipt on
-    const d = document.createElement("div");
-    d.className = "turn user";
-    log.appendChild(d);
+    bareTurn = document.createElement("div");
+    bareTurn.className = "turn user";
+    log.appendChild(bareTurn);
   }
   // Subtle receipt under the bubble: which annotations rode this message.
   let receipt = null;
@@ -1736,6 +1739,7 @@ async function sendMessage(message) {
       for (const c of pending) c.sent = 0;
       annSave();
       if (receipt) receipt.remove();
+      if (bareTurn) bareTurn.remove();  // no bubble either — drop the ghost row
     }
     addError(err.message);
   } finally {
