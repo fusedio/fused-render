@@ -1402,11 +1402,15 @@ function AddStorage({ onPick }: { onPick: (key: SetupKey) => void }) {
             className="mount-provider"
             onClick={() => onPick(o.key)}
           >
-            <span className="mount-provider-head">
+            {/* The icon is a full-height column of its own, not a glyph inline
+                with the name — it reads as the card's mark that way. */}
+            <span className="mount-provider-mark">
               <ProviderIcon provider={o.key} />
-              <span className="mount-provider-name">{o.name}</span>
             </span>
-            <span className="mount-provider-cost">{o.cost}</span>
+            <span className="mount-provider-text">
+              <span className="mount-provider-name">{o.name}</span>
+              <span className="mount-provider-cost">{o.cost}</span>
+            </span>
           </button>
         ))}
       </div>

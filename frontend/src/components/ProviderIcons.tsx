@@ -14,18 +14,20 @@
 // and a globe for open public data.
 import type { ReactNode } from "react";
 
-// 22px, not the 16px the file-type icons use. These sit on a picker card as the
-// card's own mark rather than inline beside a filename, so at 16 they read as
-// specks next to a 600-weight name. Stroke drops to 1.75 to compensate: the
-// glyphs are drawn in a 24-unit box, so scaling up thickens every line, and
-// holding 2 here made them look heavier than the shell's other iconography.
+// Deliberately UNSIZED: this is the picker card's own mark, drawn as a
+// full-height column beside the name, so the card's height is what sets the
+// glyph's size (.mount-provider-icon in shell.css). A width/height here would
+// just be overridden by that CSS and mislead the next reader.
+//
+// Stroke is 1.15, well under the 2 the 16px file-type icons use. The glyphs are
+// drawn in a 24-unit box and rendered around 40px, so every line is scaled up
+// ~1.7x — holding 2 (or even the 1.75 this had at 22px) made them read as
+// markedly heavier than the rest of the shell's iconography.
 const svgProps = {
-  width: 22,
-  height: 22,
   viewBox: "0 0 24 24",
   fill: "none",
   stroke: "currentColor",
-  strokeWidth: 1.75,
+  strokeWidth: 1.15,
   strokeLinecap: "round",
   strokeLinejoin: "round",
   "aria-hidden": true,
@@ -45,12 +47,15 @@ const GLYPHS: Record<string, ReactNode> = {
       <path d="M12 13 L19.5 18.5" />
     </>
   ),
-  // Dropbox: the stacked-diamond carton, three faces visible.
+  // Dropbox: the stacked-diamond carton, three faces visible. Drawn to fill the
+  // 24-box vertically like the others — as a small inline glyph its old 12-unit
+  // height was unnoticeable, but at card-mark size it read as the one shrunken,
+  // top-heavy icon in the row.
   dropbox: (
     <>
-      <path d="M7 3.5 L12 7 L7 10.5 L2 7 Z" />
-      <path d="M17 3.5 L22 7 L17 10.5 L12 7 Z" />
-      <path d="M7 12 L12 8.5 L17 12 L12 15.5 Z" />
+      <path d="M7 4 L12 8.5 L7 13 L2 8.5 Z" />
+      <path d="M17 4 L22 8.5 L17 13 L12 8.5 Z" />
+      <path d="M7 14.5 L12 10 L17 14.5 L12 19 Z" />
     </>
   ),
   // Box: a shipping package, the one shape the name already is.

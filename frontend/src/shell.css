@@ -4757,7 +4757,11 @@ select.field-control:has(option[value=""]:checked) {
   grid-auto-rows: 1fr;
 }
 
-.mount-provider {
+/* Scoped through .mount-picker purely for SPECIFICITY: `.prefs-section button`
+   (0,1,1) outranks a bare `.mount-provider` (0,1,0), so the card's padding,
+   radius and background were silently losing to the generic button skin — the
+   cards rendered with 5px of vertical padding, not the 12 declared here. */
+.mount-picker .mount-provider {
   /* A <button> does not reliably stretch to its grid area the way a div does,
      so the row was ragged: the cards whose cost line wraps to two lines grew
      and the rest stayed short (measured 49/63/49px across one row). Explicit
@@ -4766,8 +4770,10 @@ select.field-control:has(option[value=""]:checked) {
      against, since auto margins need spare space in the box to distribute. */
   height: 100%;
   display: flex;
-  flex-direction: column;
-  gap: 6px;
+  /* Mark on the left, text stacked to its right — a row, so the icon column
+     can span the card's whole height (see .mount-provider-mark). */
+  flex-direction: row;
+  gap: 12px;
   align-items: stretch;
   text-align: left;
   padding: 12px 14px;
@@ -4778,17 +4784,34 @@ select.field-control:has(option[value=""]:checked) {
   font: inherit;
 }
 
-/* Icon and name share a baseline row so the names line up across the grid
-   regardless of glyph height. */
-.mount-provider-head {
-  display: flex;
-  align-items: center;
-  gap: 8px;
+/* The mark: a fixed-width column stretched (by the card's align-items:stretch)
+   to the card's full content height, which is what sizes the glyph.
+   Width is fixed, matched by eye to that content height (~50px), NOT
+   `aspect-ratio: 1`: the glyphs are square, so squaring the column off the
+   stretched height looks right but is circular — the derived width feeds back
+   into the card's intrinsic size and every card inflated to 300px square
+   (measured). A constant width also keeps every card's text starting at the
+   same x. */
+.mount-provider-mark {
+  flex: none;
+  width: 50px;
+  display: grid;
+  color: var(--fg-muted);
 }
 
 .mount-provider-icon {
-  flex: none;
-  color: var(--fg-muted);
+  width: 100%;
+  height: 100%;
+}
+
+/* Name over cost. min-width:0 so a long provider name wraps inside the card
+   instead of forcing the grid column wider. */
+.mount-provider-text {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  flex: 1;
 }
 
 .mount-provider:hover .mount-provider-icon {
