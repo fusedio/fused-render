@@ -145,8 +145,32 @@
   .working .star { color: var(--orange); display: inline-block; }
   .working .verb { color: var(--orange); font-style: italic; }
   .working .meta { color: var(--dim); }
+  /* The stop control rides ON the working line rather than living in the
+     composer: the working line exists for exactly as long as a run is
+     interruptible, so the button cannot outlive what it cancels. */
+  .working .stop {
+    background: transparent;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--dim);
+    font: inherit;
+    font-size: .92em;
+    line-height: 1.5;
+    padding: 0 6px;
+    margin-left: 8px;
+    cursor: pointer;
+  }
+  .working .stop:hover:not(:disabled) {
+    color: var(--fg);
+    border-color: var(--border-focus);
+  }
+  .working .stop:disabled { opacity: .55; cursor: default; }
   .error { color: var(--error); }
   .error::before { content: "✗ "; }
+  /* A turn the user ended. Deliberately not `.error` styling: the stop worked,
+     nothing went wrong, and red would read as a failure. */
+  .note { color: var(--faint); }
+  .note::before { content: "⏹ "; }
 
   /* ── permission cards (the approval bridge) ─────────────────── */
   /* Claude runs headless here, so a tool the session's rules don't already
@@ -885,6 +909,15 @@ function addError(text) {
   log.scrollTop = log.scrollHeight;
 }
 
+// A neutral end-of-turn line: what the user did, not what went wrong.
+function addNote(text) {
+  const d = document.createElement("div");
+  d.className = "turn note";
+  d.textContent = text;
+  log.appendChild(d);
+  log.scrollTop = log.scrollHeight;
+}
+
 // ── permission cards ──────────────────────────────────────────
 // Headless claude cannot open a terminal prompt, so agent.py points its
 // --permission-prompt-tool at an MCP server that parks each request on disk;
@@ -1173,12 +1206,21 @@ function addWorking() {
   const thinkVerb = VERBS[Math.floor(Math.random() * VERBS.length)];
   const start = Date.now();
   let stats = { tokens: 0, phase: "thinking" };
-  d.innerHTML = '<span class="star">✻</span> <span class="verb"></span><span class="meta"></span>';
+  let stopping = false;
+  d.innerHTML = '<span class="star">✻</span> <span class="verb"></span><span class="meta"></span>'
+    // The key rides ON the label rather than in the hint row below: that row is
+    // `space-between` around the model/effort/approvals selectors, and a left
+    // item long enough to say this wrapped it onto a second line — so the whole
+    // bottom chrome grew and shrank every time a turn started and ended.
+    + '<button id="stopbtn" class="stop" type="button" title="Stop this turn">stop · esc</button>';
   const verbEl = d.querySelector(".verb");
   const meta = d.querySelector(".meta");
+  const stopBtn = d.querySelector(".stop");
+  stopBtn.addEventListener("click", () => stopRun());
   const draw = () => {
     const secs = Math.round((Date.now() - start) / 1000);
-    verbEl.textContent = (stats.phase === "awaiting" ? "Waiting for your approval" :
+    verbEl.textContent = (stopping ? "Stopping" :
+                          stats.phase === "awaiting" ? "Waiting for your approval" :
                           stats.phase === "composing" ? "Composing" :
                           stats.phase === "tooling" ? "Working" : thinkVerb) + "…";
     const effort = fused.params.get("effort") || DEFAULT_EFFORT;
@@ -1194,6 +1236,11 @@ function addWorking() {
   return {
     el: d,
     setStats(tokens, phase) { stats = { tokens, phase }; draw(); },
+    // While the kill is in flight the button goes dead rather than inviting a
+    // second click at a run that is already leaving. Reversible because the
+    // kill can fail, and a run that is still streaming must not be left
+    // wearing a "Stopping…" line it will never honour.
+    setStopping(on) { stopping = on; stopBtn.disabled = on; draw(); },
     stop: () => clearInterval(timer),
   };
 }
@@ -1284,6 +1331,62 @@ function makeTyper(bodyEl) {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+// ── stopping a turn ───────────────────────────────────────────
+// agent.py could always kill a run; until now nothing called it, so a turn that
+// went off the rails could only be waited out or escaped by navigating away —
+// which leaves the detached subprocess working on. The live run's id and its
+// working line, so the button and the key have something to aim at. Both are
+// set by pollLoop, which is the only place a run is ever in flight, and that
+// covers a run re-attached at boot (resumeRun) for free.
+let activeRun = null;
+let activeWorking = null;
+// The run the user asked to stop. Keyed by id, not a bare boolean: it is read
+// when a run ENDS, and a stale flag would label the next turn's ending too.
+let stoppedRun = "";
+
+// How a finished run ends on screen. Split out of the poll loop because the
+// interesting part is a judgement call, not a rendering step: killing claude
+// leaves the run dead with no `result` row, which `_poll` reports as an error BY
+// DESIGN (a truncated reply must never read as a clean success). When the user
+// is the one who asked for the stop, that error IS the stop — repeating it back
+// reads as a crash they caused — so it is swallowed here, and only here, for a
+// neutral note. `data` is the terminal poll payload; `stopped` whether this
+// run's stop was requested. Pure, and tested as such.
+function runEnding(data, stopped) {
+  if (!stopped) return { error: data.error || "", note: "", keepText: !data.error };
+  // The stop landed. Whatever streamed before the kill is real work and stays.
+  if (data.error) return { error: "", note: "Stopped.", keepText: true };
+  // The stop did NOT land: the reply completed in the window between the click
+  // and the signal. Say so, rather than leaving the button looking broken.
+  return { error: "", note: "The turn finished before the stop landed.", keepText: true };
+}
+
+async function stopRun() {
+  const run_id = activeRun;
+  if (!run_id || stoppedRun === run_id) return;  // nothing live, or already going
+  stoppedRun = run_id;
+  if (activeWorking) activeWorking.setStopping(true);
+  try {
+    await fused.runPython("./agent.py", { action: "cancel", run_id }, { key: null });
+  } catch (err) {
+    // The kill never reached the backend, so the run is still going and the
+    // poll loop is still streaming it. Take the claim back: leaving it set
+    // would relabel this run's real ending as a stop the user never got.
+    stoppedRun = "";
+    if (activeWorking) activeWorking.setStopping(false);
+    addError("Could not stop the run: " + err.message);
+  }
+}
+
+// Escape is the key a terminal user already reaches for. Gated on a live run so
+// the binding is inert the rest of the time — this page sits in an iframe and
+// must not swallow Escape from the shell around it for nothing.
+document.addEventListener("keydown", (e) => {
+  if (e.key !== "Escape" || !activeRun) return;
+  e.preventDefault();
+  stopRun();
+});
+
 // ── send one message: start detached claude, poll + stream ──
 // One turn at a time: concurrent turns would share the session_id param and
 // launch parallel claude runs against the same resumed session, interleaving
@@ -1300,6 +1403,9 @@ async function pollLoop(run_id, handoff) {
   // plain turn and for a run re-attached at boot (resumeRun) — neither returns.
   const returnTo = (handoff && handoff.mode) || "";
   const w = addWorking();
+  // This run is now the one the stop button and Escape aim at.
+  activeRun = run_id;
+  activeWorking = w;
   let reply = null;
   let typer = null;
   try {
@@ -1321,15 +1427,17 @@ async function pollLoop(run_id, handoff) {
       if (data.done) {
         fused.params.set("run", "");
         w.stop(); w.el.remove();
-        if (data.error) {
+        const end = runEnding(data, stoppedRun === run_id);
+        if (!end.keepText) {
           if (typer) typer.abort();
           if (reply) reply.remove();
-          addError(data.error);
         } else if (typer) {
           await typer.finish(data.text);
         } else if (data.text) {
           addAssistant("").lastChild.innerHTML = renderMd(data.text);
         }
+        if (end.error) addError(end.error);
+        if (end.note) addNote(end.note);
         // The comment-carrying run finished cleanly: hand the shell back to the
         // mode that sent it, so the reviewer sees the edited file instead of
         // sitting in a chat that never reloads. `returnTo` is this call's own
@@ -1352,6 +1460,11 @@ async function pollLoop(run_id, handoff) {
     addError(err.message);
   } finally {
     if (w.el.isConnected) { w.stop(); w.el.remove(); }
+    // Nothing is interruptible any more. Cleared even when the loop threw:
+    // an Escape landing after this must not fire a cancel at a finished run
+    // and then mislabel the NEXT turn's ending as a stop.
+    activeRun = null;
+    activeWorking = null;
   }
 }
 
