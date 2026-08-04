@@ -21,8 +21,20 @@ from fused_render import calls as shell_calls
 from fused_render.server.common import _error, _require_fused
 from fused_render.server.mount import _invalidate_stat_cache, _mount_probe, _mount_stat_payload, _mutation_result_payload, _probe_path, _stat_payload, _writable
 from fused_render.server.walk import _mount_list_error_response
+from fused_render.shell import storage as shell_storage
 
 router = APIRouter()
+
+
+def _is_under_sidecar_root(path: str) -> bool:
+    """True when `path` sits under home_dir()/sidecar/ (D83-reversal). Those
+    paths are server-derived (fused.sidecarPath), never user-typed, so an
+    absent deep subtree there is expected on a first write — unlike the
+    general "no mkdir -p" rule below, which exists so a typo'd arbitrary path
+    can't silently spawn a deep tree."""
+    root = os.path.abspath(os.path.join(shell_storage.home_dir(), "sidecar"))
+    ap = os.path.abspath(path)
+    return ap == root or ap.startswith(root + os.sep)
 
 
 def _commit_mutation(result, verb: str, *paths) -> None:
@@ -48,8 +60,6 @@ def _commit_mutation(result, verb: str, *paths) -> None:
             continue
         done.add(app_dir)
         app_commit_queue.mark(p, verb)
-
-
 
 
 def _fs_write(body: dict, x_fused: str | None):
@@ -142,7 +152,9 @@ def _fs_write(body: dict, x_fused: str | None):
     if os.path.isdir(path):
         return _error(f"path is a directory: {path}")
     if not os.path.isdir(parent):
-        return _error(f"parent directory does not exist: {parent}", status=404)
+        if not _is_under_sidecar_root(path):
+            return _error(f"parent directory does not exist: {parent}", status=404)
+        os.makedirs(parent, exist_ok=True)
 
     # Read-only guard: refuse before touching anything. The atomic write
     # below replaces the target via the PARENT directory, so without this

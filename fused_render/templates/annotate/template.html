@@ -564,13 +564,15 @@
     }
 
     // Sidecar writability probe: commenting always works (the URL is the live
-    // store), but when the `<file>.json` history log can't be written, say so
-    // instead of losing history silently. Probe failure itself stays silent —
-    // same best-effort posture as the record call below.
-    fused.runPython("./annotate.py", { action: "status", file }, { key: null }).then((st) => {
+    // store), but when the history log (home_dir()/sidecar/<mapped path>.json,
+    // D83-reversal) can't be written, say so instead of losing history
+    // silently. Probe failure itself stays silent — same best-effort posture
+    // as the record call below.
+    fused.runPython("./annotate.py", { action: "status", file }, { key: null }).then(async (st) => {
       if (st && st.writable === false) {
+        const sidecarName = (await window._fusedSidecarPath(file)).split("/").pop();
         fusedRoBadge.update(document.getElementById("ro"), "History not saved",
-          "The file's sidecar (" + file.split("/").pop() + ".json) isn't " +
+          "The file's sidecar (" + sidecarName + ") isn't " +
           "writable, so this review lives only in this URL and won't be " +
           "recorded to comment history.");
       }
@@ -1252,7 +1254,7 @@
       let c = comments.find((x) => x.id === wanted);
       if (!c) {
         // Not in the live URL store: one-shot FULL-STATE hydration from the
-        // sidecar. The id arrived from the timeline, so `<file>.json`'s
+        // sidecar. The id arrived from the timeline, so the sidecar's
         // upsert-by-id log is the authoritative history. Import EVERY live log
         // entry (those without a `deleted_at` tombstone), stripping the server
         // stamps. A tombstoned wanted id gets no special pass — deleted stays
@@ -1261,7 +1263,7 @@
         // once (re-records — a harmless upsert no-op). If the wanted id isn't
         // logged at all, import nothing and skip silently.
         try {
-          const sidecar = JSON.parse(await fused.readFile(file + ".json"));
+          const sidecar = JSON.parse(await fused.readFile(await window._fusedSidecarPath(file)));
           const log = Array.isArray(sidecar.comments) ? sidecar.comments : [];
           const wantedEntry = log.find((x) => x && x.id === wanted);
           if (wantedEntry && !wantedEntry.deleted_at) {

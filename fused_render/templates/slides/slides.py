@@ -19,9 +19,10 @@ Since the hash is content-derived, every ``save`` moves the doc to a new
 cache dir; ``save`` removes the prior dir once the new one lands so re-saves
 don't leak one orphaned ``model.json``/``media/`` folder per save.
 A per-document display-name override (renaming the deck without renaming the
-file) lives in the shared JSON sidecar next to the file (``<file>.json``),
-namespaced under the "slides" key, alongside whatever other templates keep
-there (e.g. claudeSessions).
+file) lives in the shared JSON sidecar under ``home_dir()/sidecar/`` (D83-
+reversal — see shared/appenv.py's ``sidecar_path``), namespaced under the
+"slides" key, alongside whatever other templates keep there (e.g.
+claudeSessions).
 
 AI-native surface (call these directly to edit a deck without the browser):
   get_model, update_element, set_text, add_text, add_image, delete_element,
@@ -36,13 +37,16 @@ import json
 import os
 import re
 import shutil
+import sys
 import tempfile
 import time
 
 # Rebuild __file__ under the openfused exec path (harmless under builtin).
 if "__file__" not in globals():
-    import sys
     __file__ = os.path.join(sys.path[0], "slides.py")
+
+_HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.join(os.path.dirname(_HERE), "shared"))
 
 import engine  # sibling module; cwd is set to the .py's dir
 
@@ -119,7 +123,8 @@ def _save_model(doc, model, expected_mtime=None):
 #  sidecar store (shared with other templates — see templates/claude/agent.py) #
 # --------------------------------------------------------------------------- #
 def _sidecar_path(file):
-    return file + ".json"
+    from appenv import sidecar_path
+    return sidecar_path(file)
 
 
 def _load_sidecar(file):
@@ -135,6 +140,7 @@ def _load_sidecar(file):
 
 def _save_sidecar(file, data):
     path = _sidecar_path(file)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), suffix=".tmp")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
@@ -152,11 +158,14 @@ def _sidecar_writable(file):
     """True iff _save_sidecar would succeed (SPEC RO-3, annotate's rule): an
     existing sidecar needs W_OK on itself (the mkstemp + os.replace above would
     otherwise bypass its read-only bit via the directory), a fresh one needs
-    W_OK on the directory (mkstemp and replace both land there)."""
+    W_OK on its nearest existing ancestor dir (mkstemp+replace land in the
+    parent once created — D83-reversal, the sidecar's subtree under
+    home_dir()/sidecar/ usually doesn't exist yet)."""
     path = _sidecar_path(os.path.abspath(file))
     if os.path.exists(path):
         return os.access(path, os.W_OK)
-    return os.access(os.path.dirname(path), os.W_OK)
+    from appenv import nearest_existing_dir
+    return os.access(nearest_existing_dir(os.path.dirname(path)), os.W_OK)
 
 
 _READONLY_TOOLTIP = ("The file is read-only — its permissions don't allow "
