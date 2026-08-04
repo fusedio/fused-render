@@ -68,6 +68,32 @@ EXEMPT_TEMPLATES = (
 # toggle was removed — it now uses the shared opt-in like any tier-1 view.)
 SELF_TOGGLING_TEMPLATES = ("excel", "tableau")
 
+# ---------------------------------------------------------------- shared assets
+# `templates/shared/*.js` is loaded BY templates with a plain
+# <script src="/template-shared/…">, so any CSS such a file injects lands in the
+# host template's themed document and is bound by exactly the same rule as the
+# template's own <style>. Scanning only `template.html` missed that whole layer,
+# which is how folder-picker.js shipped a hardcoded dark palette.
+#
+# Tokenized: no colour literal outside a palette block. (graph-canvas.js counts
+# — the colours it paints with are passed in by the host template; the one hex in
+# it is a last-resort canvas fallback, not a stylesheet rule.)
+#
+# Unmigrated: literals still present, listed so the omission is on the record
+# rather than an oversight. ro-badge.js is a tooltip shared by DEFERRED templates
+# too, so retheming it belongs with that pass; sciviz.mjs injects no CSS at all —
+# its one hit is a canvas `fillStyle` for a hover highlight, which the (naive by
+# design) parser cannot tell from a rule body.
+TOKENIZED_SHARED_ASSETS = ("folder-picker.js", "graph-canvas.js")
+UNMIGRATED_SHARED_ASSETS = ("ro-badge.js", "sciviz.mjs")
+
+# The selectors folder-picker.js uses for its OWN dark/light palette pair. It
+# cannot use `:root` — a shared asset injecting `:root` rules would redefine the
+# host template's palette — so it scopes the pair to its root element, and this
+# is where the test learns that those two blocks are palette blocks.
+SHARED_PALETTE_SELECTORS = (".fp-backdrop", ':root[data-theme="light"] .fp-backdrop')
+
+
 # Media / geospatial / studio groups — keep today's appearance for now.
 DEFERRED_TEMPLATES = (
     "canvas",
@@ -97,6 +123,14 @@ def all_template_names():
     )
 
 
+def all_shared_asset_names():
+    """Every script under `templates/shared/` a template can <script src> in."""
+    shared = os.path.join(TEMPLATES_DIR, "shared")
+    return sorted(
+        name for name in os.listdir(shared) if name.endswith((".js", ".mjs"))
+    )
+
+
 def read_repo_file(relative):
     with open(os.path.join(REPO_ROOT, relative), encoding="utf-8") as handle:
         return handle.read()
@@ -104,6 +138,10 @@ def read_repo_file(relative):
 
 def read_template(name):
     return read_repo_file(os.path.join("fused_render", "templates", name, "template.html"))
+
+
+def read_shared_asset(name):
+    return read_repo_file(os.path.join("fused_render", "templates", "shared", name))
 
 
 # `:root { … }` and `:root[data-theme="light"] { … }`, quotes optional.
@@ -134,6 +172,31 @@ def palette_blocks(source):
     )
 
 
+def _selector_block(selector):
+    """`<selector> { … }` — the rule for one exact selector list.
+
+    The leading boundary keeps a *suffix* match from counting: without it the
+    pattern for `.fp-backdrop` also matches the tail of
+    `:root[data-theme="light"] .fp-backdrop`, i.e. one selector would silently
+    consume the other's block.
+    """
+    return re.compile(
+        r"(?:^|[\n;}\"'])\s*" + re.escape(selector) + r"\s*\{([^{}]*)\}"
+    )
+
+
+def scoped_palette_blocks(source, dark_selector, light_selector):
+    """`palette_blocks` for a pair of palettes scoped to a selector rather than
+    to `:root` — what a shared asset must do, since injecting `:root` rules from
+    a <script> would redefine the host template's own palette."""
+    dark = _selector_block(dark_selector).search(source)
+    light = _selector_block(light_selector).search(source)
+    return (
+        _declarations(dark.group(1)) if dark else {},
+        _declarations(light.group(1)) if light else {},
+    )
+
+
 _STYLE_BLOCK = re.compile(r"<style[^>]*>([\s\S]*?)</style>", re.I)
 # Only declaration bodies — an `#id` selector is not a colour, and neither is
 # anything in a comment.
@@ -142,18 +205,24 @@ _HEX = re.compile(r"#[0-9a-fA-F]{3,8}\b")
 _FUNC = re.compile(r"\brgba?\(([^()]*(?:\([^()]*\)[^()]*)*)\)")
 
 
-def style_color_literals(source):
+def style_color_literals(source, palette_selectors=()):
     """Colour literals in a stylesheet that are NOT inside a palette block.
 
     A `rgb()`/`rgba()` call whose arguments are built from `var(...)` is a
     tokenized colour, not a literal, so it does not count. Anything else — a
     bare hex, a bare `rgba(0, 0, 0, .5)` — does: it cannot follow the theme.
+
+    `palette_selectors` names additional rules to treat as palette blocks, for a
+    stylesheet whose palette cannot live on `:root` (a shared asset — see
+    `scoped_palette_blocks`).
     """
     sheets = _STYLE_BLOCK.findall(source) or [source]
     found = []
     for sheet in sheets:
         # Blank out the palette blocks: those are exactly where literals belong.
         sheet = _DARK_ROOT.sub("", _LIGHT_ROOT.sub("", sheet))
+        for selector in palette_selectors:
+            sheet = _selector_block(selector).sub("", sheet)
         sheet = _COMMENT.sub("", sheet)
         for body in _RULE_BODY.findall(sheet):
             found.extend(_HEX.findall(body))

@@ -20,15 +20,31 @@ interface Paths {
   parent(p: string): string;
   join(dir: string, name: string): string;
   isRoot(p: string): boolean;
+  basename(p: string): string;
   freeName(base: string, taken: string[]): string;
+  crumbs(dir: string): { path: string; label: string }[];
 }
 
-function loadPicker(): { paths: Paths } {
-  const globals: Record<string, unknown> = {};
+interface Choice {
+  dir: string;
+  name: string;
+  path: string;
+}
+
+interface Picker {
+  paths: Paths;
+  open(opts?: Record<string, unknown>): Promise<Choice | null>;
+}
+
+// `fetch` is called bare inside the file (it is browser code, not a module), so
+// it is shadowed with an extra Function parameter rather than by poking a global
+// — the test must not leave a stubbed fetch behind for the next file.
+function loadPicker(fetchStub?: typeof fetch, doc?: unknown): Picker {
+  const globals: Record<string, unknown> = { document: doc, console: undefined };
   // No document touched at load time (CSS injects lazily, as in ro-badge.js),
-  // so a bare object is a sufficient window for this.
-  new Function("window", SOURCE)(globals);
-  return globals.fusedFolderPicker as { paths: Paths };
+  // so a bare object is a sufficient window for the pure helpers.
+  new Function("window", "fetch", SOURCE)(globals, fetchStub ?? fetch);
+  return globals.fusedFolderPicker as Picker;
 }
 
 const { paths } = loadPicker();
@@ -91,4 +107,156 @@ test("freeName gives up rather than looping forever", () => {
   // server's own existence check is the backstop.
   expect(typeof chosen).toBe("string");
   expect(chosen.length).toBeGreaterThan(0);
+});
+
+// ---------------------------------------------------------------- basename
+
+test("basename labels a folder, and a root has no label of its own", () => {
+  expect(paths.basename("/a/b/c")).toBe("c");
+  expect(paths.basename("/a/b/c/")).toBe("c");
+  // Both roots answer "" so the caller can substitute the path. Stripping the
+  // trailing slash off "C:/" would otherwise leave the bare "C:", which is a
+  // cwd-relative path, not a folder name, and must never reach the UI.
+  expect(paths.basename("/")).toBe("");
+  expect(paths.basename("C:/")).toBe("");
+});
+
+// ------------------------------------------------------------------ crumbs
+
+test("crumbs walk from the root down to the folder shown", () => {
+  expect(paths.crumbs("/a/b").map((c) => c.path)).toEqual(["/", "/a", "/a/b"]);
+  // The root's own label falls back to the path — "" would be an unclickable
+  // gap at the head of the breadcrumb.
+  expect(paths.crumbs("/a/b").map((c) => c.label)).toEqual(["/", "a", "b"]);
+});
+
+test("crumbs on a Windows path stop at the drive root", () => {
+  expect(paths.crumbs("C:/Users/ada").map((c) => c.path)).toEqual([
+    "C:/", "C:/Users", "C:/Users/ada",
+  ]);
+});
+
+test("crumbs of a root are just the root", () => {
+  expect(paths.crumbs("/")).toEqual([{ path: "/", label: "/" }]);
+});
+
+// ------------------------------------------------- native picker vs fallback
+// The routing contract, which is the whole point of having two backends:
+//   * the shell says it can -> POST /api/fs/pick-folder and use the answer;
+//   * the user cancels       -> resolve null, do NOT re-ask in HTML;
+//   * anything else          -> fall back to the in-page dialog.
+// The fallback is observed by the dialog TOUCHING the document: the stub below
+// throws a recognisable error from createElement, so "fell back" and "did not
+// fall back" are distinguishable without a DOM implementation.
+
+const FELL_BACK = "fp-test: the in-page dialog was opened";
+
+const throwingDocument = {
+  createElement() {
+    throw new Error(FELL_BACK);
+  },
+};
+
+function jsonResponse(status: number, body: unknown) {
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    json: () => Promise.resolve(body),
+  } as unknown as Response;
+}
+
+/** A fetch stub answering /api/config and /api/fs/pick-folder, recording calls. */
+function stubFetch(
+  config: Record<string, unknown>,
+  pick: () => Response,
+  listing: string[] = []
+) {
+  const calls: { url: string; body?: unknown }[] = [];
+  const impl = ((url: string, init?: RequestInit) => {
+    calls.push({ url, body: init?.body ? JSON.parse(String(init.body)) : undefined });
+    if (url === "/api/config") return Promise.resolve(jsonResponse(200, config));
+    if (url === "/api/fs/pick-folder") return Promise.resolve(pick());
+    if (url.startsWith("/api/fs/list")) {
+      return Promise.resolve(
+        jsonResponse(200, {
+          path: decodeURIComponent(url.split("=")[1] ?? "/"),
+          entries: listing.map((name) => ({ name, is_dir: true })),
+        })
+      );
+    }
+    throw new Error("unexpected fetch: " + url);
+  }) as unknown as typeof fetch;
+  return { impl, calls };
+}
+
+test("with the capability advertised, a chosen folder comes from the OS dialog", async () => {
+  const { impl, calls } = stubFetch(
+    { native_dir_picker: true },
+    () => jsonResponse(200, { path: "/Users/ada/code" })
+  );
+  const picker = loadPicker(impl, throwingDocument);
+  expect(await picker.open({ start: "/Users/ada" })).toEqual({
+    dir: "/Users/ada/code",
+    name: "",
+    path: "/Users/ada/code",
+  });
+  // The starting directory really reaches the endpoint — a native dialog that
+  // always opens at the home folder is a native dialog nobody wants.
+  expect(calls.find((c) => c.url === "/api/fs/pick-folder")?.body).toEqual({
+    start: "/Users/ada",
+  });
+});
+
+test("a native cancel resolves null and does NOT open the HTML dialog", async () => {
+  // The bug this guards: treating {path: null} as a failure would answer a
+  // cancel by popping a second, different chooser.
+  const { impl } = stubFetch(
+    { native_dir_picker: true },
+    () => jsonResponse(200, { path: null })
+  );
+  const picker = loadPicker(impl, throwingDocument);
+  expect(await picker.open({ start: "/Users/ada" })).toBeNull();
+});
+
+test("with `name` set, the native dialog's folder gains a free child name", async () => {
+  const { impl } = stubFetch(
+    { native_dir_picker: true },
+    () => jsonResponse(200, { path: "/Users/ada/code" }),
+    ["project", "project 2"]
+  );
+  const picker = loadPicker(impl, throwingDocument);
+  expect(await picker.open({ start: "/Users/ada", name: "project" })).toEqual({
+    dir: "/Users/ada/code",
+    name: "project 3",
+    path: "/Users/ada/code/project 3",
+  });
+});
+
+test("no advertised capability falls back to the in-page dialog", async () => {
+  // The hosted case: there is no GUI session to raise a dialog into, so the
+  // endpoint is never even called.
+  const { impl, calls } = stubFetch({}, () => jsonResponse(200, { path: "/nope" }));
+  const picker = loadPicker(impl, throwingDocument);
+  await expect(picker.open({ start: "/Users/ada" })).rejects.toThrow(FELL_BACK);
+  expect(calls.map((c) => c.url)).toEqual(["/api/config"]);
+});
+
+test("a failing native dialog falls back instead of dead-ending", async () => {
+  // Busy (409) or unavailable (501): the button must still do something.
+  const { impl } = stubFetch(
+    { native_dir_picker: true },
+    () => jsonResponse(409, { error: "a folder chooser is already open" })
+  );
+  const picker = loadPicker(impl, throwingDocument);
+  await expect(picker.open({ start: "/Users/ada" })).rejects.toThrow(FELL_BACK);
+});
+
+test("native: false skips the capability probe entirely", async () => {
+  const { impl, calls } = stubFetch(
+    { native_dir_picker: true },
+    () => jsonResponse(200, { path: "/nope" })
+  );
+  const picker = loadPicker(impl, throwingDocument);
+  await expect(picker.open({ native: false })).rejects.toThrow(FELL_BACK);
+  expect(calls).toEqual([]);
 });
