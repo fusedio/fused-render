@@ -34,6 +34,7 @@ def _app_folder(tmp_path):
     resolves there and caches there. A page with no imports would pass a weaker
     version of this test without exercising that path at all.
     """
+    tmp_path.mkdir(parents=True, exist_ok=True)  # callers may pass a fresh subdir
     (tmp_path / "helper.py").write_text("VALUE = 41\n", encoding="utf-8")
     (tmp_path / "compute.py").write_text(
         "from helper import VALUE\n"
@@ -74,23 +75,52 @@ def test_the_worker_leaves_no_pycache_in_the_app_folder(tmp_path):
         "the worker wrote bytecode into the user's app folder"
 
 
-def test_the_engine_wrapper_disables_bytecode_before_extending_sys_path(tmp_path):
+def test_the_worker_still_CACHES_bytecode_just_not_in_the_app_folder(tmp_path):
+    """The cache is RELOCATED, not disabled — and that distinction is the whole
+    performance story, so it gets its own assertion.
+
+    The first fix was `dont_write_bytecode = True`, justified as costing
+    "microseconds against a process spawn". Measured, that holds only for a
+    trivial helper: a page with a 161 KB module went 55 ms -> 151 ms per call
+    (2.8x) and one with forty siblings 57 ms -> 107 ms (1.9x), because a fresh
+    process per call re-parsed the whole tree every time. `pycache_prefix` keeps
+    the app folder clean AND the cache warm.
+
+    Without this test the obvious "simplification" — going back to the flag —
+    would still pass every other test in this file, and cost a page with a real
+    module tree half its speed again.
+    """
+    home = tmp_path / "home"
+    page = _app_folder(tmp_path / "app")
+    out = subprocess.run(
+        [sys.executable, CHILD],
+        input=json.dumps({"path": str(page), "params": {}}),
+        capture_output=True, text=True, timeout=60,
+        env={**os.environ, "FUSED_RENDER_HOME": str(home)})
+
+    assert out.returncode == 0, out.stderr
+    assert json.loads(out.stdout)["result"] == 42
+    assert _pycache_dirs(tmp_path / "app") == [], "nothing beside the user's source"
+    cached = list((home / "pycache").rglob("*.pyc"))
+    assert cached, "bytecode must still be written — just under our own home dir"
+
+
+def test_the_engine_wrapper_relocates_the_cache_before_extending_sys_path(tmp_path):
     """The fused engine's generated wrapper, executed for real.
 
-    Its preamble is what puts the app dir on sys.path, so the flag has to be set
-    ABOVE that line — after it, the first sibling import has already cached. The
-    ordering assertion pins that; running the preamble proves it works. Only the
-    preamble is executed: the epilogue reaches for `fused` and `_params.json`,
-    neither of which this test needs to know about, and caching happens entirely
-    within the user code the preamble exec's.
+    Its preamble is what puts the app dir on sys.path, so the prefix has to be
+    set ABOVE that line — after it, the first sibling import has already cached
+    beside the source. The ordering assertion pins that; running the preamble
+    proves it works. Only the preamble is executed: the epilogue reaches for
+    `fused` and `_params.json`, neither of which this test needs to know about,
+    and caching happens entirely within the user code the preamble exec's.
     """
     page = _app_folder(tmp_path)
     user_code = page.read_text(encoding="utf-8")
     code = engine.build_code(user_code, str(tmp_path), str(page))
 
-    flag = code.index("dont_write_bytecode")
-    assert flag < code.index("path.insert"), \
-        "bytecode must be disabled before the app dir joins sys.path"
+    assert code.index("pycache_prefix") < code.index("path.insert"), \
+        "the cache must be relocated before the app dir joins sys.path"
 
     preamble = code[:code.index("exec(compile(")] + code[
         code.index("exec(compile("):code.index("\n", code.index("exec(compile("))]

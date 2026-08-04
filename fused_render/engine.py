@@ -636,6 +636,14 @@ def _binding_source() -> str:
     return files("fused_render").joinpath("_binding.py").read_text(encoding="utf-8")
 
 
+def _pycache_prefix() -> str:
+    """Where relocated bytecode goes — the same tree `_child.py` uses, so the
+    two engines share one cache instead of each rebuilding its own."""
+    from fused_render.shell import storage
+
+    return os.path.join(storage.home_dir(), "pycache")
+
+
 def build_code(user_code: str, script_dir: str, script_path: str = "script") -> str:
     """Wrap user code so its imports/data paths resolve next to the .py, and
     bridge the bare-``main()`` contract.
@@ -667,16 +675,18 @@ def build_code(user_code: str, script_dir: str, script_path: str = "script") -> 
         entrypoint fails identically under either engine.
     """
     binding_source = _binding_source()
-    # `dont_write_bytecode` before the path insert, for the same reason
-    # `_child.py` sets it: the line below puts the user's app folder on
-    # sys.path, so every sibling module the page imports would cache a .pyc
-    # into a directory the user edits and commits. The user's own source is
-    # exec'd from a literal here and was never cached, but its imports were —
-    # so under this engine the folder acquired a `__pycache__` too, just a
-    # sparser one. Both engines must leave the same folder behind.
+    # `pycache_prefix` before the path insert, for the same reason `_child.py`
+    # sets it: the line below puts the user's app folder on sys.path, so every
+    # sibling module the page imports would cache a .pyc into a directory the
+    # user edits and commits. The user's own source is exec'd from a literal
+    # here and was never cached, but its imports were — so under this engine the
+    # folder acquired a `__pycache__` too, just a sparser one. Both engines must
+    # leave the same folder behind, and both must keep the cache: relocating it
+    # rather than disabling it is what makes a page with a real module tree cost
+    # the same here as it did before (see `_child.py` for the measurements).
     preamble = (
         f"import os as _fused_os, sys as _fused_sys\n"
-        f"_fused_sys.dont_write_bytecode = True\n"
+        f"_fused_sys.pycache_prefix = {_pycache_prefix()!r}\n"
         f"_fused_sys.path.insert(0, {script_dir!r})\n"
         f"exec(compile({user_code!r}, {script_path!r}, 'exec'), globals())\n"
     )

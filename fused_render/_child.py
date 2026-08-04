@@ -54,19 +54,31 @@ def run():
         module_dir = os.path.dirname(path)
         os.chdir(module_dir)  # relative data paths in user code resolve next to the .py
         sys.path.insert(0, module_dir)
-        # No `__pycache__` in the user's app folder. A SourceFileLoader caches
-        # bytecode next to the source, so exec_module below wrote a .pyc for the
+        # RELOCATE the bytecode cache; do not disable it. A SourceFileLoader
+        # caches beside the source, so exec_module below wrote a .pyc for the
         # page's own .py — and sys.path[0] above means every sibling it imports
-        # wrote one too. That directory is ours, not theirs: it appeared inside
-        # a folder the user edits and commits (app_git's `git add -A` swept it
-        # into app history), and its mtime moved on every run, so merely VIEWING
-        # a page made it outrank one that was actually edited in "Recent".
-        # The cache bought nothing here anyway — PY-6 is a fresh process per
-        # call, so re-parsing a page-sized module costs microseconds against a
-        # process spawn. Set on `sys` rather than via PYTHONDONTWRITEBYTECODE in
-        # the parent: executor.py inherits os.environ untouched on purpose, and
-        # this is one line at the exact point user code is loaded.
-        sys.dont_write_bytecode = True
+        # wrote one too. That directory is ours, not theirs: it appeared in a
+        # folder the user edits and commits (app_git's `git add -A` swept it
+        # into app history) and its mtime moved on every import, so merely
+        # VIEWING a page made it outrank one that was actually edited in Recent.
+        #
+        # The first fix for that was `dont_write_bytecode = True`, on the
+        # reasoning that a fresh process per call (PY-6) never reuses a cache so
+        # re-parsing costs "microseconds against a process spawn". Measured,
+        # that is true only of a trivial helper. A page whose module tree is
+        # real pays for the re-parse on EVERY call: a 161 KB module went 55 ms →
+        # 151 ms (2.8x), forty 4 KB siblings 57 ms → 107 ms (1.9x). The cache is
+        # reused — across calls, by the next process — and it is worth keeping.
+        #
+        # `pycache_prefix` keeps both: bytecode is still written and still read,
+        # into a parallel tree under our own home dir instead of into the user's
+        # folder. Resolved here rather than passed in because executor.py gives
+        # the child no `env=` on purpose; this mirrors shell/storage.home_dir()'s
+        # first line, which is the one thing worth duplicating over making this
+        # standalone worker import the package (see the note above).
+        sys.pycache_prefix = os.path.join(
+            os.environ.get("FUSED_RENDER_HOME") or os.path.expanduser("~/.fused-render"),
+            "pycache")
         spec = importlib.util.spec_from_file_location("__fused_module__", path)
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)

@@ -295,12 +295,14 @@ def main(city: str = "oslo", limit: int = 100):
   the only way a child could see the package) an outright failure for one that
   imports the package.
 - **PY-6c** **Executing a page writes nothing into the user's app folder** (D213).
-  Both engines set `sys.dont_write_bytecode` before putting the app dir on
+  Both engines set `sys.pycache_prefix` before putting the app dir on
   `sys.path`, so neither the page's own `.py` nor any sibling it imports leaves a
   `__pycache__` behind — the built-in worker cached both (`_child.py` loads
   through a `SourceFileLoader`), the fused engine cached the siblings
-  (`engine.build_code`'s wrapper does the same path insert). The cache is worth
-  nothing under PY-6 anyway: a fresh process per call never reuses it. Three
+  (`engine.build_code`'s wrapper does the same path insert). The cache is
+  RELOCATED to `home_dir()/pycache`, not disabled: a fresh process per call does
+  reuse an on-disk `.pyc`, and disabling it cost a page with a real module tree
+  up to 2.8x per call (measured; see D213). Three
   consequences follow and are held elsewhere: `__pycache__/` is in `_GITIGNORE`
   so `commit()`'s `git add -A` cannot sweep .pyc files into app history, and
   `_ensure_excludes` untracks already-committed ones **once** per repo (index
