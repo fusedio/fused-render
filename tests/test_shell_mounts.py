@@ -1425,7 +1425,8 @@ def test_upload_status_counts_pending_and_failed(home, rcd):
         _q("rejected.tif", tries=4),
     )
     st = mounts_mod._mount_upload_status({"remote": "gdrive:docs"})
-    assert st == {"pending": 3, "failed": 1, "failed_names": ["rejected.tif"]}
+    assert st == {"unknown": False, "pending": 3, "failed": 1,
+                  "failed_names": ["rejected.tif"]}
     method, body = next(c for c in rcd.calls if c[0] == "vfs/queue")
     assert body == {"fs": "gdrive:docs"}
 
@@ -1433,18 +1434,39 @@ def test_upload_status_counts_pending_and_failed(home, rcd):
 def test_upload_status_empty_queue_is_all_clear(home, rcd):
     rcd.responses["vfs/queue"] = _queue()
     assert mounts_mod._mount_upload_status({"remote": "gdrive:"}) == {
-        "pending": 0, "failed": 0, "failed_names": []}
+        "unknown": False, "pending": 0, "failed": 0, "failed_names": []}
 
 
-def test_upload_status_is_none_when_the_queue_cannot_be_read(home, rcd):
-    # No VFS for that fs, an old rclone without vfs/queue, cache mode off: all
-    # answer "unknown", which must NOT read as "nothing pending".
+def test_upload_status_is_unknown_when_the_queue_cannot_be_read(home, rcd, caplog):
+    """No VFS for that fs, an old rclone without vfs/queue, cache mode off: all
+    mean "we don't know", which is NOT "nothing pending". It must come back as a
+    positive unknown — a bare None is indistinguishable from the
+    not-applicable None get_mounts uses for read-only/unhealthy mounts, and the
+    UI would draw both as a clean card."""
     rcd.responses["vfs/queue"] = (500, {"error": 'no VFS found with name "gdrive:"'})
-    assert mounts_mod._mount_upload_status({"remote": "gdrive:"}) is None
+    with caplog.at_level("WARNING"):
+        st = mounts_mod._mount_upload_status({"remote": "gdrive:", "name": "gd"})
+    assert st["unknown"] is True and st["reason"]
+    assert "pending" not in st  # no number a caller could mistake for a count
+    # The rc error was the only record of WHY, and it used to be discarded.
+    assert "no VFS found" in caplog.text
 
 
-def test_upload_status_is_none_without_a_daemon(home):
-    assert mounts_mod._mount_upload_status({"remote": "gdrive:"}) is None
+def test_upload_status_is_unknown_on_a_non_json_reply(home, rcd, monkeypatch):
+    """_rc lets json.loads' ValueError escape unwrapped on a 200 with a
+    non-JSON body. Uncaught it would kill the get_mounts probe thread, leaving
+    the mount's uploads unset — the same false all-clear by another route."""
+    def bad_json(port, method, params=None, timeout=30, auth=None):
+        raise ValueError("Expecting value: line 1 column 1 (char 0)")
+
+    monkeypatch.setattr(mounts_mod, "_rc", bad_json)
+    st = mounts_mod._mount_upload_status({"remote": "gdrive:", "name": "gd"})
+    assert st["unknown"] is True
+
+
+def test_upload_status_is_unknown_without_a_daemon(home):
+    st = mounts_mod._mount_upload_status({"remote": "gdrive:", "name": "gd"})
+    assert st["unknown"] is True
 
 
 def test_upload_status_caps_the_names_it_reports(home, rcd):
@@ -1530,7 +1552,44 @@ def test_get_mounts_surfaces_the_upload_queue(client, rcd):
         "mountPoints": [{"Fs": "gdrive:docs", "MountPoint": created["mountpoint"]}]}
     m = client.get("/api/mounts").json()["mounts"][0]
     assert m["state"] == "mounted"
-    assert m["uploads"] == {"pending": 2, "failed": 1, "failed_names": ["b.tif"]}
+    assert m["uploads"] == {"unknown": False, "pending": 2, "failed": 1,
+                            "failed_names": ["b.tif"]}
+
+
+def test_get_mounts_reports_an_unreadable_queue_as_unknown(client, rcd):
+    """The two Nones must not collide on the wire: null means "not applicable"
+    (read-only or unhealthy), while a queue we tried and failed to read comes
+    back as a positive unknown so the page can say so."""
+    rcd.responses["vfs/queue"] = (500, {"error": "no VFS found"})
+    created = client.post("/api/mounts", json={"name": "data", "remote": "gdrive:docs"},
+                          headers=FUSED).json()
+    rcd.responses["mount/listmounts"] = {
+        "mountPoints": [{"Fs": "gdrive:docs", "MountPoint": created["mountpoint"]}]}
+    m = client.get("/api/mounts").json()["mounts"][0]
+    assert m["uploads"]["unknown"] is True
+
+
+def test_get_mounts_reads_the_queue_when_the_record_read_only_flag_is_stale(
+        client, rcd):
+    """read_only on the RECORD can drift ahead of what the live mount baked
+    (config.py's _effective_serve_read_only documents exactly this). A mount
+    recorded read-only but actually mounted read-write can still have queued
+    writes, and skipping it there is another false all-clear."""
+    rcd.responses["vfs/queue"] = _queue(_q("stuck.tif", tries=3))
+    created = client.post("/api/mounts",
+                          json={"name": "drifted", "remote": "gdrive:docs"},
+                          headers=FUSED).json()
+    rcd.responses["mount/listmounts"] = {
+        "mountPoints": [{"Fs": "gdrive:docs", "MountPoint": created["mountpoint"]}]}
+    # The record now says read-only; the LIVE mount was baked read-write.
+    rec = mounts_mod.get_mount(created["id"])
+    rec["read_only"] = True
+    assert rec.get("mounted_read_only") is False
+    mounts_mod._update_mount(rec)
+
+    m = client.get("/api/mounts").json()["mounts"][0]
+    assert m["uploads"] == {"unknown": False, "pending": 1, "failed": 1,
+                            "failed_names": ["stuck.tif"]}
 
 
 def test_get_mounts_skips_the_queue_read_for_a_read_only_mount(client, rcd):

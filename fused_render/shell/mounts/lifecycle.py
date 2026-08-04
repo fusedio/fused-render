@@ -838,9 +838,19 @@ UPLOAD_QUEUE_TIMEOUT = 5.0
 _UPLOAD_NAMES_SHOWN = 3
 
 
-def _mount_upload_status(m: dict) -> dict | None:
-    """Pending/failed VFS uploads for a mount — {"pending", "failed",
-    "failed_names"} — or None when the queue can't be read.
+def _upload_unknown(reason: str) -> dict:
+    """The "we could not find out" answer. A POSITIVE value, not an absence:
+    callers must be able to tell it from both a verified-empty queue and from
+    the None get_mounts uses for a mount where the question doesn't apply. It
+    deliberately carries NO pending/failed numbers — a zero here is exactly the
+    false all-clear this whole path exists to prevent."""
+    return {"unknown": True, "reason": reason}
+
+
+def _mount_upload_status(m: dict) -> dict:
+    """Pending/failed VFS uploads for a mount — {"unknown": False, "pending",
+    "failed", "failed_names"} — or _upload_unknown(...) when the queue could not
+    be read.
 
     Why this exists (D207): VFS_OPT sets CacheMode "full", so a write returns
     success the moment it lands in the local cache and the actual upload happens
@@ -863,21 +873,39 @@ def _mount_upload_status(m: dict) -> dict | None:
     `uploading` (rclone v1.74.4) — there is no per-item error field, so `tries`
     is the signal, not an `err` string.
 
-    None (unknown) is deliberately distinct from a zero count: no daemon, an
-    fs with no active VFS, or an rclone without the method must never read as
-    "nothing pending" — that is precisely the false all-clear this exists to
-    prevent."""
+    Unknown is deliberately distinct from a zero count: no daemon, an fs with
+    no active VFS, or an rclone without the method must never read as "nothing
+    pending" — that is precisely the false all-clear this exists to prevent. It
+    is also distinct from the None get_mounts stores for a mount that CAN'T have
+    a queue (read-only, or not healthy): that one is "not applicable", this one
+    is "we tried and could not tell", and only the second warrants a warning in
+    the UI.
+
+    Never raises. It runs inside GET /api/mounts' per-mount worker thread, where
+    an escaping exception would kill the worker and leave the mount's uploads
+    unset — the false all-clear again, by another route. Both failure shapes are
+    caught: RuntimeError (what _rc raises for an HTTP error or a socket problem)
+    and ValueError (what json.loads raises UNWRAPPED out of _rc when a 200 comes
+    back with a non-JSON body)."""
     from fused_render.shell.mounts import _live_rcd_port, _rc
-    port = _live_rcd_port()
-    if port is None:
-        return None
     try:
+        # _live_rcd_port probes the daemon (an rc call of its own), so it is
+        # inside the guard too — not just the vfs/queue call.
+        port = _live_rcd_port()
+        if port is None:
+            return _upload_unknown("the rclone daemon is not running")
         out = _rc(port, "vfs/queue", {"fs": m["remote"]}, timeout=UPLOAD_QUEUE_TIMEOUT)
-    except RuntimeError:
-        return None
+    except (RuntimeError, ValueError) as e:
+        # The rc error text was the ONLY record of why this failed; discarding
+        # it left nothing anywhere to diagnose a mount stuck on "unavailable".
+        logger.warning("mount %r: could not read the upload queue for %s: %s",
+                       m.get("name"), m.get("remote"), e)
+        return _upload_unknown("the upload queue could not be read from rclone")
     items = out.get("queue") if isinstance(out, dict) else None
     if not isinstance(items, list):
-        return None
+        logger.warning("mount %r: unexpected vfs/queue reply for %s: %.200r",
+                       m.get("name"), m.get("remote"), out)
+        return _upload_unknown("rclone returned an upload queue we couldn't read")
     pending = failed = 0
     names: list[str] = []
     for item in items:
@@ -892,7 +920,8 @@ def _mount_upload_status(m: dict) -> dict | None:
             failed += 1
             if len(names) < _UPLOAD_NAMES_SHOWN:
                 names.append(str(item.get("name") or ""))
-    return {"pending": pending, "failed": failed, "failed_names": names}
+    return {"unknown": False, "pending": pending, "failed": failed,
+            "failed_names": names}
 
 
 def mount_state(m: dict, rcd_mounts: set, timeout: float = PROBE_TIMEOUT,

@@ -1016,21 +1016,30 @@ export interface Mount {
   //    restart (not Reconnect) re-reads the refreshed ones.
   // Both route the user to the single global Restart rclone button.
   restart_reason?: "params" | "credentials" | null;
-  // The mount's async upload queue (D207), or null when it wasn't read (an
-  // unhealthy or read-only mount) or couldn't be. null is NOT "nothing
-  // pending" — with a full VFS cache a save completes locally and uploads
-  // afterwards, so an unknown queue must never be shown as all-clear.
+  // The mount's async upload queue (D207). null means the question does not
+  // APPLY — the mount is read-only or not healthy, so it can hold no queue.
+  // A read that was attempted and failed comes back as {unknown: true}, which
+  // is a different thing and must be shown, not swallowed: with a full VFS
+  // cache a save completes locally and uploads afterwards, so "we don't know"
+  // can hide files that never reached the remote.
   uploads?: MountUploads | null;
 }
 
-// Files written to a mount that haven't reached the remote yet. `failed` counts
-// items whose upload already came back unsuccessfully (quota, permissions) and
-// is the number that matters — a save the user saw succeed did not stick.
-export interface MountUploads {
-  pending: number;
-  failed: number;
-  failed_names: string[]; // capped by the server; `failed` carries the rest
-}
+// Files written to a mount that haven't reached the remote yet. A discriminated
+// union on `unknown` on purpose: the unknown case carries NO counts, so it
+// cannot be read as zero by a caller that forgets to check.
+export type MountUploads =
+  | {
+      unknown: false;
+      pending: number;
+      // Items whose upload already came back unsuccessfully (quota,
+      // permissions). The number that matters — a save the user saw succeed
+      // did not stick. Always <= pending; rclone re-queues a failed item
+      // rather than dropping it, so it stays counted in both.
+      failed: number;
+      failed_names: string[]; // capped by the server; `failed` carries the rest
+    }
+  | { unknown: true; reason: string };
 
 // A remote we can offer from credentials already present in the user's
 // dotfiles (AWS profiles/env, gcloud ADC). Materialized on first use into a

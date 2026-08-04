@@ -315,6 +315,7 @@ from .lifecycle import (
     _sweep_late_mounts,
     _sync_serves_locked,
     _unmount_for_quit,
+    _upload_unknown,
     attach_mount,
     detach_mount,
     mount_restart_reason,

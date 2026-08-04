@@ -45,8 +45,10 @@ def resolve_url_endpoint(url: str = ""):
 @router.get("/api/mounts")
 def get_mounts():
     from fused_render.shell.mounts import (
+        _effective_serve_read_only,
         _mount_credential_status,
         _mount_upload_status,
+        _upload_unknown,
         list_mounts,
         mount_state,
         mounted_paths,
@@ -68,18 +70,33 @@ def get_mounts():
     threads = []
     for i, m in enumerate(mounts):
         def probe(i=i, m=m):
-            st = mount_state(m, live)
-            states[i] = st
-            # Credentials only matter for a broken mount; a healthy/unmounted
-            # one never pays the lsd probe.
-            if st in ("disconnected", "stale"):
-                cred_statuses[i] = _mount_credential_status(m, bin_)
-            elif st == "mounted" and not m.get("read_only"):
-                # The async upload queue (D207): only a live, writable mount can
-                # have one. Deliberately in THIS worker rather than a second poll
-                # loop — and mutually exclusive with the credential probe above,
-                # so the join budget below is unchanged.
-                uploads[i] = _mount_upload_status(m)
+            try:
+                st = mount_state(m, live)
+                states[i] = st
+                # Credentials only matter for a broken mount; a healthy/unmounted
+                # one never pays the lsd probe.
+                if st in ("disconnected", "stale"):
+                    cred_statuses[i] = _mount_credential_status(m, bin_)
+                elif st == "mounted" and not _effective_serve_read_only(m):
+                    # The async upload queue (D207): only a live, writable mount
+                    # can have one. Deliberately in THIS worker rather than a
+                    # second poll loop — and mutually exclusive with the
+                    # credential probe above, so the join budget is unchanged.
+                    #
+                    # The gate is what the LIVE mount baked, not the record: the
+                    # record's read_only can drift ahead of it (detection flipped
+                    # it, or a remount was deferred — see
+                    # _effective_serve_read_only), and a mount recorded read-only
+                    # but actually mounted read-write can still be holding
+                    # queued writes we must not stay silent about.
+                    uploads[i] = _mount_upload_status(m)
+            except Exception:
+                # A worker that dies leaves this mount's slots unset, which reads
+                # as "disconnected, nothing queued" — a false all-clear on the
+                # very mount that just misbehaved. Report the unknown honestly.
+                logger.exception("mount %r: status probe failed", m.get("name"))
+                if states[i] == "mounted" and uploads[i] is None:
+                    uploads[i] = _upload_unknown("the mount could not be probed")
         t = threading.Thread(target=probe, daemon=True)
         t.start()
         threads.append(t)

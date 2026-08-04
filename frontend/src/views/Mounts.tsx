@@ -27,6 +27,7 @@ import type {
 } from "../lib/api";
 import { useRefreshOnReturn } from "../lib/hooks";
 import { navigate } from "../lib/router";
+import { hasDrainingUploads, uploadNotice } from "../lib/uploads";
 import { Modal } from "../components/modal/Modal";
 import { ErrorBanner } from "../components/ErrorBanner";
 import { Field, Select, TextInput } from "../components/field/fields";
@@ -35,29 +36,40 @@ import { Field, Select, TextInput } from "../components/field/fields";
 // Worth its own line because a mount caches writes locally and uploads them
 // afterwards: the user already saw the save succeed, so a rejection at the
 // remote (quota, permissions, a revoked token) is otherwise completely
-// invisible. Silent when the queue is empty — or unknown (null), which is not
-// the same thing and must never be drawn as an all-clear.
+// invisible.
+//
+// Three states, and conflating any two of them is the bug this shape exists to
+// prevent — see lib/uploads.ts, which owns the decision and is tested there.
 function UploadQueue({ uploads }: { uploads?: MountUploads | null }) {
-  if (!uploads || uploads.pending === 0) return null;
-  const { pending, failed, failed_names } = uploads;
-  const names = failed_names.filter(Boolean).join(", ");
-  if (failed > 0) {
-    return (
-      <div
-        className="mount-hint warn"
-        title="These files were saved on your computer but the remote rejected the upload — rclone keeps retrying with a growing delay."
-      >
-        {failed} {failed === 1 ? "file has" : "files have"} not reached the remote
-        {names && <> — {names}</>}
-        {failed > failed_names.length && <> …</>}. Saved locally; still retrying.
-      </div>
-    );
+  const notice = uploadNotice(uploads);
+  switch (notice.kind) {
+    case "none":
+      return null;
+    case "unknown":
+      return (
+        <div className="mount-hint warn" title={notice.reason}>
+          Upload status unavailable — saved files may not have reached the remote.
+        </div>
+      );
+    case "failed":
+      return (
+        <div
+          className="mount-hint warn"
+          title="These files were saved on your computer but the remote rejected the upload — rclone keeps retrying with a growing delay."
+        >
+          {notice.failed} {notice.failed === 1 ? "file has" : "files have"} not reached the
+          remote
+          {notice.names.length > 0 && <> — {notice.names.join(", ")}</>}
+          {notice.truncated && <> …</>}. Saved locally; still retrying.
+        </div>
+      );
+    case "pending":
+      return (
+        <div className="mount-hint" title="Saved on your computer and uploading to the remote.">
+          Uploading {notice.pending} {notice.pending === 1 ? "file" : "files"}…
+        </div>
+      );
   }
-  return (
-    <div className="mount-hint" title="Saved on your computer and uploading to the remote.">
-      Uploading {pending} {pending === 1 ? "file" : "files"}…
-    </div>
-  );
 }
 
 function MountRow({
@@ -832,10 +844,10 @@ export default function Mounts() {
   // upload queue (D207) honest without polling a handler that probes every
   // mount. (Same refresh-on-return cadence the account dot uses.)
   useRefreshOnReturn(reload);
-  // While something is actually queued, poll: a drain the user can watch, and
-  // a failure that appears without them having to leave and come back. Gated
-  // on a non-empty queue so an idle Mounts page stays completely quiet.
-  const uploading = state?.mounts.some((m) => (m.uploads?.pending ?? 0) > 0) ?? false;
+  // While something is actually DRAINING, poll: a transfer the user can watch,
+  // and a failure that appears without them having to leave and come back. The
+  // gate (and why it is not simply "anything queued") lives in lib/uploads.ts.
+  const uploading = hasDrainingUploads(state?.mounts ?? []);
   useEffect(() => {
     if (!uploading) return;
     const id = window.setInterval(reload, UPLOAD_POLL_MS);
