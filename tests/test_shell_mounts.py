@@ -1864,6 +1864,33 @@ def test_drive_oauth_reports_an_rc_failure(client, rcd, monkeypatch):
     assert "couldn't decode token" in s["error"]
 
 
+def test_drive_oauth_does_not_retain_the_token_after_using_it(client, rcd, monkeypatch):
+    """The token is consumed by config/create and must not outlive that call.
+    _authorize is a module global that deliberately persists (the status
+    endpoint reads the last outcome from it), so without an explicit clear the
+    raw access/refresh token stayed reachable for the life of the process —
+    which is what turns a future crash dump or an added diagnostic into a real
+    credential leak."""
+    _drive_ready(monkeypatch, rcd)
+    _spawn_python(monkeypatch, f'print("{AUTHORIZE_OK}")')
+    client.post("/api/mounts/remotes/oauth", json={"name": "gdrive"}, headers=FUSED)
+    assert _wait_oauth(client)["ok"] is True
+
+    job = mounts_mod.endpoints._authorize
+    assert list(job.out) == []
+    assert "ya29.tok" not in repr(vars(job))
+
+
+def test_drive_oauth_clears_stdout_even_when_no_token_arrived(client, rcd, monkeypatch):
+    """Same invariant on the failure path: whatever the child put on stdout is
+    dropped once it has been parsed, so nothing half-token-shaped lingers."""
+    _drive_ready(monkeypatch, rcd)
+    _spawn_python(monkeypatch, 'print("some unexpected stdout")')
+    client.post("/api/mounts/remotes/oauth", json={"name": "gdrive"}, headers=FUSED)
+    assert _wait_oauth(client)["ok"] is False
+    assert list(mounts_mod.endpoints._authorize.out) == []
+
+
 def test_drive_oauth_never_leaks_the_token_into_an_error(client, rcd, monkeypatch):
     # The token blob lands on stdout; error text is built from stderr (plus
     # token-free stdout), so a failure message can't carry the credential into

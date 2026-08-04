@@ -340,6 +340,12 @@ class _ActiveAuthorize:
     are built from. Keeping them apart is what stops a failed sign-in from
     pasting an OAuth credential into a UI banner, a log line, or a bug report.
     deque.append is atomic under the GIL, so the pumps need no lock.
+
+    `out` is CLEARED the moment the token is parsed out of it (see
+    _authorize_outcome). This record outlives the attempt on purpose — the
+    status endpoint reports the last outcome from it — so the token's lifetime
+    has to be bounded explicitly rather than by the record's. Nothing may read
+    `out` after that point.
     """
 
     name: str
@@ -472,6 +478,13 @@ def _authorize_outcome(job: _ActiveAuthorize) -> str | None:
         return (f"`rclone authorize {job.backend}` failed"
                 + (f": {detail}" if detail else f" (exit {job.proc.returncode})"))
     token = _parse_authorize_token("\n".join(job.out))
+    # Consumed. `_authorize` is a module global that deliberately outlives the
+    # attempt (the status endpoint reports the last outcome from it), so without
+    # this the raw access/refresh token would stay reachable for the life of the
+    # process — the thing that turns a later crash dump or an added diagnostic
+    # into a real credential leak. Nothing reads `out` past this point: every
+    # failure branch below builds its message from `tail` (stderr) instead.
+    job.out.clear()
     if token is None:
         # Exit 0 with nothing to show for it: the browser tab was closed, or
         # consent was never granted. Retryable, and it must SAY so — this is the
