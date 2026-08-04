@@ -293,7 +293,31 @@
   @keyframes rise { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
   @media (prefers-reduced-motion: reduce) { .turn { animation: none; } }
 
-  .user { display: flex; justify-content: flex-end; }
+  .user { display: flex; flex-direction: column; align-items: flex-end; }
+  /* annotations a sent message carried — subtle receipt under the bubble */
+  .annsum {
+    max-width: 82%;
+    margin-top: 4px;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+  .annsum .annsum-row {
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+    font-size: 11.5px;
+    color: var(--dim);
+    justify-content: flex-end;
+  }
+  .annsum .annsum-lbl { color: var(--accent); font-weight: 600; flex-shrink: 0; }
+  .annsum .annsum-el { color: var(--faint); flex-shrink: 0; font-size: 11px; }
+  .annsum .annsum-txt {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
+  }
   .user .bubble {
     background: var(--bubble-user);
     border-radius: 18px 18px 4px 18px;
@@ -1636,9 +1660,37 @@ async function sendMessage(message) {
     for (const c of pending) c.sent = 1;
     annSave();
   }
-  addUser(message + (pending.length
-    ? "\n📌 " + pending.length + " annotation" + (pending.length === 1 ? "" : "s") + " attached"
-    : ""));
+  addUser(message);
+  // Subtle receipt under the bubble: which annotations rode this message.
+  if (pending.length) {
+    const turns = log.querySelectorAll(".turn.user");
+    const turn = turns[turns.length - 1];
+    const sum = document.createElement("div");
+    sum.className = "annsum";
+    pending.forEach((c) => {
+      const row = document.createElement("div");
+      row.className = "annsum-row";
+      const lbl = document.createElement("span");
+      lbl.className = "annsum-lbl";
+      // Same letter the pin wears (index in the full list, not the pending
+      // subset), so the receipt and the ✓-pin match up.
+      lbl.textContent = "📌 " + annLabelFor(annotations.indexOf(c));
+      const txt = document.createElement("span");
+      txt.className = "annsum-txt";
+      txt.textContent = c.content;
+      txt.title = c.content;
+      row.append(lbl, txt);
+      if (c.tag) {
+        const el = document.createElement("span");
+        el.className = "annsum-el";
+        el.textContent = "<" + c.tag + ">";
+        row.appendChild(el);
+      }
+      sum.appendChild(row);
+    });
+    turn.appendChild(sum);
+    scrollBottom();
+  }
   try {
     const { run_id, error } = await fused.runPython(AGENT, {
       action: "start",
