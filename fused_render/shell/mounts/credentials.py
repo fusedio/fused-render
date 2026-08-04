@@ -255,7 +255,7 @@ def broken_mount_error(path: str) -> str | None:
         # One probe, three outcomes (see _credential_probe):
         cred_status = _mount_credential_status(m)
         if cred_status == "bad":
-            return f"mount '{name}' — {_CRED_EXPIRED_MSG}"
+            return f"mount '{name}' — {_bad_credential_advice(m)}"
         # "valid": the user re-authed, but the long-lived daemon still holds the
         # pre-refresh keys, so Reconnect (which reuses that daemon) can't help —
         # only a daemon restart re-reads them. "inconclusive"/"n/a" fall through
@@ -390,6 +390,24 @@ _CRED_EXPIRED_MSG = (
 )
 
 
+_OAUTH_EXPIRED_MSG = (
+    "the Google Drive sign-in has expired or was revoked — sign in to Google "
+    "Drive again from the Mounts page in the sidebar"
+)
+
+
+def _bad_credential_advice(m: dict) -> str:
+    """What to actually DO about a mount whose credentials probe bad. The
+    remedy is not the same for every backend and naming the wrong one is the
+    bug this whole path exists to avoid: a revoked Drive token is not fixed by
+    `aws sso login` any more than it is by Reconnect."""
+    from fused_render.shell.mounts import _remote_config
+    cfg = _remote_config(m["remote"].partition(":")[0])
+    if isinstance(cfg, dict) and str(cfg.get("type", "")).lower() == "drive":
+        return _OAUTH_EXPIRED_MSG
+    return _CRED_EXPIRED_MSG
+
+
 def _credential_probe(bin_: str, name: str) -> str:
     """Tri-state result of a top-level `lsd` against an env_auth remote:
 
@@ -436,12 +454,13 @@ def _detected_credential_error(bin_: str, name: str) -> str | None:
 def _mount_credential_status(m: dict, bin_: str | None = None) -> str:
     """Tri-state credential health of a broken mount's remote, or "n/a":
 
-      "valid" / "bad" / "inconclusive" — the _credential_probe outcome, for an
-                       env_auth remote (see there).
-      "n/a"          — not an env_auth remote (anonymous/public or key-carrying
-                       remotes don't expire this way), or no rclone binary.
+      "valid" / "bad" / "inconclusive" — the _credential_probe outcome, for a
+                       remote whose credentials can expire on their own (see
+                       there and _EXPIRABLE below).
+      "n/a"          — nothing here expires by itself (anonymous/public, or a
+                       key-carrying remote), or no rclone binary.
 
-    Only env_auth remotes are probed, and the probe (an rclone `lsd`) is paid
+    Only expirable remotes are probed, and the probe (an rclone `lsd`) is paid
     only on an already-broken mount, never on a healthy listing. Callers may
     pass a resolved `bin_` to avoid re-resolving rclone per mount."""
     from fused_render.shell.mounts import _remote_config, rclone_bin
@@ -451,6 +470,25 @@ def _mount_credential_status(m: dict, bin_: str | None = None) -> str:
         return "n/a"
     name = m["remote"].partition(":")[0]
     cfg = _remote_config(name)
-    if not isinstance(cfg, dict) or str(cfg.get("env_auth", "")).lower() != "true":
+    if not isinstance(cfg, dict) or not _has_expirable_credentials(cfg):
         return "n/a"
     return _credential_probe(bin_, name)
+
+
+def _has_expirable_credentials(cfg: dict) -> bool:
+    """Whether a remote's config carries a credential that can go bad on its own
+    — the gate on paying for a credential probe.
+
+    Two kinds qualify. `env_auth=true` remotes borrow the ambient AWS/gcloud
+    credential, which is routinely a short-lived SSO/STS token. And OAuth
+    backends hold a refresh token the USER can revoke (or Google can expire —
+    an OAuth client left in Testing mode drops refresh tokens after 7 days),
+    which is why Drive is here: without it a revoked Drive token returned "n/a"
+    and the mount fell through to the generic "reconnect" advice, and Reconnect
+    cannot re-authorize anything — only signing in again can.
+
+    Keys pasted into rclone's config are excluded on purpose: they don't expire
+    on their own, so probing them would just spend an `rclone lsd` per broken
+    mount to learn nothing."""
+    return (str(cfg.get("env_auth", "")).lower() == "true"
+            or str(cfg.get("type", "")).lower() == "drive")

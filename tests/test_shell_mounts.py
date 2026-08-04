@@ -2026,6 +2026,61 @@ def test_detect_accepts_access_denied_probe(client, monkeypatch):
     assert r.json()["name"] == "aws-env:"
 
 
+def _fake_remote_config(monkeypatch, cfg):
+    monkeypatch.setattr(mounts_mod, "rclone_bin", lambda: "/usr/bin/rclone")
+    # _mount_credential_status resolves _remote_config through the package.
+    monkeypatch.setattr(mounts_mod, "_remote_config", lambda name: cfg)
+
+
+def test_mount_credential_status_probes_a_drive_remote(monkeypatch):
+    """A Drive mount's token is exactly the kind of credential that goes bad on
+    its own (revoked in the Google account, or expired because the OAuth client
+    was left in Testing mode). Before D205 the gate was env_auth-only, so a
+    revoked Drive token returned "n/a" and fell through to the generic
+    "reconnect" message — which cannot fix it. Reconnect never re-authorizes;
+    only signing in again does."""
+    _fake_remote_config(monkeypatch, {"type": "drive", "token": "{...}"})
+    monkeypatch.setattr(mounts_mod.credentials, "_credential_probe",
+                        lambda bin_, name: "bad")
+    assert mounts_mod._mount_credential_status({"remote": "gdrive:docs"}) == "bad"
+
+
+def test_mount_credential_status_drive_valid_drives_the_restart_prompt(monkeypatch):
+    """A re-signed-in Drive remote probes valid while the long-lived daemon
+    still holds the dead token — the same stale-daemon case env_auth remotes
+    have, and it routes to the same Restart prompt."""
+    _fake_remote_config(monkeypatch, {"type": "drive"})
+    monkeypatch.setattr(mounts_mod.credentials, "_credential_probe",
+                        lambda bin_, name: "valid")
+    m = {"remote": "gdrive:", "name": "gdrive"}
+    assert mounts_mod._mount_credential_status(m) == "valid"
+    assert mounts_mod.mount_restart_reason(m, state="disconnected") == "credentials"
+
+
+def test_bad_credential_advice_is_backend_specific(monkeypatch):
+    """Naming the wrong remedy is the exact bug this path exists to avoid: a
+    revoked Drive token is no more fixed by `aws sso login` than by Reconnect."""
+    _fake_remote_config(monkeypatch, {"type": "drive"})
+    drive = mounts_mod.credentials._bad_credential_advice({"remote": "gdrive:"})
+    assert "sign in to google drive again" in drive.lower()
+    assert "aws sso" not in drive.lower()
+
+    _fake_remote_config(monkeypatch, {"type": "s3", "env_auth": "true"})
+    aws = mounts_mod.credentials._bad_credential_advice({"remote": "aws:b"})
+    assert aws == mounts_mod._CRED_EXPIRED_MSG
+
+
+def test_mount_credential_status_still_na_for_key_carrying_remotes(monkeypatch):
+    """Widening the gate to Drive must not start probing every remote: keys
+    written into rclone's config don't expire this way, and the probe is an
+    `rclone lsd` paid per broken mount."""
+    _fake_remote_config(monkeypatch, {"type": "s3", "access_key_id": "AK"})
+    monkeypatch.setattr(
+        mounts_mod.credentials, "_credential_probe",
+        lambda bin_, name: pytest.fail("must not probe a key-carrying remote"))
+    assert mounts_mod._mount_credential_status({"remote": "mys3:b"}) == "n/a"
+
+
 def test_detect_skips_probe_for_public_remotes(client, monkeypatch):
     """Anonymous public remotes carry no credentials to go stale — no lsd
     probe runs for them (it would only add latency and network flake)."""
