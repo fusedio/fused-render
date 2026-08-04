@@ -4569,6 +4569,24 @@ select.field-control:has(option[value=""]:checked) {
   border-color: var(--fg-muted);
 }
 
+/* A setup-panel option whose remote already exists. Listed rather than hidden —
+   omitting them made "Public datasets" show one lone card and read as broken —
+   but visibly settled: no action, and quieter than the ones still to create. */
+.mount-card--added {
+  background: transparent;
+  border-style: dashed;
+}
+
+.mount-card--added .mount-card-info {
+  opacity: 0.7;
+}
+
+.mount-card-status {
+  font-size: 0.85em;
+  color: var(--fg-muted);
+  white-space: nowrap;
+}
+
 /* Loading placeholder rows shown while getMounts() is in flight — a shimmer
    sweep over an empty card, so the list area reserves its space instead of
    the page jumping when data lands. */

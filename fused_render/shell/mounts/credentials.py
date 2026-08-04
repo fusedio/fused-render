@@ -124,7 +124,8 @@ def _remote_label(remote: str, suggestions: list[dict], configs: dict) -> str:
     SAME human name the suggestion used across its whole lifecycle (e.g. the
     built-in public option shows as "AWS S3 — public datasets…", not the cryptic
     "aws-open:" it materializes into). Match against the FULL suggestion set —
-    including ones already materialized, which _suggestions_view drops.
+    including ones already materialized (_suggestions_view flags those
+    `exists`, and this is the label they show under).
 
     Matching is by PROVENANCE, not name alone: the remote's stored config (from
     `rclone config dump`, keyed by bare name) must match the suggestion's backend
@@ -143,16 +144,25 @@ def _remote_label(remote: str, suggestions: list[dict], configs: dict) -> str:
 
 
 def _suggestions_view(remotes: list[str]) -> list[dict]:
-    """Public shape, minus any suggestion already materialized as a remote (so
-    the built-in aws-open drops out of the suggestions once created and shows
-    under Remotes instead). `kind` groups them in the dropdown: 'public' vs the
-    default 'detected'."""
+    """Public shape of EVERY suggestion, each flagged with `exists`: whether its
+    remote has already been materialized.
+
+    Nothing is dropped. This used to omit the already-created ones, which broke
+    the "Public datasets" panel: that panel describes what is POSSIBLE, so once
+    aws-open: existed it silently showed a single lone GCS card and read as
+    half-loaded. The panel now renders the created ones in an "already added"
+    state instead.
+
+    Consumers that CREATE from a suggestion (the Add-mount Remote dropdown,
+    which submits `suggest:<id>`) must filter on `exists` themselves — offering
+    an existing one would 409 or duplicate. `kind` groups them in the dropdown:
+    'public' vs the default 'detected'."""
     from fused_render.shell.mounts import _credential_suggestions
     return [
         {"id": s["id"], "label": s["label"], "remote_name": s["remote_name"],
-         "kind": s.get("kind", "detected")}
+         "kind": s.get("kind", "detected"),
+         "exists": f'{s["remote_name"]}:' in remotes}
         for s in _credential_suggestions()
-        if f'{s["remote_name"]}:' not in remotes
     ]
 
 

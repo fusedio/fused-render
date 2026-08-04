@@ -307,10 +307,14 @@ export function mountRootForLink(path: string): string {
 function AddMount({
   remotes,
   suggested,
+  preselect,
   onChanged,
 }: {
   remotes: RcloneRemote[];
   suggested: RemoteSuggestion[];
+  // A remote spec a setup flow just created (incl. trailing ':'), to select
+  // here once the reload carrying it lands. Null when nothing is pending.
+  preselect: string | null;
   onChanged: () => void;
 }) {
   const [name, setName] = useState("");
@@ -340,6 +344,25 @@ function AddMount({
 
   // A pasted S3/GCS link (see parseStorageUrl) that auto-fills the fields below.
   const [link, setLink] = useState("");
+
+  // The suggestions this form may OFFER. `suggested` now carries every
+  // suggestion, including ones already materialized (the setup panels need to
+  // show those as "already added"), but every option here submits
+  // "suggest:<id>" to create the remote on the fly — offering an existing one
+  // would 409 or duplicate it. The materialized ones are already listed under
+  // Remotes, so nothing is lost by dropping them here.
+  const offerable = suggested.filter((s) => !s.exists);
+
+  // Pre-select the remote a setup flow just created, and focus Path — the modal
+  // closing used to be the whole feedback, leaving the user to spot a new name
+  // in a dropdown. Waits for the reload carrying the remote: `preselect` is set
+  // as the modal closes, before getMounts() comes back.
+  const pathRef = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    if (!preselect || !remotes.some((r) => r.name === preselect)) return;
+    setRemote(preselect);
+    pathRef.current?.focus();
+  }, [preselect, remotes]);
 
   // Classify an available remote/suggestion so a pasted link can pick a matching
   // one: which cloud, and whether it's a public (no-credentials) remote. Names +
@@ -371,7 +394,7 @@ function AddMount({
   const pickRemote = (provider: "s3" | "gcs"): string | undefined => {
     const candidates = [
       ...remotes.map((r) => ({ value: r.name, ...classify(r.name, r.label) })),
-      ...suggested.map((s) => ({
+      ...offerable.map((s) => ({
         value: `suggest:${s.id}`,
         ...classify(s.remote_name, s.label),
         isPublic: s.kind === "public",
@@ -402,7 +425,7 @@ function AddMount({
   // what the mounted card then shows. A "suggest:<id>" selection resolves to
   // its real remote name at submit; use the suggestion's name for the preview.
   const resolvedBase = remote.startsWith("suggest:")
-    ? `${suggested.find((s) => `suggest:${s.id}` === remote)?.remote_name ?? ""}:`
+    ? `${offerable.find((s) => `suggest:${s.id}` === remote)?.remote_name ?? ""}:`
     : remote;
   const spec = resolvedBase && resolvedBase !== ":" ? resolvedBase + subpath : "";
 
@@ -500,9 +523,9 @@ function AddMount({
                 ))}
               </optgroup>
             )}
-            {suggested.some((s) => s.kind === "public") && (
+            {offerable.some((s) => s.kind === "public") && (
               <optgroup label="Public datasets (no credentials)">
-                {suggested
+                {offerable
                   .filter((s) => s.kind === "public")
                   .map((s) => (
                     <option key={s.id} value={`suggest:${s.id}`}>
@@ -511,9 +534,9 @@ function AddMount({
                   ))}
               </optgroup>
             )}
-            {suggested.some((s) => s.kind === "detected") && (
+            {offerable.some((s) => s.kind === "detected") && (
               <optgroup label="Detected credentials">
-                {suggested
+                {offerable
                   .filter((s) => s.kind === "detected")
                   .map((s) => (
                     <option key={s.id} value={`suggest:${s.id}`}>
@@ -526,6 +549,7 @@ function AddMount({
         </Field>
         <Field label="Path">
           <TextInput
+            ref={pathRef}
             placeholder="bucket/prefix"
             style={{ minWidth: 200 }}
             value={subpath}
@@ -571,10 +595,12 @@ function AddMount({
 }
 
 function AddRemote({
-  onChanged,
+  onCreated,
   onBusyChange,
 }: {
-  onChanged: () => void;
+  // Reports the created remote's spec (incl. ':') so Add mount can pre-select
+  // it — every setup flow ends by handing the user back to the mount form.
+  onCreated: (remote: string) => void;
   onBusyChange?: (busy: boolean) => void;
 }) {
   const [name, setName] = useState("");
@@ -592,7 +618,7 @@ function AddRemote({
     onBusyChange?.(true);
     setError(null);
     try {
-      await createRemote(name, {
+      const created = await createRemote(name, {
         access_key_id: accessKey,
         secret_access_key: secretKey,
         endpoint,
@@ -601,7 +627,7 @@ function AddRemote({
       setName("");
       setAccessKey("");
       setSecretKey("");
-      onChanged();
+      onCreated(created.name);
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -926,7 +952,9 @@ function OAuthSignIn({
 }: {
   provider: OAuthProvider;
   remotes: RcloneRemote[];
-  onConnected: () => void;
+  // Reports the connected remote's spec (incl. ':') so Add mount can
+  // pre-select it — a signed-in remote is not yet a mounted folder.
+  onConnected: (remote: string) => void;
   onBusyChange?: (busy: boolean) => void;
 }) {
   // A free default so the common case is one click. rclone's config/create
@@ -984,7 +1012,9 @@ function OAuthSignIn({
         return;
       case "connected":
         finish(null);
-        onConnected();
+        // The remote is named by the (connecting-disabled) name field, so this
+        // is the spec the server just wrote — no round-trip needed to learn it.
+        onConnected(`${name.trim()}:`);
         return;
       case "cancelled":
         finish(null);
@@ -1199,16 +1229,20 @@ function OAuthSignIn({
 function DetectedRemoteSetup({
   kind,
   suggested,
-  onChanged,
+  onCreated,
   onBusyChange,
 }: {
   kind: "detected" | "public";
   suggested: RemoteSuggestion[];
-  onChanged: () => void;
+  onCreated: (remote: string) => void;
   onBusyChange?: (busy: boolean) => void;
 }) {
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Every suggestion of this kind, INCLUDING already-created ones. Dropping
+  // those is what made this panel look broken: with aws-open: already created,
+  // "Public datasets" showed a single lone GCS card, which reads as a bug
+  // rather than as "you already have the other one". They render disabled.
   const options = suggested.filter((s) => s.kind === kind);
 
   const create = async (id: string) => {
@@ -1216,8 +1250,7 @@ function DetectedRemoteSetup({
     onBusyChange?.(true);
     setError(null);
     try {
-      await createDetectedRemote(id);
-      onChanged();
+      onCreated((await createDetectedRemote(id)).name);
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -1245,21 +1278,19 @@ function DetectedRemoteSetup({
         )}
       </p>
       {options.length === 0 ? (
+        // Only "detected" can be empty — the two public remotes are built in.
         <div className="mount-empty">
-          {kind === "detected" ? (
-            <>
-              No credentials detected. Run <code>aws sso login</code> or{" "}
-              <code>gcloud auth application-default login</code>, then reopen this — or use{" "}
-              <b>S3-compatible storage</b> to paste keys directly.
-            </>
-          ) : (
-            <>Both public remotes already exist — pick them under Remote in “Add mount”.</>
-          )}
+          No credentials detected. Run <code>aws sso login</code> or{" "}
+          <code>gcloud auth application-default login</code>, then reopen this — or use{" "}
+          <b>S3-compatible storage</b> to paste keys directly.
         </div>
       ) : (
         <div className="mount-list">
           {options.map((s) => (
-            <div className="mount-card" key={s.id}>
+            <div
+              className={"mount-card" + (s.exists ? " mount-card--added" : "")}
+              key={s.id}
+            >
               <div className="mount-card-main">
                 <div className="mount-card-info">
                   <div>{s.label}</div>
@@ -1268,14 +1299,18 @@ function DetectedRemoteSetup({
                   </div>
                 </div>
                 <div className="mount-card-actions">
-                  <button
-                    type="button"
-                    className="btn btn-primary"
-                    disabled={busy !== null}
-                    onClick={() => void create(s.id)}
-                  >
-                    {busy === s.id ? "Creating…" : "Create remote"}
-                  </button>
+                  {s.exists ? (
+                    <span className="mount-card-status">Already added</span>
+                  ) : (
+                    <button
+                      type="button"
+                      className="btn btn-primary"
+                      disabled={busy !== null}
+                      onClick={() => void create(s.id)}
+                    >
+                      {busy === s.id ? "Creating…" : "Create remote"}
+                    </button>
+                  )}
                 </div>
               </div>
             </div>
@@ -1283,8 +1318,18 @@ function DetectedRemoteSetup({
         </div>
       )}
       <p className="deploy-muted" style={{ fontSize: "0.8em", margin: 0 }}>
-        Creating a remote doesn’t mount anything yet — pick it under <b>Remote</b> in “Add
-        mount” and choose the bucket/prefix to surface.
+        {options.every((s) => s.exists) && options.length > 0 ? (
+          <>
+            All set — close this and pick the remote under <b>Remote</b> in “Add mount”,
+            then type the bucket/prefix to surface.
+          </>
+        ) : (
+          <>
+            Creating a remote doesn’t mount anything yet. This closes and pre-selects it
+            under <b>Remote</b> in “Add mount” — type the bucket/prefix there and add the
+            mount.
+          </>
+        )}
       </p>
       {error && <ErrorBanner>{error}</ErrorBanner>}
     </div>
@@ -1380,6 +1425,10 @@ export default function Mounts() {
   // it holding rclone's callback port, and the next attempt 409s on a sign-in
   // the user believes they dismissed.
   const [setupBusy, setSetupBusy] = useState(false);
+  // The remote a setup flow just created, handed to Add mount to pre-select.
+  // Creating a remote is only half the job — it mounts nothing — and the modal
+  // simply vanishing left no visible next step.
+  const [preselect, setPreselect] = useState<string | null>(null);
   // Global "Restart all mounts": a confirm modal (it briefly disconnects ALL
   // mounts) gating the multi-second daemon restart + re-mount.
   const [confirmRestart, setConfirmRestart] = useState(false);
@@ -1413,6 +1462,13 @@ export default function Mounts() {
     return () => window.clearInterval(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [uploading]);
+
+  // Shared close path for all six setup flows.
+  const finishSetup = (remote: string) => {
+    reload();
+    setSetup(null);
+    setPreselect(remote);
+  };
 
   const doRestart = async () => {
     setRestartBusy(true);
@@ -1541,6 +1597,7 @@ export default function Mounts() {
           <AddMount
             remotes={state.rclone.remotes}
             suggested={state.rclone.suggested ?? []}
+            preselect={preselect}
             onChanged={reload}
           />
           <AddStorage onPick={setSetup} />
@@ -1550,35 +1607,24 @@ export default function Mounts() {
               busy={setupBusy}
               onClose={() => setSetup(null)}
             >
-              {/* Every flow closes the same way: reload so the new remote
-                  appears in Add mount's Remote picker, then dismiss. */}
+              {/* Every flow ends the same way: reload so the new remote appears
+                  in Add mount's Remote picker, dismiss, and hand the remote to
+                  that picker so the next step is already staged. */}
               {setup === "s3compat" ? (
-                <AddRemote
-                  onBusyChange={setSetupBusy}
-                  onChanged={() => {
-                    reload();
-                    setSetup(null);
-                  }}
-                />
+                <AddRemote onBusyChange={setSetupBusy} onCreated={finishSetup} />
               ) : setup === "detected" || setup === "public" ? (
                 <DetectedRemoteSetup
                   kind={setup}
                   suggested={state.rclone.suggested ?? []}
                   onBusyChange={setSetupBusy}
-                  onChanged={() => {
-                    reload();
-                    setSetup(null);
-                  }}
+                  onCreated={finishSetup}
                 />
               ) : (
                 <OAuthSignIn
                   provider={OAUTH_PROVIDERS[setup]}
                   remotes={state.rclone.remotes}
                   onBusyChange={setSetupBusy}
-                  onConnected={() => {
-                    reload();
-                    setSetup(null);
-                  }}
+                  onConnected={finishSetup}
                 />
               )}
             </Modal>

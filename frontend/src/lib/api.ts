@@ -1051,6 +1051,11 @@ export interface RemoteSuggestion {
   // "public" = anonymous, no-credentials remote (public buckets); "detected" =
   // materialized from the user's own AWS/gcloud credentials. Groups the dropdown.
   kind: "public" | "detected";
+  // Whether `remote_name` has ALREADY been materialized. The server returns
+  // every suggestion either way, so the setup panels can show what is possible;
+  // anything that CREATES from a suggestion (the "suggest:<id>" options in Add
+  // mount) must offer only `!exists` ones or it 409s on a remote that's there.
+  exists: boolean;
 }
 
 // An existing rclone remote. `name` is the verbatim rclone spec (incl trailing

@@ -2386,7 +2386,9 @@ def test_aws_profiles_and_suggestions_from_dotfiles(tmp_path, monkeypatch):
         "provider": "AWS", "env_auth": "true", "profile": "prod"}
 
 
-def test_suggestions_view_hides_already_materialized(monkeypatch):
+def test_suggestions_view_flags_already_materialized(monkeypatch):
+    """An already-created suggestion stays in the view, flagged `exists` — the
+    setup panels show it as "already added" rather than silently omitting it."""
     monkeypatch.setattr(mounts_mod, "_credential_suggestions", lambda: [
         {"id": "aws-env", "label": "L", "remote_name": "aws-env",
          "backend": "s3", "params": {"provider": "AWS", "env_auth": "true"}},
@@ -2394,8 +2396,10 @@ def test_suggestions_view_hides_already_materialized(monkeypatch):
     # kind defaults to "detected" for entries that don't set it.
     assert mounts_mod._suggestions_view([]) == [
         {"id": "aws-env", "label": "L", "remote_name": "aws-env",
-         "kind": "detected"}]
-    assert mounts_mod._suggestions_view(["aws-env:"]) == []
+         "kind": "detected", "exists": False}]
+    assert mounts_mod._suggestions_view(["aws-env:"]) == [
+        {"id": "aws-env", "label": "L", "remote_name": "aws-env",
+         "kind": "detected", "exists": True}]
 
 
 def test_public_bucket_suggestion_always_present(monkeypatch):
@@ -2414,16 +2418,21 @@ def test_public_bucket_suggestion_always_present(monkeypatch):
     assert not any("secret" in k or "key" in k for k in pub["params"])
 
 
-def test_public_suggestion_hidden_once_materialized(monkeypatch):
+def test_public_suggestion_flagged_once_materialized(monkeypatch):
     monkeypatch.setattr(mounts_mod, "_aws_profiles", lambda: [])
     monkeypatch.delenv("AWS_ACCESS_KEY_ID", raising=False)
     monkeypatch.setattr(mounts_mod.os.path, "exists", lambda p: False)
-    # not yet created → shown under kind="public"
-    assert any(s["id"] == "aws-open-public" and s["kind"] == "public"
-               for s in mounts_mod._suggestions_view([]))
-    # once aws-open: exists it drops out (shows under Remotes instead)
-    assert not any(s["id"] == "aws-open-public"
-                   for s in mounts_mod._suggestions_view(["aws-open:"]))
+
+    def by_id(remotes):
+        return {s["id"]: s for s in mounts_mod._suggestions_view(remotes)}
+
+    # not yet created → offerable, under kind="public"
+    fresh = by_id([])["aws-open-public"]
+    assert fresh["kind"] == "public" and fresh["exists"] is False
+    # once aws-open: exists it stays listed, flagged — so the public panel can
+    # still show BOTH options (it showed a lone GCS card when this dropped out).
+    assert by_id(["aws-open:"])["aws-open-public"]["exists"] is True
+    assert by_id(["aws-open:"])["gcs-open-public"]["exists"] is False
 
 
 _AWS_OPEN_SUGG = {
@@ -2477,8 +2486,9 @@ def test_rclone_state_labels_materialized_remote(monkeypatch):
         {"name": "aws-open:", "label": "AWS S3 — public datasets (no credentials)"},
         {"name": "myminio:", "label": "myminio:"},
     ]
-    # the materialized aws-open drops out of the suggestions (shown under Remotes)
-    assert not any(s["id"] == "aws-open-public" for s in state["suggested"])
+    # the materialized aws-open stays in the suggestions, flagged exists (it
+    # also shows under Remotes); the client filters it out of what it offers.
+    assert [s["exists"] for s in state["suggested"] if s["id"] == "aws-open-public"] == [True]
 
 
 def test_detect_materializes_public_anonymous_remote(client, monkeypatch):
