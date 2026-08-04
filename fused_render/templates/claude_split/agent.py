@@ -663,12 +663,32 @@ def _shots_dir() -> dict:
         # (that is what _require_private just established) and it holds nothing
         # but our own crops — the argument that stops us chmod'ing the temp root
         # does not apply to our own directory.
-        try:
-            mode = stat.S_IMODE(os.lstat(SHOTS).st_mode)
+        #
+        # Skipped entirely where there are no mode bits to reason about, on the
+        # same grounds `_require_private` skips its uid check there: Windows has
+        # no uid model and its temp dir is already per-user, and `os.chmod` can
+        # only move the read-only flag, so enforcing 0700 there would refuse
+        # every Windows user their screenshots for a permission model that does
+        # not exist.
+        if hasattr(os, "geteuid"):
+            try:
+                mode = stat.S_IMODE(os.lstat(SHOTS).st_mode)
+                if mode & ~0o700:
+                    os.chmod(SHOTS, 0o700)
+                    # Re-read rather than trust the call: an ACL, or a filesystem
+                    # that does not carry unix modes, can accept a chmod and keep
+                    # the bits exactly where they were.
+                    mode = stat.S_IMODE(os.lstat(SHOTS).st_mode)
+            except OSError as e:
+                return {"error": "could not secure the screenshot directory: %s" % e}
             if mode & ~0o700:
-                os.chmod(SHOTS, 0o700)
-        except OSError:
-            pass
+                # REFUSE, rather than write crops into a directory we have just
+                # proved others can read. This is the asymmetry stated two
+                # paragraphs up, applied to the case where the fix fails: denial
+                # costs the user their screenshots, adopting costs them pictures
+                # of their screen.
+                return {"error": "the screenshot directory is readable by others "
+                                 "(mode %04o) and could not be tightened" % mode}
     else:
         try:
             _private_dir(SHOTS)

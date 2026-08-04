@@ -206,6 +206,37 @@ def test_an_adopted_shots_dir_is_tightened_to_owner_only(agent, tmp_path,
     assert stat.S_IMODE(os.lstat(shots).st_mode) == 0o700
 
 
+@pytest.mark.skipif(not hasattr(os, "geteuid"), reason="POSIX mode bits")
+def test_an_adopted_dir_that_cannot_be_tightened_is_refused(agent, tmp_path,
+                                                            monkeypatch):
+    """The failure path of the tightening above, and it must not be best-effort.
+    A crop is a picture of the user's screen; handing back a directory the check
+    just PROVED others can read would invert the asymmetry this function is built
+    on — a refusal only denies the user screenshots, adopting denies them their
+    privacy. So the mode is re-read after the chmod (an exotic filesystem or an
+    ACL can accept the call and keep the bits) and a still-loose directory is an
+    error, which the page degrades to sending no screenshots."""
+    shots = tmp_path / "fr" / "shots"
+    shots.mkdir(parents=True)
+    os.chmod(shots, 0o755)
+    monkeypatch.setattr(agent, "SHOTS", str(shots))
+
+    monkeypatch.setattr(agent.os, "chmod",
+                        lambda *a, **k: (_ for _ in ()).throw(OSError("read-only fs")))
+    out = agent._shots_dir()
+    assert "dir" not in out and out.get("error"), out
+
+    # The subtler one: the call SUCCEEDS and the bits do not move.
+    monkeypatch.setattr(agent.os, "chmod", lambda *a, **k: None)
+    out = agent._shots_dir()
+    assert "dir" not in out and out.get("error"), out
+
+    # And the success path still hands the directory over.
+    monkeypatch.undo()
+    monkeypatch.setattr(agent, "SHOTS", str(shots))
+    assert agent._shots_dir().get("dir")
+
+
 def test_a_shots_dir_that_cannot_be_made_is_an_error_not_a_crash(
         agent, tmp_path, monkeypatch):
     """No directory means no screenshots, which the page degrades to sending the
