@@ -44,6 +44,14 @@ import { Modal } from "../components/modal/Modal";
 import { ErrorBanner } from "../components/ErrorBanner";
 import { Field, Select, TextInput } from "../components/field/fields";
 import { ProviderIcon } from "../components/ProviderIcons";
+import {
+  mountRootForLink,
+  parseStorageUrl,
+  pickRemote,
+  shouldApplyPreselect,
+  suggestMountName,
+} from "./mounts/links";
+import type { RemoteChoice } from "./mounts/links";
 
 // Files written to this mount that haven't reached the remote yet (D207).
 // Worth its own line because a mount caches writes locally and uploads them
@@ -190,121 +198,6 @@ function MountRow({
   );
 }
 
-// A storage location pasted as a URL, reduced to the rclone-relative form the
-// Path field wants: a provider ("s3" | "gcs") and a `bucket/prefix` string (the
-// key path an rclone S3/GCS remote is addressed by). null when the input isn't a
-// recognized storage link, so the caller leaves the manual fields untouched.
-type ParsedLink = { provider: "s3" | "gcs"; path: string };
-
-// Strip leading slashes and trailing whitespace; rclone paths are relative to
-// the remote and never start with "/".
-const stripLead = (p: string) => p.replace(/^\/+/, "").replace(/\s+$/, "");
-const joinPath = (bucket: string, rest: string) => {
-  const r = stripLead(rest);
-  return r ? `${bucket}/${r}` : bucket;
-};
-
-export function parseStorageUrl(raw: string): ParsedLink | null {
-  const s = raw.trim();
-  if (!s) return null;
-
-  // Scheme URIs: s3://bucket/prefix, gs://bucket/prefix (gcs:// tolerated too).
-  let m = /^s3:\/\/(.+)$/i.exec(s);
-  if (m) return { provider: "s3", path: stripLead(m[1]) };
-  m = /^gc?s:\/\/(.+)$/i.exec(s);
-  if (m) return { provider: "gcs", path: stripLead(m[1]) };
-
-  let u: URL;
-  try {
-    u = new URL(s);
-  } catch {
-    return null;
-  }
-  if (u.protocol !== "http:" && u.protocol !== "https:") return null;
-  const host = u.hostname.toLowerCase();
-  const segs = u.pathname.split("/").filter(Boolean).map((x) => {
-    try {
-      return decodeURIComponent(x);
-    } catch {
-      return x;
-    }
-  });
-  const qsPrefix = u.searchParams.get("prefix") ?? "";
-
-  // AWS S3 console link shapes: the bucket view …/s3/buckets/<bucket>?prefix=a/b/
-  // and the object view …/s3/object/<bucket>[/<key>]?prefix=<key>. Require one of
-  // those markers so an unrelated AWS console page (ec2, iam, …) isn't mistaken
-  // for a bucket and doesn't auto-fill a bogus path from its last URL segment.
-  if (host.endsWith("console.aws.amazon.com")) {
-    const bi = segs.indexOf("buckets");
-    const oi = segs.indexOf("object");
-    const bucket = bi >= 0 ? segs[bi + 1] : oi >= 0 ? segs[oi + 1] : "";
-    if (!bucket) return null;
-    // The object view may carry the key in the path after the bucket; both
-    // shapes may carry it in ?prefix=.
-    const inPath = oi >= 0 ? segs.slice(oi + 2).join("/") : "";
-    return { provider: "s3", path: joinPath(bucket, qsPrefix || inPath) };
-  }
-  // GCP console: …/storage/browser/<bucket>/<prefix> — likewise require the
-  // "browser/<bucket>" marker; other cloud-console pages are not storage links.
-  if (host.endsWith("console.cloud.google.com")) {
-    const bi = segs.indexOf("browser");
-    if (bi < 0) return null;
-    const rest = segs.slice(bi + 1);
-    return rest.length ? { provider: "gcs", path: rest.join("/") } : null;
-  }
-  // GCS path-style data hosts.
-  if (host === "storage.googleapis.com" || host === "storage.cloud.google.com") {
-    return segs.length ? { provider: "gcs", path: segs.join("/") } : null;
-  }
-  // GCS virtual-hosted: <bucket>.storage.googleapis.com/<prefix>
-  if (host.endsWith(".storage.googleapis.com")) {
-    const bucket = host.slice(0, -".storage.googleapis.com".length);
-    return { provider: "gcs", path: joinPath(bucket, segs.join("/")) };
-  }
-  if (host.endsWith(".amazonaws.com")) {
-    // Path-style: s3.amazonaws.com/<bucket>/… or s3.<region>.amazonaws.com/<bucket>/…
-    if (host === "s3.amazonaws.com" || /^s3[.-]/.test(host)) {
-      return segs.length ? { provider: "s3", path: segs.join("/") } : null;
-    }
-    // Virtual-hosted: <bucket>.s3.<region>.amazonaws.com/<prefix> (also s3-<region>).
-    const vm = /^(.+?)\.s3[.-]/.exec(host);
-    if (vm) return { provider: "s3", path: joinPath(vm[1], segs.join("/")) };
-  }
-  return null;
-}
-
-// A trailing segment with a short extension (e.g. "TCI.tif", "part-0001.parquet")
-// — but NOT one whose extension names a directory this app browses as a folder
-// (.zarr, .gdb): those are prefixes, not objects, so a link ending in (or under)
-// one must keep the directory in the path. Used to tell a link-to-a-file from a
-// link-to-a-prefix.
-const FILE_EXT = /\.([A-Za-z0-9]{1,8})$/;
-const DIR_EXTS = new Set(["zarr", "gdb"]);
-function looksLikeFile(seg: string): boolean {
-  const m = FILE_EXT.exec(seg);
-  return !!m && !DIR_EXTS.has(m[1].toLowerCase());
-}
-
-// The path to actually mount for a pasted link. Pasting a deep link to a single
-// FILE — e.g. s3://sentinel-cogs/sentinel-s2-l2a-cogs/32/T/QR/2025/8/…/TCI.tif —
-// should not mount that one scene folder (let alone the file); the useful mount
-// is the dataset root, bucket + first prefix segment
-// (sentinel-cogs/sentinel-s2-l2a-cogs), which you then browse. A link to a
-// PREFIX (no file tail — a bucket root, a trailing-slash prefix, a .zarr/.gdb
-// directory, a console ?prefix=) is kept verbatim, since navigating there was
-// deliberate. Either way the Path field stays editable, so this is only the
-// starting suggestion.
-export function mountRootForLink(path: string): string {
-  const segs = path.split("/").filter(Boolean);
-  if (!segs.length || !looksLikeFile(segs[segs.length - 1])) return path;
-  const [bucket, ...key] = segs;
-  // key.length > 1 ⇒ there's a prefix directory before the file — keep it (even
-  // a dotted one like "data.zarr", which is a directory, not the object). A lone
-  // key segment IS the file (sits directly under the bucket) ⇒ just the bucket.
-  return key.length > 1 ? `${bucket}/${key[0]}` : bucket;
-}
-
 // The Remote dropdown's groups, in display order.
 //
 // Grouped by HOW A REMOTE IS REACHED, never by whether it has been created yet.
@@ -345,19 +238,9 @@ function AddMount({
   // are usually the same, so typing the path twice is pure friction.
   const [nameTouched, setNameTouched] = useState(false);
 
-  // add_mount() strips the name and rejects it empty or containing / \ : or a
-  // leading dot; mirror that when deriving so the auto-filled value always
-  // passes server validation (or is empty, which disables the button below).
-  const folderSafe = (s: string) => s.trim().replace(/[/\\:]/g, "").replace(/^\.+/, "");
-
   const onPathChange = (v: string) => {
     setSubpath(v);
-    if (!nameTouched) {
-      // Last non-blank segment: trim first so a trailing "/" or a whitespace
-      // tail ("bucket/  ") derives the real segment, never a spaces-only name.
-      const seg = v.split("/").map((s) => s.trim()).filter(Boolean).pop() ?? "";
-      setName(folderSafe(seg));
-    }
+    if (!nameTouched) setName(suggestMountName(v));
   };
 
   // A pasted S3/GCS link (see parseStorageUrl) that auto-fills the fields below.
@@ -373,12 +256,15 @@ function AddMount({
 
   // Pre-select the remote a setup flow just created, and focus Path — the modal
   // closing used to be the whole feedback, leaving the user to spot a new name
-  // in a dropdown. Waits for the reload carrying the remote: `preselect` is set
-  // as the modal closes, before getMounts() comes back.
+  // in a dropdown. Applied at most once per preselect, and only once the reload
+  // carrying the remote has landed (shouldApplyPreselect owns both rules).
   const pathRef = useRef<HTMLInputElement>(null);
+  const appliedPreselect = useRef<string | null>(null);
   useEffect(() => {
-    if (!preselect || !remotes.some((r) => r.name === preselect)) return;
-    setRemote(preselect);
+    if (!shouldApplyPreselect(preselect, appliedPreselect.current, remotes.map((r) => r.name)))
+      return;
+    appliedPreselect.current = preselect;
+    setRemote(preselect!);
     pathRef.current?.focus();
   }, [preselect, remotes]);
 
@@ -387,7 +273,7 @@ function AddMount({
   // submit (value = "suggest:<id>") differ only in `creates`; `kind` and
   // `provider` come from the SERVER for both, classified from the stored rclone
   // config rather than sniffed out of names and label substrings on this side.
-  const choices = [
+  const choices: RemoteChoice[] = [
     ...remotes.map((r) => ({
       value: r.name,
       label: r.label,
@@ -404,38 +290,20 @@ function AddMount({
     })),
   ];
 
-  // The <option> value to select for a pasted link's provider. Order of
-  // preference: a PUBLIC (anonymous) remote first — pasted links are usually to
-  // open data, and an unsigned request works even when creds are absent or
-  // expired — then a detected credential source, and only then one of the
-  // user's own (which for an s3:// link may well be a MinIO/R2 endpoint that
-  // cannot serve it). Within a tier, one that already EXISTS beats one that
-  // would cost a creation round-trip. undefined when nothing matches — the link
-  // still fills Path/Name and the user picks.
-  const KIND_RANK: Record<RemoteKind, number> = { public: 0, detected: 1, other: 2 };
-  const pickRemote = (provider: "s3" | "gcs"): string | undefined =>
-    choices
-      .filter((c) => c.provider === provider)
-      .sort(
-        (a, b) =>
-          KIND_RANK[a.kind] - KIND_RANK[b.kind] || Number(a.creates) - Number(b.creates),
-      )[0]?.value;
-
   const parsedLink = parseStorageUrl(link);
+  const linkRemote = parsedLink ? pickRemote(choices, parsedLink.provider) : undefined;
 
   const applyLink = (raw: string) => {
     setLink(raw);
     const parsed = parseStorageUrl(raw);
     if (!parsed) return;
-    const rv = pickRemote(parsed.provider);
+    const rv = pickRemote(choices, parsed.provider);
     if (rv) setRemote(rv);
     const rooted = mountRootForLink(parsed.path);
     setSubpath(rooted);
-    // Name from the MOUNTED root's last segment (the dataset/collection), not a
-    // deep scene or file name — and keep it tracking Path edits (no hand-typed
-    // name yet).
-    const seg = rooted.split("/").map((s) => s.trim()).filter(Boolean).pop() ?? "";
-    setName(folderSafe(seg));
+    // Name from the MOUNTED root (the dataset/collection), not a deep scene or
+    // file name — and keep it tracking Path edits (no hand-typed name yet).
+    setName(suggestMountName(rooted));
     setNameTouched(false);
   };
 
@@ -500,7 +368,7 @@ function AddMount({
           (parsedLink ? (
             <p className="deploy-muted mount-paste-hint">
               Recognized {parsedLink.provider.toUpperCase()} link — filled the fields below
-              {pickRemote(parsedLink.provider) ? "" : "; pick a remote"}.
+              {linkRemote ? "" : "; pick a remote"}.
               {mountRootForLink(parsedLink.path) !== parsedLink.path
                 ? " Trimmed to the dataset root — edit Path to mount deeper."
                 : " Review, then mount."}
