@@ -586,7 +586,7 @@ function AddMount({
           )}
         </p>
       )}
-      <p className="deploy-muted" style={{ fontSize: "0.8em", margin: 0 }}>
+      <p className="deploy-muted mount-paste-hint">
         Tip: mount a specific <b>bucket/prefix</b>, not a whole bucket — narrow mounts browse and
         search much faster.
       </p>
@@ -690,7 +690,7 @@ function AddRemote({
       </form>
       {/* Same closing line as the other setup panels: a remote is not a mount,
           and the modal simply vanishing gave no clue where to go next. */}
-      <p className="deploy-muted" style={{ fontSize: "0.8em", margin: 0 }}>
+      <p className="deploy-muted mount-paste-hint">
         Creating a remote doesn’t mount anything yet. This closes and pre-selects it under{" "}
         <b>Remote</b> in “Add mount” — type the bucket/prefix there and add the mount.
       </p>
@@ -1157,7 +1157,7 @@ function OAuthSignIn({
         uploaded back.
       </p>
       {provider.key === "drive" && (
-        <p className="deploy-muted" style={{ fontSize: "0.8em" }}>
+        <p className="deploy-muted mount-paste-hint">
           Google Docs, Sheets and Slides are skipped — they aren't real files and can't be
           opened or saved through a mount.
         </p>
@@ -1236,7 +1236,7 @@ function OAuthSignIn({
         <p className="deploy-muted mount-paste-hint warn">{nameError}</p>
       )}
       {!connecting && (
-        <p className="deploy-muted" style={{ fontSize: "0.8em", margin: 0 }}>
+        <p className="deploy-muted mount-paste-hint">
           Signing in doesn’t mount anything yet. This closes and pre-selects the remote
           under <b>Remote</b> in “Add mount” — type the folder to surface there and add the
           mount.
@@ -1343,7 +1343,7 @@ function DetectedRemoteSetup({
           ))}
         </div>
       )}
-      <p className="deploy-muted" style={{ fontSize: "0.8em", margin: 0 }}>
+      <p className="deploy-muted mount-paste-hint">
         {options.every((s) => s.exists) && options.length > 0 ? (
           <>
             All set — close this and pick the remote under <b>Remote</b> in “Add mount”,
