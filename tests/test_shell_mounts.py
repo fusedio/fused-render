@@ -2224,6 +2224,135 @@ def test_oauth_does_not_retain_the_client_secret_after_using_it(client, rcd,
     assert job.client_id == "" and job.client_secret == ""
 
 
+# -- the token must not survive ANY exit path -----------------------------------
+#
+# The stdout pump appends the token the moment rclone prints it, which is BEFORE
+# the attempt is known to have succeeded. Every way out of the watcher therefore
+# has to clear it, not just the one that consumed it — `_authorize` is a module
+# global that deliberately outlives the attempt, so anything left in `out` is
+# reachable for the life of the process.
+
+
+def _token_then(script_tail: str) -> str:
+    """A child that prints the token (as rclone would, on success) and then does
+    something that is NOT a clean exit-0."""
+    return f'print("{AUTHORIZE_OK}"); import sys; sys.stdout.flush(); {script_tail}'
+
+
+def test_oauth_clears_the_token_when_canceled_after_it_arrived(client, rcd,
+                                                               monkeypatch):
+    """The real race: consent SUCCEEDS, rclone prints the token, and the user
+    clicks Cancel before the child has exited. _cancel_active_authorize still
+    sees a live process, so the outcome takes the `canceled` early return — which
+    used to skip the clear entirely and strand a live OAuth credential in a
+    process-lifetime global."""
+    _drive_ready(monkeypatch, rcd)
+    _spawn_python(monkeypatch, _token_then("import time; time.sleep(30)"))
+    client.post("/api/mounts/remotes/oauth", json=DRIVE_BODY, headers=FUSED)
+    # Let the pump actually pick the token up before cancelling, or the test
+    # would pass for the wrong reason (nothing to clear).
+    end = time.monotonic() + 5.0
+    while not any("access_token" in line for line in mounts_mod.endpoints._authorize.out):
+        assert time.monotonic() < end, "the token never reached the stdout pump"
+        time.sleep(0.02)
+    client.post("/api/mounts/remotes/oauth/cancel", headers=FUSED)
+    s = _wait_oauth(client)
+    assert s["ok"] is False and "cancel" in s["error"].lower()
+    assert list(mounts_mod.endpoints._authorize.out) == []
+
+
+def test_oauth_clears_the_token_when_the_attempt_times_out(client, rcd,
+                                                           monkeypatch):
+    _drive_ready(monkeypatch, rcd)
+    monkeypatch.setattr(mounts_mod.endpoints, "OAUTH_TIMEOUT", 0.3)
+    _spawn_python(monkeypatch, _token_then("import time; time.sleep(30)"))
+    client.post("/api/mounts/remotes/oauth", json=DRIVE_BODY, headers=FUSED)
+    s = _wait_oauth(client)
+    assert s["ok"] is False
+    assert list(mounts_mod.endpoints._authorize.out) == []
+
+
+def test_oauth_clears_the_token_when_the_child_exits_nonzero(client, rcd,
+                                                             monkeypatch):
+    # rclone can print a token and still fail afterwards (e.g. writing its own
+    # config). The token is out on stdout either way.
+    _drive_ready(monkeypatch, rcd)
+    _spawn_python(monkeypatch, _token_then('sys.stderr.write("boom\\n"); sys.exit(1)'))
+    client.post("/api/mounts/remotes/oauth", json=DRIVE_BODY, headers=FUSED)
+    s = _wait_oauth(client)
+    assert s["ok"] is False
+    assert list(mounts_mod.endpoints._authorize.out) == []
+    assert DRIVE_TOKEN not in (s["error"] or "")
+
+
+# -- rc failure shapes and truncated output -------------------------------------
+
+
+def test_oauth_reports_a_value_error_from_the_rc_call(client, rcd, monkeypatch):
+    """_rc raises RuntimeError for an HTTP error but lets json.loads' ValueError
+    escape UNWRAPPED when a 200 carries a non-JSON body (the shape _delete_remote
+    and _mount_upload_status both already catch). Catching only RuntimeError here
+    meant such a reply skipped the rollback AND _invalidate_upstream_caches, so a
+    remote that WAS created got reported as failed and then stayed invisible
+    until a server restart."""
+    _drive_ready(monkeypatch, rcd)
+    _spawn_python(monkeypatch, f'print("{AUTHORIZE_OK}")')
+    invalidated = []
+    monkeypatch.setattr(mounts_mod.endpoints, "_invalidate_upstream_caches",
+                        lambda: invalidated.append(1))
+    deleted = []
+
+    def rc(port, method, params=None, **kw):
+        if method == "config/create":
+            raise ValueError("Expecting value: line 1 column 1 (char 0)")
+        deleted.append(method)
+        return {"pid": 4242}
+
+    monkeypatch.setattr(mounts_mod, "_rc", rc)
+    monkeypatch.setattr(mounts_mod, "ensure_rcd", lambda: 5572)
+    client.post("/api/mounts/remotes/oauth", json=DRIVE_BODY, headers=FUSED)
+    s = _wait_oauth(client)
+    assert s["ok"] is False
+    assert "could not be created" in s["error"]
+    assert invalidated, "the memoized config view must be dropped either way"
+    assert "config/delete" in deleted, "the half-created remote must be rolled back"
+
+
+def test_delete_remote_logs_why_the_rollback_failed(monkeypatch, caplog):
+    # The user-facing "delete it manually" text is right, but the rc error was
+    # the only record of WHY cleanup failed and it went nowhere — leaving a
+    # remote that keeps reappearing after a failed sign-in undiagnosable.
+    def boom(*a, **kw):
+        raise RuntimeError("config/delete exploded")
+
+    monkeypatch.setattr(mounts_mod, "_rc", boom)
+    monkeypatch.setattr(mounts_mod, "ensure_rcd", lambda: 5572)
+    assert mounts_mod.endpoints._delete_remote("gdrive") is False
+    assert "config/delete exploded" in caplog.text and "gdrive" in caplog.text
+
+
+def test_oauth_admits_the_output_may_be_truncated_when_a_pump_is_still_running(
+        client, rcd, monkeypatch, caplog):
+    """`rclone authorize` opens the browser via xdg-open/open, and a grandchild
+    that inherits the stdout pipe can hold it open past the pump join. The token
+    then goes unread and the user is told "no account was connected (the browser
+    tab was closed, or approval was not granted)" for a sign-in they completed.
+    We cannot un-truncate it, but we must not assert the confident wrong cause."""
+    _drive_ready(monkeypatch, rcd)
+    # A child that exits immediately while a "grandchild" keeps stdout open.
+    _spawn_python(
+        monkeypatch,
+        'import os, subprocess, sys; '
+        'subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"], '
+        'stdout=1); os._exit(0)')
+    monkeypatch.setattr(mounts_mod.endpoints, "OAUTH_PUMP_JOIN", 0.2)
+    client.post("/api/mounts/remotes/oauth", json=DRIVE_BODY, headers=FUSED)
+    s = _wait_oauth(client)
+    assert s["ok"] is False
+    assert "may be incomplete" in s["error"]
+    assert "still running" in caplog.text
+
+
 def test_oauth_never_leaks_the_client_secret_into_an_error(client, rcd,
                                                            monkeypatch):
     _drive_ready(monkeypatch, rcd)

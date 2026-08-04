@@ -319,6 +319,11 @@ OAUTH_TIMEOUT = 300.0
 # Grace for a terminated authorize child before it is SIGKILLed.
 OAUTH_KILL_GRACE = 3.0
 OAUTH_RC_TIMEOUT = 30.0
+# How long to wait for the output pumps to reach EOF once the child is gone.
+# Bounded rather than joined outright because the pipe can outlive the child:
+# `rclone authorize` opens the browser through xdg-open/open, and a grandchild
+# that inherited the stdout fd holds it open for as long as it lives.
+OAUTH_PUMP_JOIN = 2.0
 
 
 # Every browser-consent backend we offer, in ONE table — the whole flow below
@@ -429,6 +434,12 @@ class _ActiveAuthorize:
     error: str | None = None
     canceled: bool = False
     timed_out: bool = False
+    # A pump was still running when we stopped waiting for it, so `out`/`tail`
+    # may be missing the tail of what the child wrote. Recorded because the
+    # conclusion drawn from an empty `out` ("no account was connected") is a
+    # confident statement about the USER's actions, and it must not be made
+    # when the real explanation might be that we simply did not read it.
+    output_truncated: bool = False
 
 
 _AUTH_LOCK = threading.Lock()
@@ -593,7 +604,12 @@ def _delete_remote(name: str) -> bool:
     try:
         _rc(ensure_rcd(), "config/delete", {"name": name}, timeout=OAUTH_RC_TIMEOUT)
         return True
-    except (RuntimeError, ValueError):
+    except (RuntimeError, ValueError) as e:
+        # The caller's message ("delete it manually") is the right thing to
+        # SAY, but the rc error was the only record of why cleanup failed and
+        # discarding it left nothing anywhere to diagnose a remote that keeps
+        # reappearing after a failed sign-in.
+        logger.warning("could not roll back the half-created remote %r: %s", name, e)
         return False
 
 
@@ -615,24 +631,43 @@ def _authorize_outcome(job: _ActiveAuthorize) -> str | None:
         return (f"`rclone authorize {job.backend}` failed"
                 + (f": {detail}" if detail else f" (exit {job.proc.returncode})"))
     token = _parse_authorize_token("\n".join(job.out))
-    # Consumed. `_authorize` is a module global that deliberately outlives the
-    # attempt (the status endpoint reports the last outcome from it), so without
-    # this the raw access/refresh token would stay reachable for the life of the
-    # process — the thing that turns a later crash dump or an added diagnostic
-    # into a real credential leak. Nothing reads `out` past this point: every
-    # failure branch below builds its message from `tail` (stderr) instead.
+    # Consumed, and cleared here so the window on the SUCCESS path is as short
+    # as it can be — `_create_oauth_remote` below can spend up to
+    # OAUTH_RC_TIMEOUT inside an rc call. This is not the only clear: the
+    # unconditional backstop in _watch_authorize's `finally` is what covers the
+    # early returns above (canceled / timed out / nonzero exit), each of which
+    # can be reached with the token ALREADY in `out`, since the pump appends it
+    # the instant rclone prints it. deque.clear() is idempotent, so both firing
+    # is fine. Nothing reads `out` past this point: every failure branch below
+    # builds its message from `tail` (stderr) instead.
     job.out.clear()
     if token is None:
+        detail = _authorize_failure_detail(job)
+        if job.output_truncated:
+            # We stopped reading before EOF, so "no account was connected" would
+            # be a confident claim about the user's actions that we cannot
+            # actually support — the token may have been printed and simply not
+            # read (see OAUTH_PUMP_JOIN).
+            return (f"the {label} sign-in could not be confirmed — rclone's output "
+                    "may be incomplete, so the account may or may not have been "
+                    "connected. Check under Remotes before signing in again."
+                    + (f" Last output: {detail}" if detail else ""))
         # Exit 0 with nothing to show for it: the browser tab was closed, or
         # consent was never granted. Retryable, and it must SAY so — this is the
         # state the client sees as in_flight dropping without success.
-        detail = _authorize_failure_detail(job)
         return (f"the {label} sign-in did not complete — no account was connected "
                 "(the browser tab was closed, or approval was not granted). "
                 "Try again." + (f" Last output: {detail}" if detail else ""))
     try:
         _create_oauth_remote(job, token)
-    except RuntimeError as e:
+    # ValueError as well as RuntimeError: _rc raises RuntimeError for an HTTP
+    # error or a socket problem, but lets json.loads' ValueError escape
+    # UNWRAPPED when a 200 comes back with a non-JSON body — the same pair
+    # _delete_remote and _mount_upload_status both already catch. Catching only
+    # RuntimeError meant that reply skipped every remediation branch AND
+    # _invalidate_upstream_caches, so a remote that HAD been created was
+    # reported as failed and then stayed invisible until a server restart.
+    except (RuntimeError, ValueError) as e:
         # Whatever happened, the config may have CHANGED before it failed —
         # drop the memoized view either way, or a later read could serve a
         # half-written remote's config from cache.
@@ -670,7 +705,21 @@ def _watch_authorize(job: _ActiveAuthorize, pumps: list[threading.Thread]) -> No
         job.proc.terminate()
         _ensure_dead_child(job.proc)
     for pump in pumps:
-        pump.join(2.0)  # both pipes at EOF, so the output is complete
+        pump.join(OAUTH_PUMP_JOIN)
+    # The join is BOUNDED, so reaching here is not proof both pipes hit EOF —
+    # the old comment claimed it was and nothing checked. `rclone authorize`
+    # opens the browser through xdg-open/open, and a grandchild that inherited
+    # the stdout fd keeps the pipe open after rclone itself has exited. Left
+    # unrecorded, an unread token turns into "no account was connected (the
+    # browser tab was closed, or approval was not granted)" — told to a user who
+    # completed the sign-in. We can't wait indefinitely, so we record the doubt
+    # and _authorize_outcome softens its wording instead of asserting a cause.
+    if any(pump.is_alive() for pump in pumps):
+        job.output_truncated = True
+        logger.warning(
+            "authorize %s: an output pump was still running after %.1fs — the "
+            "child's output may be incomplete (a browser helper is likely still "
+            "holding the pipe)", job.backend, OAUTH_PUMP_JOIN)
     label = _OAUTH_PROVIDERS[job.provider]["label"]
     try:
         job.error = _authorize_outcome(job)
@@ -678,12 +727,22 @@ def _watch_authorize(job: _ActiveAuthorize, pumps: list[threading.Thread]) -> No
         logger.exception("%s sign-in failed unexpectedly", label)
         job.error = f"the {label} sign-in failed unexpectedly: {e}"
     finally:
-        # Consumed. Bounded here rather than by the record's lifetime, exactly
-        # like the token in `out` — `_authorize` outlives the attempt so the
-        # status endpoint can report the last outcome, and a client secret left
-        # reachable for the life of the process is what turns a later crash
-        # dump or an added diagnostic into a real credential leak. In `finally`
-        # because every branch above must clear it, including the failures.
+        # Consumed. Bounded here rather than by the record's lifetime —
+        # `_authorize` outlives the attempt so the status endpoint can report
+        # the last outcome, and a credential left reachable for the life of the
+        # process is what turns a later crash dump or an added diagnostic into a
+        # real leak.
+        #
+        # `out` (the TOKEN) is cleared here and not only in _authorize_outcome
+        # because the pump appends the token the moment rclone prints it, which
+        # is well before the attempt is known to have succeeded: cancel, the
+        # OAUTH_TIMEOUT kill, and a nonzero exit all return early from the
+        # outcome and each can be reached with a live token already sitting in
+        # `out`. The cancel case is not hypothetical — consent succeeds, rclone
+        # prints the token, and the user clicks Cancel before the child exits.
+        # In `finally` because every branch above must clear it, failures
+        # included.
+        job.out.clear()
         job.client_id = job.client_secret = ""
     job.ok = job.error is None
     job.done.set()
