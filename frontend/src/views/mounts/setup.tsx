@@ -67,15 +67,13 @@ export function AddRemote({
   };
 
   return (
-    <div className="prefs-section">
-      <p className="deploy-muted" style={{ marginTop: 0 }}>
-        For S3-compatible storage that needs a custom endpoint — Cloudflare R2, Backblaze B2,
-        Wasabi, MinIO, and the like. Keys are written straight into rclone's own config;
-        fused-render never stores them. For plain AWS S3 pick <b>AWS S3</b> instead, and for
-        Google Drive, Dropbox or Box pick those — they have no keys to paste.
+    <div className="mount-panel">
+      <p className="mount-panel-lede">
+        Storage that speaks S3 at its own endpoint — Cloudflare R2, Backblaze B2, Wasabi,
+        MinIO.
       </p>
       <form
-        className="mount-form-row"
+        className="mount-panel-grid"
         onSubmit={(e) => {
           e.preventDefault();
           if (canSubmit) void add();
@@ -84,14 +82,6 @@ export function AddRemote({
         <Field label="Remote name" required>
           <TextInput placeholder="e.g. r2" value={name} onChange={(e) => setName(e.target.value)} />
         </Field>
-        <Field label="Endpoint">
-          <TextInput
-            placeholder="blank for AWS S3"
-            style={{ minWidth: 240 }}
-            value={endpoint}
-            onChange={(e) => setEndpoint(e.target.value)}
-          />
-        </Field>
         <Field label="Region">
           <TextInput
             placeholder="optional"
@@ -99,6 +89,15 @@ export function AddRemote({
             onChange={(e) => setRegion(e.target.value)}
           />
         </Field>
+        <div className="mount-panel-wide">
+          <Field label="Endpoint">
+            <TextInput
+              placeholder="blank for AWS S3"
+              value={endpoint}
+              onChange={(e) => setEndpoint(e.target.value)}
+            />
+          </Field>
+        </div>
         <Field label="Access key ID" required>
           <TextInput value={accessKey} onChange={(e) => setAccessKey(e.target.value)} />
         </Field>
@@ -109,19 +108,16 @@ export function AddRemote({
             onChange={(e) => setSecretKey(e.target.value)}
           />
         </Field>
-        {/* Blank caption reserves the label row's height so the button aligns
-            with the inputs, not the captions above them. */}
-        <Field label={" "}>
+        <div className="mount-panel-wide mount-panel-actions">
           <button type="submit" className="btn btn-primary" disabled={!canSubmit}>
             {busy ? "Creating…" : "Create remote"}
           </button>
-        </Field>
+        </div>
       </form>
-      {/* Same closing line as the other setup panels: a remote is not a mount,
-          and the modal simply vanishing gave no clue where to go next. */}
-      <p className="deploy-muted mount-paste-hint">
-        Creating a remote doesn’t mount anything yet. This closes and pre-selects it under{" "}
-        <b>Remote</b> in “Add mount” — type the bucket/prefix there and add the mount.
+      <p className="mount-note">
+        Keys go straight into rclone’s own config; fused-render never stores them. For plain
+        AWS S3 use <b>AWS S3</b>, and for Drive, Dropbox or Box use those — they have no keys
+        to paste.
       </p>
       {error && <ErrorBanner>{error}</ErrorBanner>}
     </div>
@@ -204,21 +200,24 @@ function GoogleClientSetup({
 
   return (
     <div className="mount-setup">
-      <p className="deploy-muted" style={{ marginTop: 0 }}>
-        Google Drive needs <b>your own</b> Google API client. rclone’s shared one is being
-        retired, so there is no way around this — but it is a one-time setup, remembered
-        on this machine afterwards.
+      {/* .mount-note, not a second .mount-panel-lede: the modal already opened
+          with one body-size sentence and this stepper is content under it. */}
+      <p className="mount-note">
+        Drive needs <b>your own</b> Google API client — one time, on this machine.
       </p>
       <ol className="mount-steps">
+        {/* Every step is the same shape: a bold one-line title, the button that
+            opens the exact console page, and at most one muted caveat. The
+            titles used to carry their qualifications inline, which turned four
+            steps into four paragraphs to read before the first click.
+
+            The step body is wrapped, not loose: .mount-step-body is a flex
+            column, so each inline node — every <b> and each run of text between
+            them — would otherwise become its own row. */}
         <li>
           <div className="mount-step-body">
-            {/* Wrapped, not loose: .mount-step-body is a flex column, so every
-                inline node — each <b> and each run of text between them — was
-                becoming its own row. Steps 3 and 4 rendered as a stack of
-                fragments ("— pick" / "External" / ", fill in…"). */}
             <p className="mount-step-lead">
-              <b>Create or pick a Google Cloud project.</b> Any project works; a free one
-              is fine.
+              <b>Create or pick a Google Cloud project</b>
             </p>
             <div className="mount-step-actions">
               <button
@@ -229,6 +228,7 @@ function GoogleClientSetup({
                 Open project setup ↗
               </button>
             </div>
+            <p className="mount-note">Any project works; a free one is fine.</p>
             <Field label="Project ID (optional — links below jump straight to it)">
               <TextInput
                 placeholder="e.g. my-drive-mount"
@@ -241,7 +241,7 @@ function GoogleClientSetup({
         <li>
           <div className="mount-step-body">
             <p className="mount-step-lead">
-              <b>Enable the Google Drive API</b> for that project, then press Enable.
+              <b>Enable the Google Drive API</b>
             </p>
             <div className="mount-step-actions">
               <button
@@ -257,8 +257,7 @@ function GoogleClientSetup({
         <li>
           <div className="mount-step-body">
             <p className="mount-step-lead">
-              <b>Configure the consent screen</b> — pick <b>External</b>, fill in the
-              required name/email, and set publishing status to <b>In production</b>.
+              <b>Configure the consent screen</b>
             </p>
             <div className="mount-step-actions">
               <button
@@ -269,26 +268,27 @@ function GoogleClientSetup({
                 Open consent screen ↗
               </button>
             </div>
-            {/* The two things people get wrong here, and both are costly.
-                "Testing" LOOKS like the cautious choice and silently breaks the
-                mount a week later — Google drops refresh tokens issued by a
-                Testing-mode client after 7 days. And the scary "unverified app"
-                warning stops people mid-flow even though verification is simply
-                not required at this scale. */}
-            <p className="mount-paste-hint">
+            <p className="mount-note">
+              Pick <b>External</b>, fill in the required name/email, and publish{" "}
+              <b>In production</b>.
+            </p>
+            {/* The one caveat that keeps two sentences, because both are costly
+                and neither is guessable. "Testing" LOOKS like the cautious
+                choice and silently breaks the mount a week later — Google drops
+                refresh tokens issued by a Testing-mode client after 7 days. And
+                the scary "unverified app" warning stops people mid-flow even
+                though verification is simply not required at this scale. */}
+            <p className="mount-note warn">
               Do <b>not</b> leave it in “Testing” — Google expires those sign-ins after 7
-              days and the mount stops working. Google’s “unverified app” warning is
-              expected: under the Personal Use exemption, verification isn’t required
-              below 100 users, so click through <i>Advanced → Go to … (unsafe)</i> when you
-              sign in.
+              days and the mount stops working. The “unverified app” warning is expected;
+              click through <i>Advanced → Go to … (unsafe)</i>.
             </p>
           </div>
         </li>
         <li>
           <div className="mount-step-body">
             <p className="mount-step-lead">
-              <b>Create an OAuth client</b> of type <b>Desktop app</b>, then download its
-              JSON.
+              <b>Create an OAuth client, type Desktop app</b>
             </p>
             <div className="mount-step-actions">
               <button
@@ -302,9 +302,9 @@ function GoogleClientSetup({
             {/* Desktop app is not a preference: rclone authorize serves a
                 loopback redirect, which is exactly what a Desktop client
                 permits and a Web client does not without a registered URI. */}
-            <p className="mount-paste-hint">
-              It must be <b>Desktop app</b> — the sign-in comes back to a local address,
-              which only that client type allows.
+            <p className="mount-note">
+              It must be Desktop app — the sign-in comes back to a local address, which
+              only that type allows. Download its JSON.
             </p>
           </div>
         </li>
@@ -332,10 +332,9 @@ function GoogleClientSetup({
           the step people mistype. */}
       <details className="mount-manual">
         <summary>Or paste the client ID and secret</summary>
-        <div className="mount-form-row">
+        <div className="mount-panel-grid">
           <Field label="Client ID" required>
             <TextInput
-              style={{ minWidth: 280 }}
               placeholder="….apps.googleusercontent.com"
               value={client.clientId}
               onChange={(e) => onChange({ ...client, clientId: e.target.value.trim() })}
@@ -344,7 +343,6 @@ function GoogleClientSetup({
           <Field label="Client secret" required>
             <TextInput
               type="password"
-              style={{ minWidth: 200 }}
               value={client.clientSecret}
               onChange={(e) =>
                 onChange({ ...client, clientSecret: e.target.value.trim() })
@@ -355,7 +353,7 @@ function GoogleClientSetup({
       </details>
 
       {client.clientId && client.clientSecret && (
-        <p className="mount-paste-hint">
+        <p className="mount-note">
           Client <code>{client.clientId}</code> ready.{" "}
           {saved && (
             <button
@@ -573,19 +571,16 @@ export function OAuthSignIn({
   };
 
   return (
-    <div className="prefs-section">
-      <p className="deploy-muted" style={{ marginTop: 0 }}>
-        Opens {provider.label} in your browser to approve access. The sign-in is handled by
-        rclone and the token is written straight into rclone's own config; fused-render never
-        stores it. The connection is <b>read-write</b>, so edits you save under the mount are
-        uploaded back.
+    <div className="mount-panel">
+      <p className="mount-panel-lede">
+        Opens {provider.label} in your browser to approve access, read-write.
       </p>
-      {provider.key === "drive" && (
-        <p className="deploy-muted mount-paste-hint">
-          Google Docs, Sheets and Slides are skipped — they aren't real files and can't be
-          opened or saved through a mount.
-        </p>
-      )}
+      <p className="mount-note">
+        rclone handles the sign-in and writes the token into its own config; fused-render
+        never stores it.
+        {provider.key === "drive" &&
+          " Google Docs, Sheets and Slides are skipped — they aren’t real files and can’t be opened or saved through a mount."}
+      </p>
       {provider.needsClient && !connecting && (
         <GoogleClientSetup
           client={client}
@@ -598,8 +593,10 @@ export function OAuthSignIn({
           }}
         />
       )}
+      {/* Name + action on one grid row, bottom-aligned by the grid rather than
+          by a blank <Field label=" "> caption. */}
       <form
-        className="mount-form-row"
+        className="mount-panel-row"
         onSubmit={(e) => {
           e.preventDefault();
           if (!connecting && !nameError && clientReady) void begin();
@@ -612,33 +609,27 @@ export function OAuthSignIn({
             onChange={(e) => setName(e.target.value)}
           />
         </Field>
-        {/* Blank caption reserves the label row's height so the button aligns
-            with the input, not the caption above it. */}
-        <Field label={" "}>
-          {connecting ? (
-            <button type="button" className="btn btn-secondary" onClick={cancel}>
-              Cancel
-            </button>
-          ) : (
-            <button
-              type="submit"
-              className="btn btn-primary"
-              disabled={!!nameError || !clientReady}
-            >
-              Sign in to {provider.label}
-            </button>
-          )}
-        </Field>
+        {connecting ? (
+          <button type="button" className="btn btn-secondary" onClick={cancel}>
+            Cancel
+          </button>
+        ) : (
+          <button
+            type="submit"
+            className="btn btn-primary"
+            disabled={!!nameError || !clientReady}
+          >
+            Sign in to {provider.label}
+          </button>
+        )}
       </form>
       {!connecting && !clientReady && (
-        <p className="mount-paste-hint">
-          Add your Google API client above to enable the sign-in.
-        </p>
+        <p className="mount-note">Add your Google API client above to enable the sign-in.</p>
       )}
       {connecting && (
-        <p className="deploy-muted">
-          Waiting for you to approve access in your browser… If no tab opened, check for a blocked
-          window.
+        <p className="mount-note" role="status">
+          Waiting for you to approve access in your browser… If no tab opened, check for a
+          blocked window.
         </p>
       )}
       {!connecting && collides && (
@@ -646,7 +637,7 @@ export function OAuthSignIn({
         // (a revoked or expired token is the usual reason to be here), so this
         // has to be possible — just never by accident. config/create
         // overwrites, and the server refuses without this flag.
-        <label className="deploy-muted mount-paste-hint">
+        <label className="mount-note mount-note-check">
           <input
             type="checkbox"
             checked={replace}
@@ -657,14 +648,7 @@ export function OAuthSignIn({
         </label>
       )}
       {!connecting && nameError && trimmed !== "" && (
-        <p className="deploy-muted mount-paste-hint warn">{nameError}</p>
-      )}
-      {!connecting && (
-        <p className="deploy-muted mount-paste-hint">
-          Signing in doesn’t mount anything yet. This closes and pre-selects the remote
-          under <b>Remote</b> in “Add mount” — type the folder to surface there and add the
-          mount.
-        </p>
+        <p className="mount-note warn">{nameError}</p>
       )}
       {error && <ErrorBanner>{error}</ErrorBanner>}
     </div>
@@ -692,15 +676,25 @@ export function DetectedRemoteSetup({
   // Every suggestion of this kind, INCLUDING already-created ones. Dropping
   // those is what made this panel look broken: with aws-open: already created,
   // "Public datasets" showed a single lone GCS card, which reads as a bug
-  // rather than as "you already have the other one". They render disabled.
+  // rather than as "you already have the other one".
   const options = suggested.filter((s) => s.kind === kind);
 
-  const create = async (id: string) => {
-    setBusy(id);
+  // ONE verb for every row, and no dead ends. An already-created remote used to
+  // render as a disabled "Already added" row: true, useless, and a dead stop
+  // for the user who came here to mount something from it — they had to close
+  // the modal and go hunt the name in a dropdown. "Use" now means the same
+  // thing in both rows (select this remote in the form and close); whether that
+  // costs a creation round-trip first is our problem, not theirs.
+  const use = async (s: RemoteSuggestion) => {
+    if (s.exists) {
+      onCreated(`${s.remote_name}:`);
+      return;
+    }
+    setBusy(s.id);
     onBusyChange?.(true);
     setError(null);
     try {
-      onCreated((await createDetectedRemote(id)).name);
+      onCreated((await createDetectedRemote(s.id)).name);
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -710,21 +704,20 @@ export function DetectedRemoteSetup({
   };
 
   return (
-    <div className="prefs-section">
-      <p className="deploy-muted" style={{ marginTop: 0 }}>
+    <div className="mount-panel">
+      <p className="mount-panel-lede">
+        {kind === "detected"
+          ? "Credentials already on this machine — your ~/.aws profiles, gcloud application-default credentials, and the usual environment variables."
+          : "Anonymous access to open data — AWS Open Data, public GCS datasets, and anything else readable without an account."}
+      </p>
+      <p className="mount-note">
         {kind === "detected" ? (
           <>
-            Credentials already on this machine — your <code>~/.aws</code> profiles,
-            gcloud application-default credentials, and the usual environment variables.
             Nothing is copied: the remote is created with <code>env_auth</code>, so rclone
             reads them where they already live.
           </>
         ) : (
-          <>
-            Anonymous access to open data — AWS Open Data, public GCS datasets, and
-            anything else readable without credentials. Read-only by nature, and it works
-            even when you have no cloud credentials at all.
-          </>
+          <>Read-only by nature, and it works even with no cloud credentials at all.</>
         )}
       </p>
       {options.length === 0 ? (
@@ -737,50 +730,30 @@ export function DetectedRemoteSetup({
       ) : (
         <div className="mount-list">
           {options.map((s) => (
-            <div
-              className={"mount-card" + (s.exists ? " mount-card--added" : "")}
-              key={s.id}
-            >
+            <div className="mount-card" key={s.id}>
               <div className="mount-card-main">
                 <div className="mount-card-info">
-                  <div>{s.label}</div>
+                  <div className="mount-card-name">{s.label}</div>
                   <div className="mount-remote">
                     <code>{s.remote_name}:</code>
+                    {s.exists && <span className="mount-hint"> — already set up</span>}
                   </div>
                 </div>
                 <div className="mount-card-actions">
-                  {s.exists ? (
-                    <span className="mount-card-status">Already added</span>
-                  ) : (
-                    <button
-                      type="button"
-                      className="btn btn-primary"
-                      disabled={busy !== null}
-                      onClick={() => void create(s.id)}
-                    >
-                      {busy === s.id ? "Creating…" : "Create remote"}
-                    </button>
-                  )}
+                  <button
+                    type="button"
+                    className={"btn " + (s.exists ? "btn-secondary" : "btn-primary")}
+                    disabled={busy !== null}
+                    onClick={() => void use(s)}
+                  >
+                    {busy === s.id ? "Setting up…" : "Use"}
+                  </button>
                 </div>
               </div>
             </div>
           ))}
         </div>
       )}
-      <p className="deploy-muted mount-paste-hint">
-        {options.every((s) => s.exists) && options.length > 0 ? (
-          <>
-            All set — close this and pick the remote under <b>Remote</b> in “Add mount”,
-            then type the bucket/prefix to surface.
-          </>
-        ) : (
-          <>
-            Creating a remote doesn’t mount anything yet. This closes and pre-selects it
-            under <b>Remote</b> in “Add mount” — type the bucket/prefix there and add the
-            mount.
-          </>
-        )}
-      </p>
       {error && <ErrorBanner>{error}</ErrorBanner>}
     </div>
   );

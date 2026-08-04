@@ -3101,8 +3101,7 @@ body.embed .open-as-app-chip:hover {
    composite frames that reset their inner input (.templates-key-input input,
    .templates-chip-draft) and deliberate variants (.templates-rec-add-input)
    still win. */
-.modal-body :where(input:not([type="checkbox"], [type="radio"], [type="file"]), select, textarea),
-.mount-form-row :where(input, select) {
+.modal-body :where(input:not([type="checkbox"], [type="radio"], [type="file"]), select, textarea) {
   font: inherit;
   font-size: 13px;
   color: var(--fg);
@@ -3112,8 +3111,7 @@ body.embed .open-as-app-chip:hover {
   padding: 7px 10px;
 }
 
-.modal-body :where(input:not([type="checkbox"], [type="radio"], [type="file"]), select, textarea):focus,
-.mount-form-row :where(input, select):focus {
+.modal-body :where(input:not([type="checkbox"], [type="radio"], [type="file"]), select, textarea):focus {
   outline: none;
   border-color: var(--fg-muted);
 }
@@ -4440,14 +4438,6 @@ select.field-control:has(option[value=""]:checked) {
   padding: 7px 10px;
 }
 
-/* Add-mount / add-remote field rows (a <form> so Enter submits). */
-.mount-form-row {
-  display: flex;
-  gap: 10px;
-  align-items: flex-end;
-  flex-wrap: wrap;
-}
-
 /* ---- "Add a mount" -------------------------------------------------------
    One section, link-first. The pasted link is the way this form is actually
    used, so it owns a row of its own and the three details it fills sit under
@@ -4564,20 +4554,11 @@ select.field-control:has(option[value=""]:checked) {
            code, so a hint next to a field caption matches it.
 
    ABSOLUTE px, never `em`. Every one of these used to be 0.8/0.85/0.9em, and
-   they nest: .mount-paste-hint (0.8em) inside .mount-step-body (0.9em) inside
+   they nested: a 0.8em hint inside .mount-step-body (0.9em) inside
    the 13px modal body measured 9.36px, and a .mount-link inside that hint came
    out at 7.96px. The Drive modal rendered nine distinct sizes. `em` is what
    made a size depend on where the element happened to sit, so the scale could
    not be reasoned about from the rule. */
-.mount-paste-hint {
-  margin: 0;
-  font-size: 12px;
-}
-
-.mount-paste-hint.warn {
-  color: var(--warning);
-}
-
 /* Vertical rhythm, in three steps rather than 10px everywhere: 24px between
    sections (from .prefs-page), 14px between the blocks inside one, and the
    6-10px the blocks use internally. The page previously ran everything at the
@@ -4689,24 +4670,6 @@ select.field-control:has(option[value=""]:checked) {
 
 .mount-card:not(.mount-card--skeleton):hover {
   border-color: var(--fg-muted);
-}
-
-/* A setup-panel option whose remote already exists. Listed rather than hidden —
-   omitting them made "Public datasets" show one lone card and read as broken —
-   but visibly settled: no action, and quieter than the ones still to create. */
-.mount-card--added {
-  background: transparent;
-  border-style: dashed;
-}
-
-.mount-card--added .mount-card-info {
-  opacity: 0.7;
-}
-
-.mount-card-status {
-  font-size: 12px;
-  color: var(--fg-muted);
-  white-space: nowrap;
 }
 
 /* Loading placeholder rows shown while getMounts() is in flight — a shimmer
@@ -4978,6 +4941,68 @@ select.field-control:has(option[value=""]:checked) {
   line-height: 1.4;
 }
 
+/* ---- Setup-modal panels --------------------------------------------------
+   The chassis all six flows share. Each opens with ONE sentence saying what
+   this is (.mount-panel-lede, body size), and everything qualifying it drops to
+   .mount-note. The panels used to open with a four-clause paragraph and close
+   with a near-identical "this closes and pre-selects it…" note — four copies of
+   the same sentence, all of them now redundant: the add form says so itself
+   when the handoff lands. */
+.mount-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.mount-panel-lede {
+  margin: 0;
+}
+
+/* Two-column field grid for the panel forms, replacing the flex-wrap row whose
+   columns were held apart by hardcoded per-input minWidths. */
+.mount-panel-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px 12px;
+  align-items: end;
+}
+
+.mount-panel-grid .field-control,
+.mount-panel-grid .field-select-wrap {
+  width: 100%;
+}
+
+.mount-panel-wide {
+  grid-column: 1 / -1;
+}
+
+.mount-panel-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+/* One field plus its action, bottom-aligned by the grid rather than by a blank
+   <Field label=" "> caption (which put a whitespace-only <label for> on the
+   button and emptied its accessible name). */
+.mount-panel-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: end;
+}
+
+.mount-panel-row .field-control {
+  width: 100%;
+}
+
+/* A .mount-note that is itself a checkbox label. */
+.mount-note-check {
+  display: flex;
+  align-items: flex-start;
+  gap: 4px;
+  cursor: pointer;
+}
+
 /* Guided setup inside a modal: the Google Cloud console stepper. */
 .mount-setup {
   display: flex;
@@ -5045,7 +5070,7 @@ select.field-control:has(option[value=""]:checked) {
   color: var(--fg-muted);
 }
 
-.mount-manual > .mount-form-row {
+.mount-manual > .mount-panel-grid {
   margin-top: 8px;
 }
 
