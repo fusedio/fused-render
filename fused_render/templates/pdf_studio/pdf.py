@@ -11,8 +11,11 @@ Read-only inspection (classification, security scan, Markdown) lives in the
 sibling inspector.py; this module owns the editing actions and the dispatcher.
 
 The source of truth is the .pdf files on disk, wherever they live. A flat
-library (a single JSON file of absolute paths) just remembers which files the
-user added — it never copies them. Edits never touch the original directly:
+library (a single JSON file of absolute paths) remembers the most-recently-
+opened files, newest first, capped at RECENT_MAX — it never copies them.
+Opening a doc moves it to the front; files that fall off the end are dropped
+(their per-doc history and working copy discarded, the file on disk kept).
+Edits never touch the original directly:
 each open doc gets a working copy under .work/ that mutations (and undo/redo
 snapshots) apply to; an explicit save writes the working copy back over the
 original. Each call is a fresh process, so no in-memory state survives.
@@ -71,7 +74,8 @@ import shutil
 # working copies and undo snapshots are transient and belong under `cache/`.
 DATA_ROOT = os.path.expanduser(os.path.join("~", ".fused-render", "data", "pdf_studio"))
 CACHE_ROOT = os.path.expanduser(os.path.join("~", ".fused-render", "cache", "pdf_studio"))
-LIBRARY = os.path.join(DATA_ROOT, "library.json")   # flat list of PDF paths the user added
+LIBRARY = os.path.join(DATA_ROOT, "library.json")   # recent PDF paths, newest first
+RECENT_MAX = 5                                       # keep only the N most-recently-opened
 DOWNLOADS = os.path.join(DATA_ROOT, "downloads")    # PDFs fetched via import_url
 EXPORTS = os.path.join(CACHE_ROOT, "exports")
 SNAPSHOTS = os.path.join(CACHE_ROOT, "snapshots")   # undo stacks, keyed by doc path
@@ -1078,8 +1082,28 @@ def _list_library():
                          "size": 0, "mtime": 0, "page_count": None, "missing": True})
             continue
         docs.append(_doc_entry(full))
-    docs.sort(key=lambda e: e["name"].lower())
     return {"docs": docs}
+
+
+def _lib_promote(src):
+    """Move src to the front of the recent list and cap it at RECENT_MAX.
+
+    A clean doc pushed past the cap is discarded — its undo history and working
+    copy deleted (the file on disk is kept, so re-opening starts fresh). A doc
+    with unsaved changes is never discarded: it stays in the list past the cap
+    until it's saved, so edits are never lost silently.
+    """
+    src = os.path.abspath(src)
+    paths = [_fwd(src)] + [p for p in _lib_load() if not _same_path(p, src)]
+    kept = paths[:RECENT_MAX]
+    for p in paths[RECENT_MAX:]:
+        if (_work_state(p) or {}).get("dirty"):
+            kept.append(p)
+            continue
+        dropped = os.path.abspath(p)
+        shutil.rmtree(_hist_dir(dropped), ignore_errors=True)
+        _work_drop(dropped)
+    _lib_save(kept)
 
 
 def _add_to_library(src):
@@ -1087,9 +1111,7 @@ def _add_to_library(src):
     src = os.path.abspath(src)
     if not os.path.isfile(src):
         raise ValueError(f"no such file: {src}")
-    paths = _lib_load()
-    if not any(_same_path(p, src) for p in paths):
-        _lib_save(paths + [_fwd(src)])
+    _lib_promote(src)
     return {"name": os.path.basename(src), "path": _fwd(src)}
 
 
@@ -1423,6 +1445,7 @@ def main(
         return _remove_from_library(doc)
     if action == "open_doc":
         p = os.path.abspath(doc)
+        _lib_promote(p)
         wpath, wmeta = _open_work(p)
         info = _docinfo(wpath)
         info["path"] = _fwd(p)
