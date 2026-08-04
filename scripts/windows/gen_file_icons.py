@@ -4,7 +4,7 @@ Explorer draws one icon per registered ProgID; winopen.py points each
 extension's ProgID at the category .ico produced here so a file's Explorer
 icon matches the glyph fused-render's own listing shows for it.
 
-The glyphs and tints are transcribed from frontend/src/components/FileIcons.tsx
+The glyphs and tints are transcribed from frontend/src/platform/ui/FileIcons.tsx
 and shell.css — keep the two in sync. Rendering goes through Playwright's
 headless Chromium (crisp SVG at 512px), then Pillow packs the standard icon
 sizes into one multi-resolution .ico.

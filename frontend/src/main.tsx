@@ -1,11 +1,11 @@
 // Bootstrap: history wrapping, embed class, config load, React mount.
 import { createRoot } from "react-dom/client";
-import { IS_EMBED } from "./lib/router";
-import { getConfig } from "./lib/api";
-import { hydrateBookmarks, refreshBookmarks } from "./lib/bookmarks";
-import { hydrateRecents } from "./lib/recents";
-import { notifyBookmarksChanged } from "./lib/hooks";
-import App from "./App";
+import { IS_EMBED } from "@platform/lib/router";
+import { getConfig } from "@platform/lib/api";
+import { hydrateBookmarks, refreshBookmarks } from "@platform/lib/bookmarks";
+import { hydrateRecents } from "@platform/lib/recents";
+import { notifyBookmarksChanged } from "@platform/lib/hooks";
+import App from "@shell/App";
 import "./shell.css";
 
 // The preview iframe's injected runtime writes view params via

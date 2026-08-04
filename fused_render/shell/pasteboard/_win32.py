@@ -8,7 +8,7 @@ also sets `CF_UNICODETEXT` so a terminal or editor paste yields the paths.
 
 Path form matters in both directions. Windows wants backslashes; the shell's
 canonical path form is forward-slash even on Windows (see
-`frontend/src/lib/fs-actions.ts`), so `to_native`/`to_shell` sit on the two
+`frontend/src/apps/explorer/lib/fs-actions.ts`), so `to_native`/`to_shell` sit on the two
 edges and everything in between speaks one dialect. Those two, plus the
 `DROPFILES` buffer construction, are pure functions with no Win32 in them —
 deliberately, so they are tested on every platform rather than only on CI's
