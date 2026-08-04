@@ -369,6 +369,8 @@ from .health import (
     startup,
 )
 from .endpoints import (
+    _parse_authorize_token,
+    cancel_remote_oauth,
     create_detected_remote,
     create_mount,
     create_remote,
@@ -376,8 +378,10 @@ from .endpoints import (
     get_mounts,
     mount_endpoint,
     reconnect_endpoint,
+    remote_oauth_status,
     resolve_url_endpoint,
     restart_endpoint,
     router,
+    start_remote_oauth,
     unmount_endpoint,
 )

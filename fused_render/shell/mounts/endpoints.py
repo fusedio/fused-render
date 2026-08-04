@@ -1,6 +1,9 @@
 """The /api/mounts/* FastAPI surface: CRUD, mount/unmount/reconnect,
-restart, and remote-credential detection endpoints."""
+restart, remote-credential detection, and the Google Drive sign-in endpoints."""
 
+import collections
+import dataclasses
+import json
 import logging
 import os
 import re
@@ -216,9 +219,9 @@ def delete_mount(cid: str, x_fused: str | None = Header(default=None)):
 @router.post("/api/mounts/remotes")
 def create_remote(body: dict = Body(...), x_fused: str | None = Header(default=None)):
     """Create an S3-compatible rclone remote non-interactively from keys.
-    OAuth backends (Drive etc.) are deliberately NOT handled here — users run
-    `rclone config` in a terminal; the page explains that. Credentials go
-    straight into rclone's own config, never through the store."""
+    OAuth backends have no keys to paste and go through the browser sign-in
+    instead (POST /api/mounts/remotes/oauth). Credentials go straight into
+    rclone's own config, never through the store."""
     from fused_render.shell.mounts import _rc, ensure_rcd, rclone_bin
     guard = _require_fused(x_fused)
     if guard is not None:
@@ -257,6 +260,320 @@ def create_remote(body: dict = Body(...), x_fused: str | None = Header(default=N
         return JSONResponse({"error": str(e)[-500:]}, status_code=502)
     _invalidate_upstream_caches()  # new/changed keys must be picked up without restart
     return {"ok": True, "name": name + ":"}
+
+
+# -- Google Drive sign-in (D205) -------------------------------------------------
+#
+# `rclone authorize "drive"` runs its OWN loopback callback server on
+# 127.0.0.1:53682, opens the system browser, and prints the OAuth token JSON on
+# stdout when the user approves. We spawn it as one tracked child, poll it, and
+# on a clean exit create the remote through the rc daemon.
+#
+# The whole child lifecycle — dataclass record, stdout/stderr pump threads, an
+# exit watcher, SIGTERM->SIGKILL escalation, poll-don't-push completion — is
+# lifted from account.py's `fused cloud login` flow deliberately: that pattern is
+# already proven here, and a second concurrency shape for the same problem would
+# be a second thing to get wrong. The differences are only the ones the task
+# forces: there is no URL to capture (rclone opens the browser itself), so the
+# request returns as soon as the child is spawned and everything interesting
+# happens on the watcher thread; and a second sign-in is REJECTED rather than
+# joined, since rclone's callback port can only be bound once and a joiner would
+# be waiting on a remote with a different name.
+
+# rclone's callback server waits indefinitely, so the backstop is ours. Five
+# minutes is the same order as the CLI login's own ceiling and is generous for a
+# consent screen the user is actively looking at; past it the child is killed so
+# an abandoned tab can't hold 53682 (and the in-flight flag) forever.
+OAUTH_TIMEOUT = 300.0
+# Grace for a terminated authorize child before it is SIGKILLed.
+OAUTH_KILL_GRACE = 3.0
+OAUTH_RC_TIMEOUT = 30.0
+
+# The success frame rclone wraps the token in (fs/config/authorize.go, verified
+# against v1.74.4). Matched when present, but not depended on — the fallback
+# scans for a bare JSON object, so a reworded frame degrades to still working.
+_TOKEN_BEGIN = "Paste the following into your remote machine --->"
+_TOKEN_END = "<---End paste"
+
+
+@dataclasses.dataclass
+class _ActiveAuthorize:
+    """The single in-flight `rclone authorize <backend>` child.
+
+    `done` is set exactly once, by the watcher thread, AFTER `ok`/`error` are
+    written — status readers only act on `done`, so that ordering is the whole
+    synchronization (plain attribute writes are atomic under the GIL, the same
+    discipline account.py's _SetupJob uses).
+
+    Two separate output sinks, and that split is load-bearing: `out` is stdout,
+    which CARRIES THE TOKEN, and `tail` is stderr, which is what error messages
+    are built from. Keeping them apart is what stops a failed sign-in from
+    pasting an OAuth credential into a UI banner, a log line, or a bug report.
+    deque.append is atomic under the GIL, so the pumps need no lock.
+    """
+
+    name: str
+    backend: str
+    proc: subprocess.Popen
+    done: threading.Event = dataclasses.field(default_factory=threading.Event)
+    out: collections.deque = dataclasses.field(
+        default_factory=lambda: collections.deque(maxlen=200))
+    tail: collections.deque = dataclasses.field(
+        default_factory=lambda: collections.deque(maxlen=40))
+    ok: bool = False
+    error: str | None = None
+    canceled: bool = False
+    timed_out: bool = False
+
+
+_AUTH_LOCK = threading.Lock()
+# The MOST RECENT attempt, live or finished — the status endpoint reports the
+# last outcome from the same record, so a client that polls one tick late still
+# learns whether the sign-in worked.
+_authorize: _ActiveAuthorize | None = None
+
+
+def _authorize_argv(bin_: str, backend: str) -> list[str]:
+    """The authorize command line. Nothing sensitive on argv: the backend name
+    is a constant and the token only ever comes back on stdout (and then goes
+    out over the rc daemon, never as an argument — see create_remote)."""
+    return [bin_, "authorize", backend]
+
+
+def _spawn_authorize(bin_: str, backend: str) -> subprocess.Popen:
+    """Start the authorize child. The one seam the tests replace — everything
+    above it (pumps, watcher, kill escalation, parsing, the rc call) is
+    exercised for real against the substituted child."""
+    return subprocess.Popen(
+        _authorize_argv(bin_, backend),
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+
+
+def _pump_authorize(stream, sink: collections.deque) -> None:
+    for raw in stream:
+        line = raw.rstrip("\n")
+        if line.strip():
+            sink.append(line)
+    stream.close()
+
+
+def _ensure_dead_child(proc: subprocess.Popen) -> None:
+    """Escalate a terminated child to SIGKILL if it ignores SIGTERM (account.py's
+    _ensure_dead). A merely-SIGTERM'd authorize child could survive holding its
+    loopback callback server, complete a late Google round-trip, and race a
+    retried sign-in."""
+    try:
+        proc.wait(OAUTH_KILL_GRACE)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        try:
+            proc.wait(OAUTH_KILL_GRACE)
+        except subprocess.TimeoutExpired:
+            pass  # unkillable child; status still reports it in flight
+
+
+def _parse_authorize_token(stdout: str) -> str | None:
+    """The OAuth token JSON from an authorize child's stdout, or None when it
+    produced none (the abandoned-tab / denied-consent case).
+
+    Returned verbatim rather than re-serialized: rclone reads this string back
+    as the remote's `token` value, so the bytes it printed are the bytes it
+    should get. Validated as a JSON object carrying an access_token, so a
+    progress line that merely looks brace-ish can't be mistaken for one."""
+    start = stdout.find(_TOKEN_BEGIN)
+    if start != -1:
+        rest = stdout[start + len(_TOKEN_BEGIN):]
+        end = rest.find(_TOKEN_END)
+        candidates = [(rest[:end] if end != -1 else rest).strip()]
+    else:
+        candidates = [line.strip() for line in stdout.splitlines()]
+    for blob in candidates:
+        if not blob.startswith("{"):
+            continue
+        try:
+            parsed = json.loads(blob)
+        except ValueError:
+            continue
+        if isinstance(parsed, dict) and parsed.get("access_token"):
+            return blob
+    return None
+
+
+def _authorize_failure_detail(job: _ActiveAuthorize) -> str:
+    """rclone's own last words, for the error message. stderr only — stdout is
+    where the token lives and must never reach a user-visible string."""
+    return "\n".join(job.tail)[-400:]
+
+
+def _create_drive_remote(name: str, token: str) -> None:
+    """Create the Drive remote from a fresh token. Raises RuntimeError.
+
+    Through the rc daemon (JSON over loopback HTTP), NOT `rclone config create`:
+    an OAuth token on argv is visible to any other local user via `ps` — the
+    identical reasoning as the S3 secret key in create_remote above.
+
+    `scope` is full read-write `drive`: read-write is the requirement, and the
+    only non-restricted alternative (drive.file) can only ever see files this
+    app itself created, which is useless behind a mount. `skip_gdocs` because
+    Docs/Sheets have no byte representation — without it they surface as
+    ordinary-looking files whose saves silently fail to round-trip."""
+    from fused_render.shell.mounts import _rc, ensure_rcd
+    port = ensure_rcd()
+    _rc(port, "config/create",
+        {"name": name, "type": "drive",
+         "parameters": {"token": token, "scope": "drive", "skip_gdocs": "true"}},
+        timeout=OAUTH_RC_TIMEOUT)
+
+
+def _authorize_outcome(job: _ActiveAuthorize) -> str | None:
+    """Finish the attempt: the error message, or None when the remote was
+    created. Runs on the watcher thread — the endpoint is long gone."""
+    if job.canceled:
+        return "the Google sign-in was canceled"
+    if job.timed_out:
+        return (f"the Google sign-in was not completed within "
+                f"{int(OAUTH_TIMEOUT // 60)} minutes — try again")
+    if job.proc.returncode != 0:
+        detail = _authorize_failure_detail(job)
+        return (f"`rclone authorize {job.backend}` failed"
+                + (f": {detail}" if detail else f" (exit {job.proc.returncode})"))
+    token = _parse_authorize_token("\n".join(job.out))
+    if token is None:
+        # Exit 0 with nothing to show for it: the browser tab was closed, or
+        # consent was never granted. Retryable, and it must SAY so — this is the
+        # state the client sees as in_flight dropping without success.
+        detail = _authorize_failure_detail(job)
+        return ("the Google sign-in did not complete — no account was connected "
+                "(the browser tab was closed, or approval was not granted). "
+                "Try again." + (f" Last output: {detail}" if detail else ""))
+    try:
+        _create_drive_remote(job.name, token)
+    except RuntimeError as e:
+        return f"signed in, but the remote could not be created: {str(e)[-400:]}"
+    # A new remote's config must be picked up without a server restart.
+    _invalidate_upstream_caches()
+    return None
+
+
+def _watch_authorize(job: _ActiveAuthorize, pumps: list[threading.Thread]) -> None:
+    try:
+        job.proc.wait(OAUTH_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        job.timed_out = True
+        job.proc.terminate()
+        _ensure_dead_child(job.proc)
+    for pump in pumps:
+        pump.join(2.0)  # both pipes at EOF, so the output is complete
+    try:
+        job.error = _authorize_outcome(job)
+    except Exception as e:  # never strand the client polling a stuck in_flight
+        logger.exception("drive sign-in failed unexpectedly")
+        job.error = f"the Google sign-in failed unexpectedly: {e}"
+    job.ok = job.error is None
+    job.done.set()
+
+
+def _start_authorize(bin_: str, name: str, backend: str) -> _ActiveAuthorize:
+    """Spawn the authorize child and start its pumps + exit watcher.
+
+    Raises OSError when the command can't start (caller maps it to a 502)."""
+    proc = _spawn_authorize(bin_, backend)
+    job = _ActiveAuthorize(name=name, backend=backend, proc=proc)
+    pumps = [
+        threading.Thread(target=_pump_authorize, args=(proc.stdout, job.out), daemon=True),
+        threading.Thread(target=_pump_authorize, args=(proc.stderr, job.tail), daemon=True),
+    ]
+    for pump in pumps:
+        pump.start()
+    threading.Thread(target=_watch_authorize, args=(job, pumps), daemon=True).start()
+    return job
+
+
+def _cancel_active_authorize() -> bool:
+    """Terminate the in-flight authorize child, if any; True when one was live.
+    The watcher observes the death and records the cancellation, so the status
+    endpoint reports it like any other outcome."""
+    with _AUTH_LOCK:
+        job = _authorize
+    if job is None or job.done.is_set() or job.proc.poll() is not None:
+        return False
+    job.canceled = True
+    job.proc.terminate()
+    # Confirm the kill off the request path — the grace period is not the
+    # client's to wait out, but the escalation must still happen.
+    threading.Thread(target=_ensure_dead_child, args=(job.proc,), daemon=True).start()
+    return True
+
+
+@router.post("/api/mounts/remotes/oauth")
+def start_remote_oauth(body: dict = Body(...), x_fused: str | None = Header(default=None)):
+    """Begin the Google Drive sign-in: spawn `rclone authorize "drive"`, which
+    opens the system browser. Returns as soon as the child is running; the
+    client polls GET .../oauth/status for the outcome."""
+    from fused_render.shell.mounts import rclone_bin
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    # Body validation (a 400) BEFORE probing for rclone (a 502) — the same
+    # deliberate ordering as create_remote above: a bad name is bad on every
+    # platform, and a host with no rclone would otherwise mask the real 400.
+    name = (body.get("name") or "").strip()
+    if not name or ":" in name or "/" in name:
+        return JSONResponse({"error": "invalid remote name"}, status_code=400)
+    bin_ = rclone_bin()
+    if not bin_:
+        return JSONResponse({"error": "rclone is not installed"}, status_code=502)
+
+    global _authorize
+    with _AUTH_LOCK:
+        if _authorize is not None and not _authorize.done.is_set():
+            # Not joinable like account.py's login: rclone's callback server
+            # binds 127.0.0.1:53682, so a second child could not even start, and
+            # the caller is asking for a differently-named remote anyway.
+            return JSONResponse(
+                {"error": "a sign-in is already in progress — finish or cancel it first"},
+                status_code=409)
+        try:
+            _authorize = _start_authorize(bin_, name, "drive")
+        except OSError as e:
+            return JSONResponse({"error": f"could not run rclone ({bin_}): {e}"},
+                                status_code=502)
+    return {"ok": True, "name": name, "in_flight": True}
+
+
+@router.get("/api/mounts/remotes/oauth/status")
+def remote_oauth_status():
+    """Progress of the last/current sign-in. A pure in-memory read with no side
+    effects, so it stays an open GET like GET /api/mounts.
+
+    `in_flight` false with `ok` false is the failure the client must surface —
+    including the child that exited having produced no token at all (abandoned
+    tab, denied consent, timeout), which is retryable and says so."""
+    with _AUTH_LOCK:
+        job = _authorize
+    if job is None:
+        return {"in_flight": False, "name": None, "backend": None,
+                "ok": None, "error": None}
+    in_flight = not job.done.is_set()
+    return {
+        "in_flight": in_flight,
+        "name": job.name,
+        "backend": job.backend,
+        "ok": None if in_flight else job.ok,
+        "error": None if in_flight else job.error,
+    }
+
+
+@router.post("/api/mounts/remotes/oauth/cancel")
+def cancel_remote_oauth(x_fused: str | None = Header(default=None)):
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    return {"ok": True, "canceled": _cancel_active_authorize()}
 
 
 @router.post("/api/mounts/remotes/detect")

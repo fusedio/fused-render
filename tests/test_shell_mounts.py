@@ -1514,6 +1514,240 @@ def test_create_remote_rejects_bad_name(client):
     assert r.status_code == 400
 
 
+# -- Google Drive sign-in (`rclone authorize drive`) -----------------------------
+#
+# The browser round-trip itself can't be exercised (no browser, no Google
+# account), so the real child is replaced at the _spawn_authorize seam: the
+# lifecycle (pumps, exit watcher, SIGTERM->SIGKILL cancel), the stdout parsing
+# and the rc call shape are what these cover. The success/failure children are
+# REAL subprocesses (`python -c`) so the pipes, threads and exit codes are the
+# genuine article; only the hang-then-cancel case uses a stub, so a stuck test
+# can never leak a five-minute child.
+
+# What `rclone authorize drive` prints on success (verified against rclone
+# v1.74.4, fs/config/authorize.go: the token JSON between two marker lines).
+DRIVE_TOKEN = ('{"access_token":"ya29.tok","token_type":"Bearer",'
+               '"refresh_token":"1//ref","expiry":"2026-08-04T12:00:00Z"}')
+AUTHORIZE_OK = (
+    "Paste the following into your remote machine --->\\n"
+    + DRIVE_TOKEN.replace('"', '\\"')
+    + "\\n<---End paste"
+)
+
+
+def _spawn_python(monkeypatch, script, record=None):
+    """Point the authorize spawn seam at a real `python -c` child."""
+    import subprocess
+    import sys
+
+    def spawn(bin_, backend):
+        if record is not None:
+            record.append((bin_, backend))
+        return subprocess.Popen(
+            [sys.executable, "-c", script],
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE, text=True)
+
+    monkeypatch.setattr(mounts_mod.endpoints, "_spawn_authorize", spawn)
+
+
+def _drive_ready(monkeypatch, rcd_stub):
+    """rclone present + rcd answering config/create."""
+    monkeypatch.setattr(mounts_mod, "rclone_bin", lambda: "/usr/bin/rclone")
+    rcd_stub.responses["config/create"] = {}
+
+
+def _wait_oauth(client, deadline=10.0):
+    """Poll the status endpoint the way the Mounts page does, until the
+    attempt is no longer in flight."""
+    end = time.monotonic() + deadline
+    while True:
+        s = client.get("/api/mounts/remotes/oauth/status").json()
+        if not s["in_flight"]:
+            return s
+        assert time.monotonic() < end, f"timed out; last status: {s}"
+        time.sleep(0.05)
+
+
+@pytest.fixture(autouse=True)
+def _reset_oauth_state():
+    # The in-flight authorize child is process-global state; a stub left by one
+    # test must never leak into the next.
+    yield
+    mounts_mod.endpoints._cancel_active_authorize()
+    job = mounts_mod.endpoints._authorize
+    if job is not None and job.proc.poll() is None:
+        job.proc.kill()
+        job.proc.wait()
+    mounts_mod.endpoints._authorize = None
+
+
+def test_authorize_argv_is_rclone_authorize_backend():
+    assert mounts_mod.endpoints._authorize_argv("/usr/bin/rclone", "drive") == [
+        "/usr/bin/rclone", "authorize", "drive"]
+
+
+def test_parse_authorize_token_reads_the_marked_blob():
+    out = ("2026/08/04 12:00:00 NOTICE: Waiting for code...\n"
+           "Paste the following into your remote machine --->\n"
+           f"{DRIVE_TOKEN}\n"
+           "<---End paste\n")
+    assert mounts_mod.endpoints._parse_authorize_token(out) == DRIVE_TOKEN
+
+
+def test_parse_authorize_token_tolerates_a_bare_json_line():
+    # Defensive: the markers are rclone's wording, not a contract we control.
+    assert mounts_mod.endpoints._parse_authorize_token(
+        f"noise\n{DRIVE_TOKEN}\n") == DRIVE_TOKEN
+
+
+def test_parse_authorize_token_rejects_output_without_a_token():
+    assert mounts_mod.endpoints._parse_authorize_token("") is None
+    assert mounts_mod.endpoints._parse_authorize_token('{"error":"denied"}') is None
+    assert mounts_mod.endpoints._parse_authorize_token("Failed to get token") is None
+
+
+def test_drive_oauth_writes_require_fused_header(client):
+    assert client.post("/api/mounts/remotes/oauth", json={"name": "gdrive"}).status_code == 403
+    assert client.post("/api/mounts/remotes/oauth/cancel").status_code == 403
+
+
+def test_drive_oauth_rejects_bad_name_before_probing_rclone(client, monkeypatch):
+    # Same deliberate ordering as create_remote: a bad name is a 400 on every
+    # platform, and a missing rclone must not mask it with a 502.
+    monkeypatch.setattr(mounts_mod, "rclone_bin", lambda: None)
+    for bad in ("", "a:b", "a/b"):
+        r = client.post("/api/mounts/remotes/oauth", json={"name": bad}, headers=FUSED)
+        assert r.status_code == 400, bad
+
+
+def test_drive_oauth_502_when_rclone_missing(client, monkeypatch):
+    monkeypatch.setattr(mounts_mod, "rclone_bin", lambda: None)
+    r = client.post("/api/mounts/remotes/oauth", json={"name": "gdrive"}, headers=FUSED)
+    assert r.status_code == 502
+
+
+def test_drive_oauth_status_idle_before_any_attempt(client):
+    s = client.get("/api/mounts/remotes/oauth/status").json()
+    assert s == {"in_flight": False, "name": None, "backend": None,
+                 "ok": None, "error": None}
+
+
+def test_drive_oauth_creates_the_remote_over_rcd(client, rcd, monkeypatch):
+    # The token must travel over the rc daemon's loopback HTTP body, never a
+    # subprocess argv where `ps` would show it to any other local user.
+    _drive_ready(monkeypatch, rcd)
+    seen = []
+    _spawn_python(monkeypatch, f'print("{AUTHORIZE_OK}")', record=seen)
+    r = client.post("/api/mounts/remotes/oauth", json={"name": "gdrive"}, headers=FUSED)
+    assert r.status_code == 200, r.text
+    assert r.json()["name"] == "gdrive"
+
+    s = _wait_oauth(client)
+    assert s["ok"] is True and s["error"] is None and s["name"] == "gdrive"
+    assert seen == [("/usr/bin/rclone", "drive")]
+
+    method, body = next(c for c in rcd.calls if c[0] == "config/create")
+    assert body["name"] == "gdrive"
+    assert body["type"] == "drive"
+    # Full read-write drive scope (drive.readonly can't write; drive.file only
+    # ever sees files this app created), and skip_gdocs because Docs/Sheets have
+    # no byte representation and would look editable but never round-trip.
+    assert body["parameters"] == {
+        "token": DRIVE_TOKEN, "scope": "drive", "skip_gdocs": "true"}
+
+
+def test_drive_oauth_invalidates_upstream_caches(client, rcd, monkeypatch):
+    _drive_ready(monkeypatch, rcd)
+    _spawn_python(monkeypatch, f'print("{AUTHORIZE_OK}")')
+    calls = []
+    monkeypatch.setattr(mounts_mod.endpoints, "_invalidate_upstream_caches",
+                        lambda: calls.append(1))
+    client.post("/api/mounts/remotes/oauth", json={"name": "gdrive"}, headers=FUSED)
+    assert _wait_oauth(client)["ok"] is True
+    assert calls == [1]
+
+
+def test_drive_oauth_child_exiting_without_a_token_is_a_retryable_error(
+        client, rcd, monkeypatch):
+    # The abandoned-browser-tab case: rclone exits 0 having printed nothing.
+    # in_flight drops WITHOUT success, and the message must say to try again
+    # rather than leaving the page spinning forever.
+    _drive_ready(monkeypatch, rcd)
+    _spawn_python(monkeypatch, "pass")
+    client.post("/api/mounts/remotes/oauth", json={"name": "gdrive"}, headers=FUSED)
+    s = _wait_oauth(client)
+    assert s["ok"] is False
+    assert "try again" in s["error"].lower()
+    assert not any(c[0] == "config/create" for c in rcd.calls)
+
+
+def test_drive_oauth_reports_the_child_failure(client, rcd, monkeypatch):
+    _drive_ready(monkeypatch, rcd)
+    _spawn_python(
+        monkeypatch,
+        'import sys; sys.stderr.write("Failed to configure token: oauth2: denied\\n");'
+        ' sys.exit(1)')
+    client.post("/api/mounts/remotes/oauth", json={"name": "gdrive"}, headers=FUSED)
+    s = _wait_oauth(client)
+    assert s["ok"] is False
+    assert "oauth2: denied" in s["error"]
+
+
+def test_drive_oauth_reports_an_rc_failure(client, rcd, monkeypatch):
+    monkeypatch.setattr(mounts_mod, "rclone_bin", lambda: "/usr/bin/rclone")
+    rcd.responses["config/create"] = (500, {"error": "couldn't decode token"})
+    _spawn_python(monkeypatch, f'print("{AUTHORIZE_OK}")')
+    client.post("/api/mounts/remotes/oauth", json={"name": "gdrive"}, headers=FUSED)
+    s = _wait_oauth(client)
+    assert s["ok"] is False
+    assert "couldn't decode token" in s["error"]
+
+
+def test_drive_oauth_never_leaks_the_token_into_an_error(client, rcd, monkeypatch):
+    # The token blob lands on stdout; error text is built from stderr (plus
+    # token-free stdout), so a failure message can't carry the credential into
+    # the UI, a log, or a bug report.
+    _drive_ready(monkeypatch, rcd)
+    _spawn_python(
+        monkeypatch,
+        f'print("{AUTHORIZE_OK}");'
+        ' import sys; sys.stderr.write("boom\\n"); sys.exit(1)')
+    client.post("/api/mounts/remotes/oauth", json={"name": "gdrive"}, headers=FUSED)
+    s = _wait_oauth(client)
+    assert s["ok"] is False
+    assert "ya29.tok" not in s["error"] and "1//ref" not in s["error"]
+
+
+def test_drive_oauth_rejects_a_second_sign_in_while_one_is_in_flight(
+        client, rcd, monkeypatch):
+    # rclone's callback server binds 127.0.0.1:53682; a second child would just
+    # fail to bind, so the single-flight rejection is the honest answer.
+    _drive_ready(monkeypatch, rcd)
+    _spawn_python(monkeypatch, "import time; time.sleep(30)")
+    assert client.post("/api/mounts/remotes/oauth", json={"name": "gdrive"},
+                       headers=FUSED).status_code == 200
+    r = client.post("/api/mounts/remotes/oauth", json={"name": "other"}, headers=FUSED)
+    assert r.status_code == 409
+    assert client.get("/api/mounts/remotes/oauth/status").json()["in_flight"] is True
+
+
+def test_drive_oauth_cancel_terminates_the_child(client, rcd, monkeypatch):
+    _drive_ready(monkeypatch, rcd)
+    _spawn_python(monkeypatch, "import time; time.sleep(30)")
+    client.post("/api/mounts/remotes/oauth", json={"name": "gdrive"}, headers=FUSED)
+    r = client.post("/api/mounts/remotes/oauth/cancel", headers=FUSED)
+    assert r.status_code == 200 and r.json()["canceled"] is True
+    s = _wait_oauth(client)
+    assert s["ok"] is False and "cancel" in s["error"].lower()
+    assert not any(c[0] == "config/create" for c in rcd.calls)
+
+
+def test_drive_oauth_cancel_with_nothing_in_flight_is_a_no_op(client):
+    r = client.post("/api/mounts/remotes/oauth/cancel", headers=FUSED)
+    assert r.status_code == 200 and r.json()["canceled"] is False
+
+
 # -- credential auto-detection (keyless env_auth remotes) ------------------------
 
 
