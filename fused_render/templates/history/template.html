@@ -457,12 +457,13 @@
   "use strict";
 
   // ======================================================================
-  // The sidecar `<file>.json` is a SHARED store (SPEC §21/§24): the claude
-  // template owns `claudeSessions`, the bookmark mirror `bookmarkHistory`,
-  // session restore `lastSession`, annotate `comments`. This view is a
-  // READ-ONLY inspector over it — it never writes the file (HV-9), and all
-  // logic stays in this template (HV-1). Rendered as one merged timeline:
-  // the store is temporal, so time is the primary axis, not the writer.
+  // The sidecar (home_dir()/sidecar/<mapped path>.json, D83-reversal) is a
+  // SHARED store (SPEC §21/§24): the claude template owns `claudeSessions`,
+  // the bookmark mirror `bookmarkHistory`, session restore `lastSession`,
+  // annotate `comments`. This view is a READ-ONLY inspector over it — it
+  // never writes the file (HV-9), and all logic stays in this template
+  // (HV-1). Rendered as one merged timeline: the store is temporal, so time
+  // is the primary axis, not the writer.
   // ======================================================================
 
   // ---- schema (HV-4/HV-6): per-top-level-key, subset validator below.
@@ -670,20 +671,44 @@
   const file = fused.params.get("_file") || "";
 
   // Role resolution (HV-3): the mode is reachable from both the target and
-  // the sidecar itself.
-  let sidecarPath, targetPath;
-  // A sidecar is any `<name>.<ext>.json` — stripping `.json` must leave a
-  // basename that still has its own extension (matches the registry's
-  // `.*.json` wildcard key).
-  const base = (file.split("/").pop() || "");
-  if (/\.json$/i.test(base) && base.slice(0, -".json".length).lastIndexOf(".") > 0) {
-    sidecarPath = file;
-    targetPath = file.slice(0, -".json".length);
-  } else {
-    targetPath = file;
-    sidecarPath = file + ".json";
+  // the sidecar itself. Exact now (D83-reversal): a sidecar path is anything
+  // actually under the sidecar root (window._fusedTargetPathFromSidecarPath resolves
+  // it), rather than the old same-directory `<name>.<ext>.json` shape guess —
+  // sidecars no longer share a directory with anything, so the real
+  // filesystem location IS the test.
+  function bareErrorPage(message) {
+    // Used only before `header()` can be built at all (the role-resolution
+    // failure below) — no name/stem to show yet, so this skips straight to
+    // the same error-page markup fullPage()'s callers use.
+    root.innerHTML = "";
+    root.appendChild(el('<div class="error-page">' + esc(message) + "</div>"));
   }
-  const targetName = targetPath.split("/").pop() || targetPath;
+
+  let sidecarPath, targetPath;
+  try {
+    // Both _fusedTargetPathFromSidecarPath and _fusedSidecarPath reject when
+    // sidecarRoot never resolved (a failed/pending /api/config fetch) — this
+    // used to reach neither catch below it and crash the whole boot with an
+    // unhandled rejection instead of the graceful states this view already
+    // has for a real sidecar-read failure (Bugbot).
+    const maybeTarget = await window._fusedTargetPathFromSidecarPath(file);
+    if (maybeTarget !== null) {
+      sidecarPath = file;
+      targetPath = maybeTarget;
+    } else {
+      targetPath = file;
+      sidecarPath = await window._fusedSidecarPath(file);
+    }
+  } catch (e) {
+    bareErrorPage("Could not resolve the sidecar location — " +
+      ((e && e.message) || "unknown error"));
+    return;
+  }
+  // targetPath can come back Windows-shaped (backslashes) from
+  // targetPathFromSidecarPath's reverse mapping, so split on either
+  // separator — a plain "/" split left the whole path as the "name" on
+  // Windows instead of just the file's basename (Bugbot).
+  const targetName = targetPath.split(/[\\/]/).pop() || targetPath;
   const dotAt = targetName.lastIndexOf(".");
   const nameStem = dotAt > 0 ? targetName.slice(0, dotAt) : targetName;
   const nameExt = dotAt > 0 ? targetName.slice(dotAt) : "";

@@ -1,5 +1,6 @@
 """runPython target for annotate/template.html: mirror the review's comments
-into the target file's `<file>.json` sidecar as a write-only LOG.
+into the target file's sidecar (home_dir()/sidecar/<mapped path>.json,
+D83-reversal — see shared/appenv.py's sidecar_path) as a write-only LOG.
 
 The URL `comments` param stays the sole LIVE store the annotate view reads back;
 this sidecar is pure history — every comment ever seen for the file, keyed by
@@ -72,7 +73,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(_HERE), "shared"))
 # ------------------------------------------------------------- sidecar store
 
 def _sidecar_path(file: str) -> str:
-    return file + ".json"
+    from appenv import sidecar_path
+    return sidecar_path(file)
 
 
 def _load_sidecar(file: str) -> dict:
@@ -94,6 +96,7 @@ def _load_sidecar(file: str) -> dict:
 
 def _save_sidecar(file: str, data: dict) -> None:
     path = _sidecar_path(file)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), suffix=".tmp")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
@@ -190,30 +193,19 @@ def _record(file: str, comments: list, deleted_ids: list) -> dict:
 def _sidecar_writable(file: str) -> bool:
     """True iff _save_sidecar would succeed: an existing sidecar needs W_OK on
     itself (the os.replace above would otherwise bypass its read-only bit via
-    the directory), a fresh one needs W_OK on the directory (mkstemp+replace
-    both land there).
+    the directory), a fresh one needs W_OK on its parent dir once created
+    (mkstemp+replace both land there).
 
-    False under a read-only remote mount, where os.access(W_OK) LIES: with
-    CacheMode=full a write lands in the local VFS cache and only 403s at the
-    async upload (the sidecar-write incident), so os.access would wave the
-    doomed write through. Only the shell's persisted read_only flag can answer
-    this, and it arrives via `shared/appenv` (FUSED_RENDER_RO_MOUNTS, re-exported
-    on every mount-store write) rather than by importing fused_render — a
-    template child under the fused engine has no PYTHONPATH, so that import
-    ALWAYS failed there and every read-only mount looked writable. A copy of this
-    folder taken without its `shared/` sibling still keeps the pure os.access
-    behavior."""
-    file = os.path.abspath(file)
-    try:
-        from appenv import mount_read_only
-        if mount_read_only(file):
-            return False
-    except Exception:
-        pass
-    path = _sidecar_path(file)
+    No mount-read-only check anymore (D83-reversal): the sidecar lives under
+    home_dir()/sidecar/ now, never on `file`'s own mount, so a read-only
+    remote source no longer has any bearing on whether its sidecar can be
+    written — the old sidecar-write incident (CacheMode=full 403-looping a
+    doomed PutObject) structurally can't happen here."""
+    path = _sidecar_path(os.path.abspath(file))
     if os.path.exists(path):
         return os.access(path, os.W_OK)
-    return os.access(os.path.dirname(path), os.W_OK)
+    from appenv import nearest_existing_dir
+    return os.access(nearest_existing_dir(os.path.dirname(path)), os.W_OK)
 
 
 # ------------------------------------------------------------- revert (§34)

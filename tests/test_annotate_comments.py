@@ -3,8 +3,11 @@
 
 annotate.py is a stdlib-only runPython target (not a package module), so — like
 test_claude_agent_sidecar.py — these load it via importlib and drive its
-functions directly with a tmp_path target. The sidecar lives next to the TARGET
-file (`<file>.json`), so no FUSED_RENDER_HOME / TestClient is involved.
+functions directly with a tmp_path target. The sidecar now lives under
+home_dir()/sidecar/<mapped path>.json (D83-reversal), never next to the
+TARGET file — see shared/appenv.py's sidecar_path. FUSED_RENDER_HOME is
+pinned to an isolated tmp dir for every test so a real sidecar under the
+developer's actual ~/.fused-render is never touched.
 
 Semantics under test: the sidecar is a WRITE-ONLY LOG. Comments upsert by `id`
 (update in place + bump updated_at, or append with recorded_at+updated_at); a
@@ -17,6 +20,8 @@ preserved through the read-merge-write.
 import importlib.util
 import json
 import os
+import sys
+from pathlib import Path
 
 import pytest
 
@@ -34,8 +39,13 @@ def _load_annotate():
     return mod
 
 
-def _sidecar(tmp_path):
-    return tmp_path / "sample.html.json"
+@pytest.fixture(autouse=True)
+def _home(tmp_path, monkeypatch):
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
+
+
+def _sidecar(ann, f) -> Path:
+    return Path(ann._sidecar_path(str(f)))
 
 
 def _target(tmp_path):
@@ -52,7 +62,7 @@ def test_record_creates_comments_key(tmp_path):
     ], [])
     assert resp == {"recorded": True, "count": 1, "deleted": 0}
 
-    data = json.loads(_sidecar(tmp_path).read_text())
+    data = json.loads(_sidecar(ann, f).read_text())
     assert data["claudeSessions"] == []  # backfilled so a claude turn round-trips
     log = data["comments"]
     assert len(log) == 1
@@ -67,10 +77,10 @@ def test_second_record_same_id_updates_in_place(tmp_path):
     ann = _load_annotate()
     f = _target(tmp_path)
     ann._record(str(f), [{"id": "c1", "content": "hi", "createdAt": 1}], [])
-    first = json.loads(_sidecar(tmp_path).read_text())["comments"][0]
+    first = json.loads(_sidecar(ann, f).read_text())["comments"][0]
 
     ann._record(str(f), [{"id": "c1", "content": "hi", "createdAt": 1}], [])
-    log = json.loads(_sidecar(tmp_path).read_text())["comments"]
+    log = json.loads(_sidecar(ann, f).read_text())["comments"]
     assert len(log) == 1  # not duplicated
     e = log[0]
     assert e["recorded_at"] == first["recorded_at"]  # first-seen time is stable
@@ -83,7 +93,7 @@ def test_resolved_change_flows_through_as_update(tmp_path):
     ann._record(str(f), [{"id": "c1", "content": "hi", "createdAt": 1}], [])
     ann._record(str(f), [{"id": "c1", "content": "hi", "createdAt": 1, "resolved": True}], [])
 
-    log = json.loads(_sidecar(tmp_path).read_text())["comments"]
+    log = json.loads(_sidecar(ann, f).read_text())["comments"]
     assert len(log) == 1
     assert log[0]["resolved"] is True
 
@@ -101,7 +111,7 @@ def test_the_sent_flag_rides_the_verbatim_field_merge(tmp_path):
     ann._record(str(f), [
         {"id": "c1", "content": "hi", "createdAt": 1, "sent": 1}], [])
 
-    log = json.loads(_sidecar(tmp_path).read_text())["comments"]
+    log = json.loads(_sidecar(ann, f).read_text())["comments"]
     assert len(log) == 1
     assert log[0]["sent"] == 1
 
@@ -110,7 +120,7 @@ def test_the_sent_flag_rides_the_verbatim_field_merge(tmp_path):
     # log keeps its last-seen `sent`. That asymmetry is why the history timeline
     # deliberately does not surface `sent` as a label (§17): it can go stale.
     ann._record(str(f), [{"id": "c1", "content": "hi", "createdAt": 1}], [])
-    log = json.loads(_sidecar(tmp_path).read_text())["comments"]
+    log = json.loads(_sidecar(ann, f).read_text())["comments"]
     assert log[0]["sent"] == 1
 
 
@@ -125,7 +135,7 @@ def test_dropped_comment_stays_in_sidecar(tmp_path):
     ], [])
     ann._record(str(f), [{"id": "A", "content": "keep", "createdAt": 1}], [])
 
-    log = json.loads(_sidecar(tmp_path).read_text())["comments"]
+    log = json.loads(_sidecar(ann, f).read_text())["comments"]
     ids = sorted(e["id"] for e in log)
     assert ids == ["A", "B"]
     b = next(e for e in log if e["id"] == "B")
@@ -138,14 +148,16 @@ def test_preserves_unowned_keys(tmp_path):
     f = _target(tmp_path)
     sess = [{"id": "s1", "preview": "hi", "created_at": 1, "last_used": 1, "cwd": "/x"}]
     hist = [{"id": "bk-1", "search": "a=1", "recorded_at": 1.0, "updated_at": 1.0}]
-    _sidecar(tmp_path).write_text(json.dumps({
+    sidecar = _sidecar(ann, f)
+    sidecar.parent.mkdir(parents=True, exist_ok=True)
+    sidecar.write_text(json.dumps({
         "claudeSessions": sess,
         "bookmarkHistory": hist,
         "lastSession": "s1",
     }))
 
     ann._record(str(f), [{"id": "c1", "content": "hi", "createdAt": 1}], [])
-    data = json.loads(_sidecar(tmp_path).read_text())
+    data = json.loads(sidecar.read_text())
     assert data["claudeSessions"] == sess
     assert data["bookmarkHistory"] == hist
     assert data["lastSession"] == "s1"
@@ -158,17 +170,17 @@ def test_empty_array_is_no_op(tmp_path):
     resp = ann._record(str(f), [], [])
     assert resp == {"recorded": True, "count": 0, "deleted": 0}
     # A true no-op: nothing to record never touches disk, so no sidecar appears.
-    assert not _sidecar(tmp_path).exists()
+    assert not _sidecar(ann, f).exists()
 
 
 def test_empty_array_leaves_existing_log_untouched(tmp_path):
     ann = _load_annotate()
     f = _target(tmp_path)
     ann._record(str(f), [{"id": "c1", "content": "hi", "createdAt": 1}], [])
-    before = _sidecar(tmp_path).read_text()
+    before = _sidecar(ann, f).read_text()
 
     ann._record(str(f), [], [])  # user cleared the URL — log must survive
-    assert _sidecar(tmp_path).read_text() == before
+    assert _sidecar(ann, f).read_text() == before
 
 
 def test_main_dispatch_and_missing_file(tmp_path):
@@ -192,7 +204,7 @@ def test_deleted_ids_tombstone_in_same_write(tmp_path):
     resp = ann._record(str(f), [{"id": "A", "content": "keep", "createdAt": 1}], ["B"])
     assert resp == {"recorded": True, "count": 1, "deleted": 1}
 
-    log = json.loads(_sidecar(tmp_path).read_text())["comments"]
+    log = json.loads(_sidecar(ann, f).read_text())["comments"]
     b = next(e for e in log if e["id"] == "B")
     assert b["deleted_at"] == b["updated_at"]  # stamped, seconds
     a = next(e for e in log if e["id"] == "A")
@@ -208,7 +220,7 @@ def test_rerecording_keeps_tombstone(tmp_path):
     # fields merge, but the tombstone is permanent (deleted stays deleted).
     ann._record(str(f), [{"id": "A", "content": "hi again", "createdAt": 1}], [])
 
-    log = json.loads(_sidecar(tmp_path).read_text())["comments"]
+    log = json.loads(_sidecar(ann, f).read_text())["comments"]
     assert log[0]["deleted_at"]  # survives the re-record
     assert log[0]["content"] == "hi again"
 
@@ -220,13 +232,13 @@ def test_deleted_ids_alone_still_writes_and_unknown_ignored(tmp_path):
     # Tombstone-only call (emptied URL) must still land on disk.
     resp = ann._record(str(f), [], ["A", "no-such-id"])
     assert resp == {"recorded": True, "count": 0, "deleted": 1}
-    log = json.loads(_sidecar(tmp_path).read_text())["comments"]
+    log = json.loads(_sidecar(ann, f).read_text())["comments"]
     assert log[0]["deleted_at"]
     # Unknown ids alone are a true no-op: nothing recorded, nothing stamped.
-    before = _sidecar(tmp_path).read_text()
+    before = _sidecar(ann, f).read_text()
     resp = ann._record(str(f), [], ["ghost"])
     assert resp == {"recorded": True, "count": 0, "deleted": 0}
-    assert _sidecar(tmp_path).read_text() == before
+    assert _sidecar(ann, f).read_text() == before
 
 
 # ------------------------------------------------------- status (writability)
@@ -243,7 +255,8 @@ def test_status_readonly_sidecar_file(tmp_path):
     ann = _load_annotate()
     target = tmp_path / "page.html"
     target.write_text("<html></html>")
-    sidecar = tmp_path / "page.html.json"
+    sidecar = _sidecar(ann, target)
+    sidecar.parent.mkdir(parents=True, exist_ok=True)
     sidecar.write_text("{}")
     os.chmod(sidecar, 0o444)
     try:
@@ -254,6 +267,11 @@ def test_status_readonly_sidecar_file(tmp_path):
 
 @skip_root
 def test_status_readonly_parent_dir(tmp_path):
+    # The sidecar's home-dir subtree doesn't exist yet, so writability walks up
+    # to the nearest existing ancestor (nearest_existing_dir) — which is
+    # tmp_path itself here, since FUSED_RENDER_HOME (tmp_path/home) hasn't been
+    # created. An unwritable tmp_path therefore still means "not writable",
+    # exactly as it did when the sidecar was a sibling of the target.
     ann = _load_annotate()
     target = tmp_path / "page.html"
     target.write_text("<html></html>")
@@ -264,12 +282,13 @@ def test_status_readonly_parent_dir(tmp_path):
         os.chmod(tmp_path, 0o755)
 
 
-# ------------------------------------------------- read-only remote mounts
-# os.access(W_OK) lies under a read-only S3 mount (CacheMode=full: a write
-# lands in the VFS cache and only 403s at the async upload — the sidecar-write
-# incident). _sidecar_writable must consult the mount's read_only flag so the
-# template shows its "history not saved" badge instead of looping the doomed
-# upload. Commenting itself still works — the URL is the live store.
+# --------------------------------------------------- read-only remote mounts
+# D83-reversal: the sidecar now lives under home_dir()/sidecar/, never on the
+# mounted file's own filesystem, so a read-only remote mount no longer has any
+# bearing on whether its sidecar can be written or recorded to — the old
+# sidecar-write incident (CacheMode=full 403-looping a doomed PutObject)
+# structurally can't happen anymore, and the mount_read_only check that used
+# to gate _sidecar_writable has been removed entirely.
 
 @pytest.fixture
 def ro_mount(tmp_path, monkeypatch):
@@ -285,63 +304,36 @@ def ro_mount(tmp_path, monkeypatch):
     return f
 
 
-def test_status_not_writable_under_read_only_mount(ro_mount):
+def test_status_writable_under_read_only_mount(ro_mount):
     ann = _load_annotate()
-    assert ann.main(action="status", file=ro_mount) == {"writable": False}
+    assert ann.main(action="status", file=ro_mount) == {"writable": True}
 
 
-def test_record_refuses_under_read_only_mount(ro_mount):
+def test_record_succeeds_under_read_only_mount(ro_mount):
     ann = _load_annotate()
-    with pytest.raises(PermissionError):
-        ann._record(ro_mount, [
-            {"id": "c1", "content": "hi", "createdAt": 1720000000000,
-             "view": "_render"},
-        ], [])
-    # Nothing written next to the mounted file.
-    assert not os.path.exists(ro_mount + ".json")
+    resp = ann._record(ro_mount, [
+        {"id": "c1", "content": "hi", "createdAt": 1720000000000,
+         "view": "_render"},
+    ], [])
+    assert resp == {"recorded": True, "count": 1, "deleted": 0}
+    assert os.path.exists(ann._sidecar_path(ro_mount))
 
 
-def test_read_only_is_answered_from_the_env_not_a_package_import(ro_mount):
-    """The mount fact travels as an env var, so it survives a child process that
-    cannot import fused_render — which is EVERY child under the fused engine
-    (its local backend strips PYTHONPATH for venv hermeticity). Asserted by
-    proving os.access disagrees: without the env answer the doomed write would
-    be waved through."""
+def test_ro_mount_flag_no_longer_affects_sidecar_writability(ro_mount):
+    """FUSED_RENDER_RO_MOUNTS still gets set (real mount plumbing), but
+    _sidecar_writable no longer consults it (D83-reversal) — the sidecar
+    isn't on the mount anymore, so the flag is irrelevant to it."""
     assert os.environ["FUSED_RENDER_RO_MOUNTS"] == os.path.dirname(ro_mount)
-    assert os.access(os.path.dirname(ro_mount), os.W_OK)  # the lie
-    assert _load_annotate()._sidecar_writable(ro_mount) is False
-
-
-def test_writable_falls_back_to_os_access_when_the_ro_env_is_absent(
-        ro_mount, monkeypatch):
-    """The degrade path, which is now the ONLY path when no server exported the
-    list: no FUSED_RENDER_RO_MOUNTS means "nothing known to be read-only", and
-    _sidecar_writable is back to the pure os.access rule. It must not fail
-    closed here — a local file with no server around is writable."""
-    monkeypatch.delenv("FUSED_RENDER_RO_MOUNTS", raising=False)
     assert _load_annotate()._sidecar_writable(ro_mount) is True
 
 
-@skip_root
-def test_the_os_access_rule_still_applies_with_the_ro_env_absent(
-        tmp_path, monkeypatch):
-    """...and "falls back to os.access" means the real rule, not a blanket True:
-    an unwritable directory is still not writable."""
-    monkeypatch.delenv("FUSED_RENDER_RO_MOUNTS", raising=False)
-    target = _target(tmp_path)
-    os.chmod(tmp_path, 0o555)
-    try:
-        assert _load_annotate()._sidecar_writable(str(target)) is False
-    finally:
-        os.chmod(tmp_path, 0o755)
-
-
-def test_read_only_degrades_to_writable_without_appenv(ro_mount):
-    """A copy of this folder taken without its `shared/` sibling has no appenv at
-    all. The guard keeps the pre-appenv behavior (pure os.access) rather than
-    raising — the template still works, it just cannot see mount read-only-ness."""
+def test_sidecar_computation_requires_appenv(ro_mount):
+    """Unlike the old mount_read_only check this guarded, sidecar PATH
+    computation now hard-depends on appenv.home_dir() (D83-reversal) — a copy
+    of this folder taken without its `shared/` sibling can no longer degrade
+    gracefully to pure os.access, since there's nowhere to put the sidecar
+    without a home dir to root it under."""
     import builtins
-    import sys
 
     ann = _load_annotate()
     real_import = builtins.__import__
@@ -354,7 +346,8 @@ def test_read_only_degrades_to_writable_without_appenv(ro_mount):
     saved = sys.modules.pop("appenv", None)
     builtins.__import__ = blocked
     try:
-        assert ann._sidecar_writable(ro_mount) is True
+        with pytest.raises(ImportError):
+            ann._sidecar_writable(ro_mount)
     finally:
         builtins.__import__ = real_import
         if saved is not None:
