@@ -20,6 +20,8 @@ from unittest import mock
 
 import pytest
 
+from _thread_scoped import this_thread_only
+
 CONDITION = os.path.join(
     os.path.dirname(__file__), "..", "fused_render", "templates", "graph", "condition.py")
 
@@ -45,11 +47,16 @@ def _no_enumeration():
     def forbidden(*args, **kwargs):
         raise AssertionError("the gate must never enumerate a directory (CT-12)")
 
-    with mock.patch.object(os, "listdir", forbidden), \
-            mock.patch.object(os, "scandir", forbidden), \
-            mock.patch.object(os, "walk", forbidden), \
-            mock.patch.object(glob_mod, "glob", forbidden), \
-            mock.patch.object(glob_mod, "iglob", forbidden):
+    # Thread-scoped: these patches are process-wide, and under the
+    # fused-engine job another package's background thread polls its own
+    # directory with glob — it would trip a gate assertion about code it never
+    # ran. See tests/_thread_scoped.py.
+    def guard(target, name):
+        real = getattr(target, name)
+        return mock.patch.object(target, name, this_thread_only(real, forbidden))
+
+    with guard(os, "listdir"), guard(os, "scandir"), guard(os, "walk"), \
+            guard(glob_mod, "glob"), guard(glob_mod, "iglob"):
         yield
 
 
