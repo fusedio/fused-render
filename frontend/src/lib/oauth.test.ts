@@ -144,3 +144,32 @@ test("every message names the provider it is about", () => {
   // The specific regression: these all said "Google" whatever the backend.
   expect(timedOutMsg(OAUTH_PROVIDERS.dropbox.label)).not.toContain("Google");
 });
+
+// -- cancelling while the SERVER is still finalizing ---------------------------
+
+test("cancelling during server-side finalization keeps waiting, not stands down", () => {
+  // The race: _cancel_active_authorize returns false once the CHILD has exited,
+  // but the watcher may still be inside _create_oauth_remote (bounded by
+  // OAUTH_RC_TIMEOUT = 30s, plus a possible ensure_rcd() daemon spawn). The
+  // follow-up read is then still in_flight with ok/error both null. Treating
+  // that as "cancelled" stopped the poll and closed the modal, so onConnected()
+  // never fired: the remote got created, never appeared, and a retry inside the
+  // window 409'd on a sign-in the user believed they had cancelled.
+  expect(oauthCancelOutcome(false, inFlight)).toEqual({ kind: "wait" });
+});
+
+test("a settled status still decides, even when the cancel found nothing to kill", () => {
+  // The wait must be narrow: only an attempt that is genuinely still running
+  // may defer. A finished one is reported however the cancel raced.
+  expect(oauthCancelOutcome(false, succeeded)).toEqual({ kind: "connected" });
+  expect(oauthCancelOutcome(false, failed("nope"))).toEqual({
+    kind: "failed",
+    message: "nope",
+  });
+});
+
+test("a cancel that DID kill a live child never waits", () => {
+  // canceled:true means the child is gone by our own hand; there is nothing
+  // left to finalize and no outcome worth deferring for.
+  expect(oauthCancelOutcome(true, inFlight)).toEqual({ kind: "cancelled" });
+});

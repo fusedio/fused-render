@@ -1008,6 +1008,33 @@ function OAuthSignIn({
         ? `“${trimmed}” already exists — pick another name, or confirm replacing it.`
         : null;
 
+  // The poll loop, extracted because `cancel` may have to RESUME it: a cancel
+  // that lands while the server is still finalizing has an outcome coming and
+  // must not stand down (see oauthCancelOutcome). `startedAt` is deliberately
+  // not reset by a resume — the wall-clock backstop belongs to the attempt, not
+  // to this loop, or a cancel could extend the wait indefinitely.
+  const startPolling = () => {
+    stopPolling();
+    failures.current = 0;
+    timer.current = window.setInterval(async () => {
+      let status: RemoteOAuthStatus | null = null;
+      try {
+        status = await getRemoteOAuthStatus();
+        failures.current = 0;
+      } catch {
+        failures.current++; // a null status; oauthTick decides when that's fatal
+      }
+      if (timer.current === null) return; // canceled while the fetch was in flight
+      apply(
+        oauthTick(status, {
+          consecutiveFailures: failures.current,
+          elapsedMs: Date.now() - startedAt.current,
+          label: provider.label,
+        })
+      );
+    }, OAUTH_POLL_MS);
+  };
+
   const begin = async () => {
     setError(null);
     setConnecting(true);
@@ -1031,24 +1058,7 @@ function OAuthSignIn({
       saveGoogleClient(client);
       setSavedClient(client);
     }
-    stopPolling();
-    timer.current = window.setInterval(async () => {
-      let status: RemoteOAuthStatus | null = null;
-      try {
-        status = await getRemoteOAuthStatus();
-        failures.current = 0;
-      } catch {
-        failures.current++; // a null status; oauthTick decides when that's fatal
-      }
-      if (timer.current === null) return; // canceled while the fetch was in flight
-      apply(
-        oauthTick(status, {
-          consecutiveFailures: failures.current,
-          elapsedMs: Date.now() - startedAt.current,
-          label: provider.label,
-        })
-      );
-    }, OAUTH_POLL_MS);
+    startPolling();
   };
 
   const cancel = async () => {
@@ -1077,7 +1087,15 @@ function OAuthSignIn({
         status = null;
       }
     }
-    apply(oauthCancelOutcome(canceled, status));
+    const decision = oauthCancelOutcome(canceled, status);
+    if (decision.kind === "wait") {
+      // The child is gone but the server is still finalizing (creating the
+      // remote over rcd). An outcome IS coming, so resume the poll rather than
+      // closing the modal on a sign-in that is about to succeed.
+      startPolling();
+      return;
+    }
+    apply(decision);
   };
 
   return (

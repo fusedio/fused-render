@@ -109,6 +109,15 @@ export function oauthCancelOutcome(
 ): OAuthDecision {
   if (canceled) return { kind: "cancelled" };
   if (status === null) return { kind: "cancelled" }; // can't tell; stand down quietly
+  // Still in flight with nothing decided: the CHILD is gone (which is why the
+  // cancel found nothing to kill) but the server's watcher is still finalizing
+  // — creating the remote over rcd, bounded by OAUTH_RC_TIMEOUT at 30s and
+  // possibly preceded by spawning the daemon. There IS an outcome coming, so
+  // standing down here is the one thing we must not do: it stopped the poll and
+  // closed the modal, the remote got created and never appeared, and a retry
+  // inside that window 409'd on a sign-in the user believed they had cancelled.
+  // Keep waiting and let the poll's own bounds end it if no answer arrives.
+  if (status.in_flight) return { kind: "wait" };
   if (status.ok) return { kind: "connected" };
   return status.error ? { kind: "failed", message: status.error } : { kind: "cancelled" };
 }
