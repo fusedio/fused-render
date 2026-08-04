@@ -1982,7 +1982,9 @@ def test_turning_annotate_mode_off_stays_findable(html):
     pressed-styled in the strip, and while active something names both ways out —
     the tooltip, because the visible label has to survive a narrow pane and a
     52-character sentence does not (see the degradation test below)."""
-    click = _between(html, "annBtn.addEventListener(\"click\"", "\n});")
+    # `annSetMode` is the one way in and out — Escape leaves the mode too, so the
+    # click handler is now a one-line call into it.
+    click = _between(html, "function annSetMode(", "\n}")
     assert 'aria-pressed' in click
     assert 'classList.toggle("on", annOn)' in click
     exit_ = click[click.index("annBtn.title ="):]
@@ -2029,7 +2031,9 @@ def test_toggling_the_banner_cannot_resize_the_iframe(html):
     for prop in ("height", "padding", "border", "font-size", "margin"):
         assert prop not in on, "the active state may only repaint, not resize: " + on
     # and the toggle itself touches nothing that could relayout the pane
-    click = _between(html, 'annBtn.addEventListener("click"', "\n});")
+    # `annSetMode` is the one way in and out — Escape leaves the mode too, so the
+    # click handler is now a one-line call into it.
+    click = _between(html, "function annSetMode(", "\n}")
     for banned in ("style.height", "style.padding", "#lefttools", "leftview"):
         assert banned not in click, click
 
@@ -2042,10 +2046,18 @@ def test_the_banners_way_out_is_the_part_that_never_shrinks(html):
     the tooltip, where width does not bind."""
     stop = _between(html, "#annbtn .stop {", "}")
     assert "flex-shrink: 0" in stop, stop
-    assert "margin-left: auto" in stop, stop
+    # The row is packed right, so the ordering comes from `justify-content` — an
+    # `auto` margin on the stop hint would push the label back to the left edge.
+    assert "margin-left: auto" not in stop, stop
+    btn = _between(html, "#annbtn {", "}")
+    assert "justify-content: flex-end" in btn, btn
+    # ...and the hit area is still the whole row, so "click to stop" is honest
+    assert "flex: 1" in btn, btn
     tools = _between(html, '<div id="lefttools"', "</div>")
     assert 'class="stop"' in tools and "Esc" in tools, tools
-    click = _between(html, 'annBtn.addEventListener("click"', "\n});")
+    # `annSetMode` is the one way in and out — Escape leaves the mode too, so the
+    # click handler is now a one-line call into it.
+    click = _between(html, "function annSetMode(", "\n}")
     assert "annStop.hidden = !annOn" in click, click
     title = _between(html, "annBtn.title =", ";")
     assert "Esc" in title and "click this banner" in title, title

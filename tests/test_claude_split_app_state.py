@@ -1151,23 +1151,42 @@ def test_a_null_snapshot_on_the_wire_is_the_hard_error_the_page_now_avoids(
     assert res.get("error") and "state" not in res
 
 
-# --------------------------------------------------- Escape has two claimants
+# ------------------------------------------------- Escape has three claimants
 
-def test_the_annotation_composer_wins_escape_over_stopping_the_run(html):
-    """Both features bind Escape in this pane. Dismissing a popover is small and
-    repeatable; killing a live turn is neither — so an Escape pressed with a text
-    box open means the text box."""
-    def act(open_, run):
+def test_escape_prefers_the_smallest_undo_it_can_do(html):
+    """Three features bind Escape in this pane, and the order is least-destructive
+    first. Dismissing a popover is small and repeatable, leaving annotate mode is
+    reversible with one click, killing a live turn is neither — so an Escape
+    pressed with a text box open means the text box, and one pressed while
+    annotating means annotate mode, not the run."""
+    def act(open_, annotating, run):
         return _node(["function escapeAction("],
-                     "console.log(JSON.stringify(escapeAction(%s, %s)));"
-                     % (json.dumps(open_), json.dumps(run)), html)
+                     "console.log(JSON.stringify(escapeAction(%s, %s, %s)));"
+                     % (json.dumps(open_), json.dumps(annotating), json.dumps(run)),
+                     html)
 
-    assert act(True, "run-7") == "close-composer"
-    assert act(True, None) == "close-composer"
-    assert act(False, "run-7") == "stop-run"
+    assert act(True, False, "run-7") == "close-composer"
+    assert act(True, True, None) == "close-composer"
+    # The banner says "Esc or click to stop", so Escape must leave annotate mode —
+    # and must do it in preference to ending the turn.
+    assert act(False, True, None) == "exit-annotate"
+    assert act(False, True, "run-7") == "exit-annotate"
+    assert act(False, False, "run-7") == "stop-run"
     # Inert otherwise: this page is in an iframe and must not swallow the shell's
     # Escape for nothing.
-    assert act(False, None) == ""
+    assert act(False, False, None) == ""
+
+
+def test_escape_is_bound_inside_the_framed_app_too(html):
+    """Annotate mode is used with the pointer over the iframe, so that is where
+    the keydown lands — and a keydown in the frame's document does not bubble to
+    this one. Binding only the parent document is why Escape looked broken while
+    annotating: the same reason mousedown/mousemove/click are all bound on `doc`."""
+    load = html.index("annFrame.addEventListener(\"load\"")
+    body = html[load:html.index("// ── send one message", load)]
+    assert "doc.addEventListener(\"keydown\", onEscape" in body, body[-3000:]
+    # and the parent keeps its own binding, for an Escape pressed in the chat pane
+    assert "document.addEventListener(\"keydown\", onEscape" in html
 
 
 def test_the_composers_escape_does_not_also_reach_the_run_killer(html):

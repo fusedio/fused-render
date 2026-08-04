@@ -137,7 +137,12 @@
     white-space: nowrap;
     font: inherit;
     font-size: 11.5px;
-    text-align: left;
+    /* Text to the right, hit area still the whole row (the button stays `flex: 1`,
+       so "click to stop" means anywhere in the banner). Right is where this pane's
+       other controls live, and it keeps the banner's text off the app's own
+       left-aligned headings directly below it. */
+    justify-content: flex-end;
+    text-align: right;
     padding: 0 8px;
     border: 0;
     background: transparent;
@@ -157,7 +162,10 @@
   /* The instruction is expendable, the way out is not: the label ellipsizes as the
      pane narrows while the stop affordance never shrinks. */
   #annbtn .lbl { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-  #annbtn .stop { margin-left: auto; flex-shrink: 0; opacity: .8; }
+  /* No `margin-left: auto` here: the row is packed right, so an auto margin would
+     shove the label back to the left edge and undo it. `flex-shrink: 0` is what
+     actually matters — the way out never gives up width, the instruction does. */
+  #annbtn .stop { flex-shrink: 0; opacity: .8; }
   #annpins { position: absolute; inset: 0; z-index: 2; pointer-events: none; overflow: hidden; }
   .annpin {
     position: absolute;
@@ -1569,8 +1577,11 @@ annTa.addEventListener("keydown", (e) => {
 const annLbl = annBtn.querySelector(".lbl");
 const annStop = annBtn.querySelector(".stop");
 
-annBtn.addEventListener("click", () => {
-  annOn = !annOn;
+// The one way in and out of annotate mode. Extracted because Escape leaves the
+// mode too, and a second copy of this would be a second chance for the banner's
+// text to disagree with `annOn`.
+function annSetMode(on) {
+  annOn = on;
   annBtn.classList.toggle("on", annOn);
   annBtn.setAttribute("aria-pressed", String(annOn));
   // Names BOTH ways out while active, in the one place that cannot be ellipsized
@@ -1582,7 +1593,9 @@ annBtn.addEventListener("click", () => {
   annBtn.title = annOn ? "Annotating — click an element to add a note · Esc or click this banner to stop"
                        : "Annotate the app, then send the notes to Claude";
   if (!annOn) { annHl.style.display = "none"; annCloseComposer(); }
-});
+}
+
+annBtn.addEventListener("click", () => annSetMode(!annOn));
 
 // Wire the framed app on every load (the app live-reloads on Claude's edits;
 // pins re-resolve against the fresh DOM). Handlers stay attached and gate on
@@ -1596,6 +1609,10 @@ annFrame.addEventListener("load", () => {
   const doc = annFrame.contentDocument;
   if (!doc) return;
   const elementOf = (t) => (t && t.nodeType === 1 ? t : t && t.parentElement);
+  // Escape, again: annotate mode is used with the pointer (and usually focus) in
+  // here, and keydowns do not cross the frame boundary. Without this the banner's
+  // "Esc or click to stop" was a promise only the chat pane could keep.
+  doc.addEventListener("keydown", onEscape);
   // Clicks inside the frame never bubble to the parent document, so the
   // outside-click dismissal needs its own hook here. In annotate mode the
   // click handler below may immediately open a fresh composer on the clicked
@@ -3207,29 +3224,40 @@ async function stopRun() {
   }
 }
 
-// Escape has two claimants in this pane: the annotation composer and a live run.
-// The composer wins whenever it is open — dismissing a popover is the small,
-// repeatable action, while killing a turn is neither, and a user reaching for
-// Escape with a text box in front of them means the text box. Split out as a
-// pure decision so the precedence is a tested rule and not an ordering accident.
-function escapeAction(composerOpen, runId) {
+// Escape has three claimants in this pane: the annotation composer, annotate
+// mode, and a live run. Ordered least-destructive first — dismissing a popover is
+// small and repeatable, leaving annotate mode costs one click to undo, killing a
+// turn costs the turn. So a user reaching for Escape with a text box in front of
+// them means the text box, and one reaching for it while annotating means
+// annotate mode, not the run they may also have going. Split out as a pure
+// decision so the precedence is a tested rule and not an ordering accident.
+function escapeAction(composerOpen, annotating, runId) {
   if (composerOpen) return "close-composer";
+  if (annotating) return "exit-annotate";
   return runId ? "stop-run" : "";
 }
 
 // Gated on there being something to do, so the binding is inert the rest of the
 // time — this page sits in an iframe and must not swallow Escape from the shell
 // around it for nothing.
-document.addEventListener("keydown", (e) => {
+function onEscape(e) {
   if (e.key !== "Escape") return;
   // The textarea's own Escape handler stops propagation, so what reaches here
   // with the popover open is an Escape pressed with focus somewhere else.
-  const act = escapeAction(annPop.style.display === "block", activeRun);
+  const act = escapeAction(annPop.style.display === "block", annOn, activeRun);
   if (!act) return;
   e.preventDefault();
   if (act === "close-composer") annCloseComposer();
+  else if (act === "exit-annotate") annSetMode(false);
   else stopRun();
-});
+}
+
+// Bound on BOTH documents. Annotate mode is driven with the pointer over the
+// iframe, so that is where the keydown lands, and a keydown in the frame's
+// document does not bubble across the boundary to this one — the same reason the
+// mousedown/mousemove/click handlers all hang off `doc`. The frame-side binding
+// is (re)attached on every frame load; see the load handler.
+document.addEventListener("keydown", onEscape);
 
 // ── send one message: start detached claude, poll + stream ──
 // One turn at a time: concurrent turns would share the session_id param and
