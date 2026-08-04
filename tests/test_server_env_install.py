@@ -322,7 +322,7 @@ _KEY_B = "b" * 16   # what /api/env/install re-derived off the .py on disk
 _JS_PRELUDE = """
 function makeEl() {
   return {
-    style: { cssText: "" }, textContent: "", children: [], _h: {},
+    style: { cssText: "" }, textContent: "", children: [], _h: {}, dataset: {},
     appendChild(c) { this.children.push(c); return c; },
     append(...c) { this.children.push(...c); },
     remove() { this.removed = true; },
@@ -332,7 +332,17 @@ function makeEl() {
     },
   };
 }
-globalThis.document = { createElement: () => makeEl(), body: makeEl() };
+// `head` + getElementById because the indeterminate bar needs keyframes, which
+// inline styles cannot express — so the loader injects one <style> ONCE and finds
+// it by id on every call after that (D207).
+globalThis.document = {
+  createElement: () => makeEl(),
+  body: makeEl(),
+  head: makeEl(),
+  getElementById(id) {
+    return this.head.children.find((c) => c.id === id) || null;
+  },
+};
 """
 
 
@@ -505,6 +515,110 @@ console.log(JSON.stringify({ afterFirst, afterSecond: installUi.mounted }));
         "the overlay was removed while a second install with the same key was live"
     )
     assert result["afterSecond"] is False, "the overlay must go once the last one ends"
+
+
+# --- the install stage has no percentage, so the bar must not claim one (D207) --
+#
+# The worker parks at pct 25 for the entire download (there is nothing to measure
+# behind uv's captured output), so a bar sitting at 25% for four minutes reads as
+# frozen — which is exactly what was reported. These assert the DOM-observable
+# contract: `bar.dataset.indeterminate` is the flag the CSS animation hangs off.
+# What they CANNOT see is whether the result looks right; that needs a human glance.
+
+
+def test_the_install_stage_paints_an_indeterminate_bar():
+    """A number nobody can compute must not be displayed as a number.
+
+    `stage === "install"` is the one stage with no measurable progress, so the bar
+    switches to the indeterminate marker instead of parking at 25%. Stages that DO
+    carry a real value (`create` at 10, `done` at 100) must switch back to a real
+    width, or a finished install would animate forever.
+    """
+    result = _run_loader("""
+const ui = installOverlay();
+const seen = [];
+const snap = (label) => seen.push([label, ui.bar.dataset.indeterminate || null,
+                                   ui.bar.style.width]);
+paintInstall(ui, { stage: "create", pct: 10, detail: "preparing", done: false });
+snap("create");
+paintInstall(ui, { stage: "install", pct: 25, detail: "downloading (2m14s)",
+                   done: false });
+snap("install");
+paintInstall(ui, { stage: "done", pct: 100, detail: "installed", done: true });
+snap("done");
+console.log(JSON.stringify({ seen, detail: ui.detail.textContent }));
+""")
+    by_label = {row[0]: row[1:] for row in result["seen"]}
+    assert by_label["create"][0] is None, "a stage with a real pct must not animate"
+    assert by_label["create"][1] == "10%"
+    assert by_label["install"][0] == "1", "the install stage must be indeterminate"
+    assert by_label["done"][0] is None, "a finished install must stop animating"
+    assert by_label["done"][1] == "100%"
+    assert result["detail"] == "installed"
+
+
+def test_the_keyframes_are_injected_once_however_many_installs_run():
+    """The overlay is built from inline styles, which cannot express keyframes, so
+    one <style> is injected — and injected ONCE, or every install of a session
+    leaves another copy behind in `document.head`."""
+    result = _run_loader("""
+const need = { key: "%(a)s", requirements: ["x"] };
+showInstall(need);
+showInstall(need);
+hideInstall(need.key);
+hideInstall(need.key);
+showInstall(need);
+console.log(JSON.stringify({ styles: document.head.children.length }));
+""" % {"a": _KEY_A})
+    assert result["styles"] == 1, result
+
+
+def test_an_install_that_is_already_running_is_not_painted_as_zero_percent():
+    """Re-opening a page mid-install must not read as a restart.
+
+    `showInstall` used to assert `0%` unconditionally, so joining an install four
+    minutes in painted 0% and then jumped to 25% on the first poll. The server is
+    doing the right thing (`start()` JOINS a running install rather than
+    duplicating it), but a user switching between apps saw 0% → 25% → freeze over
+    and over and concluded it was looping. So the initial state claims no
+    percentage at all, and the first real paint comes from the server's own record.
+    """
+    result = _run_loader("""
+// installOverlay is memoised, so grabbing it first hands us the very bar the
+// loader will paint — and a recording setter then sees every width it assigns.
+const ui = installOverlay();
+const widths = [];
+let w = ui.bar.style.width;
+Object.defineProperty(ui.bar.style, "width", {
+  get: () => w,
+  set: (v) => { w = v; widths.push(v); },
+});
+let polls = 0;
+globalThis.fetch = (url, opts) => {
+  if (url === "/api/env/install")
+    // What the server answers when it JOINS an install already in flight.
+    return Promise.resolve({ ok: true, json: () => Promise.resolve({ ok: true,
+      key: "%(b)s",
+      progress: { stage: "install", pct: 25, done: false,
+                  detail: "downloading and installing 2 package(s): a, b (4m02s)" }})});
+  if (url.startsWith("/api/env/progress")) {
+    polls += 1;
+    return Promise.resolve({ json: () => Promise.resolve({ ok: true,
+      progress: polls === 1
+        ? { stage: "install", pct: 25, done: false, detail: "downloading (4m03s)" }
+        : { stage: "done", pct: 100, done: true, error: null, detail: "installed" }})});
+  }
+  return Promise.resolve({ ok: true, json: () => Promise.resolve({ ok: true }) });
+};
+installEnv({ key: "%(a)s", requirements: ["a", "b"] }, "a.py", "a.html").then(
+  () => console.log(JSON.stringify({ ok: true, widths })),
+  (e) => console.log(JSON.stringify({ ok: false, error: e.message, widths })));
+""" % {"a": _KEY_A, "b": _KEY_B})
+    assert result["ok"] is True, result
+    assert "0%" not in result["widths"], (
+        f"a joined install was painted as 0% first: {result['widths']}"
+    )
+    assert result["widths"][-1] == "100%", result["widths"]
 
 
 def test_the_runtime_drives_the_loader():

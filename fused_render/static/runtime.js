@@ -577,6 +577,66 @@
   // single entry that the first call to settle deletes.
   const installing = new Map();
 
+  // The indeterminate bar (D207). The worker parks at pct 25 for the WHOLE download
+  // — `ensure_requirements_venv` runs uv behind captured output, so there is no
+  // per-package progress to report — and a bar sitting at 25% for four minutes reads
+  // as frozen, which is what users reported. An indeterminate bar says the true
+  // thing: this is alive, and its remaining time is unknown.
+  //
+  // Keyframes need a stylesheet (the overlay is otherwise built from inline styles,
+  // which cannot express an animation), so one <style> is injected on first use and
+  // found by id afterwards — a per-install copy would pile up in `head` over a
+  // session. Injected here rather than at module load because a page that never
+  // installs anything should not carry it.
+  const INSTALL_BAR_STYLE_ID = "fused-install-bar-style";
+  const INSTALL_BAR_ANIM = "fused-install-sweep";
+
+  function ensureInstallBarStyle() {
+    if (document.getElementById(INSTALL_BAR_STYLE_ID)) return;
+    const style = document.createElement("style");
+    style.id = INSTALL_BAR_STYLE_ID;
+    style.textContent =
+      "@keyframes " + INSTALL_BAR_ANIM + "{" +
+      "0%{transform:translateX(-110%)}100%{transform:translateX(410%)}}";
+    document.head.appendChild(style);
+  }
+
+  // `dataset.indeterminate` is the DOM-observable contract: the tests assert on it,
+  // because no headless test can see whether an animation LOOKS right.
+  function installBarIndeterminate(ui, on) {
+    const bar = ui.bar;
+    if (on) {
+      if (bar.dataset.indeterminate === "1") return; // never restart the sweep
+      ensureInstallBarStyle();
+      bar.dataset.indeterminate = "1";
+      // A narrow fill that travels, rather than a width that grows: `transition` is
+      // turned off first, or the jump to 30% animates as if it were progress.
+      bar.style.transition = "none";
+      bar.style.width = "30%";
+      bar.style.animation = INSTALL_BAR_ANIM + " 1.1s ease-in-out infinite";
+    } else {
+      if (bar.dataset.indeterminate !== "1") return;
+      delete bar.dataset.indeterminate;
+      bar.style.animation = "";
+      bar.style.transition = "width 0.3s ease";
+    }
+  }
+
+  // Paint one progress record. Module-scope (not a closure inside installEnv) so the
+  // stage-to-bar rule has exactly one definition and can be driven directly by a
+  // test; `notice` is installEnv's sticky message, which must outrank the record's
+  // own detail (see the `notice` comment there).
+  function paintInstall(ui, prog, notice) {
+    if (!prog) return;
+    ui.detail.textContent = notice || prog.detail || prog.stage || "";
+    if (prog.stage === "install" && !prog.done) {
+      installBarIndeterminate(ui, true);
+      return;
+    }
+    installBarIndeterminate(ui, false);
+    if (typeof prog.pct === "number") ui.bar.style.width = prog.pct + "%";
+  }
+
   function installOverlay() {
     if (installUi) return installUi;
     const el = document.createElement("div");
@@ -621,8 +681,16 @@
       ui.mounted = true;
     }
     ui.title.textContent = "Installing " + (need.requirements || []).join(", ");
-    ui.detail.textContent = "starting…";
-    ui.bar.style.width = "0%";
+    // Deliberately NOT "starting…" at 0%. `/api/env/install` JOINS an install
+    // already in flight rather than duplicating it, so re-opening a page whose
+    // download is four minutes old used to paint 0% and then jump to 25% on the
+    // first poll — nothing was lost, but a user switching between apps saw
+    // 0% → 25% → freeze over and over and concluded it was looping. The initial
+    // state therefore asserts no percentage at all: indeterminate until the
+    // server's own record arrives (installEnv paints the POST response, which
+    // carries it), so the first honest paint is the only paint.
+    ui.detail.textContent = "contacting the installer…";
+    installBarIndeterminate(ui, true);
     return ui;
   }
 
@@ -692,11 +760,7 @@
     };
     ui.cancel.addEventListener("click", onCancel);
 
-    const paint = (prog) => {
-      if (!prog) return;
-      ui.detail.textContent = notice || prog.detail || prog.stage || "";
-      if (typeof prog.pct === "number") ui.bar.style.width = prog.pct + "%";
-    };
+    const paint = (prog) => paintInstall(ui, prog, notice);
 
     const poll = () =>
       fetch("/api/env/progress?key=" + encodeURIComponent(activeKey), {
