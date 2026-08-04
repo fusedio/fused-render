@@ -1593,16 +1593,15 @@ function shotJoin(dir, name) {
 // nearest <body> are the layout containers, so a truncated capture still has the
 // page's overall shape rather than one fully-styled subtree and nothing else.
 //
-// Returns what it managed, so the caller can say so — a crop that is partly
-// unstyled must not be presented as what the user saw.
+// Returns `{styled, incomplete}` — one CAUSE, not a boolean, because the caller
+// turns it into one sentence for the agent and "incomplete" alone cannot be worded
+// honestly (see shotPaneNote).
 async function shotInlineStyles(src, dst, deadline) {
-  let styled = 0, truncated = false;
+  let styled = 0, stopped = "";
   const queue = [[src, dst]];
   while (queue.length) {
-    if (styled >= SHOT_MAX_ELEMENTS || Date.now() > deadline) {
-      truncated = true;
-      break;
-    }
+    if (styled >= SHOT_MAX_ELEMENTS) { stopped = "elements"; break; }
+    if (Date.now() > deadline) { stopped = "deadline"; break; }
     const [s, d] = queue.shift();
     const cs = s.ownerDocument.defaultView.getComputedStyle(s);
     let css = "";
@@ -1612,7 +1611,29 @@ async function shotInlineStyles(src, dst, deadline) {
     for (let i = 0; i < a.length && i < b.length; i++) queue.push([a[i], b[i]]);
     if (++styled % SHOT_STYLE_CHUNK === 0) await new Promise((r) => setTimeout(r, 0));
   }
-  return { styled, truncated };
+  return { styled, incomplete: stopped };
+}
+
+// The one sentence a crop carries about what its capture could NOT do, or "" when
+// the capture was whole. Every cause shotInlineStyles can report is worded here
+// and nowhere else: the old single `truncated` boolean was set by either the
+// element cap or the deadline and the note blamed page size, so a capture that
+// merely ran out of time told the agent the DOM was too large — a misdiagnosis it
+// might act on by simplifying a page that is not big.
+function shotPaneNote(pane) {
+  const styled = (pane && pane.styled) || 0;
+  switch (pane && pane.incomplete) {
+    case "elements":
+      return "part of this capture is unstyled: the page has more elements than "
+        + "the capture budget allows (it stopped after " + styled + "), so some of "
+        + "what you see may render without its CSS rather than as the user saw it";
+    case "deadline":
+      return "part of this capture is unstyled: it ran out of time after " + styled
+        + " elements, so some of what you see may render without its CSS rather "
+        + "than as the user saw it. This is about capture speed, not page size";
+    default:
+      return "";
+  }
 }
 
 // Whether a canvas read back nothing we can use.
@@ -1757,7 +1778,7 @@ async function shotEncode(pane, rect) {
 }
 
 // Rasterise the visible left pane once. Returns
-// {canvas, width, height, blanks, styled, truncated} or null when there is no
+// {canvas, width, height, blanks, styled, incomplete} or null when there is no
 // readable app document to capture. `deadline` is a Date.now() stamp the style
 // walk stops at — the capture's share of SHOT_TIMEOUT_MS, enforced INSIDE the
 // walk because that is the only place that can enforce it (see shotInlineStyles).
@@ -1801,7 +1822,7 @@ async function shotPane(deadline) {
   ctx.fillRect(0, 0, w, h);
   ctx.drawImage(img, 0, 0);
   return { canvas, width: w, height: h, blanks,
-           styled: styles.styled, truncated: styles.truncated };
+           styled: styles.styled, incomplete: styles.incomplete };
 }
 
 // The app's own page background, from <html> then <body>. Returns "" when both
@@ -1841,15 +1862,11 @@ async function annCaptureShots(pending, deadline) {
   const doc = annFrame.contentDocument;
   const stamp = new Date().toISOString().replace(/[^0-9]/g, "").slice(0, 14)
     + "-" + crypto.randomUUID().slice(0, 8);
-  // A capture whose style walk stopped early is a real picture of the page with
-  // pieces of it rendered unstyled. Every crop out of it says so: silence here
-  // would present a half-CSS render as "the element as the user saw it", which is
-  // the same class of misread as shipping a blank canvas.
-  const paneNote = pane.truncated
-    ? "part of this capture is unstyled: the page has more elements than the "
-      + "capture budget allows (it stopped after " + pane.styled + "), so some "
-      + "of what you see may render without its CSS rather than as the user saw it"
-    : "";
+  // A capture the walk could not finish — or could not trust — is a real picture
+  // of the page with pieces of it wrong or missing. Every crop out of it says so,
+  // and says WHICH: silence would present a half-CSS render as "the element as
+  // the user saw it", the same class of misread as shipping a blank canvas.
+  const paneNote = shotPaneNote(pane);
   let made = 0;
   for (const c of pending) {
     const note = (why) => { out.shots[c.id] = { shot: null, shotNote: why }; };

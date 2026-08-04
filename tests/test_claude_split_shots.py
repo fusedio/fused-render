@@ -540,7 +540,8 @@ BLANKS.push(cv);
 # performed. `shotPane` and `shotEncode` are reassigned (a function declaration is
 # a mutable binding) because rasterising is exactly the part node cannot do —
 # what is under test is which annotations get a crop and what the others are told.
-_CAPTURE_FNS = _CAPS + _BLANK_FNS + ["function shotCropRect(",
+_CAPTURE_FNS = _CAPS + _BLANK_FNS + ["function shotPaneNote(",
+                        "function shotCropRect(",
                         "function shotFit(", "function annLabelFor(",
                         "const APP_STATE_UNREADABLE",
                         "async function annCaptureShots(", "function shotJoin(",
@@ -676,18 +677,35 @@ annotations = [a];
 # A tree of `n` elements whose getComputedStyle is counted. The real cost is one
 # getComputedStyle plus ~340 property reads each; the count is what the assertions
 # below are about, not the reads.
+#
+# Each node knows its own NAME and the computed style it hands back is that name,
+# so `written` records which source node's styles landed on which clone node —
+# which is how the pairing assertions below can see styles going to the wrong
+# element. mk(n) builds the same names for the source and the clone, exactly as
+# cloneNode would.
 _TREE = """
 var styledCount = 0;
-function CS() { const a = ["color"]; a.getPropertyValue = () => "red"; return a; }
-const view = {getComputedStyle: () => { styledCount++; return CS(); }};
-function node(kids) {
-  return {ownerDocument: {defaultView: view}, children: kids || [],
-          setAttribute: () => {}};
+var written = [];
+var view = {getComputedStyle: (el) => {
+  styledCount++;
+  const a = ["color"];
+  a.getPropertyValue = () => el.name;
+  return a;
+}};
+function node(name, kids) {
+  return {name: name, isConnected: true, ownerDocument: {defaultView: view},
+          children: kids || [],
+          setAttribute: (k, v) => { written.push([name, v]); }};
 }
-function mk(n) {
+function mk(n, tag) {
   const kids = [];
-  for (let i = 0; i < n - 1; i++) kids.push(node());
-  return node(kids);
+  for (let i = 0; i < n - 1; i++) kids.push(node((tag || "") + "l" + i));
+  return node((tag || "") + "root", kids);
+}
+// Every clone node must wear the styles of the SOURCE node of the same name.
+function mispaired() {
+  return written.filter(([name, css]) => css !== "color:" + name + ";")
+                .map(([name, css]) => name + " wears " + css);
 }
 """
 
@@ -709,10 +727,10 @@ setTimeout(() => { firedAt = styledCount; }, 0);
 (async () => {
   const r = await shotInlineStyles(mk(1000), mk(1000), Date.now() + 60000);
   console.log(JSON.stringify({firedAt: firedAt, styled: r.styled,
-                              truncated: r.truncated, chunk: SHOT_STYLE_CHUNK}));
+                              incomplete: r.incomplete, chunk: SHOT_STYLE_CHUNK}));
 })();
 """, html)
-    assert out["styled"] == 1000 and out["truncated"] is False
+    assert out["styled"] == 1000 and out["incomplete"] == ""
     assert out["firedAt"] > 0, "the timer never got a turn: the walk is still sync"
     assert out["firedAt"] < out["styled"], "it fired after the walk, not during it"
 
@@ -724,10 +742,10 @@ def test_the_style_walk_stops_at_its_deadline(html):
     out = _node(_WALK_FNS, _TREE + """
 (async () => {
   const r = await shotInlineStyles(mk(2000), mk(2000), Date.now() - 1);
-  console.log(JSON.stringify({styled: r.styled, truncated: r.truncated}));
+  console.log(JSON.stringify({styled: r.styled, incomplete: r.incomplete}));
 })();
 """, html)
-    assert out["truncated"] is True
+    assert out["incomplete"] == "deadline"
     assert out["styled"] < 2000
 
 
@@ -740,20 +758,48 @@ def test_the_style_walk_stops_at_its_element_cap(html):
   const r = await shotInlineStyles(mk(SHOT_MAX_ELEMENTS + 400),
                                    mk(SHOT_MAX_ELEMENTS + 400),
                                    Date.now() + 120000);
-  console.log(JSON.stringify({styled: r.styled, truncated: r.truncated,
+  console.log(JSON.stringify({styled: r.styled, incomplete: r.incomplete,
                               cap: SHOT_MAX_ELEMENTS}));
 })();
 """, html)
     assert out["styled"] == out["cap"]
-    assert out["truncated"] is True
+    assert out["incomplete"] == "elements"
 
 
-def test_a_truncated_capture_says_so_on_every_crop_it_produced(html):
+# ------------------------------- the note names the cause, not a guess at it
+
+def test_every_incomplete_cause_gets_its_own_wording(html):
+    """D146-shaped: the causes are enumerated in shotInlineStyles and worded in
+    shotPaneNote, so a test walks every one of them. The specific bug: `truncated`
+    was one boolean set by EITHER the element cap or the deadline, and the note
+    blamed page size — so a capture that merely ran out of time told the agent the
+    DOM was too large, a misdiagnosis it might act on by simplifying a page that
+    is not big."""
+    out = _node(["function shotPaneNote("], """
+const causes = ["", "elements", "deadline"];
+const notes = {};
+for (const c of causes) notes[c] = shotPaneNote({styled: 42, incomplete: c});
+console.log(JSON.stringify(notes));
+""", html)
+    assert out[""] == "", "a complete capture earns no note at all"
+    # each cause is worded distinctly — no two crops can be explained the same way
+    worded = [out[c] for c in ("elements", "deadline")]
+    assert all(worded) and len(set(worded)) == 2, out
+    # the element cap is the only one allowed to talk about how big the page is
+    assert "more elements" in out["elements"]
+    assert "42" in out["elements"], "and says how far it got"
+    assert "more elements" not in out["deadline"]
+    assert "time" in out["deadline"]
+
+
+def test_an_incomplete_capture_says_so_on_every_crop_it_produced(html):
     """Silence would present a half-CSS render as "the element as the user saw
-    it" — the same class of misread as shipping a blank canvas."""
-    out = _node(_CAPTURE_FNS, _CAPTURE_STUBS + """
+    it" — the same class of misread as shipping a blank canvas. Checked for two
+    different causes, since the wording is what the agent acts on."""
+    def cap(cause):
+        return _node(_CAPTURE_FNS, _CAPTURE_STUBS + ("""
 shotPane = async () => ({canvas: {}, width: 800, height: 600, blanks: [],
-                        styled: 3000, truncated: true});
+                        styled: 3000, incomplete: "%s"});
 shotEncode = async (pane, rect) => ({size: 10});
 const a = {id: "a", el: {name: "a", contains: () => false}};
 annotations = [a];
@@ -761,10 +807,18 @@ annotations = [a];
   annApplyShots([a], await annCaptureShots([a]));
   console.log(JSON.stringify({shot: a.shot, note: a.shotNote}));
 })();
-""", html)
-    assert out["shot"], "a truncated capture still produces a usable crop"
-    assert "unstyled" in out["note"]
-    assert "3000" in out["note"], "and says how far it got"
+""" % cause), html)
+
+    big = cap("elements")
+    assert big["shot"], "an incomplete capture still produces a usable crop"
+    assert "more elements" in big["note"] and "3000" in big["note"]
+
+    slow = cap("deadline")
+    assert slow["shot"]
+    assert "time" in slow["note"]
+    assert "more elements" not in slow["note"], \
+        "a slow capture must not tell the agent the page is too big"
+
 
 
 # --------------------------------------- a failed capture never fails the send
