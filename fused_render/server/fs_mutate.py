@@ -5,6 +5,7 @@ import stat as stat_mod
 import subprocess
 import sys
 import tempfile
+import zipfile
 from pathlib import Path
 from fastapi import APIRouter, Body, File, Form, Header, Request, UploadFile
 from fastapi.responses import (
@@ -19,6 +20,7 @@ from fastapi.responses import (
 from fused_render import app_commit_queue, app_git
 from fused_render import calls as shell_calls
 from fused_render.server.common import _error, _require_fused
+from fused_render.server.gitignore import _is_repo_root
 from fused_render.server.mount import _invalidate_stat_cache, _mount_probe, _mount_stat_payload, _mutation_result_payload, _probe_path, _stat_payload, _writable
 from fused_render.server.walk import _mount_list_error_response
 
@@ -329,6 +331,190 @@ def _fs_mkdir(body: dict, x_fused: str | None):
     except OSError as e:
         return _error(f"cannot create directory {path}: {e}")
     return _stat_payload(path, True)
+
+
+# Compress: the only archive formats the endpoint will ever produce, mapped to
+# the extension the sibling archive gets. An allowlist rather than a passthrough
+# because the value picks the code path AND (for the git formats) part of a
+# command line — anything not spelled here is a 400, never an argument.
+_ARCHIVE_EXT = {"zip": ".zip", "git-bundle": ".bundle", "git-archive": ".tar.gz"}
+
+# Long enough for a big repository on a slow disk, short enough that a hung git
+# (a credential prompt, a wedged filesystem) fails the request instead of
+# pinning a threadpool worker forever.
+_GIT_TIMEOUT_S = 300
+
+_GIT_ENV = {
+    # Never let git stop for input: an archive is a background action with no
+    # UI to answer a prompt, so a repo needing credentials must fail fast.
+    "GIT_TERMINAL_PROMPT": "0",
+    "GIT_ASKPASS": "",
+    "GCM_INTERACTIVE": "never",
+}
+
+
+def _run_git(args: list[str], cwd: str):
+    """Run git with an argv list (never a shell), no stdin, and a timeout.
+    Returns the CompletedProcess, or None when git is missing/hung."""
+    try:
+        return subprocess.run(
+            ["git", "--no-pager", *args],
+            cwd=cwd,
+            env={**os.environ, **_GIT_ENV},
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=_GIT_TIMEOUT_S,
+            creationflags=(subprocess.CREATE_NO_WINDOW
+                           if sys.platform == "win32" else 0),
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+
+
+def _zip_tree(src: str, tmp: str, dest: str) -> None:
+    """Write `src` (as a single top-level folder) into the zip at `tmp`.
+
+    Symlinks are STORED as symlinks — the target string as the entry body,
+    S_IFLNK in the external attrs, the convention Info-ZIP/`unzip` use — never
+    followed. That is what keeps a link to something outside the folder from
+    silently inlining its bytes, and what makes a self-referential directory
+    link a single entry instead of an infinite descent (os.walk itself is
+    followlinks=False, so a directory link is never recursed into either way).
+    Empty directories get their own entry so the tree round-trips. Anything
+    that is neither a file, a directory nor a symlink (sockets, fifos, devices)
+    is skipped: there is no meaningful zip representation for it."""
+    base = os.path.basename(src.rstrip(os.sep)) or src
+    # The archive being written must never end up inside itself. Normally it is
+    # a sibling and this is moot; an explicit `dest` inside `src` is not.
+    skip = {os.path.abspath(tmp), os.path.abspath(dest)}
+
+    # Zip entry names are always "/"-separated, whatever the host separator is.
+    def arcname(*parts: str) -> str:
+        return "/".join(p for p in os.path.join(*parts).split(os.sep) if p != "")
+
+    def add_symlink(zf: zipfile.ZipFile, full: str, arc: str) -> None:
+        info = zipfile.ZipInfo(arc)
+        info.create_system = 3  # Unix, so the mode bits below are read back
+        info.external_attr = (stat_mod.S_IFLNK | 0o777) << 16
+        zf.writestr(info, os.readlink(full))
+
+    with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as zf:
+        for root, dirs, files in os.walk(src, followlinks=False):
+            rel = os.path.relpath(root, src)
+            arc_root = base if rel == os.curdir else arcname(base, rel)
+            # Pull symlinked directories out of the walk and store them as
+            # links (leaving them in `dirs` would only stat them again).
+            links = [d for d in dirs if os.path.islink(os.path.join(root, d))]
+            dirs[:] = [d for d in dirs if d not in links]
+            for name in links:
+                add_symlink(zf, os.path.join(root, name), arcname(arc_root, name))
+            if not dirs and not files and not links and root != src:
+                zf.writestr(zipfile.ZipInfo(arc_root + "/"), b"")  # empty dir
+            for name in files:
+                full = os.path.join(root, name)
+                if os.path.abspath(full) in skip:
+                    continue
+                arc = arcname(arc_root, name)
+                if os.path.islink(full):
+                    add_symlink(zf, full, arc)
+                elif os.path.isfile(full):
+                    zf.write(full, arc)
+
+
+def _fs_compress(body: dict, x_fused: str | None):
+    """Archive a FOLDER into a sibling file (Finder's Compress, plus the two
+    git formats the shell offers on a repository root).
+
+    Same guard order as _fs_mkdir — X-Fused, absolute path, mount branch, then
+    the filesystem-shape checks — and the same wire contract ("readonly",
+    "conflict"), so the client's friendlyFsError needs no special cases for it.
+    The archive is always built to a temp file in the destination's own
+    directory and renamed into place, so a failure part-way through leaves
+    nothing at the final path for the user (or the next listing) to find."""
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+
+    path = body.get("path")
+    if not path or not isinstance(path, str) or not os.path.isabs(path):
+        return _error("'path' must be an absolute filesystem path")
+    fmt = body.get("format")
+    if fmt not in _ARCHIVE_EXT:
+        return _error("'format' must be one of: " + ", ".join(sorted(_ARCHIVE_EXT)))
+
+    src = path.rstrip(os.sep) or path
+    dest = body.get("dest") or src + _ARCHIVE_EXT[fmt]
+    if not isinstance(dest, str) or not os.path.isabs(dest):
+        return _error("'dest' must be an absolute filesystem path")
+    parent = os.path.dirname(dest)
+
+    # Mount branch, BEFORE any kernel stat of either end. Compressing across a
+    # mount is not supported at all: reading the source means a recursive walk
+    # of the remote prefix (the known mount-wedger), and writing the archive
+    # means streaming the whole thing back up through the rclone VFS cache.
+    # Read-only mounts keep the shared "readonly" wire string; a writable one
+    # gets an explicit refusal rather than a walk that would hang the mount.
+    from fused_render.shell import mounts as shell_mounts
+    if shell_mounts.is_mount_backed(src) or shell_mounts.is_mount_backed(dest):
+        if shell_mounts.mount_read_only(dest) or shell_mounts.mount_read_only(src):
+            return JSONResponse({"error": "readonly"}, status_code=403)
+        return _error("compress unsupported on mounted folders")
+
+    if not os.path.exists(src):
+        return _error(f"no such file or directory: {src}", status=404)
+    if not os.path.isdir(src):
+        return _error(f"not a directory: {src}")
+    if not os.path.isdir(parent):
+        return _error(f"parent directory does not exist: {parent}")
+    if os.path.exists(dest):
+        return JSONResponse({"error": "conflict"}, status_code=409)
+    if not _writable(dest):
+        return JSONResponse({"error": "readonly"}, status_code=403)
+
+    if fmt != "zip":
+        # The git formats archive the whole repository, so they are only ever
+        # offered — and only ever accepted — at a work-tree ROOT; a
+        # subdirectory would silently hand back far more than was asked for.
+        if not _is_repo_root(src):
+            return _error(f"not a git repository: {src}")
+        # `bundle create --all` and `archive HEAD` both fail on a repo with no
+        # commits. Asking first turns git's two different fatals into one
+        # sentence the client can phrase for a human.
+        head = _run_git(["-C", src, "rev-parse", "--verify", "HEAD"], src)
+        if head is None or head.returncode != 0:
+            return _error(f"{src} has no commits yet")
+
+    fd, tmp = tempfile.mkstemp(dir=parent, prefix=".compress-", suffix=_ARCHIVE_EXT[fmt])
+    os.close(fd)  # both zipfile and git want to open the path themselves
+    try:
+        if fmt == "zip":
+            try:
+                _zip_tree(src, tmp, dest)
+            except OSError as e:
+                return _error(f"cannot compress {src}: {e}")
+        else:
+            args = (["-C", src, "bundle", "create", tmp, "--all"] if fmt == "git-bundle"
+                    else ["-C", src, "archive", "--format=tar.gz", "-o", tmp, "HEAD"])
+            proc = _run_git(args, src)
+            if proc is None:
+                return _error(f"cannot compress {src}: git is unavailable or timed out")
+            if proc.returncode != 0:
+                detail = proc.stderr.decode("utf-8", "replace").strip().splitlines()
+                return _error(f"cannot compress {src}: "
+                              + (detail[-1] if detail else f"git exited {proc.returncode}"))
+        try:
+            os.replace(tmp, dest)
+        except OSError as e:
+            return _error(f"cannot compress {src}: {e}")
+        tmp = None
+    finally:
+        if tmp is not None:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+    return _stat_payload(dest, False)
 
 
 def _trash_supported() -> bool:
@@ -737,6 +923,27 @@ def api_fs_mkdir(body: dict = Body(...), x_fused: str | None = Header(default=No
     result = _fs_mkdir(body, x_fused)
     _invalidate_stat_cache(body.get("path"))
     return result
+
+@router.post("/api/fs/compress")
+def api_fs_compress(body: dict = Body(...), x_fused: str | None = Header(default=None)):
+    result = _fs_compress(body, x_fused)
+    # Only the archive appears; the folder it was made from is untouched, so
+    # (like copy) its cached stat stays valid.
+    _invalidate_stat_cache(_compress_dest(body))
+    _commit_mutation(result, "Compress", _compress_dest(body))
+    return result
+
+def _compress_dest(body: dict) -> str | None:
+    # The path the archive lands at, mirroring _fs_compress's own default, so
+    # the cache invalidation and the app commit name the file that actually
+    # changed rather than the folder that didn't.
+    dest = body.get("dest")
+    if isinstance(dest, str) and dest:
+        return dest
+    path, fmt = body.get("path"), body.get("format")
+    if isinstance(path, str) and path and fmt in _ARCHIVE_EXT:
+        return path.rstrip(os.sep) + _ARCHIVE_EXT[fmt]
+    return None
 
 @router.post("/api/fs/delete")
 def api_fs_delete(body: dict = Body(...), x_fused: str | None = Header(default=None)):
