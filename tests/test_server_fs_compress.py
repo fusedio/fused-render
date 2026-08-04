@@ -232,25 +232,34 @@ def test_git_archive_of_a_repo_with_no_commits_400(tmp_path):
 # care about HEAD, while `archive HEAD` needs exactly HEAD.
 
 def _orphan_branch_repo(root):
-    repo = make_repo(root)                      # real history on refs/heads/main
+    """A repo whose HEAD is unborn while its history sits on another branch.
+    Returns the repo and the refname holding that history — READ OFF the repo,
+    never assumed: which branch `git init` creates is a property of the git
+    binary and its config (`main` on Apple git, `master` on a bare CI runner),
+    so a literal here is a test that passes on one machine and fails on another.
+    (It did: the fixture helper pins `init.defaultBranch` now, and this reads it
+    back anyway — the assertion is about the ref carrying the history, not about
+    what that ref happens to be called.)"""
+    repo = make_repo(root)
+    history_ref = git(repo, "symbolic-ref", "HEAD").strip()
     git(repo, "checkout", "-q", "--orphan", "fresh")
-    return repo
+    return repo, history_ref
 
 
 def test_git_bundle_works_on_an_orphan_branch_with_history_elsewhere(tmp_path):
-    repo = _orphan_branch_repo(tmp_path / "repo")
+    repo, history_ref = _orphan_branch_repo(tmp_path / "repo")
     out = _data(COMPRESS({"path": str(repo), "format": "git-bundle"}, x_fused="1"))
     dest = tmp_path / "repo.bundle"
     assert dest.is_file() and out["name"] == "repo.bundle"
     # The bundle really carries the branch that HEAD is not on.
-    heads = git(tmp_path, "bundle", "list-heads", str(dest)).stdout.decode()
-    assert "refs/heads/main" in heads
+    heads = git(tmp_path, "bundle", "list-heads", str(dest))
+    assert history_ref in heads, heads
 
 
 def test_git_archive_still_refuses_an_orphan_branch(tmp_path):
     # `archive HEAD` genuinely cannot resolve an unborn HEAD, and the message
     # must describe THAT rather than claiming the repo has no commits.
-    repo = _orphan_branch_repo(tmp_path / "repo")
+    repo, _history_ref = _orphan_branch_repo(tmp_path / "repo")
     resp = COMPRESS({"path": str(repo), "format": "git-archive"}, x_fused="1")
     assert _status(resp) == 400
     assert "no commit checked out" in _data(resp)["error"]

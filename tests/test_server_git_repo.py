@@ -8,11 +8,18 @@ drive the module-level helpers directly (like test_server_fs_mutate.py):
 """
 import json
 import os
-import subprocess
 
 import pytest
 from fastapi.responses import JSONResponse
 
+# The ONE git fixture helper in this tree (tests/_git_repo.py). This suite used
+# to carry its own three-line `git()`, which blanked ~/.gitconfig but did not pin
+# `init.defaultBranch` — so the branch a fixture repo lands on was whatever the
+# git binary defaults to (`main` on Apple git, `master` on the CI runners), and a
+# test elsewhere that named the branch passed locally and failed in CI. A second,
+# weaker helper is how that happened; there is now only the strong one, which
+# pins the default branch, gpgsign, hooksPath and gc alongside the identity.
+from _git_repo import git
 from fused_render.server.gitignore import _is_repo_root
 from fused_render.server.routers.fs_read import _git_repo_payload
 
@@ -21,24 +28,6 @@ def _data(resp) -> dict:
     if isinstance(resp, JSONResponse):
         return json.loads(bytes(resp.body))
     return resp
-
-
-# Isolated from the developer's ~/.gitconfig so a stray `init.defaultBranch`
-# or template dir can't change what these repos look like.
-_ENV = {
-    **os.environ,
-    "GIT_CONFIG_GLOBAL": os.devnull,
-    "GIT_CONFIG_SYSTEM": os.devnull,
-    "GIT_TERMINAL_PROMPT": "0",
-}
-
-
-def git(cwd, *args):
-    return subprocess.run(
-        ["git", "-c", "user.name=t", "-c", "user.email=t@example.com",
-         "-C", str(cwd), *args],
-        env=_ENV, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-    )
 
 
 def make_repo(root, *, commit=True):
