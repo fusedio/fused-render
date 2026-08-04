@@ -1,34 +1,40 @@
-// The Drive sign-in poll's stopping conditions. Everything here is about NOT
+// The browser sign-in poll's stopping conditions. Everything here is about NOT
 // waiting forever: a poll that only stops on a good answer leaves the user on a
 // spinner with no way to learn whether their account was connected.
+//
+// Provider-generic since D209: the label travels with the poll, so the same
+// rules cover Google Drive, Dropbox and Box.
 import { expect, test } from "bun:test";
 
 import {
-  GENERIC_FAIL_MSG,
-  LOST_CONTACT_MSG,
   OAUTH_GIVE_UP_MS,
   OAUTH_MAX_POLL_FAILURES,
-  TIMED_OUT_MSG,
+  OAUTH_PROVIDERS,
+  genericFailMsg,
+  lostContactMsg,
   oauthCancelOutcome,
   oauthTick,
-} from "./drive-oauth";
-import type { DriveOAuthStatus } from "./api";
+  timedOutMsg,
+} from "./oauth";
+import type { RemoteOAuthStatus } from "./api";
 
-const inFlight: DriveOAuthStatus = {
+const inFlight: RemoteOAuthStatus = {
   in_flight: true,
   name: "gdrive",
+  provider: "drive",
   backend: "drive",
   ok: null,
   error: null,
 };
-const succeeded: DriveOAuthStatus = { ...inFlight, in_flight: false, ok: true };
-const failed = (error: string): DriveOAuthStatus => ({
+const succeeded: RemoteOAuthStatus = { ...inFlight, in_flight: false, ok: true };
+const failed = (error: string): RemoteOAuthStatus => ({
   ...inFlight,
   in_flight: false,
   ok: false,
   error,
 });
-const fresh = { consecutiveFailures: 0, elapsedMs: 0 };
+const LABEL = "Google Drive";
+const fresh = { consecutiveFailures: 0, elapsedMs: 0, label: LABEL };
 
 // -- the normal path -----------------------------------------------------------
 
@@ -51,7 +57,7 @@ test("in_flight dropping without ok surfaces the server's own message", () => {
 test("a failure with no message still says something", () => {
   expect(oauthTick({ ...failed(""), error: null }, fresh)).toEqual({
     kind: "failed",
-    message: GENERIC_FAIL_MSG,
+    message: genericFailMsg(LABEL),
   });
 });
 
@@ -72,13 +78,13 @@ test("sustained fetch failures END the wait instead of spinning forever", () => 
   // rescue that — reading it needs the fetch that is failing.
   expect(
     oauthTick(null, { ...fresh, consecutiveFailures: OAUTH_MAX_POLL_FAILURES })
-  ).toEqual({ kind: "failed", message: LOST_CONTACT_MSG });
+  ).toEqual({ kind: "failed", message: lostContactMsg(LABEL) });
 });
 
 test("an in_flight that outlives the server's own timeout is given up on", () => {
   expect(oauthTick(inFlight, { ...fresh, elapsedMs: OAUTH_GIVE_UP_MS + 1 })).toEqual({
     kind: "failed",
-    message: TIMED_OUT_MSG,
+    message: timedOutMsg(LABEL),
   });
   // Still inside the window: keep waiting, the user may be mid-consent.
   expect(oauthTick(inFlight, { ...fresh, elapsedMs: OAUTH_GIVE_UP_MS - 1 })).toEqual({
@@ -116,4 +122,25 @@ test("cancelling after a failure surfaces that failure", () => {
 
 test("cancelling with an unreadable status stands down rather than inventing one", () => {
   expect(oauthCancelOutcome(false, null)).toEqual({ kind: "cancelled" });
+});
+
+// -- the provider registry -----------------------------------------------------
+
+test("only Google Drive asks the user for their own OAuth client", () => {
+  // The explicit product decision: rclone's shared client ID is being retired
+  // for Drive alone, and inventing that setup step for Dropbox/Box would be
+  // pure friction — rclone still says "Leave blank normally" for both.
+  expect(OAUTH_PROVIDERS.drive.needsClient).toBe(true);
+  expect(OAUTH_PROVIDERS.dropbox.needsClient).toBe(false);
+  expect(OAUTH_PROVIDERS.box.needsClient).toBe(false);
+});
+
+test("every message names the provider it is about", () => {
+  for (const p of Object.values(OAUTH_PROVIDERS)) {
+    for (const msg of [lostContactMsg(p.label), timedOutMsg(p.label), genericFailMsg(p.label)]) {
+      expect(msg).toContain(p.label);
+    }
+  }
+  // The specific regression: these all said "Google" whatever the backend.
+  expect(timedOutMsg(OAUTH_PROVIDERS.dropbox.label)).not.toContain("Google");
 });

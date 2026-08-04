@@ -1,12 +1,52 @@
-// The Drive sign-in poll's decisions (D205), as pure functions so they can be
-// tested without a component renderer.
+// The browser sign-in poll's decisions (D205, D209), as pure functions so they
+// can be tested without a component renderer.
 //
 // The flow is: POST to start, then poll the status endpoint until `in_flight`
 // drops. Everything subtle lives in when to STOP waiting — a poll that only
 // ever stops on a good answer will spin forever on a server that has stopped
 // giving one, leaving the user on a spinner with no way to tell whether their
-// Google account was connected.
-import type { DriveOAuthStatus } from "./api";
+// account was connected.
+//
+// Everything here is PROVIDER-GENERIC. It used to say "Google" in every string,
+// which was simply wrong once Dropbox and Box arrived; the label travels with
+// the poll instead.
+import type { RemoteOAuthStatus } from "./api";
+
+// The three backends reached by a browser consent. Mirrors the server's
+// _OAUTH_PROVIDERS (shell/mounts/endpoints.py) — the server validates against
+// its own copy, so a drift here is a 400, never a silently wrong remote.
+export type OAuthProviderKey = "drive" | "dropbox" | "box";
+
+export interface OAuthProvider {
+  key: OAuthProviderKey;
+  // What the user calls it. Used verbatim in every message below.
+  label: string;
+  // Whether the user must supply their own OAuth client before consenting.
+  // TRUE FOR DRIVE ONLY: Google is retiring rclone's built-in shared client ID
+  // (charging for requests made with it starts later in 2026), so a Drive
+  // remote without the user's own client is on a countdown. Dropbox and Box are
+  // unaffected — rclone still says "Leave blank normally" for both — and must
+  // never be shown client id/secret fields.
+  needsClient: boolean;
+  // Seed for the remote name, so the common case is one click.
+  defaultRemoteName: string;
+}
+
+export const OAUTH_PROVIDERS: Record<OAuthProviderKey, OAuthProvider> = {
+  drive: {
+    key: "drive",
+    label: "Google Drive",
+    needsClient: true,
+    defaultRemoteName: "gdrive",
+  },
+  dropbox: {
+    key: "dropbox",
+    label: "Dropbox",
+    needsClient: false,
+    defaultRemoteName: "dropbox",
+  },
+  box: { key: "box", label: "Box", needsClient: false, defaultRemoteName: "box" },
+};
 
 export type OAuthDecision =
   | { kind: "wait" } // keep waiting; nothing to show the user yet
@@ -23,35 +63,37 @@ export const OAUTH_MAX_POLL_FAILURES = 6;
 // about what is still running, and more waiting will not fix that.
 export const OAUTH_GIVE_UP_MS = 6 * 60 * 1000;
 
-export const LOST_CONTACT_MSG =
-  "Lost contact with the server while waiting for the Google sign-in. " +
-  "Reload the page and check whether the remote was created.";
-export const TIMED_OUT_MSG = "The Google sign-in timed out. Try again.";
-export const GENERIC_FAIL_MSG = "The Google sign-in did not complete. Try again.";
+export const lostContactMsg = (label: string) =>
+  `Lost contact with the server while waiting for the ${label} sign-in. ` +
+  `Reload the page and check whether the remote was created.`;
+export const timedOutMsg = (label: string) => `The ${label} sign-in timed out. Try again.`;
+export const genericFailMsg = (label: string) =>
+  `The ${label} sign-in did not complete. Try again.`;
 
 // One poll tick. `status` is null when the fetch itself failed;
 // `consecutiveFailures` counts that failure (so the first one arrives as 1).
+// `label` names the provider in any message this produces.
 export function oauthTick(
-  status: DriveOAuthStatus | null,
-  ctx: { consecutiveFailures: number; elapsedMs: number }
+  status: RemoteOAuthStatus | null,
+  ctx: { consecutiveFailures: number; elapsedMs: number; label: string }
 ): OAuthDecision {
   if (status === null) {
     // A blip is not a failed sign-in — the child is still out there and the
     // user may still be mid-consent. Only a sustained silence ends the wait.
     return ctx.consecutiveFailures >= OAUTH_MAX_POLL_FAILURES
-      ? { kind: "failed", message: LOST_CONTACT_MSG }
+      ? { kind: "failed", message: lostContactMsg(ctx.label) }
       : { kind: "wait" };
   }
   if (status.in_flight) {
     return ctx.elapsedMs > OAUTH_GIVE_UP_MS
-      ? { kind: "failed", message: TIMED_OUT_MSG }
+      ? { kind: "failed", message: timedOutMsg(ctx.label) }
       : { kind: "wait" };
   }
   // in_flight has dropped: the remote exists now, or the attempt failed —
   // including the child that produced no token at all (abandoned tab, denied
   // consent), whose message already tells the user to try again.
   if (status.ok) return { kind: "connected" };
-  return { kind: "failed", message: status.error ?? GENERIC_FAIL_MSG };
+  return { kind: "failed", message: status.error ?? genericFailMsg(ctx.label) };
 }
 
 // What a Cancel click actually means, once the server has answered.
@@ -63,7 +105,7 @@ export function oauthTick(
 // failed).
 export function oauthCancelOutcome(
   canceled: boolean,
-  status: DriveOAuthStatus | null
+  status: RemoteOAuthStatus | null
 ): OAuthDecision {
   if (canceled) return { kind: "cancelled" };
   if (status === null) return { kind: "cancelled" }; // can't tell; stand down quietly

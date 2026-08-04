@@ -19,15 +19,23 @@ import {
   startRemoteOAuth,
 } from "../lib/api";
 import type {
-  DriveOAuthStatus,
   Mount,
   MountsResult,
   MountUploads,
   RcloneRemote,
+  RemoteOAuthStatus,
   RemoteSuggestion,
 } from "../lib/api";
-import { oauthCancelOutcome, oauthTick } from "../lib/drive-oauth";
-import type { OAuthDecision } from "../lib/drive-oauth";
+import { OAUTH_PROVIDERS, oauthCancelOutcome, oauthTick } from "../lib/oauth";
+import type { OAuthDecision, OAuthProvider, OAuthProviderKey } from "../lib/oauth";
+import {
+  clearGoogleClient,
+  googleConsoleUrls,
+  loadGoogleClient,
+  parseGoogleClientJson,
+  saveGoogleClient,
+} from "../lib/google-client";
+import type { GoogleOAuthClient } from "../lib/google-client";
 import { useRefreshOnReturn } from "../lib/hooks";
 import { navigate } from "../lib/router";
 import { hasDrainingUploads, uploadNotice } from "../lib/uploads";
@@ -606,8 +614,8 @@ function AddRemote({
       <p className="deploy-muted" style={{ marginTop: 0 }}>
         For S3-compatible storage that needs a custom endpoint — Cloudflare R2, Backblaze B2,
         Wasabi, MinIO, and the like. Keys are written straight into rclone's own config;
-        fused-render never stores them. For plain AWS S3 use <b>Detected credentials</b> instead,
-        and for <b>Google Drive</b> use <b>Sign in to Google Drive</b> — it has no keys to paste.
+        fused-render never stores them. For plain AWS S3 pick <b>AWS S3</b> instead, and for
+        Google Drive, Dropbox or Box pick those — they have no keys to paste.
       </p>
       <form
         className="mount-form-row"
@@ -662,21 +670,260 @@ function AddRemote({
 // when there is something to watch drain.
 const UPLOAD_POLL_MS = 8000;
 
-// Poll cadence for the Drive sign-in. Faster than the account flow's 2s: the
+// Poll cadence for a browser sign-in. Faster than the account flow's 2s: the
 // user is sitting on a modal watching for the browser round-trip to land.
 const OAUTH_POLL_MS = 1500;
 
-// Google Drive sign-in (D205). The server spawns `rclone authorize "drive"`,
-// which runs its own loopback callback server and opens the SYSTEM browser
-// itself — so unlike the Fused login (lib/account.ts) there is no URL for us to
-// window.open, and the client's whole job is start → poll → report. Completion
-// is polled because there is no push channel; `in_flight` dropping without
-// `ok` is the failure case, and it covers the abandoned browser tab.
-function DriveSignIn({
+// The Google Cloud console setup, as a stepper that does the navigating.
+//
+// This step exists only because Google is retiring rclone's built-in shared
+// client ID (charging for requests made with it begins later in 2026, after 90
+// days' notice), which makes bring-your-own-client MANDATORY for Drive. It is
+// by far the most error-prone thing we ask of a user, so every step is a button
+// that opens the exact console page rather than a sentence describing where to
+// click, and the DOWNLOADED FILE is the primary input — typing a client secret
+// off a screen is the step people get wrong.
+function GoogleClientSetup({
+  client,
+  onChange,
+  saved,
+  onForget,
+}: {
+  client: GoogleOAuthClient;
+  onChange: (c: GoogleOAuthClient) => void;
+  // A client remembered from a previous sign-in: entered once per MACHINE, not
+  // once per remote. Collapsed to a one-line summary so the common case (a
+  // second Drive account) is straight to consent.
+  saved: boolean;
+  onForget: () => void;
+}) {
+  const [project, setProject] = useState("");
+  const [expanded, setExpanded] = useState(!saved);
+  const [fileError, setFileError] = useState<string | null>(null);
+  const urls = googleConsoleUrls(project);
+
+  const open = (url: string) => window.open(url, "_blank", "noopener,noreferrer");
+
+  // A dropped/picked client_secret_*.json. Validated rather than trusted: the
+  // usual wrong file (a service-account key) is valid JSON from the same
+  // console and even carries a client_id, so silently half-filling the form
+  // would fail much later at Google with an opaque error.
+  const takeFile = async (file: File | null | undefined) => {
+    if (!file) return;
+    setFileError(null);
+    let text: string;
+    try {
+      text = await file.text();
+    } catch {
+      setFileError(`Could not read ${file.name}.`);
+      return;
+    }
+    const parsed = parseGoogleClientJson(text);
+    if (!parsed) {
+      setFileError(
+        `${file.name} isn’t an OAuth client JSON — it has no client_id/client_secret pair. ` +
+          `Download the file from the client you created under “OAuth clients”.`
+      );
+      return;
+    }
+    onChange(parsed);
+  };
+
+  if (saved && !expanded) {
+    return (
+      <div className="mount-callout">
+        <div className="mount-callout-title">Using your Google API client</div>
+        <div className="mount-callout-body">
+          <code>{client.clientId}</code> — remembered on this machine, so you only set
+          this up once.
+        </div>
+        <button type="button" className="mount-link" onClick={() => setExpanded(true)}>
+          Use a different client
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="mount-setup">
+      <p className="deploy-muted" style={{ marginTop: 0 }}>
+        Google Drive needs <b>your own</b> Google API client. rclone’s shared one is being
+        retired, so there is no way around this — but it is a one-time setup, remembered
+        on this machine afterwards.
+      </p>
+      <ol className="mount-steps">
+        <li>
+          <div className="mount-step-body">
+            <b>Create or pick a Google Cloud project.</b> Any project works; a free one is
+            fine.
+            <div className="mount-step-actions">
+              <button
+                type="button"
+                className="btn btn-secondary"
+                onClick={() => open(urls.createProject)}
+              >
+                Open project setup ↗
+              </button>
+            </div>
+            <Field label="Project ID (optional — links below jump straight to it)">
+              <TextInput
+                placeholder="e.g. my-drive-mount"
+                value={project}
+                onChange={(e) => setProject(e.target.value)}
+              />
+            </Field>
+          </div>
+        </li>
+        <li>
+          <div className="mount-step-body">
+            <b>Enable the Google Drive API</b> for that project, then press Enable.
+            <div className="mount-step-actions">
+              <button
+                type="button"
+                className="btn btn-secondary"
+                onClick={() => open(urls.enableApi)}
+              >
+                Open Drive API ↗
+              </button>
+            </div>
+          </div>
+        </li>
+        <li>
+          <div className="mount-step-body">
+            <b>Configure the consent screen</b> — pick <b>External</b>, fill in the
+            required name/email, and set publishing status to <b>In production</b>.
+            <div className="mount-step-actions">
+              <button
+                type="button"
+                className="btn btn-secondary"
+                onClick={() => open(urls.consentScreen)}
+              >
+                Open consent screen ↗
+              </button>
+            </div>
+            {/* The two things people get wrong here, and both are costly.
+                "Testing" LOOKS like the cautious choice and silently breaks the
+                mount a week later — Google drops refresh tokens issued by a
+                Testing-mode client after 7 days. And the scary "unverified app"
+                warning stops people mid-flow even though verification is simply
+                not required at this scale. */}
+            <p className="mount-paste-hint">
+              Do <b>not</b> leave it in “Testing” — Google expires those sign-ins after 7
+              days and the mount stops working. Google’s “unverified app” warning is
+              expected: under the Personal Use exemption, verification isn’t required
+              below 100 users, so click through <i>Advanced → Go to … (unsafe)</i> when you
+              sign in.
+            </p>
+          </div>
+        </li>
+        <li>
+          <div className="mount-step-body">
+            <b>Create an OAuth client</b> of type <b>Desktop app</b>, then download its
+            JSON.
+            <div className="mount-step-actions">
+              <button
+                type="button"
+                className="btn btn-secondary"
+                onClick={() => open(urls.createClient)}
+              >
+                Open client setup ↗
+              </button>
+            </div>
+            {/* Desktop app is not a preference: rclone authorize serves a
+                loopback redirect, which is exactly what a Desktop client
+                permits and a Web client does not without a registered URI. */}
+            <p className="mount-paste-hint">
+              It must be <b>Desktop app</b> — the sign-in comes back to a local address,
+              which only that client type allows.
+            </p>
+          </div>
+        </li>
+      </ol>
+
+      <div
+        className="mount-drop"
+        onDragOver={(e) => e.preventDefault()}
+        onDrop={(e) => {
+          e.preventDefault();
+          void takeFile(e.dataTransfer.files?.[0]);
+        }}
+      >
+        <b>Drop the downloaded <code>client_secret_….json</code> here</b>
+        <span className="deploy-muted">or</span>
+        <input
+          type="file"
+          accept=".json,application/json"
+          onChange={(e) => void takeFile(e.target.files?.[0])}
+        />
+      </div>
+      {fileError && <ErrorBanner>{fileError}</ErrorBanner>}
+
+      {/* The fallback, deliberately below the file path: it works, but it is
+          the step people mistype. */}
+      <details className="mount-manual">
+        <summary>Or paste the client ID and secret</summary>
+        <div className="mount-form-row">
+          <Field label="Client ID" required>
+            <TextInput
+              style={{ minWidth: 280 }}
+              placeholder="….apps.googleusercontent.com"
+              value={client.clientId}
+              onChange={(e) => onChange({ ...client, clientId: e.target.value.trim() })}
+            />
+          </Field>
+          <Field label="Client secret" required>
+            <TextInput
+              type="password"
+              style={{ minWidth: 200 }}
+              value={client.clientSecret}
+              onChange={(e) =>
+                onChange({ ...client, clientSecret: e.target.value.trim() })
+              }
+            />
+          </Field>
+        </div>
+      </details>
+
+      {client.clientId && client.clientSecret && (
+        <p className="mount-paste-hint">
+          Client <code>{client.clientId}</code> ready.{" "}
+          {saved && (
+            <button
+              type="button"
+              className="mount-link"
+              onClick={() => {
+                onForget();
+                setExpanded(true);
+              }}
+            >
+              Forget the saved client
+            </button>
+          )}
+        </p>
+      )}
+    </div>
+  );
+}
+
+// A browser sign-in for any OAuth provider (D205, D209). The server spawns
+// `rclone authorize "<backend>"`, which runs its own loopback callback server
+// and opens the SYSTEM browser itself — so unlike the Fused login
+// (lib/account.ts) there is no URL for us to window.open, and the client's whole
+// job is start → poll → report. Completion is polled because there is no push
+// channel; `in_flight` dropping without `ok` is the failure case, and it covers
+// the abandoned browser tab.
+//
+// ONE component for all three providers rather than three copies: the poll, its
+// bounds, and the cancel reconciliation are the subtle parts, and three copies
+// of them would be three places for the next fix to miss. What varies is the
+// label, the default remote name, and whether a client id/secret is collected.
+function OAuthSignIn({
+  provider,
   remotes,
   onConnected,
   onBusyChange,
 }: {
+  provider: OAuthProvider;
   remotes: RcloneRemote[];
   onConnected: () => void;
   onBusyChange?: (busy: boolean) => void;
@@ -687,9 +934,20 @@ function DriveSignIn({
   // this list is a snapshot from when the dialog opened.
   const taken = new Set(remotes.map((r) => r.name.replace(/:$/, "")));
   const firstFree = () => {
-    if (!taken.has("gdrive")) return "gdrive";
-    for (let i = 2; ; i++) if (!taken.has(`gdrive-${i}`)) return `gdrive-${i}`;
+    const base = provider.defaultRemoteName;
+    if (!taken.has(base)) return base;
+    for (let i = 2; ; i++) if (!taken.has(`${base}-${i}`)) return `${base}-${i}`;
   };
+
+  // Pre-filled from the per-machine store, which is what makes the Google Cloud
+  // trip a one-time cost rather than a per-remote one. Non-Drive providers
+  // never touch this — they have no client to supply.
+  const [savedClient, setSavedClient] = useState<GoogleOAuthClient | null>(() =>
+    provider.needsClient ? loadGoogleClient() : null
+  );
+  const [client, setClient] = useState<GoogleOAuthClient>(
+    () => savedClient ?? { clientId: "", clientSecret: "" }
+  );
 
   const [name, setName] = useState(firstFree);
   const [replace, setReplace] = useState(false);
@@ -717,7 +975,7 @@ function DriveSignIn({
     setError(err);
   };
 
-  // Carry out a decision from lib/drive-oauth.ts (which owns the "when do we
+  // Carry out a decision from lib/oauth.ts (which owns the "when do we
   // stop waiting" rules and is tested there).
   const apply = (decision: OAuthDecision) => {
     switch (decision.kind) {
@@ -737,6 +995,11 @@ function DriveSignIn({
 
   const trimmed = name.trim();
   const collides = taken.has(trimmed);
+  // A missing client is a hard block, not a warning: the server refuses a Drive
+  // sign-in without one (rclone's shared client ID is being retired), so
+  // enabling the button here would only buy the user a 400.
+  const clientReady =
+    !provider.needsClient || (!!client.clientId && !!client.clientSecret);
   const nameError = !trimmed
     ? "Give the remote a name."
     : /[:/]/.test(trimmed)
@@ -752,14 +1015,25 @@ function DriveSignIn({
     failures.current = 0;
     startedAt.current = Date.now();
     try {
-      await startRemoteOAuth(trimmed, replace);
+      await startRemoteOAuth(trimmed, {
+        provider: provider.key,
+        replace,
+        clientId: client.clientId,
+        clientSecret: client.clientSecret,
+      });
     } catch (e) {
       finish((e as Error).message);
       return;
     }
+    // Remembered only once the SERVER accepted it — a client it rejected out of
+    // hand is not one worth pre-filling next time.
+    if (provider.needsClient && client.clientId && client.clientSecret) {
+      saveGoogleClient(client);
+      setSavedClient(client);
+    }
     stopPolling();
     timer.current = window.setInterval(async () => {
-      let status: DriveOAuthStatus | null = null;
+      let status: RemoteOAuthStatus | null = null;
       try {
         status = await getRemoteOAuthStatus();
         failures.current = 0;
@@ -771,6 +1045,7 @@ function DriveSignIn({
         oauthTick(status, {
           consecutiveFailures: failures.current,
           elapsedMs: Date.now() - startedAt.current,
+          label: provider.label,
         })
       );
     }, OAUTH_POLL_MS);
@@ -794,7 +1069,7 @@ function DriveSignIn({
     // sign-in COMPLETED in the gap before the click landed, so the result is
     // reconciled rather than discarded (lib/account.ts does the same, for the
     // same reason).
-    let status: DriveOAuthStatus | null = null;
+    let status: RemoteOAuthStatus | null = null;
     if (!canceled) {
       try {
         status = await getRemoteOAuthStatus();
@@ -808,19 +1083,34 @@ function DriveSignIn({
   return (
     <div className="prefs-section">
       <p className="deploy-muted" style={{ marginTop: 0 }}>
-        Opens Google in your browser to approve access. The sign-in is handled by rclone and the
-        token is written straight into rclone's own config; fused-render never stores it. The
-        connection is <b>read-write</b>, so edits you save under the mount are uploaded back.
+        Opens {provider.label} in your browser to approve access. The sign-in is handled by
+        rclone and the token is written straight into rclone's own config; fused-render never
+        stores it. The connection is <b>read-write</b>, so edits you save under the mount are
+        uploaded back.
       </p>
-      <p className="deploy-muted" style={{ fontSize: "0.8em" }}>
-        Google Docs, Sheets and Slides are skipped — they aren't real files and can't be opened or
-        saved through a mount.
-      </p>
+      {provider.key === "drive" && (
+        <p className="deploy-muted" style={{ fontSize: "0.8em" }}>
+          Google Docs, Sheets and Slides are skipped — they aren't real files and can't be
+          opened or saved through a mount.
+        </p>
+      )}
+      {provider.needsClient && !connecting && (
+        <GoogleClientSetup
+          client={client}
+          onChange={setClient}
+          saved={!!savedClient && savedClient.clientId === client.clientId}
+          onForget={() => {
+            clearGoogleClient();
+            setSavedClient(null);
+            setClient({ clientId: "", clientSecret: "" });
+          }}
+        />
+      )}
       <form
         className="mount-form-row"
         onSubmit={(e) => {
           e.preventDefault();
-          if (!connecting && !nameError) void begin();
+          if (!connecting && !nameError && clientReady) void begin();
         }}
       >
         <Field label="Remote name" required>
@@ -838,12 +1128,21 @@ function DriveSignIn({
               Cancel
             </button>
           ) : (
-            <button type="submit" className="btn btn-primary" disabled={!!nameError}>
-              Sign in to Google Drive
+            <button
+              type="submit"
+              className="btn btn-primary"
+              disabled={!!nameError || !clientReady}
+            >
+              Sign in to {provider.label}
             </button>
           )}
         </Field>
       </form>
+      {!connecting && !clientReady && (
+        <p className="mount-paste-hint">
+          Add your Google API client above to enable the sign-in.
+        </p>
+      )}
       {connecting && (
         <p className="deploy-muted">
           Waiting for you to approve access in your browser… If no tab opened, check for a blocked
@@ -873,17 +1172,188 @@ function DriveSignIn({
   );
 }
 
+// Create a remote from a credential source the server already detected, or from
+// the built-in anonymous ones. Both are the SAME existing endpoint
+// (createDetectedRemote, keyed by the server's own suggestion id — never by
+// client-supplied rclone params); `kind` only decides which subset is offered
+// and how it is explained.
+function DetectedRemoteSetup({
+  kind,
+  suggested,
+  onChanged,
+  onBusyChange,
+}: {
+  kind: "detected" | "public";
+  suggested: RemoteSuggestion[];
+  onChanged: () => void;
+  onBusyChange?: (busy: boolean) => void;
+}) {
+  const [busy, setBusy] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const options = suggested.filter((s) => s.kind === kind);
+
+  const create = async (id: string) => {
+    setBusy(id);
+    onBusyChange?.(true);
+    setError(null);
+    try {
+      await createDetectedRemote(id);
+      onChanged();
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(null);
+      onBusyChange?.(false);
+    }
+  };
+
+  return (
+    <div className="prefs-section">
+      <p className="deploy-muted" style={{ marginTop: 0 }}>
+        {kind === "detected" ? (
+          <>
+            Credentials already on this machine — your <code>~/.aws</code> profiles,
+            gcloud application-default credentials, and the usual environment variables.
+            Nothing is copied: the remote is created with <code>env_auth</code>, so rclone
+            reads them where they already live.
+          </>
+        ) : (
+          <>
+            Anonymous access to open data — AWS Open Data, public GCS datasets, and
+            anything else readable without credentials. Read-only by nature, and it works
+            even when you have no cloud credentials at all.
+          </>
+        )}
+      </p>
+      {options.length === 0 ? (
+        <div className="mount-empty">
+          {kind === "detected" ? (
+            <>
+              No credentials detected. Run <code>aws sso login</code> or{" "}
+              <code>gcloud auth application-default login</code>, then reopen this — or use{" "}
+              <b>S3-compatible storage</b> to paste keys directly.
+            </>
+          ) : (
+            <>Both public remotes already exist — pick them under Remote in “Add mount”.</>
+          )}
+        </div>
+      ) : (
+        <div className="mount-list">
+          {options.map((s) => (
+            <div className="mount-card" key={s.id}>
+              <div className="mount-card-main">
+                <div className="mount-card-info">
+                  <div>{s.label}</div>
+                  <div className="mount-remote">
+                    <code>{s.remote_name}:</code>
+                  </div>
+                </div>
+                <div className="mount-card-actions">
+                  <button
+                    type="button"
+                    className="btn btn-primary"
+                    disabled={busy !== null}
+                    onClick={() => void create(s.id)}
+                  >
+                    {busy === s.id ? "Creating…" : "Create remote"}
+                  </button>
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+      <p className="deploy-muted" style={{ fontSize: "0.8em", margin: 0 }}>
+        Creating a remote doesn’t mount anything yet — pick it under <b>Remote</b> in “Add
+        mount” and choose the bucket/prefix to surface.
+      </p>
+      {error && <ErrorBanner>{error}</ErrorBanner>}
+    </div>
+  );
+}
+
+// -- the "Add storage" surface -------------------------------------------------
+//
+// One picker instead of the three disconnected entry points this replaced (the
+// Add-mount form, a bare "Sign in to Google Drive" link, and an "Add a custom S3
+// remote" link). The complaint that drove it is that a user could not tell what
+// was POSSIBLE — the links read as footnotes, so Dropbox/Box would have been
+// invisible however well they worked. Every provider is a card, and every card
+// states its setup cost up front, because "one click" and "go create a Google
+// Cloud project" are very different asks and the user should choose knowing which
+// one they are agreeing to.
+type SetupKey = OAuthProviderKey | "detected" | "s3compat" | "public";
+
+const STORAGE_OPTIONS: { key: SetupKey; name: string; cost: string; title: string }[] = [
+  {
+    key: "drive",
+    name: "Google Drive",
+    cost: "Needs a Google API client (one-time)",
+    title: "Connect Google Drive",
+  },
+  {
+    key: "dropbox",
+    name: "Dropbox",
+    cost: "One-click browser sign-in",
+    title: "Connect Dropbox",
+  },
+  { key: "box", name: "Box", cost: "One-click browser sign-in", title: "Connect Box" },
+  {
+    key: "detected",
+    name: "AWS S3",
+    cost: "Uses credentials already on this machine",
+    title: "Use detected credentials",
+  },
+  {
+    key: "s3compat",
+    name: "S3-compatible",
+    cost: "Endpoint + access keys — R2, MinIO, Wasabi, B2",
+    title: "Add an S3-compatible remote",
+  },
+  {
+    key: "public",
+    name: "Public buckets",
+    cost: "No credentials needed",
+    title: "Browse public buckets",
+  },
+];
+
+function AddStorage({ onPick }: { onPick: (key: SetupKey) => void }) {
+  return (
+    <section className="prefs-section">
+      <h2>Add storage</h2>
+      <p className="deploy-muted">
+        Connect a storage provider, then mount a folder from it above. Credentials and
+        tokens go straight into rclone's own config — fused-render never stores them.
+      </p>
+      <div className="mount-picker">
+        {STORAGE_OPTIONS.map((o) => (
+          <button
+            type="button"
+            key={o.key}
+            className="mount-provider"
+            onClick={() => onPick(o.key)}
+          >
+            <span className="mount-provider-name">{o.name}</span>
+            <span className="mount-provider-cost">{o.cost}</span>
+          </button>
+        ))}
+      </div>
+    </section>
+  );
+}
+
 export default function Mounts() {
   const [state, setState] = useState<MountsResult | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [showAddRemote, setShowAddRemote] = useState(false);
-  // Same modal-gating pattern as remoteBusy: while the browser round-trip is in
-  // flight, Esc/backdrop/✕ must not close the modal out from under a live child.
-  const [showDrive, setShowDrive] = useState(false);
-  const [driveBusy, setDriveBusy] = useState(false);
-  // Lifted from AddRemote so the modal can gate its Esc/backdrop/✕ close while a
-  // create is in flight (previously the backdrop close was ungated).
-  const [remoteBusy, setRemoteBusy] = useState(false);
+  // Which provider's setup flow is open, or null. One piece of state for all six
+  // — the picker and the modal are two views of the same choice.
+  const [setup, setSetup] = useState<SetupKey | null>(null);
+  // Lifted out of the flows so the modal can gate its Esc/backdrop/✕ close while
+  // something is in flight: closing out from under a live authorize child leaves
+  // it holding rclone's callback port, and the next attempt 409s on a sign-in
+  // the user believes they dismissed.
+  const [setupBusy, setSetupBusy] = useState(false);
   // Global "Restart all mounts": a confirm modal (it briefly disconnects ALL
   // mounts) gating the multi-second daemon restart + re-mount.
   const [confirmRestart, setConfirmRestart] = useState(false);
@@ -1047,41 +1517,44 @@ export default function Mounts() {
             suggested={state.rclone.suggested ?? []}
             onChanged={reload}
           />
-          <button type="button" className="mount-link" onClick={() => setShowDrive(true)}>
-            Sign in to Google Drive
-          </button>
-          <button type="button" className="mount-link" onClick={() => setShowAddRemote(true)}>
-            Add a custom S3 remote (R2, MinIO, …)
-          </button>
-          {showDrive && (
+          <AddStorage onPick={setSetup} />
+          {setup && (
             <Modal
-              title="Sign in to Google Drive"
-              busy={driveBusy}
-              onClose={() => setShowDrive(false)}
+              title={STORAGE_OPTIONS.find((o) => o.key === setup)?.title ?? "Add storage"}
+              busy={setupBusy}
+              onClose={() => setSetup(null)}
             >
-              <DriveSignIn
-                remotes={state.rclone.remotes}
-                onBusyChange={setDriveBusy}
-                onConnected={() => {
-                  reload(); // the new remote must appear in the Add mount picker
-                  setShowDrive(false);
-                }}
-              />
-            </Modal>
-          )}
-          {showAddRemote && (
-            <Modal
-              title="Add a custom S3 remote"
-              busy={remoteBusy}
-              onClose={() => setShowAddRemote(false)}
-            >
-              <AddRemote
-                onBusyChange={setRemoteBusy}
-                onChanged={() => {
-                  reload();
-                  setShowAddRemote(false);
-                }}
-              />
+              {/* Every flow closes the same way: reload so the new remote
+                  appears in Add mount's Remote picker, then dismiss. */}
+              {setup === "s3compat" ? (
+                <AddRemote
+                  onBusyChange={setSetupBusy}
+                  onChanged={() => {
+                    reload();
+                    setSetup(null);
+                  }}
+                />
+              ) : setup === "detected" || setup === "public" ? (
+                <DetectedRemoteSetup
+                  kind={setup}
+                  suggested={state.rclone.suggested ?? []}
+                  onBusyChange={setSetupBusy}
+                  onChanged={() => {
+                    reload();
+                    setSetup(null);
+                  }}
+                />
+              ) : (
+                <OAuthSignIn
+                  provider={OAUTH_PROVIDERS[setup]}
+                  remotes={state.rclone.remotes}
+                  onBusyChange={setSetupBusy}
+                  onConnected={() => {
+                    reload();
+                    setSetup(null);
+                  }}
+                />
+              )}
             </Modal>
           )}
         </>

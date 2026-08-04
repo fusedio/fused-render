@@ -4724,6 +4724,107 @@ select.field-control:has(option[value=""]:checked) {
   color: var(--fg-muted);
 }
 
+/* "Add storage" — the provider picker. A responsive grid rather than fixed
+   columns so it reflows in the narrow sidebar pane without a second breakpoint;
+   each card is a button whose whole surface is the hit target. */
+.mount-picker {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 10px;
+}
+
+.mount-provider {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  align-items: flex-start;
+  text-align: left;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-alt);
+  cursor: pointer;
+  font: inherit;
+}
+
+.mount-provider:hover {
+  border-color: var(--accent, var(--fg-muted));
+}
+
+.mount-provider:focus-visible {
+  outline: 2px solid var(--accent, var(--fg));
+  outline-offset: 2px;
+}
+
+.mount-provider-name {
+  font-weight: 600;
+}
+
+/* The setup COST, stated up front — "one click" and "go create a Google Cloud
+   project" are very different asks and the user picks knowing which. */
+.mount-provider-cost {
+  font-size: 0.8em;
+  color: var(--fg-muted);
+  line-height: 1.4;
+}
+
+/* Guided setup inside a modal: the Google Cloud console stepper. */
+.mount-setup {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.mount-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  margin: 0;
+  padding-left: 20px;
+}
+
+.mount-step-body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 0.9em;
+  line-height: 1.5;
+}
+
+.mount-step-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+/* The primary input for the client: dropping the downloaded JSON, which skips
+   the step people mistype. Dashed like .mount-empty so it reads as a target. */
+.mount-drop {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 14px 16px;
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+  text-align: center;
+  font-size: 0.9em;
+}
+
+.mount-drop code {
+  white-space: nowrap;
+}
+
+.mount-manual > summary {
+  cursor: pointer;
+  font-size: 0.85em;
+  color: var(--fg-muted);
+}
+
+.mount-manual > .mount-form-row {
+  margin-top: 8px;
+}
+
 /* "Add a custom S3 remote …" — a quiet inline link-button. */
 .mount-link {
   align-self: flex-start;
