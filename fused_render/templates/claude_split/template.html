@@ -90,9 +90,9 @@
     flex-shrink: 0;
     height: 28px;
     display: flex;
-    align-items: center;
-    gap: 6px;
-    padding: 0 8px;
+    align-items: stretch;
+    min-width: 0;
+    overflow: hidden;
     background: var(--panel);
     border-bottom: 1px solid var(--border);
   }
@@ -117,29 +117,47 @@
   }
 
   /* ── annotation layer over the left iframe ─────── */
-  /* In the strip, so no shadow and no absolute placement — it is a toolbar
-     control now, not something hovering over the app. */
+  /* The strip IS the control: one full-width row, no chip. A pill inside a strip
+     read as a floating call-to-action, and its active label — a whole sentence —
+     had nowhere to go once the pane was dragged narrow. A row that spans the pane
+     has no geometry left to burst; the worst case is an ellipsis.
+     Two states, ONE height. The row's height sets the iframe's height (`#leftview`
+     is `flex: 1`), so a banner that grew when annotate mode turned on would reflow
+     the app — moving the element the user is aiming at, and moving already-placed
+     pins away from what they annotate, because pins and `annStageRect` are in frame
+     viewport coordinates. So the 28px and the bottom border are the same in both
+     states and nothing about toggling touches the iframe's box. */
   #annbtn {
+    flex: 1;
+    min-width: 0;
     display: flex;
     align-items: center;
-    gap: 6px;
+    gap: 8px;
+    overflow: hidden;
+    white-space: nowrap;
     font: inherit;
     font-size: 11.5px;
-    line-height: 1;
-    padding: 3px 10px;
-    border: 1px solid var(--border);
-    border-radius: 999px;
-    background: var(--bg);
+    text-align: left;
+    padding: 0 8px;
+    border: 0;
+    background: transparent;
     color: var(--dim);
     cursor: pointer;
-    transition: color .12s, border-color .12s, background .12s;
+    transition: color .12s, background .12s, filter .12s;
   }
-  #annbtn:hover { color: var(--fg); border-color: var(--border-strong); }
+  /* The same hover-vs-active rule as `.pill` in the composer, stated the same way:
+     the neutral hover excludes the active state, and the active state hovers within
+     its accent. See the comment on `.pill:hover`. */
+  #annbtn:hover:not(.on) { background: var(--surface-2); color: var(--fg); }
   #annbtn.on {
     background: var(--accent);
-    border-color: var(--accent);
     color: var(--on-accent);
   }
+  #annbtn.on:hover { filter: brightness(1.1); }
+  /* The instruction is expendable, the way out is not: the label ellipsizes as the
+     pane narrows while the stop affordance never shrinks. */
+  #annbtn .lbl { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  #annbtn .stop { margin-left: auto; flex-shrink: 0; opacity: .8; }
   #annpins { position: absolute; inset: 0; z-index: 2; pointer-events: none; overflow: hidden; }
   .annpin {
     position: absolute;
@@ -719,12 +737,16 @@
 </head>
 <body>
   <div id="left">
-    <!-- A slim strip for the pane's own controls. It SHRINKS the iframe rather
-         than covering it: the app is full-bleed with no chrome, so a floating
-         button made the corner underneath it unannotatable. Outside the iframe, so
-         it can never appear in a capture. -->
+    <!-- A slim banner row for the pane's own state and controls. It SHRINKS the
+         iframe rather than covering it: the app is full-bleed with no chrome, so a
+         floating button made the corner underneath it unannotatable. Outside the
+         iframe, so it can never appear in a capture.
+         The button spans the row, so the banner and its control are one thing: a
+         real <button>, so Enter/Space work and `aria-pressed` announces the state,
+         and clicking anywhere along the active banner stops annotating. -->
     <div id="lefttools">
-      <button id="annbtn" type="button" aria-pressed="false" title="Annotate the app, then send the notes to Claude">✎ Annotate</button>
+      <button id="annbtn" type="button" aria-pressed="false" title="Annotate the app, then send the notes to Claude"><span
+        class="lbl" aria-live="polite">✎ Annotate</span><span class="stop" hidden>Esc or click to stop</span></button>
     </div>
     <!-- The iframe's own box, and the offset parent for every overlay that is
          positioned in FRAME viewport coordinates (pins, highlight, composer). -->
@@ -1544,14 +1566,21 @@ annTa.addEventListener("keydown", (e) => {
   }
 });
 
+const annLbl = annBtn.querySelector(".lbl");
+const annStop = annBtn.querySelector(".stop");
+
 annBtn.addEventListener("click", () => {
   annOn = !annOn;
   annBtn.classList.toggle("on", annOn);
   annBtn.setAttribute("aria-pressed", String(annOn));
-  // Names BOTH ways out while active: the strip keeps the button visible and
-  // pressed-styled, and Escape already exits, but only the label can say so.
-  annBtn.textContent = annOn ? "✎ Annotating — click an element · Esc or click here to stop"
-                             : "✎ Annotate";
+  // Names BOTH ways out while active, in the one place that cannot be ellipsized
+  // away: the stop hint is pinned to the right of the banner and never shrinks,
+  // while the instruction to its left is what gives up width first.
+  annLbl.textContent = annOn ? "✎ Annotating — click an element" : "✎ Annotate";
+  annStop.hidden = !annOn;
+  // The tooltip has no width limit, so the full sentence lives there.
+  annBtn.title = annOn ? "Annotating — click an element to add a note · Esc or click this banner to stop"
+                       : "Annotate the app, then send the notes to Claude";
   if (!annOn) { annHl.style.display = "none"; annCloseComposer(); }
 });
 

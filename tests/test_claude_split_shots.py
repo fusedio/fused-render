@@ -1979,14 +1979,101 @@ def test_the_overlays_share_the_frames_box_so_pin_coordinates_still_line_up(html
 
 def test_turning_annotate_mode_off_stays_findable(html):
     """A control that moves must not lose its exit. The button stays visible and
-    pressed-styled in the strip, and its active label now names both ways out."""
+    pressed-styled in the strip, and while active something names both ways out —
+    the tooltip, because the visible label has to survive a narrow pane and a
+    52-character sentence does not (see the degradation test below)."""
     click = _between(html, "annBtn.addEventListener(\"click\"", "\n});")
     assert 'aria-pressed' in click
     assert 'classList.toggle("on", annOn)' in click
-    label = click[click.index("annBtn.textContent"):]
-    assert "Esc" in label or "esc" in label, \
-        "the active label should say how to get out: " + label
+    exit_ = click[click.index("annBtn.title ="):]
+    assert "Esc" in exit_ or "esc" in exit_, \
+        "something should say how to get out while active: " + exit_
     assert "#annbtn.on {" in html, "and the pressed state is still visibly distinct"
+
+
+def test_the_annotate_control_is_the_whole_row_not_a_chip_inside_it(html):
+    """A pill inside the strip read as a call-to-action floating in a toolbar, and
+    its active label — a whole sentence — had nowhere to go once the pane was
+    dragged narrow: no `white-space` in a fixed 28px row means a wrapped two-line
+    control inside a one-line box, so clipped or spilling.
+
+    A row-spanning banner deletes that problem rather than tuning it: there is no
+    pill geometry left to burst, and the worst case is an ellipsis. It is still a
+    real `<button>`, so Enter/Space and `aria-pressed` come for free and clicking
+    anywhere along the banner stops."""
+    btn = _between(html, "#annbtn {", "}")
+    assert "flex: 1" in btn, "the control spans the row: " + btn
+    for gone in ("border-radius", "border: 1px"):
+        assert gone not in btn, "a banner is full-bleed, not a chip: " + btn
+    assert "white-space: nowrap" in btn and "min-width: 0" in btn, btn
+    assert "overflow: hidden" in btn, btn
+    lbl = _between(html, "#annbtn .lbl {", "}")
+    assert "text-overflow: ellipsis" in lbl and "overflow: hidden" in lbl, lbl
+    assert "min-width: 0" in lbl, lbl
+    # still a button, and still announces its state
+    tools = _between(html, '<div id="lefttools"', "</div>")
+    assert '<button id="annbtn" type="button" aria-pressed="false"' in tools, tools
+
+
+def test_toggling_the_banner_cannot_resize_the_iframe(html):
+    """Not cosmetic. `#leftview` is `flex: 1` under a fixed-height strip, so the
+    banner's height IS the iframe's height. A taller active state would reflow the
+    app at the exact moment the user is aiming at an element, and would move
+    already-placed pins away from what they annotate — pins and `annStageRect` are
+    both in frame viewport coordinates. So the row's height and its border are
+    stated once, outside either state, and the active rule may only repaint."""
+    strip = _between(html, "#lefttools {", "}")
+    assert "height: 28px" in strip, strip
+    assert "border-bottom: 1px solid" in strip, strip
+    on = _between(html, "#annbtn.on {", "}")
+    for prop in ("height", "padding", "border", "font-size", "margin"):
+        assert prop not in on, "the active state may only repaint, not resize: " + on
+    # and the toggle itself touches nothing that could relayout the pane
+    click = _between(html, 'annBtn.addEventListener("click"', "\n});")
+    for banned in ("style.height", "style.padding", "#lefttools", "leftview"):
+        assert banned not in click, click
+
+
+def test_the_banners_way_out_is_the_part_that_never_shrinks(html):
+    """An ellipsis is only a safe degradation if what it eats is expendable. A label
+    that narrows to 'Annotating — click an ele…' has hidden its own exit, so the
+    stop affordance is a separate child pinned right with `flex-shrink: 0`, and the
+    instruction to its left is what gives up width first. The full sentence lives in
+    the tooltip, where width does not bind."""
+    stop = _between(html, "#annbtn .stop {", "}")
+    assert "flex-shrink: 0" in stop, stop
+    assert "margin-left: auto" in stop, stop
+    tools = _between(html, '<div id="lefttools"', "</div>")
+    assert 'class="stop"' in tools and "Esc" in tools, tools
+    click = _between(html, 'annBtn.addEventListener("click"', "\n});")
+    assert "annStop.hidden = !annOn" in click, click
+    title = _between(html, "annBtn.title =", ";")
+    assert "Esc" in title and "click this banner" in title, title
+
+
+def test_hover_never_eats_an_active_state_in_either_control(html):
+    """D146. Two controls carry an on/off accent — the composer's pane-shot pill and
+    the left pane's banner — and both were one class + one qualifier away from the
+    same cascade bug: `.pill:hover` is (0,2,0) and so is
+    `.viewshot[aria-pressed="true"]`, so the later rule (hover) won and an ARMED
+    toggle repainted itself neutral under the cursor, losing the only signal that
+    this send carries a picture.
+
+    So both follow one rule, stated in the selectors rather than left to source
+    order: the neutral hover excludes the active state, and the active state hovers
+    within its accent. Asserted for both, because a comment saying they agree is not
+    a test that they do."""
+    pairs = [('.pill:hover:not([aria-pressed="true"])',
+              '.pill[aria-pressed="true"]:hover'),
+             ("#annbtn:hover:not(.on)", "#annbtn.on:hover")]
+    for neutral, active in pairs:
+        assert neutral + " {" in html, neutral
+        assert active + " {" in html, active
+        # the active hover stays inside the accent instead of repainting it
+        assert "filter: brightness" in _between(html, active + " {", "}")
+        # ...and it is not bodged in with !important
+        assert "!important" not in _between(html, neutral + " {", "}")
+    assert "!important" not in html, "specificity, not force"
 
 
 def test_a_rolled_back_send_releases_its_thumbnails(html):
@@ -2069,23 +2156,6 @@ def test_the_pane_shot_toggle_keeps_the_pill_box_its_neighbours_have(html):
     assert "min-height: 1.65em" in css, css
     assert "line-height: 1.65" in _between(html, "  body {", "}"), \
         "1.65em only tracks the pills if the row's line-height is still 1.65"
-
-def test_hover_never_eats_the_pane_shot_pills_armed_state(html):
-    """`.pill:hover` is specificity (0,2,0) and so is
-    `.viewshot[aria-pressed="true"]`, so the later rule — hover — won on source
-    order and repainted an ARMED toggle neutral. The one signal that this send
-    carries a picture disappeared under the cursor, at exactly the moment the user
-    was deciding whether to click.
-
-    Fixed in the selectors, not by rule order and not by `!important`: the neutral
-    hover excludes the pressed state, and the pressed state hovers within its
-    accent."""
-    neutral = '.pill:hover:not([aria-pressed="true"])'
-    active = '.pill[aria-pressed="true"]:hover'
-    assert neutral + " {" in html, neutral
-    assert active + " {" in html, active
-    assert "filter: brightness" in _between(html, active + " {", "}")
-    assert "!important" not in html, "specificity, not force"
 
 
 def test_both_composers_draw_the_toggle_identically(html):
