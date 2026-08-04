@@ -8,6 +8,7 @@ import { navigate } from "../../lib/router";
 import { uploadNotice } from "../../lib/uploads";
 import { ErrorBanner } from "../../components/ErrorBanner";
 import { ProviderIcon } from "../../components/ProviderIcons";
+import type { ProviderIconKey } from "../../components/ProviderIcons";
 
 // The card's mark, from the SERVER's classification of the remote behind the
 // mount — never from sniffing its name. The server only tells us the coarse
@@ -16,7 +17,7 @@ import { ProviderIcon } from "../../components/ProviderIcons";
 // anonymous public data, and the generic server stack for everything the user
 // connected themselves (Drive, Dropbox, Box, a custom endpoint). A mount whose
 // remote is no longer in the config falls back to that same generic mark.
-function markFor(remoteSpec: string, remotes: RcloneRemote[]): string {
+function markFor(remoteSpec: string, remotes: RcloneRemote[]): ProviderIconKey {
   const base = remoteSpec.slice(0, remoteSpec.indexOf(":") + 1);
   const r = remotes.find((x) => x.name === base);
   if (!r) return "s3compat";

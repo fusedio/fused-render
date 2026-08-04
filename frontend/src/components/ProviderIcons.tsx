@@ -33,10 +33,15 @@ const svgProps = {
   "aria-hidden": true,
 } as const;
 
-// Keyed by SetupKey (views/mounts/setup.tsx). Kept as a plain record rather than a
-// switch so a new provider that forgets its icon is a TypeScript error at the
-// lookup site, not a silently blank card.
-const GLYPHS: Record<string, ReactNode> = {
+// Every provider that has a mark. Declared HERE rather than imported from
+// views/mounts/setup.tsx, which would point the dependency the wrong way
+// (components must not reach into views); SetupKey is checked against it at the
+// call site instead, so the two cannot drift apart silently.
+export type ProviderIconKey = "drive" | "dropbox" | "box" | "detected" | "s3compat" | "public";
+
+// A TOTAL record, not Record<string, …>: that is what makes adding a provider
+// without a glyph a TypeScript error here rather than a silently blank card.
+const GLYPHS: Record<ProviderIconKey, ReactNode> = {
   // Drive's mark is a triangle split three ways — outline plus the division
   // lines meeting at the centre.
   drive: (
@@ -93,12 +98,12 @@ const GLYPHS: Record<string, ReactNode> = {
   ),
 };
 
-export function ProviderIcon({ provider }: { provider: string }) {
-  const glyph = GLYPHS[provider];
-  if (!glyph) return null;
+export function ProviderIcon({ provider }: { provider: ProviderIconKey }) {
+  // No missing-glyph fallback: GLYPHS is total over ProviderIconKey, so there
+  // is no key that reaches here without one.
   return (
     <svg {...svgProps} className={`mount-provider-icon mount-provider-icon--${provider}`}>
-      {glyph}
+      {GLYPHS[provider]}
     </svg>
   );
 }
