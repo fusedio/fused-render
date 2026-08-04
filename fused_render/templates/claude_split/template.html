@@ -361,13 +361,20 @@
      Inheriting `color` also gets the hover colour and the pressed accent applied to
      the icon for free — an emoji cannot be recoloured at all. Icon-only, and no
      word beside it: the row already carries three selects and a send button and
-     wraps in a narrow chat pane, so every extra millimetre costs a line. */
+     wraps in a narrow chat pane, so every extra millimetre costs a line.
+
+     It deliberately does NOT override `.pill`'s padding. The pill box is the shared
+     visual language of that row, and while every background is transparent a
+     different box is invisible — it only appears once hover paints one, as a pill
+     that is taller and narrower than the selects beside it. So the icon is centred
+     inside the pill's own box instead: `min-height` is the pills' text line box
+     (their font-size × the inherited line-height), which is what gives a text pill
+     its height. */
   .viewshot {
     display: inline-flex;
     align-items: center;
-    cursor: pointer;
-    line-height: 1;
-    padding: 4px 7px;
+    justify-content: center;
+    min-height: 1.65em;
   }
   .viewshot svg { display: block; }
   .viewshot[aria-pressed="true"] {
@@ -536,9 +543,19 @@
     outline: none;
     -webkit-appearance: none;
     appearance: none;
-    transition: background .12s, color .12s;
+    transition: background .12s, color .12s, filter .12s;
   }
-  .pill:hover { background: var(--surface-2); color: var(--fg); }
+  /* THE ONE RULE about hover and an active state, shared with #annbtn in the left
+     pane's banner: a neutral hover never applies to a control that is switched on,
+     and an on control hovers WITHIN its accent.
+     Spelled out in the selectors on purpose. `.pill:hover` and
+     `.viewshot[aria-pressed="true"]` are both specificity (0,2,0), so a plain
+     `.pill:hover` won on source order alone and repainted an ARMED pane-shot toggle
+     neutral — the "this send carries a picture" receipt disappeared under the
+     cursor, at exactly the moment the user was deciding whether to click. Relying on
+     rule order for that is one reshuffle away from the bug coming back. */
+  .pill:hover:not([aria-pressed="true"]) { background: var(--surface-2); color: var(--fg); }
+  .pill[aria-pressed="true"]:hover { filter: brightness(1.1); }
   .pill option { background: var(--bg); color: var(--fg); }
   .send {
     width: 32px;

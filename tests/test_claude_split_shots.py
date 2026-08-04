@@ -2057,6 +2057,37 @@ def test_the_pane_shot_toggle_still_says_what_it_is_and_whether_it_is_armed(html
     assert "var(--accent)" in css and "var(--on-accent)" in css, css
 
 
+def test_the_pane_shot_toggle_keeps_the_pill_box_its_neighbours_have(html):
+    """The pill box is the shared visual language of that row, and a private padding
+    is invisible until hover paints a background — which is exactly when the user
+    sees one pill taller and narrower than the selects beside it. So the icon is
+    centred inside the inherited box rather than given its own."""
+    css = _between(html, "  .viewshot {", "}")
+    assert "padding" not in css, "let .pill own the box: " + css
+    assert "justify-content: center" in css and "align-items: center" in css, css
+    # matched to what gives a text pill its height, not to a guessed pixel count
+    assert "min-height: 1.65em" in css, css
+    assert "line-height: 1.65" in _between(html, "  body {", "}"), \
+        "1.65em only tracks the pills if the row's line-height is still 1.65"
+
+def test_hover_never_eats_the_pane_shot_pills_armed_state(html):
+    """`.pill:hover` is specificity (0,2,0) and so is
+    `.viewshot[aria-pressed="true"]`, so the later rule — hover — won on source
+    order and repainted an ARMED toggle neutral. The one signal that this send
+    carries a picture disappeared under the cursor, at exactly the moment the user
+    was deciding whether to click.
+
+    Fixed in the selectors, not by rule order and not by `!important`: the neutral
+    hover excludes the pressed state, and the pressed state hovers within its
+    accent."""
+    neutral = '.pill:hover:not([aria-pressed="true"])'
+    active = '.pill[aria-pressed="true"]:hover'
+    assert neutral + " {" in html, neutral
+    assert active + " {" in html, active
+    assert "filter: brightness" in _between(html, active + " {", "}")
+    assert "!important" not in html, "specificity, not force"
+
+
 def test_both_composers_draw_the_toggle_identically(html):
     """D146: the home card and the chat composer each carry their own copy of this
     control, and one variable drives both — so a restyle that touched only one
