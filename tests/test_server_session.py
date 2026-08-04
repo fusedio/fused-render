@@ -1,8 +1,11 @@
 """Tests for GET/PUT /api/session (fused_render/server.py) — the per-file
 lastSession sidecar (LSN-*).
 
-The sidecar lives next to the TARGET file (`<file>.json`), not under
-FUSED_RENDER_HOME. The route handlers are thin wrappers over module-level
+The sidecar now lives under home_dir()/sidecar/<mapped path>.json (D83-
+reversal), never next to the TARGET file — see shell/storage.py's
+sidecar_path. FUSED_RENDER_HOME is pinned to an isolated tmp dir for every
+test here so a real sidecar under the developer's actual ~/.fused-render is
+never touched. The route handlers are thin wrappers over module-level
 _session_get / _session_put, which these drive directly — the same "avoid
 starlette TestClient" discipline as test_shell_bookmark_history.py (keeps the
 module importable in venvs where TestClient's httpx dependency is missing, and
@@ -16,7 +19,13 @@ from fastapi.responses import JSONResponse
 
 from fused_render.server.session import _session_get as GET
 from fused_render.server.session import _session_put as PUT
+from fused_render.shell import storage
 from fused_render.templates.claude import agent
+
+
+@pytest.fixture(autouse=True)
+def _home(tmp_path, monkeypatch):
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
 
 
 def _status(resp) -> int:
@@ -24,7 +33,7 @@ def _status(resp) -> int:
 
 
 def _sidecar(f):
-    return json.loads((f.parent / (f.name + ".json")).read_text())
+    return json.loads(open(storage.sidecar_path(str(f)), encoding="utf-8").read())
 
 
 def _target(tmp_path):
@@ -77,8 +86,10 @@ def test_put_rejects_non_string_search(tmp_path):
 
 def test_coexists_with_sessions(tmp_path):
     f = _target(tmp_path)
-    (tmp_path / "sample.html.json").write_text(
-        json.dumps({"claudeSessions": [{"id": "x"}]}))
+    sidecar_path = storage.sidecar_path(str(f))
+    os.makedirs(os.path.dirname(sidecar_path), exist_ok=True)
+    with open(sidecar_path, "w", encoding="utf-8") as fh:
+        json.dump({"claudeSessions": [{"id": "x"}]}, fh)
     PUT(body={"path": str(f), "search": "a=1"}, x_fused="1")
     data = _sidecar(f)
     assert data["claudeSessions"] == [{"id": "x"}]
@@ -137,12 +148,13 @@ def test_empty_query_does_not_clobber_existing_session(tmp_path):
     assert GET(path=str(f))["lastSession"]["search"] == "city=oslo"
 
 
-# ------------------------------------------------- read-only remote mounts
-# A file browsed inside a read-only S3 mount must not get a lastSession
-# sidecar: os.access(W_OK) lies under CacheMode=full (the write lands in the
-# VFS cache and only 403s at the async upload — the sidecar-write incident),
-# so _session_put must consult the mount's read_only flag and skip the write
-# entirely rather than loop the doomed PutObject.
+# --------------------------------------------------- read-only remote mounts
+# D83-reversal: the sidecar now lives under home_dir()/sidecar/, never on the
+# mounted file's own filesystem, so a read-only remote mount no longer has any
+# bearing on whether a lastSession sidecar can be written — the old
+# sidecar-write incident (CacheMode=full 403-looping a doomed PutObject)
+# structurally can't happen anymore. This used to be a skip case; now it's a
+# plain success case.
 
 @pytest.fixture
 def ro_mount(tmp_path, monkeypatch):
@@ -160,15 +172,13 @@ def ro_mount(tmp_path, monkeypatch):
     return f
 
 
-def test_put_skips_under_read_only_mount(ro_mount):
-    # A qualifying (non-_mode) query would normally start a session.
+def test_put_succeeds_under_read_only_mount(ro_mount):
+    # A qualifying (non-_mode) query starts a session even under a read-only
+    # mount, since the sidecar write never touches the mount.
     resp = PUT(body={"path": ro_mount, "search": "_mode=geotiff&stretch=2,1471"},
                x_fused="1")
-    assert resp == {"ok": True, "skipped": True}
-    # No sidecar written next to the mounted file.
-    assert not os.path.exists(ro_mount + ".json")
-    # And GET reports no session for it.
-    assert GET(path=ro_mount)["lastSession"] is None
+    assert resp == {"ok": True}
+    assert GET(path=ro_mount)["lastSession"]["search"] == "_mode=geotiff&stretch=2,1471"
 
 
 # --- mount-safe existence gate (_is_file_mount_safe) ----------------------

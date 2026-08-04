@@ -1,4 +1,4 @@
-"""Extra Fused workspaces discovered from Claude Code's project list (D207).
+"""Extra Fused workspaces discovered from Claude Code's project list (D208).
 
 `~/.claude.json` carries a `projects` object keyed by absolute path — every
 directory Claude Code has been run in. Most of those are source checkouts, and
@@ -324,7 +324,7 @@ def test_a_root_inside_the_claude_science_store_is_refused(tmp_path, config,
 
     The artifact folder below has exactly one `.html` version, which is what
     makes this bite: `entry_html` gets set, so the card would open via
-    claude_split — the version-stacked read-only path D205 special-cases the
+    claude_split — the version-stacked read-only path D206 special-cases the
     claude-science source to avoid. It is also a duplicate of a card that
     source already produced.
     """
@@ -485,7 +485,7 @@ def own_prefs(tmp_path, monkeypatch):
 
 def test_a_source_switched_off_is_not_listed_and_is_not_walked(
         tmp_path, workspace, config, own_prefs, monkeypatch):
-    """Preferences → App discovery (D209).
+    """Preferences → App discovery (D210).
 
     Two assertions, and the second is the one worth having: an off source must
     cost NOTHING, not merely produce nothing. Turning discovery off is largely

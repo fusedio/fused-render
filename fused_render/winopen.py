@@ -34,7 +34,7 @@ _REGISTRY_JSON = os.path.join(os.path.dirname(__file__), "templates", "registry.
 _NOT_EXTENSIONS = {".zgroup", ".zattrs", ".zmetadata"}  # zarr member files, not extensions
 
 # Extension token (after the last dot) -> category icon, mirroring EXT_VARIANT
-# in frontend/src/components/FileIcons.tsx so a file's Explorer icon matches the
+# in frontend/src/platform/ui/FileIcons.tsx so a file's Explorer icon matches the
 # glyph fused-render's own listing shows for it. Keep the two in sync; the .ico
 # files come from scripts/windows/gen_file_icons.py. Anything unmapped falls
 # back to the plain "file" icon.
@@ -70,7 +70,8 @@ _ICON_VARIANT_FOR_TOKEN = {
     ),
     # archives
     **dict.fromkeys(
-        "zip jar whl egg tar tgz tbz2 txz gz bz2 xz zst twbx tdsx".split(), "archive"
+        "zip jar whl egg tar tgz tbz2 txz gz bz2 xz zst twbx tdsx bundle".split(),
+        "archive",
     ),
     # databases
     **dict.fromkeys("sqlite sqlite3 db duckdb ddb".split(), "db"),

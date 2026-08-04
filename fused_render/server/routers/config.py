@@ -4,10 +4,12 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request
 
 from fused_render import __version__
 from fused_render import calls as shell_calls
+from fused_render.server import dirpicker
 from fused_render.server.common import get_start_dir
 from fused_render._view_url_codec import canonical_fs_path
 from fused_render.shell import mounts as shell_mounts
 from fused_render.shell import prefs as shell_prefs
+from fused_render.shell import storage as shell_storage
 from fused_render.shell.seed import fused_dir
 
 router = APIRouter()
@@ -70,6 +72,22 @@ def api_config(
         # behaviour change and belongs with the mount code, not here.)
         "calls_dir": canonical_fs_path(os.path.abspath(shell_calls.store_dir())),
         "calls_suffix": shell_calls.SUFFIX,
+        # Root of the per-file sidecar subtree (~/.fused-render/sidecar,
+        # D83-reversal — see shell/storage.py's sidecar_path). The runtime
+        # (static/runtime.js) mirrors sidecar_path's mapping algorithm so
+        # every template can compute a sidecar location client-side without a
+        # round trip per lookup; only this root has to come from the server.
+        # Canonicalized for the same reason as calls_dir above.
+        "sidecar_root": canonical_fs_path(os.path.join(shell_storage.home_dir(), "sidecar")),
+        # Whether POST /api/fs/pick-folder can raise a REAL OS folder dialog
+        # here (server/dirpicker.py). A template asking the user where to write
+        # something uses the native chooser when this is true and its own in-page
+        # dialog when it is false — a hosted or headless deploy has no GUI
+        # session to raise a modal into, and must never be left waiting on one
+        # nobody can see. Read per request: on macOS the answer depends on
+        # whether an AppKit run loop is up, which is a property of the process,
+        # not of the build.
+        "native_dir_picker": dirpicker.available(),
     }
     if instance := desktop_instance():
         config["desktop_instance"] = {"id": instance[0]}

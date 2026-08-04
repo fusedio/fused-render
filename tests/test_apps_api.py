@@ -498,7 +498,7 @@ def test_agent_start_default_still_passes_message_in_argv(tmp_path, monkeypatch)
 # Creating an app with a prompt starts a session the user never sees unless the
 # post-create navigation opens the entry file's CLAUDE-template chat attached to
 # that run. Three sources have to agree for that to work, and none of them can
-# see the other two: Home.tsx builds the URL, registry.json makes "claude" a
+# see the other two: NewAppPanel.tsx builds the URL, registry.json makes "claude" a
 # selectable mode for .html, and the claude template's boot re-attaches from the
 # `run` param. These tests pin the three ends of that contract.
 
@@ -509,7 +509,7 @@ def _repo_text(*parts):
 
 
 def test_home_navigates_into_the_claude_chat_for_the_started_run():
-    home = _repo_text("frontend", "src", "views", "Home.tsx")
+    home = _repo_text("frontend", "src", "apps", "builder", "NewAppPanel.tsx")
     # Folder-first: the scaffolding session runs via the claude_split agent on
     # the app FOLDER, so the re-attach must land in the split view (same runs
     # dir, same .claude-split.json sidecar) — not the file-scoped claude mode.

@@ -1,6 +1,6 @@
 """The entry contract shared by the sources `GET /api/apps` merges.
 
-The Home/apps listing has two sources now (D205): the Fused workspace
+The Home/apps listing has two sources now (D206): the Fused workspace
 (`server/routers/apps.py` — one folder per app, entry = its single direct-child
 `.html`) and the Claude Science artifact store (`claude_science.py` — one
 directory per artifact, entry = its newest version file). They report the same
@@ -87,7 +87,7 @@ def two_level_apps(root: str, source: str) -> list[dict]:
 
     A "tag" is any non-hidden top-level directory, an "app" any non-hidden
     directory directly inside one — no registry, so a new tag is just a new
-    folder. Shared by the two sources that use this shape (D207): the workspace
+    folder. Shared by the two sources that use this shape (D208): the workspace
     itself (`routers/apps.py`) and the extra workspaces discovered from Claude
     Code's project list (`claude_projects.py`), which differ only in `source`.
 

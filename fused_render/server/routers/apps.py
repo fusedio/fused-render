@@ -10,7 +10,7 @@ direct-child ``.html`` file when there is exactly one — zero or several means
 the folder still lists, but opens as a directory instead of a view
 (``entry_html: null``).
 
-The workspace is not the only source (D185, D205, D207). ``GET /api/apps``
+The workspace is not the only source (D185, D206, D208). ``GET /api/apps``
 merges three, each tagging its apps with a ``source`` so the shell can tell them
 apart:
 
@@ -23,11 +23,11 @@ apart:
 * ``claude-code`` — apps in *other* Fused-shaped folders, found by reading the
   absolute paths in Claude Code's ``~/.claude.json`` project list
   (``claude_projects.py``). A folder contributes when most of its
-  subdirectories are apps (D208), which is what keeps ordinary source trees out
+  subdirectories are apps (D209), which is what keeps ordinary source trees out
   of Home.
 
 The discovered sources are read-only — nothing here scaffolds, commits or
-deploys into them — and each is switchable off from Preferences (D209,
+deploys into them — and each is switchable off from Preferences (D210,
 ``prefs.discovery_enabled``), checked per request so a toggle applies to the
 next listing and an off source is never walked at all.
 
@@ -101,7 +101,7 @@ def api_apps():
     # rather than short-circuiting: the other sources may still have something,
     # and discarding it would make Home emptier than the machine is.
     apps = app_listing.two_level_apps(root, "workspace")
-    # The two discovered sources are switchable from Preferences (D209). The
+    # The two discovered sources are switchable from Preferences (D210). The
     # check is per request, like the engine pref: a toggle takes effect on the
     # next listing with no restart. Reading it BEFORE the call is the point —
     # a source that is off costs no walk at all, which is most of why someone

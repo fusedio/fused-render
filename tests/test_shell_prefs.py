@@ -559,7 +559,7 @@ def test_forced_by_flags_track_the_writers_override_resolvers(tmp_path, monkeypa
         assert calls["retention_forced_by"] == expected_retention, (capture, retention)
 
 
-# ------------------------------------------------- app discovery (D209)
+# ------------------------------------------------- app discovery (D210)
 
 def test_discovery_defaults_ON_and_toggles(tmp_path, monkeypatch):
     """Opposite default to deploy/reader, and the reason is the point.

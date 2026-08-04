@@ -8,6 +8,12 @@
     "types": ["bun"],
     "module": "ESNext",
     "moduleResolution": "bundler",
+    "paths": {
+      "@shell/*": ["./src/shell/*"],
+      "@platform/*": ["./src/platform/*"],
+      "@apps/*": ["./src/apps/*"],
+      "@assets/*": ["./src/assets/*"]
+    },
     "resolveJsonModule": true,
     "isolatedModules": true,
     "noEmit": true,

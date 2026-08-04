@@ -15,7 +15,7 @@ writes into <config dir>/skills/ and POST /api/apps/new triggers it, so no
 test may touch the real ~/.claude.
 
 FUSED_RENDER_CLAUDE_SCIENCE_DIR is redirected for the read-only mirror of that
-reason (D205): GET /api/apps lists the local Claude Science store's artifacts
+reason (D206): GET /api/apps lists the local Claude Science store's artifacts
 alongside the workspace's apps, so on a developer machine that has Claude
 Science installed the apps tests would see that person's real artifacts and
 their assertions about the listing would depend on whose laptop ran them.
@@ -23,7 +23,7 @@ Pointing it at an empty tmp dir makes the listing hermetic; the tests that are
 ABOUT the store set it themselves (see test_claude_science.py).
 
 FUSED_RENDER_CLAUDE_CONFIG is the third source's version of the same hazard
-(D207): GET /api/apps reads the absolute paths in Claude Code's ~/.claude.json
+(D208): GET /api/apps reads the absolute paths in Claude Code's ~/.claude.json
 and lists the apps in any Fused-shaped folder among them, so an un-redirected
 run would list whatever the developer happens to have on disk.
 
@@ -64,7 +64,7 @@ for _var, _prefix in (("FUSED_RENDER_HOME", "fused-render-tests-"),
 # does NOT exist, which reads to claude_projects as "Claude Code is not
 # installed". Without this the apps tests would walk the real ~/.claude.json on
 # a developer machine and list whatever Fused-shaped folders that person
-# happens to have (D207). The tests that are ABOUT the source write their own
+# happens to have (D208). The tests that are ABOUT the source write their own
 # config file and point this at it.
 if "FUSED_RENDER_CLAUDE_CONFIG" not in os.environ:
     _tmp = tempfile.mkdtemp(prefix="fused-render-tests-claude-config-")

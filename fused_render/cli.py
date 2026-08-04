@@ -86,23 +86,20 @@ _HOST = "127.0.0.1"
 
 
 def _port_free(port: int) -> bool:
-    """True if uvicorn could bind ``port`` on the loopback right now.
+    """True if no server is listening on ``port`` on the loopback right now.
 
-    Mirror uvicorn's own bind by setting SO_REUSEADDR so the probe agrees with
-    it in both directions: an active listener (a stale server) still makes bind
-    fail — SO_REUSEADDR does not permit two live binds to the same address, that
-    needs SO_REUSEPORT — so a real collision is still caught, while a port merely
-    lingering in TIME_WAIT after a clean shutdown reads as free (uvicorn, which
-    also sets SO_REUSEADDR, would bind it). A plain bind here would reject those
-    TIME_WAIT ports and wrongly block an immediate dev.sh restart.
-    """
+    A connect probe, not a bind probe — the same one app.pick_port, winopen and
+    the supervisor use. A bind probe must set SO_REUSEADDR to tolerate a port
+    lingering in TIME_WAIT after a clean shutdown (uvicorn, which also sets it,
+    would happily bind that), but on Windows SO_REUSEADDR *also* lets a bind
+    succeed against a port an old server is actively listening on: the probe
+    would then read a live collision as "free", uvicorn would bind the same port
+    a second time, and connections would split nondeterministically between the
+    two servers. Connect instead: a live listener answers (taken), while a
+    TIME_WAIT port refuses the connect (free)."""
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        try:
-            s.bind((_HOST, port))
-            return True
-        except OSError:
-            return False
+        s.settimeout(0.25)
+        return s.connect_ex((_HOST, port)) != 0
 
 
 def _check_port_free(port: int) -> None:

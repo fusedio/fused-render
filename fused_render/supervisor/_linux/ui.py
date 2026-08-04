@@ -98,6 +98,42 @@ def pick_file() -> str | None:
     return chosen or None
 
 
+def pick_directory(title: str = "Choose a folder", start: str | None = None) -> str | None:
+    """Show the folder chooser; return the chosen path, or None if the user
+    cancelled. Raises OSError when the dialog itself broke.
+
+    Cancel and failure are DISTINCT here, unlike in `pick_file` above: this one
+    backs `/api/fs/pick-folder`, whose caller falls back to an in-page dialog on
+    a failure but must honour a cancel as the answer it is. Both tools exit 1
+    for "the user said no" and something else for a real fault (zenity 255 on a
+    missing display, kdialog 2 on a usage error), so the exit code carries it.
+    """
+    tool = _dialog_tool()
+    if tool == "zenity":
+        argv = ["zenity", "--file-selection", "--directory", "--title", title]
+        if start:
+            # zenity only treats --filename as a FOLDER to open in when it ends
+            # in a separator; without one it preselects the folder's sibling.
+            argv += ["--filename", start.rstrip("/") + "/"]
+        result = _run(argv)
+    elif tool == "kdialog":
+        argv = ["kdialog", "--title", title, "--getexistingdirectory",
+                start or str(Path.home())]
+        result = _run(argv)
+    else:
+        return _tk_pick_directory(title, start)
+    if result is None:
+        # No process, or one that outlived the timeout: `_run` swallowed the
+        # reason, and there is no answer either way.
+        raise OSError(f"the {tool} folder chooser did not return")
+    if result.returncode == 0:
+        return result.stdout.strip() or None
+    if result.returncode == 1:
+        return None  # the user cancelled
+    raise OSError(
+        f"{tool} exited with status {result.returncode}: {result.stderr.strip()}")
+
+
 def open_path(path: Path) -> None:
     _xdg_open(str(path))
 
@@ -169,3 +205,23 @@ def _tk_pick_file() -> str | None:
         return chosen or None
     except Exception:  # noqa: BLE001 - tk missing / no display: best-effort no-op
         return None
+
+
+def _tk_pick_directory(title: str, start: str | None) -> str | None:
+    # Unlike _tk_pick_file, a broken Tk here RAISES: this backs an endpoint that
+    # has to tell "you cancelled" apart from "there is no dialog", and answering
+    # None for the second would look like a cancel the user never made.
+    try:
+        import tkinter
+        from tkinter import filedialog
+
+        root = tkinter.Tk()
+        root.withdraw()
+        try:
+            chosen = filedialog.askdirectory(title=title, initialdir=start or None,
+                                             mustexist=True)
+        finally:
+            root.destroy()
+    except Exception as exc:  # noqa: BLE001 - tk missing / no display
+        raise OSError(f"no folder chooser available: {exc}") from exc
+    return chosen or None

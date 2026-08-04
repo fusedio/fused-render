@@ -31,7 +31,7 @@ def test_to_native_handles_unc_paths():
 
 def test_to_shell_uses_forward_slashes():
     # The shell's canonical path form is forward-slash even on Windows
-    # (frontend/src/lib/fs-actions.ts), so what we hand back must match or
+    # (frontend/src/apps/explorer/lib/fs-actions.ts), so what we hand back must match or
     # every downstream comparison breaks.
     assert _win32.to_shell("C:\\Users\\u\\a file.csv") == "C:/Users/u/a file.csv"
 

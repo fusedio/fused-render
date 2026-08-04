@@ -33,7 +33,7 @@ this repo's `fused_render/` 3/8 (38%), its root 2/10 (20%). Each root is tried
 at both depths — as a tag folder itself, and as a holder of tag folders —
 because which folder a user opens Claude Code in is theirs to choose.
 
-Read-only, like the Claude Science source (D205): nothing here writes to,
+Read-only, like the Claude Science source (D206): nothing here writes to,
 scaffolds into or commits to a discovered folder. Unlike that one, a discovered
 app IS an ordinary Fused app — it is the same shape, in a folder the user owns
 — so it opens the same way, beside a Claude chat.
@@ -164,7 +164,7 @@ def _is_workspace_like(root: str, exclude: str) -> bool:
       two-level rule reads that as `<project-id>/<artifact-uuid>/` — so an
       artifact whose newest version happens to be its only `.html` would come
       back as a `claude-code` app and open via claude_split, the exact
-      version-stacked, read-only path D205 special-cases claude-science to
+      version-stacked, read-only path D206 special-cases claude-science to
       avoid. Reachable only if the user has run Claude Code cwd'd inside that
       store, which is unlikely and cheap to rule out.
     * it is a hidden directory.

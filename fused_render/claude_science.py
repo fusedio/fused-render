@@ -1,4 +1,4 @@
-"""Claude Science artifacts, listed as apps on Home and in the /apps hub (D205).
+"""Claude Science artifacts, listed as apps on Home and in the /apps hub (D206).
 
 Claude Science (Anthropic's research workbench) keeps everything it produces in
 one local store, laid out like this::
