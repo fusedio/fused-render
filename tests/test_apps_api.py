@@ -18,6 +18,7 @@ import time
 import pytest
 from fastapi.testclient import TestClient
 
+from fused_render import app_listing
 from fused_render.server import create_app
 from fused_render.server.routers import apps as apps_mod
 
@@ -156,9 +157,56 @@ def test_unreadable_project_dir_is_skipped_not_fatal(client, workspace):
     assert [a["name"] for a in apps] == ["ok"]  # unreadable project dir skipped, no 500
 
 
+def test_an_unreadable_project_dir_is_skipped_at_any_uid(client, workspace,
+                                                         monkeypatch):
+    """The same contract as above, without depending on file permissions.
+
+    The chmod test is VACUOUS FOR ROOT — mode 0 does not stop uid 0 reading the
+    directory, so it is skipped there and a developer (or a container) running
+    as root gets no coverage of this path at all. That is how a regression
+    shipped once: `app_entry` was called from inside `app_dict`, which swallowed
+    the `OSError` and turned "skip this directory" into "list it with no entry".
+
+    Raising from `app_entry` itself reproduces the condition deterministically,
+    for every uid and on Windows too, and is what the listing actually has to
+    survive.
+    """
+    _app_dir(workspace, "ok")
+    (workspace / "local" / "locked").mkdir()
+
+    real = app_listing.app_entry
+
+    def refuse(path):
+        if os.path.basename(path) == "locked":
+            raise PermissionError(13, "Permission denied", path)
+        return real(path)
+
+    monkeypatch.setattr(app_listing, "app_entry", refuse)
+    apps = client.get("/api/apps").json()["apps"]
+
+    assert [a["name"] for a in apps] == ["ok"]
+
+
 def test_missing_workspace_lists_empty(client, workspace):
     os.rmdir(workspace)
     assert client.get("/api/apps").json() == {"apps": []}
+
+
+def test_entry_is_reported_alongside_entry_html(client, workspace):
+    """Both keys, same file — the shell reads `entry` and needs it to be there.
+
+    `entry` is "the file a card opens"; `entry_html` is the narrower "this entry
+    is a renderable page". They coincide for a workspace app, and an entry-less
+    folder reports null under both rather than omitting either key.
+    """
+    _app_dir(workspace, "withentry")
+    (workspace / "local" / "bare").mkdir()
+
+    apps = {a["name"]: a for a in client.get("/api/apps").json()["apps"]}
+
+    assert apps["withentry"]["entry"] == apps["withentry"]["entry_html"]
+    assert apps["withentry"]["entry"].endswith("index.html")
+    assert apps["bare"]["entry"] is None and apps["bare"]["entry_html"] is None
 
 
 # ------------------------------------------------------------------- creation
