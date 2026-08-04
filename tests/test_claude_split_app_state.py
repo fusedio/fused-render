@@ -862,7 +862,10 @@ _WIRE_FNS = ["const APP_STATE_TAG", "function appStateBlock(",
              # test_claude_split_shots.py); these two are what stripBlocks needs to
              # be its exact inverse, whether or not a given message carries one.
              "const PANE_SHOT_TAG", "function paneShotBlock(",
-             "function stripPaneBlock(",
+             # stripBlocks names its no-words markers through these (see
+             # test_claude_split_shots.py) so resumeRun cannot drift from it.
+             "const MARKER_ANN", "const MARKER_VIEW", "const MARKER_JOIN",
+             "function isMarkerOnly(", "function stripPaneBlock(",
              "function stripAnnBlock("]
 
 _PENDING = ('[{"id": "1", "sent": 0, "createdAt": 5, "anchorId": "reset",'

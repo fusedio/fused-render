@@ -2383,6 +2383,27 @@ function stripPaneBlock(text) {
   return (text || "").replace(re, "").trim();
 }
 
+// The substitute texts stripBlocks uses when a send carried no typed words — and
+// the predicate that recognises them. ONE definition, read by both the strip that
+// produces them and `resumeRun`, which must never match a prior turn on one:
+// every such send collapses to the same text, so it identifies no particular turn,
+// and a false match trims another turn's assistant rows and destroys real
+// transcript content.
+//
+// A literal repeated at those two ends is exactly what went wrong before: the
+// re-attach check knew about the annotations marker, then the pane shot added two
+// more marker shapes and the check did not learn them, so a view-only send could
+// match the wrong turn. A predicate over a named set cannot drift that way, and
+// adding a fourth marker means adding it here — where both ends see it.
+const MARKER_ANN = "📌 annotations";
+const MARKER_VIEW = "🖼 pane screenshot";
+const MARKER_JOIN = " + ";
+function isMarkerOnly(text) {
+  const t = (text || "").trim();
+  return !!t && t.split(MARKER_JOIN)
+    .every((part) => part === MARKER_ANN || part === MARKER_VIEW);
+}
+
 // The inverse of composeOutgoing: hand back exactly what the user typed. Used by
 // BOTH readers of a wire message (the run re-attach probe and the history
 // restore) so they cannot disagree about what a turn said.
@@ -2397,9 +2418,9 @@ function stripBlocks(text) {
   const bare = stripAnnBlock(noPane);
   if (bare) return bare;
   const carried = [];
-  if (bare !== noPane) carried.push("📌 annotations");
-  if (noPane !== noState) carried.push("🖼 pane screenshot");
-  return carried.join(" + ");
+  if (bare !== noPane) carried.push(MARKER_ANN);
+  if (noPane !== noState) carried.push(MARKER_VIEW);
+  return carried.join(MARKER_JOIN);
 }
 
 // History restore and run re-attach hand back the composed wire text; peel
@@ -3363,11 +3384,13 @@ async function resumeRun(run_id) {
     const users = log.querySelectorAll(".user .bubble");
     const lastUser = users[users.length - 1];
     const lastTurn = lastUser && lastUser.parentElement;
-    // The generic annotation-only marker never counts as a match: every such
-    // send collapses to the same text, so it can't identify a specific turn —
-    // and a false match trims another turn's assistant rows. Worst case for
-    // refusing: a duplicated marker row, which is harmless by comparison.
-    const matches = !!lastUser && probeMsg !== "📌 annotations" && lastUser.textContent === probeMsg;
+    // A marker-only message never counts as a match: every such send collapses to
+    // the same text, so it can't identify a specific turn — and a false match
+    // trims another turn's assistant rows. Worst case for refusing: a duplicated
+    // marker row, which is harmless by comparison. `isMarkerOnly` rather than a
+    // literal, so a marker added to stripBlocks cannot leave this check behind.
+    const matches = !!lastUser && !isMarkerOnly(probeMsg)
+                    && lastUser.textContent === probeMsg;
     if (probe.done) {
       // Run finished with no frame attached: only repair what the restored
       // transcript can provably be missing (see the claude template).

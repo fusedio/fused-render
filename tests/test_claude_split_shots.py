@@ -1625,6 +1625,8 @@ _WIRE_FNS = ["function formatAnnotations(", "function stripAnnBlock(",
              "function stripAppStateBlock(", "function stripBlocks(",
              "const APP_STATE_TAG", "function appStateBlock(",
              "const PANE_SHOT_TAG", "function paneShotBlock(",
+             "const MARKER_ANN", "const MARKER_VIEW", "const MARKER_JOIN",
+             "function isMarkerOnly(",
              "function stripPaneBlock(", "function composeOutgoing("]
 
 
@@ -1735,6 +1737,53 @@ console.log(JSON.stringify({
     assert out["viewOnly"].endswith("everything shifted")
     # and the toggle off changes nothing at all
     assert out["neither"] == "just words"
+
+
+def test_every_marker_a_strip_can_produce_is_known_to_be_non_identifying(html):
+    """D146, and it has already drifted once. `resumeRun` refuses to match a prior
+    turn on a marker because every such send collapses to the SAME text, so it
+    identifies no particular turn and a false match trims another turn's assistant
+    rows. It excluded the annotations marker by literal — then the pane shot added
+    two more marker shapes and the check did not know about them, so a view-only
+    send could match the wrong turn and destroy real transcript content.
+
+    The markers are DERIVED here from stripBlocks itself rather than listed, so a
+    fourth marker added later without teaching `isMarkerOnly` about it fails this
+    test instead of silently reintroducing the bug."""
+    out = _wire(html, """
+const a = {id: "x", content: "here", anchorId: "hdr"};
+const view = {view: "/tmp/fr/shots/S-view.png"};
+// Every combination that can leave the user's own words empty.
+const produced = [
+  stripBlocks(composeOutgoing("", [a], null, null)),
+  stripBlocks(composeOutgoing("", [], null, view)),
+  stripBlocks(composeOutgoing("", [a], null, view)),
+  stripBlocks(composeOutgoing("", [a], {entry: "/p"}, view)),
+];
+console.log(JSON.stringify({
+  produced: produced,
+  verdicts: produced.map(isMarkerOnly),
+  real: ["fix the header", "📌 annotations please", "", "🖼"].map(isMarkerOnly),
+}));
+""")
+    # every marker-only send really does collapse to a non-identifying text...
+    assert all(out["produced"]), out["produced"]
+    assert len(set(out["produced"])) == 3, out["produced"]
+    # ...and the predicate recognises every one of them
+    assert out["verdicts"] == [True, True, True, True], out["produced"]
+    # a real message — including one that merely mentions a marker — is identifying
+    assert out["real"] == [False, False, False, False]
+
+
+def test_the_re_attach_check_asks_the_predicate_not_a_literal(html):
+    """Wired where it matters: `resumeRun` must consult the one definition, so a
+    new marker cannot reintroduce the false match. Asserted on the source because
+    the alternative is a literal that drifts, which is the bug."""
+    start = html.index("const probeMsg = stripBlocks(")
+    branch = html[start:html.index("if (probe.done)", start)]
+    assert "isMarkerOnly(probeMsg)" in branch, branch
+    # and the old literal is gone from the comparison
+    assert "probeMsg !== " not in branch, branch
 
 
 def test_a_pane_shot_path_never_reaches_the_transcript_the_user_reads(html, agent):
