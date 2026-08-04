@@ -898,12 +898,17 @@ export function putDeployEnabled(enabled: boolean): Promise<Prefs> {
 //: The switchable app-discovery sources, in the order the page lists them.
 //: Keyed off the same strings the backend stores (`discover_<source>`) and the
 //: listing tags apps with, so the three cannot drift apart.
-export const DISCOVERY_SOURCES = ["claude_science", "claude_code"] as const;
+export const DISCOVERY_SOURCES = ["claude_code", "claude_science"] as const;
 export type DiscoverySource = (typeof DISCOVERY_SOURCES)[number];
 
+//: Each row is named for the tool whose name is on the card badge
+//: (APP_SOURCE_LABELS). That correspondence is the whole job of these strings:
+//: a user who wants to stop seeing cards marked "Claude Code" looks for
+//: "Claude Code" here, and a row called "Other Fused folders" left them with
+//: nothing to match against.
 export const DISCOVERY_LABELS: Record<DiscoverySource, string> = {
+  claude_code: "Claude Code artifacts",
   claude_science: "Claude Science artifacts",
-  claude_code: "Other Fused folders",
 };
 
 export function putDiscoveryEnabled(

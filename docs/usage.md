@@ -56,11 +56,11 @@ The gear at the sidebar's bottom-left opens **Preferences**:
   entirely yours; see the authoring skill for how to follow the desktop
   preference if you want to.
 - **App discovery** — which optional sources Home and the Apps hub list beside
-  your workspace: Claude Science artifacts, and other Fused folders found from
-  Claude Code. Both on by default; your workspace is always listed and has no
-  switch. Turning one off skips it entirely — it isn't scanned, so nothing is
-  read from it. A source that isn't installed says so rather than offering a
-  toggle that changes nothing.
+  your workspace: Claude Code artifacts and Claude Science artifacts. Both on by
+  default; your workspace is always listed and has no switch. Turning one off
+  skips it entirely — it isn't scanned, so nothing is read from it. A source
+  that isn't installed says so rather than offering a toggle that changes
+  nothing.
 - **Deploy to Fused account** — the opt-in toggle for the preview header's
   Deploy button.
 - **Call log** — whether the app records the API calls your pages make, how
@@ -147,7 +147,7 @@ app, copy it into your workspace first.
 `~/.claude-science`) for a Claude Science installed somewhere else. To stop
 listing these entirely, switch them off in **Preferences → App discovery**.
 
-## Other Fused folders
+## Claude Code artifacts
 
 Your workspace (`~/Documents/Fused`) is not the only place an app can live. If
 you keep a second folder of the same shape — on an external drive, in a shared

@@ -300,10 +300,10 @@ function DiscoveryToggle({
 }
 
 const DISCOVERY_BLURBS: Record<DiscoverySource, string> = {
-  claude_science:
-    "Show the figures, tables and reports Claude Science has saved, alongside your own apps.",
   claude_code:
     "Show apps from other Fused-shaped folders you have opened Claude Code in.",
+  claude_science:
+    "Show the figures, tables and reports Claude Science has saved, alongside your own apps.",
 };
 
 function AppDiscoverySection({
