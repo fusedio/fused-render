@@ -75,6 +75,7 @@ import shutil
 DATA_ROOT = os.path.expanduser(os.path.join("~", ".fused-render", "data", "pdf_studio"))
 CACHE_ROOT = os.path.expanduser(os.path.join("~", ".fused-render", "cache", "pdf_studio"))
 LIBRARY = os.path.join(DATA_ROOT, "library.json")   # recent PDF paths, newest first
+_LIB_VERSION = 2                                     # bump migrates library.json on load
 RECENT_MAX = 5                                       # keep only the N most-recently-opened
 DOWNLOADS = os.path.join(DATA_ROOT, "downloads")    # PDFs fetched via import_url
 EXPORTS = os.path.join(CACHE_ROOT, "exports")
@@ -1059,7 +1060,16 @@ def _lib_load():
         try:
             with open(LIBRARY, encoding="utf-8") as f:
                 data = json.load(f)
-            return data.get("paths") or []
+            paths = data.get("paths") or []
+            if data.get("v") != _LIB_VERSION:
+                # Pre-v2 libraries were append-only (oldest first); v2 is
+                # newest first. Reverse once and re-persist so recency order
+                # is right — otherwise the cap would keep the oldest entries
+                # and evict the newest. Non-destructive: nothing is dropped
+                # here, the cap only bites on the next open.
+                paths = list(reversed(paths))
+                _lib_save(paths)
+            return paths
         except Exception:
             pass
     return []
@@ -1069,7 +1079,7 @@ def _lib_save(paths):
     os.makedirs(DATA_ROOT, exist_ok=True)
     tmp = LIBRARY + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
-        json.dump({"paths": paths}, f)
+        json.dump({"v": _LIB_VERSION, "paths": paths}, f)
     os.replace(tmp, LIBRARY)
 
 
@@ -1445,8 +1455,8 @@ def main(
         return _remove_from_library(doc)
     if action == "open_doc":
         p = os.path.abspath(doc)
-        _lib_promote(p)
-        wpath, wmeta = _open_work(p)
+        wpath, wmeta = _open_work(p)   # raises on a missing/unreadable file…
+        _lib_promote(p)                # …so a failed open never reorders or evicts
         info = _docinfo(wpath)
         info["path"] = _fwd(p)
         info["name"] = os.path.basename(p)
