@@ -372,6 +372,16 @@ def _run_git(args: list[str], cwd: str):
         return None
 
 
+def _has_any_ref(src: str) -> bool:
+    """Whether the repo at `src` has at least one ref — what `git bundle --all`
+    actually needs. `for-each-ref --count=1` exits 0 whether or not anything
+    matches and prints a refname only when one exists, so emptiness is read off
+    stdout rather than the exit code."""
+    refs = _run_git(["-C", src, "for-each-ref", "--count=1",
+                     "--format=%(refname)"], src)
+    return refs is not None and refs.returncode == 0 and bool(refs.stdout.strip())
+
+
 def _zip_tree(src: str, tmp: str, dest: str) -> None:
     """Write `src` (as a single top-level folder) into the zip at `tmp`.
 
@@ -409,7 +419,14 @@ def _zip_tree(src: str, tmp: str, dest: str) -> None:
             dirs[:] = [d for d in dirs if d not in links]
             for name in links:
                 add_symlink(zf, os.path.join(root, name), arcname(arc_root, name))
-            if not dirs and not files and not links and root != src:
+            # An empty directory has no member to imply it, so it needs an
+            # entry of its own or it does not survive extraction. That includes
+            # the TOP directory: excluding `root == src` here meant compressing
+            # an empty folder produced a zip with zero members, which extracts
+            # to nothing at all — the folder simply vanished. A non-empty
+            # directory is implied by its children's paths and gets no entry,
+            # so this can never duplicate one.
+            if not dirs and not files and not links:
                 zf.writestr(zipfile.ZipInfo(arc_root + "/"), b"")  # empty dir
             for name in files:
                 full = os.path.join(root, name)
@@ -478,12 +495,31 @@ def _fs_compress(body: dict, x_fused: str | None):
         # subdirectory would silently hand back far more than was asked for.
         if not _is_repo_root(src):
             return _error(f"not a git repository: {src}")
-        # `bundle create --all` and `archive HEAD` both fail on a repo with no
-        # commits. Asking first turns git's two different fatals into one
-        # sentence the client can phrase for a human.
-        head = _run_git(["-C", src, "rev-parse", "--verify", "HEAD"], src)
-        if head is None or head.returncode != 0:
-            return _error(f"{src} has no commits yet")
+        # Both formats fail on a repo with nothing to archive, but they fail on
+        # DIFFERENT preconditions and must not share one preflight.
+        #
+        # `bundle create --all` packs every ref and never looks at HEAD, so the
+        # thing it needs is "at least one ref". `archive HEAD` needs precisely
+        # HEAD. They come apart on an unborn HEAD — `git checkout --orphan` (or
+        # a fresh `git switch -c`) leaves HEAD on a branch with no commit while
+        # the real history sits on other refs. Asking `rev-parse --verify HEAD`
+        # for both is what wrongly told such a repo it had no commits and
+        # refused to bundle history it was perfectly able to pack.
+        #
+        # `for-each-ref --count=1` exits 0 either way and prints a refname only
+        # when one exists, so emptiness is read off stdout, not the exit code.
+        if fmt == "git-bundle":
+            if not _has_any_ref(src):
+                return _error(f"{src} has no commits yet")
+        else:
+            head = _run_git(["-C", src, "rev-parse", "--verify", "HEAD"], src)
+            if head is None or head.returncode != 0:
+                # A repo with no refs at all really has no commits; one whose
+                # HEAD alone is unborn is full of history that just isn't
+                # reachable from HEAD right now. Two different fixes for the
+                # user, so two different sentences.
+                return _error(f"{src} has no commits yet" if not _has_any_ref(src)
+                              else f"{src} has no commit checked out")
 
     fd, tmp = tempfile.mkstemp(dir=parent, prefix=".compress-", suffix=_ARCHIVE_EXT[fmt])
     os.close(fd)  # both zipfile and git want to open the path themselves

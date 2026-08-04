@@ -8,6 +8,7 @@ disk and the wire error contract shared with the other mutations:
 """
 import json
 import os
+import shutil
 import stat
 import subprocess
 import tarfile
@@ -69,6 +70,64 @@ def test_zip_writes_sibling_archive_and_returns_stat(tmp_path):
         assert z.read("proj/sub/b.txt") == b"beta\n"
     # An empty subdirectory survives as a directory entry.
     assert any(n.rstrip("/") == "proj/empty" for n in names)
+
+
+# Round-tripping is asserted through a REAL extractor, not just namelist():
+# a zip can list an entry and still not produce the tree, and the whole point
+# of the empty-folder case is what appears on disk after unzipping.
+def _unzip(archive, into):
+    into.mkdir(parents=True, exist_ok=True)
+    proc = subprocess.run(["unzip", "-q", str(archive), "-d", str(into)],
+                          stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    assert proc.returncode == 0, proc.stderr.decode()
+    return into
+
+
+def _tree(root):
+    """Every path under `root`, relative and "/"-separated, dirs marked."""
+    out = set()
+    for base, dirs, files in os.walk(root):
+        for name in dirs:
+            out.add(os.path.relpath(os.path.join(base, name), root) + "/")
+        for name in files:
+            out.add(os.path.relpath(os.path.join(base, name), root))
+    return out
+
+
+needs_unzip = pytest.mark.skipif(shutil.which("unzip") is None,
+                                 reason="no unzip binary to verify extraction")
+
+
+@needs_unzip
+def test_an_empty_folder_round_trips_to_an_empty_folder(tmp_path):
+    # Finder's behaviour: compressing an empty folder and unzipping gives you
+    # the empty folder back. A zip with zero members extracts to nothing.
+    src = tmp_path / "hollow"
+    src.mkdir()
+    out = _data(COMPRESS({"path": str(src), "format": "zip"}, x_fused="1"))
+    with zipfile.ZipFile(out["path"]) as z:
+        assert z.namelist(), "an empty folder must still have an entry for itself"
+    assert _tree(_unzip(tmp_path / "hollow.zip", tmp_path / "out")) == {"hollow/"}
+
+
+@needs_unzip
+def test_a_folder_of_only_an_empty_subdirectory_round_trips(tmp_path):
+    src = tmp_path / "shell"
+    (src / "inner").mkdir(parents=True)
+    COMPRESS({"path": str(src), "format": "zip"}, x_fused="1")
+    assert _tree(_unzip(tmp_path / "shell.zip", tmp_path / "out")) == {
+        "shell/", "shell/inner/"}
+
+
+@needs_unzip
+def test_a_normal_tree_round_trips_with_no_stray_or_duplicate_entries(tmp_path):
+    src = make_tree(tmp_path / "proj")
+    out = _data(COMPRESS({"path": str(src), "format": "zip"}, x_fused="1"))
+    with zipfile.ZipFile(out["path"]) as z:
+        names = z.namelist()
+    assert len(names) == len(set(names)), f"duplicate entries: {names}"
+    assert _tree(_unzip(tmp_path / "proj.zip", tmp_path / "out")) == {
+        "proj/", "proj/a.txt", "proj/sub/", "proj/sub/b.txt", "proj/empty/"}
 
 
 def test_zip_honours_an_explicit_dest(tmp_path):
@@ -164,6 +223,38 @@ def test_git_archive_of_a_repo_with_no_commits_400(tmp_path):
     resp = COMPRESS({"path": str(repo), "format": "git-archive"}, x_fused="1")
     assert _status(resp) == 400
     assert "no commits" in _data(resp)["error"]
+
+
+# An UNBORN HEAD is not an empty repository. `git checkout --orphan` leaves
+# HEAD pointing at a branch with no commit while the repo's real history sits
+# on other refs — so the two git formats have genuinely different preconditions
+# and must not share one preflight: `bundle --all` packs every ref and does not
+# care about HEAD, while `archive HEAD` needs exactly HEAD.
+
+def _orphan_branch_repo(root):
+    repo = make_repo(root)                      # real history on refs/heads/main
+    git(repo, "checkout", "-q", "--orphan", "fresh")
+    return repo
+
+
+def test_git_bundle_works_on_an_orphan_branch_with_history_elsewhere(tmp_path):
+    repo = _orphan_branch_repo(tmp_path / "repo")
+    out = _data(COMPRESS({"path": str(repo), "format": "git-bundle"}, x_fused="1"))
+    dest = tmp_path / "repo.bundle"
+    assert dest.is_file() and out["name"] == "repo.bundle"
+    # The bundle really carries the branch that HEAD is not on.
+    heads = git(tmp_path, "bundle", "list-heads", str(dest)).stdout.decode()
+    assert "refs/heads/main" in heads
+
+
+def test_git_archive_still_refuses_an_orphan_branch(tmp_path):
+    # `archive HEAD` genuinely cannot resolve an unborn HEAD, and the message
+    # must describe THAT rather than claiming the repo has no commits.
+    repo = _orphan_branch_repo(tmp_path / "repo")
+    resp = COMPRESS({"path": str(repo), "format": "git-archive"}, x_fused="1")
+    assert _status(resp) == 400
+    assert "no commit checked out" in _data(resp)["error"]
+    assert not (tmp_path / "repo.tar.gz").exists()
 
 
 def test_git_format_on_a_non_repo_400(tmp_path):

@@ -265,6 +265,12 @@ export function friendlyFsError(err: unknown, ctx: { verb: string; name: string 
   if (msg.includes("has no commits"))
     return `"${name}" has no commits yet — there's nothing for git to archive.`;
 
+  // `git archive HEAD` on an unborn HEAD (a fresh orphan branch). The repo has
+  // history, just none reachable from where HEAD points — so the fix is to
+  // check something out, not to commit, and a bundle would work today.
+  if (msg.includes("no commit checked out"))
+    return `"${name}" has no commit checked out — switch to a branch with commits, or use the Git bundle format.`;
+
   // Compress across a mount: reading the source would mean walking the whole
   // remote prefix, so the server refuses rather than hanging the mount.
   if (msg.includes("compress unsupported"))
