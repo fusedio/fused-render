@@ -796,6 +796,57 @@ const a = {id: "a"};
     assert "const SHOT_TIMEOUT_MS" in html, "the real cap still has to exist"
 
 
+def test_an_abandoned_capture_cannot_reject_unhandled(html):
+    """The race attached no handler to the capture itself, so a failure INSIDE an
+    abandoned capture — a late rasterise error, a late upload error — surfaced as
+    an unhandled promise rejection long after the send had gone out."""
+    out = _node([n for n in _CAPTURE_FNS if n != "const SHOT_TIMEOUT_MS"],
+                "var SHOT_TIMEOUT_MS = 10;\n" + _CAPTURE_STUBS + """
+var unhandled = [];
+process.on("unhandledRejection", (e) => { unhandled.push(String(e)); });
+var warned = [];
+var console2 = console;
+console = {warn: (...a) => warned.push(a.join(" "))};
+annCaptureShots = async () => {
+  await new Promise((r) => setTimeout(r, 60));
+  throw new Error("the upload failed after we stopped listening");
+};
+const a = {id: "a"};
+(async () => {
+  const r = await annShots([a]);
+  await new Promise((res) => setTimeout(res, 120));   // outlive the abandoned one
+  console2.log(JSON.stringify({shots: r.shots, unhandled: unhandled,
+                               warned: warned.length}));
+})();
+""", html)
+    assert out["shots"] == {}
+    assert out["unhandled"] == []
+    assert out["warned"] >= 1, "and it is not swallowed silently either"
+
+
+def test_an_abandoned_captures_thumbnails_are_released(html):
+    """`annCaptureShots` mints an object URL per crop unconditionally. When the
+    timeout wins the result is discarded, so those URLs pin their Blobs for the
+    page's lifetime with nothing left holding a handle to revoke them."""
+    out = _node([n for n in _CAPTURE_FNS if n != "const SHOT_TIMEOUT_MS"],
+                "var SHOT_TIMEOUT_MS = 10;\n" + _CAPTURE_STUBS + """
+var revoked = [];
+URL.revokeObjectURL = (u) => revoked.push(u);
+annCaptureShots = async () => {
+  await new Promise((r) => setTimeout(r, 60));
+  return {shots: {a: {shot: "/tmp/x.png"}}, thumbs: {a: "blob:late"}};
+};
+const a = {id: "a"};
+(async () => {
+  const r = await annShots([a]);
+  await new Promise((res) => setTimeout(res, 120));   // outlive the abandoned one
+  console.log(JSON.stringify({shots: r.shots, revoked: revoked}));
+})();
+""", html)
+    assert out["shots"] == {}, "the discarded result carries no paths"
+    assert out["revoked"] == ["blob:late"]
+
+
 def test_a_stale_shot_from_a_failed_send_is_not_quietly_re_sent(html):
     """A send that never launched rolls the notes back to pending, paths and all.
     Re-sending a path captured from an older screen is worse than no path."""

@@ -1926,14 +1926,28 @@ async function annCaptureShots(pending, deadline) {
 // itself, and yields often enough for this timer to get a turn. Neither alone
 // bounds anything.
 //
-// A timed-out capture is abandoned, not cancelled — it may still finish and
-// upload a file nobody references. That is what agent.py's pruning is for.
+// A timed-out capture is abandoned, not cancelled. Three consequences, and only
+// the first is somebody else's problem:
+//   it may still upload a file nobody references — agent.py's pruning collects it.
+//   it may still REJECT, long after the race stopped listening, and a rejection
+//     with no handler is an unhandled promise rejection in the console.
+//   it may still have minted thumbnail object URLs, and the discarded result held
+//     the only handles to them — so each pins its Blob for the page's lifetime.
+// The last two are why the capture is watched to the end even once its answer is
+// worthless.
 function annShots(pending) {
   let timer = null;
+  let abandoned = false;
   const budget = new Promise((res) => {
-    timer = setTimeout(() => res(null), SHOT_TIMEOUT_MS);
+    timer = setTimeout(() => { abandoned = true; res(null); }, SHOT_TIMEOUT_MS);
   });
   const capture = annCaptureShots(pending, Date.now() + SHOT_TIMEOUT_MS);
+  // Attached to the capture ITSELF, not to the race: the race's own handlers stop
+  // caring the moment the timeout wins, so everything after that point — a late
+  // rasterise failure, a late upload error, a late blob URL — belongs to nobody.
+  capture.then(
+    (late) => { if (abandoned) annRevokeThumbs(late); },
+    (err) => { if (abandoned) console.warn("abandoned capture failed:", err); });
   return Promise.race([capture, budget])
     .catch((err) => {
       console.warn("annotation screenshots skipped:", err.message);
