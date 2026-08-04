@@ -39,6 +39,7 @@ subprocess:
   unanswered dialog must fail the request instead of pinning a threadpool
   worker for the life of the process.
 """
+import functools
 import os
 import shutil
 import subprocess
@@ -105,11 +106,20 @@ def _choose_backend(platform: str, environ, *, has_osascript: bool = True,
     return ""
 
 
+@functools.cache
+def _has_osascript() -> bool:
+    # Cached: `available()` is read on every /api/config, which every page load
+    # makes, and a PATH walk per request buys nothing — /usr/bin/osascript does
+    # not come and go inside one process. The AppKit half is NOT cached: whether
+    # a run loop is up is exactly the thing that can change.
+    return shutil.which("osascript") is not None
+
+
 def _backend() -> str:
     return _choose_backend(
         sys.platform,
         os.environ,
-        has_osascript=shutil.which("osascript") is not None,
+        has_osascript=_has_osascript(),
         appkit_live=_appkit_runloop_live(),
     )
 

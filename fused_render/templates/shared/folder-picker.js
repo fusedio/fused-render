@@ -129,8 +129,17 @@
   --fp-scrim: rgba(0, 0, 0, 0.5);
   --fp-shadow: rgba(0, 0, 0, 0.5);
   --fp-card: var(--surface, var(--bg, #16181c));
-  --fp-inset: var(--bg, #0f1013);
-  --fp-hover: var(--surface-2, var(--bg-alt, #22252b));
+  /* Derived from the card rather than mapped onto a host token, and not for
+     tidiness: --surface-2 / --bg-alt are the nearest host names, but a template
+     declaring only --bg and --bg-alt leaves the card on --bg, and the list inset
+     would then land on the SAME colour — a list with no edge (seen for real in
+     the bundle viewer). A mix against the ink is guaranteed to contrast in
+     either theme: light ink over a dark card, dark ink over a light one.
+     NB no backticks anywhere in this stylesheet — it is a template literal, and
+     one in a comment ends it mid-rule. That is a syntax error the whole file
+     dies of, which is why a test parses this file rather than trusting it. */
+  --fp-inset: color-mix(in srgb, var(--fp-ink) 6%, var(--fp-card));
+  --fp-hover: color-mix(in srgb, var(--fp-ink) 13%, var(--fp-card));
   --fp-line: var(--line, var(--border, #2a2d33));
   --fp-line-hover: var(--line-hover, var(--line-strong, var(--border, #454a53)));
   --fp-ink: var(--ink, var(--fg, #e8eaed));
@@ -154,8 +163,8 @@
   --fp-scrim: rgba(28, 30, 34, 0.32);
   --fp-shadow: rgba(28, 30, 34, 0.22);
   --fp-card: var(--surface, var(--bg, #ffffff));
-  --fp-inset: var(--bg, #ffffff);
-  --fp-hover: var(--surface-2, var(--bg-alt, #eceef0));
+  --fp-inset: color-mix(in srgb, var(--fp-ink) 5%, var(--fp-card));
+  --fp-hover: color-mix(in srgb, var(--fp-ink) 11%, var(--fp-card));
   --fp-line: var(--line, var(--border, #d8dade));
   --fp-line-hover: var(--line-hover, var(--line-strong, var(--border, #b4b9c0)));
   --fp-ink: var(--ink, var(--fg, #1f2023));
@@ -203,9 +212,13 @@
 .fp-crumb[aria-current="true"] { color: var(--fp-ink); font-weight: 600; }
 .fp-sep { color: var(--fp-ink-3); }
 .fp-crumb:focus-visible, .fp-place:focus-visible,
-.fp-list:focus-visible, .fp-actions button:focus-visible, .fp-name input:focus-visible {
+.fp-actions button:focus-visible, .fp-name input:focus-visible {
   outline: 2px solid var(--fp-accent); outline-offset: 1px;
 }
+/* The list gets an accent EDGE rather than the ring: it is a big element, and a
+   2px ring around it drowns out the selected row inside it — which is the thing
+   the keyboard is actually moving. */
+.fp-list:focus-visible { outline: none; border-color: var(--fp-accent); }
 
 /* ---- list ---------------------------------------------------------------- */
 .fp-list {
@@ -332,11 +345,14 @@
    * user cancelled — a cancel is an ANSWER, so it must not be reported as a
    * failure and must not be re-asked in HTML. Anything else rejects, and the
    * caller falls back to the in-page dialog. */
-  function pickNative(start) {
+  function pickNative(start, title) {
     return fetch("/api/fs/pick-folder", {
       method: "POST",
       headers: { "Content-Type": "application/json", "X-Fused": "1" },
-      body: JSON.stringify({ start: start || null }),
+      // The caller's title rides along: the OS dialog is the one the user sees,
+      // so it has to say what it is FOR ("Clone this bundle into…"), not carry
+      // the generic default while the in-page fallback gets the real wording.
+      body: JSON.stringify({ start: start || null, title: title || null }),
     }).then(function (res) {
       return res.json().then(function (data) {
         if (!res.ok) {
@@ -380,7 +396,7 @@
     }
     return appConfig().then(function (config) {
       if (!config || !config.native_dir_picker) return openDialog(opts);
-      return pickNative(opts.start || "/").then(function (dir) {
+      return pickNative(opts.start || "/", opts.title).then(function (dir) {
         if (dir === null) return null;  // cancelled: the user's answer, honoured
         return toChoice(dir, opts);
       }, function (err) {
@@ -532,7 +548,9 @@
         var parts = crumbs(dir);
         var html = "";
         for (var i = 0; i < parts.length; i++) {
-          if (i) html += '<span class="fp-sep">/</span>';
+          // No separator after a root: the root's own label IS "/" (or "C:/"),
+          // so one would read as "/ / Users".
+          if (i && !isRoot(parts[i - 1].path)) html += '<span class="fp-sep">/</span>';
           html += '<button type="button" class="fp-crumb" data-path="' +
             esc(parts[i].path) + '"' +
             (i === parts.length - 1 ? ' aria-current="true"' : "") +

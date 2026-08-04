@@ -442,12 +442,33 @@ def test_a_chosen_folder_comes_back_as_a_path(monkeypatch):
     seen = {}
 
     def fake(start=None, title=None):
-        seen["start"] = start
+        seen.update(start=start, title=title)
         return "/Users/ada/code"
 
     monkeypatch.setattr(dirpicker, "pick_directory", fake)
-    assert _data(_pick({"start": "/Users/ada"})) == {"path": "/Users/ada/code"}
+    assert _data(_pick({"start": "/Users/ada", "title": "Clone into…"})) == {
+        "path": "/Users/ada/code"}
     assert seen["start"] == "/Users/ada"
+    # The caller's wording reaches the OS dialog: it is the dialog the user
+    # actually sees, so "Clone this bundle into…" must not be swapped for the
+    # generic default while only the in-page fallback says the real thing.
+    assert seen["title"] == "Clone into…"
+
+
+def test_a_runaway_title_is_clamped_rather_than_sizing_the_dialog(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(dirpicker, "pick_directory",
+                        lambda start=None, title=None: seen.update(title=title) or "/tmp")
+    _pick({"title": "x" * 5000})
+    assert len(seen["title"]) == 120
+
+
+def test_no_title_gets_a_sensible_default(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(dirpicker, "pick_directory",
+                        lambda start=None, title=None: seen.update(title=title) or "/tmp")
+    _pick({})
+    assert seen["title"] == "Choose a folder"
 
 
 def test_no_start_is_fine(monkeypatch):

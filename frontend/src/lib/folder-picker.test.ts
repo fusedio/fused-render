@@ -204,6 +204,7 @@ test("with the capability advertised, a chosen folder comes from the OS dialog",
   // always opens at the home folder is a native dialog nobody wants.
   expect(calls.find((c) => c.url === "/api/fs/pick-folder")?.body).toEqual({
     start: "/Users/ada",
+    title: null,
   });
 });
 
@@ -259,4 +260,38 @@ test("native: false skips the capability probe entirely", async () => {
   const picker = loadPicker(impl, throwingDocument);
   await expect(picker.open({ native: false })).rejects.toThrow(FELL_BACK);
   expect(calls).toEqual([]);
+});
+
+// ----------------------------------------------------------- the CSS literal
+// The stylesheet is a template literal, so a backtick or a `${` anywhere inside
+// it — including inside a CSS comment — ends the literal mid-rule and the whole
+// file becomes a SyntaxError. Every test above loads the source, so any of them
+// would fail; this one names the cause, because "picker: undefined" in a browser
+// console does not.
+
+test("the CSS literal contains nothing that could terminate it", () => {
+  const start = SOURCE.indexOf("var CSS = `");
+  expect(start).toBeGreaterThan(-1);
+  const body = SOURCE.slice(start + "var CSS = `".length);
+  const css = body.slice(0, body.indexOf("`;"));
+  expect(css.length).toBeGreaterThan(1000);       // it really is the stylesheet
+  expect(css).not.toInclude("`");
+  expect(css).not.toInclude("${");
+});
+
+test("the caller's title rides to the OS dialog, not just to the fallback", () => {
+  // The dialog the user sees is the native one, so it has to say what it is for.
+  const { impl, calls } = stubFetch(
+    { native_dir_picker: true },
+    () => jsonResponse(200, { path: "/Users/ada/code" })
+  );
+  const picker = loadPicker(impl, throwingDocument);
+  return picker
+    .open({ start: "/Users/ada", title: "Clone this bundle into…" })
+    .then(() => {
+      expect(calls.find((c) => c.url === "/api/fs/pick-folder")?.body).toEqual({
+        start: "/Users/ada",
+        title: "Clone this bundle into…",
+      });
+    });
 });

@@ -714,9 +714,12 @@ def api_fs_pick_folder(body: dict = Body(...), x_fused: str | None = Header(defa
     start = body.get("start") or None
     if start is not None and not os.path.isabs(start):
         return _error("'start' must be an absolute filesystem path")
+    # The prompt the OS dialog shows. Clamped, not because it is dangerous (it is
+    # escaped for AppleScript and is just a string to AppKit) but because a title
+    # is a label and a dialog sized by a runaway one is unusable.
+    title = str(body.get("title") or "Choose a folder")[:120]
     try:
-        chosen = dirpicker.pick_directory(start=start,
-                                         title=body.get("title") or "Choose a folder")
+        chosen = dirpicker.pick_directory(start=start, title=title)
     except dirpicker.PickerBusy as exc:
         return _error(str(exc), status=409)
     except dirpicker.PickerUnavailable as exc:
