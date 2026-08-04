@@ -284,6 +284,12 @@ def create_app(start_dir: str) -> FastAPI:
     # The Home view's apps backend (routers/apps.py): list workspace app
     # folders + scaffold new ones from the app starter kit.
     app.include_router(apps_router)
+    # Claude Code related-parts (routers/claude_code.py): sessions index,
+    # transcript -> files, file -> sessions + checkpointed versions. Read-only
+    # pivots over the same store the claude-session listing source reads.
+    from fused_render.server.routers.claude_code import router as claude_code_router
+
+    app.include_router(claude_code_router)
     # GitHub deep links (SPEC §26, D110): GET /clone confirm page +
     # POST /api/clone sparse-clone into ~/Documents/Fused. deeplink.py never
     # imports server, so the include stays acyclic like shell/*.

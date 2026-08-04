@@ -47,7 +47,18 @@ export function timeAgo(epochSeconds: number | null | undefined): string | null 
 // exactly the .app-pcard-thumb box, whatever the grid column resolves to.
 const PREVIEW_SCALE = 0.25;
 
-export function AppPreviewCard({ app }: { app: AppInfo }) {
+export function AppPreviewCard({
+  app,
+  onHistory,
+}: {
+  app: AppInfo;
+  // When provided, the card offers a History button (the /apps hub passes it;
+  // Home's tiles don't) opening the Claude Code checkpoint/session view for
+  // the card's entry file. On the card rather than only on Claude-sourced
+  // ones: a workspace app's entry has checkpoints too, whenever a session
+  // edited it.
+  onHistory?: (app: AppInfo) => void;
+}) {
   const title = app.title || app.name;
   const ago = timeAgo(app.updated_at);
   const sourceLabel = appSourceLabel(app.source);
@@ -108,6 +119,27 @@ export function AppPreviewCard({ app }: { app: AppInfo }) {
           <span className="app-pcard-tag">{app.tag}</span>
           {title !== app.name && <span className="app-pcard-name">{app.name}</span>}
           {ago && <span className="app-pcard-ago">{ago}</span>}
+          {onHistory && entry && (
+            // A button inside the card's anchor: preventDefault + stop so the
+            // click opens the panel and never rides on to the card's href
+            // (onAppCardClick already yields to a defaultPrevented event).
+            <button
+              type="button"
+              className="app-pcard-history"
+              title="History — Claude Code checkpoints and sessions for this file"
+              aria-label="History"
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                onHistory(app);
+              }}
+            >
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <circle cx="12" cy="12" r="9" />
+                <path d="M12 7v5l3 3" />
+              </svg>
+            </button>
+          )}
         </span>
       </span>
     </a>

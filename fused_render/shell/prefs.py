@@ -120,7 +120,8 @@ def reader_enabled() -> bool:
 #: workspace itself is deliberately absent: it is what the app IS, not a source
 #: to discover, and a toggle that could empty Home of the user's own work is
 #: not a preference — it's a footgun.
-DISCOVERY_SOURCES = ("claude_science", "claude_code")
+DISCOVERY_SOURCES = ("claude_science", "claude_code", "claude_sessions",
+                     "claude_uploads")
 
 
 def discovery_enabled(source: str) -> bool:
@@ -263,7 +264,12 @@ def _discovery_state() -> dict:
     find". Imported inside the function to keep this module's import graph as
     small as it was — the same reason `calls` is imported lazily in `put_prefs`.
     """
-    from fused_render import claude_projects, claude_science
+    from fused_render import (
+        claude_projects,
+        claude_science,
+        claude_sessions,
+        claude_uploads,
+    )
 
     return {
         "claude_science": {
@@ -278,6 +284,14 @@ def _discovery_state() -> dict:
             # turns the source off), so the presence of a path says nothing
             # about the presence of a config.
             "available": os.path.isfile(claude_projects.config_path() or ""),
+        },
+        "claude_sessions": {
+            "enabled": discovery_enabled("claude_sessions"),
+            "available": os.path.isdir(claude_sessions.projects_dir()),
+        },
+        "claude_uploads": {
+            "enabled": discovery_enabled("claude_uploads"),
+            "available": os.path.isdir(claude_uploads.uploads_dir()),
         },
     }
 
@@ -416,11 +430,14 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
         prefs["calls_retention_days"] = value
         changed = True
     if not changed:
+        # The discover_* names are generated from DISCOVERY_SOURCES so a new
+        # source cannot leave this message advertising a stale key set.
+        discover_keys = ", ".join(f"'discover_{s}'" for s in DISCOVERY_SOURCES)
         return JSONResponse(
             {"error": "no known preference in request (expected 'engine', "
-                      "'deploy_enabled', 'reader_enabled', 'discover_claude_science', "
-                      "'discover_claude_code', 'calls_enabled', "
-                      "'calls_params' and/or 'calls_retention_days')"},
+                      f"'deploy_enabled', 'reader_enabled', {discover_keys}, "
+                      "'calls_enabled', 'calls_params' and/or "
+                      "'calls_retention_days')"},
             status_code=400,
         )
     storage.write_json(_path(), prefs)

@@ -302,6 +302,10 @@ function DiscoveryToggle({
 const DISCOVERY_BLURBS: Record<DiscoverySource, string> = {
   claude_code:
     "Show apps from other Fused-shaped folders you have opened Claude Code in.",
+  claude_sessions:
+    "Show the pages, figures and reports your recent Claude Code sessions wrote, wherever they were saved.",
+  claude_uploads:
+    "Show the local copies of files you attached to Claude Code conversations.",
   claude_science:
     "Show the figures, tables and reports Claude Science has saved, alongside your own apps.",
 };

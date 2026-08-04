@@ -13,6 +13,7 @@ import { requestCloneApp } from "@platform/cloud/cloneApp";
 import { useDeployEnabled } from "@platform/lib/prefs";
 import { navigateUrl } from "@platform/lib/router";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
+import { AppHistoryPanel } from "@apps/builder/AppHistory";
 import { AppPreviewCard } from "@apps/builder/AppPreviewCard";
 import { HomeHero } from "./HomeHero";
 import { NewAppPanel } from "./NewAppPanel";
@@ -43,6 +44,8 @@ export default function Apps() {
   const [tag, setTag] = useState<string | null>(null);
   const [sort, setSort] = useState<SortKey>("recent");
   const [creating, setCreating] = useState(false);
+  // The card whose entry file the history panel is open for, or null.
+  const [history, setHistory] = useState<AppInfo | null>(null);
   // Whether deploying is switched on at all — the import entry follows it (see the toolbar).
   const deployEnabled = useDeployEnabled();
   // Bumped when the panel creates an app: refetches the grid without clearing it.
@@ -186,7 +189,7 @@ export default function Apps() {
             ) : (
               <div className="apps-cards">
                 {shown.map((app) => (
-                  <AppPreviewCard key={app.path} app={app} />
+                  <AppPreviewCard key={app.path} app={app} onHistory={setHistory} />
                 ))}
               </div>
             )}
@@ -197,6 +200,7 @@ export default function Apps() {
       {creating && (
         <NewAppPanel onClose={() => setCreating(false)} onCreated={() => setNonce((n) => n + 1)} />
       )}
+      {history && <AppHistoryPanel app={history} onClose={() => setHistory(null)} />}
     </div>
   );
 }

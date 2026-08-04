@@ -183,6 +183,36 @@ test("a Claude Science artifact opens the FILE, never the folder-with-a-chat", (
   ).toEqual({ path: "/w/a", opts: { isDir: true, mode: "claude_split" } });
 });
 
+test("file-sourced cards open the FILE — their path IS the file", () => {
+  // claude-session and claude-upload cards carry a file in `path`, not a
+  // folder: opening one as a project would point claude_split at a file path.
+  // The rule is an ALLOWLIST (workspace, claude-code) so a future source
+  // defaults to this safe behaviour instead of repeating the science bug.
+  for (const source of ["claude-session", "claude-upload"] as const) {
+    expect(
+      openTargetFor(
+        app({
+          path: "/somewhere/report.html",
+          entry: "/somewhere/report.html",
+          entry_html: "/somewhere/report.html",
+          source,
+        }),
+      ),
+    ).toEqual({ path: "/somewhere/report.html" });
+  }
+  // An unknown future source with a page entry: file, not project.
+  expect(
+    openTargetFor(
+      app({
+        path: "/x/p.html",
+        entry: "/x/p.html",
+        entry_html: "/x/p.html",
+        source: "brand-new" as AppInfo["source"],
+      }),
+    ),
+  ).toEqual({ path: "/x/p.html" });
+});
+
 test("isImageEntry recognises the types an <img> can paint", () => {
   for (const path of ["/a/f.png", "/a/f.JPG", "/a/f.jpeg", "/a/f.svg", "/a/f.webp"]) {
     expect(isImageEntry(path)).toBe(true);

@@ -16,7 +16,7 @@ the file a card opens and previews, ``entry_html`` the narrower claim that the
 entry is a renderable page (the only one the HTML-only ``/render`` iframe may be
 pointed at). For an app of this shape they are the same file.
 
-The workspace is not the only source. ``GET /api/apps`` merges three, each
+The workspace is not the only source. ``GET /api/apps`` merges five, each
 tagging its apps with a ``source`` so the shell can badge them and branch its
 open rule:
 
@@ -28,8 +28,14 @@ open rule:
   absolute paths in Claude Code's ``~/.claude.json`` project list
   (``claude_projects.py``). A folder contributes when most of its
   subdirectories are apps, which keeps ordinary source trees out of Home.
+* ``claude-session`` — individual viewable FILES that recent Claude Code
+  sessions wrote, found from the session transcripts
+  (``claude_sessions.py``) — the pages, figures and reports that never land
+  in an app-shaped folder at all.
+* ``claude-upload`` — the local copies of files the user attached to Claude
+  Code conversations (``claude_uploads.py``).
 
-Both discovered sources are read-only — nothing here scaffolds, commits or
+Every discovered source is read-only — nothing here scaffolds, commits or
 deploys into them — and each is switchable off from Preferences
 (``prefs.discovery_enabled``), checked per request so a toggle applies to the
 next listing and an off source is never walked at all.
@@ -59,7 +65,13 @@ import time
 
 from fastapi import APIRouter, Body, Header
 
-from fused_render import app_listing, claude_projects, claude_science
+from fused_render import (
+    app_listing,
+    claude_projects,
+    claude_science,
+    claude_sessions,
+    claude_uploads,
+)
 from fused_render.server.common import _error, _require_fused
 from fused_render.shell import prefs
 from fused_render.shell.seed import fused_dir
@@ -108,6 +120,10 @@ def api_apps():
         apps += _from("Claude Science", claude_science.list_apps)
     if prefs.discovery_enabled("claude_code"):
         apps += _from("Claude Code project", lambda: claude_projects.list_apps(root))
+    if prefs.discovery_enabled("claude_sessions"):
+        apps += _from("Claude Code session", lambda: claude_sessions.list_apps(root))
+    if prefs.discovery_enabled("claude_uploads"):
+        apps += _from("Claude Code upload", claude_uploads.list_apps)
     apps.sort(key=lambda a: (a["tag"].lower(), a["name"].lower()))
     return {"apps": apps}
 

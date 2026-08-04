@@ -25,6 +25,15 @@ export function entryOf(app: AppInfo): string | null {
   return app.entry ?? app.entry_html;
 }
 
+// Sources whose card is a FOLDER the user owns — the only ones a page entry
+// may open as a project. An allowlist rather than the blocklist it began as:
+// when claude-session/claude-upload arrived (cards whose `path` IS the file,
+// not a folder), a blocklist would have opened claude_split on a file path —
+// the same class of breakage the claude-science exclusion already fixed once.
+// A new source now defaults to the safe behaviour (open the file) until it is
+// added here deliberately.
+const PROJECT_SOURCES = new Set(["workspace", "claude-code"]);
+
 // Whether opening this app means opening its folder beside a Claude chat, which
 // is what a page entry earns: claude_split rediscovers the entry from the folder
 // and wants exactly one top-level .html there.
@@ -33,9 +42,10 @@ export function entryOf(app: AppInfo): string | null {
 // the FILE even when it is a page, for two independent reasons: that folder
 // holds one file per VERSION, so claude_split's "exactly one top-level .html"
 // resolves to nothing the moment a report is saved twice; and the chat would
-// run cwd'd inside ~/.claude-science, a store this app only ever reads.
+// run cwd'd inside ~/.claude-science, a store this app only ever reads. A
+// claude-session or claude-upload card is a single file outright.
 function opensAsProject(app: AppInfo): boolean {
-  return Boolean(app.entry_html) && app.source !== "claude-science";
+  return Boolean(app.entry_html) && (!app.source || PROJECT_SOURCES.has(app.source));
 }
 
 // Image types the thumbnail can paint directly through /api/fs/raw. Kept to
