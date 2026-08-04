@@ -65,7 +65,25 @@ export function parseStorageUrl(raw: string): ParsedLink | null {
     const bi = segs.indexOf("browser");
     if (bi < 0) return null;
     const rest = segs.slice(bi + 1);
-    return rest.length ? { provider: "gcs", path: rest.join("/") } : null;
+    // The single-object view inserts a "_details" marker before the bucket
+    // (…/browser/_details/<bucket>/<key>). Reading it as the bucket produced a
+    // path no remote could ever serve.
+    if (rest[0] === "_details") rest.shift();
+    if (!rest.length) return null;
+    // The console hangs matrix parameters on the BUCKET segment
+    // ("my-bucket;tab=objects"). That is UI state, not part of the name.
+    // Stripped from the bucket only: ";" is legal in an object name, so doing
+    // this to every segment would corrupt real keys.
+    rest[0] = rest[0].split(";")[0];
+    if (!rest[0]) return null;
+    const base = rest.join("/");
+    // ?prefix= appears on the BUCKET view, where it carries the whole key path;
+    // a deeper URL already encodes that path in its segments, so appending
+    // there would duplicate it.
+    return {
+      provider: "gcs",
+      path: rest.length === 1 && qsPrefix ? joinPath(base, qsPrefix) : base,
+    };
   }
   // GCS path-style data hosts.
   if (host === "storage.googleapis.com" || host === "storage.cloud.google.com") {

@@ -31,6 +31,47 @@ test("an unrelated AWS console page is not a storage link", () => {
   expect(parseStorageUrl("https://console.aws.amazon.com/ec2/home?region=us-east-1")).toBeNull();
 });
 
+test("a GCS console browser link parses to bucket/prefix", () => {
+  expect(parseStorageUrl("https://console.cloud.google.com/storage/browser/my-bucket/a/b")).toEqual(
+    { provider: "gcs", path: "my-bucket/a/b" },
+  );
+});
+
+test("a GCS console object-detail link drops the _details marker", () => {
+  // …/browser/_details/<bucket>/<key> is the single-object view. Treating
+  // "_details" as the bucket produced a path no remote could ever serve.
+  expect(
+    parseStorageUrl("https://console.cloud.google.com/storage/browser/_details/my-bucket/x.tif"),
+  ).toEqual({ provider: "gcs", path: "my-bucket/x.tif" });
+});
+
+test("a GCS console link strips the matrix parameter off the bucket", () => {
+  // The console hangs ";tab=objects" on the bucket segment, which is UI state,
+  // not part of the bucket name.
+  expect(
+    parseStorageUrl("https://console.cloud.google.com/storage/browser/my-bucket;tab=objects"),
+  ).toEqual({ provider: "gcs", path: "my-bucket" });
+  expect(
+    parseStorageUrl(
+      "https://console.cloud.google.com/storage/browser/my-bucket;tab=objects?project=p",
+    ),
+  ).toEqual({ provider: "gcs", path: "my-bucket" });
+});
+
+test("a GCS console bucket link honors ?prefix=, like the S3 branch", () => {
+  expect(
+    parseStorageUrl(
+      "https://console.cloud.google.com/storage/browser/my-bucket;tab=objects?prefix=data/2026/",
+    ),
+  ).toEqual({ provider: "gcs", path: "my-bucket/data/2026/" });
+});
+
+test("a GCS console page that is not a browser view is not a storage link", () => {
+  expect(parseStorageUrl("https://console.cloud.google.com/storage/settings")).toBeNull();
+  expect(parseStorageUrl("https://console.cloud.google.com/storage/browser")).toBeNull();
+  expect(parseStorageUrl("https://console.cloud.google.com/storage/browser/_details")).toBeNull();
+});
+
 test("a virtual-hosted S3 URL folds the bucket back into the path", () => {
   expect(parseStorageUrl("https://my-bucket.s3.us-west-2.amazonaws.com/data/x.tif")).toEqual({
     provider: "s3",
