@@ -638,10 +638,24 @@ def _binding_source() -> str:
 
 def _pycache_prefix() -> str:
     """Where relocated bytecode goes — the same tree `_child.py` uses, so the
-    two engines share one cache instead of each rebuilding its own."""
-    from fused_render.shell import storage
+    two engines share one cache instead of each rebuilding its own.
 
-    return os.path.join(storage.home_dir(), "pycache")
+    Deliberately the RAW `FUSED_RENDER_HOME` base, not `storage.home_dir()`.
+    That one nests under `branches/<ref>/` when `FUSED_RENDER_BRANCH` is set, so
+    going through it split the tree in two the moment a branch ref existed —
+    engine writes under the branch, `_child.py` (a standalone script that cannot
+    import this package) under the base — and the sharing this docstring claims
+    quietly stopped happening. Raised in review.
+
+    Branch isolation exists so parallel branches' *shell state* — templates,
+    bookmarks, prefs — cannot collide. A bytecode cache has no such hazard to
+    isolate: CPython validates a `.pyc` against its source's path, mtime and
+    size, and tags the filename with the interpreter version, so two branches
+    either produce byte-identical entries or entries under different paths.
+    Nesting would only build the same cache twice.
+    """
+    base = os.environ.get("FUSED_RENDER_HOME") or os.path.expanduser("~/.fused-render")
+    return os.path.join(base, "pycache")
 
 
 def build_code(user_code: str, script_dir: str, script_path: str = "script") -> str:

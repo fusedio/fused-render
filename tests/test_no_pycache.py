@@ -105,6 +105,50 @@ def test_the_worker_still_CACHES_bytecode_just_not_in_the_app_folder(tmp_path):
     assert cached, "bytecode must still be written — just under our own home dir"
 
 
+def test_both_engines_relocate_to_THE_SAME_tree_even_under_a_branch_ref(
+        tmp_path, monkeypatch):
+    """Raised in review, and invisible without a branch ref set.
+
+    The engine resolved its prefix through `storage.home_dir()`, which nests
+    under `branches/<ref>/` when FUSED_RENDER_BRANCH is set, while `_child.py`
+    uses the raw base — it is a standalone script and cannot import the package.
+    So the moment a branch ref existed the two engines wrote to different trees
+    and each paid a cold cache, while the docstring claimed they shared one.
+
+    A bytecode cache has nothing to isolate per branch: CPython validates a
+    `.pyc` against its source's path, mtime and size and tags the filename with
+    the interpreter version. Sharing is correct, not merely convenient.
+    """
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("FUSED_RENDER_BRANCH", "some-feature-branch")
+    # The ref is resolved once per process and cached (_branch._CACHED_REF), and
+    # by this point some earlier import has already resolved it to "" — which
+    # would make a branch-nesting _pycache_prefix() return the unnested path
+    # anyway and let the regression slip through this test. Reset it so the env
+    # var above actually takes effect; monkeypatch restores the old value.
+    from fused_render import _branch
+
+    monkeypatch.setattr(_branch, "_CACHED_REF", None)
+
+    # Where the child actually writes, observed by running it — not recomputed
+    # here, which would just be a third copy of the rule agreeing with itself.
+    page = _app_folder(tmp_path / "app")
+    child = subprocess.run(
+        [sys.executable, CHILD],
+        input=json.dumps({"path": str(page), "params": {}}),
+        capture_output=True, text=True, timeout=60,
+        env={**os.environ, "FUSED_RENDER_HOME": str(tmp_path / "home"),
+             "FUSED_RENDER_BRANCH": "some-feature-branch"})
+    assert child.returncode == 0, child.stderr
+
+    child_tree = tmp_path / "home" / "pycache"
+    assert list(child_tree.rglob("*.pyc")), "the child cached under the raw base"
+    assert engine._pycache_prefix() == str(child_tree), \
+        "the engine must point at the same tree the child writes to"
+    assert not (tmp_path / "home" / "branches").exists(), \
+        "the cache is not branch-nested — there is nothing to isolate"
+
+
 def test_the_engine_wrapper_relocates_the_cache_before_extending_sys_path(tmp_path):
     """The fused engine's generated wrapper, executed for real.
 
