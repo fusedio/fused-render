@@ -113,6 +113,30 @@ BACKEND_ATTRS = ("_venvs_path", "_python_executable")
 # becoming the very stale-forever fact the marker already was.
 _VALIDATED: dict[str, bool] = {}
 
+# venv directory -> how many times its verdict has been discarded, i.e. which
+# GENERATION of that directory the cache is allowed to describe. Bumped by
+# `_discard_verdict`, the only way an entry leaves `_VALIDATED`.
+#
+# This exists because the probe runs outside the lock (see `_venv_is_usable`), so a
+# verdict can be measured against a venv that is destroyed before it is stored. The
+# invariant it buys is small and absolute: **a verdict is only ever cached against
+# the generation it judged.** Without it the cache could hold an answer about a
+# directory that no longer exists, attached to whatever replaced it under the same
+# key — the same defect class as caching an inconclusive probe, where the cache ends
+# up answering a question nobody asked it and nothing ever re-asks.
+#
+# Deliberately not leaning on `_REBUILD_ATTEMPTED` to absorb that instead: the
+# rebuild budget is a POLICY (D206 records it as one, and policies get tuned), and
+# quietly making it double as the staleness backstop means a later change to the
+# budget resurfaces staleness somewhere unrelated to the change that caused it.
+_GENERATION: dict[str, int] = {}
+
+# Bumped by `reset_venv_validation_cache`, and folded into every generation read
+# (`_generation_of`). A per-directory counter alone cannot express "invalidate
+# everything", because a probe on its first look at a venv has no entry to bump —
+# and that is the majority of in-flight probes. One epoch covers them all.
+_EPOCH = 0
+
 # venv directories whose ready marker this process has already discarded once
 # (D206). The bound on the repair: one rebuild per venv per process, because for
 # the cohort this whole mechanism exists for the rebuild is guaranteed to reproduce
@@ -276,6 +300,28 @@ def _venv_runs(venv_dir: str) -> bool | None:
     return True
 
 
+def _generation_of(venv_dir: str) -> tuple[int, int]:
+    """Which generation of `venv_dir` the cache may currently describe.
+
+    The pair, never either half alone: `_GENERATION` ends one directory's generation
+    (a discard), `_EPOCH` ends all of them at once (a reset). Caller holds
+    `_validated_lock`.
+    """
+    return (_EPOCH, _GENERATION.get(venv_dir, 0))
+
+
+def _discard_verdict(venv_dir: str) -> None:
+    """Forget `venv_dir`'s cached verdict and END the generation it described.
+
+    The ONLY way an entry may leave `_VALIDATED`, so that "the verdict is gone" and
+    "the generation moved" can never disagree — a bare `pop` elsewhere would silently
+    re-open the window `_GENERATION` exists to close. The caller must already hold
+    `_validated_lock`: both dicts are one piece of state.
+    """
+    _VALIDATED.pop(venv_dir, None)
+    _GENERATION[venv_dir] = _GENERATION.get(venv_dir, 0) + 1
+
+
 def _venv_is_usable(venv_dir: str) -> bool | None:
     """`_venv_runs`, memoized per venv directory **per process**.
 
@@ -301,6 +347,13 @@ def _venv_is_usable(venv_dir: str) -> bool | None:
     while we were probing, theirs wins and ours is discarded, so every caller in
     the race still sees ONE answer.
 
+    Probing outside the lock also means the venv can be DESTROYED mid-probe, so the
+    generation is read before the probe and re-checked after (`_generation_of`), and
+    the invariant is absolute: **a verdict is only ever cached against the generation
+    it judged.** If it moved, this returns its own measurement to its own caller and
+    stores nothing — no window in which the cache describes a venv that is gone, and
+    nothing for `_REBUILD_ATTEMPTED` to have to absorb.
+
     Negative verdicts are cached too — and `is_installed` drops the entry whenever
     the marker is absent, which is what stops a cached "no" from outliving the
     venv it judged. See the comment there.
@@ -313,25 +366,26 @@ def _venv_is_usable(venv_dir: str) -> bool | None:
     """
     with _validated_lock:
         cached = _VALIDATED.get(venv_dir)
+        generation = _generation_of(venv_dir)
     if cached is not None:
         return cached
     verdict = _venv_runs(venv_dir)
     if verdict is None:
         return None  # inconclusive: nothing to store, nothing to agree about
     with _validated_lock:
-        # Prefer whatever landed while we were probing — `setdefault` makes
-        # "store only if still absent, and tell me which won" one atomic step, so
-        # every caller in a race returns the SAME verdict rather than each its own.
-        #
-        # The one thing this cannot distinguish is "nobody has stored yet" from
-        # "someone stored and `is_installed` then popped it" (which it does when it
-        # discards a marker), so a concurrent discard can leave our now-historical
-        # verdict behind. Bounded on purpose rather than solved with a generation
-        # counter: the very next `is_installed` either finds the marker absent — and
-        # pops the entry again, by the same branch that popped it — or finds a
-        # rebuilt, re-marked venv, where a stale `False` costs at most the one
-        # rebuild `_REBUILD_ATTEMPTED` already allows. Neither outcome is
-        # permanent, and neither is worth a generation counter here.
+        if _generation_of(venv_dir) != generation:
+            # The venv we judged was discarded while we were judging it, so this
+            # verdict describes a directory that is gone. Return it to OUR caller —
+            # it is what we genuinely measured, and answering it is strictly better
+            # than a second probe on the request path — but store nothing, so the
+            # next call re-probes the venv that now stands here. No attempt to
+            # decide which verdict is "fresher": there is no evidence either way,
+            # and the cheap, always-correct move is to cache neither.
+            return verdict
+        # Same generation, so whatever landed while we probed describes the same
+        # venv and either answer is right. `setdefault` makes "store only if still
+        # absent, and tell me which won" one atomic step, so every caller in the
+        # race returns the SAME verdict rather than each its own.
         return _VALIDATED.setdefault(venv_dir, verdict)
 
 
@@ -346,9 +400,21 @@ def reset_venv_validation_cache() -> None:
     bound that silently suppresses the repair the re-probe just asked for, and
     leaving `_BOUND_LOGGED` behind would silence the announcement of a bound that
     can now engage again.
+
+    Bumps `_EPOCH` rather than only emptying the dicts, so every generation actually
+    ENDS — including those of venvs that have no `_VALIDATED` entry yet, which is
+    every probe currently in flight on its FIRST look at a venv. A bare clear would
+    be undone by exactly the calls it means to invalidate: such a probe measured the
+    pre-reset world, would find its key absent afterwards, and would insert that
+    pre-reset verdict. With the epoch moved, `_GENERATION` can be emptied too — the
+    epoch already invalidates everything it held.
     """
+    global _EPOCH
+
     with _validated_lock:
+        _EPOCH += 1
         _VALIDATED.clear()
+        _GENERATION.clear()
         _REBUILD_ATTEMPTED.clear()
         _BOUND_LOGGED.clear()
 
@@ -390,7 +456,7 @@ def is_installed(requirements: list[str]) -> bool:
         # bad venv for a permanently negative answer — the loader would install
         # successfully and `is_installed` would still say no, forever.
         with _validated_lock:
-            _VALIDATED.pop(venv_dir, None)
+            _discard_verdict(venv_dir)
         return False
     verdict = _venv_is_usable(venv_dir)
     if verdict is True:
@@ -442,7 +508,7 @@ def is_installed(requirements: list[str]) -> bool:
         # is `threading.Lock`, a file lock would need a stale-lock policy, and the
         # race being closed is between threads of one server.
         if not os.path.exists(marker):
-            _VALIDATED.pop(venv_dir, None)  # that generation is over
+            _discard_verdict(venv_dir)  # that generation is over
             return False
         already_tried = venv_dir in _REBUILD_ATTEMPTED
         _REBUILD_ATTEMPTED.add(venv_dir)
@@ -461,7 +527,7 @@ def is_installed(requirements: list[str]) -> bool:
             # See the marker-absent branch above: the verdict must not outlive the
             # generation it judged. Kept on the already-tried path, so repeated
             # calls answer from the cache instead of spawning a probe apiece.
-            _VALIDATED.pop(venv_dir, None)
+            _discard_verdict(venv_dir)
     if already_tried:
         (logger.warning if first_bound_hit else logger.debug)(
             "script venv %s still cannot run its own python after a rebuild, so "

@@ -672,6 +672,68 @@ def test_concurrent_callers_still_pay_no_probe_per_request(tmp_path, monkeypatch
 
 
 @requires_fused
+def test_a_verdict_probed_ACROSS_a_discard_is_never_cached(tmp_path, monkeypatch):
+    """The invariant: a verdict is only ever cached against the generation it judged.
+
+    The probe runs outside the lock, so a concurrent `is_installed` can discard this
+    venv — end its generation — while we are still probing it. Storing our verdict
+    then would attach an answer about a DESTROYED venv to whatever replaces it under
+    the same key, which is the same defect class as caching an inconclusive probe:
+    the cache answers a question nobody asked it, and nothing ever re-asks.
+
+    So a generation change means: return our answer to our own caller (it is what we
+    genuinely measured) and store NOTHING. The next call re-probes. Deliberately no
+    cleverness about which verdict is "fresher" — there is no evidence either way.
+
+    Driven by making the probe itself perform the discard, which is exactly what a
+    racing caller's discard looks like from here: no threads, no sleeps.
+    """
+    reqs = ["some-dist"]
+    venv_dir = _marked_venv(tmp_path, monkeypatch, reqs, runnable=True)
+
+    probes = []
+    real = envinstall._venv_runs
+
+    def _probe_then_someone_else_discards(d):
+        verdict = real(d)
+        with envinstall._validated_lock:
+            envinstall._discard_verdict(d)  # what a concurrent discard does
+        probes.append(d)
+        return verdict
+
+    monkeypatch.setattr(envinstall, "_venv_runs", _probe_then_someone_else_discards)
+    assert envinstall.is_installed(reqs) is True, "our own caller still gets an answer"
+    assert str(venv_dir) not in envinstall._VALIDATED, "stored against a dead generation"
+    assert envinstall.is_installed(reqs) is True
+    assert len(probes) == 2, "the next call must re-probe, not trust the stale verdict"
+
+
+@requires_fused
+def test_reset_ends_every_generation_so_an_inflight_probe_cannot_store(
+    tmp_path, monkeypatch
+):
+    """`reset_venv_validation_cache` has to END generations, not just empty the dict.
+
+    A probe already in flight when the reset lands measured the world before it. If
+    the reset merely cleared `_VALIDATED`, that probe would find the key absent
+    afterwards and happily insert a pre-reset verdict — the reset would be undone by
+    the very call it was meant to invalidate.
+    """
+    reqs = ["some-dist"]
+    venv_dir = _marked_venv(tmp_path, monkeypatch, reqs, runnable=True)
+    real = envinstall._venv_runs
+
+    def _probe_then_reset(d):
+        verdict = real(d)
+        envinstall.reset_venv_validation_cache()
+        return verdict
+
+    monkeypatch.setattr(envinstall, "_venv_runs", _probe_then_reset)
+    assert envinstall.is_installed(reqs) is True
+    assert str(venv_dir) not in envinstall._VALIDATED
+
+
+@requires_fused
 def test_a_stalled_probe_of_one_venv_does_not_block_another(tmp_path, monkeypatch):
     """One wedged venv must not freeze `is_installed` for every other venv.
 
