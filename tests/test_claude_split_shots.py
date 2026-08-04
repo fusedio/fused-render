@@ -379,6 +379,123 @@ def test_a_crop_is_downscaled_by_its_longest_edge(html):
     assert out["exact"]["width"] == 640 and out["exact"]["scale"] == 1
 
 
+_ENCODE_FNS = _CAPS + ["const SHOT_WEBP_QUALITY", "function shotFit(",
+                       "function shotBlob(", "function shotExt(",
+                       "let shotWebpOk", "async function shotEncode("]
+
+# A canvas whose toBlob behaves like a real one — including the way WKWebView
+# behaves, which is the whole point of this group: asked for webp it hands back a
+# PNG blob, at byte-identical size, with no throw and no null.
+_ENCODE_STUBS = """
+var calls = [];
+var WEBP_REAL = true;
+var SIZE = (type, q, w) => 10;
+var document = {createElement: () => ({
+  width: 0, height: 0,
+  getContext: () => ({drawImage: () => {}}),
+  toBlob: function (cb, type, q) {
+    calls.push({type: type, q: q === undefined ? null : q, w: this.width});
+    const got = (type === "image/webp" && WEBP_REAL) ? "image/webp" : "image/png";
+    cb({type: got, size: SIZE(got, q, this.width)});
+  },
+})};
+var PANE = {canvas: {}, width: 1600, height: 1000};
+"""
+
+
+def _encode(html, body):
+    return _node(_ENCODE_FNS, _ENCODE_STUBS + body, html)
+
+
+def test_a_shot_is_named_from_the_bytes_it_holds_not_the_format_asked_for(html):
+    """The one rule that makes trying WebP safe at all. WKWebView cannot encode
+    WebP and fails SILENTLY: `toBlob(cb, "image/webp", q)` yields a blob whose
+    `type` is "image/png", at byte-identical size, with no throw and no null. A
+    file named `.webp` from what we ASKED for would hold PNG bytes — worse than
+    never trying — so the extension comes off `blob.type`."""
+    out = _encode(html, """
+WEBP_REAL = false;                       // this is WKWebView
+(async () => {
+  const blob = await shotEncode(PANE, {left: 0, top: 0, width: 640, height: 400});
+  console.log(JSON.stringify({type: blob.type, ext: shotExt(blob),
+                              asked: calls.map((c) => c.type)}));
+})();
+""")
+    assert out["type"] == "image/png"
+    assert out["ext"] == ".png", "a PNG blob is a .png file whatever we requested"
+    # it did try, once, and then stopped asking
+    assert out["asked"] == ["image/webp", "image/png"]
+
+
+def test_where_webp_is_real_the_file_is_a_webp(html):
+    out = _encode(html, """
+(async () => {
+  const blob = await shotEncode(PANE, {left: 0, top: 0, width: 640, height: 400});
+  console.log(JSON.stringify({type: blob.type, ext: shotExt(blob),
+                              asked: calls.map((c) => [c.type, c.q])}));
+})();
+""")
+    assert out["ext"] == ".webp"
+    # and it costs ONE encode when the first quality already fits
+    assert out["asked"] == [["image/webp", 0.8]]
+
+
+def test_a_silent_webp_failure_is_only_discovered_once(html):
+    """Probing per crop would double the encodes for every WKWebView user, on a
+    capability that cannot change mid-session."""
+    out = _encode(html, """
+WEBP_REAL = false;
+(async () => {
+  for (let i = 0; i < 4; i++) {
+    await shotEncode(PANE, {left: 0, top: 0, width: 640, height: 400});
+  }
+  console.log(JSON.stringify({asked: calls.map((c) => c.type), ok: shotWebpOk}));
+})();
+""")
+    assert out["ok"] is False
+    assert out["asked"] == ["image/webp"] + ["image/png"] * 4, out["asked"]
+
+
+def test_quality_steps_down_before_resolution_is_halved(html):
+    """The reason to prefer WebP at all: PNG has no quality dial, so the only knob
+    was resolution — and halving 640px to 320px to 160px destroys the legibility
+    that is the entire point of sending a picture. Where WebP is real, every
+    quality step is spent at full size before a single pixel is given up."""
+    out = _encode(html, """
+// Nothing fits until the image is halved, so every knob gets exercised.
+SIZE = (type, q, w) => (w > 320 ? 999999 : 10);
+(async () => {
+  const blob = await shotEncode(PANE, {left: 0, top: 0, width: 640, height: 400});
+  console.log(JSON.stringify({tried: calls.map((c) => [c.type, c.q, c.w]),
+                              ext: shotExt(blob), qualities: SHOT_WEBP_QUALITY}));
+})();
+""")
+    tried = out["tried"]
+    widths = [w for _t, _q, w in tried]
+    # the first resolution is tried with every quality AND with png before the
+    # first halving
+    first = [[t, q] for t, q, w in tried if w == widths[0]]
+    assert first == [["image/webp", 0.8], ["image/webp", 0.6], ["image/png", None]], first
+    assert widths[0] > widths[-1], "and only then did resolution give way"
+    assert sorted(widths, reverse=True) == widths, "resolution never goes back up"
+
+
+def test_the_png_only_path_is_exactly_what_it_was(html):
+    """WKWebView users must get today's behaviour, not a degraded version of it:
+    same halve-and-retry, same three attempts, same null when nothing fits."""
+    out = _encode(html, """
+WEBP_REAL = false;
+SIZE = () => 999999;                     // nothing ever fits
+(async () => {
+  const blob = await shotEncode(PANE, {left: 0, top: 0, width: 640, height: 400});
+  console.log(JSON.stringify({blob: blob,
+    pngWidths: calls.filter((c) => c.type === "image/png").map((c) => c.w)}));
+})();
+""")
+    assert out["blob"] is None, "over budget even halved: no shot beats a huge one"
+    assert out["pngWidths"] == [640, 320, 160], out["pngWidths"]
+
+
 def test_a_downscale_never_rounds_an_edge_to_zero(html):
     """A 1000x1 rule would scale to 640x0.64 and a zero-height canvas throws on
     toBlob, which would lose the whole capture rather than one crop."""
@@ -541,7 +658,7 @@ BLANKS.push(cv);
 # a mutable binding) because rasterising is exactly the part node cannot do —
 # what is under test is which annotations get a crop and what the others are told.
 _CAPTURE_FNS = _CAPS + _BLANK_FNS + ["function shotPaneNote(",
-                        "function shotCropRect(",
+                        "function shotExt(", "function shotCropRect(",
                         "function shotFit(", "function annLabelFor(",
                         "const APP_STATE_UNREADABLE",
                         "async function annCaptureShots(", "function shotJoin(",
@@ -596,6 +713,23 @@ annotations = [a, b];
     assert out["uploaded"][1].endswith("-B.png")
     assert out["uploaded"][0].startswith("/tmp/fr/shots/")
     assert out["thumbs"] == ["a", "b"]
+
+
+def test_a_crop_that_encoded_as_webp_is_uploaded_under_a_webp_name(html):
+    """End to end, because the naming is where a silent WebP failure would do its
+    damage: the path in the annotation JSON is the one the agent Reads, and a
+    `.webp` holding PNG bytes is a file it cannot open."""
+    out = _capture(html, """
+shotEncode = async () => ({size: 10, type: "image/webp"});
+const a = {id: "a", el: {name: "a", contains: () => false}};
+annotations = [a];
+(async () => {
+  annApplyShots([a], await annCaptureShots([a]));
+  console.log(JSON.stringify({shot: a.shot, uploaded: uploaded}));
+})();
+""")
+    assert out["shot"].endswith("-A.webp")
+    assert out["uploaded"] == [out["shot"]]
 
 
 def test_a_blank_webgl_element_gets_a_note_instead_of_a_blank_image(html):

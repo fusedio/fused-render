@@ -1860,34 +1860,86 @@ function shotCropRect(rect, paneW, paneH) {
   return { left: l, top: t, width: w, height: h };
 }
 
-// Target size for a crop: longest edge down to SHOT_MAX_EDGE, never UP (a 320px
-// button blown up to 640 is more bytes and no more information). Edges floor at
-// 1px, because a zero-dimension canvas throws on toBlob and would cost the whole
+// Target size for a shot: longest edge down to `maxEdge`, never UP (a 320px button
+// blown up to 640 is more bytes and no more information). Edges floor at 1px,
+// because a zero-dimension canvas throws on toBlob and would cost the whole
 // capture rather than one crop.
-function shotFit(w, h) {
-  const scale = Math.min(1, SHOT_MAX_EDGE / Math.max(w, h));
+function shotFit(w, h, maxEdge) {
+  const scale = Math.min(1, (maxEdge || SHOT_MAX_EDGE) / Math.max(w, h));
   return { width: Math.max(1, Math.round(w * scale)),
            height: Math.max(1, Math.round(h * scale)), scale };
 }
 
-function shotBlob(canvas) {
-  return new Promise((res) => canvas.toBlob(res, "image/png"));
+function shotBlob(canvas, type, quality) {
+  return new Promise((res) => canvas.toBlob(res, type, quality));
 }
 
-// Cut one crop out of the pane bitmap and encode it, halving the target size
-// while it is over budget (PNG has no quality dial, so size is the only knob).
-// null means "over budget even then" — no crop beats one that dominates the turn.
-async function shotEncode(pane, rect) {
-  let fit = shotFit(rect.width, rect.height);
+// The extension a blob has EARNED, read off the bytes rather than off what we
+// asked the encoder for. This one rule is what makes trying WebP safe:
+// WKWebView — which the desktop app ships — cannot encode WebP and fails
+// SILENTLY. `toBlob(cb, "image/webp", q)` hands back a blob whose `type` is
+// "image/png", at byte-identical size, with no throw and no null. A file named
+// `.webp` holding PNG bytes would be worse than never trying, so the name follows
+// the content. Used for both crop and pane-shot naming, so the two cannot disagree.
+function shotExt(blob) {
+  return blob && blob.type === "image/webp" ? ".webp" : ".png";
+}
+
+// Quality steps tried before any resolution is given up. Claude Code's Read tool
+// accepts .webp (verified against the real CLI under the real Read(//<abs>/**)
+// rule), and small text in a UI stays legible down to q60 — so this is a much
+// better knob than shrinking. JPEG is deliberately not here: measured on this very
+// UI it LOST to PNG (13477 → 13945 bytes on a card, 18173 → 91579 on a canvas
+// raster), because flat colour is PNG's strong case.
+const SHOT_WEBP_QUALITY = [0.8, 0.6];
+// Whether this engine really encodes WebP: null until the first attempt tells us.
+// Probed once per page, not once per crop — the capability cannot change
+// mid-session, and re-probing would cost every WKWebView user a wasted encode on
+// every single shot.
+let shotWebpOk = null;
+
+// Cut one region out of the pane bitmap and encode it as small as it can be while
+// staying legible. `limits` overrides the crop caps (the pane shot has its own, and
+// must NOT inherit SHOT_MAX_EDGE). null means "over budget however hard we tried"
+// — no shot beats one that dominates the turn.
+//
+// Knob order is deliberate: quality first, resolution last. The halve-and-retry
+// below exists only because PNG has no quality parameter, and dropping 640px to
+// 320px to 160px destroys exactly the legibility a picture is sent for. Where WebP
+// is real, every quality step is spent at full size before a pixel is given up.
+//
+// Both formats are tried at each size rather than one being assumed smaller: lossy
+// WebP usually wins, but PNG genuinely beats it on flat UI, and the first encoding
+// that FITS is the one we want. We do not encode both to compare when the first
+// already fits — that doubles the cost for a marginal byte win, and the budget
+// here is time.
+async function shotEncode(pane, rect, limits) {
+  const maxEdge = (limits && limits.maxEdge) || SHOT_MAX_EDGE;
+  const maxBytes = (limits && limits.maxBytes) || SHOT_MAX_BYTES;
+  let fit = shotFit(rect.width, rect.height, maxEdge);
   for (let attempt = 0; attempt < 3; attempt++) {
     const c = document.createElement("canvas");
     c.width = fit.width;
     c.height = fit.height;
     c.getContext("2d").drawImage(pane.canvas, rect.left, rect.top,
                                  rect.width, rect.height, 0, 0, fit.width, fit.height);
-    const blob = await shotBlob(c);
-    if (!blob) return null;
-    if (blob.size <= SHOT_MAX_BYTES) return blob;
+    if (shotWebpOk !== false) {
+      for (const q of SHOT_WEBP_QUALITY) {
+        const webp = await shotBlob(c, "image/webp", q);
+        if (!webp) break;
+        if (webp.type !== "image/webp") {
+          // The silent failure. Recorded so no later shot pays for the discovery
+          // again, and fall through to PNG — which is what this blob already is.
+          shotWebpOk = false;
+          break;
+        }
+        shotWebpOk = true;
+        if (webp.size <= maxBytes) return webp;
+      }
+    }
+    const png = await shotBlob(c, "image/png");
+    if (!png) return null;
+    if (png.size <= maxBytes) return png;
     fit = { width: Math.max(1, Math.round(fit.width / 2)),
             height: Math.max(1, Math.round(fit.height / 2)), scale: fit.scale / 2 };
   }
@@ -2028,7 +2080,8 @@ async function annCaptureShots(pending, deadline) {
         note("no crop: it did not fit the " + SHOT_MAX_BYTES + "-byte budget");
         continue;
       }
-      const path = shotJoin(dir, stamp + "-" + annLabelFor(annotations.indexOf(c)) + ".png");
+      const path = shotJoin(dir, stamp + "-" + annLabelFor(annotations.indexOf(c))
+                                 + shotExt(blob));
       await fused.uploadFile(path, blob);
       out.shots[c.id] = { shot: path };
       // What this crop does NOT show, if anything. A crop that only laps onto a
