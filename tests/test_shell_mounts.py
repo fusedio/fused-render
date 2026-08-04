@@ -2558,6 +2558,31 @@ def test_bad_credential_advice_is_backend_specific(monkeypatch):
     assert aws == mounts_mod._CRED_EXPIRED_MSG
 
 
+@pytest.mark.parametrize("type_,label", [("dropbox", "Dropbox"), ("box", "Box")])
+def test_bad_credential_advice_covers_every_oauth_provider(monkeypatch, type_,
+                                                           label):
+    """The advice is keyed off the provider registry, not a Drive special case:
+    an expired Dropbox token must not be met with the S3 "refresh them (e.g.
+    `aws sso login`)" text, which cannot fix it."""
+    _fake_remote_config(monkeypatch, {"type": type_})
+    advice = mounts_mod.credentials._bad_credential_advice({"remote": f"{type_}:"})
+    assert f"sign in to {label.lower()} again" in advice.lower()
+    assert "aws sso" not in advice.lower()
+
+
+@pytest.mark.parametrize("type_", ["drive", "dropbox", "box"])
+def test_oauth_remotes_are_all_treated_as_expirable(type_):
+    # They hold a refresh token the user can revoke (or the provider expire),
+    # so they must be PROBED — otherwise the mount falls through to the generic
+    # "reconnect" advice, and Reconnect cannot re-authorize anything.
+    assert mounts_mod._has_expirable_credentials({"type": type_}) is True
+
+
+def test_non_oauth_keyed_remotes_stay_unprobed():
+    assert mounts_mod._has_expirable_credentials(
+        {"type": "s3", "access_key_id": "AK"}) is False
+
+
 def test_mount_credential_status_still_na_for_key_carrying_remotes(monkeypatch):
     """Widening the gate to Drive must not start probing every remote: keys
     written into rclone's config don't expire this way, and the probe is an

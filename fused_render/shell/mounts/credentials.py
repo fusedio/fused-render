@@ -390,21 +390,42 @@ _CRED_EXPIRED_MSG = (
 )
 
 
-_OAUTH_EXPIRED_MSG = (
-    "the Google Drive sign-in has expired or was revoked — sign in to Google "
-    "Drive again from the Mounts page in the sidebar"
-)
+def _oauth_backend_labels() -> dict[str, str]:
+    """{rclone backend type: display label} for every provider reached through a
+    browser sign-in, read off the ONE registry that defines them
+    (endpoints._OAUTH_PROVIDERS). Imported inside the function because
+    endpoints imports this module — a top-level import would be a cycle — and
+    derived rather than restated so adding a provider there cannot silently
+    leave it with the wrong credential advice here."""
+    from .endpoints import _OAUTH_PROVIDERS
+    return {str(spec["backend"]).lower(): str(spec["label"])
+            for spec in _OAUTH_PROVIDERS.values()}
+
+
+def _oauth_expired_msg(label: str) -> str:
+    """Advice for a revoked/expired OAuth grant. Signing in again is the ONLY
+    remedy — neither Reconnect nor a credential refresh touches it."""
+    return (f"the {label} sign-in has expired or was revoked — sign in to "
+            f"{label} again from the Mounts page in the sidebar")
+
+
+# Kept for the Drive-specific wording callers may still reference.
+_OAUTH_EXPIRED_MSG = _oauth_expired_msg("Google Drive")
 
 
 def _bad_credential_advice(m: dict) -> str:
     """What to actually DO about a mount whose credentials probe bad. The
     remedy is not the same for every backend and naming the wrong one is the
     bug this whole path exists to avoid: a revoked Drive token is not fixed by
-    `aws sso login` any more than it is by Reconnect."""
+    `aws sso login` any more than it is by Reconnect — and neither is a revoked
+    Dropbox or Box one, which is why this is keyed off the whole provider
+    registry rather than a `type == "drive"` special case."""
     from fused_render.shell.mounts import _remote_config
     cfg = _remote_config(m["remote"].partition(":")[0])
-    if isinstance(cfg, dict) and str(cfg.get("type", "")).lower() == "drive":
-        return _OAUTH_EXPIRED_MSG
+    if isinstance(cfg, dict):
+        label = _oauth_backend_labels().get(str(cfg.get("type", "")).lower())
+        if label:
+            return _oauth_expired_msg(label)
     return _CRED_EXPIRED_MSG
 
 
@@ -481,14 +502,15 @@ def _has_expirable_credentials(cfg: dict) -> bool:
 
     Two kinds qualify. `env_auth=true` remotes borrow the ambient AWS/gcloud
     credential, which is routinely a short-lived SSO/STS token. And OAuth
-    backends hold a refresh token the USER can revoke (or Google can expire —
-    an OAuth client left in Testing mode drops refresh tokens after 7 days),
-    which is why Drive is here: without it a revoked Drive token returned "n/a"
-    and the mount fell through to the generic "reconnect" advice, and Reconnect
-    cannot re-authorize anything — only signing in again can.
+    backends — EVERY provider in the registry, not just Drive — hold a refresh
+    token the USER can revoke (or the provider can expire: a Google OAuth client
+    left in Testing mode drops refresh tokens after 7 days). Without them here a
+    revoked token returned "n/a" and the mount fell through to the generic
+    "reconnect" advice, and Reconnect cannot re-authorize anything — only
+    signing in again can.
 
     Keys pasted into rclone's config are excluded on purpose: they don't expire
     on their own, so probing them would just spend an `rclone lsd` per broken
     mount to learn nothing."""
     return (str(cfg.get("env_auth", "")).lower() == "true"
-            or str(cfg.get("type", "")).lower() == "drive")
+            or str(cfg.get("type", "")).lower() in _oauth_backend_labels())
