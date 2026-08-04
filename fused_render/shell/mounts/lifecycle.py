@@ -828,6 +828,72 @@ def reconnect_mount(m: dict) -> str | None:
 
 PROBE_TIMEOUT = 3.0
 
+# One loopback rc call against a daemon that already has the answer in memory.
+# Kept short because it is paid per healthy mount inside GET /api/mounts' join
+# budget — an unresponsive daemon must cost the listing a moment, not a probe's
+# worth of time.
+UPLOAD_QUEUE_TIMEOUT = 5.0
+# How many failing files to name. Enough to be actionable, not a wall of text;
+# the count carries the rest.
+_UPLOAD_NAMES_SHOWN = 3
+
+
+def _mount_upload_status(m: dict) -> dict | None:
+    """Pending/failed VFS uploads for a mount — {"pending", "failed",
+    "failed_names"} — or None when the queue can't be read.
+
+    Why this exists (D207): VFS_OPT sets CacheMode "full", so a write returns
+    success the moment it lands in the local cache and the actual upload happens
+    afterwards. A quota or permission rejection at the remote therefore shows up
+    nowhere the user looks — they saw the save succeed. rcd's `vfs/queue` is the
+    authority on whether the bytes ever left, and it is the same
+    daemon-over-loopback call every other mount fact already comes from (the
+    rejected alternative was scraping the rcd log, which is free-form, rotates,
+    and interleaves every mount).
+
+    Reading "failing" from the queue: rclone's writeback (vfs/vfscache/writeback)
+    increments `tries` when an upload STARTS and, on failure, requeues the item
+    with a doubled delay; a success removes it from the queue entirely. So an
+    item still queued with tries >= 1 and `uploading` false has already had an
+    attempt come back unsuccessfully, while tries >= 1 WITH `uploading` true is
+    simply in flight. That distinction is what separates "syncing" from
+    "failing" without parsing any message string.
+
+    NOTE the per-item shape is `name`/`id`/`size`/`expiry`/`tries`/`delay`/
+    `uploading` (rclone v1.74.4) — there is no per-item error field, so `tries`
+    is the signal, not an `err` string.
+
+    None (unknown) is deliberately distinct from a zero count: no daemon, an
+    fs with no active VFS, or an rclone without the method must never read as
+    "nothing pending" — that is precisely the false all-clear this exists to
+    prevent."""
+    from fused_render.shell.mounts import _live_rcd_port, _rc
+    port = _live_rcd_port()
+    if port is None:
+        return None
+    try:
+        out = _rc(port, "vfs/queue", {"fs": m["remote"]}, timeout=UPLOAD_QUEUE_TIMEOUT)
+    except RuntimeError:
+        return None
+    items = out.get("queue") if isinstance(out, dict) else None
+    if not isinstance(items, list):
+        return None
+    pending = failed = 0
+    names: list[str] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        pending += 1
+        try:
+            tries = int(item.get("tries") or 0)
+        except (TypeError, ValueError):
+            tries = 0
+        if tries >= 1 and not item.get("uploading"):
+            failed += 1
+            if len(names) < _UPLOAD_NAMES_SHOWN:
+                names.append(str(item.get("name") or ""))
+    return {"pending": pending, "failed": failed, "failed_names": names}
+
 
 def mount_state(m: dict, rcd_mounts: set, timeout: float = PROBE_TIMEOUT,
                 *, probe_io: bool = True) -> str:
@@ -954,7 +1020,7 @@ def mount_restart_reason(m: dict, rcd_mounts: set | None = None,
 
 
 def mount_view(m: dict, rcd_mounts: set | None = None, state: str | None = None,
-               cred_status=_UNSET) -> dict:
+               cred_status=_UNSET, uploads: dict | None = None) -> dict:
     from fused_render.shell.mounts import mount_state, mounted_paths
     mp = mountpoint(m)
     listed = mounted_paths() if rcd_mounts is None else rcd_mounts
@@ -981,4 +1047,10 @@ def mount_view(m: dict, rcd_mounts: set | None = None, state: str | None = None,
         # a cred_status probed off the serial path, so building a view never
         # blocks on a per-mount `rclone lsd`.
         "restart_reason": mount_restart_reason(m, listed, state, cred_status),
+        # Async upload queue (D207), or None when it wasn't read (an unhealthy
+        # or read-only mount) or couldn't be. NEVER probed here — only the bulk
+        # get_mounts path, which threads it off the serial view-building loop,
+        # supplies it; a per-view rc call would put one on every mount_view
+        # caller, including the mount/unmount responses.
+        "uploads": uploads,
     }

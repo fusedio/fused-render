@@ -307,6 +307,7 @@ from .lifecycle import (
     _await_ismount,
     _force_unmount,
     _is_mounted,
+    _mount_upload_status,
     _mount_via_rcd,
     _mount_wedged,
     _quit_tile_daemons,

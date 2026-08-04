@@ -1398,6 +1398,63 @@ def test_mounted_paths_empty_when_rcd_down(home):
     assert mounts_mod.mounted_paths() == set()
 
 
+# -- async upload queue (D207) ---------------------------------------------------
+#
+# With CacheMode "full" a write returns success once it lands in the local VFS
+# cache, so a quota/permission rejection at the remote is invisible: the user
+# saw the save succeed. rcd's vfs/queue is the only authority on whether the
+# bytes actually left.
+
+
+def _queue(*items):
+    return {"queue": list(items)}
+
+
+def _q(name, tries=0, uploading=False, size=10, id_=1):
+    return {"name": name, "id": id_, "size": size, "expiry": 1.0,
+            "tries": tries, "delay": 5.0, "uploading": uploading}
+
+
+def test_upload_status_counts_pending_and_failed(home, rcd):
+    # tries>=1 with uploading false means an attempt has already come back and
+    # the item was requeued (writeback.go doubles the delay on failure) — that
+    # is a FAILING upload. A first attempt still in flight is merely pending.
+    rcd.responses["vfs/queue"] = _queue(
+        _q("fresh.tif", tries=0),
+        _q("in-flight.tif", tries=1, uploading=True),
+        _q("rejected.tif", tries=4),
+    )
+    st = mounts_mod._mount_upload_status({"remote": "gdrive:docs"})
+    assert st == {"pending": 3, "failed": 1, "failed_names": ["rejected.tif"]}
+    method, body = next(c for c in rcd.calls if c[0] == "vfs/queue")
+    assert body == {"fs": "gdrive:docs"}
+
+
+def test_upload_status_empty_queue_is_all_clear(home, rcd):
+    rcd.responses["vfs/queue"] = _queue()
+    assert mounts_mod._mount_upload_status({"remote": "gdrive:"}) == {
+        "pending": 0, "failed": 0, "failed_names": []}
+
+
+def test_upload_status_is_none_when_the_queue_cannot_be_read(home, rcd):
+    # No VFS for that fs, an old rclone without vfs/queue, cache mode off: all
+    # answer "unknown", which must NOT read as "nothing pending".
+    rcd.responses["vfs/queue"] = (500, {"error": 'no VFS found with name "gdrive:"'})
+    assert mounts_mod._mount_upload_status({"remote": "gdrive:"}) is None
+
+
+def test_upload_status_is_none_without_a_daemon(home):
+    assert mounts_mod._mount_upload_status({"remote": "gdrive:"}) is None
+
+
+def test_upload_status_caps_the_names_it_reports(home, rcd):
+    rcd.responses["vfs/queue"] = _queue(
+        *[_q(f"f{i}.tif", tries=2, id_=i) for i in range(10)])
+    st = mounts_mod._mount_upload_status({"remote": "gdrive:"})
+    assert st["failed"] == 10
+    assert len(st["failed_names"]) == 3  # enough to name, not a wall of text
+
+
 # -- endpoints -------------------------------------------------------------------
 
 FUSED = {"X-Fused": "1"}  # D3 guard header required on writes
@@ -1458,7 +1515,51 @@ def test_mount_view_has_no_automount_field(client, rcd):
     # automount is implicit for every mount now — the field is gone.
     assert "automount" not in m
     assert set(m) == {"id", "name", "remote", "mountpoint", "mounted", "state",
-                      "read_only", "builtin", "restart_reason"}
+                      "read_only", "builtin", "restart_reason", "uploads"}
+
+
+def test_get_mounts_surfaces_the_upload_queue(client, rcd):
+    """The Mounts page already polls GET /api/mounts, and that handler already
+    fans a worker out per mount — so the queue read rides along there rather
+    than becoming a second poll loop."""
+    rcd.responses["vfs/queue"] = _queue(_q("a.tif", tries=0),
+                                        _q("b.tif", tries=3))
+    created = client.post("/api/mounts", json={"name": "data", "remote": "gdrive:docs"},
+                          headers=FUSED).json()
+    rcd.responses["mount/listmounts"] = {
+        "mountPoints": [{"Fs": "gdrive:docs", "MountPoint": created["mountpoint"]}]}
+    m = client.get("/api/mounts").json()["mounts"][0]
+    assert m["state"] == "mounted"
+    assert m["uploads"] == {"pending": 2, "failed": 1, "failed_names": ["b.tif"]}
+
+
+def test_get_mounts_skips_the_queue_read_for_a_read_only_mount(client, rcd):
+    """A read-only mount can't have queued writes; the rc call would be pure
+    latency inside the handler's per-mount timeout budget."""
+    rcd.responses["vfs/queue"] = _queue(_q("a.tif"))
+    created = client.post("/api/mounts",
+                          json={"name": "ro", "remote": "pub:b", "read_only": True},
+                          headers=FUSED).json()
+    rcd.responses["mount/listmounts"] = {
+        "mountPoints": [{"Fs": "pub:b", "MountPoint": created["mountpoint"]}]}
+    m = client.get("/api/mounts").json()["mounts"][0]
+    assert m["state"] == "mounted" and m["read_only"] is True
+    assert m["uploads"] is None
+    assert not any(c[0] == "vfs/queue" for c in rcd.calls)
+
+
+def test_get_mounts_skips_the_queue_read_for_a_broken_mount(client, rcd,
+                                                            monkeypatch):
+    """A disconnected mount pays the credential probe instead — the two probes
+    are mutually exclusive, so the handler's join budget is unchanged."""
+    rcd.responses["vfs/queue"] = _queue(_q("a.tif"))
+    client.post("/api/mounts", json={"name": "data", "remote": "gdrive:docs"},
+                headers=FUSED)
+    monkeypatch.setattr(mounts_mod, "mount_state", lambda m, live, **k: "disconnected")
+    monkeypatch.setattr(mounts_mod, "_mount_credential_status", lambda m, b=None: "n/a")
+    m = client.get("/api/mounts").json()["mounts"][0]
+    assert m["uploads"] is None
+    assert not any(c[0] == "vfs/queue" for c in rcd.calls)
 
 
 def test_delete_unmounts_and_removes(client, rcd):

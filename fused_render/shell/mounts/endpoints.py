@@ -46,6 +46,7 @@ def resolve_url_endpoint(url: str = ""):
 def get_mounts():
     from fused_render.shell.mounts import (
         _mount_credential_status,
+        _mount_upload_status,
         list_mounts,
         mount_state,
         mounted_paths,
@@ -63,6 +64,7 @@ def get_mounts():
     # per-mount worker and hand the results to mount_view, which never probes.
     states: list[str | None] = [None] * len(mounts)
     cred_statuses: list[str] = ["n/a"] * len(mounts)
+    uploads: list[dict | None] = [None] * len(mounts)
     threads = []
     for i, m in enumerate(mounts):
         def probe(i=i, m=m):
@@ -72,6 +74,12 @@ def get_mounts():
             # one never pays the lsd probe.
             if st in ("disconnected", "stale"):
                 cred_statuses[i] = _mount_credential_status(m, bin_)
+            elif st == "mounted" and not m.get("read_only"):
+                # The async upload queue (D207): only a live, writable mount can
+                # have one. Deliberately in THIS worker rather than a second poll
+                # loop — and mutually exclusive with the credential probe above,
+                # so the join budget below is unchanged.
+                uploads[i] = _mount_upload_status(m)
         t = threading.Thread(target=probe, daemon=True)
         t.start()
         threads.append(t)
@@ -82,8 +90,8 @@ def get_mounts():
     return {
         "rclone": _rclone_state(),
         "mounts": [
-            mount_view(m, live, state=s or "disconnected", cred_status=cs)
-            for m, s, cs in zip(mounts, states, cred_statuses)
+            mount_view(m, live, state=s or "disconnected", cred_status=cs, uploads=up)
+            for m, s, cs, up in zip(mounts, states, cred_statuses, uploads)
         ],
     }
 
