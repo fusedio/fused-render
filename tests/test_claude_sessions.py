@@ -165,6 +165,27 @@ def test_what_is_refused(store, tmp_path):
     assert [a["name"] for a in apps] == ["kept.md"]
 
 
+def test_a_NUL_in_a_transcript_path_cannot_crash_any_pivot(store, tmp_path):
+    """os.stat raises ValueError (not OSError) on an embedded NUL, and a
+    transcript is another application's journal — one hostile line crashed
+    list_apps, session_files AND related before the ingestion guard. The bogus
+    path must not surface anywhere: it is not a filesystem path at all."""
+    ok = _saved(tmp_path, "fine.html")
+    bad = "/evil" + chr(0) + "path.html"
+    _transcript(store, "s1", [
+        _user_line(tmp_path / "work", "x"),
+        _write_line(bad),
+        _write_line(ok),
+    ])
+    assert [a["name"] for a in claude_sessions.list_apps(str(tmp_path / "u"))] \
+        == ["fine.html"]
+    assert [f["path"] for f in claude_sessions.session_files("s1")["files"]] \
+        == [str(ok)], "the NUL path is refused at ingestion, not merely skipped"
+    # The query-param direction never passes through ingestion — the stat
+    # belt answers for it.
+    assert claude_sessions.related(bad)["exists"] is False
+
+
 def test_a_file_two_sessions_wrote_is_one_card(store, tmp_path):
     page = _saved(tmp_path, "shared.html")
     _transcript(store, "s1", [_user_line(tmp_path, "a"), _write_line(page)])

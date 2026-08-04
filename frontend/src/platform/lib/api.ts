@@ -1569,6 +1569,11 @@ export interface ClaudeFileVersion {
   session: string;
   version: number;
   existed: boolean;
+  // The checkpoint file itself (a FULL copy, never a diff). A view that wants
+  // the version's bytes — a diff pane, a preview — reads them through the
+  // existing /api/fs/raw (rawUrl in appEntry). Null for a did-not-exist
+  // boundary entry, which has no content by definition.
+  path: string | null;
   mtime: number;
   size: number;
   lines: number | null;

@@ -252,6 +252,12 @@ def _squash(text: str) -> str:
 def _note_file(files: dict, path, ts) -> None:
     if not isinstance(path, str) or not os.path.isabs(path):
         return  # a relative path is not attributable to anything (see _ghost_from)
+    if "\0" in path:
+        # No filesystem path contains NUL — but a transcript is another
+        # application's journal, and os.stat raises ValueError (not OSError)
+        # on one, which crashed every pivot off a single hostile line. Refuse
+        # at ingestion so the index only ever holds statable paths.
+        return
     path = os.path.abspath(path)
     rec = files.get(path)
     if rec is None:
@@ -373,8 +379,14 @@ def _indexes() -> list[tuple[dict, dict]]:
     rather than the machine's history."""
     pairs = [(t, _index(t)) for t in _transcripts()]
     live = {t["path"] for t, _ in pairs}
-    for stale in [p for p in _CACHE if p not in live]:
-        del _CACHE[stale]
+    # Snapshot the keys before filtering: two requests can run this
+    # concurrently (FastAPI sync handlers share a threadpool), and iterating
+    # the live dict while the other thread's _index() inserts into it raises
+    # RuntimeError — the one concurrent outcome the cache's "worst case is a
+    # duplicate parse" claim did not cover. The del stays safe either way:
+    # deleting an already-deleted key would KeyError, hence the pop.
+    for stale in [p for p in list(_CACHE) if p not in live]:
+        _CACHE.pop(stale, None)
     return pairs
 
 
@@ -442,8 +454,12 @@ def _iter_apps(exclude_root: str):
                 continue
             try:
                 st = os.stat(path)
-            except OSError:
-                continue  # deleted since, or unreadable — either way, no card
+            except (OSError, ValueError):
+                # Deleted since, unreadable, or a path stat() refuses outright
+                # (ValueError, e.g. an embedded NUL) — either way, no card.
+                # _note_file already refuses NUL at ingestion; this is the
+                # belt for any other value the OS rejects.
+                continue
             if not stat_module.S_ISREG(st.st_mode):
                 continue
             is_page = app_listing.is_html(path)
@@ -510,8 +526,8 @@ def list_sessions() -> list[dict]:
 def _file_record(path: str, meta: dict) -> dict:
     try:
         exists = stat_module.S_ISREG(os.stat(path).st_mode)
-    except OSError:
-        exists = False
+    except (OSError, ValueError):
+        exists = False  # ValueError: a path stat() refuses (embedded NUL)
     return {
         "path": path,
         "exists": exists,
@@ -598,7 +614,10 @@ def related(path: str) -> dict:
     target = os.path.abspath(path)
     try:
         exists = stat_module.S_ISREG(os.stat(target).st_mode)
-    except OSError:
+    except (OSError, ValueError):
+        # ValueError covers a path stat() refuses outright (embedded NUL) —
+        # this one arrives straight off the query string, so the ingestion
+        # guard in _note_file never saw it.
         exists = False
     return {
         "file": target,

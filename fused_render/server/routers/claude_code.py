@@ -7,7 +7,10 @@ tomorrow) can pivot between the pieces of a session's work:
 * ``GET /api/claude/sessions/{session_id}/files`` — transcript → every file it
   touched (source code included — see `session_files`' ``viewable`` hint).
 * ``GET /api/claude/related?path=…`` — file → the sessions that touched it AND
-  its checkpointed versions: the git-history-like payload.
+  its checkpointed versions: the git-history-like payload. Each version names
+  its checkpoint file (``path`` — a full copy, never a diff), so a UI that
+  wants a version's CONTENT reads it through the existing ``/api/fs/raw``;
+  no content endpoint is duplicated here.
 
 All of the logic lives in ``fused_render/claude_sessions.py`` — these handlers
 only translate "unknown" into a 404 and a bad path into a 400, so the module
