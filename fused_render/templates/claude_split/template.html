@@ -752,11 +752,15 @@ document.title = "Claude split — " + BASENAME;
     if (!entry) throw new Error("no app entry (index.html or a single top-level .html) in " + FILE);
     document.getElementById("leftframe").src = "/render?path=" + encodeURIComponent(entry);
   } catch (err) {
-    document.getElementById("left").innerHTML = "";
+    // Swap only the iframe for the message — #left also hosts the annotation
+    // layer (button, pins, highlight, popover), and wiping it would leave JS
+    // driving detached nodes. No app, nothing to annotate: hide the toggle.
+    document.getElementById("leftframe").remove();
+    document.getElementById("annbtn").style.display = "none";
     const d = document.createElement("div");
     d.id = "msg";
     d.textContent = "Could not open preview: " + err.message;
-    document.getElementById("left").appendChild(d);
+    document.getElementById("left").prepend(d);
   }
 })();
 
