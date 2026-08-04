@@ -1104,6 +1104,8 @@ def _lib_promote(src):
     until it's saved, so edits are never lost silently.
     """
     src = os.path.abspath(src)
+    # _lib_load() returns newest-first (pre-v2 files are reversed on load), so
+    # prepending src and keeping the head keeps the most recent, never the oldest.
     paths = [_fwd(src)] + [p for p in _lib_load() if not _same_path(p, src)]
     kept = paths[:RECENT_MAX]
     for p in paths[RECENT_MAX:]:
@@ -1479,6 +1481,9 @@ def main(
         info["readonly_tooltip"] = "" if info["writable"] else (
             "The file is read-only — edits can't be saved back to it. "
             "Use Save a copy.")
+        # Return the promoted/capped list so the sidebar reflects this open
+        # synchronously — no separate list_library round trip to lag or fail.
+        info["docs"] = _list_library()["docs"]
         return info
     if action == "listdir":
         # `src` on the listdir action carries the server ORIGIN (mount-safe

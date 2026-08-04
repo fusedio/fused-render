@@ -1133,7 +1133,7 @@ async function openDoc(path) {
     return openDoc(res.path);
   }
   state.doc = info.path; state.work = info.work; state.info = info; state.mtime = info.mtime;
-  state.dirty = !!info.dirty;
+  state.docs = info.docs; state.dirty = !!info.dirty;
   state.curPage = 1; state.spans = {};
   state.undoDepth = info.undo_depth; state.redoDepth = info.redo_depth;
   dropInspect();
@@ -1152,7 +1152,6 @@ async function openDoc(path) {
   updateUndoUi();
   renderDocList();
   await renderAll();
-  refreshLib().catch(() => {});
 }
 
 function clearOpenDoc() {
