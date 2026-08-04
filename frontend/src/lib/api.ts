@@ -1016,6 +1016,20 @@ export interface Mount {
   //    restart (not Reconnect) re-reads the refreshed ones.
   // Both route the user to the single global Restart rclone button.
   restart_reason?: "params" | "credentials" | null;
+  // The mount's async upload queue (D207), or null when it wasn't read (an
+  // unhealthy or read-only mount) or couldn't be. null is NOT "nothing
+  // pending" — with a full VFS cache a save completes locally and uploads
+  // afterwards, so an unknown queue must never be shown as all-clear.
+  uploads?: MountUploads | null;
+}
+
+// Files written to a mount that haven't reached the remote yet. `failed` counts
+// items whose upload already came back unsuccessfully (quota, permissions) and
+// is the number that matters — a save the user saw succeed did not stick.
+export interface MountUploads {
+  pending: number;
+  failed: number;
+  failed_names: string[]; // capped by the server; `failed` carries the rest
 }
 
 // A remote we can offer from credentials already present in the user's
@@ -1129,8 +1143,8 @@ export function deleteMount(id: string): Promise<void> {
 }
 
 // S3-compatible only: keys are written straight into rclone's own config.
-// OAuth backends (Google Drive, …) are set up with `rclone config` in a
-// terminal instead — the Mounts page explains that.
+// OAuth backends (Google Drive, …) have no keys to paste and go through
+// startRemoteOAuth below instead.
 export function createRemote(
   name: string,
   params: Record<string, string>
@@ -1147,6 +1161,40 @@ export function createDetectedRemote(id: string): Promise<{ ok: boolean; name: s
   return postJson<{ ok: boolean; name: string }>("/api/mounts/remotes/detect", {
     id,
   });
+}
+
+// -- Google Drive sign-in (D205) ---------------------------------------------
+//
+// The server spawns `rclone authorize "drive"`, which runs its own loopback
+// callback server and opens the SYSTEM browser itself — unlike the Fused
+// login there is no URL for us to window.open. So the client's whole job is
+// to start it, poll, and report; the same shape as lib/account.ts otherwise.
+
+export interface DriveOAuthStatus {
+  in_flight: boolean;
+  name: string | null;
+  backend: string | null;
+  // Both null while in flight. `ok` false with a message is the failure the UI
+  // must show — INCLUDING the child that exited having produced no token at
+  // all (browser tab closed, consent never granted, timed out), which is
+  // retryable and says so in `error`.
+  ok: boolean | null;
+  error: string | null;
+}
+
+// Starts the browser sign-in and returns immediately; 409 when one is already
+// in flight (rclone's callback port can only be bound once).
+export function startRemoteOAuth(name: string): Promise<{ ok: boolean; name: string }> {
+  return postJson<{ ok: boolean; name: string }>("/api/mounts/remotes/oauth", { name });
+}
+
+// Open GET like getMounts — a pure in-memory read with no side effects.
+export function getRemoteOAuthStatus(): Promise<DriveOAuthStatus> {
+  return getJson<DriveOAuthStatus>("/api/mounts/remotes/oauth/status");
+}
+
+export function cancelRemoteOAuth(): Promise<{ ok: boolean; canceled: boolean }> {
+  return postJson<{ ok: boolean; canceled: boolean }>("/api/mounts/remotes/oauth/cancel", {});
 }
 
 // -- Template management (fused_render/templates_api.py; TEMPLATE_MGMT_SPEC) --

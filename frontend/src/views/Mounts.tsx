@@ -5,21 +5,60 @@
 // Backend: shell/mounts.py (rclone rcd). Credentials live in rclone's
 // own config, never here. Section layout and per-action busy/error state
 // follow views/Preferences.tsx.
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
+  cancelRemoteOAuth,
   createDetectedRemote,
   createMount,
   createRemote,
   deleteMount,
   getMounts,
+  getRemoteOAuthStatus,
   reconnectMount,
   restartRclone,
+  startRemoteOAuth,
 } from "../lib/api";
-import type { Mount, MountsResult, RcloneRemote, RemoteSuggestion } from "../lib/api";
+import type {
+  Mount,
+  MountsResult,
+  MountUploads,
+  RcloneRemote,
+  RemoteSuggestion,
+} from "../lib/api";
+import { useRefreshOnReturn } from "../lib/hooks";
 import { navigate } from "../lib/router";
 import { Modal } from "../components/modal/Modal";
 import { ErrorBanner } from "../components/ErrorBanner";
 import { Field, Select, TextInput } from "../components/field/fields";
+
+// Files written to this mount that haven't reached the remote yet (D207).
+// Worth its own line because a mount caches writes locally and uploads them
+// afterwards: the user already saw the save succeed, so a rejection at the
+// remote (quota, permissions, a revoked token) is otherwise completely
+// invisible. Silent when the queue is empty — or unknown (null), which is not
+// the same thing and must never be drawn as an all-clear.
+function UploadQueue({ uploads }: { uploads?: MountUploads | null }) {
+  if (!uploads || uploads.pending === 0) return null;
+  const { pending, failed, failed_names } = uploads;
+  const names = failed_names.filter(Boolean).join(", ");
+  if (failed > 0) {
+    return (
+      <div
+        className="mount-hint warn"
+        title="These files were saved on your computer but the remote rejected the upload — rclone keeps retrying with a growing delay."
+      >
+        {failed} {failed === 1 ? "file has" : "files have"} not reached the remote
+        {names && <> — {names}</>}
+        {failed > failed_names.length && <> …</>}. Saved locally; still retrying.
+      </div>
+    );
+  }
+  return (
+    <div className="mount-hint" title="Saved on your computer and uploading to the remote.">
+      Uploading {pending} {pending === 1 ? "file" : "files"}…
+    </div>
+  );
+}
 
 function MountRow({
   conn,
@@ -86,6 +125,7 @@ function MountRow({
           <div className="deploy-muted mount-remote" title={conn.mountpoint}>
             {conn.remote}
           </div>
+          <UploadQueue uploads={conn.uploads} />
         </div>
         <div className="mount-card-actions">
           {conn.state === "mounted" ? (
@@ -552,8 +592,7 @@ function AddRemote({
         For S3-compatible storage that needs a custom endpoint — Cloudflare R2, Backblaze B2,
         Wasabi, MinIO, and the like. Keys are written straight into rclone's own config;
         fused-render never stores them. For plain AWS S3 use <b>Detected credentials</b> instead,
-        and for <b>Google Drive</b> or other sign-in backends run <code>rclone config</code> in a
-        terminal — either then appears in the remote dropdown on reload.
+        and for <b>Google Drive</b> use <b>Sign in to Google Drive</b> — it has no keys to paste.
       </p>
       <form
         className="mount-form-row"
@@ -603,10 +642,170 @@ function AddRemote({
   );
 }
 
+// How often the mount list re-reads itself while an upload is in flight.
+// Deliberately slow: GET /api/mounts probes every mount, so this only runs
+// when there is something to watch drain.
+const UPLOAD_POLL_MS = 8000;
+
+// Poll cadence for the Drive sign-in. Faster than the account flow's 2s: the
+// user is sitting on a modal watching for the browser round-trip to land.
+const OAUTH_POLL_MS = 1500;
+
+// Google Drive sign-in (D205). The server spawns `rclone authorize "drive"`,
+// which runs its own loopback callback server and opens the SYSTEM browser
+// itself — so unlike the Fused login (lib/account.ts) there is no URL for us to
+// window.open, and the client's whole job is start → poll → report. Completion
+// is polled because there is no push channel; `in_flight` dropping without
+// `ok` is the failure case, and it covers the abandoned browser tab.
+function DriveSignIn({
+  remotes,
+  onConnected,
+  onBusyChange,
+}: {
+  remotes: RcloneRemote[];
+  onConnected: () => void;
+  onBusyChange?: (busy: boolean) => void;
+}) {
+  // A free default so the common case is one click. rclone's config/create
+  // overwrites a same-named remote, so an existing name is refused below
+  // rather than silently replacing a working Drive connection.
+  const taken = new Set(remotes.map((r) => r.name.replace(/:$/, "")));
+  const firstFree = () => {
+    if (!taken.has("gdrive")) return "gdrive";
+    for (let i = 2; ; i++) if (!taken.has(`gdrive-${i}`)) return `gdrive-${i}`;
+  };
+
+  const [name, setName] = useState(firstFree);
+  const [connecting, setConnecting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const timer = useRef<number | null>(null);
+
+  const stopPolling = () => {
+    if (timer.current !== null) {
+      window.clearInterval(timer.current);
+      timer.current = null;
+    }
+  };
+  useEffect(() => stopPolling, []);
+
+  const finish = (err: string | null) => {
+    stopPolling();
+    setConnecting(false);
+    onBusyChange?.(false);
+    setError(err);
+  };
+
+  const trimmed = name.trim();
+  const nameError = !trimmed
+    ? "Give the remote a name."
+    : /[:/]/.test(trimmed)
+      ? "A remote name can’t contain “:” or “/”."
+      : taken.has(trimmed)
+        ? `“${trimmed}” already exists — pick another name so it isn’t replaced.`
+        : null;
+
+  const begin = async () => {
+    setError(null);
+    setConnecting(true);
+    onBusyChange?.(true);
+    try {
+      await startRemoteOAuth(trimmed);
+    } catch (e) {
+      finish((e as Error).message);
+      return;
+    }
+    stopPolling();
+    timer.current = window.setInterval(async () => {
+      let status;
+      try {
+        status = await getRemoteOAuthStatus();
+      } catch {
+        return; // transient (server restart, network blip) — keep polling
+      }
+      if (timer.current === null) return; // canceled while the fetch was in flight
+      if (status.in_flight) return;
+      // in_flight has dropped: either the remote exists now, or the attempt
+      // failed — including the child that produced no token at all, whose
+      // message already says to try again.
+      if (status.ok) {
+        finish(null);
+        onConnected();
+      } else {
+        finish(status.error ?? "The Google sign-in did not complete. Try again.");
+      }
+    }, OAUTH_POLL_MS);
+  };
+
+  const cancel = async () => {
+    finish(null);
+    try {
+      await cancelRemoteOAuth();
+    } catch {
+      // Best-effort: the child is killed by its own timeout regardless.
+    }
+  };
+
+  return (
+    <div className="prefs-section">
+      <p className="deploy-muted" style={{ marginTop: 0 }}>
+        Opens Google in your browser to approve access. The sign-in is handled by rclone and the
+        token is written straight into rclone's own config; fused-render never stores it. The
+        connection is <b>read-write</b>, so edits you save under the mount are uploaded back.
+      </p>
+      <p className="deploy-muted" style={{ fontSize: "0.8em" }}>
+        Google Docs, Sheets and Slides are skipped — they aren't real files and can't be opened or
+        saved through a mount.
+      </p>
+      <form
+        className="mount-form-row"
+        onSubmit={(e) => {
+          e.preventDefault();
+          if (!connecting && !nameError) void begin();
+        }}
+      >
+        <Field label="Remote name" required>
+          <TextInput
+            value={name}
+            disabled={connecting}
+            onChange={(e) => setName(e.target.value)}
+          />
+        </Field>
+        {/* Blank caption reserves the label row's height so the button aligns
+            with the input, not the caption above it. */}
+        <Field label={" "}>
+          {connecting ? (
+            <button type="button" className="btn btn-secondary" onClick={cancel}>
+              Cancel
+            </button>
+          ) : (
+            <button type="submit" className="btn btn-primary" disabled={!!nameError}>
+              Sign in to Google Drive
+            </button>
+          )}
+        </Field>
+      </form>
+      {connecting && (
+        <p className="deploy-muted">
+          Waiting for you to approve access in your browser… If no tab opened, check for a blocked
+          window.
+        </p>
+      )}
+      {!connecting && nameError && trimmed !== "" && (
+        <p className="deploy-muted mount-paste-hint warn">{nameError}</p>
+      )}
+      {error && <ErrorBanner>{error}</ErrorBanner>}
+    </div>
+  );
+}
+
 export default function Mounts() {
   const [state, setState] = useState<MountsResult | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [showAddRemote, setShowAddRemote] = useState(false);
+  // Same modal-gating pattern as remoteBusy: while the browser round-trip is in
+  // flight, Esc/backdrop/✕ must not close the modal out from under a live child.
+  const [showDrive, setShowDrive] = useState(false);
+  const [driveBusy, setDriveBusy] = useState(false);
   // Lifted from AddRemote so the modal can gate its Esc/backdrop/✕ close while a
   // create is in flight (previously the backdrop close was ungated).
   const [remoteBusy, setRemoteBusy] = useState(false);
@@ -629,6 +828,20 @@ export default function Mounts() {
     );
   };
   useEffect(reload, []);
+  // Coming back to the window re-reads the list — the cheap way to keep the
+  // upload queue (D207) honest without polling a handler that probes every
+  // mount. (Same refresh-on-return cadence the account dot uses.)
+  useRefreshOnReturn(reload);
+  // While something is actually queued, poll: a drain the user can watch, and
+  // a failure that appears without them having to leave and come back. Gated
+  // on a non-empty queue so an idle Mounts page stays completely quiet.
+  const uploading = state?.mounts.some((m) => (m.uploads?.pending ?? 0) > 0) ?? false;
+  useEffect(() => {
+    if (!uploading) return;
+    const id = window.setInterval(reload, UPLOAD_POLL_MS);
+    return () => window.clearInterval(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [uploading]);
 
   const doRestart = async () => {
     setRestartBusy(true);
@@ -759,9 +972,28 @@ export default function Mounts() {
             suggested={state.rclone.suggested ?? []}
             onChanged={reload}
           />
+          <button type="button" className="mount-link" onClick={() => setShowDrive(true)}>
+            Sign in to Google Drive
+          </button>
           <button type="button" className="mount-link" onClick={() => setShowAddRemote(true)}>
             Add a custom S3 remote (R2, MinIO, …)
           </button>
+          {showDrive && (
+            <Modal
+              title="Sign in to Google Drive"
+              busy={driveBusy}
+              onClose={() => setShowDrive(false)}
+            >
+              <DriveSignIn
+                remotes={state.rclone.remotes}
+                onBusyChange={setDriveBusy}
+                onConnected={() => {
+                  reload(); // the new remote must appear in the Add mount picker
+                  setShowDrive(false);
+                }}
+              />
+            </Modal>
+          )}
           {showAddRemote && (
             <Modal
               title="Add a custom S3 remote"
