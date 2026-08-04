@@ -111,7 +111,18 @@ def test_a_killed_run_polls_as_done_with_an_error(agent, tmp_path, monkeypatch):
 # ------------------------------------------------------------- runEnding, in node
 
 def _run_ending(data, stopped, template="claude"):
-    """Run the page's real `runEnding` over one terminal poll payload."""
+    """Run the page's real `runEnding` over one terminal poll payload.
+
+    The node guard lives HERE, at the shell-out itself, rather than in a fixture
+    keyed on the test's name: the name-prefix version missed
+    `test_the_two_chats_decide_endings_identically` — which is the one test the
+    duplicated-rule decision (D146) rests on — and raised FileNotFoundError
+    instead of skipping wherever node is absent. Sited on the subprocess call, no
+    later test can drift out of the guard's reach. Same siting as
+    test_claude_split_shots.py's and test_claude_split_app_state.py's `_node`.
+    """
+    if not shutil.which("node"):
+        pytest.skip("node is needed to run the page's own end-of-run decision")
     html = _html(template)
     start = html.index("function runEnding(")
     # up to the next top-level definition — `runEnding` is deliberately pure, so
@@ -122,12 +133,6 @@ def _run_ending(data, stopped, template="claude"):
     out = subprocess.run(["node", "-e", script], capture_output=True, text=True)
     assert out.returncode == 0, out.stderr
     return json.loads(out.stdout)
-
-
-@pytest.fixture(autouse=True)
-def _needs_node(request):
-    if request.function.__name__.startswith("test_the_ending") and not shutil.which("node"):
-        pytest.skip("node is needed to run the page's own end-of-run decision")
 
 
 def test_the_ending_of_an_unstopped_failure_is_still_an_error(template):
