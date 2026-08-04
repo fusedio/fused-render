@@ -56,6 +56,7 @@ belongs to another application:
   line when the cap bites, so a truncated listing is never silently passed off
   as a complete one.
 """
+import itertools
 import logging
 import os
 import pathlib
@@ -293,17 +294,16 @@ def _artifact_app(artifact_dir: str, tag: str) -> dict | None:
     }
 
 
-def list_apps() -> list[dict]:
-    """Every Claude Science artifact in the store, as app dicts.
+def _iter_apps(orgs_dir: str, include_examples: bool):
+    """Every artifact in the store, lazily.
 
-    Empty when Claude Science isn't installed (no store, or no ``orgs/``), which
-    is the common case and not a condition worth reporting. Unsorted — the
-    caller merges these with the workspace apps and sorts the whole list once."""
-    root = claude_science_dir()
-    orgs_dir = os.path.join(root, "orgs")
-    apps: list[dict] = []
-    truncated = 0
-    include_examples = _examples_included()
+    A generator so `MAX_ARTIFACTS` can cap the WORK and not merely the output.
+    The first version capped only the output: it kept iterating — and kept
+    calling `_child_dirs` on every remaining project — long after it had stopped
+    keeping anything, so a large store paid for a full walk on every Home
+    render to produce a list it had already finished. Yielding lets the caller
+    stop the walk mid-directory.
+    """
     for org in _child_dirs(orgs_dir):
         org_dir = os.path.join(orgs_dir, org)
         artifacts_dir = os.path.join(org_dir, "artifacts")
@@ -311,7 +311,8 @@ def list_apps() -> list[dict]:
         if not projects:
             continue
         # One DB read per org, not per project — and skipped entirely for an org
-        # with nothing in it.
+        # with nothing in it. Inside the generator, so an org past the cap is
+        # never opened at all.
         names = _project_names(org_dir)
         for project in projects:
             if project in EXAMPLE_PROJECT_IDS and not include_examples:
@@ -321,16 +322,30 @@ def list_apps() -> list[dict]:
             project_dir = os.path.join(artifacts_dir, project)
             tag = names.get(project) or project
             for artifact in _child_dirs(project_dir):
-                if len(apps) >= MAX_ARTIFACTS:
-                    truncated += 1
-                    continue
                 app = _artifact_app(os.path.join(project_dir, artifact), tag)
                 if app is not None:
-                    apps.append(app)
-    if truncated:
+                    yield app
+
+
+def list_apps() -> list[dict]:
+    """Every Claude Science artifact in the store, as app dicts.
+
+    Empty when Claude Science isn't installed (no store, or no ``orgs/``), which
+    is the common case and not a condition worth reporting. Unsorted — the
+    caller merges these with the workspace apps and sorts the whole list once.
+
+    Capped at `MAX_ARTIFACTS`, and the cap STOPS THE WALK — `islice` abandons
+    the generator, so nothing past the limit is listed, stat'd or opened. One
+    extra `next()` is what detects that there was more; it costs one artifact's
+    work and is the difference between an honest warning and a silent cap."""
+    stream = _iter_apps(os.path.join(claude_science_dir(), "orgs"),
+                        _examples_included())
+    apps = list(itertools.islice(stream, MAX_ARTIFACTS))
+    if next(stream, None) is not None:
         # Never a silent cap: a listing that dropped work says so, or the
         # missing cards read as "Claude Science has nothing else".
         logger.warning(
-            "claude-science: listing capped at %d artifacts; %d more not listed "
-            "(store: %s)", MAX_ARTIFACTS, truncated, root)
+            "claude-science: listing capped at %d artifacts; the store holds "
+            "more and the walk stopped there (store: %s)",
+            MAX_ARTIFACTS, claude_science_dir())
     return apps

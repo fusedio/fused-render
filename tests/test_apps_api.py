@@ -18,6 +18,7 @@ import time
 import pytest
 from fastapi.testclient import TestClient
 
+from fused_render import app_listing
 from fused_render.server import create_app
 from fused_render.server.routers import apps as apps_mod
 
@@ -154,6 +155,36 @@ def test_unreadable_project_dir_is_skipped_not_fatal(client, workspace):
     finally:
         os.chmod(locked, stat.S_IRWXU)
     assert [a["name"] for a in apps] == ["ok"]  # unreadable project dir skipped, no 500
+
+
+def test_an_unreadable_project_dir_is_skipped_at_any_uid(client, workspace,
+                                                         monkeypatch):
+    """The same contract as above, without depending on file permissions.
+
+    The chmod test is VACUOUS FOR ROOT — mode 0 does not stop uid 0 reading the
+    directory, so a developer (or a container) running as root sees it pass no
+    matter what the code does. That is how a regression shipped: `app_entry`
+    moved inside `app_dict`, which swallowed the `OSError` and turned "skip this
+    directory" into "list it with no entry". Local runs were green; every CI job
+    failed.
+
+    Raising from `app_entry` itself reproduces the condition deterministically,
+    for every uid, and is what the listing actually has to survive.
+    """
+    _app_dir(workspace, "ok")
+    (workspace / "local" / "locked").mkdir()
+
+    real = app_listing.app_entry
+
+    def refuse(path):
+        if os.path.basename(path) == "locked":
+            raise PermissionError(13, "Permission denied", path)
+        return real(path)
+
+    monkeypatch.setattr(app_listing, "app_entry", refuse)
+    apps = client.get("/api/apps").json()["apps"]
+
+    assert [a["name"] for a in apps] == ["ok"]
 
 
 def test_missing_workspace_lists_empty(client, workspace):

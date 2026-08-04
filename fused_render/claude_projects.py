@@ -38,6 +38,7 @@ scaffolds into or commits to a discovered folder. Unlike that one, a discovered
 app IS an ordinary Fused app — it is the same shape, in a folder the user owns
 — so it opens the same way, beside a Claude chat.
 """
+import itertools
 import json
 import logging
 import os
@@ -177,13 +178,17 @@ def _is_workspace_like(root: str, exclude: str) -> bool:
     return not os.path.basename(root).startswith(".")
 
 
-def _app_shaped(path: str) -> bool:
-    """A directory holding exactly one non-hidden top-level `.html` — the shape
-    of an app. Cheap: one listdir, no recursion."""
+def _app_entry_of(path: str) -> str | None:
+    """The entry of an app-shaped directory — one holding exactly one non-hidden
+    top-level `.html` — or None for anything else, including a directory that
+    cannot be read. Cheap: one listdir, no recursion.
+
+    Returns the entry rather than a bool so the caller does not resolve it a
+    second time when building the app dict."""
     try:
-        return os.path.isdir(path) and app_listing.app_entry(path) is not None
+        return app_listing.app_entry(path) if os.path.isdir(path) else None
     except OSError:
-        return False
+        return None
 
 
 def _child_dirs(folder: str) -> list[str]:
@@ -222,11 +227,12 @@ def _tag_apps(folder: str, tag: str, source: str) -> list[dict]:
     children = _child_dirs(folder)
     if len(children) < MIN_TAG_APPS:
         return []
-    shaped = [c for c in children if _app_shaped(os.path.join(folder, c))]
+    shaped = [(c, _app_entry_of(os.path.join(folder, c))) for c in children]
+    shaped = [(c, entry) for c, entry in shaped if entry]
     if len(shaped) < MIN_TAG_APPS or len(shaped) < MIN_TAG_SHARE * len(children):
         return []
-    return [app_listing.app_dict(os.path.join(folder, c), c, tag, source)
-            for c in shaped]
+    return [app_listing.app_dict(os.path.join(folder, c), c, tag, source, entry)
+            for c, entry in shaped]
 
 
 def list_apps(exclude_root: str) -> list[dict]:
@@ -248,26 +254,39 @@ def list_apps(exclude_root: str) -> list[dict]:
     Deduplicated by app path: two project entries can nest (a workspace and a
     folder inside it), the two depths can overlap, and the same app must not
     become two cards.
+
+    Capped at `MAX_APPS`, and the cap STOPS THE WALK. That matters more here
+    than for the artifact store: past the cap the first version went on calling
+    `_tag_apps` for every remaining root and every one of their subdirectories,
+    each of which is a listdir plus an entry resolution — real I/O across
+    repositories this source knows nothing about, on every Home render, purely
+    to count what it was discarding.
     """
-    exclude = os.path.abspath(exclude_root)
-    apps: list[dict] = []
+    stream = _iter_apps(os.path.abspath(exclude_root))
+    apps = list(itertools.islice(stream, MAX_APPS))
+    if next(stream, None) is not None:
+        logger.warning("claude-code: listing capped at %d apps; more were found "
+                       "and the walk stopped there", MAX_APPS)
+    return apps
+
+
+def _iter_apps(exclude: str):
+    """Every discovered app, lazily and deduplicated by path.
+
+    A generator so the caller's cap can abandon the walk mid-root — see
+    `list_apps`. Dedup lives here rather than in the caller because the two
+    depths of one root can legitimately produce the same app twice, and a
+    duplicate must not consume one of the capped slots.
+    """
     seen: set[str] = set()
-    truncated = 0
     for root in project_roots():
         if not _is_workspace_like(root, exclude):
             continue
-        found = _tag_apps(root, os.path.basename(root), SOURCE)
-        for tag in _child_dirs(root):
-            found += _tag_apps(os.path.join(root, tag), tag, SOURCE)
-        for app in found:
-            if app["path"] in seen:
-                continue
-            if len(apps) >= MAX_APPS:
-                truncated += 1
-                continue
-            seen.add(app["path"])
-            apps.append(app)
-    if truncated:
-        logger.warning("claude-code: %d app(s) beyond the %d cap were not listed",
-                       truncated, MAX_APPS)
-    return apps
+        candidates = [(root, os.path.basename(root))]
+        candidates += [(os.path.join(root, tag), tag) for tag in _child_dirs(root)]
+        for folder, tag in candidates:
+            for app in _tag_apps(folder, tag, SOURCE):
+                if app["path"] in seen:
+                    continue
+                seen.add(app["path"])
+                yield app

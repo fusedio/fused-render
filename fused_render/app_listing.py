@@ -55,13 +55,16 @@ def app_entry(dir_path: str) -> str | None:
     return os.path.abspath(os.path.join(dir_path, htmls[0]))
 
 
-def app_dict(path: str, name: str, tag: str, source: str) -> dict:
+def app_dict(path: str, name: str, tag: str, source: str,
+             entry_html: str | None) -> dict:
     """One app's listing entry. The single place the shape is built, so the
-    three sources cannot drift in what they report."""
-    try:
-        entry_html = app_entry(path)
-    except OSError:
-        entry_html = None  # unreadable/racing: it still lists, as a folder
+    three sources cannot drift in what they report.
+
+    `entry_html` is resolved by the CALLER, deliberately. An earlier version
+    called `app_entry` here and swallowed its `OSError`, which quietly turned
+    "this directory cannot be read, skip it" into "this directory has no entry,
+    list it as a folder" — an unreadable app came back as a card. The caller is
+    the only one that knows which of those it wants, so it decides."""
     return {
         "name": name,
         "tag": tag,
@@ -117,9 +120,13 @@ def two_level_apps(root: str, source: str) -> list[dict]:
             try:
                 if not os.path.isdir(path):
                     continue
+                entry_html = app_entry(path)
             except OSError:
-                continue  # unreadable/racing entry: skip, never fail the listing
-            apps.append(app_dict(path, name, tag, source))
+                # Unreadable or racing: SKIPPED, not listed as an entry-less
+                # card. Resolving the entry inside this guard is what makes
+                # that distinction — see `app_dict`.
+                continue
+            apps.append(app_dict(path, name, tag, source, entry_html))
     return apps
 
 

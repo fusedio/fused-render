@@ -345,15 +345,34 @@ def test_multiple_orgs_are_all_walked(store):
     assert {a["name"] for a in claude_science.list_apps()} == {"one.png", "two.png"}
 
 
-def test_the_cap_bounds_the_listing_and_is_logged(store, monkeypatch, caplog):
+def test_the_cap_stops_the_walk_and_is_logged(store, monkeypatch, caplog):
+    """The cap bounds the WORK, not just the output — raised in review.
+
+    The first version capped only what it kept: it went on iterating, and on
+    calling `_child_dirs` for every remaining project, purely to count what it
+    was discarding. A large store paid for a full walk on every Home render to
+    produce a list it had already finished.
+
+    The call count is the assertion that matters. Ten artifacts, a cap of 3:
+    exactly 4 may be visited — the 3 that are listed plus the single lookahead
+    that detects there was more. The exact remainder is deliberately no longer
+    reported, because counting it is the work being avoided.
+    """
     monkeypatch.setattr(claude_science, "MAX_ARTIFACTS", 3)
-    for i in range(5):
+    for i in range(10):
         _artifact(store, "proj_a", f"u{i}", [f"vaaaaaaa{i}_fig{i}.png"])
+
+    visited = []
+    real = claude_science._artifact_app
+    monkeypatch.setattr(claude_science, "_artifact_app",
+                        lambda d, tag: (visited.append(d), real(d, tag))[1])
 
     with caplog.at_level("WARNING", logger="fused_render"):
         apps = claude_science.list_apps()
+
     assert len(apps) == 3
-    assert "capped at 3" in caplog.text and "2 more" in caplog.text
+    assert len(visited) == 4, "the walk must stop at the cap, not run to the end"
+    assert "capped at 3" in caplog.text
 
 
 # ----------------------------------------------------------------- GET /api/apps

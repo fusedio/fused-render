@@ -173,6 +173,41 @@ def test_an_absent_config_reads_as_no_roots(tmp_path, monkeypatch):
     assert claude_projects.list_apps(str(tmp_path / "ws")) == []
 
 
+def test_the_app_cap_stops_the_walk(tmp_path, config, monkeypatch, caplog):
+    """The cap bounds the WORK, not just the output — raised in review, and it
+    bites harder here than in the artifact store.
+
+    Past the cap the first version kept calling `_tag_apps` for every remaining
+    root AND every one of their subdirectories: a listdir plus an entry
+    resolution each, across repositories this source knows nothing about, on
+    every Home render — purely to count what it was discarding.
+
+    Six roots of two apps each, capped at 3: the walk must stop inside the
+    second root, so the later roots are never even considered.
+    """
+    monkeypatch.setattr(claude_projects, "MAX_APPS", 3)
+    roots = []
+    for r in range(6):
+        root = tmp_path / f"root{r}"
+        for name in ("one", "two"):
+            _app(root / "work", f"{name}{r}")
+        roots.append(root)
+    config(roots)
+
+    scanned = []
+    real = claude_projects._tag_apps
+    monkeypatch.setattr(claude_projects, "_tag_apps",
+                        lambda f, t, s: (scanned.append(f), real(f, t, s))[1])
+
+    with caplog.at_level("WARNING", logger="fused_render"):
+        apps = claude_projects.list_apps(str(tmp_path / "ws"))
+
+    assert len(apps) == 3
+    assert "capped at 3" in caplog.text
+    touched = {p for p in scanned if str(tmp_path / "root2") in p}
+    assert not touched, "roots past the cap must never be scanned"
+
+
 def test_the_root_cap_is_logged_not_silent(tmp_path, config, monkeypatch, caplog):
     monkeypatch.setattr(claude_projects, "MAX_ROOTS", 3)
     roots = []
