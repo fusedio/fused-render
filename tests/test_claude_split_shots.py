@@ -513,7 +513,8 @@ _CAPTURE_FNS = _CAPS + _BLANK_FNS + ["function shotCropRect(",
                         "function shotFit(", "function annLabelFor(",
                         "const APP_STATE_UNREADABLE",
                         "async function annCaptureShots(", "function shotJoin(",
-                        "function annApplyShots(", "function annShots("]
+                        "function annApplyShots(", "function annRevokeThumbs(",
+                        "function annShots("]
 
 _CAPTURE_STUBS = """
 var uploaded = [];
@@ -639,6 +640,102 @@ annotations = [a];
     assert out["sentence"] in out["note"]
 
 
+# -------------------------------- the style walk: the part that costs the time
+
+# A tree of `n` elements whose getComputedStyle is counted. The real cost is one
+# getComputedStyle plus ~340 property reads each; the count is what the assertions
+# below are about, not the reads.
+_TREE = """
+var styledCount = 0;
+function CS() { const a = ["color"]; a.getPropertyValue = () => "red"; return a; }
+const view = {getComputedStyle: () => { styledCount++; return CS(); }};
+function node(kids) {
+  return {ownerDocument: {defaultView: view}, children: kids || [],
+          setAttribute: () => {}};
+}
+function mk(n) {
+  const kids = [];
+  for (let i = 0; i < n - 1; i++) kids.push(node());
+  return node(kids);
+}
+"""
+
+_WALK_FNS = ["const SHOT_MAX_ELEMENTS", "const SHOT_STYLE_CHUNK",
+             "async function shotInlineStyles("]
+
+
+def test_the_style_walk_lets_a_timer_fire_while_it_runs(html):
+    """The bug SHOT_TIMEOUT_MS was quietly failing to bound. The walk is the
+    expensive part of a capture — one getComputedStyle plus ~340 property reads
+    per element, order 10⁶ reads on a few-thousand-element app — and as one
+    synchronous recursion NO timer could fire while it ran. So the budget could
+    not be enforced, and the chat UI froze for the whole capture on every
+    annotated send. Asserted by scheduling a timer before the walk and recording
+    how far the walk had got when it fired."""
+    out = _node(_WALK_FNS, _TREE + """
+let firedAt = -1;
+setTimeout(() => { firedAt = styledCount; }, 0);
+(async () => {
+  const r = await shotInlineStyles(mk(1000), mk(1000), Date.now() + 60000);
+  console.log(JSON.stringify({firedAt: firedAt, styled: r.styled,
+                              truncated: r.truncated, chunk: SHOT_STYLE_CHUNK}));
+})();
+""", html)
+    assert out["styled"] == 1000 and out["truncated"] is False
+    assert out["firedAt"] > 0, "the timer never got a turn: the walk is still sync"
+    assert out["firedAt"] < out["styled"], "it fired after the walk, not during it"
+
+
+def test_the_style_walk_stops_at_its_deadline(html):
+    """The other half of the budget: yielding lets the timer fire, and the
+    deadline is what makes the walk itself stop rather than run on as an
+    abandoned job hogging the main thread."""
+    out = _node(_WALK_FNS, _TREE + """
+(async () => {
+  const r = await shotInlineStyles(mk(2000), mk(2000), Date.now() - 1);
+  console.log(JSON.stringify({styled: r.styled, truncated: r.truncated}));
+})();
+""", html)
+    assert out["truncated"] is True
+    assert out["styled"] < 2000
+
+
+def test_the_style_walk_stops_at_its_element_cap(html):
+    """A page bigger than the cap costs a partly-styled capture, not an
+    unbounded one — which also bounds the serialized SVG, since every element
+    adds a few KB of inline style to it."""
+    out = _node(_WALK_FNS, _TREE + """
+(async () => {
+  const r = await shotInlineStyles(mk(SHOT_MAX_ELEMENTS + 400),
+                                   mk(SHOT_MAX_ELEMENTS + 400),
+                                   Date.now() + 120000);
+  console.log(JSON.stringify({styled: r.styled, truncated: r.truncated,
+                              cap: SHOT_MAX_ELEMENTS}));
+})();
+""", html)
+    assert out["styled"] == out["cap"]
+    assert out["truncated"] is True
+
+
+def test_a_truncated_capture_says_so_on_every_crop_it_produced(html):
+    """Silence would present a half-CSS render as "the element as the user saw
+    it" — the same class of misread as shipping a blank canvas."""
+    out = _node(_CAPTURE_FNS, _CAPTURE_STUBS + """
+shotPane = async () => ({canvas: {}, width: 800, height: 600, blanks: [],
+                        styled: 3000, truncated: true});
+shotEncode = async (pane, rect) => ({size: 10});
+const a = {id: "a", el: {name: "a", contains: () => false}};
+annotations = [a];
+(async () => {
+  annApplyShots([a], await annCaptureShots([a]));
+  console.log(JSON.stringify({shot: a.shot, note: a.shotNote}));
+})();
+""", html)
+    assert out["shot"], "a truncated capture still produces a usable crop"
+    assert "unstyled" in out["note"]
+    assert "3000" in out["note"], "and says how far it got"
+
+
 # --------------------------------------- a failed capture never fails the send
 
 def test_a_thrown_capture_degrades_to_sending_the_annotations_without_shots(html):
@@ -667,21 +764,35 @@ const a = {id: "a", content: "this is wrong", anchorPath: "div:nth-of-type(1)",
 
 
 def test_a_slow_capture_is_abandoned_rather_than_awaited_forever(html):
-    """SHOT_TIMEOUT_MS is shortened here (the real value is a human-scale wait);
-    what is asserted is that the race resolves to no-shots rather than hanging."""
+    """SHOT_TIMEOUT_MS is shortened here (the real value is a human-scale wait).
+
+    The stub burns REAL synchronous work in chunks, the way the style walk does,
+    rather than awaiting a promise that never settles: a capture whose cost is one
+    long synchronous stretch cannot be timed out at all — a timer cannot fire
+    while it runs — so a stub that only awaits would assert nothing about the
+    budget. What is asserted is that the race resolves to no-shots while the
+    capture is still mid-flight."""
     out = _node([n for n in _CAPTURE_FNS if n != "const SHOT_TIMEOUT_MS"],
                 "var SHOT_TIMEOUT_MS = 20;\n" + _CAPTURE_STUBS + """
-annCaptureShots = () => new Promise(() => {});   // never settles
+var finished = false;
+annCaptureShots = async () => {
+  for (let i = 0; i < 100; i++) {
+    const until = Date.now() + 3;
+    while (Date.now() < until) {}                  // synchronous cost...
+    await new Promise((r) => setTimeout(r, 0));    // ...that yields between chunks
+  }
+  finished = true;
+  return {shots: {a: {shot: "/tmp/x.png"}}, thumbs: {}};
+};
 const a = {id: "a"};
 (async () => {
-  const started = Date.now();
   const r = await annShots([a]);
   annApplyShots([a], r);
   console.log(JSON.stringify({shots: r.shots, thumbs: r.thumbs,
-                              shot: a.shot === undefined}));
+                              shot: a.shot === undefined, finished: finished}));
 })();
 """, html)
-    assert out == {"shots": {}, "thumbs": {}, "shot": True}
+    assert out == {"shots": {}, "thumbs": {}, "shot": True, "finished": False}
     assert "const SHOT_TIMEOUT_MS" in html, "the real cap still has to exist"
 
 

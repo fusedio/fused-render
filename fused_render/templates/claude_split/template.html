@@ -815,6 +815,18 @@ const SHOT_MIN_AREA = 64;
 // The whole capture's budget. Past it the send goes out WITHOUT shots: a user
 // losing their message because a screenshot was slow is not a trade we make.
 const SHOT_TIMEOUT_MS = 6000;
+// Elements whose computed style the capture will inline before it gives up. Each
+// one costs a getComputedStyle plus ~340 property reads and adds a few KB to the
+// serialized SVG, so this is the cap that keeps a big app from turning the send
+// into a freeze. Past it the capture is finished with what it has and every crop
+// says so.
+const SHOT_MAX_ELEMENTS = 3000;
+// Elements between yields to the event loop during that walk. The reason it is a
+// number and not "never": a synchronous walk cannot be interrupted by a timer, so
+// without these yields SHOT_TIMEOUT_MS below could not fire and the chat UI froze
+// for the whole capture. Small enough that a frame is never missed by much, large
+// enough that the yields themselves are not the cost.
+const SHOT_STYLE_CHUNK = 200;
 // Fraction of an annotated element's own area that may sit over an unreadable
 // canvas before the crop is suppressed instead of annotated. Half is the line
 // between "a picture of the thing, with a hole in a corner" (worth sending, with
@@ -1562,13 +1574,45 @@ function shotJoin(dir, name) {
 // `<style>` rules do not travel with a serialized element, so every computed
 // property is copied onto the clone's inline style. This is what makes the
 // capture look like the app instead of like unstyled HTML.
-function shotInlineStyles(src, dst) {
-  const cs = src.ownerDocument.defaultView.getComputedStyle(src);
-  let css = "";
-  for (const prop of cs) css += prop + ":" + cs.getPropertyValue(prop) + ";";
-  dst.setAttribute("style", css);
-  const a = src.children, b = dst.children;
-  for (let i = 0; i < a.length && i < b.length; i++) shotInlineStyles(a[i], b[i]);
+//
+// It is also, by a wide margin, the expensive part of a capture: one
+// getComputedStyle plus a read of every longhand (~340) PER ELEMENT, which on a
+// few-thousand-element app is order 10⁶ property reads. As one synchronous
+// recursion that made SHOT_TIMEOUT_MS a promise the capture could not keep — a
+// timer cannot fire while synchronous code runs — so the send stalled and the
+// whole chat UI froze for however long the walk took, on every annotated send.
+//
+// Hence two limits, and both are load-bearing:
+//   YIELDS every SHOT_STYLE_CHUNK elements, which is what makes the budget's
+//     timer able to fire at all (and keeps typing responsive meanwhile).
+//   STOPS at SHOT_MAX_ELEMENTS or past `deadline`, so a huge page costs a
+//     partly-styled capture instead of an unbounded one — that also bounds the
+//     serialized SVG, which grows by a few KB of inline style per element.
+//
+// Breadth-first rather than depth-first BECAUSE it can stop early: the elements
+// nearest <body> are the layout containers, so a truncated capture still has the
+// page's overall shape rather than one fully-styled subtree and nothing else.
+//
+// Returns what it managed, so the caller can say so — a crop that is partly
+// unstyled must not be presented as what the user saw.
+async function shotInlineStyles(src, dst, deadline) {
+  let styled = 0, truncated = false;
+  const queue = [[src, dst]];
+  while (queue.length) {
+    if (styled >= SHOT_MAX_ELEMENTS || Date.now() > deadline) {
+      truncated = true;
+      break;
+    }
+    const [s, d] = queue.shift();
+    const cs = s.ownerDocument.defaultView.getComputedStyle(s);
+    let css = "";
+    for (const prop of cs) css += prop + ":" + cs.getPropertyValue(prop) + ";";
+    d.setAttribute("style", css);
+    const a = s.children, b = d.children;
+    for (let i = 0; i < a.length && i < b.length; i++) queue.push([a[i], b[i]]);
+    if (++styled % SHOT_STYLE_CHUNK === 0) await new Promise((r) => setTimeout(r, 0));
+  }
+  return { styled, truncated };
 }
 
 // Whether a canvas read back nothing we can use.
@@ -1712,9 +1756,12 @@ async function shotEncode(pane, rect) {
   return null;
 }
 
-// Rasterise the visible left pane once. Returns {canvas, width, height, blanks}
-// or null when there is no readable app document to capture.
-async function shotPane() {
+// Rasterise the visible left pane once. Returns
+// {canvas, width, height, blanks, styled, truncated} or null when there is no
+// readable app document to capture. `deadline` is a Date.now() stamp the style
+// walk stops at — the capture's share of SHOT_TIMEOUT_MS, enforced INSIDE the
+// walk because that is the only place that can enforce it (see shotInlineStyles).
+async function shotPane(deadline) {
   const win = appWindow();
   const doc = win && win.document;
   const body = doc && doc.body;
@@ -1723,7 +1770,7 @@ async function shotPane() {
   const w = Math.max(1, Math.round(root.clientWidth || body.offsetWidth));
   const h = Math.max(1, Math.round(root.clientHeight || body.offsetHeight));
   const clone = body.cloneNode(true);
-  shotInlineStyles(body, clone);
+  const styles = await shotInlineStyles(body, clone, deadline);
   const blanks = shotRasterise(body, clone);
   // Shift the clone by the app's scroll offset so the bitmap matches the VIEWPORT
   // — which is the coordinate space annStageRect (and the pins) already work in.
@@ -1753,7 +1800,8 @@ async function shotPane() {
   ctx.fillStyle = shotBackdrop(win) || "#ffffff";
   ctx.fillRect(0, 0, w, h);
   ctx.drawImage(img, 0, 0);
-  return { canvas, width: w, height: h, blanks };
+  return { canvas, width: w, height: h, blanks,
+           styled: styles.styled, truncated: styles.truncated };
 }
 
 // The app's own page background, from <html> then <body>. Returns "" when both
@@ -1777,11 +1825,12 @@ function shotBackdrop(win) {
 // Deliberately does NOT mutate the annotations: the caller races this against a
 // timeout, and a half-applied capture would leave some notes carrying paths from
 // a capture that never finished. The caller applies the result or nothing.
-async function annCaptureShots(pending) {
+async function annCaptureShots(pending, deadline) {
   const out = { shots: {}, thumbs: {} };
   if (!pending || !pending.length) return out;
   const dir = await shotDirPath();
-  const pane = await shotPane();
+  const pane = await shotPane(deadline === undefined
+                              ? Date.now() + SHOT_TIMEOUT_MS : deadline);
   if (!pane) {
     for (const c of pending) {
       out.shots[c.id] = { shot: null,
@@ -1792,6 +1841,15 @@ async function annCaptureShots(pending) {
   const doc = annFrame.contentDocument;
   const stamp = new Date().toISOString().replace(/[^0-9]/g, "").slice(0, 14)
     + "-" + crypto.randomUUID().slice(0, 8);
+  // A capture whose style walk stopped early is a real picture of the page with
+  // pieces of it rendered unstyled. Every crop out of it says so: silence here
+  // would present a half-CSS render as "the element as the user saw it", which is
+  // the same class of misread as shipping a blank canvas.
+  const paneNote = pane.truncated
+    ? "part of this capture is unstyled: the page has more elements than the "
+      + "capture budget allows (it stopped after " + pane.styled + "), so some "
+      + "of what you see may render without its CSS rather than as the user saw it"
+    : "";
   let made = 0;
   for (const c of pending) {
     const note = (why) => { out.shots[c.id] = { shot: null, shotNote: why }; };
@@ -1830,15 +1888,21 @@ async function annCaptureShots(pending) {
       const path = shotJoin(dir, stamp + "-" + annLabelFor(annotations.indexOf(c)) + ".png");
       await fused.uploadFile(path, blob);
       out.shots[c.id] = { shot: path };
-      // A crop that only laps onto a blank canvas is worth sending — but never
-      // silently. Without this the agent is handed a picture with an unexplained
-      // empty corner and told it is "the element as the user saw it".
+      // What this crop does NOT show, if anything. A crop that only laps onto a
+      // blank canvas, or comes out of a truncated capture, is worth sending — but
+      // never silently: otherwise the agent gets a picture with an unexplained
+      // hole in it and is told it is "the element as the user saw it".
+      const caveats = [];
       if (cover > 0) {
-        out.shots[c.id].shotNote =
-          "part of this crop (about " + Math.round(cover * 100) + "% of the "
-          + "element) overlaps a WebGL canvas whose pixels could not be read "
-          + "back, so that area shows the app's background instead of what was "
-          + "drawn there. The rest of the crop is what the user saw.";
+        caveats.push("part of this crop (about " + Math.round(cover * 100)
+          + "% of the element) overlaps a WebGL canvas whose pixels could not be "
+          + "read back, so that area shows the app's background instead of what "
+          + "was drawn there");
+      }
+      if (paneNote) caveats.push(paneNote);
+      if (caveats.length) {
+        out.shots[c.id].shotNote = caveats.join("; ")
+          + ". The rest of the crop is what the user saw.";
       }
       out.thumbs[c.id] = URL.createObjectURL(blob);
       made++;
@@ -1855,6 +1919,13 @@ async function annCaptureShots(pending) {
 // with their anchors, which are what Claude edits from anyway. A thrown or timed
 // out capture must never cost the user the message they typed.
 //
+// The timer is only HALF of what makes the budget real, and for a long time it
+// was the only half — a `setTimeout` cannot fire while synchronous code runs, and
+// the expensive part of a capture (the computed-style walk) used to be exactly
+// that. The deadline handed to annCaptureShots is the other half: the walk stops
+// itself, and yields often enough for this timer to get a turn. Neither alone
+// bounds anything.
+//
 // A timed-out capture is abandoned, not cancelled — it may still finish and
 // upload a file nobody references. That is what agent.py's pruning is for.
 function annShots(pending) {
@@ -1862,7 +1933,8 @@ function annShots(pending) {
   const budget = new Promise((res) => {
     timer = setTimeout(() => res(null), SHOT_TIMEOUT_MS);
   });
-  return Promise.race([annCaptureShots(pending), budget])
+  const capture = annCaptureShots(pending, Date.now() + SHOT_TIMEOUT_MS);
+  return Promise.race([capture, budget])
     .catch((err) => {
       console.warn("annotation screenshots skipped:", err.message);
       return null;
