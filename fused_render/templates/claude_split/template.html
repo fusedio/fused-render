@@ -1773,7 +1773,11 @@ async function resumeRun(run_id) {
     const users = log.querySelectorAll(".user .bubble");
     const lastUser = users[users.length - 1];
     const lastTurn = lastUser && lastUser.parentElement;
-    const matches = !!lastUser && lastUser.textContent === probeMsg;
+    // The generic annotation-only marker never counts as a match: every such
+    // send collapses to the same text, so it can't identify a specific turn —
+    // and a false match trims another turn's assistant rows. Worst case for
+    // refusing: a duplicated marker row, which is harmless by comparison.
+    const matches = !!lastUser && probeMsg !== "📌 annotations" && lastUser.textContent === probeMsg;
     if (probe.done) {
       // Run finished with no frame attached: only repair what the restored
       // transcript can provably be missing (see the claude template).
