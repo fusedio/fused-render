@@ -344,7 +344,7 @@ function AddMount({
   // Classify an available remote/suggestion so a pasted link can pick a matching
   // one: which cloud, and whether it's a public (no-credentials) remote. Names +
   // labels are the only client-side signal (e.g. "aws:" + "AWS S3 — default
-  // profile", or "aws-open:" + "… public buckets (no credentials)").
+  // profile", or "aws-open:" + "… public datasets (no credentials)").
   const classify = (nameRaw: string, labelRaw: string) => {
     const n = nameRaw.toLowerCase();
     const l = labelRaw.toLowerCase();

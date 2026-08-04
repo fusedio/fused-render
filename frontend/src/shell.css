@@ -4731,9 +4731,22 @@ select.field-control:has(option[value=""]:checked) {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
   gap: 10px;
+  align-items: stretch;
+  /* Every row the same height, not just every card within a row. Grid sizes
+     rows independently by default, so a one-line row sat visibly shorter than
+     a row containing a card whose cost text wraps — the picker read as uneven
+     even though each row was internally aligned. */
+  grid-auto-rows: 1fr;
 }
 
 .mount-provider {
+  /* A <button> does not reliably stretch to its grid area the way a div does,
+     so the row was ragged: the cards whose cost line wraps to two lines grew
+     and the rest stayed short (measured 49/63/49px across one row). Explicit
+     height is what makes the grid's stretch actually apply — and it is also
+     what gives .mount-provider-cost's margin-top:auto something to push
+     against, since auto margins need spare space in the box to distribute. */
+  height: 100%;
   display: flex;
   flex-direction: column;
   gap: 6px;

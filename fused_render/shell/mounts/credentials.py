@@ -55,14 +55,14 @@ def _credential_suggestions() -> list[dict]:
     from fused_render.shell.mounts import _aws_profiles
     out: list[dict] = [{
         "id": "aws-open-public",
-        "label": "AWS S3 — public buckets (no credentials)",
+        "label": "AWS S3 — public datasets (no credentials)",
         "remote_name": "aws-open",
         "backend": "s3",
         "kind": "public",
         "params": {"provider": "AWS", "env_auth": "false", "region": "us-west-2"},
     }, {
         "id": "gcs-open-public",
-        "label": "Google Cloud Storage — public buckets (no credentials)",
+        "label": "Google Cloud Storage — public datasets (no credentials)",
         "remote_name": "gcs-open",
         "backend": "google cloud storage",
         "kind": "public",
@@ -122,7 +122,7 @@ def _rclone_config_dump(bin_: str) -> dict:
 def _remote_label(remote: str, suggestions: list[dict], configs: dict) -> str:
     """Friendly label for a materialized rclone remote, so it presents under the
     SAME human name the suggestion used across its whole lifecycle (e.g. the
-    built-in public option shows as "AWS S3 — public buckets…", not the cryptic
+    built-in public option shows as "AWS S3 — public datasets…", not the cryptic
     "aws-open:" it materializes into). Match against the FULL suggestion set —
     including ones already materialized, which _suggestions_view drops.
 

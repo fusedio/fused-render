@@ -2428,7 +2428,7 @@ def test_public_suggestion_hidden_once_materialized(monkeypatch):
 
 _AWS_OPEN_SUGG = {
     "id": "aws-open-public",
-    "label": "AWS S3 — public buckets (no credentials)",
+    "label": "AWS S3 — public datasets (no credentials)",
     "remote_name": "aws-open", "backend": "s3", "kind": "public",
     "params": {"provider": "AWS", "env_auth": "false"},
 }
@@ -2439,7 +2439,7 @@ def test_remote_label_matches_suggestion():
     that suggestion's friendly label — one stable human name across its lifecycle."""
     configs = {"aws-open": {"type": "s3", "provider": "AWS", "env_auth": "false"}}
     assert (mounts_mod._remote_label("aws-open:", [_AWS_OPEN_SUGG], configs)
-            == "AWS S3 — public buckets (no credentials)")
+            == "AWS S3 — public datasets (no credentials)")
 
 
 def test_remote_label_falls_back_to_bare_name():
@@ -2474,7 +2474,7 @@ def test_rclone_state_labels_materialized_remote(monkeypatch):
 
     state = mounts_mod._rclone_state()
     assert state["remotes"] == [
-        {"name": "aws-open:", "label": "AWS S3 — public buckets (no credentials)"},
+        {"name": "aws-open:", "label": "AWS S3 — public datasets (no credentials)"},
         {"name": "myminio:", "label": "myminio:"},
     ]
     # the materialized aws-open drops out of the suggestions (shown under Remotes)
