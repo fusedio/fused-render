@@ -27,6 +27,7 @@ import shutil
 import subprocess
 import sys
 import threading
+import time
 
 import pytest
 from fastapi.responses import JSONResponse
@@ -34,6 +35,19 @@ from fastapi.responses import JSONResponse
 from fused_render.server import dirpicker
 from fused_render.server.routers.config import api_config
 from fused_render.server.routers.fs_read import api_fs_pick_folder
+
+
+@pytest.fixture(autouse=True)
+def _no_dialog_outstanding():
+    """Nobody's dialog leaks into the next test.
+
+    The one-dialog claim is module state by necessity (there is one screen), and a
+    test that deliberately abandons a dialog leaves it held — which would show up
+    as an unrelated later test mysteriously getting PickerBusy.
+    """
+    dirpicker._forget_outstanding_dialog()
+    yield
+    dirpicker._forget_outstanding_dialog()
 
 darwin_only = pytest.mark.skipif(sys.platform != "darwin", reason="macOS only")
 needs_osascript = pytest.mark.skipif(
@@ -382,13 +396,6 @@ def test_the_windows_backend_runs_the_dialog_off_the_request_thread(monkeypatch)
     assert threading.current_thread() is threading.main_thread()
 
 
-def test_a_windows_dialog_that_never_returns_times_out(monkeypatch):
-    monkeypatch.setattr(dirpicker, "_DIALOG_TIMEOUT_S", 0.3)
-    _fake_win32(monkeypatch, on_show=lambda: threading.Event().wait(30))
-    with pytest.raises(dirpicker.PickerFailed, match="not answered"):
-        dirpicker._pick_win32(None, "Pick")
-
-
 def test_a_windows_dialog_failure_reaches_the_calling_thread(monkeypatch):
     # The thread swallowing it would leave the request looking like a cancel.
     def broken():
@@ -560,6 +567,137 @@ def test_a_backend_answering_a_relative_path_is_a_failure(monkeypatch):
                         lambda start, title: "relative/dir")
     with pytest.raises(dirpicker.PickerFailed):
         dirpicker.pick_directory()
+
+
+# ------------------------------------------------- a dialog we gave up waiting on
+# The hard case, and the one the first version got wrong. When a backend CANNOT
+# take the dialog down — the win32 STA thread and the AppKit main thread both own
+# a modal we have no handle on — giving up on the wait leaves the dialog on
+# screen. Releasing the claim there stacks a second modal over the first; never
+# releasing it wedges the picker for the life of the process. So the claim passes
+# to the dialog, and clears when the dialog itself finishes.
+
+
+def _abandoning_backend(monkeypatch, finished):
+    """A backend that reports "I gave up, and the dialog is still up"."""
+    def abandon(start, title):
+        raise dirpicker.DialogAbandoned(finished)
+
+    monkeypatch.setattr(dirpicker, "_backend", lambda: "win32")
+    monkeypatch.setitem(dirpicker._BACKENDS, "win32", abandon)
+
+
+def test_an_abandoned_dialog_keeps_the_claim_until_it_really_finishes(monkeypatch):
+    still_up = threading.Event()
+    _abandoning_backend(monkeypatch, still_up)
+
+    with pytest.raises(dirpicker.PickerFailed, match="not answered"):
+        dirpicker.pick_directory()
+
+    # The dialog is STILL on screen, so a second request must be refused rather
+    # than stacking another modal on top of it.
+    monkeypatch.setitem(dirpicker._BACKENDS, "win32",
+                        lambda start, title: "/Users/ada/code")
+    with pytest.raises(dirpicker.PickerBusy):
+        dirpicker.pick_directory()
+
+    # …and when the orphaned dialog finally closes, the picker works again. This
+    # is the other half: refusing forever would be a permanent wedge after one
+    # unanswered dialog.
+    still_up.set()
+    assert dirpicker.pick_directory() == "/Users/ada/code"
+
+
+def test_a_dialog_that_finished_while_we_gave_up_does_not_wedge(monkeypatch):
+    # The race: the dialog completes between the wait timing out and the claim
+    # being handed over. Its event is already set, so the next request is served.
+    already_done = threading.Event()
+    already_done.set()
+    _abandoning_backend(monkeypatch, already_done)
+    with pytest.raises(dirpicker.PickerFailed):
+        dirpicker.pick_directory()
+    monkeypatch.setitem(dirpicker._BACKENDS, "win32",
+                        lambda start, title: "/Users/ada/code")
+    assert dirpicker.pick_directory() == "/Users/ada/code"
+
+
+def test_the_win32_timeout_really_reports_the_dialog_as_still_up(monkeypatch):
+    # Not a fake at this level: the STA thread is a real thread, still alive with
+    # the (faked) modal, and `_pick_win32` must say so rather than raise a plain
+    # failure that would let the claim go.
+    monkeypatch.setattr(dirpicker, "_DIALOG_TIMEOUT_S", 0.3)
+    let_go = threading.Event()
+    _fake_win32(monkeypatch, on_show=lambda: let_go.wait(20))
+    with pytest.raises(dirpicker.DialogAbandoned) as caught:
+        dirpicker._pick_win32(None, "Pick")
+    finished = caught.value.finished
+    assert not finished.is_set(), "the dialog thread is still running"
+    let_go.set()
+    assert finished.wait(5), "the dialog thread never marked itself finished"
+
+
+@darwin_only
+def test_the_appkit_timeout_really_reports_the_panel_as_still_up(
+        menubar_pin, monkeypatch):
+    # Same shape on macOS, and worse: the panel is owned by the MAIN thread, so
+    # there is nothing at all we could cancel from here.
+    let_go = threading.Event()
+    monkeypatch.setattr(menubar_pin, "_run_directory_panel",
+                        lambda start, title, prompt: let_go.wait(20) and "/late")
+    _delivers_on_another_thread(monkeypatch, menubar_pin)
+    with pytest.raises(menubar_pin.PanelNotAnswered) as caught:
+        _off_main_thread(lambda: menubar_pin.choose_directory(timeout=0.3))
+    finished = caught.value.finished
+    assert not finished.is_set()
+    let_go.set()
+    assert finished.wait(5), "the panel never marked itself finished"
+    # PanelNotAnswered stays a TimeoutError, so existing callers keep working.
+    assert isinstance(caught.value, TimeoutError)
+
+
+@darwin_only
+def test_an_abandoned_appkit_panel_keeps_the_claim(menubar_pin, monkeypatch):
+    # End to end through the real appkit backend seam: a panel nobody answers
+    # holds the claim, and hands it back when it closes.
+    let_go = threading.Event()
+    monkeypatch.setattr(menubar_pin, "_run_directory_panel",
+                        lambda start, title, prompt: let_go.wait(20) and "/late")
+    _delivers_on_another_thread(monkeypatch, menubar_pin)
+    monkeypatch.setattr(dirpicker, "_backend", lambda: "appkit")
+    monkeypatch.setattr(dirpicker, "_DIALOG_TIMEOUT_S", 0.3)
+
+    with pytest.raises(dirpicker.PickerFailed):
+        _off_main_thread(dirpicker.pick_directory)
+    with pytest.raises(dirpicker.PickerBusy):
+        dirpicker.pick_directory()
+    let_go.set()
+    monkeypatch.setitem(dirpicker._BACKENDS, "appkit",
+                        lambda start, title: "/Users/ada/code")
+    # The panel's own event clears the claim; give it a moment to be observed.
+    for _ in range(50):
+        try:
+            assert dirpicker.pick_directory() == "/Users/ada/code"
+            break
+        except dirpicker.PickerBusy:
+            time.sleep(0.05)
+    else:
+        pytest.fail("the claim was never handed back after the panel closed")
+
+
+def test_a_killable_dialog_still_hands_the_claim_straight_back(monkeypatch):
+    # The asymmetry worth being explicit about: osascript and zenity run in a
+    # CHILD PROCESS, which subprocess.run kills on timeout. There is no dialog
+    # left, so those backends raise a plain failure and the claim frees at once —
+    # they must NOT be made to hold it like the in-process ones do.
+    monkeypatch.setattr(dirpicker, "_backend", lambda: "osascript")
+    monkeypatch.setitem(dirpicker._BACKENDS, "osascript",
+                        lambda start, title: (_ for _ in ()).throw(
+                            dirpicker.PickerFailed("not answered in time")))
+    with pytest.raises(dirpicker.PickerFailed):
+        dirpicker.pick_directory()
+    monkeypatch.setitem(dirpicker._BACKENDS, "osascript",
+                        lambda start, title: "/Users/ada/code")
+    assert dirpicker.pick_directory() == "/Users/ada/code"
 
 
 def test_an_os_error_from_a_backend_becomes_a_picker_failure(monkeypatch):

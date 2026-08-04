@@ -602,6 +602,22 @@ def _run_directory_panel(start: str | None, title: str, prompt: str) -> str | No
         start=start, create_directories=True)
 
 
+class PanelNotAnswered(TimeoutError):
+    """`choose_directory` stopped waiting, and the panel may still be ON SCREEN.
+
+    A TimeoutError still, so a caller that only cares that the wait ended keeps
+    working. What it adds is `finished`: the panel runs on the AppKit main thread
+    and nothing off that thread can dismiss it, so this Event — set when the panel
+    block finally returns — is the only way anyone can learn the modal has gone.
+    `server/dirpicker.py` needs that to hold its one-dialog claim for exactly as
+    long as the panel is up, instead of releasing it over a live modal.
+    """
+
+    def __init__(self, message: str, finished: threading.Event):
+        super().__init__(message)
+        self.finished = finished
+
+
 def _call_on_main_thread(fn) -> None:
     """Post `fn` to the AppKit main thread — the established hop (app.py uses it
     for the same reason). A named seam so a test can stand in for "runs
@@ -614,7 +630,8 @@ def choose_directory(start: str | None = None, title: str = "Choose a folder",
     """A folder-only NSOpenPanel, callable from ANY thread. Blocks the caller.
 
     Returns the chosen path, or None if the user cancelled. Raises whatever the
-    panel raised, and TimeoutError if the answer never came.
+    panel raised, and `PanelNotAnswered` (a TimeoutError) if the answer never
+    came — carrying the Event that reports when the still-open panel closes.
 
     Every AppKit call has to happen on the main thread, and the caller here is a
     uvicorn threadpool worker (the server runs on a daemon thread inside this
@@ -646,7 +663,10 @@ def choose_directory(start: str | None = None, title: str = "Choose a folder",
     else:
         _call_on_main_thread(run)
         if not done.wait(timeout):
-            raise TimeoutError("the folder chooser was not answered in time")
+            # `done` rides along: the panel is very possibly still on screen, and
+            # this is the only handle anyone has on when it goes away.
+            raise PanelNotAnswered(
+                "the folder chooser was not answered in time", done)
     if "error" in cell:
         raise cell["error"]
     return cell.get("path")

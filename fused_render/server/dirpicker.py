@@ -34,10 +34,16 @@ subprocess:
 * **a cancel is an answer.** It returns None and reads as a cancel all the way
   out to the page. Reporting it as an error makes the page pop a second,
   different chooser at someone who just said no.
-* **one dialog at a time, and never forever.** A non-blocking lock refuses a
+* **one dialog at a time, and never forever.** A non-blocking claim refuses a
   second request rather than stacking modals, and every wait is bounded — an
   unanswered dialog must fail the request instead of pinning a threadpool
   worker for the life of the process.
+
+  Those two pull against each other when a wait times out over a dialog that is
+  STILL UP, which the in-process backends cannot take down. Freeing the claim
+  there stacks a second modal on the first; keeping it forever wedges the picker.
+  So the claim is handed to the dialog itself and clears when the dialog really
+  ends — see the one-dialog claim section below, and `DialogAbandoned`.
 """
 import functools
 import os
@@ -65,6 +71,24 @@ class PickerBusy(RuntimeError):
 
 class PickerFailed(RuntimeError):
     """The dialog broke. NOT what a user cancelling looks like — see None."""
+
+
+class DialogAbandoned(RuntimeError):
+    """We stopped waiting, but the dialog is STILL ON SCREEN.
+
+    Raised only by the backends that own a modal they cannot take down: the
+    Windows STA thread and the AppKit main thread. `finished` is set when that
+    dialog really does end, which is what lets `pick_directory` keep refusing new
+    requests until then without wedging the picker forever.
+
+    A child-process backend (osascript, zenity) never raises this: subprocess
+    kills the child on timeout, so there is no dialog left and a plain
+    PickerFailed is the honest answer.
+    """
+
+    def __init__(self, finished: threading.Event):
+        super().__init__("the folder chooser was not answered in time")
+        self.finished = finished
 
 
 # ------------------------------------------------------------ backend selection
@@ -140,8 +164,14 @@ def available() -> bool:
 def _pick_appkit(start, title):
     from fused_render import menubar_pin
 
-    return menubar_pin.choose_directory(
-        start=start, title=title, timeout=_DIALOG_TIMEOUT_S)
+    try:
+        return menubar_pin.choose_directory(
+            start=start, title=title, timeout=_DIALOG_TIMEOUT_S)
+    except menubar_pin.PanelNotAnswered as exc:
+        # The panel belongs to the AppKit main thread and there is nothing here
+        # that could dismiss it, so this is not "the dialog failed" — it is "the
+        # dialog is still up and we are no longer waiting".
+        raise DialogAbandoned(exc.finished) from exc
 
 
 # ---------------------------------------------------------- macOS: osascript
@@ -213,18 +243,24 @@ def _pick_win32(start, title):
     from fused_render.supervisor._win32.ui import pick_directory
 
     cell = {}
+    # Set by the dialog thread itself, whatever the outcome. On the timeout path
+    # this is the ONLY thing that can tell anyone the modal has gone: nothing here
+    # can dismiss an IFileDialog pumping its own message loop.
+    finished = threading.Event()
 
     def run():
         try:
             cell["path"] = pick_directory(title=title, start=start)
         except BaseException as exc:  # noqa: BLE001 - carried to the caller below
             cell["error"] = exc
+        finally:
+            finished.set()
 
     thread = threading.Thread(target=run, daemon=True, name="fused-dir-dialog")
     thread.start()
     thread.join(_DIALOG_TIMEOUT_S)
     if thread.is_alive():
-        raise PickerFailed("the folder chooser was not answered in time")
+        raise DialogAbandoned(finished)
     if "error" in cell:
         raise cell["error"]
     return cell.get("path")
@@ -240,12 +276,60 @@ _BACKENDS = {
 }
 
 
-# ----------------------------------------------------------------- the entry point
+# --------------------------------------------------------------- the one-dialog claim
+# There is one screen, so this is necessarily module state.
+#
+# INVARIANT: at most one dialog is outstanding, and the claim on it is held by
+# whoever can observe that dialog end. `_outstanding` is None when no dialog is
+# up; otherwise it is an Event that becomes set when the outstanding dialog
+# finishes. For a dialog we are still waiting on, that Event is one nobody sets —
+# the waiter clears the slot itself when its wait returns. For a dialog we GAVE UP
+# on, it is the dialog's own completion Event, so the claim clears when the modal
+# really goes away and not a moment sooner.
+#
+# Both halves matter. Releasing on the timeout path stacks a second modal over the
+# first, unanswered one — exactly what the claim exists to prevent. Never
+# releasing wedges the picker for the rest of the process after a single
+# unanswered dialog.
+_state = threading.Lock()   # guards `_outstanding`; never held while a dialog is up
+_outstanding: threading.Event | None = None
 
-# Non-blocking: a second request must be REFUSED, not queued. Queuing would let
-# a page fire two dialogs and then wait on the second for as long as the first
-# stays open, which looks identical to a hang.
-_lock = threading.Lock()
+
+def _claim() -> threading.Event:
+    """Claim the right to put a dialog up, or raise PickerBusy.
+
+    Non-blocking by design: a second request must be REFUSED, not queued.
+    Queuing would let a page fire two dialogs and then wait on the second for as
+    long as the first stays open, which is indistinguishable from a hang.
+    """
+    global _outstanding
+    with _state:
+        if _outstanding is not None and not _outstanding.is_set():
+            raise PickerBusy("a folder chooser is already open")
+        _outstanding = threading.Event()
+        return _outstanding
+
+
+def _unclaim(claim: threading.Event, still_up: threading.Event | None) -> None:
+    """Give the claim back. With `still_up`, the dialog outlived our wait, so the
+    claim passes to it instead of being freed."""
+    global _outstanding
+    with _state:
+        # Identity-checked: if something else already took the slot over (only
+        # possible after we handed it away), leave it alone.
+        if _outstanding is claim:
+            _outstanding = still_up
+
+
+def _forget_outstanding_dialog() -> None:
+    """Drop any claim. For tests only — a real dialog is never forgotten, it
+    finishes."""
+    global _outstanding
+    with _state:
+        _outstanding = None
+
+
+# ----------------------------------------------------------------- the entry point
 
 
 def pick_directory(start: str | None = None,
@@ -261,16 +345,22 @@ def pick_directory(start: str | None = None,
     if not backend:
         raise PickerUnavailable(
             "this system has no folder chooser the app can open")
-    if not _lock.acquire(blocking=False):
-        raise PickerBusy("a folder chooser is already open")
+    claim = _claim()
+    still_up = None
     try:
         chosen = _BACKENDS[backend](start, title)
+    except DialogAbandoned as exc:
+        # The dialog is still on screen. Hand it the claim (see _unclaim) so the
+        # next request is refused while it is up and served once it closes.
+        still_up = exc.finished
+        logger.warning("folder chooser (%s): abandoned, dialog still open", backend)
+        raise PickerFailed(str(exc)) from exc
     except (PickerBusy, PickerFailed, PickerUnavailable):
         raise
     except OSError as exc:
         raise PickerFailed(str(exc)) from exc
     finally:
-        _lock.release()
+        _unclaim(claim, still_up)
     if chosen is None:
         logger.info("folder chooser (%s): cancelled", backend)
         return None
