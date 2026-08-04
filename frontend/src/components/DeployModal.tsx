@@ -38,7 +38,7 @@ import { useFusedLogin } from "../lib/account";
 import DeploymentErrors from "./DeploymentErrors";
 import { basename, dirname, formatSize } from "../lib/format";
 import { useRefreshOnReturn } from "../lib/hooks";
-import { navigateUrl } from "../lib/router";
+import { navigate, navigateUrl } from "../lib/router";
 import { Modal } from "./modal/Modal";
 import { ErrorBanner } from "./ErrorBanner";
 import { Select, TextInput } from "./field/fields";
@@ -566,6 +566,17 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
     alive.current = false;
   }, []);
 
+  // Set when a deploy in THIS dialog published a live copy at a different path
+  // than the page it was opened on (a dev-copy deploy): closing the dialog then
+  // navigates to the live copy — the deploy folder is what's actually deployed,
+  // so that's where the user should land. Cleared by a revoke (the live copy is
+  // deleted with it — navigating there would 404 the view).
+  const deployedPageRef = useRef<string | null>(null);
+  const closeModal = () => {
+    onClose();
+    if (deployedPageRef.current) navigate(deployedPageRef.current, { isDir: false });
+  };
+
   const applyDeployment = (d: Deployment | null) => {
     if (alive.current) setDeployment(d);
     onChange(d);
@@ -806,6 +817,10 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
         namedTokenActive ? trimmedToken : undefined,
       );
       applyDeployment(record);
+      // What was published is the LIVE COPY (<ws>/deploy/<name>/…) — when this
+      // deploy was launched from a dev copy, remember the live page so closing
+      // the dialog lands the user on what's actually deployed.
+      if (record.page && record.page !== fsPath) deployedPageRef.current = record.page;
       if (!alive.current) return;
       setReconciled(true);
       setLive("active");
@@ -838,6 +853,7 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
     try {
       const record = await revokeDeployment(fsPath);
       applyDeployment(record);
+      deployedPageRef.current = null; // the live copy was just removed
       if (!alive.current) return;
       setLive("revoked");
     } catch (e) {
@@ -1499,7 +1515,7 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
     // trap the user. closeTitle reflects that.
     <Modal
       title={`Deploy ${basename(fsPath)}`}
-      onClose={onClose}
+      onClose={closeModal}
       closeTitle={busy !== null ? "Close (the action keeps running)" : "Close"}
     >
       {body()}

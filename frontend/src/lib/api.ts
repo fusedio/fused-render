@@ -410,7 +410,11 @@ export interface DeployConfig {
 // The thin per-page deployment pointer (~/.fused-render/deployments.json).
 // url is null when the backend never returned one (AWS prints token+path only).
 export interface Deployment {
+  // The LIVE COPY's entry page (<workspace>/deploy/<name>/…) — what is
+  // actually published. Deploying from a dev copy records that origin in
+  // `source`; the two differ exactly when the deploy made a copy.
   page: string;
+  source?: string;
   env: string;
   backend: string;
   token: string;

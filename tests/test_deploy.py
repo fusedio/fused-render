@@ -99,15 +99,23 @@ class Harness:
         self.set_scenario({})
         monkeypatch.setenv("FUSED_STUB_SCENARIO", str(self.scenario_file))
 
-        # A deployable page with one runPython dependency beside it.
-        self.page = tmp_path / "view.html"
+        # Deploy is scoped to managed apps (<workspace>/<tag>/<name>/), so the
+        # deployable page lives inside one; a deploy copies the app folder to
+        # <workspace>/deploy/<name>/ and the pointer keys on the LIVE copy.
+        self.workspace = tmp_path / "Fused"
+        monkeypatch.setenv("FUSED_RENDER_DIR", str(self.workspace))
+        self.app_dir = self.workspace / "local" / "view"
+        self.app_dir.mkdir(parents=True)
+        self.page = self.app_dir / "view.html"
         self.page.write_text(
             "<html><head></head><body><script>"
             "fused.runPython('./sine.py', {});"
             "</script></body></html>",
             encoding="utf-8",
         )
-        (tmp_path / "sine.py").write_text("def main():\n    return 1\n", encoding="utf-8")
+        (self.app_dir / "sine.py").write_text("def main():\n    return 1\n", encoding="utf-8")
+        self.live_dir = self.workspace / "deploy" / "view"
+        self.live_page = self.live_dir / "view.html"
 
         self.client = TestClient(create_app(start_dir=str(tmp_path)))
 
@@ -123,7 +131,7 @@ class Harness:
         path = self.home / "deployments.json"
         if not path.exists():
             return None
-        return json.loads(path.read_text(encoding="utf-8")).get(str(self.page))
+        return json.loads(path.read_text(encoding="utf-8")).get(str(self.live_page))
 
 
 def _has_flag(argv: list[str], flag: str, value: str) -> bool:
@@ -571,7 +579,7 @@ def test_deploy_custom_token_ignored_on_repoint(tmp_path, monkeypatch):
 
 def test_deploy_bundles_included_file_and_persists_selection(tmp_path, monkeypatch):
     h = _harness(tmp_path, monkeypatch)
-    (tmp_path / "data.csv").write_text("a,b\n1,2\n", encoding="utf-8")
+    (h.app_dir / "data.csv").write_text("a,b\n1,2\n", encoding="utf-8")
     h.set_scenario(
         {"create": {"token": "abc123", "url": "https://serve.example/abc123", "status": "active"}}
     )
@@ -1525,7 +1533,7 @@ def test_shares_joins_mounts_to_local_pages(tmp_path, monkeypatch):
     mounts = resp.json()["mounts"]
     # Local pages first, live before revoked.
     assert [(m["token"], m["page"]) for m in mounts] == [
-        ("abc123", str(h.page)),
+        ("abc123", str(h.live_page)),  # the store keys on the live copy
         ("zzz999", None),
         ("old111", None),
     ]
@@ -1562,7 +1570,7 @@ def test_preview_lists_what_would_be_published(tmp_path, monkeypatch):
 
 def test_preview_applies_include_and_exclude(tmp_path, monkeypatch):
     h = _harness(tmp_path, monkeypatch)
-    (tmp_path / "data.csv").write_text("a,b\n1,2\n", encoding="utf-8")
+    (h.app_dir / "data.csv").write_text("a,b\n1,2\n", encoding="utf-8")
     # Include a file the scan can't see; exclude the auto-detected entrypoint.
     resp = h.client.post(
         "/api/deploy/preview",
@@ -1592,10 +1600,10 @@ def test_preview_reports_asset_source(tmp_path, monkeypatch):
         "</body></html>",
         encoding="utf-8",
     )
-    (tmp_path / "logo.png").write_text("PNG", encoding="utf-8")
-    (tmp_path / "tiles").mkdir()
-    (tmp_path / "tiles" / "0.png").write_text("PNG", encoding="utf-8")
-    (tmp_path / "extra.csv").write_text("a,b\n1,2\n", encoding="utf-8")
+    (h.app_dir / "logo.png").write_text("PNG", encoding="utf-8")
+    (h.app_dir / "tiles").mkdir()
+    (h.app_dir / "tiles" / "0.png").write_text("PNG", encoding="utf-8")
+    (h.app_dir / "extra.csv").write_text("a,b\n1,2\n", encoding="utf-8")
     resp = h.client.post(
         "/api/deploy/preview", json={"path": str(h.page), "include": ["extra.csv"]}
     )
@@ -1738,3 +1746,237 @@ def test_errors_old_cli_gives_upgrade_hint(tmp_path, monkeypatch):
     with pytest.raises(deploy_mod.DeployError) as ei:
         deploy_mod.list_errors("cloud", "tok")
     assert "too old" in str(ei.value)
+
+
+# -- managed-app scoping and the live copy in <workspace>/deploy/<name>/ -------
+
+
+CREATE_OK = {"create": {"token": "abc123", "url": "https://serve.example/abc123", "status": "active"}}
+
+
+def test_deploy_rejects_a_page_outside_the_workspace(tmp_path, monkeypatch):
+    h = _harness(tmp_path, monkeypatch)
+    stray = tmp_path / "stray.html"
+    stray.write_text("<html></html>", encoding="utf-8")
+    h.set_scenario(CREATE_OK)
+    resp = h.client.post("/api/deploy", json={"page": str(stray), "env": "cloud"}, headers=FUSED)
+    assert resp.status_code == 400
+    assert "only apps in the Fused workspace" in resp.json()["error"]
+    assert h.calls() == []  # rejected before any CLI call
+
+    # Preview rejects the same way, so the modal says so before the click.
+    resp = h.client.post("/api/deploy/preview", json={"path": str(stray)})
+    assert resp.status_code == 400
+    assert "only apps in the Fused workspace" in resp.json()["error"]
+
+
+def test_deploy_rejects_a_page_directly_under_a_tag(tmp_path, monkeypatch):
+    # <workspace>/<tag>/page.html is not an app (apps are one level deeper).
+    h = _harness(tmp_path, monkeypatch)
+    page = h.workspace / "local" / "loose.html"
+    page.write_text("<html></html>", encoding="utf-8")
+    resp = h.client.post("/api/deploy", json={"page": str(page), "env": "cloud"}, headers=FUSED)
+    assert resp.status_code == 400
+    assert "only apps in the Fused workspace" in resp.json()["error"]
+
+
+def test_deploy_copies_the_app_into_the_deploy_tag(tmp_path, monkeypatch):
+    h = _harness(tmp_path, monkeypatch)
+    h.set_scenario(CREATE_OK)
+    resp = h.client.post("/api/deploy", json={"page": str(h.page), "env": "cloud"}, headers=FUSED)
+    assert resp.status_code == 200, resp.text
+    # The live copy exists, whole-folder, and the dev copy is untouched.
+    assert h.live_page.is_file()
+    assert (h.live_dir / "sine.py").is_file()
+    assert h.page.is_file() and (h.app_dir / "sine.py").is_file()
+    # No staging leftovers.
+    assert sorted(p.name for p in (h.workspace / "deploy").iterdir()) == ["view"]
+    # The record points at the live copy and remembers the dev source.
+    record = resp.json()
+    assert record["page"] == str(h.live_page)
+    assert record["source"] == str(h.page)
+    assert h.pointer()["page"] == str(h.live_page)
+
+
+def test_deploy_rolls_back_the_copy_when_the_share_fails(tmp_path, monkeypatch):
+    h = _harness(tmp_path, monkeypatch)
+    h.set_scenario({})  # stub answers nothing -> `share create` fails
+    resp = h.client.post("/api/deploy", json={"page": str(h.page), "env": "cloud"}, headers=FUSED)
+    assert resp.status_code == 400
+    # First deploy failed -> the deploy tag holds nothing for this app.
+    assert not h.live_dir.exists()
+    assert h.pointer() is None
+
+
+def test_failed_redeploy_restores_the_previous_live_copy(tmp_path, monkeypatch):
+    h = _harness(tmp_path, monkeypatch)
+    h.set_scenario(CREATE_OK)
+    assert (
+        h.client.post(
+            "/api/deploy", json={"page": str(h.page), "env": "cloud"}, headers=FUSED
+        ).status_code
+        == 200
+    )
+    old_live = h.live_page.read_text(encoding="utf-8")
+
+    # Change the dev copy, then make the redeploy's CLI step fail.
+    h.page.write_text("<html><body>v2</body></html>", encoding="utf-8")
+    h.set_scenario({})  # list/repoint all fail
+    resp = h.client.post("/api/deploy", json={"page": str(h.page), "env": "cloud"}, headers=FUSED)
+    assert resp.status_code == 400
+    # The live copy is byte-for-byte what was deployed before, not v2.
+    assert h.live_page.read_text(encoding="utf-8") == old_live
+    assert not (h.workspace / "deploy" / ".bak-view").exists()
+    assert not (h.workspace / "deploy" / ".tmp-view").exists()
+
+
+def test_preview_warns_before_overwriting_another_apps_deployment(tmp_path, monkeypatch):
+    h = _harness(tmp_path, monkeypatch)
+    h.set_scenario(CREATE_OK)
+    h.client.post("/api/deploy", json={"page": str(h.page), "env": "cloud"}, headers=FUSED)
+
+    # A DIFFERENT app with the same name under another tag.
+    other = h.workspace / "team" / "view"
+    other.mkdir(parents=True)
+    other_page = other / "view.html"
+    other_page.write_text("<html></html>", encoding="utf-8")
+    resp = h.client.post("/api/deploy/preview", json={"path": str(other_page)})
+    assert resp.status_code == 200, resp.text
+    assert any("overwrite" in w for w in resp.json()["warnings"])
+
+    # The SAME app redeploying over its own live copy stays silent.
+    resp = h.client.post("/api/deploy/preview", json={"path": str(h.page)})
+    assert resp.status_code == 200, resp.text
+    assert not any("overwrite" in w for w in resp.json()["warnings"])
+
+
+def test_status_reads_the_same_pointer_from_either_copy(tmp_path, monkeypatch):
+    h = _harness(tmp_path, monkeypatch)
+    h.set_scenario(CREATE_OK)
+    h.client.post("/api/deploy", json={"page": str(h.page), "env": "cloud"}, headers=FUSED)
+    for path in (str(h.page), str(h.live_page)):
+        resp = h.client.get("/api/deploy/status", params={"path": path})
+        assert resp.json()["deployment"]["token"] == "abc123"
+
+
+def test_redeploy_in_place_from_the_live_copy_does_not_recopy(tmp_path, monkeypatch):
+    h = _harness(tmp_path, monkeypatch)
+    h.set_scenario(CREATE_OK)
+    h.client.post("/api/deploy", json={"page": str(h.page), "env": "cloud"}, headers=FUSED)
+    # Edit the live copy directly, then redeploy FROM it.
+    h.live_page.write_text("<html><body>hotfix</body></html>", encoding="utf-8")
+    h.set_scenario(
+        {
+            "list": [{"token": "abc123", "status": "active"}],
+            "repoint": {"token": "abc123", "status": "active"},
+        }
+    )
+    resp = h.client.post(
+        "/api/deploy", json={"page": str(h.live_page), "env": "cloud"}, headers=FUSED
+    )
+    assert resp.status_code == 200, resp.text
+    # The hotfix edit survives (no copy clobbered it). `source` stays the
+    # ORIGINAL dev copy, not this call's live-copy path — an in-place redeploy
+    # must not sever the record's link back to the app's dev copy (see
+    # test_in_place_redeploy_keeps_the_original_source for why).
+    assert "hotfix" in h.live_page.read_text(encoding="utf-8")
+    assert resp.json()["source"] == str(h.page)
+
+
+def test_revoke_removes_the_live_copy(tmp_path, monkeypatch):
+    h = _harness(tmp_path, monkeypatch)
+    h.set_scenario({**CREATE_OK, "revoke": {"token": "abc123", "status": "revoked"}})
+    h.client.post("/api/deploy", json={"page": str(h.page), "env": "cloud"}, headers=FUSED)
+    assert h.live_dir.is_dir()
+    resp = h.client.post("/api/deploy/revoke", json={"page": str(h.page)}, headers=FUSED)
+    assert resp.status_code == 200, resp.text
+    # The live copy is gone, the dev copy stays, the pointer keeps the token.
+    assert not h.live_dir.exists()
+    assert h.page.is_file()
+    assert h.pointer()["status"] == "revoked"
+    assert h.pointer()["token"] == "abc123"
+
+
+def test_failed_revoke_leaves_the_live_copy(tmp_path, monkeypatch):
+    h = _harness(tmp_path, monkeypatch)
+    h.set_scenario(CREATE_OK)  # no "revoke" answer -> revoke fails
+    h.client.post("/api/deploy", json={"page": str(h.page), "env": "cloud"}, headers=FUSED)
+    resp = h.client.post("/api/deploy/revoke", json={"page": str(h.page)}, headers=FUSED)
+    assert resp.status_code == 400
+    assert h.live_dir.is_dir()  # still live -> still there
+    assert h.pointer()["status"] == "active"
+
+
+# -- bugbot fixes: account revoke, in-place source, cross-drive path ----------
+
+
+def test_revoke_by_token_removes_the_live_copy(tmp_path, monkeypatch):
+    # The account page's revoke (env+token, no page) must clean up the deploy
+    # folder exactly like the Deploy modal's page-based revoke does.
+    h = _harness(tmp_path, monkeypatch)
+    h.set_scenario(CREATE_OK)
+    h.client.post("/api/deploy", json={"page": str(h.page), "env": "cloud"}, headers=FUSED)
+    assert h.live_dir.is_dir()
+    h.set_scenario({"revoke": {"token": "abc123", "status": "revoked"}})
+    resp = h.client.post(
+        "/api/deploy/revoke", json={"env": "cloud", "token": "abc123"}, headers=FUSED
+    )
+    assert resp.status_code == 200, resp.text
+    assert not h.live_dir.exists()
+    assert h.pointer()["status"] == "revoked"
+
+
+def test_in_place_redeploy_keeps_the_original_source(tmp_path, monkeypatch):
+    # Editing the live copy directly and redeploying FROM it must not overwrite
+    # the record's `source` with the live path itself — that would make the
+    # ORIGINAL dev copy's next preview misread itself as "someone else's app".
+    h = _harness(tmp_path, monkeypatch)
+    h.set_scenario(CREATE_OK)
+    h.client.post("/api/deploy", json={"page": str(h.page), "env": "cloud"}, headers=FUSED)
+    assert h.pointer()["source"] == str(h.page)
+
+    h.live_page.write_text("<html><body>hotfix</body></html>", encoding="utf-8")
+    h.set_scenario(
+        {
+            "list": [{"token": "abc123", "status": "active"}],
+            "repoint": {"token": "abc123", "status": "active"},
+        }
+    )
+    resp = h.client.post(
+        "/api/deploy", json={"page": str(h.live_page), "env": "cloud"}, headers=FUSED
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["source"] == str(h.page)  # NOT the live path
+    assert h.pointer()["source"] == str(h.page)
+
+    # The original dev copy's preview must stay silent (it IS the owner).
+    resp = h.client.post("/api/deploy/preview", json={"path": str(h.page)})
+    assert resp.status_code == 200, resp.text
+    assert not any("overwrite" in w for w in resp.json()["warnings"])
+
+
+def test_app_of_returns_none_on_relpath_failure(tmp_path, monkeypatch):
+    # A path with no relative form against the workspace (e.g. a different
+    # drive on Windows raises ValueError from os.path.relpath) must read as
+    # "not inside the workspace", not crash the caller.
+    monkeypatch.setenv("FUSED_RENDER_DIR", str(tmp_path / "Fused"))
+    monkeypatch.setattr(
+        deploy_mod.os.path, "relpath",
+        lambda *a, **k: (_ for _ in ()).throw(ValueError("no relative path")),
+    )
+    assert deploy_mod._app_of(str(tmp_path / "Fused" / "local" / "app" / "x.html")) is None
+
+
+def test_preview_of_a_sibling_page_stays_silent(tmp_path, monkeypatch):
+    # A second .html page in the SAME app folder, never individually
+    # deployed itself, must not read as a foreign app just because its own
+    # (per-page) pointer doesn't exist yet — only index.html's does.
+    h = _harness(tmp_path, monkeypatch)
+    h.set_scenario(CREATE_OK)
+    h.client.post("/api/deploy", json={"page": str(h.page), "env": "cloud"}, headers=FUSED)
+
+    sibling = h.app_dir / "admin.html"
+    sibling.write_text("<html></html>", encoding="utf-8")
+    resp = h.client.post("/api/deploy/preview", json={"path": str(sibling)})
+    assert resp.status_code == 200, resp.text
+    assert not any("overwrite" in w for w in resp.json()["warnings"])
