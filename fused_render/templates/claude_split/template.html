@@ -963,6 +963,16 @@ function annCloseComposer() {
   annDraft = null;
   annEditing = null;
 }
+// Click anywhere outside the popover dismisses it. mousedown, not click, so
+// it fires before the target's own handlers; pins and chips are exempt — their
+// click handlers own the toggle/reopen behavior and a mousedown-close here
+// would make the pin's toggle reopen instead.
+document.addEventListener("mousedown", (e) => {
+  if (annPop.style.display !== "block") return;
+  const t = e.target;
+  if (annPop.contains(t) || (t.closest && (t.closest(".annpin") || t.closest(".annchip")))) return;
+  annCloseComposer();
+});
 annDelBtn.addEventListener("click", () => {
   if (annEditing) annotations = annotations.filter((a) => a.id !== annEditing);
   annSave();
@@ -1000,6 +1010,13 @@ annFrame.addEventListener("load", () => {
   const doc = annFrame.contentDocument;
   if (!doc) return;
   const elementOf = (t) => (t && t.nodeType === 1 ? t : t && t.parentElement);
+  // Clicks inside the frame never bubble to the parent document, so the
+  // outside-click dismissal needs its own hook here. In annotate mode the
+  // click handler below may immediately open a fresh composer on the clicked
+  // element — that's the expected "move the popover" flow.
+  doc.addEventListener("mousedown", () => {
+    if (annPop.style.display === "block") annCloseComposer();
+  }, true);
   doc.addEventListener("mousemove", (e) => {
     if (!annOn) return;
     const el = elementOf(e.target);
