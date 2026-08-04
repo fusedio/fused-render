@@ -25,7 +25,7 @@ import {
   shouldApplyPreselect,
   suggestMountName,
 } from "./links";
-import type { RemoteChoice } from "./links";
+import type { RemoteChoice, RemoteHandoff } from "./links";
 
 // The Remote dropdown's groups, in display order.
 //
@@ -58,9 +58,10 @@ export function AddMount({
 }: {
   remotes: RcloneRemote[];
   suggested: RemoteSuggestion[];
-  // A remote spec a setup flow just created (incl. trailing ':'), to select
-  // here once the reload carrying it lands. Null when nothing is pending.
-  preselect: string | null;
+  // The last setup flow to finish, to select here once the reload carrying its
+  // remote lands. Null when nothing is pending. Nonce-keyed so that connecting
+  // the SAME remote twice is two handoffs, not one — see RemoteHandoff.
+  preselect: RemoteHandoff | null;
   onChanged: () => void;
   onPickProvider: (key: SetupKey) => void;
 }) {
@@ -98,20 +99,35 @@ export function AddMount({
   // and say in words what just happened and what to do next.
   const sectionRef = useRef<HTMLElement>(null);
   const pathRef = useRef<HTMLInputElement>(null);
-  const appliedPreselect = useRef<string | null>(null);
+  const appliedNonce = useRef<number | null>(null);
   const [flash, setFlash] = useState(false);
   const [connected, setConnected] = useState<string | null>(null);
+  // The flash timer lives in a ref, NOT in the effect's cleanup. This effect
+  // re-runs on every `remotes` change — the 8s upload poll, and the
+  // refresh-on-return that fires the moment the user comes back from the OAuth
+  // browser tab — and a cleanup-owned timer was therefore cancelled by an
+  // unrelated reload without ever being rescheduled, leaving .mount-grid--flash
+  // painted on forever and every later handoff unable to replay it.
+  const flashTimer = useRef<number | null>(null);
+  useEffect(
+    () => () => {
+      if (flashTimer.current !== null) window.clearTimeout(flashTimer.current);
+    },
+    [],
+  );
   useEffect(() => {
-    if (!shouldApplyPreselect(preselect, appliedPreselect.current, remotes.map((r) => r.name)))
-      return;
-    appliedPreselect.current = preselect;
-    setRemote(preselect!);
-    setConnected(preselect);
+    if (!shouldApplyPreselect(preselect, appliedNonce.current, remotes.map((r) => r.name))) return;
+    appliedNonce.current = preselect!.nonce;
+    setRemote(preselect!.remote);
+    setConnected(preselect!.remote);
     sectionRef.current?.scrollIntoView({ block: "nearest", behavior: "smooth" });
     pathRef.current?.focus();
+    if (flashTimer.current !== null) window.clearTimeout(flashTimer.current);
     setFlash(true);
-    const t = window.setTimeout(() => setFlash(false), HANDOFF_FLASH_MS);
-    return () => window.clearTimeout(t);
+    flashTimer.current = window.setTimeout(() => {
+      flashTimer.current = null;
+      setFlash(false);
+    }, HANDOFF_FLASH_MS);
   }, [preselect, remotes]);
 
   // Everything the Remote picker can offer, as one list. A remote the user has

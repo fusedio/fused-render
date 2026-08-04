@@ -5,7 +5,7 @@
 // Backend: shell/mounts.py (rclone rcd). Credentials live in rclone's
 // own config, never here. Section layout and per-action busy/error state
 // follow views/Preferences.tsx.
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { getMounts, restartRclone } from "../lib/api";
 import type { MountsResult } from "../lib/api";
 import { OAUTH_PROVIDERS } from "../lib/oauth";
@@ -14,6 +14,7 @@ import { hasDrainingUploads } from "../lib/uploads";
 import { Modal } from "../components/modal/Modal";
 import { ErrorBanner } from "../components/ErrorBanner";
 import { AddMount } from "./mounts/AddMount";
+import type { RemoteHandoff } from "./mounts/links";
 import { MountRow } from "./mounts/MountList";
 import {
   AddRemote,
@@ -39,10 +40,14 @@ export default function Mounts() {
   // it holding rclone's callback port, and the next attempt 409s on a sign-in
   // the user believes they dismissed.
   const [setupBusy, setSetupBusy] = useState(false);
-  // The remote a setup flow just created, handed to Add mount to pre-select.
-  // Creating a remote is only half the job — it mounts nothing — and the modal
-  // simply vanishing left no visible next step.
-  const [preselect, setPreselect] = useState<string | null>(null);
+  // The last setup flow to finish, handed to Add mount to pre-select. Creating
+  // a remote is only half the job — it mounts nothing — and the modal simply
+  // vanishing left no visible next step. Carries a NONCE, so connecting the
+  // same remote twice is two handoffs rather than a silent no-op (see
+  // RemoteHandoff): re-using aws-open:, or re-signing in to Drive to replace an
+  // expired token, are both ordinary things to do twice.
+  const [preselect, setPreselect] = useState<RemoteHandoff | null>(null);
+  const handoffNonce = useRef(0);
   // Global "Restart all mounts": a confirm modal (it briefly disconnects ALL
   // mounts) gating the multi-second daemon restart + re-mount.
   const [confirmRestart, setConfirmRestart] = useState(false);
@@ -81,7 +86,8 @@ export default function Mounts() {
   const finishSetup = (remote: string) => {
     reload();
     setSetup(null);
-    setPreselect(remote);
+    handoffNonce.current += 1;
+    setPreselect({ remote, nonce: handoffNonce.current });
   };
 
   const doRestart = async () => {

@@ -182,20 +182,31 @@ export interface RemoteChoice {
 // that has no credentials at all.
 const KIND_RANK: Record<RemoteKind, number> = { other: 0, detected: 1, public: 2 };
 
+// A setup flow finishing: "this remote was just connected, hand the user back
+// to the form". An EVENT, not a value — which is the whole reason for `nonce`.
+// Keyed on the remote name alone, a repeat of the same remote was
+// indistinguishable from the one already applied, so the second Use of
+// `aws-open:` (or a Drive re-sign-in with Replace, which is the normal way to
+// recover an expired token) closed the modal onto an untouched form.
+export interface RemoteHandoff {
+  remote: string; // the rclone spec, incl. trailing ':'
+  nonce: number; // bumped by finishSetup on every completion
+}
+
 // Whether a setup flow's handoff should move the Remote picker now.
 //
-// Two separate hazards, which is why `applied` exists at all. The remote is
-// routinely ABSENT when the preselect arrives (finishSetup sets it as the modal
-// closes, before getMounts() lands), so this must keep saying "not yet" rather
-// than firing once and giving up. And the mount list re-reads itself on a timer
-// and on window focus, so once applied it must never fire AGAIN — that would
-// throw away a Remote the user has since picked by hand.
+// Two separate hazards. The remote is routinely ABSENT when the handoff arrives
+// (finishSetup fires it as the modal closes, before getMounts() lands), so this
+// must keep saying "not yet" rather than firing once and giving up. And the
+// mount list re-reads itself on a timer and on window focus, so once a given
+// handoff is applied it must never fire AGAIN — that would throw away a Remote
+// the user has since picked by hand.
 export function shouldApplyPreselect(
-  pending: string | null,
-  applied: string | null,
+  pending: RemoteHandoff | null,
+  appliedNonce: number | null,
   remoteNames: string[],
 ): boolean {
-  return !!pending && pending !== applied && remoteNames.includes(pending);
+  return !!pending && pending.nonce !== appliedNonce && remoteNames.includes(pending.remote);
 }
 
 // The <option> value to select for a pasted link's provider. Cost first: a

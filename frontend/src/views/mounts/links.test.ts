@@ -188,25 +188,40 @@ test("a remote for the other cloud is never picked", () => {
 });
 
 // -- shouldApplyPreselect ------------------------------------------------------
+//
+// The handoff is an EVENT ("this flow just finished"), not a value ("this remote
+// is selected"), so it is keyed by a nonce rather than by the remote name. Every
+// test below is really about that distinction.
+
+const handoff = (remote: string, nonce: number) => ({ remote, nonce });
 
 test("nothing pending means nothing to apply", () => {
   expect(shouldApplyPreselect(null, null, ["aws:"])).toBe(false);
 });
 
-test("a pending preselect waits for the reload that carries its remote", () => {
-  // finishSetup sets the preselect as the modal closes — before getMounts()
+test("a pending handoff waits for the reload that carries its remote", () => {
+  // finishSetup fires the handoff as the modal closes — before getMounts()
   // comes back — so the remote is routinely absent on the first render.
-  expect(shouldApplyPreselect("gdrive:", null, ["aws:"])).toBe(false);
-  expect(shouldApplyPreselect("gdrive:", null, ["aws:", "gdrive:"])).toBe(true);
+  expect(shouldApplyPreselect(handoff("gdrive:", 1), null, ["aws:"])).toBe(false);
+  expect(shouldApplyPreselect(handoff("gdrive:", 1), null, ["aws:", "gdrive:"])).toBe(true);
 });
 
-test("a preselect is applied once and never re-stomps a later manual choice", () => {
+test("a handoff is applied once and never re-stomps a later manual choice", () => {
   // The mount list re-reads itself (upload poll, refresh-on-return), and every
-  // one of those renders used to re-run the preselect and throw away whatever
+  // one of those renders used to re-run the handoff and throw away whatever
   // Remote the user had since picked.
-  expect(shouldApplyPreselect("gdrive:", "gdrive:", ["gdrive:"])).toBe(false);
+  expect(shouldApplyPreselect(handoff("gdrive:", 1), 1, ["gdrive:"])).toBe(false);
 });
 
-test("a second setup flow's preselect applies even after a first one did", () => {
-  expect(shouldApplyPreselect("box:", "gdrive:", ["gdrive:", "box:"])).toBe(true);
+test("a second setup flow's handoff applies even after a first one did", () => {
+  expect(shouldApplyPreselect(handoff("box:", 2), 1, ["gdrive:", "box:"])).toBe(true);
+});
+
+test("the SAME remote handed off twice applies both times", () => {
+  // The bug: keyed on the remote name, a repeat was indistinguishable from the
+  // one already applied. Use "aws-open:" from Public datasets, mount it, reopen
+  // the modal and Use "aws-open:" again — the modal closed onto an untouched
+  // form. Same for a Drive re-sign-in with Replace, which is the NORMAL way to
+  // recover an expired token.
+  expect(shouldApplyPreselect(handoff("aws-open:", 2), 1, ["aws-open:"])).toBe(true);
 });
