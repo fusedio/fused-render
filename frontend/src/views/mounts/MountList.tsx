@@ -109,7 +109,7 @@ export function MountRow({
   const broken = conn.state === "disconnected" || conn.state === "stale";
 
   return (
-    <div className="mount-card mount-card--mount">
+    <div className="mount-card">
       <div className="mount-card-main">
         <span className="mount-card-mark" aria-hidden="true">
           <ProviderIcon provider={iconKey} />
@@ -175,7 +175,7 @@ export function MountRow({
           {!conn.builtin && (
             <button
               type="button"
-              className="btn btn-ghost mount-remove"
+              className="btn mount-remove"
               disabled={busy}
               title="Remove this mount — the folder disappears locally; nothing on the remote is deleted"
               onClick={() => act(() => deleteMount(conn.id))}

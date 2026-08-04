@@ -4997,58 +4997,123 @@ select.field-control:has(option[value=""]:checked) {
   gap: 12px;
 }
 
-.mount-steps {
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
+.mount-steps-head {
   margin: 0;
-  padding-left: 20px;
 }
 
-/* No font-size: a step's sentence IS body text, so it inherits the 13px modal
-   body. The old 0.9em also made the step BODY smaller than its own <ol>
-   numeral, which stayed at the li's inherited 13px — the number read as a
-   heading for text it was numbering. */
-.mount-step-body {
+/* The Google-console checklist: ONE bordered unit with hairline-divided,
+   self-numbered rows, so four steps read as a single artifact to work through
+   rather than four floating paragraphs each carrying full button chrome. The
+   open-in-console actions are quiet links on the title row — the visual
+   weight of this modal belongs to the drop zone below it. */
+.mount-steps {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  counter-reset: mount-step;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+/* No font-size on the body text: a step's sentence IS body text, so it
+   inherits the 13px modal body; captions are .mount-note (12px). */
+.mount-step {
+  counter-increment: mount-step;
+  position: relative;
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 4px;
+  padding: 10px 12px 10px 34px;
   line-height: 1.5;
 }
 
-/* A step's sentence, kept as ONE flex item. Loose text and <b> directly under
-   .mount-step-body each became their own row (see the comment at its use). */
-.mount-step-lead {
+.mount-step + .mount-step {
+  border-top: 1px solid var(--border);
+}
+
+.mount-step::before {
+  content: counter(mount-step);
+  position: absolute;
+  left: 0;
+  top: 10px;
+  width: 34px;
+  text-align: center;
+  font-size: 12px;
+  line-height: 1.625; /* 12px × this = the 13px title's 19.5px line box */
+  color: var(--fg-muted);
+}
+
+.mount-step-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.mount-step-title {
+  font-weight: 600;
+}
+
+/* Scoped through .mount-steps for SPECIFICITY: the generic `.prefs-section
+   button` skin (0,1,1) would otherwise re-box these links. */
+.mount-steps .mount-step-open {
+  border: none;
+  background: none;
+  padding: 0;
+  font: inherit;
+  color: var(--accent);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.mount-steps .mount-step-open:hover:not(:disabled) {
+  background: none;
+  text-decoration: underline;
+}
+
+.mount-step .mount-note {
   margin: 0;
 }
 
-.mount-step-actions {
-  display: flex;
-  gap: 8px;
-  flex-wrap: wrap;
+.mount-step-project {
+  margin-top: 4px;
+  max-width: 420px;
 }
 
 /* The primary input for the client: dropping the downloaded JSON, which skips
-   the step people mistype. Dashed like .mount-empty so it reads as a target. */
+   the step people mistype. A <label> around a hidden file input, so the whole
+   dashed zone browses on click — this is the modal's focal point and the only
+   element that invites an action bigger than a link. */
 .mount-drop {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 6px;
-  padding: 14px 16px;
+  gap: 4px;
+  padding: 22px 16px;
   border: 1px dashed var(--border);
   border-radius: 8px;
   text-align: center;
+  cursor: pointer;
+  background: rgba(var(--tint), 0.03);
+}
+
+.mount-drop:hover,
+.mount-drop--over {
+  border-color: var(--accent);
+  background: rgba(var(--accent-rgb), 0.06);
 }
 
 .mount-drop code {
   white-space: nowrap;
 }
 
-/* A file input does not inherit font by default, so it rendered at the UA's
-   own 13.333px — a size that matched nothing else on the page. */
 .mount-drop input[type="file"] {
-  font: inherit;
+  display: none;
+}
+
+.mount-drop-sub {
+  font-size: 12px;
+  color: var(--fg-muted);
 }
 
 .mount-manual > summary {

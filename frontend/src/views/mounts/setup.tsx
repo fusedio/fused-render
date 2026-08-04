@@ -79,8 +79,25 @@ export function AddRemote({
           if (canSubmit) void add();
         }}
       >
-        <Field label="Remote name" required>
-          <TextInput placeholder="e.g. r2" value={name} onChange={(e) => setName(e.target.value)} />
+        <div className="mount-panel-wide">
+          <Field label="Remote name" required>
+            <TextInput
+              placeholder="e.g. r2"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+            />
+          </Field>
+        </div>
+        {/* Endpoint and Region share a row: they are the same fact (where this
+            storage lives), and the endpoint is what makes a remote
+            "S3-compatible" at all. The old order put Region beside the remote's
+            NAME — two unrelated answers on one line. */}
+        <Field label="Endpoint">
+          <TextInput
+            placeholder="blank for AWS S3"
+            value={endpoint}
+            onChange={(e) => setEndpoint(e.target.value)}
+          />
         </Field>
         <Field label="Region">
           <TextInput
@@ -89,15 +106,6 @@ export function AddRemote({
             onChange={(e) => setRegion(e.target.value)}
           />
         </Field>
-        <div className="mount-panel-wide">
-          <Field label="Endpoint">
-            <TextInput
-              placeholder="blank for AWS S3"
-              value={endpoint}
-              onChange={(e) => setEndpoint(e.target.value)}
-            />
-          </Field>
-        </div>
         <Field label="Access key ID" required>
           <TextInput value={accessKey} onChange={(e) => setAccessKey(e.target.value)} />
         </Field>
@@ -154,6 +162,7 @@ function GoogleClientSetup({
   const [project, setProject] = useState("");
   const [expanded, setExpanded] = useState(!saved);
   const [fileError, setFileError] = useState<string | null>(null);
+  const [dragOver, setDragOver] = useState(false);
   const urls = googleConsoleUrls(project);
 
   const open = (url: string) => window.open(url, "_blank", "noopener,noreferrer");
@@ -200,132 +209,125 @@ function GoogleClientSetup({
 
   return (
     <div className="mount-setup">
-      {/* .mount-note, not a second .mount-panel-lede: the modal already opened
-          with one body-size sentence and this stepper is content under it. */}
-      <p className="mount-note">
+      {/* The list header, not a second .mount-panel-lede: the modal already
+          opened with one body-size sentence and this checklist is content
+          under it. */}
+      <p className="mount-steps-head">
         Drive needs <b>your own</b> Google API client — one time, on this machine.
       </p>
+      {/* One bordered checklist, not four button blocks: each step is a single
+          row — numeral, bold title, a right-aligned link that opens the exact
+          console page — with at most one muted caveat under it. The numbering
+          is real sequence (each console page depends on the one before), and
+          the quiet link treatment keeps the visual weight on the drop zone
+          below, which is the only input this modal actually exists to
+          collect. */}
       <ol className="mount-steps">
-        {/* Every step is the same shape: a bold one-line title, the button that
-            opens the exact console page, and at most one muted caveat. The
-            titles used to carry their qualifications inline, which turned four
-            steps into four paragraphs to read before the first click.
-
-            The step body is wrapped, not loose: .mount-step-body is a flex
-            column, so each inline node — every <b> and each run of text between
-            them — would otherwise become its own row. */}
-        <li>
-          <div className="mount-step-body">
-            <p className="mount-step-lead">
-              <b>Create or pick a Google Cloud project</b>
-            </p>
-            <div className="mount-step-actions">
-              <button
-                type="button"
-                className="btn btn-secondary"
-                onClick={() => open(urls.createProject)}
-              >
-                Open project setup ↗
-              </button>
-            </div>
-            <p className="mount-note">Any project works; a free one is fine.</p>
-            <Field label="Project ID (optional — links below jump straight to it)">
-              <TextInput
-                placeholder="e.g. my-drive-mount"
-                value={project}
-                onChange={(e) => setProject(e.target.value)}
-              />
-            </Field>
+        <li className="mount-step">
+          <div className="mount-step-row">
+            <span className="mount-step-title">Create or pick a Google Cloud project</span>
+            <button
+              type="button"
+              className="mount-step-open"
+              onClick={() => open(urls.createProject)}
+            >
+              Open&nbsp;↗
+            </button>
+          </div>
+          <p className="mount-note">Any project works; a free one is fine.</p>
+          <TextInput
+            className="mount-step-project"
+            placeholder="Project ID (optional — the links below jump straight to it)"
+            aria-label="Project ID (optional — the links below jump straight to it)"
+            value={project}
+            onChange={(e) => setProject(e.target.value)}
+          />
+        </li>
+        <li className="mount-step">
+          <div className="mount-step-row">
+            <span className="mount-step-title">Enable the Google Drive API</span>
+            <button
+              type="button"
+              className="mount-step-open"
+              onClick={() => open(urls.enableApi)}
+            >
+              Open&nbsp;↗
+            </button>
           </div>
         </li>
-        <li>
-          <div className="mount-step-body">
-            <p className="mount-step-lead">
-              <b>Enable the Google Drive API</b>
-            </p>
-            <div className="mount-step-actions">
-              <button
-                type="button"
-                className="btn btn-secondary"
-                onClick={() => open(urls.enableApi)}
-              >
-                Open Drive API ↗
-              </button>
-            </div>
+        <li className="mount-step">
+          <div className="mount-step-row">
+            <span className="mount-step-title">Configure the consent screen</span>
+            <button
+              type="button"
+              className="mount-step-open"
+              onClick={() => open(urls.consentScreen)}
+            >
+              Open&nbsp;↗
+            </button>
           </div>
+          <p className="mount-note">
+            Pick <b>External</b>, fill in the required name/email, and publish{" "}
+            <b>In production</b>.
+          </p>
+          {/* The one caveat that keeps two sentences, because both are costly
+              and neither is guessable. "Testing" LOOKS like the cautious
+              choice and silently breaks the mount a week later — Google drops
+              refresh tokens issued by a Testing-mode client after 7 days. And
+              the scary "unverified app" warning stops people mid-flow even
+              though verification is simply not required at this scale. */}
+          <p className="mount-note warn">
+            Do <b>not</b> leave it in “Testing” — Google expires those sign-ins after 7
+            days and the mount stops working. The “unverified app” warning is expected;
+            click through <i>Advanced → Go to … (unsafe)</i>.
+          </p>
         </li>
-        <li>
-          <div className="mount-step-body">
-            <p className="mount-step-lead">
-              <b>Configure the consent screen</b>
-            </p>
-            <div className="mount-step-actions">
-              <button
-                type="button"
-                className="btn btn-secondary"
-                onClick={() => open(urls.consentScreen)}
-              >
-                Open consent screen ↗
-              </button>
-            </div>
-            <p className="mount-note">
-              Pick <b>External</b>, fill in the required name/email, and publish{" "}
-              <b>In production</b>.
-            </p>
-            {/* The one caveat that keeps two sentences, because both are costly
-                and neither is guessable. "Testing" LOOKS like the cautious
-                choice and silently breaks the mount a week later — Google drops
-                refresh tokens issued by a Testing-mode client after 7 days. And
-                the scary "unverified app" warning stops people mid-flow even
-                though verification is simply not required at this scale. */}
-            <p className="mount-note warn">
-              Do <b>not</b> leave it in “Testing” — Google expires those sign-ins after 7
-              days and the mount stops working. The “unverified app” warning is expected;
-              click through <i>Advanced → Go to … (unsafe)</i>.
-            </p>
+        <li className="mount-step">
+          <div className="mount-step-row">
+            <span className="mount-step-title">
+              Create an OAuth client, type <b>Desktop app</b>
+            </span>
+            <button
+              type="button"
+              className="mount-step-open"
+              onClick={() => open(urls.createClient)}
+            >
+              Open&nbsp;↗
+            </button>
           </div>
-        </li>
-        <li>
-          <div className="mount-step-body">
-            <p className="mount-step-lead">
-              <b>Create an OAuth client, type Desktop app</b>
-            </p>
-            <div className="mount-step-actions">
-              <button
-                type="button"
-                className="btn btn-secondary"
-                onClick={() => open(urls.createClient)}
-              >
-                Open client setup ↗
-              </button>
-            </div>
-            {/* Desktop app is not a preference: rclone authorize serves a
-                loopback redirect, which is exactly what a Desktop client
-                permits and a Web client does not without a registered URI. */}
-            <p className="mount-note">
-              It must be Desktop app — the sign-in comes back to a local address, which
-              only that type allows. Download its JSON.
-            </p>
-          </div>
+          {/* Desktop app is not a preference: rclone authorize serves a
+              loopback redirect, which is exactly what a Desktop client
+              permits and a Web client does not without a registered URI. */}
+          <p className="mount-note">
+            Only Desktop app allows the local sign-in redirect. Download its JSON.
+          </p>
         </li>
       </ol>
 
-      <div
-        className="mount-drop"
-        onDragOver={(e) => e.preventDefault()}
+      {/* A <label> around a hidden file input, so the whole zone is the
+          browse button — the visible native control matched nothing else on
+          the page and buried the modal's one real input. */}
+      <label
+        className={"mount-drop" + (dragOver ? " mount-drop--over" : "")}
+        onDragOver={(e) => {
+          e.preventDefault();
+          setDragOver(true);
+        }}
+        onDragLeave={() => setDragOver(false)}
         onDrop={(e) => {
           e.preventDefault();
+          setDragOver(false);
           void takeFile(e.dataTransfer.files?.[0]);
         }}
       >
-        <b>Drop the downloaded <code>client_secret_….json</code> here</b>
-        <span className="deploy-muted">or</span>
         <input
           type="file"
           accept=".json,application/json"
           onChange={(e) => void takeFile(e.target.files?.[0])}
         />
-      </div>
+        <b>Drop the downloaded <code>client_secret_….json</code> here</b>
+        <span className="mount-drop-sub">or click to browse for it</span>
+      </label>
       {fileError && <ErrorBanner>{fileError}</ErrorBanner>}
 
       {/* The fallback, deliberately below the file path: it works, but it is
