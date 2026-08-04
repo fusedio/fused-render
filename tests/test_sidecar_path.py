@@ -53,6 +53,16 @@ def test_sidecar_subpath(abs_path, expected):
     assert storage._sidecar_subpath(abs_path) == expected
 
 
+def test_sidecar_subpath_preserves_posix_backslash():
+    # Backslash is a legal POSIX filename character. A POSIX path (no drive,
+    # no UNC prefix) must round-trip it untouched, never fold it to "/" — that
+    # would collide "weird\file.txt" with the entirely different
+    # "weird/file.txt" (Bugbot).
+    assert storage._sidecar_subpath("/data/weird\\file.txt") == "data/weird\\file.txt"
+    assert (storage._sidecar_subpath("/data/weird\\file.txt")
+            != storage._sidecar_subpath("/data/weird/file.txt"))
+
+
 def test_sidecar_subpath_preserves_case():
     # A case-sensitive filesystem (Linux) must never fold "/Users/..." and
     # "/users/..." into the same sidecar — they are different files.
@@ -69,6 +79,7 @@ def test_sidecar_subpath_parity_with_appenv_mirror(appenv):
         "C:/Users/vasu/file.txt",
         r"\\server\share\dir\file.txt",
         "/data/résumé.parquet",
+        "/data/weird\\file.txt",
     ]
     for p in cases:
         assert storage._sidecar_subpath(p) == appenv._sidecar_subpath(p), p
@@ -112,3 +123,20 @@ def test_sidecar_path_parity_with_appenv_mirror(home, monkeypatch, appenv):
 
 def test_sidecar_path_ends_in_json(home):
     assert storage.sidecar_path("/a/b/c.parquet").endswith("c.parquet.json")
+
+
+def test_sidecar_path_of_the_filesystem_root_stays_inside_the_sidecar_tree(home):
+    # abs_path == "/" maps to an EMPTY subpath, so the parts list is empty —
+    # os.path.join(home, "sidecar", *[]) drops straight to ".../sidecar" with
+    # nothing to descend into, landing a "sidecar.json" FILE beside the
+    # "sidecar" DIRECTORY instead of inside it (Bugbot). The result must stay
+    # under the sidecar root so _is_under_sidecar_root's auto-mkdir gate
+    # (fs_mutate.py) still recognizes it.
+    p = storage.sidecar_path("/")
+    root = os.path.join(str(home), "sidecar")
+    assert p == os.path.join(root, ".json")
+    assert p.startswith(root + os.sep)
+
+
+def test_sidecar_path_of_root_parity_with_appenv_mirror(home, appenv):
+    assert storage.sidecar_path("/") == appenv.sidecar_path("/")

@@ -83,9 +83,13 @@ def _sidecar_subpath(abs_path: str) -> str:
     would collide two distinct paths on a case-sensitive filesystem.
     """
     drive, tail = ntpath.splitdrive(abs_path)
-    tail = tail.replace("\\", "/").lstrip("/")
     if not drive:
-        return tail
+        # A bare POSIX path: backslash is a legal filename character here (no
+        # drive/UNC prefix means ntpath found no separator to interpret), so
+        # it must round-trip untouched — replacing it would collide a real
+        # "weird\file.txt" with the entirely different "weird/file.txt".
+        return tail.lstrip("/")
+    tail = tail.replace("\\", "/").lstrip("/")
     if drive.endswith(":"):
         return "/".join(filter(None, [drive[0].upper(), tail]))
     return "/".join(filter(None, ["unc", *drive.strip("\\").replace("\\", "/").split("/"), tail]))
@@ -99,4 +103,8 @@ def sidecar_path(file: str) -> str:
     where its sidecar lives, not whatever it resolves to.
     """
     parts = [p for p in _sidecar_subpath(os.path.abspath(file)).split("/") if p]
-    return os.path.join(home_dir(), "sidecar", *parts) + ".json"
+    # An empty mapping (abs_path == "/", the filesystem root) must still land
+    # INSIDE the sidecar subtree, not as a "sidecar.json" sibling of it — the
+    # unpacked *parts below drops straight to "sidecar" with nothing to
+    # descend into unless something is there to join.
+    return os.path.join(home_dir(), "sidecar", *(parts or [""])) + ".json"

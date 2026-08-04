@@ -1001,14 +1001,19 @@
   // Windows host — gated on sidecarRoot's OWN shape, not just a segment's
   // length, so a real POSIX top-level dir that happens to be one letter long
   // (e.g. a real "/a/file.txt", subpath "a/file.txt") is never misread as a
-  // drive letter on a POSIX host.
+  // drive letter on a POSIX host. A Windows home can itself be a UNC path
+  // (a roaming profile on a network share) — canonical_fs_path only
+  // normalizes a DRIVE-letter path (backslash is a legal POSIX filename
+  // character, so a UNC root stays backslashed on purpose, same as a POSIX
+  // one) — so drive-letter-shaped is not the only Windows shape sidecarRoot
+  // can take; a leading "\\\\" is the other (Bugbot).
   function targetPathFromSidecarPath(path) {
     return loadConfig().then(() => {
       if (typeof sidecarRoot !== "string") return null;
       if (path.indexOf(sidecarRoot + "/") !== 0 || !/\.json$/i.test(path)) return null;
       const rel = path.slice(sidecarRoot.length + 1, -".json".length);
       const parts = rel.split("/");
-      const windowsHost = /^[A-Za-z]:/.test(sidecarRoot);
+      const windowsHost = /^[A-Za-z]:/.test(sidecarRoot) || /^\\\\/.test(sidecarRoot);
       if (windowsHost && parts[0] && parts[0].length === 1 && /[A-Za-z]/.test(parts[0])) {
         return parts[0].toUpperCase() + ":\\" + parts.slice(1).join("\\");
       }
