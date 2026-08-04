@@ -1928,38 +1928,6 @@ def _between(html, start, end):
     return html[i:html.index(end, i)]
 
 
-def test_the_annotate_control_does_not_float_over_the_app(html):
-    """`#left` is a full-bleed iframe with no chrome, so an absolutely-positioned
-    button sat on top of the app's own top-right corner and made whatever is under
-    it unannotatable — you cannot click through a control. Worst exactly when in
-    use, because the active label is longer, so the button GREW over the app at the
-    moment the user was trying to click things.
-
-    Now it lives in a strip that shrinks the iframe instead of covering it:
-    occlusion becomes layout, and nothing is hidden."""
-    css = _between(html, "#annbtn {", "}")
-    assert "position: absolute" not in css, css
-    assert "top:" not in css and "right:" not in css, css
-    # in the strip, in the DOM
-    tools = _between(html, '<div id="lefttools"', "</div>")
-    assert 'id="annbtn"' in tools, tools
-
-
-def test_the_strip_sits_outside_the_frame_so_it_cannot_be_captured(html):
-    """The strip must not appear in a crop or the pane shot. Structural, not
-    hopeful: `shotPane` rasterises `appWindow().document.body` — the FRAMED
-    document — so anything in the parent document is unreachable by construction.
-    This pins the arrangement that makes that argument true: the strip is a sibling
-    ABOVE the view box, never inside it."""
-    left = _between(html, '<div id="left">', '<div id="annpop">')
-    assert left.index('id="lefttools"') < left.index('id="leftview"')
-    view = _between(html, '<div id="leftview"', "<!-- /leftview -->")
-    assert 'id="leftframe"' in view
-    assert 'id="lefttools"' not in view
-    # and the capture still reads the frame, not the pane
-    assert "appWindow()" in _between(html, "async function shotPane(", "\n}\n")
-
-
 def test_the_overlays_share_the_frames_box_so_pin_coordinates_still_line_up(html):
     """The reason for a `#leftview` wrapper rather than putting the strip straight
     into `#left`: pins, the highlight and the composer are positioned in FRAME
@@ -1991,76 +1959,6 @@ def test_turning_annotate_mode_off_stays_findable(html):
     assert "Esc" in exit_ or "esc" in exit_, \
         "something should say how to get out while active: " + exit_
     assert "#annbtn.on {" in html, "and the pressed state is still visibly distinct"
-
-
-def test_the_annotate_control_is_the_whole_row_not_a_chip_inside_it(html):
-    """A pill inside the strip read as a call-to-action floating in a toolbar, and
-    its active label — a whole sentence — had nowhere to go once the pane was
-    dragged narrow: no `white-space` in a fixed 28px row means a wrapped two-line
-    control inside a one-line box, so clipped or spilling.
-
-    A row-spanning banner deletes that problem rather than tuning it: there is no
-    pill geometry left to burst, and the worst case is an ellipsis. It is still a
-    real `<button>`, so Enter/Space and `aria-pressed` come for free and clicking
-    anywhere along the banner stops."""
-    btn = _between(html, "#annbtn {", "}")
-    assert "flex: 1" in btn, "the control spans the row: " + btn
-    for gone in ("border-radius", "border: 1px"):
-        assert gone not in btn, "a banner is full-bleed, not a chip: " + btn
-    assert "white-space: nowrap" in btn and "min-width: 0" in btn, btn
-    assert "overflow: hidden" in btn, btn
-    lbl = _between(html, "#annbtn .lbl {", "}")
-    assert "text-overflow: ellipsis" in lbl and "overflow: hidden" in lbl, lbl
-    assert "min-width: 0" in lbl, lbl
-    # still a button, and still announces its state
-    tools = _between(html, '<div id="lefttools"', "</div>")
-    assert '<button id="annbtn" type="button" aria-pressed="false"' in tools, tools
-
-
-def test_toggling_the_banner_cannot_resize_the_iframe(html):
-    """Not cosmetic. `#leftview` is `flex: 1` under a fixed-height strip, so the
-    banner's height IS the iframe's height. A taller active state would reflow the
-    app at the exact moment the user is aiming at an element, and would move
-    already-placed pins away from what they annotate — pins and `annStageRect` are
-    both in frame viewport coordinates. So the row's height and its border are
-    stated once, outside either state, and the active rule may only repaint."""
-    strip = _between(html, "#lefttools {", "}")
-    assert "height: 28px" in strip, strip
-    assert "border-bottom: 1px solid" in strip, strip
-    on = _between(html, "#annbtn.on {", "}")
-    for prop in ("height", "padding", "border", "font-size", "margin"):
-        assert prop not in on, "the active state may only repaint, not resize: " + on
-    # and the toggle itself touches nothing that could relayout the pane
-    # `annSetMode` is the one way in and out — Escape leaves the mode too, so the
-    # click handler is now a one-line call into it.
-    click = _between(html, "function annSetMode(", "\n}")
-    for banned in ("style.height", "style.padding", "#lefttools", "leftview"):
-        assert banned not in click, click
-
-
-def test_the_banners_way_out_is_the_part_that_never_shrinks(html):
-    """An ellipsis is only a safe degradation if what it eats is expendable. A label
-    that narrows to 'Annotating — click an ele…' has hidden its own exit, so the
-    stop affordance is a separate child pinned right with `flex-shrink: 0`, and the
-    instruction to its left is what gives up width first. The full sentence lives in
-    the tooltip, where width does not bind."""
-    stop = _between(html, "#annbtn .stop {", "}")
-    assert "flex-shrink: 0" in stop, stop
-    # The row is packed right, so the ordering comes from `justify-content` — an
-    # `auto` margin on the stop hint would push the label back to the left edge.
-    assert "margin-left: auto" not in stop, stop
-    btn = _between(html, "#annbtn {", "}")
-    assert "justify-content: flex-end" in btn, btn
-    # ...and the hit area is still the whole row, so "click to stop" is honest
-    assert "flex: 1" in btn, btn
-    tools = _between(html, '<div id="lefttools"', "</div>")
-    assert 'class="stop"' in tools and "Esc" in tools, tools
-    # `annSetMode` is the one way in and out — Escape leaves the mode too, so the
-    # click handler is now a one-line call into it.
-    click = _between(html, "function annSetMode(", "\n}")
-    assert "annStop.hidden = !annOn" in click, click
-    title = _between(html, "annBtn.title =", ";")
-    assert "Esc" in title and "click this banner" in title, title
 
 
 def test_hover_never_eats_an_active_state_in_either_control(html):
@@ -2177,3 +2075,108 @@ def test_both_composers_draw_the_toggle_identically(html):
     commented."""
     chat, home = _viewshot_buttons(html)
     assert chat.replace('id="viewshot"', "ID") == home.replace('id="hviewshot"', "ID")
+
+
+def test_the_annotate_control_is_a_small_unlabelled_icon(html):
+    """Annotating is occasional, so its control must not charge every project that
+    never uses it. A permanent strip cost ~28px of app height plus a line of chrome
+    the app never asked for, and the labelled pill before it grew into a whole
+    sentence when armed — covering MORE of the app at the moment the user was
+    aiming at it. A fixed 26px icon has neither cost: no layout row, and nothing
+    that can change size."""
+    btn = _between(html, "#annbtn {", "}")
+    assert "width: 26px" in btn and "height: 26px" in btn, btn
+    assert "border-radius: 999px" in btn, btn
+    # no label text in either state, so nothing to ellipsize and nothing to grow
+    assert "#annbtn .lbl {" not in html
+    assert "#annbtn .stop {" not in html
+    assert "annLbl" not in html and "annStop" not in html
+    assert "textContent" not in _between(html, "function annSetMode(", "\n}")
+    # Accent while idle, because a 26px unlabelled glyph outside the pane is easy
+    # to miss — but then idle and armed both use the accent, so the ONE thing that
+    # still separates them must hold: idle tints (accent glyph, panel background),
+    # armed fills (accent background, glyph knocked out). Without this the control
+    # has no visible state at all, and there is no label to fall back on.
+    assert "color: var(--accent)" in btn and "background: var(--panel)" in btn, btn
+    on = _between(html, "#annbtn.on {", "}")
+    assert "background: var(--accent)" in on, on
+    assert "color: var(--on-accent)" in on, on
+    # an icon-only control still has to have a name and announce its state
+    view = _between(html, '<div id="leftview"', "<!-- /leftview -->")
+    assert 'id="annbtn"' in view and 'aria-label="' in view, view
+    assert 'aria-pressed="false"' in view, view
+    # An inline SVG stroked in currentColor, like the composer's pane-shot icon —
+    # that is what lets one glyph follow the accent tint AND be knocked out to
+    # --on-accent when armed. A text/emoji glyph can do neither, and renders at a
+    # different weight on every platform.
+    icon = _between(view, 'id="annbtn"', "</button>")
+    assert "<svg" in icon and 'stroke="currentColor"' in icon, icon
+    assert 'fill="none"' in icon and 'aria-hidden="true"' in icon, icon
+    assert "✎" not in html, "the pencil glyph is gone from the template"
+
+
+def test_the_annotate_icon_covers_none_of_the_app(html):
+    """The original floating button sat on the app's own top-right corner, and you
+    cannot click through a control — whatever was under it could not be annotated.
+    Fixed by moving it OUT of the pane rather than by shrinking it: a negative
+    offset puts it past the divider, in the chat pane's left margin, so the overlap
+    with the app is zero rather than merely small.
+
+    Safe because nothing clips it (neither `#left` nor `#leftview` sets `overflow`,
+    and `#chat`'s `overflow: hidden` cannot clip a non-descendant) and because the
+    space always exists: `#chat` has `min-width: 340px` and this layout never
+    stacks vertically."""
+    btn = _between(html, "#annbtn {", "}")
+    assert "position: absolute" in btn, btn
+    # negative, i.e. outside the pane — clear of the 4px divider's drag strip AND
+    # not jammed against it: 26px button + 4px divider + a real gap. Flush against
+    # the seam read as having slid there rather than being placed.
+    off = btn[btn.index("right:"):].split(";")[0]
+    px = int(off.split(":")[1].strip().rstrip("px"))
+    assert px <= -34, "26px button + 4px divider + a gap: " + off
+    # inset from the corner on both axes by the same amount, so it reads as placed
+    top = btn[btn.index("top:"):].split(";")[0]
+    assert top.split(":")[1].strip() == "%dpx" % (-px - 30), (top, off)
+    for clipper in ("#left {", "#leftview {"):
+        assert "overflow" not in _between(html, clipper, "}"), clipper
+    assert "min-width: 340px" in _between(html, "#chat {", "}")
+
+
+def test_the_annotate_icon_sits_outside_the_frame_so_it_cannot_be_captured(html):
+    """The button must not appear in a crop or the pane shot. Structural, not
+    hopeful: `shotPane` rasterises `appWindow().document.body` — the FRAMED
+    document — so anything in the parent document is unreachable by construction.
+    This pins the arrangement that makes that argument true: the button is a
+    SIBLING of the iframe in the parent document, never inside it."""
+    view = _between(html, '<div id="leftview"', "<!-- /leftview -->")
+    assert 'id="leftframe"' in view and 'id="annbtn"' in view
+    # and the capture still reads the frame, not the pane
+    assert "appWindow()" in _between(html, "async function shotPane(", "\n}\n")
+
+
+def test_toggling_annotate_mode_cannot_move_the_app(html):
+    """Not cosmetic. Pins and `annStageRect` are in FRAME viewport coordinates, so
+    anything that reflows the app mid-session moves the element the user is aiming
+    at and drags already-placed pins off what they annotate. An overlay cannot
+    resize the iframe at all — that is the structural half. The other half is that
+    the armed state may only REPAINT: no size, no offset, no border box."""
+    on = _between(html, "#annbtn.on {", "}")
+    for prop in ("width", "height", "padding", "font-size", "margin", "top",
+                 "bottom", "right", "transform", "border-radius", "border-width"):
+        assert prop not in on, "the armed state may only repaint: " + on
+    # and the toggle itself touches nothing that could relayout the pane
+    click = _between(html, "function annSetMode(", "\n}")
+    for banned in ("style.height", "style.width", "style.padding", "leftview"):
+        assert banned not in click, click
+
+
+def test_both_ways_out_of_annotate_mode_are_named_while_armed(html):
+    """With no label there is nowhere on screen to write "Esc or click to stop", so
+    the tooltip carries it — and it must name BOTH exits, because Escape is the one
+    a user is least likely to guess and the click is the one they can find by
+    hovering. The tooltip has no width limit, so this costs no space."""
+    title = _between(html, "annBtn.title =", ";")
+    assert "Esc" in title and "click this button" in title, title
+    # the armed tooltip is the one that names them
+    armed = title.split(":")[0]
+    assert "Esc" in armed, title

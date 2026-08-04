@@ -79,26 +79,10 @@
 
   /* ── split layout ─────────────────────────────── */
   #left { position: relative; min-width: 200px; display: flex; flex-direction: column; }
-  /* The pane's control strip. Deliberately a LAYOUT row, not an overlay: the app
-     below is full-bleed with no chrome of its own, so a floating control sat on
-     top of the app's own corner and made it unclickable — and the annotate button
-     grows when active, so it covered more of the app at exactly the moment the
-     user was trying to click things. Trading ~28px of app height for a pane where
-     nothing is hidden is the better deal, and it gives future pane controls a home
-     that is outside the iframe (so outside every capture). */
-  #lefttools {
-    flex-shrink: 0;
-    height: 28px;
-    display: flex;
-    align-items: stretch;
-    min-width: 0;
-    overflow: hidden;
-    background: var(--panel);
-    border-bottom: 1px solid var(--border);
-  }
-  /* The iframe's box. `min-height: 0` because a flex child's default
-     `min-height: auto` would let the iframe refuse to shrink and push the strip
-     off the top. */
+  /* The iframe's box, and the offset parent for everything that floats over the
+     app — the annotate button, the pins, the highlight, the composer. `min-height:
+     0` because a flex child's default `min-height: auto` would let the iframe
+     refuse to shrink. */
   #leftview { position: relative; flex: 1; min-height: 0; }
   #leftview iframe {
     position: absolute;
@@ -117,55 +101,79 @@
   }
 
   /* ── annotation layer over the left iframe ─────── */
-  /* The strip IS the control: one full-width row, no chip. A pill inside a strip
-     read as a floating call-to-action, and its active label — a whole sentence —
-     had nowhere to go once the pane was dragged narrow. A row that spans the pane
-     has no geometry left to burst; the worst case is an ellipsis.
-     Two states, ONE height. The row's height sets the iframe's height (`#leftview`
-     is `flex: 1`), so a banner that grew when annotate mode turned on would reflow
-     the app — moving the element the user is aiming at, and moving already-placed
-     pins away from what they annotate, because pins and `annStageRect` are in frame
-     viewport coordinates. So the 28px and the bottom border are the same in both
-     states and nothing about toggling touches the iframe's box. */
+  /* A small floating icon, NOT a strip or a banner. Annotating is an occasional
+     act, and a permanent row (or a full-width status bar) charged every project
+     that never annotates ~28px of app height plus a line of chrome the app did
+     not ask for. So the control floats over the app again — but it is a 26px
+     circle in ONE corner instead of the ~100px labelled pill whose active state
+     grew into a sentence, which is what made the old floating version cover the
+     app's top-right corner and get in the way of clicking.
+     And it is pushed OUTSIDE the pane (see `right`), so it covers none of the app
+     at all — the corner it used to sit on is annotatable again. Bottom edge,
+     deliberately: an app's headings, tabs and toolbars — the things people annotate
+     most — live along the TOP.
+     Size and position are IDENTICAL in both states: the active state may only
+     repaint. A control that grew when armed would cover more of the app at
+     exactly the moment the user is aiming at it, and being an overlay (not a
+     layout row) it cannot move the iframe's box at all, so pins and
+     `annStageRect` — which are in frame viewport coordinates — are untouched by
+     toggling.
+     No label in either state. Armed is signalled by the accent fill and by the
+     highlight box that tracks the pointer over the app; the full instruction and
+     both ways out live in the tooltip, where they cost no space. */
   #annbtn {
-    flex: 1;
-    min-width: 0;
+    position: absolute;
+    /* Top of the pane, with real space around it on both axes. The two offsets are
+       the same 10px, so the icon reads as inset from a corner rather than pinned to
+       one edge — a control jammed against the divider with no gap looked like it
+       had slid there, and the vertically-centred version was aligned to nothing
+       the eye could see. */
+    top: 10px;
+    /* Pushed clear of the pane entirely, PLUS a gap: -40px = the button's own 26px,
+       the 4px divider, and 10px of air between the divider and the button. So it
+       covers zero of the app, none of the divider's drag strip, and does not touch
+       the seam. Nothing clips it — neither `#left` nor `#leftview` sets `overflow`,
+       and `#chat`'s own `overflow: hidden` cannot clip a box that is not its
+       descendant. It lands in the chat pane's left margin, which is empty
+       background: `#chat` has `min-width: 340px` and this layout never stacks
+       vertically, so those 40px always exist. */
+    right: -40px;
+    z-index: 4;
+    width: 26px;
+    height: 26px;
+    padding: 0;
     display: flex;
     align-items: center;
-    gap: 8px;
-    overflow: hidden;
-    white-space: nowrap;
+    justify-content: center;
     font: inherit;
-    font-size: 11.5px;
-    /* Text to the right, hit area still the whole row (the button stays `flex: 1`,
-       so "click to stop" means anywhere in the banner). Right is where this pane's
-       other controls live, and it keeps the banner's text off the app's own
-       left-aligned headings directly below it. */
-    justify-content: flex-end;
-    text-align: right;
-    padding: 0 8px;
-    border: 0;
-    background: transparent;
-    color: var(--dim);
+    font-size: 12px;
+    line-height: 1;
+    /* Accent while IDLE, on purpose: the control is now a 26px unlabelled glyph
+       parked outside the pane, which is easy to miss entirely — so the one thing it
+       still has to do is be noticed. Idle TINTS (accent glyph and ring on the panel
+       background), armed FILLS (solid accent disc, glyph knocked out). Both use the
+       accent, and the difference is which one is painted, so the two states stay
+       distinguishable without a label to tell them apart. */
+    border: 1px solid var(--accent);
+    border-radius: 999px;
+    background: var(--panel);
+    color: var(--accent);
     cursor: pointer;
-    transition: color .12s, background .12s, filter .12s;
+    box-shadow: 0 2px 8px var(--shadow);
+    transition: color .12s, border-color .12s, background .12s, filter .12s;
   }
   /* The same hover-vs-active rule as `.pill` in the composer, stated the same way:
      the neutral hover excludes the active state, and the active state hovers within
      its accent. See the comment on `.pill:hover`. */
-  #annbtn:hover:not(.on) { background: var(--surface-2); color: var(--fg); }
+  /* `display: block` kills the inline baseline gap that would push the glyph off
+     centre inside a fixed 26px circle. Same rule as `.viewshot svg`. */
+  #annbtn svg { display: block; }
+  #annbtn:hover:not(.on) { background: var(--surface-2); }
   #annbtn.on {
     background: var(--accent);
     color: var(--on-accent);
   }
   #annbtn.on:hover { filter: brightness(1.1); }
-  /* The instruction is expendable, the way out is not: the label ellipsizes as the
-     pane narrows while the stop affordance never shrinks. */
-  #annbtn .lbl { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-  /* No `margin-left: auto` here: the row is packed right, so an auto margin would
-     shove the label back to the left edge and undo it. `flex-shrink: 0` is what
-     actually matters — the way out never gives up width, the instruction does. */
-  #annbtn .stop { flex-shrink: 0; opacity: .8; }
   #annpins { position: absolute; inset: 0; z-index: 2; pointer-events: none; overflow: hidden; }
   .annpin {
     position: absolute;
@@ -745,21 +753,26 @@
 </head>
 <body>
   <div id="left">
-    <!-- A slim banner row for the pane's own state and controls. It SHRINKS the
-         iframe rather than covering it: the app is full-bleed with no chrome, so a
-         floating button made the corner underneath it unannotatable. Outside the
-         iframe, so it can never appear in a capture.
-         The button spans the row, so the banner and its control are one thing: a
-         real <button>, so Enter/Space work and `aria-pressed` announces the state,
-         and clicking anywhere along the active banner stops annotating. -->
-    <div id="lefttools">
-      <button id="annbtn" type="button" aria-pressed="false" title="Annotate the app, then send the notes to Claude"><span
-        class="lbl" aria-live="polite">✎ Annotate</span><span class="stop" hidden>Esc or click to stop</span></button>
-    </div>
     <!-- The iframe's own box, and the offset parent for every overlay that is
          positioned in FRAME viewport coordinates (pins, highlight, composer). -->
     <div id="leftview">
       <iframe id="leftframe" title="File preview"></iframe>
+      <!-- One small floating icon in the bottom-right corner. A real <button>, so
+           Enter/Space work and `aria-pressed` announces the state to a screen
+           reader that cannot see the accent fill; `aria-label` names it because
+           there is no text to read. Inside #leftview so it floats over the app —
+           and therefore outside the iframe, so it can never land in a capture. -->
+      <!-- A comment bubble, not a pencil: a pencil means "edit this", which is what
+           CLAUDE does to the app — this button lets the user leave a note ON the app,
+           and the marks it produces are numbered comment pins. Inline SVG stroked in
+           `currentColor` like the composer's pane-shot icon, so it follows the accent
+           tint while idle and is knocked out to `--on-accent` when armed; a text
+           glyph could do neither and rendered at a different weight per platform. -->
+      <button id="annbtn" type="button" aria-pressed="false" aria-label="Annotate the app"
+              title="Annotate the app, then send the notes to Claude"><svg width="13" height="13"
+        viewBox="0 0 16 16" fill="none" aria-hidden="true"><rect x="2.3" y="2.8" width="11.4"
+        height="8.4" rx="2.2" stroke="currentColor" stroke-width="1.4"/><path d="M5.6 11.2v2.6l3-2.6"
+        stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
       <div id="annhl"></div>
       <div id="annpins"></div>
       <div id="annpop">
@@ -1574,9 +1587,6 @@ annTa.addEventListener("keydown", (e) => {
   }
 });
 
-const annLbl = annBtn.querySelector(".lbl");
-const annStop = annBtn.querySelector(".stop");
-
 // The one way in and out of annotate mode. Extracted because Escape leaves the
 // mode too, and a second copy of this would be a second chance for the banner's
 // text to disagree with `annOn`.
@@ -1584,13 +1594,13 @@ function annSetMode(on) {
   annOn = on;
   annBtn.classList.toggle("on", annOn);
   annBtn.setAttribute("aria-pressed", String(annOn));
-  // Names BOTH ways out while active, in the one place that cannot be ellipsized
-  // away: the stop hint is pinned to the right of the banner and never shrinks,
-  // while the instruction to its left is what gives up width first.
-  annLbl.textContent = annOn ? "✎ Annotating — click an element" : "✎ Annotate";
-  annStop.hidden = !annOn;
-  // The tooltip has no width limit, so the full sentence lives there.
-  annBtn.title = annOn ? "Annotating — click an element to add a note · Esc or click this banner to stop"
+  // No label in either state — the icon never changes size or position, so nothing
+  // here can cover more of the app than the idle button already does. The tooltip
+  // is where the instruction and BOTH ways out live, because it has no width limit
+  // and costs no space. The visible signals are the accent fill and the highlight
+  // box that tracks the pointer over the app (the strongest of the two: it only
+  // appears in annotate mode and it follows what the user is aiming at).
+  annBtn.title = annOn ? "Annotating — click an element to add a note · Esc or click this button to stop"
                        : "Annotate the app, then send the notes to Claude";
   if (!annOn) { annHl.style.display = "none"; annCloseComposer(); }
 }
