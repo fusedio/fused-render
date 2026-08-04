@@ -617,7 +617,12 @@ def related(path: str) -> dict:
     except (OSError, ValueError):
         # ValueError covers a path stat() refuses outright (embedded NUL) —
         # this one arrives straight off the query string, so the ingestion
-        # guard in _note_file never saw it.
+        # guard in _note_file never saw it. The abspath above cannot be the
+        # raiser (asked in review): ntpath.abspath has caught (OSError,
+        # ValueError) from _getfullpathname and fallen back to pure-string
+        # resolution since Python 3.8 (CPython gh-75230), below this
+        # package's >=3.10 floor — on every supported interpreter the NUL
+        # surfaces here, at stat, inside the belt.
         exists = False
     return {
         "file": target,
