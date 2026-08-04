@@ -979,11 +979,29 @@ def mount_state(m: dict, rcd_mounts: set, timeout: float = PROBE_TIMEOUT,
                 # health-check).
                 out["state"] = "disconnected"
             else:
+                # The fast verdict is published BEFORE the slow listdir runs,
+                # and that ordering is the whole point (D208). A probe that
+                # merely OUTRUNS `timeout` proves nothing about health — but
+                # the join below can only fall back to out's default, so an
+                # unwritten `out` reads "disconnected". Measured on a real
+                # Drive mount: a cold subdirectory listing takes 18.3s and a
+                # root listing once VFS_OPT's 30s DirCacheTime expires takes
+                # 35.5s, against PROBE_TIMEOUT=3.0. So a healthy Drive mount
+                # reported "disconnected" — a 503 out of the fs-listing
+                # endpoint — every 30 seconds, indefinitely.
+                #
+                # Raising PROBE_TIMEOUT is the wrong fix: it is paid per
+                # HEALTHY mount inside GET /api/mounts' join budget. The right
+                # one is this — the checks above already classify every genuine
+                # failure mode (wedged, stale, unmounted, not-served) and are
+                # cheap, so the listdir is only ever allowed to DOWNGRADE their
+                # verdict, via the except below. Slow stays "mounted"; broken
+                # still becomes "disconnected".
+                out["state"] = "mounted"
                 # POSIX only: on win32 this readdir can fail for the lifetime of
                 # one process while the mount is healthy (INCIDENT 2026-07-30).
                 if probe_io and sys.platform != "win32":
                     os.listdir(mp)  # the actual I/O health check
-                out["state"] = "mounted"
         except OSError as e:
             logger.warning("mount %r probe failed at %s: %s", m["name"], mp, e)
             out["state"] = "disconnected"
@@ -991,7 +1009,11 @@ def mount_state(m: dict, rcd_mounts: set, timeout: float = PROBE_TIMEOUT,
     t = threading.Thread(target=probe, daemon=True, name=f"mount-probe-{m['name']}")
     t.start()
     t.join(timeout)
-    return out.get("state", "disconnected")  # no answer in time == wedged
+    # No answer in time means the FAST checks themselves blocked — the hard
+    # wedge, where even ismount/stat hang in the kernel. A slow-but-healthy
+    # listdir does not land here: probe() has already written "mounted" by the
+    # time it starts (see there).
+    return out.get("state", "disconnected")
 
 
 _UNSET = object()

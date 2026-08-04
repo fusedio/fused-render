@@ -2697,8 +2697,15 @@ def test_state_stale_when_rcd_tracks_a_dropped_kernel_mount(home, rcd):
     assert mounts_mod.mount_state(c, mounts_mod.mounted_paths()) == "stale"
 
 
-def test_state_disconnected_when_listing_hangs(home, rcd, monkeypatch):
-    # A wedged NFS mount blocks listdir forever; the probe times out instead.
+def test_state_mounted_when_a_slow_listing_outruns_the_probe_timeout(home, rcd,
+                                                                    monkeypatch):
+    # A probe that TIMES OUT proves nothing about health, and must not be read
+    # as "disconnected". Measured on a real Drive mount: a cold subdirectory
+    # listing takes ~18s and a root listing after DirCacheTime (30s) expires
+    # ~35s, against a PROBE_TIMEOUT of 3s — so a perfectly healthy Drive mount
+    # reported disconnected (a 503 out of the fs-listing endpoint) every 30
+    # seconds, forever. The fast checks below already classify every genuine
+    # failure mode, so the slow listdir may only ever DOWNGRADE their verdict.
     # POSIX-pinned: only POSIX enumerates the mount.
     c, mp = _make_mount(home, rcd)
     monkeypatch.setattr(mounts_mod.sys, "platform", "linux")
@@ -2714,6 +2721,38 @@ def test_state_disconnected_when_listing_hangs(home, rcd, monkeypatch):
         state = mounts_mod.mount_state(c, mounts_mod.mounted_paths(), timeout=0.2)
     finally:
         ev.set()  # release the probe thread
+    assert state == "mounted"
+
+
+def test_state_disconnected_when_a_slow_listing_then_fails(home, rcd, monkeypatch):
+    # The other half of the above: the optimistic "mounted" is provisional, so
+    # a listdir that actually FAILS still downgrades — even after outrunning
+    # nothing, i.e. when the caller does wait for it.
+    c, mp = _make_mount(home, rcd)
+    monkeypatch.setattr(mounts_mod.sys, "platform", "linux")
+    monkeypatch.setattr(mounts_mod.os.path, "ismount", lambda p: p == mp)
+
+    def slow_then_fail(p):
+        time.sleep(0.05)
+        raise OSError(errno.ENOTCONN, "Transport endpoint is not connected")
+
+    monkeypatch.setattr(mounts_mod.os, "listdir", slow_then_fail)
+    assert mounts_mod.mount_state(c, mounts_mod.mounted_paths()) == "disconnected"
+
+
+def test_state_disconnected_when_the_fast_checks_themselves_hang(home, rcd,
+                                                                monkeypatch):
+    # The hard wedge: a mount whose backend is gone blocks in the KERNEL, so
+    # even ismount/stat never return and no fast verdict is ever written. That
+    # timeout must still read "disconnected" — the default is what carries it.
+    c, mp = _make_mount(home, rcd)
+    monkeypatch.setattr(mounts_mod.sys, "platform", "linux")
+    ev = threading.Event()
+    monkeypatch.setattr(mounts_mod.os.path, "ismount", lambda p: (ev.wait(5), True)[1])
+    try:
+        state = mounts_mod.mount_state(c, mounts_mod.mounted_paths(), timeout=0.2)
+    finally:
+        ev.set()
     assert state == "disconnected"
 
 
