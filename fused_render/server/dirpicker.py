@@ -96,7 +96,11 @@ def _choose_backend(platform: str, environ, *, has_osascript: bool = True,
         if appkit_live:
             return "appkit"
         return "osascript" if has_osascript else ""
-    if platform == "win32" or os.name == "nt":
+    # `sys.platform` alone, never `os.name`: reading the ambient os.name here
+    # would make this function answer differently on the machine it runs on than
+    # on the platform it was asked about — i.e. not pure, and its tests would
+    # pass everywhere except on a Windows runner.
+    if platform == "win32":
         return "win32"
     if platform.startswith("linux"):
         # No display means no dialog: a hosted or headless deploy must advertise

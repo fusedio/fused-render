@@ -86,6 +86,19 @@ def test_linux_needs_a_display():
     assert dirpicker._choose_backend("linux", {"WAYLAND_DISPLAY": "wayland-0"}) == "linux"
 
 
+def test_backend_selection_ignores_the_machine_it_runs_on(monkeypatch):
+    # It answers about the platform it is ASKED about, never the ambient one.
+    # This is not hypothetical: the first version also consulted `os.name`, so
+    # every case above passed here and `_choose_backend("linux", …)` would have
+    # answered "win32" on the Windows CI runner — a failure only that runner
+    # could see. Faking os.name is the cheapest way to be that runner.
+    monkeypatch.setattr(dirpicker.os, "name", "nt")
+    assert dirpicker._choose_backend("linux", {"DISPLAY": ":0"}) == "linux"
+    assert dirpicker._choose_backend("darwin", {}, has_osascript=True) == "osascript"
+    monkeypatch.setattr(dirpicker.os, "name", "posix")
+    assert dirpicker._choose_backend("win32", {}) == "win32"
+
+
 def test_availability_is_just_whether_there_is_a_backend(monkeypatch):
     monkeypatch.setattr(dirpicker, "_backend", lambda: "")
     assert dirpicker.available() is False
@@ -242,6 +255,148 @@ def test_a_linux_cancel_is_none_but_a_crash_raises(monkeypatch):
     monkeypatch.setattr(ui, "_run", lambda argv: None)
     with pytest.raises(OSError):
         ui.pick_directory()
+
+
+# ----------------------------------------------------------- windows backend
+# No Windows runner here, so pywin32 is stood in for. What is asserted is what a
+# runner could not tell us anyway: that the dialog is put in FOLDER mode at all
+# (GetOpenFileNameW, which pick_file uses, has no folder mode, so getting this
+# wrong silently gives a FILE chooser), and that the cancel HRESULT is the one
+# thing not treated as a breakage.
+
+
+class _FakeShellItem:
+    def __init__(self, path):
+        self._path = path
+
+    def GetDisplayName(self, _kind):
+        return self._path
+
+
+class _FakeDialog:
+    def __init__(self, log, on_show):
+        self._log = log
+        self._on_show = on_show
+
+    def GetOptions(self):
+        return 0x1  # a pre-existing flag, which must survive the OR
+
+    def SetOptions(self, options):
+        self._log["options"] = options
+
+    def SetTitle(self, title):
+        self._log["title"] = title
+
+    def SetFolder(self, item):
+        self._log["folder"] = item
+
+    def Show(self, _owner):
+        self._on_show()
+
+    def GetResult(self):
+        return _FakeShellItem("C:\\Users\\ada\\code")
+
+
+class _FakePywintypesError(Exception):
+    pass
+
+
+def _fake_win32(monkeypatch, on_show):
+    """Put a fake pywin32 in sys.modules and return the dialog's call log."""
+    import types
+
+    log = {}
+    consts = types.SimpleNamespace(
+        FOS_PICKFOLDERS=0x20, FOS_FORCEFILESYSTEM=0x40,
+        FOS_PATHMUSTEXIST=0x800, SIGDN_FILESYSPATH=0x80058000)
+    shell = types.SimpleNamespace(
+        CLSID_FileOpenDialog="clsid", IID_IFileOpenDialog="iid",
+        IID_IShellItem="iid-item",
+        SHCreateItemFromParsingName=lambda path, _b, _i: _FakeShellItem(path))
+    pythoncom = types.SimpleNamespace(
+        CLSCTX_INPROC_SERVER=1,
+        CoInitialize=lambda: log.setdefault("co", []).append("init"),
+        CoUninitialize=lambda: log.setdefault("co", []).append("uninit"),
+        CoCreateInstance=lambda *a: _FakeDialog(log, on_show))
+    shell_pkg = types.ModuleType("win32com.shell")
+    shell_pkg.shell = shell
+    shell_pkg.shellcon = consts
+    win32com = types.ModuleType("win32com")
+    win32com.shell = shell_pkg
+    pywintypes = types.ModuleType("pywintypes")
+    pywintypes.error = _FakePywintypesError
+    for name, module in (("pythoncom", pythoncom), ("pywintypes", pywintypes),
+                        ("win32com", win32com), ("win32com.shell", shell_pkg)):
+        monkeypatch.setitem(sys.modules, name, module)
+    return log, consts
+
+
+def test_the_windows_dialog_is_put_in_folder_mode(monkeypatch):
+    from fused_render.supervisor._win32 import ui
+
+    log, consts = _fake_win32(monkeypatch, on_show=lambda: None)
+    assert ui.pick_directory(title="Clone into…",
+                             start="C:\\Users\\ada") == "C:\\Users\\ada\\code"
+    # FOS_PICKFOLDERS is the whole difference between this and a file chooser.
+    assert log["options"] & consts.FOS_PICKFOLDERS
+    # FORCEFILESYSTEM too, or the dialog can answer a virtual shell folder
+    # ("This PC", a library) that has no path to give back.
+    assert log["options"] & consts.FOS_FORCEFILESYSTEM
+    assert log["options"] & 0x1, "the dialog's existing options were overwritten"
+    assert log["title"] == "Clone into…"
+    assert log["folder"]._path == "C:\\Users\\ada"
+    # The apartment is initialised and handed back even on the happy path.
+    assert log["co"] == ["init", "uninit"]
+
+
+def test_a_windows_cancel_is_a_cancel_and_anything_else_is_an_error(monkeypatch):
+    from fused_render.supervisor._win32 import ui
+
+    def cancelled():
+        raise _FakePywintypesError(ui._ERROR_CANCELLED, "Show", "Operation cancelled")
+
+    log, _ = _fake_win32(monkeypatch, on_show=cancelled)
+    assert ui.pick_directory() is None
+    assert log["co"] == ["init", "uninit"], "the apartment leaked on a cancel"
+
+    def broken():
+        raise _FakePywintypesError(-2147467259, "Show", "Unspecified error")
+
+    log, _ = _fake_win32(monkeypatch, on_show=broken)
+    with pytest.raises(OSError):
+        ui.pick_directory()
+    assert log["co"] == ["init", "uninit"], "the apartment leaked on a failure"
+
+
+def test_the_windows_backend_runs_the_dialog_off_the_request_thread(monkeypatch):
+    # IFileDialog pumps its own message loop and needs an STA, so it must not run
+    # on the threadpool worker that served the request — which is why the backend
+    # owns a thread rather than calling straight through.
+    seen = {}
+    _fake_win32(monkeypatch, on_show=lambda: seen.update(
+        thread=threading.current_thread().name))
+    # _pick_win32, not pick_directory: the entry point normalizes and requires an
+    # absolute path, and a Windows path is not absolute to a POSIX os.path.
+    assert dirpicker._pick_win32("C:\\Users\\ada", "Pick") == "C:\\Users\\ada\\code"
+    assert seen["thread"] == "fused-dir-dialog"
+    assert threading.current_thread() is threading.main_thread()
+
+
+def test_a_windows_dialog_that_never_returns_times_out(monkeypatch):
+    monkeypatch.setattr(dirpicker, "_DIALOG_TIMEOUT_S", 0.3)
+    _fake_win32(monkeypatch, on_show=lambda: threading.Event().wait(30))
+    with pytest.raises(dirpicker.PickerFailed, match="not answered"):
+        dirpicker._pick_win32(None, "Pick")
+
+
+def test_a_windows_dialog_failure_reaches_the_calling_thread(monkeypatch):
+    # The thread swallowing it would leave the request looking like a cancel.
+    def broken():
+        raise _FakePywintypesError(-2147467259, "Show", "Unspecified error")
+
+    _fake_win32(monkeypatch, on_show=broken)
+    with pytest.raises(OSError):
+        dirpicker._pick_win32(None, "Pick")
 
 
 # ----------------------------------------------------------- appkit thread hop
