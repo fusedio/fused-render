@@ -959,6 +959,29 @@ export function copyEntry(src: string, dst: string, overwrite = false): Promise<
   return postJson<StatResult>("/api/fs/copy", { src, dst, overwrite });
 }
 
+// The archive formats /api/fs/compress accepts. Kept as a union so a typo
+// can't reach the server, which answers an unknown format with a 400.
+export type ArchiveFormat = "zip" | "git-bundle" | "git-archive";
+
+// Compress a FOLDER into `dest` (a sibling archive, named by the caller so a
+// clash can be resolved against the listing first). Same 409-on-existing-dest
+// and "readonly" contract as rename/copy. The git formats require `path` to be
+// a repository root — see gitRepoInfo.
+export function compressEntry(
+  path: string,
+  format: ArchiveFormat,
+  dest: string
+): Promise<StatResult> {
+  return postJson<StatResult>("/api/fs/compress", { path, format, dest });
+}
+
+// Whether `path` is the work-tree ROOT of a git repository — the gate for the
+// two git entries in the Compress submenu. It shells out to git, so it is
+// fetched lazily on submenu hover, never as part of rendering a row.
+export function gitRepoInfo(path: string): Promise<{ path: string; is_repo_root: boolean }> {
+  return getJson("/api/fs/git-repo?path=" + encodeURIComponent(path));
+}
+
 // -- OS clipboard bridge (server/routers/clipboard.py) -----------------
 // The webview can't read or write the native file flavors Finder/Explorer/
 // Nautilus use, so the local backend does it for us and we trade in absolute

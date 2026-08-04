@@ -64,6 +64,14 @@ export const MenuIcons: Record<string, ReactNode> = {
       <path d="M10 12v4M8 14h4" />
     </svg>
   ),
+  // Compress — archive box: a lid band over a body, with a latch.
+  compress: (
+    <svg {...svgProps}>
+      <rect x="3" y="4" width="18" height="4.5" rx="1" />
+      <path d="M5 8.5V18a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8.5" />
+      <path d="M10 12h4" />
+    </svg>
+  ),
   // Cut — scissors.
   cut: (
     <svg {...svgProps}>

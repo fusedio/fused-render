@@ -7,10 +7,10 @@
 // view keeps its own menu/dialog/toast state and its own post-action behaviour
 // (Listing re-anchors its selection + refetches; Preview navigates).
 import { listDir, deleteEntry, statPath, resolveConditions } from "./api";
-import type { TemplateEntry } from "./api";
+import type { ArchiveFormat, TemplateEntry } from "./api";
 import { getClipboard, setClipboard } from "./fs-clipboard";
 import { dropRecentsFor } from "./recents";
-import type { MenuItem } from "../components/ContextMenu";
+import type { MenuEntry, MenuItem } from "../components/ContextMenu";
 import { KNOWN_SENTINEL_MODES, modeTitle, templateModeIcon } from "../components/ModeSwitcher";
 
 // Windows fs paths are rooted at a drive letter ("C:/…"), not at "/" — mirrors
@@ -260,6 +260,22 @@ export function friendlyFsError(err: unknown, ctx: { verb: string; name: string 
       : `Couldn't ${verb} "${name}" — something with that name already exists.`;
   }
 
+  // Compress on a repository that has nothing committed yet — neither
+  // `git bundle --all` nor `git archive HEAD` has anything to write.
+  if (msg.includes("has no commits"))
+    return `"${name}" has no commits yet — there's nothing for git to archive.`;
+
+  // `git archive HEAD` on an unborn HEAD (a fresh orphan branch). The repo has
+  // history, just none reachable from where HEAD points — so the fix is to
+  // check something out, not to commit, and a bundle would work today.
+  if (msg.includes("no commit checked out"))
+    return `"${name}" has no commit checked out — switch to a branch with commits, or use the Git bundle format.`;
+
+  // Compress across a mount: reading the source would mean walking the whole
+  // remote prefix, so the server refuses rather than hanging the mount.
+  if (msg.includes("compress unsupported"))
+    return `"${name}" is on a mounted location — compressing there isn't supported.`;
+
   // The containing folder was removed out from under the action.
   if (msg.includes("parent directory does not exist")) return "That folder no longer exists.";
 
@@ -314,6 +330,67 @@ export async function resolveOpenWithModes(path: string): Promise<TemplateEntry[
     }
   }
   return filtered;
+}
+
+// -- Compress ---------------------------------------------------------------
+
+// The archive a Compress produces, in menu order. `ext` is appended whole, so
+// a two-part extension (".tar.gz") stays intact.
+const COMPRESS_FORMATS: { format: ArchiveFormat; ext: string; label: string; gitOnly: boolean }[] = [
+  { format: "zip", ext: ".zip", label: "Compressed (.zip)", gitOnly: false },
+  // Full history, clonable — the archive you send someone so they get the repo.
+  { format: "git-bundle", ext: ".bundle", label: "Git bundle (.bundle)", gitOnly: true },
+  // Tracked files at HEAD, no history — the archive you ship as a release.
+  { format: "git-archive", ext: ".tar.gz", label: "Git archive of HEAD (.tar.gz)", gitOnly: true },
+];
+
+// Finder's archive naming: the first one takes the folder's own name
+// ("myrepo.zip"), and a clash appends a number BEFORE the extension
+// ("myrepo 2.zip"). Note this is not duplicateName's " copy" convention — an
+// archive of a folder isn't a copy of it, and Finder names the two differently.
+// The folder name is never split on ".", so "my.app" stays "my.app 2.zip".
+export function archiveName(folder: string, counter: number, ext: string): string {
+  return counter <= 1 ? folder + ext : `${folder} ${counter}${ext}`;
+}
+
+// First free archive path for compressing `folderName` in `parentDir`, chosen
+// by listing the folder first so Compress never 409s on a name that's already
+// there. Mirrors freeDuplicatePath, truncated-listing stat probe included.
+export async function freeArchivePath(
+  parentDir: string,
+  folderName: string,
+  ext: string
+): Promise<string> {
+  const dir = normDir(parentDir);
+  const { entries, truncated } = await listDir(dir);
+  const taken = new Set(entries.map((e) => e.name));
+  let i = 1;
+  let candidate = archiveName(folderName, i, ext);
+  while (taken.has(candidate)) candidate = archiveName(folderName, ++i, ext);
+  while (truncated && (await pathExists(join(dir, candidate)))) {
+    if (i > 100) break; // bounded like firstFreeProbed; the server's 409 backstops us
+    candidate = archiveName(folderName, ++i, ext);
+  }
+  return join(dir, candidate);
+}
+
+// Build the Compress submenu. The two git formats archive the WHOLE repository
+// (`bundle --all`, `archive HEAD`), so they appear only when the folder is a
+// repo root — `isRepoRoot` comes from the lazy gitRepoInfo probe, which is why
+// this submenu is loaded on hover rather than built on every right-click.
+// Returns MenuEntry[] (not MenuItem[]) for the separator; no entry carries a
+// submenu of its own, since ContextMenu renders exactly one level.
+export function buildCompressItems(
+  isRepoRoot: boolean,
+  onSelect: (format: ArchiveFormat, ext: string) => void
+): MenuEntry[] {
+  const row = (f: (typeof COMPRESS_FORMATS)[number]): MenuItem => ({
+    label: f.label,
+    onClick: () => onSelect(f.format, f.ext),
+  });
+  const items: MenuEntry[] = COMPRESS_FORMATS.filter((f) => !f.gitOnly).map(row);
+  if (isRepoRoot) items.push("separator", ...COMPRESS_FORMATS.filter((f) => f.gitOnly).map(row));
+  return items;
 }
 
 // Build the Open-With submenu rows from a resolved mode list. `onSelect` gets

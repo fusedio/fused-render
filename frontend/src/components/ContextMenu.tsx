@@ -25,9 +25,10 @@ export interface MenuItem {
   // Destructive action (Delete): tinted with --error.
   danger?: boolean;
   // Lazy submenu: invoked when the row is hovered. While the promise is
-  // pending the submenu shows a "Loading…" placeholder; the resolved items are
-  // one level deep (no nested submenus).
-  submenu?: () => Promise<MenuItem[]>;
+  // pending the submenu shows a "Loading…" placeholder; the resolved entries
+  // are one level deep (no nested submenus) but may include separators —
+  // Compress divides its plain zip from the git-repo-only formats.
+  submenu?: () => Promise<MenuEntry[]>;
 }
 
 // A separator is a bare sentinel so item arrays stay trivial to build inline.
@@ -107,7 +108,7 @@ export default function ContextMenu({ x, y, items, onClose }: ContextMenuProps) 
   // Index of the top-level item whose submenu is open (null = none), plus its
   // resolved items (null while the loader is still in flight).
   const [openSub, setOpenSub] = useState<number | null>(null);
-  const [subItems, setSubItems] = useState<MenuItem[] | null>(null);
+  const [subItems, setSubItems] = useState<MenuEntry[] | null>(null);
   // Guards against a stale loader resolving after the user moved to another row.
   const loadToken = useRef(0);
 
@@ -258,16 +259,20 @@ export default function ContextMenu({ x, y, items, onClose }: ContextMenuProps) 
                 {subItems === null ? (
                   <div className="context-menu-item disabled">Loading…</div>
                 ) : (
-                  subItems.map((s, j) => (
-                    <Row
-                      key={j}
-                      item={s}
-                      open={false}
-                      showIcon={subHasIcon}
-                      onEnter={() => {}}
-                      onActivate={() => activate(s)}
-                    />
-                  ))
+                  subItems.map((s, j) =>
+                    s === "separator" ? (
+                      <div key={j} className="context-menu-sep" />
+                    ) : (
+                      <Row
+                        key={j}
+                        item={s}
+                        open={false}
+                        showIcon={subHasIcon}
+                        onEnter={() => {}}
+                        onActivate={() => activate(s)}
+                      />
+                    )
+                  )
                 )}
               </div>
             )}

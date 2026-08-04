@@ -141,6 +141,7 @@ def _repo_toplevel(path):
     try:
         proc = subprocess.run(
             ["git", "-C", path, "rev-parse", "--show-toplevel"],
+            stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
             timeout=5,
@@ -152,6 +153,35 @@ def _repo_toplevel(path):
         return None
     top = os.fsdecode(proc.stdout.strip())
     return top or None
+
+
+def _canonical(path: str) -> str:
+    """A path in the one form two spellings of the same location share:
+    symlinks resolved (macOS's /var -> /private/var, a symlinked checkout) and
+    case folded where the platform folds it (HFS+/APFS, NTFS)."""
+    return os.path.normcase(os.path.realpath(path))
+
+
+def _is_repo_root(path: str) -> bool:
+    """True iff `path` is the WORK-TREE ROOT of a git repository.
+
+    Deliberately stricter than `rev-parse --is-inside-work-tree`: the Compress
+    menu's git formats (`git bundle --all`, `git archive HEAD`) archive the
+    whole repository, so offering them on a SUBDIRECTORY would silently hand
+    back far more than the folder that was right-clicked. So git is still the
+    authority — it is the only thing that knows about `.git` files, linked
+    worktrees, `$GIT_DIR`, and ceiling directories — but its answer only counts
+    when the toplevel IS this folder.
+
+    Fails closed (False) on a missing git, a timeout, a bare repo, a path
+    inside `.git`, or anything that isn't a directory: the menu simply drops
+    the git entries, which is the safe direction."""
+    if not path or not os.path.isdir(path):
+        return False
+    top = _repo_toplevel(path)
+    if top is None:
+        return False
+    return _canonical(top) == _canonical(path)
 
 
 def _git_ignored(cwd: str, rel_names: list[str]) -> set[str]:

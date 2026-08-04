@@ -578,6 +578,9 @@
   ".egg": [
     "zip"
   ],
+  ".bundle": [
+    "bundle"
+  ],
   ".tar": [
     "tar"
   ],

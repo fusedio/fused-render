@@ -228,6 +228,8 @@ const EXT_VARIANT: Record<string, Variant> = {
   zip: "archive", jar: "archive", whl: "archive", egg: "archive",
   tar: "archive", tgz: "archive", tbz2: "archive", txz: "archive",
   gz: "archive", bz2: "archive", xz: "archive",
+  // A git bundle is an archive too — a whole repository in one file.
+  bundle: "archive",
   // databases
   sqlite: "db", sqlite3: "db", db: "db",
 };
