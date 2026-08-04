@@ -704,28 +704,18 @@ document.getElementById("home-path").textContent = FILE;
 document.title = "Claude split — " + BASENAME;
 
 // ── left pane: the file's ordinary preview ─────────────────────
-// /embed/<abs path minus leading slash>, each segment URL-encoded. Windows
-// paths arrive from app.py with backslashes and a drive letter — normalize
-// drive-letter paths only, same rule as the shell's urlForFsPath (router.ts):
-// on POSIX a backslash is a legal filename character and must round-trip.
-function embedUrl(absPath, query) {
-  const norm = /^[A-Za-z]:[\\/]/.test(absPath) ? absPath.replace(/\\/g, "/") : absPath;
-  const segs = norm.replace(/^\//, "").split("/").filter(Boolean).map(encodeURIComponent);
-  const qs = new URLSearchParams(query).toString();
-  return "/embed/" + segs.join("/") + (qs ? "?" + qs : "");
-}
-
 (async () => {
   try {
     // The left pane renders the APP, not the folder: the project's entry
     // html (index.html, or its single top-level html — same rule as the
-    // shell's "Open as app" button), rendered as itself via `_render`.
-    // Deliberately NOT the `_listing` sentinel: a directory listing brings
-    // its own header chrome (mode switcher, Open as app) into the pane —
-    // including a button back into this very template.
+    // shell's "Open as app" button). Framed via /render — the RAW rendered
+    // document, same as the annotate template — NOT /embed: /embed serves
+    // the React shell, which nests the app one iframe deeper, putting its
+    // document out of the annotation layer's reach (the anchor listeners
+    // would wire the shell document and never see a click).
     const { entry } = await fused.runPython("./app.py", { dir: FILE });
     if (!entry) throw new Error("no app entry (index.html or a single top-level .html) in " + FILE);
-    document.getElementById("leftframe").src = embedUrl(entry, { _mode: "_render" });
+    document.getElementById("leftframe").src = "/render?path=" + encodeURIComponent(entry);
   } catch (err) {
     document.getElementById("left").innerHTML = "";
     const d = document.createElement("div");
