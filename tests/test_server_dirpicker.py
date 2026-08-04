@@ -710,6 +710,65 @@ def test_an_os_error_from_a_backend_becomes_a_picker_failure(monkeypatch):
         dirpicker.pick_directory()
 
 
+# --------------------------------------------------- the shape of the path out
+
+
+def test_a_windows_path_comes_back_forward_slashed(monkeypatch):
+    # The shell, /api/fs/*, and folder-picker.js's parent()/join() all assume the
+    # canonical forward-slashed form (see canonical_fs_path, and the same note on
+    # /api/config's calls_dir). A backslashed path would feed mixed separators
+    # into clone-destination naming and every call after it.
+    monkeypatch.setattr(dirpicker, "_backend", lambda: "win32")
+    monkeypatch.setitem(dirpicker._BACKENDS, "win32",
+                        lambda start, title: "C:\\Users\\ada\\code")
+    assert dirpicker.pick_directory() == "C:/Users/ada/code"
+
+
+def test_the_endpoint_answers_a_windows_pick_forward_slashed(monkeypatch):
+    monkeypatch.setattr(dirpicker, "_backend", lambda: "win32")
+    monkeypatch.setitem(dirpicker._BACKENDS, "win32",
+                        lambda start, title: "C:\\Users\\ada\\My Repos\\")
+    assert _data(_pick({})) == {"path": "C:/Users/ada/My Repos"}
+
+
+def test_a_windows_drive_root_survives_as_a_drive_root(monkeypatch):
+    # "C:/" is the canonical drive root folder-picker.js's isRoot() recognises; a
+    # bare "C:" is cwd-relative and must never be produced.
+    monkeypatch.setattr(dirpicker, "_backend", lambda: "win32")
+    monkeypatch.setitem(dirpicker._BACKENDS, "win32", lambda start, title: "C:\\")
+    assert dirpicker.pick_directory() == "C:/"
+
+
+def test_a_drive_path_counts_as_absolute_off_windows_too(monkeypatch):
+    # The absoluteness test must CLASSIFY rather than ask the running OS:
+    # posixpath.isabs("C:/Users/ada") is False, and that is exactly the value a
+    # Windows server produces — so asking os.path would reject the real answer
+    # everywhere this is tested.
+    assert dirpicker._canonical_absolute("C:\\Users\\ada") == "C:/Users/ada"
+
+
+def test_a_unc_path_is_left_exactly_as_the_codec_leaves_it():
+    # Deliberately NOT forward-slashed: canonical_fs_path only normalizes
+    # drive-letter paths, because the /view codec keeps a UNC path as one opaque
+    # segment (and on POSIX a backslash is a legal filename character). Inventing
+    # a second convention here would make this the only place in the app that
+    # disagrees. Its absoluteness is judged by the running OS, which for a UNC
+    # path means Windows, so only the canonical form is asserted here.
+    from fused_render._view_url_codec import canonical_fs_path
+
+    assert canonical_fs_path("\\\\server\\share\\dir") == "\\\\server\\share\\dir"
+
+
+def test_a_posix_path_with_a_backslash_in_a_name_round_trips(monkeypatch):
+    # A backslash is a legal POSIX filename character, so it must NOT be swapped
+    # for a separator — the reason canonical_fs_path is conditional.
+    if os.name == "nt":
+        pytest.skip("a backslash cannot be a filename character on Windows")
+    monkeypatch.setattr(dirpicker, "_backend", lambda: "linux")
+    monkeypatch.setitem(dirpicker._BACKENDS, "linux",
+                        lambda start, title: "/home/ada/we\\ird")
+    assert dirpicker.pick_directory() == "/home/ada/we\\ird"
+
 # --------------------------------------------------------------- the endpoint
 
 
