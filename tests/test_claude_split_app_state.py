@@ -302,6 +302,10 @@ def _spawn(agent, monkeypatch, target, message="hi"):
     class _Proc:
         pid = 4242
 
+    # The argv is what's under test, not where claude lives. CI runners have no
+    # claude on PATH, so resolving the real one would fail there and pass only
+    # on a developer machine that happens to have it installed.
+    monkeypatch.setattr(agent, "_claude_bin", lambda: "/bin/claude")
     monkeypatch.setattr(agent.subprocess, "Popen",
                         lambda cmd, **kw: (seen.__setitem__("cmd", cmd), _Proc())[1])
     out = agent._start(str(target), message, "", "", "")
