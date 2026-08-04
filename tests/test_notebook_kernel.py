@@ -179,8 +179,27 @@ def test_output_truncation(kernel):
 
 
 def test_interrupt_aborts_queued_cells(kernel):
-    kernel.send({"op": "execute", "id": "e1", "code": "import time\ntime.sleep(60)"})
+    # Wait until e1 is provably INSIDE the sleep, not merely `started`.
+    #
+    # `started` is emitted at the top of kernel_body.execute — before the flush
+    # ticker starts, before the stdio swap, before ast.parse and before a line
+    # of the cell runs. Interrupting on that event alone races the cell's own
+    # progress toward `time.sleep`, and this test's whole subject is what an
+    # interrupt does to a cell that IS running. It failed exactly that way on a
+    # loaded CI runner: e2 and e3 were aborted off the queue as expected, but
+    # e1 never produced `done`, so the wait below timed out after 15s.
+    #
+    # The printed marker closes the window deterministically: once its stream
+    # event has arrived (StreamWriter.flush emits synchronously), the next
+    # statement executed is the sleep. The short settle covers the handful of
+    # bytecodes between the two — the sibling test_interrupt_running_cell buys
+    # the same guarantee with a bare 0.5s wait and no marker.
+    kernel.send({"op": "execute", "id": "e1",
+                 "code": "import time\nprint('sleeping', flush=True)\ntime.sleep(60)"})
     kernel.wait_for(lambda e: e.get("type") == "started" and e.get("id") == "e1")
+    kernel.wait_for(lambda e: e.get("type") == "stream"
+                    and "sleeping" in (e.get("text") or ""))
+    time.sleep(0.2)
     # e2/e3 sit on the queue behind the sleeping cell; the stdin pipe is FIFO,
     # so they are queued before the interrupt is processed
     kernel.send({"op": "execute", "id": "e2", "code": "x = 'ran'"})
