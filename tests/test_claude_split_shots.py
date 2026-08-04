@@ -1506,18 +1506,23 @@ const a = {id: "a"};
     assert "const SHOT_TIMEOUT_MS" in html, "the real cap still has to exist"
 
 
-def test_a_view_only_send_survives_a_thrown_capture(html):
-    """The non-negotiable rule, now for a message whose ONLY attachment is the
-    pane shot: if the capture throws there is no view and no annotations — and the
-    send still has to go. Losing the user's words because a screenshot failed is
-    not a trade this feature makes, and a view-only send is the case where there is
-    nothing else to fall back on."""
-    out = _node([n for n in _CAPTURE_FNS if n != "const SHOT_TIMEOUT_MS"]
-                + ["function formatAnnotations(", "const PANE_SHOT_TAG",
-                   "function paneShotBlock(", "function stripPaneBlock(",
-                   "function stripAnnBlock(", "function stripAppStateBlock(",
-                   "const APP_STATE_TAG", "function appStateBlock(",
-                   "function stripBlocks(", "function composeOutgoing("],
+_WIRE_ALSO = ["function formatAnnotations(", "const PANE_SHOT_TAG",
+              "function paneShotBlock(", "function stripPaneBlock(",
+              "function stripAnnBlock(", "function stripAppStateBlock(",
+              "const APP_STATE_TAG", "function appStateBlock(",
+              "const MARKER_ANN", "const MARKER_VIEW", "const MARKER_JOIN",
+              "function isMarkerOnly(",
+              "function stripBlocks(", "function composeOutgoing("]
+
+
+def test_a_thrown_capture_still_reports_that_a_pane_shot_was_asked_for(html):
+    """Degrading to "no image" is right; degrading to "no evidence anything was
+    asked" is the silent-failure shape. A view-only send has nothing else in it to
+    carry the intent, so dropping the field started a turn that looks empty while
+    the user had explicitly asked for a picture and been told nothing.
+
+    The message still goes out, which is the rule that does not bend."""
+    out = _node([n for n in _CAPTURE_FNS if n != "const SHOT_TIMEOUT_MS"] + _WIRE_ALSO,
                 "var SHOT_TIMEOUT_MS = 50;\n" + _CAPTURE_STUBS + """
 var console2 = console;
 console = {warn: () => {}};
@@ -1525,18 +1530,23 @@ annCaptureShots = async () => { throw new Error("canvas exploded"); };
 (async () => {
   const r = await annShots([], true);
   const outgoing = composeOutgoing("everything shifted down", [], null, r.view);
-  console2.log(JSON.stringify({view: r.view === undefined, outgoing: outgoing,
+  console2.log(JSON.stringify({view: r.view, outgoing: outgoing,
                                stripped: stripBlocks(outgoing)}));
 })();
 """, html)
-    assert out["view"] is True, "no view field at all, rather than a broken one"
-    assert out["outgoing"] == "everything shifted down", "the message still goes"
+    assert out["view"]["view"] is None, "no path — there is no picture"
+    assert "canvas exploded" in out["view"]["viewNote"], out["view"]
+    # the agent is told a pane shot was requested and could not be made...
+    assert "<pane-shot>" in out["outgoing"]
+    # ...and the user's words are untouched and still the whole visible message
+    assert out["outgoing"].endswith("everything shifted down")
     assert out["stripped"] == "everything shifted down"
 
 
-def test_a_view_whose_budget_died_is_dropped_not_half_sent(html):
-    """The timeout path. The pane shot shares the crops' one budget deliberately,
-    so it degrades the same way: no view rather than no message."""
+def test_a_budget_that_died_still_reports_the_pane_shot_request(html):
+    """The timeout path, same requirement. The pane shot shares the crops' one
+    budget deliberately, so it degrades the same way — but "it timed out" is a
+    fact the agent and the user are owed, not one to swallow."""
     out = _node([n for n in _CAPTURE_FNS if n != "const SHOT_TIMEOUT_MS"],
                 "var SHOT_TIMEOUT_MS = 20;\n" + _CAPTURE_STUBS + """
 var revoked = [];
@@ -1549,12 +1559,56 @@ annCaptureShots = async () => {
 (async () => {
   const r = await annShots([], true);
   await new Promise((res) => setTimeout(res, 140));   // outlive the abandoned one
-  console.log(JSON.stringify({view: r.view === undefined, revoked: revoked}));
+  console.log(JSON.stringify({view: r.view, revoked: revoked, ms: SHOT_TIMEOUT_MS}));
 })();
 """, html)
-    assert out["view"] is True
+    assert out["view"]["view"] is None, "the late path is NOT adopted"
+    assert str(out["ms"]) in out["view"]["viewNote"], out["view"]
     # and the abandoned capture's pane thumbnail is released like any other
     assert out["revoked"] == ["blob:late-view"]
+
+
+def test_a_failed_capture_says_nothing_about_a_pane_shot_nobody_asked_for(html):
+    """The other half: a send with the toggle OFF must be byte-identical to one
+    from before this feature, failure or not."""
+    out = _node([n for n in _CAPTURE_FNS if n != "const SHOT_TIMEOUT_MS"] + _WIRE_ALSO,
+                "var SHOT_TIMEOUT_MS = 50;\n" + _CAPTURE_STUBS + """
+var console2 = console;
+console = {warn: () => {}};
+annCaptureShots = async () => { throw new Error("canvas exploded"); };
+(async () => {
+  const r = await annShots([], false);
+  console2.log(JSON.stringify({view: r.view === undefined,
+    outgoing: composeOutgoing("just words", [], null, r.view)}));
+})();
+""", html)
+    assert out["view"] is True, "no view field at all when none was requested"
+    assert out["outgoing"] == "just words"
+
+
+def test_a_failed_view_only_send_still_shows_the_user_a_receipt(html):
+    """They asked for a picture and did not get one; being told is the minimum.
+    The receipt row is built whenever there is a `view` object at all, so the
+    failure note has to be that object rather than an absent field."""
+    body = html[html.index("async function sendMessage("):]
+    body = body[:body.index("\n}\n")]
+    assert "pending.length || (shots && shots.view)" in body
+    assert 'shots.view.view ? "whole pane attached"' in body
+    assert '"no pane screenshot"' in body
+
+
+def test_a_marker_still_names_a_pane_shot_that_was_requested_and_failed(html):
+    """The marker logic reads what the message CARRIED, and a failed pane shot
+    still carries its block — so a wordless send says so instead of rendering an
+    empty bubble."""
+    out = _wire(html, """
+const failed = {view: null, viewNote: "no pane screenshot: it could not be saved"};
+const wire = composeOutgoing("", [], null, failed);
+console.log(JSON.stringify({stripped: stripBlocks(wire),
+                            marker: isMarkerOnly(stripBlocks(wire))}));
+""")
+    assert out["stripped"] == "\U0001f5bc pane screenshot"
+    assert out["marker"] is True, "still non-identifying, so re-attach must refuse it"
 
 
 def test_an_abandoned_capture_cannot_reject_unhandled(html):

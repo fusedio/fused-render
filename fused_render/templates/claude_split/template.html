@@ -2256,6 +2256,7 @@ async function annCaptureShots(pending, deadline, wantView) {
 function annShots(pending, wantView) {
   let timer = null;
   let abandoned = false;
+  let failure = "";
   const budget = new Promise((res) => {
     timer = setTimeout(() => { abandoned = true; res(null); }, SHOT_TIMEOUT_MS);
   });
@@ -2270,10 +2271,29 @@ function annShots(pending, wantView) {
     (err) => { if (abandoned) console.warn("abandoned capture failed:", err); });
   return Promise.race([capture, budget])
     .catch((err) => {
+      failure = err.message;
       console.warn("annotation screenshots skipped:", err.message);
       return null;
     })
-    .then((r) => { clearTimeout(timer); return r || { shots: {}, thumbs: {} }; });
+    .then((r) => {
+      clearTimeout(timer);
+      if (r) return r;
+      const out = { shots: {}, thumbs: {} };
+      // A REQUESTED pane shot has to be reported even when it could not be made.
+      // Degrading to "no image" is right; degrading to "no evidence anything was
+      // asked for" is the silent-failure shape — and it is worst for a view-only
+      // send, where nothing else in the message carries the intent, so the turn
+      // would look empty while the user had explicitly asked for a picture and
+      // been told nothing. The annotations need no equivalent: each one keeps its
+      // own anchor, which says what the user pointed at regardless.
+      if (wantView) {
+        out.view = { view: null, viewNote: "no pane screenshot: "
+          + (failure ? "the capture failed (" + failure + ")"
+                     : "the capture did not finish within " + SHOT_TIMEOUT_MS
+                       + "ms and was abandoned") };
+      }
+      return out;
+    });
 }
 
 // Fold a finished capture into the notes about to be sent. Stale fields are
