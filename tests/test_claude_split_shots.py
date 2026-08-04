@@ -378,25 +378,129 @@ def test_a_transparent_readback_is_recognised_as_unreadable(html):
     assert out["noprobe"] is True
 
 
+_BLANK_FNS = ["const SHOT_BLANK_BLOCK", "function shotRectOverlap(",
+              "function shotBlankCover("]
+
+# The blank map fills the pane; the elements below sit at their own rects over it.
+_BLANK_STUBS = """
+var RECTS = {};
+function annStageRect(el) { return RECTS[el.name]; }
+const cv = {name: "cv", tagName: "CANVAS", contains: (n) => n === cv};
+RECTS.cv = {left: 0, top: 0, width: 800, height: 600};
+const cover = (el) => shotBlankCover(el, [cv], RECTS[el.name]);
+"""
+
+
 def test_an_annotation_on_or_around_a_blank_canvas_is_blocked(html):
     """`is or contains`: pointing at the map itself, and pointing at the panel
-    the map is inside, are both "these pixels are not readable". A sibling
-    overlay button is not — it renders in the DOM and captures fine."""
-    out = _node(["function shotBlocked("], """
-const cv = {tagName: "CANVAS", contains: (n) => n === cv};
-const btn = {tagName: "BUTTON", contains: (n) => n === btn};
-const panel = {tagName: "DIV", contains: (n) => n === panel || n === cv || n === btn};
+    the map is inside, are both "these pixels are not readable". Kept as an
+    absolute regardless of geometry — a panel far bigger than the map it holds
+    is still a claim about the map."""
+    out = _node(_BLANK_FNS, _BLANK_STUBS + """
+const panel = {name: "panel", tagName: "DIV", contains: (n) => n === panel || n === cv};
+RECTS.panel = {left: 0, top: 0, width: 800, height: 600};
+const far = {name: "far", tagName: "BUTTON", contains: () => false};
+RECTS.far = {left: 810, top: 10, width: 60, height: 20};
 console.log(JSON.stringify({
-  itself: shotBlocked(cv, [cv]),
-  ancestor: shotBlocked(panel, [cv]),
-  sibling: shotBlocked(btn, [cv]),
-  none: shotBlocked(panel, []),
+  itself: cover(cv), ancestor: cover(panel), elsewhere: cover(far),
+  none: shotBlankCover(panel, [], RECTS.panel), block: SHOT_BLANK_BLOCK,
 }));
 """, html)
-    assert out["itself"] is True
-    assert out["ancestor"] is True
-    assert out["sibling"] is False
-    assert out["none"] is False
+    assert out["itself"] == 1
+    assert out["ancestor"] == 1
+    # A sibling that does not overlap the canvas renders in the DOM and captures
+    # fine. This is the case the guard must NOT widen into.
+    assert out["elsewhere"] == 0
+    assert out["none"] == 0
+    assert out["block"] <= 1
+
+
+def test_an_element_sitting_over_a_blank_canvas_is_blocked_too(html):
+    """The gap the containment-only guard left, and it is the single most common
+    map-app layout: a legend/zoom control absolutely positioned OVER the map is
+    neither the canvas nor a container of it, so it used to get a real crop —
+    the control floating on a blank backdrop, with no note to say the map behind
+    it is missing. Geometry, not DOM ancestry, is what decides this."""
+    out = _node(_BLANK_FNS, _BLANK_STUBS + """
+const legend = {name: "legend", tagName: "DIV", contains: () => false};
+RECTS.legend = {left: 600, top: 500, width: 180, height: 80};
+const clipped = {name: "clipped", tagName: "DIV", contains: () => false};
+RECTS.clipped = {left: 700, top: 0, width: 400, height: 400};
+console.log(JSON.stringify({legend: cover(legend), clipped: cover(clipped),
+                            block: SHOT_BLANK_BLOCK}));
+""", html)
+    assert out["legend"] == 1, "the legend's whole rect is over the blank map"
+    assert out["legend"] >= out["block"], "so the crop is suppressed"
+    # A partial lap is a fraction, and below the threshold — the crop survives.
+    assert out["clipped"] == 0.25
+    assert out["clipped"] < out["block"]
+
+
+def test_a_crop_that_only_clips_a_blank_canvas_is_sent_with_a_note(html):
+    """A partial overlap: a panel whose corner laps onto the map. Suppressing
+    the crop would throw away a mostly-trustworthy picture; sending it silently
+    would hand the agent a blank corner it cannot account for. So it is sent,
+    WITH a note about the part that is missing."""
+    out = _capture(html, """
+const el = {name: "panel", contains: () => false};
+const cv = {name: "cv"};
+RECTS.panel = {left: 300, top: 0, width: 400, height: 400};   // 25% over the map
+RECTS.cv = {left: 0, top: 0, width: 400, height: 600};
+const a = {id: "a", el: el};
+annotations = [a];
+BLANKS.push(cv);
+(async () => {
+  annApplyShots([a], await annCaptureShots([a]));
+  console.log(JSON.stringify({shot: a.shot, note: a.shotNote, uploaded: uploaded}));
+})();
+""")
+    assert out["shot"], "a mostly-good crop is worth sending"
+    assert out["uploaded"] == [out["shot"]]
+    assert "WebGL" in out["note"]
+    assert "part" in out["note"].lower()
+
+
+def test_the_blank_share_is_measured_on_the_crop_not_the_whole_element(html):
+    """A panel hanging off the right edge of the pane is cropped to its visible
+    part. Half its full rect is over the blank map, but ALL of what gets cut is —
+    and it is the crop the agent looks at, so that is what the share describes."""
+    out = _capture(html, """
+const el = {name: "panel", contains: () => false};
+const cv = {name: "cv"};
+RECTS.panel = {left: 600, top: 0, width: 400, height: 400};  // 200px of it visible
+RECTS.cv = {left: 0, top: 0, width: 800, height: 600};       // and all of that blank
+const a = {id: "a", el: el};
+annotations = [a];
+BLANKS.push(cv);
+(async () => {
+  annApplyShots([a], await annCaptureShots([a]));
+  console.log(JSON.stringify({shot: a.shot, note: a.shotNote}));
+})();
+""")
+    assert out["shot"] is None
+    assert "not readable" in out["note"]
+
+
+def test_an_annotation_away_from_the_blank_canvas_gets_a_clean_crop(html):
+    """The other direction, and the one that would make the feature useless on
+    exactly the apps it is for: a blank map somewhere on the page must not cost
+    every other annotation its crop, nor attach a note to a picture that is
+    entirely accurate."""
+    out = _capture(html, """
+const el = {name: "side", contains: () => false};
+const cv = {name: "cv"};
+RECTS.side = {left: 500, top: 20, width: 200, height: 100};
+RECTS.cv = {left: 0, top: 0, width: 400, height: 600};
+const a = {id: "a", el: el};
+annotations = [a];
+BLANKS.push(cv);
+(async () => {
+  annApplyShots([a], await annCaptureShots([a]));
+  console.log(JSON.stringify({shot: a.shot, keys: Object.keys(a).sort()}));
+})();
+""")
+    assert out["shot"]
+    assert "shotNote" not in out["keys"]
 
 
 # ------------------------------------- one capture, N crops: the orchestration
@@ -405,7 +509,7 @@ console.log(JSON.stringify({
 # performed. `shotPane` and `shotEncode` are reassigned (a function declaration is
 # a mutable binding) because rasterising is exactly the part node cannot do —
 # what is under test is which annotations get a crop and what the others are told.
-_CAPTURE_FNS = _CAPS + ["function shotBlocked(", "function shotCropRect(",
+_CAPTURE_FNS = _CAPS + _BLANK_FNS + ["function shotCropRect(",
                         "function shotFit(", "function annLabelFor(",
                         "const APP_STATE_UNREADABLE",
                         "async function annCaptureShots(", "function shotJoin(",
