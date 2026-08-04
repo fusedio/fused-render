@@ -633,3 +633,30 @@ const a = {id: "x", content: "here", anchorId: "hdr",
 console.log(JSON.stringify({stripped: stripBlocks(composeOutgoing("", [a], null))}));
 """)
     assert out["stripped"] == "\U0001f4cc annotations"
+
+
+def test_a_rolled_back_send_releases_its_thumbnails(html):
+    """The receipt's removal detaches the only <img> holding each thumbnail's blob
+    URL; an unrevoked one pins its Blob for the life of the page, and a retried
+    send captures fresh crops anyway."""
+    out = _node(["function annRevokeThumbs("], """
+var revoked = [];
+var URL = {revokeObjectURL: (u) => revoked.push(u)};
+const r = {shots: {}, thumbs: {a: "blob:1", b: "blob:2"}};
+annRevokeThumbs(r);
+annRevokeThumbs(r);   // a second call must be a no-op, not a double revoke
+annRevokeThumbs(null);
+annRevokeThumbs({shots: {}});
+console.log(JSON.stringify({revoked: revoked.sort(), left: r.thumbs}));
+""", html)
+    assert out["revoked"] == ["blob:1", "blob:2"]
+    assert out["left"] == {}
+
+
+def test_the_rollback_releases_the_thumbnails_it_just_removed(html):
+    """Wired where the receipt is pulled, not somewhere hopeful: a thumbnail still
+    on screen needs its URL alive."""
+    start = html.index("    if (!started) {")
+    branch = html[start:html.index("\n    }\n", start)]
+    assert "receipt.remove()" in branch
+    assert "annRevokeThumbs(shots)" in branch

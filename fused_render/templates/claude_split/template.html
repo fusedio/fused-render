@@ -1833,6 +1833,19 @@ function annApplyShots(pending, result) {
   }
 }
 
+// Release the thumbnails' blob URLs. Called ONLY when the receipt they were shown
+// in is being removed — a thumbnail still on screen needs its URL alive, and the
+// transcript keeps it for the session. Empties the map so a second call is a
+// no-op.
+function annRevokeThumbs(result) {
+  const thumbs = result && result.thumbs;
+  if (!thumbs) return;
+  for (const id of Object.keys(thumbs)) {
+    try { URL.revokeObjectURL(thumbs[id]); } catch (err) { /* already gone */ }
+    delete thumbs[id];
+  }
+}
+
 function formatAnnotations(arr) {
   const wire = arr.map(({ id, sent, createdAt, ...rest }) => rest);
   return (
@@ -2719,6 +2732,10 @@ async function sendMessage(message) {
         annSave();
         if (receipt) receipt.remove();
         if (bareTurn) bareTurn.remove();  // no bubble either — drop the ghost row
+        // Removing the receipt detaches the only <img> holding each thumbnail's
+        // blob URL, and an unrevoked one pins its Blob for the life of the page.
+        // A retried send captures fresh crops anyway, so nothing here is reusable.
+        annRevokeThumbs(shots);
       }
     }
     addError(err.message);
