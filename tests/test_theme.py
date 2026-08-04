@@ -126,7 +126,7 @@ def test_the_storage_key_is_spelled_identically_everywhere():
     # with `data-fused-theme` and lets runtime.js resolve it, rather than
     # becoming a fourth place this key is spelled.
     for path in (
-        "frontend/src/lib/theme.ts",
+        "frontend/src/platform/lib/theme.ts",
         "frontend/index.html",
         "fused_render/static/runtime.js",
     ):
@@ -136,7 +136,7 @@ def test_the_storage_key_is_spelled_identically_everywhere():
 def test_theme_persistence_is_best_effort():
     # Same posture as viewstate.ts / sidebarstate.ts: a private-mode or
     # quota-exceeded localStorage must never break the shell.
-    src = read_repo_file("frontend/src/lib/theme.ts")
+    src = read_repo_file("frontend/src/platform/lib/theme.ts")
     assert src.count("try {") >= 2 and "catch" in src
 
 

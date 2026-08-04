@@ -608,7 +608,7 @@ def test_the_shared_picker_ships_and_exports_its_api():
 
 
 def test_the_listing_shows_an_archive_icon_for_dot_bundle():
-    with open(_repo_path("frontend", "src", "components", "FileIcons.tsx"),
+    with open(_repo_path("frontend", "src", "platform", "ui", "FileIcons.tsx"),
               encoding="utf-8") as fh:
         assert 'bundle: "archive"' in fh.read()
 
