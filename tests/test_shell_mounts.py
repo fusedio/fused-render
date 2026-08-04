@@ -1891,6 +1891,54 @@ def test_drive_oauth_clears_stdout_even_when_no_token_arrived(client, rcd, monke
     assert list(mounts_mod.endpoints._authorize.out) == []
 
 
+def test_drive_oauth_rolls_back_a_half_created_remote(client, rcd, monkeypatch):
+    """_rc turns BOTH an HTTP error and a socket timeout into RuntimeError, so
+    "the remote could not be created" can be a lie: a timeout against a daemon
+    that nonetheless finished config/create leaves a remote that exists while
+    the user is told it does not. create_detected_remote handles exactly this
+    class by rolling back; so does this."""
+    _drive_ready(monkeypatch, rcd)
+    rcd.responses["config/create"] = (500, {"error": "timed out"})
+    rcd.responses["config/delete"] = {}
+    _spawn_python(monkeypatch, f'print("{AUTHORIZE_OK}")')
+    client.post("/api/mounts/remotes/oauth", json={"name": "gdrive"}, headers=FUSED)
+    s = _wait_oauth(client)
+    assert s["ok"] is False
+    deleted = [b for meth, b in rcd.calls if meth == "config/delete"]
+    assert deleted == [{"name": "gdrive"}]
+
+
+def test_drive_oauth_says_so_when_the_rollback_also_fails(client, rcd, monkeypatch):
+    """A rollback that itself fails may leave the remote behind. Saying only
+    "could not be created" would invite a doomed mount against a half-written
+    remote the user was told did not exist."""
+    _drive_ready(monkeypatch, rcd)
+    rcd.responses["config/create"] = (500, {"error": "timed out"})
+    rcd.responses["config/delete"] = (500, {"error": "nope"})
+    _spawn_python(monkeypatch, f'print("{AUTHORIZE_OK}")')
+    client.post("/api/mounts/remotes/oauth", json={"name": "gdrive"}, headers=FUSED)
+    s = _wait_oauth(client)
+    assert s["ok"] is False
+    err = s["error"].lower()
+    assert "could not be removed" in err or "manually" in err
+
+
+def test_drive_oauth_does_not_roll_back_over_a_replaced_remote(client, rcd, monkeypatch):
+    """Rollback deletes a remote we believe WE created. When the user asked to
+    replace an existing one, a delete would destroy their previous working
+    config on top of a failed sign-in — strictly worse than leaving it."""
+    _drive_ready(monkeypatch, rcd)
+    _fake_rclone(monkeypatch, existing_remotes=("gdrive:",))
+    rcd.responses["config/create"] = (500, {"error": "timed out"})
+    rcd.responses["config/delete"] = {}
+    _spawn_python(monkeypatch, f'print("{AUTHORIZE_OK}")')
+    client.post("/api/mounts/remotes/oauth",
+                json={"name": "gdrive", "replace": True}, headers=FUSED)
+    s = _wait_oauth(client)
+    assert s["ok"] is False
+    assert not any(meth == "config/delete" for meth, _ in rcd.calls)
+
+
 def test_drive_oauth_never_leaks_the_token_into_an_error(client, rcd, monkeypatch):
     # The token blob lands on stdout; error text is built from stderr (plus
     # token-free stdout), so a failure message can't carry the credential into

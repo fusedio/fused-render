@@ -351,6 +351,10 @@ class _ActiveAuthorize:
     name: str
     backend: str
     proc: subprocess.Popen
+    # The caller explicitly asked to overwrite an EXISTING remote. Recorded at
+    # spawn time because it decides whether a failed create may be rolled back:
+    # deleting is only safe for a remote we ourselves brought into existence.
+    replacing: bool = False
     done: threading.Event = dataclasses.field(default_factory=threading.Event)
     out: collections.deque = dataclasses.field(
         default_factory=lambda: collections.deque(maxlen=200))
@@ -456,13 +460,33 @@ def _create_drive_remote(name: str, token: str) -> None:
     only non-restricted alternative (drive.file) can only ever see files this
     app itself created, which is useless behind a mount. `skip_gdocs` because
     Docs/Sheets have no byte representation — without it they surface as
-    ordinary-looking files whose saves silently fail to round-trip."""
+    ordinary-looking files whose saves silently fail to round-trip.
+
+    Deliberately NOT probed afterwards, unlike create_detected_remote's `lsd`.
+    That probe exists because a detected credential was found sitting in a
+    dotfile and may be of any age; this token was minted seconds ago by a
+    consent the user just completed, so there is nothing for the probe to catch
+    — while an `lsd` against a large Drive would add up to 30s to the spinner
+    the user is watching. Recorded as a choice, not an oversight: if signed-in
+    but broken Drive remotes ever turn up, this is where the probe goes."""
     from fused_render.shell.mounts import _rc, ensure_rcd
     port = ensure_rcd()
     _rc(port, "config/create",
         {"name": name, "type": "drive",
          "parameters": {"token": token, "scope": "drive", "skip_gdocs": "true"}},
         timeout=OAUTH_RC_TIMEOUT)
+
+
+def _delete_remote(name: str) -> bool:
+    """Best-effort `config/delete` for a remote we just failed to finish
+    creating. True when rclone confirmed the delete. Over the rc daemon like
+    the create, so it works on the same connection and needs no argv."""
+    from fused_render.shell.mounts import _rc, ensure_rcd
+    try:
+        _rc(ensure_rcd(), "config/delete", {"name": name}, timeout=OAUTH_RC_TIMEOUT)
+        return True
+    except (RuntimeError, ValueError):
+        return False
 
 
 def _authorize_outcome(job: _ActiveAuthorize) -> str | None:
@@ -496,7 +520,30 @@ def _authorize_outcome(job: _ActiveAuthorize) -> str | None:
     try:
         _create_drive_remote(job.name, token)
     except RuntimeError as e:
-        return f"signed in, but the remote could not be created: {str(e)[-400:]}"
+        # Whatever happened, the config may have CHANGED before it failed —
+        # drop the memoized view either way, or a later read could serve a
+        # half-written remote's config from cache.
+        _invalidate_upstream_caches()
+        msg = f"signed in, but the remote could not be created: {str(e)[-400:]}"
+        # "could not be created" may be a LIE: _rc raises the same RuntimeError
+        # for an HTTP error and for a socket timeout, and a timeout against a
+        # daemon that nonetheless finished config/create leaves a remote that
+        # exists while the user is told it does not. Roll it back so a
+        # half-written remote can't linger under Remotes inviting a doomed
+        # mount — the posture create_detected_remote already takes for the same
+        # class of failure.
+        if job.replacing:
+            # We did not bring this name into existence; the user had a working
+            # remote here. Deleting it on top of a failed sign-in would be
+            # strictly worse than leaving whatever survived.
+            return msg + (" — the remote you asked to replace may or may not have "
+                          "been overwritten; check it before mounting")
+        if not _delete_remote(job.name):
+            # The delete failed too, so the remote may still be there. Say so
+            # rather than returning the bare error as if cleanup succeeded.
+            return msg + (" (the half-created remote could not be removed "
+                          "automatically — delete it manually before retrying)")
+        return msg
     # A new remote's config must be picked up without a server restart.
     _invalidate_upstream_caches()
     return None
@@ -520,12 +567,13 @@ def _watch_authorize(job: _ActiveAuthorize, pumps: list[threading.Thread]) -> No
     job.done.set()
 
 
-def _start_authorize(bin_: str, name: str, backend: str) -> _ActiveAuthorize:
+def _start_authorize(bin_: str, name: str, backend: str,
+                     replacing: bool = False) -> _ActiveAuthorize:
     """Spawn the authorize child and start its pumps + exit watcher.
 
     Raises OSError when the command can't start (caller maps it to a 502)."""
     proc = _spawn_authorize(bin_, backend)
-    job = _ActiveAuthorize(name=name, backend=backend, proc=proc)
+    job = _ActiveAuthorize(name=name, backend=backend, proc=proc, replacing=replacing)
     pumps = [
         threading.Thread(target=_pump_authorize, args=(proc.stdout, job.out), daemon=True),
         threading.Thread(target=_pump_authorize, args=(proc.stderr, job.tail), daemon=True),
@@ -598,7 +646,7 @@ def start_remote_oauth(body: dict = Body(...), x_fused: str | None = Header(defa
                 {"error": "a sign-in is already in progress — finish or cancel it first"},
                 status_code=409)
         try:
-            _authorize = _start_authorize(bin_, name, "drive")
+            _authorize = _start_authorize(bin_, name, "drive", replacing=replace)
         except OSError as e:
             return JSONResponse({"error": f"could not run rclone ({bin_}): {e}"},
                                 status_code=502)
