@@ -999,6 +999,16 @@ function annCloseComposer() {
   annDraft = null;
   annEditing = null;
 }
+// A fresh note usually precedes a "go apply it" message: seed the visible
+// composer so sending is one keypress. Only when it's empty — never clobber
+// typed text — and never auto-send.
+function annPrefillComposer() {
+  const home = chatEl.classList.contains("home");
+  const el = home ? homebox : box;
+  if (el.value.trim()) return;
+  el.value = "apply the comments";
+  (home ? growHome : growBox)();
+}
 // Click anywhere outside the popover dismisses it. mousedown, not click, so
 // it fires before the target's own handlers; pins and chips are exempt — their
 // click handlers own the toggle/reopen behavior and a mousedown-close here
@@ -1022,6 +1032,7 @@ annTa.addEventListener("keydown", (e) => {
     if (content && annDraft) {
       annotations.push({ id: crypto.randomUUID(), content, createdAt: Date.now(), ...annDraft });
       annSave();
+      annPrefillComposer();
     } else if (content && annEditing) {
       const c = annotations.find((a) => a.id === annEditing);
       if (c && !c.sent) { c.content = content; annSave(); }
