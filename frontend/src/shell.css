@@ -4727,24 +4727,11 @@ select.field-control:has(option[value=""]:checked) {
   margin-left: auto;
 }
 
-.mount-card button {
-  font: inherit;
-  padding: 5px 12px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: var(--bg);
-  color: var(--fg);
-  cursor: pointer;
-}
-
-.mount-card button:hover:not(:disabled) {
-  border-color: var(--accent);
-}
-
-.mount-card button:disabled {
-  opacity: 0.55;
-  cursor: default;
-}
+/* No generic `.mount-card button` skin any more. Every button inside a card is
+   now a .btn — Open/Reconnect, Remove, and the setup panels' "Use" — and the
+   old element-scoped rule (0,1,1) silently outranked `.btn` (0,1,0) inside a
+   modal, overriding its height and padding while .btn-primary's colours still
+   won at (0,2,0). Half-skinned buttons were the visible result. */
 
 /* Remove: a LABELLED ghost button, not a bare "✕". Quiet until hovered, where
    it turns destructive-red — the glyph it replaced gave no clue whether it
