@@ -27,6 +27,7 @@ import errno
 import json
 import logging
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -1254,6 +1255,251 @@ def test_the_worker_builds_the_venv_the_server_will_look_for(tmp_path, monkeypat
     assert built["dir"] == envinstall.venv_dir_for(reqs), (
         "the worker built a venv under a different key than the server looks for"
     )
+
+
+# --- the worker's heartbeat (D207) --------------------------------------------
+#
+# `ensure_requirements_venv` runs uv behind `capture_output=True`, so between the
+# `install` record and the terminal one NOTHING was emitted — minutes on a cold
+# cache with imagecodecs/pyproj. The client polled every 500ms and repainted an
+# identical record, which is the whole "stuck for a long time" report. The
+# heartbeat proves liveness; these tests protect the ORDERING it introduces,
+# because a heartbeat landing after the terminal record puts `done: false` back on
+# the wire and the page then polls forever — the same symptom, made permanent.
+
+
+def _worker_module(name="_env_install_worker_hb"):
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        name, os.path.join(os.path.dirname(envinstall.__file__), "_env_install_worker.py")
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _record(progress_dir):
+    with open(os.path.join(progress_dir, "progress.json"), encoding="utf-8") as fh:
+        return json.load(fh)
+
+
+# A heartbeat record, told apart from the FIRST `install` record by its elapsed
+# suffix — "package(s)" means a bare "(" in the detail cannot be the signal.
+_BEAT_RE = re.compile(r"\((?:\d+m)?\d+s\)$")
+
+
+def _is_beat(stage, detail):
+    return stage == "install" and _BEAT_RE.search(detail or "") is not None
+
+
+def test_the_heartbeat_refreshes_ts_and_detail_without_faking_progress(
+    tmp_path, monkeypatch
+):
+    """Liveness, not advancement.
+
+    `pct` stays at 25 for the whole download because there IS no computable
+    percentage — upstream captures uv's output, so nothing here can see per-package
+    progress. Animating the number upward would be inventing data, and the number
+    is what a user trusts most. What changes instead is elapsed time and `ts`: the
+    record proves the install is alive without claiming to know how far along it is.
+    """
+    worker = _worker_module()
+    monkeypatch.setattr(worker, "_HEARTBEAT_S", 0.02)
+    d = str(tmp_path / "prog")
+    beats = threading.Event()
+    seen = []
+
+    real_write = worker._write
+
+    def _watch(progress_dir, stage, pct, detail="", done=False, error=None):
+        out = real_write(progress_dir, stage, pct, detail, done, error)
+        if _is_beat(stage, detail):
+            # `ts` is read back off DISK, because that is what the client polls.
+            seen.append((pct, detail, _record(progress_dir)["ts"]))
+            if len(seen) >= 2:
+                beats.set()
+        return out
+
+    monkeypatch.setattr(worker, "_write", _watch)
+    monkeypatch.setattr(
+        worker, "_build",
+        lambda venvs_path, requirements, python_executable: (
+            (beats.wait(10), "/x/venv/bin/python")[1]
+        ),
+    )
+    worker.install("k", d, str(tmp_path / "venvs"), ["pandas", "pyproj"])
+
+    assert len(seen) >= 2, f"the heartbeat did not repeat: {seen}"
+    assert all(pct == worker._INSTALL_PCT for pct, _, _ in seen), seen
+    stamps = [ts for _, _, ts in seen]
+    assert stamps == sorted(stamps) and stamps[0] < stamps[-1], (
+        f"ts never moved, so nothing on the wire proves the install is alive: {stamps}"
+    )
+    assert all("pandas, pyproj" in detail for _, detail, _ in seen), seen
+    # An elapsed suffix, which is the only thing that changes between beats.
+    assert _BEAT_RE.search(seen[0][1]), seen[0][1]
+    assert _record(d)["done"] is True
+
+
+def test_the_terminal_record_is_written_last_even_with_a_heartbeat_running(
+    tmp_path, monkeypatch
+):
+    """The ordering the whole feature stands on.
+
+    Heartbeat and terminal write both `os.replace` onto `progress.json`, so if a
+    beat lands afterwards the client sees `done: false` again and polls a finished
+    install forever. Pinned on both the success and the failure path, since the
+    error record is written from an exception handler and is the easier one to get
+    wrong.
+    """
+    worker = _worker_module()
+    monkeypatch.setattr(worker, "_HEARTBEAT_S", 0.02)
+    calls = []
+    real_write = worker._write
+
+    def _log(progress_dir, stage, pct, detail="", done=False, error=None):
+        out = real_write(progress_dir, stage, pct, detail, done, error)
+        calls.append((stage, done))
+        return out
+
+    monkeypatch.setattr(worker, "_write", _log)
+
+    beats = threading.Event()
+    monkeypatch.setattr(
+        worker, "_build",
+        lambda venvs_path, requirements, python_executable: (
+            (beats.wait(10), "/x/venv/bin/python")[1]
+        ),
+    )
+
+    def _wait_for_beats(progress_dir, stage, pct, detail="", done=False, error=None):
+        if _is_beat(stage, detail) and len(
+                [c for c in calls if c == ("install", False)]) >= 2:
+            beats.set()
+        return _log(progress_dir, stage, pct, detail, done, error)
+
+    monkeypatch.setattr(worker, "_write", _wait_for_beats)
+    ok_dir = str(tmp_path / "ok")
+    worker.install("k", ok_dir, str(tmp_path / "venvs"), ["pandas"])
+    assert calls[-1] == ("done", True), calls
+    assert _record(ok_dir)["done"] is True
+
+    calls.clear()
+    beats.clear()
+
+    def _boom(venvs_path, requirements, python_executable):
+        beats.wait(10)
+        raise RuntimeError("Failed to install: no wheels for imagecodecs")
+
+    monkeypatch.setattr(worker, "_build", _boom)
+    bad_dir = str(tmp_path / "bad")
+    with pytest.raises(RuntimeError):
+        worker.install("k", bad_dir, str(tmp_path / "venvs"), ["imagecodecs"])
+    assert calls[-1] == ("error", True), calls
+    assert [c for c in calls if c[0] == "error"] == [("error", True)], (
+        "more than one terminal error record"
+    )
+    rec = _record(bad_dir)
+    assert rec["done"] is True
+    assert "no wheels for imagecodecs" in rec["error"]
+
+
+def test_a_late_heartbeat_cannot_undo_the_terminal_record(tmp_path, monkeypatch):
+    """The guarantee, not the hope.
+
+    `join(timeout=…)` can return with a beat still inside its own write (a slow
+    filesystem, a suspended thread), so ordering cannot rest on the join alone.
+    Writes therefore go through one lock and a latch: once a terminal record is
+    written, nothing else may write. Driven by blocking a beat INSIDE `_write`
+    until after the build has finished, which is exactly the interleaving the join
+    cannot prevent.
+    """
+    worker = _worker_module()
+    monkeypatch.setattr(worker, "_HEARTBEAT_S", 0.01)
+    d = str(tmp_path / "prog")
+    held = threading.Event()
+    first_beat = threading.Event()
+    real_write = worker._write
+
+    def _hold_the_first_beat(progress_dir, stage, pct, detail="", done=False, error=None):
+        if _is_beat(stage, detail) and not first_beat.is_set():
+            first_beat.set()
+            held.wait(10)  # the build finishes while this beat is parked here
+        return real_write(progress_dir, stage, pct, detail, done, error)
+
+    monkeypatch.setattr(worker, "_write", _hold_the_first_beat)
+    monkeypatch.setattr(
+        worker, "_build",
+        lambda venvs_path, requirements, python_executable: (
+            (first_beat.wait(10), "/x/venv/bin/python")[1]
+        ),
+    )
+    # Released from a timer: the main thread is inside `install()`, which is where
+    # the contention this test creates has to be resolved.
+    threading.Timer(0.2, held.set).start()
+    worker.install("k", d, str(tmp_path / "venvs"), ["pandas"])
+    assert _record(d)["done"] is True, "a late heartbeat put done:false back on the wire"
+    assert _record(d)["stage"] == "done"
+
+
+def test_the_heartbeat_thread_does_not_outlive_the_install(tmp_path, monkeypatch):
+    """Stopped and joined on BOTH paths, and a daemon so a wedged one cannot keep
+    the worker process alive after the record says done."""
+    worker = _worker_module()
+    monkeypatch.setattr(worker, "_HEARTBEAT_S", 0.01)
+    threads = []
+    real_thread = worker.threading.Thread
+
+    def _capture(*a, **kw):
+        t = real_thread(*a, **kw)
+        threads.append(t)
+        return t
+
+    monkeypatch.setattr(worker.threading, "Thread", _capture)
+    monkeypatch.setattr(
+        worker, "_build",
+        lambda venvs_path, requirements, python_executable: "/x/venv/bin/python",
+    )
+    worker.install("k", str(tmp_path / "a"), str(tmp_path / "venvs"), ["pandas"])
+    assert threads and all(t.daemon for t in threads)
+    assert not any(t.is_alive() for t in threads), "the heartbeat outlived the install"
+
+    def _boom(venvs_path, requirements, python_executable):
+        raise RuntimeError("nope")
+
+    monkeypatch.setattr(worker, "_build", _boom)
+    with pytest.raises(RuntimeError):
+        worker.install("k", str(tmp_path / "b"), str(tmp_path / "venvs"), ["pandas"])
+    assert not any(t.is_alive() for t in threads), (
+        "the heartbeat outlived a FAILED install"
+    )
+
+
+def test_the_workers_temp_file_is_unique_per_writer_not_just_per_process(
+    tmp_path, monkeypatch
+):
+    """Two writers now live in ONE process (heartbeat + main), so a pid-unique temp
+    name is no longer unique: the first `os.replace` consumes the other's file and
+    its own replace fails with FileNotFoundError — a crashed installer whose venv
+    was fine. Thread id, matching `envinstall._write`.
+    """
+    worker = _worker_module()
+    d = tmp_path / "prog"
+    d.mkdir()
+    names = []
+    real_replace = worker.os.replace
+    monkeypatch.setattr(worker.os, "replace",
+                        lambda src, dst: (names.append(src), real_replace(src, dst))[1])
+
+    def _write_from_a_thread():
+        worker._write(str(d), "install", 25, "x")
+
+    t = threading.Thread(target=_write_from_a_thread)
+    t.start()
+    t.join(10)
+    worker._write(str(d), "install", 25, "y")
+    assert len(names) == 2 and names[0] != names[1], names
 
 
 def test_the_worker_reads_an_empty_interpreter_argument_as_none(tmp_path, monkeypatch):
