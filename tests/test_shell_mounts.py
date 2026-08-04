@@ -3095,6 +3095,123 @@ def test_state_disconnected_when_a_slow_listing_then_fails(home, rcd, monkeypatc
     assert mounts_mod.mount_state(c, mounts_mod.mounted_paths()) == "disconnected"
 
 
+# -- the blackhole: a listdir that never answers ---------------------------------
+#
+# D208 publishes "mounted" from the fast checks BEFORE the slow listdir runs, so
+# a slow-but-progressing Drive listing stops reading as disconnected. The hole
+# that leaves is a readdir that never returns AT ALL — laptop suspend, VPN drop,
+# dead DNS — where rcd is alive and listing, ismount is true, and _mount_wedged's
+# lstat is served from the dentry cache. Every fast check passes, only the
+# readdir touches the network, and it blocks forever: no exception is ever
+# raised, so nothing can downgrade the committed "mounted".
+
+
+@pytest.fixture(autouse=True)
+def _reset_listdir_inflight():
+    # Per-mountpoint in-flight state is module-global; a stuck probe from one
+    # test must not decide the next one's verdict.
+    yield
+    mounts_mod.lifecycle._LISTDIR_INFLIGHT.clear()
+
+
+def _blackhole_listdir(monkeypatch, release: threading.Event, calls: list):
+    """os.listdir that blocks until `release` is set, counting its calls."""
+    def blocked(p):
+        calls.append(p)
+        release.wait(10)
+        return []
+
+    monkeypatch.setattr(mounts_mod.os, "listdir", blocked)
+
+
+def test_state_disconnected_once_a_listdir_has_blackholed_past_the_threshold(
+        home, rcd, monkeypatch, caplog):
+    c, mp = _make_mount(home, rcd)
+    monkeypatch.setattr(mounts_mod.sys, "platform", "linux")
+    monkeypatch.setattr(mounts_mod.os.path, "ismount", lambda p: p == mp)
+    monkeypatch.setattr(mounts_mod.lifecycle, "LISTDIR_STUCK_AFTER", 0.3)
+    release, calls = threading.Event(), []
+    _blackhole_listdir(monkeypatch, release, calls)
+    try:
+        live = mounts_mod.mounted_paths()
+        # First poll: outstanding but not yet stuck — this is exactly the
+        # slow-Drive case D208 exists to keep green.
+        assert mounts_mod.mount_state(c, live, timeout=0.05) == "mounted"
+        time.sleep(0.35)
+        # Past the threshold the listdir is not slow, it is gone. The user needs
+        # the red dot and the Reconnect it unlocks.
+        assert mounts_mod.mount_state(c, live, timeout=0.05) == "disconnected"
+        assert "stuck" in caplog.text.lower() and c["name"] in caplog.text
+    finally:
+        release.set()
+
+
+def test_state_starts_only_one_listdir_per_mountpoint(home, rcd, monkeypatch):
+    """A readdir into a blackhole is an UNINTERRUPTIBLE syscall — the probe
+    thread cannot be cancelled and never exits. Without this cap, every poll
+    (~30s per mount) would strand another one for the whole outage."""
+    c, mp = _make_mount(home, rcd)
+    monkeypatch.setattr(mounts_mod.sys, "platform", "linux")
+    monkeypatch.setattr(mounts_mod.os.path, "ismount", lambda p: p == mp)
+    monkeypatch.setattr(mounts_mod.lifecycle, "LISTDIR_STUCK_AFTER", 0.3)
+    release, calls = threading.Event(), []
+    _blackhole_listdir(monkeypatch, release, calls)
+    try:
+        live = mounts_mod.mounted_paths()
+        for _ in range(5):
+            mounts_mod.mount_state(c, live, timeout=0.05)
+            time.sleep(0.1)
+        assert calls == [mp], f"one outstanding listdir, got {len(calls)}"
+    finally:
+        release.set()
+
+
+def test_state_recovers_when_a_stuck_listdir_finally_returns(home, rcd,
+                                                             monkeypatch):
+    # Self-healing: nothing needs to notice the network came back.
+    c, mp = _make_mount(home, rcd)
+    monkeypatch.setattr(mounts_mod.sys, "platform", "linux")
+    monkeypatch.setattr(mounts_mod.os.path, "ismount", lambda p: p == mp)
+    monkeypatch.setattr(mounts_mod.lifecycle, "LISTDIR_STUCK_AFTER", 0.3)
+    release, calls = threading.Event(), []
+    _blackhole_listdir(monkeypatch, release, calls)
+    try:
+        live = mounts_mod.mounted_paths()
+        mounts_mod.mount_state(c, live, timeout=0.05)
+        time.sleep(0.35)
+        assert mounts_mod.mount_state(c, live, timeout=0.05) == "disconnected"
+    finally:
+        release.set()
+    # Let the stranded probe thread run its `finally` and release the claim.
+    end = time.monotonic() + 5.0
+    while mounts_mod.lifecycle._LISTDIR_INFLIGHT:
+        assert time.monotonic() < end, "the claim was never released"
+        time.sleep(0.02)
+    monkeypatch.setattr(mounts_mod.os, "listdir", lambda p: [])
+    assert mounts_mod.mount_state(c, mounts_mod.mounted_paths()) == "mounted"
+
+
+def test_state_disconnected_when_the_probe_raises_a_non_oserror(home, rcd,
+                                                                monkeypatch,
+                                                                caplog):
+    """`out["state"] = "mounted"` is COMMITTED before the risky call, so an
+    escape that isn't an OSError used to leave a false healthy behind and die via
+    threading.excepthook — nothing reaching logger, and get_mounts' own
+    `except Exception` being on a different thread entirely. Real shapes: a
+    ValueError on a name with an embedded NUL, a UnicodeDecodeError on a
+    surrogate-hostile FUSE filename, a MemoryError on a pathological listing."""
+    c, mp = _make_mount(home, rcd)
+    monkeypatch.setattr(mounts_mod.sys, "platform", "linux")
+    monkeypatch.setattr(mounts_mod.os.path, "ismount", lambda p: p == mp)
+
+    def boom(p):
+        raise ValueError("embedded null byte")
+
+    monkeypatch.setattr(mounts_mod.os, "listdir", boom)
+    assert mounts_mod.mount_state(c, mounts_mod.mounted_paths()) == "disconnected"
+    assert "embedded null byte" in caplog.text
+
+
 def test_state_disconnected_when_the_fast_checks_themselves_hang(home, rcd,
                                                                 monkeypatch):
     # The hard wedge: a mount whose backend is gone blocks in the KERNEL, so

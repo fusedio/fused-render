@@ -828,6 +828,59 @@ def reconnect_mount(m: dict) -> str | None:
 
 PROBE_TIMEOUT = 3.0
 
+# How long a health listdir may be outstanding before the mount is called
+# disconnected rather than merely slow (D208).
+#
+# The number has to clear the worst SLOW-BUT-HEALTHY case by a comfortable
+# margin, because everything under it reports "mounted": measured on a real
+# Drive mount, a cold subdirectory listing takes 18.3s and a root listing once
+# VFS_OPT's 30s DirCacheTime expires takes 35.5s. 60s is ~1.7x that. Above it we
+# are no longer describing a slow server — a readdir outstanding for a minute is
+# one that is not coming back, and the user needs the red dot and the Reconnect
+# it unlocks.
+LISTDIR_STUCK_AFTER = 60.0
+
+# mountpoint -> {"since": monotonic, "warned": bool} for a health listdir that
+# has started and not yet returned. Module-global because it must outlive the
+# mount_state call that started it — that is the entire point (see _claim_listdir).
+_LISTDIR_LOCK = threading.Lock()
+_LISTDIR_INFLIGHT: dict[str, dict] = {}
+
+
+def _claim_listdir(mp: str) -> dict | None:
+    """Claim the right to run the health listdir for `mp`.
+
+    None when the caller may run it (the claim is now held); otherwise the
+    record of the listdir ALREADY outstanding, carrying when it started.
+
+    Two jobs, both load-bearing, which is why they share one lock:
+
+    1. It caps concurrency at one outstanding listdir per mountpoint. A readdir
+       into a blackhole blocks in an UNINTERRUPTIBLE syscall — `t.join(timeout)`
+       abandons the probe thread but cannot cancel it, so the thread never
+       exits. Without the cap, every poll (~30s per mount) would strand another
+       one for the whole outage: unbounded accumulation, nothing logged.
+
+    2. It records SINCE WHEN, which is what lets a join timeout distinguish
+       "slow" from "never coming back". Without it the two are indistinguishable
+       from outside, and D208's fix — publish "mounted" before the listdir —
+       would report a green dot for the entire duration of a dead backend.
+    """
+    with _LISTDIR_LOCK:
+        existing = _LISTDIR_INFLIGHT.get(mp)
+        if existing is not None:
+            return existing
+        _LISTDIR_INFLIGHT[mp] = {"since": time.monotonic(), "warned": False}
+        return None
+
+
+def _release_listdir(mp: str) -> None:
+    """Drop the claim once the listdir returns OR raises. Self-healing: a mount
+    that was reported stuck goes back to being probed normally on the next poll,
+    with nothing needing to notice the network came back."""
+    with _LISTDIR_LOCK:
+        _LISTDIR_INFLIGHT.pop(mp, None)
+
 # One loopback rc call against a daemon that already has the answer in memory.
 # Kept short because it is paid per healthy mount inside GET /api/mounts' join
 # budget — an unresponsive daemon must cost the listing a moment, not a probe's
@@ -995,15 +1048,58 @@ def mount_state(m: dict, rcd_mounts: set, timeout: float = PROBE_TIMEOUT,
                 # one is this — the checks above already classify every genuine
                 # failure mode (wedged, stale, unmounted, not-served) and are
                 # cheap, so the listdir is only ever allowed to DOWNGRADE their
-                # verdict, via the except below. Slow stays "mounted"; broken
-                # still becomes "disconnected".
+                # verdict. Slow stays "mounted"; broken becomes "disconnected".
                 out["state"] = "mounted"
                 # POSIX only: on win32 this readdir can fail for the lifetime of
                 # one process while the mount is healthy (INCIDENT 2026-07-30).
-                if probe_io and sys.platform != "win32":
+                if not (probe_io and sys.platform != "win32"):
+                    return
+                # A listdir can downgrade the verdict two ways, and BOTH are
+                # needed. Raising is the easy one (the excepts below). The other
+                # is never returning at all: with rcd alive and listing, ismount
+                # true, and _mount_wedged's lstat served from the dentry cache,
+                # every fast check passes while the only call that touches the
+                # network blocks forever (laptop suspend, VPN drop, dead DNS).
+                # No exception is ever raised there, so without this the
+                # committed "mounted" would stand for the whole outage and
+                # broken_mount_error's Reconnect advice would never fire.
+                inflight = _claim_listdir(mp)
+                if inflight is not None:
+                    # Someone else's listdir is still out. How long it has been
+                    # out is the whole signal: under the threshold it is the
+                    # slow-Drive case D208 exists to keep green; over it, the
+                    # readdir is not slow, it is gone.
+                    waiting = time.monotonic() - inflight["since"]
+                    if waiting >= LISTDIR_STUCK_AFTER:
+                        out["state"] = "disconnected"
+                        if not inflight["warned"]:
+                            # Once per stuck episode, not once per poll — the
+                            # claim (and with it this flag) is dropped when the
+                            # listdir finally returns, so a later episode warns
+                            # again.
+                            inflight["warned"] = True
+                            logger.warning(
+                                "mount %r at %s: the health listdir has been stuck "
+                                "for %.0fs — reporting disconnected", m["name"],
+                                mp, waiting)
+                    return  # never a second listdir into the same blackhole
+                try:
                     os.listdir(mp)  # the actual I/O health check
+                finally:
+                    _release_listdir(mp)
         except OSError as e:
             logger.warning("mount %r probe failed at %s: %s", m["name"], mp, e)
+            out["state"] = "disconnected"
+        except Exception:
+            # NOT redundant with the OSError branch. Because "mounted" is
+            # committed BEFORE the risky call (that is D208's whole mechanism),
+            # any other escape would leave a false healthy behind and then die
+            # via threading.excepthook — never reaching logger, and never
+            # reaching get_mounts' own `except Exception`, which is on a
+            # different thread. Real shapes: ValueError on a name with an
+            # embedded NUL, UnicodeDecodeError on a surrogate-hostile FUSE
+            # filename, MemoryError on a pathological listing.
+            logger.exception("mount %r probe raised at %s", m["name"], mp)
             out["state"] = "disconnected"
 
     t = threading.Thread(target=probe, daemon=True, name=f"mount-probe-{m['name']}")
@@ -1012,7 +1108,8 @@ def mount_state(m: dict, rcd_mounts: set, timeout: float = PROBE_TIMEOUT,
     # No answer in time means the FAST checks themselves blocked — the hard
     # wedge, where even ismount/stat hang in the kernel. A slow-but-healthy
     # listdir does not land here: probe() has already written "mounted" by the
-    # time it starts (see there).
+    # time it starts, and a listdir that stays out past LISTDIR_STUCK_AFTER
+    # downgrades that on the NEXT poll (see there).
     return out.get("state", "disconnected")
 
 
