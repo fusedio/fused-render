@@ -12,6 +12,10 @@ import { fileURLToPath } from "node:url";
 
 const SRC = fileURLToPath(new URL("../src", import.meta.url));
 
+// All layer/spec comparisons use forward slashes; path.relative/normalize
+// emit backslashes on Windows, so normalize every derived path through this.
+const posix = (p) => p.split(path.sep).join("/");
+
 const files = [];
 (function walk(d) {
   for (const e of fs.readdirSync(d, { withFileTypes: true })) {
@@ -22,10 +26,12 @@ const files = [];
 })(SRC);
 
 // Layer of a src-relative path: "platform", "shell", "apps/<name>", or null (root).
+// An app's package root ("apps/learn", from a bare "@apps/learn" import) is
+// part of that app's layer, hence the optional trailing segment.
 function layerOf(rel) {
-  if (rel.startsWith("platform/")) return "platform";
-  if (rel.startsWith("shell/")) return "shell";
-  const m = rel.match(/^apps\/([^/]+)\//);
+  if (rel === "platform" || rel.startsWith("platform/")) return "platform";
+  if (rel === "shell" || rel.startsWith("shell/")) return "shell";
+  const m = rel.match(/^apps\/([^/]+)(\/|$)/);
   if (m) return "apps/" + m[1];
   return null;
 }
@@ -36,13 +42,13 @@ function resolveSpec(spec, fileRel) {
   if (spec.startsWith("@shell/")) return "shell/" + spec.slice("@shell/".length);
   if (spec.startsWith("@apps/")) return "apps/" + spec.slice("@apps/".length);
   if (spec.startsWith("@assets/")) return "assets/" + spec.slice("@assets/".length);
-  if (spec.startsWith(".")) return path.normalize(path.join(path.dirname(fileRel), spec));
+  if (spec.startsWith(".")) return posix(path.normalize(path.join(path.dirname(fileRel), spec)));
   return null; // bare import: node_modules
 }
 
 const violations = [];
 for (const file of files) {
-  const fileRel = path.relative(SRC, file);
+  const fileRel = posix(path.relative(SRC, file));
   const from = layerOf(fileRel);
   if (from === null || from === "shell") continue; // root + shell may import anything
   const text = fs.readFileSync(file, "utf8");
