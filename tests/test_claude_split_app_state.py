@@ -18,13 +18,18 @@ JSON-RPC (the surface the CLI talks to), and the page's own JS functions are
 extracted and run under node — the same treatment the approval card's
 summariser gets in test_claude_permission_bridge.py.
 
-The frame chain is STUBBED, and it is stubbed because a real browser found the
-defect these tests now pin: `/embed/<app>` is fused-render's own shell and the
-app is a nested iframe one level deeper, so the first build described the
-viewer's chrome and captured none of the app's logging. The stub pins the
-descent, the instrumentation target and the re-wrap-on-reload rule. What it
-still cannot cover is the live document itself — real console timing, real
-iframe navigation, and what a real page outlines to all need a browser.
+There is no frame descent to test any more, and that absence is itself asserted
+below. The first build of this feature framed `/embed/<app>` — fused-render's
+React shell, with the app nested one iframe deeper — and had to walk down to
+find the app's window; #372 moved the pane to `/render?path=<entry>`, the raw
+rendered document, so the frame's own `contentDocument` IS the app's. The walker
+is gone, and with it the class of bug where the viewer's chrome got described as
+the user's app.
+
+What node still cannot cover is the live document: real console timing (the
+app's first inline script runs before the frame's `load` and its logging is
+genuinely missed), real iframe navigation, and what a real page outlines. Those
+need a browser.
 """
 import importlib.util
 import json
@@ -402,8 +407,9 @@ def test_the_page_and_the_agent_agree_on_the_block_delimiters(agent, html):
     """D146: the page writes the block and agent.py strips it, so the marker is
     a rule in two places and needs a test rather than a comment. A drift here
     is invisible — the chat simply starts showing JSON to the user."""
-    assert "<%s>" % agent.APP_STATE_TAG in html
-    assert "</%s>" % agent.APP_STATE_TAG in html
+    # The page composes the tag from one const rather than spelling the literal
+    # twice, so it is that const the two sides have to agree on.
+    assert 'const APP_STATE_TAG = "%s";' % agent.APP_STATE_TAG in html
     assert agent._strip_app_state(
         "<%s>\n{}\n</%s>\n\nhello" % (agent.APP_STATE_TAG, agent.APP_STATE_TAG)
     ) == "hello"
@@ -417,10 +423,9 @@ def test_the_page_and_the_agent_agree_on_the_app_state_action(agent, html):
     assert agent.main(action="app_state", run_id="", request_id="x",
                       state="{}").get("error")
 
-
 # ------------------------------------------------- the page's own JS, in node
 
-def _node(fn_names, call, html):
+def _node(fn_names, call, html, prelude=""):
     """Run named top-level functions/consts out of template.html under node.
 
     Extracted and executed rather than asserted about, like the approval card's
@@ -443,331 +448,511 @@ def _node(fn_names, call, html):
             if line.split("//")[0].rstrip().endswith(";"):
                 break
         chunks.append("\n".join(taken))
-    out = subprocess.run(["node", "-e", "\n".join(chunks) + "\n" + call],
-                         capture_output=True, text=True)
+    script = prelude + "\n" + "\n".join(chunks) + "\n" + call
+    out = subprocess.run(["node", "-e", script], capture_output=True, text=True)
     assert out.returncode == 0, out.stderr
     return json.loads(out.stdout)
 
 
+# A DOM small enough to write by hand and complete enough for the two functions
+# that matter here: annPathOf walks up (parentElement / previousElementSibling /
+# tagName) and annResolve walks down (body / children / getElementById). jsdom is
+# not a dependency of this repo, and stubbing exactly the surface under test is
+# what makes the round trip below a real round trip rather than a mock agreeing
+# with itself.
+_DOM = """
+function el(tag, opts, kids) {
+  opts = opts || {};
+  const e = {tagName: tag.toUpperCase(), nodeType: 1, id: opts.id || "",
+             className: opts.cls || "", children: [], childNodes: [],
+             parentElement: null, previousElementSibling: null,
+             textContent: opts.text || ""};
+  if (opts.text) e.childNodes.push({nodeType: 3, nodeValue: opts.text});
+  (kids || []).forEach((k) => {
+    k.parentElement = e;
+    k.previousElementSibling = e.children[e.children.length - 1] || null;
+    e.children.push(k);
+    e.childNodes.push(k);
+  });
+  return e;
+}
+function docOf(body) {
+  return {body: body, title: "", getElementById(id) {
+    let hit = null;
+    (function walk(n) {
+      if (n.id === id && !hit) hit = n;
+      (n.children || []).forEach(walk);
+    })(body);
+    return hit;
+  }};
+}
+// Every element in document order, body excluded (annPathOf is relative to it).
+function flatten(body) {
+  const out = [];
+  (function walk(n) { (n.children || []).forEach((k) => { out.push(k); walk(k); }); })(body);
+  return out;
+}
+// The outline's nodes in the same order, its root excluded.
+function flatOutline(root) {
+  const out = [];
+  (function walk(n) { (n.children || []).forEach((k) => { out.push(k); walk(k); }); })(root);
+  return out;
+}
+const BODY = el("body", {}, [
+  el("header", {id: "top"}, [el("h1", {text: "Ookla speeds"})]),
+  el("main", {cls: "wrap"}, [
+    el("div", {cls: "row"}, [
+      el("button", {text: "Deploy"}),
+      el("button", {id: "reset", text: "Reset"}),
+    ]),
+    el("div", {cls: "row"}, [el("span", {text: "42 Mbps"})]),
+  ]),
+  el("script", {text: "fused.runPython('./data.py')"}),
+]);
+const DOC = docOf(BODY);
+"""
+
+_OUTLINE_FNS = ["const APP_STATE_MAX_TEXT", "const APP_STATE_MAX_NODES",
+                "const APP_STATE_MAX_DEPTH", "const APP_STATE_MAX_NODE_TEXT",
+                "const QUIET_TAGS", "function clipText(", "function annPathOf(",
+                "function annResolve(", "function outlineNode("]
+
+# A window whose document can be swapped, which is what a live-reload looks like
+# from out here. `calls` records what the app's OWN console received, so the
+# call-through can be checked rather than assumed.
+_FRAME = """
+function fakeWin(doc, href) {
+  const w = {calls: [], listeners: [],
+             location: {href: href || "http://x/render?path=/p/index.html",
+                        pathname: "/render", search: "?path=/p/index.html&zoom=3"}};
+  w.document = doc;
+  w.console = {error(...a) { w.calls.push("error:" + a.join(" ")); },
+               warn(...a) { w.calls.push("warn:" + a.join(" ")); }};
+  w.addEventListener = (name) => w.listeners.push(name);
+  return w;
+}
+"""
+
+_STATE_FNS = ["const APP_STATE_MAX_LOGS", "const APP_STATE_MAX_TEXT",
+              "const APP_STATE_MAX_NODES", "const APP_STATE_MAX_DEPTH",
+              "const APP_STATE_MAX_NODE_TEXT", "const APP_STATE_TAG",
+              "const appLogs", "let appEntry", "let appLoads",
+              "function clipText(", "function pushAppLog(", "function fmtLogArg(",
+              "function appWindow(", "function watchWindow(", "function watchApp(",
+              "function searchParamsOf(", "const CHAT_PARAMS",
+              "function appParamsOf(", "const QUIET_TAGS", "function annPathOf(",
+              "function outlineNode(", "function appStateSnapshot("]
+
+
+# ------------------------------------------------------------ the pushed block
+
 def test_the_state_block_is_omitted_when_there_is_nothing_to_say(html):
     """An empty snapshot must not push a block: a turn that says nothing about
-    the app should look exactly like today's turn."""
-    empty = _node(["function appStateBlock("],
+    the app should look exactly like a turn from before this feature."""
+    empty = _node(["const APP_STATE_TAG", "function appStateBlock("],
                   "console.log(JSON.stringify(appStateBlock(null)));", html)
     assert empty == ""
 
 
 def test_the_state_block_labels_itself_and_carries_the_json(html):
-    block = _node(["function appStateBlock("],
+    block = _node(["const APP_STATE_TAG", "function appStateBlock("],
                   "console.log(JSON.stringify(appStateBlock("
                   '{"title": "Demo", "console": [{"level": "error", "text": "boom"}]}'
                   ")));", html)
     assert block.startswith("<live-app-state>")
-    assert "</live-app-state>" in block
-    # One line telling the model what it is, then the payload.
+    assert block.endswith("</live-app-state>")
+    # One paragraph telling the model what it is, then the payload.
     assert "looking at" in block.split("\n")[1]
     assert "boom" in block
-    # The user's own text is not inside the block.
-    assert block.rstrip().endswith("</live-app-state>")
 
 
 def test_the_console_buffer_is_capped_and_each_entry_truncated(html):
-    """Unbounded, this is a log of every error a live-reloading page ever threw
-    — pushed into the model's context on every turn."""
-    got = _node(["const APP_STATE_MAX_LOGS", "const APP_STATE_MAX_TEXT",
-                 "const appLogs", "function clipText(", "function pushAppLog("],
-                "for (let i = 0; i < 200; i++) pushAppLog('error', 'x'.repeat(5000));"
-                "console.log(JSON.stringify("
-                "{n: appLogs.length, len: appLogs[0].text.length}));", html)
-    assert got["n"] == 50
-    assert got["len"] <= 301
+    """A live-reloading page logs forever, and one console line can be a whole
+    stack trace. Neither may grow the prompt without bound."""
+    logs = _node(["const APP_STATE_MAX_LOGS", "const APP_STATE_MAX_TEXT",
+                  "const appLogs", "function clipText(", "function pushAppLog("],
+                 "for (let i = 0; i < 400; i++) pushAppLog('error', 'x'.repeat(900));"
+                 "console.log(JSON.stringify(appLogs));", html)
+    assert len(logs) == 50
+    assert len(logs[0]["text"]) == 301 and logs[0]["text"].endswith("…")
 
 
 def test_the_buffer_keeps_the_newest_entries(html):
-    got = _node(["const APP_STATE_MAX_LOGS", "const APP_STATE_MAX_TEXT",
-                 "const appLogs", "function clipText(", "function pushAppLog("],
-                "for (let i = 0; i < 60; i++) pushAppLog('warn', 'm' + i);"
-                "console.log(JSON.stringify("
-                "[appLogs[0].text, appLogs[appLogs.length - 1].text]));", html)
-    assert got == ["m10", "m59"]
+    """Which end is dropped matters: the errors that appeared AFTER Claude's edit
+    are the ones worth reporting."""
+    logs = _node(["const APP_STATE_MAX_LOGS", "const APP_STATE_MAX_TEXT",
+                  "const appLogs", "function clipText(", "function pushAppLog("],
+                 "for (let i = 0; i < 60; i++) pushAppLog('warn', 'line ' + i);"
+                 "console.log(JSON.stringify(appLogs.map((e) => e.text)));", html)
+    assert logs[0] == "line 10" and logs[-1] == "line 59"
+
+
+def test_console_log_is_not_captured_only_errors_and_warnings(html):
+    """50 ring slots spent on an app's ordinary chatter would push out the
+    errors they exist for."""
+    out = _node(["const APP_STATE_MAX_LOGS", "const APP_STATE_MAX_TEXT",
+                 "const appLogs", "function clipText(", "function pushAppLog(",
+                 "function fmtLogArg(", "function watchWindow("],
+                _DOM + _FRAME + "const W = fakeWin(docOf(BODY));"
+                + "const originalLog = (msg) => W.calls.push('log:' + msg);"
+                + "W.console.log = originalLog;"
+                + "watchWindow(W);"
+                + "W.console.log('just chatter');"
+                + "W.console.error('a real problem');"
+                + "console.log(JSON.stringify({untouched: W.console.log === originalLog,"
+                  " buffered: appLogs.map((e) => e.text)}));", html)
+    assert out["untouched"] is True, "console.log must be left alone"
+    assert out["buffered"] == ["a real problem"]
 
 
 def test_the_dom_outline_is_bounded_in_depth_and_node_count(html):
-    """A structural outline, not `outerHTML`: a real app's body is tens of KB
-    and would dominate every turn. Driven here with a stub node object — this
-    checks the BUDGET, which is the part that can run away; it says nothing
-    about what a real document outlines to (that needs a browser)."""
-    stub = """
-    function node(tag, kids) {
-      return {tagName: tag, id: "", className: "", children: kids || [],
-              childNodes: [], textContent: "t"};
-    }
-    let deep = node("DIV");
-    for (let i = 0; i < 40; i++) deep = node("DIV", [deep]);
-    const wide = node("BODY", Array.from({length: 500}, () => node("SPAN")));
-    """
-    got = _node(["const APP_STATE_MAX_NODES", "const APP_STATE_MAX_DEPTH",
-                 "const APP_STATE_MAX_NODE_TEXT", "const QUIET_TAGS",
-                 "function clipText(", "function outlineNode("],
-                stub + "console.log(JSON.stringify({"
-                "deep: JSON.stringify(outlineNode(deep, 0)).length,"
-                "wide: JSON.stringify(outlineNode(wide, 0)).length,"
-                "wideKids: outlineNode(wide, 0).children.length}));", html)
-    assert got["wideKids"] <= 60
-    assert got["deep"] < 2000 and got["wide"] < 8000
+    """outerHTML for a real app is tens of KB that would dominate every turn."""
+    out = _node(_OUTLINE_FNS,
+                _DOM
+                + "let deep = el('span', {text: 'bottom'});"
+                + "for (let i = 0; i < 8; i++) deep = el('div', {}, [deep]);"
+                + "const wide = el('ul', {}, Array.from({length: 200},"
+                  " (_, i) => el('li', {text: 'item ' + i})));"
+                + "const body = el('body', {}, [deep, wide]);"
+                + "const doc = docOf(body);"
+                + "const tree = outlineNode(body, 0, null, doc);"
+                + "let depth = 0, count = 0;"
+                + "(function walk(n, d) { depth = Math.max(depth, d); count++;"
+                  " (n.children || []).forEach((k) => walk(k, d + 1)); })(tree, 0);"
+                + "console.log(JSON.stringify({depth, count}));", html)
+    assert out["depth"] <= 4, out
+    # the shared budget caps the WHOLE walk, not each level
+    assert out["count"] <= 61, out
 
 
 def test_the_outline_notes_where_it_truncated(html):
-    """Truncation the model cannot see is a lie about the page: it would report
-    a missing element as absent when it was only elided."""
-    stub = """
-    function node(tag, kids) {
-      return {tagName: tag, id: "", className: "", children: kids || [],
-              childNodes: [], textContent: ""};
-    }
-    const wide = node("BODY", Array.from({length: 500}, () => node("SPAN")));
-    """
-    got = _node(["const APP_STATE_MAX_NODES", "const APP_STATE_MAX_DEPTH",
-                 "const APP_STATE_MAX_NODE_TEXT", "const QUIET_TAGS",
-                 "function clipText(", "function outlineNode("],
-                stub + "console.log(JSON.stringify(outlineNode(wide, 0)));", html)
-    assert got.get("truncated")
-
-
-# The frame chain the pane really has, as a stub: #leftframe holds fused-render's
-# own embed shell (no runtime), and the APP is a nested iframe one level deeper
-# with `fused` injected. Targeting the outer document described the chrome and
-# captured none of the app's logging — found in a browser, pinned here.
-_FRAME_CHAIN = """
-function node(tag, text, kids) {
-  return {tagName: tag, id: "", className: "", children: kids || [],
-          childNodes: [{nodeType: 3, nodeValue: text || ""}], textContent: text || ""};
-}
-function win(spec) {
-  const w = {console: {error(){}, warn(){}}, addEventListener(){}, calls: [],
-             location: {href: spec.href || "http://x/", search: spec.search || "",
-                        pathname: spec.pathname || "/"}};
-  w.document = {title: spec.title || "", __fusedAppWatched: false,
-                body: spec.body || node("BODY"),
-                querySelectorAll: () => (spec.frames || []).map((f) => ({contentWindow: f}))};
-  if (spec.runtime) w.fused = {params: {getAll: () => ({})}};
-  w.console.error = function (...a) { w.calls.push(a.join(" ")); };
-  w.console.warn = function (...a) { w.calls.push(a.join(" ")); };
-  return w;
-}
-const app = win({runtime: true, title: "", href: "http://x/render?path=/p/index.html"});
-const shell = win({title: "index.html — Fused Render", frames: [app]});
-"""
-
-_FRAME_FNS = ["function reachableFrames(", "function hasRuntime(",
-              "function appFrameOf(", "const APP_FRAME_MAX_DEPTH",
-              "function resolveAppWindow("]
-
-
-def test_the_app_is_the_innermost_frame_not_the_pane_itself(html):
-    """/embed/<app> is the viewer's shell; the app is one iframe deeper. Reading
-    the outer document reported `title: "index.html — Fused Render"` and a DOM
-    outline of fused-render's own chrome."""
-    got = _node(_FRAME_FNS, _FRAME_CHAIN
-                + "const r = resolveAppWindow(shell);"
-                "console.log(JSON.stringify({resolved: r.resolved,"
-                " isApp: r.win === app, title: r.win.document.title}));", html)
-    assert got == {"resolved": True, "isApp": True, "title": ""}
-
-
-def test_the_descent_stops_at_the_app_even_when_the_app_has_frames_of_its_own(html):
-    """`fused` (the injected runtime) is the tell, so an app that embeds an
-    iframe is described as itself rather than as whatever it embeds."""
-    got = _node(_FRAME_FNS, _FRAME_CHAIN
-                + "const widget = win({runtime: true, title: 'widget'});"
-                "const inner = win({runtime: true, title: 'the app',"
-                " frames: [widget]});"
-                "const outer = win({title: 'shell', frames: [inner]});"
-                "console.log(JSON.stringify(resolveAppWindow(outer)"
-                ".win.document.title));", html)
-    assert got == "the app"
-
-
-def test_an_unreachable_app_frame_is_reported_not_papered_over(html):
-    """A cross-origin child (an exported page in the pane) throws on `.document`.
-    The descent must degrade to "I could not reach the app" rather than to a
-    confident description of the chrome."""
-    got = _node(_FRAME_FNS, _FRAME_CHAIN + """
-    const blocked = {get document() { throw new Error("cross-origin"); }};
-    const outer = win({title: "shell", frames: [blocked]});
-    console.log(JSON.stringify(resolveAppWindow(outer).resolved));
-    """, html)
-    assert got is False
-
-
-def test_the_descent_refuses_to_guess_between_several_plain_frames(html):
-    """Two candidate frames and no runtime in either: picking one would risk
-    describing a widget as the whole app."""
-    got = _node(_FRAME_FNS, _FRAME_CHAIN
-                + "const outer = win({title: 'shell', frames:"
-                " [win({title: 'a'}), win({title: 'b'})]});"
-                "console.log(JSON.stringify(resolveAppWindow(outer)"
-                ".win.document.title));", html)
-    assert got == "shell"
-
-
-def test_instrumentation_targets_the_apps_window_not_the_shells(html):
-    """The other half of the same defect: the console wrapper went onto the
-    shell, so nothing the app logged was ever seen. Asserted by logging into
-    BOTH windows and checking which one the buffer heard."""
-    got = _node(["const APP_STATE_MAX_LOGS", "const APP_STATE_MAX_TEXT",
-                 "const appLogs", "function clipText(", "function pushAppLog(",
-                 "function fmtLogArg(", "function watchWindow("],
-                _FRAME_CHAIN + """
-                watchWindow(app);
-                app.console.warn("from the app");
-                shell.console.warn("from the chrome");
-                console.log(JSON.stringify(appLogs.map((e) => e.text)));
-                """, html)
-    assert got == ["from the app"]
-
-
-def test_the_wrapper_calls_through_so_the_apps_own_logging_still_happens(html):
-    got = _node(["const APP_STATE_MAX_LOGS", "const APP_STATE_MAX_TEXT",
-                 "const appLogs", "function clipText(", "function pushAppLog(",
-                 "function fmtLogArg(", "function watchWindow("],
-                _FRAME_CHAIN + """
-                watchWindow(app);
-                app.console.error("boom");
-                console.log(JSON.stringify(app.calls));
-                """, html)
-    assert got == ["boom"]
-
-
-def test_a_document_is_only_wrapped_once_but_a_new_one_is_wrapped_again(html):
-    """The re-wrap IS the reload detector: a same-origin navigation keeps the
-    window and replaces its document, so the marker lives on the document."""
-    got = _node(["const APP_STATE_MAX_LOGS", "const APP_STATE_MAX_TEXT",
-                 "const appLogs", "function clipText(", "function pushAppLog(",
-                 "function fmtLogArg(", "function watchWindow("],
-                _FRAME_CHAIN + """
-                const first = watchWindow(app);
-                const again = watchWindow(app);
-                app.document = {__fusedAppWatched: false, querySelectorAll: () => []};
-                const afterReload = watchWindow(app);
-                console.log(JSON.stringify([first, again, afterReload]));
-                """, html)
-    assert got == [True, False, True]
-
-
-_SNAPSHOT_FNS = ["const APP_STATE_MAX_LOGS", "const APP_STATE_MAX_TEXT",
-                 "const APP_STATE_MAX_NODES", "const APP_STATE_MAX_DEPTH",
-                 "const APP_STATE_MAX_NODE_TEXT", "const appLogs",
-                 "let appEntry", "function clipText(",
-                 "function searchParamsOf(", "const CHAT_PARAMS",
-                 "function appParamsOf(", "const QUIET_TAGS",
-                 "function outlineNode("] + _FRAME_FNS + [
-                 "function appWindow(", "function appStateSnapshot("]
-
-
-def test_the_snapshot_describes_the_app_it_resolved(html):
-    """The whole snapshot over the real frame shape: shell outside, app inside."""
-    got = _node(_SNAPSHOT_FNS, _FRAME_CHAIN + """
-    const app2 = win({runtime: true, title: "Widget dashboard",
-                      pathname: "/render", search: "?path=/p/index.html&zoom=4",
-                      body: node("BODY", "", [node("H1", "Widget dashboard")])});
-    const shell2 = win({title: "index.html — Fused Render", frames: [app2]});
-    const leftframe = {contentWindow: shell2};
-    appEntry = "/p/index.html";
-    console.log(JSON.stringify(appStateSnapshot()));
-    """, html)
-    assert got["title"] == "Widget dashboard"          # not the viewer's title
-    assert got["dom"]["children"][0]["text"] == "Widget dashboard"
-    assert got["url"] == "/render?path=/p/index.html&zoom=4"
-    assert "unreadable" not in got
-
-
-def test_an_unresolved_frame_reports_nothing_rather_than_the_chrome(html):
-    """The failure mode that shipped: describing fused-render's own UI as the
-    user's app. With no app frame to reach, the snapshot must say so and
-    describe NO title and NO DOM — a confident wrong answer is the worst one."""
-    got = _node(_SNAPSHOT_FNS, _FRAME_CHAIN + """
-    const shell2 = win({title: "index.html — Fused Render",
-                        body: node("BODY", "", [node("DIV", "breadcrumb")]),
-                        pathname: "/embed/p/index.html", search: "?zoom=9"});
-    const leftframe = {contentWindow: shell2};
-    console.log(JSON.stringify(appStateSnapshot()));
-    """, html)
-    assert "could not be reached" in got["unreadable"]
-    assert "title" not in got and "dom" not in got
-    # ...and NO url or params either. These were the leak that survived the first
-    # fix: `url` was gated only on having *a* window, so the shell's own address
-    # and query string were reported as the app's, beside a note saying the app
-    # could not be read. A smaller field carrying the same lie is still the lie.
-    assert "url" not in got, got
-    assert "params" not in got, got
-
-
-def test_the_watcher_wires_the_descent_to_the_instrumentation(html):
-    """End to end over the stub chain: the thing the timer calls must resolve the
-    app and wrap THAT — and a replaced document must be re-wrapped and counted,
-    since a live-reload navigates the inner frame and fires no outer `load`."""
-    got = _node(["const APP_STATE_MAX_LOGS", "const APP_STATE_MAX_TEXT",
-                 "const appLogs", "let appLoads", "function clipText(",
-                 "function pushAppLog(", "function fmtLogArg("] + _FRAME_FNS
-                + ["function appWindow(", "function watchWindow(",
-                   "function watchApp("],
-                _FRAME_CHAIN + """
-                const leftframe = {contentWindow: shell};
-                watchApp(); watchApp();
-                app.console.warn("before the edit");
-                app.document = {__fusedAppWatched: false, querySelectorAll: () => []};
-                watchApp();
-                app.console.warn("after the edit");
-                console.log(JSON.stringify({loads: appLoads,
-                  log: appLogs.map((e) => e.level + ":" + e.text)}));
-                """, html)
-    # Two documents seen, the reload marked between them, and the app's own
-    # logging captured on both sides of it.
-    assert got["loads"] == 2
-    assert got["log"][0] == "warn:before the edit"
-    assert got["log"][1].startswith("reload:")
-    assert got["log"][2] == "warn:after the edit"
-
-
-def test_the_chats_own_params_are_not_reported_as_the_apps(html):
-    """The pane sets no param boundary, so the child's runtime reads THIS page's
-    URL as its ancestor and its getAll() comes back carrying our bookkeeping.
-    Reporting `session_id` and `split` as the app's params would have the model
-    reasoning about state that belongs to the chat around it."""
-    got = _node(["function clipText(", "const CHAT_PARAMS", "function appParamsOf("],
-                "console.log(JSON.stringify(appParamsOf({_file: '/p', _mode: "
-                "'_render', session_id: 'abc', run: 'r', split: '70', model: "
-                "'sonnet', effort: 'high', permission: 'auto', zoom: '4'})));",
-                html)
-    assert got == {"zoom": "4"}
-
-
-def test_child_params_fall_back_to_parsing_its_query_string(html):
-    """The child normally answers with its own `fused.params.getAll()`; a child
-    that has not booted its runtime yet still has a URL."""
-    got = _node(["function searchParamsOf("],
-                "console.log(JSON.stringify(searchParamsOf('?a=1&b=two')));", html)
-    assert got == {"a": "1", "b": "two"}
+    """Truncation the agent cannot see is a lie about the page: it would read an
+    elided element as an absent one."""
+    out = _node(_OUTLINE_FNS,
+                _DOM
+                + "const body = el('body', {}, Array.from({length: 200},"
+                  " (_, i) => el('p', {text: 'p' + i})));"
+                + "const tree = outlineNode(body, 0, null, docOf(body));"
+                + "console.log(JSON.stringify(tree.truncated || ''));", html)
+    assert "sibling(s) not shown" in out
 
 
 def test_the_outline_lists_a_script_without_quoting_its_source(html):
-    """Measured against a real app: the outline came back carrying the first 120
-    chars of its own inline script. A structural outline is not a place for code
-    fragments — the agent can read the file."""
-    stub = """
-    function node(tag, text, kids) {
-      return {tagName: tag, id: "", className: "", children: kids || [],
-              childNodes: [{nodeType: 3, nodeValue: text}], textContent: text};
-    }
-    const body = node("BODY", "", [node("P", "hello"),
-                                   node("SCRIPT", "console.warn('secret sauce')")]);
-    """
-    got = _node(["const APP_STATE_MAX_NODES", "const APP_STATE_MAX_DEPTH",
-                 "const APP_STATE_MAX_NODE_TEXT", "const QUIET_TAGS",
-                 "function clipText(", "function outlineNode("],
-                stub + "console.log(JSON.stringify(outlineNode(body, 0)));", html)
-    tags = [k["tag"] for k in got["children"]]
-    assert tags == ["p", "script"]           # still listed
-    assert got["children"][0]["text"] == "hello"
-    assert "text" not in got["children"][1]  # never quoted
+    """A clipped 120 chars of an app's own JS in a structural outline is noise at
+    best; the agent can read the file properly. The element is still listed —
+    "there is a script here" is structure."""
+    out = _node(_OUTLINE_FNS,
+                _DOM + "const tree = outlineNode(BODY, 0, null, DOC);"
+                + "console.log(JSON.stringify(flatOutline(tree)"
+                  ".filter((n) => n.tag === 'script')));", html)
+    assert len(out) == 1 and out[0]["tag"] == "script"
+    assert "text" not in out[0], out
+
+
+# ------------------------------------- ONE identifier space, shared with #372
+
+def test_an_outline_path_resolves_back_to_the_element_it_describes(html):
+    """The property that makes the shared scheme worth anything: every path the
+    outline emits is one `annResolve` hands back the very same element for. If it
+    were a second, subtly different path builder, the agent could read a node in
+    the outline and be unable to act on the pin the user put on it."""
+    out = _node(_OUTLINE_FNS,
+                _DOM + "const tree = outlineNode(BODY, 0, null, DOC);"
+                + "const els = flatten(BODY), nodes = flatOutline(tree);"
+                + "const rows = els.map((e, i) => ({tag: e.tagName.toLowerCase(),"
+                  " path: nodes[i] && nodes[i].path,"
+                  " same: annResolve({anchorPath: nodes[i] && nodes[i].path}, DOC) === e}));"
+                + "console.log(JSON.stringify(rows));", html)
+    assert len(out) >= 8, out
+    assert all(r["path"] for r in out), out
+    assert all(r["same"] for r in out), [r for r in out if not r["same"]]
+    # the shape is annotations' own, not a private one
+    assert out[0]["path"] == "header:nth-of-type(1)", out[0]
+
+
+def test_an_outline_node_carries_the_id_the_annotation_anchor_would_use(html):
+    """anchorId is annResolve's preferred key, so the outline has to surface it
+    too — otherwise the agent sees a path for an element the user's pin names by
+    id, and cannot tell they are the same thing."""
+    out = _node(_OUTLINE_FNS,
+                _DOM + "const tree = outlineNode(BODY, 0, null, DOC);"
+                + "const byId = flatOutline(tree).filter((n) => n.id);"
+                + "console.log(JSON.stringify(byId.map((n) => ({id: n.id,"
+                  " same: annResolve({anchorId: n.id}, DOC) === DOC.getElementById(n.id)}))));",
+                html)
+    assert sorted(r["id"] for r in out) == ["reset", "top"], out
+    assert all(r["same"] for r in out), out
+
+
+def test_the_path_scheme_has_exactly_one_implementation(html):
+    """D146: a rule in two implementations needs a test, and the cheapest way to
+    pass that test is not to have two. The outline calls the annotation layer's
+    builder rather than growing its own."""
+    assert html.count("function annPathOf(") == 1
+    start = html.index("function outlineNode(")
+    body = html[start:html.index("\n}\n", start)]
+    assert "annPathOf(" in body, "the outline builds its own paths"
+
+
+# ------------------------------------- reading the framed app, without descent
+
+def test_no_frame_descent_machinery_remains(html):
+    """#372 reframed the pane as /render?path=<entry> — the RAW rendered
+    document — so `leftframe.contentDocument` is the app's document and there is
+    nothing to walk down through. The walker is deleted, not left dormant:
+    dormant code that once resolved a window is exactly what would get
+    reinstated by the next person who reads the comment above it."""
+    for gone in ["reachableFrames", "hasRuntime", "appFrameOf",
+                 "resolveAppWindow", "APP_FRAME_MAX_DEPTH"]:
+        assert gone not in html, gone
+
+
+def test_the_app_document_is_the_left_frames_own(html):
+    url = _node(_STATE_FNS,
+                _DOM + _FRAME
+                + "let annFrame = {isConnected: true,"
+                  " contentWindow: fakeWin(docOf(BODY))};"
+                + "const s = appStateSnapshot();"
+                + "console.log(JSON.stringify({url: s.url, tag: s.dom.tag,"
+                  " params: s.params}));", html)
+    assert url["tag"] == "body"
+    assert url["url"] == "/render?path=/p/index.html&zoom=3"
+    # /render's own plumbing is not something the app defined; the app's is
+    assert url["params"] == {"zoom": "3"}
+
+
+def test_a_project_with_no_app_entry_degrades_instead_of_describing_this_chat(html):
+    """When there is no entry html the loader REMOVES the iframe, so `annFrame`
+    is a detached element. Reporting this chat's own window as the app's is the
+    defect that framing would invite, so the snapshot has to see "no app" — and
+    a snapshot with nothing in it at all is null, not an empty object."""
+    out = _node(_STATE_FNS,
+                _DOM + _FRAME
+                + "let annFrame = {isConnected: false, contentWindow: null};"
+                + "console.log(JSON.stringify({bare: appStateSnapshot(),"
+                  " withLog: (pushAppLog('error', 'the left pane could not open"
+                  " the app: no app entry'), appStateSnapshot())}));", html)
+    # nothing known and nothing logged: no block at all this turn
+    assert out["bare"] is None
+    # once the console says WHY, the sentence earns its place beside it
+    assert "could not be read" in out["withLog"]["unreadable"]
+    assert out["withLog"]["console"][0]["text"].startswith("the left pane")
+    assert "dom" not in out["withLog"] and "title" not in out["withLog"]
+    assert "url" not in out["withLog"], "an unreadable frame must not report a url"
+
+
+def test_about_blank_is_not_described_as_the_app(html):
+    """The placeholder document every iframe starts on. Describing it would put
+    an empty body in the prompt as though the app rendered nothing."""
+    out = _node(_STATE_FNS,
+                _DOM + _FRAME
+                + "let annFrame = {isConnected: true,"
+                  " contentWindow: fakeWin(docOf(BODY), 'about:blank')};"
+                + "console.log(JSON.stringify(appStateSnapshot()));", html)
+    assert out is None
+
+
+def test_an_unreachable_frame_never_throws_the_send(html):
+    """Cross-origin, or torn down mid-navigation. Nothing here may break the
+    chat: a failure degrades to less state, never to a thrown send."""
+    out = _node(_STATE_FNS,
+                _DOM + _FRAME
+                + "let annFrame = {isConnected: true, get contentWindow() {"
+                  " throw new Error('cross-origin'); }};"
+                + "pushAppLog('error', 'boom');"
+                + "console.log(JSON.stringify(appStateSnapshot()));", html)
+    assert out["unreadable"]
+    assert out["console"][0]["text"] == "boom"
+
+
+def test_the_chats_own_params_are_not_reported_as_the_apps(html):
+    """This page sets no param boundary, so the pane's runtime hands back the
+    app's params merged with this chat's bookkeeping. Telling the model the app
+    is "running with" session_id and split is worse than saying nothing."""
+    out = _node(["function clipText(", "const CHAT_PARAMS", "function appParamsOf(",
+                 "const APP_STATE_MAX_TEXT"],
+                "console.log(JSON.stringify(appParamsOf({session_id: 's', run: 'r',"
+                " split: '70', model: 'sonnet', effort: 'high', permission: 'prompt',"
+                " _file: '/p', _mode: 'claude_split', path: '/p/index.html',"
+                " annotations: '[]', city: 'Lisbon'})));", html)
+    assert out == {"city": "Lisbon"}
+
+
+# ------------------------------------------- instrumentation, and the reload
+
+def test_the_reload_marker_fires_on_the_frames_own_load(html):
+    """With /render in the pane, a live-reload replaces the LEFT FRAME's document,
+    so its `load` fires again — which is why the 100 ms poller the first build
+    needed (the reload used to navigate a nested frame the outer load never saw)
+    is gone. The marker rides in the buffer rather than clearing it: "these were
+    there before, this one appeared after your edit" is the buffer's whole value."""
+    out = _node(_STATE_FNS,
+                _DOM + _FRAME
+                + "const W = fakeWin(docOf(BODY));"
+                + "let annFrame = {isConnected: true, contentWindow: W};"
+                + "watchApp();"                          # first document
+                + "pushAppLog('error', 'was already broken');"
+                + "watchApp();"                          # same document: a no-op
+                + "W.document = docOf(BODY);"            # a live-reload landed
+                + "watchApp();"
+                + "console.log(JSON.stringify(appLogs.map((e) => [e.level, e.text])));",
+                html)
+    assert [lvl for lvl, _ in out] == ["error", "reload"], out
+    assert "reloaded" in out[1][1]
+
+
+def test_the_watcher_is_wired_to_the_load_event_not_to_a_timer(html):
+    """The interval existed only because the old /embed framing hid the reload
+    from the outer frame. Hooking the same `load` the annotation rewiring uses
+    keeps one place where a fresh document is noticed."""
+    assert "APP_WATCH_INTERVAL" not in html
+    assert "setInterval(watchApp" not in html
+    start = html.index('annFrame.addEventListener("load"')
+    assert "watchApp()" in html[start:start + 500], "the load hook does not watch"
+
+
+def test_a_document_is_only_wrapped_once_but_a_new_one_is_wrapped_again(html):
+    """The marker lives on the DOCUMENT: a same-origin navigation keeps the
+    window proxy but replaces the global, so a flag on the window would outlive
+    the wrapper it is meant to track and the reloaded page would go unlogged."""
+    out = _node(["const APP_STATE_MAX_LOGS", "const APP_STATE_MAX_TEXT",
+                 "const appLogs", "function clipText(", "function pushAppLog(",
+                 "function fmtLogArg(", "function watchWindow("],
+                _DOM + _FRAME + "const W = fakeWin(docOf(BODY));"
+                + "const first = watchWindow(W), again = watchWindow(W);"
+                + "W.document = docOf(BODY);"
+                + "const fresh = watchWindow(W);"
+                + "console.log(JSON.stringify({first, again, fresh}));", html)
+    assert out == {"first": True, "again": False, "fresh": True}
+
+
+def test_the_wrapper_calls_through_so_the_apps_own_logging_still_happens(html):
+    """Instrumentation the user can notice is instrumentation that changed the
+    app: whatever devtools showed before must still show."""
+    out = _node(["const APP_STATE_MAX_LOGS", "const APP_STATE_MAX_TEXT",
+                 "const appLogs", "function clipText(", "function pushAppLog(",
+                 "function fmtLogArg(", "function watchWindow("],
+                _DOM + _FRAME + "const W = fakeWin(docOf(BODY));"
+                + "watchWindow(W);"
+                + "W.console.error('boom', {code: 7});"
+                + "W.console.warn(new Error('careful'));"
+                + "console.log(JSON.stringify({buffered: appLogs.map((e) => e.text),"
+                  " passedThrough: W.calls, hooked: W.listeners}));", html)
+    assert out["buffered"] == ['boom {"code":7}', "careful"]
+    assert out["passedThrough"] == ['error:boom [object Object]', "warn:Error: careful"]
+    # uncaught errors and rejections are the ones a console wrapper cannot see
+    assert out["hooked"] == ["error", "unhandledrejection"]
+
+
+# ------------------------- one composition point, one strip (both blocks)
+
+_WIRE_FNS = ["const APP_STATE_TAG", "function appStateBlock(",
+             "function formatAnnotations(", "function composeOutgoing(",
+             "function stripAppStateBlock(", "function stripBlocks(",
+             "function stripAnnBlock("]
+
+_PENDING = ('[{"id": "1", "sent": 0, "createdAt": 5, "anchorId": "reset",'
+            ' "tag": "button", "text": "Reset"}]')
+_STATE = '{"title": "Demo", "dom": {"tag": "body", "path": null}}'
+
+
+def _round_trip(html, typed, annotated, stateful):
+    """Compose a wire message the way the composer does, then strip it the way
+    the transcript readers do."""
+    return _node(_WIRE_FNS,
+                 "const wire = composeOutgoing(%s, %s, %s);"
+                 "console.log(JSON.stringify({wire, back: stripBlocks(wire)}));"
+                 % (json.dumps(typed), _PENDING if annotated else "[]",
+                    _STATE if stateful else "null"), html)
+
+
+@pytest.mark.parametrize("annotated,stateful", [
+    (False, False), (True, False), (False, True), (True, True),
+])
+def test_a_wire_message_strips_back_to_exactly_what_the_user_typed(html, annotated,
+                                                                  stateful):
+    """The bug this pins, in both directions: main's `stripAnnBlock` bails unless
+    the text STARTS with its own preamble, so an app-state block in front of it
+    silently no-ops the strip and leaks the annotation JSON into the transcript —
+    while an app-state block placed after the annotation fence leaks itself
+    instead. Neither order works with one strip that only knows one block, so
+    there is one composer and one strip and this covers all four combinations."""
+    out = _round_trip(html, "why is the map blank?", annotated, stateful)
+    assert out["back"] == "why is the map blank?", out["wire"]
+    assert ("live-app-state" in out["wire"]) is stateful
+    assert ("The user annotated " in out["wire"]) is annotated
+
+
+def test_an_annotation_only_send_still_collapses_to_its_marker(html):
+    """No typed text: the transcript shows a small marker, and the app-state
+    block riding along must not turn into the bubble's contents."""
+    out = _round_trip(html, "", True, True)
+    assert out["back"] == "📌 annotations", out["wire"]
+
+
+def test_the_state_block_is_removed_wherever_it_sits(html):
+    """A position-independent peel, matching agent.py's regex: the composer fixes
+    the order, but a message stored by an older build (or by a future one that
+    reorders) must still strip clean rather than half-strip."""
+    out = _node(_WIRE_FNS,
+                'const tail = "hello\\n\\n<live-app-state>\\n{}\\n</live-app-state>\\n\\n";'
+                'console.log(JSON.stringify(stripBlocks(tail)));', html)
+    assert out == "hello"
+
+
+def test_the_two_readers_of_a_wire_message_use_the_same_strip(html):
+    """The re-attach probe compares against the bubble on screen and the history
+    restore renders the bubble. If they stripped differently, a re-attach would
+    stop matching and trim another turn's rows."""
+    assert html.count("stripAnnBlock(") == 2, "stripAnnBlock is called outside stripBlocks"
+    assert "stripBlocks(probe.message" in html
+    assert "addUser(stripBlocks(t.text))" in html
+
+
+# ------------------------------------------------- the pull channel, on screen
+
+def test_the_pull_answers_with_a_snapshot_taken_now_not_the_pushed_one(html):
+    """The tool exists because the pushed snapshot went stale the moment Claude
+    edited something; answering from a cached one would be the same staleness
+    with an extra round trip."""
+    start = html.index("async function answerAppState(")
+    body = html[start:html.index("\n}\n", start)]
+    assert "appStateSnapshot()" in body
+    # and it says so in the log — the whole transparency story for a read that
+    # deliberately raises no card
+    assert '"read app state' in body or "read app state" in body
+
+
+def test_reading_the_app_state_is_noted_in_the_log_not_carded(html):
+    assert "addNote(" in html
+    assert 'p.tool' in html  # permission cards still exist for everything else
+    start = html.index("async function answerAppState(")
+    assert "buildPermCard" not in html[start:html.index("\n}\n", start)]
+
+
+# --------------------------------------------------- Escape has two claimants
+
+def test_the_annotation_composer_wins_escape_over_stopping_the_run(html):
+    """Both features bind Escape in this pane. Dismissing a popover is small and
+    repeatable; killing a live turn is neither — so an Escape pressed with a text
+    box open means the text box."""
+    def act(open_, run):
+        return _node(["function escapeAction("],
+                     "console.log(JSON.stringify(escapeAction(%s, %s)));"
+                     % (json.dumps(open_), json.dumps(run)), html)
+
+    assert act(True, "run-7") == "close-composer"
+    assert act(True, None) == "close-composer"
+    assert act(False, "run-7") == "stop-run"
+    # Inert otherwise: this page is in an iframe and must not swallow the shell's
+    # Escape for nothing.
+    assert act(False, None) == ""
+
+
+def test_the_composers_escape_does_not_also_reach_the_run_killer(html):
+    """The textarea's handler runs first and hides the popover, so without a
+    stopPropagation the document binding would look at an already-closed
+    composer and end the turn as well."""
+    start = html.index("annTa.addEventListener(\"keydown\"")
+    head = html[start:start + 400]
+    assert "stopPropagation" in head, head

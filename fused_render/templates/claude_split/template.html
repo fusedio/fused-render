@@ -318,6 +318,9 @@
     white-space: nowrap;
     min-width: 0;
   }
+  /* The push channel's receipt: this message carried a description of the app
+     the user is looking at, and they should be able to see that it did. */
+  .user .attach { margin-top: 4px; font-size: 11px; color: var(--faint); }
   .user .bubble {
     background: var(--bubble-user);
     border-radius: 18px 18px 4px 18px;
@@ -365,6 +368,25 @@
   @media (prefers-reduced-motion: reduce) { .working .star { animation: none; } }
   .working .verb { color: var(--fg); }
   .working .meta { color: var(--faint); font-size: 12px; }
+  /* The stop control rides ON the working line, which exists for exactly as long
+     as a run is interruptible — so the button cannot outlive what it cancels. */
+  .working .stop {
+    background: transparent;
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    color: var(--dim);
+    font: inherit;
+    font-size: 12px;
+    padding: 1px 7px;
+    cursor: pointer;
+  }
+  .working .stop:hover:not(:disabled) { color: var(--fg); border-color: var(--faint); }
+  .working .stop:disabled { opacity: .55; cursor: default; }
+
+  /* A one-liner for something that happened beside the conversation: the agent
+     reading the app state on its own, or the user ending a turn. */
+  .note { display: flex; gap: 8px; font-size: 12px; color: var(--faint); }
+  .note .eye { color: var(--dim); }
 
   /* ── permission cards (the approval bridge) ── */
   .perm {
@@ -738,6 +760,297 @@ document.getElementById("home-file").textContent = BASENAME;
 document.getElementById("home-path").textContent = FILE;
 document.title = "Claude split — " + BASENAME;
 
+// ── live app state: what the agent can SEE of the running app ──
+// Without this the agent is editing a page it cannot look at: it has no way to
+// tell whether its own change rendered, whether the console filled with errors,
+// or whether the page went blank. Two channels close that, and both are served
+// from here:
+//
+//   push — appStateSnapshot() rides along with each message (appStateBlock).
+//   pull — the agent's `app_state` MCP tool, answered from the poll loop, for
+//          after it edits something and the snapshot has gone stale.
+//
+// It is deliberately TEXT ONLY — structure, own-text, params, console lines —
+// for the same reason the annotation anchors are (#372): a description Claude
+// can map straight back to the app's HTML source beats pixels it has to guess
+// from. Nothing here is allowed to break the chat: the framed document can be
+// mid-navigation, absent (no app entry — see the loader below) or cross-origin,
+// so every access is guarded and a failure degrades to LESS state, never to a
+// thrown send.
+const APP_STATE_MAX_LOGS = 50;    // ring buffer: a live-reloading page logs forever
+const APP_STATE_MAX_TEXT = 300;   // per console line / text snippet
+const APP_STATE_MAX_NODES = 60;   // elements in the DOM outline
+const APP_STATE_MAX_DEPTH = 4;    // how deep the outline descends
+// Text per OUTLINED element, deliberately tighter than a console line: this one
+// is paid 60 times over, and the whole snapshot is meant to be a few KB rather
+// than a transcription of the page's copy.
+const APP_STATE_MAX_NODE_TEXT = 120;
+// The block's delimiter, duplicated in agent.py (which strips it back out of
+// everything user-facing) and in stripAppStateBlock below — a test holds the
+// three together, because a drift is invisible until the chat starts showing
+// the user a screenful of JSON they never typed (D146).
+const APP_STATE_TAG = "live-app-state";
+// {level, text, source?, line?, ts}. PARENT-side, deliberately: the buffer has
+// to outlive the framed app's own reloads, which is exactly what makes "that
+// error was already there before my edit" answerable.
+const appLogs = [];
+let appEntry = "";                // the entry html the pane is rendering
+let appLoads = 0;                 // loads seen, so a RELOAD can be told apart
+
+function clipText(value, max) {
+  const s = value === null || value === undefined ? "" : String(value);
+  return s.length > max ? s.slice(0, max) + "…" : s;
+}
+
+function pushAppLog(level, text, source, line) {
+  const entry = { level, text: clipText(text, APP_STATE_MAX_TEXT),
+                  ts: Math.round(Date.now() / 1000) };
+  if (source) entry.source = clipText(source, 200);
+  if (line) entry.line = line;
+  appLogs.push(entry);
+  while (appLogs.length > APP_STATE_MAX_LOGS) appLogs.shift();
+}
+
+// console.error's arguments are anything at all, including cross-realm objects
+// (the frame's Error is not this realm's Error, so `instanceof` is useless here).
+function fmtLogArg(v) {
+  if (typeof v === "string") return v;
+  if (v && typeof v.message === "string") return v.message;
+  try {
+    const json = JSON.stringify(v);
+    return json === undefined ? String(v) : json;
+  } catch (err) {
+    return String(v);  // circular, or a throwing toJSON
+  }
+}
+
+// The window the app runs in — #leftframe's OWN, with no descent. #372 moved
+// the pane from /embed/<app> (fused-render's React shell, with the app nested
+// one iframe deeper) to /render?path=<entry>, the raw rendered document: the
+// frame's contentDocument IS the app's document now, so the frame-walking layer
+// that used to live here is gone rather than merely unused.
+//
+// Returns null — never this chat's own window — in the three cases that are
+// genuinely "no app":
+//   * the project has no app entry, so the loader below REMOVED the iframe;
+//   * about:blank, the placeholder before the first real document;
+//   * unreachable (cross-origin, or mid-navigation).
+function appWindow() {
+  try {
+    if (!annFrame || !annFrame.isConnected) return null;
+    const win = annFrame.contentWindow;
+    if (!win || !win.document) return null;
+    if (String(win.location.href) === "about:blank") return null;
+    return win;
+  } catch (err) {
+    return null;
+  }
+}
+
+// Wrap one window's console + error events. Returns true when THIS document was
+// newly wrapped, which is also how a reload is detected (see watchApp).
+function watchWindow(win) {
+  try {
+    const doc = win && win.document;
+    // Marked on the DOCUMENT, not the window: a same-origin navigation keeps the
+    // window proxy but replaces the global, so a flag there would survive as
+    // little as the wrapper itself does — and re-wrapping is exactly what a
+    // reload needs.
+    if (!doc || doc.__fusedAppWatched) return false;
+    doc.__fusedAppWatched = true;
+    // console.log is deliberately NOT wrapped: an app's chatter is not news, and
+    // 50 ring-buffer slots spent on it would push out the errors that are.
+    for (const level of ["error", "warn"]) {
+      const original = win.console && win.console[level];
+      if (typeof original !== "function") continue;
+      win.console[level] = function (...args) {
+        try { pushAppLog(level, args.map(fmtLogArg).join(" ")); } catch (err) { /* never */ }
+        // Call through: the app's own logging (and the devtools output the user
+        // may be reading) must behave exactly as it did uninstrumented.
+        return original.apply(win.console, args);
+      };
+    }
+    win.addEventListener("error", (ev) => {
+      pushAppLog("error", (ev && (ev.message || (ev.error && ev.error.message)))
+                 || "script error", ev && ev.filename, ev && ev.lineno);
+    });
+    win.addEventListener("unhandledrejection", (ev) => {
+      const reason = ev && ev.reason;
+      pushAppLog("error", "unhandled promise rejection: " + fmtLogArg(reason));
+    });
+    return true;
+  } catch (err) {
+    // Cross-origin, navigating, or already torn down. The snapshot simply has
+    // no console entries to report; the chat is unaffected.
+    return false;
+  }
+}
+
+// Called from #leftframe's `load` (beside the annotation rewiring) and once at
+// boot. That is enough BECAUSE of the /render framing: a live-reload replaces
+// the frame's own document, so `load` fires again — under the old /embed nesting
+// it was the INNER frame that navigated and only a timer could see it.
+//
+// The one thing this cannot win is the race against the app's FIRST inline
+// script, which runs before `load`: logging from there is still missed. The DOM
+// outline shows what that script did or failed to do, and everything from the
+// next tick onwards is captured.
+function watchApp() {
+  const win = appWindow();
+  if (!win) return;
+  if (!watchWindow(win)) return;
+  appLoads++;
+  // Mark the reload IN the buffer rather than clearing it: "these three errors
+  // were there before, this one appeared after your edit" is the single most
+  // useful thing the buffer can tell the agent, and clearing it destroys that.
+  if (appLoads > 1) pushAppLog("reload", "the app reloaded (a file it uses changed)");
+}
+
+// The app's params from its URL, for before its runtime has booted.
+function searchParamsOf(search) {
+  const out = {};
+  new URLSearchParams(search || "").forEach((v, k) => { out[k] = v; });
+  return out;
+}
+
+// This page sets no `_fusedParamBoundary`, so the pane's runtime treats OUR URL
+// as its param target (D46/D72) and its `getAll()` hands back the app's params
+// merged with this chat's own bookkeeping. Dropped by name: telling the model
+// that the app is "running with" session_id and split is worse than telling it
+// nothing about params at all.
+// `path` is in here for a different reason: it is /render's own plumbing (the
+// pane is /render?path=<entry>), so it is on every rendered page and is never
+// something the app itself defined. `annotations` likewise — those are the
+// user's notes, already sent in their own block.
+const CHAT_PARAMS = new Set(["_file", "_mode", "session_id", "run", "split",
+                             "model", "effort", "permission", "annotations",
+                             "path"]);
+
+function appParamsOf(all) {
+  const out = {};
+  for (const key of Object.keys(all || {})) {
+    if (!CHAT_PARAMS.has(key)) out[key] = clipText(all[key], 200);
+  }
+  return out;
+}
+
+// Elements whose text is code, not content: listed, never quoted from.
+const QUIET_TAGS = new Set(["script", "style", "noscript", "template"]);
+
+// A structural outline of the body — tag, id/class, own text — NOT outerHTML,
+// which for a real app is tens of KB of markup that would dominate every turn.
+//
+// Every node also carries `path`: annPathOf's identifier, the SAME one the
+// annotation anchors use. That is the point of routing through annPathOf rather
+// than growing a second path builder — the element the user pinned and the node
+// the agent reads in the outline are then literally the same name, so it can act
+// on a pin without guessing, and annResolve round-trips either one. A second
+// implementation of the scheme is precisely what D146 forbids.
+//
+// `budget` is shared across the whole walk so the total node count is capped,
+// not just each level's, and any elision is reported (`truncated`): truncation
+// the agent cannot see is a lie about the page, since it would read an elided
+// element as an absent one.
+function outlineNode(el, depth, budget, doc) {
+  budget = budget || { left: APP_STATE_MAX_NODES };
+  const out = { tag: String(el.tagName || "?").toLowerCase() };
+  if (el.id) out.id = clipText(el.id, 80);
+  const path = doc ? annPathOf(el, doc) : null;
+  if (path) out.path = clipText(path, 400);
+  const cls = typeof el.className === "string" ? el.className.trim() : "";
+  if (cls) out.class = clipText(cls, 120);
+  const kids = el.children || [];
+  // Own text only (the element's direct text nodes): textContent on a container
+  // is the whole subtree, which would repeat the entire page at every level.
+  // Script/style bodies are excluded: their "text" is source the agent can read
+  // in the file properly, and a clipped 120 chars of it in a structural outline
+  // is noise at best and a misleading fragment at worst (measured against a real
+  // app, whose outline came back carrying the first line of its own script).
+  const own = [];
+  if (!QUIET_TAGS.has(out.tag)) {
+    for (const node of el.childNodes || []) {
+      if (node.nodeType === 3 && node.nodeValue && node.nodeValue.trim()) {
+        own.push(node.nodeValue.trim());
+      }
+    }
+  }
+  let text = own.join(" ");
+  if (!text && !kids.length && !QUIET_TAGS.has(out.tag) && el.textContent) {
+    text = String(el.textContent).trim();
+  }
+  if (text) out.text = clipText(text, APP_STATE_MAX_NODE_TEXT);
+  if (!kids.length) return out;
+  if (depth >= APP_STATE_MAX_DEPTH) {
+    out.truncated = kids.length + " deeper element(s) not shown";
+    return out;
+  }
+  out.children = [];
+  for (const kid of kids) {
+    if (budget.left <= 0) {
+      out.truncated = (kids.length - out.children.length) + " sibling(s) not shown";
+      break;
+    }
+    budget.left--;
+    out.children.push(outlineNode(kid, depth + 1, budget, doc));
+  }
+  return out;
+}
+
+// What the user is looking at, right now, as a compact JSON-serialisable
+// object. Returns null when we learned NOTHING — a turn with nothing to say
+// about the app must look exactly like a turn from before this feature.
+function appStateSnapshot() {
+  const state = {};
+  if (appEntry) state.entry = appEntry;
+  let known = false;
+  // Resolved fresh on every call: the pane reloads on its own, so the document
+  // that was the app a moment ago may be a different one now.
+  const win = appWindow();
+  if (!win) {
+    // No document to describe. `unreadable` is set but does NOT count as
+    // knowledge on its own: a frame that simply has not loaded yet is not worth
+    // a block. It DOES ride along once there is something else to say — and the
+    // console usually says why (the loader logs a failed open), which is the
+    // case where this sentence earns its place.
+    state.unreadable = "the app's document could not be read (the project may "
+                     + "have no app entry, or the pane has not finished "
+                     + "loading), so nothing is known about its title, url or "
+                     + "DOM right now";
+  } else {
+    try {
+      const doc = win.document;
+      if (doc.title) state.title = clipText(doc.title, 200);
+      if (doc.body) { state.dom = outlineNode(doc.body, 0, null, doc); }
+      state.url = clipText(String(win.location.pathname + win.location.search), 500);
+      // The app's OWN view of its params (its runtime does the merging and
+      // defaulting), falling back to its query string before it has booted.
+      const params = appParamsOf(win.fused && win.fused.params && win.fused.params.getAll
+        ? win.fused.params.getAll() : searchParamsOf(win.location.search));
+      if (Object.keys(params).length) state.params = params;
+      known = true;
+    } catch (err) {
+      state.unreadable = "could not read the app's document: " + err.message;
+    }
+  }
+  if (appLogs.length) { state.console = appLogs.slice(); known = true; }
+  return known ? state : null;
+}
+
+// The block prepended to the user's message. Delimited and labelled, because
+// the model has to be able to tell the user's words from a machine-written
+// description of their screen. No trailing separator — composeOutgoing owns the
+// joining, so there is exactly one place that decides the message's shape.
+function appStateBlock(state) {
+  if (!state) return "";
+  return "<" + APP_STATE_TAG + ">\n"
+    + "A snapshot of the app the user is looking at in the left pane, taken as "
+    + "they sent this message. `path` on each node is the same anchorPath the "
+    + "annotations use, so a pin and an outline node name the same element. It "
+    + "goes stale the moment you edit anything — call the app_state tool for a "
+    + "fresh read.\n"
+    + JSON.stringify(state) + "\n</" + APP_STATE_TAG + ">";
+}
+
 // ── left pane: the file's ordinary preview ─────────────────────
 (async () => {
   try {
@@ -750,6 +1063,7 @@ document.title = "Claude split — " + BASENAME;
     // would wire the shell document and never see a click).
     const { entry } = await fused.runPython("./app.py", { dir: FILE });
     if (!entry) throw new Error("no app entry (index.html or a single top-level .html) in " + FILE);
+    appEntry = entry;
     document.getElementById("leftframe").src = "/render?path=" + encodeURIComponent(entry);
   } catch (err) {
     // Swap only the iframe for the message — #left also hosts the annotation
@@ -761,6 +1075,10 @@ document.title = "Claude split — " + BASENAME;
     d.id = "msg";
     d.textContent = "Could not open preview: " + err.message;
     document.getElementById("left").prepend(d);
+    // Tell Claude too: "the pane is showing an error instead of your app" is the
+    // most important thing the state channel can carry, and from here the iframe
+    // is gone (appWindow returns null forever) so nothing else will report it.
+    pushAppLog("error", "the left pane could not open the app: " + err.message);
   }
 })();
 
@@ -1025,7 +1343,11 @@ annDelBtn.addEventListener("click", () => {
   annCloseComposer();
 });
 annTa.addEventListener("keydown", (e) => {
-  if (e.key === "Escape") annCloseComposer();
+  // stopPropagation, because the document-level Escape binding also kills a live
+  // run: without it, closing the composer would end the turn as well (this
+  // handler runs first and would leave the popover already hidden, so the
+  // precedence check up there could not see it).
+  if (e.key === "Escape") { e.stopPropagation(); annCloseComposer(); }
   if (e.key === "Enter" && !e.shiftKey) {
     e.preventDefault();
     const content = annTa.value.trim();
@@ -1054,6 +1376,10 @@ annBtn.addEventListener("click", () => {
 // `annOn`, so toggling never needs a rewire.
 let annObserver = null;
 annFrame.addEventListener("load", () => {
+  // The app-state channel hangs off the same event, for the same reason: this is
+  // where a fresh document appears, so it is where the console has to be
+  // re-wrapped and a reload marked. See watchApp.
+  watchApp();
   const doc = annFrame.contentDocument;
   if (!doc) return;
   const elementOf = (t) => (t && t.nodeType === 1 ? t : t && t.parentElement);
@@ -1118,6 +1444,7 @@ annFrame.addEventListener("load", () => {
 });
 window.addEventListener("resize", renderAnn);
 renderAnn();  // chips from a persisted review show before the frame loads
+watchApp();   // a document already in the frame at boot never fires `load`
 
 function formatAnnotations(arr) {
   const wire = arr.map(({ id, sent, createdAt, ...rest }) => rest);
@@ -1130,9 +1457,46 @@ function formatAnnotations(arr) {
     "instructions:\n\n```json\n" + JSON.stringify(wire, null, 2) + "\n```"
   );
 }
+// Everything the page prepends to the typed message, composed in ONE place so
+// stripBlocks below can be its exact inverse. Two blocks can ride along —
+// the app-state snapshot and the annotation notes — in any combination, and the
+// ORDER is fixed here rather than at the call site: stripAnnBlock recognises its
+// preamble only at the START of the text, so an app-state block wedged in front
+// of it (or between it and the message) turns that strip into a silent no-op and
+// leaks raw JSON into the transcript. State first, notes closest to the words
+// they annotate, message last.
+function composeOutgoing(message, pending, state) {
+  const parts = [];
+  if (state) parts.push(appStateBlock(state));
+  if (pending && pending.length) parts.push(formatAnnotations(pending));
+  if (message) parts.push(message);
+  return parts.join("\n\n");
+}
+
+// The app-state block, removed from wherever it sits — a position-independent
+// mirror of agent.py's `_APP_STATE_BLOCK` (which strips it server-side for
+// meta.json and the restored transcript; this is the page's own half, and what
+// makes the composed order above safe for stripAnnBlock).
+function stripAppStateBlock(text) {
+  const re = new RegExp("<" + APP_STATE_TAG + ">[\\s\\S]*?</" + APP_STATE_TAG
+                        + ">\\s*", "g");
+  // trim(), like agent.py's `.strip()`: peeling a block off the front or the back
+  // leaves the separator that joined it on, and stripAnnBlock (which runs next)
+  // only recognises its preamble at position zero.
+  return (text || "").replace(re, "").trim();
+}
+
+// The inverse of composeOutgoing: hand back exactly what the user typed. Used by
+// BOTH readers of a wire message (the run re-attach probe and the history
+// restore) so they cannot disagree about what a turn said.
+function stripBlocks(text) {
+  return stripAnnBlock(stripAppStateBlock(text));
+}
+
 // History restore and run re-attach hand back the composed wire text; peel
 // the annotation preamble + JSON block off so the transcript shows what the
 // user actually typed (annotation-only sends collapse to a small marker).
+// Runs AFTER stripAppStateBlock, never before — see composeOutgoing.
 function stripAnnBlock(text) {
   if (!text.startsWith("The user annotated ")) return text;
   const i = text.indexOf("\n```json\n");
@@ -1283,6 +1647,24 @@ function addError(text) {
   d.className = "turn error";
   d.textContent = text;
   log.appendChild(d);
+  scrollBottom();
+}
+
+// A one-line note for something that happened beside the conversation: the agent
+// reading the app state on its own (◍), or the user ending a turn (⏹). Not a
+// card — there is nothing to decide. `working`, when given, keeps the note above
+// the still-running status line.
+function addNote(text, working, glyph) {
+  const d = document.createElement("div");
+  d.className = "turn note";
+  const eye = document.createElement("span");
+  eye.className = "eye";
+  eye.textContent = glyph || "◍";
+  const body = document.createElement("span");
+  body.textContent = text;
+  d.append(eye, body);
+  if (working && working.el && working.el.isConnected) log.insertBefore(d, working.el);
+  else log.appendChild(d);
   scrollBottom();
 }
 
@@ -1507,12 +1889,20 @@ function addWorking() {
   const thinkVerb = VERBS[Math.floor(Math.random() * VERBS.length)];
   const start = Date.now();
   let stats = { tokens: 0, phase: "thinking" };
-  d.innerHTML = '<span class="star">✻</span> <span class="verb"></span><span class="meta"></span>';
+  let stopping = false;
+  d.innerHTML = '<span class="star">✻</span> <span class="verb"></span><span class="meta"></span>'
+    // The key rides on the label, not in a hint row: same reasoning as the
+    // claude template — a separate hint line grows and shrinks the chrome every
+    // time a turn starts and ends, and the pane here is narrower still.
+    + '<button id="stopbtn" class="stop" type="button" title="Stop this turn">stop · esc</button>';
   const verbEl = d.querySelector(".verb");
   const meta = d.querySelector(".meta");
+  const stopBtn = d.querySelector(".stop");
+  stopBtn.addEventListener("click", () => stopRun());
   const draw = () => {
     const secs = Math.round((Date.now() - start) / 1000);
-    verbEl.textContent = (stats.phase === "awaiting" ? "Waiting for your approval" :
+    verbEl.textContent = (stopping ? "Stopping" :
+                          stats.phase === "awaiting" ? "Waiting for your approval" :
                           stats.phase === "composing" ? "Composing" :
                           stats.phase === "tooling" ? "Working" : thinkVerb) + "…";
     const effort = fused.params.get("effort") || DEFAULT_EFFORT;
@@ -1528,6 +1918,9 @@ function addWorking() {
   return {
     el: d,
     setStats(tokens, phase) { stats = { tokens, phase }; draw(); },
+    // Reversible: the kill can fail, and a run that is still streaming must not
+    // be left wearing a "Stopping…" line it will never honour.
+    setStopping(on) { stopping = on; stopBtn.disabled = on; draw(); },
     stop: () => clearInterval(timer),
   };
 }
@@ -1617,6 +2010,105 @@ function makeTyper(bodyEl) {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+// ── the pull channel: answer the agent's app_state reads ──────
+// agent.py parks each `app_state` tool call as a file and hands the unanswered
+// ones to every poll; this frame is the only thing that can see the app, so it
+// is the only thing that can answer. No card and no confirmation: it is a read
+// of the user's own screen, for the agent they are already talking to, and the
+// tool call is BLOCKED until it is answered. The one-line note is the whole
+// transparency story, and it is the right size for it.
+const answeredStates = new Set();  // ids already answered; poll replays the list
+
+async function answerAppState(list, run_id, working) {
+  for (const req of list || []) {
+    if (!req || !req.id || answeredStates.has(req.id)) continue;
+    answeredStates.add(req.id);   // claimed before the await: polls overlap
+    addNote(req.reason ? "read app state — " + req.reason : "read app state", working);
+    try {
+      await fused.runPython(AGENT, {
+        action: "app_state", run_id, request_id: req.id,
+        // Taken HERE, not at send time: the whole point of the pull channel is
+        // that the pushed snapshot has gone stale.
+        // A JSON string, not a nested object: params cross into python
+        // string-shaped, and nothing on that side reads inside the snapshot.
+        state: JSON.stringify(appStateSnapshot()),
+      }, { key: null });
+    } catch (err) {
+      // The tool call is still blocked, so this has to be retried — un-claim
+      // the id and let the next poll (400 ms) have another go. Its own timeout
+      // is the backstop if this keeps failing.
+      answeredStates.delete(req.id);
+    }
+  }
+}
+
+// ── stopping a turn ───────────────────────────────────────────
+// Mirrors the claude template (this chat is a fork of it): agent.py could always
+// kill a run, and until the stop button nothing called it — a turn that went off
+// the rails could only be waited out or escaped by navigating away, which leaves
+// the detached subprocess working on. pollLoop publishes the live run so the
+// button and Escape have something to aim at, which covers a re-attached run too.
+let activeRun = null;
+let activeWorking = null;
+// Keyed by id, not a bare boolean: it is read when a run ENDS, and a stale flag
+// would label the next turn's ending as a stop too.
+let stoppedRun = "";
+
+// How a finished run ends on screen. Killing claude leaves the run dead with no
+// `result` row, which `_poll` reports as an error BY DESIGN (a truncated reply
+// must never read as a clean success) — but when the user asked for the stop,
+// that error IS the stop, and repeating it back reads as a crash they caused. So
+// it is swallowed here, and only here. Pure, and tested as such — against the
+// claude template's copy, which must decide identically.
+function runEnding(data, stopped) {
+  if (!stopped) return { error: data.error || "", note: "", keepText: !data.error };
+  // The stop landed. Whatever streamed before the kill is real work and stays.
+  if (data.error) return { error: "", note: "Stopped.", keepText: true };
+  // The stop did NOT land: the reply completed between the click and the signal.
+  return { error: "", note: "The turn finished before the stop landed.", keepText: true };
+}
+
+async function stopRun() {
+  const run_id = activeRun;
+  if (!run_id || stoppedRun === run_id) return;  // nothing live, or already going
+  stoppedRun = run_id;
+  if (activeWorking) activeWorking.setStopping(true);
+  try {
+    await fused.runPython(AGENT, { action: "cancel", run_id }, { key: null });
+  } catch (err) {
+    // The kill never reached the backend, so the run is still going and the poll
+    // loop is still streaming it. Take the claim back: leaving it set would
+    // relabel this run's real ending as a stop the user never got.
+    stoppedRun = "";
+    if (activeWorking) activeWorking.setStopping(false);
+    addError("Could not stop the run: " + err.message);
+  }
+}
+
+// Escape has two claimants in this pane: the annotation composer and a live run.
+// The composer wins whenever it is open — dismissing a popover is the small,
+// repeatable action, while killing a turn is neither, and a user reaching for
+// Escape with a text box in front of them means the text box. Split out as a
+// pure decision so the precedence is a tested rule and not an ordering accident.
+function escapeAction(composerOpen, runId) {
+  if (composerOpen) return "close-composer";
+  return runId ? "stop-run" : "";
+}
+
+// Gated on there being something to do, so the binding is inert the rest of the
+// time — this page sits in an iframe and must not swallow Escape from the shell
+// around it for nothing.
+document.addEventListener("keydown", (e) => {
+  if (e.key !== "Escape") return;
+  // The textarea's own Escape handler stops propagation, so what reaches here
+  // with the popover open is an Escape pressed with focus somewhere else.
+  const act = escapeAction(annPop.style.display === "block", activeRun);
+  if (!act) return;
+  e.preventDefault();
+  if (act === "close-composer") annCloseComposer();
+  else stopRun();
+});
+
 // ── send one message: start detached claude, poll + stream ──
 // One turn at a time: concurrent turns would share the session_id param and
 // launch parallel claude runs against the same resumed session.
@@ -1627,6 +2119,10 @@ let sending = false;
 // keeps going and the next boot re-attaches via resumeRun.
 async function pollLoop(run_id) {
   const w = addWorking();
+  // This run is now the one the stop button and Escape aim at. Set here, the one
+  // place a run is ever in flight, which covers a re-attached run for free.
+  activeRun = run_id;
+  activeWorking = w;
   let reply = null;
   let typer = null;
   try {
@@ -1637,6 +2133,9 @@ async function pollLoop(run_id) {
       const tokens = Math.max(data.tokens || 0, Math.round((data.text || "").length / 4));
       w.setStats(tokens, data.phase || "thinking");
       syncPermissions(data.permissions, run_id, w, data.mode);
+      // Not awaited: a snapshot must never hold up the streaming reply, and the
+      // answered-set makes a second poll arriving mid-answer a no-op.
+      if (data.app_state && data.app_state.length) answerAppState(data.app_state, run_id, w);
       if (data.text) {
         if (!reply) {
           reply = addAssistant("");
@@ -1654,15 +2153,17 @@ async function pollLoop(run_id) {
         // stamped `sent` and folded into the transcript, so they resolve
         // either way — re-annotating is one click, silently re-sending isn't.
         annResolveSent();
-        if (data.error) {
+        const end = runEnding(data, stoppedRun === run_id);
+        if (!end.keepText) {
           if (typer) typer.abort();
           if (reply) reply.remove();
-          addError(data.error);
         } else if (typer) {
           await typer.finish(data.text);
         } else if (data.text) {
           addAssistant("").lastChild.innerHTML = renderMd(data.text);
         }
+        if (end.error) addError(end.error);
+        if (end.note) addNote(end.note, null, "⏹");
         break;
       }
       await sleep(400);
@@ -1677,6 +2178,11 @@ async function pollLoop(run_id) {
     addError(err.message);
   } finally {
     if (w.el.isConnected) { w.stop(); w.el.remove(); }
+    // Nothing is interruptible any more. Cleared even when the loop threw: an
+    // Escape landing after this must not cancel a finished run and then mislabel
+    // the NEXT turn's ending as a stop.
+    activeRun = null;
+    activeWorking = null;
   }
 }
 
@@ -1688,9 +2194,12 @@ async function sendMessage(message) {
   // rolled back so the notes stay editable and re-sendable.
   const pending = annPending();
   if (!message && !pending.length) { sending = false; return; }
-  let outgoing = message;
+  // Both composer entry points come through here, so the snapshot is taken in
+  // exactly one place — at SEND time, which is the moment whose state the user is
+  // describing when they type.
+  const state = appStateSnapshot();
+  const outgoing = composeOutgoing(message, pending, state);
   if (pending.length) {
-    outgoing = message ? formatAnnotations(pending) + "\n\n" + message : formatAnnotations(pending);
     for (const c of pending) c.sent = 1;
     annSave();
   }
@@ -1735,6 +2244,18 @@ async function sendMessage(message) {
     turn.appendChild(sum);
     scrollBottom();
   }
+  // The push channel's own receipt. A sibling of the bubble, not a wrapper around
+  // it: the re-attach probe matches on `.user .bubble`'s textContent, and folding
+  // this line inside would make every such turn stop matching.
+  let attach = null;
+  if (state) {
+    const turns = log.querySelectorAll(".turn.user");
+    attach = document.createElement("div");
+    attach.className = "attach";
+    attach.textContent = "app state attached";
+    turns[turns.length - 1].appendChild(attach);
+    scrollBottom();
+  }
   let started = false;
   try {
     const { run_id, error } = await fused.runPython(AGENT, {
@@ -1756,11 +2277,15 @@ async function sendMessage(message) {
   } catch (err) {
     // The run never launched, so the agent never saw the annotations: give
     // them back as pending (and pull the receipt) so they can be re-sent.
-    if (!started && pending.length) {
-      for (const c of pending) c.sent = 0;
-      annSave();
-      if (receipt) receipt.remove();
-      if (bareTurn) bareTurn.remove();  // no bubble either — drop the ghost row
+    if (!started) {
+      // Same for the app-state receipt: nothing was attached to anything.
+      if (attach) attach.remove();
+      if (pending.length) {
+        for (const c of pending) c.sent = 0;
+        annSave();
+        if (receipt) receipt.remove();
+        if (bareTurn) bareTurn.remove();  // no bubble either — drop the ghost row
+      }
     }
     addError(err.message);
   } finally {
@@ -1786,7 +2311,7 @@ async function resumeRun(run_id) {
       annResolveSent();
       return;
     }
-    const probeMsg = stripAnnBlock(probe.message || "");
+    const probeMsg = stripBlocks(probe.message || "");
     const users = log.querySelectorAll(".user .bubble");
     const lastUser = users[users.length - 1];
     const lastTurn = lastUser && lastUser.parentElement;
@@ -1897,7 +2422,7 @@ async function loadHistory(session_id) {
     const { turns } = await fused.runPython(AGENT, { action: "history", file: FILE, session_id }, { key: null });
     log.innerHTML = "";  // drop the skeleton now that real turns are ready
     for (const t of turns) {
-      if (t.role === "user") addUser(stripAnnBlock(t.text));
+      if (t.role === "user") addUser(stripBlocks(t.text));
       else addAssistant("").lastChild.innerHTML = renderMd(t.text);
     }
     scrollBottom();
