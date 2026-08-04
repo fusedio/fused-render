@@ -17,7 +17,6 @@ import { AddMount } from "./mounts/AddMount";
 import { MountRow } from "./mounts/MountList";
 import {
   AddRemote,
-  AddStorage,
   DetectedRemoteSetup,
   OAuthSignIn,
   STORAGE_OPTIONS,
@@ -192,20 +191,28 @@ export default function Mounts() {
 
       {restartError && <ErrorBanner>{restartError}</ErrorBanner>}
 
-      {state &&
-        (state.mounts.length > 0 ? (
-          <div className="mount-list">
-            {state.mounts.map((c) => (
-              <MountRow key={c.id} conn={c} onChanged={reload} />
-            ))}
-          </div>
-        ) : (
-          state.rclone.available && (
-            <div className="mount-empty">
-              No mounts yet — add one below to browse remote storage as local folders.
+      {state && (state.mounts.length > 0 || state.rclone.available) && (
+        <section className="prefs-section">
+          <h2>Your mounts</h2>
+          {state.mounts.length > 0 ? (
+            <div className="mount-list">
+              {state.mounts.map((c) => (
+                <MountRow
+                  key={c.id}
+                  conn={c}
+                  remotes={state.rclone.remotes}
+                  onChanged={reload}
+                />
+              ))}
             </div>
-          )
-        ))}
+          ) : (
+            <div className="mount-empty">
+              Nothing mounted yet. Paste a storage link below — or connect a provider — and
+              remote folders show up here as ordinary local ones.
+            </div>
+          )}
+        </section>
+      )}
 
       {state?.rclone.available && (
         <>
@@ -214,8 +221,8 @@ export default function Mounts() {
             suggested={state.rclone.suggested ?? []}
             preselect={preselect}
             onChanged={reload}
+            onPickProvider={setSetup}
           />
-          <AddStorage onPick={setSetup} />
           {setup && (
             <Modal
               title={STORAGE_OPTIONS.find((o) => o.key === setup)?.title ?? "Add storage"}

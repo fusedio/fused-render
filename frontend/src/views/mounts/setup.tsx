@@ -836,14 +836,16 @@ export const STORAGE_OPTIONS: { key: SetupKey; name: string; cost: string; title
   },
 ];
 
-export function AddStorage({ onPick }: { onPick: (key: SetupKey) => void }) {
+// The bottom of the Add-mount section, not a section of its own: this is the
+// branch you take when you have no link to paste yet, so it lives inside the
+// one add flow rather than under a second heading with its own vocabulary.
+export function ProviderPicker({ onPick }: { onPick: (key: SetupKey) => void }) {
   return (
-    <section className="prefs-section">
-      <h2>Add storage</h2>
-      <p className="deploy-muted">
-        Connect a storage provider, then mount a folder from it above. Credentials and
-        tokens go straight into rclone's own config — fused-render never stores them.
-      </p>
+    <div className="mount-providers">
+      <div className="mount-providers-head">
+        No link? Connect a provider first — tokens and keys go straight into rclone’s own
+        config, never here.
+      </div>
       <div className="mount-picker">
         {STORAGE_OPTIONS.map((o) => (
           <button
@@ -852,8 +854,8 @@ export function AddStorage({ onPick }: { onPick: (key: SetupKey) => void }) {
             className="mount-provider"
             onClick={() => onPick(o.key)}
           >
-            {/* The icon is a full-height column of its own, not a glyph inline
-                with the name — it reads as the card's mark that way. */}
+            {/* The icon is a column of its own, not a glyph inline with the
+                name — it reads as the card's mark that way. */}
             <span className="mount-provider-mark">
               <ProviderIcon provider={o.key} />
             </span>
@@ -864,6 +866,6 @@ export function AddStorage({ onPick }: { onPick: (key: SetupKey) => void }) {
           </button>
         ))}
       </div>
-    </section>
+    </div>
   );
 }

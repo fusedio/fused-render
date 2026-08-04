@@ -4448,16 +4448,108 @@ select.field-control:has(option[value=""]:checked) {
   flex-wrap: wrap;
 }
 
-/* Paste-a-link fast path above the manual fields: a full-width input that
-   parses an S3/GCS URL and auto-fills Name/Remote/Path below. */
-.mount-paste {
+/* ---- "Add a mount" -------------------------------------------------------
+   One section, link-first. The pasted link is the way this form is actually
+   used, so it owns a row of its own and the three details it fills sit under
+   it in a grid — the previous layout put all four in one flex-wrap row, which
+   claimed they were co-equal and left the button aligned by a blank caption. */
+.mount-add-form {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.mount-hero {
   display: flex;
   flex-direction: column;
   gap: 6px;
 }
 
-.mount-paste :where(input, select) {
+/* Primary by SIZE AND WEIGHT, never by a bigger font: the page holds exactly
+   two text sizes (see the type-scale note below), so the hero earns its
+   prominence from a full-width 40px control and a full-contrast caption. */
+.mount-hero .field-label {
+  font-weight: 600;
+  color: var(--fg);
+}
+
+.mount-hero .field-control {
   width: 100%;
+  height: 40px;
+  padding: 0 14px;
+}
+
+.mount-hero .field-control:focus {
+  border-color: var(--accent);
+}
+
+/* Confirm-and-correct: Name | Remote | Path | Add. A real grid, so the button
+   bottom-aligns with the inputs through `align-items: end` instead of the
+   blank-caption <Field label=" "> hack — which rendered a whitespace-only
+   <label for> on the button and left it with an empty accessible name. */
+.mount-grid {
+  display: grid;
+  grid-template-columns: minmax(110px, 0.9fr) minmax(150px, 1.1fr) minmax(150px, 1.4fr) auto;
+  gap: 10px;
+  align-items: end;
+  border-radius: 8px;
+  outline: 2px solid transparent;
+  outline-offset: 6px;
+}
+
+.mount-grid .field-control,
+.mount-grid .field-select-wrap {
+  width: 100%;
+}
+
+/* The setup handoff, made visible. A modal closing and a dropdown quietly
+   changing value was the entire feedback for "your remote is connected"; the
+   grid now flashes once so the eye lands where the next step is. */
+.mount-grid--flash {
+  animation: mount-handoff-flash 1.8s ease-out;
+}
+
+@keyframes mount-handoff-flash {
+  0%,
+  55% {
+    outline-color: var(--accent);
+  }
+  100% {
+    outline-color: transparent;
+  }
+}
+
+/* Secondary text throughout the add section: the link's recognition status,
+   the connected-remote line, and the single explainer. */
+.mount-note {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--fg-muted);
+}
+
+.mount-note.warn {
+  color: var(--warning);
+}
+
+.mount-note.ok {
+  color: var(--success);
+}
+
+/* The provider cards, at the foot of the same section rather than under a
+   second "Add storage" heading — they are the "no link yet" branch of this
+   flow, not a separate feature. */
+.mount-providers {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+}
+
+.mount-providers-head {
+  font-size: 12px;
+  color: var(--fg-muted);
 }
 
 /* ---- Mounts type scale ---------------------------------------------------
@@ -4486,6 +4578,15 @@ select.field-control:has(option[value=""]:checked) {
   color: var(--warning);
 }
 
+/* Vertical rhythm, in three steps rather than 10px everywhere: 24px between
+   sections (from .prefs-page), 14px between the blocks inside one, and the
+   6-10px the blocks use internally. The page previously ran everything at the
+   shared 10px, so a section boundary and a line of hint text were spaced the
+   same and nothing grouped. */
+.mounts-page .prefs-section {
+  gap: 14px;
+}
+
 /* Page header — title + one-line intro on the left, global actions on the
    right. Wraps on a narrow pane so the action drops below the title. */
 .mounts-head {
@@ -4506,7 +4607,7 @@ select.field-control:has(option[value=""]:checked) {
 .mounts-subtitle {
   margin: 4px 0 0;
   color: var(--fg-muted);
-  font-size: 12.5px;
+  font-size: 12px;
   line-height: 1.45;
   max-width: 54ch;
 }
@@ -4682,28 +4783,43 @@ select.field-control:has(option[value=""]:checked) {
   cursor: default;
 }
 
-/* Delete: quiet muted glyph, turns red on hover. Higher specificity than the
-   generic .mount-card button rules above so it wins without !important. */
-.mount-card .mount-delete {
-  width: 26px;
-  height: 26px;
-  padding: 0;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border: 1px solid transparent;
-  border-radius: 6px;
+/* Remove: a LABELLED ghost button, not a bare "✕". Quiet until hovered, where
+   it turns destructive-red — the glyph it replaced gave no clue whether it
+   unmounted the folder or deleted data on the remote (it does the former).
+   Specificity ties with `.prefs-section .btn` and wins by order. */
+.mount-card .mount-remove {
   background: none;
+  border-color: transparent;
   color: var(--fg-muted);
-  font-size: 15px;
-  line-height: 1;
-  flex-shrink: 0;
 }
 
-.mount-card .mount-delete:hover:not(:disabled) {
+.mount-card .mount-remove:hover:not(:disabled) {
   color: var(--error);
   border-color: var(--error);
   background: rgba(var(--error-rgb), 0.12);
+}
+
+/* The mount card's mark — the same column the provider cards use, at the size
+   the row can carry. Classified server-side (see markFor in MountList.tsx). */
+.mount-card-mark {
+  flex: none;
+  width: 26px;
+  height: 26px;
+  display: grid;
+  color: var(--fg-muted);
+}
+
+/* NOT flex: the name line carries inline qualifiers ("— read-only",
+   "— disconnected") that a flex container would each break onto their own row.
+   The dot rides inline with the text instead. */
+.mount-card-name {
+  font-weight: 600;
+}
+
+.mount-card-name .mount-dot {
+  display: inline-block;
+  margin-right: 8px;
+  vertical-align: middle;
 }
 
 /* Health dot — color tracks state via a modifier class, off the shared
@@ -4763,13 +4879,15 @@ select.field-control:has(option[value=""]:checked) {
   color: var(--fg-muted);
 }
 
-/* "Add storage" — the provider picker. A responsive grid rather than fixed
-   columns so it reflows in the narrow sidebar pane without a second breakpoint;
-   each card is a button whose whole surface is the hit target. */
+/* The provider picker. A responsive grid rather than fixed columns so it
+   reflows in the narrow sidebar pane without a second breakpoint; each card is
+   a button whose whole surface is the hit target. Compact, because these cards
+   now sit at the foot of the add form rather than carrying a section of their
+   own — they must not out-shout the thing they support. */
 .mount-picker {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-  gap: 10px;
+  grid-template-columns: repeat(auto-fit, minmax(196px, 1fr));
+  gap: 8px;
   align-items: stretch;
   /* Every row the same height, not just every card within a row. Grid sizes
      rows independently by default, so a one-line row sat visibly shorter than
@@ -4791,13 +4909,12 @@ select.field-control:has(option[value=""]:checked) {
      against, since auto margins need spare space in the box to distribute. */
   height: 100%;
   display: flex;
-  /* Mark on the left, text stacked to its right — a row, so the icon column
-     can span the card's whole height (see .mount-provider-mark). */
+  /* Mark on the left, name over cost to its right. */
   flex-direction: row;
-  gap: 12px;
-  align-items: stretch;
+  gap: 10px;
+  align-items: center;
   text-align: left;
-  padding: 12px 14px;
+  padding: 10px 12px;
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--bg-alt);
@@ -4805,17 +4922,16 @@ select.field-control:has(option[value=""]:checked) {
   font: inherit;
 }
 
-/* The mark: a fixed-width column stretched (by the card's align-items:stretch)
-   to the card's full content height, which is what sizes the glyph.
-   Width is fixed, matched by eye to that content height (~50px), NOT
-   `aspect-ratio: 1`: the glyphs are square, so squaring the column off the
-   stretched height looks right but is circular — the derived width feeds back
-   into the card's intrinsic size and every card inflated to 300px square
-   (measured). A constant width also keeps every card's text starting at the
-   same x. */
+/* The mark: a fixed square, sized here rather than derived from the card's
+   height. It used to stretch to the content height, which is circular — the
+   glyphs are square, so a width taken from the stretched height feeds back
+   into the card's intrinsic size (every card inflated to 300px square when
+   that was tried with aspect-ratio). A constant size also keeps every card's
+   text starting at the same x. */
 .mount-provider-mark {
   flex: none;
-  width: 50px;
+  width: 26px;
+  height: 26px;
   display: grid;
   color: var(--fg-muted);
 }
@@ -4830,7 +4946,7 @@ select.field-control:has(option[value=""]:checked) {
 .mount-provider-text {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 3px;
   min-width: 0;
   flex: 1;
 }
@@ -4853,16 +4969,11 @@ select.field-control:has(option[value=""]:checked) {
 }
 
 /* The setup COST, stated up front — "one click" and "go create a Google Cloud
-   project" are very different asks and the user picks knowing which.
-
-   margin-top:auto is the alignment: grid rows stretch every card to the tallest
-   in the row, and the cost lines wrap to one or two lines depending on the
-   provider, so without this the cost text floats at a different height in each
-   card and the row reads as ragged. Pinning it to the bottom lines the cost
-   blocks up against each other and keeps the names on their own shared row. */
+   project" are very different asks and the user picks knowing which. 12px, the
+   page's one secondary size: this was the last `em` left on the page, and at
+   0.8em it rendered at 10.4px, a ninth size nothing else used. */
 .mount-provider-cost {
-  margin-top: auto;
-  font-size: 0.8em;
+  font-size: 12px;
   color: var(--fg-muted);
   line-height: 1.4;
 }
@@ -4977,10 +5088,20 @@ select.field-control:has(option[value=""]:checked) {
     justify-content: center;
   }
 
-  /* On a broken mount the Open/Reconnect + delete row wraps below the name;
+  /* On a broken mount the Open/Reconnect + Remove row wraps below the name;
      stretch it full-width so the buttons aren't cramped against the edge. */
   .mount-card-actions {
     flex-wrap: wrap;
+  }
+
+  /* One field per row, button last and full width — the four-column details
+     grid has nowhere to go at this width. */
+  .mount-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .mount-grid-submit {
+    width: 100%;
   }
 }
 

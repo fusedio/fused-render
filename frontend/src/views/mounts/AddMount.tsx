@@ -1,10 +1,23 @@
-// The "Add a mount" form — the page's primary action. Split out of
-// views/Mounts.tsx; the pure decisions it makes live in ./links.ts.
+// The "Add a mount" section — the page's one add flow, and the only place a
+// provider gets connected.
+//
+// LINK-FIRST, because that is how it is actually used: people arrive with an
+// s3:// URL or a console tab and paste it, and Name/Remote/Path are then filled
+// in for them. The old form rendered the link box as a fourth co-equal field
+// above three others, which said the opposite. Here the link input owns its own
+// row and the three details sit under it as confirm-and-correct.
+//
+// The provider cards live at the FOOT of this same section rather than in a
+// sibling "Add storage" heading. They were a second section with its own
+// taxonomy, so connecting Drive and then mounting from it read as two unrelated
+// features; they are the "no link yet" branch of one flow.
 import { useEffect, useRef, useState } from "react";
 import { createDetectedRemote, createMount } from "../../lib/api";
 import type { RcloneRemote, RemoteKind, RemoteSuggestion } from "../../lib/api";
 import { ErrorBanner } from "../../components/ErrorBanner";
 import { Field, Select, TextInput } from "../../components/field/fields";
+import { ProviderPicker } from "./setup";
+import type { SetupKey } from "./setup";
 import {
   mountRootForLink,
   parseStorageUrl,
@@ -31,11 +44,17 @@ const REMOTE_GROUPS: { kind: RemoteKind; label: string }[] = [
   { kind: "public", label: "Public datasets (no credentials)" },
 ];
 
+// How long the details grid stays highlighted after a setup flow hands a remote
+// back. Long enough to be seen by someone whose eyes are still on the closing
+// modal, short enough not to become page furniture.
+const HANDOFF_FLASH_MS = 1800;
+
 export function AddMount({
   remotes,
   suggested,
   preselect,
   onChanged,
+  onPickProvider,
 }: {
   remotes: RcloneRemote[];
   suggested: RemoteSuggestion[];
@@ -43,15 +62,16 @@ export function AddMount({
   // here once the reload carrying it lands. Null when nothing is pending.
   preselect: string | null;
   onChanged: () => void;
+  onPickProvider: (key: SetupKey) => void;
 }) {
   const [name, setName] = useState("");
   const [remote, setRemote] = useState("");
   const [subpath, setSubpath] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  // Until the user edits Name themselves, it follows the last path segment
-  // (the "slug tracks title" pattern) — the mount name and its bucket/prefix
-  // are usually the same, so typing the path twice is pure friction.
+  // Until the user edits Name themselves, it follows the path (the "slug tracks
+  // title" pattern) — the mount name and its bucket/prefix are usually the
+  // same, so typing the path twice is pure friction.
   const [nameTouched, setNameTouched] = useState(false);
 
   const onPathChange = (v: string) => {
@@ -62,26 +82,36 @@ export function AddMount({
   // A pasted S3/GCS link (see parseStorageUrl) that auto-fills the fields below.
   const [link, setLink] = useState("");
 
-  // The suggestions this form may OFFER. `suggested` now carries every
-  // suggestion, including ones already materialized (the setup panels need to
-  // show those as "already added"), but every option here submits
-  // "suggest:<id>" to create the remote on the fly — offering an existing one
-  // would 409 or duplicate it. The materialized ones are already listed under
-  // Remotes, so nothing is lost by dropping them here.
+  // The suggestions this form may OFFER. `suggested` carries every suggestion,
+  // including ones already materialized (the setup panels show those too), but
+  // every option here submits "suggest:<id>" to create the remote on the fly —
+  // offering an existing one would 409 or duplicate it. The materialized ones
+  // are already listed under Remotes, so nothing is lost by dropping them here.
   const offerable = suggested.filter((s) => !s.exists);
 
-  // Pre-select the remote a setup flow just created, and focus Path — the modal
-  // closing used to be the whole feedback, leaving the user to spot a new name
-  // in a dropdown. Applied at most once per preselect, and only once the reload
-  // carrying the remote has landed (shouldApplyPreselect owns both rules).
+  // -- the setup-flow handoff --------------------------------------------------
+  //
+  // A setup flow creates a REMOTE, which mounts nothing. The modal closing used
+  // to be the entire feedback: the user was left to notice a new name in a
+  // dropdown further down a page they were not looking at. So the handoff is
+  // made visible — scroll this section into view, focus Path, flash the grid,
+  // and say in words what just happened and what to do next.
+  const sectionRef = useRef<HTMLElement>(null);
   const pathRef = useRef<HTMLInputElement>(null);
   const appliedPreselect = useRef<string | null>(null);
+  const [flash, setFlash] = useState(false);
+  const [connected, setConnected] = useState<string | null>(null);
   useEffect(() => {
     if (!shouldApplyPreselect(preselect, appliedPreselect.current, remotes.map((r) => r.name)))
       return;
     appliedPreselect.current = preselect;
     setRemote(preselect!);
+    setConnected(preselect);
+    sectionRef.current?.scrollIntoView({ block: "nearest", behavior: "smooth" });
     pathRef.current?.focus();
+    setFlash(true);
+    const t = window.setTimeout(() => setFlash(false), HANDOFF_FLASH_MS);
+    return () => window.clearTimeout(t);
   }, [preselect, remotes]);
 
   // Everything the Remote picker can offer, as one list. A remote the user has
@@ -155,6 +185,7 @@ export function AddMount({
       setRemote("");
       setLink("");
       setNameTouched(false);
+      setConnected(null);
       onChanged();
     } catch (e) {
       setError((e as Error).message);
@@ -164,93 +195,100 @@ export function AddMount({
   };
 
   return (
-    <section className="prefs-section">
-      <h2>Add mount</h2>
-      <p className="deploy-muted">
-        Surface a remote as a local folder. The <b>Remote</b> list groups by how each one is
-        reached — your own remotes, credentials detected on this machine, and public data
-        that needs none. An entry marked <b>+</b> isn’t set up yet; picking it creates the
-        remote as part of adding the mount.
-      </p>
-      <div className="mount-paste">
-        <Field label="Paste a link">
-          <TextInput
-            placeholder="s3://bucket/prefix, gs://bucket/prefix, or an S3/GCS console URL"
-            value={link}
-            onChange={(e) => applyLink(e.target.value)}
-          />
-        </Field>
-        {link.trim() &&
-          (parsedLink ? (
-            <p className="deploy-muted mount-paste-hint">
-              Recognized {parsedLink.provider.toUpperCase()} link — filled the fields below
-              {linkRemote ? "" : "; pick a remote"}.
-              {mountRootForLink(parsedLink.path) !== parsedLink.path
-                ? " Trimmed to the dataset root — edit Path to mount deeper."
-                : " Review, then mount."}
-            </p>
-          ) : (
-            <p className="deploy-muted mount-paste-hint warn">
-              Not a recognized S3/GCS link — fill the fields below manually.
-            </p>
-          ))}
-      </div>
+    <section className="prefs-section mount-add" ref={sectionRef}>
+      <h2>Add a mount</h2>
       <form
-        className="mount-form-row"
+        className="mount-add-form"
         onSubmit={(e) => {
           e.preventDefault();
           if (!busy && nameValid && remote) void add();
         }}
       >
-        <Field label="Name" required>
-          <TextInput
-            placeholder="e.g. sensor-data"
-            value={name}
-            onChange={(e) => {
-              setName(e.target.value);
-              setNameTouched(true);
-            }}
-          />
-        </Field>
-        <Field label="Remote" required>
-          <Select value={remote} onChange={(e) => setRemote(e.target.value)}>
-            <option value="">— remote —</option>
-            {REMOTE_GROUPS.map((g) => {
-              const items = choices.filter((c) => c.kind === g.kind);
-              if (items.length === 0) return null;
-              return (
-                <optgroup key={g.kind} label={g.label}>
-                  {items.map((c) => (
-                    // value is the raw rclone spec — or "suggest:<id>", which
-                    // add() materializes first; only the shown text differs.
-                    <option key={c.value} value={c.value}>
-                      {c.creates ? `+ ${c.label}` : c.label}
-                    </option>
-                  ))}
-                </optgroup>
-              );
-            })}
-          </Select>
-        </Field>
-        <Field label="Path">
-          <TextInput
-            ref={pathRef}
-            placeholder="bucket/prefix"
-            style={{ minWidth: 200 }}
-            value={subpath}
-            onChange={(e) => onPathChange(e.target.value)}
-          />
-        </Field>
-        {/* Blank caption reserves the label row's height so the button
-            aligns with the input boxes, not the labels above them. */}
-        <Field label={" "}>
-          <button type="submit" className="btn btn-primary" disabled={busy || !nameValid || !remote}>
+        <div className="mount-hero">
+          <Field label="Paste a storage link">
+            <TextInput
+              placeholder="s3://bucket/prefix, gs://bucket/prefix, or an S3/GCS console URL"
+              value={link}
+              onChange={(e) => applyLink(e.target.value)}
+            />
+          </Field>
+          {link.trim() &&
+            (parsedLink ? (
+              <p className="mount-note">
+                Recognized {parsedLink.provider.toUpperCase()} link — filled the details below
+                {linkRemote ? "" : "; pick a remote"}.
+                {mountRootForLink(parsedLink.path) !== parsedLink.path
+                  ? " Trimmed to the dataset root — edit Path to mount deeper."
+                  : " Review, then mount."}
+              </p>
+            ) : (
+              <p className="mount-note warn">
+                Not a recognized S3/GCS link — fill the details below manually.
+              </p>
+            ))}
+          {/* The setup handoff, said out loud. Without it the only evidence a
+              sign-in worked was a dropdown quietly changing value. */}
+          {connected && (
+            <p className="mount-note ok" role="status">
+              <code>{connected}</code> connected — pick a folder path and add the mount.
+            </p>
+          )}
+        </div>
+
+        <div className={"mount-grid" + (flash ? " mount-grid--flash" : "")}>
+          <Field label="Name" required>
+            <TextInput
+              placeholder="e.g. sensor-data"
+              value={name}
+              onChange={(e) => {
+                setName(e.target.value);
+                setNameTouched(true);
+              }}
+            />
+          </Field>
+          <Field label="Remote" required>
+            <Select value={remote} onChange={(e) => setRemote(e.target.value)}>
+              <option value="">— remote —</option>
+              {REMOTE_GROUPS.map((g) => {
+                const items = choices.filter((c) => c.kind === g.kind);
+                if (items.length === 0) return null;
+                return (
+                  <optgroup key={g.kind} label={g.label}>
+                    {items.map((c) => (
+                      // value is the raw rclone spec — or "suggest:<id>", which
+                      // add() materializes first; only the shown text differs.
+                      <option key={c.value} value={c.value}>
+                        {c.creates ? `+ ${c.label}` : c.label}
+                      </option>
+                    ))}
+                  </optgroup>
+                );
+              })}
+            </Select>
+          </Field>
+          <Field label="Path">
+            <TextInput
+              ref={pathRef}
+              placeholder="bucket/prefix"
+              value={subpath}
+              onChange={(e) => onPathChange(e.target.value)}
+            />
+          </Field>
+          {/* Bottom-aligned by the grid, not by a blank <Field label=" ">. That
+              hack rendered a whitespace-only <label for> on the button, which
+              overrode its text and left it with an EMPTY accessible name. */}
+          <button
+            type="submit"
+            className="btn btn-primary mount-grid-submit"
+            disabled={busy || !nameValid || !remote}
+          >
             {busy ? "Mounting…" : "Add & mount"}
           </button>
-        </Field>
+        </div>
       </form>
+
       {spec && (
-        <p className="deploy-muted mount-spec">
+        <p className="mount-spec">
           Mounts <code>{spec}</code>
           {nameValid ? (
             <>
@@ -258,10 +296,7 @@ export function AddMount({
               as folder <code>{trimmedName}</code>
             </>
           ) : trimmedName ? (
-            <span className="warn">
-              {" "}
-              — name can’t contain / \ : or start with “.”
-            </span>
+            <span className="warn"> — name can’t contain / \ : or start with “.”</span>
           ) : (
             <>
               {" "}
@@ -270,11 +305,17 @@ export function AddMount({
           )}
         </p>
       )}
-      <p className="deploy-muted mount-paste-hint">
-        Tip: mount a specific <b>bucket/prefix</b>, not a whole bucket — narrow mounts browse and
-        search much faster.
+
+      {/* The ONE explainer this section gets. It used to carry three stacked
+          paragraphs plus an essay about how the Remote dropdown is grouped. */}
+      <p className="mount-note">
+        Mount a specific <b>bucket/prefix</b> rather than a whole bucket — narrow mounts browse
+        and search much faster. An entry marked <b>+</b> is set up as part of adding the mount.
       </p>
+
       {error && <ErrorBanner>{error}</ErrorBanner>}
+
+      <ProviderPicker onPick={onPickProvider} />
     </section>
   );
 }

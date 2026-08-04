@@ -3,9 +3,26 @@
 import { useState } from "react";
 import { deleteMount, reconnectMount } from "../../lib/api";
 import type { Mount, MountUploads } from "../../lib/api";
+import type { RcloneRemote } from "../../lib/api";
 import { navigate } from "../../lib/router";
 import { uploadNotice } from "../../lib/uploads";
 import { ErrorBanner } from "../../components/ErrorBanner";
+import { ProviderIcon } from "../../components/ProviderIcons";
+
+// The card's mark, from the SERVER's classification of the remote behind the
+// mount — never from sniffing its name. The server only tells us the coarse
+// cloud (s3 / gcs / other) and whether it is anonymous, so this is a family
+// mark rather than a brand logo: a bucket for object storage, a globe for
+// anonymous public data, and the generic server stack for everything the user
+// connected themselves (Drive, Dropbox, Box, a custom endpoint). A mount whose
+// remote is no longer in the config falls back to that same generic mark.
+function markFor(remoteSpec: string, remotes: RcloneRemote[]): string {
+  const base = remoteSpec.slice(0, remoteSpec.indexOf(":") + 1);
+  const r = remotes.find((x) => x.name === base);
+  if (!r) return "s3compat";
+  if (r.kind === "public") return "public";
+  return r.provider === "s3" || r.provider === "gcs" ? "detected" : "s3compat";
+}
 
 // Files written to this mount that haven't reached the remote yet (D207).
 // Worth its own line because a mount caches writes locally and uploads them
@@ -49,13 +66,18 @@ function UploadQueue({ uploads }: { uploads?: MountUploads | null }) {
 
 export function MountRow({
   conn,
+  remotes,
   onChanged,
 }: {
   conn: Mount;
+  // Only to classify the card's mark (markFor) — the row itself is driven
+  // entirely by `conn`.
+  remotes: RcloneRemote[];
   onChanged: () => void;
 }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const iconKey = markFor(conn.remote, remotes);
 
   const act = async (fn: () => Promise<unknown>) => {
     setBusy(true);
@@ -87,11 +109,19 @@ export function MountRow({
   const broken = conn.state === "disconnected" || conn.state === "stale";
 
   return (
-    <div className="mount-card">
+    <div className="mount-card mount-card--mount">
       <div className="mount-card-main">
-        <span className={`mount-dot ${conn.state}`} role="img" aria-label={dotLabel} title={dotLabel} />
+        <span className="mount-card-mark" aria-hidden="true">
+          <ProviderIcon provider={iconKey} />
+        </span>
         <div className="mount-card-info">
-          <div style={{ fontWeight: 600 }}>
+          <div className="mount-card-name">
+            <span
+              className={`mount-dot ${conn.state}`}
+              role="img"
+              aria-label={dotLabel}
+              title={dotLabel}
+            />
             {conn.name}
             {conn.read_only && (
               <span className="mount-hint" title="This remote rejects writes — files open read-only">
@@ -116,7 +146,12 @@ export function MountRow({
         </div>
         <div className="mount-card-actions">
           {conn.state === "mounted" ? (
-            <button type="button" disabled={busy} onClick={() => navigate(conn.mountpoint, { isDir: true })}>
+            <button
+              type="button"
+              className="btn btn-secondary"
+              disabled={busy}
+              onClick={() => navigate(conn.mountpoint, { isDir: true })}
+            >
               Open
             </button>
           ) : (
@@ -127,25 +162,28 @@ export function MountRow({
             // never-mounted case, where it just attaches).
             <button
               type="button"
+              className="btn btn-secondary"
               disabled={busy}
               onClick={() => act(() => reconnectMount(conn.id))}
             >
               {busy ? "Reconnecting…" : "Reconnect"}
             </button>
           )}
+          {/* A LABELLED remove, not a bare "✕". Same behaviour as before
+              (removing a mount only unmounts it; nothing on the remote is
+              touched), but the glyph gave no clue which of those two it was. */}
+          {!conn.builtin && (
+            <button
+              type="button"
+              className="btn btn-ghost mount-remove"
+              disabled={busy}
+              title="Remove this mount — the folder disappears locally; nothing on the remote is deleted"
+              onClick={() => act(() => deleteMount(conn.id))}
+            >
+              Remove
+            </button>
+          )}
         </div>
-        {!conn.builtin && (
-          <button
-            type="button"
-            className="mount-delete"
-            disabled={busy}
-            title="Delete mount"
-            aria-label="Delete mount"
-            onClick={() => act(() => deleteMount(conn.id))}
-          >
-            ✕
-          </button>
-        )}
       </div>
       {error && <ErrorBanner>{error}</ErrorBanner>}
     </div>
