@@ -18,6 +18,7 @@ from fastapi.responses import (
 )
 from starlette.concurrency import iterate_in_threadpool, run_in_threadpool
 
+from fused_render.server import dirpicker
 from fused_render.server.common import _error, _require_fused, logger
 from fused_render.server.gitignore import _git_ignored, _is_repo_root
 # The tuning knobs (`_STAT_TTL_S`, `_CONDITIONS_TTL_S`, the `WALK_*`/`LIST_*`
@@ -690,3 +691,37 @@ def api_fs_reveal(body: dict = Body(...), x_fused: str | None = Header(default=N
         cmd = ["xdg-open", path if is_dir else os.path.dirname(path)]
     subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     return JSONResponse({"ok": True})
+
+
+@router.post("/api/fs/pick-folder")
+def api_fs_pick_folder(body: dict = Body(...), x_fused: str | None = Header(default=None)):
+    """Raise the OS folder chooser and answer with what the user picked.
+
+    A sync `def` on purpose, like `api_fs_reveal` above: FastAPI runs it in the
+    threadpool, where blocking for as long as a modal dialog is open is allowed.
+
+    `{"path": "<abs>"}` on a choice, `{"path": null}` on a cancel — the two must
+    be distinguishable, because the page falls back to its in-page dialog on a
+    FAILURE and would otherwise re-ask someone who just said no. Failures are
+    404-shaped errors instead: 409 one is already open, 501 this machine has
+    none (`/api/config`'s `native_dir_picker` says so up front, so a page should
+    not be asking), 500 it broke.
+    """
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+
+    start = body.get("start") or None
+    if start is not None and not os.path.isabs(start):
+        return _error("'start' must be an absolute filesystem path")
+    try:
+        chosen = dirpicker.pick_directory(start=start,
+                                         title=body.get("title") or "Choose a folder")
+    except dirpicker.PickerBusy as exc:
+        return _error(str(exc), status=409)
+    except dirpicker.PickerUnavailable as exc:
+        return _error(str(exc), status=501)
+    except (dirpicker.PickerFailed, TimeoutError) as exc:
+        logger.warning("folder chooser failed: %s", exc)
+        return _error(str(exc) or "the folder chooser failed", status=500)
+    return JSONResponse({"path": chosen})

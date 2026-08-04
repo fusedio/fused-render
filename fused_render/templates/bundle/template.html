@@ -386,9 +386,14 @@
 
   // A real clone, not just the command: git unpacks a local bundle in one
   // synchronous shot, so it needs no job system — the button just waits.
-  // Where it lands is the user's choice (the shared folder picker), seeded at
-  // the bundle's own folder with the name the server would have derived, so
-  // the default is one Enter away and anything else is two clicks.
+  //
+  // Where it lands is the user's choice, asked with the OS's OWN folder dialog
+  // where the shell can raise one (fusedFolderPicker routes to
+  // /api/fs/pick-folder and falls back to its in-page dialog otherwise). Seeded
+  // at the bundle's own folder, and the clone's directory NAME is derived —
+  // `project`, then `project 2` — because a native folder dialog answers with an
+  // existing folder and reader.py refuses a destination that already exists.
+  // The notice below reports the full path it actually landed in.
   document.getElementById("clone").onclick = async (e) => {
     const btn = e.currentTarget;
     const dest = OVERVIEW.clone_dest || "";
