@@ -19,7 +19,7 @@ from fastapi.responses import (
 from starlette.concurrency import iterate_in_threadpool, run_in_threadpool
 
 from fused_render.server.common import _error, _require_fused, logger
-from fused_render.server.gitignore import _git_ignored
+from fused_render.server.gitignore import _git_ignored, _is_repo_root
 # The tuning knobs (`_STAT_TTL_S`, `_CONDITIONS_TTL_S`, the `WALK_*`/`LIST_*`
 # caps) are read through their DEFINING module below — `_server_mount._STAT_TTL_S`
 # and friends — never re-bound here by `from … import`. Each of those modules says
@@ -638,6 +638,29 @@ async def api_fs_events(ws: WebSocket):
         pumper.cancel()
         for entry in entries:
             _WATCH_REGISTRY.unsubscribe(entry, queue)
+
+def _git_repo_payload(path: str):
+    """Whether `path` is the work-tree root of a git repository.
+
+    Backs the Compress submenu's two git formats, which only make sense at a
+    repo root (see gitignore._is_repo_root). It is a `git` subprocess, so it
+    is deliberately NOT part of the stat payload: it runs on submenu hover,
+    once, instead of on every right-click of every row.
+
+    A mount-backed path answers False without asking git at all — a `git -C`
+    over a mount walks the remote prefix, the known mount-wedging pattern —
+    and that is also the honest answer: an object-store prefix is not a
+    checkout."""
+    if not path or not os.path.isabs(path):
+        return _error("'path' must be an absolute filesystem path")
+    if shell_mounts.is_mount_backed(path):
+        return {"path": path, "is_repo_root": False}
+    return {"path": path, "is_repo_root": _is_repo_root(path)}
+
+
+@router.get("/api/fs/git-repo")
+def api_fs_git_repo(path: str):
+    return _git_repo_payload(path)
 
 @router.post("/api/fs/reveal")
 def api_fs_reveal(body: dict = Body(...), x_fused: str | None = Header(default=None)):
