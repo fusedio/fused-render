@@ -1,4 +1,4 @@
-// The badge an app card shows for its listing source (D206, D208). Small, but
+// The badge an app card shows for its listing source (D212, D214). Small, but
 // it is the only thing distinguishing three sources that otherwise render
 // identically — and it used to be an inline `=== "claude-science"` written out
 // separately in AppPreviewCard and in Home's RecentRow, which is exactly the

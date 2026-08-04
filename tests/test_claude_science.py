@@ -1,4 +1,4 @@
-"""Claude Science artifacts in the Home/apps listing (claude_science.py, D206).
+"""Claude Science artifacts in the Home/apps listing (claude_science.py, D212).
 
 The fixtures mirror the real store byte-for-byte, because every rule in the
 module is a rule about *that* layout:

@@ -15,7 +15,14 @@
 // Apps with no entry at all get the monogram too (their initial, there being
 // no extension to name), so a card is never blank.
 import { appSourceLabel, type AppInfo } from "@platform/lib/api";
-import { entryOf, extLabel, isImageEntry, openApp, rawUrl } from "@platform/lib/appEntry";
+import {
+  entryOf,
+  extLabel,
+  hrefFor,
+  isImageEntry,
+  onAppCardClick,
+  rawUrl,
+} from "@platform/lib/appEntry";
 import { hueFor } from "@apps/builder/AppCard";
 
 // "3d ago" style stamp for the card meta line; null when the backend didn't
@@ -46,11 +53,13 @@ export function AppPreviewCard({ app }: { app: AppInfo }) {
   const sourceLabel = appSourceLabel(app.source);
   const entry = entryOf(app);
   const ext = extLabel(entry);
+  // An anchor, not a button — see AppCard. The href is what makes middle-click
+  // and "Open in new tab" land on the same place a left click does.
   return (
-    <button
-      type="button"
+    <a
       className="app-pcard"
-      onClick={() => openApp(app)}
+      href={hrefFor(app)}
+      onClick={(e) => onAppCardClick(e, app)}
       title={entry ?? app.path}
     >
       <span className="app-pcard-thumb" aria-hidden="true">
@@ -69,7 +78,8 @@ export function AppPreviewCard({ app }: { app: AppInfo }) {
               title=""
             />
             {/* Shield: the preview is display-only — every pointer event lands
-                on the card button, never inside the app. */}
+                on the card's link, never inside the app — which is also what
+                keeps middle-click over the preview a new tab for the app. */}
             <span className="app-pcard-shield" />
           </>
         ) : isImageEntry(entry) ? (
@@ -100,6 +110,6 @@ export function AppPreviewCard({ app }: { app: AppInfo }) {
           {ago && <span className="app-pcard-ago">{ago}</span>}
         </span>
       </span>
-    </button>
+    </a>
   );
 }

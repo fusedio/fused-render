@@ -294,7 +294,7 @@ def main(city: str = "oslo", limit: int = 100):
   silently — a per-poll spawn for the readers, and (while PY-6a's bootstrap was
   the only way a child could see the package) an outright failure for one that
   imports the package.
-- **PY-6c** **Executing a page writes nothing into the user's app folder** (D207).
+- **PY-6c** **Executing a page writes nothing into the user's app folder** (D213).
   Both engines set `sys.dont_write_bytecode` before putting the app dir on
   `sys.path`, so neither the page's own `.py` nor any sibling it imports leaves a
   `__pycache__` behind — the built-in worker cached both (`_child.py` loads

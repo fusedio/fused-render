@@ -4,7 +4,7 @@
 // a tile never changes colour across visits, and the hues are the same family
 // the listing already paints file icons with.
 import type { AppInfo } from "@platform/lib/api";
-import { entryOf, openApp } from "@platform/lib/appEntry";
+import { hrefFor, onAppCardClick, openTargetFor } from "@platform/lib/appEntry";
 
 const APP_HUES = [
   "var(--icon-folder)",
@@ -25,12 +25,15 @@ export function hueFor(name: string): string {
 
 export function AppCard({ app }: { app: AppInfo }) {
   const title = app.title || app.name;
+  // An anchor, not a button, so middle-click / Cmd-click / "Open in new tab"
+  // work; the open rule itself lives in appEntry so all three card surfaces
+  // share it. The tooltip names what will actually open.
   return (
-    <button
-      type="button"
+    <a
       className="home-app"
-      onClick={() => openApp(app)}
-      title={entryOf(app) ?? app.path}
+      href={hrefFor(app)}
+      onClick={(e) => onAppCardClick(e, app)}
+      title={openTargetFor(app).path}
     >
       <span className="home-app-monogram" aria-hidden="true" style={{ color: hueFor(app.name) }}>
         {title.charAt(0).toUpperCase()}
@@ -42,6 +45,6 @@ export function AppCard({ app }: { app: AppInfo }) {
         {title !== app.name && <span className="home-app-sub">{app.name}</span>}
       </span>
       <span className="home-app-tag">{app.tag}</span>
-    </button>
+    </a>
   );
 }

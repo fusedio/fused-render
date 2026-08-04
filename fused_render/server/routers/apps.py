@@ -10,25 +10,28 @@ direct-child ``.html`` file when there is exactly one — zero or several means
 the folder still lists, but opens as a directory instead of a view
 (``entry_html: null``).
 
-The workspace is not the only source (D185, D206, D208). ``GET /api/apps``
-merges three, each tagging its apps with a ``source`` so the shell can tell them
-apart:
+The walk itself lives in ``fused_render/app_listing.py``, which also defines
+what one listed app looks like. Each app reports its entry twice: ``entry`` is
+the file a card opens and previews, ``entry_html`` the narrower claim that the
+entry is a renderable page (the only one the HTML-only ``/render`` iframe may be
+pointed at). For an app of this shape they are the same file.
+
+The workspace is not the only source. ``GET /api/apps`` merges three, each
+tagging its apps with a ``source`` so the shell can badge them and branch its
+open rule:
 
 * ``workspace`` — the two-level walk above, over ``fused_dir()``.
-* ``claude-science`` — the artifacts in the local Claude Science store
-  (``claude_science.py``), tagged by the project that produced them. Because
-  most are figures and tables rather than pages, every app also reports
-  ``entry``: the file the card opens and previews, which for a folder-shaped app
-  is simply its ``entry_html``.
-* ``claude-code`` — apps in *other* Fused-shaped folders, found by reading the
+* ``claude-science`` — artifacts in the local Claude Science store
+  (``claude_science.py``), tagged by the project that produced them. Most are
+  figures and tables rather than pages, which is what ``entry`` exists for.
+* ``claude-code`` — apps in *other* Fused-shaped folders, found from the
   absolute paths in Claude Code's ``~/.claude.json`` project list
   (``claude_projects.py``). A folder contributes when most of its
-  subdirectories are apps (D209), which is what keeps ordinary source trees out
-  of Home.
+  subdirectories are apps, which keeps ordinary source trees out of Home.
 
-The discovered sources are read-only — nothing here scaffolds, commits or
-deploys into them — and each is switchable off from Preferences (D210,
-``prefs.discovery_enabled``), checked per request so a toggle applies to the
+Both discovered sources are read-only — nothing here scaffolds, commits or
+deploys into them — and each is switchable off from Preferences
+(``prefs.discovery_enabled``), checked per request so a toggle applies to the
 next listing and an off source is never walked at all.
 
 POST /api/apps/new scaffolds ``<workspace>/local/<name>/`` from the packaged
@@ -74,9 +77,9 @@ _APP_STARTER_DIR = os.path.join(
 
 # ------------------------------------------------------------------- listing
 
-# Every source agrees on the entry contract, and two of them use the same
-# two-level folder shape, so the walk and its helpers live in app_listing
-# rather than being written twice (see that module).
+# The walk and the entry contract live in `app_listing` rather than in this
+# handler: they are the part worth testing directly (and reusing) — a route is
+# not the right place for the rules about what an app IS. See that module.
 
 
 def _from(label: str, fn) -> list[dict]:
@@ -96,16 +99,11 @@ def _from(label: str, fn) -> list[dict]:
 @router.get("/api/apps")
 def api_apps():
     root = fused_dir()
-    # The workspace's own apps, then the two discovered sources. A workspace
-    # that does not exist yet (first run, before seeding) contributes nothing
-    # rather than short-circuiting: the other sources may still have something,
-    # and discarding it would make Home emptier than the machine is.
-    apps = app_listing.two_level_apps(root, "workspace")
-    # The two discovered sources are switchable from Preferences (D210). The
-    # check is per request, like the engine pref: a toggle takes effect on the
-    # next listing with no restart. Reading it BEFORE the call is the point —
-    # a source that is off costs no walk at all, which is most of why someone
-    # would turn one off.
+    apps = app_listing.two_level_apps(root)
+    # Read the pref BEFORE calling the source, not as a filter on its result:
+    # someone switching a source off is usually objecting to the WALK — reading
+    # folders they did not ask this app to read — and a filter afterwards would
+    # keep paying exactly the cost they turned off.
     if prefs.discovery_enabled("claude_science"):
         apps += _from("Claude Science", claude_science.list_apps)
     if prefs.discovery_enabled("claude_code"):

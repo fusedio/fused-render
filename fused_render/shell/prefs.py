@@ -130,7 +130,7 @@ def discovery_enabled(source: str) -> bool:
     who doesn't want it should never see, whereas these only surface work the
     user already has, in a listing they already look at. Off-by-default would
     mean a user with a folder of Claude Code apps sees nothing until they find
-    a setting telling them the feature exists (D210).
+    a setting telling them the feature exists (D216).
 
     Any non-`false` stored value (including missing) reads as on, matching
     `calls_enabled` — the on-by-default reading, not the opt-in one.
@@ -233,7 +233,7 @@ def _prefs_response() -> dict:
         "deploy": {"enabled": deploy_enabled()},
         # Whether the Reader (listen-to-files) accessibility mode is offered (opt-in).
         "reader": {"enabled": reader_enabled()},
-        # The optional sources GET /api/apps merges (D210). `available` is the
+        # The optional sources GET /api/apps merges (D216). `available` is the
         # derived fact beside the stored one, the same shape the engine block
         # uses: a toggle for something that isn't installed would otherwise
         # look broken rather than inapplicable.

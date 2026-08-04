@@ -846,7 +846,7 @@ export interface Prefs {
   // Whether the Reader (listen-to-files) accessibility mode is offered (opt-in,
   // default off).
   reader: { enabled: boolean };
-  // The optional sources GET /api/apps merges beside the workspace (D210).
+  // The optional sources GET /api/apps merges beside the workspace (D216).
   // Both default ON — they surface work the user already has rather than
   // adding an affordance, so opt-out is the honest default. `available` says
   // whether the source is installed at all, which is what lets the page
@@ -1457,12 +1457,12 @@ export function openTemplateInClaude(name: string): Promise<{ url: string }> {
 // comes from that file's <title>, null falls back to the folder name in the
 // UI.
 //
-// The listing merges three sources. **claude-science** (D206) is the local
+// The listing merges three sources. **claude-science** (D212) is the local
 // Claude Science store's artifacts, tagged by the project that produced them:
 // read-only and mostly not pages, so `entry` — the file a card opens and
 // previews — is the field to reach for, while `entry_html` is the narrower
 // "this entry is a renderable page" claim the /render iframe and the
-// claude_split open path key off. **claude-code** (D208) is an app in another
+// claude_split open path key off. **claude-code** (D214) is an app in another
 // Fused-shaped folder, found from Claude Code's project list; it is an
 // ordinary Fused app in a folder the user owns, so it behaves exactly like a
 // workspace one and differs only in its badge.
@@ -1485,10 +1485,13 @@ export interface AppInfo {
   tag: string;
   path: string;
   entry_html: string | null;
-  // The file the card opens and previews: the entry HTML for a workspace app,
-  // the newest version file (figure, table, page…) for a Claude Science
-  // artifact. Optional for older backends — fall back to `entry_html` via
-  // entryOf() rather than reading it directly.
+  // The file a card opens and previews — the entry HTML for an app of the
+  // folder-with-a-page shape. Reported separately from `entry_html`, which is
+  // the narrower claim that the entry is a renderable page and so the only one
+  // the HTML-only /render iframe may be pointed at. Optional for older backends
+  // that predate the key — read it through entryOf(), never directly.
+  // For a Claude Science artifact it is the newest version file, which may
+  // be a figure or a table rather than a page — the case `entry` exists for.
   entry?: string | null;
   title: string | null;
   // Last-modified time, epoch seconds. Optional/null for servers that don't

@@ -250,7 +250,7 @@ function ReaderToggle({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs) 
   );
 }
 
-// One switchable app-discovery source (D210). Both default ON, so these read
+// One switchable app-discovery source (D216). Both default ON, so these read
 // as "stop showing me these" rather than "enable a feature" — which is why the
 // copy names what disappears rather than what appears.
 function DiscoveryToggle({

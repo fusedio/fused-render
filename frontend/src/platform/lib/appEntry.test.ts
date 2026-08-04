@@ -1,86 +1,196 @@
-// Entry resolution for app cards (D206). The rules that matter here are the
-// ones that decide which of three thumbnail routes a card takes and what
-// clicking it opens — a wrong answer is either a blank card or a navigation to
-// a folder full of UUIDs, and neither is visible to a typecheck.
+// Entry resolution for app cards. The rules that matter here are the ones no
+// typecheck can check: where a click lands, and whether the browser's own
+// new-tab gestures still reach the anchor. A wrong answer is either a card that
+// navigates somewhere unexpected or a middle-click that does nothing.
 import { expect, test } from "bun:test";
 
 import type { AppInfo } from "./api";
 
-// appEntry pulls `navigate` from router.ts, which reads `location` at MODULE
-// scope (IS_EMBED) — and bun's test runtime has no DOM. A static import is
-// hoisted above any shim, so `location` is stubbed first and the module comes
-// in dynamically after it. (toast.test.ts shims `window` the same way but can
-// import statically: it only touches it at call time.) The stub is on
-// globalThis, which every file shares — hence `??=`, and hence a shape real
-// enough for router to read rather than an empty object.
-(globalThis as { location?: unknown }).location ??= { pathname: "/" };
-const { entryOf, extLabel, isImageEntry, openTargetFor, rawUrl } = await import("./appEntry");
+// appEntry pulls `navigate`/`urlForFsPath` from router.ts, which reads
+// `location` at MODULE scope (IS_EMBED) — and bun's test runtime has no DOM. A
+// static import is hoisted above any shim, so `location` is stubbed first and
+// the module comes in dynamically after it. The stub is on globalThis, which
+// every file shares — hence `??=`, and hence a shape real enough for router to
+// read rather than an empty object.
+(globalThis as { location?: unknown }).location ??= {
+  pathname: "/",
+  search: "",
+  href: "http://localhost/",
+};
+// `openApp` really does call navigate(), which pushes history and fires the nav
+// event. Stubbed rather than avoided: the assertion below is about whether the
+// shell CLAIMED the click, and swapping in a fake openApp would test the fake.
+// Where navigate() then lands is router.ts's business, not this module's.
+(globalThis as { history?: unknown }).history ??= {
+  state: null,
+  pushState() {},
+  replaceState() {},
+};
+(globalThis as { window?: unknown }).window ??= { dispatchEvent() {} };
 
-// Where a click lands — the rule this module exists to hold in one place, and
-// one no typecheck can check. Asserted through openTargetFor rather than by
-// mocking `navigate`: bun's mock.module is process-wide, so stubbing router
-// here leaked into whichever suite happened to run next.
-const openedBy = (over: Partial<AppInfo>) => openTargetFor(app(over));
+const {
+  entryOf,
+  extLabel,
+  hrefFor,
+  isBrowserHandledClick,
+  isImageEntry,
+  onAppCardClick,
+  openTargetFor,
+  rawUrl,
+} = await import("./appEntry");
 
-function app(over: Partial<AppInfo>): AppInfo {
+function app(over: Partial<AppInfo> = {}): AppInfo {
   return {
-    name: "a",
+    name: "demo",
     tag: "local",
-    path: "/w/a",
-    entry_html: null,
+    path: "/w/local/demo",
+    entry_html: "/w/local/demo/index.html",
     title: null,
     ...over,
   };
 }
 
+// A React MouseEvent, reduced to what the handler reads. `preventDefault`
+// records rather than mocks — the assertion is whether the shell claimed the
+// click, and that IS the preventDefault call.
+function click(over: Record<string, unknown> = {}) {
+  let prevented = false;
+  return {
+    button: 0,
+    metaKey: false,
+    ctrlKey: false,
+    shiftKey: false,
+    altKey: false,
+    defaultPrevented: false,
+    preventDefault() {
+      prevented = true;
+    },
+    get prevented() {
+      return prevented;
+    },
+    ...over,
+  };
+}
+
 test("entryOf prefers entry and falls back to entry_html", () => {
-  expect(entryOf(app({ entry: "/w/a/fig.png", entry_html: null }))).toBe("/w/a/fig.png");
-  // A backend that predates `entry` sends only entry_html; the cards must not
-  // go blank against it.
-  expect(entryOf(app({ entry_html: "/w/a/index.html" }))).toBe("/w/a/index.html");
-  expect(entryOf(app({}))).toBe(null);
-  // Explicitly null (an artifact dir we could not read) is not "absent".
+  expect(entryOf(app({ entry: "/w/e.png", entry_html: null }))).toBe("/w/e.png");
+  // An older backend sends no `entry` at all; the page must not read undefined.
+  expect(entryOf(app({ entry: undefined }))).toBe("/w/local/demo/index.html");
   expect(entryOf(app({ entry: null, entry_html: null }))).toBe(null);
+});
+
+// ------------------------------------------------------- where a click lands
+
+test("an app with a page entry opens its folder beside a Claude chat", () => {
+  expect(openTargetFor(app())).toEqual({
+    path: "/w/local/demo",
+    opts: { isDir: true, mode: "claude_split" },
+  });
+});
+
+test("an entry that is not a page opens the file itself", () => {
+  // No workspace app is shaped this way today, but `entry` exists for exactly
+  // this case and the fallback below must keep meaning "nothing to open".
+  expect(openTargetFor(app({ entry: "/w/local/demo/table.csv", entry_html: null })))
+    .toEqual({ path: "/w/local/demo/table.csv" });
+});
+
+test("an app with no entry at all opens its folder", () => {
+  expect(openTargetFor(app({ entry: null, entry_html: null }))).toEqual({
+    path: "/w/local/demo",
+    opts: { isDir: true },
+  });
+});
+
+// -------------------------------------------------------------- the new tab
+
+test("href points at the same target a left click opens", () => {
+  // The whole point of building both from openTargetFor: a new tab and an
+  // in-app click cannot land in different places.
+  expect(hrefFor(app())).toBe("/view/w/local/demo?_mode=claude_split");
+  expect(hrefFor(app({ entry: "/w/local/demo/t.csv", entry_html: null }))).toBe(
+    "/view/w/local/demo/t.csv",
+  );
+});
+
+test("href encodes a path the URL codec would otherwise break on", () => {
+  // A space, a `#` and a non-ASCII name all have to survive into the href —
+  // an unencoded `#` would truncate the URL at the fragment.
+  expect(hrefFor(app({ path: "/w/local/my app #2", entry_html: null, entry: null }))).toBe(
+    "/view/w/local/my%20app%20%232",
+  );
+  expect(hrefFor(app({ path: "/w/local/日本", entry_html: null, entry: null }))).toBe(
+    "/view/w/local/%E6%97%A5%E6%9C%AC",
+  );
+});
+
+test("the browser keeps every gesture that means 'not this tab'", () => {
+  // Middle-click (and any non-primary button) plus every modifier: Cmd/Ctrl for
+  // a new tab, Shift for a new window, Alt for download. Intercepting any of
+  // them would make the card fight the browser.
+  expect(isBrowserHandledClick(click({ button: 1 }))).toBe(true);
+  expect(isBrowserHandledClick(click({ button: 2 }))).toBe(true);
+  expect(isBrowserHandledClick(click({ metaKey: true }))).toBe(true);
+  expect(isBrowserHandledClick(click({ ctrlKey: true }))).toBe(true);
+  expect(isBrowserHandledClick(click({ shiftKey: true }))).toBe(true);
+  expect(isBrowserHandledClick(click({ altKey: true }))).toBe(true);
+  // A plain left click is the shell's.
+  expect(isBrowserHandledClick(click())).toBe(false);
+});
+
+test("a plain left click is intercepted; a modified one is left alone", () => {
+  const plain = click();
+  onAppCardClick(plain, app());
+  expect(plain.prevented).toBe(true); // in-app navigation, no page reload
+
+  for (const modified of [click({ button: 1 }), click({ metaKey: true }),
+                          click({ ctrlKey: true }), click({ shiftKey: true })]) {
+    onAppCardClick(modified, app());
+    expect(modified.prevented).toBe(false); // the href does the work
+  }
+});
+
+test("a click something else already handled is not hijacked", () => {
+  const handled = click({ defaultPrevented: true });
+  onAppCardClick(handled, app());
+  expect(handled.prevented).toBe(false);
+});
+
+
+// ---------------------------------------------- the artifact sources' additions
+
+test("a Claude Science artifact opens the FILE, never the folder-with-a-chat", () => {
+  // The one exception to "a page entry opens its folder". Two independent
+  // reasons, one of them a live bug caught in review: claude_split rediscovers
+  // the entry from the folder and wants exactly one top-level .html, but an
+  // artifact folder holds one per VERSION — so the second save of a report left
+  // the pane with no entry at all. And that chat would run cwd'd inside
+  // ~/.claude-science, a store this app only ever reads.
+  expect(
+    openTargetFor(
+      app({
+        path: "/cs/u1",
+        entry: "/cs/u1/v2_report.html",
+        entry_html: "/cs/u1/v2_report.html",
+        source: "claude-science",
+      }),
+    ),
+  ).toEqual({ path: "/cs/u1/v2_report.html" });
+
+  // A workspace app with the same shape still opens its folder.
+  expect(
+    openTargetFor(app({ path: "/w/a", entry_html: "/w/a/index.html", source: "workspace" })),
+  ).toEqual({ path: "/w/a", opts: { isDir: true, mode: "claude_split" } });
 });
 
 test("isImageEntry recognises the types an <img> can paint", () => {
   for (const path of ["/a/f.png", "/a/f.JPG", "/a/f.jpeg", "/a/f.svg", "/a/f.webp"]) {
     expect(isImageEntry(path)).toBe(true);
   }
-  // A CSV table and an HTML page both have their own route; neither is an image.
+  // A CSV table and an HTML page each have their own route; neither is an image.
   for (const path of ["/a/f.csv", "/a/f.html", "/a/f.parquet", "/a/png", null]) {
     expect(isImageEntry(path)).toBe(false);
   }
-});
-
-test("a workspace page app opens its folder beside a Claude chat", () => {
-  expect(openedBy({ path: "/w/a", entry_html: "/w/a/index.html", entry: "/w/a/index.html", source: "workspace" }))
-    .toEqual({ path: "/w/a", opts: { isDir: true, mode: "claude_split" } });
-  // An older backend sends no `source` at all; it can only mean workspace.
-  expect(openedBy({ path: "/w/a", entry_html: "/w/a/index.html" }))
-    .toEqual({ path: "/w/a", opts: { isDir: true, mode: "claude_split" } });
-});
-
-test("a Claude Science artifact opens the FILE, never the folder-with-a-chat", () => {
-  // The HTML case is the one that regressed: claude_split rediscovers the entry
-  // from the folder and wants exactly one top-level .html, but an artifact
-  // folder holds one per version — so the second save left the pane empty. It
-  // would also have run a Claude session inside ~/.claude-science.
-  expect(
-    openedBy({
-      path: "/cs/u1",
-      entry: "/cs/u1/v2_report.html",
-      entry_html: "/cs/u1/v2_report.html",
-      source: "claude-science",
-    }),
-  ).toEqual({ path: "/cs/u1/v2_report.html" });
-
-  expect(openedBy({ path: "/cs/u2", entry: "/cs/u2/v1_fig.png", source: "claude-science" }))
-    .toEqual({ path: "/cs/u2/v1_fig.png" });
-});
-
-test("an app with no entry at all opens its folder", () => {
-  expect(openedBy({ path: "/w/empty" })).toEqual({ path: "/w/empty", opts: { isDir: true } });
 });
 
 test("extLabel names what a thumbnail-less card holds", () => {
@@ -99,8 +209,8 @@ test("extLabel names what a thumbnail-less card holds", () => {
 });
 
 test("rawUrl encodes the path as a query parameter", () => {
-  // Claude Science artifact paths carry UUID dirs and saved names that may hold
-  // spaces, & and + — all of which must survive as path characters.
+  // Artifact paths carry UUID dirs and saved names that may hold spaces, & and
+  // + — all of which must survive as path characters.
   expect(rawUrl("/Users/i/.claude-science/orgs/26f4/artifacts/p/u/v6f4_a b&c+d.png")).toBe(
     "/api/fs/raw?path=%2FUsers%2Fi%2F.claude-science%2Forgs%2F26f4%2Fartifacts%2Fp%2Fu%2Fv6f4_a%20b%26c%2Bd.png",
   );

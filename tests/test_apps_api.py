@@ -162,14 +162,14 @@ def test_an_unreadable_project_dir_is_skipped_at_any_uid(client, workspace,
     """The same contract as above, without depending on file permissions.
 
     The chmod test is VACUOUS FOR ROOT — mode 0 does not stop uid 0 reading the
-    directory, so a developer (or a container) running as root sees it pass no
-    matter what the code does. That is how a regression shipped: `app_entry`
-    moved inside `app_dict`, which swallowed the `OSError` and turned "skip this
-    directory" into "list it with no entry". Local runs were green; every CI job
-    failed.
+    directory, so it is skipped there and a developer (or a container) running
+    as root gets no coverage of this path at all. That is how a regression
+    shipped once: `app_entry` was called from inside `app_dict`, which swallowed
+    the `OSError` and turned "skip this directory" into "list it with no entry".
 
     Raising from `app_entry` itself reproduces the condition deterministically,
-    for every uid, and is what the listing actually has to survive.
+    for every uid and on Windows too, and is what the listing actually has to
+    survive.
     """
     _app_dir(workspace, "ok")
     (workspace / "local" / "locked").mkdir()
@@ -190,6 +190,23 @@ def test_an_unreadable_project_dir_is_skipped_at_any_uid(client, workspace,
 def test_missing_workspace_lists_empty(client, workspace):
     os.rmdir(workspace)
     assert client.get("/api/apps").json() == {"apps": []}
+
+
+def test_entry_is_reported_alongside_entry_html(client, workspace):
+    """Both keys, same file — the shell reads `entry` and needs it to be there.
+
+    `entry` is "the file a card opens"; `entry_html` is the narrower "this entry
+    is a renderable page". They coincide for a workspace app, and an entry-less
+    folder reports null under both rather than omitting either key.
+    """
+    _app_dir(workspace, "withentry")
+    (workspace / "local" / "bare").mkdir()
+
+    apps = {a["name"]: a for a in client.get("/api/apps").json()["apps"]}
+
+    assert apps["withentry"]["entry"] == apps["withentry"]["entry_html"]
+    assert apps["withentry"]["entry"].endswith("index.html")
+    assert apps["bare"]["entry"] is None and apps["bare"]["entry_html"] is None
 
 
 # ------------------------------------------------------------------- creation
