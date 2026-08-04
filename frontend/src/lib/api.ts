@@ -1191,10 +1191,19 @@ export interface DriveOAuthStatus {
   error: string | null;
 }
 
-// Starts the browser sign-in and returns immediately; 409 when one is already
-// in flight (rclone's callback port can only be bound once).
-export function startRemoteOAuth(name: string): Promise<{ ok: boolean; name: string }> {
-  return postJson<{ ok: boolean; name: string }>("/api/mounts/remotes/oauth", { name });
+// Starts the browser sign-in and returns immediately. 409 when one is already
+// in flight (rclone's callback port can only be bound once), and 409 when
+// `name` is already taken unless `replace` is set — config/create overwrites,
+// so replacing a working remote takes an explicit opt-in rather than a stale
+// client-side snapshot.
+export function startRemoteOAuth(
+  name: string,
+  replace = false
+): Promise<{ ok: boolean; name: string }> {
+  return postJson<{ ok: boolean; name: string }>("/api/mounts/remotes/oauth", {
+    name,
+    replace,
+  });
 }
 
 // Open GET like getMounts — a pure in-memory read with no side effects.

@@ -1906,6 +1906,43 @@ def test_drive_oauth_never_leaks_the_token_into_an_error(client, rcd, monkeypatc
     assert "ya29.tok" not in s["error"] and "1//ref" not in s["error"]
 
 
+def test_drive_oauth_refuses_to_overwrite_an_existing_remote(client, rcd, monkeypatch):
+    """config/create OVERWRITES a same-named remote. The only collision check
+    was client-side, against a snapshot taken when the modal opened — stale for
+    the whole five-minute sign-in window, and absent for any non-UI caller. A
+    re-sign-in under the same name would silently replace a working remote."""
+    _drive_ready(monkeypatch, rcd)
+    _fake_rclone(monkeypatch, existing_remotes=("gdrive:",))
+    spawned = []
+    _spawn_python(monkeypatch, "pass", record=spawned)
+    r = client.post("/api/mounts/remotes/oauth", json={"name": "gdrive"}, headers=FUSED)
+    assert r.status_code == 409
+    assert "already" in r.json()["error"].lower()
+    # Refused BEFORE the browser is opened — not after the user consents.
+    assert spawned == []
+
+
+def test_drive_oauth_overwrites_only_when_replace_is_explicit(client, rcd, monkeypatch):
+    _drive_ready(monkeypatch, rcd)
+    _fake_rclone(monkeypatch, existing_remotes=("gdrive:",))
+    _spawn_python(monkeypatch, f'print("{AUTHORIZE_OK}")')
+    r = client.post("/api/mounts/remotes/oauth",
+                    json={"name": "gdrive", "replace": True}, headers=FUSED)
+    assert r.status_code == 200
+    assert _wait_oauth(client)["ok"] is True
+    assert any(c[0] == "config/create" for c in rcd.calls)
+
+
+def test_drive_oauth_replace_must_be_a_real_boolean(client, rcd, monkeypatch):
+    """A truthy string from a sloppy caller must not be able to authorize an
+    overwrite — the same strictness add_mount applies to read_only."""
+    _drive_ready(monkeypatch, rcd)
+    _fake_rclone(monkeypatch, existing_remotes=("gdrive:",))
+    r = client.post("/api/mounts/remotes/oauth",
+                    json={"name": "gdrive", "replace": "yes"}, headers=FUSED)
+    assert r.status_code == 400
+
+
 def test_drive_oauth_rejects_a_second_sign_in_while_one_is_in_flight(
         client, rcd, monkeypatch):
     # rclone's callback server binds 127.0.0.1:53682; a second child would just

@@ -567,9 +567,26 @@ def start_remote_oauth(body: dict = Body(...), x_fused: str | None = Header(defa
     name = (body.get("name") or "").strip()
     if not name or ":" in name or "/" in name:
         return JSONResponse({"error": "invalid remote name"}, status_code=400)
+    # Strict bool, like add_mount's read_only: a truthy string from a sloppy
+    # caller must not be able to authorize destroying an existing remote.
+    replace = body.get("replace", False)
+    if not isinstance(replace, bool):
+        return JSONResponse({"error": "'replace' must be true or false"}, status_code=400)
     bin_ = rclone_bin()
     if not bin_:
         return JSONResponse({"error": "rclone is not installed"}, status_code=502)
+    # config/create OVERWRITES a same-named remote, and re-signing in under the
+    # name you already use is the natural thing to do — so the collision has to
+    # be caught HERE. The page's own check is a snapshot from when the dialog
+    # opened, which is stale for the whole sign-in window and absent entirely
+    # for any non-UI caller. Refused before the browser opens, not after the
+    # user has consented to something we then throw away.
+    if not replace and any(r["name"] == f"{name}:"
+                           for r in _rclone_state().get("remotes", [])):
+        return JSONResponse(
+            {"error": f"a remote named '{name}' already exists — pick another name, "
+                      f"or confirm replacing it"},
+            status_code=409)
 
     global _authorize
     with _AUTH_LOCK:

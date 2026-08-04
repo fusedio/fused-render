@@ -679,8 +679,9 @@ function DriveSignIn({
   onBusyChange?: (busy: boolean) => void;
 }) {
   // A free default so the common case is one click. rclone's config/create
-  // overwrites a same-named remote, so an existing name is refused below
-  // rather than silently replacing a working Drive connection.
+  // overwrites a same-named remote, so reusing an existing name takes an
+  // explicit opt-in below — and the server enforces that independently, since
+  // this list is a snapshot from when the dialog opened.
   const taken = new Set(remotes.map((r) => r.name.replace(/:$/, "")));
   const firstFree = () => {
     if (!taken.has("gdrive")) return "gdrive";
@@ -688,6 +689,7 @@ function DriveSignIn({
   };
 
   const [name, setName] = useState(firstFree);
+  const [replace, setReplace] = useState(false);
   const [connecting, setConnecting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const timer = useRef<number | null>(null);
@@ -708,12 +710,13 @@ function DriveSignIn({
   };
 
   const trimmed = name.trim();
+  const collides = taken.has(trimmed);
   const nameError = !trimmed
     ? "Give the remote a name."
     : /[:/]/.test(trimmed)
       ? "A remote name can’t contain “:” or “/”."
-      : taken.has(trimmed)
-        ? `“${trimmed}” already exists — pick another name so it isn’t replaced.`
+      : collides && !replace
+        ? `“${trimmed}” already exists — pick another name, or confirm replacing it.`
         : null;
 
   const begin = async () => {
@@ -721,7 +724,7 @@ function DriveSignIn({
     setConnecting(true);
     onBusyChange?.(true);
     try {
-      await startRemoteOAuth(trimmed);
+      await startRemoteOAuth(trimmed, replace);
     } catch (e) {
       finish((e as Error).message);
       return;
@@ -801,6 +804,21 @@ function DriveSignIn({
           Waiting for you to approve access in your browser… If no tab opened, check for a blocked
           window.
         </p>
+      )}
+      {!connecting && collides && (
+        // Re-signing in under the name you already use is the NATURAL action
+        // (a revoked or expired token is the usual reason to be here), so this
+        // has to be possible — just never by accident. config/create
+        // overwrites, and the server refuses without this flag.
+        <label className="deploy-muted mount-paste-hint">
+          <input
+            type="checkbox"
+            checked={replace}
+            onChange={(e) => setReplace(e.target.checked)}
+          />{" "}
+          Replace the existing “{trimmed}” remote — use this to sign in again after a
+          token expired or was revoked.
+        </label>
       )}
       {!connecting && nameError && trimmed !== "" && (
         <p className="deploy-muted mount-paste-hint warn">{nameError}</p>
