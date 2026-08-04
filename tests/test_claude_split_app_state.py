@@ -440,7 +440,7 @@ def _node(fn_names, call, html, prelude=""):
     chunks = []
     for name in fn_names:
         start = html.index(name)
-        if name.startswith("function"):
+        if name.startswith("function") or name.startswith("async function"):
             end = html.index("\n}\n", start) + 3      # closing brace at column 0
             chunks.append(html[start:end])
             continue
@@ -540,6 +540,7 @@ function fakeWin(doc, href) {
 _STATE_FNS = ["const APP_STATE_MAX_LOGS", "const APP_STATE_MAX_TEXT",
               "const APP_STATE_MAX_NODES", "const APP_STATE_MAX_DEPTH",
               "const APP_STATE_MAX_NODE_TEXT", "const APP_STATE_TAG",
+              "const APP_STATE_UNREADABLE",
               "const appLogs", "let appEntry", "let appLoads",
               "function clipText(", "function pushAppLog(", "function fmtLogArg(",
               "function appWindow(", "function watchWindow(", "function watchApp(",
@@ -932,6 +933,118 @@ def test_reading_the_app_state_is_noted_in_the_log_not_carded(html):
     assert 'p.tool' in html  # permission cards still exist for everything else
     start = html.index("async function answerAppState(")
     assert "buildPermCard" not in html[start:html.index("\n}\n", start)]
+
+
+# ------------------------------ an empty snapshot: null means two things
+
+_PULL_FNS = _STATE_FNS + ["function appStatePull(", "const answeredStates",
+                          "const APP_STATE_NULL_POLLS", "const nullStatePolls",
+                          "async function answerAppState("]
+
+# `fused.runPython` and the on-screen note, recorded rather than performed. The
+# thing under test is WHICH polls send an answer and what that answer says.
+_PULL_STUBS = """
+var AGENT = "./agent.py";
+var sentStates = [];
+var noted = [];
+function addNote(text, working) { noted.push(text); }
+var fused = {runPython: async (agent, params) => {
+  sentStates.push(params.state); return {};
+}};
+"""
+
+
+def test_a_mid_reload_pull_is_retried_rather_than_settled_as_an_error(html):
+    """The model is TOLD to call app_state after an edit, and an edit live-reloads
+    the left pane — so the snapshot is empty at exactly the moment the tool is
+    most likely to be called. Sending the bare `null` that is right for the push
+    channel makes agent.py write a permanent "could not read the app's state",
+    and the id stays claimed so no later poll retries. The reload has to be
+    waited out instead."""
+    out = _node(_PULL_FNS, _DOM + _FRAME + _PULL_STUBS
+                + "let annFrame = {isConnected: true, contentWindow: null};"
+                + """
+(async () => {
+  const req = [{id: "r1", reason: "checking my edit"}];
+  for (let i = 0; i < 3; i++) await answerAppState(req, "run", null);
+  const duringReload = {sent: sentStates.length, noted: noted.length,
+                        claimed: answeredStates.has("r1")};
+  // the pane finishes loading
+  annFrame = {isConnected: true, contentWindow: fakeWin(docOf(BODY))};
+  await answerAppState(req, "run", null);
+  console.log(JSON.stringify({duringReload: duringReload,
+    answers: sentStates.map((s) => JSON.parse(s)), noted: noted}));
+})();
+""", html)
+    # nothing sent, nothing claimed, and no note on screen for a read that has
+    # not happened yet
+    assert out["duringReload"] == {"sent": 0, "noted": 0, "claimed": False}
+    # once the app is back, the very next poll answers with the real thing
+    assert len(out["answers"]) == 1
+    assert out["answers"][0]["dom"]["tag"] == "body"
+    assert out["noted"] == ["read app state — checking my edit"]
+
+
+def test_a_pull_that_can_never_read_the_app_is_answered_instead_of_spun(html):
+    """The other null: a project with no app entry, where the iframe was REMOVED
+    and no amount of waiting will produce a document. Retrying to the tool's own
+    timeout (minutes) would be a worse answer for the model than the sentence
+    saying so, so the retry is bounded."""
+    out = _node(_PULL_FNS, _DOM + _FRAME + _PULL_STUBS
+                + "let annFrame = {isConnected: false, contentWindow: null};"
+                + """
+(async () => {
+  const req = [{id: "r1"}];
+  const perPoll = [];
+  for (let i = 0; i < APP_STATE_NULL_POLLS + 3; i++) {
+    await answerAppState(req, "run", null);
+    perPoll.push(sentStates.length);
+  }
+  console.log(JSON.stringify({perPoll: perPoll,
+    answers: sentStates.map((s) => JSON.parse(s)), raw: sentStates}));
+})();
+""", html)
+    # exactly one answer, and not before the bound is spent
+    assert out["perPoll"] == [0] * 5 + [1, 1, 1], out["perPoll"]
+    assert len(out["answers"]) == 1
+    answer = out["answers"][0]
+    # a dict, NOT the bare `null` agent.py reads as a permanent failure
+    assert out["raw"][0] != "null"
+    assert isinstance(answer, dict)
+    assert "could not be read" in answer["unreadable"]
+    # the security constraint: we could not read the app's window, so there is no
+    # honest source for any of these — and this chat's own window is not it
+    for leak in ("url", "params", "title", "dom"):
+        assert leak not in answer, leak
+
+
+def test_the_push_and_the_pull_read_one_snapshot_and_disagree_about_null(html):
+    """D146: two callers now interpret the same return value differently, so the
+    difference is asserted rather than described. Push omits the block entirely
+    (a turn with nothing to say must look like a turn from before this feature);
+    pull cannot omit anything, because the model is blocked on a reply."""
+    out = _node(_PULL_FNS, _DOM + _FRAME + _PULL_STUBS
+                + "let annFrame = {isConnected: true, contentWindow: null};"
+                + "appEntry = '/p/index.html';"
+                + "console.log(JSON.stringify({push: appStateSnapshot(),"
+                  " pull: appStatePull(), sentence: APP_STATE_UNREADABLE}));",
+                html)
+    assert out["push"] is None
+    assert out["pull"]["unreadable"] == out["sentence"]
+    # the one thing we DO know without reading the window
+    assert out["pull"]["entry"] == "/p/index.html"
+
+
+def test_a_null_snapshot_on_the_wire_is_the_hard_error_the_page_now_avoids(
+        agent, run_dir):
+    """The python half of the same bug, pinned so the page's fix cannot be
+    quietly undone: `JSON.stringify(null)` is the string "null", which parses to
+    a non-dict and settles the tool call as a permanent error."""
+    agent.RUNS = str(run_dir.parent)
+    (run_dir / "appstate" / "abc.req.json").write_text(json.dumps({"id": "abc"}))
+    agent.main(action="app_state", run_id="run", request_id="abc", state="null")
+    res = json.load(open(run_dir / "appstate" / "abc.res.json", encoding="utf-8"))
+    assert res.get("error") and "state" not in res
 
 
 # --------------------------------------------------- Escape has two claimants

@@ -790,6 +790,13 @@ const APP_STATE_MAX_NODE_TEXT = 120;
 // three together, because a drift is invisible until the chat starts showing
 // the user a screenful of JSON they never typed (D146).
 const APP_STATE_TAG = "live-app-state";
+// Why there is nothing to say about the app. ONE const because two callers say
+// it: the snapshot itself, and the pull channel's fallback answer (appStatePull)
+// — a divergence there would tell the model two different stories about the same
+// condition (D146: the duplicated rule gets a test, not a comment).
+const APP_STATE_UNREADABLE = "the app's document could not be read (the project "
+  + "may have no app entry, or the pane has not finished loading), so nothing is "
+  + "known about its title, url or DOM right now";
 // {level, text, source?, line?, ts}. PARENT-side, deliberately: the buffer has
 // to outlive the framed app's own reloads, which is exactly what makes "that
 // error was already there before my edit" answerable.
@@ -1012,10 +1019,7 @@ function appStateSnapshot() {
     // a block. It DOES ride along once there is something else to say — and the
     // console usually says why (the loader logs a failed open), which is the
     // case where this sentence earns its place.
-    state.unreadable = "the app's document could not be read (the project may "
-                     + "have no app entry, or the pane has not finished "
-                     + "loading), so nothing is known about its title, url or "
-                     + "DOM right now";
+    state.unreadable = APP_STATE_UNREADABLE;
   } else {
     try {
       const doc = win.document;
@@ -1034,6 +1038,34 @@ function appStateSnapshot() {
   }
   if (appLogs.length) { state.console = appLogs.slice(); known = true; }
   return known ? state : null;
+}
+
+// The PULL channel's view of the same snapshot. Push and pull read one snapshot
+// function and disagree about what `null` means, on purpose:
+//
+//   push — null is "not worth a block". A turn taken while the pane reloads must
+//          look exactly like a turn from before this feature, not carry a
+//          <live-app-state> block whose entire content is "still loading".
+//   pull — null is not an answer at all. The MODEL asked, its tool call is
+//          BLOCKED on the reply, and agent.py turns a non-dict into the
+//          permanent decision "the window could not read the app's state" — a
+//          hard error, for a condition that is usually over in a few hundred ms.
+//
+// So the pull side never hands `null` down: answerAppState retries a null for a
+// bounded number of polls (the mid-reload case, which resolves), and then falls
+// back to THIS — an explicit, non-fatal sentence the model can act on (the
+// no-app-entry case, which never resolves and must not spin to the tool timeout).
+//
+// `entry` rides along when known; `title`/`url`/`params`/`dom` deliberately do
+// NOT. We could not read the app's window, so there is no honest source for
+// them — and the one wrong answer here is describing THIS chat's window as the
+// app's.
+function appStatePull() {
+  const state = appStateSnapshot();
+  if (state) return state;
+  const out = { unreadable: APP_STATE_UNREADABLE };
+  if (appEntry) out.entry = appEntry;
+  return out;
 }
 
 // The block prepended to the user's message. Delimited and labelled, because
@@ -2018,20 +2050,43 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // tool call is BLOCKED until it is answered. The one-line note is the whole
 // transparency story, and it is the right size for it.
 const answeredStates = new Set();  // ids already answered; poll replays the list
+// Polls a request may see an empty snapshot before we stop waiting and answer
+// with appStatePull's explicit sentence instead. The poll loop is 400 ms, so
+// this is ~2 s — comfortably longer than a live-reload of the left pane, and far
+// shorter than the tool's own timeout (minutes), which would be the alternative
+// backstop and a much worse answer for the model.
+const APP_STATE_NULL_POLLS = 5;
+const nullStatePolls = new Map();  // req.id -> polls seen with nothing to report
 
 async function answerAppState(list, run_id, working) {
   for (const req of list || []) {
     if (!req || !req.id || answeredStates.has(req.id)) continue;
+    // Taken HERE, not at send time: the whole point of the pull channel is that
+    // the pushed snapshot has gone stale.
+    const state = appStateSnapshot();
+    if (!state) {
+      // Nothing to report YET. Almost always the pane mid-reload — and an edit
+      // is exactly what triggers a reload, so this is the common case right
+      // after the model edits something and then asks what happened. Leave the
+      // id UNclaimed so the next poll tries again, rather than settling the tool
+      // call as an error it cannot retry (see appStatePull).
+      const seen = (nullStatePolls.get(req.id) || 0) + 1;
+      nullStatePolls.set(req.id, seen);
+      if (seen <= APP_STATE_NULL_POLLS) continue;
+      // Still nothing: this is not a reload, it is a project with no app to
+      // read. Fall through and answer, so the model is told that instead of
+      // waiting out the tool timeout for the same news.
+    }
     answeredStates.add(req.id);   // claimed before the await: polls overlap
     addNote(req.reason ? "read app state — " + req.reason : "read app state", working);
     try {
       await fused.runPython(AGENT, {
         action: "app_state", run_id, request_id: req.id,
-        // Taken HERE, not at send time: the whole point of the pull channel is
-        // that the pushed snapshot has gone stale.
         // A JSON string, not a nested object: params cross into python
         // string-shaped, and nothing on that side reads inside the snapshot.
-        state: JSON.stringify(appStateSnapshot()),
+        // Never the bare `null` a snapshot can be — agent.py reads a non-dict as
+        // a permanent failure.
+        state: JSON.stringify(state || appStatePull()),
       }, { key: null });
     } catch (err) {
       // The tool call is still blocked, so this has to be retried — un-claim
