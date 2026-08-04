@@ -612,6 +612,26 @@ export function NewAppPanel({ onClose, onCreated }: { onClose: () => void; onCre
   );
 }
 
+// The hero card itself — wordmark, headline, and the prompt composer.
+// Exported so /apps can show the exact same hero above its grid; `onCreated`
+// lets each page refresh its own app list once the folder exists.
+export function HomeHero({ onCreated }: { onCreated: () => void }) {
+  return (
+    <header className="home-hero">
+      {/* Fused wordmark, centered. Two theme-matched renders of the same
+          logo; CSS shows the one matching the active theme. */}
+      <img className="home-hero-logo home-hero-logo-dark" src={logoDark} alt="Fused" />
+      <img className="home-hero-logo home-hero-logo-light" src={logoLight} alt="Fused" />
+      <h1 className="home-hero-title">
+        Build your next <span className="home-hero-accent">local app</span>
+      </h1>
+      {/* The hero's only verb, prompt-first: describe the app right here
+          and a named, scaffolded folder + claude session comes back. */}
+      <HeroComposer onCreated={onCreated} />
+    </header>
+  );
+}
+
 // Section heading: mono eyebrow + count, hairline rule filling the middle,
 // optional trailing action link. The mono face is the shell's existing code
 // voice (listings, paths), so the labels read as part of the tool, not chrome.
@@ -715,23 +735,10 @@ export default function Home({ config }: { config: Config }) {
   return (
     <div className="home-page">
       <div className="home-inner">
-        {/* Hero card: the product's pitch plus its two verbs. "New app" is the
-            page's primary action (opens the create modal — the actual fields
-            live there); "Browse files" is the everyday doorway. */}
-        <header className="home-hero">
-          {/* Fused wordmark, centered. Two theme-matched renders of the same
-              logo; CSS shows the one matching the active theme. */}
-          <img className="home-hero-logo home-hero-logo-dark" src={logoDark} alt="Fused" />
-          <img className="home-hero-logo home-hero-logo-light" src={logoLight} alt="Fused" />
-          <h1 className="home-hero-title">
-            Build your next <span className="home-hero-accent">local app</span>
-          </h1>
-          {/* The hero's only verb, prompt-first: describe the app right here
-              and a named, scaffolded folder + claude session comes back. The
-              structured (name-it-yourself) NewAppPanel lives on /apps now,
-              and file browsing has its doorway card below. */}
-          <HeroComposer onCreated={reloadApps} />
-        </header>
+        {/* Hero card: wordmark + headline + the prompt composer (shared with
+            /apps via HomeHero). The structured NewAppPanel lives on /apps,
+            and file browsing has its doorway card below. */}
+        <HomeHero onCreated={reloadApps} />
 
         {/* Doorways: one card per entry point. */}
         <div className="home-doors">
