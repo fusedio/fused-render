@@ -662,6 +662,77 @@ def test_a_header_is_the_complete_requirement_list(monkeypatch, tmp_path):
     assert call["requirements"] == ["imagecodecs", "pyproj"]
 
 
+@requires_tomllib
+def test_the_install_preflight_does_not_run_on_the_event_loop(monkeypatch, tmp_path):
+    """`is_installed` can spawn a subprocess, so it must not block the loop.
+
+    Since D206 the pre-flight is not a single `os.path.exists` any more: the first
+    call for a venv probes its interpreter with `subprocess.run(..., timeout=5)`.
+    `/api/run` awaits this coroutine directly (`routers/run.py`), so running that
+    inline stalls the ENTIRE server — websockets, the file watcher, every other
+    request — for up to five seconds. The header-LESS branch of the same `if` was
+    moved off the loop for exactly this reason (`await asyncio.to_thread(
+    app_interpreter)`); this pins that the header branch matches it.
+
+    Asserted by thread identity rather than by timing: no sleeps, no flakiness.
+    """
+    target = tmp_path / "declared.py"
+    target.write_text(
+        '# /// script\n# dependencies = ["imagecodecs"]\n# ///\n'
+        "def main():\n    return 1\n"
+    )
+    backend = _FakeBackend(_FakeResult(return_value="1"))
+    monkeypatch.setattr(engine, "get_backend", lambda: backend)
+    seen = {}
+
+    def _where_am_i(reqs):
+        seen["ident"] = threading.get_ident()
+        return True
+
+    monkeypatch.setattr("fused_render.envinstall.is_installed", _where_am_i)
+
+    async def _drive():
+        return threading.get_ident(), await engine.run_python(str(target), {})
+
+    loop_ident, out = asyncio.run(_drive())
+    assert out["ok"] is True
+    assert seen["ident"] != loop_ident, "the pre-flight probe ran ON the event loop"
+
+
+@requires_tomllib
+@pytest.mark.parametrize("exc", [ImportError("no fused"), RuntimeError("no attr")])
+def test_a_preflight_that_raises_is_still_contained_off_thread(
+    monkeypatch, tmp_path, exc
+):
+    """Moving the pre-flight to a thread must not widen what escapes /api/run.
+
+    `is_installed` -> `venv_key_for` reaches into `fused.agent_core...` unguarded,
+    and `_backend_attr` raises RuntimeError BY DESIGN when an upstream private
+    attribute disappears. Uncontained, that made /api/run an unhandled 500 whose
+    body is `{"error": "<string>"}`, which runtime.js renders as the literal word
+    `undefined`. `asyncio.to_thread` re-raises in the awaiting frame, so the
+    existing `try` still covers it — verified here rather than assumed, because
+    "the exception surfaces somewhere else now" is exactly the kind of regression
+    a thread hop hides.
+    """
+    target = tmp_path / "declared.py"
+    target.write_text(
+        '# /// script\n# dependencies = ["imagecodecs"]\n# ///\n'
+        "def main():\n    return 1\n"
+    )
+    backend = _FakeBackend(_FakeResult(return_value="1"))
+    monkeypatch.setattr(engine, "get_backend", lambda: backend)
+
+    def _raise(reqs):
+        raise exc
+
+    monkeypatch.setattr("fused_render.envinstall.is_installed", _raise)
+    out = asyncio.run(engine.run_python(str(target), {}))
+    assert out["ok"] is False
+    assert out["error"]["message"], out
+    assert "traceback" in out["error"]
+
+
 def test_no_resolvable_interpreter_is_a_loud_error_not_a_venv(monkeypatch, tmp_path):
     """A header-less script must NEVER silently fall back to a venv.
 
