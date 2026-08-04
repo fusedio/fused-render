@@ -1,4 +1,4 @@
-// Per-provider icons for the Mounts page's "Add storage" picker. Same house
+// Per-provider icons for the Mounts page provider picker. Same house
 // style as FileIcons/FinderIcon: viewBox 0 0 24 24, fill none, stroke
 // currentColor, round caps/joins — hand-written paths, no npm dependency.
 //
@@ -33,7 +33,7 @@ const svgProps = {
   "aria-hidden": true,
 } as const;
 
-// Keyed by SetupKey (views/Mounts.tsx). Kept as a plain record rather than a
+// Keyed by SetupKey (views/mounts/setup.tsx). Kept as a plain record rather than a
 // switch so a new provider that forgets its icon is a TypeScript error at the
 // lookup site, not a silently blank card.
 const GLYPHS: Record<string, ReactNode> = {
