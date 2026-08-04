@@ -727,10 +727,12 @@ setTimeout(() => { firedAt = styledCount; }, 0);
 (async () => {
   const r = await shotInlineStyles(mk(1000), mk(1000), Date.now() + 60000);
   console.log(JSON.stringify({firedAt: firedAt, styled: r.styled,
-                              incomplete: r.incomplete, chunk: SHOT_STYLE_CHUNK}));
+                              incomplete: r.incomplete, chunk: SHOT_STYLE_CHUNK,
+                              mispaired: mispaired()}));
 })();
 """, html)
     assert out["styled"] == 1000 and out["incomplete"] == ""
+    assert out["mispaired"] == [], "an undisturbed walk pairs every node correctly"
     assert out["firedAt"] > 0, "the timer never got a turn: the walk is still sync"
     assert out["firedAt"] < out["styled"], "it fired after the walk, not during it"
 
@@ -766,6 +768,230 @@ def test_the_style_walk_stops_at_its_element_cap(html):
     assert out["incomplete"] == "elements"
 
 
+# ------------------- the walk yields, so the live DOM can move underneath it
+
+def test_a_node_detached_mid_walk_is_skipped_rather_than_read(html):
+    """Yielding bought boundedness and gave up atomicity: between chunks the app
+    can re-render. getComputedStyle on a node that has left the document returns
+    empty/meaningless values (verified in a real browser: a detached subtree
+    enumerates ZERO properties), so reading one would write an authoritative
+    "this element has no styling" onto the clone."""
+    out = _node(_WALK_FNS, _TREE + """
+const src = mk(400), dst = mk(400);
+// At the walk's first yield, everything past the first chunk leaves the document.
+setTimeout(() => { src.children.forEach((k) => { k.isConnected = false; }); }, 0);
+(async () => {
+  const r = await shotInlineStyles(src, dst, Date.now() + 60000);
+  console.log(JSON.stringify({styled: r.styled, incomplete: r.incomplete,
+                              mispaired: mispaired()}));
+})();
+""", html)
+    assert out["incomplete"] == "detached"
+    assert out["styled"] < 400, "the detached nodes were not read"
+    assert out["mispaired"] == []
+
+
+def test_a_frame_that_navigated_mid_walk_does_not_throw(html):
+    """`s.ownerDocument.defaultView` is null once the frame navigates, which used
+    to be a TypeError out of the middle of a capture rather than a degradation."""
+    out = _node(_WALK_FNS, _TREE + """
+const src = mk(400), dst = mk(400);
+setTimeout(() => { src.children.forEach((k) => { k.ownerDocument = {defaultView: null}; }); }, 0);
+(async () => {
+  const r = await shotInlineStyles(src, dst, Date.now() + 60000);
+  console.log(JSON.stringify({styled: r.styled, incomplete: r.incomplete}));
+})();
+""", html)
+    assert out["incomplete"] == "detached"
+    assert out["styled"] < 400
+
+
+def test_children_that_stopped_corresponding_are_never_paired(html):
+    """The worse symptom, and the one a detachment test cannot show. The clone was
+    taken from this very tree, so a child list that no longer matches it means the
+    app re-rendered — and pairing a[i] with b[i] past that point lands each live
+    node's styles on a DIFFERENT clone node. Demonstrated in a real browser before
+    this fix: 375 clone nodes wearing another element's computed style, with
+    nothing reported."""
+    out = _node(_WALK_FNS, _TREE + """
+// 300 leaves so the walk yields (chunk is 200) before it reaches the wrapper,
+// whose live children lose their FIRST entry mid-walk — so a naive a[i]/b[i]
+// pairing shifts every one of them onto the wrong clone node.
+const kids = [];
+for (let i = 0; i < 300; i++) kids.push(node("l" + i));
+const inner = ["w0", "w1", "w2"].map((n) => node(n));
+kids.push(node("w", inner));
+const src = node("root", kids);
+const dstKids = [];
+for (let i = 0; i < 300; i++) dstKids.push(node("l" + i));
+dstKids.push(node("w", ["w0", "w1", "w2"].map((n) => node(n))));
+const dst = node("root", dstKids);
+setTimeout(() => { inner.shift(); }, 0);
+(async () => {
+  const r = await shotInlineStyles(src, dst, Date.now() + 60000);
+  console.log(JSON.stringify({incomplete: r.incomplete, mispaired: mispaired(),
+                              styled: r.styled}));
+})();
+""", html)
+    assert out["mispaired"] == [], "a style must never land on the wrong element"
+    assert out["incomplete"] == "mutated"
+    # the wrapper itself is styled; only its now-unpairable children are skipped
+    assert out["styled"] == 302
+
+
+def test_a_mid_walk_re_render_that_keeps_the_shape_is_still_reported(html):
+    """The case a structural check cannot catch: a list re-rendered with the same
+    number of children. Node counts still match, so the pairing looks sound while
+    every pair may be wrong — only an observer on the source can see it. (This is
+    half of the real-browser repro: 400 wrappers, half losing a child and half
+    rotating one, and the rotations are invisible to the length check.)"""
+    out = _node(_WALK_FNS, _TREE + """
+var moFire = null;
+view.MutationObserver = function (cb) {
+  this.observe = () => { moFire = cb; };
+  this.disconnect = () => {};
+  this.takeRecords = () => [];
+};
+const src = mk(400), dst = mk(400);
+// The app re-renders between chunks: same shape, different nodes.
+setTimeout(() => { if (moFire) moFire([{type: "childList"}]); }, 0);
+(async () => {
+  const r = await shotInlineStyles(src, dst, Date.now() + 60000);
+  console.log(JSON.stringify({styled: r.styled, incomplete: r.incomplete}));
+})();
+""", html)
+    assert out["incomplete"] == "mutated"
+    # It cannot un-style what it already did, so it finishes and reports instead
+    # of throwing the work away.
+    assert out["styled"] == 400
+
+
+def test_a_reordered_child_list_is_not_paired_by_index(html):
+    """The rotation case, which is where reporting alone was not enough. A row
+    whose first child moves to the end keeps its child COUNT, so the structural
+    check waves it through and every one of its children then wears its
+    neighbour's styles. Measured in a real browser with only the count check: 225
+    clone nodes wearing another element's computed style — reported, but wrong. A
+    style landing on the wrong element is a lie about the page, so the subtree is
+    dropped instead."""
+    out = _node(_WALK_FNS, _TREE + """
+var moFire = null;
+view.MutationObserver = function (cb) {
+  this.observe = () => { moFire = cb; };
+  this.disconnect = () => {};
+  this.takeRecords = () => [];
+};
+// 300 leaves so the walk yields before reaching the wrapper.
+const kids = [];
+for (let i = 0; i < 300; i++) kids.push(node("l" + i));
+const inner = ["w0", "w1", "w2"].map((n) => node(n));
+const wrap = node("w", inner);
+kids.push(wrap);
+const src = node("root", kids);
+const dstKids = [];
+for (let i = 0; i < 300; i++) dstKids.push(node("l" + i));
+dstKids.push(node("w", ["w0", "w1", "w2"].map((n) => node(n))));
+const dst = node("root", dstKids);
+setTimeout(() => {
+  inner.push(inner.shift());          // rotate: same count, different order
+  moFire([{type: "childList", target: wrap}]);
+}, 0);
+(async () => {
+  const r = await shotInlineStyles(src, dst, Date.now() + 60000);
+  console.log(JSON.stringify({incomplete: r.incomplete, mispaired: mispaired(),
+                              styled: r.styled}));
+})();
+""", html)
+    assert out["mispaired"] == [], "a rotated row must not be paired by index"
+    assert out["incomplete"] == "mutated"
+    assert out["styled"] == 302, "the wrapper is styled; its children are dropped"
+
+
+def test_a_pair_formed_before_a_re_render_is_still_honoured(html):
+    """The other side of the same reasoning, and why the fix is not "abandon the
+    capture": a queued pair holds direct node references, so a pairing made before
+    the app re-rendered is still that node's own clone however the live tree is
+    shuffled afterwards. Throwing those away would cost the whole page's styling
+    for one late mutation somewhere else."""
+    out = _node(_WALK_FNS, _TREE + """
+var moFire = null;
+view.MutationObserver = function (cb) {
+  this.observe = () => { moFire = cb; };
+  this.disconnect = () => {};
+  this.takeRecords = () => [];
+};
+const src = mk(400), dst = mk(400);
+// Everything is already paired by the time this lands (the root was processed in
+// the first chunk), and it names a node that is not an ancestor of anything left.
+setTimeout(() => { moFire([{type: "childList", target: node("elsewhere")}]); }, 0);
+(async () => {
+  const r = await shotInlineStyles(src, dst, Date.now() + 60000);
+  console.log(JSON.stringify({styled: r.styled, incomplete: r.incomplete,
+                              mispaired: mispaired()}));
+})();
+""", html)
+    assert out["styled"] == 400, "already-queued pairs are still styled"
+    assert out["mispaired"] == []
+    assert out["incomplete"] == "mutated", "and the re-render is still reported"
+
+
+def test_a_mutation_seen_only_at_the_end_is_still_reported(html):
+    """An observer's callback is a microtask, so a mutation in the final chunk may
+    not have been delivered when the loop ends. takeRecords is what closes that
+    window."""
+    out = _node(_WALK_FNS, _TREE + """
+var pending = [{type: "childList"}];
+view.MutationObserver = function (cb) {
+  this.observe = () => {};
+  this.disconnect = () => {};
+  this.takeRecords = () => pending.splice(0);
+};
+(async () => {
+  const r = await shotInlineStyles(mk(50), mk(50), Date.now() + 60000);
+  console.log(JSON.stringify({styled: r.styled, incomplete: r.incomplete}));
+})();
+""", html)
+    assert out["incomplete"] == "mutated"
+    assert out["styled"] == 50
+
+
+def test_a_walk_with_no_observer_available_still_completes(html):
+    """MutationObserver is the precision, not the requirement: where it is absent
+    the structural check is still there and the walk must not throw."""
+    out = _node(_WALK_FNS, _TREE + """
+(async () => {
+  const r = await shotInlineStyles(mk(50), mk(50), Date.now() + 60000);
+  console.log(JSON.stringify({styled: r.styled, incomplete: r.incomplete,
+                              mispaired: mispaired()}));
+})();
+""", html)
+    assert out == {"styled": 50, "incomplete": "", "mispaired": []}
+
+
+def test_a_correctness_problem_is_reported_over_a_mere_budget_one(html):
+    """Both can be true at once, and the note has room for one cause. A re-render
+    means styles may be WRONG anywhere in the capture; a cap means styles are
+    merely MISSING past a point. The user of this field is an agent deciding
+    whether to trust the picture, so the correctness news wins."""
+    out = _node(_WALK_FNS, _TREE + """
+var moFire = null;
+view.MutationObserver = function (cb) {
+  this.observe = () => { moFire = cb; };
+  this.disconnect = () => {};
+  this.takeRecords = () => [];
+};
+const src = mk(SHOT_MAX_ELEMENTS + 400), dst = mk(SHOT_MAX_ELEMENTS + 400);
+setTimeout(() => { if (moFire) moFire([{type: "childList"}]); }, 0);
+(async () => {
+  const r = await shotInlineStyles(src, dst, Date.now() + 120000);
+  console.log(JSON.stringify({styled: r.styled, incomplete: r.incomplete,
+                              cap: SHOT_MAX_ELEMENTS}));
+})();
+""", html)
+    assert out["styled"] == out["cap"], "the cap still fired"
+    assert out["incomplete"] == "mutated", "but the re-render is the worse news"
+
+
 # ------------------------------- the note names the cause, not a guess at it
 
 def test_every_incomplete_cause_gets_its_own_wording(html):
@@ -776,20 +1002,26 @@ def test_every_incomplete_cause_gets_its_own_wording(html):
     DOM was too large, a misdiagnosis it might act on by simplifying a page that
     is not big."""
     out = _node(["function shotPaneNote("], """
-const causes = ["", "elements", "deadline"];
+const causes = ["", "elements", "deadline", "detached", "mutated"];
 const notes = {};
 for (const c of causes) notes[c] = shotPaneNote({styled: 42, incomplete: c});
 console.log(JSON.stringify(notes));
 """, html)
     assert out[""] == "", "a complete capture earns no note at all"
     # each cause is worded distinctly — no two crops can be explained the same way
-    worded = [out[c] for c in ("elements", "deadline")]
-    assert all(worded) and len(set(worded)) == 2, out
+    worded = [out[c] for c in ("elements", "deadline", "detached", "mutated")]
+    assert all(worded) and len(set(worded)) == 4, out
     # the element cap is the only one allowed to talk about how big the page is
     assert "more elements" in out["elements"]
     assert "42" in out["elements"], "and says how far it got"
-    assert "more elements" not in out["deadline"]
+    for c in ("deadline", "detached", "mutated"):
+        assert "more elements" not in out[c], (c, out[c])
     assert "time" in out["deadline"]
+    # the two correctness causes have to say the picture may not match the screen,
+    # which is a different warning from "some of it is unstyled"
+    assert "re-render" in out["mutated"] or "changed" in out["mutated"]
+    for c in ("detached", "mutated"):
+        assert "while the capture was running" in out[c], (c, out[c])
 
 
 def test_an_incomplete_capture_says_so_on_every_crop_it_produced(html):
@@ -819,6 +1051,8 @@ annotations = [a];
     assert "more elements" not in slow["note"], \
         "a slow capture must not tell the agent the page is too big"
 
+    mutated = cap("mutated")
+    assert "while the capture was running" in mutated["note"]
 
 
 # --------------------------------------- a failed capture never fails the send

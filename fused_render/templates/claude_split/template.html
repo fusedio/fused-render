@@ -1593,25 +1593,134 @@ function shotJoin(dir, name) {
 // nearest <body> are the layout containers, so a truncated capture still has the
 // page's overall shape rather than one fully-styled subtree and nothing else.
 //
-// Returns `{styled, incomplete}` — one CAUSE, not a boolean, because the caller
-// turns it into one sentence for the agent and "incomplete" alone cannot be worded
-// honestly (see shotPaneNote).
+// ── and the price of yielding: the source is LIVE ──
+//
+// The synchronous walk was slow but ATOMIC. Yielding bought boundedness and gave
+// up atomicity: `src` is the app's own tree, `dst` a clone taken before the walk
+// began, and between chunks the app can re-render — which is not exotic, an
+// interval that re-renders a list is enough. Three things then go wrong, and the
+// worst of them was silent:
+//   a queued source node can leave the document, where getComputedStyle returns
+//     nothing usable (verified in a real browser: a detached subtree enumerates
+//     ZERO properties), so reading it writes an authoritative "no styling" —
+//   `defaultView` can be null once the frame navigates, which was a TypeError out
+//     of the middle of a capture rather than a degradation —
+//   and `s.children` / `d.children` can stop corresponding, so `a[i]`/`b[i]`
+//     pairs a live node with the WRONG clone node and every style past that point
+//     lands on the wrong element. Measured before this guard existed, on a page
+//     mutating mid-capture: 375 clone nodes wearing another element's computed
+//     style, with nothing reported.
+//
+// Atomicity is not recoverable here (see shotPane for why the clone cannot be
+// styled from its own document), so the property kept instead is: NEVER write a
+// style we are not sure belongs to that node, and always report when we could
+// not. A missing style degrades a picture; a wrong one lies about it.
+//
+// Note WHERE the mispairing comes from, because it decides the fix: a queued pair
+// holds direct node references, so a pair formed BEFORE a re-render stays correct
+// however the live tree is shuffled afterwards. Only pairs formed AFTER it are
+// wrong — the clone's child list no longer lines up with the live one. So the rule
+// is not "abandon the capture", it is "never descend into a parent whose children
+// have moved since the clone was taken".
+//
+// Detected two ways, both needed:
+//   a MutationObserver on the source root names every element whose child list
+//     changed. That covers the case no structural check can see — a list rebuilt
+//     or reordered with the SAME number of children — and it is half of what a
+//     real re-render does. Measured: with only the count check below, a page
+//     rotating one child per row still mispaired 225 nodes (reported, but wrong).
+//   a child-count comparison is the floor for anything the observer misses (and it
+//     is proof of a re-render on its own: the clone came from this very tree).
+//     Where MutationObserver does not exist a same-shape reorder can still
+//     mispair; every browser that can run this template has had it for a decade.
+//
+// Reported, not retried. A retry from a fresh clone doubles the cost inside a
+// budget that is already tight, and an app re-rendering on an interval will just
+// mutate again — so the honest note is worth more than another attempt.
+//
+// Returns `{styled, incomplete}`: one cause, never a set of booleans that can
+// disagree, because the caller turns it into one sentence. Precedence when
+// several apply — a re-render may have made styles WRONG anywhere in the capture,
+// while a cap only leaves them MISSING past a point, and the reader is an agent
+// deciding whether to trust the picture. So correctness news outranks budget news.
 async function shotInlineStyles(src, dst, deadline) {
-  let styled = 0, stopped = "";
-  const queue = [[src, dst]];
-  while (queue.length) {
-    if (styled >= SHOT_MAX_ELEMENTS) { stopped = "elements"; break; }
-    if (Date.now() > deadline) { stopped = "deadline"; break; }
-    const [s, d] = queue.shift();
-    const cs = s.ownerDocument.defaultView.getComputedStyle(s);
-    let css = "";
-    for (const prop of cs) css += prop + ":" + cs.getPropertyValue(prop) + ";";
-    d.setAttribute("style", css);
-    const a = s.children, b = d.children;
-    for (let i = 0; i < a.length && i < b.length; i++) queue.push([a[i], b[i]]);
-    if (++styled % SHOT_STYLE_CHUNK === 0) await new Promise((r) => setTimeout(r, 0));
+  let styled = 0, stopped = "", detached = false, mutated = false;
+  // Elements whose child list has changed since the clone was taken, so descending
+  // into them would pair the wrong nodes.
+  const reshaped = new Set();
+  const absorb = (records) => {
+    for (const r of records || []) {
+      mutated = true;
+      if (r.type === "childList") reshaped.add(r.target);
+    }
+  };
+  // The observer watches the SOURCE only; our own writes go to the clone, so the
+  // walk cannot trip its own alarm.
+  const view0 = src.ownerDocument && src.ownerDocument.defaultView;
+  const MO = view0 && view0.MutationObserver;
+  let observer = null;
+  if (MO) {
+    try {
+      observer = new MO(absorb);
+      // childList ONLY, deliberately. What this walk can get WRONG is pairing,
+      // and only a changed child list breaks that. An attribute or text change
+      // mid-walk misattributes nothing — every style still belongs to the node it
+      // is written on — it just means the picture was taken of a page that moved,
+      // as any photograph is. Observing those too would put the note (which tells
+      // the agent to distrust the crop) on every capture of a page with a clock or
+      // a spinner in it, which is most of them, and a warning that fires always
+      // carries no information.
+      observer.observe(src, { subtree: true, childList: true });
+    } catch (err) {
+      observer = null;   // no observer is a loss of precision, not of correctness
+    }
   }
-  return { styled, incomplete: stopped };
+  // Records are drained at every yield rather than left to the observer's own
+  // callback: a mutation can only happen while we are yielded (this is one
+  // thread), so draining on the way back in is what guarantees the reshaped set is
+  // complete BEFORE any further pairing is done with it.
+  const drain = () => {
+    if (!observer) return;
+    try { absorb(observer.takeRecords()); } catch (err) { /* frame gone */ }
+  };
+  try {
+    const queue = [[src, dst]];
+    while (queue.length) {
+      if (styled >= SHOT_MAX_ELEMENTS) { stopped = stopped || "elements"; break; }
+      if (Date.now() > deadline) { stopped = stopped || "deadline"; break; }
+      const [s, d] = queue.shift();
+      // Re-checked per node, not once up front: the whole point is that this can
+      // change between chunks.
+      const view = s.isConnected ? (s.ownerDocument && s.ownerDocument.defaultView)
+                                 : null;
+      if (!view) { detached = true; continue; }
+      const cs = view.getComputedStyle(s);
+      let css = "";
+      for (const prop of cs) css += prop + ":" + cs.getPropertyValue(prop) + ";";
+      d.setAttribute("style", css);
+      const a = s.children, b = d.children;
+      if (reshaped.has(s) || a.length !== b.length) {
+        // This parent's children have moved since the clone was taken, so `a[i]`
+        // and `b[i]` are no longer the same element. Dropping the subtree costs
+        // its styling; pairing it anyway would put one element's appearance on
+        // another and call it a photograph.
+        mutated = true;
+      } else {
+        for (let i = 0; i < a.length; i++) queue.push([a[i], b[i]]);
+      }
+      if (++styled % SHOT_STYLE_CHUNK === 0) {
+        await new Promise((r) => setTimeout(r, 0));
+        drain();
+      }
+    }
+  } finally {
+    // One last drain: the callback is a microtask, so a mutation during the final
+    // chunk may not have been delivered anywhere else.
+    drain();
+    if (observer) { try { observer.disconnect(); } catch (err) { /* gone */ } }
+  }
+  const incomplete = mutated ? "mutated" : (detached ? "detached" : stopped);
+  return { styled, incomplete };
 }
 
 // The one sentence a crop carries about what its capture could NOT do, or "" when
@@ -1631,6 +1740,14 @@ function shotPaneNote(pane) {
       return "part of this capture is unstyled: it ran out of time after " + styled
         + " elements, so some of what you see may render without its CSS rather "
         + "than as the user saw it. This is about capture speed, not page size";
+    case "detached":
+      return "part of this capture is unstyled: the app removed elements while the "
+        + "capture was running, so some of what you see may render without its CSS";
+    case "mutated":
+      return "the app re-rendered while the capture was running, so this picture "
+        + "may not match what was on screen: some elements are missing their "
+        + "styling and the layout may be a blend of before and after. Trust the "
+        + "anchor and the DOM outline over this crop";
     default:
       return "";
   }
@@ -1782,6 +1899,15 @@ async function shotEncode(pane, rect) {
 // readable app document to capture. `deadline` is a Date.now() stamp the style
 // walk stops at — the capture's share of SHOT_TIMEOUT_MS, enforced INSIDE the
 // walk because that is the only place that can enforce it (see shotInlineStyles).
+//
+// Why the clone is styled from the LIVE tree, which is what creates the race
+// shotInlineStyles has to defend against: a clone is detached, and a detached
+// element has no cascade — `getComputedStyle` on one enumerates zero properties
+// and returns "" for everything (checked in a real browser, not assumed). Putting
+// the clone INTO the app's document to give it a cascade would double the DOM,
+// duplicate every id, change what sibling and nth-child selectors match, and
+// mutate the page the user is looking at. So the live tree is the only source of
+// truth for computed style, and the race is detected rather than avoided.
 async function shotPane(deadline) {
   const win = appWindow();
   const doc = win && win.document;
