@@ -1107,6 +1107,17 @@ function formatAnnotations(arr) {
     "instructions:\n\n```json\n" + JSON.stringify(wire, null, 2) + "\n```"
   );
 }
+// History restore and run re-attach hand back the composed wire text; peel
+// the annotation preamble + JSON block off so the transcript shows what the
+// user actually typed (annotation-only sends collapse to a small marker).
+function stripAnnBlock(text) {
+  if (!text.startsWith("The user annotated ")) return text;
+  const i = text.indexOf("\n```json\n");
+  if (i === -1) return text;
+  const j = text.indexOf("\n```", i + 9);
+  if (j === -1) return text;
+  return text.slice(j + 4).replace(/^\n+/, "") || "📌 annotations";
+}
 // Called when a run that carried annotations finishes cleanly: everything
 // stamped `sent` is now handled — auto-resolve (drop) it.
 function annResolveSent() {
@@ -1649,23 +1660,32 @@ async function pollLoop(run_id) {
 async function sendMessage(message) {
   if (sending) return;
   sending = true;
-  // Fold pending annotations into the outgoing message and stamp them `sent`
-  // before the send — the composed string carries them, so a failed start
-  // still took them (same posture as the claude template's handoff). The
-  // bubble shows the typed text plus a count, not the JSON block.
+  // Fold pending annotations into the outgoing message and stamp them `sent`.
+  // If the start below never launches a run, the stamp (and the receipt) are
+  // rolled back so the notes stay editable and re-sendable.
   const pending = annPending();
+  if (!message && !pending.length) { sending = false; return; }
   let outgoing = message;
   if (pending.length) {
-    outgoing = formatAnnotations(pending) + "\n\n" + message;
+    outgoing = message ? formatAnnotations(pending) + "\n\n" + message : formatAnnotations(pending);
     for (const c of pending) c.sent = 1;
     annSave();
   }
-  addUser(message);
+  if (message) {
+    addUser(message);
+  } else {
+    // annotation-only send: a bubble-less user turn to hang the receipt on
+    const d = document.createElement("div");
+    d.className = "turn user";
+    log.appendChild(d);
+  }
   // Subtle receipt under the bubble: which annotations rode this message.
+  let receipt = null;
   if (pending.length) {
     const turns = log.querySelectorAll(".turn.user");
     const turn = turns[turns.length - 1];
     const sum = document.createElement("div");
+    receipt = sum;
     sum.className = "annsum";
     pending.forEach((c) => {
       const row = document.createElement("div");
@@ -1691,6 +1711,7 @@ async function sendMessage(message) {
     turn.appendChild(sum);
     scrollBottom();
   }
+  let started = false;
   try {
     const { run_id, error } = await fused.runPython(AGENT, {
       action: "start",
@@ -1705,9 +1726,17 @@ async function sendMessage(message) {
       // awaited poll would leave it pending and hang the streaming loop.
     }, { key: null });
     if (error) throw new Error(error);
+    started = true;
     fused.params.set("run", run_id);
     await pollLoop(run_id);
   } catch (err) {
+    // The run never launched, so the agent never saw the annotations: give
+    // them back as pending (and pull the receipt) so they can be re-sent.
+    if (!started && pending.length) {
+      for (const c of pending) c.sent = 0;
+      annSave();
+      if (receipt) receipt.remove();
+    }
     addError(err.message);
   } finally {
     sending = false;
@@ -1726,18 +1755,22 @@ async function resumeRun(run_id) {
   try {
     const probe = await fused.runPython(AGENT, { action: "poll", run_id }, { key: null });
     if (probe.error === "unknown run_id") {
-      // stale param (bookmarked mid-run URL, pruned tmp) — nothing to attach to
+      // stale param (bookmarked mid-run URL, pruned tmp) — nothing to attach
+      // to, and nothing to hand annotations back to: resolve any stragglers
       fused.params.set("run", "");
+      annResolveSent();
       return;
     }
+    const probeMsg = stripAnnBlock(probe.message || "");
     const users = log.querySelectorAll(".user .bubble");
     const lastUser = users[users.length - 1];
     const lastTurn = lastUser && lastUser.parentElement;
-    const matches = !!lastUser && lastUser.textContent === probe.message;
+    const matches = !!lastUser && lastUser.textContent === probeMsg;
     if (probe.done) {
       // Run finished with no frame attached: only repair what the restored
       // transcript can provably be missing (see the claude template).
       fused.params.set("run", "");
+      annResolveSent();  // the run this frame missed still handled its notes
       if (probe.error) {
         if (matches || !users.length) addError(probe.error);
         return;
@@ -1745,8 +1778,8 @@ async function resumeRun(run_id) {
       if (matches) {
         while (lastTurn.nextElementSibling) lastTurn.nextElementSibling.remove();
         if (probe.text) addAssistant("").lastChild.innerHTML = renderMd(probe.text);
-      } else if (!users.length && probe.message) {
-        addUser(probe.message);
+      } else if (!users.length && probeMsg) {
+        addUser(probeMsg);
         if (probe.text) addAssistant("").lastChild.innerHTML = renderMd(probe.text);
       }
       scrollBottom();
@@ -1756,8 +1789,8 @@ async function resumeRun(run_id) {
       // In flight and this turn's user line is on screen: keep it, drop the
       // partial assistant rows — pollLoop re-streams the whole turn.
       while (lastTurn.nextElementSibling) lastTurn.nextElementSibling.remove();
-    } else if (probe.message) {
-      addUser(probe.message);
+    } else if (probeMsg) {
+      addUser(probeMsg);
     }
     await pollLoop(run_id);
   } catch (err) {
@@ -1771,7 +1804,7 @@ async function resumeRun(run_id) {
 function submitChat() {
   if (sending) return;
   const message = box.value.trim();
-  if (!message) return;
+  if (!message && !annPending().length) return;  // notes alone are sendable
   box.value = "";
   growBox();
   sendMessage(message);
@@ -1786,7 +1819,7 @@ document.getElementById("card").onsubmit = (e) => {
   e.preventDefault();
   if (sending) return;
   const message = homebox.value.trim();
-  if (!message) return;
+  if (!message && !annPending().length) return;  // notes alone are sendable
   homebox.value = "";
   growHome();
   enterChat();
@@ -1835,7 +1868,7 @@ async function loadHistory(session_id) {
     const { turns } = await fused.runPython(AGENT, { action: "history", file: FILE, session_id }, { key: null });
     log.innerHTML = "";  // drop the skeleton now that real turns are ready
     for (const t of turns) {
-      if (t.role === "user") addUser(t.text);
+      if (t.role === "user") addUser(stripAnnBlock(t.text));
       else addAssistant("").lastChild.innerHTML = renderMd(t.text);
     }
     scrollBottom();
