@@ -12,8 +12,10 @@
 // (the injected runtime writes params through the parent's history object,
 // which fires no native event) — that wrapping is load-bearing for the
 // layout modes and the update-bookmark flow, not just for these hooks.
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { NAV_EVENT } from "./router";
+import { createCloseDeferrer } from "./exit-animation";
+import { getConfig } from "./api";
 
 function useEventCounter(events: readonly string[]): number {
   const [n, setN] = useState(0);
@@ -109,6 +111,32 @@ export function useRefreshOnReturn(cb: () => void): void {
   }, []);
 }
 
+// Exit animation for an overlay whose CALLER owns the unmount (every dialog is
+// `{open && <Modal …/>}`, so the overlay can't hold itself on screen — see
+// lib/exit-animation). Returns `closing` — true while the exit runs, i.e. the
+// frame budget the `.closing` CSS has to play in — and `requestClose`, which
+// every close path (Esc, backdrop, ✕) calls INSTEAD of onClose.
+//
+// The deferrer is created once and reads `onClose` through a ref, so an inline
+// arrow closure as onClose (what every call site passes) doesn't tear down and
+// rebuild a pending exit mid-animation.
+export function useDeferredClose(
+  onClose: () => void,
+  durationMs: number,
+): { closing: boolean; requestClose: () => void } {
+  const [closing, setClosing] = useState(false);
+  const closeRef = useRef(onClose);
+  closeRef.current = onClose;
+  const deferrer = useMemo(
+    () => createCloseDeferrer(durationMs, () => closeRef.current(), setClosing),
+    [durationMs],
+  );
+  // Drop a pending close on unmount: the caller may have unmounted the overlay
+  // for its own reasons (a navigation) and the timer must not fire into it.
+  useEffect(() => () => deferrer.cancel(), [deferrer]);
+  return { closing, requestClose: deferrer.request };
+}
+
 // Tab title reflects whatever's on screen (a file/dir name, or a static
 // label like "Panel"), falling back to the bare app name at the root.
 // `undefined` means "not this view's title to set" (e.g. App skips it for
@@ -118,4 +146,75 @@ export function useDocumentTitle(label: string | null | undefined): void {
     if (label === undefined) return;
     document.title = label ? `${label} – Fused Render` : "Fused Render";
   }, [label]);
+}
+
+// Whether the builtin learn mount is attached and browsable. Seeded from the
+// boot-time config snapshot, then re-verified by a bounded /api/config poll —
+// the one-shot fetch (main.tsx) lands well before the server's background
+// automount thread finishes attaching the mount, so the snapshot essentially
+// always says false; and the inverse race exists too (rcd survives server
+// restarts, so boot can catch the PRIOR run's still-live mount reporting true
+// moments before ensure_learn_mount's forced detach rips it out), so the poll
+// always runs and follows whatever the fresh answer says. The bound (2s x 60
+// = 120s) comfortably exceeds attach_mount's ~70s worst case (ensure_rcd
+// spawn + full 60s mount rc timeout, shell/mounts.py) so a slow-but-
+// successful mount isn't missed; the cap keeps a dev checkout with no
+// bundled learn.zip (never becomes ready) from polling forever. Once any
+// mount confirms true, that result is cached at module scope (below) so a
+// later remount of the hook doesn't re-litigate it against a stale seed.
+// Module-level cache of the last CONFIRMED-true readiness, shared by every
+// mount of the hook. Home unmounts/remounts on every visit to "/" (it's a
+// route, not persistent chrome like Sidebar), so without this a return visit
+// re-seeds from the stale boot `initial` (still false) and restarts the
+// bounded poll from scratch — the Learn card would vanish for up to 2s and
+// reflow the grid on every trip back to Home, even though readiness was
+// already confirmed earlier in the session.
+let cachedReady = false;
+
+export function useLearnMountReady(initial: boolean): boolean {
+  const [ready, setReady] = useState(cachedReady || initial);
+  useEffect(() => {
+    if (cachedReady) return; // already confirmed — nothing left to poll for
+    let cancelled = false;
+    let attempts = 0;
+    // setInterval fires a new getConfig() every tick without waiting for the
+    // previous one to settle, so responses can arrive out of order. Only the
+    // newest ISSUED request's response is applied — a straggler from an
+    // earlier tick is discarded as stale rather than overwriting a `true` a
+    // later request already reported (which would stick permanently, since
+    // that `true` had already cleared the interval).
+    let latestRequestId = 0;
+    const MAX_ATTEMPTS = 60;
+    const POLL_MS = 2000;
+    const timer = window.setInterval(() => {
+      attempts += 1;
+      const requestId = ++latestRequestId;
+      getConfig().then(
+        (fresh) => {
+          if (cancelled || requestId !== latestRequestId) return;
+          setReady(fresh.learn_mount_ready);
+          if (fresh.learn_mount_ready) {
+            cachedReady = true;
+            window.clearInterval(timer);
+          } else if (attempts >= MAX_ATTEMPTS) {
+            window.clearInterval(timer);
+          }
+        },
+        () => {
+          if (cancelled || requestId !== latestRequestId) return;
+          // Transient fetch failure — just try again next tick.
+          if (attempts >= MAX_ATTEMPTS) window.clearInterval(timer);
+        }
+      );
+    }, POLL_MS);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+    // Deliberately empty deps: run once on mount only. Depending on `ready`
+    // here would restart the whole bounded poll window from zero every time
+    // it changes, and `initial` is only a seed.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  return ready;
 }

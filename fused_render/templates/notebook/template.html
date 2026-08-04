@@ -1,0 +1,2209 @@
+<!DOCTYPE html>
+<html data-fused-theme="shell">
+<head>
+<meta charset="utf-8" />
+<title>Notebook</title>
+<script src="/template-assets/codemirror.bundle.js"></script>
+<script src="/template-shared/ro-badge.js"></script>
+<style>
+  /* Marimo-style look: airy, single centered column of chromeless-at-rest
+     cells. `data-theme` is written onto <html> by the injected runtime
+     because this document opted in via `data-fused-theme`
+     (see fused_render/static/runtime.js). */
+  :root {
+    color-scheme: dark;
+    --bg: #14161a;
+    --fg: #e7e9ec;
+    --fg-muted: #9aa0a6;
+    --border: #2a2d33;
+    --accent: #12b886;
+    --accent-fg: #ffffff;
+    --error: #ff6b6b;
+    --error-bg: #2a1c1e;
+    --console-bg: #1b1e23;
+    --bar-bg: rgba(20, 22, 26, 0.88);
+    --menu-bg: #1e2126;
+    --dot-idle: #4a4f57;
+    --dot-ok: #12b886;
+    --dot-err: #ff6b6b;
+    --dot-run: #f59f00;
+    --shadow-soft: rgba(0, 0, 0, 0.25);
+    --shadow: rgba(0, 0, 0, 0.45);
+    --shadow-strong: rgba(0, 0, 0, 0.6);
+    --scrim: rgba(8, 10, 13, 0.55);
+  }
+  :root[data-theme="light"] {
+    color-scheme: light;
+    --bg: #fcfcfc;
+    --fg: #1f2023;
+    --fg-muted: #74787e;
+    --border: #e6e7ea;
+    --accent: #0ca678;
+    --accent-fg: #ffffff;
+    --error: #c92a2a;
+    --error-bg: #fff5f5;
+    --console-bg: #f6f7f8;
+    --bar-bg: rgba(252, 252, 252, 0.88);
+    --menu-bg: #ffffff;
+    --dot-idle: #c6cacf;
+    --dot-ok: #12b886;
+    --dot-err: #fa5252;
+    --dot-run: #f59f00;
+    --shadow-soft: rgba(0, 0, 0, 0.05);
+    --shadow: rgba(0, 0, 0, 0.13);
+    --shadow-strong: rgba(0, 0, 0, 0.25);
+    --scrim: rgba(15, 18, 22, 0.35);
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; min-height: 100%; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, Helvetica, Arial, sans-serif;
+    background: var(--bg);
+    color: var(--fg);
+    font-size: 14px;
+  }
+  button {
+    font: inherit;
+    color: inherit;
+    background: none;
+    border: none;
+    cursor: pointer;
+    border-radius: 6px;
+    padding: 3px 8px;
+  }
+  button:hover { background: color-mix(in srgb, var(--fg) 7%, transparent); }
+  button:disabled { opacity: 0.4; cursor: default; }
+
+  /* ------------------------------------------------------------- top bar */
+  #bar {
+    position: sticky;
+    top: 0;
+    z-index: 30;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 7px 16px;
+    font-size: 13px;
+    background: var(--bar-bg);
+    backdrop-filter: blur(8px);
+    border-bottom: 1px solid var(--border);
+  }
+  #filename { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #file-wrap { position: relative; display: inline-flex; }
+  #file-menu { padding: 2px 5px; color: var(--fg-muted); }
+  #file-wrap .menu-pop { left: 0; right: auto; }
+  #bar .grow { flex: 1 1 auto; }
+  #kchip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 2px 9px;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    color: var(--fg-muted);
+    max-width: 260px;
+    white-space: nowrap;
+  }
+  #kchip .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--dot-idle); flex: 0 0 auto; }
+  #kchip.busy .dot, #kchip.starting .dot { background: var(--dot-run); animation: pulse 1s ease-in-out infinite; }
+  #kchip.idle .dot { background: var(--dot-ok); }
+  #kchip.dead .dot { background: var(--dot-err); }
+  #kchip span { overflow: hidden; text-overflow: ellipsis; }
+  #env {
+    font: inherit;
+    color: inherit;
+    background: transparent;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 2px 6px;
+    max-width: 220px;
+  }
+  #kbd-hint { color: var(--fg-muted); cursor: help; }
+  #status-text { color: var(--fg-muted); }
+  #status-text.error { color: var(--error); }
+  #conflict { display: none; align-items: center; gap: 8px; color: var(--error); }
+  #conflict button { border: 1px solid var(--border); }
+
+  /* ------------------------------------------------------------ notebook */
+  #nb { max-width: 900px; margin: 0 auto; padding: 20px 20px 45vh; }
+  #load-status { padding: 40px 20px; color: var(--fg-muted); font-size: 13px; }
+  #load-status.error { color: var(--error); }
+
+  .cell {
+    position: relative;
+    display: flex;
+    gap: 6px;
+    border: 1px solid transparent;
+    border-radius: 8px;
+    padding: 6px 8px 6px 4px;
+  }
+  .cell:hover { border-color: var(--border); box-shadow: 0 1px 4px var(--shadow-soft); }
+  .cell:focus-within { border-color: var(--accent); box-shadow: 0 1px 4px var(--shadow-soft); }
+  /* command-mode selection: Jupyter-style accent bar on the left edge */
+  .cell.selected::before {
+    content: "";
+    position: absolute;
+    left: -1px;
+    top: 6px;
+    bottom: 6px;
+    width: 3px;
+    border-radius: 3px;
+    background: var(--accent);
+  }
+  .gutter {
+    flex: 0 0 30px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 5px;
+    padding-top: 9px;
+  }
+  .gutter .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--dot-idle); }
+  .gutter .dot.ok { background: var(--dot-ok); }
+  .gutter .dot.err { background: var(--dot-err); }
+  .gutter .dot.run { background: var(--dot-run); animation: pulse 1s ease-in-out infinite; }
+  @keyframes pulse { 50% { opacity: 0.35; } }
+  .gutter .count {
+    font-family: "Cascadia Code", Consolas, ui-monospace, monospace;
+    font-size: 10px;
+    color: var(--fg-muted);
+  }
+  .gutter .time {
+    font-family: "Cascadia Code", Consolas, ui-monospace, monospace;
+    font-size: 9px;
+    color: var(--fg-muted);
+    white-space: nowrap;
+  }
+  .main { flex: 1 1 auto; min-width: 0; }
+  .rail {
+    position: absolute;
+    top: 5px;
+    right: 6px;
+    display: none;
+    gap: 2px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 1px;
+    z-index: 5;
+  }
+  .cell:hover .rail, .cell:focus-within .rail, .rail.open { display: flex; }
+  .rail button { padding: 2px 7px; font-size: 12px; color: var(--fg-muted); }
+  .rail button:hover { color: var(--fg); }
+  .rail .run-btn { color: var(--accent); }
+  .menu-pop {
+    position: absolute;
+    top: calc(100% + 4px);
+    right: 0;
+    display: none;
+    flex-direction: column;
+    min-width: 150px;
+    background: var(--menu-bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    box-shadow: 0 6px 20px var(--shadow);
+    padding: 4px;
+    z-index: 25;
+  }
+  .menu-pop.open { display: flex; }
+  .menu-pop button { text-align: left; font-size: 12.5px; padding: 5px 9px; white-space: nowrap; }
+
+  /* outputs sit ABOVE the editor (marimo's signature layout) */
+  .outputs { display: none; padding: 6px 4px 2px; overflow-x: auto; }
+  .outputs.has { display: block; }
+  .outputs img { max-width: 100%; }
+  .outputs .html-out { display: block; width: 100%; border: 0; }
+  .outputs pre {
+    margin: 0;
+    font-family: "Cascadia Code", Consolas, ui-monospace, monospace;
+    font-size: 12.5px;
+    line-height: 1.5;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  .outputs .err-out {
+    background: var(--error-bg);
+    border-radius: 6px;
+    padding: 8px 10px;
+    color: var(--error);
+  }
+  .outputs table { border-collapse: collapse; font-size: 12.5px; }
+  .outputs table td, .outputs table th { border: 1px solid var(--border); padding: 2px 8px; }
+  .console {
+    display: none;
+    margin: 4px 4px 2px;
+    padding: 6px 10px;
+    background: var(--console-bg);
+    border-radius: 6px;
+    font-family: "Cascadia Code", Consolas, ui-monospace, monospace;
+    font-size: 12px;
+    line-height: 1.5;
+    white-space: pre-wrap;
+    word-break: break-word;
+    max-height: 320px;
+    overflow: auto;
+  }
+  .console.has { display: block; }
+  .console .stderr { color: var(--error); }
+
+  /* Ask AI: inline prompt row between output and editor (Colab-style) */
+  .ai-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin: 4px 4px 2px;
+  }
+  .ai-row[hidden] { display: none; }
+  .ai-row input {
+    flex: 1 1 auto;
+    font: inherit;
+    font-size: 12.5px;
+    color: var(--fg);
+    background: transparent;
+    border: 1px solid var(--accent);
+    border-radius: 6px;
+    padding: 4px 9px;
+    outline: none;
+  }
+  .ai-row input::placeholder { color: var(--fg-muted); }
+  .ai-row button {
+    font-size: 11.5px;
+    color: var(--fg-muted);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    padding: 1px 10px;
+    white-space: nowrap;
+  }
+  .ai-row button:hover { color: var(--accent); border-color: var(--accent); }
+  .ai-status { margin: 0 6px 2px; font-size: 11.5px; color: var(--fg-muted); }
+  .ai-status.error { color: var(--error); }
+  .ai-status:empty { display: none; }
+
+  .editor { padding: 2px 0; position: relative; }
+  .ed-ph {
+    position: absolute;
+    inset: 0;
+    z-index: 1;
+    display: flex;
+    align-items: center;
+    padding-left: 22px; /* clear of the caret so nothing sits under the cursor */
+    font-size: 13px;
+    color: var(--fg-muted);
+    white-space: nowrap;
+    overflow: hidden;
+    pointer-events: none;
+    user-select: none;
+  }
+  .ed-ph[hidden] { display: none; }
+  .ed-ph a {
+    pointer-events: auto;
+    color: var(--accent);
+    cursor: pointer;
+    margin-left: 0.35em;
+  }
+  .ed-ph a:hover { text-decoration: underline; }
+  .cm-editor { background: transparent; font-size: 13.5px; }
+  .cm-editor.cm-focused { outline: none; }
+  .cm-scroller {
+    font-family: "Cascadia Code", Consolas, ui-monospace, monospace;
+    line-height: 1.6;
+  }
+  .cm-gutters { display: none; }
+  .cm-activeLine { background: transparent; }
+
+  /* markdown cells */
+  .md-view { padding: 4px 6px; line-height: 1.6; cursor: text; }
+  .md-view > :first-child { margin-top: 0; }
+  .md-view > :last-child { margin-bottom: 0; }
+  .md-view h1, .md-view h2, .md-view h3 { line-height: 1.3; }
+  .md-view code {
+    font-family: "Cascadia Code", Consolas, ui-monospace, monospace;
+    font-size: 0.9em;
+    background: var(--console-bg);
+    border-radius: 4px;
+    padding: 1px 4px;
+  }
+  .md-view pre {
+    background: var(--console-bg);
+    border-radius: 6px;
+    padding: 8px 10px;
+    overflow-x: auto;
+  }
+  .md-view pre code { background: none; padding: 0; }
+  .md-view a { color: var(--accent); }
+  .md-view.empty { color: var(--fg-muted); font-style: italic; }
+
+  /* insertion zones */
+  .gap {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    gap: 6px;
+    height: 18px;
+    opacity: 0;
+    transition: opacity 0.08s;
+  }
+  .gap:hover, .gap:focus-within { opacity: 1; }
+  .gap button {
+    font-size: 11.5px;
+    color: var(--fg-muted);
+    border: 1px solid var(--border);
+    background: var(--bg);
+    padding: 1px 10px;
+    border-radius: 999px;
+  }
+  .gap button:hover { color: var(--accent); border-color: var(--accent); }
+
+  /* modal dialog (new notebook / save a copy / custom interpreter) */
+  #modal-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 60;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--scrim);
+  }
+  #modal-overlay[hidden] { display: none; }
+  #modal {
+    width: min(520px, 92vw);
+    background: var(--menu-bg);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    box-shadow: 0 16px 48px var(--shadow-strong);
+    padding: 16px 18px;
+    font-size: 13px;
+  }
+  #modal-title { font-size: 14.5px; font-weight: 600; margin-bottom: 4px; }
+  #modal-note { color: var(--fg-muted); font-size: 12px; margin-bottom: 8px; }
+  #modal-note:empty { display: none; }
+  #modal-loc {
+    color: var(--fg-muted);
+    font-size: 12px;
+    margin: 6px 0;
+    word-break: break-all;
+  }
+  #modal-loc span { cursor: pointer; }
+  #modal-loc span:hover { color: var(--accent); }
+  #modal-list {
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    max-height: 200px;
+    overflow-y: auto;
+    margin-bottom: 12px;
+  }
+  #modal-list > div { padding: 6px 10px; cursor: pointer; }
+  #modal-list > div:hover { background: color-mix(in srgb, var(--fg) 6%, transparent); }
+  #modal-list .file { color: var(--fg-muted); }
+  #modal-list .empty { color: var(--fg-muted); cursor: default; }
+  #modal-name-row { display: flex; align-items: center; gap: 8px; }
+  #modal-name {
+    flex: 1 1 auto;
+    font: inherit;
+    color: var(--fg);
+    background: transparent;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 6px 9px;
+  }
+  #modal-name:focus { border-color: var(--accent); outline: none; }
+  #modal-ext { color: var(--fg-muted); }
+  #modal-check-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-top: 10px;
+    color: var(--fg-muted);
+    cursor: pointer;
+  }
+  /* flex above beats the hidden attribute's display:none (same trap as
+     ro-badge) — without this the New-notebook modal shows a bare checkbox */
+  #modal-check-row[hidden] { display: none; }
+  #modal-check { accent-color: var(--accent); }
+  #modal-error { color: var(--error); font-size: 12px; min-height: 16px; margin-top: 8px; }
+  #modal-btns { display: flex; justify-content: flex-end; gap: 8px; margin-top: 6px; }
+  #modal-btns button { border: 1px solid var(--border); padding: 4px 14px; border-radius: 6px; }
+  #modal-btns .primary { background: var(--accent); border-color: var(--accent); color: var(--accent-fg); }
+  #modal-btns .primary:hover { background: var(--accent); opacity: 0.9; }
+
+  #toast {
+    position: fixed;
+    bottom: 18px;
+    left: 50%;
+    transform: translateX(-50%);
+    max-width: 70%;
+    background: var(--menu-bg);
+    border: 1px solid var(--error);
+    color: var(--error);
+    border-radius: 8px;
+    padding: 8px 14px;
+    font-size: 13px;
+    box-shadow: 0 6px 20px var(--shadow);
+    display: none;
+    z-index: 40;
+  }
+</style>
+</head>
+<body>
+  <div id="bar">
+    <span id="filename"></span>
+    <span id="file-wrap">
+      <button id="file-menu" title="Notebook file actions">▾</button>
+      <div class="menu-pop" id="file-pop">
+        <button id="new-nb">New notebook…</button>
+        <button id="copy-nb">Save a copy as…</button>
+      </div>
+    </span>
+    <span id="kchip" class="off"><span class="dot"></span><span id="kchip-text">Kernel off</span></span>
+    <select id="env" title="Python interpreter for this notebook"></select>
+    <span class="grow"></span>
+    <span id="kbd-hint" title="Esc — command mode · Enter — edit
+A / B — insert cell above / below
+D,D — delete cell · C / X / V — copy / cut / paste
+M / Y — to markdown / to code
+↑ ↓ or K / J — select · Shift+Enter — run
+Z / Shift+Z — undo / redo · S — save">⌨</span>
+    <button id="undo" title="Undo cell operation (Ctrl+Shift+Z)" disabled>↶</button>
+    <button id="redo" title="Redo cell operation (Ctrl+Shift+Y)" disabled>↷</button>
+    <button id="run-all" title="Run all code cells">Run all</button>
+    <button id="interrupt" title="Interrupt the running cell">Interrupt</button>
+    <button id="restart" title="Restart the kernel (clears all state)">Restart</button>
+    <span id="conflict">
+      File changed on disk
+      <button id="reload">Reload</button>
+      <button id="overwrite">Overwrite</button>
+    </span>
+    <span id="ro" hidden></span>
+    <span id="status-text">Saved</span>
+    <button id="save" title="Save (Ctrl+S)" disabled>Save</button>
+  </div>
+  <div id="nb"><div id="load-status">Loading notebook…</div></div>
+  <div id="modal-overlay" hidden>
+    <div id="modal" role="dialog" aria-modal="true">
+      <div id="modal-title"></div>
+      <div id="modal-note"></div>
+      <div id="modal-loc"></div>
+      <div id="modal-list"></div>
+      <div id="modal-name-row">
+        <input id="modal-name" spellcheck="false" />
+        <span id="modal-ext"></span>
+      </div>
+      <label id="modal-check-row"><input type="checkbox" id="modal-check" /><span id="modal-check-label"></span></label>
+      <div id="modal-error"></div>
+      <div id="modal-btns">
+        <button id="modal-cancel">Cancel</button>
+        <button id="modal-ok" class="primary"></button>
+      </div>
+    </div>
+  </div>
+  <div id="toast"></div>
+
+<script>
+  fused.autoReload(false); // our own saves change mtime; external edits are the conflict banner's job
+
+  const nbEl = document.getElementById("nb");
+  const filenameEl = document.getElementById("filename");
+  const statusTextEl = document.getElementById("status-text");
+  const conflictEl = document.getElementById("conflict");
+  const kchipEl = document.getElementById("kchip");
+  const kchipTextEl = document.getElementById("kchip-text");
+  const envEl = document.getElementById("env");
+  const toastEl = document.getElementById("toast");
+  const saveBtn = document.getElementById("save");
+  const undoBtn = document.getElementById("undo");
+  const redoBtn = document.getElementById("redo");
+
+  let file = null;
+  let mtime = null;
+  let writable = true;
+  let dirty = false;
+  let saving = false;
+  let savePromise = null;
+  let nb = null;       // the nbformat document — single source of truth for save
+  let cells = [];      // UI entries: {id, model, el, dot, countEl, outEl, conEl, edEl, view, editing}
+
+  let selected = null;      // command-mode cell (accent bar); null = none
+  let cellClipboard = null; // deep-cloned model for C/X/V
+
+  let daemon = null, daemonP = null;   // {port, token}
+  let kernelId = null, kernelP = null;
+  let since = 0, polling = false, pollEpoch = 0;
+  let kState = "off";
+  let runningAll = false;
+
+  const CUSTOM_ENV = "__custom__";
+  const ANSI_RE = /\u001b\[[0-9;]*[A-Za-z]/g;
+
+  // ---------------------------------------------------------------- utils
+  function escapeHtml(s) {
+    return String(s)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;");
+  }
+  function joinText(v) {
+    return Array.isArray(v) ? v.join("") : (v == null ? "" : String(v));
+  }
+  function newId() {
+    return Array.from(crypto.getRandomValues(new Uint8Array(8)),
+      (b) => "abcdefghijklmnopqrstuvwxyz0123456789"[b % 36]).join("");
+  }
+  function sleep(ms) {
+    return new Promise((r) => setTimeout(r, ms));
+  }
+  let toastTimer = null;
+  function toast(msg) {
+    toastEl.textContent = msg;
+    toastEl.style.display = "block";
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => { toastEl.style.display = "none"; }, 6000);
+  }
+
+  // Tiny sanitized markdown subset: escape everything first, then transform.
+  // Headings, hr, fenced code, lists, bold/italic/inline code, links, images.
+  function mdToHtml(src) {
+    const out = [];
+    const parts = String(src).split(/^```([^\n`]*)\n?/m);
+    for (let i = 0; i < parts.length; i += 2) {
+      if (i > 0) {
+        // parts[i-1] was a fence info string; the body runs to the closing fence
+        const close = parts[i].indexOf("```");
+        const code = close >= 0 ? parts[i].slice(0, close) : parts[i];
+        out.push("<pre><code>" + escapeHtml(code.replace(/\n$/, "")) + "</code></pre>");
+        parts[i] = close >= 0 ? parts[i].slice(close + 3) : "";
+      }
+      out.push(mdBlocks(parts[i]));
+    }
+    return out.join("");
+  }
+  function mdInline(s) {
+    return s
+      .replace(/`([^`]+)`/g, (m, c) => "<code>" + c + "</code>")
+      .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+      .replace(/\*([^*]+)\*/g, "<em>$1</em>")
+      .replace(/!\[([^\]]*)\]\(([^)\s]+)\)/g, (m, alt, url) =>
+        mdSafeUrl(url) ? '<img alt="' + alt + '" src="' + url + '" />' : m)
+      .replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (m, text, url) =>
+        mdSafeUrl(url) ? '<a href="' + url + '" target="_blank" rel="noopener">' + text + "</a>" : m);
+  }
+  function mdSafeUrl(url) {
+    // the relative fallback must reject protocol-relative //host URLs
+    return /^(https?:|mailto:|#)/i.test(url) || /^(?!\/\/)[\w./-]+$/.test(url);
+  }
+  function mdBlocks(text) {
+    const lines = escapeHtml(text).split("\n");
+    const html = [];
+    let list = null; // "ul" | "ol"
+    const closeList = () => { if (list) { html.push("</" + list + ">"); list = null; } };
+    for (const line of lines) {
+      const h = line.match(/^(#{1,6})\s+(.*)$/);
+      const ul = line.match(/^\s*[-*]\s+(.*)$/);
+      const ol = line.match(/^\s*\d+[.)]\s+(.*)$/);
+      if (h) {
+        closeList();
+        html.push("<h" + h[1].length + ">" + mdInline(h[2]) + "</h" + h[1].length + ">");
+      } else if (/^\s*(---+|\*\*\*+)\s*$/.test(line)) {
+        closeList();
+        html.push("<hr />");
+      } else if (ul || ol) {
+        const want = ul ? "ul" : "ol";
+        if (list !== want) { closeList(); html.push("<" + want + ">"); list = want; }
+        html.push("<li>" + mdInline((ul || ol)[1]) + "</li>");
+      } else if (line.trim() === "") {
+        closeList();
+      } else {
+        closeList();
+        html.push("<p>" + mdInline(line) + "</p>");
+      }
+    }
+    closeList();
+    return html.join("\n");
+  }
+
+  // ------------------------------------------------------------- nbformat
+  function parseNb(text) {
+    if (!text.trim()) {
+      return { cells: [{ cell_type: "code", id: newId(), metadata: {},
+                         source: "", outputs: [], execution_count: null }],
+               metadata: {}, nbformat: 4, nbformat_minor: 5 };
+    }
+    const doc = JSON.parse(text);
+    if (!Array.isArray(doc.cells)) throw new Error("not a v4 notebook (no cells array)");
+    doc.nbformat = 4;
+    doc.nbformat_minor = Math.max(doc.nbformat_minor || 0, 5);
+    doc.metadata = doc.metadata || {};
+    for (const c of doc.cells) {
+      if (!c.id) c.id = newId();
+      c.source = joinText(c.source);
+      c.metadata = c.metadata || {};
+      if (c.cell_type === "code") {
+        c.outputs = c.outputs || [];
+        if (c.execution_count === undefined) c.execution_count = null;
+      }
+    }
+    return doc;
+  }
+
+  function serializeNb() {
+    for (const c of cells) syncEditor(c);
+    return JSON.stringify(nb, null, 1) + "\n";
+  }
+
+  // -------------------------------------------------- save flow (manual only)
+  function setDirty(d) {
+    dirty = d;
+    saveBtn.disabled = !d || !writable;
+    if (conflictEl.style.display !== "flex") {
+      statusTextEl.textContent = d ? "Unsaved changes" : "Saved";
+      statusTextEl.classList.remove("error");
+    }
+  }
+  function markDirty() {
+    if (!writable) return;
+    setDirty(true);
+  }
+  async function save() {
+    while (saving && savePromise) await savePromise;
+    if (!nb || !dirty || !writable) return;
+    savePromise = doSave();
+    await savePromise;
+  }
+  async function doSave() {
+    const doc = serializeNb();
+    statusTextEl.textContent = "Saving…";
+    statusTextEl.classList.remove("error");
+    saving = true;
+    try {
+      const st = await fused.writeFile(file, doc, { expectedMtime: mtime });
+      mtime = st.mtime;
+      hideConflict();
+      setDirty(serializeNb() !== doc);
+    } catch (err) {
+      if (err.type === "conflict") {
+        showConflict();
+      } else if (err.type === "readonly") {
+        setReadonly();
+      } else {
+        statusTextEl.textContent = "Save failed: " + (err.message || "");
+        statusTextEl.classList.add("error");
+      }
+    } finally {
+      saving = false;
+    }
+  }
+  function showConflict() {
+    conflictEl.style.display = "flex";
+    statusTextEl.textContent = "";
+  }
+  function hideConflict() {
+    conflictEl.style.display = "none";
+  }
+  function setReadonly() {
+    writable = false;
+    setDirty(false);
+    statusTextEl.textContent = "";
+    saveBtn.hidden = true;
+    undoBtn.hidden = true;
+    redoBtn.hidden = true;
+    fusedRoBadge.update(document.getElementById("ro"), "Read-only",
+      "The file can't be written, so edits and outputs won't be saved. Running cells still works.");
+    for (const c of cells) lockEditor(c);
+  }
+
+  // -------------------------------------------------- structural undo/redo
+  // Operation-based inverse log: each structural op (insert/delete/move/
+  // convert/clear-output) records {undo, redo} closures over the apply*
+  // primitives below, so undoing one never reverts text typed in other cells
+  // afterwards. Per-cell TEXT undo stays with CodeMirror's own history.
+  const undoStack = [];
+  const redoStack = [];
+  const UNDO_CAP = 100;
+
+  function record(op) {
+    undoStack.push(op);
+    if (undoStack.length > UNDO_CAP) undoStack.shift();
+    redoStack.length = 0;
+    updateUndoUi();
+  }
+  function undoOp() {
+    if (!writable || !undoStack.length) return;
+    const op = undoStack.pop();
+    op.undo();
+    redoStack.push(op);
+    updateUndoUi();
+  }
+  function redoOp() {
+    if (!writable || !redoStack.length) return;
+    const op = redoStack.pop();
+    op.redo();
+    undoStack.push(op);
+    updateUndoUi();
+  }
+  function resetUndo() {
+    undoStack.length = 0;
+    redoStack.length = 0;
+    updateUndoUi();
+  }
+  function updateUndoUi() {
+    undoBtn.disabled = !undoStack.length;
+    redoBtn.disabled = !redoStack.length;
+  }
+
+  // -------------------------------------------------------- kernel client
+  function ensureDaemon() {
+    if (daemon) return Promise.resolve(daemon);
+    if (!daemonP) {
+      daemonP = fused.runPython("./kernel.py", {}, { key: null })
+        .then((r) => {
+          if (!r || !r.port) throw new Error((r && r.error) || "notebook daemon did not start");
+          daemon = r;
+          return r;
+        })
+        .catch((err) => { daemonP = null; throw err; });
+    }
+    return daemonP;
+  }
+  function dURL(p) {
+    return `http://127.0.0.1:${daemon.port}${p}${p.includes("?") ? "&" : "?"}t=${encodeURIComponent(daemon.token || "")}`;
+  }
+  async function dSend(path, body) {
+    await ensureDaemon();
+    const res = await fetch(dURL(path), body ? { method: "POST", body: JSON.stringify(body) } : undefined);
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "HTTP " + res.status);
+    return data;
+  }
+  const DAEMON_UNREACHABLE =
+    "Could not reach the notebook kernel daemon — check daemon.log in the app cache (cache/notebook-daemon).";
+  let recovering = false;
+  // A dead cached port (the daemon was replaced or quit underneath us) rejects
+  // with a bare TypeError. Recover once, transparently: fresh ensure, fresh
+  // kernel for this notebook, then retry the original request against the new
+  // kernel id. Anything still failing surfaces as an actionable message —
+  // never the raw "Failed to fetch".
+  async function dFetch(path, body, recover = true) {
+    try {
+      return await dSend(path, body);
+    } catch (err) {
+      const network = err instanceof TypeError;
+      // the daemon reaps kernels idle > 30 min while other traffic keeps the
+      // daemon itself alive — a cached kernel_id can outlive its kernel
+      const reaped = !network && kernelId &&
+        /unknown kernel_id/i.test(err.message || "");
+      if (!recover || (!network && !reaped) || recovering) {
+        throw network ? new Error(DAEMON_UNREACHABLE) : err;
+      }
+      recovering = true;
+      try {
+        const oldKernel = kernelId;
+        stopPolling();
+        kernelId = null;
+        kernelP = null;
+        since = 0;
+        if (network) {
+          daemon = null;
+          daemonP = null;
+          await ensureDaemon();
+        }
+        if (oldKernel) {
+          await ensureKernel();
+          // the retried request re-executes body.cell_id on the new kernel —
+          // staling it would let a duplicate run queue behind the live one
+          for (const c of cells) if (!body || c.id !== body.cell_id) markStale(c);
+          toast(network
+            ? "Kernel connection was lost; reconnected with a fresh kernel — re-run earlier cells if needed."
+            : "The kernel had been shut down while idle; started a fresh one — re-run earlier cells if needed.");
+        }
+        let p = oldKernel && kernelId ? path.split(oldKernel).join(kernelId) : path;
+        p = p.replace(/([?&])since=\d+/, "$1since=" + since); // resume at the new kernel's seq
+        const b = body && body.kernel_id ? { ...body, kernel_id: kernelId } : body;
+        return await dSend(p, b);
+      } catch (err2) {
+        throw err2 instanceof TypeError ? new Error(DAEMON_UNREACHABLE) : err2;
+      } finally {
+        recovering = false;
+      }
+    }
+  }
+
+  function pythonPath() {
+    return (nb.metadata.fused_render || {}).python || "";
+  }
+  function setKState(s) {
+    kState = s;
+    kchipEl.className = s;
+    const py = pythonPath();
+    const label = py ? py.split(/[\\/]/).pop() : "app env";
+    kchipTextEl.textContent =
+      s === "off" ? "Kernel off" :
+      s === "starting" ? "Starting…" :
+      s === "dead" ? "Kernel dead — restart" :
+      (s === "busy" ? "Busy" : "Idle") + " · " + label;
+  }
+
+  function ensureKernel() {
+    if (kernelId && kState !== "dead") return Promise.resolve(kernelId);
+    if (!kernelP) {
+      kernelP = (async () => {
+        setKState("starting");
+        const r = await dFetch("/kernel/ensure", { nb_path: file, python: pythonPath() });
+        kernelId = r.kernel_id;
+        since = r.seq || 0; // a reused warm kernel must not replay its history
+        setKState(r.state);
+        startPolling();
+        return kernelId;
+      })().catch((err) => { kernelP = null; setKState(kernelId ? "dead" : "off"); throw err; });
+    }
+    return kernelP;
+  }
+
+  function anyRunning() {
+    return cells.some((c) => c.running);
+  }
+  // A superseded loop (env switch, reconnect) must not touch shared state:
+  // its late failure would toast and force the fresh kernel's chip to "dead".
+  function stopPolling() {
+    pollEpoch += 1;
+    polling = false;
+  }
+  function startPolling() {
+    if (polling || !kernelId) return;
+    const id = kernelId;
+    const epoch = ++pollEpoch;
+    polling = true;
+    (async () => {
+      try {
+        while (polling && epoch === pollEpoch && kernelId === id) {
+          const r = await dFetch(`/kernel/events?kernel_id=${id}&since=${since}`, undefined, false);
+          if (epoch !== pollEpoch || kernelId !== id) return;
+          since = r.next;
+          for (const ev of r.events) handleEvent(ev);
+          setKState(r.state);
+          if ((r.state === "idle" || r.state === "dead") && !anyRunning()) break;
+          await sleep(200);
+        }
+      } catch (err) {
+        if (epoch !== pollEpoch || kernelId !== id) return;
+        toast(err.message || String(err));
+        for (const c of cells) markStale(c); // also stops the elapsed ticker
+        kernelP = null; // a cached resolved promise would defeat the re-ensure
+        setKState("dead"); // honest chip state instead of an endless spinner
+      } finally {
+        if (epoch === pollEpoch) polling = false;
+      }
+    })();
+  }
+
+  function fmtDuration(ms) {
+    if (ms < 10000) return (ms / 1000).toFixed(1) + "s";
+    if (ms < 60000) return Math.round(ms / 1000) + "s";
+    return Math.floor(ms / 60000) + "m " + Math.round((ms % 60000) / 1000) + "s";
+  }
+  let tickTimer = null;
+  function tick() {
+    let live = false;
+    for (const c of cells) {
+      if (c.runStart) {
+        live = true;
+        c.timeEl.textContent = fmtDuration(performance.now() - c.runStart);
+      }
+    }
+    if (!live) { clearInterval(tickTimer); tickTimer = null; }
+  }
+  function handleEvent(ev) {
+    if (ev.type === "restarted") {
+      for (const c of cells) markStale(c);
+      return;
+    }
+    if (ev.type === "dead") {
+      kernelP = null;
+      for (const c of cells) {
+        if (c.running) { c.running = false; c.runStart = null; setDot(c, "err"); }
+      }
+      return;
+    }
+    if (ev.type === "ready") return;
+    const c = cells.find((x) => x.id === ev.cell_id);
+    // deleted or converted-to-markdown while its run was in flight — a
+    // markdown model has no outputs to append to
+    if (!c || c.model.cell_type !== "code") return;
+    if (ev.type === "started") {
+      if (c.clearOnRun) { clearOutputs(c); c.clearOnRun = false; }
+      c.runStart = performance.now();
+      if (!tickTimer) tickTimer = setInterval(tick, 100);
+    } else if (ev.type === "stream") {
+      appendOutput(c, { output_type: "stream", name: ev.name, text: ev.text });
+    } else if (ev.type === "execute_result") {
+      appendOutput(c, { output_type: "execute_result", data: ev.data, metadata: {},
+                        execution_count: ev.execution_count });
+    } else if (ev.type === "display_data") {
+      appendOutput(c, { output_type: "display_data", data: ev.data, metadata: {} });
+    } else if (ev.type === "error") {
+      appendOutput(c, { output_type: "error", ename: ev.ename, evalue: ev.evalue,
+                        traceback: ev.traceback });
+    } else if (ev.type === "done") {
+      c.running = false;
+      c.runStart = null;
+      c.clearOnRun = false;
+      if (ev.duration_ms != null) c.timeEl.textContent = fmtDuration(ev.duration_ms);
+      c.model.execution_count = ev.execution_count;
+      c.countEl.textContent = "[" + ev.execution_count + "]";
+      setDot(c, c.model.outputs.some((o) => o.output_type === "error") ? "err" : "ok");
+      markDirty();
+    }
+  }
+
+  // ------------------------------------------------------ output rendering
+  function setDot(c, cls) {
+    c.dot.className = "dot" + (cls ? " " + cls : "");
+  }
+  function markStale(c) {
+    if (c.model.cell_type !== "code") return;
+    c.running = false;
+    c.runStart = null;
+    c.clearOnRun = false; // the queued run died — keep the previous outputs
+    setDot(c, "");
+  }
+  function clearOutputs(c) {
+    c.model.outputs = [];
+    c.outEl.innerHTML = "";
+    c.outEl.classList.remove("has");
+    c.conEl.innerHTML = "";
+    c.conEl.classList.remove("has");
+  }
+  function appendOutput(c, out) {
+    const outs = c.model.outputs;
+    // Jupyter coalesces consecutive same-name stream outputs
+    if (out.output_type === "stream" && outs.length &&
+        outs[outs.length - 1].output_type === "stream" &&
+        outs[outs.length - 1].name === out.name) {
+      outs[outs.length - 1].text = joinText(outs[outs.length - 1].text) + out.text;
+      const span = c.conEl.lastElementChild;
+      span.textContent += out.text.replace(ANSI_RE, "");
+      return;
+    }
+    outs.push(out);
+    renderOutput(c, out);
+  }
+  function renderOutput(c, out) {
+    if (out.output_type === "stream") {
+      const span = document.createElement("span");
+      span.className = out.name === "stderr" ? "stderr" : "stdout";
+      span.textContent = joinText(out.text).replace(ANSI_RE, "");
+      c.conEl.appendChild(span);
+      c.conEl.classList.add("has");
+      return;
+    }
+    let el = null;
+    if (out.output_type === "error") {
+      el = document.createElement("pre");
+      el.className = "err-out";
+      el.textContent = (out.traceback || []).map((l) => joinText(l).replace(ANSI_RE, "")).join("\n")
+        || out.ename + ": " + out.evalue;
+    } else if (out.output_type === "execute_result" || out.output_type === "display_data") {
+      const d = out.data || {};
+      if (d["text/html"]) {
+        el = document.createElement("iframe");
+        el.className = "html-out";
+        el.setAttribute("sandbox", "");
+        el.srcdoc = joinText(d["text/html"]);
+      } else if (d["image/png"]) {
+        el = document.createElement("img");
+        el.src = "data:image/png;base64," + joinText(d["image/png"]).replace(/\s/g, "");
+      } else if (d["text/plain"] !== undefined) {
+        el = document.createElement("pre");
+        el.textContent = joinText(d["text/plain"]);
+      }
+    }
+    if (el) {
+      c.outEl.appendChild(el);
+      c.outEl.classList.add("has");
+    }
+  }
+  function renderSavedOutputs(c) {
+    for (const out of c.model.outputs || []) renderOutput(c, out);
+    if (c.model.execution_count) c.countEl.textContent = "[" + c.model.execution_count + "]";
+  }
+
+  // ------------------------------------------------------------- editors
+  function wantsDark() {
+    return document.documentElement.getAttribute("data-theme") === "dark";
+  }
+  function runKeymap(c) {
+    return CM.Prec.highest(CM.keymap.of([
+      { key: "Mod-Enter", run: () => { runCell(c); return true; } },
+      { key: "Shift-Enter", run: () => { runCellAndAdvance(c); return true; } },
+      { key: "Mod-i", run: () => { if (c.aiRowEl) { openAiRow(c); return true; } return false; } },
+      // structural (notebook-level) undo/redo works with focus anywhere,
+      // shadowing CM's Mod-Shift-z text-redo — text redo stays on Mod-y
+      { key: "Mod-Shift-z", run: () => { undoOp(); return true; } },
+      { key: "Mod-Shift-y", run: () => { redoOp(); return true; } },
+      // Esc leaves edit mode: markdown re-renders, code just blurs — either
+      // way the cell stays selected (command mode)
+      { key: "Escape", run: () => {
+          if (c.model.cell_type === "markdown") renderMdCell(c);
+          else c.view.contentDOM.blur();
+          selectCell(c);
+          return true;
+        } },
+    ]));
+  }
+  function baseExtensions(c) {
+    const exts = [
+      CM.basicSetup,
+      CM.EditorView.lineWrapping,
+      runKeymap(c),
+      CM.EditorView.updateListener.of((update) => {
+        if (update.docChanged) {
+          c.model.source = update.state.doc.toString();
+          updateAiPlaceholder(c);
+          markDirty();
+        }
+      }),
+    ];
+    if (c.model.cell_type === "code") exts.push(CM.python());
+    else exts.push(CM.markdown());
+    if (wantsDark()) exts.push(CM.oneDark);
+    if (!writable) {
+      exts.push(CM.EditorView.editable.of(false));
+      exts.push(CM.EditorState.readOnly.of(true));
+    }
+    return exts;
+  }
+  function makeEditor(c) {
+    c.extensions = baseExtensions(c);
+    c.view = new CM.EditorView({
+      doc: c.model.source,
+      extensions: c.extensions,
+      parent: c.edEl,
+    });
+  }
+  function syncEditor(c) {
+    if (c.view) c.model.source = c.view.state.doc.toString();
+  }
+  function lockEditor(c) {
+    if (!c.view) return;
+    // the lock must live on c.extensions — the theme observer reconfigures
+    // from it, and a transient set would be dropped on the next theme flip
+    c.extensions = c.extensions.concat([
+      CM.EditorView.editable.of(false), CM.EditorState.readOnly.of(true)]);
+    c.view.dispatch({ effects: CM.StateEffect.reconfigure.of(c.extensions) });
+  }
+  const themeObserver = new MutationObserver(() => {
+    for (const c of cells) {
+      if (!c.view) continue;
+      c.view.dispatch({
+        effects: CM.StateEffect.reconfigure.of(
+          c.extensions.filter((e) => e !== CM.oneDark).concat(wantsDark() ? [CM.oneDark] : [])),
+      });
+      c.extensions = c.extensions.filter((e) => e !== CM.oneDark).concat(wantsDark() ? [CM.oneDark] : []);
+    }
+  });
+  themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
+
+  // -------------------------------------------------------------- Ask AI
+  // Older servers don't expose the template AI bridge — hide the affordances
+  // entirely rather than showing dead UI.
+  const AI_OK = typeof fused.ai === "function";
+  const AI_SYSTEM_CODE = "You write Python code for exactly one Jupyter notebook cell. " +
+    "Return only the code that belongs in the cell — no prose before or after, no markdown " +
+    "fences, no usage examples or demo calls unless asked. If asked for a function, return " +
+    "just the function. Reuse variables and imports already defined in earlier cells; " +
+    "do not repeat imports that already exist.";
+  const AI_SYSTEM_MD = "You write the content of exactly one Jupyter notebook cell of type " +
+    "markdown. Return only the markdown — do not wrap it in code fences and do not explain " +
+    "what you did.";
+  const AI_CONTEXT_CAP = 8192;
+
+  // streaming-safe: strips an unclosed leading fence while chunks arrive
+  function stripFencesPartial(text) {
+    return String(text || "")
+      .replace(/^\s*```[^\n]*\n?/, "")
+      .replace(/\n?```\s*$/, "");
+  }
+  function codeFromAi(text) {
+    const fenced = String(text || "").match(/```(?:python|py)?\s*\n?([\s\S]*?)```/i);
+    return (fenced ? fenced[1] : stripFencesPartial(text)).trim();
+  }
+  // markdown replies may legitimately contain fences — only strip a wrapping one
+  function mdFromAi(text) {
+    const s = String(text || "");
+    return (/^\s*```/.test(s) ? stripFencesPartial(s) : s).trim();
+  }
+  function setEditorText(c, text) {
+    if (!c.view || c.view.state.doc.toString() === text) return;
+    c.view.dispatch({ changes: { from: 0, to: c.view.state.doc.length, insert: text } });
+  }
+  function setCellText(c, text) {
+    if (c.view) { setEditorText(c, text); return; }
+    // rendered markdown cell — no editor to stream into, re-render instead
+    if (c.model.source === text) return;
+    c.model.source = text;
+    renderMdCell(c);
+    markDirty();
+  }
+  function cellTraceback(c) {
+    const errs = (c.model.outputs || []).filter((o) => o.output_type === "error");
+    if (!errs.length) return "";
+    const e = errs[errs.length - 1];
+    return (e.traceback || []).map(joinText).join("\n") || e.ename + ": " + e.evalue;
+  }
+  function aiPrompt(c, question, traceback) {
+    const parts = [];
+    for (const other of cells) {
+      if (other === c) break;
+      syncEditor(other);
+      const src = other.model.source.trim();
+      if (!src) continue;
+      parts.push(other.model.cell_type === "markdown"
+        ? src.split("\n").map((l) => "# " + l).join("\n")
+        : src);
+    }
+    let ctx = parts.join("\n\n");
+    while (parts.length > 1 && ctx.length > AI_CONTEXT_CAP) {
+      parts.shift(); // oldest cells fall out of the budget first
+      ctx = parts.join("\n\n");
+    }
+    if (ctx.length > AI_CONTEXT_CAP) ctx = ctx.slice(-AI_CONTEXT_CAP);
+    syncEditor(c);
+    const current = c.model.source.trim();
+    const pieces = [];
+    if (ctx) pieces.push("Code from the notebook's earlier cells:\n```python\n" + ctx + "\n```");
+    if (current) {
+      const isMd = c.model.cell_type === "markdown";
+      pieces.push("Current " + (isMd ? "markdown " : "") + "cell content — modify or replace as requested:\n" +
+        "```" + (isMd ? "markdown" : "python") + "\n" + current + "\n```");
+    }
+    if (traceback) pieces.push("The cell raised this error:\n" + traceback);
+    pieces.push("Request: " + question);
+    return pieces.join("\n\n");
+  }
+
+  async function askAi(c, question, traceback) {
+    const st = c.aiStatus;
+    syncEditor(c);
+    const before = c.model.source;
+    const prompt = aiPrompt(c, question, traceback);
+    const run = { cancelled: false };
+    c.aiRun = run;
+    let received = "";
+    st.classList.remove("error");
+    st.textContent = "Writing…";
+    c.aiCancelBtn.hidden = false;
+    c.aiInput.disabled = true;
+    const isMd = c.model.cell_type === "markdown";
+    try {
+      const res = await fused.ai(prompt, {
+        systemPrompt: isMd ? AI_SYSTEM_MD : AI_SYSTEM_CODE,
+        effort: "low",
+        onChunk: (t) => {
+          if (run.cancelled) return;
+          received += t;
+          setCellText(c, isMd ? mdFromAi(received) : stripFencesPartial(received).trim());
+        },
+      });
+      if (!run.cancelled) {
+        const out = isMd ? mdFromAi(res.text) : codeFromAi(res.text);
+        if (!out) throw new Error("The AI did not return " + (isMd ? "markdown." : "code."));
+        setCellText(c, out);
+        st.textContent = isMd ? "Review the markdown — click the cell to edit."
+          : "Review the code, then run it.";
+      }
+    } catch (err) {
+      if (!run.cancelled) {
+        if (!received) setCellText(c, before);
+        st.classList.add("error");
+        st.textContent = err.type === "ai_unavailable"
+          ? "AI is unavailable in this Fused session."
+          : "Could not write code: " + (err.message || err);
+      }
+    } finally {
+      if (c.aiRun === run) c.aiRun = null;
+      c.aiCancelBtn.hidden = true;
+      c.aiInput.disabled = false;
+    }
+  }
+
+  function buildAiRow(c) {
+    const row = document.createElement("div");
+    row.className = "ai-row";
+    row.hidden = true;
+    const input = document.createElement("input");
+    input.placeholder = c.model.cell_type === "markdown"
+      ? "Ask AI to write markdown…" : "Ask AI to write code…";
+    input.spellcheck = false;
+    const fix = document.createElement("button");
+    fix.textContent = "Fix error";
+    fix.hidden = true;
+    const cancel = document.createElement("button");
+    cancel.textContent = "Cancel";
+    cancel.hidden = true;
+    row.append(input, fix, cancel);
+    const status = document.createElement("div");
+    status.className = "ai-status";
+    input.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        const q = input.value.trim();
+        if (q) askAi(c, q);
+      } else if (e.key === "Escape") {
+        e.preventDefault();
+        closeAiRow(c);
+      }
+    });
+    fix.addEventListener("click", () => askAi(c, "Fix the error in this cell.", cellTraceback(c)));
+    cancel.addEventListener("click", () => {
+      if (c.aiRun) c.aiRun.cancelled = true;
+      status.textContent = "Cancelled.";
+      cancel.hidden = true;
+      input.disabled = false;
+    });
+    c.aiRowEl = row;
+    c.aiInput = input;
+    c.aiFixBtn = fix;
+    c.aiCancelBtn = cancel;
+    c.aiStatus = status;
+    return [row, status];
+  }
+  function openAiRow(c) {
+    if (!c.aiRowEl) return;
+    c.aiRowEl.hidden = false;
+    c.aiFixBtn.hidden = !cellTraceback(c);
+    c.aiInput.focus();
+  }
+  function closeAiRow(c) {
+    if (!c.aiRowEl) return;
+    c.aiRowEl.hidden = true;
+    c.aiStatus.textContent = "";
+    if (c.view) c.view.focus();
+  }
+  function updateAiPlaceholder(c) {
+    if (!c.phEl) return;
+    c.phEl.hidden = !c.view || c.view.state.doc.length > 0;
+  }
+
+  // ------------------------------------------------------------ cell DOM
+  function buildCell(model) {
+    const c = { id: model.id, model, running: false, editing: false, view: null };
+    c.el = document.createElement("div");
+    c.el.className = "cell";
+    c.el.dataset.id = model.id;
+
+    const gutter = document.createElement("div");
+    gutter.className = "gutter";
+    c.dot = document.createElement("span");
+    c.dot.className = "dot";
+    c.countEl = document.createElement("span");
+    c.countEl.className = "count";
+    c.timeEl = document.createElement("span");
+    c.timeEl.className = "time";
+    gutter.append(c.dot, c.countEl, c.timeEl);
+
+    const main = document.createElement("div");
+    main.className = "main";
+    c.outEl = document.createElement("div");
+    c.outEl.className = "outputs";
+    c.conEl = document.createElement("div");
+    c.conEl.className = "console";
+    c.edEl = document.createElement("div");
+    c.edEl.className = "editor";
+    main.append(c.outEl, c.conEl, c.edEl);
+
+    const rail = document.createElement("div");
+    rail.className = "rail";
+    const runBtn = document.createElement("button");
+    runBtn.className = "run-btn";
+    runBtn.title = "Run cell (Ctrl+Enter)";
+    runBtn.textContent = "▶";
+    runBtn.addEventListener("click", () => runCell(c));
+    const aiOk = AI_OK && writable;
+    let aiBtn = null;
+    if (aiOk) {
+      aiBtn = document.createElement("button");
+      aiBtn.textContent = "✦";
+      aiBtn.title = model.cell_type === "markdown"
+        ? "Ask AI to write markdown (Ctrl+I)"
+        : "Ask AI to write code (Ctrl+I) — offers Fix error when the cell failed";
+      aiBtn.addEventListener("click", () => openAiRow(c));
+    }
+    const menuBtn = document.createElement("button");
+    menuBtn.textContent = "⋯";
+    menuBtn.title = "Cell actions";
+    const pop = document.createElement("div");
+    pop.className = "menu-pop";
+    const item = (label, fn) => {
+      const b = document.createElement("button");
+      b.textContent = label;
+      b.addEventListener("click", () => { pop.classList.remove("open"); rail.classList.remove("open"); fn(); });
+      pop.appendChild(b);
+    };
+    item("Move up", () => moveCell(c, -1));
+    item("Move down", () => moveCell(c, +1));
+    item(model.cell_type === "code" ? "Convert to markdown" : "Convert to code", () => convertCell(c));
+    // a markdown model carries no `outputs` — clearing would add an empty one
+    // (invalid nbformat) and leave undo holding an undefined to restore
+    if (model.cell_type === "code") item("Clear output", () => clearOutputAction(c));
+    item("Delete cell", () => deleteCell(c));
+    menuBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      closeMenus();
+      pop.classList.add("open");
+      rail.classList.add("open");
+    });
+    // every ⋯ action restructures the notebook — dead weight when read-only
+    const withMenu = writable ? [menuBtn, pop] : [];
+    if (aiBtn) rail.append(runBtn, aiBtn, ...withMenu);
+    else rail.append(runBtn, ...withMenu);
+
+    c.el.append(gutter, main, rail);
+    c.el.addEventListener("click", () => selectCell(c));
+    c.el.addEventListener("focusin", () => selectCell(c));
+
+    if (aiOk) {
+      const [row, status] = buildAiRow(c);
+      c.edEl.before(row, status);
+    }
+    if (model.cell_type === "markdown") {
+      renderMdCell(c);
+    } else {
+      if (aiOk) {
+        const ph = document.createElement("div");
+        ph.className = "ed-ph";
+        ph.innerHTML = 'Start coding or <a>⚡ generate with AI</a>';
+        ph.querySelector("a").addEventListener("click", () => openAiRow(c));
+        c.edEl.appendChild(ph);
+        c.phEl = ph;
+      }
+      makeEditor(c);
+      updateAiPlaceholder(c);
+      renderSavedOutputs(c);
+    }
+    return c;
+  }
+  function closeMenus() {
+    document.querySelectorAll(".menu-pop.open").forEach((p) => p.classList.remove("open"));
+    document.querySelectorAll(".rail.open").forEach((r) => r.classList.remove("open"));
+  }
+  document.addEventListener("click", closeMenus);
+
+  function renderMdCell(c) {
+    syncEditor(c);
+    if (c.view) { c.view.destroy(); c.view = null; }
+    c.editing = false;
+    c.edEl.innerHTML = "";
+    const view = document.createElement("div");
+    view.className = "md-view" + (c.model.source.trim() ? "" : " empty");
+    if (c.model.source.trim()) {
+      view.innerHTML = mdToHtml(c.model.source);
+    } else {
+      view.innerHTML = c.aiRowEl
+        ? 'Empty markdown cell — click to edit, or <a>⚡ generate with AI</a>'
+        : "Empty markdown cell — click to edit";
+      const gen = view.querySelector("a");
+      if (gen) gen.addEventListener("click", () => openAiRow(c));
+    }
+    view.addEventListener("click", (e) => {
+      if (e.target.closest("a")) return;
+      editMdCell(c);
+    });
+    c.edEl.appendChild(view);
+  }
+  function editMdCell(c) {
+    if (c.editing || !writable) return;
+    c.editing = true;
+    c.edEl.innerHTML = "";
+    makeEditor(c);
+    c.view.focus();
+  }
+
+  function gapEl() {
+    const gap = document.createElement("div");
+    gap.className = "gap";
+    if (!writable) return gap; // inserting cells needs a writable notebook
+    const add = (label, type) => {
+      const b = document.createElement("button");
+      b.textContent = label;
+      b.addEventListener("click", () => insertCell(indexOfGap(gap), type));
+      gap.appendChild(b);
+    };
+    add("+ Code", "code");
+    add("+ Markdown", "markdown");
+    return gap;
+  }
+  function indexOfGap(gap) {
+    return Array.from(nbEl.querySelectorAll(".gap")).indexOf(gap);
+  }
+
+  function renderAll() {
+    nbEl.innerHTML = "";
+    cells = [];
+    selected = null;
+    nbEl.appendChild(gapEl());
+    for (const model of nb.cells) {
+      const c = buildCell(model);
+      cells.push(c);
+      nbEl.appendChild(c.el);
+      nbEl.appendChild(gapEl());
+    }
+  }
+
+  // --------------------------------------------------------- selection
+  function selectCell(c, scroll) {
+    if (selected && selected !== c) selected.el.classList.remove("selected");
+    selected = c || null;
+    if (selected) {
+      selected.el.classList.add("selected");
+      if (scroll) selected.el.scrollIntoView({ block: "nearest" });
+    }
+  }
+
+  // ------------------------------------------------------------ cell ops
+  // apply* primitives change nb.cells + cells + DOM without recording; the
+  // user-facing wrappers below record their inverses on the undo stack.
+  function applyInsert(index, model) {
+    nb.cells.splice(index, 0, model);
+    const c = buildCell(model);
+    cells.splice(index, 0, c);
+    nbEl.querySelectorAll(".gap")[index].after(c.el);
+    c.el.after(gapEl());
+    markDirty();
+    return c;
+  }
+  function applyDelete(index) {
+    const c = cells[index];
+    if (selected === c) selectCell(null);
+    syncEditor(c);
+    nb.cells.splice(index, 1);
+    cells.splice(index, 1);
+    if (c.view) c.view.destroy();
+    c.el.nextElementSibling.remove(); // the gap after it
+    c.el.remove();
+    markDirty();
+    return c.model;
+  }
+  function applyMove(i, delta) {
+    const j = i + delta;
+    const c = cells[i];
+    const other = cells[j];
+    syncEditor(c);
+    syncEditor(other);
+    const cGap = c.el.nextElementSibling;
+    if (delta < 0) other.el.before(c.el, cGap);
+    else other.el.nextElementSibling.after(c.el, cGap);
+    [nb.cells[i], nb.cells[j]] = [nb.cells[j], nb.cells[i]];
+    [cells[i], cells[j]] = [cells[j], cells[i]];
+    markDirty();
+  }
+  function applyConvert(index, type, outputs, count) {
+    const c = cells[index];
+    syncEditor(c);
+    const m = c.model;
+    m.cell_type = type;
+    if (type === "code") {
+      m.outputs = outputs || [];
+      m.execution_count = count === undefined ? null : count;
+    } else {
+      delete m.outputs;
+      delete m.execution_count;
+    }
+    const fresh = buildCell(m);
+    c.el.replaceWith(fresh.el);
+    if (c.view) c.view.destroy();
+    cells[index] = fresh;
+    if (selected === c) {
+      selected = null;
+      selectCell(fresh);
+    }
+    markDirty();
+  }
+  function applyOutputs(index, outputs, count) {
+    const c = cells[index];
+    clearOutputs(c);
+    // clones: appendOutput coalesces streams by mutating .text in place, and
+    // the undo record must keep pristine originals
+    for (const out of outputs) appendOutput(c, { ...out });
+    c.model.execution_count = count;
+    c.countEl.textContent = count ? "[" + count + "]" : "";
+    setDot(c, "");
+    markDirty();
+  }
+
+  function insertModelCell(index, model) {
+    const c = applyInsert(index, model);
+    record({ undo: () => applyDelete(index),
+             redo: () => applyInsert(index, model) });
+    return c;
+  }
+  // Every structural op gates on writable here — the gap buttons, cell menu
+  // and Shift+Enter reach these without going through the command-mode keys
+  function insertCell(index, type, focus = true) {
+    if (!writable) return null;
+    const model = { cell_type: type, id: newId(), metadata: {}, source: "" };
+    if (type === "code") { model.outputs = []; model.execution_count = null; }
+    const c = insertModelCell(index, model);
+    if (focus) {
+      if (type === "markdown") editMdCell(c);
+      else if (c.view) c.view.focus();
+    }
+    return c;
+  }
+  function deleteCell(c) {
+    if (!writable) return;
+    const i = cells.indexOf(c);
+    if (i < 0) return;
+    const model = applyDelete(i);
+    record({ undo: () => applyInsert(i, model),
+             redo: () => applyDelete(i) });
+  }
+  function moveCell(c, delta) {
+    if (!writable) return;
+    const i = cells.indexOf(c);
+    const j = i + delta;
+    if (j < 0 || j >= cells.length) return;
+    applyMove(i, delta);
+    record({ undo: () => applyMove(j, -delta),
+             redo: () => applyMove(i, delta) });
+  }
+  function convertCell(c) {
+    if (!writable) return;
+    const i = cells.indexOf(c);
+    const m = c.model;
+    const was = { type: m.cell_type, outputs: m.outputs, count: m.execution_count };
+    const to = m.cell_type === "code" ? "markdown" : "code";
+    applyConvert(i, to);
+    record({ undo: () => applyConvert(i, was.type, was.outputs, was.count),
+             redo: () => applyConvert(i, to) });
+  }
+  function clearOutputAction(c) {
+    if (!writable) return;
+    const i = cells.indexOf(c);
+    const was = { outputs: c.model.outputs, count: c.model.execution_count };
+    applyOutputs(i, [], null);
+    record({ undo: () => applyOutputs(i, was.outputs, was.count),
+             redo: () => applyOutputs(i, [], null) });
+  }
+
+  // ------------------------------------------------------------- running
+  async function runCell(c) {
+    if (runningAll || c.running) return;
+    if (c.model.cell_type === "markdown") {
+      renderMdCell(c); // pure view change — edits already marked dirty on input
+      return;
+    }
+    try {
+      syncEditor(c);
+      // outputs clear on the cell's `started` event, not at submit — a run the
+      // kernel never starts (death, reconnect) keeps its previous results
+      c.clearOnRun = true;
+      c.running = true;
+      c.runStart = null;
+      c.timeEl.textContent = "";
+      setDot(c, "run");
+      await ensureKernel();
+      await dFetch("/kernel/execute", { kernel_id: kernelId, cell_id: c.id, code: c.model.source });
+      markDirty();
+      startPolling();
+    } catch (err) {
+      c.clearOnRun = false;
+      c.running = false;
+      c.runStart = null;
+      setDot(c, "err");
+      toast("Run failed: " + (err.message || err));
+    }
+  }
+  function runCellAndAdvance(c) {
+    if (runningAll) return; // no run, no insert-below during a batch
+    runCell(c);
+    const i = cells.indexOf(c);
+    if (i === cells.length - 1) {
+      insertCell(i + 1, "code");
+    } else {
+      const next = cells[i + 1];
+      if (next.view) next.view.focus();
+      else if (next.model.cell_type === "markdown") next.el.scrollIntoView({ block: "nearest" });
+    }
+  }
+  async function runAll() {
+    if (runningAll || anyRunning()) return;
+    runningAll = true;
+    let active = null;
+    try {
+      await ensureKernel();
+      const batch = cells.slice(); // cells inserted mid-batch don't join it
+      for (const c of batch) {
+        if (!runningAll) break; // Interrupt aborts the rest of the batch
+        if (c.model.cell_type !== "code" || !cells.includes(c)) continue;
+        syncEditor(c);
+        // outputs clear on the cell's `started` event, not at submit: a
+        // reconnect mid-batch voids queued executes, and those cells must
+        // keep their previous results
+        c.clearOnRun = true;
+        c.running = true;
+        active = c;
+        c.runStart = null;
+        c.timeEl.textContent = "";
+        setDot(c, "run");
+        await dFetch("/kernel/execute", { kernel_id: kernelId, cell_id: c.id, code: c.model.source });
+        markDirty();
+        active = null;
+        // ensureKernel's poller may have exited on an idle kernel before any
+        // cell was marked running — outputs must stream during the batch
+        startPolling();
+      }
+    } catch (err) {
+      if (active) {
+        active.clearOnRun = false;
+        active.running = false;
+        active.runStart = null;
+        setDot(active, "err");
+      }
+      toast("Run all failed: " + (err.message || err));
+    } finally {
+      runningAll = false;
+      startPolling();
+    }
+  }
+  async function interruptKernel() {
+    runningAll = false; // stop a Run all batch from submitting more cells
+    try {
+      if (!kernelId) return;
+      await dFetch("/kernel/interrupt", { kernel_id: kernelId });
+    } catch (err) {
+      toast("Interrupt failed: " + (err.message || err));
+    }
+  }
+  async function restartKernel() {
+    runningAll = false; // a mid-batch restart aborts the rest of the batch
+    try {
+      if (!kernelId) {
+        // a failed recovery can strand running flags with no kernel — Restart
+        // must clear them or every future run stays blocked on anyRunning()
+        for (const c of cells) markStale(c);
+        await ensureKernel();
+        return;
+      }
+      setKState("starting");
+      await dFetch("/kernel/restart", { kernel_id: kernelId });
+      kernelP = Promise.resolve(kernelId);
+      for (const c of cells) markStale(c);
+      startPolling();
+    } catch (err) {
+      kernelP = null;
+      setKState(kernelId ? "dead" : "off"); // never strand the chip on Starting
+      toast("Restart failed: " + (err.message || err));
+    }
+  }
+
+  // ------------------------------------------------------------ env picker
+  function fillEnvSelect(envs) {
+    const current = pythonPath();
+    envEl.innerHTML = "";
+    const opts = envs.slice();
+    if (current && !opts.some((e) => e.path === current)) {
+      opts.push({ label: current.split(/[\\/]/).pop() + " (saved)", path: current });
+    }
+    for (const e of opts) {
+      const o = document.createElement("option");
+      o.value = e.path;
+      o.textContent = e.label;
+      envEl.appendChild(o);
+    }
+    const custom = document.createElement("option");
+    custom.value = CUSTOM_ENV;
+    custom.textContent = "Custom path…";
+    envEl.appendChild(custom);
+    envEl.value = current && opts.some((e) => e.path === current) ? current : "";
+    if (!envEl.value) envEl.selectedIndex = 0;
+  }
+  let envsLoaded = false;
+  envEl.addEventListener("pointerdown", async () => {
+    if (envsLoaded) return;
+    try {
+      const r = await dFetch("/envs?nb_path=" + encodeURIComponent(file) +
+                             "&src=" + encodeURIComponent(location.origin));
+      envsLoaded = true;
+      fillEnvSelect(r.envs);
+    } catch (err) {
+      toast("Could not list environments: " + (err.message || err));
+    }
+  });
+  async function switchEnv(path) {
+    if ((pythonPath() || "") === path) return;
+    runningAll = false;
+    stopPolling();
+    const previous = pythonPath();
+    try {
+      if (kernelId) {
+        await dFetch("/kernel/shutdown", { kernel_id: kernelId });
+      }
+    } catch (err) {
+      kernelId = null;
+      kernelP = null;
+      since = 0;
+      envEl.value = previous;
+      throw err;
+    }
+    const meta = nb.metadata.fused_render || (nb.metadata.fused_render = {});
+    meta.python = path;
+    markDirty();
+    kernelId = null;
+    kernelP = null;
+    since = 0;
+    for (const c of cells) markStale(c);
+    await ensureKernel();
+  }
+  envEl.addEventListener("change", async () => {
+    try {
+      const path = envEl.value;
+      if (path === CUSTOM_ENV) {
+        envEl.value = pythonPath(); // revert while the modal decides
+        openModal({
+          title: "Custom Python interpreter",
+          placeholder: "Path to a python executable",
+          okLabel: "Use interpreter",
+          onSubmit: async ({ name }) => {
+            const o = document.createElement("option");
+            o.value = name;
+            o.textContent = name.split(/[\\/]/).pop() + " (custom)";
+            envEl.insertBefore(o, envEl.lastElementChild);
+            envEl.value = name;
+            await switchEnv(name);
+          },
+        });
+        return;
+      }
+      await switchEnv(path);
+    } catch (err) {
+      toast("Environment switch failed: " + (err.message || err));
+      setKState("off");
+    }
+  });
+
+  // --------------------------------------------------------- file actions
+  function shellPrefix() {
+    // Stay inside the shell's active prefix (router.ts PREFIX): an /embed/
+    // session keeps routing under /embed/, never teleported to /view/.
+    try {
+      const p = window.top.location.pathname;
+      if (p.startsWith("/embed/") || p === "/embed") return "/embed/";
+    } catch (e) { /* cross-origin — assume the normal shell */ }
+    return "/view/";
+  }
+  function viewUrlFor(path) {
+    // mirror the shell's /view codec (frontend/src/lib/router.ts): forward
+    // slashes for drive paths, per-segment encoding, no leading slash
+    const norm = /^[A-Za-z]:[\\/]/.test(path) ? path.replace(/\\/g, "/") : path;
+    return shellPrefix() + norm.replace(/^\/+/, "").split("/").filter(Boolean)
+      .map(encodeURIComponent).join("/");
+  }
+  function navigateShell(path) {
+    // the shell's own SPA navigation (router.ts): a location.href assignment
+    // from this iframe needs transient user activation and a full reload; the
+    // pushState + "fused:navigate" pair needs neither. Iframe remounts skip
+    // beforeunload, so callers confirm unsaved changes themselves.
+    const url = viewUrlFor(path);
+    const top = window.top;
+    try {
+      top.history.pushState(null, "", url);
+      top.dispatchEvent(new top.Event("fused:navigate"));
+    } catch (err) {
+      top.location.href = url;
+    }
+  }
+  // ---- modal (no native prompt/confirm anywhere in this template) ----
+  const modalOverlayEl = document.getElementById("modal-overlay");
+  const modalTitleEl = document.getElementById("modal-title");
+  const modalNoteEl = document.getElementById("modal-note");
+  const modalLocEl = document.getElementById("modal-loc");
+  const modalListEl = document.getElementById("modal-list");
+  const modalNameEl = document.getElementById("modal-name");
+  const modalExtEl = document.getElementById("modal-ext");
+  const modalCheckRowEl = document.getElementById("modal-check-row");
+  const modalCheckEl = document.getElementById("modal-check");
+  const modalCheckLabelEl = document.getElementById("modal-check-label");
+  const modalErrorEl = document.getElementById("modal-error");
+  const modalOkEl = document.getElementById("modal-ok");
+  let modalCtx = null; // {dir, ext, onSubmit, busy, gen}
+
+  function openModal(opts) {
+    modalCtx = { dir: opts.dir || "", ext: opts.ext || "", onSubmit: opts.onSubmit,
+                 folder: !!opts.folder, busy: false, gen: 0 };
+    modalTitleEl.textContent = opts.title;
+    modalNoteEl.textContent = opts.note || "";
+    modalNameEl.value = opts.name || "";
+    modalNameEl.placeholder = opts.placeholder || "";
+    modalExtEl.textContent = modalCtx.ext;
+    modalCheckRowEl.hidden = !opts.check;
+    if (opts.check) {
+      modalCheckLabelEl.textContent = opts.check.label;
+      modalCheckEl.checked = opts.check.checked;
+    }
+    modalOkEl.textContent = opts.okLabel || "Save";
+    modalErrorEl.textContent = "";
+    modalLocEl.hidden = modalListEl.hidden = !opts.folder;
+    modalOverlayEl.hidden = false;
+    if (opts.folder) refreshModalDir(modalCtx.dir);
+    modalNameEl.focus();
+    modalNameEl.select();
+  }
+  function closeModal() {
+    modalCtx = null;
+    modalOverlayEl.hidden = true;
+  }
+  async function refreshModalDir(dir) {
+    const gen = ++modalCtx.gen;
+    modalLocEl.textContent = "…";
+    let d;
+    try {
+      const src = location.origin + "/api/fs/raw?path=" + encodeURIComponent(dir || "");
+      d = await fused.runPython("./kernel.py", { action: "listdir", path: dir || "", src },
+                                { key: null });
+      if (d.error) throw new Error(d.error);
+    } catch (err) {
+      if (modalCtx && gen === modalCtx.gen) {
+        modalErrorEl.textContent = "Cannot list folder: " + (err.message || err);
+      }
+      return;
+    }
+    if (!modalCtx || gen !== modalCtx.gen) return; // superseded / closed
+    modalCtx.dir = d.path;
+    const unc = d.path.startsWith("//"); // "//server/share/…" — the "//" is the root
+    const segs = d.path.split("/").filter(Boolean);
+    const winRoot = /^[A-Za-z]:$/.test(segs[0] || ""); // "C:" drive paths take no leading "/"
+    const rooted = winRoot || unc; // neither gets a standalone "/" crumb
+    const dirAt = (i) => {
+      const q = segs.slice(0, i + 1).join("/");
+      if (unc) return "//" + q;
+      return winRoot ? (i ? q : q + "/") : "/" + q;
+    };
+    modalLocEl.innerHTML =
+      (rooted ? "" : `<span data-dir="/">/</span>`) +
+      segs.map((s, i) =>
+        `${i || !rooted ? " › " : ""}<span data-dir="${escapeHtml(dirAt(i))}">${escapeHtml(s)}</span>`).join("");
+    const rows = [];
+    if (d.path !== d.parent) rows.push(`<div data-dir="${escapeHtml(d.parent)}">⬆ ..</div>`);
+    for (const n of d.dirs) {
+      rows.push(`<div data-dir="${escapeHtml(d.path.replace(/\/$/, "") + "/" + n)}">📁 ${escapeHtml(n)}</div>`);
+    }
+    for (const n of d.files) {
+      rows.push(`<div class="file" data-name="${escapeHtml(n.replace(/\.ipynb$/i, ""))}">📄 ${escapeHtml(n)}</div>`);
+    }
+    if (!rows.length) rows.push(`<div class="empty">Empty folder</div>`);
+    modalListEl.innerHTML = rows.join("");
+    modalLocEl.querySelectorAll("[data-dir]").forEach((el) =>
+      el.addEventListener("click", () => refreshModalDir(el.dataset.dir)));
+    modalListEl.querySelectorAll("[data-dir]").forEach((el) =>
+      el.addEventListener("click", () => refreshModalDir(el.dataset.dir)));
+    modalListEl.querySelectorAll(".file").forEach((el) =>
+      el.addEventListener("click", () => { modalNameEl.value = el.dataset.name; }));
+  }
+  async function modalSubmit() {
+    if (!modalCtx || modalCtx.busy) return;
+    const raw = modalNameEl.value.trim();
+    if (!raw) {
+      modalErrorEl.textContent = "Enter a name.";
+      return;
+    }
+    modalCtx.busy = true;
+    modalOkEl.disabled = true;
+    let name = raw;
+    try {
+      const payload = { name: raw, dir: modalCtx.dir, checked: modalCheckEl.checked };
+      if (modalCtx.folder) {
+        // resolve server-side: the input may be a plain name, a relative
+        // subpath, or an absolute path overriding the browsed folder — and
+        // os.path knows the platform's separator rules
+        const src = location.origin + "/api/fs/raw?path=" + encodeURIComponent(modalCtx.dir || "");
+        const r = await fused.runPython("./kernel.py",
+          { action: "resolve", path: modalCtx.dir, name: raw, src }, { key: null });
+        if (r.error) throw new Error(r.error);
+        name = r.name;
+        payload.path = r.path;
+        payload.name = r.name;
+        payload.dir = r.dir;
+        if (r.dir !== modalCtx.dir) refreshModalDir(r.dir); // show the parsed parent
+      }
+      await modalCtx.onSubmit(payload);
+      closeModal();
+    } catch (err) {
+      modalErrorEl.textContent =
+        err.type === "exists" ? `"${name}" already exists here — pick another name.` :
+        err.type === "readonly" ? "This location is read-only." :
+        (err.message || String(err));
+    } finally {
+      if (modalCtx) modalCtx.busy = false;
+      modalOkEl.disabled = false;
+    }
+  }
+  modalOkEl.addEventListener("click", modalSubmit);
+  document.getElementById("modal-cancel").addEventListener("click", closeModal);
+  modalOverlayEl.addEventListener("click", (e) => {
+    if (e.target === modalOverlayEl) closeModal();
+  });
+  modalOverlayEl.addEventListener("keydown", (e) => {
+    e.stopPropagation(); // the window-level shortcuts must not fire under the modal
+    if (e.key === "Escape") {
+      e.preventDefault();
+      closeModal();
+    } else if (e.key === "Enter" && e.target.tagName !== "BUTTON") {
+      e.preventDefault();
+      modalSubmit();
+    } else if (e.key === "Tab") {
+      const items = Array.from(
+        modalOverlayEl.querySelectorAll("button, input")).filter(
+        (el) => !el.disabled && el.offsetParent !== null);
+      if (!items.length) return;
+      let i = items.indexOf(document.activeElement) + (e.shiftKey ? -1 : 1);
+      if (i < 0) i = items.length - 1;
+      if (i >= items.length) i = 0;
+      e.preventDefault();
+      items[i].focus();
+    }
+  });
+
+  function blankNbJson() {
+    return JSON.stringify({
+      cells: [{ cell_type: "code", id: newId(), metadata: {},
+                source: "", outputs: [], execution_count: null }],
+      metadata: {}, nbformat: 4, nbformat_minor: 5 }, null, 1) + "\n";
+  }
+  // mirrors the shell's dirname(): a bare drive letter is cwd-relative to
+  // os.path, so a drive-root notebook yields "C:/" and a POSIX-root one "/"
+  function dirOf(path) {
+    const i = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"));
+    const dir = path.slice(0, i);
+    if (!dir) return "/";
+    return /^[A-Za-z]:$/.test(dir) ? dir + "/" : dir;
+  }
+  function newNotebook() {
+    openModal({
+      title: "New notebook",
+      note: dirty ? "Unsaved changes in the current notebook will be lost when it opens." : "",
+      folder: true,
+      dir: dirOf(file),
+      name: "Untitled",
+      ext: ".ipynb",
+      okLabel: "Create",
+      onSubmit: async ({ path }) => {
+        await fused.writeFile(path, blankNbJson(), { create: true });
+        navigateShell(path);
+      },
+    });
+  }
+  function saveCopyAs() {
+    openModal({
+      title: "Save a copy",
+      folder: true,
+      dir: dirOf(file),
+      name: file.split(/[\\/]/).pop().replace(/\.ipynb$/i, "") + " copy",
+      ext: ".ipynb",
+      check: { label: "Open the copy after saving", checked: true },
+      okLabel: "Save copy",
+      onSubmit: async ({ path, checked }) => {
+        await fused.writeFile(path, serializeNb(), { create: true });
+        if (checked) navigateShell(path);
+      },
+    });
+  }
+
+  // -------------------------------------------------------------- loading
+  async function load() {
+    file = fused.params.get("_file");
+    if (!file) {
+      nbEl.innerHTML = `<div id="load-status" class="error">No file selected (missing _file param).</div>`;
+      return false;
+    }
+    let scaffolded = false;
+    try {
+      const st = await fused.stat(file);
+      const text = await fused.readFile(file);
+      scaffolded = !text.trim(); // empty file -> blank in-memory notebook
+      nb = parseNb(text);
+      mtime = st.mtime;
+      writable = st.writable !== false;
+    } catch (err) {
+      nbEl.innerHTML = `<div id="load-status" class="error">Failed to load notebook: ${escapeHtml(err.message || String(err))}</div>`;
+      return false;
+    }
+    filenameEl.textContent = file.split(/[\\/]/).pop();
+    renderAll();
+    resetUndo();
+    setDirty(false);
+    setKState("off");
+    const saved = pythonPath();
+    fillEnvSelect([{ label: "App environment", path: "" }]);
+    if (saved) envEl.value = saved;
+    if (!writable) setReadonly();
+    else if (scaffolded) setDirty(true); // first explicit Save writes valid nbformat
+    return true;
+  }
+  async function reloadFromDisk() {
+    try {
+      hideConflict();
+      setDirty(false);
+      await load();
+    } catch (err) {
+      statusTextEl.textContent = "Reload failed: " + (err.message || "");
+      statusTextEl.classList.add("error");
+    }
+  }
+  async function overwrite() {
+    try {
+      const st = await fused.writeFile(file, serializeNb());
+      mtime = st.mtime;
+      hideConflict();
+      setDirty(false);
+    } catch (err) {
+      statusTextEl.textContent = "Save failed: " + (err.message || "");
+      statusTextEl.classList.add("error");
+    }
+  }
+
+  document.getElementById("run-all").addEventListener("click", runAll);
+  document.getElementById("interrupt").addEventListener("click", interruptKernel);
+  document.getElementById("restart").addEventListener("click", restartKernel);
+  document.getElementById("reload").addEventListener("click", reloadFromDisk);
+  document.getElementById("overwrite").addEventListener("click", overwrite);
+  saveBtn.addEventListener("click", save);
+  undoBtn.addEventListener("click", undoOp);
+  redoBtn.addEventListener("click", redoOp);
+  const filePopEl = document.getElementById("file-pop");
+  document.getElementById("file-menu").addEventListener("click", (e) => {
+    e.stopPropagation();
+    const open = filePopEl.classList.contains("open");
+    closeMenus();
+    if (!open) filePopEl.classList.add("open");
+  });
+  document.getElementById("new-nb").addEventListener("click", () => {
+    filePopEl.classList.remove("open");
+    newNotebook();
+  });
+  document.getElementById("copy-nb").addEventListener("click", () => {
+    filePopEl.classList.remove("open");
+    saveCopyAs();
+  });
+
+  window.addEventListener("keydown", (e) => {
+    if (!(e.metaKey || e.ctrlKey) || e.defaultPrevented) return;
+    const key = e.key.toLowerCase();
+    if (key === "s") {
+      e.preventDefault();
+      save();
+      return;
+    }
+    if (e.shiftKey && (key === "z" || key === "y")) {
+      // structural undo/redo, global — inside CM editors the per-cell keymap
+      // already handled (and defaultPrevented) these
+      e.preventDefault();
+      if (key === "z") undoOp();
+      else redoOp();
+      return;
+    }
+    // plain Ctrl+Z / Ctrl+Y fall back to structural only OUTSIDE editors and
+    // text inputs, which own text undo/redo there
+    if (e.target.closest && (e.target.closest(".cm-editor") ||
+        /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName))) return;
+    if (key === "z") {
+      e.preventDefault();
+      undoOp();
+    } else if (key === "y") {
+      e.preventDefault();
+      redoOp();
+    }
+  });
+  // Jupyter-style command mode: acts on the selected cell only while focus is
+  // outside every editor, input, and the modal.
+  let lastDeleteKey = 0;
+  window.addEventListener("keydown", (e) => {
+    if (e.defaultPrevented || !selected || !modalOverlayEl.hidden) return;
+    const t = e.target;
+    if (t.closest && (t.closest(".cm-editor") ||
+        /^(INPUT|TEXTAREA|SELECT|BUTTON)$/.test(t.tagName))) return;
+    const c = selected;
+    const i = cells.indexOf(c);
+    if (e.metaKey || e.ctrlKey || e.altKey) {
+      if ((e.metaKey || e.ctrlKey) && !e.altKey && e.key === "Enter") {
+        e.preventDefault();
+        runCell(c); // run in place
+      }
+      return;
+    }
+    if (e.key === "Enter") {
+      e.preventDefault();
+      if (e.shiftKey) {
+        runCellAndAdvance(c);
+      } else if (c.model.cell_type === "markdown") {
+        editMdCell(c);
+      } else if (c.view) {
+        c.view.focus();
+      }
+      return;
+    }
+    const k = e.key.toLowerCase();
+    if (e.key === "ArrowUp" || e.key === "ArrowDown" || k === "k" || k === "j") {
+      e.preventDefault();
+      const j = i + (e.key === "ArrowUp" || k === "k" ? -1 : 1);
+      if (j >= 0 && j < cells.length) selectCell(cells[j], true);
+      return;
+    }
+    if (e.shiftKey) {
+      if (k === "z") { e.preventDefault(); redoOp(); }
+      return;
+    }
+    if (k === "z") { e.preventDefault(); undoOp(); return; }
+    if (k === "s") { e.preventDefault(); save(); return; }
+    if (k === "c") {
+      e.preventDefault();
+      syncEditor(c);
+      cellClipboard = JSON.parse(JSON.stringify(c.model));
+      return;
+    }
+    if (!writable) return; // the structural keys below mutate the notebook
+    if (k === "a" || k === "b") {
+      e.preventDefault();
+      selectCell(insertCell(k === "a" ? i : i + 1, "code", false), true);
+    } else if (k === "d") {
+      e.preventDefault();
+      const now = Date.now();
+      if (now - lastDeleteKey < 800) {
+        lastDeleteKey = 0;
+        deleteCell(c);
+        selectCell(cells[Math.min(i, cells.length - 1)] || null, true);
+      } else {
+        lastDeleteKey = now;
+      }
+    } else if (k === "m" || k === "y") {
+      e.preventDefault();
+      if ((k === "m") === (c.model.cell_type === "code")) convertCell(c);
+    } else if (k === "x") {
+      e.preventDefault();
+      syncEditor(c);
+      cellClipboard = JSON.parse(JSON.stringify(c.model));
+      deleteCell(c);
+      selectCell(cells[Math.min(i, cells.length - 1)] || null, true);
+    } else if (k === "v") {
+      e.preventDefault();
+      if (!cellClipboard) return;
+      const model = JSON.parse(JSON.stringify(cellClipboard));
+      model.id = newId();
+      selectCell(insertModelCell(i + 1, model), true);
+    }
+  });
+  window.addEventListener("beforeunload", (e) => {
+    if (dirty) {
+      e.preventDefault();
+      e.returnValue = "";
+    }
+  });
+  window.__fusedFlushEdits = async () => {
+    if (!nb || !dirty) return { ok: true };
+    if (conflictEl.style.display === "flex") return { ok: false };
+    await save();
+    return { ok: !dirty && conflictEl.style.display !== "flex" };
+  };
+
+  load();
+</script>
+</body>
+</html>

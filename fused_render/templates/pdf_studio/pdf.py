@@ -7,6 +7,9 @@ ops, PyMuPDF handles text extraction/editing and rasterization. Every action
 returns JSON so an AI agent can drive the whole app headlessly exactly as the
 UI does.
 
+Read-only inspection (classification, security scan, Markdown) lives in the
+sibling inspector.py; this module owns the editing actions and the dispatcher.
+
 The source of truth is the .pdf files on disk, wherever they live. A flat
 library (a single JSON file of absolute paths) just remembers which files the
 user added — it never copies them. Edits never touch the original directly:
@@ -44,6 +47,9 @@ Actions
   excel_to_pdf(src)                        -> {name, path, dir}
   images_to_pdf(sources,name,directory)    -> {name, path, dir}  (image file paths)
   save_scan(images_b64,name,directory)     -> {name, path, dir}  (base64 captures)
+  inspect(doc,pages)                       -> {doc, verdict, pages, fonts, text, security, rust}
+  to_markdown(doc,pages)                   -> {markdown, chars, pages}
+  save_markdown(doc,pages,directory,name)  -> {name, path, size, dir}
   reveal(path)                             -> {ok}  (opens the OS file explorer)
   page_text(doc,page)                      -> {width, height, rotation, spans:[...]}
   undo(doc) / redo(doc)                    -> mutation contract shape
@@ -1281,6 +1287,62 @@ def _export(doc, kind, pages, name, directory=""):
             "dir": _fwd(out)}
 
 
+# ------------------------------------------------------------------ inspection
+# The report itself lives in the sibling inspector.py. It is loaded by path, not
+# by name: the built-in executor runs helpers with sys.path untouched, so an
+# `import inspector` would not resolve (and would collide in the subprocess
+# engine, where the script's own directory IS on the path).
+def _inspector():
+    import importlib.util
+
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "inspector.py")
+    spec = importlib.util.spec_from_file_location("_pdf_studio_inspector", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _page_indices(path, pages):
+    import fitz
+
+    d = fitz.open(path)
+    n = d.page_count
+    d.close()
+    return _parse_pages(pages, n)
+
+
+def _inspect(doc, pages):
+    cur = _cur_path(doc)
+    # The working copy is what the report describes, but revisions and
+    # web-optimization are facts about the file the user has — the working copy
+    # carries this session's incremental saves.
+    report = _inspector().report(cur, _page_indices(cur, pages),
+                                disk=os.path.abspath(doc))
+    # The report describes the bytes on disk; the identity is the doc the user
+    # opened, which is the original even while a working copy is being read.
+    report["doc"]["path"] = _fwd(os.path.abspath(doc))
+    report["doc"]["name"] = os.path.basename(doc)
+    return report
+
+
+def _markdown(doc, pages):
+    cur = _cur_path(doc)
+    return _inspector().markdown(cur, _page_indices(cur, pages))
+
+
+def _save_markdown(doc, pages, directory, name, text=None):
+    # The caller sends back the markdown it is showing, so the file matches the
+    # preview and a large document is not converted twice against the timeout.
+    md = text if text is not None else _markdown(doc, pages)["markdown"]
+    out = _out_dir(directory, os.path.dirname(os.path.abspath(doc)))
+    stem = _safe_name(name, os.path.basename(doc))
+    dest = _unique_path(out, os.path.splitext(stem)[0] + ".md")
+    with open(dest, "w", encoding="utf-8") as f:
+        f.write(md)
+    return {"name": os.path.basename(dest), "path": _fwd(dest),
+            "size": os.path.getsize(dest), "dir": _fwd(out)}
+
+
 def _health():
     out = {"ok": True, "pymupdf": "", "pikepdf": ""}
     try:
@@ -1293,6 +1355,18 @@ def _health():
         out["pikepdf"] = pikepdf.__version__
     except Exception as e:
         out["ok"], out["pikepdf_error"] = False, str(e)
+    # pdf_inspector is optional, so a broken install must not fail the whole
+    # health check the way a missing required engine does — a prebuilt native
+    # wheel can raise more than ImportError (OSError loading the .pyd, a package
+    # __init__ that throws). Absent or broken, the app runs without it.
+    try:
+        import pdf_inspector
+        out["pdf_inspector"] = getattr(pdf_inspector, "__version__", "installed")
+    except ImportError:
+        out["pdf_inspector"] = ""
+    except Exception as e:
+        out["pdf_inspector"] = ""
+        out["pdf_inspector_error"] = str(e)
     out["soffice"] = bool(_find_soffice())
     out["ocr_langs"] = sorted(
         f[:-len(".traineddata")] for f in os.listdir(TESSDATA)
@@ -1337,6 +1411,7 @@ def main(
     language: str = "",
     images_b64: str = "",
     exts: str = "",
+    text: str = "",
 ):
     if action == "health":
         return _health()
@@ -1464,6 +1539,12 @@ def main(
             import sys
             subprocess.Popen(["open" if sys.platform == "darwin" else "xdg-open", p])
         return {"ok": True}
+    if action == "inspect":
+        return _inspect(doc, pages)
+    if action == "to_markdown":
+        return _markdown(doc, pages)
+    if action == "save_markdown":
+        return _save_markdown(doc, pages, directory, name, text or None)
     if action == "page_text":
         return _page_text(_open_work(doc)[0], page)
     if action == "undo":

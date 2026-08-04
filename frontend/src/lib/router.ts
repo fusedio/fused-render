@@ -57,7 +57,7 @@ export function urlForFsPath(fsPath: string, search?: string): string {
   return PREFIX + encoded + (search || "");
 }
 
-export function navigate(fsPath: string, opts?: { isDir?: boolean }): void {
+export function navigate(fsPath: string, opts?: { isDir?: boolean; mode?: string }): void {
   // Navigating between files/dirs drops old view params (fresh query string) —
   // EXCEPT `preview` (the listing's preview-pane visibility), which is sticky
   // across DIRECTORY navigation: the pane is workspace layout the user
@@ -69,10 +69,12 @@ export function navigate(fsPath: string, opts?: { isDir?: boolean }): void {
   // `preview` param. Going back (history) or re-entering a folder restores the
   // pane from that entry's URL / the folder's viewstate instead.
   const preview = new URLSearchParams(location.search).get("preview");
-  const search =
-    opts?.isDir === true && preview !== null
-      ? "?preview=" + encodeURIComponent(preview)
-      : "";
+  const parts: string[] = [];
+  if (opts?.isDir === true && preview !== null) parts.push("preview=" + encodeURIComponent(preview));
+  // `opts.mode` picks the destination's template mode (`_mode`) — how the app
+  // cards open a project folder straight into the claude_split split view.
+  if (opts?.mode) parts.push("_mode=" + encodeURIComponent(opts.mode));
+  const search = parts.length ? "?" + parts.join("&") : "";
   // `opts.isDir` is a nav hint (the clicked listing row / breadcrumb already
   // knows whether the target is a directory): it rides in history.state so the
   // destination view can paint the right scaffold — a directory's listing plus
@@ -108,10 +110,14 @@ export function replaceSearch(url: string): void {
   history.replaceState(history.state, "", url);
 }
 
-export function navigateUrl(url: string): void {
+export function navigateUrl(url: string, opts?: { isDir?: boolean }): void {
   // Like navigate(), but preserves the full url (incl. query string) — used
-  // when opening a bookmark, whose url carries saved view params.
-  history.pushState(null, "", url);
+  // when opening a bookmark, whose url carries saved view params. Callers
+  // that know the target's kind (e.g. Home's post-create hop into the app
+  // folder's chat) pass the same isDir nav hint navigate() takes, so the
+  // destination paints the right scaffold instead of the file one.
+  const state = opts && typeof opts.isDir === "boolean" ? { fsDir: opts.isDir } : null;
+  history.pushState(state, "", url);
   notifyNavigate();
 }
 

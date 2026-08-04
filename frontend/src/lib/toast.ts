@@ -20,13 +20,26 @@ export interface ToastItem {
   msg: string;
   tone: ToastTone;
   action?: ToastAction;
+  // Dismissed, but still rendered while its exit animation plays (see
+  // TOAST_EXIT_MS). The host paints these with `.toast-leaving`; nothing else
+  // should treat them as live.
+  leaving: boolean;
 }
 
 const DEFAULT_TTL_MS = 6000;
 
+// How long a dismissed toast stays in the queue so it can fade + collapse
+// (which is also what makes the toasts below it glide up instead of snapping).
+// Must match the .toast/.toast-slot exit transition in shell.css (--dur-med).
+export const TOAST_EXIT_MS = 150;
+
 let toasts: ToastItem[] = [];
 let nextId = 1;
 const timers = new Map<number, number>();
+// Exit timers, keyed the same way. Separate from `timers`: a toast in its exit
+// window has no TTL left to cancel, and a dismiss landing mid-exit must not
+// restart or shorten the animation.
+const exiting = new Map<number, number>();
 const listeners = new Set<() => void>();
 
 function emit(): void {
@@ -41,8 +54,9 @@ function subscribe(cb: () => void): () => void {
 }
 
 // Stable snapshot: the array reference only changes when the queue mutates, so
-// useSyncExternalStore stays render-free between pushes/dismisses.
-function getSnapshot(): ToastItem[] {
+// useSyncExternalStore stays render-free between pushes/dismisses. Includes
+// toasts in their exit window (`leaving: true`) — they are still on screen.
+export function getToasts(): ToastItem[] {
   return toasts;
 }
 
@@ -56,7 +70,7 @@ export function pushToast(t: {
   ttlMs?: number;
 }): number {
   const id = nextId++;
-  toasts = [...toasts, { id, msg: t.msg, tone: t.tone, action: t.action }];
+  toasts = [...toasts, { id, msg: t.msg, tone: t.tone, action: t.action, leaving: false }];
   const ttl = t.ttlMs ?? DEFAULT_TTL_MS;
   if (ttl > 0) {
     timers.set(id, window.setTimeout(() => dismissToast(id), ttl));
@@ -65,18 +79,37 @@ export function pushToast(t: {
   return id;
 }
 
+// Dismiss = start the exit animation, not "remove". The toast keeps its slot in
+// the queue (and therefore its place in the column) with `leaving: true` for
+// TOAST_EXIT_MS, then goes. Both dismiss routes land here: the TTL timer above
+// calls this, and so does the ✕ / a caller dismissing its own toast.
 export function dismissToast(id: number): void {
   const timer = timers.get(id);
   if (timer !== undefined) {
     window.clearTimeout(timer);
     timers.delete(id);
   }
+  if (exiting.has(id)) return; // already animating out — don't restart it
+  let found = false;
+  const next = toasts.map((t) => {
+    if (t.id !== id) return t;
+    found = true;
+    return { ...t, leaving: true };
+  });
+  if (!found) return; // already gone — stay render-free
+  toasts = next;
+  exiting.set(id, window.setTimeout(() => removeToast(id), TOAST_EXIT_MS));
+  emit();
+}
+
+function removeToast(id: number): void {
+  exiting.delete(id);
   const next = toasts.filter((t) => t.id !== id);
-  if (next.length === toasts.length) return; // already gone — stay render-free
+  if (next.length === toasts.length) return;
   toasts = next;
   emit();
 }
 
 export function useToasts(): ToastItem[] {
-  return useSyncExternalStore(subscribe, getSnapshot);
+  return useSyncExternalStore(subscribe, getToasts);
 }

@@ -35,25 +35,45 @@ export function modeTitle(mode: string): string {
 interface ModeSwitcherProps<M extends string> {
   entries: ModeSwitcherEntry<M>[];
   active: M;
+  // The mode a click is currently switching TO, if any. The switch is async
+  // (the preview asks the open editor to flush its buffer first, bounded at
+  // 10s) and clicks landing mid-switch are dropped, so the entry that was
+  // clicked shows a spinner until the iframe swap starts — otherwise a slow
+  // switch reads as a dead button.
+  busy?: M | null;
   onSelect: (mode: M) => void;
 }
 
-export default function ModeSwitcher<M extends string>({ entries, active, onSelect }: ModeSwitcherProps<M>) {
+export default function ModeSwitcher<M extends string>({ entries, active, busy, onSelect }: ModeSwitcherProps<M>) {
   if (entries.length <= 1) return null;
   return (
     <div className="mode-switcher">
-      {entries.map((e) => (
-        <button
-          key={e.mode}
-          type="button"
-          className={"mode-switcher-btn" + (e.mode === active ? " active" : "") + (e.pending ? " pending" : "")}
-          title={e.pending ? `${modeTitle(e.mode)} — checking if this view applies…` : modeTitle(e.mode)}
-          disabled={e.pending}
-          onClick={() => onSelect(e.mode)}
-        >
-          {e.pending ? <span className="mode-icon-spinner" /> : e.icon}
-        </button>
-      ))}
+      {entries.map((e) => {
+        const waiting = busy === e.mode;
+        return (
+          <button
+            key={e.mode}
+            type="button"
+            className={
+              "mode-switcher-btn" +
+              (e.mode === active ? " active" : "") +
+              (e.pending ? " pending" : "") +
+              (waiting ? " switching" : "")
+            }
+            title={
+              waiting
+                ? `${modeTitle(e.mode)} — switching…`
+                : e.pending
+                  ? `${modeTitle(e.mode)} — checking if this view applies…`
+                  : modeTitle(e.mode)
+            }
+            disabled={e.pending || waiting}
+            onClick={() => onSelect(e.mode)}
+          >
+            {e.pending || waiting ? <span className="mode-icon-spinner" /> : e.icon}
+          </button>
+        );
+      })}
     </div>
   );
 }

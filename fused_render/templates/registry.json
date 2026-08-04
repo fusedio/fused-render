@@ -48,15 +48,19 @@
     "tree",
     "code",
     "duckdb",
+    "versions",
     "git",
     "reader",
-    "annotate",
-    "versions"
+    "annotate"
   ],
   ".jsonl": [
     "code",
     "duckdb",
     "reader",
+    "annotate"
+  ],
+  ".ipynb": [
+    "notebook",
     "annotate"
   ],
   ".calls.jsonl": [
@@ -140,19 +144,19 @@
     "markdown",
     "code",
     "claude",
+    "versions",
     "git",
     "reader",
-    "annotate",
-    "versions"
+    "annotate"
   ],
   ".markdown": [
     "markdown",
     "code",
     "claude",
+    "versions",
     "git",
     "reader",
-    "annotate",
-    "versions"
+    "annotate"
   ],
   ".tex": [
     "latex",
@@ -268,17 +272,17 @@
   ".py": [
     "code",
     "api",
+    "versions",
     "git",
     "reader",
-    "annotate",
-    "versions"
+    "annotate"
   ],
   ".js": [
     "code",
+    "versions",
     "git",
     "reader",
-    "annotate",
-    "versions"
+    "annotate"
   ],
   ".ts": [
     "code",
@@ -366,17 +370,17 @@
   ],
   ".yaml": [
     "code",
+    "versions",
     "git",
     "reader",
-    "annotate",
-    "versions"
+    "annotate"
   ],
   ".yml": [
     "code",
+    "versions",
     "git",
     "reader",
-    "annotate",
-    "versions"
+    "annotate"
   ],
   ".toml": [
     "canvas",
@@ -417,18 +421,18 @@
   ],
   ".css": [
     "code",
+    "versions",
     "git",
     "reader",
-    "annotate",
-    "versions"
+    "annotate"
   ],
   ".txt": [
     "text",
     "code",
+    "versions",
     "git",
     "reader",
-    "annotate",
-    "versions"
+    "annotate"
   ],
   ".log": [
     "log_studio",
@@ -442,20 +446,20 @@
     "_render",
     "code",
     "claude",
+    "versions",
     "git",
     "reader",
     "annotate",
-    "history",
-    "versions"
+    "history"
   ],
   ".htm": [
     "_render",
     "code",
     "claude",
+    "versions",
     "git",
     "reader",
-    "annotate",
-    "versions"
+    "annotate"
   ],
   ".tif": [
     "geotiff",
@@ -478,8 +482,9 @@
   ],
   "/": [
     "_listing",
-    "git",
+    "claude_split",
     "versions",
+    "git",
     "graph",
     "zarr_aoi"
   ],

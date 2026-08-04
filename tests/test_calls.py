@@ -23,6 +23,7 @@ import subprocess
 import sys
 import threading
 import time
+from urllib.parse import quote
 
 import pytest
 from fastapi.testclient import TestClient
@@ -358,6 +359,36 @@ def test_a_failed_run_records_the_traceback(app_client):
     assert got["outcome"] == "error"
     assert got["error"]["type"] == "ZeroDivisionError"
     assert "ZeroDivisionError" in got["error"]["traceback"]
+
+
+def test_a_non_latin1_path_rides_percent_encoded_and_lands_decoded(app_client):
+    """A file whose name is not Latin-1 must not take the whole page down: a
+    header holding one made `fetch` throw, killing every call the page made."""
+    client, d = app_client
+    target = d / "调查-обзор-مسح.pdf"
+    page = d / "p.html"
+    client.get(f"/api/fs/stat?path={target}", headers={
+        "X-Fused-Page": quote(str(page)), "X-Fused-Target": quote(str(target)),
+    })
+    assert drain()
+
+    got = calls.query(limit=10)["records"][0]
+    assert got["page"] == canonical_fs_path(str(page))
+    assert got["target_file"] == canonical_fs_path(str(target)), (
+        "an encoded record matches no filter and names a file nobody has")
+
+
+def test_the_runtime_encodes_the_paths_it_puts_in_headers(store):
+    """The producer half: the decode above passes even if the runtime stops
+    encoding, which is exactly the state that was broken."""
+    from pathlib import Path
+
+    import fused_render
+
+    runtime = (Path(fused_render.__file__).parent / "static"
+               / "runtime.js").read_text(encoding="utf-8")
+    assert 'headers["X-Fused-Page"] = encodeURIComponent(page)' in runtime
+    assert 'headers["X-Fused-Target"] = encodeURIComponent(target)' in runtime
 
 
 def test_first_party_flags_a_template_page_not_the_users_own(store):

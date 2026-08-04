@@ -150,6 +150,13 @@ function TabFrame({
   };
 
   const onLoad = () => {
+    // Fade in instead of flashing an unpainted frame (`.tabs-body iframe`
+    // starts at opacity 0, see shell.css). Toggled on the DOM node rather than
+    // through state because the tab bar's mode menu also writes this iframe's
+    // src imperatively (framesRef) and has to be able to re-arm the fade
+    // without owning React state here; `className` is a constant prop, so
+    // React never rewrites the attribute and can't clobber the token.
+    iframeRef.current?.classList.add("is-loaded");
     onUrlChange();
     // null when this document is already hooked — keep the existing hook.
     if (!iframeRef.current) return;
@@ -165,6 +172,7 @@ function TabFrame({
         iframeRef.current = el;
         onFrame(el);
       }}
+      className="tab-frame"
       src={srcRef.current}
       onLoad={onLoad}
       style={active ? undefined : { display: "none" }}
@@ -314,7 +322,11 @@ export default function Tabs({ config }: { config: Config }) {
                 query={t.query}
                 onNavigate={(q) => {
                   const f = framesRef.current.get(t.id);
-                  if (f) f.src = embedSrc(t.path, q);
+                  if (!f) return;
+                  // Re-arm the load fade (TabFrame.onLoad puts it back) so the
+                  // reload dissolves through --bg instead of flashing white.
+                  f.classList.remove("is-loaded");
+                  f.src = embedSrc(t.path, q);
                 }}
               />
             )}

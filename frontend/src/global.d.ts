@@ -10,3 +10,9 @@ interface Window {
 
 // Vite handles CSS side-effect imports at build time.
 declare module "*.css";
+
+// Vite resolves image imports to their served URL.
+declare module "*.png" {
+  const url: string;
+  export default url;
+}

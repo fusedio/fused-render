@@ -30,6 +30,7 @@ import type { CallsParamsMode, Prefs } from "../lib/api";
 import { navigate, navigateUrl } from "../lib/router";
 import { notifyPrefsChanged } from "../lib/prefs";
 import { ErrorBanner } from "../components/ErrorBanner";
+import { SkeletonLines } from "../components/Skeleton";
 import { useThemePref } from "../lib/theme";
 import { AccountPanel } from "./Account";
 
@@ -114,7 +115,8 @@ function EngineSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs)
         How <code>fused.runPython</code> runs a page's Python. <b>Both engines run on this
         machine</b> — neither uses your configured Fused environments (those are only deploy
         targets, chosen in a page's Deploy dialog). Changes apply to the next run — no restart
-        needed.
+        needed. With nothing chosen here the <b>Fused engine</b> is used when its package is
+        importable, and Local otherwise (D204).
       </p>
       <label className={"prefs-radio" + (locked ? " locked" : "")}>
         <input
@@ -129,6 +131,12 @@ function EngineSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs)
           launched this server.
         </span>
       </label>
+      {/* Since D204 an unset pref reports `selected: "fused"`, so on a machine
+          without the package this radio renders CHECKED and disabled — the common
+          case now, not an edge one. It is not left unexplained: the inline
+          "(unavailable…)" span below, the title, and the "Currently running: Local
+          (built-in) — falling back…" line together say what is running and why,
+          and the Local radio stays live so the choice can still be pinned. */}
       <label
         className={"prefs-radio" + (locked || !engine.fused_available ? " locked" : "")}
         title={
@@ -145,7 +153,7 @@ function EngineSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs)
           onChange={() => select("fused")}
         />
         <span>
-          <b>Fused engine</b> — the fused package's local runner: PEP 723 inline requirements
+          <b>Fused engine (default)</b> — the fused package's local runner: PEP 723 inline requirements
           resolved into cached venvs (<code>~/.openfused/venvs</code>), plus{" "}
           <code>@fused.udf</code> / <code>result</code> entrypoints.
           {!engine.fused_available && (
@@ -451,7 +459,7 @@ export default function Preferences() {
   return (
     <div className="prefs-page">
       {error && <ErrorBanner>{error}</ErrorBanner>}
-      {!prefs && !error && <div className="deploy-muted">Loading…</div>}
+      {!prefs && !error && <SkeletonLines rows={4} label="Loading preferences" />}
       {prefs && (
         <>
           <div className="prefs-tabs">

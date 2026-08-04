@@ -27,14 +27,20 @@ export default function NotificationHost() {
   const toasts = useToasts();
   return (
     <div className="notif-host">
+      {/* Each toast rides in a grid-row wrapper (.toast-slot) whose row
+          collapses 1fr → 0fr on the way out, so the cards below it GLIDE up
+          instead of snapping the moment one is dismissed. The wrapper is what
+          animates height; the card itself only fades and slides (shell.css). */}
       {toasts.map((t) => (
-        <Toast
-          key={t.id}
-          msg={t.msg}
-          tone={t.tone}
-          action={t.action}
-          onClose={() => dismissToast(t.id)}
-        />
+        <div key={t.id} className={"toast-slot" + (t.leaving ? " leaving" : "")}>
+          <Toast
+            msg={t.msg}
+            tone={t.tone}
+            action={t.action}
+            leaving={t.leaving}
+            onClose={() => dismissToast(t.id)}
+          />
+        </div>
       ))}
       {!IS_EMBED && <ServerStatusBanner />}
     </div>

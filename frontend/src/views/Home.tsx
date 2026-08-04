@@ -3,21 +3,27 @@
 //   1. Hero card — headline + blurb + the prompt composer (describe an app,
 //      haiku names it, POST /api/apps/new scaffolds it). The structured
 //      NewAppPanel is exported from here but opens from /apps.
-//   2. Doorways — three equal cards for the app's entry points: file
-//      explorer, apps hub (the Fused workspace dir), templates manager.
+//   2. Doorways — equal cards for the app's entry points: file explorer,
+//      apps hub (the Fused workspace dir), templates manager, and — once
+//      the bundled learn mount is ready — the Learn lessons.
 //   3. Recent — the 10 most recently updated apps (GET /api/apps), sorted
 //      once per fetch so the grid never reorders under interaction; keys
 //      are stable paths.
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import { aiComplete, createApp, getApps } from "../lib/api";
-import type { Config } from "../lib/api";
-import { navigate, navigateUrl, urlForFsPath } from "../lib/router";
+import { aiComplete, createApp, getApps, statPath } from "../lib/api";
+import type { AppInfo, Config } from "../lib/api";
+import { currentUrl, navigate, navigateUrl, urlForFsPath } from "../lib/router";
 import { ErrorBanner } from "../components/ErrorBanner";
 import { TextInput, TextArea } from "../components/field/fields";
 import { basename } from "../lib/format";
 import { isMod, MOD_LABEL } from "../lib/platform";
-import { AppCard } from "../components/AppCard";
+import { useDeferredClose, useLearnMountReady } from "../lib/hooks";
+import { PANEL_EXIT_MS } from "../lib/exit-animation";
+import { timeAgo } from "../components/AppPreviewCard";
+import { SkeletonLines } from "../components/Skeleton";
+import logoDark from "../assets/logo-text-black-bg-transparent.png";
+import logoLight from "../assets/logo-text-white-bg-transparent.png";
 
 type Loaded<T> = { status: "loading" } | { status: "ok"; data: T } | { status: "error"; message: string };
 
@@ -50,14 +56,17 @@ function appNameError(name: string): string | null {
   return null;
 }
 
-// URL of a file's claude-template chat, attached to a specific live run.
+// URL of an app folder's claude_split chat, attached to a specific live run.
 // `_mode` is the shell's template selector; `run` is a plain view param the
-// claude template reads through fused.params (its boot resumes that run, so
-// a session started server-side is picked up exactly like one the page
-// started itself).
-export function claudeChatUrl(fsPath: string, runId: string): string {
-  const params = new URLSearchParams({ _mode: "claude", run: runId });
-  return urlForFsPath(fsPath, "?" + params.toString());
+// claude_split template reads through fused.params (its boot resumes that
+// run, so a session started server-side is picked up exactly like one the
+// page started itself). Folder-scoped on purpose: the server starts the
+// scaffolding session via the claude_split agent on the app FOLDER, so the
+// re-attach must land in the same template — same runs dir, same
+// .claude-split.json sidecar — never the file-scoped claude template.
+export function claudeChatUrl(appDir: string, runId: string): string {
+  const params = new URLSearchParams({ _mode: "claude_split", run: runId });
+  return urlForFsPath(appDir, "?" + params.toString());
 }
 
 // -- Prompt-first creation (the hero composer) --------------------------------
@@ -246,7 +255,7 @@ function HeroComposer({ onCreated }: { onCreated: () => void }) {
         }
         return;
       }
-      if (res.run_id) navigateUrl(claudeChatUrl(res.entry_html, res.run_id));
+      if (res.run_id) navigateUrl(claudeChatUrl(res.path, res.run_id), { isDir: true });
       else navigate(res.entry_html, { isDir: false });
     } catch (e) {
       if (alive.current) {
@@ -402,6 +411,10 @@ const APP_STEPS: { title: string; desc: string }[] = [
 // exists (session error or not) so the caller's list can refresh underneath —
 // it never closes the panel, whose own success/error state still has to be read.
 export function NewAppPanel({ onClose, onCreated }: { onClose: () => void; onCreated?: () => void }) {
+  // Slide OUT as well as in. The caller unmounts this panel, so closing is
+  // deferred by the slide duration and `is-open` comes off immediately — the
+  // same CSS that animated the entry runs backwards (lib/exit-animation).
+  const { closing, requestClose } = useDeferredClose(onClose, PANEL_EXIT_MS);
   const [name, setName] = useState("");
   const [prompt, setPrompt] = useState("");
   const [busy, setBusy] = useState(false);
@@ -451,7 +464,7 @@ export function NewAppPanel({ onClose, onCreated }: { onClose: () => void; onCre
       // enters chat, and streams the live run (agent.py `poll`), replaying the
       // prompt as the user turn. Without a prompt there is no session, so the
       // default (rendered) view is the right landing.
-      if (res.run_id) navigateUrl(claudeChatUrl(res.entry_html, res.run_id));
+      if (res.run_id) navigateUrl(claudeChatUrl(res.path, res.run_id), { isDir: true });
       else navigate(res.entry_html, { isDir: false });
     } catch (e) {
       // 409 (collision) and 400 (bad name) both carry the server's message.
@@ -466,11 +479,11 @@ export function NewAppPanel({ onClose, onCreated }: { onClose: () => void; onCre
   // exactly like the modal chassis this panel replaced.
   useEffect(() => {
     const onDocKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && !busy) onClose();
+      if (e.key === "Escape" && !busy) requestClose();
     };
     document.addEventListener("keydown", onDocKey);
     return () => document.removeEventListener("keydown", onDocKey);
-  }, [busy, onClose]);
+  }, [busy, requestClose]);
 
   // Cmd/Ctrl+Enter submits from either field (plain Enter in the textarea
   // inserts a newline as usual).
@@ -483,9 +496,9 @@ export function NewAppPanel({ onClose, onCreated }: { onClose: () => void; onCre
 
   return createPortal(
     <div
-      className={"app-panel-overlay" + (open ? " is-open" : "")}
+      className={"app-panel-overlay" + (open && !closing ? " is-open" : "")}
       onMouseDown={(e) => {
-        if (e.target === e.currentTarget && !busy) onClose();
+        if (e.target === e.currentTarget && !busy) requestClose();
       }}
     >
       <div
@@ -506,7 +519,7 @@ export function NewAppPanel({ onClose, onCreated }: { onClose: () => void; onCre
             aria-label="Close"
             title="Close"
             disabled={busy}
-            onClick={onClose}
+            onClick={requestClose}
           >
             ✕
           </button>
@@ -586,7 +599,7 @@ export function NewAppPanel({ onClose, onCreated }: { onClose: () => void; onCre
           <span className="app-panel-hint">
             <kbd>{MOD_LABEL}</kbd> + <kbd>↵</kbd> to create
           </span>
-          <button type="button" className="btn btn-secondary" onClick={onClose} disabled={busy}>
+          <button type="button" className="btn btn-secondary" onClick={requestClose} disabled={busy}>
             Cancel
           </button>
           <button type="button" className="btn btn-primary" onClick={create} disabled={!canCreate}>
@@ -651,8 +664,53 @@ function Doorway({
   );
 }
 
+// One row in the Recent list: name, tag, last-used — no icon. Same open
+// behavior as the /apps cards: the app FOLDER in the claude_split view when
+// an entry exists, else the plain folder.
+function RecentRow({ app }: { app: AppInfo }) {
+  const open = () => {
+    if (app.entry_html) navigate(app.path, { isDir: true, mode: "claude_split" });
+    else navigate(app.path, { isDir: true });
+  };
+  const title = app.title || app.name;
+  return (
+    <button type="button" className="home-recent" onClick={open} title={app.path}>
+      <span className="home-recent-name">{title}</span>
+      <span className="home-app-tag">{app.tag}</span>
+      <span className="home-recent-when">{timeAgo(app.updated_at) ?? "—"}</span>
+    </button>
+  );
+}
+
 export default function Home({ config }: { config: Config }) {
   const [apps, reloadApps] = useLoad(getApps);
+  // The boot-time config snapshot's learn_mount_ready is stale in both
+  // directions (see useLearnMountReady) — without the bounded re-poll the
+  // Learn doorway would essentially never appear.
+  const learnMountReady = useLearnMountReady(config.learn_mount_ready);
+
+  // Same landing logic as the Sidebar's Learn entry (D123): the bundled
+  // learn.zip is mounted read-only at `${mounts_root}/learn`; prefer its
+  // index.html as the landing page, fall back to the mount folder.
+  const openLearn = async () => {
+    if (!config.mounts_root) return;
+    const root = `${config.mounts_root.replace(/\/+$/, "")}/learn`;
+    // The stat can be slow (mount-backed read); if the user navigated
+    // elsewhere while it was in flight, don't yank them back.
+    const before = currentUrl();
+    let dest = root;
+    let destIsDir = true;
+    try {
+      const st = await statPath(`${root}/index.html`);
+      if (!st.is_dir) {
+        dest = `${root}/index.html`;
+        destIsDir = false;
+      }
+    } catch {
+      // stat 404s (or the mount is briefly not attached) — open the folder.
+    }
+    if (currentUrl() === before) navigate(dest, { isDir: destIsDir });
+  };
 
   return (
     <div className="home-page">
@@ -661,19 +719,13 @@ export default function Home({ config }: { config: Config }) {
             page's primary action (opens the create modal — the actual fields
             live there); "Browse files" is the everyday doorway. */}
         <header className="home-hero">
-          <div className="home-hero-badge">
-            <span className="home-hero-dot" aria-hidden="true" />
-            fused-render
-          </div>
+          {/* Fused wordmark, centered. Two theme-matched renders of the same
+              logo; CSS shows the one matching the active theme. */}
+          <img className="home-hero-logo home-hero-logo-dark" src={logoDark} alt="Fused" />
+          <img className="home-hero-logo home-hero-logo-light" src={logoLight} alt="Fused" />
           <h1 className="home-hero-title">
-            Build your next
-            <br />
-            <span className="home-hero-accent">local app</span>
+            Build your next <span className="home-hero-accent">local app</span>
           </h1>
-          <p className="home-hero-sub">
-            Describe an app and Claude builds it in your workspace — or explore your files
-            with interactive templates. Everything lives as plain folders you own.
-          </p>
           {/* The hero's only verb, prompt-first: describe the app right here
               and a named, scaffolded folder + claude session comes back. The
               structured (name-it-yourself) NewAppPanel lives on /apps now,
@@ -721,13 +773,28 @@ export default function Home({ config }: { config: Config }) {
               </svg>
             }
           />
+          {learnMountReady && (
+            <Doorway
+              hue="var(--icon-data)"
+              title="Learn"
+              desc="Guided lessons that teach fused-render by example, right in the app."
+              onClick={openLearn}
+              glyph={
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M12 7v13" />
+                  <path d="M3 6a2 2 0 0 1 2-2h4a3 3 0 0 1 3 3v13a2.5 2.5 0 0 0-2.5-2.5H3Z" />
+                  <path d="M21 6a2 2 0 0 0-2-2h-4a3 3 0 0 0-3 3v13a2.5 2.5 0 0 1 2.5-2.5H21Z" />
+                </svg>
+              }
+            />
+          )}
         </div>
 
         <section className="home-section">
           <SectionRule
             label="recent"
             action={
-              apps.status === "ok" && apps.data.apps.length > 10 ? (
+              apps.status === "ok" && apps.data.apps.length > 5 ? (
                 <button
                   type="button"
                   className="home-rule-action"
@@ -739,7 +806,7 @@ export default function Home({ config }: { config: Config }) {
             }
           />
           {apps.status === "error" && <ErrorBanner>{apps.message}</ErrorBanner>}
-          {apps.status === "loading" && <div className="home-loading">Loading…</div>}
+          {apps.status === "loading" && <SkeletonLines rows={3} label="Loading apps" />}
           {apps.status === "ok" && apps.data.apps.length === 0 && (
             <div className="home-empty">
               No apps yet. Describe one in the box above — it lands in{" "}
@@ -747,8 +814,8 @@ export default function Home({ config }: { config: Config }) {
             </div>
           )}
           {apps.status === "ok" && apps.data.apps.length > 0 && (
-            <div className="home-apps">
-              {/* The 10 most recently updated apps. Sort is computed once per
+            <div className="home-recents">
+              {/* The 5 most recently updated apps. Sort is computed once per
                   fetch: recency (updated_at epoch seconds, missing → last;
                   name breaks ties) — stable under interaction since nothing
                   re-sorts after load. */}
@@ -758,9 +825,9 @@ export default function Home({ config }: { config: Config }) {
                   (a, b) =>
                     (b.updated_at ?? 0) - (a.updated_at ?? 0) || a.name.localeCompare(b.name),
                 )
-                .slice(0, 10)
+                .slice(0, 5)
                 .map((app) => (
-                  <AppCard key={app.path} app={app} />
+                  <RecentRow key={app.path} app={app} />
                 ))}
             </div>
           )}

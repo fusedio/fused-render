@@ -1,0 +1,1389 @@
+<!DOCTYPE html>
+<html data-fused-theme="shell">
+<head>
+<meta charset="utf-8">
+<title>Claude split</title>
+<style>
+  /* Chat pane styled like a modern assistant app (claude.ai / v0 / ChatGPT):
+     sans-serif UI, a centered message column, right-aligned user bubbles,
+     full-width assistant prose behind a spark avatar, and a floating rounded
+     composer. Backend and behavior are the claude template's 1:1 — only the
+     skin differs. Every colour is a token; the light block repaints all of
+     them (SPEC §30). */
+  :root {
+    color-scheme: dark;
+    --bg: #191a1e;
+    --panel: #1e2025;
+    --surface: #26282f;          /* composer, cards */
+    --surface-2: #2d3038;        /* hover, user bubble */
+    --bubble-user: #2f3239;
+    --fg: #ececf1;
+    --fg-strong: #ffffff;
+    --dim: #9a9fa9;
+    --faint: #6b7079;
+    --border: #34363e;
+    --border-strong: #4a4d57;
+    --accent: #d97757;
+    --on-accent: #1a1a1a;
+    --error: #f26d6d;
+    --ok: #6cc07a;
+    --code-bg: #2a2c33;
+    --code-fg: #e8c07d;
+    --pre-bg: #141519;
+    --pre-fg: #d4d4d8;
+    --link: #7aa8ff;
+    --shadow: rgba(0, 0, 0, .4);
+    --scrollbar: #3a3d45;
+    --handle-hover: #4a4d57;
+  }
+  :root[data-theme="light"] {
+    color-scheme: light;
+    --bg: #ffffff;
+    --panel: #fafafa;
+    --surface: #f4f4f6;
+    --surface-2: #ebebef;
+    --bubble-user: #f0f0f3;
+    --fg: #1f2023;
+    --fg-strong: #000000;
+    --dim: #61656c;
+    --faint: #9a9ea6;
+    --border: #e3e4e8;
+    --border-strong: #c9cbd2;
+    --accent: #b8542f;
+    --on-accent: #ffffff;
+    --error: #c62828;
+    --ok: #2e7d32;
+    --code-bg: #f0f1f3;
+    --code-fg: #8a5a12;
+    --pre-bg: #f7f8f9;
+    --pre-fg: #33363c;
+    --link: #1c5fb8;
+    --shadow: rgba(0, 0, 0, .10);
+    --scrollbar: #cdd0d6;
+    --handle-hover: #a8adb6;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--fg);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    font-size: 14px;
+    line-height: 1.65;
+    display: flex;
+    overflow: hidden;
+    -webkit-font-smoothing: antialiased;
+  }
+  code, pre, .mono { font-family: "SF Mono", Menlo, Monaco, "Cascadia Mono", monospace; }
+
+  /* ── split layout ─────────────────────────────── */
+  #left { position: relative; min-width: 200px; }
+  #left iframe {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    border: 0;
+    background: var(--bg);
+  }
+  #divider {
+    flex-shrink: 0;
+    width: 4px;
+    cursor: col-resize;
+    background: var(--border);
+    transition: background .15s;
+  }
+  #divider:hover, body.dragging #divider { background: var(--handle-hover); }
+  body.dragging #left iframe { pointer-events: none; }
+  #msg { margin: auto; color: var(--dim); text-align: center; padding: 24px; }
+
+  /* ── chat pane ─────────────────────────────── */
+  #chat {
+    flex: 1;
+    min-width: 340px;
+    display: flex;
+    flex-direction: column;
+    background: var(--panel);
+    overflow: hidden;
+  }
+  #chat.home #topbar, #chat.home #logwrap, #chat.home #composer-chat { display: none; }
+  #chat:not(.home) #home { display: none; }
+
+  /* top bar */
+  #topbar {
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 16px;
+    border-bottom: 1px solid var(--border);
+  }
+  #topbar .spark { color: var(--accent); font-size: 15px; }
+  #topbar .tb-title {
+    font-weight: 600;
+    font-size: 13px;
+    color: var(--fg-strong);
+    white-space: nowrap;
+  }
+  #topbar .tb-file {
+    color: var(--faint);
+    font-size: 12px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    flex: 1;
+    min-width: 0;
+  }
+  #session {
+    color: var(--faint);
+    font-size: 11px;
+    letter-spacing: .3px;
+  }
+  #back {
+    background: transparent;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    color: var(--dim);
+    font: inherit;
+    font-size: 12px;
+    padding: 4px 10px;
+    cursor: pointer;
+    flex-shrink: 0;
+    transition: color .12s, border-color .12s, background .12s;
+  }
+  #back:hover { color: var(--fg); border-color: var(--border-strong); background: var(--surface); }
+
+  /* message log */
+  #logwrap { flex: 1; overflow-y: auto; }
+  #logwrap::-webkit-scrollbar { width: 8px; }
+  #logwrap::-webkit-scrollbar-thumb { background: var(--scrollbar); border-radius: 4px; }
+  #log {
+    max-width: 720px;
+    margin: 0 auto;
+    padding: 24px 20px 12px;
+  }
+  .turn { margin: 0 0 20px; animation: rise .18s ease-out; }
+  @keyframes rise { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+  @media (prefers-reduced-motion: reduce) { .turn { animation: none; } }
+
+  .user { display: flex; justify-content: flex-end; }
+  .user .bubble {
+    background: var(--bubble-user);
+    border-radius: 18px 18px 4px 18px;
+    padding: 9px 14px;
+    max-width: 82%;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  .assistant { display: flex; gap: 10px; }
+  .assistant .dot {
+    flex-shrink: 0;
+    width: 24px;
+    height: 24px;
+    border-radius: 50%;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    color: var(--accent);
+    font-size: 12px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin-top: 2px;
+  }
+  .assistant .body {
+    min-width: 0;
+    white-space: pre-wrap;
+    word-break: break-word;
+    padding-top: 2px;
+  }
+  .error {
+    color: var(--error);
+    background: color-mix(in srgb, var(--error) 8%, transparent);
+    border: 1px solid color-mix(in srgb, var(--error) 30%, transparent);
+    border-radius: 10px;
+    padding: 8px 12px;
+    font-size: 13px;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+
+  /* working indicator */
+  .working { display: flex; align-items: baseline; gap: 8px; color: var(--dim); font-size: 13px; }
+  .working .star { color: var(--accent); animation: pulse 1.4s ease-in-out infinite; }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .35; } }
+  @media (prefers-reduced-motion: reduce) { .working .star { animation: none; } }
+  .working .verb { color: var(--fg); }
+  .working .meta { color: var(--faint); font-size: 12px; }
+
+  /* ── permission cards (the approval bridge) ── */
+  .perm {
+    border: 1px solid color-mix(in srgb, var(--accent) 55%, transparent);
+    border-radius: 14px;
+    background: var(--surface);
+    padding: 12px 14px;
+    box-shadow: 0 4px 16px var(--shadow);
+  }
+  .perm.resolved { border-color: var(--border); box-shadow: none; }
+  .perm .perm-head { font-size: 13px; color: var(--dim); }
+  .perm .perm-head .tool { color: var(--accent); font-weight: 600; }
+  .perm .perm-sub { color: var(--dim); word-break: break-word; font-size: 12px; margin-top: 2px; }
+  .perm pre {
+    background: var(--pre-bg);
+    color: var(--pre-fg);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    margin: 8px 0 0;
+    padding: 8px 10px;
+    max-height: 190px;
+    overflow: auto;
+    white-space: pre-wrap;
+    word-break: break-word;
+    font-size: 12px;
+  }
+  .perm .perm-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+  .perm button {
+    font: inherit;
+    font-size: 12.5px;
+    font-weight: 500;
+    padding: 5px 14px;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    background: transparent;
+    color: var(--fg);
+    cursor: pointer;
+    transition: background .12s, border-color .12s, filter .12s;
+  }
+  .perm button:hover:not(:disabled) { border-color: var(--border-strong); background: var(--surface-2); }
+  .perm button.primary {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: var(--on-accent);
+  }
+  .perm button.primary:hover:not(:disabled) { filter: brightness(1.1); background: var(--accent); }
+  .perm button:disabled { opacity: .55; cursor: default; }
+  .perm .perm-status { margin-top: 10px; font-size: 13px; }
+  .perm .perm-status.allow { color: var(--ok); }
+  .perm .perm-status.deny { color: var(--error); }
+  .perm .perm-status.expired { color: var(--dim); }
+
+  /* ── composer (shared by home + chat) ── */
+  .composer {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 20px;
+    padding: 12px 14px 10px;
+    box-shadow: 0 6px 24px var(--shadow);
+    transition: border-color .15s;
+  }
+  .composer:focus-within { border-color: var(--border-strong); }
+  .composer textarea {
+    width: 100%;
+    background: transparent;
+    border: 0;
+    outline: none;
+    resize: none;
+    color: var(--fg);
+    font: inherit;
+    font-size: 14px;
+    line-height: 1.5;
+    max-height: 200px;
+    padding: 2px 2px 6px;
+  }
+  .composer textarea::placeholder { color: var(--faint); }
+  .composer-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+  }
+  .composer-row .spacer { flex: 1; }
+  .pill {
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 999px;
+    color: var(--dim);
+    font: inherit;
+    font-size: 12px;
+    padding: 3px 8px;
+    cursor: pointer;
+    outline: none;
+    -webkit-appearance: none;
+    appearance: none;
+    transition: background .12s, color .12s;
+  }
+  .pill:hover { background: var(--surface-2); color: var(--fg); }
+  .pill option { background: var(--bg); color: var(--fg); }
+  .send {
+    width: 32px;
+    height: 32px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--accent);
+    color: var(--on-accent);
+    border: 0;
+    border-radius: 50%;
+    padding: 0;
+    cursor: pointer;
+    flex-shrink: 0;
+    transition: filter .12s, transform .12s, opacity .12s;
+  }
+  .send:hover { filter: brightness(1.1); transform: translateY(-1px); }
+  .send:active { transform: none; }
+
+  #composer-chat {
+    flex-shrink: 0;
+    max-width: 720px;
+    width: 100%;
+    margin: 0 auto;
+    padding: 8px 20px 6px;
+  }
+  #footnote {
+    max-width: 720px;
+    margin: 0 auto;
+    padding: 0 24px 10px;
+    text-align: center;
+    color: var(--faint);
+    font-size: 11px;
+  }
+  #chat.home #footnote { display: none; }
+
+  /* markdown inside assistant turns */
+  .assistant b, .assistant strong { color: var(--fg-strong); font-weight: 600; }
+  .assistant em { font-style: italic; }
+  .assistant code {
+    background: var(--code-bg);
+    color: var(--code-fg);
+    border-radius: 5px;
+    padding: 1px 5px;
+    font-size: 12.5px;
+  }
+  .assistant pre {
+    background: var(--pre-bg);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 10px 12px;
+    margin: 8px 0;
+    overflow-x: auto;
+    white-space: pre;
+    font-size: 12.5px;
+    line-height: 1.55;
+  }
+  .assistant pre code { background: transparent; color: var(--pre-fg); padding: 0; }
+  .assistant .h { color: var(--fg-strong); font-weight: 600; font-size: 15px; }
+  .assistant .bullet { color: var(--accent); }
+  .assistant a { color: var(--link); text-decoration: none; }
+  .assistant a:hover { text-decoration: underline; }
+  .cursor { color: var(--accent); animation: blink 1s step-end infinite; }
+  @keyframes blink { 0%,49%{opacity:1} 50%,100%{opacity:0} }
+
+  /* ── home view ── */
+  #home {
+    flex: 1;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding-top: 14vh;
+  }
+  #home .inner { width: 100%; max-width: 620px; padding: 0 24px; }
+  .home-title {
+    font-size: 26px;
+    font-weight: 600;
+    letter-spacing: -.02em;
+    color: var(--fg-strong);
+    text-align: center;
+    margin-bottom: 4px;
+  }
+  .home-title .spark { color: var(--accent); margin-right: 10px; font-weight: 400; }
+  .home-sub {
+    color: var(--faint);
+    font-size: 12.5px;
+    text-align: center;
+    margin-bottom: 28px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  #recent { margin-top: 28px; padding-bottom: 32px; }
+  #recent .head {
+    color: var(--faint);
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: .8px;
+    text-transform: uppercase;
+    margin-bottom: 8px;
+    padding: 0 4px;
+  }
+  .chat-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 14px;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    margin-bottom: 8px;
+    cursor: pointer;
+    background: transparent;
+    transition: background .12s, border-color .12s;
+  }
+  .chat-row:hover { background: var(--surface); border-color: var(--border-strong); }
+  .chat-row .dot { color: var(--accent); flex-shrink: 0; font-size: 10px; }
+  .chat-row .row-title {
+    color: var(--fg);
+    font-size: 13px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    flex: 1;
+  }
+  .chat-row .row-sub { color: var(--faint); font-size: 12px; flex-shrink: 0; }
+
+  /* ── skeleton loading placeholders ── */
+  .skel-bar {
+    height: 11px;
+    border-radius: 4px;
+    background: linear-gradient(90deg, var(--surface) 25%, var(--border) 50%, var(--surface) 75%);
+    background-size: 200% 100%;
+    animation: skel-shimmer 1.2s ease-in-out infinite;
+  }
+  @keyframes skel-shimmer {
+    from { background-position: 200% 0; }
+    to { background-position: -200% 0; }
+  }
+  .skel-turn { margin: 0 0 20px; }
+  .skel-turn-user { display: flex; justify-content: flex-end; }
+  .skel-turn-user .skel-bar { width: 34%; height: 34px; border-radius: 16px; }
+  .skel-turn-assistant { display: flex; gap: 10px; }
+  .skel-turn-assistant .skel-dot-a {
+    width: 24px; height: 24px; border-radius: 50%;
+    background: var(--surface); border: 1px solid var(--border); flex-shrink: 0;
+  }
+  .skel-turn-assistant .skel-lines { flex: 1; display: flex; flex-direction: column; gap: 8px; padding-top: 4px; }
+  .skel-row {
+    display: flex; align-items: center; gap: 10px;
+    padding: 10px 14px; border: 1px solid var(--border);
+    border-radius: 12px; margin-bottom: 8px;
+  }
+  .skel-row .skel-dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: var(--border); flex-shrink: 0;
+  }
+  .skel-row .skel-bar.title { flex: 1; }
+  .skel-row .skel-bar.sub { width: 42px; flex-shrink: 0; }
+</style>
+</head>
+<body>
+  <div id="left"><iframe id="leftframe" title="File preview"></iframe></div>
+  <div id="divider" role="separator" aria-orientation="vertical" aria-label="Resize panels"></div>
+
+  <div id="chat" class="home">
+    <!-- chat view -->
+    <div id="topbar">
+      <span class="spark">✻</span>
+      <span class="tb-title">Claude</span>
+      <span class="tb-file" id="banner-sub"></span>
+      <span id="session" class="mono"></span>
+      <button id="back" type="button" aria-label="Back to chats">← Chats</button>
+    </div>
+    <div id="logwrap"><div id="log"></div></div>
+    <form id="inputbox" class="composer" style="display:contents">
+      <div id="composer-chat">
+        <div class="composer">
+          <textarea id="box" rows="1" placeholder="Reply to Claude…" spellcheck="false"
+                    data-gramm="false" data-gramm_editor="false" data-enable-grammarly="false"></textarea>
+          <div class="composer-row">
+            <select id="model" class="pill model-sel" title="Model"></select>
+            <select id="effort" class="pill effort-sel" title="Effort"></select>
+            <select id="perm" class="pill perm-sel" title="How much Claude may do without asking"></select>
+            <span class="spacer"></span>
+            <button class="send" type="submit" aria-label="Send">
+              <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+                <path d="M8 13V3M8 3L3.5 7.5M8 3l4.5 4.5" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+            </button>
+          </div>
+        </div>
+      </div>
+    </form>
+    <div id="footnote">Claude can read and edit files in this project. Approvals control what runs without asking.</div>
+
+    <!-- home view -->
+    <div id="home">
+      <div class="inner">
+        <div class="home-title"><span class="spark">✻</span><span id="home-file"></span></div>
+        <div class="home-sub" id="home-path"></div>
+        <form id="card" class="composer">
+          <textarea id="homebox" rows="2" placeholder="Ask Claude about this project…" autofocus spellcheck="false"
+                    data-gramm="false" data-gramm_editor="false" data-enable-grammarly="false"></textarea>
+          <div class="composer-row">
+            <select id="hmodel" class="pill model-sel" title="Model"></select>
+            <select id="heffort" class="pill effort-sel" title="Effort"></select>
+            <select id="hperm" class="pill perm-sel" title="How much Claude may do without asking"></select>
+            <span class="spacer"></span>
+            <button class="send" type="submit" aria-label="Send">
+              <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+                <path d="M8 13V3M8 3L3.5 7.5M8 3l4.5 4.5" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+            </button>
+          </div>
+        </form>
+        <div id="recent">
+          <div class="head">Recent chats</div>
+          <div id="recentlist"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+<script>
+// The claude template's chat, 1:1, as the right pane of a split view — same
+// backend (../claude/agent.py: start/poll/decide/history/sessions), same
+// permission cards, same run/session params, same resume semantics. The only
+// claude-template feature deliberately absent is the annotate comment handoff
+// (claudeComments/claudeReturn): annotate hands off to `_mode=claude`, not to
+// this view, and the return-trip exists to show the edited file — which the
+// left pane already does.
+//
+// A chat must never reload out from under a live conversation: the runtime
+// watches _file (LR-1), so Claude's own edit to the target would reload THIS
+// frame mid-stream — killing the poll loop and orphaning the run. The left
+// preview iframe is its own document and keeps live-reloading on its own.
+fused.autoReload(false);
+
+// The agent is this template's own copy (forked from the claude template —
+// templates are self-contained, no cross-template imports).
+const AGENT = "./agent.py";
+
+const log = document.getElementById("log");
+const logwrap = document.getElementById("logwrap");
+const box = document.getElementById("box");
+const chatEl = document.getElementById("chat");
+const sessionEl = document.getElementById("session");
+const homebox = document.getElementById("homebox");
+
+// The target file arrives as the read-only _file param (template contract).
+const FILE = fused.params.get("_file") || "";
+const BASENAME = FILE.split("/").pop();
+
+if (!FILE) {
+  document.body.innerHTML = '<div id="msg">No file selected (missing _file param).</div>';
+  throw new Error("claude_split template: missing _file");
+}
+
+document.getElementById("banner-sub").textContent = BASENAME;
+document.getElementById("home-file").textContent = BASENAME;
+document.getElementById("home-path").textContent = FILE;
+document.title = "Claude split — " + BASENAME;
+
+// ── left pane: the file's ordinary preview ─────────────────────
+// /embed/<abs path minus leading slash>, each segment URL-encoded. Windows
+// paths arrive from app.py with backslashes and a drive letter — normalize
+// drive-letter paths only, same rule as the shell's urlForFsPath (router.ts):
+// on POSIX a backslash is a legal filename character and must round-trip.
+function embedUrl(absPath, query) {
+  const norm = /^[A-Za-z]:[\\/]/.test(absPath) ? absPath.replace(/\\/g, "/") : absPath;
+  const segs = norm.replace(/^\//, "").split("/").filter(Boolean).map(encodeURIComponent);
+  const qs = new URLSearchParams(query).toString();
+  return "/embed/" + segs.join("/") + (qs ? "?" + qs : "");
+}
+
+(async () => {
+  try {
+    // The left pane renders the APP, not the folder: the project's entry
+    // html (index.html, or its single top-level html — same rule as the
+    // shell's "Open as app" button), rendered as itself via `_render`.
+    // Deliberately NOT the `_listing` sentinel: a directory listing brings
+    // its own header chrome (mode switcher, Open as app) into the pane —
+    // including a button back into this very template.
+    const { entry } = await fused.runPython("./app.py", { dir: FILE });
+    if (!entry) throw new Error("no app entry (index.html or a single top-level .html) in " + FILE);
+    document.getElementById("leftframe").src = embedUrl(entry, { _mode: "_render" });
+  } catch (err) {
+    document.getElementById("left").innerHTML = "";
+    const d = document.createElement("div");
+    d.id = "msg";
+    d.textContent = "Could not open preview: " + err.message;
+    document.getElementById("left").appendChild(d);
+  }
+})();
+
+// ── resizable divider; the split ratio is view state, so it lives in a param ──
+const leftEl = document.getElementById("left");
+const clampPct = (pct) => Math.min(80, Math.max(20, pct));
+function applySplit() {
+  leftEl.style.width = clampPct(parseFloat(fused.params.get("split") || "70")) + "%";
+}
+applySplit();
+
+document.getElementById("divider").addEventListener("mousedown", (e) => {
+  e.preventDefault();
+  document.body.classList.add("dragging");
+  const move = (ev) => {
+    leftEl.style.width = clampPct((ev.clientX / window.innerWidth) * 100) + "%";
+  };
+  const up = (ev) => {
+    document.body.classList.remove("dragging");
+    window.removeEventListener("mousemove", move);
+    window.removeEventListener("mouseup", up);
+    fused.params.set("split", clampPct((ev.clientX / window.innerWidth) * 100).toFixed(1));
+  };
+  window.addEventListener("mousemove", move);
+  window.addEventListener("mouseup", up);
+});
+
+// ── auto-growing textareas ─────────────────────────────────────
+function autoGrow(el) {
+  const grow = () => {
+    el.style.height = "auto";
+    el.style.height = Math.min(200, el.scrollHeight) + "px";
+  };
+  el.addEventListener("input", grow);
+  return grow;
+}
+const growBox = autoGrow(box);
+const growHome = autoGrow(homebox);
+
+const VERBS = ["Thinking", "Pondering", "Vibing", "Noodling", "Brewing", "Simmering", "Mulling", "Percolating"];
+
+// ── model/effort/approvals selectors (home + composer sync via params) ──
+const MODELS = ["", "fable", "opus", "sonnet", "haiku"];
+const EFFORTS = ["", "low", "medium", "high", "xhigh", "max"];
+// How much Claude may do without stopping for a card. Values are agent.py's
+// PERMISSION_MODES keys; the labels say what the user gets. `auto` is a
+// broader opt-in, NOT a blanket one — Claude Code's own classifier judges each
+// request and still escalates what it won't vouch for.
+const PERMISSION_MODES = ["prompt", "acceptEdits", "auto"];
+const PERMISSION_LABELS = {
+  prompt: "ask every time",
+  acceptEdits: "auto-accept edits",
+  auto: "Claude decides",
+};
+const DEFAULT_MODEL = "sonnet";
+const DEFAULT_EFFORT = "medium";
+// The strictest mode is the default: more auto-approval is opted into, never
+// handed out by a missing param.
+const DEFAULT_PERMISSION = "prompt";
+function fillSelect(el, values, label) {
+  for (const v of values) {
+    const o = document.createElement("option");
+    o.value = v;
+    o.textContent = v || label;
+    el.appendChild(o);
+  }
+}
+document.querySelectorAll(".model-sel").forEach((el) => fillSelect(el, MODELS, "model"));
+document.querySelectorAll(".effort-sel").forEach((el) => fillSelect(el, EFFORTS, "effort"));
+document.querySelectorAll(".perm-sel").forEach((el) => {
+  for (const v of PERMISSION_MODES) {
+    const o = document.createElement("option");
+    o.value = v;
+    o.textContent = PERMISSION_LABELS[v];
+    el.appendChild(o);
+  }
+});
+
+function syncSelects() {
+  document.querySelectorAll(".model-sel").forEach((el) => { el.value = fused.params.get("model") || DEFAULT_MODEL; });
+  document.querySelectorAll(".effort-sel").forEach((el) => { el.value = fused.params.get("effort") || DEFAULT_EFFORT; });
+  const perm = fused.params.get("permission");
+  document.querySelectorAll(".perm-sel").forEach((el) => {
+    el.value = PERMISSION_MODES.includes(perm) ? perm : DEFAULT_PERMISSION;
+  });
+}
+document.querySelectorAll(".model-sel").forEach((el) =>
+  el.addEventListener("change", () => { fused.params.set("model", el.value); syncSelects(); }));
+document.querySelectorAll(".effort-sel").forEach((el) =>
+  el.addEventListener("change", () => { fused.params.set("effort", el.value); syncSelects(); }));
+document.querySelectorAll(".perm-sel").forEach((el) =>
+  el.addEventListener("change", () => { fused.params.set("permission", el.value); syncSelects(); }));
+syncSelects();
+
+// The split param changes on drag too — applySplit on every change is cheap
+// and idempotent.
+fused.params.onChange(() => { applySplit(); });
+
+function showSession() {
+  const id = fused.params.get("session_id");
+  sessionEl.textContent = id ? id.slice(0, 8) : "";
+}
+showSession();
+
+const scrollBottom = () => { logwrap.scrollTop = logwrap.scrollHeight; };
+const nearBottom = () => logwrap.scrollHeight - logwrap.scrollTop - logwrap.clientHeight < 60;
+
+// Back to chats: the landing is both "start a new chat" and "open a past one".
+// Clear the session param so a reload lands on the landing page,
+// wipe the visible transcript, and rebuild the session list.
+document.getElementById("back").onclick = () => {
+  if (sending) return;  // mid-turn reset would orphan the streaming run's UI
+  fused.params.set("session_id", "");
+  fused.params.set("run", "");  // a failed re-attach must not chase us home
+  showSession();
+  log.innerHTML = "";
+  permCards.clear();  // the cards went with the log; don't keep handles to them
+  chatEl.classList.add("home");
+  document.getElementById("recentlist").innerHTML = "";
+  document.getElementById("recent").style.display = "";
+  loadRecent();
+  homebox.focus();
+};
+
+function enterChat() {
+  chatEl.classList.remove("home");
+  box.focus();
+}
+
+// ── log rendering ──
+function addUser(text) {
+  const d = document.createElement("div");
+  d.className = "turn user";
+  const b = document.createElement("div");
+  b.className = "bubble";
+  b.textContent = text;
+  d.appendChild(b);
+  log.appendChild(d);
+  scrollBottom();
+}
+
+function addAssistant(text) {
+  const d = document.createElement("div");
+  d.className = "turn assistant";
+  const dot = document.createElement("span");
+  dot.className = "dot";
+  dot.textContent = "✻";
+  const body = document.createElement("span");
+  body.className = "body";
+  body.textContent = text;
+  d.append(dot, body);
+  log.appendChild(d);
+  scrollBottom();
+  return d;
+}
+
+function addError(text) {
+  const d = document.createElement("div");
+  d.className = "turn error";
+  d.textContent = text;
+  log.appendChild(d);
+  scrollBottom();
+}
+
+// ── permission cards ──────────────────────────────────────────
+// Headless claude cannot open a terminal prompt, so agent.py points its
+// --permission-prompt-tool at an MCP server that parks each request on disk;
+// poll hands them here and these buttons write the answer back. Until one is
+// clicked the subprocess is genuinely blocked — the card IS the prompt.
+const permCards = new Map();  // request id -> card handle, cleared with the log
+
+// Tools where "allow all of these for the rest of the reply" is a
+// proportionate offer. Everything else — Bash, web tools, Task, unknown/MCP —
+// gets Allow/Deny only (see the claude template for the full rationale).
+const WHOLE_TOOL_GRANTABLE = new Set([
+  "Edit", "Write", "Read", "Glob", "Grep", "NotebookEdit",
+]);
+
+// What the user is actually being asked to allow. Every field goes in through
+// textContent — tool input is model-authored text, never parsed as markup.
+// NOTHING here truncates: an Allow hands the tool its input verbatim, so a
+// card that rendered only a prefix would ask the user to approve bytes they
+// never saw. `covered` is derived from what was actually RENDERED (non-empty),
+// and buildPermCard dumps whatever is left over, so no key can be invisible.
+function summarizePermission(tool, input) {
+  const inp = input && typeof input === "object" ? input : {};
+  const str = (v) => (typeof v === "string" ? v : v === undefined || v === null ? "" : JSON.stringify(v));
+  const mark = (v, ch) => str(v).split("\n").map((line) => ch + " " + line).join("\n");
+
+  const used = [];
+  const show = (k) => {
+    const v = str(inp[k]);
+    if (v) used.push(k);
+    return v;
+  };
+  const pick = (...keys) => {           // an alternation: record only the winner
+    for (const k of keys) if (inp[k]) { used.push(k); return str(inp[k]); }
+    return "";
+  };
+  const out = (sub, body) => ({ sub, body, covered: used });
+
+  switch (tool) {
+    case "Bash":
+      return out(show("description"), show("command"));
+    case "Edit": {
+      const path = show("file_path");
+      show("replace_all");  // rendered as the annotation below, so it is covered
+      return out(path + (inp.replace_all ? "  (every occurrence)" : ""),
+                 mark(show("old_string"), "-") + "\n" + mark(show("new_string"), "+"));
+    }
+    case "Write":
+      return out(show("file_path"), show("content"));
+    case "NotebookEdit":
+      return out(show("notebook_path"), show("new_source"));
+    case "Read":
+      return out(pick("file_path", "path"), "");
+    case "Glob":
+    case "Grep": {
+      const where = show("path");
+      const glob = show("glob");
+      return out([where, glob ? "in " + glob : ""].filter(Boolean).join("  "),
+                 show("pattern"));
+    }
+    case "WebFetch":
+    case "WebSearch":
+      return out(pick("url", "query"), show("prompt"));
+  }
+  // Unknown tool: the whole object is the body, so every key is covered.
+  const keys = Object.keys(inp);
+  used.push(...keys);
+  return out("", keys.length ? JSON.stringify(inp, null, 2) : "");
+}
+
+// Whatever summarizePermission did not render — shown verbatim, never dropped.
+// Object.fromEntries, not `{}` + assignment: res.json() DEFINES an own
+// `__proto__` key; assignment would silently lose it while updatedInput still
+// authorises it.
+function leftoverInput(input, covered) {
+  const seen = covered || [];
+  const rest = Object.keys(input || {}).filter((k) => seen.indexOf(k) < 0);
+  return rest.length ? Object.fromEntries(rest.map((k) => [k, input[k]])) : null;
+}
+
+// The buttons a card offers. `liveMode` is the mode the run is ACTUALLY in, as
+// reported by poll — never the picker's `permission` param (the picker applies
+// to the next spawn).
+function permChoices(tool, label, liveMode) {
+  const choices = [["Allow", "allow", "once", "", "primary"]];
+  if (WHOLE_TOOL_GRANTABLE.has(tool)) {
+    choices.push(["Allow all " + label + " in this reply", "allow", "session", "", ""]);
+  }
+  if ((liveMode || DEFAULT_PERMISSION) !== "auto") {
+    choices.push(["Allow, and let Claude decide from here", "allow", "once", "auto", ""]);
+  }
+  choices.push(["Deny", "deny", "once", "", ""]);
+  return choices;
+}
+
+function buildPermCard(p, run_id, liveMode) {
+  const toolName = p.tool || "a tool";
+  const label = toolName.length > 28 ? toolName.slice(0, 27) + "…" : toolName;
+
+  const el = document.createElement("div");
+  el.className = "turn perm";
+  const head = document.createElement("div");
+  head.className = "perm-head";
+  const tool = document.createElement("span");
+  tool.className = "tool";
+  tool.textContent = toolName;
+  head.append("Claude wants to use ", tool);
+  el.appendChild(head);
+
+  const { sub, body, covered } = summarizePermission(p.tool, p.input);
+  if (sub) {
+    const d = document.createElement("div");
+    d.className = "perm-sub";
+    d.textContent = sub;
+    el.appendChild(d);
+  }
+  if (body) {
+    const pre = document.createElement("pre");
+    pre.textContent = body;
+    el.appendChild(pre);
+  }
+  const extra = leftoverInput(p.input, covered);
+  if (extra) {
+    const pre = document.createElement("pre");
+    pre.textContent = JSON.stringify(extra, null, 2);
+    el.appendChild(pre);
+  }
+
+  const actions = document.createElement("div");
+  actions.className = "perm-actions";
+  const status = document.createElement("div");
+  status.className = "perm-status";
+  el.append(actions, status);
+
+  // Re-render whenever the verdict CHANGES: the click renders optimistically,
+  // the polls report what landed on disk, and the file is the truth claude
+  // acts on — so it has to be able to correct the label.
+  let shown = "";
+  function resolve(decision, scope, mode) {
+    const key = decision + "/" + (scope || "") + "/" + (mode || "");
+    if (key === shown) return;
+    shown = key;
+    actions.remove();
+    el.classList.add("resolved");
+    if (decision === "allow") {
+      status.className = "perm-status allow";
+      status.textContent = mode
+        ? "✓ Allowed — approvals set to “" + (PERMISSION_LABELS[mode] || mode) + "”"
+        : scope === "session"
+          ? "✓ Allowed — not asking again for " + label + " in this reply"
+          : "✓ Allowed";
+    } else if (decision === "expired") {
+      status.className = "perm-status expired";
+      status.textContent = "◦ Unanswered — the reply ended before you decided";
+    } else {
+      status.className = "perm-status deny";
+      status.textContent = "✗ Denied";
+    }
+  }
+
+  async function send(decision, scope, mode) {
+    actions.querySelectorAll("button").forEach((b) => { b.disabled = true; });
+    status.className = "perm-status";
+    status.textContent = "sending…";
+    try {
+      const res = await fused.runPython(AGENT, {
+        action: "decide", run_id, request_id: p.id, decision, scope,
+        mode: mode || "",
+      }, { key: null });
+      if (res && res.error) throw new Error(res.error);
+      // A mode switch outlives this run: carry it into the next spawn too.
+      if (res && res.mode) { fused.params.set("permission", res.mode); syncSelects(); }
+      // agent.py answers with what landed on disk (first writer wins).
+      resolve((res && res.decision) || decision, (res && res.scope) || scope,
+              (res && res.mode) || "");
+    } catch (err) {
+      // The subprocess is still blocked, so the buttons have to come back.
+      actions.querySelectorAll("button").forEach((b) => { b.disabled = false; });
+      status.className = "perm-status deny";
+      status.textContent = "Could not send that: " + err.message;
+    }
+  }
+
+  permChoices(p.tool, label, liveMode).forEach(([text, decision, scope, mode, cls]) => {
+    const b = document.createElement("button");
+    b.type = "button";
+    if (cls) b.className = cls;
+    b.textContent = text;
+    if (mode) b.title = "Stops asking for what Claude judges safe; it still "
+                      + "escalates anything it will not vouch for.";
+    b.onclick = () => send(decision, scope, mode);
+    actions.appendChild(b);
+  });
+
+  return { el, resolve };
+}
+
+// Reconcile the poll's request list with what is on screen. Idempotent — poll
+// replays the whole list every 400 ms.
+function syncPermissions(list, run_id, working, liveMode) {
+  for (const p of list || []) {
+    if (!p || !p.id) continue;
+    let card = permCards.get(p.id);
+    if (!card) {
+      card = buildPermCard(p, run_id, liveMode);
+      permCards.set(p.id, card);
+    }
+    if (!card.el.isConnected) {
+      if (working && working.el && working.el.isConnected) log.insertBefore(card.el, working.el);
+      else log.appendChild(card.el);
+      scrollBottom();
+    }
+    if (p.decision) card.resolve(p.decision, p.scope, p.mode);
+  }
+}
+
+function addWorking() {
+  const d = document.createElement("div");
+  d.className = "turn working";
+  const thinkVerb = VERBS[Math.floor(Math.random() * VERBS.length)];
+  const start = Date.now();
+  let stats = { tokens: 0, phase: "thinking" };
+  d.innerHTML = '<span class="star">✻</span> <span class="verb"></span><span class="meta"></span>';
+  const verbEl = d.querySelector(".verb");
+  const meta = d.querySelector(".meta");
+  const draw = () => {
+    const secs = Math.round((Date.now() - start) / 1000);
+    verbEl.textContent = (stats.phase === "awaiting" ? "Waiting for your approval" :
+                          stats.phase === "composing" ? "Composing" :
+                          stats.phase === "tooling" ? "Working" : thinkVerb) + "…";
+    const effort = fused.params.get("effort") || DEFAULT_EFFORT;
+    const parts = [secs + "s"];
+    if (stats.tokens) parts.push("↓ " + stats.tokens + " tokens");
+    if (stats.phase === "thinking" && effort) parts.push(effort + " effort");
+    meta.textContent = " (" + parts.join(" · ") + ")";
+  };
+  const timer = setInterval(draw, 1000);
+  draw();
+  log.appendChild(d);
+  scrollBottom();
+  return {
+    el: d,
+    setStats(tokens, phase) { stats = { tokens, phase }; draw(); },
+    stop: () => clearInterval(timer),
+  };
+}
+
+// ── minimal markdown → HTML, tolerant of unclosed markers mid-stream ──
+function renderMd(text) {
+  const esc = (s) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  const inline = (s) => {
+    // pull inline code out first so its contents stay literal
+    const codes = [];
+    return esc(s)
+      .replace(/`([^`]+)`/g, (_, c) => "" + (codes.push(c) - 1) + "")
+      .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+      .replace(/(^|\W)\*([^*\s][^*]*)\*/g, "$1<em>$2</em>")
+      .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank">$1</a>')
+      .replace(/(^|[^"(\]])(https?:\/\/[^\s)<]+)/g, '$1<a href="$2" target="_blank">$2</a>')
+      .replace(/(\d+)/g, (_, i) => "<code>" + codes[i] + "</code>");
+  };
+
+  const out = [];
+  const parts = text.split(/```/);
+  for (let i = 0; i < parts.length; i++) {
+    if (i % 2 === 1) {  // inside a fence (possibly still open mid-stream)
+      const body = parts[i].replace(/^[\w+-]*\n?/, "");  // drop language tag
+      out.push("<pre><code>" + esc(body) + "</code></pre>");
+      continue;
+    }
+    const lines = parts[i].split("\n").map((line) => {
+      let m;
+      if ((m = line.match(/^(#{1,4})\s+(.*)$/)))
+        return '<span class="h">' + inline(m[2]) + "</span>";
+      if ((m = line.match(/^(\s*)[-*]\s+(.*)$/)))
+        return m[1] + '<span class="bullet">•</span> ' + inline(m[2]);
+      if ((m = line.match(/^(\s*)(\d+)\.\s+(.*)$/)))
+        return m[1] + '<span class="bullet">' + m[2] + ".</span> " + inline(m[3]);
+      return inline(line);
+    });
+    out.push(lines.join("\n"));
+  }
+  return out.join("");
+}
+
+// ── typewriter: polls fill `target`; a rAF loop drains it smoothly ──
+function makeTyper(bodyEl) {
+  let target = "";
+  let shown = 0;
+  let finished = false;
+  let raf = null;
+  const cur = document.createElement("span");
+  cur.className = "cursor";
+  cur.textContent = "▋";
+  bodyEl.after(cur);
+
+  function tick() {
+    raf = null;
+    if (shown > target.length) {
+      // Target got rewritten shorter (authoritative final text): without this
+      // clamp nothing ever redraws and the frozen frame keeps stale text.
+      shown = target.length;
+      bodyEl.innerHTML = renderMd(target);
+    }
+    const remaining = target.length - shown;
+    if (remaining > 0) {
+      const atBottom = nearBottom();
+      const step = Math.max(1, Math.ceil(remaining / 36));  // drain in ~36 frames
+      shown = Math.min(target.length, shown + step);
+      bodyEl.innerHTML = renderMd(target.slice(0, shown));
+      if (atBottom) scrollBottom();
+    }
+    if (shown < target.length) raf = requestAnimationFrame(tick);
+    else if (finished) cur.remove();
+  }
+
+  return {
+    update(text) { target = text; if (!raf) raf = requestAnimationFrame(tick); },
+    finish(text) {
+      target = text;
+      finished = true;
+      if (!raf) raf = requestAnimationFrame(tick);
+      return new Promise((resolve) => {
+        (function wait() { raf ? requestAnimationFrame(wait) : resolve(); })();
+      });
+    },
+    abort() { if (raf) cancelAnimationFrame(raf); cur.remove(); },
+  };
+}
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// ── send one message: start detached claude, poll + stream ──
+// One turn at a time: concurrent turns would share the session_id param and
+// launch parallel claude runs against the same resumed session.
+let sending = false;
+
+// Stream one run into the log. The `run` URL param marks the run as in-flight
+// for the page's whole life — if this frame dies mid-loop, the subprocess
+// keeps going and the next boot re-attaches via resumeRun.
+async function pollLoop(run_id) {
+  const w = addWorking();
+  let reply = null;
+  let typer = null;
+  try {
+    while (true) {
+      const data = await fused.runPython(AGENT, { action: "poll", run_id }, { key: null });
+      if (data.session_id) { fused.params.set("session_id", String(data.session_id)); showSession(); }
+      // usage arrives only at message end; estimate from streamed text meanwhile
+      const tokens = Math.max(data.tokens || 0, Math.round((data.text || "").length / 4));
+      w.setStats(tokens, data.phase || "thinking");
+      syncPermissions(data.permissions, run_id, w, data.mode);
+      if (data.text) {
+        if (!reply) {
+          reply = addAssistant("");
+          log.insertBefore(reply, w.el);  // status line stays below the streaming reply
+          typer = makeTyper(reply.lastChild);
+        }
+        if (!data.done) typer.update(data.text);
+      }
+      if (data.done) {
+        fused.params.set("run", "");
+        w.stop(); w.el.remove();
+        if (data.error) {
+          if (typer) typer.abort();
+          if (reply) reply.remove();
+          addError(data.error);
+        } else if (typer) {
+          await typer.finish(data.text);
+        } else if (data.text) {
+          addAssistant("").lastChild.innerHTML = renderMd(data.text);
+        }
+        break;
+      }
+      await sleep(400);
+    }
+  } catch (err) {
+    // Kill the rAF loop and drop the partial bubble so a failed run never
+    // leaves a half-streamed reply behind. The `run` param is deliberately
+    // NOT cleared: a poll that died with the page being torn down should
+    // still re-attach on the next boot.
+    if (typer) typer.abort();
+    if (reply) reply.remove();
+    addError(err.message);
+  } finally {
+    if (w.el.isConnected) { w.stop(); w.el.remove(); }
+  }
+}
+
+async function sendMessage(message) {
+  if (sending) return;
+  sending = true;
+  addUser(message);
+  try {
+    const { run_id, error } = await fused.runPython(AGENT, {
+      action: "start",
+      file: FILE,
+      message,
+      session_id: fused.params.get("session_id") || "",
+      model: fused.params.get("model") || DEFAULT_MODEL,
+      effort: fused.params.get("effort") || DEFAULT_EFFORT,
+      permission_mode: fused.params.get("permission") || DEFAULT_PERMISSION,
+      // key:null — all agent calls opt out of default per-file cancellation
+      // (D114): start/poll/history/sessions share one file, and superseding an
+      // awaited poll would leave it pending and hang the streaming loop.
+    }, { key: null });
+    if (error) throw new Error(error);
+    fused.params.set("run", run_id);
+    await pollLoop(run_id);
+  } catch (err) {
+    addError(err.message);
+  } finally {
+    sending = false;
+  }
+  scrollBottom();
+  box.focus();
+}
+
+// Re-attach to a run that was streaming when this page last unloaded (mode
+// switch / reload): only the poll loop died with the frame — the detached
+// claude subprocess kept working. The poll replays the WHOLE turn's text, so
+// any partial rows the history restore already rendered are trimmed first.
+async function resumeRun(run_id) {
+  if (sending) return;
+  sending = true;
+  try {
+    const probe = await fused.runPython(AGENT, { action: "poll", run_id }, { key: null });
+    if (probe.error === "unknown run_id") {
+      // stale param (bookmarked mid-run URL, pruned tmp) — nothing to attach to
+      fused.params.set("run", "");
+      return;
+    }
+    const users = log.querySelectorAll(".user .bubble");
+    const lastUser = users[users.length - 1];
+    const lastTurn = lastUser && lastUser.parentElement;
+    const matches = !!lastUser && lastUser.textContent === probe.message;
+    if (probe.done) {
+      // Run finished with no frame attached: only repair what the restored
+      // transcript can provably be missing (see the claude template).
+      fused.params.set("run", "");
+      if (probe.error) {
+        if (matches || !users.length) addError(probe.error);
+        return;
+      }
+      if (matches) {
+        while (lastTurn.nextElementSibling) lastTurn.nextElementSibling.remove();
+        if (probe.text) addAssistant("").lastChild.innerHTML = renderMd(probe.text);
+      } else if (!users.length && probe.message) {
+        addUser(probe.message);
+        if (probe.text) addAssistant("").lastChild.innerHTML = renderMd(probe.text);
+      }
+      scrollBottom();
+      return;
+    }
+    if (matches) {
+      // In flight and this turn's user line is on screen: keep it, drop the
+      // partial assistant rows — pollLoop re-streams the whole turn.
+      while (lastTurn.nextElementSibling) lastTurn.nextElementSibling.remove();
+    } else if (probe.message) {
+      addUser(probe.message);
+    }
+    await pollLoop(run_id);
+  } catch (err) {
+    console.warn("run re-attach failed:", err.message);
+  } finally {
+    sending = false;
+    box.focus();
+  }
+}
+
+function submitChat() {
+  if (sending) return;
+  const message = box.value.trim();
+  if (!message) return;
+  box.value = "";
+  growBox();
+  sendMessage(message);
+}
+document.getElementById("inputbox").onsubmit = (e) => { e.preventDefault(); submitChat(); };
+box.addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); submitChat(); }
+});
+
+// ── home: big input + this file's sidecar sessions ──
+document.getElementById("card").onsubmit = (e) => {
+  e.preventDefault();
+  if (sending) return;
+  const message = homebox.value.trim();
+  if (!message) return;
+  homebox.value = "";
+  growHome();
+  enterChat();
+  sendMessage(message);
+};
+homebox.addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && !e.shiftKey) {
+    e.preventDefault();
+    document.getElementById("card").requestSubmit();
+  }
+});
+
+function ago(ts) {
+  const s = Math.max(0, Date.now() / 1000 - ts);
+  if (s < 60) return "now";
+  if (s < 3600) return Math.floor(s / 60) + "m ago";
+  if (s < 86400) return Math.floor(s / 3600) + "h ago";
+  if (s < 172800) return "yesterday";
+  return Math.floor(s / 86400) + "d ago";
+}
+
+// Content-shaped placeholder for a restoring transcript.
+function renderLogSkeleton() {
+  log.innerHTML = "";
+  const user = document.createElement("div");
+  user.className = "turn skel-turn skel-turn-user";
+  user.innerHTML = '<div class="skel-bar"></div>';
+  const assistant = document.createElement("div");
+  assistant.className = "turn skel-turn skel-turn-assistant";
+  assistant.innerHTML =
+    '<span class="skel-dot-a"></span><span class="skel-lines">' +
+    '<span class="skel-bar" style="width:88%"></span>' +
+    '<span class="skel-bar" style="width:72%"></span>' +
+    '<span class="skel-bar" style="width:50%"></span></span>';
+  log.append(user, assistant);
+}
+
+async function loadHistory(session_id) {
+  // Reuse the `sending` gate: a message sent during the await would be
+  // appended first and the older history turns dumped after it.
+  if (sending) return;
+  sending = true;
+  permCards.clear();
+  renderLogSkeleton();  // replace the visible conversation, don't append to it
+  try {
+    const { turns } = await fused.runPython(AGENT, { action: "history", file: FILE, session_id }, { key: null });
+    log.innerHTML = "";  // drop the skeleton now that real turns are ready
+    for (const t of turns) {
+      if (t.role === "user") addUser(t.text);
+      else addAssistant("").lastChild.innerHTML = renderMd(t.text);
+    }
+    scrollBottom();
+  } catch (err) {
+    log.innerHTML = "";
+    console.warn("history restore failed:", err.message);
+  } finally {
+    sending = false;
+  }
+}
+
+function addChatRow(list, s) {
+  const row = document.createElement("div");
+  row.className = "chat-row";
+  row.setAttribute("role", "button");
+  row.tabIndex = 0;
+  row.innerHTML = '<span class="dot">⏺</span><span class="row-title"></span><span class="row-sub"></span>';
+  row.querySelector(".row-title").textContent = s.preview || s.id;
+  row.querySelector(".row-sub").textContent = ago(s.last_used || s.created_at || 0);
+  const open = async () => {
+    fused.params.set("session_id", s.id);
+    showSession();
+    enterChat();
+    await loadHistory(s.id);
+  };
+  row.onclick = open;
+  row.onkeydown = (e) => { if (e.key === "Enter") open(); };
+  list.appendChild(row);
+}
+
+// Content-shaped placeholder for the session list.
+function renderRecentSkeleton(list) {
+  list.innerHTML = "";
+  [72, 58, 44].forEach((pct) => {
+    const row = document.createElement("div");
+    row.className = "skel-row";
+    row.innerHTML =
+      '<span class="skel-dot"></span>' +
+      '<span class="skel-bar title" style="max-width:' + pct + '%"></span>' +
+      '<span class="skel-bar sub"></span>';
+    list.appendChild(row);
+  });
+}
+
+async function loadRecent() {
+  const list = document.getElementById("recentlist");
+  renderRecentSkeleton(list);
+  try {
+    const { sessions, error } = await fused.runPython(AGENT, { action: "sessions", file: FILE }, { key: null });
+    if (error) throw new Error(error);
+    list.innerHTML = "";  // drop the skeleton now that we know the real state
+    if (!sessions.length) {
+      document.getElementById("recent").style.display = "none";
+      return;
+    }
+    for (const s of sessions) addChatRow(list, s);
+  } catch (err) {
+    list.innerHTML = "";
+    console.warn("session list failed:", err.message);
+  }
+}
+
+// ── boot: resume from URL, or show the landing page ──
+(async () => {
+  const session_id = fused.params.get("session_id");
+  const run_id = fused.params.get("run");
+  if (session_id || run_id) {
+    // A bare `run` param (frame died before the first poll saw the session id)
+    // still means an in-flight conversation — enter chat and re-attach.
+    enterChat();
+    if (session_id) await loadHistory(session_id);
+    if (run_id) await resumeRun(run_id);
+  } else {
+    homebox.focus();
+    await loadRecent();
+  }
+})();
+</script>
+</body>
+</html>

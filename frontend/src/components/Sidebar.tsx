@@ -27,7 +27,7 @@ import {
   takeLastAddedBookmarkId,
 } from "../lib/bookmarks";
 import { bookmarkSaveTarget } from "../lib/bookmark-file";
-import { exportBookmarkFile, getConfig, statPath } from "../lib/api";
+import { exportBookmarkFile, statPath } from "../lib/api";
 import IconPicker from "./IconPicker";
 import { FolderIcon, LearnIcon } from "./FileIcons";
 import type { Bookmark, BookmarkFolder, BookmarkItem } from "../lib/bookmarks";
@@ -45,6 +45,7 @@ import {
   notifyBookmarksChanged,
   useRecentsVersion,
   useArmedVersion,
+  useLearnMountReady,
 } from "../lib/hooks";
 import type { Config } from "../lib/api";
 import { splitShellSearch } from "../lib/layout-codec";
@@ -265,6 +266,9 @@ interface FolderRowProps {
   folder: BookmarkFolder;
   child?: boolean;
   parentId?: string;
+  // Optimistic expand/collapse state (see isCollapsed in Sidebar): the store's
+  // own `folder.collapsed` lags a click by a store write, so the row is told.
+  collapsed: boolean;
   activeHint: boolean;
   isRenaming: boolean;
   onGlyphClick: (e: React.MouseEvent<HTMLSpanElement>) => void;
@@ -279,10 +283,10 @@ interface FolderRowProps {
 
 // activeHint: folder is collapsed but holds the current view's bookmark —
 // highlight the row so the selection isn't invisible while folded away.
-function FolderRow({ folder, child, parentId, activeHint, isRenaming, onGlyphClick, onRowClick, onRename, onDelete, onCommitRename, onCancelRename, registerRef, dragProps }: FolderRowProps) {
+function FolderRow({ folder, child, parentId, collapsed, activeHint, isRenaming, onGlyphClick, onRowClick, onRename, onDelete, onCommitRename, onCancelRename, registerRef, dragProps }: FolderRowProps) {
   return (
     <div
-      className={"bookmark-row folder-row" + (child ? " child-row" : "") + (folder.collapsed ? " collapsed" : "") + (activeHint ? " active" : "")}
+      className={"bookmark-row folder-row" + (child ? " child-row" : "") + (collapsed ? " collapsed" : "") + (activeHint ? " active" : "")}
       data-id={folder.id}
       data-parent={child ? parentId : undefined}
       draggable="true"
@@ -341,77 +345,9 @@ export default function Sidebar({ config }: SidebarProps) {
   const accountLoggedIn = useAccountLoggedIn();
   const deployEnabled = useDeployEnabled();
 
-  // BUGBOT: config (and its learn_mount_ready flag) is fetched exactly ONCE
-  // at page load (main.tsx), well before the server's background automount
-  // thread has finished attaching the learn mount — ensure_learn_mount now
-  // force-detaches and remounts it on every startup, so the one-shot fetch
-  // essentially always sees false and the Learn entry would never appear
-  // for the whole session. Re-poll /api/config on a short bounded interval
-  // (mirrors main.tsx's own bookmark-poll pattern) until it flips true;
-  // capped at MAX_ATTEMPTS so a dev checkout with no bundled learn.zip
-  // (never becomes ready) doesn't poll forever.
-  //
-  // BUGBOT: the bound must comfortably exceed attach_mount's own worst case
-  // — up to ~10s for ensure_rcd to spawn/confirm the rclone daemon, plus a
-  // full 60s mount/mount rc timeout (shell/mounts.py) — or a slow-but-
-  // eventually-successful mount finishes after the poll gives up and the
-  // entry never appears without a full page reload. 2s x 60 = 120s, safely
-  // past that ~70s worst case with margin.
-  //
-  // BUGBOT: gating the poll on "only start if the INITIAL fetch saw false"
-  // was itself racy — rcd survives server restarts, so the boot-time
-  // /api/config fetch can catch a still-live mount from the PRIOR run and
-  // report true, moments before ensure_learn_mount's own forced detach (see
-  // its docstring) rips that very mount out from under it. Polling would
-  // then never engage at all, and the entry would point at an empty
-  // mountpoint for the remount window — or the whole session, if the
-  // remount fails. So this always re-verifies via a live poll after mount,
-  // regardless of the seeded initial value, and follows whatever the fresh
-  // answer says (including back to not-ready, if the detach window is
-  // caught mid-poll) rather than trusting the one-shot snapshot as final.
-  const [learnMountReady, setLearnMountReady] = useState(config.learn_mount_ready);
-  useEffect(() => {
-    let cancelled = false;
-    let attempts = 0;
-    // BUGBOT: setInterval fires a new getConfig() every tick without
-    // waiting for the previous one to settle, so responses can arrive
-    // out of order (a slow earlier request resolving AFTER a faster later
-    // one). Unconditionally applying whatever resolves most recently in
-    // WALL-CLOCK order let a stale `false` from an earlier in-flight
-    // request overwrite a `true` a later request already reported —
-    // permanently, since that `true` had already cleared the interval.
-    // latestRequestId tracks which tick's request is the newest ISSUED
-    // one; only that request's response is applied, so a straggler from
-    // an earlier tick is discarded as stale rather than overwriting it.
-    let latestRequestId = 0;
-    const MAX_ATTEMPTS = 60;
-    const POLL_MS = 2000;
-    const timer = window.setInterval(() => {
-      attempts += 1;
-      const requestId = ++latestRequestId;
-      getConfig().then(
-        (fresh) => {
-          if (cancelled || requestId !== latestRequestId) return;
-          setLearnMountReady(fresh.learn_mount_ready);
-          if (fresh.learn_mount_ready || attempts >= MAX_ATTEMPTS) {
-            window.clearInterval(timer);
-          }
-        },
-        () => {
-          if (cancelled || requestId !== latestRequestId) return;
-          // Transient fetch failure — just try again next tick.
-          if (attempts >= MAX_ATTEMPTS) window.clearInterval(timer);
-        }
-      );
-    }, POLL_MS);
-    return () => {
-      cancelled = true;
-      window.clearInterval(timer);
-    };
-    // Deliberately empty deps: run once on mount only. Depending on
-    // learnMountReady here would restart the whole bounded poll window
-    // from zero every time it changes.
-  }, []);
+  // Bounded /api/config re-poll for the learn mount (see useLearnMountReady
+  // for the full race notes — the boot snapshot is stale in both directions).
+  const learnMountReady = useLearnMountReady(config.learn_mount_ready);
 
   // Sidebar chrome: draggable width + collapsed flag, persisted once per
   // gesture (drag end / toggle), not per mousemove. Width lives in React
@@ -753,11 +689,35 @@ export default function Sidebar({ config }: SidebarProps) {
 
   // --- folder row handlers ----------------------------------------------------
 
-  const onFolderGlyphClick = async (e: React.MouseEvent<HTMLSpanElement>, id: string) => {
+  // Expand/collapse is a store write (bookmarks.json, through a serial mutation
+  // queue), and awaiting it before the UI moved meant the chevron and the
+  // children lagged the click by a round trip. Flip optimistically instead: the
+  // override wins over the store's value until the write lands and the store
+  // notify re-renders with the same answer. Keyed per id, so two folders toggled
+  // in quick succession don't clobber each other.
+  const [collapseOverride, setCollapseOverride] = useState<Record<string, boolean>>({});
+  const isCollapsed = (folder: BookmarkFolder): boolean =>
+    collapseOverride[folder.id] ?? !!folder.collapsed;
+  const applyToggle = async (folder: BookmarkFolder) => {
+    const next = !isCollapsed(folder);
+    setCollapseOverride((m) => ({ ...m, [folder.id]: next }));
+    try {
+      await toggleFolder(folder.id);
+      notifyBookmarksChanged();
+    } finally {
+      // Drop the override either way: on success the store now agrees, and on
+      // failure the row must fall back to the truth rather than lie forever.
+      setCollapseOverride((m) => {
+        const { [folder.id]: _dropped, ...rest } = m;
+        return rest;
+      });
+    }
+  };
+
+  const onFolderGlyphClick = (e: React.MouseEvent<HTMLSpanElement>, folder: BookmarkFolder) => {
     e.preventDefault();
     e.stopPropagation(); // don't also trigger the row's open handler
-    await toggleFolder(id);
-    notifyBookmarksChanged();
+    void applyToggle(folder);
   };
 
   // Name or row click opens the folder as tabs, except over the glyph, the
@@ -779,13 +739,12 @@ export default function Sidebar({ config }: SidebarProps) {
     if (!folder || !tabChildren.length) {
       // Nothing to open as tabs, but still expand a collapsed folder so its
       // nested contents become reachable.
-      if (folder && folder.collapsed && folder.children.length) {
-        await toggleFolder(folder.id);
-        notifyBookmarksChanged();
+      if (folder && isCollapsed(folder) && folder.children.length) {
+        void applyToggle(folder);
       }
       return;
     }
-    if (folder.collapsed) await toggleFolder(folder.id); // expand only — never re-collapse
+    if (isCollapsed(folder)) void applyToggle(folder); // expand only — never re-collapse
     // No notifyBookmarksChanged() here: navigateUrl re-renders the sidebar
     // via useUrlVersion (mirrors the vanilla route()-driven re-render).
     navigateUrl(composeFolderTabsUrl(tabChildren));
@@ -997,17 +956,19 @@ export default function Sidebar({ config }: SidebarProps) {
     list.map((it) => {
       const child = parentId !== null;
       if (isFolder(it)) {
-        const activeHint = it.collapsed && subtreeHoldsActive(it.children);
+        const collapsed = isCollapsed(it);
+        const activeHint = collapsed && subtreeHoldsActive(it.children);
         return (
           <React.Fragment key={it.id}>
             <FolderRow
               folder={it}
               child={child}
               parentId={parentId ?? undefined}
+              collapsed={collapsed}
               activeHint={activeHint}
               isRenaming={renamingId === it.id}
               registerRef={registerRow(it.id)}
-              onGlyphClick={(e) => onFolderGlyphClick(e, it.id)}
+              onGlyphClick={(e) => onFolderGlyphClick(e, it)}
               onRowClick={(e) => onFolderRowClick(e, it)}
               onRename={(e) => {
                 e.preventDefault();
@@ -1018,7 +979,7 @@ export default function Sidebar({ config }: SidebarProps) {
               onCancelRename={cancelRename}
               dragProps={dragProps(it.id, true, child)}
             />
-            {!it.collapsed && (
+            {!collapsed && (
               <div className="folder-children">{renderItems(it.children, it.id)}</div>
             )}
           </React.Fragment>
@@ -1054,7 +1015,7 @@ export default function Sidebar({ config }: SidebarProps) {
     // Collapsed: the whole sidebar shrinks to a slim strip that expands it
     // back. Still the same #sidebar node, so the <=700px media hide applies.
     return (
-      <nav id="sidebar" className="sidebar-collapsed">
+      <nav id="sidebar" className={"sidebar-collapsed" + (resizing ? " sidebar-no-transition" : "")}>
         <button
           type="button"
           className="sidebar-expand-strip"
@@ -1075,7 +1036,15 @@ export default function Sidebar({ config }: SidebarProps) {
   }
 
   return (
-    <nav id="sidebar" style={{ flexBasis: sidebarWidth, width: sidebarWidth }}>
+    // The collapse/expand width change glides (shell.css); a pointer DRAG must
+    // not, or every pointermove would chase a 200ms transition and the handle
+    // would lag the cursor. `sidebar-no-transition` is that suppression — the
+    // mechanism the comment on `resizing` above has always described.
+    <nav
+      id="sidebar"
+      className={resizing ? "sidebar-no-transition" : undefined}
+      style={{ flexBasis: sidebarWidth, width: sidebarWidth }}
+    >
       <div className="sidebar-brand">
         {/* Logo + name are one click target that goes Home — the front door is
             always one click away from anywhere. The collapse button stays its

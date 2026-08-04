@@ -58,6 +58,7 @@ import threading
 import time
 import uuid
 from datetime import datetime, timezone
+from urllib.parse import unquote
 
 from fastapi import APIRouter, Body, Header, Request
 from fastapi.responses import JSONResponse
@@ -73,6 +74,7 @@ RECORD_VERSION = 1
 
 # Attribution + correlation headers set by static/runtime.js. X-Fused-Page is
 # what makes a request an "app call" at all; the other two are additive context.
+# The two PATH headers arrive percent-encoded — see _header_path.
 PAGE_HEADER = "x-fused-page"
 CALL_HEADER = "x-fused-call"
 TARGET_HEADER = "x-fused-target"
@@ -1065,6 +1067,14 @@ def sweep(now: float | None = None) -> int:
 
 # ------------------------------------------- middleware / handler integration
 
+def _header_path(value: str | None) -> str | None:
+    """Undo runtime.js's encodeURIComponent. A path sent raw is left alone:
+    decoding is the identity for the ASCII a curl or a test carries."""
+    if not value:
+        return None
+    return unquote(value)
+
+
 def begin(request: Request) -> dict | None:
     """Start a record for an app call, or return None when this isn't one.
 
@@ -1076,7 +1086,7 @@ def begin(request: Request) -> dict | None:
     path = request.url.path
     if path.startswith(SKIP_PREFIXES):
         return None
-    page = request.headers.get(PAGE_HEADER)
+    page = _header_path(request.headers.get(PAGE_HEADER))
     if not page:
         return None
     if not enabled():
@@ -1101,7 +1111,7 @@ def begin(request: Request) -> dict | None:
         "kind": "call",
         "occurred_at": _now_iso(),
         "page": page,
-        "target_file": request.headers.get(TARGET_HEADER) or None,
+        "target_file": _header_path(request.headers.get(TARGET_HEADER)),
         "first_party": is_first_party(page),
         "route": path,
         "http_method": request.method,
