@@ -12,6 +12,7 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { getApps } from "@platform/lib/api";
 import type { AppInfo, Config } from "@platform/lib/api";
+import { hrefFor, onAppCardClick, openTargetFor } from "@platform/lib/appEntry";
 import { navigate, navigateUrl } from "@platform/lib/router";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { basename } from "@platform/lib/format";
@@ -94,21 +95,23 @@ function Doorway({
   );
 }
 
-// One row in the Recent list: name, tag, last-used — no icon. Same open
-// behavior as the /apps cards: the app FOLDER in the claude_split view when
-// an entry exists, else the plain folder.
+// One row in the Recent list: name, tag, last-used — no icon. Opens through the
+// same shared rule as the /apps cards (appEntry.openTargetFor), rather than the
+// inline copy it used to carry: that copy had already drifted from the hub's,
+// and a row and a card for the same app must not open different things.
 function RecentRow({ app }: { app: AppInfo }) {
-  const open = () => {
-    if (app.entry_html) navigate(app.path, { isDir: true, mode: "claude_split" });
-    else navigate(app.path, { isDir: true });
-  };
   const title = app.title || app.name;
   return (
-    <button type="button" className="home-recent" onClick={open} title={app.path}>
+    <a
+      className="home-recent"
+      href={hrefFor(app)}
+      onClick={(e) => onAppCardClick(e, app)}
+      title={openTargetFor(app).path}
+    >
       <span className="home-recent-name">{title}</span>
       <span className="home-app-tag">{app.tag}</span>
       <span className="home-recent-when">{timeAgo(app.updated_at) ?? "—"}</span>
-    </button>
+    </a>
   );
 }
 
