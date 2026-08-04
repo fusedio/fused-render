@@ -709,6 +709,68 @@ def test_a_verdict_probed_ACROSS_a_discard_is_never_cached(tmp_path, monkeypatch
 
 
 @requires_fused
+def test_a_marker_REPLACED_during_the_probe_is_not_unlinked(tmp_path, monkeypatch):
+    """Identity, not existence: the marker we answer about must be the one we judged.
+
+    Inside the probe window the install worker can finish a rebuild and write a
+    FRESH marker. A boolean `exists()` re-check reads True for that, so the bound
+    would be consulted against a verdict describing the venv that was destroyed —
+    and the first-failure branch would unlink the marker of a freshly rebuilt,
+    possibly healthy venv and force another download. Comparing
+    `(st_ino, st_mtime_ns)` sees the swap that `exists()` cannot.
+    """
+    reqs = ["some-dist"]
+    venv_dir = _marked_venv(tmp_path, monkeypatch, reqs)  # no interpreter -> False
+    marker = venv_dir / envinstall.READY_MARKER
+    before = envinstall._marker_stamp(str(marker))
+
+    def _probe_while_the_worker_re_marks(d):
+        m = os.path.join(d, envinstall.READY_MARKER)
+        os.unlink(m)  # the rebuild starts
+        with open(m + ".new", "w") as fh:  # ... and finishes, marker and all
+            fh.write("{}")
+        os.replace(m + ".new", m)
+        return False
+
+    monkeypatch.setattr(envinstall, "_venv_runs", _probe_while_the_worker_re_marks)
+    assert envinstall._marker_stamp(str(marker)) == before, "setup: stamp not captured"
+
+    assert envinstall.is_installed(reqs) is False, "answer about the venv we judged"
+    assert marker.exists(), "the REBUILT venv's marker must survive"
+    assert envinstall._marker_stamp(str(marker)) != before, "setup: stamp unchanged"
+
+
+@requires_fused
+def test_a_TRUE_verdict_is_not_returned_once_the_marker_has_VANISHED(
+    tmp_path, monkeypatch
+):
+    """A "ready" answer requires the marker to still be there when we answer.
+
+    `is_installed` stamps the marker, probes, then answers. If the worker un-marks
+    and starts rebuilding inside that window, answering True hands `/api/run` a
+    directory being rebuilt underneath it — a confusing mid-rebuild failure instead
+    of the install loader. So the answer is False: the caller reports
+    `needs_install` and joins the install already in flight (`start()` joins rather
+    than duplicating), which is the same conclusion the replaced-marker branch
+    reaches, through the same code path.
+    """
+    reqs = ["some-dist"]
+    venv_dir = _marked_venv(tmp_path, monkeypatch, reqs, runnable=True)
+    marker = venv_dir / envinstall.READY_MARKER
+    real = envinstall._venv_runs
+
+    def _probe_while_the_worker_unmarks(d):
+        verdict = real(d)
+        os.unlink(os.path.join(d, envinstall.READY_MARKER))
+        return verdict
+
+    monkeypatch.setattr(envinstall, "_venv_runs", _probe_while_the_worker_unmarks)
+    assert envinstall.is_installed(reqs) is False, "do not run against a rebuild"
+    assert str(venv_dir) not in envinstall._VALIDATED, "and do not keep the verdict"
+    assert not marker.exists()
+
+
+@requires_fused
 def test_reset_ends_every_generation_so_an_inflight_probe_cannot_store(
     tmp_path, monkeypatch
 ):

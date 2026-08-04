@@ -300,6 +300,26 @@ def _venv_runs(venv_dir: str) -> bool | None:
     return True
 
 
+def _marker_stamp(marker: str) -> tuple[int, int] | None:
+    """Which ready marker this is — `(st_ino, st_mtime_ns)` — or None if absent.
+
+    The marker's IDENTITY, because its existence is not enough: the install worker is
+    a different PROCESS, and inside one probe window it can un-mark a venv, rebuild
+    it and write a fresh marker. `os.path.exists` reads True before and after that
+    and so cannot see it, while inode + nanosecond mtime changes on any rewrite,
+    replace or recreate. Named to match openfused's `_marker_stamp`, which closes the
+    same hole on its side, so the two read alike.
+
+    None (absent) is a value like any other here: comparing a captured None against a
+    later stamp correctly reports "a marker appeared", and vice versa.
+    """
+    try:
+        st = os.stat(marker)
+    except OSError:
+        return None
+    return (st.st_ino, st.st_mtime_ns)
+
+
 def _generation_of(venv_dir: str) -> tuple[int, int]:
     """Which generation of `venv_dir` the cache may currently describe.
 
@@ -441,26 +461,36 @@ def is_installed(requirements: list[str]) -> bool:
     and the repair is attempted at most ONCE per venv per process, so a venv that
     cannot be fixed by rebuilding stops asking to be rebuilt. Both are contracts,
     not defensive padding — see the comments at each branch below.
+
+    And ONE rule covers every branch that acts on a verdict: **a verdict may only be
+    acted on while the generation it judged is still current, and a "ready" answer
+    requires the marker to still be there at the moment we answer.** The probe is a
+    subprocess, so between stamping the marker and answering, the install worker (a
+    different PROCESS) can un-mark this venv, rebuild it, and re-mark it — none of
+    which touches `_GENERATION`/`_EPOCH`, because those only know what THIS process
+    did. That asymmetry is why both mechanisms exist: the counters keep the cache
+    honest about our own discards, and the marker stamp keeps us honest about
+    everyone else's. So the stamp is captured before the probe and re-checked, by
+    IDENTITY not existence, before either answer that depends on it.
     """
     if not requirements:
         return True  # nothing to install; the bare/interpreter paths handle it
     venv_dir = venv_dir_for(requirements)
     marker = os.path.join(venv_dir, READY_MARKER)
-    if not os.path.exists(marker):
-        # No claim, so nothing to validate — and the common case by count (every
-        # first open of a PEP 723 script), which stays a single stat rather than a
-        # spawn. Also the ONE place a cached verdict is dropped: a marker that is
-        # absent now means the directory is being (or is about to be) rebuilt, and
-        # the rebuild must not inherit the failed verdict of what stood there
-        # before. Without this, deleting the marker below would trade a permanently
+    stamp = _marker_stamp(marker)
+    if stamp is None:
+        # No marker at all, so there is no claim to validate — and this is the common
+        # case by count (every first open of a PEP 723 script), which stays a single
+        # stat rather than a spawn. Also a place a cached verdict is dropped: a
+        # marker that is absent now means the directory is being (or is about to be)
+        # rebuilt, and the rebuild must not inherit the failed verdict of what stood
+        # there before. Without this, deleting the marker below would trade a permanently
         # bad venv for a permanently negative answer — the loader would install
         # successfully and `is_installed` would still say no, forever.
         with _validated_lock:
             _discard_verdict(venv_dir)
         return False
     verdict = _venv_is_usable(venv_dir)
-    if verdict is True:
-        return True
     if verdict is None:
         # The probe could not be completed (a timeout, a fork that failed under
         # load). That is a fact about this server at this instant, not about the
@@ -468,8 +498,18 @@ def is_installed(requirements: list[str]) -> bool:
         # run proceeds and surfaces whatever really happens, exactly as it did
         # before any of this validation existed. Destroying a multi-hundred-MB venv
         # requires evidence, and "I could not look" is not evidence.
+        #
+        # No stamp re-check on this path: it neither answers FROM a verdict nor acts
+        # on one. It says "I learned nothing", and that is true whatever the marker
+        # has done in the meantime.
         return True
-    # A definite failure — but the repair is allowed exactly ONCE per venv dir per
+    # Both remaining answers act on the verdict — one says "ready", the other spends
+    # the repair budget and may unlink — so both are gated on the marker still being
+    # the SAME one that was judged. Shared, not duplicated per branch: the rule is
+    # one rule (see this function's docstring), and two copies of it would be two
+    # places to get the identity comparison subtly different.
+    #
+    # A definite failure means the repair is allowed exactly ONCE per venv dir per
     # process. Beyond that, the download is known-futile: for the cohort D206 exists
     # for (a pre-symlink `.app`) the rebuild reproduces the identical breakage,
     # because the property that failed is the bundled interpreter's own base prefix
@@ -486,30 +526,47 @@ def is_installed(requirements: list[str]) -> bool:
     # a fixed DMG gets a fresh server, hence an empty set, hence one rebuild that
     # actually works.
     with _validated_lock:
-        # Re-stat the marker HERE, inside the critical section, before the bound is
-        # consulted. "stat the marker -> probe -> consult the bound -> unlink" is not
-        # atomic, and the endpoints are sync `def` running in FastAPI's threadpool,
-        # so two pre-flights for the same script genuinely interleave: A passes the
-        # marker check, probes, records the attempt and unlinks, while B — which
-        # passed the marker check BEFORE A's unlink — arrives here AFTER A's add. B
-        # would then read `already_tried`, announce that a rebuild had already been
-        # tried (it had not; A's rebuild has not even been requested yet), and return
-        # True, running a venv known to be broken instead of joining the install A
-        # just asked for.
+        # Re-stamp the marker HERE, inside the critical section, before anything is
+        # answered or spent. "stamp the marker -> probe -> decide -> unlink" is not
+        # atomic, in two independent ways:
         #
-        # A marker that is gone now means someone else has un-marked this venv, so
-        # the honest answer is the same one they gave: not installed. The caller
-        # joins their install (`start()` is idempotent and joins rather than
-        # duplicating). The bound question only makes sense against a marker that is
-        # still there — it asks "did the rebuild of THIS marked venv already fail",
-        # and with no marker there is no such venv to ask about.
+        #   * ANOTHER THREAD of this server. The endpoints are sync `def` running in
+        #     FastAPI's threadpool, so two pre-flights for one script interleave: A
+        #     stamps, probes, records the attempt and unlinks, while B — which
+        #     stamped BEFORE A's unlink — arrives here AFTER A's add. Ungated, B
+        #     reads `already_tried`, announces a rebuild that has not happened (A's
+        #     has not even been requested yet) and returns True, running a venv known
+        #     to be broken instead of joining the install A just asked for.
+        #   * ANOTHER PROCESS. The install worker can un-mark this venv and start
+        #     rebuilding (so a True verdict must NOT be answered — /api/run would
+        #     execute against a directory being rebuilt underneath it), or finish a
+        #     rebuild and write a FRESH marker (so a False verdict must NOT be acted
+        #     on — the first-failure branch would unlink the marker of a just-rebuilt,
+        #     possibly healthy venv and force another multi-hundred-MB download).
         #
-        # Deliberately not a cross-process lock: this module's only mutual exclusion
-        # is `threading.Lock`, a file lock would need a stale-lock policy, and the
-        # race being closed is between threads of one server.
-        if not os.path.exists(marker):
+        # Compared by IDENTITY, `(st_ino, st_mtime_ns)`, not by existence: the
+        # un-mark-and-re-mark case leaves a marker present the whole time this side
+        # can observe, so a boolean `exists()` sees nothing at all. This is what
+        # `_marker_stamp` is for, and openfused's copy carries the same name so the
+        # two read alike.
+        #
+        # Either way the conclusion is the same, which is why one branch serves both:
+        # this verdict is about a venv that is no longer the one on disk, so drop it
+        # and answer not-installed. The caller reports `needs_install` and joins the
+        # install already in flight (`start()` joins rather than duplicating). The
+        # bound question, likewise, only makes sense against the marker it was asked
+        # about — "did the rebuild of THIS marked venv already fail".
+        #
+        # A stat under the lock is a deliberate, bounded cost: it is the same syscall
+        # this function already makes unguarded on entry, so if that one returned, the
+        # filesystem was answering microseconds ago. Not a cross-process lock, for the
+        # reasons above — this module's only mutual exclusion is `threading.Lock`, and
+        # a file lock would need a stale-lock policy of its own.
+        if _marker_stamp(marker) != stamp:
             _discard_verdict(venv_dir)  # that generation is over
             return False
+        if verdict is True:
+            return True
         already_tried = venv_dir in _REBUILD_ATTEMPTED
         _REBUILD_ATTEMPTED.add(venv_dir)
         if already_tried:
