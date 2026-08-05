@@ -1054,7 +1054,7 @@ def api_new_template(body: dict = Body(...), x_fused: str | None = Header(defaul
         return _error(f"failed to create template {name!r}: {exc}")
 
     # Refresh the skills the starter CLAUDE.md references: the plugin root a
-    # session we launch is handed (D212) and the user-level copy for the user's
+    # session we launch is handed (D216) and the user-level copy for the user's
     # own sessions (D185). Best-effort inside — a skill copy must never fail
     # scaffolding.
     from fused_render.skill_plugin import export_skill_plugin_env

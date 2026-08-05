@@ -6,7 +6,7 @@ no ``.claude/`` of their own any more (D185).
 
 This sync is no longer load-bearing. It cannot be: writing into a dir we
 *resolved* is a guess about the machine, and every way it can miss is silent
-(see D212). The sessions fused-render itself spawns get the skills from
+(see D216). The sessions fused-render itself spawns get the skills from
 ``skill_plugin.py``'s plugin root instead, passed explicitly as
 ``--plugin-dir``. What survives here is the case that mechanism cannot reach —
 a session fused-render did NOT launch, e.g. the user's own ``claude`` in their

@@ -220,7 +220,7 @@ def _plugin_argv() -> list:
     this session, else `[]`.
 
     This is how a session we launch gets the fused-render skills with certainty
-    instead of hoping the user-level sync landed somewhere the CLI reads (D212).
+    instead of hoping the user-level sync landed somewhere the CLI reads (D216).
     The path (and the decision to pass it at all — see appenv) arrives through
     the env contract, so `_start` neither imports the app nor shells out to
     interrogate the CLI. A `--plugin-dir` load is session-scoped and additive:

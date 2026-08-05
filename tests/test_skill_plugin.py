@@ -1,4 +1,4 @@
-"""The skill PLUGIN root (fused_render/skill_plugin.py, D212): the canonical
+"""The skill PLUGIN root (fused_render/skill_plugin.py, D216): the canonical
 skills assembled into `home_dir()/skill-plugin/` in the shape Claude Code's
 `--plugin-dir` loader wants, and handed to every session fused-render spawns.
 
@@ -288,7 +288,7 @@ def test_the_repo_root_is_itself_a_plugin_root():
 # ------------------------------------------------------- the two duplications
 
 def test_the_two_skill_deliveries_agree_on_the_skill_list():
-    """D212's plugin root and D185's user-level sync ship the same three skills
+    """D216's plugin root and D185's user-level sync ship the same three skills
     from the same two source roots. Separate modules, deliberately — but a skill
     added to one list and not the other would be missing from half the sessions
     on the machine."""
@@ -331,7 +331,7 @@ def _spawn_argv(agent, tmp_path, monkeypatch):
 
 
 def test_a_spawned_session_is_handed_the_plugin(agent, tmp_path, monkeypatch):
-    """The whole point of D212: a session fused-render launches gets the skills
+    """The whole point of D216: a session fused-render launches gets the skills
     from a path we just wrote, not from whatever state the user's ~/.claude
     happens to be in."""
     monkeypatch.setenv(skill_plugin.PLUGIN_DIR_ENV, "/somewhere/skill-plugin")

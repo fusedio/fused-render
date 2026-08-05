@@ -45,7 +45,7 @@ def _write_baked_ref(root: str, ref: str, build_data: dict) -> None:
 # The three canonical skills ship ONLY as a package-level copy at
 # fused_render/skills/ — the wheel-install source for both the user-level skill
 # sync (fused_render/user_skills.py, D185) and the plugin root assembled under
-# home_dir() (fused_render/skill_plugin.py, D212). The skills live once at
+# home_dir() (fused_render/skill_plugin.py, D216). The skills live once at
 # skills/<name>/ (single source, D106); the copy is gitignored and shipped via
 # the `artifacts` glob in pyproject — the same not-committed-but-packaged
 # pattern as the Vite shell (D54). Scaffolded folders (apps AND templates)
@@ -96,7 +96,7 @@ class ShellBuildHook(BuildHookInterface):
     def _copy_starter_skills(self) -> None:
         """Copy the canonical skills to fused_render/skills/ — the wheel-install
         source for the user-level skill sync (user_skills.py, D185) and for the
-        plugin root assembled under home_dir() (skill_plugin.py, D212). Source is
+        plugin root assembled under home_dir() (skill_plugin.py, D216). Source is
         the single repo-level skills/<name>/; the copy is gitignored and shipped
         via pyproject's `artifacts` glob. Refresh each time so a packaged build
         always reflects the current skill. Starter kits (app and template) carry

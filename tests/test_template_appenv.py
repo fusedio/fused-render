@@ -222,7 +222,7 @@ def test_export_app_env_sets_all_three_vars(exported, monkeypatch):
     assert os.environ["FUSED_RENDER_HOME_DIR"] == str(exported)
     assert os.environ["FUSED_RENDER_MOUNTS_DIR"] == str(exported / "mounts")
     assert os.environ["FUSED_RENDER_RO_MOUNTS"] == ""
-    # The skill plugin root (D212) rides the same export. It is the one var here
+    # The skill plugin root (D216) rides the same export. It is the one var here
     # that may legitimately be ABSENT — a `claude` whose `--help` has no
     # `--plugin-dir`, or a sync with nothing to copy — so this asserts only that
     # it never carries a path to a root that isn't a plugin; details live in

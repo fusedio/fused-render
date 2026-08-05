@@ -1,5 +1,5 @@
 """Assemble the canonical fused-render skills into a Claude Code **plugin root**
-that fused-render owns outright, under ``home_dir()/skill-plugin/`` (D212).
+that fused-render owns outright, under ``home_dir()/skill-plugin/`` (D216).
 
 Why a plugin root and not just the user-level skills dir (``user_skills.py``,
 D185): that sync is a *guess* about the machine, and every way it can miss is

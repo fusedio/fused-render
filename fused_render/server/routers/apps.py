@@ -29,7 +29,7 @@ An app folder carries no ``.claude/`` of its own (D185); the starter
 ``CLAUDE.md`` references the canonical skills by name and fused-render supplies
 them. The scaffolding session below gets them the way every session
 fused-render spawns does — from the plugin root under the app's home dir,
-loaded with ``--plugin-dir`` (skill_plugin.py, D212) — and the user-level copy
+loaded with ``--plugin-dir`` (skill_plugin.py, D216) — and the user-level copy
 (user_skills.py) covers the user's own later ``claude`` in the folder. Both are
 refreshed at server startup and again here at create time.
 """
@@ -258,7 +258,7 @@ def api_new_app(body: dict = Body(...), x_fused: str | None = Header(default=Non
         return _error(f"failed to create app {name!r}: {exc}")
 
     # Refresh the skills the starter CLAUDE.md references: the plugin root the
-    # scaffolding session below is handed (D212) and the user-level copy for the
+    # scaffolding session below is handed (D216) and the user-level copy for the
     # user's own sessions (D185). Startup already synced both; doing it again
     # here repairs a deletion in the window before that session starts.
     # Best-effort inside — never fails creation over a skill copy.

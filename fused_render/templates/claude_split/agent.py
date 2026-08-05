@@ -103,7 +103,7 @@ RUNS = _runs_root()
 # account cannot read the pixels of the app on this user's screen.
 #
 # It holds the app-state DOM outlines too, which the page writes here rather than
-# into the message (D213). Same kind of artifact under the same argument — a
+# into the message (D217). Same kind of artifact under the same argument — a
 # private, short-lived record of what was on the user's screen, handed to the
 # agent and junk once the turn is over — and sharing this directory means one
 # 0700 enforcement, one pruner and one `Read(...)` rule rather than two of each.
@@ -265,7 +265,7 @@ def _plugin_argv() -> list:
     this session, else `[]`.
 
     This is how a session we launch gets the fused-render skills with certainty
-    instead of hoping the user-level sync landed somewhere the CLI reads (D212).
+    instead of hoping the user-level sync landed somewhere the CLI reads (D216).
     The path (and the decision to pass it at all — see appenv) arrives through
     the env contract, so `_start` neither imports the app nor shells out to
     interrogate the CLI. A `--plugin-dir` load is session-scoped and additive:
@@ -322,7 +322,7 @@ def _split_system_prompt() -> str:
     and a session opened on a project whose CLAUDE.md was edited away — or that
     predates it — otherwise has nothing telling it the HTML in front of it is an
     app with a Python bridge behind it. Same reliability argument as the skill
-    plugin (D212): the thing the model must know cannot depend on a file we do
+    plugin (D216): the thing the model must know cannot depend on a file we do
     not own. Still deliberately short of the file-scoping prompt above, which the
     directory branch of `_start` exists to avoid (see the comment there) — this
     says what the project IS, not what to work on.

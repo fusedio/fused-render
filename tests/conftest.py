@@ -218,7 +218,7 @@ def warm_fused_backend_venv(tmp_path_factory):
 # next test's mount detection quietly answers against the previous test's home.
 _APPENV_VARS = ("FUSED_RENDER_HOME_DIR", "FUSED_RENDER_MOUNTS_DIR",
                 "FUSED_RENDER_RO_MOUNTS", "FUSED_RENDER_ORIGIN",
-                # D212: the skill plugin root a spawned claude session is handed.
+                # D216: the skill plugin root a spawned claude session is handed.
                 # Leaks the same way — a test that calls export_app_env would
                 # otherwise leave a previous test's plugin path on every later
                 # spawn's argv in the same worker.

@@ -155,7 +155,7 @@ def skill_plugin_dir() -> str | None:
     or None when there is none to hand it.
 
     fused-render assembles the canonical skills into a plugin under its home dir
-    and exports the path here (`skill_plugin.export_skill_plugin_env`, D212), so
+    and exports the path here (`skill_plugin.export_skill_plugin_env`, D216), so
     a chat this app launches knows the `fused` bridge contract regardless of the
     state of the user's `~/.claude`.
 
