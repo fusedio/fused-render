@@ -210,8 +210,9 @@ def _resolve_dest(path: str, directory: str) -> str:
     else:
         joined = os.path.join(directory, raw) if directory else raw
         dest = os.path.abspath(os.path.expanduser(joined))
-    if not dest.lower().endswith(".docx"):
-        dest += ".docx"
+    # The writer only produces .docx, so normalize a typed .docx/.odt to .docx
+    # (matches the dialog's "Will save to" preview, which strips both).
+    dest = re.sub(r"\.(docx|odt)$", "", dest, flags=re.IGNORECASE) + ".docx"
     os.makedirs(os.path.dirname(dest) or ".", exist_ok=True)
     return dest
 
