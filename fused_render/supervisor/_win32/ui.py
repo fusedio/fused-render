@@ -91,6 +91,68 @@ def pick_file() -> str | None:
     return path or None
 
 
+# HRESULT_FROM_WIN32(ERROR_CANCELLED) — what IFileDialog::Show returns when the
+# user closes the dialog. The one failure that is not a failure.
+_ERROR_CANCELLED = -2147023673  # 0x800704C7 as a signed 32-bit HRESULT
+
+
+def pick_directory(title: str = "Choose a folder", start: str | None = None) -> str | None:
+    """Show the folder chooser; return the chosen path, or None if the user
+    cancelled. Raises OSError when the dialog itself broke.
+
+    `IFileDialog` with `FOS_PICKFOLDERS`, not the `GetOpenFileNameW` that
+    `pick_file` above uses: the old common dialog has no folder mode at all, and
+    `SHBrowseForFolder` (the other option) is the cramped tree-only dialog with
+    no address bar, no favourites and no search. This is the same chooser
+    Explorer shows.
+
+    Same STA discipline as `pick_file`: the dialog pumps its own message loop and
+    shell extensions need a single-threaded apartment, so CoInitialize brackets
+    the call and the caller owns the dedicated thread and the single-dialog lock
+    (`server/dirpicker._pick_win32`, mirroring `supervisor/core.py`).
+    """
+    import pythoncom
+    import pywintypes
+    from win32com.shell import shell, shellcon
+
+    pythoncom.CoInitialize()
+    try:
+        dialog = pythoncom.CoCreateInstance(
+            shell.CLSID_FileOpenDialog, None,
+            pythoncom.CLSCTX_INPROC_SERVER, shell.IID_IFileOpenDialog)
+        # FORCEFILESYSTEM as well as PICKFOLDERS: without it the dialog will
+        # happily return a virtual shell folder (a library, "This PC") that has
+        # no filesystem path, and GetDisplayName then fails instead of the
+        # dialog refusing the choice up front.
+        dialog.SetOptions(dialog.GetOptions()
+                          | shellcon.FOS_PICKFOLDERS
+                          | shellcon.FOS_FORCEFILESYSTEM
+                          | shellcon.FOS_PATHMUSTEXIST)
+        dialog.SetTitle(title)
+        if start:
+            # A starting folder is a nicety, never a reason to fail: an
+            # unreadable or deleted path just leaves the dialog where it was.
+            try:
+                dialog.SetFolder(shell.SHCreateItemFromParsingName(
+                    start, None, shell.IID_IShellItem))
+            except pywintypes.error:
+                pass
+        try:
+            dialog.Show(0)
+        except pywintypes.error as exc:
+            if exc.args and exc.args[0] == _ERROR_CANCELLED:
+                return None
+            raise OSError(f"the folder chooser failed: {exc}") from exc
+        item = dialog.GetResult()
+        return item.GetDisplayName(shellcon.SIGDN_FILESYSPATH) or None
+    except OSError:
+        raise
+    except pywintypes.error as exc:
+        raise OSError(f"the folder chooser failed: {exc}") from exc
+    finally:
+        pythoncom.CoUninitialize()
+
+
 def open_path(path: Path) -> None:
     os.startfile(str(path))  # noqa: S606 - local admin-installed path, not user input
 

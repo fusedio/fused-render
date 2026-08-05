@@ -222,6 +222,14 @@ def test_export_app_env_sets_all_three_vars(exported, monkeypatch):
     assert os.environ["FUSED_RENDER_HOME_DIR"] == str(exported)
     assert os.environ["FUSED_RENDER_MOUNTS_DIR"] == str(exported / "mounts")
     assert os.environ["FUSED_RENDER_RO_MOUNTS"] == ""
+    # The skill plugin root (D216) rides the same export. It is the one var here
+    # that may legitimately be ABSENT — a `claude` whose `--help` has no
+    # `--plugin-dir`, or a sync with nothing to copy — so this asserts only that
+    # it never carries a path to a root that isn't a plugin; details live in
+    # test_skill_plugin.py.
+    published = os.environ.get("FUSED_RENDER_SKILL_PLUGIN_DIR")
+    assert published is None or os.path.isfile(
+        os.path.join(published, ".claude-plugin", "plugin.json"))
 
 
 def test_the_bundled_uv_is_on_the_path_every_child_inherits(home, tmp_path, monkeypatch):
@@ -337,9 +345,13 @@ def test_appenv_works_without_fused_render_importable(tmp_path):
 
 
 def test_appenv_imports_only_the_stdlib():
-    """Guard the constraint at the AST level: nothing but `os` is imported, so
-    neither fused_render nor a third-party package can creep in (either would
-    break the standalone / no-PYTHONPATH case the module exists for)."""
+    """Guard the constraint at the AST level: nothing but `os`/`ntpath` is
+    imported, so neither fused_render nor a third-party package can creep in
+    (either would break the standalone / no-PYTHONPATH case the module exists
+    for). `ntpath` is stdlib (pure path classification, no OS calls even on
+    non-Windows hosts) - sidecar_path's Windows-shaped/UNC mapping needs it,
+    for the same reason _view_url_codec.py builds its own path classification
+    on pathlib.PureWindowsPath rather than a live os.path."""
     import ast
     with open(APPENV_PATH, encoding="utf-8") as f:
         src = f.read()
@@ -349,4 +361,4 @@ def test_appenv_imports_only_the_stdlib():
             names.update(a.name.split(".")[0] for a in node.names)
         elif isinstance(node, ast.ImportFrom) and node.module:
             names.add(node.module.split(".")[0])
-    assert names <= {"os"}, names
+    assert names <= {"os", "ntpath"}, names

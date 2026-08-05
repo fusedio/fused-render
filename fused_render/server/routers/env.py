@@ -71,7 +71,11 @@ def api_env_install(body: dict = Body(...), x_fused: str | None = Header(default
     # "HTTP 500", discarding the diagnostic that was the whole point.
     try:
         record = envinstall.start(reqs)
-        key = envinstall.venv_key_for(reqs)
+        # The key comes back FROM `start`, never recomputed here: when this machine
+        # has no pinned Python yet the install reports under
+        # `envinstall.PYTHON_BOOTSTRAP_KEY` rather than the venv key (D214), and a
+        # second derivation would hand the page a key with no record behind it.
+        key = record["key"]
     except (ImportError, RuntimeError) as e:
         return _error(str(e))
     return JSONResponse({"ok": True, "key": key,

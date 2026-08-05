@@ -11,13 +11,14 @@ router = APIRouter()
 
 
 
-# Per-file sidecar <file>.json (shared with the claude chat template, which
-# owns "claudeSessions", and bookmarks, which own "bookmarkHistory" — see
-# templates/claude/agent.py and shell/bookmarks.py). Read/merge/write preserves
-# every other key so the writers never clobber each other (single local user,
-# last-write-wins on a true interleave — D3).
+# Per-file sidecar, now homed under home_dir()/sidecar/ (D83-reversal) rather
+# than beside the target — see storage.sidecar_path. Shared with the claude
+# chat template, which owns "claudeSessions", and bookmarks, which own
+# "bookmarkHistory" (see templates/claude/agent.py and shell/bookmarks.py).
+# Read/merge/write preserves every other key so the writers never clobber
+# each other (single local user, last-write-wins on a true interleave — D3).
 def _sidecar_path(file: str) -> str:
-    return file + ".json"
+    return storage.sidecar_path(file)
 
 
 def _read_sidecar(file: str) -> dict:
@@ -64,15 +65,10 @@ def _session_put(body: dict, x_fused: str | None):
         return _error(f"no such file: {path}", status=404)
     if not isinstance(search, str):
         return _error("'search' must be a string")
-    # A file browsed inside a read-only remote mount can never take the
-    # sidecar write: with CacheMode=full the doomed PutObject lands in the VFS
-    # cache and 403-loops forever (the sidecar-write incident). Skip before
-    # even reading the sidecar (that read is a network stat too) — reopening
-    # the file just restores the default view. Same "skipped" shape as the
-    # LSN-3 gate below.
-    from fused_render.shell.mounts import mount_read_only
-    if mount_read_only(path):
-        return {"ok": True, "skipped": True}
+    # No read-only-mount gate here anymore (D83-reversal): the sidecar lives
+    # under home_dir()/sidecar/ now, never on the source's mount, so the old
+    # sidecar-write incident (CacheMode=full 403-looping a doomed PutObject)
+    # structurally can't happen — the read below is local, not a network stat.
     # Read-merge-write the whole dict so claudeSessions / bookmarkHistory
     # survive alongside lastSession (see _read_sidecar comment).
     data = _read_sidecar(path)

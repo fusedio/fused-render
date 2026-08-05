@@ -18,8 +18,9 @@ from fastapi.responses import (
 )
 from starlette.concurrency import iterate_in_threadpool, run_in_threadpool
 
+from fused_render.server import dirpicker
 from fused_render.server.common import _error, _require_fused, logger
-from fused_render.server.gitignore import _git_ignored
+from fused_render.server.gitignore import _git_ignored, _is_repo_root
 # The tuning knobs (`_STAT_TTL_S`, `_CONDITIONS_TTL_S`, the `WALK_*`/`LIST_*`
 # caps) are read through their DEFINING module below — `_server_mount._STAT_TTL_S`
 # and friends — never re-bound here by `from … import`. Each of those modules says
@@ -639,6 +640,29 @@ async def api_fs_events(ws: WebSocket):
         for entry in entries:
             _WATCH_REGISTRY.unsubscribe(entry, queue)
 
+def _git_repo_payload(path: str):
+    """Whether `path` is the work-tree root of a git repository.
+
+    Backs the Compress submenu's two git formats, which only make sense at a
+    repo root (see gitignore._is_repo_root). It is a `git` subprocess, so it
+    is deliberately NOT part of the stat payload: it runs on submenu hover,
+    once, instead of on every right-click of every row.
+
+    A mount-backed path answers False without asking git at all — a `git -C`
+    over a mount walks the remote prefix, the known mount-wedging pattern —
+    and that is also the honest answer: an object-store prefix is not a
+    checkout."""
+    if not path or not os.path.isabs(path):
+        return _error("'path' must be an absolute filesystem path")
+    if shell_mounts.is_mount_backed(path):
+        return {"path": path, "is_repo_root": False}
+    return {"path": path, "is_repo_root": _is_repo_root(path)}
+
+
+@router.get("/api/fs/git-repo")
+def api_fs_git_repo(path: str):
+    return _git_repo_payload(path)
+
 @router.post("/api/fs/reveal")
 def api_fs_reveal(body: dict = Body(...), x_fused: str | None = Header(default=None)):
     # Open the path in the OS file manager (Finder / Explorer / xdg).
@@ -667,3 +691,40 @@ def api_fs_reveal(body: dict = Body(...), x_fused: str | None = Header(default=N
         cmd = ["xdg-open", path if is_dir else os.path.dirname(path)]
     subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     return JSONResponse({"ok": True})
+
+
+@router.post("/api/fs/pick-folder")
+def api_fs_pick_folder(body: dict = Body(...), x_fused: str | None = Header(default=None)):
+    """Raise the OS folder chooser and answer with what the user picked.
+
+    A sync `def` on purpose, like `api_fs_reveal` above: FastAPI runs it in the
+    threadpool, where blocking for as long as a modal dialog is open is allowed.
+
+    `{"path": "<abs>"}` on a choice, `{"path": null}` on a cancel — the two must
+    be distinguishable, because the page falls back to its in-page dialog on a
+    FAILURE and would otherwise re-ask someone who just said no. Failures are
+    404-shaped errors instead: 409 one is already open, 501 this machine has
+    none (`/api/config`'s `native_dir_picker` says so up front, so a page should
+    not be asking), 500 it broke.
+    """
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+
+    start = body.get("start") or None
+    if start is not None and not os.path.isabs(start):
+        return _error("'start' must be an absolute filesystem path")
+    # The prompt the OS dialog shows. Clamped, not because it is dangerous (it is
+    # escaped for AppleScript and is just a string to AppKit) but because a title
+    # is a label and a dialog sized by a runaway one is unusable.
+    title = str(body.get("title") or "Choose a folder")[:120]
+    try:
+        chosen = dirpicker.pick_directory(start=start, title=title)
+    except dirpicker.PickerBusy as exc:
+        return _error(str(exc), status=409)
+    except dirpicker.PickerUnavailable as exc:
+        return _error(str(exc), status=501)
+    except (dirpicker.PickerFailed, TimeoutError) as exc:
+        logger.warning("folder chooser failed: %s", exc)
+        return _error(str(exc) or "the folder chooser failed", status=500)
+    return JSONResponse({"path": chosen})

@@ -22,6 +22,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 
+from _thread_scoped import this_thread_only
+
 from fused_render.templates.geotiff import browse as br
 from fused_render.templates.zarr_aoi import browse as zbr
 
@@ -129,10 +131,12 @@ def no_kernel_list(monkeypatch):
     def boom(*a, **k):
         raise AssertionError("kernel filesystem access on a remote path")
 
-    monkeypatch.setattr(os, "listdir", boom)
-    monkeypatch.setattr(os, "scandir", boom)
-    monkeypatch.setattr(os.path, "isdir", boom)
-    monkeypatch.setattr(os.path, "getsize", boom)
+    # Thread-scoped — these are process-wide patches and another package's
+    # background thread must not be blamed for them (tests/_thread_scoped.py).
+    for target, name in ((os, "listdir"), (os, "scandir"),
+                         (os.path, "isdir"), (os.path, "getsize")):
+        monkeypatch.setattr(target, name,
+                            this_thread_only(getattr(target, name), boom))
 
 
 # --------------------------------------------------------------------------

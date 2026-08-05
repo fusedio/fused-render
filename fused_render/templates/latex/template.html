@@ -416,21 +416,31 @@ pdfjs.GlobalWorkerOptions.workerSrc = "/template-assets/pdfjs.worker.bundle.mjs"
     compiling: false, pendingCompile: false,
     dirty: false, view: null,
   };
-  const SIDECAR = S.mainAbs + ".json";
-
   // =========================================================== sidecar (D3: read-modify-write, best-effort)
+  // home_dir()/sidecar/<mapped path>.json now, not beside mainAbs (D83-reversal).
   async function loadSidecarOpen() {
     try {
-      const data = JSON.parse(await fused.readFile(SIDECAR));
+      const data = JSON.parse(await fused.readFile(await window._fusedSidecarPath(S.mainAbs)));
       return (data && data.latex && typeof data.latex.open === "string") ? data.latex.open : "";
     } catch (e) { return ""; }
   }
   async function saveSidecarOpen(rel) {
+    // _fusedSidecarPath rejects when sidecarRoot never resolved (a failed
+    // /api/config fetch); callers fire this without awaiting it (best-effort,
+    // like the writeFile below), so an unhandled rejection here would
+    // otherwise surface as a bare console error instead of the silent
+    // best-effort skip every other failure in this function gets (Bugbot).
+    let sidecar;
+    try {
+      sidecar = await window._fusedSidecarPath(S.mainAbs);
+    } catch (e) {
+      return;  // best-effort — losing this preference must not break editing
+    }
     let data = {};
-    try { data = JSON.parse(await fused.readFile(SIDECAR)); } catch (e) { /* absent or unreadable — start fresh */ }
+    try { data = JSON.parse(await fused.readFile(sidecar)); } catch (e) { /* absent or unreadable — start fresh */ }
     if (typeof data !== "object" || data === null || Array.isArray(data)) data = {};
     data.latex = Object.assign({}, data.latex, { open: rel });
-    try { await fused.writeFile(SIDECAR, JSON.stringify(data, null, 2)); }
+    try { await fused.writeFile(sidecar, JSON.stringify(data, null, 2)); }
     catch (e) { /* best-effort — losing this preference must not break editing */ }
   }
 

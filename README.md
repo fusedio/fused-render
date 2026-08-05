@@ -179,3 +179,9 @@ claude plugin install fused-render@fused-render
 
 The manifests live in `.claude-plugin/` (`marketplace.json` +
 `plugin.json`); the skills themselves are under `skills/`.
+
+Installing is optional and only affects *your own* Claude Code sessions. Chats
+started from inside fused-render (the Claude and split-view templates, and app
+scaffolding) already get these skills: the app assembles the same plugin under
+`~/.fused-render/skill-plugin/` and loads it per session with `--plugin-dir`,
+so they work on a plain wheel or DMG install with nothing cloned.

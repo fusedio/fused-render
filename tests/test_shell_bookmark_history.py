@@ -1,11 +1,13 @@
 """Tests for POST /api/bookmarks/history (fused_render/shell/bookmarks.py) —
 the bookmarkHistory sidecar mirror.
 
-The sidecar lives next to the TARGET file (`<file>.json`), not under
-FUSED_RENDER_HOME, so these drive the route functions directly with a tmp_path
-target. Calling the handlers as plain functions (rather than via TestClient)
-keeps the module importable in venvs where starlette's TestClient is missing
-its httpx dependency.
+The sidecar now lives under home_dir()/sidecar/<mapped path>.json (D83-
+reversal), never next to the TARGET file — see shell/storage.py's
+sidecar_path. FUSED_RENDER_HOME is pinned to an isolated tmp dir for every
+test here so a real sidecar under the developer's actual ~/.fused-render is
+never touched. Calling the handlers as plain functions (rather than via
+TestClient) keeps the module importable in venvs where starlette's TestClient
+is missing its httpx dependency.
 """
 import json
 import os
@@ -13,6 +15,11 @@ import os
 import pytest
 
 from fused_render.shell import bookmarks
+
+
+@pytest.fixture(autouse=True)
+def _home(tmp_path, monkeypatch):
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
 
 
 def _post(payload, x_fused="1"):
@@ -25,6 +32,14 @@ def _url_for(path) -> str:
     return "/view" + str(path)
 
 
+def _sidecar(path) -> dict:
+    return json.loads(open(bookmarks.storage.sidecar_path(str(path)), encoding="utf-8").read())
+
+
+def _sidecar_exists(path) -> bool:
+    return os.path.exists(bookmarks.storage.sidecar_path(str(path)))
+
+
 def test_create_writes_sidecar(tmp_path):
     f = tmp_path / "sample.html"
     f.write_text("<html></html>")
@@ -32,14 +47,15 @@ def test_create_writes_sidecar(tmp_path):
                   "url": _url_for(f) + "?a=1", "created_at": 1720000000000})
     assert resp == {"recorded": True}
 
-    data = json.loads((tmp_path / "sample.html.json").read_text())
+    data = _sidecar(f)
     assert data["claudeSessions"] == []
     hist = data["bookmarkHistory"]
     assert len(hist) == 1
     e = hist[0]
     assert e["id"] == "bk-1"
     # Portable: the entry stores only the query string, never the absolute
-    # /view/<abs-path> url — the target file is the sidecar's owner.
+    # /view/<abs-path> url — the target file's own path deterministically
+    # derives its sidecar's location (storage.sidecar_path).
     assert e["search"] == "a=1"
     assert "url" not in e
     assert e["recorded_at"] == e["updated_at"]
@@ -49,7 +65,7 @@ def test_bare_url_stores_empty_search(tmp_path):
     f = tmp_path / "sample.html"
     f.write_text("<html></html>")
     _post({"id": "bk-1", "name": "n", "url": _url_for(f)})  # no query
-    e = json.loads((tmp_path / "sample.html.json").read_text())["bookmarkHistory"][0]
+    e = _sidecar(f)["bookmarkHistory"][0]
     assert e["search"] == ""
     assert "url" not in e
 
@@ -58,10 +74,13 @@ def test_preserves_existing_sessions(tmp_path):
     f = tmp_path / "sample.html"
     f.write_text("<html></html>")
     sess = [{"id": "s1", "preview": "hi", "created_at": 1, "last_used": 1, "cwd": "/x"}]
-    (tmp_path / "sample.html.json").write_text(json.dumps({"claudeSessions": sess}))
+    sidecar_path = bookmarks.storage.sidecar_path(str(f))
+    os.makedirs(os.path.dirname(sidecar_path), exist_ok=True)
+    with open(sidecar_path, "w", encoding="utf-8") as fh:
+        json.dump({"claudeSessions": sess}, fh)
 
     _post({"id": "bk-1", "name": "n", "url": _url_for(f)})
-    data = json.loads((tmp_path / "sample.html.json").read_text())
+    data = _sidecar(f)
     assert data["claudeSessions"] == sess
     assert len(data["bookmarkHistory"]) == 1
 
@@ -70,10 +89,10 @@ def test_update_by_id(tmp_path):
     f = tmp_path / "sample.html"
     f.write_text("<html></html>")
     _post({"id": "bk-1", "name": "n", "url": _url_for(f) + "?a=1"})
-    first = json.loads((tmp_path / "sample.html.json").read_text())["bookmarkHistory"][0]
+    first = _sidecar(f)["bookmarkHistory"][0]
 
     _post({"id": "bk-1", "name": "n", "url": _url_for(f) + "?a=2"})
-    hist = json.loads((tmp_path / "sample.html.json").read_text())["bookmarkHistory"]
+    hist = _sidecar(f)["bookmarkHistory"]
     assert len(hist) == 1
     e = hist[0]
     assert e["search"] == "a=2"
@@ -86,7 +105,7 @@ def test_update_only_upsert(tmp_path):
     f.write_text("<html></html>")
     # No prior create for this id -> appended.
     _post({"id": "never-created", "url": _url_for(f)})
-    hist = json.loads((tmp_path / "sample.html.json").read_text())["bookmarkHistory"]
+    hist = _sidecar(f)["bookmarkHistory"]
     assert [e["id"] for e in hist] == ["never-created"]
 
 
@@ -95,7 +114,7 @@ def test_none_field_does_not_clobber(tmp_path):
     f.write_text("<html></html>")
     _post({"id": "bk-1", "name": "keep-me", "url": _url_for(f)})
     _post({"id": "bk-1", "name": None, "url": _url_for(f)})  # update carries no name
-    e = json.loads((tmp_path / "sample.html.json").read_text())["bookmarkHistory"][0]
+    e = _sidecar(f)["bookmarkHistory"][0]
     assert e["name"] == "keep-me"
 
 
@@ -104,7 +123,7 @@ def test_directory_target(tmp_path):
     d.mkdir()
     resp = _post({"id": "bk-1", "name": "proj", "url": _url_for(d)})
     assert resp == {"recorded": True}
-    assert (tmp_path / "proj.json").exists()  # sibling sidecar
+    assert _sidecar_exists(d)  # sidecar under home_dir()/sidecar/, not a sibling
 
 
 def test_sentinel_no_op(tmp_path):
@@ -120,7 +139,7 @@ def test_nested_file_named_like_sentinel_records(tmp_path):
     f.write_text("<html></html>")
     resp = _post({"id": "bk-1", "url": _url_for(f)})
     assert resp == {"recorded": True}
-    assert (tmp_path / "_panel.json").exists()
+    assert _sidecar_exists(f)
 
 
 def test_nonexistent_path_no_op(tmp_path):
@@ -151,7 +170,7 @@ def test_missing_fused_header_forbidden(tmp_path):
     f.write_text("<html></html>")
     resp = _post({"id": "bk-1", "url": _url_for(f)}, x_fused=None)
     assert resp.status_code == 403
-    assert not (tmp_path / "sample.html.json").exists()
+    assert not _sidecar_exists(f)
 
 
 def test_bad_payload_rejected(tmp_path):
@@ -164,14 +183,15 @@ def test_embed_prefix_handled(tmp_path):
     f.write_text("<html></html>")
     resp = _post({"id": "bk-1", "url": "/embed" + str(f)})
     assert resp == {"recorded": True}
-    assert (tmp_path / "sample.html.json").exists()
+    assert _sidecar_exists(f)
 
 
-# ------------------------------------------------- read-only remote mounts
-# Bookmarking a file inside a read-only S3 mount still stores the bookmark in
-# the global tree (bookmarks.json), but the per-file bookmarkHistory sidecar
-# mirror must be skipped: the mount can't take the write (CacheMode=full loops
-# the doomed PutObject — the sidecar-write incident).
+# --------------------------------------------------- read-only remote mounts
+# D83-reversal: the sidecar now lives under home_dir()/sidecar/, never on the
+# target's own mount, so a read-only remote mount no longer has any bearing on
+# whether the bookmarkHistory mirror can be written — the old sidecar-write
+# incident (CacheMode=full 403-looping a doomed PutObject) structurally can't
+# happen anymore. This used to be a skip case; now it's a plain success case.
 
 @pytest.fixture
 def ro_mount(tmp_path, monkeypatch):
@@ -187,8 +207,8 @@ def ro_mount(tmp_path, monkeypatch):
     return f
 
 
-def test_history_skipped_under_read_only_mount(ro_mount):
+def test_history_recorded_under_read_only_mount(ro_mount):
     resp = _post({"id": "bk-1", "name": "cog.tif",
                   "url": "/view" + ro_mount + "?stretch=2,1471"})
-    assert resp == {"recorded": False}
-    assert not os.path.exists(ro_mount + ".json")
+    assert resp == {"recorded": True}
+    assert _sidecar_exists(ro_mount)

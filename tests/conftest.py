@@ -97,10 +97,23 @@ def warm_fused_backend_venv(tmp_path_factory):
     import asyncio
     import time
 
-    from fused_render import engine
+    from fused_render import engine, envinstall
 
     if not engine.available():
         return  # the tests that ask for this are skipped anyway
+
+    # Build from THIS interpreter, whatever version it is (D214). Session-scoped, so
+    # the function-scoped pin below has not run yet and the real resolution would
+    # apply: on any runner that is not on the pinned 3.12 and has no uv-managed 3.12
+    # — the `fused-engine` CI job is exactly that, deliberately pinned to 3.11 as the
+    # extra's floor — `start()` correctly asks for the INTERPRETER first, under
+    # `PYTHON_BOOTSTRAP_KEY`, and this fixture polls the venv key and sees nothing
+    # ("the warm script venv was not built. last progress: None").
+    #
+    # Pinned rather than taught the two-round flow on purpose: what these tests need
+    # is *a* working venv, not a particular Python, and making CI download 30MB of
+    # CPython to satisfy a fixture buys nothing. The bootstrap flow has its own tests.
+    envinstall._script_python = (None, True)
 
     lock = tmp_path_factory.getbasetemp().parent / "fused-bare-venv.lock"
     stale_after = 600  # a cold `uv venv` + install can legitimately take minutes
@@ -217,7 +230,12 @@ def warm_fused_backend_venv(tmp_path_factory):
 # later test in the same worker. That leak is invisible and one-directional: the
 # next test's mount detection quietly answers against the previous test's home.
 _APPENV_VARS = ("FUSED_RENDER_HOME_DIR", "FUSED_RENDER_MOUNTS_DIR",
-                "FUSED_RENDER_RO_MOUNTS", "FUSED_RENDER_ORIGIN")
+                "FUSED_RENDER_RO_MOUNTS", "FUSED_RENDER_ORIGIN",
+                # D216: the skill plugin root a spawned claude session is handed.
+                # Leaks the same way — a test that calls export_app_env would
+                # otherwise leave a previous test's plugin path on every later
+                # spawn's argv in the same worker.
+                "FUSED_RENDER_SKILL_PLUGIN_DIR")
 
 
 @pytest.fixture(autouse=True)
@@ -236,6 +254,34 @@ def _isolate_appenv_contract_vars():
                 os.environ.pop(var, None)
             else:
                 os.environ[var] = value
+
+
+@pytest.fixture(autouse=True)
+def _pin_the_script_interpreter_resolution():
+    """Every test starts believing this machine's pinned Python is available.
+
+    `envinstall.script_python()` (D214) resolves the interpreter script venvs are
+    built from, and its answer depends on TWO things a test has no business
+    depending on: the version of Python running the suite, and whether uv's managed
+    registry happens to hold a 3.12 on this machine. Left alone, the whole suite
+    would behave differently per interpreter — CI runs the matrix on 3.10/3.11/3.13,
+    where the resolution goes to "no 3.12 yet", and `is_installed` then answers False
+    for every requirement set, so tests about markers, probes and rebuild budgets
+    would fail for a reason unrelated to what they assert.
+
+    Pinned to `(None, True)` — "build from ours, and it is fine" — because that is
+    what the resolution is for the interpreters this project ships on, and it is the
+    pre-D214 behaviour, so tests written before the pin keep testing what they meant
+    to. Tests that are ABOUT the resolution reset it (see `_fresh_script_python` in
+    tests/test_env_install.py) and drive it explicitly.
+    """
+    from fused_render import envinstall
+
+    envinstall._script_python = (None, True)
+    try:
+        yield
+    finally:
+        envinstall.reset_script_python_cache()
 
 
 @pytest.fixture(scope="session", autouse=True)

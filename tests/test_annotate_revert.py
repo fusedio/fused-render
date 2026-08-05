@@ -5,7 +5,8 @@ and the Claude-file-history reader (SPEC §34, D194).
 cannot: turning every failure into an `{"error": ...}` DICT (a raised exception
 would become the red traceback overlay, which is not an acceptable answer to
 "this file has no history"), and stashing the pre-restore content into the
-`<file>.json` sidecar it already read-merge-writes.
+sidecar (home_dir()/sidecar/<mapped path>.json, D83-reversal) it already
+read-merge-writes.
 
 The stash is the answer to the sharpest hazard in the feature: current on-disk
 content is frequently in NO checkpoint, so a restore can vaporize work that
@@ -15,6 +16,7 @@ the second.
 import importlib.util
 import json
 import os
+from pathlib import Path
 
 import pytest
 
@@ -34,14 +36,22 @@ def _load_annotate():
     return mod
 
 
+@pytest.fixture(autouse=True)
+def _home(tmp_path, monkeypatch):
+    # The sidecar (and its revertStash) now live under home_dir()/sidecar/
+    # (D83-reversal), never beside the target — pin FUSED_RENDER_HOME so these
+    # tests never touch a real ~/.fused-render.
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
+
+
 def _target(tmp_path, content="a\nb\nc\n", name="page.html"):
     f = tmp_path / name
     f.write_text(content)
     return str(f)
 
 
-def _sidecar(target):
-    return target + ".json"
+def _sidecar(ann, target):
+    return ann._sidecar_path(target)
 
 
 # ------------------------------------------------------------- history action
@@ -122,7 +132,7 @@ def test_revert_restores_and_stashes_the_previous_content(claude_home, tmp_path)
     with open(f, encoding="utf-8") as h:
         assert h.read() == "wanted\n"
 
-    stash = json.loads(open(_sidecar(f), encoding="utf-8").read())["revertStash"]
+    stash = json.loads(open(_sidecar(ann, f), encoding="utf-8").read())["revertStash"]
     assert len(stash) == 1
     assert stash[0]["content"] == "unsaved work\n"
     assert stash[0]["version_id"] == "s@v1"
@@ -155,12 +165,14 @@ def test_the_stash_preserves_every_key_it_does_not_own(claude_home, tmp_path):
     write_version(claude_home, "s", f, "after\n")
     sess = [{"id": "s1", "preview": "hi", "created_at": 1, "last_used": 1,
              "cwd": "/x"}]
-    with open(_sidecar(f), "w", encoding="utf-8") as h:
+    sidecar = Path(_sidecar(ann, f))
+    sidecar.parent.mkdir(parents=True, exist_ok=True)
+    with open(sidecar, "w", encoding="utf-8") as h:
         json.dump({"claudeSessions": sess, "lastSession": "s1",
                    "comments": [{"id": "c1", "content": "keep me"}]}, h)
 
     ann.main(action="revert", file=f, version_id="s@v1", confirm_unique=True)
-    data = json.loads(open(_sidecar(f), encoding="utf-8").read())
+    data = json.loads(open(_sidecar(ann, f), encoding="utf-8").read())
     assert data["claudeSessions"] == sess
     assert data["lastSession"] == "s1"
     assert data["comments"][0]["content"] == "keep me"
@@ -177,7 +189,7 @@ def test_the_stash_is_bounded(claude_home, tmp_path):
     for i in range(1, 7):
         ann.main(action="revert", file=f, version_id="s@v%d" % i,
                  confirm_unique=True)
-    stash = json.loads(open(_sidecar(f), encoding="utf-8").read())["revertStash"]
+    stash = json.loads(open(_sidecar(ann, f), encoding="utf-8").read())["revertStash"]
     assert len(stash) == ann.STASH_KEEP
     # Newest last: the entries kept are the most recent ones.
     assert stash[-1]["content"] == "gen5\n"
@@ -196,7 +208,7 @@ def test_a_large_file_is_reverted_without_being_copied_into_the_sidecar(
     assert out["ok"] is True
     assert out["stashed"] is False
     assert out["stash_note"]
-    assert not os.path.exists(_sidecar(f))  # nothing written at all
+    assert not os.path.exists(_sidecar(ann, f))  # nothing written at all
     with open(f, encoding="utf-8") as h:
         assert h.read() == "small\n"
 
@@ -235,7 +247,7 @@ def test_a_delete_revert_stashes_the_whole_file_first(claude_home, tmp_path):
     assert out["ok"] is True and out["action"] == "delete"
     assert out["stashed"] is True
     assert not os.path.exists(f)
-    stash = json.loads(open(_sidecar(f), encoding="utf-8").read())["revertStash"]
+    stash = json.loads(open(_sidecar(ann, f), encoding="utf-8").read())["revertStash"]
     assert stash[0]["content"] == "claude wrote this\n"
 
 
@@ -640,7 +652,7 @@ def test_the_comments_log_and_the_stash_coexist(claude_home, tmp_path):
     ann.main(action="revert", file=f, version_id="s@v1", confirm_unique=True)
     ann._record(f, [{"id": "c2", "content": "there", "createdAt": 2}], [])
 
-    data = json.loads(open(_sidecar(f), encoding="utf-8").read())
+    data = json.loads(open(_sidecar(ann, f), encoding="utf-8").read())
     assert sorted(c["id"] for c in data["comments"]) == ["c1", "c2"]
     assert len(data["revertStash"]) == 1
 
@@ -669,7 +681,7 @@ def test_the_stash_is_byte_faithful(claude_home, tmp_path, raw):
     out = ann.main(action="revert", file=f, version_id="s@v1",
                    confirm_unique=True)
     assert out["stashed"] is True
-    entry = json.loads(open(_sidecar(f), encoding="utf-8").read())["revertStash"][0]
+    entry = json.loads(open(_sidecar(ann, f), encoding="utf-8").read())["revertStash"][0]
     assert entry["content"].encode("utf-8") == raw
     assert entry["size"] == len(raw)          # and the two agree
 
@@ -683,7 +695,7 @@ def test_the_stashed_size_is_the_byte_count_not_the_character_count(claude_home,
         h.write(raw)
     write_version(claude_home, "s", f, "x\n")
     ann.main(action="revert", file=f, version_id="s@v1", confirm_unique=True)
-    entry = json.loads(open(_sidecar(f), encoding="utf-8").read())["revertStash"][0]
+    entry = json.loads(open(_sidecar(ann, f), encoding="utf-8").read())["revertStash"][0]
     assert entry["size"] == len(raw)
     assert entry["content"].encode("utf-8") == raw
 
@@ -738,7 +750,8 @@ def test_the_plan_reports_a_stash_skip_for_an_unwritable_sidecar(claude_home,
     ann = _load_annotate()
     f = _target(tmp_path, "unsaved\n")
     write_version(claude_home, "s", f, "old\n")
-    sidecar = tmp_path / "page.html.json"
+    sidecar = Path(_sidecar(ann, f))
+    sidecar.parent.mkdir(parents=True, exist_ok=True)
     sidecar.write_text("{}")
     os.chmod(sidecar, 0o444)
     try:
@@ -1526,7 +1539,7 @@ def test_no_unwritable_target_reaches_the_stash(claude_home, tmp_path):
         out = ann.main(action="revert", file=f, version_id="s@v1",
                        confirm_unique=True)
         assert "error" in out
-        assert not os.path.exists(_sidecar(f))
+        assert not os.path.exists(_sidecar(ann, f))
         with open(f, encoding="utf-8") as h:
             assert h.read() == "keep\n"
     finally:

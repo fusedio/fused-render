@@ -15,6 +15,7 @@ background thread).
 """
 import logging
 import os
+import threading
 from urllib.parse import quote
 
 import objc
@@ -478,7 +479,7 @@ class PinController:
 
     def _pin_url(self) -> str:
         # Same URL shape shell panes iframe: chrome-free, registry-dispatched.
-        return f"http://127.0.0.1:{self._port}/embed{quote(self._pinned_path)}"
+        return f"http://127.0.0.1:{self._port}/explorer/embed{quote(self._pinned_path)}"
 
     def _load_body(self) -> None:
         """Point the webview at the right content for the current state.
@@ -509,32 +510,10 @@ class PinController:
     # ---- open panel (PV-3) -----------------------------------------------------
 
     def _run_open_panel(self) -> None:
-        # The panel must be able to become KEY or it orders out the moment it
-        # is focused. A source-run interpreter (no bundle) has activation
-        # policy Prohibited, whose windows can never be key — lift it to
-        # Accessory (key-able windows, no Dock icon, no space switch on
-        # activate). The packaged .app is already Regular and is left alone.
-        if NSApp.activationPolicy() == NSApplicationActivationPolicyProhibited:
-            NSApp.setActivationPolicy_(NSApplicationActivationPolicyAccessory)
-        NSApp.activateIgnoringOtherApps_(True)
-        panel = NSOpenPanel.openPanel()
-        panel.setCanChooseFiles_(True)
-        panel.setCanChooseDirectories_(True)  # directories render too (D81)
-        panel.setAllowsMultipleSelection_(False)
-        panel.setTitle_("Pin a file to the menu bar")
-        panel.setPrompt_("Pin")
-        # Menu-bar app: no regular windows to key off, so float the panel
-        # above the frontmost app's windows — and let it join fullscreen-app
-        # spaces (same FullScreenAuxiliary story as the popover, PV-5).
-        panel.setLevel_(NSModalPanelWindowLevel)
-        panel.setCollectionBehavior_(
-            panel.collectionBehavior()
-            | NSWindowCollectionBehaviorCanJoinAllSpaces
-            | NSWindowCollectionBehaviorFullScreenAuxiliary
-        )
-        if panel.runModal() != NSModalResponseOK or panel.URL() is None:
-            return
-        self.set_pin(panel.URL().path())
+        chosen = _run_open_panel_modal(
+            title="Pin a file to the menu bar", prompt="Pin", files=True, directories=True)
+        if chosen is not None:
+            self.set_pin(chosen)
 
     # ---- detach (PV-5) ----------------------------------------------------------
 
@@ -550,3 +529,144 @@ class PinController:
             | NSWindowCollectionBehaviorFullScreenAuxiliary
         )
         logger.info("pinned view detached into floating window")
+
+
+# ---- open panels, callable from anywhere (PV-3) -----------------------------
+# Module level on purpose. The server needs a folder panel too, and it cannot
+# reach the controller: `state["pin"]` is a local of app.py's `main()`, and the
+# uvicorn thread has no handle on it. So the panel itself lives here, as a
+# function, and both the menu action and the server go through it.
+
+
+def _prepare_app_for_modal() -> None:
+    """Make this process able to own a key modal window.
+
+    The panel must be able to become KEY or it orders out the moment it is
+    focused. A source-run interpreter (no bundle) has activation policy
+    Prohibited, whose windows can never be key — lift it to Accessory (key-able
+    windows, no Dock icon, no space switch on activate). The packaged .app is
+    already Regular and is left alone.
+    """
+    if NSApp.activationPolicy() == NSApplicationActivationPolicyProhibited:
+        NSApp.setActivationPolicy_(NSApplicationActivationPolicyAccessory)
+    NSApp.activateIgnoringOtherApps_(True)
+
+
+def _float_panel_over_everything(panel) -> None:
+    """A menu-bar app has no regular windows to key off, so float the panel
+    above the frontmost app's windows — and let it join fullscreen-app spaces
+    (the same FullScreenAuxiliary story as the popover, PV-5). Without both, the
+    panel opens invisibly, or on the desktop space behind a fullscreen app."""
+    panel.setLevel_(NSModalPanelWindowLevel)
+    panel.setCollectionBehavior_(
+        panel.collectionBehavior()
+        | NSWindowCollectionBehaviorCanJoinAllSpaces
+        | NSWindowCollectionBehaviorFullScreenAuxiliary
+    )
+
+
+def _run_open_panel_modal(*, title: str, prompt: str, files: bool,
+                          directories: bool, start: str | None = None,
+                          create_directories: bool = False) -> str | None:
+    """Run an NSOpenPanel to completion. MAIN THREAD ONLY.
+
+    Returns the chosen path, or None when the user cancelled.
+    """
+    _prepare_app_for_modal()
+    panel = NSOpenPanel.openPanel()
+    panel.setCanChooseFiles_(files)
+    panel.setCanChooseDirectories_(directories)
+    panel.setAllowsMultipleSelection_(False)
+    panel.setCanCreateDirectories_(create_directories)
+    panel.setTitle_(title)
+    panel.setPrompt_(prompt)
+    # A starting directory that does not exist would leave the panel wherever it
+    # last was, silently; checking is cheaper than explaining that.
+    if start and os.path.isdir(start):
+        panel.setDirectoryURL_(NSURL.fileURLWithPath_(start))
+    _float_panel_over_everything(panel)
+    if panel.runModal() != NSModalResponseOK or panel.URL() is None:
+        return None
+    return panel.URL().path()
+
+
+def _run_directory_panel(start: str | None, title: str, prompt: str) -> str | None:
+    """Folders only. MAIN THREAD ONLY — see `choose_directory`.
+
+    `canCreateDirectories` is what makes this a real answer to "where should this
+    go": the user can make the folder in the dialog instead of cancelling, going
+    to Finder, and starting again.
+    """
+    return _run_open_panel_modal(
+        title=title, prompt=prompt, files=False, directories=True,
+        start=start, create_directories=True)
+
+
+class PanelNotAnswered(TimeoutError):
+    """`choose_directory` stopped waiting, and the panel may still be ON SCREEN.
+
+    A TimeoutError still, so a caller that only cares that the wait ended keeps
+    working. What it adds is `finished`: the panel runs on the AppKit main thread
+    and nothing off that thread can dismiss it, so this Event — set when the panel
+    block finally returns — is the only way anyone can learn the modal has gone.
+    `server/dirpicker.py` needs that to hold its one-dialog claim for exactly as
+    long as the panel is up, instead of releasing it over a live modal.
+    """
+
+    def __init__(self, message: str, finished: threading.Event):
+        super().__init__(message)
+        self.finished = finished
+
+
+def _call_on_main_thread(fn) -> None:
+    """Post `fn` to the AppKit main thread — the established hop (app.py uses it
+    for the same reason). A named seam so a test can stand in for "runs
+    elsewhere" without needing a run loop."""
+    AppHelper.callAfter(fn)
+
+
+def choose_directory(start: str | None = None, title: str = "Choose a folder",
+                     prompt: str = "Choose", timeout: float = 300.0) -> str | None:
+    """A folder-only NSOpenPanel, callable from ANY thread. Blocks the caller.
+
+    Returns the chosen path, or None if the user cancelled. Raises whatever the
+    panel raised, and `PanelNotAnswered` (a TimeoutError) if the answer never
+    came — carrying the Event that reports when the still-open panel closes.
+
+    Every AppKit call has to happen on the main thread, and the caller here is a
+    uvicorn threadpool worker (the server runs on a daemon thread inside this
+    same process — app.py's `_start_server_thread`). So the panel is posted with
+    `callAfter`, the established hop, and the answer comes back through an Event
+    and a result cell.
+
+    The timeout is not paranoia: under `fused-render serve` there is no AppKit
+    run loop at all, so a posted block is never delivered and an unbounded wait
+    would hang the request for the life of the process. (`dirpicker` picks the
+    osascript backend there for exactly that reason; this is the backstop for
+    the case where the detection is wrong.)
+    """
+    cell: dict = {}
+    done = threading.Event()
+
+    def run() -> None:
+        try:
+            cell["path"] = _run_directory_panel(start, title, prompt)
+        except BaseException as exc:  # noqa: BLE001 - re-raised on the caller's thread
+            cell["error"] = exc
+        finally:
+            done.set()
+
+    if threading.current_thread() is threading.main_thread():
+        # Already where AppKit wants us: posting would deadlock a caller that is
+        # itself the run loop.
+        run()
+    else:
+        _call_on_main_thread(run)
+        if not done.wait(timeout):
+            # `done` rides along: the panel is very possibly still on screen, and
+            # this is the only handle anyone has on when it goes away.
+            raise PanelNotAnswered(
+                "the folder chooser was not answered in time", done)
+    if "error" in cell:
+        raise cell["error"]
+    return cell.get("path")

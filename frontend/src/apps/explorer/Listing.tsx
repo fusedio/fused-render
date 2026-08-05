@@ -1,0 +1,836 @@
+// Directory listing view with sortable columns and an in-folder search.
+// Sort state lives in the URL (?sort=name|size|mtime&order=asc|desc) so a
+// sorted listing is refresh-proof and bookmarkable like any other view state;
+// the search query rides the URL the same way (?q=…). A non-empty query swaps
+// the listing for flat, rank-ordered results over a recursive walk of the
+// folder — see listing/useWalkSearch for the streaming/scoring pipeline.
+//
+// This file is the orchestrator: it wires the hooks together and renders the
+// table. The pieces live in listing/:
+//   types.ts               shared types + tuning constants
+//   sorting.ts             sort resolution + entry sorting
+//   search.ts              fuzzy scoring / ranking (pure)
+//   selection.ts           selection model + cross-remount stash (pure)
+//   pane.ts                preview-pane state (usePreviewPane)
+//   row-utils.ts           RowCtx batch helpers
+//   bits.tsx               skeleton rows, ClipMark, highlight, scroll anchor
+//   useDirListing.ts       /api/fs/list fetch, Load more, dir watch, new-row cue
+//   useWalkSearch.ts       streamed walk + scoring + throttles + result paging
+//   useListingSelection.ts selection state + keyboard nav + reconcile
+//   useFileOps.ts          file operations + context menus + dialogs
+//   useListingShortcuts.ts file-op keyboard chords
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { navigate, replaceSearch } from "@platform/lib/router";
+import { dirname } from "@apps/explorer/lib/fs-actions";
+import { acquireOverlay, releaseOverlay } from "@platform/lib/ui-overlay";
+import { isMod } from "@platform/lib/platform";
+import { formatSize, formatMtime } from "@platform/lib/format";
+import { iconForEntry, isAppEntry } from "@platform/ui/FileIcons";
+import { getViewState, setViewState } from "@platform/lib/viewstate";
+import { useFlip, FLIP_KEY_ATTR } from "@platform/lib/flip";
+import { useClipboard } from "@apps/explorer/lib/fs-clipboard";
+import ContextMenu from "@platform/ui/ContextMenu";
+import { PromptDialog, ConfirmDialog } from "@apps/explorer/FsDialogs";
+import { SplitRightIcon } from "@platform/ui/SplitIcons";
+import ListingPreviewPane from "@apps/explorer/ListingPreviewPane";
+import {
+  FLIP_MAX_ROWS,
+  SORT_KEYS,
+  type RowCtx,
+  type SortKey,
+  type SortOrder,
+} from "@apps/explorer/listing/types";
+import { resolveSort, sortEntries } from "@apps/explorer/listing/sorting";
+import { skeletonRows, ClipMark, renderHighlight, measureScrollAnchor } from "@apps/explorer/listing/bits";
+import { usePreviewPane, reflectPaneInUrl, PANE_DEFAULT_FRAC } from "@apps/explorer/listing/pane";
+import { useDirListing } from "@apps/explorer/listing/useDirListing";
+import { useWalkSearch } from "@apps/explorer/listing/useWalkSearch";
+import { useListingSelection } from "@apps/explorer/listing/useListingSelection";
+import { useFileOps } from "@apps/explorer/listing/useFileOps";
+import { useListingShortcuts } from "@apps/explorer/listing/useListingShortcuts";
+
+export default function Listing({
+  fsPath,
+  provisional = false,
+  onSingleApp,
+}: {
+  fsPath: string;
+  // `provisional`: this Listing is rendering inside the pre-stat loading
+  // scaffold (App LoadingScaffold), mounted off a directory NAV HINT rather
+  // than a confirmed stat. The hint is authoritative in practice but can be
+  // stale — if the path is actually a file, /api/fs/list 404s. In that
+  // provisional phase a failed listing must NOT paint the hard "Failed to
+  // list" error: stat is still resolving and will drive the correct final view
+  // (a file <Preview>) a beat later, so we show the neutral loading body and
+  // let stat commit the real view. Absent/false (the committed post-stat
+  // render), errors show normally.
+  provisional?: boolean;
+  // Reports the path of this directory's lone top-level HTML file (an
+  // "app"), or null when there isn't exactly one — the caller (Preview's
+  // header) uses this to surface an "Open as app" button. Fires whenever the
+  // plain (non-search) listing settles, so it tracks dir-watch refreshes too.
+  onSingleApp?: (path: string | null) => void;
+}) {
+  const { state, refresh, refetch, loadMore, loadingMore, newNames } = useDirListing(fsPath);
+
+  // Sort lives in the URL; mirror it in state so clicks re-render without a
+  // navigation (vanilla re-ran renderListing after its replaceState).
+  const [{ sort, order }, setSortState] = useState<{ sort: SortKey; order: SortOrder }>(() =>
+    resolveSort(fsPath)
+  );
+  // When the sort was restored from saved state (URL carried none), reflect it
+  // in the URL so the address bar, bookmarks, and Back-button history match
+  // what's shown — as if the column had been clicked. Only syncs a genuinely
+  // saved order; an unsorted folder keeps its clean, param-free URL. replaceState
+  // (not navigate) so the view doesn't remount.
+  useEffect(() => {
+    if (new URLSearchParams(location.search).get("sort")) return; // URL is authoritative
+    const s = new URLSearchParams(getViewState(fsPath));
+    // No stored SORT → leave default sort + clean URL. (The stored string may
+    // still carry pane keys — those never ride the URL.)
+    if (!s.get("sort")) return;
+    const params = new URLSearchParams(location.search);
+    params.set("sort", s.get("sort") || "name");
+    params.set("order", s.get("order") === "desc" ? "desc" : "asc");
+    replaceSearch(location.pathname + "?" + params.toString());
+  }, [fsPath]);
+  // Same URL reflection for a pane restored from saved viewstate.
+  useEffect(() => {
+    reflectPaneInUrl(fsPath);
+  }, [fsPath]);
+
+  const setSort = (key: SortKey) => {
+    const next: { sort: SortKey; order: SortOrder } = {
+      sort: key,
+      order: key === sort && order === "asc" ? "desc" : "asc",
+    };
+    const params = new URLSearchParams(location.search);
+    params.set("sort", next.sort);
+    params.set("order", next.order);
+    replaceSearch(location.pathname + "?" + params.toString());
+    setSortState(next);
+    // Remember this folder's choice so returning to it later restores this sort.
+    // Only sort/order are persisted — the in-folder search `q` stays transient.
+    // Merged into the saved string so the pane keys (resolvePane) survive.
+    const saved = new URLSearchParams(getViewState(fsPath));
+    saved.set("sort", next.sort);
+    saved.set("order", next.order);
+    setViewState(fsPath, "?" + saved.toString());
+  };
+
+  const {
+    query,
+    setQuery,
+    searching,
+    isStale,
+    validWalk,
+    prefetchWalk,
+    hits,
+    displayHits,
+    visibleHits,
+    showingHeld,
+    hasMore,
+    sentinelRef,
+    searchSort,
+    setSearchSort,
+    setSearchSortKey,
+  } = useWalkSearch(fsPath, refresh);
+
+  const { pane, splitRef, togglePane, onDividerPointerDown } = usePreviewPane(fsPath);
+
+  const clipboard = useClipboard();
+
+  // Search input, so a keystroke anywhere in the listing can focus it.
+  const searchInputRef = useRef<HTMLInputElement>(null);
+  // Path -> RowCtx for the rendered rows, read by the once-registered keydown
+  // handler so Enter can pass the row's is_dir as a nav hint (assigned each
+  // render from the rowCtxByPath memo below).
+  const rowCtxByPathRef = useRef<Map<string, RowCtx>>(new Map());
+  // True while a context menu or a modal dialog is open. The document-level nav
+  // and shortcut handlers (registered once, reading refs) hard-guard on this so
+  // an open overlay owns the keyboard — a stray Enter can't navigate a row and
+  // Cmd+Backspace can't trash one behind the dialog, regardless of where focus
+  // sits (the dialog's own containment covers focus; this covers the rest).
+  const overlayOpenRef = useRef(false);
+
+  // Same idea for the plain (non-search) listing as visibleHits' memo:
+  // re-sorting on every render (e.g. a keystroke that flips `searching` before
+  // this branch even displays) was pure waste when `state`/sort/order hadn't
+  // changed.
+  const sortedEntries = useMemo(
+    () => (state.status === "ok" ? sortEntries(state.entries, sort, order) : []),
+    [state, sort, order]
+  );
+
+  const base = fsPath.replace(/\/$/, "");
+
+  // Tell the caller whether this folder's top level holds exactly one HTML
+  // ("app") file. Keyed off the plain listing, not the search results — the
+  // button this drives describes the folder's own contents, regardless of
+  // what's currently typed into the in-folder search box.
+  //   • A truncated listing (the server-cap banner) only ever holds a partial
+  //     page, so a lone HTML match there doesn't mean it's the folder's only
+  //     one — withhold the report rather than risk a false "app" button.
+  //   • "loading" reports nothing either way (neither null nor a path) so a
+  //     same-path remount (e.g. switching a mode away from `_listing` and
+  //     back) doesn't flicker an already-known button off for the length of
+  //     the refetch; only "ok"/"error" settle the caller's state.
+  useEffect(() => {
+    if (!onSingleApp) return;
+    if (state.status === "loading") return;
+    if (state.status !== "ok" || state.truncated) {
+      onSingleApp(null);
+      return;
+    }
+    const apps = state.entries.filter((e) => isAppEntry(e.name, e.is_dir));
+    onSingleApp(apps.length === 1 ? base + "/" + apps[0].name : null);
+  }, [state, base, onSingleApp]);
+
+  // Flat, ordered list of the paths the arrow keys step through: the rendered
+  // search hits while searching, otherwise the sorted listing. Keyed off the
+  // same memoized arrays the table renders, so selection never drifts from view.
+  const navRows = useMemo(
+    () =>
+      searching
+        ? visibleHits.map(({ entry }) => base + "/" + entry.rel)
+        : sortedEntries.map((entry) => base + "/" + entry.name),
+    [searching, visibleHits, sortedEntries, base]
+  );
+
+  // Whether navRows reflects a LOADED listing (not a transient empty while the
+  // fetch is in flight). Only the non-search listing can be mid-load with rows
+  // still empty AND a selection already set — that's the folder-open case: the
+  // resolved Listing mounts with a selection restored from the pre-stat
+  // provisional one, but its own /api/fs/list is briefly loading. Search keeps
+  // its prior behavior (results stream in). Used by the reconcile effect so a
+  // real, still-valid selection is never cleared as "vanished" during a reload.
+  // "Settled" = not mid-fetch: an ok listing OR a terminal error (rows are
+  // then genuinely empty, so the reconcile should clear/reclamp a stale
+  // selection). Only the transient `loading` status suppresses reconcile.
+  const listingLoaded = searching ? true : state.status !== "loading";
+
+  const {
+    sel,
+    selectedPath,
+    selectedSet,
+    selectOnly,
+    toggleSelected,
+    extendTo,
+    pendingSelectRef,
+  } = useListingSelection({
+    fsPath,
+    navRows,
+    listingLoaded,
+    searchInputRef,
+    rowCtxByPathRef,
+    overlayOpenRef,
+  });
+
+  const {
+    menu,
+    setMenu,
+    dialog,
+    setDialog,
+    doPaste,
+    doDuplicate,
+    doTrash,
+    startRename,
+    startNewFolder,
+    rowMenu,
+    backgroundMenu,
+  } = useFileOps({ base, clipboard, refetch, pendingSelectRef });
+
+  overlayOpenRef.current = menu !== null || dialog !== null;
+  // Also publish this view's overlay state to the shared registry (lib/
+  // ui-overlay) so OTHER views back off. When a directory is opened in Preview,
+  // that Preview's header menu/dialogs live in separate state; this embedded
+  // Listing's document-level handlers must not fire behind them (and vice
+  // versa). acquire on open, release on close — and on unmount, so a nav-away
+  // while the menu is open can't leak a held count.
+  // Layout effect so the hold registers before paint — no one-frame window
+  // where another view's handlers still see isOverlayOpen() === false.
+  useLayoutEffect(() => {
+    if (!overlayOpenRef.current) return;
+    acquireOverlay();
+    return () => releaseOverlay();
+  }, [menu, dialog]);
+
+  // FLIP the rows to their new slots whenever the rendered set changes: a column
+  // sort, a dir-watch refresh of the plain listing, or a streaming search
+  // re-rank (which B4 throttles, so the glide has time to read). navRows is the
+  // rendered order itself, so one signal covers all three; growing it by a page
+  // moves nothing already on screen, so paging animates nothing.
+  const scrollRef = useRef<HTMLDivElement>(null);
+  useFlip(scrollRef, navRows, navRows.length <= FLIP_MAX_ROWS);
+
+  // Scroll anchoring (B5). A dir-watch refresh that inserts or removes rows
+  // ABOVE the viewport shifts everything below it, so the rows the user was
+  // reading slid out from under them. Re-apply the scroll offset the anchor row
+  // had. The anchor is re-measured on EVERY commit (it has to be current), but
+  // the correction is applied only when the refresh generation changed: a sort
+  // or a page reveal is the user's own gesture and must not be undone.
+  const anchorRef = useRef<{ key: string; top: number; scrollTop: number } | null>(null);
+  const anchorGenRef = useRef(refresh);
+  useLayoutEffect(() => {
+    const scroller = scrollRef.current;
+    if (!scroller) return;
+    const prev = anchorRef.current;
+    if (prev && refresh !== anchorGenRef.current) {
+      const el = scroller.querySelector<HTMLElement>(
+        `[${FLIP_KEY_ATTR}="${CSS.escape(prev.key)}"]`,
+      );
+      if (el) {
+        const shift = el.offsetTop - prev.top;
+        if (shift !== 0) scroller.scrollTop = prev.scrollTop + shift;
+      }
+    }
+    anchorGenRef.current = refresh;
+    anchorRef.current = measureScrollAnchor(scroller);
+  }, [navRows, refresh]);
+
+  // Which visible entries are cut sources — dimmed in the table. A cut can hold
+  // several paths, so this is a set rather than one path.
+  const cutSet = useMemo(
+    () => new Set(clipboard?.op === "cut" ? clipboard.paths : []),
+    [clipboard]
+  );
+
+  // The copy counterpart: marked with an accent edge + wash rather than dimmed
+  // (a copy doesn't remove anything, so fading the source would lie). Exactly
+  // one of cutSet/copiedSet is ever non-empty — the clipboard holds one op.
+  const copiedSet = useMemo(
+    () => new Set(clipboard?.op === "copy" ? clipboard.paths : []),
+    [clipboard]
+  );
+
+  // Map every rendered row's path to its RowCtx, so a keyboard shortcut can
+  // resolve the selected path back to a full row (is_dir etc.) the same way a
+  // right-click does. Keyed off the arrays the table renders.
+  const rowCtxByPath = useMemo(() => {
+    const m = new Map<string, RowCtx>();
+    if (searching) {
+      for (const { entry } of visibleHits) {
+        const path = base + "/" + entry.rel;
+        m.set(path, {
+          path,
+          name: entry.rel.split("/").pop() ?? entry.rel,
+          isDir: entry.is_dir,
+          parentDir: dirname(path),
+        });
+      }
+    } else {
+      for (const entry of sortedEntries) {
+        m.set(base + "/" + entry.name, {
+          path: base + "/" + entry.name,
+          name: entry.name,
+          isDir: entry.is_dir,
+          parentDir: base,
+        });
+      }
+    }
+    return m;
+  }, [searching, visibleHits, sortedEntries, base]);
+  rowCtxByPathRef.current = rowCtxByPath;
+
+  // The selection as full rows, in rendered order (so a batch op processes rows
+  // top-to-bottom regardless of the order they were clicked). Paths without a
+  // rendered row — a search page not yet revealed, a row removed by a refetch
+  // before the reconcile effect ran — are dropped: an op can only act on what
+  // the user can actually see selected.
+  const selectedRows = useMemo(() => {
+    const chosen = new Set(sel.paths);
+    return navRows.filter((p) => chosen.has(p)).map((p) => rowCtxByPath.get(p)!).filter(Boolean);
+  }, [sel.paths, navRows, rowCtxByPath]);
+  // The lead row, for the single-entry operations (Rename, paste target).
+  const leadRow = sel.lead ? rowCtxByPath.get(sel.lead) : undefined;
+
+  useListingShortcuts({
+    base,
+    clipboard,
+    selectedRows,
+    leadRow,
+    searchInputRef,
+    overlayOpenRef,
+    refetch,
+    doPaste,
+    doDuplicate,
+    doTrash,
+    startRename,
+    startNewFolder,
+  });
+
+  // Mouse selection on a row:
+  //   • Shift+click  — select the contiguous range anchor..row (rendered order);
+  //   • Mod+click    — toggle this row in/out and re-anchor on it;
+  //   • plain click  — depends on the preview pane. Pane OFF (the default):
+  //     select AND open, what a single click has always done in this explorer.
+  //     Pane ON: select only — the click's job is to drive the pane preview
+  //     (files and folders both), and double-click is what opens. Enter still
+  //     opens either way (the keyboard model doesn't change with the pane).
+  // No single/double-click delay timer: with the pane on, the first click of a
+  // double-click selects (harmless — the pane fetch is superseded/unmounted by
+  // the navigation the second click triggers).
+  // Native text selection is suppressed in onRowMouseDown, not here — see there.
+  const onRowClick = (e: React.MouseEvent, path: string, row: RowCtx) => {
+    if (e.shiftKey && !isMod(e)) {
+      e.preventDefault();
+      extendTo(path);
+      return;
+    }
+    if (isMod(e)) {
+      e.preventDefault();
+      toggleSelected(path);
+      return;
+    }
+    selectOnly(path);
+    if (!pane.on) navigate(row.path, { isDir: row.isDir });
+  };
+
+  // Double-click opens when the pane owns the single click. Pane off: the
+  // single click already navigated, so this is a no-op (navigation unmounts
+  // the listing before a second click can land anyway).
+  const onRowDoubleClick = (row: RowCtx) => {
+    if (pane.on) navigate(row.path, { isDir: row.isDir });
+  };
+
+  // Kill the browser's own text selection for Shift/Mod+click, on MOUSEDOWN —
+  // the only moment early enough. `user-select: none` on tr.row (shell.css) is
+  // necessary but NOT sufficient: it makes the row's own text unselectable, yet
+  // a Shift+click still sets a selection ENDPOINT, so the browser happily paints
+  // a range anchored at whatever selectable text was last clicked (a crumb, the
+  // search box, anything outside the table) straight across the listing. So:
+  // preventDefault stops a selection from being started or extended, and the
+  // removeAllRanges collapses one that already existed before the gesture.
+  // preventDefault on mousedown does not cancel the subsequent click, so
+  // onRowClick still runs; rows aren't focusable, so the suppressed focus
+  // side-effect costs nothing.
+  const onRowMouseDown = (e: React.MouseEvent) => {
+    if (!e.shiftKey && !isMod(e)) return;
+    e.preventDefault();
+    const winSel = window.getSelection();
+    if (winSel && !winSel.isCollapsed) winSel.removeAllRanges();
+  };
+
+  // Right-clicking INSIDE an existing multi-row selection keeps it and acts on
+  // the whole thing (Finder/Explorer behaviour); right-clicking anywhere else
+  // collapses the selection onto that row first.
+  const openRowMenu = (e: React.MouseEvent, row: RowCtx) => {
+    e.preventDefault();
+    e.stopPropagation(); // don't also open the background menu
+    const inSelection = sel.paths.includes(row.path);
+    const rows = inSelection && selectedRows.length > 1 ? selectedRows : [row];
+    if (!inSelection) selectOnly(row.path);
+    setMenu({ x: e.clientX, y: e.clientY, items: rowMenu(row, rows) });
+  };
+
+  // Fires only for the listing background (rows stopPropagation above).
+  const openBackgroundMenu = (e: React.MouseEvent) => {
+    e.preventDefault();
+    setMenu({ x: e.clientX, y: e.clientY, items: backgroundMenu() });
+  };
+
+  // --- table body -----------------------------------------------------------
+
+  let body: React.ReactNode;
+  if (searching) {
+    if (validWalk.status === "error") {
+      body = (
+        <tr>
+          <td colSpan={3} className="status-message error">
+            Search failed: {validWalk.message}
+          </td>
+        </tr>
+      );
+    } else if (displayHits.length) {
+      // Rows exist: either the fresh ranking, or the held one from the same
+      // query while a refresh-invalidated walk re-runs (showingHeld).
+      body = (
+        <>
+            {visibleHits.map(({ entry, positions }) => {
+              const childPath = base + "/" + entry.rel;
+              return (
+                <tr
+                  key={entry.rel}
+                  data-flip-key={childPath}
+                  className={
+                    "row" +
+                    (selectedSet.has(childPath) ? " selected" : "") +
+                    // Marker only (no styling of its own): the lead row is what
+                    // the scroll-into-view effect tracks.
+                    (childPath === selectedPath ? " lead" : "") +
+                    (cutSet.has(childPath) ? " cut" : "") +
+                    (copiedSet.has(childPath) ? " copied" : "")
+                  }
+                  onClick={(e) =>
+                    onRowClick(e, childPath, {
+                      path: childPath,
+                      name: entry.rel.split("/").pop() ?? entry.rel,
+                      isDir: entry.is_dir,
+                      parentDir: dirname(childPath),
+                    })
+                  }
+                  onDoubleClick={() =>
+                    onRowDoubleClick({
+                      path: childPath,
+                      name: entry.rel.split("/").pop() ?? entry.rel,
+                      isDir: entry.is_dir,
+                      parentDir: dirname(childPath),
+                    })
+                  }
+                  onMouseDown={onRowMouseDown}
+                  onContextMenu={(e) =>
+                    openRowMenu(e, {
+                      path: childPath,
+                      name: entry.rel.split("/").pop() ?? entry.rel,
+                      isDir: entry.is_dir,
+                      parentDir: dirname(childPath),
+                    })
+                  }
+                >
+                  <td className="name">
+                    <span className="icon">{iconForEntry(entry.rel.split("/").pop() ?? entry.rel, entry.is_dir)}</span>
+                    <span className="search-path">{renderHighlight(entry.rel, positions)}</span>
+                    <ClipMark cut={cutSet.has(childPath)} copied={copiedSet.has(childPath)} />
+                  </td>
+                  <td className="size">{entry.is_dir ? "" : formatSize(entry.size)}</td>
+                  <td className="mtime">{formatMtime(entry.mtime)}</td>
+                </tr>
+              );
+            })}
+            {hasMore && (
+              <tr ref={sentinelRef}>
+                <td colSpan={3} className="status-message">
+                  Scroll for more…
+                </td>
+              </tr>
+            )}
+        </>
+      );
+    } else if (validWalk.status === "ok" || validWalk.status === "streaming") {
+      // No matches. Say so honestly: distinguish "still looking" (stream
+      // running) and "the walk didn't even cover everything" (truncated) —
+      // the old UI showed a bare "No matches" even when the file existed
+      // in a region the capped walk never reached.
+      const message =
+        validWalk.status === "streaming"
+          ? `No matches yet — still searching (${validWalk.count.toLocaleString()} entries scanned)`
+          : validWalk.truncated
+          ? `No matches in the first ${validWalk.total.toLocaleString()} entries — this folder tree is too large to search fully`
+          : "No matches";
+      body = (
+        <tr>
+          <td colSpan={3} className="status-message">
+            {message}
+          </td>
+        </tr>
+      );
+    } else {
+      body = (
+        <tr>
+          <td colSpan={3} className="status-message">
+            Searching…
+          </td>
+        </tr>
+      );
+    }
+  } else if (state.status === "loading") {
+    body = skeletonRows(8);
+  } else if (state.status === "error") {
+    // In the provisional scaffold phase a list failure is most likely a stale
+    // dir hint pointing at a file (its /api/fs/list 404s); suppress the hard
+    // error and show the neutral loading skeleton — stat is still resolving and
+    // will replace this scaffold with the correct file view. Post-stat
+    // (committed render), a genuine list failure surfaces normally.
+    body = provisional ? (
+      skeletonRows(8)
+    ) : (
+      <tr>
+        <td colSpan={3} className="status-message error">
+          Failed to list {fsPath}: {state.message}
+        </td>
+      </tr>
+    );
+  } else {
+    const rows = sortedEntries.map((entry) => {
+      const childPath = base + "/" + entry.name;
+      return (
+        <tr
+          key={entry.name}
+          data-flip-key={childPath}
+          className={
+            (entry.ignored ? "row ignored" : "row") +
+            (newNames.has(entry.name) ? " row-new" : "") + // brief dir-watch tint
+            (selectedSet.has(childPath) ? " selected" : "") +
+            (childPath === selectedPath ? " lead" : "") + // scroll-into-view marker
+            (cutSet.has(childPath) ? " cut" : "") +
+            (copiedSet.has(childPath) ? " copied" : "")
+          }
+          onClick={(e) =>
+            onRowClick(e, childPath, {
+              path: childPath,
+              name: entry.name,
+              isDir: entry.is_dir,
+              parentDir: base,
+            })
+          }
+          onDoubleClick={() =>
+            onRowDoubleClick({
+              path: childPath,
+              name: entry.name,
+              isDir: entry.is_dir,
+              parentDir: base,
+            })
+          }
+          onMouseDown={onRowMouseDown}
+          onContextMenu={(e) =>
+            openRowMenu(e, {
+              path: childPath,
+              name: entry.name,
+              isDir: entry.is_dir,
+              parentDir: base,
+            })
+          }
+        >
+          <td className="name">
+            <span className="icon">{iconForEntry(entry.name, entry.is_dir)}</span>
+            {entry.name}
+            <ClipMark cut={cutSet.has(childPath)} copied={copiedSet.has(childPath)} />
+          </td>
+          <td className="size">{entry.is_dir ? "" : formatSize(entry.size)}</td>
+          <td className="mtime">{formatMtime(entry.mtime)}</td>
+        </tr>
+      );
+    });
+    // A truncated listing gets a slim banner row after the entries: the
+    // directory has more than the server cap. On the resumable S3-direct route
+    // (cursor non-null) it carries a Load more button that appends the next
+    // page; otherwise it just states the listing is partial.
+    const banner = state.truncated ? (
+      <tr key="__truncated__" className="listing-truncated">
+        <td colSpan={3} className="status-message">
+          Showing first {sortedEntries.length} entries — directory listing is partial.
+          {state.cursor && (
+            <button
+              type="button"
+              className="listing-load-more"
+              disabled={loadingMore}
+              onClick={loadMore}
+            >
+              {loadingMore ? "Loading…" : "Load more"}
+            </button>
+          )}
+        </td>
+      </tr>
+    ) : null;
+    body =
+      rows.length || banner ? (
+        <>
+          {rows}
+          {banner}
+        </>
+      ) : (
+        <tr>
+          <td colSpan={3} className="status-message">
+            Empty directory
+          </td>
+        </tr>
+      );
+  }
+
+  // --- search match count (inline in the search row) ------------------------
+
+  let searchCount: string | null = null;
+  let searchCountTitle: string | undefined;
+  if (searching && validWalk.status === "streaming") {
+    // Live progress while the walk streams: match count so far + how much of
+    // the tree has been scanned. Updates in place, no layout shift.
+    searchCount = `${hits.length.toLocaleString()} match${hits.length === 1 ? "" : "es"} · ${validWalk.count.toLocaleString()} scanned…`;
+  } else if (searching && validWalk.status === "ok" && hits.length > 0) {
+    // A truncated walk (server safety cap) means `hits` undercounts the real
+    // tree. Signal that without new UI: a "+" on the number plus a tooltip.
+    const suffix = validWalk.truncated ? "+" : "";
+    searchCount = `${hits.length.toLocaleString()}${suffix} match${hits.length === 1 ? "" : "es"}`;
+    if (validWalk.truncated)
+      searchCountTitle = `Search covers the first ${validWalk.total.toLocaleString()} entries of this folder tree`;
+  }
+
+  return (
+    <div className="listing">
+      <div className="listing-search">
+        {/* The box wraps input + pinned chips so the pane toggle can sit to
+            their right without disturbing the chips' inside-the-input pin. */}
+        <div className="listing-search-box">
+          <input
+            ref={searchInputRef}
+            type="search"
+            className="listing-search-input"
+            placeholder="Start typing to search…"
+            value={query}
+            onFocus={prefetchWalk}
+            onChange={(e) => setQuery(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Escape") {
+                e.preventDefault();
+                setQuery("");
+                e.currentTarget.blur();
+              }
+            }}
+          />
+          {searching && (validWalk.status === "idle" || validWalk.status === "streaming") && (
+            <span className="listing-search-spinner" aria-hidden="true" />
+          )}
+          {searchCount !== null && (
+            <span className="listing-search-count" title={searchCountTitle}>
+              {searchCount}
+            </span>
+          )}
+          {/* Multi-selection readout — a single selected row needs no count. */}
+          {sel.paths.length > 1 && (
+            <span className="listing-search-count">{sel.paths.length} selected</span>
+          )}
+        </div>
+        {/* Current result ordering, and the way back to relevance. Without it
+            "no arrow anywhere" was the only signal that results were in fuzzy
+            rank order, and a column sort had no explicit escape. */}
+        {searching && (
+          <button
+            type="button"
+            className={"listing-sort-chip" + (searchSort ? " sorted" : "")}
+            disabled={!searchSort}
+            title={
+              searchSort
+                ? "Results are column-sorted — click for relevance order"
+                : "Results are in relevance order (best match first)"
+            }
+            onClick={() => setSearchSort(null)}
+          >
+            {searchSort
+              ? `${SORT_KEYS[searchSort.sort].toLowerCase()} ${searchSort.order}`
+              : "relevance"}
+          </button>
+        )}
+        <button
+          type="button"
+          className={"listing-pane-toggle" + (pane.on ? " active" : "")}
+          title={pane.on ? "Hide preview pane" : "Show preview pane"}
+          aria-pressed={pane.on}
+          onClick={togglePane}
+        >
+          <SplitRightIcon />
+        </button>
+      </div>
+      <div className="listing-split" ref={splitRef}>
+        <div
+          ref={scrollRef}
+          /* Dimmed both when the deferred render lags a keystroke and while
+             held (pre-refresh) results stand in for a re-running walk. */
+          className={"listing-scroll" + (isStale || showingHeld ? " listing-stale" : "")}
+          onContextMenu={openBackgroundMenu}
+        >
+          <table className="listing-table">
+            <thead>
+              <tr>
+                {(Object.entries(SORT_KEYS) as [SortKey, string][]).map(([key, label]) =>
+                  searching ? (
+                    // While searching, headers sort the results; no active arrow
+                    // means relevance (fuzzy-rank) order.
+                    <th
+                      key={key}
+                      className={"sortable" + (searchSort?.sort === key ? " sorted" : "")}
+                      title={
+                        searchSort?.sort === key && searchSort.order === "desc"
+                          ? `Back to relevance order`
+                          : `Sort results by ${label.toLowerCase()}`
+                      }
+                      onClick={() => setSearchSortKey(key)}
+                    >
+                      {label}
+                      {/* One glyph that ROTATES for desc (see .sort-arrow):
+                          swapping ▲ for ▼ replaced the element, so the change
+                          could only ever pop. */}
+                      {searchSort?.sort === key && (
+                        <span className={"sort-arrow" + (searchSort.order === "desc" ? " desc" : "")}>▲</span>
+                      )}
+                    </th>
+                  ) : (
+                    <th
+                      key={key}
+                      className={"sortable" + (key === sort ? " sorted" : "")}
+                      onClick={() => setSort(key)}
+                    >
+                      {label}
+                      {key === sort && (
+                        <span className={"sort-arrow" + (order === "desc" ? " desc" : "")}>▲</span>
+                      )}
+                    </th>
+                  )
+                )}
+              </tr>
+            </thead>
+            <tbody>{body}</tbody>
+          </table>
+        </div>
+        {pane.on && (
+          <>
+            <div
+              className="listing-divider"
+              onPointerDown={onDividerPointerDown}
+              role="separator"
+              aria-orientation="vertical"
+            />
+            <div
+              className="listing-pane-slot"
+              // Null width = first open with nothing saved: half the container
+              // as a flex percentage until the measuring layout effect pins a
+              // pixel value (same visual, so no flash either way).
+              style={{ flexBasis: pane.width ?? `${PANE_DEFAULT_FRAC * 100}%` }}
+            >
+              {/* Keyed on the previewed path: switching rows remounts the pane,
+                  so a stale iframe never lingers a frame while the new row's
+                  stat/list resolves. */}
+              <ListingPreviewPane
+                key={sel.paths.length === 1 && leadRow ? leadRow.path : "none"}
+                row={sel.paths.length === 1 && leadRow ? leadRow : null}
+                selCount={sel.paths.length}
+              />
+            </div>
+          </>
+        )}
+      </div>
+
+      {menu && (
+        <ContextMenu x={menu.x} y={menu.y} items={menu.items} onClose={() => setMenu(null)} />
+      )}
+
+      {dialog?.kind === "prompt" && (
+        <PromptDialog
+          title={dialog.title}
+          initialValue={dialog.initial}
+          confirmLabel={dialog.confirmLabel}
+          selectStem={dialog.selectStem}
+          onConfirm={(v) => {
+            const { onConfirm } = dialog;
+            setDialog(null);
+            onConfirm(v);
+          }}
+          onCancel={() => setDialog(null)}
+        />
+      )}
+      {dialog?.kind === "confirm" && (
+        <ConfirmDialog
+          title={dialog.title}
+          message={dialog.message}
+          confirmLabel={dialog.confirmLabel}
+          danger={dialog.danger}
+          onConfirm={() => {
+            const { onConfirm } = dialog;
+            setDialog(null);
+            onConfirm();
+          }}
+          onCancel={() => setDialog(null)}
+        />
+      )}
+
+    </div>
+  );
+}

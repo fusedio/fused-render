@@ -42,12 +42,19 @@ from _theme_sources import (
     EXEMPT_TEMPLATES,
     OPT_IN_ATTR,
     SELF_TOGGLING_TEMPLATES,
+    SHARED_PALETTE_SELECTORS,
     THEME_KEY,
     TIER_ONE_TEMPLATES,
+    TOKENIZED_SHARED_ASSETS,
+    UNMIGRATED_SHARED_ASSETS,
+    _selector_block,
+    all_shared_asset_names,
     all_template_names,
     palette_blocks,
     read_repo_file,
+    read_shared_asset,
     read_template,
+    scoped_palette_blocks,
     style_color_literals,
 )
 
@@ -119,7 +126,7 @@ def test_the_storage_key_is_spelled_identically_everywhere():
     # with `data-fused-theme` and lets runtime.js resolve it, rather than
     # becoming a fourth place this key is spelled.
     for path in (
-        "frontend/src/lib/theme.ts",
+        "frontend/src/platform/lib/theme.ts",
         "frontend/index.html",
         "fused_render/static/runtime.js",
     ):
@@ -129,7 +136,7 @@ def test_the_storage_key_is_spelled_identically_everywhere():
 def test_theme_persistence_is_best_effort():
     # Same posture as viewstate.ts / sidebarstate.ts: a private-mode or
     # quota-exceeded localStorage must never break the shell.
-    src = read_repo_file("frontend/src/lib/theme.ts")
+    src = read_repo_file("frontend/src/platform/lib/theme.ts")
     assert src.count("try {") >= 2 and "catch" in src
 
 
@@ -211,6 +218,67 @@ def test_tier_one_template_has_no_colour_literals_outside_its_palettes(name):
     assert not literals, (
         f"{name}: colours outside the palette blocks cannot follow the theme — "
         f"found {sorted(set(literals))}"
+    )
+
+
+# ------------------------------------------------------- shared template assets
+# The layer this suite used to miss entirely. `templates/shared/*.js` injects CSS
+# into the HOST template's document, so its colours are bound by the same rule as
+# the template's own <style> — but nothing scanned those files, and
+# folder-picker.js shipped a hardcoded dark palette (plus `var()` names from only
+# one of the two vocabularies templates use) that ignored the toggle.
+
+
+def test_shared_asset_lists_partition_the_shared_script_set():
+    classified = list(TOKENIZED_SHARED_ASSETS) + list(UNMIGRATED_SHARED_ASSETS)
+    assert sorted(classified) == all_shared_asset_names(), (
+        "every templates/shared script must be classified tokenized or "
+        f"unmigrated — classified {sorted(classified)}, on disk "
+        f"{all_shared_asset_names()}"
+    )
+    assert len(set(classified)) == len(classified), "a script is in both lists"
+
+
+@pytest.mark.parametrize("name", TOKENIZED_SHARED_ASSETS)
+def test_tokenized_shared_asset_has_no_colour_literals_outside_its_palettes(name):
+    literals = style_color_literals(
+        read_shared_asset(name), palette_selectors=SHARED_PALETTE_SELECTORS
+    )
+    assert not literals, (
+        f"shared/{name}: this CSS lands in a themed template document, so a "
+        f"literal outside a palette block cannot follow the theme — found "
+        f"{sorted(set(literals))}"
+    )
+
+
+def test_the_folder_picker_declares_both_palettes_scoped_to_itself():
+    # Scoped, not `:root`: a shared script that wrote `:root` rules would
+    # redefine its HOST template's palette. Same dual-block contract otherwise.
+    dark, light = scoped_palette_blocks(
+        read_shared_asset("folder-picker.js"), *SHARED_PALETTE_SELECTORS
+    )
+    assert dark, "folder-picker.js must define its own dark palette tokens"
+    assert set(dark) == set(light), (
+        "folder-picker.js dark/light token sets differ — "
+        f"dark-only {sorted(set(dark) - set(light))}, "
+        f"light-only {sorted(set(light) - set(dark))}"
+    )
+
+
+def test_the_folder_picker_paints_only_through_its_own_tokens():
+    # Every colour a rule uses must be one of the picker's OWN --fp-* tokens.
+    # Reaching straight for a host token (`var(--surface)`) is the bug this
+    # replaces: half the templates spell that `--bg-alt`, so the reference
+    # resolved in three views and fell through to a dark literal in nineteen.
+    # The mapping to host names belongs in the palette blocks and nowhere else.
+    src = read_shared_asset("folder-picker.js")
+    for selector in SHARED_PALETTE_SELECTORS:
+        src = _selector_block(selector).sub("", src)
+    referenced = set(re.findall(r"var\((--[\w-]+)", src))
+    assert referenced, "no tokens referenced at all — is the CSS still there?"
+    assert all(name.startswith("--fp-") for name in referenced), (
+        "folder-picker.js must paint through its own --fp-* tokens; found "
+        f"{sorted(n for n in referenced if not n.startswith('--fp-'))}"
     )
 
 

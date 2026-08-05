@@ -27,8 +27,10 @@ Use short imperative subjects ("Add dark theme toggle", "Fix param sync").
 Don't push, don't add remotes, don't rewrite history — this repo is purely
 local undo history for the app.
 
-fused-render installs that skill (and its siblings, `fused-render-usage` and
-`fused-render-custom-templates`) into Claude Code's user-level skills
-directory and keeps them up to date, so it is available here by name. If the
-skill isn't listed, start (or restart) fused-render once — the server
-re-installs it on startup.
+fused-render supplies that skill (and its siblings, `fused-render-usage` and
+`fused-render-custom-templates`) to every chat it launches, as a plugin loaded
+for that session, so it is available here by name with no install step. It
+also keeps a copy in Claude Code's user-level skills directory for sessions
+fused-render didn't start — a plain `claude` in this folder, say. If the skill
+isn't listed in one of those, start (or restart) fused-render once; it
+refreshes both on startup.

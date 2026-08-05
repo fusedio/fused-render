@@ -228,7 +228,7 @@ def test_clone_subdir_opens_index(env, source_repo):
     assert (dest / "examples" / "how_it_works" / "index.html").is_file()
     # sparse checkout: the unrelated tree must not be materialized
     assert not (dest / "unrelated").exists()
-    assert result["view"].startswith("/view/")
+    assert result["view"].startswith("/explorer/view/")
     assert result["view"].endswith("/index.html")
 
 
@@ -258,9 +258,9 @@ def test_view_url_path_normalizes_windows_drive_paths():
 
     assert (
         _view_url_path("C:\\Users\\v\\Documents\\Fused\\x\\index.html")
-        == "/view/C%3A/Users/v/Documents/Fused/x/index.html"
+        == "/explorer/view/C%3A/Users/v/Documents/Fused/x/index.html"
     )
-    assert _view_url_path("/Users/v/a b/index.html") == "/view/Users/v/a%20b/index.html"
+    assert _view_url_path("/Users/v/a b/index.html") == "/explorer/view/Users/v/a%20b/index.html"
 
 
 def _rev(source_repo, ref="HEAD"):

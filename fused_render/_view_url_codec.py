@@ -1,6 +1,6 @@
 """Shared fs-path -> /view URL codec for the Windows entry points.
 
-Mirrors the frontend codec (frontend/src/lib/router.ts urlForFsPath): only a
+Mirrors the frontend codec (frontend/src/platform/lib/router.ts urlForFsPath): only a
 drive-letter path gets its backslashes normalized to '/' before segmenting —
 a UNC path stays one percent-encoded segment, and on POSIX a backslash is a
 legal filename character that must round-trip untouched. A `.bookmark` file
@@ -42,12 +42,12 @@ def canonical_fs_path(fs_path: str) -> str:
 
 
 def view_url_path(fs_path: str) -> str:
-    """/view URL path (no host/port) for an absolute fs path."""
+    """Explorer URL path (no host/port) for an absolute fs path."""
     norm = canonical_fs_path(fs_path)
     if fs_path.lower().endswith(".bookmark"):
-        return "/view/_bookmark?file=" + quote(norm, safe="")
+        return "/explorer/view/_bookmark?file=" + quote(norm, safe="")
     segments = [quote(seg, safe="!*'()") for seg in norm.lstrip("/").split("/") if seg]
-    return "/view/" + "/".join(segments)
+    return "/explorer/view/" + "/".join(segments)
 
 
 def view_url(port: int, fs_path: str | None) -> str:

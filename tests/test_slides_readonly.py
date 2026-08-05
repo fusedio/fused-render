@@ -11,19 +11,25 @@ Gates under test:
   * action="save" refuses a chmod -w .pptx up front (before _load_model /
     mkstemp — the atomic tempfile+os.replace would silently bypass the file's
     read-only bit via the parent directory).
-  * action="set_title" refuses when its `<file>.json` sidecar isn't writable:
-    an EXISTING sidecar needs W_OK on itself, a fresh one W_OK on the parent
-    directory (same rule as annotate's _sidecar_writable).
+  * action="set_title" refuses when its sidecar (home_dir()/sidecar/<mapped
+    path>.json, D83-reversal) isn't writable: an EXISTING sidecar needs W_OK
+    on itself, a fresh one W_OK on its nearest existing ancestor dir (same
+    rule as annotate's _sidecar_writable).
   * _editability(file) is the RO-4 verdict the open action folds into its
     response (editable / readonly_message / readonly_tooltip).
 Read-only never blocks viewing or the cache-model autosave — only the explicit
 overwrite of the .pptx and the sidecar title write are gated.
+
+FUSED_RENDER_HOME is pinned to an isolated tmp dir for every test (autouse
+_home fixture) so sidecar_path never touches the developer's real
+~/.fused-render.
 """
 import importlib.util
 import json
 import os
 import sys
 import types
+from pathlib import Path
 
 import pytest
 
@@ -39,6 +45,11 @@ pytestmark = pytest.mark.skipif(
 def _boom(*args, **kwargs):
     raise AssertionError(
         "engine must not be called — the read-only gate has to fire first")
+
+
+@pytest.fixture(autouse=True)
+def _home(tmp_path, monkeypatch):
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
 
 
 @pytest.fixture
@@ -74,6 +85,10 @@ def _deck(tmp_path):
     return f
 
 
+def _sidecar(mod, f) -> Path:
+    return Path(mod._sidecar_path(str(f)))
+
+
 # --------------------------------------------------------------- save gate
 def test_save_on_readonly_pptx_raises_before_engine(slides, tmp_path):
     f = _deck(tmp_path)
@@ -91,7 +106,8 @@ def test_save_on_readonly_pptx_raises_before_engine(slides, tmp_path):
 # ------------------------------------------------------------ sidecar gate
 def test_set_title_readonly_sidecar_raises_and_preserves_bytes(slides, tmp_path):
     f = _deck(tmp_path)
-    sidecar = tmp_path / "deck.pptx.json"
+    sidecar = _sidecar(slides, f)
+    sidecar.parent.mkdir(parents=True, exist_ok=True)
     original = b'{"slides": {"title": "Old"}}'
     sidecar.write_bytes(original)
     os.chmod(sidecar, 0o444)
@@ -104,12 +120,15 @@ def test_set_title_readonly_sidecar_raises_and_preserves_bytes(slides, tmp_path)
 
 
 def test_set_title_readonly_dir_without_sidecar_raises(slides, tmp_path):
+    # The sidecar's home-dir subtree doesn't exist yet, so writability walks up
+    # to the nearest existing ancestor (nearest_existing_dir) — tmp_path itself
+    # here, since FUSED_RENDER_HOME (tmp_path/home) hasn't been created.
     f = _deck(tmp_path)
     os.chmod(tmp_path, 0o555)
     try:
         with pytest.raises(PermissionError, match="read-only"):
             slides.main(action="set_title", file=str(f), title="New")
-        assert not (tmp_path / "deck.pptx.json").exists()
+        assert not _sidecar(slides, f).exists()
     finally:
         os.chmod(tmp_path, 0o755)
 
@@ -118,7 +137,7 @@ def test_set_title_creates_sidecar_in_writable_dir(slides, tmp_path):
     f = _deck(tmp_path)
     res = slides.main(action="set_title", file=str(f), title="My Deck")
     assert res == {"ok": True, "title": "My Deck"}
-    data = json.loads((tmp_path / "deck.pptx.json").read_text())
+    data = json.loads(_sidecar(slides, f).read_text())
     assert data["slides"]["title"] == "My Deck"
 
 
@@ -139,7 +158,8 @@ def test_editability_verdict(slides, tmp_path):
 def test_sidecar_writable_helper(slides, tmp_path):
     f = _deck(tmp_path)
     assert slides._sidecar_writable(str(f)) is True   # fresh sidecar, writable dir
-    sidecar = tmp_path / "deck.pptx.json"
+    sidecar = _sidecar(slides, f)
+    sidecar.parent.mkdir(parents=True, exist_ok=True)
     sidecar.write_text("{}")
     os.chmod(sidecar, 0o444)
     try:

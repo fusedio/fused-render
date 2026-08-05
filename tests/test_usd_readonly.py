@@ -5,17 +5,22 @@ convert-time deps, not import-time), so — like test_annotate_comments.py —
 these load it via importlib and drive `_sidecar_writable`/`main` directly.
 
 The usd template never writes the viewed asset; its only write target is the
-settings sidecar `<file>.json` saved from JS via fused.writeFile. The reader's
-`inspect` action reports `sidecar_writable` so the template can stop firing
-doomed saves and show the shared ro-badge. Writability rule: existing sidecar
-→ W_OK on itself; absent → W_OK on the parent dir (the JS write lands there).
+settings sidecar (home_dir()/sidecar/<mapped path>.json, D83-reversal) saved
+from JS via fused.writeFile. The reader's `inspect` action reports
+`sidecar_writable` so the template can stop firing doomed saves and show the
+shared ro-badge. Writability rule: existing sidecar → W_OK on itself; absent
+→ W_OK on its nearest existing ancestor dir (the JS write lands there once
+created).
 
 Tests use a `.splat` target: inspect's direct branch needs only os.path, no
 cache dir and no heavy deps. CACHE_ROOT is repointed at tmp_path anyway so
-nothing can touch the real home.
+nothing can touch the real home, and FUSED_RENDER_HOME is pinned to an
+isolated tmp dir (via _load_reader) so sidecar_path never touches the
+developer's real ~/.fused-render.
 """
 import importlib.util
 import os
+from pathlib import Path
 
 import pytest
 
@@ -30,6 +35,7 @@ skip_root = pytest.mark.skipif(
 
 
 def _load_reader(tmp_path, monkeypatch):
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
     spec = importlib.util.spec_from_file_location("usd_reader_target", READER_PY)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
@@ -41,6 +47,14 @@ def _asset(tmp_path):
     f = tmp_path / "scene.splat"
     f.write_bytes(b"\x00" * 32)
     return f
+
+
+def _sidecar(mod, f) -> Path:
+    # reader.py has no module-level _sidecar_path (only _sidecar_writable,
+    # which imports appenv locally) — but loading it already put shared/ on
+    # sys.path, so appenv is importable here too.
+    import appenv
+    return Path(appenv.sidecar_path(str(f)))
 
 
 # ---------------------------------------------------------- _sidecar_writable
@@ -55,7 +69,8 @@ def test_sidecar_writable_no_sidecar_writable_dir(tmp_path, monkeypatch):
 def test_sidecar_writable_existing_readonly_sidecar(tmp_path, monkeypatch):
     mod = _load_reader(tmp_path, monkeypatch)
     f = _asset(tmp_path)
-    sidecar = tmp_path / "scene.splat.json"
+    sidecar = _sidecar(mod, f)
+    sidecar.parent.mkdir(parents=True, exist_ok=True)
     sidecar.write_text("{}")
     os.chmod(sidecar, 0o444)
     try:
@@ -65,17 +80,19 @@ def test_sidecar_writable_existing_readonly_sidecar(tmp_path, monkeypatch):
 
 
 @skip_root
-def test_sidecar_writable_readonly_parent_no_sidecar(tmp_path, monkeypatch):
+def test_sidecar_writable_readonly_ancestor_no_sidecar(tmp_path, monkeypatch):
+    # The sidecar's home-dir subtree doesn't exist yet, so writability walks
+    # up to the nearest existing ancestor (nearest_existing_dir) — tmp_path
+    # itself here, since FUSED_RENDER_HOME (tmp_path/home) hasn't been created.
+    # (Unlike before D83-reversal, the asset's OWN directory no longer matters
+    # at all — the sidecar lives in a completely separate tree now.)
     mod = _load_reader(tmp_path, monkeypatch)
-    d = tmp_path / "locked"
-    d.mkdir()
-    f = d / "scene.splat"
-    f.write_bytes(b"\x00" * 32)
-    os.chmod(d, 0o555)
+    f = _asset(tmp_path)
+    os.chmod(tmp_path, 0o555)
     try:
         assert mod._sidecar_writable(str(f)) is False
     finally:
-        os.chmod(d, 0o755)
+        os.chmod(tmp_path, 0o755)
 
 
 # ------------------------------------------------------------ inspect action
@@ -92,7 +109,8 @@ def test_inspect_reports_sidecar_writable_true(tmp_path, monkeypatch):
 def test_inspect_reports_sidecar_writable_false(tmp_path, monkeypatch):
     mod = _load_reader(tmp_path, monkeypatch)
     f = _asset(tmp_path)
-    sidecar = tmp_path / "scene.splat.json"
+    sidecar = _sidecar(mod, f)
+    sidecar.parent.mkdir(parents=True, exist_ok=True)
     sidecar.write_text("{}")
     os.chmod(sidecar, 0o444)
     try:

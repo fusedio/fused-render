@@ -10,6 +10,12 @@ direct-child ``.html`` file when there is exactly one — zero or several means
 the folder still lists, but opens as a directory instead of a view
 (``entry_html: null``).
 
+The walk itself lives in ``fused_render/app_listing.py``, which also defines
+what one listed app looks like. Each app reports its entry twice: ``entry`` is
+the file a card opens and previews, ``entry_html`` the narrower claim that the
+entry is a renderable page (the only one the HTML-only ``/render`` iframe may be
+pointed at). For an app of this shape they are the same file.
+
 POST /api/apps/new scaffolds ``<workspace>/local/<name>/`` from the packaged
 app starter kit (``fused_render/app_starter/`` — an ``index.html`` entry view
 plus a ``CLAUDE.md``) and — when the request carries a prompt — starts a
@@ -19,30 +25,34 @@ to ``index.html`` and the existing claude template UI lists and resumes it
 with no new machinery. "local" is just this feature's own tag — nothing about
 the listing side treats it specially.
 
-An app folder carries no ``.claude/`` of its own (D185): the canonical skills
-are synced to Claude Code's user-level skills dir instead (user_skills.py) —
-once per machine, refreshed at server startup and again here at create time —
-and the starter ``CLAUDE.md`` references them by name.
+An app folder carries no ``.claude/`` of its own (D185); the starter
+``CLAUDE.md`` references the canonical skills by name and fused-render supplies
+them. The scaffolding session below gets them the way every session
+fused-render spawns does — from the plugin root under the app's home dir,
+loaded with ``--plugin-dir`` (skill_plugin.py, D216) — and the user-level copy
+(user_skills.py) covers the user's own later ``claude`` in the folder. Both are
+refreshed at server startup and again here at create time.
 """
-import html
 import json
 import os
-import re
 import shutil
 import subprocess
 import sys
 import threading
 import time
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Body, Header
 
+from fused_render import app_listing
 from fused_render.server.common import _error, _require_fused
 from fused_render.shell.seed import fused_dir
 
 router = APIRouter()
 
 # The packaged app starter kit: index.html + CLAUDE.md, both committed. No
-# .claude/ ships in it (D185) — skills live at the user level (user_skills.py).
+# .claude/ ships in it (D185) — skills are supplied by fused-render instead
+# (skill_plugin.py for the sessions it spawns, user_skills.py for the rest).
 _APP_STARTER_DIR = os.path.join(
     os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "app_starter"
 )
@@ -50,101 +60,107 @@ _APP_STARTER_DIR = os.path.join(
 
 # ------------------------------------------------------------------- listing
 
-_TITLE_RE = re.compile(rb"<title[^>]*>(.*?)</title>", re.IGNORECASE | re.DOTALL)
-
-
-def _entry_title(entry_html: str) -> str | None:
-    """The <title> of an entry file, from its first 4 KiB — cheap enough to run
-    per app on every listing. None when absent, empty, or unreadable."""
-    try:
-        with open(entry_html, "rb") as fh:
-            head = fh.read(4096)
-    except OSError:
-        return None
-    match = _TITLE_RE.search(head)
-    if not match:
-        return None
-    title = html.unescape(match.group(1).decode("utf-8", "replace"))
-    return " ".join(title.split()) or None
-
-
-def _updated_at(dir_path: str) -> float | None:
-    """When the app was last touched, as an epoch float (st_mtime).
-
-    Max of the dir's own mtime and its DIRECT children's — the dir mtime alone
-    only moves on add/remove/rename, so editing index.html in place wouldn't
-    register; a deep walk is unbounded work per listing for marginal gain
-    (edits in an app land overwhelmingly in top-level files). One extra stat
-    per child, no recursion. None when nothing stats (racing delete)."""
-    latest = None
-    try:
-        latest = os.stat(dir_path).st_mtime
-        with os.scandir(dir_path) as it:
-            for child in it:
-                try:
-                    latest = max(latest, child.stat().st_mtime)
-                except OSError:
-                    continue
-    except OSError:
-        pass
-    return latest
-
-
-def _app_entry(dir_path: str) -> str | None:
-    """The app's entry file: the single non-hidden direct-child .html, or None
-    when the folder has zero or several (ambiguous — the UI opens the folder).
-    Raises OSError when the dir can't be listed — the caller skips those."""
-    children = os.listdir(dir_path)
-    htmls = [
-        c for c in sorted(children)
-        if not c.startswith(".")
-        and c.lower().endswith(".html")
-        and os.path.isfile(os.path.join(dir_path, c))
-    ]
-    if len(htmls) != 1:
-        return None
-    return os.path.abspath(os.path.join(dir_path, htmls[0]))
+# The walk and the entry contract live in `app_listing` rather than in this
+# handler: they are the part worth testing directly (and reusing) — a route is
+# not the right place for the rules about what an app IS. See that module.
 
 
 @router.get("/api/apps")
 def api_apps():
-    root = fused_dir()
-    apps = []
-    try:
-        tag_names = os.listdir(root)
-    except OSError:
-        # No workspace yet (first run before seeding) — an empty Home, not a 500.
-        return {"apps": []}
-    for tag in tag_names:
-        if tag.startswith("."):
-            continue
-        tag_path = os.path.join(root, tag)
-        try:
-            if not os.path.isdir(tag_path):
-                continue
-            names = os.listdir(tag_path)
-        except OSError:
-            continue  # unreadable/racing tag dir: skip, never fail the listing
-        for name in names:
-            if name.startswith("."):
-                continue
-            path = os.path.join(tag_path, name)
-            try:
-                if not os.path.isdir(path):
-                    continue
-                entry_html = _app_entry(path)
-            except OSError:
-                continue  # unreadable/racing entry: skip, never fail the listing
-            apps.append({
-                "name": name,
-                "tag": tag,
-                "path": os.path.abspath(path),
-                "entry_html": entry_html,
-                "title": _entry_title(entry_html) if entry_html else None,
-                "updated_at": _updated_at(path),
-            })
+    apps = app_listing.two_level_apps(fused_dir())
     apps.sort(key=lambda a: (a["tag"].lower(), a["name"].lower()))
     return {"apps": apps}
+
+
+# ------------------------------------------------------------------- recents
+#
+# App-builder recents at ~/.fused-render/app_recents.json — its OWN store,
+# fully independent of the explorer's recents.json (shell/recents.py). Entries
+# identify an app by (tag, name), newest-first, deduped, capped. GET filters
+# entries whose app folder is gone (read-only — the folder may come back).
+# The workspace is always local, so plain isdir checks are safe here.
+
+APP_RECENTS_CAP = 20
+
+
+def _app_recents_path() -> str:
+    from fused_render.shell import storage
+
+    return os.path.join(storage.home_dir(), "app_recents.json")
+
+
+def _read_app_recents() -> dict:
+    from fused_render.shell import storage
+
+    data = storage.read_json(_app_recents_path())
+    if not isinstance(data, dict):
+        return {"entries": []}
+    entries = data.get("entries")
+    return {
+        "entries": [
+            e
+            for e in (entries if isinstance(entries, list) else [])
+            if isinstance(e, dict)
+            and isinstance(e.get("tag"), str)
+            and isinstance(e.get("name"), str)
+        ]
+    }
+
+
+@router.get("/api/apps/recents")
+def api_app_recents():
+    root = fused_dir()
+    entries = [
+        e
+        for e in _read_app_recents()["entries"]
+        if os.path.isdir(os.path.join(root, e["tag"], e["name"]))
+    ]
+    return {"entries": entries}
+
+
+@router.post("/api/apps/recents/open")
+def api_app_recent_open(
+    body: dict = Body(...), x_fused: str | None = Header(default=None)
+):
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    from fused_render.shell import storage
+
+    tag, name = body.get("tag"), body.get("name")
+    if not isinstance(tag, str) or not isinstance(name, str) or not tag or not name:
+        return _error("tag and name required", 400)
+    # Only real app folders are recorded — same benign no-op posture as the
+    # explorer's POST /api/recents/open for a non-file url.
+    if "/" in tag or "/" in name or tag.startswith(".") or name.startswith("."):
+        return {"recorded": False}
+    if not os.path.isdir(os.path.join(fused_dir(), tag, name)):
+        return {"recorded": False}
+    title_raw = body.get("title")
+    title = title_raw.strip() if isinstance(title_raw, str) and title_raw.strip() else None
+    data = _read_app_recents()
+    # Dedupe by (tag, name); a title-less re-record keeps the last known title.
+    existing_title = None
+    kept = []
+    for e in data["entries"]:
+        if e["tag"] == tag and e["name"] == name:
+            t = e.get("title")
+            if existing_title is None and isinstance(t, str) and t:
+                existing_title = t
+            continue
+        kept.append(e)
+    entry = {
+        "tag": tag,
+        "name": name,
+        "openedAt": datetime.now(timezone.utc).isoformat(),
+    }
+    if title is not None:
+        entry["title"] = title
+    elif existing_title is not None:
+        entry["title"] = existing_title
+    data["entries"] = [entry, *kept][:APP_RECENTS_CAP]
+    storage.write_json(_app_recents_path(), data)
+    return {"recorded": True}
 
 
 # ------------------------------------------------------------------ creation
@@ -333,12 +349,15 @@ def api_new_app(body: dict = Body(...), x_fused: str | None = Header(default=Non
         shutil.rmtree(dest, ignore_errors=True)
         return _error(f"failed to create app {name!r}: {exc}")
 
-    # Refresh the user-level skills the starter CLAUDE.md references (D185).
-    # Startup already synced them; doing it again here repairs a deletion
-    # before the session below starts. Best-effort inside — never fails
-    # creation over a skill copy.
+    # Refresh the skills the starter CLAUDE.md references: the plugin root the
+    # scaffolding session below is handed (D216) and the user-level copy for the
+    # user's own sessions (D185). Startup already synced both; doing it again
+    # here repairs a deletion in the window before that session starts.
+    # Best-effort inside — never fails creation over a skill copy.
+    from fused_render.skill_plugin import export_skill_plugin_env
     from fused_render.user_skills import sync_user_skills
 
+    export_skill_plugin_env()
     sync_user_skills()
 
     # Version control from birth: every new app is a git repo whose first

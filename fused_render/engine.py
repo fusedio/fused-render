@@ -462,13 +462,26 @@ def get_backend():
     if _backend is None:
         from fused.agent_core.backends.local.python_compute import LocalPythonComputeBackend
 
+        from fused_render import envinstall
         from fused_render.executor import DEFAULT_TIMEOUT
 
         # cache_storage=None disables result caching explicitly (PY-9: fresh
         # execution every call). It is the upstream default today, but we may
         # track a nightly wheel — don't rely on a default staying put.
+        #
+        # python_executable pins the base interpreter script venvs are built from
+        # to 3.12 (D214). Passed HERE, at the one place the backend is constructed,
+        # because `envinstall._python_executable()` reads the attribute straight
+        # back off this instance: the resolution and the venv key it feeds are one
+        # value with one source, and a loader that re-decided it independently
+        # could disagree with the backend and fill a directory no run ever reads.
+        #
+        # None for every packaged build (they already run 3.12), which is exactly
+        # the value this argument had before D214 — so their venv keys do not move.
         _backend = LocalPythonComputeBackend(
-            timeout_seconds=int(DEFAULT_TIMEOUT), cache_storage=None
+            timeout_seconds=int(DEFAULT_TIMEOUT),
+            cache_storage=None,
+            python_executable=envinstall.script_python(),
         )
     return _backend
 
@@ -643,8 +656,23 @@ def build_code(user_code: str, script_dir: str, script_path: str = "script") -> 
     The user's source is embedded as a literal and ``exec``'d as **its own
     compile unit under its real filename** — so a leading ``from __future__``
     import stays the first statement of its unit, and every user traceback
-    frame carries the real file and exact line (no offset bookkeeping). The
-    wrapper must NOT chdir before the user code runs: the backend's runner
+    frame carries the real file and exact line (no offset bookkeeping).
+
+    The preamble also defines the module globals the built-in executor's worker
+    gets for free, because it loads the file through
+    ``spec_from_file_location("__fused_module__", path)`` and CPython's import
+    machinery sets them. ``exec(compile(...))`` sets neither: ``compile()``'s
+    filename argument only *labels* code objects for tracebacks, so a script
+    doing ``os.path.dirname(__file__)`` — the ordinary way to find a data file
+    next to your ``.py`` — raised ``NameError`` here while working under the
+    other engine. ``__name__`` is set for the same parity reason; it was
+    inherited from the backend's runner namespace as ``"builtins"``. Neither
+    engine makes ``__name__`` ``"__main__"``, so ``if __name__ ==
+    "__main__":`` blocks stay dormant — templates such as
+    ``geotiff/tile_server.py`` rely on that, using the guard for the
+    subprocess they spawn of themselves.
+
+    The wrapper must NOT chdir before the user code runs: the backend's runner
     reads _params.json from the exec cwd after module-level code finishes, so
     cwd stays on the exec dir until an entrypoint is actually invoked. The
     epilogue then:
@@ -670,6 +698,8 @@ def build_code(user_code: str, script_dir: str, script_path: str = "script") -> 
     preamble = (
         f"import os as _fused_os, sys as _fused_sys\n"
         f"_fused_sys.path.insert(0, {script_dir!r})\n"
+        f"__file__ = {script_path!r}\n"
+        f'__name__ = "__fused_module__"\n'
         f"exec(compile({user_code!r}, {script_path!r}, 'exec'), globals())\n"
     )
     epilogue = f"""
@@ -786,20 +816,40 @@ def _needs_install_dict(requirements: list[str], abs_path: str) -> dict:
     """
     from fused_render import envinstall
 
+    # Two rounds are possible (D214): with no pinned Python on this machine the
+    # FIRST install is the interpreter, reported under its own key, and the packages
+    # follow once it lands. The key differs between the rounds on purpose — it is
+    # what lets the page tell "we made progress, ask again" from "we installed and
+    # nothing changed", which is a loop.
+    needs_python = not envinstall.script_python_ready()
+    if needs_python:
+        key = envinstall.PYTHON_BOOTSTRAP_KEY
+        message = (
+            f"{os.path.basename(abs_path)} declares dependencies that need Python "
+            f"{envinstall.SCRIPT_PYTHON_VERSION}, which this machine does not have "
+            "yet. It needs a one-time download, and then the packages themselves."
+        )
+    else:
+        key = envinstall.venv_key_for(requirements)
+        message = (
+            f"{os.path.basename(abs_path)} declares dependencies that are not "
+            f"installed yet: {', '.join(requirements)}. They need a one-time "
+            "download."
+        )
     return {
         "ok": False,
         "needs_install": {
-            "key": envinstall.venv_key_for(requirements),
+            "key": key,
             "requirements": requirements,
             "py": abs_path,
+            # So the loader can name what it is fetching instead of listing packages
+            # it is not downloading yet. Absent (not false) on the ordinary path, so
+            # a client that ignores it is unaffected.
+            **({"python": envinstall.SCRIPT_PYTHON_VERSION} if needs_python else {}),
         },
         "error": {
             "type": "EnvNotInstalled",
-            "message": (
-                f"{os.path.basename(abs_path)} declares dependencies that are not "
-                f"installed yet: {', '.join(requirements)}. They need a one-time "
-                "download."
-            ),
+            "message": message,
             "traceback": "",
         },
         "stdout": "",
@@ -899,10 +949,20 @@ async def run_python(path: str, params: dict) -> dict:
         # 500 whose body is `{"error": "<string>"}`, and runtime.js reads
         # `data.error.message` off that — so the diagnostic `_backend_attr` wrote
         # to be READ reached the user as the literal word `undefined`.
+        #
+        # Off the event loop, for the same reason `app_interpreter` above is: since
+        # D212 this is not a single `os.path.exists` any more — the first call for a
+        # given venv probes its interpreter with `subprocess.run(..., timeout=5)`.
+        # /api/run awaits this coroutine directly (`routers/run.py`), so inline that
+        # stalls the entire server — websockets, watcher, every other request — for
+        # the probe's duration, and a venv on a wedged mount would stall it for the
+        # full budget. `to_thread` re-raises in this frame, so the guard above still
+        # contains the ImportError/RuntimeError pair (pinned by a test, because "the
+        # exception now surfaces somewhere else" is exactly what a thread hop hides).
         if requirements:
             from fused_render import envinstall
 
-            if not envinstall.is_installed(requirements):
+            if not await asyncio.to_thread(envinstall.is_installed, requirements):
                 return _needs_install_dict(requirements, abs_path=abs_path)
 
         # build_code reads _binding.py's source off the package

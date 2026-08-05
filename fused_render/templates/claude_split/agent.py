@@ -15,11 +15,12 @@ win32 route where the POSIX one is absent or destructive (_DETACH, _alive,
 _cancel).
 
 Sessions are per-file. Every conversation started from this template is
-recorded in a sidecar next to the target file — `<file>.json`, e.g.
-`my-folder/sample.html` -> `my-folder/sample.html.json` — and the template
-lists ONLY the sessions in that sidecar, never the user's global session
-history. Claude runs with cwd = the target file's directory and an appended
-system prompt that scopes it (softly) to the file.
+recorded in a sidecar under home_dir()/sidecar/<mapped path>.json
+(D83-reversal, D205 — see shared/appenv.py's sidecar_path), never beside
+the target, and the template lists ONLY the sessions in that sidecar,
+never the user's global session history. Claude runs with cwd = the
+target file's directory and an appended system prompt that scopes it
+(softly) to the file.
 
 Tool approvals are the browser's to give: claude is spawned with a
 `--permission-prompt-tool` pointing at `permission_server.py` (a one-tool stdio
@@ -34,9 +35,12 @@ Actions:
       -> {"text": ..., "done": bool, "session_id": ..., "error": ..., "tokens": N,
           "phase": ..., "message": <the run's first message, for re-attach>,
           "permissions": [{"id", "tool", "input", "decision", "scope"}, ...],
+          "app_state": [{"id", "reason", "created_at"}, ...]  (unanswered only),
           "mode": <the mode this run is RUNNING in, not the picker's>}
   main(action="decide", run_id=..., request_id=..., decision="allow"|"deny",
        scope="once"|"session")        -> {"decided": ..., "decision": ...}
+  main(action="app_state", run_id=..., request_id=..., state=<json string>)
+                                      -> {"answered": ...}
   main(action="sessions", file=...)   -> {"sessions": [...]}   (sidecar only)
   main(action="history", file=..., session_id=...) -> {"turns": [...]}
   main(action="cancel", run_id=...)   -> {"cancelled": ...}
@@ -60,6 +64,7 @@ if "__file__" not in globals():
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(HERE), "shared"))
+from appenv import skill_plugin_dir as _skill_plugin_dir
 from appenv import workspace_dir as _workspace_dir
 from procutil import pid_alive as _pid_alive
 
@@ -85,6 +90,33 @@ def _runs_root() -> str:
 
 
 RUNS = _runs_root()
+
+# Where annotation screenshots land: a SIBLING of `runs`, not a child of a run
+# dir. The ordering is what forces it — annotations are captured and uploaded as
+# part of composing the outgoing message, and the run dir does not exist until
+# `_start` runs, which is strictly after. A per-run directory would mean either
+# writing the crops somewhere else first and moving them, or splitting `_start`
+# in two; a stable directory the page can ask for at any time is neither.
+#
+# Under our own 0700 root (never the user's project — a screenshot is not their
+# file), so the same privacy argument as the run dir covers it: another local
+# account cannot read the pixels of the app on this user's screen.
+#
+# It holds the app-state DOM outlines too, which the page writes here rather than
+# into the message (D217). Same kind of artifact under the same argument — a
+# private, short-lived record of what was on the user's screen, handed to the
+# agent and junk once the turn is over — and sharing this directory means one
+# 0700 enforcement, one pruner and one `Read(...)` rule rather than two of each.
+SHOTS = os.path.join(os.path.dirname(RUNS), "shots")
+
+# How long a crop is kept, and how many are kept at all. Both are cleanup, not
+# a quota: the page names the file it writes and the ONLY reader is the agent
+# reading a path out of one turn's message, so a crop stops mattering when its
+# conversation does. The TTL is generously longer than a session anyone would
+# keep scrolling back through, and the count is the backstop for a machine that
+# never idles long enough for the TTL to fire.
+SHOTS_TTL = 12 * 3600
+SHOTS_KEEP = 200
 
 # Claude Code's own data dir, and it must be the SAME one the CLI itself uses —
 # reading the wrong dir loses history and resume. CLAUDE_CONFIG_DIR wins where
@@ -119,6 +151,18 @@ _POSIX_CANDIDATES = ("~/.local/bin/claude", "/opt/homebrew/bin/claude",
 # an MCP tool as mcp__<server>__<tool>, so neither half may contain "__".
 PERMISSION_SERVER = "fused_approvals"
 PERMISSION_TOOL = "approve"
+# The same server's second tool, which the MODEL calls: "what is the app in the
+# left pane doing right now". Pre-allowed on the spawn line (see _start) —
+# carding a read of the page the user is already looking at would be a prompt
+# with no decision in it, once per edit.
+APP_STATE_TOOL = "app_state"
+# The delimiters the PAGE wraps its send-time snapshot in. Stripped from every
+# user-facing copy of a message (the run's `meta.json`, hence the sidecar
+# preview, the commit subject and a re-attach match — plus the restored
+# transcript in `_history`), because the user typed the message, not the block.
+# Duplicated in template.html, which writes it; a test asserts the two agree
+# (D146: a duplicated rule needs a test, not a comment).
+APP_STATE_TAG = "live-app-state"
 
 
 _DEFAULT_WAIT = 3600
@@ -216,6 +260,22 @@ def _claude_bin() -> str:
     )
 
 
+def _plugin_argv() -> list:
+    """`["--plugin-dir", <root>]` when fused-render has a skill plugin to hand
+    this session, else `[]`.
+
+    This is how a session we launch gets the fused-render skills with certainty
+    instead of hoping the user-level sync landed somewhere the CLI reads (D216).
+    The path (and the decision to pass it at all — see appenv) arrives through
+    the env contract, so `_start` neither imports the app nor shells out to
+    interrogate the CLI. A `--plugin-dir` load is session-scoped and additive:
+    the user's own skills, plugins, CLAUDE.md and settings are all untouched,
+    and a user who installed the published plugin themselves just sees the same
+    skills listed twice."""
+    root = _skill_plugin_dir()
+    return ["--plugin-dir", root] if root else []
+
+
 def _bad_id(value: str) -> bool:
     """Whether an id from the page is unsafe to join into a filesystem path.
 
@@ -249,37 +309,53 @@ def _system_prompt(file: str) -> str:
     )
 
 
+def _split_system_prompt() -> str:
+    """The DIRECTORY target's prompt. It says two things: what kind of project
+    this is, and that the app-state tool exists.
+
+    A tool the model is never told about is a tool it never calls, and the
+    tool's own description is not enough on its own — nothing in an ordinary
+    session suggests that the page being edited can be read back.
+
+    Naming fused-render is the other half, and it belongs HERE rather than being
+    left to the starter `CLAUDE.md`: that file is the user's, in their folder,
+    and a session opened on a project whose CLAUDE.md was edited away — or that
+    predates it — otherwise has nothing telling it the HTML in front of it is an
+    app with a Python bridge behind it. Same reliability argument as the skill
+    plugin (D216): the thing the model must know cannot depend on a file we do
+    not own. Still deliberately short of the file-scoping prompt above, which the
+    directory branch of `_start` exists to avoid (see the comment there) — this
+    says what the project IS, not what to work on.
+    """
+    tool = "mcp__%s__%s" % (PERMISSION_SERVER, APP_STATE_TOOL)
+    return (
+        "This is a fused-render project: its HTML is an app fused-render serves, "
+        "calling local Python through fused-render's bridge rather than a server "
+        "you write. The `fused-render-authoring` skill documents that bridge — "
+        "use it rather than inferring the API. "
+        "The user sees the app rendered live beside this chat. "
+        f"`{tool}` reports what that page is doing now: console errors, URL "
+        "params, a DOM outline. Call it after any change that affects the page "
+        "(it reloads itself — this is how you see whether the change worked), "
+        "and whenever the user reports something visibly wrong. A "
+        f"<{APP_STATE_TAG}> block on their message is the same reading taken at "
+        "send time; it carries the outline either inline or as a `dom_path` to "
+        "read, and goes stale as soon as you edit anything."
+    )
+
+
 # ------------------------------------------------------------- sidecar store
 
 def _sidecar_path(file: str) -> str:
-    # A folder target keeps its session index INSIDE the folder under a
-    # reserved dotfile name. `<folder>.json` as a sibling would collide with
-    # ordinary user files (a `todo` project beside a real `todo.json`), and
-    # the first turn would treat that data file as the session index and
-    # rewrite it. File targets keep the classic `<file>.json` sibling.
-    if os.path.isdir(file):
-        return os.path.join(file, ".claude-split.json")
-    return file + ".json"
-
-
-def _mount_read_only(file: str) -> bool:
-    """True when `file` sits under a read-only remote mount, where the sidecar
-    write can never be accepted — with CacheMode=full the doomed upload lands
-    in the VFS cache and 403-loops forever (the sidecar-write incident).
-
-    Answered through `shared/appenv` (FUSED_RENDER_RO_MOUNTS, which the shell
-    re-exports on every mount-store write) and NOT by importing fused_render:
-    this file runs as a child process, and under the fused engine a child has no
-    PYTHONPATH, so the old `from fused_render.shell.mounts import ...` failed on
-    every run there and a read-only mount looked writable. os.access(W_OK) is no
-    substitute — it cannot see a remote's read-only-ness — so only the shell's
-    flag can answer this. Still guarded: a copy of this folder taken without its
-    `shared/` sibling degrades to False, the pre-guard behavior."""
-    try:
-        from appenv import mount_read_only
-        return mount_read_only(file)
-    except Exception:
-        return False
+    # home_dir()/sidecar/<mapped path>.json (D83-reversal, D205), never a
+    # sibling of the target. A folder target used to keep its session index
+    # INSIDE the folder under a reserved dotfile name — `<folder>.json` as a
+    # sibling would have collided with an ordinary user file (a `todo` project
+    # beside a real `todo.json`) — but that collision risk doesn't exist once
+    # the sidecar lives in its own tree under home_dir(), so a directory target
+    # maps through the exact same function as a file target.
+    from appenv import sidecar_path
+    return sidecar_path(file)
 
 
 def _load_sidecar(file: str) -> dict:
@@ -303,6 +379,7 @@ def _load_sidecar(file: str) -> dict:
 
 def _save_sidecar(file: str, data: dict) -> None:
     path = _sidecar_path(file)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), suffix=".tmp")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
@@ -326,14 +403,11 @@ def _record_session(file: str, session_id: str, message: str,
     stays one row. `cwd` tracks where the transcript lives so a moved file
     can migrate it (see _migrate_session); refreshed every turn.
 
-    No-op when `file` is inside a read-only remote mount: the sidecar write
-    can't be accepted there (the sidecar-write incident). The chat and its
-    transcript (~/.claude/projects) are unaffected — only this file's session
-    list stays empty, so past conversations won't be listed/resumable from the
-    template UI for a mounted file.
+    No mount-read-only check anymore (D83-reversal, D205): the sidecar lives
+    under home_dir()/sidecar/ now, never on `file`'s own mount, so a
+    read-only remote source no longer has any bearing on whether its sidecar
+    can be written.
     """
-    if _mount_read_only(file):
-        return
     data = _load_sidecar(file)
     now = time.time()
     cwd = _workdir(file)
@@ -364,9 +438,11 @@ def _munge(path: str) -> str:
 
 def _migrate_session(file: str, session_id: str) -> None:
     """Copy-on-resume: claude's --resume only finds transcripts under the
-    CURRENT cwd's project dir, so when the target file (plus sidecar) has
-    been moved, copy the transcript from the sidecar's recorded `cwd` into
-    the new directory's project dir. No-op when it is already there; never
+    CURRENT cwd's project dir, so when the target file has moved (and its
+    sidecar's mapped location along with it, purely by recomputation — the
+    sidecar itself never physically moves), copy the transcript from the
+    sidecar's recorded `cwd` into the new directory's project dir. No-op
+    when it is already there; never
     overwrites an existing destination (the destination is where new turns
     append — it is always the newer copy). Best-effort: any failure just
     means claude reports the session as not found."""
@@ -405,6 +481,15 @@ def _migrate_session(file: str, session_id: str) -> None:
 
 def _perm_dir(run_dir: str) -> str:
     return os.path.join(run_dir, "perm")
+
+
+def _state_dir(run_dir: str) -> str:
+    """Where `app_state` requests park — a SIBLING of `perm/`, never inside it.
+
+    The page renders every request file in the perm dir as an approval card,
+    and a snapshot read is not something to click: sharing the directory would
+    put a card with no decision in it on screen once per edit."""
+    return os.path.join(run_dir, "appstate")
 
 
 def _within_our_tree(path: str) -> bool:
@@ -511,9 +596,152 @@ def _private_open(path: str):
         "w", encoding="utf-8")
 
 
+# ---------------------------------------------------- annotation screenshots
+
+def _wire_path(path: str) -> str:
+    """The ONE spelling of a shots path: forward slashes, on every platform.
+
+    Two places name this directory and they have to name it identically — the
+    `Read(//…/**)` rule on the spawn line, and the crop paths the page puts in
+    the annotation JSON — because the CLI matches a rule as TEXT, not as a
+    resolved path (see `_read_rule`). On POSIX they agreed by accident. On
+    Windows `SHOTS` comes off `os.path.join`, so the rule (which has always
+    normalised) said `C:/Users/a/shots` while the page, joining with the
+    separator it read off the directory, produced `C:\\Users\\a\\shots\\x.png`:
+    the rule matched nothing, every crop raised a card, and the whole
+    pre-approval was defeated.
+
+    Forward slashes is the form that wins rather than backslashes because the
+    crop is WRITTEN through `/api/fs/upload`, whose only requirement on the path
+    is `os.path.isabs` — and Windows' `ntpath` accepts either separator, as does
+    `open`. So one spelling satisfies both the rule and the write, and the page
+    can join with a plain `/` instead of guessing a platform.
+    """
+    return path.replace("\\", "/")
+
+
+def _read_rule(path: str) -> str:
+    """A `Read(...)` permission rule scoped to everything under `path`.
+
+    The DOUBLE slash is load-bearing and is the whole reason this is a function
+    with a comment rather than an f-string at the call site: the CLI reads a
+    rule path as relative unless it starts with `//`, so `Read(/tmp/x/**)`
+    silently matches nothing and every crop raises a card. Verified against
+    claude 2.1.221 — `Read(//<abs>/**)` allows a read under it and a sibling
+    directory is still refused.
+
+    The rule has to name the path in the SAME form the agent will be handed
+    (this is the dir string the page puts in the message), because the CLI
+    matches the text, not the resolved inode: a rule spelled with macOS'
+    `/private/var/...` does not match a read of `/var/...` even though they are
+    one directory. `tempfile.gettempdir()` is where both come from, so they
+    agree by construction — and `_wire_path` is the single normalisation both
+    this rule and the path handed to the page go through, so the separator
+    cannot differ between them either."""
+    return "Read(//%s/**)" % _wire_path(path).lstrip("/")
+
+
+def _prune_shots() -> None:
+    """Drop crops nobody will read again. Best-effort throughout: this is
+    housekeeping on a temp directory, and no failure here is worth refusing the
+    user a screenshot over."""
+    try:
+        names = os.listdir(SHOTS)
+    except OSError:
+        return
+    now = time.time()
+    aged = []
+    for name in names:
+        path = os.path.join(SHOTS, name)
+        try:
+            mtime = os.lstat(path).st_mtime
+        except OSError:
+            continue
+        aged.append((mtime, path))
+    stale = [p for m, p in aged if now - m > SHOTS_TTL]
+    # Oldest first, so what survives the count cap is the recent conversation.
+    aged.sort()
+    excess = [p for _m, p in aged[:max(0, len(aged) - SHOTS_KEEP)]]
+    for path in set(stale) | set(excess):
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+
+
+def _shots_dir() -> dict:
+    """Ensure the screenshot directory exists and hand its path to the page.
+
+    Unlike a run dir this one is SHARED and long-lived, so an existing directory
+    is adopted rather than refused — but only after `_require_private` vouches
+    for it, which is the same check `_private_dir` runs on the parents it did not
+    create. A directory another account planted here would otherwise let them
+    read every crop, and the crops are pictures of the user's screen.
+
+    Two failure shapes, deliberately different:
+
+      a REFUSAL (`_require_private` raising) propagates. Somebody else's
+        directory is here, and that is worth failing loudly over — an attacker
+        who plants it can deny the user screenshots, which is not a disclosure.
+      an ordinary OSError becomes an error DICT. A full disk or a file in the way
+        means no screenshots, and the page degrades to sending the annotations
+        without them. It must never mean no message.
+    """
+    if os.path.isdir(SHOTS):
+        _require_private(SHOTS)
+        # `_require_private` refuses a directory others can WRITE to, which is the
+        # right test for a parent we did not create. It is not enough for this
+        # leaf: a crop is a picture of the user's screen, so others must not be
+        # able to READ it either. Tightened rather than refused because we own it
+        # (that is what _require_private just established) and it holds nothing
+        # but our own crops — the argument that stops us chmod'ing the temp root
+        # does not apply to our own directory.
+        #
+        # Skipped entirely where there are no mode bits to reason about, on the
+        # same grounds `_require_private` skips its uid check there: Windows has
+        # no uid model and its temp dir is already per-user, and `os.chmod` can
+        # only move the read-only flag, so enforcing 0700 there would refuse
+        # every Windows user their screenshots for a permission model that does
+        # not exist.
+        if hasattr(os, "geteuid"):
+            try:
+                mode = stat.S_IMODE(os.lstat(SHOTS).st_mode)
+                if mode & ~0o700:
+                    os.chmod(SHOTS, 0o700)
+                    # Re-read rather than trust the call: an ACL, or a filesystem
+                    # that does not carry unix modes, can accept a chmod and keep
+                    # the bits exactly where they were.
+                    mode = stat.S_IMODE(os.lstat(SHOTS).st_mode)
+            except OSError as e:
+                return {"error": "could not secure the screenshot directory: %s" % e}
+            if mode & ~0o700:
+                # REFUSE, rather than write crops into a directory we have just
+                # proved others can read. This is the asymmetry stated two
+                # paragraphs up, applied to the case where the fix fails: denial
+                # costs the user their screenshots, adopting costs them pictures
+                # of their screen.
+                return {"error": "the screenshot directory is readable by others "
+                                 "(mode %04o) and could not be tightened" % mode}
+    else:
+        try:
+            _private_dir(SHOTS)
+        except FileExistsError:
+            # Another page asked at the same moment. Theirs is fine if it is
+            # ours; _require_private is what decides that (and raises if not).
+            _require_private(SHOTS)
+        except OSError as e:
+            return {"error": "could not prepare the screenshot directory: %s" % e}
+    _prune_shots()
+    # `_wire_path`, not the raw join: this string is what the page joins crop
+    # names onto, and it has to be spelled the way the Read rule spells it.
+    return {"dir": _wire_path(SHOTS)}
+
+
 def _write_mcp_config(run_dir: str) -> str:
     """The one-server MCP config that makes the chat window the permission
-    prompt, written into the run dir. Returns its path (for --mcp-config).
+    prompt AND the app's own eyes (`app_state`), written into the run dir.
+    Returns its path (for --mcp-config). Each channel gets its own directory in
+    argv — see _state_dir for why they are not one.
 
     The server path comes off HERE, not a fresh `__file__` read: under the
     optional fused engine (D69) this module is `exec`'d into a namespace that
@@ -527,7 +755,7 @@ def _write_mcp_config(run_dir: str) -> str:
             # sys.executable, matching how the app spawns every other helper
             # (executor.py): in the packaged .app that is the bundled python.
             "command": sys.executable,
-            "args": [server, _perm_dir(run_dir)],
+            "args": [server, _perm_dir(run_dir), _state_dir(run_dir)],
             "env": {"FUSED_RENDER_PERMISSION_TIMEOUT": str(PERMISSION_WAIT)},
             # Hard per-call ceiling for this server, and a permission card is a
             # tool call that lasts as long as the user takes to look at it. Set
@@ -726,11 +954,114 @@ def _live_mode(meta: dict, permissions: list) -> str:
 
 def _deny_pending(run_dir: str, reason: str) -> None:
     """Release every unanswered request so the blocked claude subprocess stops
-    waiting on a window that is not coming back."""
+    waiting on a window that is not coming back.
+
+    Both kinds: an `app_state` read blocks the subprocess exactly like an
+    approval does, so releasing only the approvals leaves a cancelled run
+    parked for the app-state timeout with nobody left to answer it."""
     for perm in _permissions(run_dir):
         if not perm["decision"]:
             _write_decision(_perm_dir(run_dir), perm["id"],
                             {"decision": "deny", "reason": reason})
+    _expire_app_state(run_dir, reason)
+
+
+# --------------------------------------------------------- live app state
+# The split view's second channel: the agent asks the page what the app in the
+# left pane is doing (console errors, params, a DOM outline) through the same
+# request-file round trip approvals use. Requests land in `appstate/`, the page
+# answers them from its poll loop, and there is no card — this is a read of the
+# user's own screen for the agent they are already talking to.
+
+_APP_STATE_BLOCK = re.compile(
+    r"<%s>.*?</%s>\s*" % (APP_STATE_TAG, APP_STATE_TAG), re.DOTALL)
+
+
+def _strip_app_state(text: str) -> str:
+    """`text` without any pushed app-state block. Non-greedy and anchored on
+    the closing tag, so text that merely mentions the tag survives intact."""
+    return _APP_STATE_BLOCK.sub("", text or "").strip()
+
+
+def _app_state_requests(run_dir: str) -> list:
+    """The app-state requests still waiting for an answer.
+
+    UNLIKE `_permissions`, only the unanswered ones: there is no card to
+    rebuild, so a re-attaching page has nothing to learn from an answered
+    request — and replaying it would invite a second answer to a request whose
+    latch is already closed."""
+    state_dir = _state_dir(run_dir)
+    try:
+        names = sorted(n for n in os.listdir(state_dir) if n.endswith(".req.json"))
+    except OSError:
+        return []
+    out = []
+    for name in names:
+        try:
+            with open(os.path.join(state_dir, name), encoding="utf-8") as fh:
+                req = json.load(fh)
+        except (OSError, json.JSONDecodeError):
+            continue  # half-written; the next poll gets it
+        if not isinstance(req, dict) or _bad_id(str(req.get("id") or "")):
+            continue
+        if _read_decision(state_dir, req["id"]):
+            continue
+        out.append({"id": req["id"],
+                    "reason": str(req.get("reason") or ""),
+                    "created_at": req.get("created_at") or 0})
+    return out
+
+
+def _answer_app_state(run_id: str, request_id: str, state: str) -> dict:
+    """Hand the page's snapshot to the waiting tool call.
+
+    Same first-writer-wins latch as a decision (`_write_decision` writes the
+    `.res.json` either way), because the same two races apply: the server's own
+    timeout may have landed first, and a re-attaching page may answer twice.
+
+    Every error carries `retry`, saying whether trying again could ever help —
+    the page keys on that flag rather than on the wording. A write that did not
+    reach disk is worth another poll (the window is alive and willing, the tool
+    call is still blocked); an unknown run or request never will be, and a page
+    retrying one every 400 ms until the run ends is strictly worse than a page
+    that lets the tool's own timeout settle it.
+    """
+    run_dir = os.path.join(RUNS, run_id)
+    if _bad_id(run_id) or not os.path.isdir(run_dir):
+        return {"error": "unknown run_id", "retry": False}
+    if _bad_id(request_id):
+        return {"error": "unknown app-state request", "retry": False}
+    state_dir = _state_dir(run_dir)
+    if not os.path.isfile(os.path.join(state_dir, request_id + ".req.json")):
+        return {"error": "unknown app-state request", "retry": False}
+    try:
+        snapshot = json.loads(state) if state else None
+    except (TypeError, ValueError):
+        snapshot = None
+    if isinstance(snapshot, dict):
+        payload = {"state": snapshot}
+    else:
+        # An empty snapshot would read as a page with nothing wrong with it,
+        # which is the one wrong answer here: say the read failed instead.
+        payload = {"error": "the window could not read the app's state"}
+    # Never claim an answer the tool cannot read. `_write_decision` reports False
+    # for a write that raised and left nothing behind (a full disk being the
+    # ordinary cause), and discarding that told the page "answered" while the
+    # tool call stayed blocked for its whole timeout — the same bug `_decide`
+    # avoids by reading its verdict back instead of trusting the write.
+    if not _write_decision(state_dir, request_id, payload):
+        return {"error": "could not record the window's answer", "retry": True}
+    return {"answered": request_id}
+
+
+def _expire_app_state(run_dir: str, reason: str) -> None:
+    """Release every unanswered app-state request. Called when the run is
+    cancelled and when a poll first sees it finished: the page's poll loop stops
+    with the run, so from that moment nothing will ever answer one."""
+    for req in _app_state_requests(run_dir):
+        _write_decision(_state_dir(run_dir), req["id"],
+                        {"error": "the reply ended before the window answered "
+                                  "(%s)" % reason})
 
 
 # ----------------------------------------------------------------- start/poll
@@ -761,6 +1092,7 @@ def _start(file: str, message: str, session_id: str, model: str,
     run_dir = os.path.join(RUNS, run_id)
     _private_dir(run_dir)
     _private_dir(_perm_dir(run_dir))
+    _private_dir(_state_dir(run_dir))
 
     # An unknown mode falls back to the strictest of the three rather than
     # erroring: a mangled param must not quietly buy more auto-approval than
@@ -796,13 +1128,38 @@ def _start(file: str, message: str, session_id: str, model: str,
            # ExitPlanMode, which the CLI otherwise disables in headless mode.
            # This chat renders neither a question picker nor a plan dialog, so
            # keep them off: the change is about tool approvals and nothing else.
-           "--disallowed-tools", "AskUserQuestion,ExitPlanMode"]
-    # A FILE target gets the scoping system prompt. A DIRECTORY target (the
-    # claude_split app template) deliberately does NOT: the session should be
-    # plain Claude Code in that project — the user's own system prompt,
-    # CLAUDE.md, skills and tools — with cwd (_workdir) as the only scoping.
-    if not os.path.isdir(file):
-        cmd += ["--append-system-prompt", _system_prompt(file)]
+           "--disallowed-tools", "AskUserQuestion,ExitPlanMode",
+           # Two pre-allowances, and they are the only ones — everything else
+           # still raises a card. Both are the same thing in different clothes:
+           # looking at the app the user is looking at.
+           #
+           #   the app_state tool — an MCP tool otherwise raises a card, so every
+           #     app-state read would put a prompt on screen with no decision in
+           #     it, for a read of the user's own screen by the agent they are
+           #     already talking to.
+           #   Read of the SHOTS dir — an annotation carries the path of a PNG
+           #     crop of the element the user pointed at. The user attached it
+           #     deliberately; carding it would make them approve their own
+           #     screenshot. Scoped to that one directory, which holds nothing
+           #     else and is not the user's project.
+           #
+           # Narrow by construction: one fully-qualified tool name and one
+           # directory, and the prompt bridge stays wired for everything else.
+           "--allowed-tools",
+           f"mcp__{PERMISSION_SERVER}__{APP_STATE_TOOL}," + _read_rule(SHOTS)]
+    cmd += _plugin_argv()
+    # BOTH targets get an --append-system-prompt here, and they get different
+    # ones. A FILE target gets the scoping prompt. A DIRECTORY target (the
+    # claude_split app template) still does NOT get that one — the session
+    # should be plain Claude Code in that project, with the user's own system
+    # prompt, CLAUDE.md, skills and tools, and cwd (_workdir) as the only
+    # scoping — but it does get a narrow prompt of its own, whose entire job is
+    # to name the app_state tool. That is the exception to the rule this comment
+    # used to state absolutely: an un-announced tool does not get called, and
+    # the split view is the one target where seeing the running app is the point.
+    cmd += ["--append-system-prompt",
+            _split_system_prompt() if os.path.isdir(file)
+            else _system_prompt(file)]
     if cli_mode:
         cmd += ["--permission-mode", cli_mode]
     if session_id:
@@ -818,8 +1175,14 @@ def _start(file: str, message: str, session_id: str, model: str,
     # because nothing else can reconstruct it: the picker's URL param is what
     # the *next* turn will use, so reading that back mid-turn describes a
     # session that does not exist yet. See `_live_mode`.
+    # `message` here is the USER-FACING one: the page prepends a live-app-state
+    # block for the model, and everything fed from meta.json is a copy of what
+    # the user said — the sidecar preview, the commit subject, and the message a
+    # re-attaching page compares against the bubble on screen (which shows the
+    # typed text only, so an unstripped copy silently stopped matching). Stripped
+    # here, once, rather than at each of those three readers.
     with _private_open(os.path.join(run_dir, "meta.json")) as f:
-        json.dump({"file": file, "message": message,
+        json.dump({"file": file, "message": _strip_app_state(message),
                    "resumed_from": session_id, "mode": mode}, f)
 
     stdin_path = os.path.join(run_dir, "stdin.jsonl")
@@ -885,11 +1248,14 @@ def _commit_turn(file: str, message: str) -> None:
             capture_output=True, text=True, timeout=30, close_fds=False)
 
     try:
-        # Repos initialized before the sidecar patterns existed keep their old
-        # .gitignore, and this sweep's add -A would commit chat bookkeeping
-        # into app history. Mirror app_git._ensure_excludes: append missing
-        # patterns to the repo-local .git/info/exclude (never the user's
-        # .gitignore). Keep the pattern list in step with app_git._GITIGNORE.
+        # Legacy defense (D83-reversal, D205): sidecars now live under
+        # home_dir()/sidecar/, never inside the app dir, so a fresh repo never
+        # grows one of these files — but a repo from before the relocation may
+        # still have an old co-located sidecar sitting in its tree, and this
+        # sweep's add -A would commit it into app history. Mirror
+        # app_git._ensure_excludes: append missing patterns to the repo-local
+        # .git/info/exclude (never the user's .gitignore). Keep the pattern
+        # list in step with app_git._GITIGNORE.
         exclude = os.path.join(app_dir, ".git", "info", "exclude")
         if os.path.isdir(os.path.dirname(exclude)):
             try:
@@ -927,11 +1293,85 @@ def _alive(run_dir: str) -> bool:
         return False
 
 
+def _retry_info(row: dict):
+    """One `api_retry` row as the page's view of it, or None if unreadable.
+
+    The CLI retries an overloaded or rate-limited request on its own and reports
+    every attempt. `status` travels because 529 and 429 are different news for
+    the user — the API is swamped vs. we are being throttled — and so does
+    `max_retries`, because that budget is the CLI's and not ours to assume.
+    """
+    try:
+        return {"attempt": int(row["attempt"]),
+                "max_retries": int(row.get("max_retries") or 0),
+                "delay_ms": int(row.get("retry_delay_ms") or 0),
+                "status": int(row.get("error_status") or 0),
+                "error": str(row.get("error") or "")}
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def _overload_error(error: str, info) -> str:
+    """`error` rewritten to say what actually happened, for a run that died with a
+    retry still in flight.
+
+    The raw text is "API Error: 529 Overloaded" — accurate, but it reads as a bug
+    in this app, says nothing about the attempts already spent on the user's
+    behalf, and gives no hint that waiting a moment IS the remedy. The original is
+    kept in parentheses because it is the part a bug report can be matched on.
+
+    `info` is the retry that was live when the end arrived, NOT the run's retry
+    tally. Keying off the tally was a bug: it survives a mid-turn retry that
+    SUCCEEDED, so a later unrelated failure — a crashed tool, a bad edit, an auth
+    error — was dressed up as an API overload and the real cause was buried. The
+    tally still rides in the payload for the page; it just cannot decide this.
+    """
+    if info is None or not error:
+        return error
+    status = info.get("status") or 0
+    spent = info.get("attempt") or 0
+    what = ("the API was overloaded" if status == 529
+            else "we were rate limited" if status == 429
+            else "the API call kept failing")
+    return ("Could not reach the API: %s, and %d retr%s did not clear it. "
+            "Trying again in a moment usually works. (%s)"
+            % (what, spent, "y" if spent == 1 else "ies", error))
+
+
+def _skill_calls(row: dict) -> list:
+    """The Skill invocations in one FINALIZED `assistant` row.
+
+    This row rather than the streamed `content_block_start` for the same call:
+    that one arrives with `input: {}` and the skill name only turns up as
+    `input_json_delta` fragments that would have to be reassembled, while this
+    one is already whole. Both are in the file, so reading only this one is also
+    what keeps a call from being reported twice.
+
+    A call whose name we cannot read is dropped rather than reported blank — an
+    empty note row in the log would say less than no row at all.
+    """
+    message = row.get("message")
+    content = message.get("content") if isinstance(message, dict) else None
+    if not isinstance(content, list):
+        return []
+    out = []
+    for block in content:
+        if not isinstance(block, dict) or block.get("type") != "tool_use":
+            continue
+        if block.get("name") != "Skill":
+            continue
+        skill = (block.get("input") or {}).get("skill")
+        if isinstance(skill, str) and skill and block.get("id"):
+            out.append({"id": str(block["id"]), "skill": skill})
+    return out
+
+
 def _poll(run_id: str) -> dict:
     run_dir = os.path.join(RUNS, run_id)
     if _bad_id(run_id) or not os.path.isdir(run_dir):
         return {"text": "", "done": True, "session_id": "", "error": "unknown run_id",
-                "permissions": []}
+                "permissions": [], "app_state": [], "skills": [], "retry": None,
+                "retry_total": 0, "retry_status": 0}
 
     text_parts = []
     result_text = None
@@ -942,6 +1382,11 @@ def _poll(run_id: str) -> dict:
     tokens_current = 0   # cumulative usage of the in-flight message
     phase = "thinking"
     pending_sep = False  # a message ended; separate it from the next one's text
+    skills = []          # Skill invocations, in call order (see _skill_calls)
+    retry = None         # the api_retry the request is sitting in RIGHT NOW
+    retry_total = 0      # how many retries this run has seen at all
+    retry_status = 0     # HTTP status of the last one (529 overloaded, 429 …)
+    gave_up = None       # the retry still in flight when the run ended badly
 
     try:
         lines = open(os.path.join(run_dir, "out.jsonl"), encoding="utf-8",
@@ -955,8 +1400,30 @@ def _poll(run_id: str) -> dict:
         except json.JSONDecodeError:
             continue  # half-written last line; next poll gets it
         t = row.get("type")
+        # Any of these means the request the retries were for went THROUGH.
+        # Rows are in file order, so anything the model produced after an
+        # `api_retry` ends it: the live retry state has to be transient, or the
+        # page would go on saying "retrying" for the rest of the turn — a lie
+        # for far longer than it was ever true. The TALLY below is deliberately
+        # not cleared; "this turn was retried four times" is what makes a final
+        # failure explainable.
+        if t in ("stream_event", "assistant", "result"):
+            # Kept for one row: a `result` clears the retry like anything else,
+            # so without this the terminal row would erase the very evidence that
+            # the run died mid-retry (see `gave_up` below).
+            was_retrying, retry = retry, None
+        else:
+            was_retrying = None
         if t == "system":
             new_session = row.get("session_id", new_session)
+            if row.get("subtype") == "api_retry":
+                info = _retry_info(row)
+                if info is not None:
+                    retry = info
+                    retry_total += 1
+                    retry_status = info["status"]
+        elif t == "assistant":
+            skills += _skill_calls(row)
         elif t == "stream_event":
             ev = row.get("event", {})
             et = ev.get("type")
@@ -989,6 +1456,15 @@ def _poll(run_id: str) -> dict:
             result_text = row.get("result")
             if row.get("is_error"):
                 error = str(result_text or "claude exited with an error")
+                # Only if the failure arrived DURING a retry. A retry earlier in
+                # the turn that then succeeded says nothing about why this ended.
+                gave_up = was_retrying
+
+    # Last word on the verb: a run sitting in a retry is not thinking, and
+    # saying so is the whole point — "Thinking…" with a frozen token count is
+    # indistinguishable from a hang, which is what an overload used to look like.
+    if retry is not None:
+        phase = "retrying"
 
     if not done and not _alive(run_dir):
         # Dead without a `result` row = abnormal exit (crash, OOM, cancel),
@@ -1003,6 +1479,12 @@ def _poll(run_id: str) -> dict:
             tail = ""
         error = tail or ("claude exited before completing the reply"
                          if text_parts else "claude exited unexpectedly")
+
+    # Both error paths above converge here: if the end arrived with a retry in
+    # flight then THAT is the story and the raw text does not tell it. `retry`
+    # covers the abnormal exit — a process killed mid-backoff never writes the
+    # `result` row that would have moved it into `gave_up`.
+    error = _overload_error(error, gave_up or retry)
 
     # Approvals, after `done` is final. A card the user never answered is only
     # still live while the run is: once it ends, whatever the request was
@@ -1027,6 +1509,17 @@ def _poll(run_id: str) -> dict:
         # A parked approval outranks whatever the stream last said it was
         # doing: the run is not thinking, it is waiting on the user.
         phase = "awaiting"
+
+    # App-state reads, same shape but a different audience: nobody is asked
+    # anything, so they never set `phase`. Released once the run is over for the
+    # same reason a leftover card is expired — the page's poll loop stops with
+    # the run, so from here on no answer can arrive and the blocked subprocess
+    # (if it somehow outlives us) would wait out the full app-state timeout.
+    if done:
+        _expire_app_state(run_dir, "the run finished")
+        app_state = []
+    else:
+        app_state = _app_state_requests(run_dir)
 
     # The run's own first message rides back on every poll so a re-attaching
     # page (mode switch / reload killed the poll loop, subprocess kept going)
@@ -1080,7 +1573,9 @@ def _poll(run_id: str) -> dict:
     return {"text": text, "done": done, "session_id": new_session, "error": error,
             "tokens": tokens_done + tokens_current, "phase": phase,
             "message": meta.get("message", ""), "permissions": permissions,
-            "mode": _live_mode(meta, permissions)}
+            "app_state": app_state, "mode": _live_mode(meta, permissions),
+            "skills": skills, "retry": retry, "retry_total": retry_total,
+            "retry_status": retry_status}
 
 
 # ------------------------------------------------------- sessions & history
@@ -1128,6 +1623,11 @@ def _history(file: str, session_id: str) -> dict:
             else:
                 text = "\n".join(b.get("text", "") for b in content
                                  if isinstance(b, dict) and b.get("type") == "text")
+            # The transcript holds what claude was SENT, so a pushed app-state
+            # block comes back on every restore. The user never typed it and
+            # never saw it — showing them a screenful of JSON they don't
+            # recognise is the whole reason it is stripped here.
+            text = _strip_app_state(text)
             if text.strip() and not text.startswith(("<local-command", "<command-name")):
                 turns.append({"role": "user", "text": text})
         elif role == "assistant" and isinstance(content, list):
@@ -1183,7 +1683,8 @@ def _cancel(run_id: str) -> dict:
 def main(action: str = "start", file: str = "", message: str = "",
          session_id: str = "", model: str = "", effort: str = "",
          run_id: str = "", request_id: str = "", decision: str = "",
-         scope: str = "once", permission_mode: str = "", mode: str = "") -> dict:
+         scope: str = "once", permission_mode: str = "", mode: str = "",
+         state: str = "") -> dict:
     if action == "start":
         if not file:
             return {"error": "missing target file (no _file param?)"}
@@ -1194,6 +1695,11 @@ def main(action: str = "start", file: str = "", message: str = "",
         return _poll(run_id)
     if action == "decide":
         return _decide(run_id, request_id, decision, scope, mode)
+    if action == "app_state":
+        # `state` arrives as a JSON string, not a nested object: params reach
+        # main() through the URL/param binder (str-shaped), and the snapshot is
+        # the page's own structure — nothing here reads inside it.
+        return _answer_app_state(run_id, request_id, state)
     if action == "sessions":
         if not file:
             return {"error": "missing target file (no _file param?)"}
@@ -1202,6 +1708,10 @@ def main(action: str = "start", file: str = "", message: str = "",
         if not file:
             return {"error": "missing target file (no _file param?)"}
         return _history(file, session_id)
+    if action == "shots_dir":
+        # Asked for by the page BEFORE it composes a message, because that is
+        # when it has crops to upload — see SHOTS for why this is not a run dir.
+        return _shots_dir()
     if action == "cancel":
         return _cancel(run_id)
     return {"error": f"unknown action: {action}"}

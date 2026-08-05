@@ -20,6 +20,19 @@
  *                page can branch on where it runs and gate any local-only behaviour
  *                when deployed. See docs/EXPORT.md.
  *
+ * `window.fused` is the DOCUMENTED public bridge (docs/EXPORT.md's portable-subset
+ * table) — every user-authored template writes against it, so anything added here
+ * is a contract kept forever, mirrored by the separate hosted stub (the `fused`
+ * wheel's own copy of this file). The per-file sidecar's location mapping
+ * (window._fusedSidecarPath / window._fusedTargetPathFromSidecarPath, below) is
+ * deliberately NOT on `fused`: it is app-internal bookkeeping — the exact JSON file
+ * five other built-in features read-merge-write (claudeSessions/bookmarkHistory/
+ * comments/...) — not a general-purpose "store a file next to mine" feature, and a
+ * third-party template calling writeFile on it directly would clobber that file
+ * wholesale instead of merging. Built-in templates reach it as a plain global
+ * because they run in the same window this script is injected into; it is not
+ * present in the hosted runtime and is not meant to be.
+ *
  * Same-origin iframe model: this script talks to an ancestor window's URL
  * directly (no postMessage bridge — see DECISIONS.md D3/D4). The param target
  * is the TOPMOST same-origin ancestor (D46), stopping BELOW any ancestor
@@ -564,6 +577,88 @@
   // single entry that the first call to settle deletes.
   const installing = new Map();
 
+  // The indeterminate bar (D213). The worker parks at pct 25 for the WHOLE download
+  // — `ensure_requirements_venv` runs uv behind captured output, so there is no
+  // per-package progress to report — and a bar sitting at 25% for four minutes reads
+  // as frozen, which is what users reported. An indeterminate bar says the true
+  // thing: this is alive, and its remaining time is unknown.
+  //
+  // Keyframes need a stylesheet (the overlay is otherwise built from inline styles,
+  // which cannot express an animation), so one <style> is injected on first use and
+  // found by id afterwards — a per-install copy would pile up in `head` over a
+  // session. Injected here rather than at module load because a page that never
+  // installs anything should not carry it.
+  const INSTALL_BAR_STYLE_ID = "fused-install-bar-style";
+  const INSTALL_BAR_ANIM = "fused-install-sweep";
+
+  function ensureInstallBarStyle() {
+    if (document.getElementById(INSTALL_BAR_STYLE_ID)) return;
+    const style = document.createElement("style");
+    style.id = INSTALL_BAR_STYLE_ID;
+    style.textContent =
+      "@keyframes " + INSTALL_BAR_ANIM + "{" +
+      "0%{transform:translateX(-110%)}100%{transform:translateX(410%)}}";
+    document.head.appendChild(style);
+  }
+
+  // `dataset.indeterminate` is the DOM-observable contract: the tests assert on it,
+  // because no headless test can see whether an animation LOOKS right.
+  function installBarIndeterminate(ui, on) {
+    const bar = ui.bar;
+    if (on) {
+      if (bar.dataset.indeterminate === "1") return; // never restart the sweep
+      ensureInstallBarStyle();
+      bar.dataset.indeterminate = "1";
+      // A narrow fill that travels, rather than a width that grows: `transition` is
+      // turned off first, or the jump to 30% animates as if it were progress.
+      bar.style.transition = "none";
+      bar.style.width = "30%";
+      bar.style.animation = INSTALL_BAR_ANIM + " 1.1s ease-in-out infinite";
+    } else {
+      if (bar.dataset.indeterminate !== "1") return;
+      delete bar.dataset.indeterminate;
+      bar.style.animation = "";
+      bar.style.transition = "width 0.3s ease";
+    }
+  }
+
+  // Paint one progress record. Module-scope (not a closure inside installEnv) so the
+  // stage-to-bar rule has exactly one definition and can be driven directly by a
+  // test; `notice` is installEnv's sticky message, which must outrank the record's
+  // own detail (see the `notice` comment there).
+  function paintInstall(ui, prog, notice) {
+    if (!prog) return;
+    ui.detail.textContent = notice || prog.detail || prog.stage || "";
+    // Both long steps are indeterminate, for the same reason: `install` runs uv
+    // behind captured output, and `python` (D214, the interpreter download) captures
+    // it too, so neither has a percentage to report. Listed rather than inferred from
+    // pct, because a stage that legitimately sits at one number is exactly what an
+    // indeterminate bar is for — and a stage added later without a decision here
+    // should render as a plain bar, not silently inherit the sweep.
+    if ((prog.stage === "install" || prog.stage === "python") && !prog.done) {
+      installBarIndeterminate(ui, true);
+      return;
+    }
+    installBarIndeterminate(ui, false);
+    if (typeof prog.pct === "number") ui.bar.style.width = prog.pct + "%";
+  }
+
+  // Act on this needs_install, or fail? The rule is PROGRESS, not a count: a key we
+  // have not installed yet is a new thing to install, and the same key coming back
+  // after we installed it means nothing changed — the real loop, and one clear
+  // failure beats installing forever.
+  //
+  // A boolean "already installed once" is what this replaces, and it was wrong as
+  // soon as a run could legitimately need two rounds: with no pinned Python on this
+  // machine the first install is the interpreter and the packages follow, each under
+  // its own key (D214), so the second — correct — round died as "something disagrees
+  // about the venv key". Named and at module scope for the same reason `paintInstall`
+  // is: one definition of a subtle rule, directly testable, rather than a condition
+  // buried in a promise chain.
+  function shouldInstall(need, installed) {
+    return Boolean(need && need.key) && !installed.has(need.key);
+  }
+
   function installOverlay() {
     if (installUi) return installUi;
     const el = document.createElement("div");
@@ -607,9 +702,23 @@
       document.body.appendChild(ui.el);
       ui.mounted = true;
     }
-    ui.title.textContent = "Installing " + (need.requirements || []).join(", ");
-    ui.detail.textContent = "starting…";
-    ui.bar.style.width = "0%";
+    // Name what is actually being fetched. On the interpreter round (D214) the
+    // packages are NOT downloading yet, and titling that round with their names is
+    // the kind of small lie that makes a four-minute wait feel broken — the user
+    // watches "Installing tensorflow" and nothing about tensorflow is happening.
+    ui.title.textContent = need.python
+      ? "Installing Python " + need.python
+      : "Installing " + (need.requirements || []).join(", ");
+    // Deliberately NOT "starting…" at 0%. `/api/env/install` JOINS an install
+    // already in flight rather than duplicating it, so re-opening a page whose
+    // download is four minutes old used to paint 0% and then jump to 25% on the
+    // first poll — nothing was lost, but a user switching between apps saw
+    // 0% → 25% → freeze over and over and concluded it was looping. The initial
+    // state therefore asserts no percentage at all: indeterminate until the
+    // server's own record arrives (installEnv paints the POST response, which
+    // carries it), so the first honest paint is the only paint.
+    ui.detail.textContent = "contacting the installer…";
+    installBarIndeterminate(ui, true);
     return ui;
   }
 
@@ -679,11 +788,7 @@
     };
     ui.cancel.addEventListener("click", onCancel);
 
-    const paint = (prog) => {
-      if (!prog) return;
-      ui.detail.textContent = notice || prog.detail || prog.stage || "";
-      if (typeof prog.pct === "number") ui.bar.style.width = prog.pct + "%";
-    };
+    const paint = (prog) => paintInstall(ui, prog, notice);
 
     const poll = () =>
       fetch("/api/env/progress?key=" + encodeURIComponent(activeKey), {
@@ -794,9 +899,16 @@
         signal: controller.signal,
       }).then((res) => res.json());
 
-    // `installed` guards against a loop: if the run still reports needs_install
-    // after a successful install, something disagrees about the venv key, and
-    // one clear failure beats installing forever.
+    // `installed` guards against a loop, and holds the KEYS already installed
+    // rather than a boolean because a run can legitimately need two rounds: with no
+    // pinned Python on this machine the first install is the interpreter and the
+    // packages follow (D214), each under its own key. A boolean would fail that
+    // second, correct round with "something disagrees about the venv key".
+    //
+    // The rule is progress, not a count: a needs_install naming a key we have not
+    // installed yet is a new thing to install, and the SAME key coming back after we
+    // installed it means nothing changed — which is the real loop, and still one
+    // clear failure rather than installing forever.
     const handle = (data, installed) => {
       if (data.stdout) {
         console.log("[python]", data.stdout);
@@ -805,9 +917,10 @@
       // broken py that gets fixed must still trigger a reload. Read before
       // the ok check so it's recorded either way.
       if (data.resolved_py) watchPath(data.resolved_py);
-      if (data.needs_install && !installed) {
+      if (shouldInstall(data.needs_install, installed)) {
+        installed.add(data.needs_install.key);
         return installEnv(data.needs_install, pyPath, ownPath).then(() =>
-          attempt().then((next) => handle(next, true))
+          attempt().then((next) => handle(next, installed))
         );
       }
       if (!data.ok) {
@@ -821,7 +934,7 @@
     };
 
     return attempt()
-      .then((data) => handle(data, false))
+      .then((data) => handle(data, new Set()))
       .then(
         (result) => {
           cleanup();
@@ -935,6 +1048,81 @@
         if (!res.ok) throw new Error((data && data.error) || "HTTP " + res.status);
         return data;
       });
+  }
+
+  // ---- sidecar path mapping (D83-reversal) ---------------------------------
+  // INTERNAL ONLY — see the file header for why this is not on `window.fused`.
+  // Reached by built-in templates as window._fusedSidecarPath /
+  // window._fusedTargetPathFromSidecarPath, assigned alongside window.fused
+  // below.
+  //
+  // Every per-file sidecar now lives under sidecarRoot (~/.fused-render/
+  // sidecar/<mapped path>.json) instead of beside the target file. Mirrors
+  // fused_render/shell/storage.py's _sidecar_subpath — keep the two in step.
+  // A drive letter becomes its own single-letter folder, a UNC share nests
+  // under "unc/<server>/<share>/...", and a POSIX path just drops its
+  // leading "/". Case is preserved exactly throughout.
+  function _sidecarSubpath(absPath) {
+    const drive = /^([A-Za-z]):[\\/](.*)$/.exec(absPath);
+    if (drive) {
+      const tail = drive[2].replace(/\\/g, "/").replace(/^\/+/, "");
+      return drive[1].toUpperCase() + (tail ? "/" + tail : "");
+    }
+    const unc = /^\\\\([^\\]+)\\([^\\]+)(\\.*)?$/.exec(absPath);
+    if (unc) {
+      const tail = (unc[3] || "").replace(/\\/g, "/").replace(/^\/+/, "");
+      return "unc/" + unc[1] + "/" + unc[2] + (tail ? "/" + tail : "");
+    }
+    return absPath.replace(/^\/+/, "");
+  }
+
+  // The `<file>.json` sidecar's location for an absolute `file` path. Async:
+  // the mapping needs sidecarRoot, which arrives from the server's one-time
+  // /api/config fetch (see loadConfig/sidecarRoot above) — every template
+  // that used to build `file + ".json"` synchronously now awaits this once.
+  function sidecarPath(file) {
+    return loadConfig().then(() => {
+      if (typeof sidecarRoot !== "string") {
+        throw new Error("sidecar root unavailable (no /api/config response)");
+      }
+      return sidecarRoot + "/" + _sidecarSubpath(file) + ".json";
+    });
+  }
+
+  // Inverse of sidecarPath, for the history/inspector view (HV-3): given a
+  // path that MAY be a sidecar location (a user can navigate to one
+  // directly), the target file it belongs to — or null if `path` isn't
+  // under sidecarRoot. Heuristic on this host's own path shape, same as the
+  // forward mapping: a leading single-letter segment is a drive, a leading
+  // "unc" segment is a share, anything else is POSIX — meaningful only for a
+  // path this same host's sidecarPath could have produced.
+  //
+  // Windows-shaped segments (drive letter / "unc") are only ever real on a
+  // Windows host — gated on sidecarRoot's OWN shape, not just a segment's
+  // length, so a real POSIX top-level dir that happens to be one letter long
+  // (e.g. a real "/a/file.txt", subpath "a/file.txt") is never misread as a
+  // drive letter on a POSIX host. A Windows home can itself be a UNC path
+  // (a roaming profile on a network share) — canonical_fs_path only
+  // normalizes a DRIVE-letter path (backslash is a legal POSIX filename
+  // character, so a UNC root stays backslashed on purpose, same as a POSIX
+  // one) — so drive-letter-shaped is not the only Windows shape sidecarRoot
+  // can take; a leading "\\\\" is the other (Bugbot).
+  function targetPathFromSidecarPath(path) {
+    return loadConfig().then(() => {
+      if (typeof sidecarRoot !== "string") return null;
+      if (path.indexOf(sidecarRoot + "/") !== 0 || !/\.json$/i.test(path)) return null;
+      const rel = path.slice(sidecarRoot.length + 1, -".json".length);
+      const parts = rel.split("/");
+      const windowsHost = /^[A-Za-z]:/.test(sidecarRoot) || /^\\\\/.test(sidecarRoot);
+      if (windowsHost && parts[0] && parts[0].length === 1 && /[A-Za-z]/.test(parts[0])) {
+        return parts[0].toUpperCase() + ":\\" + parts.slice(1).join("\\");
+      }
+      if (windowsHost && parts[0] === "unc" && parts.length >= 3) {
+        return "\\\\" + parts[1] + "\\" + parts[2] +
+          (parts.length > 3 ? "\\" + parts.slice(3).join("\\") : "");
+      }
+      return "/" + parts.join("/");
+    });
   }
 
   // Write BYTES to a file, returning the fresh stat object. `blob` is a Blob or
@@ -1127,6 +1315,34 @@
     return !!(callsDir && p.indexOf(callsDir + "/") === 0);
   }
 
+  // Root of the per-file sidecar subtree (~/.fused-render/sidecar), fetched
+  // once from the SAME /api/config round trip as mountsRoot/callsDir above
+  // (see configPromise) rather than a second fetch. sidecarPath/
+  // targetPathFromSidecarPath below await this before answering, since there
+  // is no way to compute a sidecar's location without it.
+  //
+  // The assignment lives INSIDE loadConfig's own promise chain, not in
+  // startAutoReload's separate .then() below: startAutoReload only begins on
+  // DOMContentLoaded (LR-5), but an inline template can call
+  // fused.sidecarPath() before that fires. Doing the assignment here means
+  // whichever caller reaches loadConfig() first — startAutoReload or a
+  // template's own sidecarPath() call — populates sidecarRoot/mountsRoot/
+  // callsDir exactly once, since configPromise is memoized.
+  let sidecarRoot = null;
+  let configPromise = null;
+  function loadConfig() {
+    if (!configPromise) {
+      configPromise = fetch("/api/config").then((res) => res.json()).then((cfg) => {
+        if (cfg && typeof cfg.mounts_root === "string") mountsRoot = cfg.mounts_root;
+        if (cfg && typeof cfg.calls_dir === "string") callsDir = cfg.calls_dir;
+        if (cfg && typeof cfg.calls_suffix === "string") callsSuffix = cfg.calls_suffix;
+        if (cfg && typeof cfg.sidecar_root === "string") sidecarRoot = cfg.sidecar_root;
+        return cfg;
+      }).catch(() => ({}));
+    }
+    return configPromise;
+  }
+
   function isUnwatchable(p) {
     return isMountBacked(p) || isCallLog(p);
   }
@@ -1221,15 +1437,11 @@
       if (file && !isUnwatchable(file)) watched.add(file);
       if (autoReloadEnabled) resubscribe();
     };
-    fetch("/api/config")
-      .then((res) => res.json())
-      .then((cfg) => {
-        if (cfg && typeof cfg.mounts_root === "string") mountsRoot = cfg.mounts_root;
-        if (cfg && typeof cfg.calls_dir === "string") callsDir = cfg.calls_dir;
-        if (cfg && typeof cfg.calls_suffix === "string") callsSuffix = cfg.calls_suffix;
-      })
-      .catch(() => {})
-      .then(begin);
+    // loadConfig's own promise chain does the mountsRoot/callsDir/callsSuffix/
+    // sidecarRoot assignment now (so a template calling fused.sidecarPath()
+    // before this ever runs still gets it) — this just waits on it. loadConfig
+    // never rejects (its own .catch(() => ({})) absorbs a fetch failure).
+    loadConfig().then(begin);
   }
 
   window.fused = {
@@ -1247,6 +1459,11 @@
     autoReload,
     params: { get, getAll, set, onChange },
   };
+
+  // Internal-only sidecar bridge for built-in templates — deliberately not on
+  // `window.fused` (see the file header). Not present in the hosted runtime.
+  window._fusedSidecarPath = sidecarPath;
+  window._fusedTargetPathFromSidecarPath = targetPathFromSidecarPath;
 
   // Error overlay: shows for unhandled runPython rejections the page didn't
   // catch itself (identified by carrying a `.traceback`).
