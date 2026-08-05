@@ -168,6 +168,115 @@ def test_the_stripped_env_vars_are_read_off_fused_not_guessed():
     assert set(engine._stripped_env_vars()) == set(python_compute._STRIPPED_ENV_VARS)
 
 
+# --- the precedence `run_python`'s interpreter fast path rests on --------------
+#
+# `run_python` skips the venv entirely when the app interpreter already satisfies
+# every requirement in a header, and it does that by passing `interpreter=` and NO
+# requirements. That is only correct because upstream reads `interpreter` FIRST and
+# never looks at `requirements` once it is set (`_execute_sync`, and stated in
+# `compute_base.py`: "`interpreter`, when set … wins over `requirements`"). Nothing
+# tested that precedence. If upstream ever flipped it to union the two, every
+# fast-path run would silently start building the multi-GB venv the fast path
+# exists to avoid — no error, just the old bill back. These two tests fail loudly
+# instead.
+#
+# Related hazard, deliberately NOT exercised here because we never trigger it:
+# `compute_base.execute()` sets `resolved_interpreter` from a uv workflow venv when
+# `project`/`project_dir` is passed, AND swaps the cache `env_component` to
+# `wv.env_component` — so with a project, requirements drop out of both the venv
+# and the cache identity. `engine._execute` passes neither argument; were it ever
+# to, "requirements were honoured" would stop being true on the venv path too.
+
+
+class _StopBeforeSpawn(BaseException):
+    """Aborts `_execute_sync` at the child spawn.
+
+    A `BaseException`, so the broad `except` blocks inside `_execute_sync` cannot
+    swallow it and turn a failed assertion into a plausible-looking result.
+    """
+
+
+@requires_fused
+def test_upstream_still_lets_the_interpreter_win_over_requirements(monkeypatch):
+    """Both arguments given: the interpreter runs the child, no venv is built."""
+    from fused.agent_core.backends.local import python_compute as pc
+
+    built = []
+    monkeypatch.setattr(
+        pc, "ensure_requirements_venv",
+        lambda *a, **k: built.append(a) or "/nonexistent/venv/bin/python",
+    )
+
+    backend = engine.get_backend()
+    monkeypatch.setattr(type(backend), "_ensure_dispatcher",
+                        lambda self: type("D", (), {"host_dir": "/tmp"})(),
+                        raising=True)
+    monkeypatch.setattr(type(backend), "_ensure_venv",
+                        lambda self: pytest.fail("built the bare venv"),
+                        raising=True)
+
+    spawned = []
+
+    def _run(cmd, **kw):
+        spawned.append(cmd)
+        raise _StopBeforeSpawn()
+
+    monkeypatch.setattr(pc.subprocess, "run", _run)
+
+    with pytest.raises(_StopBeforeSpawn):
+        backend._execute_sync(
+            code="print(1)",
+            interpreter="/the/app/interpreter",
+            requirements=["pandas>=2.0.0"],
+        )
+
+    assert not built, (
+        "upstream built a requirements venv despite `interpreter` being set; the "
+        "app-interpreter fast path in run_python is no longer safe"
+    )
+    assert spawned and spawned[0][0] == "/the/app/interpreter", (
+        f"the child ran on {spawned[0][0] if spawned else None}, not the interpreter"
+    )
+
+
+@requires_fused
+def test_engine_never_hands_the_backend_both_interpreter_and_requirements(monkeypatch):
+    """Our side of the same contract: the two are mutually exclusive at the call.
+
+    Passing both would read as "install these INTO that interpreter", which is not
+    what upstream does with it — and on the fast path the requirements are exactly
+    the set we have just proven is already present.
+    """
+    import asyncio
+
+    calls = {}
+
+    class _Backend:
+        def _execute_sync(self, **kw):
+            calls["sync"] = kw
+            return "ok"
+
+        async def execute(self, **kw):
+            calls["execute"] = kw
+            return "ok"
+
+    monkeypatch.setattr(engine, "get_backend", lambda: _Backend())
+
+    asyncio.run(engine._execute("code", ["pandas>=2.0.0"], "/the/app/interpreter", {}))
+    assert calls["sync"]["interpreter"] == "/the/app/interpreter"
+    assert "requirements" not in calls["sync"], (
+        "requirements travelled alongside interpreter; upstream would ignore them, "
+        "so passing them can only mislead a future reader"
+    )
+
+    calls.clear()
+    asyncio.run(engine._execute("code", ["pandas>=2.0.0"], None, {}))
+    assert calls["execute"]["requirements"] == ["pandas>=2.0.0"]
+    assert not calls["execute"].get("interpreter"), (
+        "the venv path must not pin an interpreter, or requirements stop mattering"
+    )
+
+
 def test_the_bundled_uv_is_found_beside_the_interpreter(tmp_path, monkeypatch):
     """The macOS bundle has no `venv`/`ensurepip`/`pip`, so uv is not optional.
 
