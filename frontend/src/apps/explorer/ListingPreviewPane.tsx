@@ -36,6 +36,25 @@ export interface PaneTarget {
 // a registry mode — it exists only in this menu, so the constant is local.
 const APP_MODE = "_app";
 
+// Monochrome switcher icon for the `_app` mode — currentColor like the other
+// mode icons, so it takes the switcher's muted/active tinting instead of the
+// colored file icon (which read as an odd yellow button in the strip).
+const APP_MODE_ICON = (
+  <svg
+    viewBox="0 0 24 24"
+    width="16"
+    height="16"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="2"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+  >
+    <rect x="3" y="3" width="18" height="18" rx="3" />
+    <path d="M10 8.5l6 3.5-6 3.5z" />
+  </svg>
+);
+
 // The stat'ed template picture for the selected row. `conditions` is null
 // while gated entries are still resolving (CT-12 deferred verdicts).
 interface PaneInfo {
@@ -212,10 +231,7 @@ export default function ListingPreviewPane({
     // The lone app outranks the listing: it leads the switcher and wins the
     // default below when the folder has no template of its own.
     if (app) {
-      modes.push({
-        mode: APP_MODE,
-        icon: <span className="pane-header-icon">{iconForEntry(app.name, false)}</span>,
-      });
+      modes.push({ mode: APP_MODE, icon: APP_MODE_ICON });
     }
     if (!row.self) {
       modes.push({
