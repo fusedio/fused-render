@@ -28,8 +28,16 @@ import type { AppInfo } from "./api";
 };
 (globalThis as { window?: unknown }).window ??= { dispatchEvent() {} };
 
-const { entryOf, hrefFor, isBrowserHandledClick, onAppCardClick, openTargetFor } =
-  await import("./appEntry");
+const {
+  entryOf,
+  extLabel,
+  hrefFor,
+  isBrowserHandledClick,
+  isImageEntry,
+  onAppCardClick,
+  openTargetFor,
+  rawUrl,
+} = await import("./appEntry");
 
 function app(over: Partial<AppInfo> = {}): AppInfo {
   return {
@@ -146,4 +154,94 @@ test("a click something else already handled is not hijacked", () => {
   const handled = click({ defaultPrevented: true });
   onAppCardClick(handled, app());
   expect(handled.prevented).toBe(false);
+});
+
+
+// ---------------------------------------------- the artifact sources' additions
+
+test("a Claude Science artifact opens the FILE, never the folder-with-a-chat", () => {
+  // The one exception to "a page entry opens its folder". Two independent
+  // reasons, one of them a live bug caught in review: claude_split rediscovers
+  // the entry from the folder and wants exactly one top-level .html, but an
+  // artifact folder holds one per VERSION — so the second save of a report left
+  // the pane with no entry at all. And that chat would run cwd'd inside
+  // ~/.claude-science, a store this app only ever reads.
+  expect(
+    openTargetFor(
+      app({
+        path: "/cs/u1",
+        entry: "/cs/u1/v2_report.html",
+        entry_html: "/cs/u1/v2_report.html",
+        source: "claude-science",
+      }),
+    ),
+  ).toEqual({ path: "/cs/u1/v2_report.html" });
+
+  // A workspace app with the same shape still opens its folder.
+  expect(
+    openTargetFor(app({ path: "/w/a", entry_html: "/w/a/index.html", source: "workspace" })),
+  ).toEqual({ path: "/w/a", opts: { isDir: true, mode: "claude_split" } });
+});
+
+test("file-sourced cards open the FILE — their path IS the file", () => {
+  // claude-session and claude-upload cards carry a file in `path`, not a
+  // folder: opening one as a project would point claude_split at a file path.
+  // The rule is an ALLOWLIST (workspace, claude-code) so a future source
+  // defaults to this safe behaviour instead of repeating the science bug.
+  for (const source of ["claude-session", "claude-upload"] as const) {
+    expect(
+      openTargetFor(
+        app({
+          path: "/somewhere/report.html",
+          entry: "/somewhere/report.html",
+          entry_html: "/somewhere/report.html",
+          source,
+        }),
+      ),
+    ).toEqual({ path: "/somewhere/report.html" });
+  }
+  // An unknown future source with a page entry: file, not project.
+  expect(
+    openTargetFor(
+      app({
+        path: "/x/p.html",
+        entry: "/x/p.html",
+        entry_html: "/x/p.html",
+        source: "brand-new" as AppInfo["source"],
+      }),
+    ),
+  ).toEqual({ path: "/x/p.html" });
+});
+
+test("isImageEntry recognises the types an <img> can paint", () => {
+  for (const path of ["/a/f.png", "/a/f.JPG", "/a/f.jpeg", "/a/f.svg", "/a/f.webp"]) {
+    expect(isImageEntry(path)).toBe(true);
+  }
+  // A CSV table and an HTML page each have their own route; neither is an image.
+  for (const path of ["/a/f.csv", "/a/f.html", "/a/f.parquet", "/a/png", null]) {
+    expect(isImageEntry(path)).toBe(false);
+  }
+});
+
+test("extLabel names what a thumbnail-less card holds", () => {
+  expect(extLabel("/a/u/v6f4b965a_overture_coverage_matrix.csv")).toBe("CSV");
+  expect(extLabel("/a/u/v6f4b965a_two.parts.here.tsv")).toBe("TSV");
+  // Nothing usable to label with — the card keeps its monogram instead.
+  expect(extLabel("/a/u/v6f4b965a_dataset")).toBe(null);
+  expect(extLabel("/a/u/.gitignore")).toBe(null); // a dotfile's name is not its type
+  // The everyday long ones in this app must not be the ones that get dropped.
+  expect(extLabel("/a/u/tiles.parquet")).toBe("PARQUET");
+  expect(extLabel("/a/u/shapes.geojson")).toBe("GEOJSON");
+  expect(extLabel("/a/u/notes.markdownish")).toBe(null); // past the ceiling
+  expect(extLabel(null)).toBe(null);
+  // A dot in a parent directory must not be mistaken for the file's own.
+  expect(extLabel("/Users/i/.claude-science/orgs/26f4/artifacts/p/u/report")).toBe(null);
+});
+
+test("rawUrl encodes the path as a query parameter", () => {
+  // Artifact paths carry UUID dirs and saved names that may hold spaces, & and
+  // + — all of which must survive as path characters.
+  expect(rawUrl("/Users/i/.claude-science/orgs/26f4/artifacts/p/u/v6f4_a b&c+d.png")).toBe(
+    "/api/fs/raw?path=%2FUsers%2Fi%2F.claude-science%2Forgs%2F26f4%2Fartifacts%2Fp%2Fu%2Fv6f4_a%20b%26c%2Bd.png",
+  );
 });
