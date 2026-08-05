@@ -277,12 +277,8 @@ export default function ListingPreviewPane({
     icon: templateModeIcon(e),
   }));
   if (row.isDir) {
-    modes.push({
-      mode: "_listing",
-      title: modeTitle("_listing"),
-      icon: templateModeIcon({ mode: "_listing", path: null } as TemplateEntry),
-    });
-    // App detection is a MODE, not a default: it only ever shows when picked.
+    // The lone app outranks the listing: it leads the menu and wins the
+    // default below when the folder has no template of its own.
     if (app) {
       modes.push({
         mode: APP_MODE,
@@ -290,19 +286,36 @@ export default function ListingPreviewPane({
         icon: <span className="pane-header-icon">{iconForEntry(app.name, false)}</span>,
       });
     }
+    modes.push({
+      mode: "_listing",
+      title: modeTitle("_listing"),
+      icon: templateModeIcon({ mode: "_listing", path: null } as TemplateEntry),
+    });
   }
 
   // Default mode: the folder's/file's own first eligible template (same
   // unconditional-first rule as Preview, CT-12); a folder without one falls
-  // back to `_listing`, a file to the metadata card (mode null).
+  // back to its lone app, then `_listing`; a file to the metadata card
+  // (mode null). While the app probe is still in flight the default is
+  // undecided — skeleton below, so the pane never flashes the listing and
+  // then swaps to the app.
   const defaultEntry = embeddable.find((e) => !e.conditional) ?? embeddable[0] ?? null;
+  if (row.isDir && !defaultEntry && modeOverride === null && app === undefined) {
+    return (
+      <div className="listing-pane">
+        <div className="pane-skel" />
+      </div>
+    );
+  }
   const activeMode =
     modeOverride !== null && modes.some((m) => m.mode === modeOverride)
       ? modeOverride
       : defaultEntry
         ? defaultEntry.mode
         : row.isDir
-          ? "_listing"
+          ? app
+            ? APP_MODE
+            : "_listing"
           : null;
   const activeEntry = embeddable.find((e) => e.mode === activeMode) ?? null;
 
