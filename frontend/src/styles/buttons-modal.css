@@ -1,0 +1,128 @@
+/* ---- Unified button vocabulary + modal chassis -------------------------- */
+/* One .btn base and four variants for every modal/form action, with ONE
+   disabled treatment and ONE focus-visible ring. The selectors are grouped for
+   the bare, .deploy-body and .prefs-section contexts so .btn wins over the
+   generic `.deploy-body button` / `.prefs-section button` skins by specificity
+   (0,2,x) regardless of source order. */
+.btn,
+.deploy-body .btn,
+.prefs-section .btn {
+  font: inherit;
+  font-size: 13px;
+  height: 32px;
+  padding: 0 14px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--fg);
+  cursor: pointer;
+  white-space: nowrap;
+  align-self: auto;
+}
+
+.btn:disabled,
+.deploy-body .btn:disabled,
+.prefs-section .btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.btn:focus-visible,
+.deploy-body .btn:focus-visible,
+.prefs-section .btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* Quiet primary: accent-tinted, not accent-filled — still the strongest button
+   in a footer, without the neon pop of a solid lime fill on the dark surface. */
+/* Neutral filled primary — reads strongest through contrast, not accent
+   (Akshil: accent buttons pop too much). Accent stays for focus/selection. */
+.btn-primary,
+.deploy-body .btn-primary,
+.prefs-section .btn-primary {
+  background: var(--fg);
+  border-color: transparent;
+  color: var(--bg);
+  font-weight: 600;
+}
+
+.btn-primary:hover:not(:disabled),
+.deploy-body .btn-primary:hover:not(:disabled),
+.prefs-section .btn-primary:hover:not(:disabled) {
+  background: var(--on-fg);
+  border-color: transparent;
+}
+
+.btn-secondary,
+.deploy-body .btn-secondary,
+.prefs-section .btn-secondary {
+  background: transparent;
+  border-color: var(--border);
+  color: var(--fg);
+}
+
+.btn-secondary:hover:not(:disabled),
+.deploy-body .btn-secondary:hover:not(:disabled),
+.prefs-section .btn-secondary:hover:not(:disabled) {
+  background: transparent;
+  border-color: var(--fg-muted);
+}
+
+.btn-danger,
+.deploy-body .btn-danger,
+.prefs-section .btn-danger {
+  background: rgba(var(--error-rgb), 0.1);
+  border-color: var(--error);
+  color: var(--error);
+}
+
+.btn-danger:hover:not(:disabled),
+.deploy-body .btn-danger:hover:not(:disabled),
+.prefs-section .btn-danger:hover:not(:disabled) {
+  background: rgba(var(--error-rgb), 0.18);
+  border-color: var(--error);
+}
+
+/* Text-only destructive action; margin-right:auto anchors it to the far left of
+   a footer row so the primary/cancel stay right-aligned. */
+.btn-danger-text,
+.deploy-body .btn-danger-text,
+.prefs-section .btn-danger-text {
+  background: none;
+  border-color: transparent;
+  color: var(--error);
+  margin-right: auto;
+}
+
+.btn-danger-text:hover:not(:disabled),
+.deploy-body .btn-danger-text:hover:not(:disabled),
+.prefs-section .btn-danger-text:hover:not(:disabled) {
+  background: rgba(var(--error-rgb), 0.12);
+  border-color: transparent;
+}
+
+/* Shared modal chrome — .modal-* names alias the existing .deploy-* rules (the
+   Modal component applies both classes, so descendant .deploy-* skins keep
+   working). Footer row follows the footer grammar: destructive far left
+   (via .btn-danger-text margin-right:auto), Cancel then primary at the right. */
+.modal-footer {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  justify-content: flex-end;
+  padding: 12px 16px;
+  border-top: 1px solid var(--border);
+}
+
+.modal-dirty-hint {
+  color: var(--fg-muted);
+  font-size: 12px;
+  margin-right: auto;
+}
+

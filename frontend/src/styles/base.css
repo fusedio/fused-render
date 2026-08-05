@@ -1,0 +1,86 @@
+/* ---- Motion tokens ------------------------------------------------------- */
+/* Three durations, one easing — every transition/animation in this file picks
+   one of these rather than inventing a number, so the whole shell moves at the
+   same speed:
+     --dur-fast  hover / press colour changes
+     --dur-med   overlays, toasts, fades, context menus
+     --dur-slow  panels, slide-overs, sidebar collapse, FLIP row reorders
+   Deliberately its own `:root` block, NOT merged into the palettes above: the
+   theme contract (tests/test_theme.py) requires every token in the dark
+   palette to have a light counterpart, and a duration has no light value.
+   prefers-reduced-motion (bottom of this file) collapses all of them. */
+:root {
+  --dur-fast: 80ms;
+  --dur-med: 150ms;
+  --dur-slow: 200ms;
+  --ease-out: ease-out;
+}
+
+/* ---- Shared hover/press easing ------------------------------------------- */
+/* One rule for every interactive surface in the shell, grouped here rather than
+   as a `transition` bolted onto sixteen scattered declarations — that way the
+   set is auditable and can't drift apart. Colour properties only: each of these
+   selectors already has hover/active rules that repaint background, text or
+   border, and this is purely what makes that repaint ease instead of snap. Their
+   own rules keep owning the colours. */
+.sidebar-item,
+.bookmark-row,
+.icon-btn,
+#breadcrumb .path-crumb,
+.star-btn,
+table.listing-table tr.row,
+table.listing-table th.sortable,
+.preview-actions button,
+.tab,
+.tab-close,
+.tab-add,
+.tab-open-plain,
+.context-menu-item,
+.toast-close,
+.toast-action,
+.panel-btn,
+.listing-pane-toggle,
+.listing-load-more {
+  transition:
+    background-color var(--dur-fast) var(--ease-out),
+    color var(--dur-fast) var(--ease-out),
+    border-color var(--dur-fast) var(--ease-out);
+}
+
+/* Press feedback on the button-shaped members of the set above. Deliberately
+   one shared 1px nudge and nothing else: a filter/opacity press reads as a
+   disabled state, and a transform on a table row looks like a layout bug, so
+   rows are left out. */
+.icon-btn:active:not(:disabled),
+.star-btn:active,
+.preview-actions button:active:not(:disabled),
+.panel-btn:active,
+.tab-add:active,
+.toast-action:active:not(:disabled),
+.listing-pane-toggle:active,
+.listing-load-more:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html, body {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  color: var(--fg);
+  background: var(--bg);
+  font-size: 14px;
+}
+
+#app {
+  display: flex;
+  flex-direction: row;
+  height: 100vh;
+}
+

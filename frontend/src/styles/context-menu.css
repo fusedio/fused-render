@@ -1,0 +1,135 @@
+/* ---- File-explorer context menu (components/ContextMenu.tsx) -------------- */
+/* Same surface as .pane-mode-dropdown; sits above everything, position:fixed at
+   the cursor (clamped to the viewport in JS). */
+.context-menu {
+  position: fixed;
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  /* Own its text alignment so it never inherits `text-align` from the element
+     it's mounted under (e.g. the right-aligned .row-actions-cell). */
+  text-align: left;
+  min-width: 220px;
+  padding: 5px;
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 8px 28px var(--shadow-lg);
+  user-select: none;
+}
+
+/* The clamp pass (components/ContextMenu.tsx) needs the menu's real size before
+   it can decide where the menu goes, so the first — pre-paint — render is
+   hidden rather than painted at the raw cursor coords and then moved. */
+.context-menu.measuring {
+  visibility: hidden;
+}
+
+/* Grows out of whichever corner sits under the cursor; ContextMenu sets
+   transform-origin inline from the clamp result. */
+.context-menu.placed {
+  animation: context-menu-in 110ms var(--ease-out);
+}
+
+@keyframes context-menu-in {
+  from {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+}
+
+/* Wrapper for an item + its (absolutely positioned) submenu. */
+.context-menu-row {
+  position: relative;
+}
+
+.context-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 28px;
+  padding: 4px 10px;
+  border-radius: 6px;
+  font-size: 13px;
+  color: var(--fg);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.context-menu-item:hover:not(.disabled),
+.context-menu-item.open {
+  background: rgba(var(--tint), 0.08);
+}
+
+.context-menu-item.disabled {
+  color: var(--fg-muted);
+  opacity: 0.5;
+  cursor: default;
+}
+
+.context-menu-item.danger {
+  color: var(--error);
+}
+
+.context-menu-item.dimmed .context-menu-label {
+  opacity: 0.5;
+}
+
+/* Fixed-width icon column so labels align even for iconless rows (e.g. a
+   submenu's mode entries). The glyph inherits the row's colour. */
+.context-menu-icon {
+  flex: 0 0 20px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--fg-muted);
+}
+
+.context-menu-item:hover:not(.disabled) .context-menu-icon,
+.context-menu-item.open .context-menu-icon,
+.context-menu-item.danger .context-menu-icon {
+  color: inherit;
+}
+
+.context-menu-label {
+  flex: 1 1 auto;
+}
+
+.context-menu-arrow {
+  font-size: 14px;
+  line-height: 1;
+  color: var(--fg-muted);
+  margin-left: 12px;
+}
+
+.context-menu-item.open .context-menu-arrow {
+  color: inherit;
+}
+
+.context-menu-sep {
+  height: 1px;
+  margin: 5px 10px;
+  background: var(--border);
+}
+
+/* Submenu opens to the item's right by default, or its left near the viewport
+   edge (the `.left` modifier is set in JS). The small negative top aligns the
+   first submenu row with its parent row. */
+.context-submenu {
+  position: absolute;
+  top: -5px;
+  left: 100%;
+  margin-left: 2px;
+  /* Grows out of the parent row's edge, i.e. the side it's attached to. */
+  transform-origin: left top;
+}
+
+.context-submenu.left {
+  left: auto;
+  right: 100%;
+  margin-left: 0;
+  margin-right: 2px;
+  transform-origin: right top;
+}
+

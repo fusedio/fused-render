@@ -1,0 +1,148 @@
+/* ---- Deploy button + modal (SPEC §19) ------------------------------------ */
+
+/* Header action for deployable pages: same chrome as its .preview-actions
+   siblings, plus a live dot when the page's deployment pointer reads active. */
+.preview-actions .deploy-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.deploy-live-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--success-bright);
+  flex: 0 0 auto;
+}
+
+.deploy-overlay {
+  position: fixed;
+  inset: 0;
+  background: var(--scrim);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 8vh 16px 16px;
+  z-index: 1000;
+}
+
+/* Enter/exit for EVERY dialog in the app: the scrim fades and the dialog scales
+   up a hair. `.closing` is painted by the chassis (components/modal/Modal.tsx
+   and the FsDialogs overlay) for the length of --dur-med before the caller
+   unmounts it — see lib/exit-animation for why the delay lives in JS. The enter
+   is an animation (the node is newly mounted, so there is no `from` value for a
+   transition); the exit is a transition off the mounted state. */
+.modal-overlay {
+  animation: modal-scrim-in var(--dur-med) var(--ease-out);
+}
+
+.modal-overlay .modal-dialog {
+  animation: modal-dialog-in var(--dur-med) var(--ease-out);
+}
+
+@keyframes modal-scrim-in {
+  from {
+    opacity: 0;
+  }
+}
+
+@keyframes modal-dialog-in {
+  from {
+    opacity: 0;
+    transform: scale(0.98);
+  }
+}
+
+.modal-overlay.closing {
+  /* A dialog closed inside its own enter window would otherwise stay driven by
+     the animation above, which wins over a transition. */
+  animation: none;
+  opacity: 0;
+  /* Nothing behind a dialog that is already leaving should be clickable, and
+     neither should the dialog itself. */
+  pointer-events: none;
+  transition: opacity var(--dur-med) var(--ease-out);
+}
+
+.modal-overlay.closing .modal-dialog {
+  animation: none;
+  opacity: 0;
+  transform: scale(0.98);
+  transition:
+    opacity var(--dur-med) var(--ease-out),
+    transform var(--dur-med) var(--ease-out);
+}
+
+.deploy-dialog {
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  width: min(600px, 100%);
+  max-height: 85vh;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 12px 40px var(--shadow-lg);
+}
+
+.deploy-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.deploy-head h2 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.deploy-close {
+  background: none;
+  border: none;
+  color: var(--fg-muted);
+  font-size: 14px;
+  cursor: pointer;
+  padding: 4px 6px;
+}
+
+.deploy-close:hover {
+  color: var(--fg);
+}
+
+.deploy-body {
+  padding: 14px 16px 16px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  font-size: 13px;
+}
+
+/* Canonical field controls inside modals and mount forms — ONE background
+   (--bg, recessed against the --bg-alt dialog surface), ONE padding, ONE
+   focus treatment. :where() keeps specificity at the scope class alone, so
+   composite frames that reset their inner input (.templates-key-input input,
+   .templates-chip-draft) and deliberate variants (.templates-rec-add-input)
+   still win. */
+.modal-body :where(input:not([type="checkbox"], [type="radio"], [type="file"]), select, textarea) {
+  font: inherit;
+  font-size: 13px;
+  color: var(--fg);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 7px 10px;
+}
+
+.modal-body :where(input:not([type="checkbox"], [type="radio"], [type="file"]), select, textarea):focus {
+  outline: none;
+  border-color: var(--fg-muted);
+}
+

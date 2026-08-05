@@ -1,0 +1,331 @@
+/* ---- Setup-modal panels --------------------------------------------------
+   The chassis all six flows share. Each opens with ONE sentence saying what
+   this is (.mount-panel-lede, body size), and everything qualifying it drops to
+   .mount-note. The panels used to open with a four-clause paragraph and close
+   with a near-identical "this closes and pre-selects it…" note — four copies of
+   the same sentence, all of them now redundant: the add form says so itself
+   when the handoff lands. */
+.mount-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.mount-panel-lede {
+  margin: 0;
+}
+
+/* Two-column field grid for the panel forms, replacing the flex-wrap row whose
+   columns were held apart by hardcoded per-input minWidths. */
+.mount-panel-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px 12px;
+  align-items: end;
+}
+
+.mount-panel-grid .field-control,
+.mount-panel-grid .field-select-wrap {
+  width: 100%;
+}
+
+.mount-panel-wide {
+  grid-column: 1 / -1;
+}
+
+.mount-panel-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+/* One field plus its action, bottom-aligned by the grid rather than by a blank
+   <Field label=" "> caption (which put a whitespace-only <label for> on the
+   button and emptied its accessible name). */
+.mount-panel-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: end;
+}
+
+.mount-panel-row .field-control {
+  width: 100%;
+}
+
+/* A .mount-note that is itself a checkbox label. */
+.mount-note-check {
+  display: flex;
+  align-items: flex-start;
+  gap: 4px;
+  cursor: pointer;
+}
+
+/* Guided setup inside a modal: the Google Cloud console stepper. */
+.mount-setup {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.mount-steps-head {
+  margin: 0;
+}
+
+/* The Google-console checklist: ONE bordered unit with hairline-divided,
+   self-numbered rows, so four steps read as a single artifact to work through
+   rather than four floating paragraphs each carrying full button chrome. The
+   open-in-console actions are quiet links on the title row — the visual
+   weight of this modal belongs to the drop zone below it. */
+.mount-steps {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  counter-reset: mount-step;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+/* No font-size on the body text: a step's sentence IS body text, so it
+   inherits the 13px modal body; captions are .mount-note (12px). */
+.mount-step {
+  counter-increment: mount-step;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 12px 10px 34px;
+  line-height: 1.5;
+}
+
+.mount-step + .mount-step {
+  border-top: 1px solid var(--border);
+}
+
+.mount-step::before {
+  content: counter(mount-step);
+  position: absolute;
+  left: 0;
+  top: 10px;
+  width: 34px;
+  text-align: center;
+  font-size: 12px;
+  line-height: 1.625; /* 12px × this = the 13px title's 19.5px line box */
+  color: var(--fg-muted);
+}
+
+.mount-step-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.mount-step-title {
+  font-weight: 600;
+}
+
+/* Scoped through .mount-steps for SPECIFICITY: the generic `.prefs-section
+   button` skin (0,1,1) would otherwise re-box these links. */
+.mount-steps .mount-step-open {
+  border: none;
+  background: none;
+  padding: 0;
+  font: inherit;
+  color: var(--accent);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.mount-steps .mount-step-open:hover:not(:disabled) {
+  background: none;
+  text-decoration: underline;
+}
+
+.mount-step .mount-note {
+  margin: 0;
+}
+
+.mount-step-project {
+  margin-top: 4px;
+  max-width: 420px;
+}
+
+/* The primary input for the client: dropping the downloaded JSON, which skips
+   the step people mistype. A <label> around a hidden file input, so the whole
+   dashed zone browses on click — this is the modal's focal point and the only
+   element that invites an action bigger than a link. */
+.mount-drop {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 22px 16px;
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+  text-align: center;
+  cursor: pointer;
+  background: rgba(var(--tint), 0.03);
+}
+
+.mount-drop:hover,
+.mount-drop--over {
+  border-color: var(--accent);
+  background: rgba(var(--accent-rgb), 0.06);
+}
+
+.mount-drop code {
+  white-space: nowrap;
+}
+
+.mount-drop input[type="file"] {
+  display: none;
+}
+
+.mount-drop-sub {
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+
+.mount-manual > summary {
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+
+.mount-manual > .mount-panel-grid {
+  margin-top: 8px;
+}
+
+/* "Add a custom S3 remote …" — a quiet inline link-button. */
+.mount-link {
+  align-self: flex-start;
+  border: none;
+  background: none;
+  cursor: pointer;
+  padding: 0;
+  font: inherit;
+  font-size: 12px;
+  color: var(--fg-muted);
+  text-decoration: underline;
+}
+.mount-link:hover {
+  color: var(--fg);
+}
+
+/* Compact layout for narrow panes: tighten page padding, shrink the title, and
+   let the header action span the full width (so it doesn't get squeezed next to
+   a wrapping title). The mount-card / header flex-wrap rules handle the
+   in-between widths; this is the small-end polish. */
+@media (max-width: 560px) {
+  .prefs-page {
+    padding: 14px 14px 24px;
+    gap: 18px;
+  }
+
+  .mounts-title {
+    font-size: 16px;
+  }
+
+  .mounts-actions {
+    width: 100%;
+  }
+
+  .mounts-actions .mounts-restart {
+    width: 100%;
+    justify-content: center;
+  }
+
+  /* On a broken mount the Open/Reconnect + Remove row wraps below the name;
+     stretch it full-width so the buttons aren't cramped against the edge. */
+  .mount-card-actions {
+    flex-wrap: wrap;
+  }
+
+  /* One field per row, button last and full width — the four-column details
+     grid has nowhere to go at this width. */
+  .mount-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .mount-grid-submit {
+    width: 100%;
+  }
+}
+
+.prefs-radio {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  cursor: pointer;
+}
+
+.prefs-radio input {
+  margin-top: 3px;
+  accent-color: var(--accent);
+}
+
+.prefs-radio.locked {
+  cursor: default;
+  opacity: 0.65;
+}
+
+/* A labelled control plus its explanation (the Call log section's parameter
+   and retention selects). Same vertical rhythm as .prefs-radio rows, but the
+   label and its <select> sit on one line above the muted note. */
+.prefs-field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.prefs-field > label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.prefs-field select:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+/* Registry table: pattern -> template chips (+ source badge). */
+.prefs-registry-table {
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.prefs-registry-table td {
+  padding: 5px 10px 5px 0;
+  border-top: 1px solid var(--border);
+  vertical-align: top;
+}
+
+.prefs-registry-table .registry-templates code + code {
+  margin-left: 5px;
+}
+
+.prefs-registry-table .default-mode {
+  border-color: var(--accent);
+}
+
+.prefs-registry-table .registry-error {
+  color: var(--error);
+}
+
+.registry-source {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  border: 1px solid var(--border);
+  color: var(--fg-muted);
+  white-space: nowrap;
+}
+
+.registry-source.user,
+.registry-source.user-override {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
