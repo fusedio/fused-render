@@ -4,6 +4,7 @@
 // No file-type checks live in the shell — html arrives through stat.templates
 // like everything else, via the "_render" sentinel (SPEC PT-12).
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 import {
   getDeployStatus,
   rawUrl,
@@ -62,6 +63,19 @@ function Header({ fsPath, stat, children, afterName, onContextMenu }: HeaderProp
       <div className="preview-actions">{children}</div>
     </div>
   );
+}
+
+// Explorer variant: the second header bar is gone (the name is redundant with
+// the breadcrumb), so the view's actions render into the breadcrumb bar's
+// `#topbar-mode-slot` (Breadcrumb.tsx) via a portal. The slot is a sibling
+// rendered in the same commit as the preview, so it exists by the time this
+// effect runs; keyed remounts on navigation re-find it.
+function TopbarActions({ children }: { children: ReactNode }) {
+  const [slot, setSlot] = useState<HTMLElement | null>(null);
+  useEffect(() => {
+    setSlot(document.getElementById("topbar-mode-slot"));
+  }, []);
+  return slot ? createPortal(children, slot) : null;
 }
 
 // One open modal for the preview file menu: a Rename prompt or a Delete confirm
@@ -381,6 +395,7 @@ function TemplatePreview({
   conditions,
   onRenderedTitle,
   hideHeader,
+  actionsInTopbar,
 }: {
   fsPath: string;
   stat: StatResult;
@@ -388,6 +403,7 @@ function TemplatePreview({
   conditions: Record<string, boolean> | null;
   onRenderedTitle?: (title: string | null) => void;
   hideHeader?: boolean;
+  actionsInTopbar?: boolean;
 }) {
   // Caller only renders this when `templates` (already sentinel-filtered by
   // Preview's dispatch, SPEC PT-12) is non-empty. Entries whose condition.py
@@ -633,48 +649,62 @@ function TemplatePreview({
     Promise.resolve(buildOpenWithItems(templates, (m) => void setMode(m)));
   const fileMenu = usePreviewFileMenu(fsPath, stat, loadOpenWith);
 
+  const openAsAppBtn =
+    isListing && singleAppPath ? (
+      <button
+        type="button"
+        className="open-as-app-btn"
+        onClick={() => navigate(singleAppPath, { isDir: false })}
+      >
+        Open as app
+      </button>
+    ) : null;
+
+  const headerActions = (
+    <>
+      {/* Deployable = the mode list carries the "_render" sentinel AND the
+          file is .html/.htm — the exporter's actual contract. The extension
+          check matters because a registry rebind can put "_render" on any
+          type (D73), but /api/export and /api/deploy/preview accept only
+          .html/.htm — the button must not open a modal that can't deploy.
+          Directories never deploy (no _render binding exists for one today;
+          the guard keeps that true even if a registry ever says otherwise).
+          Gated on the opt-in Deploy pref (Preferences → Deployments): hidden
+          entirely unless the user has turned Deploy on. */}
+      {!stat.is_dir &&
+        deployEnabled &&
+        templates.some((t) => t.mode === "_render") &&
+        /\.html?$/i.test(fsPath) && <DeployButton fsPath={fsPath} />}
+      <ModeSwitcher
+        entries={templates.map((t) => ({ mode: t.mode, icon: templateModeIcon(t), pending: isPending(t) }))}
+        active={entry.mode}
+        /* Spinner from the click until the incoming frame has actually taken
+           over — the flush wait AND the new document's load are both time the
+           user is waiting on that button. */
+        busy={switchingTo ?? (shown !== mode ? mode : null)}
+        onSelect={setMode}
+      />
+    </>
+  );
+
   return (
     <>
-      {!hideHeader && (
-      <Header
-        fsPath={fsPath}
-        stat={stat}
-        onContextMenu={fileMenu.onContextMenu}
-        afterName={
-          isListing && singleAppPath ? (
-            <button
-              type="button"
-              className="open-as-app-btn"
-              onClick={() => navigate(singleAppPath, { isDir: false })}
-            >
-              Open as app
-            </button>
-          ) : null
-        }
-      >
-        {/* Deployable = the mode list carries the "_render" sentinel AND the
-            file is .html/.htm — the exporter's actual contract. The extension
-            check matters because a registry rebind can put "_render" on any
-            type (D73), but /api/export and /api/deploy/preview accept only
-            .html/.htm — the button must not open a modal that can't deploy.
-            Directories never deploy (no _render binding exists for one today;
-            the guard keeps that true even if a registry ever says otherwise).
-            Gated on the opt-in Deploy pref (Preferences → Deployments): hidden
-            entirely unless the user has turned Deploy on. */}
-        {!stat.is_dir &&
-          deployEnabled &&
-          templates.some((t) => t.mode === "_render") &&
-          /\.html?$/i.test(fsPath) && <DeployButton fsPath={fsPath} />}
-        <ModeSwitcher
-          entries={templates.map((t) => ({ mode: t.mode, icon: templateModeIcon(t), pending: isPending(t) }))}
-          active={entry.mode}
-          /* Spinner from the click until the incoming frame has actually taken
-             over — the flush wait AND the new document's load are both time the
-             user is waiting on that button. */
-          busy={switchingTo ?? (shown !== mode ? mode : null)}
-          onSelect={setMode}
-        />
-      </Header>
+      {actionsInTopbar ? (
+        <TopbarActions>
+          {openAsAppBtn}
+          {headerActions}
+        </TopbarActions>
+      ) : (
+        !hideHeader && (
+          <Header
+            fsPath={fsPath}
+            stat={stat}
+            onContextMenu={fileMenu.onContextMenu}
+            afterName={openAsAppBtn}
+          >
+            {headerActions}
+          </Header>
+        )
       )}
       <div className="preview-body">
         {isPending(entry) ? (
@@ -740,14 +770,14 @@ function TemplatePreview({
   );
 }
 
-function FallbackPreview({ fsPath, stat }: { fsPath: string; stat: StatResult }) {
+function FallbackPreview({ fsPath, stat, actionsInTopbar }: { fsPath: string; stat: StatResult; actionsInTopbar?: boolean }) {
   // No renderable views back this file (that's why it's the fallback), so Open
   // With resolves to the empty "No views available" list without a re-stat.
   const loadOpenWith = () => Promise.resolve(buildOpenWithItems([], () => {}));
   const fileMenu = usePreviewFileMenu(fsPath, stat, loadOpenWith);
   return (
     <>
-      <Header fsPath={fsPath} stat={stat} onContextMenu={fileMenu.onContextMenu} />
+      {!actionsInTopbar && <Header fsPath={fsPath} stat={stat} onContextMenu={fileMenu.onContextMenu} />}
       <div className="preview-body">
         <div className="metadata-card">
           <dl>
@@ -786,9 +816,12 @@ interface PreviewProps {
   // Chrome-free render (the /learn page): no preview header, no mode switcher —
   // the content fills the body directly.
   hideHeader?: boolean;
+  // Explorer variant: no preview header bar; the mode switcher/deploy actions
+  // portal into the breadcrumb bar's #topbar-mode-slot instead.
+  actionsInTopbar?: boolean;
 }
 
-export default function Preview({ fsPath, stat, onRenderedTitle, allowModes, hideHeader }: PreviewProps) {
+export default function Preview({ fsPath, stat, onRenderedTitle, allowModes, hideHeader, actionsInTopbar }: PreviewProps) {
   // Defensive filter (SPEC PT-12): an entry with path===null whose mode isn't
   // a recognized sentinel (`_render`, `_listing`) is dropped. Filtering here
   // keeps the non-empty dispatch check honest (an all-unknown list falls back
@@ -809,7 +842,7 @@ export default function Preview({ fsPath, stat, onRenderedTitle, allowModes, hid
   if (resolving && templates.length > 0 && templates.every((t) => t.conditional)) {
     return (
       <>
-        <Header fsPath={fsPath} stat={stat} />
+        {!actionsInTopbar && <Header fsPath={fsPath} stat={stat} />}
         <div className="preview-body">
           <div className="preview-resolving">
             <span className="mode-icon-spinner" />
@@ -828,7 +861,8 @@ export default function Preview({ fsPath, stat, onRenderedTitle, allowModes, hid
         conditions={conditions}
         onRenderedTitle={onRenderedTitle}
         hideHeader={hideHeader}
+        actionsInTopbar={actionsInTopbar}
       />
     );
-  return <FallbackPreview fsPath={fsPath} stat={stat} />;
+  return <FallbackPreview fsPath={fsPath} stat={stat} actionsInTopbar={actionsInTopbar} />;
 }

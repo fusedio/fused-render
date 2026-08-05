@@ -164,24 +164,28 @@ function StatErrorView({
 // (api.prefetchListDir) when stat resolves and the preview remounts the
 // listing. Without a directory hint we can't safely show a listing (a file's
 // list would 404), so only the header + a neutral loading body paint.
-function LoadingScaffold({ fsPath, isDir }: { fsPath: string; isDir: boolean }) {
+function LoadingScaffold({ fsPath, isDir, headerless }: { fsPath: string; isDir: boolean; headerless?: boolean }) {
   return (
     <>
       {/* Mirror the loaded Header exactly (Preview.tsx `Header`): the name in a
           `.preview-title` group, and a `.mode-switcher-placeholder` that reserves
           the mode switcher's button height in the actions slot. Without this the
           header grows (spinner → 28px buttons) when stat resolves, dropping the
-          name and the whole body — a visible layout shift on every navigation. */}
-      <div className="preview-header">
-        <div className="preview-title">
-          <h1 title={fsPath}>{basename(fsPath)}</h1>
+          name and the whole body — a visible layout shift on every navigation.
+          Skipped for the explorer (`headerless`): its actions live in the
+          breadcrumb bar's slot, and there is no second header bar at all. */}
+      {!headerless && (
+        <div className="preview-header">
+          <div className="preview-title">
+            <h1 title={fsPath}>{basename(fsPath)}</h1>
+          </div>
+          <div className="preview-actions">
+            <span className="mode-switcher-placeholder" aria-label="Loading">
+              <span className="mode-icon-spinner" />
+            </span>
+          </div>
         </div>
-        <div className="preview-actions">
-          <span className="mode-switcher-placeholder" aria-label="Loading">
-            <span className="mode-icon-spinner" />
-          </span>
-        </div>
-      </div>
+      )}
       <div className="preview-body">
         {isDir ? (
           // provisional: the hint could be stale (file, not dir). Suppress
@@ -272,7 +276,7 @@ function StatView({
   if (stat.status === "loading") {
     // Not a blank screen: paint the scaffold immediately (Fix #1). A directory
     // nav also starts its listing fetch now, parallel with stat (Fix #2).
-    content = <LoadingScaffold fsPath={fsPath} isDir={navIsDir === true} />;
+    content = <LoadingScaffold fsPath={fsPath} isDir={navIsDir === true} headerless={variant === "explorer"} />;
   } else if (stat.status === "error") {
     content = (
       <StatErrorView
@@ -299,7 +303,7 @@ function StatView({
       // the same file scaffold as the stat-loading branch (header + spinner in
       // the file's chrome) rather than a bare centered "Loading…" — on a cold
       // mount this wait is ~2s and must never read as a blank/black screen.
-      content = <LoadingScaffold fsPath={fsPath} isDir={false} />;
+      content = <LoadingScaffold fsPath={fsPath} isDir={false} headerless={variant === "explorer"} />;
     } else {
       content = (
         <Preview
@@ -308,6 +312,7 @@ function StatView({
           onRenderedTitle={setRenderedTitle}
           allowModes={variant === "app" ? APP_MODES : undefined}
           hideHeader={variant === "learn"}
+          actionsInTopbar={variant === "explorer"}
         />
       );
     }
