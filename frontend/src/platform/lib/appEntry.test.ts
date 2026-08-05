@@ -26,7 +26,14 @@ import type { AppInfo } from "./api";
   pushState() {},
   replaceState() {},
 };
-(globalThis as { window?: unknown }).window ??= { dispatchEvent() {} };
+// The stub leaks to every other suite in the run (bun shares globals), so it
+// must carry what those suites' modules read off `window` — toast.ts calls
+// window.setTimeout, and a bare {dispatchEvent} broke its whole file.
+(globalThis as { window?: unknown }).window ??= {
+  dispatchEvent() {},
+  setTimeout: globalThis.setTimeout.bind(globalThis),
+  clearTimeout: globalThis.clearTimeout.bind(globalThis),
+};
 
 const { entryOf, hrefFor, isBrowserHandledClick, onAppCardClick, openTargetFor } =
   await import("./appEntry");

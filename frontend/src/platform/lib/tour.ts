@@ -127,6 +127,12 @@ export function maybeAutoStartTour(): boolean {
   }
   if (seen) return true;
   if (!document.querySelector("#sidebar")) return false;
+  // The walkthrough is built around the explorer chrome (bookmarks, listing
+  // search, breadcrumb, split). A first visit lands on /apps, whose shell
+  // sidebar matches a few early steps — starting there would run a truncated
+  // tour AND mark it seen. Wait until the explorer is actually on screen; the
+  // caller retries on every route change.
+  if (!document.querySelector(".sidebar-bookmarks")) return false;
   const steps = presentSteps();
   if (steps.length === 0) return false;
   runTour(steps);

@@ -8,7 +8,7 @@ import { navigate, navigateUrl } from "@platform/lib/router";
 import { basename } from "@platform/lib/format";
 import { iconForEntry } from "@platform/ui/FileIcons";
 import type { Config } from "@platform/lib/api";
-import { allBookmarks, loadBookmarks, type Bookmark } from "@platform/lib/bookmarks";
+import { allBookmarks, armBookmark, loadBookmarks, type Bookmark } from "@platform/lib/bookmarks";
 import { useBookmarksVersion } from "@platform/lib/hooks";
 import { loadRecents, recentFsPath, useRecentsVersion } from "@apps/explorer/lib/recents";
 import { bookmarkFsPath } from "@apps/explorer/sidebar/BookmarksSection";
@@ -75,7 +75,12 @@ function BookmarkCard({ b }: { b: Bookmark }) {
       }
       name={b.name}
       path={fsPath}
-      onOpen={() => navigateUrl(b.url)}
+      onOpen={() => {
+        // Same as a sidebar bookmark click: arm the bookmark so the
+        // breadcrumb's "Update bookmark" tracks param changes at the target.
+        armBookmark(b.id, b.url);
+        navigateUrl(b.url);
+      }}
     />
   );
 }
