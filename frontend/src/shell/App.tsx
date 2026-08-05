@@ -23,7 +23,9 @@ import { useMountHealth } from "@platform/lib/mountHealth";
 import { basename } from "@platform/lib/format";
 import { maybeAutoStartTour } from "@platform/lib/tour";
 import { useThemeSync } from "@platform/lib/theme";
-import Sidebar, { type SidebarCtx } from "@shell/Sidebar";
+import ShellSidebar from "@shell/ShellSidebar";
+import ExplorerSidebar from "@apps/explorer/sidebar/ExplorerSidebar";
+import BuilderSidebar from "@apps/builder/sidebar/BuilderSidebar";
 import CloneAppHost from "@platform/cloud/CloneAppHost";
 import NotificationHost from "@platform/ui/NotificationHost";
 import ShortcutsOverlay from "@platform/ui/ShortcutsOverlay";
@@ -637,18 +639,20 @@ export default function App({ config }: { config: Config }) {
     );
   }
 
-  // Which sub-app owns the sidebar body: the builder route and explorer
-  // fs-path routes get their sub-app's sections; every shell page (homepages,
-  // settings, learn) gets the app-switcher list.
-  const ctx: SidebarCtx = appFsPath
-    ? "builder"
-    : fsPath || isPanel || isTabs || isBookmark
-      ? "explorer"
-      : "shell";
+  // Each sub-app owns its sidebar; the shell only picks which one matches the
+  // active route: builder on /apps/<tag>/<name>, explorer on fs-path routes,
+  // the shell's own app-switcher everywhere else (homepages, settings, learn).
+  const sidebar = appFsPath ? (
+    <BuilderSidebar config={config} />
+  ) : fsPath || isPanel || isTabs || isBookmark ? (
+    <ExplorerSidebar config={config} />
+  ) : (
+    <ShellSidebar config={config} />
+  );
 
   return (
     <div id="app">
-      {!IS_EMBED && <Sidebar config={config} ctx={ctx} />}
+      {!IS_EMBED && sidebar}
       <div id="main">{main}</div>
       <NotificationHost />
       {/* Opening a deployed app is requested from the path bar (a pasted https:// link) and

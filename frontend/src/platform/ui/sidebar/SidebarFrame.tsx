@@ -1,55 +1,30 @@
-// Shell sidebar chrome (super-app step 2): brand, resize/collapse, and a body
-// that switches on the active sub-app context. The shell itself knows nothing
-// about bookmarks or recents — those sections belong to the sub-apps
-// (apps/explorer/sidebar/*, apps/builder/sidebar/*) and are composed here.
-//
-//   shell ctx    — sub-app list (Apps / File Explorer / Learn) on top,
-//                  settings list (Templates / Mounts / Preferences) at bottom
-//   explorer ctx — Home (→ /explorer) + Bookmarks + file Recents
-//   builder ctx  — Home (→ /apps) + app Recents
+// Shared sidebar chassis: brand row (logo + owner-supplied title + version),
+// draggable width, collapse strip, and the resize handle. Owns NO body — each
+// sub-app (and the shell itself) renders its own sidebar by composing this
+// frame with its own sections, so the platform stays ignorant of bookmarks,
+// recents, and app lists. Width/collapsed state is shared across all owners
+// (platform/lib/sidebarstate): switching sub-apps must not jump the layout.
 import React, { useRef, useState } from "react";
 import { navigateUrl } from "@platform/lib/router";
-import { FolderIcon, LearnIcon } from "@platform/ui/FileIcons";
-import type { Config } from "@platform/lib/api";
 import {
   loadSidebarState,
   saveSidebarState,
   SIDEBAR_MIN_WIDTH,
   SIDEBAR_MAX_WIDTH,
 } from "@platform/lib/sidebarstate";
-import { useUrlVersion, useLearnMountReady } from "@platform/lib/hooks";
-import { useAccountLoggedIn } from "@platform/lib/account";
-import { useDeployEnabled } from "@platform/lib/prefs";
-import BookmarksSection from "@apps/explorer/sidebar/BookmarksSection";
-import ExplorerRecentsSection from "@apps/explorer/sidebar/RecentsSection";
-import BuilderRecentsSection from "@apps/builder/sidebar/RecentsSection";
 
-export type SidebarCtx = "shell" | "explorer" | "builder";
-
-interface SidebarProps {
-  config: Config;
-  ctx: SidebarCtx;
+export interface SidebarFrameProps {
+  /** Brand text next to the cube mark — names the owning context. */
+  title: string;
+  version: string;
+  /** Where the brand click lands; the front door of the owning app. */
+  homeHref?: string;
+  children: React.ReactNode;
 }
-
-const HOME_ICON = (
-  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-    <path d="M3 10.5 12 3l9 7.5" />
-    <path d="M5 9.5V21h14V9.5" />
-  </svg>
-);
-
-const APPS_ICON = (
-  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-    <rect x="3" y="3" width="8" height="8" rx="2" />
-    <rect x="13" y="3" width="8" height="8" rx="2" />
-    <rect x="3" y="13" width="8" height="8" rx="2" />
-    <circle cx="17" cy="17" r="4" />
-  </svg>
-);
 
 // A plain sidebar nav row: highlights on exact pathname match, navigates
 // in-shell, keeps href for middle-click/copy-link.
-function NavItem({
+export function NavItem({
   href,
   label,
   icon,
@@ -81,19 +56,7 @@ function NavItem({
   );
 }
 
-export default function Sidebar({ config, ctx }: SidebarProps) {
-  // Re-render on any nav/url change (active-item highlight).
-  useUrlVersion();
-  // Signed-in dot on the Preferences entry (SPEC AC-1): shown only once
-  // Deploy is enabled, since that's the only reason this app cares about a
-  // Fused account at all.
-  const accountLoggedIn = useAccountLoggedIn();
-  const deployEnabled = useDeployEnabled();
-
-  // Bounded /api/config re-poll for the learn mount (see useLearnMountReady
-  // for the full race notes — the boot snapshot is stale in both directions).
-  const learnMountReady = useLearnMountReady(config.learn_mount_ready);
-
+export function SidebarFrame({ title, version, homeHref = "/apps", children }: SidebarFrameProps) {
   // Sidebar chrome: draggable width + collapsed flag, persisted once per
   // gesture (drag end / toggle), not per mousemove. Width lives in React
   // state — per-pointermove setState is fine (React 18 batches) and there is
@@ -198,16 +161,16 @@ export default function Sidebar({ config, ctx }: SidebarProps) {
       style={{ flexBasis: sidebarWidth, width: sidebarWidth }}
     >
       <div className="sidebar-brand">
-        {/* Logo + name are one click target that goes to the app home (/apps) —
+        {/* Logo + name are one click target that goes to the owner's home —
             the front door is always one click away from anywhere. The collapse
             button stays its own control outside the link. */}
         <a
-          href="/apps"
+          href={homeHref}
           className="brand-home-link"
           title="Home"
           onClick={(e) => {
             e.preventDefault();
-            navigateUrl("/apps");
+            navigateUrl(homeHref);
           }}
         >
           {/* Fused cube mark (brand asset logo-black-bg-transparent.svg), stroke
@@ -221,13 +184,9 @@ export default function Sidebar({ config, ctx }: SidebarProps) {
               />
             </svg>
           </span>{" "}
-          {/* Brand names the current context: the shell is the platform
-              ("Fused Render"), each sub-app announces itself. */}
-          <span className="brand-title">
-            {ctx === "builder" ? "Fused App" : ctx === "explorer" ? "Fused Explorer" : "Fused Render"}
-          </span>
+          <span className="brand-title">{title}</span>
         </a>
-        <span className="brand-version">v{config.version}</span>
+        <span className="brand-version">v{version}</span>
         <button
           type="button"
           className="icon-btn sidebar-collapse-btn"
@@ -241,74 +200,7 @@ export default function Sidebar({ config, ctx }: SidebarProps) {
         </button>
       </div>
 
-      {ctx === "shell" && (
-        <>
-          <div className="sidebar-section">
-            <NavItem href="/apps" id="apps-link" label="Apps" icon={APPS_ICON} />
-            <NavItem href="/explorer" id="explorer-link" label="File Explorer" icon={<FolderIcon />} />
-            {learnMountReady && <NavItem href="/learn" id="learn-link" label="Learn" icon={<LearnIcon />} />}
-          </div>
-          {/* Settings — pinned to the bottom edge (margin-top: auto), the same
-              list treatment as the sub-app list above. */}
-          <div className="sidebar-section sidebar-settings">
-            <NavItem
-              href="/templates"
-              label="Templates"
-              icon={
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                  <rect x="3" y="3" width="7" height="7" rx="1" />
-                  <rect x="14" y="3" width="7" height="7" rx="1" />
-                  <rect x="3" y="14" width="7" height="7" rx="1" />
-                  <rect x="14" y="14" width="7" height="7" rx="1" />
-                </svg>
-              }
-            />
-            {/* PROTOTYPE: mounts entry — remote mounts. */}
-            <NavItem
-              href="/mounts"
-              label="Mounts"
-              icon={
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                  <path d="M17.5 19a4.5 4.5 0 1 0-.9-8.9 6 6 0 1 0-11.4 2.4A3.5 3.5 0 0 0 6.5 19h11z" />
-                </svg>
-              }
-            />
-            <NavItem
-              href="/preferences"
-              label="Preferences"
-              icon={
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                  <circle cx="12" cy="12" r="3" />
-                  <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h.01a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51h.01a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v.01a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
-                </svg>
-              }
-              // Fused-account signed-in signal (SPEC AC-1), folded onto the
-              // Preferences entry. Gated on Deploy being enabled — that's the
-              // only reason a Fused account matters here.
-              extra={deployEnabled && accountLoggedIn ? <span className="account-signedin-dot" /> : undefined}
-            />
-          </div>
-        </>
-      )}
-
-      {ctx === "explorer" && (
-        <>
-          <div className="sidebar-section">
-            <NavItem href="/explorer" id="explorer-home-link" label="Home" icon={HOME_ICON} />
-          </div>
-          <BookmarksSection />
-          <ExplorerRecentsSection />
-        </>
-      )}
-
-      {ctx === "builder" && (
-        <>
-          <div className="sidebar-section">
-            <NavItem href="/apps" id="builder-home-link" label="Home" icon={HOME_ICON} />
-          </div>
-          <BuilderRecentsSection />
-        </>
-      )}
+      {children}
 
       {/* Resize handle riding the right border: drag to resize (pointer
           capture keeps the gesture even when the cursor leaves the strip),
@@ -325,3 +217,12 @@ export default function Sidebar({ config, ctx }: SidebarProps) {
     </nav>
   );
 }
+
+// The "Home" row shared by sub-app sidebars (explorer, builder) — same glyph
+// everywhere so "back to my app's front page" reads identically.
+export const HOME_ICON = (
+  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <path d="M3 10.5 12 3l9 7.5" />
+    <path d="M5 9.5V21h14V9.5" />
+  </svg>
+);
