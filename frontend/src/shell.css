@@ -4582,6 +4582,27 @@ select.field-control:has(option[value=""]:checked) {
   background: none;
 }
 
+/* The two-row fold's "Show more": a quiet pill centered under the grid. */
+.fhb-more {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 14px auto 0;
+  padding: 5px 14px;
+  font-size: 12px;
+  color: var(--fg-muted);
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  cursor: pointer;
+  transition: color 0.12s ease, border-color 0.12s ease;
+}
+
+.fhb-more:hover {
+  color: var(--fg);
+  border-color: color-mix(in srgb, var(--fg-muted) 35%, var(--border));
+}
+
 /* driver.js popover — dark theme overrides scoped under .driver-popover. */
 .driver-popover {
   background: var(--bg-popover);
