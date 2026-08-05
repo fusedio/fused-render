@@ -479,6 +479,14 @@ def test_no_312_yet_reports_NOT_installed_whatever_the_marker_says(
     """
     reqs = ["pip"]
     venv_dir = _marked_venv(tmp_path, monkeypatch, reqs, runnable=True)
+    # The baseline is about the MARKER, so the interpreter must be pinned ready
+    # rather than measured: `_fresh_script_python` drops conftest's pin, and on a
+    # runner that is neither 3.12 nor holding a uv-managed 3.12 the real
+    # resolution answers "not ready" — which is the very short-circuit under test,
+    # so the baseline would assert the post-condition and pass for the wrong
+    # reason on 3.12 while failing outright on 3.11 (which is what CI's
+    # fused-engine job pins, and the only job where @requires_fused runs at all).
+    monkeypatch.setattr(envinstall, "script_python_ready", lambda: True)
     assert envinstall.is_installed(reqs) is True  # baseline: the marker is trusted
 
     envinstall.reset_venv_validation_cache()
