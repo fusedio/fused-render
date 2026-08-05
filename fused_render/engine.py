@@ -462,13 +462,26 @@ def get_backend():
     if _backend is None:
         from fused.agent_core.backends.local.python_compute import LocalPythonComputeBackend
 
+        from fused_render import envinstall
         from fused_render.executor import DEFAULT_TIMEOUT
 
         # cache_storage=None disables result caching explicitly (PY-9: fresh
         # execution every call). It is the upstream default today, but we may
         # track a nightly wheel — don't rely on a default staying put.
+        #
+        # python_executable pins the base interpreter script venvs are built from
+        # to 3.12 (D214). Passed HERE, at the one place the backend is constructed,
+        # because `envinstall._python_executable()` reads the attribute straight
+        # back off this instance: the resolution and the venv key it feeds are one
+        # value with one source, and a loader that re-decided it independently
+        # could disagree with the backend and fill a directory no run ever reads.
+        #
+        # None for every packaged build (they already run 3.12), which is exactly
+        # the value this argument had before D214 — so their venv keys do not move.
         _backend = LocalPythonComputeBackend(
-            timeout_seconds=int(DEFAULT_TIMEOUT), cache_storage=None
+            timeout_seconds=int(DEFAULT_TIMEOUT),
+            cache_storage=None,
+            python_executable=envinstall.script_python(),
         )
     return _backend
 

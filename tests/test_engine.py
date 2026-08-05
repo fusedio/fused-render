@@ -20,7 +20,7 @@ import types
 import pytest
 
 import conftest
-from fused_render import engine
+from fused_render import engine, envinstall
 
 
 def _toml_available() -> bool:
@@ -413,6 +413,39 @@ def test_ci_claiming_to_cover_this_engine_actually_runs_it():
         "wheel marked python_version >= '3.11': check the interpreter), so every "
         "engine test would have skipped while the job reported success"
     )
+
+
+@requires_fused
+def test_the_backend_is_built_from_the_RESOLVED_script_interpreter(monkeypatch):
+    """D214: the pin only exists if it reaches the backend.
+
+    `envinstall._python_executable()` reads this attribute straight back off the
+    live backend, and `venv_key_for` folds it into the venv key — so the resolution
+    and the key are one value with one source. A resolver whose answer never
+    reached the constructor would leave every venv still keyed on whatever
+    interpreter happened to run the server, which is the bug D214 is about.
+    """
+    monkeypatch.setattr(engine, "_backend", None)
+    monkeypatch.setattr(envinstall, "script_python", lambda: "/pinned/python3.12")
+    backend = engine.get_backend()
+    assert backend._python_executable == "/pinned/python3.12"
+    # And read back through the loader, which is what actually keys the venv.
+    assert envinstall._python_executable() == "/pinned/python3.12"
+
+
+@requires_fused
+def test_a_server_already_on_312_leaves_the_backend_default_untouched(monkeypatch):
+    """None must stay None all the way to the constructor.
+
+    This is the packaged-build path, and `None` is what makes it a no-op: it is
+    the value the backend has always been given, so `python_identity` produces the
+    identical key and no existing venv is orphaned. Passing something merely
+    equivalent (`sys.executable`) instead would re-key every venv on every
+    installed app for no behavioural gain.
+    """
+    monkeypatch.setattr(engine, "_backend", None)
+    monkeypatch.setattr(envinstall, "script_python", lambda: None)
+    assert engine.get_backend()._python_executable is None
 
 
 @requires_fused
