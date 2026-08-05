@@ -4268,11 +4268,12 @@ select.field-control:has(option[value=""]:checked) {
 .files-home {
   height: 100%;
   overflow-y: auto;
-  padding: 40px 28px 72px;
+  padding: 36px 28px 72px;
 }
 
+/* Same content width as /apps (.apps-inner) so the two homepages line up. */
 .files-home-inner {
-  max-width: 860px;
+  max-width: 1120px;
   margin: 0 auto;
 }
 
