@@ -360,6 +360,23 @@ def test_a_directory_target_is_told_about_the_tool(agent, tmp_path, monkeypatch)
     assert "Keep your work scoped to this file" not in prompt
 
 
+def test_a_directory_target_is_told_what_kind_of_project_it_is_in(
+        agent, tmp_path, monkeypatch):
+    """Here rather than only in the starter CLAUDE.md, which is the user's file
+    in the user's folder: a project whose CLAUDE.md was edited away, or that
+    predates it, would otherwise have nothing telling the session that the HTML
+    in front of it is an app with a Python bridge behind it."""
+    agent.RUNS = str(tmp_path / "runs")
+    project = tmp_path / "proj"
+    project.mkdir()
+    cmd, _run_dir = _spawn(agent, monkeypatch, project)
+    prompt = cmd[cmd.index("--append-system-prompt") + 1]
+    assert "fused-render project" in prompt
+    # and the skill that documents the bridge is named, so the model reaches for
+    # it instead of inferring the API from whatever is in the file
+    assert "fused-render-authoring" in prompt
+
+
 def test_a_file_target_still_gets_the_file_scoping_prompt(agent, tmp_path,
                                                           monkeypatch):
     agent.RUNS = str(tmp_path / "runs")
@@ -369,6 +386,21 @@ def test_a_file_target_still_gets_the_file_scoping_prompt(agent, tmp_path,
     prompt = cmd[cmd.index("--append-system-prompt") + 1]
     assert "Keep your work scoped to this file" in prompt
     assert agent.APP_STATE_TOOL not in prompt
+
+
+def test_a_file_target_is_not_told_it_is_a_fused_render_project(
+        agent, tmp_path, monkeypatch):
+    """The framing belongs to the DIRECTORY prompt, which is the only one this
+    template's gate ever reaches — `condition.py` offers the split view solely
+    for a project folder two levels under the workspace root. The file branch of
+    `_start` is a fork of the plain viewer prompt and stays that way, so the app
+    framing cannot leak into a target that is just a file being looked at."""
+    agent.RUNS = str(tmp_path / "runs")
+    target = tmp_path / "notes.md"
+    target.write_text("# hi")
+    cmd, _run_dir = _spawn(agent, monkeypatch, target)
+    prompt = cmd[cmd.index("--append-system-prompt") + 1]
+    assert "fused-render project" not in prompt
 
 
 # ------------------------------------------ the pushed block: model-only text

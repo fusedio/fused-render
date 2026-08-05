@@ -310,27 +310,37 @@ def _system_prompt(file: str) -> str:
 
 
 def _split_system_prompt() -> str:
-    """The DIRECTORY target's prompt, and it says one thing only: the app-state
-    tool exists.
+    """The DIRECTORY target's prompt. It says two things: what kind of project
+    this is, and that the app-state tool exists.
 
     A tool the model is never told about is a tool it never calls, and the
     tool's own description is not enough on its own — nothing in an ordinary
-    session suggests that the page being edited can be read back. Deliberately
-    nothing else in here: the split view is a whole project and the file-scoping
-    prompt above is exactly what the directory branch of `_start` exists to
-    avoid (see the comment there).
+    session suggests that the page being edited can be read back.
+
+    Naming fused-render is the other half, and it belongs HERE rather than being
+    left to the starter `CLAUDE.md`: that file is the user's, in their folder,
+    and a session opened on a project whose CLAUDE.md was edited away — or that
+    predates it — otherwise has nothing telling it the HTML in front of it is an
+    app with a Python bridge behind it. Same reliability argument as the skill
+    plugin (D212): the thing the model must know cannot depend on a file we do
+    not own. Still deliberately short of the file-scoping prompt above, which the
+    directory branch of `_start` exists to avoid (see the comment there) — this
+    says what the project IS, not what to work on.
     """
     tool = "mcp__%s__%s" % (PERMISSION_SERVER, APP_STATE_TOOL)
     return (
-        "This session is a split view: the user is looking at this project's "
-        f"app rendered live beside the chat. The `{tool}` tool reports what "
-        "that page is doing right now — console errors, its URL params and an "
-        "outline of its DOM. Call it after changing anything that affects the "
-        "rendered page (the page reloads itself, so this is how you find out "
-        "whether the change worked), and whenever the user reports something "
-        "visibly wrong. The user's message may also arrive with a "
-        f"<{APP_STATE_TAG}> block: that is the same snapshot, taken the moment "
-        "they hit send, and it is stale as soon as you edit anything."
+        "This is a fused-render project: its HTML is an app fused-render serves, "
+        "calling local Python through fused-render's bridge rather than a server "
+        "you write. The `fused-render-authoring` skill documents that bridge — "
+        "use it rather than inferring the API. "
+        "The user sees the app rendered live beside this chat. "
+        f"`{tool}` reports what that page is doing now: console errors, URL "
+        "params, a DOM outline. Call it after any change that affects the page "
+        "(it reloads itself — this is how you see whether the change worked), "
+        "and whenever the user reports something visibly wrong. A "
+        f"<{APP_STATE_TAG}> block on their message is the same reading taken at "
+        "send time, with the outline at a path it gives you; it goes stale as "
+        "soon as you edit anything."
     )
 
 
