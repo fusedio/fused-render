@@ -1328,6 +1328,24 @@ def _spawn(key: str, requirements: list[str], acquire_python: str | None = None)
     return child.pid
 
 
+def _reported(key: str, record: dict) -> dict:
+    """`record` plus the key it belongs to, for the response body only.
+
+    The caller (/api/env/install) hands the client a key to poll with, and it must
+    be the key this install actually reports under rather than one recomputed from
+    the requirements. Two independent derivations is one too many: in bootstrap mode
+    they disagree BY DESIGN (`PYTHON_BOOTSTRAP_KEY` vs the venv key), so the page
+    would poll for a record that does not exist and fail an install running fine —
+    and even when they agree, readiness can flip between the two calls, which is
+    exactly the window a fast interpreter download opens.
+
+    Added to the returned copy only, never to what `_write` puts on disk: the record
+    ON DISK is the shape `templates/docs/install_worker.py` also writes, and the page
+    shell polls one shape.
+    """
+    return {**record, "key": key}
+
+
 def start(requirements: list[str]) -> dict:
     """Begin (or join) the install for `requirements`; returns its progress.
 
@@ -1349,7 +1367,7 @@ def start(requirements: list[str]) -> dict:
         record = {"stage": "done", "pct": 100, "detail": "already installed",
                   "done": True, "error": None, "pid": os.getpid(), "ts": time.time()}
         _write(key, record)
-        return record
+        return _reported(key, record)
     if not _claim(key):
         # Someone else owns this install — join it, and report exactly what a poll
         # would see. No synthetic record here any more: `progress()` covers the
@@ -1371,7 +1389,7 @@ def start(requirements: list[str]) -> dict:
                 "could not start or join an installer for these packages: "
                 f"{progress_dir(key)} is not writable"
             )
-        return joined
+        return _reported(key, joined)
     # This attempt owns the key now, so the PREVIOUS attempt's record must go.
     # `_write_if_absent` below deliberately cannot overwrite a record, so a failed
     # attempt's error left in place would become this attempt's answer: the loader
@@ -1402,8 +1420,8 @@ def start(requirements: list[str]) -> dict:
         # rule as the join branch above, and for the same reason: a record shape
         # written only into this response body could disagree with the GET that
         # follows it.
-        return progress(key) or record
-    return record
+        return _reported(key, progress(key) or record)
+    return _reported(key, record)
 
 
 def cancel(key: str) -> bool:

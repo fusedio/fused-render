@@ -104,7 +104,11 @@ def test_install_derives_requirements_from_the_file_not_the_body(tmp_path, monke
     started = []
     monkeypatch.setattr(
         "fused_render.envinstall.start",
-        lambda reqs: started.append(list(reqs)) or {"stage": "spawn", "done": False},
+        # `key` included because `start` reports the key it used and the endpoint
+        # hands that straight to the client (D214) — a double that omits it is not
+        # standing in for the real function.
+        lambda reqs: started.append(list(reqs)) or {"stage": "spawn", "done": False,
+                                                    "key": "0" * 16},
     )
     resp = client.post(
         "/api/env/install",
@@ -126,7 +130,8 @@ def test_install_resolves_a_relative_py_against_the_page(tmp_path, monkeypatch):
     (tmp_path / "sub").mkdir()
     _py(tmp_path / "sub", "rel.py",
         '# /// script\n# dependencies = ["pyproj"]\n# ///\ndef main():\n    return 1\n')
-    monkeypatch.setattr("fused_render.envinstall.start", lambda reqs: {"done": False})
+    monkeypatch.setattr("fused_render.envinstall.start",
+                        lambda reqs: {"done": False, "key": "0" * 16})
     resp = client.post(
         "/api/env/install",
         json={"py": "rel.py", "html": str(tmp_path / "sub" / "page.html")},
@@ -557,6 +562,101 @@ console.log(JSON.stringify({ seen, detail: ui.detail.textContent }));
     assert result["detail"] == "installed"
 
 
+def test_the_python_stage_paints_an_indeterminate_bar_too():
+    """The interpreter download has no measurable progress either (D214).
+
+    `_acquire_python` captures uv's output exactly as upstream's builder does, so
+    `python` parks at pct 5 for the whole ~30MB fetch. A bar frozen at 5% is the same
+    "it looks broken" this treatment exists to fix — and the stage list is explicit,
+    so a stage added later renders as a plain bar rather than silently inheriting the
+    sweep.
+    """
+    result = _run_loader("""
+const ui = installOverlay();
+const seen = [];
+const snap = (label) => seen.push([label, ui.bar.dataset.indeterminate || null,
+                                   ui.bar.style.width]);
+paintInstall(ui, { stage: "python", pct: 5, detail: "downloading Python 3.12 (14s)",
+                   done: false });
+snap("python");
+paintInstall(ui, { stage: "done", pct: 100, detail: "downloaded Python 3.12",
+                   done: true });
+snap("done");
+console.log(JSON.stringify({ seen, detail: ui.detail.textContent }));
+""")
+    by_label = {row[0]: row[1:] for row in result["seen"]}
+    assert by_label["python"][0] == "1", "the python stage must be indeterminate"
+    assert by_label["done"][0] is None, "a finished download must stop animating"
+    assert by_label["done"][1] == "100%"
+    assert result["detail"] == "downloaded Python 3.12"
+
+
+def test_the_interpreter_round_is_titled_PYTHON_not_the_packages():
+    """Naming the packages during the interpreter download is a small lie with a
+    real cost: the user watches "Installing tensorflow" for minutes while nothing
+    about tensorflow is happening, which is how a working install comes to look
+    stuck. `need.python` is present only on that round."""
+    result = _run_loader("""
+const ui = showInstall({ key: "%(a)s", requirements: ["tensorflow"], python: "3.12" });
+const first = ui.title.textContent;
+hideInstall("%(a)s");
+const second = showInstall({ key: "%(b)s", requirements: ["tensorflow"] }).title.textContent;
+console.log(JSON.stringify({ first, second }));
+""" % {"a": _KEY_A, "b": _KEY_B})
+    assert result["first"] == "Installing Python 3.12"
+    assert result["second"] == "Installing tensorflow"
+
+
+def test_two_rounds_are_allowed_when_they_install_DIFFERENT_things():
+    """Interpreter then packages, each under its own key (D214).
+
+    The guard used to be a boolean, which was right while exactly one install could
+    ever be needed. With the interpreter round it is not: the run's second
+    needs_install is correct and necessary, and a boolean failed it as
+    "something disagrees about the venv key" — leaving a page that had just
+    downloaded Python unable to install anything with it.
+    """
+    result = _run_loader("""
+const installed = new Set();
+const pythonRound = { key: "%(a)s", requirements: ["tensorflow"], python: "3.12" };
+const packageRound = { key: "%(b)s", requirements: ["tensorflow"] };
+const seen = [];
+// Round 1: the interpreter. New key -> install it.
+seen.push(shouldInstall(pythonRound, installed));
+installed.add(pythonRound.key);
+// Round 2: the packages. DIFFERENT key -> still install.
+seen.push(shouldInstall(packageRound, installed));
+installed.add(packageRound.key);
+// Round 3: the same package key back again -> nothing changed, so stop.
+seen.push(shouldInstall(packageRound, installed));
+console.log(JSON.stringify({ seen }));
+""" % {"a": _KEY_A, "b": _KEY_B})
+    assert result["seen"] == [True, True, False], (
+        "expected install, install, then refuse — got " + repr(result["seen"])
+    )
+
+
+def test_a_repeated_key_still_fails_instead_of_installing_forever():
+    """The loop guard this replaced a boolean with must still hold. A run that keeps
+    asking for the SAME key after a successful install means the loader and the run
+    disagree about the venv key, and installing forever hides that."""
+    result = _run_loader("""
+const installed = new Set();
+const need = { key: "%(a)s", requirements: ["x"] };
+shouldInstall(need, installed);
+installed.add(need.key);
+console.log(JSON.stringify({
+  again: shouldInstall(need, installed),
+  // A needs_install with no key at all is not something to install either.
+  keyless: shouldInstall({ requirements: ["x"] }, installed),
+  absent: shouldInstall(undefined, installed),
+}));
+""" % {"a": _KEY_A})
+    assert result["again"] is False
+    assert result["keyless"] is False
+    assert result["absent"] is False
+
+
 def test_the_keyframes_are_injected_once_however_many_installs_run():
     """The overlay is built from inline styles, which cannot express keyframes, so
     one <style> is injected — and injected ONCE, or every install of a session
@@ -639,8 +739,17 @@ def test_the_runtime_drives_the_loader():
     assert "/api/env/install" in src
     assert "/api/env/progress?key=" in src
     assert "/api/env/cancel" in src
-    # The retry, and its one-shot guard: re-running after the install is the
-    # whole point, and looping on it forever is the way that goes wrong.
-    assert "handle(next, true)" in src, "the run must be retried once, and only once"
+    # The retry, and its loop guard: re-running after the install is the whole
+    # point, and looping on it forever is the way that goes wrong. The guard is
+    # keyed on PROGRESS rather than a count since D214 — the interpreter round and
+    # the package round are two legitimate installs — so what is pinned here is that
+    # the set is threaded through the retry and consulted before installing.
+    assert "handle(next, installed)" in src, "the run must be retried after an install"
+    assert "shouldInstall(data.needs_install, installed)" in src, (
+        "the retry must be gated on the progress rule, not on a bare boolean"
+    )
+    assert "installed.add(data.needs_install.key)" in src, (
+        "a key must be recorded as installed, or the guard can never close"
+    )
     # Verbatim errors survive to the page.
     assert "new Error(prog.error)" in src

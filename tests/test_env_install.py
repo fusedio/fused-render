@@ -495,6 +495,29 @@ def test_the_bootstrap_reports_under_its_OWN_key_not_a_venv_key(
 
 
 @requires_fused
+def test_start_REPORTS_the_key_it_used_rather_than_leaving_it_to_be_recomputed(
+    tmp_path, monkeypatch, _fresh_script_python
+):
+    """The caller must not re-derive it, and this is why.
+
+    /api/env/install hands the client a key to poll. Recomputing that key means two
+    independent answers to "which key" — and in bootstrap mode they DISAGREE by
+    design, so the page would poll the venv key while the worker reported under the
+    interpreter key, read no record, and fail an install that was running fine.
+    Recomputing is also racy even when both agree: readiness can flip between the
+    two calls, which is exactly the window a fast download opens.
+    """
+    monkeypatch.setattr(envinstall, "_spawn", lambda *a, **kw: os.getpid())
+
+    monkeypatch.setattr(envinstall, "script_python_ready", lambda: False)
+    assert envinstall.start(["pip"])["key"] == envinstall.PYTHON_BOOTSTRAP_KEY
+
+    monkeypatch.setattr(envinstall, "script_python_ready", lambda: True)
+    envinstall.reset_venv_validation_cache()
+    assert envinstall.start(["pip"])["key"] == envinstall.venv_key_for(["pip"])
+
+
+@requires_fused
 def test_the_venv_key_folds_in_the_RESOLVED_script_interpreter(
     tmp_path, monkeypatch, _fresh_script_python
 ):

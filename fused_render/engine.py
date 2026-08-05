@@ -799,20 +799,40 @@ def _needs_install_dict(requirements: list[str], abs_path: str) -> dict:
     """
     from fused_render import envinstall
 
+    # Two rounds are possible (D214): with no pinned Python on this machine the
+    # FIRST install is the interpreter, reported under its own key, and the packages
+    # follow once it lands. The key differs between the rounds on purpose — it is
+    # what lets the page tell "we made progress, ask again" from "we installed and
+    # nothing changed", which is a loop.
+    needs_python = not envinstall.script_python_ready()
+    if needs_python:
+        key = envinstall.PYTHON_BOOTSTRAP_KEY
+        message = (
+            f"{os.path.basename(abs_path)} declares dependencies that need Python "
+            f"{envinstall.SCRIPT_PYTHON_VERSION}, which this machine does not have "
+            "yet. It needs a one-time download, and then the packages themselves."
+        )
+    else:
+        key = envinstall.venv_key_for(requirements)
+        message = (
+            f"{os.path.basename(abs_path)} declares dependencies that are not "
+            f"installed yet: {', '.join(requirements)}. They need a one-time "
+            "download."
+        )
     return {
         "ok": False,
         "needs_install": {
-            "key": envinstall.venv_key_for(requirements),
+            "key": key,
             "requirements": requirements,
             "py": abs_path,
+            # So the loader can name what it is fetching instead of listing packages
+            # it is not downloading yet. Absent (not false) on the ordinary path, so
+            # a client that ignores it is unaffected.
+            **({"python": envinstall.SCRIPT_PYTHON_VERSION} if needs_python else {}),
         },
         "error": {
             "type": "EnvNotInstalled",
-            "message": (
-                f"{os.path.basename(abs_path)} declares dependencies that are not "
-                f"installed yet: {', '.join(requirements)}. They need a one-time "
-                "download."
-            ),
+            "message": message,
             "traceback": "",
         },
         "stdout": "",
