@@ -539,43 +539,27 @@ export default function App({ config }: { config: Config }) {
       </>
     );
   } else if (isPrefs) {
-    // Preferences (SPEC §20): a sentinel pathname like _panel/_tab — not a
-    // file; entered from the sidebar's gear. /view only (no embed variant —
-    // settings chrome inside a pane makes no sense).
+    // Preferences (SPEC §20): a shell settings page — no topbar. Bookmark and
+    // split actions are explorer concepts and never render outside it.
     main = (
-      <>
-        <div id="breadcrumb">
-          <StaticBreadcrumb label="Preferences" />
-        </div>
-        <div id="content" key={epoch}>
-          <Preferences key={epoch} />
-        </div>
-      </>
+      <div id="content" key={epoch}>
+        <Preferences key={epoch} />
+      </div>
     );
   } else if (isTemplates) {
-    // Templates management (TEMPLATE_MGMT_SPEC §3): a sentinel pathname like
-    // _prefs — not a file; entered from the sidebar footer. /view only.
+    // Templates management (TEMPLATE_MGMT_SPEC §3): shell settings page, no
+    // topbar.
     main = (
-      <>
-        <div id="breadcrumb">
-          <StaticBreadcrumb label="Templates" />
-        </div>
-        <div id="content" key={epoch}>
-          <Templates key={epoch} />
-        </div>
-      </>
+      <div id="content" key={epoch}>
+        <Templates key={epoch} />
+      </div>
     );
   } else if (isMounts) {
-    // PROTOTYPE — remote-storage mounts, same sentinel pattern as _prefs.
+    // PROTOTYPE — remote-storage mounts, same chrome-free settings pattern.
     main = (
-      <>
-        <div id="breadcrumb">
-          <StaticBreadcrumb label="Mounts" />
-        </div>
-        <div id="content" key={epoch}>
-          <Mounts key={epoch} />
-        </div>
-      </>
+      <div id="content" key={epoch}>
+        <Mounts key={epoch} />
+      </div>
     );
   } else if (isApps) {
     // Apps hub — the app home. No breadcrumb bar; the page owns its own
