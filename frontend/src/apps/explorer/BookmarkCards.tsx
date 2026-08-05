@@ -122,11 +122,14 @@ function bestPeekFile(entries: FsEntry[]): FsEntry | null {
 function FolderStack({ path }: { path: string }) {
   const [entries, setEntries] = useState<FsEntry[] | null>(null);
   // Absolute fs path of a probed subfolder's best file — the fallback peek.
-  const [subPeek, setSubPeek] = useState<string | null>(null);
+  // undefined = probe not settled yet, null = settled with nothing to peek;
+  // the note body waits for settled so it doesn't flash a count and then
+  // swap to a preview mid-probe.
+  const [subPeek, setSubPeek] = useState<string | null | undefined>(undefined);
   useEffect(() => {
     let alive = true;
     setEntries(null);
-    setSubPeek(null);
+    setSubPeek(undefined);
     (async () => {
       let list: FsEntry[] = [];
       try {
@@ -137,7 +140,10 @@ function FolderStack({ path }: { path: string }) {
       if (!alive) return;
       setEntries(list);
       const teaser = teaserEntries(list);
-      if (teaser.some((e) => !e.is_dir)) return; // a direct file child wins
+      if (teaser.some((e) => !e.is_dir)) {
+        setSubPeek(null); // a direct file child wins — no probe needed
+        return;
+      }
       let best: { path: string; rank: number } | null = null;
       for (const d of teaser.filter((e) => e.is_dir).slice(0, APP_PROBE_LIMIT)) {
         const subPath = joinPath(path, d.name);
@@ -154,7 +160,7 @@ function FolderStack({ path }: { path: string }) {
         if (!best || rank < best.rank) best = { path: joinPath(subPath, f.name), rank };
         if (rank === 0) break; // an html — nothing can outrank it
       }
-      if (best) setSubPeek(best.path);
+      setSubPeek(best ? best.path : null);
     })();
     return () => {
       alive = false;
@@ -164,7 +170,9 @@ function FolderStack({ path }: { path: string }) {
   const teaser = teaserEntries(entries ?? []);
   const shown = teaser.slice(0, MAX_CHIPS);
   const firstFile = bestPeekFile(teaser);
-  const peekPath = firstFile ? joinPath(path, firstFile.name) : subPeek;
+  const peekPath = firstFile ? joinPath(path, firstFile.name) : (subPeek ?? null);
+  // Settled: listDir landed AND the subfolder probe reached a verdict.
+  const settled = entries !== null && subPeek !== undefined;
   return (
     <span className="fhb-stack">
       {/* Back chip first: natural stacking keeps the front chip on top. */}
@@ -177,7 +185,7 @@ function FolderStack({ path }: { path: string }) {
       {peekPath ? (
         <LivePreview src={embedUrlForFsPath(peekPath)} />
       ) : (
-        entries !== null && (
+        settled && (
           // Nothing to peek at — fill the stack's leftover space with a
           // count so a subfolder-only (or empty) folder card isn't a void.
           <span className="fhb-note">
@@ -248,11 +256,16 @@ const STAR_ICON = (
 
 export function BookmarkPreviewCard({ b }: { b: Bookmark }) {
   const fsPath = bookmarkFsPath(b.url);
-  // A saved layout (/_tab, /_panel) is never a directory — skip the stat.
-  const sentinel = basename(fsPath).startsWith("_");
+  // A saved layout (/_tab, /_panel — exact sentinel segments, not any
+  // _-prefixed folder like _site) is never a directory — skip the stat.
+  const sentinel = fsPath === "/_tab" || fsPath === "/_panel";
   const missing = isBookmarkMissing(b.id);
   const [isDir, setIsDir] = useState<boolean | null>(sentinel ? false : null);
   useEffect(() => {
+    // Reset before the stat lands, so a card re-pointed at a new target
+    // doesn't keep showing the previous target's body while the new stat
+    // is in flight.
+    setIsDir(sentinel ? false : null);
     if (sentinel || missing) return;
     let alive = true;
     statPath(fsPath).then(
