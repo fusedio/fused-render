@@ -101,6 +101,12 @@ RUNS = _runs_root()
 # Under our own 0700 root (never the user's project — a screenshot is not their
 # file), so the same privacy argument as the run dir covers it: another local
 # account cannot read the pixels of the app on this user's screen.
+#
+# It holds the app-state DOM outlines too, which the page writes here rather than
+# into the message (D213). Same kind of artifact under the same argument — a
+# private, short-lived record of what was on the user's screen, handed to the
+# agent and junk once the turn is over — and sharing this directory means one
+# 0700 enforcement, one pruner and one `Read(...)` rule rather than two of each.
 SHOTS = os.path.join(os.path.dirname(RUNS), "shots")
 
 # How long a crop is kept, and how many are kept at all. Both are cleanup, not

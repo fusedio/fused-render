@@ -1196,3 +1196,121 @@ def test_the_composers_escape_does_not_also_reach_the_run_killer(html):
     start = html.index("annTa.addEventListener(\"keydown\"")
     head = html[start:start + 400]
     assert "stopPropagation" in head, head
+
+
+# ------------------------------- the outline travels as a file, not in the message
+
+# The outline used to be stringified straight into the message, which put it in
+# the CLI's own session transcript: N messages meant N full DOM trees re-read on
+# every later turn, all but the newest already stale. It goes to a file now and
+# only the path rides along.
+
+_BLOCK = ["const APP_STATE_TAG", "function appStateBlock("]
+_FILE = ["function shotJoin(", "let appStateSeq", "async function appStateFile("]
+
+
+def test_the_block_points_at_the_outline_instead_of_carrying_it(html):
+    block = _node(_BLOCK, 'console.log(JSON.stringify(appStateBlock('
+                  '{"title": "Disk Cleaner", '
+                  '"dom_path": "/tmp/shots/appstate-1-1.json"})));', html)
+    assert "/tmp/shots/appstate-1-1.json" in block
+    # and it TELLS the model the tree is in a file — a path with no instruction
+    # is a path that never gets read
+    assert "dom_path" in block and "read it" in block
+
+
+def test_an_outline_that_could_not_be_written_still_rides_inline(html):
+    """The fallback has to keep working: no directory or a failed write must not
+    leave the agent knowing less about the screen than before this existed."""
+    block = _node(_BLOCK, 'console.log(JSON.stringify(appStateBlock('
+                  '{"dom": {"tag": "body"}})));', html)
+    assert '"tag":"body"' in block.replace(" ", "")
+    assert "dom_path" not in block
+
+
+def test_the_preamble_does_not_promise_a_file_that_is_not_there(html):
+    """Two shapes, one preamble. Describing `dom_path` when the outline came
+    inline would send the model looking for a key that does not exist."""
+    inline = _node(_BLOCK, 'console.log(JSON.stringify(appStateBlock('
+                   '{"dom": {"tag": "body"}})));', html)
+    assert "read it" not in inline
+
+
+def test_the_outline_is_written_into_the_screenshot_directory(html):
+    """That directory, and not a new one: it is already 0700-enforced, already
+    pruned, and already the one path --allowed-tools lets Read touch without
+    raising a card."""
+    prelude = """
+let written = null;
+async function shotDirPath() { return "/tmp/shots"; }
+const fused = { async uploadFile(path) { written = path; } };
+"""
+    out = _node(_FILE, 'appStateFile({"title": "x", "dom": {"tag": "body"}})'
+                '.then((s) => console.log(JSON.stringify({state: s, '
+                'written: written})));', html, prelude)
+    assert out["written"].startswith("/tmp/shots/appstate-")
+    assert out["written"].endswith(".json")
+    assert out["state"]["dom_path"] == out["written"]
+    # the whole point: the bytes are gone from what gets composed
+    assert "dom" not in out["state"]
+    assert out["state"]["title"] == "x"
+
+
+def test_two_sends_in_the_same_millisecond_do_not_share_a_file(html):
+    """Date.now() alone collides, and the second send would overwrite the first
+    send's outline while the first was still being read."""
+    prelude = """
+async function shotDirPath() { return "/tmp/shots"; }
+const fused = { async uploadFile() {} };
+"""
+    out = _node(_FILE, 'Promise.all([appStateFile({"dom": {"tag": "body"}}), '
+                'appStateFile({"dom": {"tag": "body"}})]).then((s) => '
+                'console.log(JSON.stringify(s.map((x) => x.dom_path))));',
+                html, prelude)
+    assert out[0] != out[1], out
+
+
+def test_a_failed_write_keeps_the_outline_inline_rather_than_losing_it(html):
+    """console.warn goes to stderr, so the fallback stays quiet on stdout."""
+    prelude = """
+async function shotDirPath() { throw new Error("no screenshot directory"); }
+const fused = { async uploadFile() {} };
+"""
+    out = _node(_FILE, 'appStateFile({"dom": {"tag": "body"}})'
+                '.then((s) => console.log(JSON.stringify(s)));', html, prelude)
+    assert out["dom"] == {"tag": "body"}
+    assert "dom_path" not in out
+
+
+def test_a_snapshotless_send_is_left_alone(html):
+    prelude = """
+async function shotDirPath() { throw new Error("never called"); }
+const fused = { async uploadFile() {} };
+"""
+    out = _node(_FILE, 'appStateFile(null).then((s) => '
+                'console.log(JSON.stringify({state: s})));', html, prelude)
+    assert out["state"] is None
+
+
+def test_the_send_path_writes_the_outline_before_it_composes(html):
+    """composeOutgoing is sync and pure — the exact inverse of stripBlocks — so
+    the write cannot happen inside it."""
+    assert "const sentState = await appStateFile(state);" in html
+    assert "composeOutgoing(message, pending, sentState," in html
+
+
+def test_the_outline_path_comes_from_the_shots_directory_the_agent_grants(html):
+    """Pinned as source, because the security of this rests on the file landing
+    under the directory `_read_rule` already covers."""
+    start = html.index("async function appStateFile(")
+    body = html[start:html.index("\n}\n", start)]
+    assert "shotDirPath()" in body
+
+
+def test_a_path_carrying_block_is_still_stripped_from_the_transcript(agent):
+    """agent.py's stripper is anchored on the tag, not the contents, and the tag
+    did not change — pinned so the user's own words stay the transcript."""
+    text = ('<live-app-state>\nsnapshot of the app\n'
+            '{"title": "x", "dom_path": "/tmp/shots/appstate-1-1.json"}\n'
+            '</live-app-state>\n\nwhy is it blank?')
+    assert agent._strip_app_state(text) == "why is it blank?"
