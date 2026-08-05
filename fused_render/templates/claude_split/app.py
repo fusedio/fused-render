@@ -12,7 +12,7 @@ def main(dir: str = ""):
         names = os.listdir(dir)
     except OSError:
         return {"entry": None}
-    # Same filter as the apps API's `_app_entry` (server/routers/apps.py):
+    # Same filter as the listing's `app_entry` (fused_render/app_listing.py):
     # non-hidden direct children, `.html` only — a hidden html or a sibling
     # `.htm` must not change which folders count as apps.
     htmls = [n for n in sorted(names)

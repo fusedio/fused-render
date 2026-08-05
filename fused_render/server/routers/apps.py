@@ -10,6 +10,12 @@ direct-child ``.html`` file when there is exactly one — zero or several means
 the folder still lists, but opens as a directory instead of a view
 (``entry_html: null``).
 
+The walk itself lives in ``fused_render/app_listing.py``, which also defines
+what one listed app looks like. Each app reports its entry twice: ``entry`` is
+the file a card opens and previews, ``entry_html`` the narrower claim that the
+entry is a renderable page (the only one the HTML-only ``/render`` iframe may be
+pointed at). For an app of this shape they are the same file.
+
 POST /api/apps/new scaffolds ``<workspace>/local/<name>/`` from the packaged
 app starter kit (``fused_render/app_starter/`` — an ``index.html`` entry view
 plus a ``CLAUDE.md``) and — when the request carries a prompt — starts a
@@ -24,10 +30,8 @@ are synced to Claude Code's user-level skills dir instead (user_skills.py) —
 once per machine, refreshed at server startup and again here at create time —
 and the starter ``CLAUDE.md`` references them by name.
 """
-import html
 import json
 import os
-import re
 import shutil
 import subprocess
 import sys
@@ -37,6 +41,7 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Body, Header
 
+from fused_render import app_listing
 from fused_render.server.common import _error, _require_fused
 from fused_render.shell.seed import fused_dir
 
@@ -51,99 +56,14 @@ _APP_STARTER_DIR = os.path.join(
 
 # ------------------------------------------------------------------- listing
 
-_TITLE_RE = re.compile(rb"<title[^>]*>(.*?)</title>", re.IGNORECASE | re.DOTALL)
-
-
-def _entry_title(entry_html: str) -> str | None:
-    """The <title> of an entry file, from its first 4 KiB — cheap enough to run
-    per app on every listing. None when absent, empty, or unreadable."""
-    try:
-        with open(entry_html, "rb") as fh:
-            head = fh.read(4096)
-    except OSError:
-        return None
-    match = _TITLE_RE.search(head)
-    if not match:
-        return None
-    title = html.unescape(match.group(1).decode("utf-8", "replace"))
-    return " ".join(title.split()) or None
-
-
-def _updated_at(dir_path: str) -> float | None:
-    """When the app was last touched, as an epoch float (st_mtime).
-
-    Max of the dir's own mtime and its DIRECT children's — the dir mtime alone
-    only moves on add/remove/rename, so editing index.html in place wouldn't
-    register; a deep walk is unbounded work per listing for marginal gain
-    (edits in an app land overwhelmingly in top-level files). One extra stat
-    per child, no recursion. None when nothing stats (racing delete)."""
-    latest = None
-    try:
-        latest = os.stat(dir_path).st_mtime
-        with os.scandir(dir_path) as it:
-            for child in it:
-                try:
-                    latest = max(latest, child.stat().st_mtime)
-                except OSError:
-                    continue
-    except OSError:
-        pass
-    return latest
-
-
-def _app_entry(dir_path: str) -> str | None:
-    """The app's entry file: the single non-hidden direct-child .html, or None
-    when the folder has zero or several (ambiguous — the UI opens the folder).
-    Raises OSError when the dir can't be listed — the caller skips those."""
-    children = os.listdir(dir_path)
-    htmls = [
-        c for c in sorted(children)
-        if not c.startswith(".")
-        and c.lower().endswith(".html")
-        and os.path.isfile(os.path.join(dir_path, c))
-    ]
-    if len(htmls) != 1:
-        return None
-    return os.path.abspath(os.path.join(dir_path, htmls[0]))
+# The walk and the entry contract live in `app_listing` rather than in this
+# handler: they are the part worth testing directly (and reusing) — a route is
+# not the right place for the rules about what an app IS. See that module.
 
 
 @router.get("/api/apps")
 def api_apps():
-    root = fused_dir()
-    apps = []
-    try:
-        tag_names = os.listdir(root)
-    except OSError:
-        # No workspace yet (first run before seeding) — an empty Home, not a 500.
-        return {"apps": []}
-    for tag in tag_names:
-        if tag.startswith("."):
-            continue
-        tag_path = os.path.join(root, tag)
-        try:
-            if not os.path.isdir(tag_path):
-                continue
-            names = os.listdir(tag_path)
-        except OSError:
-            continue  # unreadable/racing tag dir: skip, never fail the listing
-        for name in names:
-            if name.startswith("."):
-                continue
-            path = os.path.join(tag_path, name)
-            try:
-                if not os.path.isdir(path):
-                    continue
-                entry_html = _app_entry(path)
-            except OSError:
-                continue  # unreadable/racing entry: skip, never fail the listing
-            apps.append({
-                "name": name,
-                "tag": tag,
-                "path": os.path.abspath(path),
-                "entry_html": entry_html,
-                "title": _entry_title(entry_html) if entry_html else None,
-                "updated_at": _updated_at(path),
-            })
+    apps = app_listing.two_level_apps(fused_dir())
     apps.sort(key=lambda a: (a["tag"].lower(), a["name"].lower()))
     return {"apps": apps}
 

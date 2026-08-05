@@ -1432,6 +1432,12 @@ export interface AppInfo {
   tag: string;
   path: string;
   entry_html: string | null;
+  // The file a card opens and previews — the entry HTML for an app of the
+  // folder-with-a-page shape. Reported separately from `entry_html`, which is
+  // the narrower claim that the entry is a renderable page and so the only one
+  // the HTML-only /render iframe may be pointed at. Optional for older backends
+  // that predate the key — read it through entryOf(), never directly.
+  entry?: string | null;
   title: string | null;
   // Last-modified time, epoch seconds. Optional/null for servers that don't
   // report it (older backends) — those sort last in the Home grid.

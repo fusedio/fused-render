@@ -6,8 +6,7 @@
 // blank. Iframes are lazy so a big workspace doesn't render everything at
 // once.
 import type { AppInfo } from "@platform/lib/api";
-import { navigate, navigateUrl } from "@platform/lib/router";
-import { appRouteUrl } from "./AppCard";
+import { hrefFor, onAppCardClick, openTargetFor } from "@platform/lib/appEntry";
 import { hueFor } from "@apps/builder/AppCard";
 
 // "3d ago" style stamp for the card meta line; null when the backend didn't
@@ -33,16 +32,17 @@ export function timeAgo(epochSeconds: number | null | undefined): string | null 
 const PREVIEW_SCALE = 0.25;
 
 export function AppPreviewCard({ app }: { app: AppInfo }) {
-  const open = () => {
-    // Folder-first: an app with an entry opens in the claude_split view (app
-    // beside a Claude chat); without one, the plain folder listing.
-    if (app.entry_html) navigateUrl(appRouteUrl(app) + "?_mode=claude_split", { isDir: true });
-    else navigate(app.path, { isDir: true });
-  };
   const title = app.title || app.name;
   const ago = timeAgo(app.updated_at);
+  // An anchor, not a button — see AppCard. The href is what makes middle-click
+  // and "Open in new tab" land on the same place a left click does.
   return (
-    <button type="button" className="app-pcard" onClick={open} title={app.path}>
+    <a
+      className="app-pcard"
+      href={hrefFor(app)}
+      onClick={(e) => onAppCardClick(e, app)}
+      title={openTargetFor(app).path}
+    >
       <span className="app-pcard-thumb" aria-hidden="true">
         {app.entry_html ? (
           <>
@@ -59,7 +59,8 @@ export function AppPreviewCard({ app }: { app: AppInfo }) {
               title=""
             />
             {/* Shield: the preview is display-only — every pointer event lands
-                on the card button, never inside the app. */}
+                on the card's link, never inside the app — which is also what
+                keeps middle-click over the preview a new tab for the app. */}
             <span className="app-pcard-shield" />
           </>
         ) : (
@@ -76,6 +77,6 @@ export function AppPreviewCard({ app }: { app: AppInfo }) {
           {ago && <span className="app-pcard-ago">{ago}</span>}
         </span>
       </span>
-    </button>
+    </a>
   );
 }

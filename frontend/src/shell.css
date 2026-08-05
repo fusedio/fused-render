@@ -6166,6 +6166,9 @@ select.field-control:has(option[value=""]:checked) {
   gap: 2px;
 }
 
+/* An <a> so middle-click / Cmd-click / "Open in new tab" work on it (appEntry).
+   `text-decoration: none` is what an anchor needs and a button did not; the
+   colour was already pinned, so a link never paints as one here. */
 .home-recent {
   display: flex;
   align-items: center;
@@ -6176,6 +6179,7 @@ select.field-control:has(option[value=""]:checked) {
   text-align: left;
   background: none;
   color: var(--fg);
+  text-decoration: none;
   border: none;
   border-radius: 8px;
   cursor: pointer;
@@ -6218,6 +6222,7 @@ select.field-control:has(option[value=""]:checked) {
   }
 }
 
+/* An <a>, like .home-recent — see the note there. */
 .home-app {
   display: flex;
   align-items: center;
@@ -6228,6 +6233,7 @@ select.field-control:has(option[value=""]:checked) {
   text-align: left;
   background: none;
   color: var(--fg);
+  text-decoration: none;
   border: none;
   border-radius: 8px;
   cursor: pointer;
@@ -6455,6 +6461,7 @@ select.field-control:has(option[value=""]:checked) {
   gap: 18px;
 }
 
+/* An <a>, like .home-recent — see the note there. */
 .app-pcard {
   display: flex;
   flex-direction: column;
@@ -6463,6 +6470,7 @@ select.field-control:has(option[value=""]:checked) {
   font: inherit;
   text-align: left;
   color: var(--fg);
+  text-decoration: none;
   background: var(--bg-alt);
   border: 1px solid var(--border);
   border-radius: 12px;

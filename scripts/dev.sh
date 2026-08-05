@@ -84,23 +84,68 @@ fi
 # reads NSPasteboard through). Leaving it out is how the Finder-paste bridge
 # came to report `supported: false` on every dev machine while the tests that
 # would have caught it skipped for the same missing dependency.
+
+# Install the pinned dependency set into $1 (a venv dir). Runs from REPO_ROOT
+# with the `.[extras]` form: uv rejects an absolute path carrying extras (parses
+# it as a PEP508 requirement). Shared by the bootstrap and the staleness resync
+# below so the two can never drift on which extras a dev venv carries.
+install_python_deps() {
+  if command -v uv >/dev/null 2>&1; then
+    (cd "$REPO_ROOT" && uv pip install --python "$1/bin/python" -e ".[dev,fused,bundled]")
+  else
+    (cd "$REPO_ROOT" && "$1/bin/python" -m pip install -e ".[dev,fused,bundled]")
+  fi
+}
+
 if [[ -n "${VIRTUAL_ENV:-}" ]]; then
   PY="$VIRTUAL_ENV/bin/python"
+  VENV_DIR="$VIRTUAL_ENV"
 elif [[ -x "$REPO_ROOT/.venv/bin/python" ]]; then
   PY="$REPO_ROOT/.venv/bin/python"
+  VENV_DIR="$REPO_ROOT/.venv"
 else
   echo "==> no venv found — creating $REPO_ROOT/.venv with the [dev,fused,bundled] extras"
-  # Run the install from REPO_ROOT with the `.[extras]` form: uv rejects an
-  # absolute path carrying extras (parses it as a PEP508 requirement).
   if command -v uv >/dev/null 2>&1; then
     uv venv "$REPO_ROOT/.venv"
-    (cd "$REPO_ROOT" && uv pip install --python "$REPO_ROOT/.venv/bin/python" -e ".[dev,fused,bundled]")
   else
     python3 -m venv "$REPO_ROOT/.venv"
     "$REPO_ROOT/.venv/bin/python" -m pip install --upgrade pip
-    (cd "$REPO_ROOT" && "$REPO_ROOT/.venv/bin/python" -m pip install -e ".[dev,fused,bundled]")
   fi
+  install_python_deps "$REPO_ROOT/.venv"
   PY="$REPO_ROOT/.venv/bin/python"
+  VENV_DIR="$REPO_ROOT/.venv"
+  # Stamp here too, or the freshly-bootstrapped venv would immediately look
+  # unstamped to the resync below and install the same set a second time.
+  touch "$REPO_ROOT/.venv/.fused-render-deps"
+fi
+
+# Resync the venv when pyproject.toml has moved on since the last install — the
+# Python half of the `package-lock.json -nt node_modules/.package-lock.json`
+# check below, and load-bearing for the same reason. Before this, the venv was
+# adopted on *existence* alone, so bumping a pin re-synced nothing on any
+# machine that already had a .venv: `.venv` sat on `fused` 2.9.3.post3 while
+# pyproject pinned post13, and post3's local compute backend spawns its runner
+# with `cwd=` + the default close_fds — a fork(), which trips PROJ's
+# pthread_atfork handler and SIGSEGVs before exec. Every /api/run died with a
+# bare `Runner exited with code -11` and no traceback, in code that had not
+# changed; worktrees ranged across post3/post7/post10/post13 purely by setup
+# date. The `import fused_render` guard below cannot see this — it passes
+# happily against a stale dependency set.
+#
+# A missing stamp reads as stale (`-nt` is true when the target is absent), so
+# venvs predating this check — and any venv restored, copied, or half-built
+# without one — self-heal on the next run instead of needing a manual install.
+# The stamp is only touched AFTER a successful install; with `set -e` a failed
+# resync aborts dev.sh, so a broken sync can never be recorded as a good one.
+DEPS_STAMP="$VENV_DIR/.fused-render-deps"
+if [[ ! -e "$DEPS_STAMP" ]]; then
+  echo "==> syncing python deps into $VENV_DIR (no install stamp yet)"
+  install_python_deps "$VENV_DIR"
+  touch "$DEPS_STAMP"
+elif [[ "$REPO_ROOT/pyproject.toml" -nt "$DEPS_STAMP" ]]; then
+  echo "==> syncing python deps into $VENV_DIR (pyproject.toml changed since last install)"
+  install_python_deps "$VENV_DIR"
+  touch "$DEPS_STAMP"
 fi
 
 command -v npm >/dev/null || { echo "npm not found — the dev loop needs Node 22"; exit 1; }
