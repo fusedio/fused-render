@@ -261,6 +261,7 @@ export default function Listing({
     rowCtxByPathRef,
     overlayOpenRef,
     globalKeys: !embedded,
+    urlSync: !embedded,
   });
 
   const {
