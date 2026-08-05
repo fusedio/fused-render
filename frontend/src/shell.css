@@ -6816,7 +6816,7 @@ select.field-control:has(option[value=""]:checked) {
   display: block;
   aspect-ratio: 16 / 10;
   background: var(--bg);
-  border-bottom: 1px solid var(--border);
+  border-top: 1px solid var(--border);
   overflow: hidden;
 }
 
