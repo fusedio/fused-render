@@ -4284,7 +4284,9 @@ select.field-control:has(option[value=""]:checked) {
    different, stretched component. */
 .files-hero {
   text-align: center;
-  max-width: 880px;
+  /* .home-inner is 880px with 28px side padding, so the /apps hero card
+     renders 824px wide — the exact same card width here. */
+  max-width: 824px;
   margin-left: auto;
   margin-right: auto;
 }
