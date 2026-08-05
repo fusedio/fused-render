@@ -75,8 +75,10 @@ function notice(msg, isError) {
 
 async function load() {
   try {
+    // Rejects on a Python-side error (runtime.js turns the error payload into a
+    // thrown Error), so the catch below is the only failure path — app.py never
+    // returns an error key of its own.
     const res = await fused.runPython("./app.py", { dir: FILE }, { key: "entry" });
-    if (res.error) return notice(res.error, true);
     if (!res.entry) {
       return notice("No page to open here — an app needs an index.html, " +
                     "or exactly one .html file.");
