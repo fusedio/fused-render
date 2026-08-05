@@ -43,6 +43,14 @@ export function AppPreviewCard({ app }: { app: AppInfo }) {
       onClick={(e) => onAppCardClick(e, app)}
       title={openTargetFor(app).path}
     >
+      <span className="app-pcard-body">
+        <span className="app-pcard-title">{title}</span>
+        <span className="app-pcard-meta">
+          <span className="app-pcard-tag">{app.tag}</span>
+          {title !== app.name && <span className="app-pcard-name">{app.name}</span>}
+          {ago && <span className="app-pcard-ago">{ago}</span>}
+        </span>
+      </span>
       <span className="app-pcard-thumb" aria-hidden="true">
         {app.entry_html ? (
           <>
@@ -68,14 +76,6 @@ export function AppPreviewCard({ app }: { app: AppInfo }) {
             {title.charAt(0).toUpperCase()}
           </span>
         )}
-      </span>
-      <span className="app-pcard-body">
-        <span className="app-pcard-title">{title}</span>
-        <span className="app-pcard-meta">
-          <span className="app-pcard-tag">{app.tag}</span>
-          {title !== app.name && <span className="app-pcard-name">{app.name}</span>}
-          {ago && <span className="app-pcard-ago">{ago}</span>}
-        </span>
       </span>
     </a>
   );
