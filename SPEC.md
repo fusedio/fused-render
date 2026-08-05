@@ -305,7 +305,11 @@ def main(city: str = "oslo", limit: int = 100):
   `FUSED_RENDER_RO_MOUNTS` (`os.pathsep`-joined absolute mountpoints of mounts
   whose remote rejects writes, **re-exported on every mount-store write** so it
   tracks attach/detach/create/delete) and `FUSED_RENDER_ORIGIN` (the origin the
-  server is ACTUALLY bound to — see the `--port` hazard in §26).
+  server is ACTUALLY bound to — see the `--port` hazard in §26) and
+  `FUSED_RENDER_SKILL_PLUGIN_DIR` (the Claude Code plugin root holding the
+  canonical skills, to hand a spawned session as `--plugin-dir`; **absent** when
+  there is none to hand — nothing synced, or a `claude` whose `--help` does not
+  list the flag — D212).
   `templates/shared/appenv.py` is the **only** sanctioned reader: stdlib-only, no
   `fused_render` import, every value resolved **per call** (a long-lived template
   daemon must see the read-only set change under it). Templates reach it the
