@@ -186,7 +186,8 @@ def _agent_path() -> str:
     (server.templates.TEMPLATES_DIR), the same file the split app view
     executes, so the runs dir, sidecar shape (.claude-split.json inside the
     app folder), and permission_server path stay in step with what the page
-    will poll. Apps open folder-first in claude_split, so the scaffolding
+    will poll. A newly CREATED app lands folder-first in claude_split (opening
+    an existing one lands in the plain `app` view instead), so the scaffolding
     session must be recorded at the folder level too."""
     from fused_render.server import templates as _server_templates
 

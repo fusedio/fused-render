@@ -2,6 +2,7 @@
 // builder's own store (apps/builder/lib/recents.ts — independent of the
 // explorer's file recents). Rows reuse the bookmark row classes so the
 // section reads like the explorer's.
+import { APP_OPEN_MODE } from "@platform/lib/appEntry";
 import { APP_ROUTE_PREFIX, navigateUrl } from "@platform/lib/router";
 import { loadAppRecents, useAppRecentsVersion } from "@apps/builder/lib/recents";
 
@@ -19,7 +20,9 @@ export default function RecentsSection() {
           encodeURIComponent(r.tag) +
           "/" +
           encodeURIComponent(r.name) +
-          "?_mode=claude_split";
+          // Opening a recent app IS opening an app: same mode the hub's cards
+          // use (appEntry), never the create-a-new-app split view.
+          "?_mode=" + APP_OPEN_MODE;
         return (
           <a
             key={r.tag + "/" + r.name}
