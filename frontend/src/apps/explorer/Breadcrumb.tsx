@@ -16,10 +16,11 @@ import {
   armBookmark,
   disarmBookmark,
   getArmedBookmark,
+  getArmedBookmarkFor,
   sameSearch,
   splitBookmarkUrl,
 } from "@platform/lib/bookmarks";
-import { useUrlVersion, useBookmarksVersion, notifyBookmarksChanged } from "@platform/lib/hooks";
+import { useUrlVersion, useBookmarksVersion, useArmedVersion, notifyBookmarksChanged } from "@platform/lib/hooks";
 import { urlScheme, isCloudScheme, fileUrlToPath } from "@platform/lib/path-url";
 import { resolveCloudUrl } from "@platform/lib/api";
 import { pushToast } from "@platform/lib/toast";
@@ -116,8 +117,11 @@ function RevealButton({ fsPath }: { fsPath: string }) {
 function BookmarkStar({ name }: { name: string }) {
   useUrlVersion();
   useBookmarksVersion();
+  useArmedVersion();
   const starred = allBookmarks().some((b) => b.url === currentUrl());
-  const armed = !IS_EMBED && getArmedBookmark() !== null;
+  // Pathname-gated (getArmedBookmarkFor): an armed bookmark lights the star
+  // only on ITS view, and useArmedVersion re-renders this when a disarm fires.
+  const armed = !IS_EMBED && getArmedBookmarkFor(location.pathname) !== null;
   const active = starred || armed;
 
   const onBookmark = async () => {

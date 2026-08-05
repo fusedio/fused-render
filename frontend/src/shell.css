@@ -1937,6 +1937,22 @@ table.listing-table td.mtime {
   color: var(--accent);
 }
 
+/* In the explorer the button portals into the breadcrumb's actions slot
+   (.preview-actions): re-assert the accent chrome over the slot's generic
+   `.preview-actions button` rules, which otherwise outrank the class above. */
+.preview-actions .open-as-app-btn {
+  font-size: 12px;
+  border: 1px solid rgba(var(--accent-rgb), 0.35);
+  background: rgba(var(--accent-rgb), 0.08);
+  color: var(--accent-soft);
+}
+
+.preview-actions .open-as-app-btn:hover {
+  background: rgba(var(--accent-rgb), 0.16);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
 .preview-actions {
   display: flex;
   align-items: center;
