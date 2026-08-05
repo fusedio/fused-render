@@ -10,9 +10,8 @@ export const VIEW_PREFIX = "/explorer/view/";
 export const EMBED_PREFIX = "/explorer/embed/";
 
 // Pre-rename URL shapes (old bookmarks/recents entries, .bookmark files,
-// external embed links) rewritten in place at module init — before IS_EMBED
-// is computed, so a legacy /embed/ load still comes up in embed mode. Settings
-// sentinels became plain routes at the same time.
+// external embed links). Settings sentinels became plain routes at the same
+// time as the /explorer prefix rename.
 const LEGACY_SENTINELS: Record<string, string> = {
   "/view/_home": "/apps",
   "/view/_prefs": "/preferences",
@@ -20,15 +19,29 @@ const LEGACY_SENTINELS: Record<string, string> = {
   "/view/_mounts": "/mounts",
   "/view/_account": "/preferences",
 };
-(function rewriteLegacyPath(): void {
-  const p = location.pathname;
-  const strippedQuery = p === "/view/_account" ? "?tab=account" : location.search;
+
+// A legacy url mapped to its current shape; already-current urls pass through
+// untouched. Needed in TWO places: at module init below (a full page load on a
+// legacy url), and inside navigateUrl (a stored bookmark/recents url clicked
+// IN-APP — preventDefault means no page load, so init never re-runs and the
+// pushed path must already be current or routing won't recognize it).
+export function rewriteLegacyUrl(url: string): string {
+  const qIdx = url.indexOf("?");
+  const p = qIdx === -1 ? url : url.slice(0, qIdx);
+  const q = qIdx === -1 ? "" : url.slice(qIdx);
+  if (p === "/view/_account") return "/preferences?tab=account";
   const mapped = LEGACY_SENTINELS[p];
-  let next: string | null = null;
-  if (mapped) next = mapped + strippedQuery;
-  else if (p.startsWith("/view/")) next = "/explorer" + p + location.search;
-  else if (p.startsWith("/embed/")) next = "/explorer" + p + location.search;
-  if (next) history.replaceState(history.state, "", next);
+  if (mapped) return mapped + q;
+  if (p.startsWith("/view/") || p.startsWith("/embed/")) return "/explorer" + p + q;
+  return url;
+}
+
+// Rewritten in place at module init — before IS_EMBED is computed, so a
+// legacy /embed/ load still comes up in embed mode.
+(function rewriteLegacyPath(): void {
+  const current = location.pathname + location.search;
+  const next = rewriteLegacyUrl(current);
+  if (next !== current) history.replaceState(history.state, "", next);
 })();
 
 export const IS_EMBED =
@@ -166,7 +179,10 @@ export function navigateUrl(url: string, opts?: { isDir?: boolean }): void {
   // folder's chat) pass the same isDir nav hint navigate() takes, so the
   // destination paints the right scaffold instead of the file one.
   const state = opts && typeof opts.isDir === "boolean" ? { fsDir: opts.isDir } : null;
-  history.pushState(state, "", url);
+  // Stored urls (bookmarks, recents, .bookmark files) may predate the
+  // /explorer prefix rename; an in-app push skips the module-init rewrite, so
+  // map here or the dispatcher won't recognize the path.
+  history.pushState(state, "", rewriteLegacyUrl(url));
   notifyNavigate();
 }
 
