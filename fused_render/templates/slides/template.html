@@ -487,6 +487,10 @@
   const titleOf=(f)=>f?f.split(/[\\/]/).pop().replace(/\.pptx$/i,""):"Untitled";
   let FILE=fused.params.get("_file")||fused.params.get("lib")||"";
   let DEFAULT_TITLE=titleOf(FILE);
+  // An unsaved draft living in the New-deck library: edits autosave into the
+  // scratch file so nothing is lost, but the first manual Save prompts for a
+  // real location + name (set from the open verdict in load()).
+  let untitled=false;
 
   // ---------------- state ----------------
   const S={ doc:null, title:null, model:null, mediaDir:"", mtime:0, cur:0, sel:null, selIds:[],
@@ -1061,6 +1065,7 @@
   function load(p){
     hideLoadingSkeleton();
     S.doc=p.doc; S.model=p.model; S.mtime=p.mtime; S.mediaDir=p.media_dir; S.title=p.title||null;
+    untitled=!!p.library;
     S.cur=Math.min(Math.max(0,parseInt(fused.params.get("slide")||"0",10)),S.model.slides.length-1);
     S.selIds=[]; S.sel=null; S.undo.length=0; S.redo.length=0; refreshUndoBtns();
     $("welcome").classList.add("hidden");
@@ -1076,7 +1081,7 @@
     // ITS writability (RO-6), independent of the .pptx verdict.
     $("deckName").contentEditable=S.sidecarWritable?"true":"false";
     $("deckName").title=S.sidecarWritable?"Rename deck":"Rename disabled — the deck's sidecar file is read-only";
-    $("saved").textContent="All changes saved";
+    $("saved").textContent=untitled?"Draft — Save to name & choose a location":"All changes saved";
     preloadFonts(S.model);
     setMode(fused.params.get("mode")||"view");
     renderFilm(); renderCanvas(); updateToolbar();
@@ -1135,6 +1140,10 @@
   // Repoint the document to a library deck (a real .pptx), keep it in the URL via
   // the `lib` param so reload reopens it, and drive it through `open` like any file.
   async function openLibrary(path){
+    // Flush a pending autosave of the current deck before repointing — otherwise
+    // File ▸ New blank deck (or opening another library deck) drops queued edits.
+    if(saveTimer){ clearTimeout(saveTimer); saveTimer=null; }
+    if(S.dirty && S.doc){ await doSave(); if(S.dirty) return; }
     FILE=path; DEFAULT_TITLE=titleOf(path);
     fused.params.set("lib",path);
     $("welcome").classList.add("hidden");
@@ -1152,6 +1161,9 @@
     else if(a==="saveas") saveAsDeck();
   }
   async function saveDeck(){ if(!S.doc)return;
+    // First Save of an untitled draft: prompt for a real location + name instead
+    // of overwriting the library scratch. Autosave keeps the scratch safe until then.
+    if(untitled){ saveAsDeck(true); return; }
     if(!S.editable){ toast("Read-only — the file can't be overwritten. Use File ▸ Save as."); return; }
     await doSave();
     try{ $("saved").textContent="Saving…"; const r=await py({action:"save",doc:S.doc,file:FILE});
@@ -1161,11 +1173,14 @@
     catch(e){ toast("Save failed: "+e.message); } }
 
   // In-app directory browser for Save as (no native dialogs).
-  async function saveAsDeck(){ if(!S.doc)return;
+  async function saveAsDeck(firstSave=false){ if(!S.doc)return;
     const ov=$("overlay");
     const fileDir=FILE.slice(0,Math.max(FILE.lastIndexOf("/"),FILE.lastIndexOf("\\"))+1).replace(/\\/g,"/");
-    let curDir=fileDir;
-    const startName=(S.title||DEFAULT_TITLE)+" copy";
+    // First save of a draft starts in Home (the scratch's own folder is the
+    // hidden library — never a place to offer as the default), and defaults the
+    // name to the deck's title; a copy starts beside the current file.
+    let curDir=firstSave?"":fileDir;
+    const startName=firstSave?(S.title||"Untitled"):(S.title||DEFAULT_TITLE)+" copy";
     async function render(p){
       // src (origin only) lets the worker route a mount-backed dir via
       // /api/fs/list instead of a kernel scan that could drop the mount.
@@ -1179,9 +1194,9 @@
         `${i||!winRoot?`<span class="sepc">›</span>`:""}<span class="seg" data-dir="${esc(dirAt(i))}">${esc(s)}</span>`).join("");
       const prevName=(ov.querySelector("#fbName")||{}).value;
       ov.innerHTML=`<div class="modal" style="width:min(580px,94vw)">
-        <h3>Save as</h3>
+        <h3>${firstSave?"Save deck":"Save as"}</h3>
         <div class="fb-quick">
-          <button data-dir="${esc(fileDir)}">📁 This file's folder</button>
+          ${firstSave?"":`<button data-dir="${esc(fileDir)}">📁 This file's folder</button>`}
           <button data-dir="${esc(d.home)}">🏠 Home</button>
         </div>
         <div class="fb-crumb">${crumb}</div>
@@ -1208,6 +1223,20 @@
       $("fbCancel").onclick=()=>{ ov.style.display="none"; };
       $("fbSave").onclick=async()=>{ const v=nm.value.trim(); if(!v){toast("Enter a file name");return;}
         ov.style.display="none";
+        if(firstSave){
+          // Bind the draft to the chosen file, drop the library scratch, then
+          // reopen from the new path so saves/export target it from now on.
+          if(saveTimer){ clearTimeout(saveTimer); saveTimer=null; }
+          try{
+            const r=await py({action:"save_new",doc:S.doc,name:v,directory:curDir,file:FILE});
+            FILE=r.path; DEFAULT_TITLE=titleOf(r.path); untitled=false;
+            fused.params.set("lib",r.path);
+            showLoadingSkeleton();
+            load(await py({action:"open",file:FILE}));
+            toast("Saved to "+r.path);
+          }catch(e){ toast("Save failed: "+e.message); }
+          return;
+        }
         try{ const r=await py({action:"save_as",doc:S.doc,name:v,directory:curDir,file:FILE});
           toast("Saved a copy to "+r.path); }
         catch(e){ toast("Save as failed: "+e.message); } };

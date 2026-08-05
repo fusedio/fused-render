@@ -32,6 +32,7 @@ AI-native surface (call these directly to edit a deck without the browser):
 from __future__ import annotations
 
 import base64
+import contextlib
 import hashlib
 import json
 import os
@@ -54,8 +55,9 @@ CACHE_ROOT = os.path.expanduser(os.path.join("~", ".fused-render", "cache", "sli
 UPLOADS = os.path.join(tempfile.gettempdir(), "fused_render_slides_uploads")
 EXPORTS = os.path.join(tempfile.gettempdir(), "fused_render_slides_exports")
 # Decks created from the home screen (no `_file`) live here, as real .pptx files
-# next to the script; each then flows through the ordinary `open` path.
-LIBRARY = os.path.join(_HERE, "library")
+# under the user's ~/.fused-render dir (never the package tree, which is
+# read-only and wiped on upgrade); each then flows through the ordinary `open` path.
+LIBRARY = os.path.expanduser(os.path.join("~", ".fused-render", "slides"))
 
 # Translate a stored path (may be WSL /mnt/c/... or native C:\...) to this OS's convention.
 _WSL_MOUNT_RE = re.compile(r"^/mnt/([A-Za-z])(/.*)?$")
@@ -300,9 +302,13 @@ def main(action: str = "open",
             with open(mp, "w", encoding="utf-8") as f:
                 json.dump(model, f, ensure_ascii=False)
         editable, ro_msg, ro_tip = _editability(file)
+        # `library`: an unsaved draft in the New-deck library (~/.fused-render/
+        # slides), so the first manual Save prompts for a real location + name
+        # instead of overwriting the scratch draft in place.
+        library = os.path.dirname(os.path.abspath(file)) == os.path.abspath(LIBRARY)
         return {"doc": d, "model": model, "mtime": os.path.getmtime(mp),
                 "media_dir": _media_dir(d).replace(os.sep, "/"),
-                "title": _get_title(file),
+                "title": _get_title(file), "library": library,
                 "editable": editable, "readonly_message": ro_msg,
                 "readonly_tooltip": ro_tip,
                 "sidecar_writable": _sidecar_writable(file)}
@@ -701,6 +707,29 @@ def main(action: str = "open",
             # unreachable (the client switches to new_doc on this response).
             shutil.rmtree(_cache_dir(doc), ignore_errors=True)
         return {"path": file, "doc": new_doc, "mtime": os.path.getmtime(_model_path(new_doc))}
+
+    # --------- first save of a new/untitled draft: write the .pptx to the chosen
+    # location, carry the deck's title over, and drop the library scratch draft.
+    if action == "save_new":
+        model = _load_model(doc)
+        base = re.sub(r"[^a-zA-Z0-9._ -]", "_", (name or "Untitled")).strip() or "Untitled"
+        if not base.lower().endswith(".pptx"):
+            base += ".pptx"
+        dstdir = (os.path.abspath(os.path.expanduser(_to_native_path(directory))) if directory
+                  else os.path.expanduser("~"))
+        os.makedirs(dstdir, exist_ok=True)
+        dst = os.path.join(dstdir, base)
+        engine.build_pptx(model, dst, _media_dir(doc))
+        src_file = _to_native_path(file) if file else ""
+        if src_file:
+            title_carry = _get_title(src_file)
+            if title_carry:
+                _set_title(dst, title_carry)
+            if os.path.dirname(os.path.abspath(src_file)) == os.path.abspath(LIBRARY):
+                for p in (os.path.abspath(src_file), _sidecar_path(src_file)):
+                    with contextlib.suppress(OSError):
+                        os.remove(p)
+        return {"path": dst.replace(os.sep, "/"), "name": base}
 
     # --------- Save as = write a NEW .pptx elsewhere; the open document is unchanged
     if action == "save_as":

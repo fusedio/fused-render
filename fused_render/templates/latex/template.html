@@ -1100,8 +1100,8 @@ pdfjs.GlobalWorkerOptions.workerSrc = "/template-assets/pdfjs.worker.bundle.mjs"
 
   // =========================================================== home / library
   // Only reached when opened without a _file. Projects created here live under
-  // engine.py's ./projects; opening one hands its main.tex to startWorkspace,
-  // so the editor/compile path below is identical to the _file case.
+  // the user's ~/.fused-render/latex/projects; opening one hands its main.tex to
+  // startWorkspace, so the editor/compile path below is identical to the _file case.
   const TPLS = [
     { id: "article", name: "Article", desc: "amsmath, hyperref" },
     { id: "report",  name: "Report",  desc: "chapters + TOC" },
@@ -1124,7 +1124,8 @@ pdfjs.GlobalWorkerOptions.workerSrc = "/template-assets/pdfjs.worker.bundle.mjs"
       `<div class="lib-row" data-slug="${esc(p.slug)}"><span class="ic">TEX</span><span class="n">${esc(p.title)}</span><span class="meta">${esc(p.main)}</span></div>`).join("");
     list.querySelectorAll(".lib-row").forEach(r => r.addEventListener("click", () => openProject(r.dataset.slug)));
   }
-  function showHome() {
+  async function showHome() {
+    await saveNow();  // flush any pending autosave before leaving the workspace for the library
     const bootEl = $("boot"); if (bootEl) bootEl.remove();
     document.body.classList.add("has-home");
     $("topbar").classList.add("hidden"); $("main").classList.add("hidden");
@@ -1167,6 +1168,7 @@ pdfjs.GlobalWorkerOptions.workerSrc = "/template-assets/pdfjs.worker.bundle.mjs"
   // resets the per-document state first. opts.home shows the Home button so the
   // user can get back to the library; opts.title labels the doc.
   async function startWorkspace(fileAbs, opts = {}) {
+    await saveNow();  // flush the outgoing buffer's pending autosave before we reset S.dirty/fileAbs (no-op on first entry)
     S.mainAbs = fileAbs;
     S.root = fileAbs.slice(0, Math.max(fileAbs.lastIndexOf("/"), fileAbs.lastIndexOf("\\")));
     if (S.pdf) { try { S.pdf.destroy(); } catch (e) {} S.pdf = null; }
@@ -1210,9 +1212,9 @@ pdfjs.GlobalWorkerOptions.workerSrc = "/template-assets/pdfjs.worker.bundle.mjs"
     if (proj) {
       const r = await py({ action: "open_project", slug: proj }).catch(() => null);
       if (r && r.main_path && !r.error) await startWorkspace(r.main_path, { home: true, title: r.title });
-      else showHome();
+      else await showHome();
     } else {
-      showHome();
+      await showHome();
     }
   }
 })();

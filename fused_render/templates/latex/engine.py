@@ -62,7 +62,7 @@ BUILDS = os.path.join(CACHE_ROOT, "builds")                  # per-doc aux outpu
 EXPORTS = os.path.join(CACHE_ROOT, "exports")                # per-doc pandoc exports, hashed
 INSTALL_DIR = os.path.join(CACHE_ROOT, "_install")           # tectonic download staging
 BIN_DIR = os.path.expanduser("~/.fused-render/bin")          # user-owned install location
-LIBRARY = os.path.join(HERE, "projects")                     # one folder per project created from Home
+LIBRARY = os.path.expanduser("~/.fused-render/latex/projects")  # user-owned; one folder per project created from Home
 
 TECTONIC_VERSION = "0.16.9"
 
@@ -594,8 +594,8 @@ def _synctex_forward(synctex_gz: str, target_file: str, line: int):
 # ----------------------------------------------------------------- projects ---
 # Home-screen projects: a scaffold is pure file-writing, so a new blank document
 # succeeds even when tectonic isn't installed (compilation then fails gracefully
-# through the usual missing-tectonic path). Projects live in ./projects next to
-# this script, one folder each with a main.tex + meta.json.
+# through the usual missing-tectonic path). Projects live under LIBRARY
+# (~/.fused-render/latex/projects), one folder each with a main.tex + meta.json.
 PROJECT_TEMPLATES = {
     "article": r"""\documentclass[11pt]{article}
 \usepackage[utf8]{inputenc}
@@ -725,13 +725,17 @@ def _list_projects():
 
 def _new_project(title, template):
     os.makedirs(LIBRARY, exist_ok=True)
-    slug = _safe_slug(title or "untitled")
-    if os.path.exists(os.path.join(_project_dir(slug), "main.tex")):
-        i = 2
-        while os.path.exists(_project_dir(f"{slug}-{i}")):
-            i += 1
-        slug = f"{slug}-{i}"
-    d = _project_dir(slug)
+    # Build a unique dir directly under LIBRARY. The suffix is applied to a base
+    # trimmed to leave room for it, so a title that already fills the 64-char
+    # slug budget can't collapse back onto the existing dir and spin forever.
+    base = _safe_slug(title or "untitled")
+    slug = base
+    n = 2
+    while os.path.exists(os.path.join(LIBRARY, slug)):
+        suffix = f"-{n}"
+        slug = base[: 64 - len(suffix)].rstrip("-") + suffix
+        n += 1
+    d = os.path.join(LIBRARY, slug)
     os.makedirs(d, exist_ok=True)
     body = PROJECT_TEMPLATES.get(template, PROJECT_TEMPLATES["article"]).replace(
         "__TITLE__", (title or slug).replace("{", "").replace("}", ""))

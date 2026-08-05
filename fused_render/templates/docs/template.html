@@ -460,6 +460,10 @@
   // comment-preserving serialization — odt saves drop comments the same way
   // non-docx export downloads already do.
   const IS_DOCX = /\.docx$/i.test(BASENAME);
+  // An unsaved draft opened from the New-document library: edits autosave into
+  // the library scratch file so nothing is lost, but the first manual Save
+  // prompts for a real location + name (set from the import verdict below).
+  let untitled = false;
   document.title = "Docs — " + BASENAME;
 
   // ---- vendored asset loading (relative src 404s inside the render iframe) ----
@@ -1341,11 +1345,18 @@
   }
 
   // ---- save / export ----
-  function updateSavedTag() { $("savedTag").textContent = S.saving ? "Saving…" : S.dirty ? "Unsaved changes" : (S.savedMtime ? "All changes saved" : ""); }
+  function updateSavedTag() {
+    if (untitled) { $("savedTag").textContent = S.saving ? "Saving…" : S.dirty ? "Unsaved changes" : "Draft — Save to name & choose a location"; return; }
+    $("savedTag").textContent = S.saving ? "Saving…" : S.dirty ? "Unsaved changes" : (S.savedMtime ? "All changes saved" : "");
+  }
   async function doSave(kind = "auto", label = "") {
     // Suppressed entirely on a read-only file (manual Save, ⌘S, autosave) —
     // the badge explains why; only the deliberate paths get a toast too.
     if (RO) { if (kind === "manual") toast("This file is read-only — use “Save a copy…” to keep changes."); return; }
+    // First manual Save of an untitled draft: prompt for a real location + name
+    // (autosave keeps writing to the library scratch until then, so nothing is
+    // lost). Once bound to a real file, subsequent saves go there in place.
+    if (untitled && kind === "manual") { firstSaveDialog(); return; }
     if (!S.view || S.saving) return;
     S.saving = true; updateSavedTag();
     try {
@@ -1430,19 +1441,27 @@
       toast("Downloaded " + res.name);
     } catch (e) { toast("Export failed: " + e.message, 5000); }
   }
-  // Directory-browser popup: pick a folder + name, write a .docx copy there —
   // ---- new document (File ▸ New): create a blank doc in the library and open
-  // it. Flush a pending autosave first so the current file keeps its edits.
+  // it. Flush a pending autosave first, and bail if it didn't land (conflict,
+  // read-only, error) so the current file's edits are never lost on navigate.
   async function doNew() {
-    if (S.dirty && !RO) { clearTimeout(saveTimer); await doSave("auto"); }
+    if (S.dirty && !RO) { clearTimeout(saveTimer); await doSave("auto"); if (S.dirty) return; }
     let res;
     try { res = await py({ action: "new", title: "Untitled document" }); }
     catch (e) { toast("Could not create document: " + e.message); return; }
     const u = new URL(location.href); u.searchParams.set("_file", res.path); location.href = u.toString();
   }
 
-  // this never changes what `_file` points to, it just exports a copy.
-  async function doSaveAs() {
+  // First manual Save of an untitled draft: same folder browser, but it binds
+  // the document to the chosen file (and drops the library scratch) instead of
+  // just exporting a copy.
+  const firstSaveDialog = () => doSaveAs(true);
+
+  // Directory-browser popup: pick a folder + name. In copy mode (default) it
+  // writes a .docx copy and never changes what `_file` points to. In first-save
+  // mode it writes the real file, removes the library scratch draft, and
+  // renavigates so the editor binds to the new file from then on.
+  async function doSaveAs(firstSave = false) {
     if (!S.view) return;
     closeDialog();
     const wrap = document.createElement("div"); wrap.className = "modal-overlay";
@@ -1451,7 +1470,10 @@
     card.style.cssText = "background:#fff;border-radius:10px;box-shadow:var(--shadow-2);padding:18px;width:min(560px,92vw)";
     wrap.appendChild(card); document.body.appendChild(wrap); dialogEl = wrap;
     wrap.onclick = (e) => { if (e.target === wrap) closeDialog(); };
-    let curDir = FILE.slice(0, Math.max(FILE.lastIndexOf("/"), FILE.lastIndexOf("\\")));
+    // First save of a draft starts in Home — the scratch's own folder is the
+    // hidden library, never a place to offer as the default. A copy starts
+    // beside the current file.
+    let curDir = firstSave ? "" : FILE.slice(0, Math.max(FILE.lastIndexOf("/"), FILE.lastIndexOf("\\")));
     async function render(p) {
       let d;
       // src (origin only) lets the worker route a mount-backed dir via
@@ -1465,7 +1487,7 @@
       const crumb = (winRoot ? "" : `<span data-dir="/" style="cursor:pointer">/</span>`) + segs.map((s, i) =>
         `${i || !winRoot ? " › " : ""}<span data-dir="${esc(dirAt(i))}" style="cursor:pointer">${esc(s)}</span>`).join("");
       const prevName = card.querySelector("#fbName") ? card.querySelector("#fbName").value : BASENAME.replace(DOC_EXT, "");
-      card.innerHTML = `<div style="font-weight:700;font-size:15px;margin-bottom:10px">Save a copy</div>
+      card.innerHTML = `<div style="font-weight:700;font-size:15px;margin-bottom:10px">${firstSave ? "Save document" : "Save a copy"}</div>
         <div style="font-size:12px;color:var(--ink-2);margin-bottom:8px;word-break:break-all">${crumb}</div>
         <div style="border:1px solid var(--hair);border-radius:6px;max-height:240px;overflow-y:auto;font-size:13px">
           ${d.path !== d.parent ? `<div data-dir="${esc(d.parent)}" style="padding:7px 10px;cursor:pointer">⬆ ..</div>` : ""}
@@ -1488,6 +1510,16 @@
         if (!name) { toast("Enter a file name"); return; }
         closeDialog();
         try {
+          if (firstSave) {
+            // Bind the draft to a real file: write it, drop the scratch, then
+            // renavigate so boot reopens it as an ordinary in-place-saved doc.
+            clearTimeout(saveTimer);
+            const res = await py({ action: "save_new", html: docToSaveHtml(S.view.state.doc),
+              path: name, directory: curDir, file: FILE });
+            if (res.error) { toast("Save failed: " + res.error); return; }
+            const u = new URL(location.href); u.searchParams.set("_file", res.path); location.href = u.toString();
+            return;
+          }
           const res = await py({ action: "save_as", html: docToSaveHtml(S.view.state.doc),
             path: name, directory: curDir });
           if (res.error) { toast("Save failed: " + res.error); return; }
@@ -1622,7 +1654,8 @@
   const importedDoc = PMDOMParser.fromSchema(schema).parse(dom.body);
   const sidecar = await loadSidecar();
   S.author = sidecar.docs.author || "";
-  $("docTitle").textContent = BASENAME;
+  untitled = !!res.library;
+  $("docTitle").textContent = untitled ? BASENAME.replace(DOC_EXT, "") : BASENAME;
   $("topbar").classList.remove("hidden"); $("toolbar").classList.remove("hidden"); $("main").classList.remove("hidden");
   mountEditor(importedDoc);
   // The reader's editability verdict (RO-4): lock before the initial setMode

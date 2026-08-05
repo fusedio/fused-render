@@ -2668,6 +2668,9 @@ async function newWorkbookDialog() {
   $("newOk").onclick = async () => {
     const nm = $("newName").value.trim();
     if (!nm) return;
+    // Flush unsaved edits to the current workbook before navigating away —
+    // Excel has no autosave, so a new file would otherwise silently drop them.
+    if (dirty && book && !readOnly) { await save(false); if (dirty) return; }
     closeModal();
     setStatus("Creating…");
     try {
@@ -2772,7 +2775,7 @@ async function act(name) {
   // above mutates the model (RO-5). `save` keeps its own, more specific gate;
   // sort routes through sortSheet, which blocks only the in-place small-sheet
   // branch (big-sheet sort is a server-side view op).
-  const RO_SAFE = new Set(["save", "saveAs", "dlCsv", "dlXlsx", "dlPdf", "dlParquet",
+  const RO_SAFE = new Set(["save", "saveAs", "new", "dlCsv", "dlXlsx", "dlPdf", "dlParquet",
                            "sortAsc", "sortDesc", "sortOff", "toggleFilter", "loadAll"]);
   if (readOnly && !RO_SAFE.has(name) && roBlocked()) return;
   if (book || name === "new") {

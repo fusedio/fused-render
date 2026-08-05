@@ -39,7 +39,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(HERE), "shared"))
 from procutil import pid_alive as _pid_alive
 
 CACHE_ROOT = os.path.join(os.path.expanduser("~"), ".fused-render", "cache", "docs")
-DOCS_DIR = os.path.join(HERE, "docs")  # library of blank docs created from the Home screen
+DOCS_DIR = os.path.join(os.path.expanduser("~"), ".fused-render", "docs")  # user-owned library of docs created from the Home screen
 BIN_DIR = os.path.expanduser(os.path.join("~", ".fused-render", "bin"))
 TYPST_INSTALL_DIR = os.path.join(CACHE_ROOT, "_typst_install")
 TYPST_VERSION = "v0.13.1"
@@ -345,9 +345,13 @@ def main(action: str = "export", file: str = "", html: str = "", title: str = ""
         out = _pandoc(["-f", _source_fmt(file), "-t", "html+tex_math_dollars", "--mathjax",
                        "--track-changes=all", "--embed-resources",
                        "--wrap=none", file])
+        # `library`: the file is an unsaved draft in the New-document library
+        # (~/.fused-render/docs), so the editor prompts for a real location on
+        # the first manual Save instead of writing back into the library.
+        library = os.path.dirname(os.path.abspath(file)) == os.path.abspath(DOCS_DIR)
         return {"html": out.decode("utf-8", "replace"), "mtime": os.path.getmtime(file),
                 "editable": editable, "readonly_message": ro_msg,
-                "readonly_tooltip": ro_tip}
+                "readonly_tooltip": ro_tip, "library": library}
 
     # ---- export/convert: browser sends serialized HTML, we fan out to formats
     if action == "export":
@@ -447,6 +451,27 @@ def main(action: str = "export", file: str = "", html: str = "", title: str = ""
         vpath = os.path.join(_cache_dir(file), "versions", sha + ".html")
         with open(vpath, encoding="utf-8") as f:
             return {"html": f.read()}
+
+    # ---- first save of a new/untitled draft: write the .docx to the location
+    # the user browsed to and bind to it, then drop the library scratch draft we
+    # were autosaving into (only ever a file directly under DOCS_DIR).
+    if action == "save_new":
+        if not html:
+            raise ValueError("nothing to save")
+        raw = os.path.join(directory, path) if directory else path
+        dest = os.path.abspath(os.path.expanduser(raw))
+        if not dest.lower().endswith(".docx"):
+            dest += ".docx"
+        os.makedirs(os.path.dirname(dest), exist_ok=True)
+        _pandoc(["-f", HTML_FROM, "-t", "docx", "--wrap=none",
+                 "--standalone", "-o", dest], input_text=html)
+        if file and os.path.dirname(os.path.abspath(file)) == os.path.abspath(DOCS_DIR):
+            scratch = os.path.abspath(file)
+            for p in (scratch, scratch + ".json"):  # draft + its version sidecar
+                with contextlib.suppress(OSError):
+                    os.remove(p)
+        return {"path": dest.replace(os.sep, "/"), "name": os.path.basename(dest),
+                "mtime": os.path.getmtime(dest)}
 
     # ---- "Save a copy…": write a .docx to a location the user browsed to
     if action == "save_as":
