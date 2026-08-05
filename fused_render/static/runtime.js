@@ -567,14 +567,44 @@
   // Shape follows the docs template's typst install (a detached worker writing
   // progress.json, polled) — one pattern in this app, not two.
   const INSTALL_POLL_MS = 500;
+  // The first second is polled faster. A fixed 500ms grid is invisible next to a
+  // four-minute download but dominates a short one: a ~540ms install lands
+  // mid-grid, so it is not noticed until the SECOND poll, turning ~0.5s of work
+  // into ~1.5s of blocked page. The window is bounded rather than adaptive because
+  // the only installs it can help are the ones that finish inside it, and a long
+  // download must not end up polled harder than it was before.
+  const INSTALL_POLL_FAST_MS = 100;
+  const INSTALL_FAST_POLL_WINDOW_MS = 1000;
+
+  // How long an install may run before the overlay appears at all.
+  //
+  // The overlay used to mount synchronously, before anything was known about how
+  // long the install would take — so an install that finishes in tens of
+  // milliseconds still threw a full-screen modal over the page and tore it down
+  // again, which reads as a flicker/flash rather than as progress. Now that a
+  // header the app interpreter already satisfies installs NOTHING (see engine.py's
+  // `app_satisfies`), the installs that remain are either genuinely long (a real
+  // download, where 600ms of delay is imperceptible) or genuinely short (a warm uv
+  // cache, where the modal was pure noise). Delay separates the two without having
+  // to predict which one this is.
+  const INSTALL_MOUNT_DELAY_MS = 600;
+
   let installUi = null;
-  // Live installs, as key -> how many calls are waiting on it. A page can call
-  // two different .py files, each with its own header, so the overlay is shared
-  // by more than one install and has to stay up until the LAST one finishes, or
-  // the first to end tears the loader out from under the others and the page sits
-  // blank with no cancel button. Ref-COUNTED, not a Set of keys: two .py files
-  // with identical requirement sets share one venv key, so a Set would hold a
-  // single entry that the first call to settle deletes.
+  // Live installs, as key -> { row, count }.
+  //
+  // A page can call several .py files, each with its OWN header, so N installs
+  // with N DISTINCT keys run at once. Each therefore gets its own ROW — its own
+  // title, detail, bar and Cancel — because one shared set of nodes made N
+  // installs illegible: the title named whichever install started last, N pollers
+  // rewrote one detail line at 2Hz, and one Cancel button carried N listeners, so
+  // a single click cancelled every install while each chain's message overwrote
+  // the others'.
+  //
+  // Still ref-COUNTED per key, which is a different case and remains real: two .py
+  // files with IDENTICAL requirement sets share one venv key, so they share one
+  // row, and the row may only go when the LAST of them settles. The count lives
+  // inside the entry so both facts — which row, how many waiters — are one piece of
+  // state that cannot disagree with itself.
   const installing = new Map();
 
   // The indeterminate bar (D213). The worker parks at pct 25 for the WHOLE download
@@ -602,9 +632,11 @@
   }
 
   // `dataset.indeterminate` is the DOM-observable contract: the tests assert on it,
-  // because no headless test can see whether an animation LOOKS right.
-  function installBarIndeterminate(ui, on) {
-    const bar = ui.bar;
+  // because no headless test can see whether an animation LOOKS right. Takes a ROW
+  // (one install's nodes), not the overlay: with several installs live, "the bar" is
+  // not a thing there is one of.
+  function installBarIndeterminate(row, on) {
+    const bar = row.bar;
     if (on) {
       if (bar.dataset.indeterminate === "1") return; // never restart the sweep
       ensureInstallBarStyle();
@@ -626,9 +658,9 @@
   // stage-to-bar rule has exactly one definition and can be driven directly by a
   // test; `notice` is installEnv's sticky message, which must outrank the record's
   // own detail (see the `notice` comment there).
-  function paintInstall(ui, prog, notice) {
+  function paintInstall(row, prog, notice) {
     if (!prog) return;
-    ui.detail.textContent = notice || prog.detail || prog.stage || "";
+    row.detail.textContent = notice || prog.detail || prog.stage || "";
     // Both long steps are indeterminate, for the same reason: `install` runs uv
     // behind captured output, and `python` (D214, the interpreter download) captures
     // it too, so neither has a percentage to report. Listed rather than inferred from
@@ -636,11 +668,11 @@
     // indeterminate bar is for — and a stage added later without a decision here
     // should render as a plain bar, not silently inherit the sweep.
     if ((prog.stage === "install" || prog.stage === "python") && !prog.done) {
-      installBarIndeterminate(ui, true);
+      installBarIndeterminate(row, true);
       return;
     }
-    installBarIndeterminate(ui, false);
-    if (typeof prog.pct === "number") ui.bar.style.width = prog.pct + "%";
+    installBarIndeterminate(row, false);
+    if (typeof prog.pct === "number") row.bar.style.width = prog.pct + "%";
   }
 
   // Act on this needs_install, or fail? The rule is PROGRESS, not a count: a key we
@@ -659,6 +691,9 @@
     return Boolean(need && need.key) && !installed.has(need.key);
   }
 
+  // The backdrop, and the container every install's row is appended to. It owns no
+  // title/detail/bar of its own any more — those belong to a row, because there is
+  // no longer one install to describe.
   function installOverlay() {
     if (installUi) return installUi;
     const el = document.createElement("div");
@@ -669,6 +704,30 @@
       "font-size:14px", "padding:32px", "box-sizing:border-box",
       "display:flex", "flex-direction:column", "gap:14px",
       "align-items:center", "justify-content:center", "text-align:center",
+    ].join(";");
+    const rows = document.createElement("div");
+    rows.style.cssText = [
+      "display:flex", "flex-direction:column", "gap:26px",
+      "align-items:center", "width:100%",
+    ].join(";");
+    el.appendChild(rows);
+    // `mountTimer` is part of the state, not a local in `showInstall`: the delay has
+    // to be cancellable from `hideInstall` (an install that finishes inside the
+    // window must not mount an overlay afterwards) and must not be restarted by a
+    // second install arriving while it is still pending.
+    installUi = { el, rows, mounted: false, mountTimer: null };
+    return installUi;
+  }
+
+  // One install's nodes. Built per key, and — deliberately — built SYNCHRONOUSLY in
+  // `showInstall` even though mounting is delayed: `installEnv` registers its cancel
+  // handler and paints its first record immediately, so the nodes have to exist
+  // before the overlay does. A row that is never mounted is simply never seen.
+  function installRow() {
+    const el = document.createElement("div");
+    el.style.cssText = [
+      "display:flex", "flex-direction:column", "gap:10px",
+      "align-items:center", "text-align:center",
     ].join(";");
     const title = document.createElement("div");
     title.style.cssText = "font-size:17px;font-weight:600;";
@@ -691,22 +750,41 @@
       "font-size:13px", "cursor:pointer",
     ].join(";");
     el.append(title, track, detail, cancel);
-    installUi = { el, title, detail, bar, cancel, mounted: false };
-    return installUi;
+    return { el, title, detail, bar, cancel };
+  }
+
+  // Mount after INSTALL_MOUNT_DELAY_MS, at most one timer at a time.
+  //
+  // The `installing.size` re-check inside the callback is the point of the whole
+  // mechanism, not a precaution: between scheduling and firing, every install can
+  // have finished and called `hideInstall`, and mounting then would put a modal over
+  // the page with nothing running behind it and no live Cancel to dismiss it.
+  function mountInstallSoon(ui) {
+    if (ui.mounted || ui.mountTimer !== null) return;
+    ui.mountTimer = setTimeout(function () {
+      ui.mountTimer = null;
+      if (!installing.size) return;
+      document.body.appendChild(ui.el);
+      ui.mounted = true;
+    }, INSTALL_MOUNT_DELAY_MS);
   }
 
   function showInstall(need) {
     const ui = installOverlay();
-    installing.set(need.key, (installing.get(need.key) || 0) + 1);
-    if (!ui.mounted) {
-      document.body.appendChild(ui.el);
-      ui.mounted = true;
+    let entry = installing.get(need.key);
+    if (!entry) {
+      entry = { row: installRow(), count: 0 };
+      installing.set(need.key, entry);
+      ui.rows.appendChild(entry.row.el);
     }
+    entry.count += 1;
+    mountInstallSoon(ui);
+    const row = entry.row;
     // Name what is actually being fetched. On the interpreter round (D214) the
     // packages are NOT downloading yet, and titling that round with their names is
     // the kind of small lie that makes a four-minute wait feel broken — the user
     // watches "Installing tensorflow" and nothing about tensorflow is happening.
-    ui.title.textContent = need.python
+    row.title.textContent = need.python
       ? "Installing Python " + need.python
       : "Installing " + (need.requirements || []).join(", ");
     // Deliberately NOT "starting…" at 0%. `/api/env/install` JOINS an install
@@ -717,19 +795,34 @@
     // state therefore asserts no percentage at all: indeterminate until the
     // server's own record arrives (installEnv paints the POST response, which
     // carries it), so the first honest paint is the only paint.
-    ui.detail.textContent = "contacting the installer…";
-    installBarIndeterminate(ui, true);
-    return ui;
+    row.detail.textContent = "contacting the installer…";
+    installBarIndeterminate(row, true);
+    return row;
   }
 
   function hideInstall(key) {
-    const left = (installing.get(key) || 0) - 1;
-    if (left > 0) installing.set(key, left);
-    else installing.delete(key);
+    const entry = installing.get(key);
+    if (entry) {
+      entry.count -= 1;
+      if (entry.count > 0) return; // another call is still waiting on this key
+      entry.row.el.remove();
+      installing.delete(key);
+    }
     if (installing.size) return; // another install is still running
-    if (installUi && installUi.mounted) {
-      installUi.el.remove();
-      installUi.mounted = false;
+    const ui = installUi;
+    if (!ui) return;
+    // A pending mount is cancelled, not left to fire: this is the path a fast
+    // install takes, and without the clear the overlay would appear ~600ms AFTER
+    // everything finished and stay there (the callback's own size check would also
+    // catch it, but leaving a timer armed to do nothing is how the next person
+    // reading this concludes the delay is unreliable).
+    if (ui.mountTimer !== null) {
+      clearTimeout(ui.mountTimer);
+      ui.mountTimer = null;
+    }
+    if (ui.mounted) {
+      ui.el.remove();
+      ui.mounted = false;
     }
   }
 
@@ -747,7 +840,7 @@
   // needs, and rewriting it into something friendlier is what made this opaque
   // in the first place.
   function installEnv(need, pyPath, ownPath) {
-    const ui = showInstall(need);
+    const row = showInstall(need);
     let cancelled = false;
     // The key to poll and to cancel is the INSTALLER's, not the pre-flight's.
     // /api/env/install re-derives the requirements from the .py on disk and
@@ -770,7 +863,7 @@
     const onCancel = () => {
       cancelled = true;
       notice = "";
-      ui.detail.textContent = "cancelling…";
+      row.detail.textContent = "cancelling…";
       envPost("/api/env/cancel", { key: activeKey })
         .then(({ data }) => {
           if (data && data.cancelled === false) {
@@ -781,14 +874,24 @@
             notice =
               "the installer could not be stopped — it had not started yet, or " +
               "had already finished. Press Cancel again if it is still running.";
-            ui.detail.textContent = notice;
+            row.detail.textContent = notice;
           }
         })
         .catch(() => {});
     };
-    ui.cancel.addEventListener("click", onCancel);
+    row.cancel.addEventListener("click", onCancel);
 
-    const paint = (prog) => paintInstall(ui, prog, notice);
+    const paint = (prog) => paintInstall(row, prog, notice);
+
+    // Measured from the click, not from the previous poll, so the fast window is a
+    // property of the INSTALL's age rather than of how many times we happened to
+    // poll — a slow first response would otherwise stretch the fast phase
+    // arbitrarily.
+    const startedAt = Date.now();
+    const pollDelay = () =>
+      Date.now() - startedAt < INSTALL_FAST_POLL_WINDOW_MS
+        ? INSTALL_POLL_FAST_MS
+        : INSTALL_POLL_MS;
 
     const poll = () =>
       fetch("/api/env/progress?key=" + encodeURIComponent(activeKey), {
@@ -805,7 +908,7 @@
             throw new Error("the installer left no progress record");
           }
           if (!prog.done) {
-            return new Promise((r) => setTimeout(r, INSTALL_POLL_MS)).then(poll);
+            return new Promise((r) => setTimeout(r, pollDelay())).then(poll);
           }
           if (prog.error) throw new Error(prog.error);
           return prog;
@@ -823,7 +926,7 @@
       })
       .then(
         (prog) => {
-          ui.cancel.removeEventListener("click", onCancel);
+          row.cancel.removeEventListener("click", onCancel);
           hideInstall(need.key);
           if (cancelled) {
             // The install finished anyway — a cancel the server could not honour,
@@ -838,7 +941,7 @@
           return prog;
         },
         (err) => {
-          ui.cancel.removeEventListener("click", onCancel);
+          row.cancel.removeEventListener("click", onCancel);
           hideInstall(need.key);
           if (cancelled) {
             const e = new Error("the install was cancelled");
