@@ -743,7 +743,7 @@ def main(action: str = "open",
                 for p in (os.path.abspath(src_file), _sidecar_path(src_file)):
                     with contextlib.suppress(OSError):
                         os.remove(p)
-        return {"path": dst.replace(os.sep, "/"), "name": base}
+        return {"path": dst.replace(os.sep, "/"), "name": os.path.basename(dst)}
 
     # --------- Save as = write a NEW .pptx elsewhere; the open document is unchanged
     if action == "save_as":
