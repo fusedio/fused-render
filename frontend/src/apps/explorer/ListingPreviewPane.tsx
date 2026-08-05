@@ -11,13 +11,13 @@
 // the URL or saved viewstate). Wire-up state (pane visibility, width, the
 // divider drag) stays in Listing — this component only owns what the pane
 // shows for a given selection.
-import { useEffect, useRef, useState, type MouseEvent } from "react";
+import { useEffect, useState } from "react";
 import { listDir, resolveConditions, statPath } from "@platform/lib/api";
 import type { TemplateEntry } from "@platform/lib/api";
 import { navigate, VIEW_PREFIX } from "@platform/lib/router";
 import { formatSize } from "@platform/lib/format";
 import { iconForEntry, isAppEntry } from "@platform/ui/FileIcons";
-import { KNOWN_SENTINEL_MODES, modeTitle, templateModeIcon } from "@apps/explorer/ModeSwitcher";
+import ModeSwitcher, { KNOWN_SENTINEL_MODES, templateModeIcon } from "@apps/explorer/ModeSwitcher";
 import Listing from "@apps/explorer/Listing";
 
 // The selected row, as the pane needs it. Structurally a subset of Listing's
@@ -57,10 +57,10 @@ interface AppTarget {
   path: string;
 }
 
-// One entry of the pane's mode menu (template modes + the pane's sentinels).
+// One entry of the pane's mode switcher (template modes + pane sentinels) —
+// the shape ModeSwitcher takes.
 interface PaneMode {
   mode: string;
-  title: string;
   icon: React.ReactNode;
 }
 
@@ -76,77 +76,6 @@ function viewUrlFor(fsPath: string): string {
     .map(encodeURIComponent)
     .join("/");
   return VIEW_PREFIX + encoded;
-}
-
-// The pane's own mode dropdown. PaneModeMenu (Panel/Tabs chrome) stats its
-// path itself and only knows registry modes; the pane's list is richer (the
-// synthetic `_app` mode) and already stat'ed here, so this menu is fed the
-// finished list instead. Same look: pane-mode-* classes, fixed-position
-// dropdown, closes on outside pointerdown / window blur.
-function PaneModeSelect({
-  modes,
-  active,
-  onSelect,
-}: {
-  modes: PaneMode[];
-  active: string;
-  onSelect: (mode: string) => void;
-}) {
-  const [pos, setPos] = useState<{ top: number; left: number } | null>(null);
-  const rootRef = useRef<HTMLSpanElement | null>(null);
-
-  useEffect(() => {
-    if (!pos) return;
-    const onDown = (e: PointerEvent) => {
-      if (!rootRef.current?.contains(e.target as Node)) setPos(null);
-    };
-    const onBlur = () => setPos(null);
-    document.addEventListener("pointerdown", onDown);
-    window.addEventListener("blur", onBlur);
-    return () => {
-      document.removeEventListener("pointerdown", onDown);
-      window.removeEventListener("blur", onBlur);
-    };
-  }, [pos]);
-
-  if (modes.length < 2) return null;
-  const current = modes.find((m) => m.mode === active) ?? modes[0];
-
-  const toggle = (e: MouseEvent) => {
-    e.stopPropagation();
-    if (pos) {
-      setPos(null);
-      return;
-    }
-    const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
-    setPos({ top: r.bottom + 4, left: Math.max(0, Math.min(r.left, window.innerWidth - 150)) });
-  };
-
-  return (
-    <span className="pane-mode-menu" ref={rootRef}>
-      <span className="pane-mode-btn" title={"Mode: " + current.title} onClick={toggle}>
-        {current.icon}
-      </span>
-      {pos && (
-        <span className="pane-mode-dropdown" style={{ top: pos.top, left: pos.left }}>
-          {modes.map((m) => (
-            <span
-              key={m.mode}
-              className={"pane-mode-item" + (m.mode === current.mode ? " active" : "")}
-              onClick={(e) => {
-                e.stopPropagation();
-                setPos(null);
-                onSelect(m.mode);
-              }}
-            >
-              {m.icon}
-              <span>{m.title}</span>
-            </span>
-          ))}
-        </span>
-      )}
-    </span>
-  );
 }
 
 export default function ListingPreviewPane({
@@ -277,23 +206,20 @@ export default function ListingPreviewPane({
 
   const modes: PaneMode[] = embeddable.map((e) => ({
     mode: e.mode,
-    title: modeTitle(e.mode),
     icon: templateModeIcon(e),
   }));
   if (row.isDir) {
-    // The lone app outranks the listing: it leads the menu and wins the
+    // The lone app outranks the listing: it leads the switcher and wins the
     // default below when the folder has no template of its own.
     if (app) {
       modes.push({
         mode: APP_MODE,
-        title: "App",
         icon: <span className="pane-header-icon">{iconForEntry(app.name, false)}</span>,
       });
     }
     if (!row.self) {
       modes.push({
         mode: "_listing",
-        title: modeTitle("_listing"),
         icon: templateModeIcon({ mode: "_listing", path: null } as TemplateEntry),
       });
     }
@@ -359,11 +285,9 @@ export default function ListingPreviewPane({
       <span className="pane-header-name" title={row.name}>
         {row.name}
       </span>
-      <PaneModeSelect
-        modes={modes}
-        active={activeMode ?? ""}
-        onSelect={(m) => setModeOverride(m)}
-      />
+      {/* Horizontal icon strip, same look as the shell preview header (PT-10):
+          every available mode side by side, active one highlighted. */}
+      <ModeSwitcher entries={modes} active={activeMode ?? ""} onSelect={(m) => setModeOverride(m)} />
       {activeMode === APP_MODE && app ? (
         <button
           type="button"

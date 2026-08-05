@@ -29,6 +29,7 @@ export interface ModeSwitcherEntry<M extends string> {
 export function modeTitle(mode: string): string {
   if (mode === "_render") return "Rendered";
   if (mode === "_listing") return "Listing";
+  if (mode === "_app") return "App"; // pane-only sentinel (ListingPreviewPane)
   return mode.charAt(0).toUpperCase() + mode.slice(1);
 }
 
