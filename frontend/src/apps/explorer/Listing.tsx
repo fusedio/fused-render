@@ -733,75 +733,87 @@ export default function Listing({
     <div className="listing">
       <div className="listing-split" ref={splitRef}>
         <div className="listing-main">
-          <div className="listing-search">
-            {/* The box wraps input + pinned chips so the pane toggle can sit to
+          {/* Embedded (preview pane): no search row — the pane is a glance,
+              and the host listing's search/toggle already own that chrome. */}
+          {!embedded && (
+            <div className="listing-search">
+              {/* The box wraps input + pinned chips so the pane toggle can sit to
             their right without disturbing the chips' inside-the-input pin. */}
-            <div className="listing-search-box">
-              <input
-                ref={searchInputRef}
-                type="search"
-                className="listing-search-input"
-                placeholder="Start typing to search…"
-                value={query}
-                onFocus={prefetchWalk}
-                onChange={(e) => setQuery(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Escape") {
-                    e.preventDefault();
-                    setQuery("");
-                    e.currentTarget.blur();
-                  }
-                }}
-              />
-              {searching &&
-                (validWalk.status === "idle" ||
-                  validWalk.status === "streaming") && (
-                  <span className="listing-search-spinner" aria-hidden="true" />
+              <div className="listing-search-box">
+                <input
+                  ref={searchInputRef}
+                  type="search"
+                  className="listing-search-input"
+                  placeholder="Start typing to search…"
+                  value={query}
+                  onFocus={prefetchWalk}
+                  onChange={(e) => setQuery(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Escape") {
+                      e.preventDefault();
+                      setQuery("");
+                      e.currentTarget.blur();
+                    }
+                  }}
+                />
+                {searching &&
+                  (validWalk.status === "idle" ||
+                    validWalk.status === "streaming") && (
+                    <span
+                      className="listing-search-spinner"
+                      aria-hidden="true"
+                    />
+                  )}
+                {searchCount !== null && (
+                  <span
+                    className="listing-search-count"
+                    title={searchCountTitle}
+                  >
+                    {searchCount}
+                  </span>
                 )}
-              {searchCount !== null && (
-                <span className="listing-search-count" title={searchCountTitle}>
-                  {searchCount}
-                </span>
-              )}
-              {/* Multi-selection readout — a single selected row needs no count. */}
-              {sel.paths.length > 1 && (
-                <span className="listing-search-count">
-                  {sel.paths.length} selected
-                </span>
-              )}
-            </div>
-            {/* Current result ordering, and the way back to relevance. Without it
+                {/* Multi-selection readout — a single selected row needs no count. */}
+                {sel.paths.length > 1 && (
+                  <span className="listing-search-count">
+                    {sel.paths.length} selected
+                  </span>
+                )}
+              </div>
+              {/* Current result ordering, and the way back to relevance. Without it
             "no arrow anywhere" was the only signal that results were in fuzzy
             rank order, and a column sort had no explicit escape. */}
-            {searching && (
-              <button
-                type="button"
-                className={"listing-sort-chip" + (searchSort ? " sorted" : "")}
-                disabled={!searchSort}
-                title={
-                  searchSort
-                    ? "Results are column-sorted — click for relevance order"
-                    : "Results are in relevance order (best match first)"
-                }
-                onClick={() => setSearchSort(null)}
-              >
-                {searchSort
-                  ? `${SORT_KEYS[searchSort.sort].toLowerCase()} ${searchSort.order}`
-                  : "relevance"}
-              </button>
-            )}
-            {!embedded && (
-              <button
-                type="button"
-                className={"listing-pane-toggle" + (pane.on ? " active" : "")}
-                title={pane.on ? "Hide preview pane" : "Show preview pane"}
-                aria-pressed={pane.on}
-                onClick={togglePane}
-              >
-                <SplitRightIcon />
-              </button>
-            )}
-          </div>
+              {searching && (
+                <button
+                  type="button"
+                  className={
+                    "listing-sort-chip" + (searchSort ? " sorted" : "")
+                  }
+                  disabled={!searchSort}
+                  title={
+                    searchSort
+                      ? "Results are column-sorted — click for relevance order"
+                      : "Results are in relevance order (best match first)"
+                  }
+                  onClick={() => setSearchSort(null)}
+                >
+                  {searchSort
+                    ? `${SORT_KEYS[searchSort.sort].toLowerCase()} ${searchSort.order}`
+                    : "relevance"}
+                </button>
+              )}
+              {!embedded && (
+                <button
+                  type="button"
+                  className={"listing-pane-toggle" + (pane.on ? " active" : "")}
+                  title={pane.on ? "Hide preview pane" : "Show preview pane"}
+                  aria-pressed={pane.on}
+                  onClick={togglePane}
+                >
+                  <SplitRightIcon />
+                </button>
+              )}
+            </div>
+          )}
           <div
             ref={scrollRef}
             /* Dimmed both when the deferred render lags a keystroke and while
@@ -811,7 +823,7 @@ export default function Listing({
               (isStale || showingHeld ? " listing-stale" : "")
             }
             onClick={onBackgroundClick}
-          onContextMenu={openBackgroundMenu}
+            onContextMenu={openBackgroundMenu}
           >
             <table className="listing-table">
               <thead>
@@ -894,10 +906,31 @@ export default function Listing({
             >
               {/* Keyed on the previewed path: switching rows remounts the pane,
                   so a stale iframe never lingers a frame while the new row's
-                  stat/list resolves. */}
+                  stat/list resolves. Nothing selected → the pane previews THIS
+                  folder itself (self: its template or lone app — never its
+                  listing, which is already on the left). */}
               <ListingPreviewPane
-                key={sel.paths.length === 1 && leadRow ? leadRow.path : "none"}
-                row={sel.paths.length === 1 && leadRow ? leadRow : null}
+                key={
+                  sel.paths.length === 1 && leadRow
+                    ? leadRow.path
+                    : sel.paths.length === 0
+                      ? "self:" + fsPath
+                      : "none"
+                }
+                row={
+                  sel.paths.length === 1 && leadRow
+                    ? leadRow
+                    : sel.paths.length === 0
+                      ? {
+                          path: fsPath,
+                          name:
+                            fsPath.replace(/\/+$/, "").split("/").pop() ||
+                            fsPath,
+                          isDir: true,
+                          self: true,
+                        }
+                      : null
+                }
                 selCount={sel.paths.length}
               />
             </div>

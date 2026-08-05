@@ -26,6 +26,10 @@ export interface PaneTarget {
   path: string;
   name: string;
   isDir: boolean;
+  // True when the target is the listing's OWN folder (nothing selected): the
+  // same mode logic runs, except `_listing` is never offered — that listing
+  // is already on the left side of the split.
+  self?: boolean;
 }
 
 // The pane-only sentinel for a folder's lone HTML app rendered in place. Not
@@ -286,11 +290,13 @@ export default function ListingPreviewPane({
         icon: <span className="pane-header-icon">{iconForEntry(app.name, false)}</span>,
       });
     }
-    modes.push({
-      mode: "_listing",
-      title: modeTitle("_listing"),
-      icon: templateModeIcon({ mode: "_listing", path: null } as TemplateEntry),
-    });
+    if (!row.self) {
+      modes.push({
+        mode: "_listing",
+        title: modeTitle("_listing"),
+        icon: templateModeIcon({ mode: "_listing", path: null } as TemplateEntry),
+      });
+    }
   }
 
   // Default mode: the folder's/file's own first eligible template (same
@@ -304,6 +310,17 @@ export default function ListingPreviewPane({
     return (
       <div className="listing-pane">
         <div className="pane-skel" />
+      </div>
+    );
+  }
+  // A self target with nothing to show (no template, no lone app) gets the
+  // neutral hint — never its own listing, which is already on the left.
+  if (row.self && !defaultEntry && !app && modeOverride === null) {
+    return (
+      <div className="listing-pane">
+        <div className="pane-center">
+          <div className="pane-hint">Select a file to preview.</div>
+        </div>
       </div>
     );
   }
@@ -355,7 +372,8 @@ export default function ListingPreviewPane({
         >
           Open app
         </button>
-      ) : (
+      ) : row.self ? null : (
+        // Self target: "Open" would navigate to the folder already open.
         <button
           type="button"
           className="pane-header-btn"
