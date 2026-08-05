@@ -1507,11 +1507,22 @@
           <div style="display:flex;gap:8px;align-items:center;margin-top:4px">
             <input id="fbName" style="flex:1;padding:8px;border:1px solid var(--hair);border-radius:6px;font:inherit;color:var(--ink)">
             <span style="color:var(--ink-3)">.docx</span></div></label>
+        <div style="margin-top:10px;font-size:12px;color:var(--ink-2)">Will save to <b id="fbTarget" style="color:var(--ink);word-break:break-all"></b></div>
         <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:14px">
           <button class="btn" id="fbCancel">Cancel</button><button class="btn primary" id="fbSave">Save</button></div>`;
-      card.querySelector("#fbName").value = prevName;
+      const nmEl = card.querySelector("#fbName");
+      nmEl.value = prevName;
+      // Live target preview — honors a full/absolute path typed into the box
+      // (Windows drive, POSIX root, or ~), otherwise joins the browsed folder.
+      const upd = () => {
+        const raw = (nmEl.value.trim() || "document").replace(/^["']|["']$/g, "");
+        const abs = /^([A-Za-z]:[\\/]|\/|~[\\/]?)/.test(raw);
+        const base = abs ? raw.replace(/\\/g, "/") : d.path.replace(/\/$/, "") + "/" + raw;
+        card.querySelector("#fbTarget").textContent = base.replace(DOC_EXT, "") + ".docx";
+      };
+      nmEl.oninput = upd; upd();
       card.querySelectorAll("[data-dir]").forEach((r) => r.onclick = () => render(r.dataset.dir));
-      card.querySelectorAll(".fb-file").forEach((r) => r.onclick = () => { card.querySelector("#fbName").value = r.dataset.name; });
+      card.querySelectorAll(".fb-file").forEach((r) => r.onclick = () => { nmEl.value = r.dataset.name; upd(); });
       card.querySelector("#fbCancel").onclick = closeDialog;
       card.querySelector("#fbSave").onclick = async () => {
         const name = (card.querySelector("#fbName").value || "").trim();
@@ -1663,25 +1674,29 @@
   const sidecar = await loadSidecar();
   S.author = sidecar.docs.author || "";
   untitled = !!res.library;
-  title = sidecar.docs.title || "";
-  // Inline rename in the nav bar (like slides' deck name): the display title is
-  // a sidecar label, separate from the file name; it also seeds the first-save
-  // name. Committed on blur; Enter commits, Escape reverts.
+  // Rename only applies to a new draft, where the edited name seeds the
+  // first-save file name. An already-saved file's name IS its identity, so its
+  // nav-bar title stays fixed (renaming a label there does nothing on Save,
+  // which is confusing) — we don't make it editable.
+  title = untitled ? (sidecar.docs.title || "") : "";
   const dt = $("docTitle");
   dt.textContent = displayName();
   document.title = "Docs — " + displayName();
-  dt.contentEditable = "true"; dt.spellcheck = false;
-  dt.addEventListener("keydown", (e) => {
-    if (e.key === "Enter") { e.preventDefault(); dt.blur(); }
-    else if (e.key === "Escape") { e.preventDefault(); dt.textContent = displayName(); dt.blur(); }
-  });
-  dt.addEventListener("blur", () => {
-    const n = dt.textContent.replace(/\s+/g, " ").trim();
-    const t = (n && n !== BASENAME.replace(DOC_EXT, "")) ? n : "";
-    if (t === title) { dt.textContent = displayName(); return; }
-    title = t; dt.textContent = displayName(); document.title = "Docs — " + displayName();
-    saveSidecar((d) => { d.title = t; });  // best-effort; never rejects
-  });
+  if (untitled) {
+    dt.contentEditable = "true"; dt.spellcheck = false;
+    dt.title = "Name this document — used as the file name when you first save";
+    dt.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") { e.preventDefault(); dt.blur(); }
+      else if (e.key === "Escape") { e.preventDefault(); dt.textContent = displayName(); dt.blur(); }
+    });
+    dt.addEventListener("blur", () => {
+      const n = dt.textContent.replace(/\s+/g, " ").trim();
+      const t = (n && n !== BASENAME.replace(DOC_EXT, "")) ? n : "";
+      if (t === title) { dt.textContent = displayName(); return; }
+      title = t; dt.textContent = displayName(); document.title = "Docs — " + displayName();
+      saveSidecar((d) => { d.title = t; });  // best-effort; never rejects
+    });
+  }
   $("topbar").classList.remove("hidden"); $("toolbar").classList.remove("hidden"); $("main").classList.remove("hidden");
   mountEditor(importedDoc);
   // The reader's editability verdict (RO-4): lock before the initial setMode
