@@ -15,6 +15,7 @@ import { loadRecents, recentFsPath, useRecentsVersion } from "@apps/explorer/lib
 import { BookmarkPreviewCard } from "@apps/explorer/BookmarkCards";
 import { describeSpec, runAiSearch, type AiSearchResult } from "@apps/explorer/lib/ai-search";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
+import { TextArea } from "@platform/ui/field/fields";
 import logoMark from "@assets/logo-black-bg-transparent.png";
 
 // How many recent files earn a card. The sidebar shows a tight top-3; the
@@ -142,16 +143,18 @@ function AiSearchComposer({
   return (
     <div className="home-composer-wrap files-search-wrap">
       <div className={"home-composer files-search" + (busy ? " is-busy" : "")}>
-        <input
-          className="home-composer-input files-search-input"
-          type="text"
+        <TextArea
+          className="home-composer-input"
           placeholder="Search your files — “big csv from last week”, “notebook about weather”…"
           aria-label="Search your files"
           value={query}
+          rows={3}
           disabled={busy}
           onChange={(e) => setQuery(e.target.value)}
           onKeyDown={(e) => {
-            if (e.key === "Enter") {
+            // Enter submits (a search is a one-shot prompt); Shift+Enter
+            // keeps the newline — same contract as the /apps composer.
+            if (e.key === "Enter" && !e.shiftKey) {
               e.preventDefault();
               submit();
             } else if (e.key === "Escape" && active) {
@@ -166,7 +169,8 @@ function AiSearchComposer({
               "Searching…"
             ) : (
               <>
-                <kbd>↵</kbd> to search{active && (
+                <kbd>↵</kbd> to search · <kbd>⇧↵</kbd> for a new line
+                {active && (
                   <>
                     {" · "}
                     <kbd>esc</kbd> to clear
