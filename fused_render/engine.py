@@ -379,6 +379,205 @@ def app_interpreter() -> str | None:
         return _app_interpreter
 
 
+# --- a header the app interpreter ALREADY satisfies ---------------------------
+#
+# D172 settled that a header is the script's COMPLETE dependency list: no baseline
+# is unioned into it. What nothing checked is the INVERSE question — whether the
+# list is already satisfied by the interpreter the app ships. `[bundled]` bakes
+# pandas/numpy/duckdb/pyarrow/geopandas/rasterio/zarr/pyproj/keyring/pyyaml/
+# cryptography into that interpreter, so a header naming `pandas` built a
+# multi-gigabyte venv beside the pandas already on disk, then downloaded it again
+# for the next header that differed by one package.
+#
+# Measured on one developer machine's venv store: 33 venvs / 4.9GB beside a 51GB uv
+# cache, in which the set ['duckdb>=1.5.0','keyring>=24','pandas>=2.0.0',
+# 'pyarrow>=14.0.0','pyyaml>=6.0.0'] — every member already present on the
+# interpreter — existed under FIVE distinct keys, and one thirteen-package science
+# stack under four.
+#
+# What makes skipping the venv expressible at all is upstream's precedence rule:
+# `_execute_sync` reads `interpreter` and, when it is set, never looks at
+# `requirements` (`compute_base.execute`'s docstring states it outright, and
+# tests/test_env_install.py pins it). So handing over an interpreter is a claim of
+# full ownership over what is installed — upstream will neither build nor verify
+# anything behind it. That is exactly why every branch below fails CLOSED: this
+# path may only be taken when every requirement is PROVEN present, because the
+# alternative to proof is not a slower run, it is a script that dies on its first
+# import with an error about the code rather than about the environment.
+#
+# The accepted trade: such a script now runs on the shared app interpreter and can
+# therefore see packages its header never declared, where a purpose-built venv
+# would have hidden them. PY-17 already runs every header-LESS script exactly this
+# way, so this widens an existing property rather than introducing a new one.
+_FORCE_VENV_ENV = "FUSED_RENDER_FORCE_SCRIPT_VENV"
+
+# Distribution names + versions, as the APP INTERPRETER sees them. It has to be
+# that interpreter and not this process: in the packaged macOS app they are
+# different pythons with different site-packages, and answering from ours would
+# clear a header the child cannot actually import.
+#
+# `importlib.metadata`, not an import attempt, because the question is a PEP 508
+# one — `pandas>=2.0.0` needs a VERSION, and importability cannot supply it — and
+# because distribution names are what a header spells: `python-pptx` imports as
+# `pptx`, so an import-based check would need a name map that metadata makes
+# unnecessary.
+_APP_PACKAGES_PROBE = (
+    "import json;"
+    "from importlib.metadata import distributions;"
+    "print(json.dumps({(d.metadata['Name'] or ''): d.version for d in distributions()}))"
+)
+
+_app_packages = _UNPROBED
+# Same reasoning as `_app_interpreter_lock`: `app_satisfies` is reached through
+# `asyncio.to_thread`, so two runs starting together genuinely race, and the cache
+# only ever goes _UNPROBED -> final.
+_app_packages_lock = threading.Lock()
+
+
+def reset_app_packages_cache() -> None:
+    """Forget the probed distribution list so the next call re-probes."""
+    global _app_packages
+    with _app_packages_lock:
+        _app_packages = _UNPROBED
+
+
+def _probe_app_packages(exe: str) -> dict | None:
+    """`{canonical distribution name: version}` for `exe`, or None if it wouldn't say.
+
+    None is "no evidence", never "nothing installed" — `app_satisfies` treats the
+    two completely differently, and collapsing them would send every satisfied
+    header to the venv path on one unlucky spawn (harmless) or, with the sense
+    inverted, clear a header on a probe that never ran (not harmless).
+
+    Under `_child_env()` and `_PROBE_TIMEOUT_S`, for the same reasons `_probe`
+    documents: the environment the backend will actually give the child, and a
+    budget small enough that a candidate which never answers cannot hang a request.
+    """
+    try:
+        proc = subprocess.run(
+            [exe, "-c", _APP_PACKAGES_PROBE],
+            capture_output=True, text=True, timeout=_PROBE_TIMEOUT_S, env=_child_env(),
+        )
+    except (OSError, subprocess.SubprocessError) as e:
+        logger.info("app package probe failed for %s: %s: %s", exe, type(e).__name__, e)
+        return None
+    if proc.returncode != 0:
+        logger.info("app package probe failed for %s: %s", exe,
+                    (proc.stderr or proc.stdout or "").strip() or f"exit {proc.returncode}")
+        return None
+    try:
+        raw = json.loads(proc.stdout.strip().splitlines()[-1])
+    except (ValueError, IndexError) as e:
+        logger.info("app package probe output unparseable for %s: %s: %s",
+                    exe, type(e).__name__, e)
+        return None
+    # Canonicalised HERE rather than in the probe: PEP 503 folding (case, and
+    # `_`/`.`/`-` all equivalent) is `packaging`'s job, and the probe must stay a
+    # one-liner that runs on an interpreter which may not have packaging at all.
+    from packaging.utils import canonicalize_name
+
+    return {canonicalize_name(name): version for name, version in raw.items() if name}
+
+
+def app_packages() -> dict | None:
+    """`_probe_app_packages` for the app interpreter, memoized per process.
+
+    The ceiling this guarantees, and the reason it exists: at most ONE subprocess
+    per server process, never one per `/api/run`. The probe enumerates every
+    distribution on the interpreter's path, and it is consulted on the request path
+    of every PEP 723 script — the exact per-request spawn this fast path was built
+    to remove, so paying it per request would be self-defeating.
+    """
+    global _app_packages
+    if _app_packages is not _UNPROBED:
+        return _app_packages
+    with _app_packages_lock:
+        if _app_packages is not _UNPROBED:
+            return _app_packages
+        exe = app_interpreter()
+        # No verified interpreter means nothing to probe AND nothing to run on, so
+        # there is no answer to cache-bust later: `app_interpreter` is itself
+        # per-process and terminal, so this cannot go stale while it stays None.
+        _app_packages = None if exe is None else _probe_app_packages(exe)
+        return _app_packages
+
+
+def app_satisfies(requirements: list[str]) -> bool:
+    """Does the app interpreter already meet EVERY one of `requirements`?
+
+    All-or-nothing, because a script runs on exactly one interpreter: "pandas from
+    the app, imagecodecs from a venv" is not a thing that can be arranged, so a
+    single unmet requirement sends the whole header down the venv path unchanged.
+
+    Every uncertain answer is False. The cases, and why each one is not a
+    judgement call:
+
+    * **no requirements** — that is PY-17's business, and the vacuous truth a
+      quantifier gives here would claim this path for a script that never asked.
+    * **`_FORCE_VENV_ENV` set** — the escape hatch, checked before any probe so it
+      also costs nothing.
+    * **the probe said nothing** (`app_packages() is None`) — no evidence is not
+      evidence, the same three-valued discipline `envinstall._venv_is_usable` and
+      `_probe` already follow.
+    * **extras** (`pandas[performance]`) — a version number vouches for the
+      distribution and says nothing whatsoever about an extra's transitive
+      dependencies, so this is unprovable by construction, not merely unproven.
+    * **unparseable requirement, or any exception at all** — "I could not read it"
+      must never arrive as "it is already there".
+
+    Environment markers are ignored on purpose: `script_requirements` has already
+    dropped the requirements whose markers do not hold and returns the survivors
+    verbatim, markers included, so re-evaluating one here would be a second
+    implementation of a decision that is already made.
+    """
+    if not requirements:
+        return False
+    if os.environ.get(_FORCE_VENV_ENV):
+        return False
+    installed = app_packages()
+    if installed is None:
+        return False
+    try:
+        from packaging.requirements import InvalidRequirement, Requirement
+        from packaging.utils import canonicalize_name
+
+        for spec in requirements:
+            try:
+                req = Requirement(spec)
+            except InvalidRequirement:
+                return False
+            if req.extras:
+                return False
+            version = installed.get(canonicalize_name(req.name))
+            if version is None:
+                return False
+            # prereleases=True so an app shipping `2.1.0rc1` counts against
+            # `>=2.0.0`. The default excludes pre-releases, which would send a
+            # header to the venv path over a version the interpreter genuinely
+            # has — and that venv would resolve the very same pre-release.
+            if str(req.specifier) and not req.specifier.contains(version, prereleases=True):
+                return False
+        return True
+    except Exception:  # noqa: BLE001
+        # Deliberately total: this function's contract is that it never turns an
+        # internal problem into a claim that packages are present. Logged rather
+        # than swallowed, because a persistent failure here is a silent, permanent
+        # loss of the fast path and nothing else would ever say so.
+        logger.exception("app_satisfies failed for %r; treating as unsatisfied",
+                         requirements)
+        return False
+
+
+def _app_interpreter_if_satisfies(requirements: list[str]) -> str | None:
+    """The app interpreter when it already meets `requirements`, else None.
+
+    Both probes behind ONE `asyncio.to_thread` hop from `run_python`: they are
+    subprocess-backed on first call, and two hops would be two chances to stall
+    the event loop for no gain.
+    """
+    return app_interpreter() if app_satisfies(requirements) else None
+
+
 def _resolve_app_interpreter() -> str | None:
     """Probe the rungs and answer with the interpreter to cache.
 
@@ -906,6 +1105,13 @@ async def run_python(path: str, params: dict) -> dict:
     # `requirements` are mutually exclusive upstream (the interpreter branch
     # ignores requirements silently), so they are never both set here.
     interpreter = None
+    if requirements:
+        # A header the app interpreter already meets needs no venv, no download and
+        # no loader — see the `app_satisfies` block above for why this fails closed
+        # and what it trades. Off the event loop because both probes behind it are
+        # subprocess-backed on their first call, exactly as `app_interpreter` and
+        # `is_installed` below are.
+        interpreter = await asyncio.to_thread(_app_interpreter_if_satisfies, requirements)
     if not requirements:
         # Off the event loop: `app_interpreter` is sync (it is called from sync
         # contexts and tests) and its first call in a process runs up to two
@@ -959,7 +1165,12 @@ async def run_python(path: str, params: dict) -> dict:
         # full budget. `to_thread` re-raises in this frame, so the guard above still
         # contains the ImportError/RuntimeError pair (pinned by a test, because "the
         # exception now surfaces somewhere else" is exactly what a thread hop hides).
-        if requirements:
+        # `interpreter is None` and not merely `requirements`: a header the app
+        # interpreter already satisfies resolved one above, and it has nothing to
+        # install — asking `is_installed` about it would name a venv directory that
+        # is never going to be built and answer `needs_install`, putting the loader
+        # in front of a run that was ready to go.
+        if requirements and interpreter is None:
             from fused_render import envinstall
 
             if not await asyncio.to_thread(envinstall.is_installed, requirements):

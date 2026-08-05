@@ -686,7 +686,24 @@ def test_a_headerless_script_sees_the_app_s_own_packages(monkeypatch, tmp_path):
 def test_a_declared_header_still_gets_its_own_venv(
     monkeypatch, tmp_path, warm_fused_backend_venv
 ):
-    """A header keeps today's venv path — it must NOT land on the app python."""
+    """The venv path, end to end: a real venv is built and the script runs IN it.
+
+    `_FORCE_VENV_ENV` is set because this test's header would otherwise no longer
+    reach the venv path at all, and for an honest reason rather than a convenient
+    one: `conftest.WARM_HEADER` declares `pip`, chosen because it is the cheapest
+    possible warm venv, and `pip` is present on the app interpreter (the dev-env
+    setup seeds it into `.venv` on purpose, so `test_deploy.py` can exercise a real
+    `_pip_available()`). A header every member of which is already installed is
+    precisely what `app_satisfies` now claims, so leaving the fast path enabled here
+    would silently convert this into a second header-less test.
+
+    The hatch keeps the assertion this test is FOR — build a venv, run the script
+    inside it, land under `venvs` — rather than trading it for a weaker one. Which
+    header routes where is covered separately, on the fake backend, by
+    `test_one_missing_package_sends_the_whole_header_to_the_venv_path` and
+    `test_a_header_the_app_already_satisfies_builds_no_venv`.
+    """
+    monkeypatch.setenv(engine._FORCE_VENV_ENV, "1")
     monkeypatch.setattr(engine, "_backend", None)
     target = tmp_path / "declared.py"
     target.write_text(
@@ -844,6 +861,186 @@ def test_a_missing_execute_sync_is_loud_too(monkeypatch, tmp_path):
     assert out["error"]["type"] == "EngineError"
     assert "_execute_sync" in out["error"]["traceback"]
     assert backend.calls == []
+
+
+# --- a header the app interpreter ALREADY satisfies ----------------------------
+#
+# The `[bundled]` extra puts pandas/duckdb/pyarrow/numpy/geopandas/rasterio/zarr/
+# pyproj/keyring/yaml/cryptography on the app interpreter, and D172 stops a header
+# being EXTENDED with a baseline — but nothing checked whether a header was already
+# SATISFIED. So a header naming `pandas` built a multi-GB venv beside the pandas the
+# app already ships. Measured on one machine's venv store: the set
+# ['duckdb>=1.5.0','keyring>=24','pandas>=2.0.0','pyarrow>=14.0.0','pyyaml>=6.0.0']
+# — every one already present — under FIVE different keys; 33 venvs, 4.9GB.
+#
+# These tests pin both directions: the fast path when every requirement is met, and
+# an unchanged venv path the moment anything cannot be PROVEN met.
+
+
+def _satisfied_header(deps):
+    return "# /// script\n# dependencies = %r\n# ///\n" % (list(deps),)
+
+
+def _preflight_spy(monkeypatch):
+    """Records whether the venv pre-flight was consulted at all."""
+    seen = []
+    monkeypatch.setattr("fused_render.envinstall.is_installed",
+                        lambda reqs: seen.append(list(reqs)) or True)
+    return seen
+
+
+@requires_tomllib
+@requires_fused
+def test_a_header_the_app_already_satisfies_builds_no_venv(monkeypatch, tmp_path):
+    """pandas is on the app interpreter, so a header naming it needs no venv."""
+    target = tmp_path / "declared.py"
+    target.write_text(_satisfied_header(["pandas>=2.0.0"]) + "def main():\n    return 1\n")
+    backend = _FakeBackend(_FakeResult(return_value="1"))
+    monkeypatch.setattr(engine, "get_backend", lambda: backend)
+    seen = _preflight_spy(monkeypatch)
+
+    out = asyncio.run(engine.run_python(str(target), {}))
+    assert out["ok"] is True, out
+    assert "needs_install" not in out
+    assert seen == [], "the venv pre-flight ran for a header nothing needs to install"
+    call = backend.calls[0]
+    assert call["via"] == "_execute_sync"
+    assert call["interpreter"] == engine.app_interpreter()
+    assert "requirements" not in call, (
+        "upstream ignores requirements once interpreter is set; passing both misleads"
+    )
+
+
+@requires_tomllib
+@requires_fused
+def test_one_missing_package_sends_the_whole_header_to_the_venv_path(
+    monkeypatch, tmp_path
+):
+    """All-or-nothing: the venv is what makes the MISSING one importable.
+
+    Splitting the set — interpreter for the satisfied part, venv for the rest — is
+    not expressible: one script runs on one interpreter. So one miss means the
+    header goes to the venv exactly as before, pandas rebuilt and all.
+    """
+    target = tmp_path / "declared.py"
+    target.write_text(
+        _satisfied_header(["pandas>=2.0.0", "imagecodecs"])
+        + "def main():\n    return 1\n"
+    )
+    backend = _FakeBackend(_FakeResult(return_value="1"))
+    monkeypatch.setattr(engine, "get_backend", lambda: backend)
+    seen = _preflight_spy(monkeypatch)
+
+    out = asyncio.run(engine.run_python(str(target), {}))
+    assert out["ok"] is True, out
+    assert seen == [["imagecodecs", "pandas>=2.0.0"]]
+    assert backend.calls[0]["via"] == "execute"
+    assert backend.calls[0]["requirements"] == ["imagecodecs", "pandas>=2.0.0"]
+
+
+@requires_tomllib
+@requires_fused
+def test_a_version_the_app_cannot_meet_is_not_treated_as_satisfied(
+    monkeypatch, tmp_path
+):
+    """The check is on the SPECIFIER, not on importability.
+
+    "pandas is importable" would have said yes to `pandas>=99`, run the script on
+    an interpreter with 2.x, and produced whatever error a version-sensitive script
+    produces — an error about the code, for a dependency problem.
+    """
+    target = tmp_path / "declared.py"
+    target.write_text(_satisfied_header(["pandas>=99"]) + "def main():\n    return 1\n")
+    backend = _FakeBackend(_FakeResult(return_value="1"))
+    monkeypatch.setattr(engine, "get_backend", lambda: backend)
+    seen = _preflight_spy(monkeypatch)
+
+    asyncio.run(engine.run_python(str(target), {}))
+    assert seen == [["pandas>=99"]], "an unmeetable pin must still get its own venv"
+    assert backend.calls[0]["via"] == "execute"
+
+
+@requires_tomllib
+@requires_fused
+def test_extras_are_never_treated_as_satisfied(monkeypatch, tmp_path):
+    """`pandas[performance]` asks for packages a version number cannot vouch for.
+
+    `importlib.metadata.version` says nothing about whether an extra's transitive
+    dependencies are installed, so "cannot tell" has to mean "not satisfied" —
+    otherwise the script runs and fails on the first import of the extra's package.
+    """
+    target = tmp_path / "declared.py"
+    target.write_text(
+        _satisfied_header(["pandas[performance]>=2.0.0"]) + "def main():\n    return 1\n"
+    )
+    backend = _FakeBackend(_FakeResult(return_value="1"))
+    monkeypatch.setattr(engine, "get_backend", lambda: backend)
+    seen = _preflight_spy(monkeypatch)
+
+    asyncio.run(engine.run_python(str(target), {}))
+    assert seen == [["pandas[performance]>=2.0.0"]]
+    assert backend.calls[0]["via"] == "execute"
+
+
+@requires_tomllib
+@requires_fused
+def test_the_escape_hatch_forces_the_venv_path(monkeypatch, tmp_path):
+    """One env var puts a satisfied header back on the old, isolated venv path."""
+    monkeypatch.setenv(engine._FORCE_VENV_ENV, "1")
+    target = tmp_path / "declared.py"
+    target.write_text(_satisfied_header(["pandas>=2.0.0"]) + "def main():\n    return 1\n")
+    backend = _FakeBackend(_FakeResult(return_value="1"))
+    monkeypatch.setattr(engine, "get_backend", lambda: backend)
+    seen = _preflight_spy(monkeypatch)
+
+    asyncio.run(engine.run_python(str(target), {}))
+    assert seen == [["pandas>=2.0.0"]]
+    assert backend.calls[0]["via"] == "execute"
+
+
+@requires_fused
+def test_the_app_package_probe_runs_at_most_once_per_process(monkeypatch):
+    """One subprocess per server process, not one per /api/run.
+
+    The probe spawns the app interpreter and imports importlib.metadata over every
+    distribution on its path — tens of milliseconds, and it is asked on the request
+    path. Uncached it would be paid by every run of every header, which is the cost
+    this whole fast path exists to remove.
+    """
+    engine.reset_app_packages_cache()
+    spawns = []
+    real = engine._probe_app_packages
+    monkeypatch.setattr(engine, "_probe_app_packages",
+                        lambda exe: spawns.append(exe) or real(exe))
+    first = engine.app_packages()
+    assert engine.app_packages() is first
+    assert engine.app_packages() is first
+    assert len(spawns) == 1, spawns
+    assert "pandas" in first, first
+
+
+@requires_fused
+def test_an_unparseable_requirement_is_not_satisfied():
+    """"I could not read it" must never read as "it is already there"."""
+    assert engine.app_satisfies(["not a requirement at all!!"]) is False
+
+
+def test_a_failed_probe_means_not_satisfied(monkeypatch):
+    """A probe that could not answer leaves the venv path in charge.
+
+    Same discipline as `envinstall._venv_is_usable` and `engine._probe`: a timeout
+    or a spawn failure is not evidence about what is installed, and acting on it as
+    if it were would run a script against an interpreter we know nothing about.
+    """
+    monkeypatch.setattr(engine, "app_packages", lambda: None)
+    assert engine.app_satisfies(["pandas"]) is False
+
+
+def test_an_empty_requirement_list_is_not_the_fast_path(monkeypatch):
+    """No header is PY-17's business, not this check's — and vacuous truth here
+    would make `app_satisfies([])` answer True for a script that never asked."""
+    monkeypatch.setattr(engine, "app_packages", lambda: {"pandas": "2.3.3"})
+    assert engine.app_satisfies([]) is False
 
 
 # --- the PYTHONHOME wrapper: making the packaged macOS app work ---------------
