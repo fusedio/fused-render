@@ -561,6 +561,18 @@ def app_satisfies(requirements: list[str]) -> bool:
                 return False
             if req.extras:
                 return False
+            # A direct reference (`pandas @ https://…/pandas-9.9.9.whl`, or a local
+            # path / VCS URL) names a SOURCE, and an installed version number is no
+            # evidence at all about whether the thing installed came from it. Left
+            # unchecked this was the extras hole in a second shape: the app happens
+            # to have a `pandas`, so the header cleared and the wheel the author
+            # deliberately pinned was never fetched — a script silently running
+            # against different code than it asked for. Not hypothetical here,
+            # either: this repo pins its own `fused` as a direct-URL wheel
+            # (pyproject.toml's `[fused]` extra), so the idiom is one a template
+            # author has every reason to copy.
+            if req.url:
+                return False
             version = installed.get(canonicalize_name(req.name))
             if version is None:
                 return False

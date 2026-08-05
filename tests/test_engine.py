@@ -1078,6 +1078,27 @@ def test_the_fast_path_is_not_taken_when_the_backend_cannot_run_on_an_interprete
 
 
 @requires_fused
+def test_a_direct_url_requirement_is_never_treated_as_satisfied(monkeypatch):
+    """`pandas @ https://…` names a SOURCE, which a version cannot vouch for.
+
+    The extras hole in a second shape, and the more dangerous one: the app happens
+    to have a `pandas`, so the header cleared and the wheel the author deliberately
+    pinned was never fetched — the script ran against different code than it asked
+    for, silently. Local paths and VCS URLs are the same case (`req.url` covers all
+    three). This repo pins its own `fused` as a direct-URL wheel, so it is an idiom
+    a template author has every reason to copy.
+    """
+    monkeypatch.setattr(engine, "app_packages", lambda: {"pandas": "2.3.3"})
+    assert engine.app_satisfies(["pandas"]) is True, "control: the plain name is met"
+    for spec in (
+        "pandas @ https://example.com/pandas-9.9.9-py3-none-any.whl",
+        "pandas @ file:///tmp/pandas-9.9.9-py3-none-any.whl",
+        "pandas @ git+https://github.com/pandas-dev/pandas@main",
+    ):
+        assert engine.app_satisfies([spec]) is False, spec
+
+
+@requires_fused
 def test_an_unparseable_requirement_is_not_satisfied():
     """"I could not read it" must never read as "it is already there"."""
     assert engine.app_satisfies(["not a requirement at all!!"]) is False
