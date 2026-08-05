@@ -13,7 +13,7 @@ import { navigateUrl, EMBED_PREFIX, VIEW_PREFIX } from "@platform/lib/router";
 import { listDir, statPath } from "@platform/lib/api";
 import type { FsEntry } from "@platform/lib/api";
 import { basename } from "@platform/lib/format";
-import { iconForEntry } from "@platform/ui/FileIcons";
+import { iconForEntry, isAppEntry } from "@platform/ui/FileIcons";
 import { armBookmark, isBookmarkMissing, splitBookmarkUrl } from "@platform/lib/bookmarks";
 import type { Bookmark } from "@platform/lib/bookmarks";
 import { bookmarkFsPath } from "@apps/explorer/sidebar/BookmarksSection";
@@ -75,33 +75,79 @@ function LivePreview({ src }: { src: string }) {
   );
 }
 
-// The stack body of a folder card: back-to-front fanned chips over an
-// optional live preview peeking out underneath the front chip.
-function FolderStack({ path }: { path: string }) {
-  const [entries, setEntries] = useState<FsEntry[] | null>(null);
-  useEffect(() => {
-    let alive = true;
-    listDir(path).then(
-      (r) => alive && setEntries(r.entries),
-      () => alive && setEntries([]),
-    );
-    return () => {
-      alive = false;
-    };
-  }, [path]);
-
-  // The card is a teaser, not a listing: hidden and gitignored entries would
-  // waste its three chip slots (and .DS_Store as the peeking preview says
-  // nothing about the folder), so they're dropped rather than sorted last.
-  const teaser = (entries ?? [])
+// The card is a teaser, not a listing: hidden and gitignored entries would
+// waste its three chip slots (and .DS_Store as the peeking preview says
+// nothing about the folder), so they're dropped rather than sorted last.
+function teaserEntries(entries: FsEntry[]): FsEntry[] {
+  return entries
     .filter((e) => !e.name.startsWith(".") && !e.ignored)
     .sort(
       (a, b) =>
         a.name.localeCompare(b.name, undefined, { sensitivity: "base" }) ||
         (a.name < b.name ? -1 : a.name > b.name ? 1 : 0),
     );
+}
+
+// How many subfolders a file-less folder probes for an app to peek at.
+const APP_PROBE_LIMIT = 3;
+
+// A subfolder's app entry, if the subfolder reads as a fused-app: exactly one
+// html file inside (or an index.html among several). Null otherwise.
+function appEntryIn(entries: FsEntry[]): FsEntry | null {
+  const htmls = entries.filter((e) => isAppEntry(e.name, e.is_dir));
+  if (htmls.length === 1) return htmls[0];
+  return htmls.find((e) => e.name.toLowerCase() === "index.html") ?? null;
+}
+
+// The stack body of a folder card: back-to-front fanned chips over an
+// optional live preview peeking out underneath the front chip. The peek is
+// the folder's first file child; a folder holding only subfolders (a deploy
+// dir of apps) probes its first few subfolders for a fused-app and peeks
+// that app's html instead.
+function FolderStack({ path }: { path: string }) {
+  const [entries, setEntries] = useState<FsEntry[] | null>(null);
+  // Absolute fs path of a probed subfolder's app html — the fallback peek.
+  const [appPeek, setAppPeek] = useState<string | null>(null);
+  useEffect(() => {
+    let alive = true;
+    setEntries(null);
+    setAppPeek(null);
+    (async () => {
+      let list: FsEntry[] = [];
+      try {
+        list = (await listDir(path)).entries;
+      } catch {
+        /* unreadable folder — the note body says what the card knows */
+      }
+      if (!alive) return;
+      setEntries(list);
+      const teaser = teaserEntries(list);
+      if (teaser.some((e) => !e.is_dir)) return; // a direct file child wins
+      for (const d of teaser.filter((e) => e.is_dir).slice(0, APP_PROBE_LIMIT)) {
+        const subPath = joinPath(path, d.name);
+        let sub: FsEntry[];
+        try {
+          sub = (await listDir(subPath)).entries;
+        } catch {
+          continue;
+        }
+        if (!alive) return;
+        const entry = appEntryIn(sub);
+        if (entry) {
+          setAppPeek(joinPath(subPath, entry.name));
+          return;
+        }
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [path]);
+
+  const teaser = teaserEntries(entries ?? []);
   const shown = teaser.slice(0, MAX_CHIPS);
   const firstFile = teaser.find((e) => !e.is_dir);
+  const peekPath = firstFile ? joinPath(path, firstFile.name) : appPeek;
   return (
     <span className="fhb-stack">
       {/* Back chip first: natural stacking keeps the front chip on top. */}
@@ -111,11 +157,11 @@ function FolderStack({ path }: { path: string }) {
           <span className="fhb-chip-label">{e.name}</span>
         </span>
       ))}
-      {firstFile ? (
-        <LivePreview src={embedUrlForFsPath(joinPath(path, firstFile.name))} />
+      {peekPath ? (
+        <LivePreview src={embedUrlForFsPath(peekPath)} />
       ) : (
         entries !== null && (
-          // No file child to peek at — fill the stack's leftover space with a
+          // Nothing to peek at — fill the stack's leftover space with a
           // count so a subfolder-only (or empty) folder card isn't a void.
           <span className="fhb-note">
             {shown.length === 0
