@@ -4278,17 +4278,10 @@ select.field-control:has(option[value=""]:checked) {
   padding: 36px 28px 72px;
 }
 
-/* Same card as the /apps hero at the same width: the files page's content
-   column is wider (1120px for the grids), so the hero is capped at the /apps
-   page width and centered — otherwise the identical composer reads as a
-   different, stretched component. */
+/* No width of its own: .files-home-inner mirrors .apps-inner exactly, so the
+   uncapped hero card renders at the /apps hero's width by construction. */
 .files-hero {
   text-align: center;
-  /* .home-inner is 880px with 28px side padding, so the /apps hero card
-     renders 824px wide — the exact same card width here. */
-  max-width: 824px;
-  margin-left: auto;
-  margin-right: auto;
 }
 
 .files-search-wrap {
