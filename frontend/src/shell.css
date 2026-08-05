@@ -4288,6 +4288,37 @@ select.field-control:has(option[value=""]:checked) {
   text-align: left;
 }
 
+/* Anchor for the clear ✕ riding the input's right edge. */
+.files-search-field {
+  position: relative;
+}
+
+/* Keep typed text from running under the ✕. */
+.files-search-field .home-composer-input,
+.files-search-field .home-composer-input:focus {
+  padding-right: 40px;
+}
+
+.files-search-clear {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border: none;
+  border-radius: 50%;
+  background: var(--bg-alt);
+  color: var(--fg-muted);
+  cursor: pointer;
+}
+
+.files-search-clear:hover {
+  color: var(--fg);
+}
+
 /* The "Understood as: …" echo line above search results. */
 .fh-search-summary {
   margin: -4px 0 14px;

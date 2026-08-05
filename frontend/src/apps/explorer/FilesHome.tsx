@@ -5,7 +5,7 @@
 // /explorer/view/... (the explorer proper).
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import { navigate, navigateUrl, urlForFsPath } from "@platform/lib/router";
+import { navigate, navigateUrl, replaceSearch, urlForFsPath } from "@platform/lib/router";
 import { basename } from "@platform/lib/format";
 import { iconForEntry } from "@platform/ui/FileIcons";
 import type { Config } from "@platform/lib/api";
@@ -95,16 +95,18 @@ type SearchPhase = "idle" | "searching";
 // brings them back.
 function AiSearchComposer({
   home,
+  initialQuery,
   onResult,
   onClear,
   active,
 }: {
   home: string;
+  initialQuery: string;
   onResult: (query: string, r: AiSearchResult) => void;
   onClear: () => void;
   active: boolean;
 }) {
-  const [query, setQuery] = useState("");
+  const [query, setQuery] = useState(initialQuery);
   const [phase, setPhase] = useState<SearchPhase>("idle");
   const [error, setError] = useState<string | null>(null);
   // One in-flight search at a time: a new submit aborts the previous walk.
@@ -139,30 +141,58 @@ function AiSearchComposer({
     }
   };
 
+  // A URL-restored query (?q=…) runs on mount: the URL is the state of
+  // record (same ethos as the listing's ?q=), so landing on a search URL
+  // must reproduce the search, not just prefill the box.
+  const ranInitial = useRef(false);
+  useEffect(() => {
+    if (ranInitial.current) return;
+    ranInitial.current = true;
+    if (initialQuery.trim()) void submit();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const busy = phase === "searching";
   return (
     <div className="home-composer-wrap files-search-wrap">
       <div className={"home-composer files-search" + (busy ? " is-busy" : "")}>
-        <TextArea
-          className="home-composer-input"
-          placeholder="Search your files — “big csv from last week”, “notebook about weather”…"
-          aria-label="Search your files"
-          value={query}
-          rows={3}
-          disabled={busy}
-          onChange={(e) => setQuery(e.target.value)}
-          onKeyDown={(e) => {
-            // Enter submits (a search is a one-shot prompt); Shift+Enter
-            // keeps the newline — same contract as the /apps composer.
-            if (e.key === "Enter" && !e.shiftKey) {
-              e.preventDefault();
-              submit();
-            } else if (e.key === "Escape" && active) {
-              e.preventDefault();
-              clear();
-            }
-          }}
-        />
+        {/* The clear ✕ floats at the input's right edge (not in the footer
+            bar) so wiping the query reads as an input affordance. */}
+        <div className="files-search-field">
+          <TextArea
+            className="home-composer-input"
+            placeholder="Search your files — “big csv from last week”, “notebook about weather”…"
+            aria-label="Search your files"
+            value={query}
+            rows={3}
+            disabled={busy}
+            onChange={(e) => setQuery(e.target.value)}
+            onKeyDown={(e) => {
+              // Enter submits (a search is a one-shot prompt); Shift+Enter
+              // keeps the newline — same contract as the /apps composer.
+              if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
+                submit();
+              } else if (e.key === "Escape" && active) {
+                e.preventDefault();
+                clear();
+              }
+            }}
+          />
+          {(active || query !== "") && !busy && (
+            <button
+              type="button"
+              className="files-search-clear"
+              aria-label="Clear search"
+              title="Clear search"
+              onClick={clear}
+            >
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" aria-hidden="true">
+                <path d="M6 6l12 12M18 6L6 18" />
+              </svg>
+            </button>
+          )}
+        </div>
         <div className="home-composer-bar">
           <span className="home-composer-hint">
             {busy ? (
@@ -179,11 +209,6 @@ function AiSearchComposer({
               </>
             )}
           </span>
-          {active && !busy && (
-            <button type="button" className="home-composer-sample" onClick={clear}>
-              Clear
-            </button>
-          )}
           <button
             type="button"
             className="home-composer-send"
@@ -272,6 +297,17 @@ export default function FilesHome({ config }: { config: Config }) {
   // A committed AI search result takes over the page body (bookmarks/recents
   // hide behind it) until cleared — the homepage becomes the result page.
   const [search, setSearch] = useState<{ query: string; result: AiSearchResult } | null>(null);
+  // The committed query rides the URL (?q=…, same ethos as the listing
+  // search): submit writes it, Clear removes it, and a load with ?q= present
+  // re-runs the search via the composer's initialQuery.
+  const initialQuery = useRef(new URLSearchParams(location.search).get("q") || "").current;
+  const syncQueryParam = (q: string | null) => {
+    const params = new URLSearchParams(location.search);
+    if (q) params.set("q", q);
+    else params.delete("q");
+    const qs = params.toString();
+    replaceSearch(location.pathname + (qs ? "?" + qs : ""));
+  };
 
   return (
     <div className="files-home">
@@ -289,9 +325,16 @@ export default function FilesHome({ config }: { config: Config }) {
           </h1>
           <AiSearchComposer
             home={config.home}
+            initialQuery={initialQuery}
             active={search !== null}
-            onResult={(query, result) => setSearch({ query, result })}
-            onClear={() => setSearch(null)}
+            onResult={(query, result) => {
+              setSearch({ query, result });
+              syncQueryParam(query);
+            }}
+            onClear={() => {
+              setSearch(null);
+              syncQueryParam(null);
+            }}
           />
         </header>
 
