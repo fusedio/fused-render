@@ -1122,6 +1122,41 @@ def test_an_empty_requirement_list_is_not_the_fast_path(monkeypatch):
     assert engine.app_satisfies([]) is False
 
 
+def test_a_backend_that_cannot_be_resolved_is_not_an_interpreter_path(monkeypatch):
+    """`get_backend()` raising is a "no", not an error to propagate.
+
+    The gate is the FIRST thing /api/run touches for a header, and `get_backend`
+    raises outright when `fused` is absent — so letting that through made every
+    more specific failure downstream unreachable. CI caught it: the plain
+    `test-python` jobs install no `fused`, and
+    `test_a_preflight_that_cannot_answer_returns_the_house_error_shape` saw a bare
+    ModuleNotFoundError from this probe instead of the pre-flight's own diagnosis.
+    """
+    def _no_fused():
+        raise ModuleNotFoundError("No module named 'fused'")
+
+    monkeypatch.setattr(engine, "get_backend", _no_fused)
+    assert engine._interpreter_path_available() is False
+
+
+def test_a_missing_packaging_warns_instead_of_probing(monkeypatch):
+    """The ImportError handler must be reachable — it sits above the probe.
+
+    `_probe_app_packages` canonicalises with `packaging` too, so probing first let
+    the very ImportError this handler exists for escape from underneath it. What
+    the user got was not "the fast path is off" but an EngineError on every header
+    script, for a dependency problem that has a graceful answer.
+    """
+    probed = []
+    monkeypatch.setattr(engine, "app_packages",
+                        lambda: probed.append(True) or {"pandas": "2.3.3"})
+    # A None entry in sys.modules is what the import system treats as "this module
+    # is not importable" — closer to a broken install than deleting the real one.
+    monkeypatch.setitem(sys.modules, "packaging.requirements", None)
+    assert engine.app_satisfies(["pandas"]) is False
+    assert probed == [], "the probe ran, so it would have raised first"
+
+
 # --- the PYTHONHOME wrapper: making the packaged macOS app work ---------------
 #
 # Measured against a real DMG (FusedRender-0.3.12), because every earlier guess

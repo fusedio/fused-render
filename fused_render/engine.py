@@ -534,9 +534,12 @@ def app_satisfies(requirements: list[str]) -> bool:
         return False
     if os.environ.get(_FORCE_VENV_ENV):
         return False
-    installed = app_packages()
-    if installed is None:
-        return False
+    # Imported BEFORE `app_packages()`, not just before the loop: `_probe_app_packages`
+    # canonicalises with `packaging` too, so probing first would let the very
+    # ImportError this handler exists for escape from underneath it — turning a
+    # missing parser into an EngineError on every header instead of one warning and
+    # the venv path.
+    #
     # Split out of the catch-all below, and NOT logged as an exception: a missing
     # parser is a packaging fault, not a bug in this call, and it would otherwise
     # write a full traceback on every run of every header while silently disabling
@@ -552,6 +555,9 @@ def app_satisfies(requirements: list[str]) -> bool:
             "header will build its own venv until `packaging` is importable.",
             requirements, e,
         )
+        return False
+    installed = app_packages()
+    if installed is None:
         return False
     try:
         for spec in requirements:
@@ -612,8 +618,18 @@ def _interpreter_path_available() -> bool:
     the script anyway would fail on `import numpy`), because there is nothing to
     fall back TO. Here the venv path is a perfectly good fallback: slower, more
     isolated, and exactly what this header did before the fast path existed.
+
+    `get_backend()` raising is one of those "no" answers, not an error to propagate.
+    It raises when `fused` is absent entirely, and this gate is the FIRST thing
+    /api/run touches — so letting it through would make every failure downstream
+    (the pre-flight's `RuntimeError`, `needs_install`, D175) unreachable, replacing
+    each one's specific diagnosis with a bare ModuleNotFoundError from a fast-path
+    probe that was only ever asking an optional question.
     """
-    return hasattr(get_backend(), "_execute_sync")
+    try:
+        return hasattr(get_backend(), "_execute_sync")
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def _app_interpreter_if_satisfies(requirements: list[str]) -> str | None:
