@@ -7,7 +7,7 @@ import { aiComplete, createApp } from "@platform/lib/api";
 import { APP_ROUTE_PREFIX, navigate, navigateUrl } from "@platform/lib/router";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { TextArea } from "@platform/ui/field/fields";
-import logoMark from "@assets/logo-black-bg-transparent.png";
+import { HeroBrand } from "@platform/ui/HeroBrand";
 
 // URL of an app folder's claude_split chat, attached to a specific live run.
 // `_mode` is the shell's template selector; `run` is a plain view param the
@@ -20,7 +20,13 @@ import logoMark from "@assets/logo-black-bg-transparent.png";
 // Lands in the BUILDER namespace (/apps/<tag>/<name>) — the app folder's last
 // two path segments ARE its tag/name by the server's workspace contract.
 export function claudeChatUrl(appDir: string, runId: string): string {
-  const segs = appDir.replace(/\/+$/, "").split("/");
+  // The server builds this path with os.path.abspath, so on Windows it
+  // arrives with backslashes — normalize before splitting or tag/name
+  // extraction silently grabs the whole path as one segment. Same
+  // drive-letter-only guard as urlForFsPath (a backslash is a legal filename
+  // character on POSIX).
+  const norm = /^[A-Za-z]:[\\/]/.test(appDir) ? appDir.replace(/\\/g, "/") : appDir;
+  const segs = norm.replace(/\/+$/, "").split("/");
   const [tag, name] = segs.slice(-2);
   const params = new URLSearchParams({ _mode: "claude_split", run: runId });
   return (
@@ -317,10 +323,7 @@ export function HomeHero({ onCreated }: { onCreated: () => void }) {
   return (
     <header className="home-hero">
       {/* Fused mark + "Fused App" wordmark row, centered above the title. */}
-      <div className="home-hero-brand">
-        <img className="home-hero-logo" src={logoMark} alt="" aria-hidden="true" />
-        <span className="home-hero-brand-name">Fused App</span>
-      </div>
+      <HeroBrand name="Fused App" />
       <h1 className="home-hero-title">
         Build your next <span className="home-hero-accent">local app</span>
       </h1>
