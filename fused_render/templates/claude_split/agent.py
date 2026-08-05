@@ -1277,11 +1277,79 @@ def _alive(run_dir: str) -> bool:
         return False
 
 
+def _retry_info(row: dict):
+    """One `api_retry` row as the page's view of it, or None if unreadable.
+
+    The CLI retries an overloaded or rate-limited request on its own and reports
+    every attempt. `status` travels because 529 and 429 are different news for
+    the user — the API is swamped vs. we are being throttled — and so does
+    `max_retries`, because that budget is the CLI's and not ours to assume.
+    """
+    try:
+        return {"attempt": int(row["attempt"]),
+                "max_retries": int(row.get("max_retries") or 0),
+                "delay_ms": int(row.get("retry_delay_ms") or 0),
+                "status": int(row.get("error_status") or 0),
+                "error": str(row.get("error") or "")}
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def _overload_error(error: str, total: int, status: int) -> str:
+    """`error` rewritten to say what actually happened, for a run that died while
+    the CLI was retrying.
+
+    The raw text is "API Error: 529 Overloaded" — accurate, but it reads as a bug
+    in this app, says nothing about the ten attempts already spent on the user's
+    behalf, and gives no hint that waiting a moment IS the remedy. Rewritten only
+    when we actually saw retry rows, so this is never string-sniffing the CLI's
+    error text; the original is kept in parentheses because it is the part a bug
+    report can be matched on.
+    """
+    if not total or not error:
+        return error
+    what = ("the API was overloaded" if status == 529
+            else "we were rate limited" if status == 429
+            else "the API call kept failing")
+    return ("Could not reach the API: %s, and %d retr%s did not clear it. "
+            "Trying again in a moment usually works. (%s)"
+            % (what, total, "y" if total == 1 else "ies", error))
+
+
+def _skill_calls(row: dict) -> list:
+    """The Skill invocations in one FINALIZED `assistant` row.
+
+    This row rather than the streamed `content_block_start` for the same call:
+    that one arrives with `input: {}` and the skill name only turns up as
+    `input_json_delta` fragments that would have to be reassembled, while this
+    one is already whole. Both are in the file, so reading only this one is also
+    what keeps a call from being reported twice.
+
+    A call whose name we cannot read is dropped rather than reported blank — an
+    empty note row in the log would say less than no row at all.
+    """
+    message = row.get("message")
+    content = message.get("content") if isinstance(message, dict) else None
+    if not isinstance(content, list):
+        return []
+    out = []
+    for block in content:
+        if not isinstance(block, dict) or block.get("type") != "tool_use":
+            continue
+        if block.get("name") != "Skill":
+            continue
+        skill = (block.get("input") or {}).get("skill")
+        if isinstance(skill, str) and skill and block.get("id"):
+            out.append({"id": str(block["id"]), "skill": skill})
+    return out
+
+
 def _poll(run_id: str) -> dict:
     run_dir = os.path.join(RUNS, run_id)
     if _bad_id(run_id) or not os.path.isdir(run_dir):
         return {"text": "", "done": True, "session_id": "", "error": "unknown run_id",
-                "permissions": [], "app_state": []}
+                "permissions": [], "app_state": [], "skills": [], "retry": None,
+                "retry_total": 0, "retry_status": 0}
 
     text_parts = []
     result_text = None
@@ -1292,6 +1360,10 @@ def _poll(run_id: str) -> dict:
     tokens_current = 0   # cumulative usage of the in-flight message
     phase = "thinking"
     pending_sep = False  # a message ended; separate it from the next one's text
+    skills = []          # Skill invocations, in call order (see _skill_calls)
+    retry = None         # the api_retry the request is sitting in RIGHT NOW
+    retry_total = 0      # how many retries this run has seen at all
+    retry_status = 0     # HTTP status of the last one (529 overloaded, 429 …)
 
     try:
         lines = open(os.path.join(run_dir, "out.jsonl"), encoding="utf-8",
@@ -1305,8 +1377,25 @@ def _poll(run_id: str) -> dict:
         except json.JSONDecodeError:
             continue  # half-written last line; next poll gets it
         t = row.get("type")
+        # Any of these means the request the retries were for went THROUGH.
+        # Rows are in file order, so anything the model produced after an
+        # `api_retry` ends it: the live retry state has to be transient, or the
+        # page would go on saying "retrying" for the rest of the turn — a lie
+        # for far longer than it was ever true. The TALLY below is deliberately
+        # not cleared; "this turn was retried four times" is what makes a final
+        # failure explainable.
+        if t in ("stream_event", "assistant", "result"):
+            retry = None
         if t == "system":
             new_session = row.get("session_id", new_session)
+            if row.get("subtype") == "api_retry":
+                info = _retry_info(row)
+                if info is not None:
+                    retry = info
+                    retry_total += 1
+                    retry_status = info["status"]
+        elif t == "assistant":
+            skills += _skill_calls(row)
         elif t == "stream_event":
             ev = row.get("event", {})
             et = ev.get("type")
@@ -1340,6 +1429,12 @@ def _poll(run_id: str) -> dict:
             if row.get("is_error"):
                 error = str(result_text or "claude exited with an error")
 
+    # Last word on the verb: a run sitting in a retry is not thinking, and
+    # saying so is the whole point — "Thinking…" with a frozen token count is
+    # indistinguishable from a hang, which is what an overload used to look like.
+    if retry is not None:
+        phase = "retrying"
+
     if not done and not _alive(run_dir):
         # Dead without a `result` row = abnormal exit (crash, OOM, cancel),
         # even if some text streamed first. Report it as an error regardless
@@ -1353,6 +1448,11 @@ def _poll(run_id: str) -> dict:
             tail = ""
         error = tail or ("claude exited before completing the reply"
                          if text_parts else "claude exited unexpectedly")
+
+    # Both error paths above converge here: whatever went wrong, if the CLI had
+    # been retrying an overloaded or throttled API then THAT is the story, and
+    # the raw text does not tell it.
+    error = _overload_error(error, retry_total, retry_status)
 
     # Approvals, after `done` is final. A card the user never answered is only
     # still live while the run is: once it ends, whatever the request was
@@ -1441,7 +1541,9 @@ def _poll(run_id: str) -> dict:
     return {"text": text, "done": done, "session_id": new_session, "error": error,
             "tokens": tokens_done + tokens_current, "phase": phase,
             "message": meta.get("message", ""), "permissions": permissions,
-            "app_state": app_state, "mode": _live_mode(meta, permissions)}
+            "app_state": app_state, "mode": _live_mode(meta, permissions),
+            "skills": skills, "retry": retry, "retry_total": retry_total,
+            "retry_status": retry_status}
 
 
 # ------------------------------------------------------- sessions & history

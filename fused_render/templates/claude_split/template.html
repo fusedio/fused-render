@@ -2699,6 +2699,7 @@ document.getElementById("back").onclick = () => {
   showSession();
   log.innerHTML = "";
   permCards.clear();  // the cards went with the log; don't keep handles to them
+  notedSkills.clear();  // and the skill rows; a rebuilt log re-announces them
   chatEl.classList.add("home");
   document.getElementById("recentlist").innerHTML = "";
   document.getElementById("recent").style.display = "";
@@ -2979,12 +2980,24 @@ function syncPermissions(list, run_id, working, liveMode) {
   }
 }
 
+// What a LIVE api_retry says on the status line. The status code picks the
+// words, because 529 and 429 send the user looking in different places: the API
+// is swamped and waiting helps, versus we are being throttled. `max_retries` is
+// the CLI's budget and is only shown when it told us one.
+function retryVerb(retry) {
+  const what = retry.status === 429 ? "Rate limited"
+             : retry.status === 529 ? "Overloaded"
+             : "API error";
+  const budget = retry.max_retries ? "/" + retry.max_retries : "";
+  return what + " — retrying (" + retry.attempt + budget + ")";
+}
+
 function addWorking() {
   const d = document.createElement("div");
   d.className = "turn working";
   const thinkVerb = VERBS[Math.floor(Math.random() * VERBS.length)];
   const start = Date.now();
-  let stats = { tokens: 0, phase: "thinking" };
+  let stats = { tokens: 0, phase: "thinking", retry: null };
   let stopping = false;
   d.innerHTML = '<span class="star">✻</span> <span class="verb"></span><span class="meta"></span>'
     // The key rides on the label, not in a hint row: same reasoning as the
@@ -2997,7 +3010,10 @@ function addWorking() {
   stopBtn.addEventListener("click", () => stopRun());
   const draw = () => {
     const secs = Math.round((Date.now() - start) / 1000);
+    // A live retry outranks every phase but the user's own stop: it is the only
+    // one of these that explains why nothing is happening.
     verbEl.textContent = (stopping ? "Stopping" :
+                          stats.retry ? retryVerb(stats.retry) :
                           stats.phase === "awaiting" ? "Waiting for your approval" :
                           stats.phase === "composing" ? "Composing" :
                           stats.phase === "tooling" ? "Working" : thinkVerb) + "…";
@@ -3013,7 +3029,7 @@ function addWorking() {
   scrollBottom();
   return {
     el: d,
-    setStats(tokens, phase) { stats = { tokens, phase }; draw(); },
+    setStats(tokens, phase, retry) { stats = { tokens, phase, retry: retry || null }; draw(); },
     // Reversible: the kill can fail, and a run that is still streaming must not
     // be left wearing a "Stopping…" line it will never honour.
     setStopping(on) { stopping = on; stopBtn.disabled = on; draw(); },
@@ -3133,6 +3149,27 @@ const nullStatePolls = new Map();  // req.id -> polls seen with nothing to repor
 const APP_STATE_MEMO_MAX = 200;
 function appStateTrim(memo) {
   while (memo.size > APP_STATE_MEMO_MAX) memo.delete(memo.keys().next().value);
+}
+
+// Skill invocations already announced in the log, by `tool_use` id. Poll replays
+// every call in the file on each 400 ms tick, so without this the same skill
+// would append a row per tick — the same reason `notedStates` exists next door.
+// Trimmed on the shared cap: the ids are unique per run and a turn that invokes
+// two hundred skills is not a thing, so the oldest can never come back.
+const notedSkills = new Set();
+
+// Which skills the model reached for, as they happen. Worth a row of its own
+// because a skill silently changes how the reply was produced: without this the
+// only visible difference between a session that loaded the fused-render
+// authoring skill and one that did not is that the answers are better.
+function noteSkills(list, working) {
+  for (const call of list || []) {
+    if (!call || !call.id || !call.skill || notedSkills.has(call.id)) continue;
+    notedSkills.add(call.id);
+    appStateTrim(notedSkills);
+    // Skill names are model-authored text; addNote puts them in via textContent.
+    addNote("skill · " + call.skill, working, "◆");
+  }
 }
 
 async function answerAppState(list, run_id, working) {
@@ -3291,8 +3328,9 @@ async function pollLoop(run_id) {
       if (data.session_id) { fused.params.set("session_id", String(data.session_id)); showSession(); }
       // usage arrives only at message end; estimate from streamed text meanwhile
       const tokens = Math.max(data.tokens || 0, Math.round((data.text || "").length / 4));
-      w.setStats(tokens, data.phase || "thinking");
+      w.setStats(tokens, data.phase || "thinking", data.retry);
       syncPermissions(data.permissions, run_id, w, data.mode);
+      noteSkills(data.skills, w);
       // Not awaited: a snapshot must never hold up the streaming reply, and the
       // answered-set makes a second poll arriving mid-answer a no-op.
       if (data.app_state && data.app_state.length) answerAppState(data.app_state, run_id, w);
@@ -3647,6 +3685,7 @@ async function loadHistory(session_id) {
   if (sending) return;
   sending = true;
   permCards.clear();
+  notedSkills.clear();
   renderLogSkeleton();  // replace the visible conversation, don't append to it
   try {
     const { turns } = await fused.runPython(AGENT, { action: "history", file: FILE, session_id }, { key: null });
