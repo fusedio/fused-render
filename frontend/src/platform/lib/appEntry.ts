@@ -1,6 +1,6 @@
-// How an app card resolves, links to and opens its app — shared by the three
-// places that render one (Home's Recent rows, Home's app tiles, the /apps hub's
-// preview cards) so they can never disagree about what clicking a card does.
+// How an app card resolves, links to and opens its app — shared by every
+// surface that renders one (the /apps hub's preview cards, the builder
+// sidebar's recents) so they can never disagree about what clicking a card does.
 //
 // They did disagree. Each carried its own inline copy of the rule, and Home's
 // Recent row had already drifted from the hub's card. The rule itself is
@@ -16,7 +16,13 @@
 // `openTargetFor` resolve the same target, so a new tab and a left click can't
 // land in different places.
 import type { AppInfo } from "./api";
-import { navigate, urlForFsPath } from "./router";
+import { APP_ROUTE_PREFIX, navigate, navigateUrl, urlForFsPath } from "./router";
+
+// The builder route for an app — /apps/<tag>/<name>, straight from the
+// AppInfo identity (no fs-path round trip needed).
+export function appRouteUrl(app: Pick<AppInfo, "tag" | "name">): string {
+  return APP_ROUTE_PREFIX + encodeURIComponent(app.tag) + "/" + encodeURIComponent(app.name);
+}
 
 // The file this card is about, tolerating a backend that predates `entry`.
 // `entry` is "the file a card opens and previews"; `entry_html` is the narrower
@@ -64,12 +70,22 @@ export function openTargetFor(app: AppInfo): OpenTarget {
 // codec, so an app path with a space, a `#` or a non-ASCII name encodes exactly
 // as in-app navigation encodes it.
 export function hrefFor(app: AppInfo): string {
+  // A project open lands in the BUILDER namespace (/apps/<tag>/<name>) — the
+  // app rendered beside a Claude chat under the builder's own sidebar; the
+  // fallbacks stay explorer URLs (plain folder listing / single file).
+  if (opensAsProject(app)) return appRouteUrl(app) + "?_mode=claude_split";
   const { path, opts } = openTargetFor(app);
   const search = opts?.mode ? "?_mode=" + encodeURIComponent(opts.mode) : "";
   return urlForFsPath(path, search);
 }
 
 export function openApp(app: AppInfo): void {
+  if (opensAsProject(app)) {
+    // navigateUrl, not navigate: the builder URL is already fully formed
+    // (navigate speaks fs paths and would re-encode into the explorer prefix).
+    navigateUrl(hrefFor(app), { isDir: true });
+    return;
+  }
   const { path, opts } = openTargetFor(app);
   navigate(path, opts);
 }

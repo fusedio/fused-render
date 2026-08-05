@@ -458,6 +458,9 @@ export default function Preferences() {
 
   return (
     <div className="prefs-page">
+      {/* Page names itself — the topbar that used to carry "Preferences" is
+          gone (settings pages render chrome-free). */}
+      <h1 className="prefs-title">Preferences</h1>
       {error && <ErrorBanner>{error}</ErrorBanner>}
       {!prefs && !error && <SkeletonLines rows={4} label="Loading preferences" />}
       {prefs && (

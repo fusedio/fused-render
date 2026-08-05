@@ -10,10 +10,24 @@ import { useEffect, useRef } from "react";
 
 import { getRecents, postRecentOpen, putRecentsCollapsed } from "@platform/lib/api";
 import type { RecentEntry, RecentsResult } from "@platform/lib/api";
-import { notifyRecentsChanged } from "@platform/lib/hooks";
+import { useEventCounter } from "@platform/lib/hooks";
 import { IS_EMBED, VIEW_PREFIX, currentUrl, fsPathFromLocation, rootedFsPath } from "@platform/lib/router";
 
 export type { RecentEntry };
+
+// Store change signal — explorer-owned (recents are an explorer concept, not a
+// shell/platform one; the app-builder keeps its own independent recents in
+// apps/builder/lib/recents.ts). The store dispatches it itself after every
+// cache advance.
+const RECENTS_EVENT = "fused:recents";
+
+export function notifyRecentsChanged(): void {
+  window.dispatchEvent(new Event(RECENTS_EVENT));
+}
+
+export function useRecentsVersion(): number {
+  return useEventCounter([RECENTS_EVENT]);
+}
 
 let cache: RecentsResult = { collapsed: false, entries: [] };
 
@@ -21,15 +35,18 @@ export function loadRecents(): RecentsResult {
   return cache;
 }
 
-// The fs path a recent entry targets, decoded from its /view/ url — the
+// The fs path a recent entry targets, decoded from its explorer url — the
 // entry's stable identity: the url mutates on every live param write, the
-// path doesn't (React row keys and the slot order below key on it).
+// path doesn't (React row keys and the slot order below key on it). The bare
+// legacy "/view/" prefix still decodes (entries recorded before the /explorer
+// namespace rename).
 export function recentFsPath(url: string): string {
   const qIdx = url.indexOf("?");
   const pathname = qIdx !== -1 ? url.slice(0, qIdx) : url;
-  if (!pathname.startsWith(VIEW_PREFIX)) return pathname;
+  const prefix = [VIEW_PREFIX, "/view/"].find((p) => pathname.startsWith(p));
+  if (!prefix) return pathname;
   return rootedFsPath(
-    pathname.slice(VIEW_PREFIX.length).split("/").filter(Boolean).map(decodeURIComponent).join("/")
+    pathname.slice(prefix.length).split("/").filter(Boolean).map(decodeURIComponent).join("/")
   );
 }
 

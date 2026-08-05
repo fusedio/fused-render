@@ -11,7 +11,7 @@
 // or the pane would reload on every re-render (the vanilla shell set src once
 // at creation; crumb clicks write it imperatively).
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { navigateUrl, urlForFsPath, IS_EMBED } from "@platform/lib/router";
+import { navigateUrl, urlForFsPath, IS_EMBED, VIEW_PREFIX, EMBED_PREFIX } from "@platform/lib/router";
 import {
   leaf,
   encodeNode,
@@ -35,7 +35,7 @@ import PaneModeMenu from "@apps/explorer/PaneModeMenu";
 
 // Panel mode lives under the page's own prefix (`/view/_panel` or
 // `/embed/_panel`), so entering/refreshing/exiting stays in the active mode.
-const PANEL_PATH = (IS_EMBED ? "/embed/" : "/view/") + "_panel";
+const PANEL_PATH = (IS_EMBED ? EMBED_PREFIX : VIEW_PREFIX) + "_panel";
 
 // Build <prefix>/_panel?... : the encoded tree plus any top-level params
 // (hand-typed globals only, D72 — the shell never promotes params there).

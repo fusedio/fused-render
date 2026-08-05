@@ -11,11 +11,28 @@ def shell_root(shell_path: str = Depends(get_shell_path)):
     return FileResponse(shell_path)
 
 @router.get("/apps")
-def shell_apps(shell_path: str = Depends(get_shell_path)):
-    # Apps hub — a client-side route like "/" (chrome-free landing page);
-    # serving the shell here makes direct loads and refreshes of /apps work.
+@router.get("/apps/{path:path}")
+def shell_apps(path: str = "", shell_path: str = Depends(get_shell_path)):
+    # Apps hub (the app home) plus /apps/<tag>/<name> app-builder routes — all
+    # client-side; serving the shell makes direct loads and refreshes work.
     return FileResponse(shell_path)
 
+@router.get("/explorer")
+@router.get("/explorer/{path:path}")
+def shell_explorer(path: str = "", shell_path: str = Depends(get_shell_path)):
+    # File-explorer namespace: /explorer (homepage), /explorer/view/<path>,
+    # /explorer/embed/<path>.
+    return FileResponse(shell_path)
+
+@router.get("/learn")
+@router.get("/preferences")
+@router.get("/templates")
+@router.get("/mounts")
+def shell_page(shell_path: str = Depends(get_shell_path)):
+    return FileResponse(shell_path)
+
+# Pre-rename URL shapes; the client rewrites them in place at boot
+# (frontend router.ts rewriteLegacyPath), so keep serving the shell here.
 @router.get("/view/{path:path}")
 def shell_view(path: str, shell_path: str = Depends(get_shell_path)):
     return FileResponse(shell_path)

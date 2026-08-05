@@ -1,10 +1,13 @@
-// Sidebar UI: brand, Fused-dir entry, bookmark rows with hover card + inline rename.
+// The explorer's bookmark tree — extracted from the shell Sidebar when
+// bookmarks became an explorer concept (super-app step 2): search, nested
+// folders, drag-reorder, inline rename, icon picker, hover card. Renders both
+// as the explorer sidebar's Bookmarks section and as the /explorer homepage's
+// launcher (FilesHome).
 import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { navigate, navigateUrl, currentUrl, rootedFsPath, VIEW_PREFIX } from "@platform/lib/router";
-// Folder-as-tabs entry (TM-8): composeFolderTabsUrl builds the `/view/_tab` url
-// from a folder's children. This sidebar -> views/Tabs.jsx import is the
-// documented acyclic exception (Tabs.jsx never imports back), mirroring
-// Breadcrumb.jsx -> views/Panel.jsx.
+import { navigateUrl, currentUrl, rootedFsPath, VIEW_PREFIX } from "@platform/lib/router";
+// Folder-as-tabs entry (TM-8): composeFolderTabsUrl builds the `_tab` url
+// from a folder's children. This sidebar -> Tabs import is the documented
+// acyclic exception (Tabs never imports back), mirroring Breadcrumb -> Panel.
 import { composeFolderTabsUrl } from "@apps/explorer/Tabs";
 import {
   loadBookmarks,
@@ -27,41 +30,28 @@ import {
   takeLastAddedBookmarkId,
 } from "@platform/lib/bookmarks";
 import { bookmarkSaveTarget } from "@platform/lib/bookmark-file";
-import { openLearn } from "@apps/learn";
 import { exportBookmarkFile } from "@platform/lib/api";
 import IconPicker from "@platform/ui/IconPicker";
-import { FolderIcon, LearnIcon } from "@platform/ui/FileIcons";
 import type { Bookmark, BookmarkFolder, BookmarkItem } from "@platform/lib/bookmarks";
-import { loadRecents, displayRecents, setRecentsCollapsed } from "@platform/lib/recents";
-import {
-  loadSidebarState,
-  saveSidebarState,
-  SIDEBAR_MIN_WIDTH,
-  SIDEBAR_MAX_WIDTH,
-} from "@platform/lib/sidebarstate";
-import { basename } from "@platform/lib/format";
 import {
   useUrlVersion,
   useBookmarksVersion,
   notifyBookmarksChanged,
-  useRecentsVersion,
   useArmedVersion,
-  useLearnMountReady,
 } from "@platform/lib/hooks";
-import type { Config } from "@platform/lib/api";
 import { splitShellSearch } from "@platform/lib/layout-codec";
 import { fuzzyMatch, highlightSegments } from "@platform/lib/fuzzy";
 import type { FuzzyResult } from "@platform/lib/fuzzy";
-import { useAccountLoggedIn } from "@platform/lib/account";
-import { useDeployEnabled } from "@platform/lib/prefs";
 
-// The fs path a bookmark targets, decoded from its /view/ url (same rule as
-// the hover card). Used for search matching and the tooltip.
-function bookmarkFsPath(url: string): string {
+// The fs path a bookmark targets, decoded from its explorer url (same rule as
+// the hover card). Used for search matching and the tooltip. The bare legacy
+// "/view/" prefix still decodes (bookmarks saved before the /explorer rename).
+export function bookmarkFsPath(url: string): string {
   const qIdx = url.indexOf("?");
   const pathname = qIdx !== -1 ? url.slice(0, qIdx) : url;
-  return pathname.startsWith(VIEW_PREFIX)
-    ? rootedFsPath(pathname.slice(VIEW_PREFIX.length).split("/").map(decodeURIComponent).join("/"))
+  const prefix = [VIEW_PREFIX, "/view/"].find((p) => pathname.startsWith(p));
+  return prefix
+    ? rootedFsPath(pathname.slice(prefix.length).split("/").map(decodeURIComponent).join("/"))
     : pathname;
 }
 
@@ -267,7 +257,7 @@ interface FolderRowProps {
   folder: BookmarkFolder;
   child?: boolean;
   parentId?: string;
-  // Optimistic expand/collapse state (see isCollapsed in Sidebar): the store's
+  // Optimistic expand/collapse state (see isCollapsed below): the store's
   // own `folder.collapsed` lags a click by a store write, so the row is told.
   collapsed: boolean;
   activeHint: boolean;
@@ -319,110 +309,21 @@ function FolderRow({ folder, child, parentId, collapsed, activeHint, isRenaming,
   );
 }
 
-interface SidebarProps {
-  config: Config;
-}
-
 interface HoverState {
   bookmark: Bookmark;
   rect: { top: number; right: number };
 }
 
-export default function Sidebar({ config }: SidebarProps) {
+export default function BookmarksSection() {
   // Re-render on any nav/url change (active-row highlight) and on every
   // bookmark-store mutation (this component is itself the primary subscriber
   // of the store it renders).
   useUrlVersion();
   const bookmarksVersion = useBookmarksVersion();
-  useRecentsVersion();
   // Arm/disarm doesn't always coincide with a url or bookmark-store event —
   // the Breadcrumb's pathname-change disarm fires from an effect after this
   // component already rendered — so the armed store notifies separately.
   useArmedVersion();
-  // Signed-in dot on the footer's Preferences entry (SPEC AC-1): shown only
-  // once Deploy is enabled, since that's the only reason this app cares about
-  // a Fused account at all — a dot for a feature the user hasn't turned on
-  // would just be a mystery indicator.
-  const accountLoggedIn = useAccountLoggedIn();
-  const deployEnabled = useDeployEnabled();
-
-  // Bounded /api/config re-poll for the learn mount (see useLearnMountReady
-  // for the full race notes — the boot snapshot is stale in both directions).
-  const learnMountReady = useLearnMountReady(config.learn_mount_ready);
-
-  // Sidebar chrome: draggable width + collapsed flag, persisted once per
-  // gesture (drag end / toggle), not per mousemove. Width lives in React
-  // state — per-pointermove setState is fine (React 18 batches) and there is
-  // no transition during a drag, so no jank.
-  const [{ width: sidebarWidth, collapsed: sidebarCollapsed }, setSidebarState] =
-    useState(loadSidebarState);
-  // True only while the handle is captured — used to suppress the collapse
-  // transition and text selection mid-drag.
-  const [resizing, setResizing] = useState(false);
-  // The "open a deployed app" clone dialog (footer entry, below).
-  const dragRef = useRef<{ pointerId: number; startX: number; startWidth: number } | null>(null);
-
-  // Double-press-to-collapse is detected manually here: preventDefault on
-  // pointerdown (needed to stop a text selection starting before the
-  // body:has(.resizing) rule commits) suppresses the compatibility mouse
-  // events that produce dblclick in several engines, so onDoubleClick on the
-  // handle can't be relied on.
-  const lastHandlePressRef = useRef<{ time: number; x: number } | null>(null);
-
-  const onHandlePointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
-    if (e.button !== 0) return;
-    e.preventDefault(); // no text selection while dragging
-    const last = lastHandlePressRef.current;
-    if (last && e.timeStamp - last.time < 350 && Math.abs(e.clientX - last.x) < 5) {
-      // Second press of a double-press: collapse instead of starting a drag.
-      lastHandlePressRef.current = null;
-      toggleSidebarCollapsed();
-      return;
-    }
-    lastHandlePressRef.current = { time: e.timeStamp, x: e.clientX };
-    dragRef.current = { pointerId: e.pointerId, startX: e.clientX, startWidth: sidebarWidth };
-    e.currentTarget.setPointerCapture(e.pointerId);
-    setResizing(true);
-  };
-
-  const onHandlePointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
-    const drag = dragRef.current;
-    if (!drag || e.pointerId !== drag.pointerId) return;
-    // A real drag isn't the first half of a double-press.
-    if (Math.abs(e.clientX - drag.startX) >= 5) lastHandlePressRef.current = null;
-    const width = Math.min(
-      SIDEBAR_MAX_WIDTH,
-      Math.max(SIDEBAR_MIN_WIDTH, drag.startWidth + (e.clientX - drag.startX))
-    );
-    setSidebarState((s) => (s.width === width ? s : { ...s, width }));
-  };
-
-  const onHandlePointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
-    const drag = dragRef.current;
-    if (!drag || e.pointerId !== drag.pointerId) return;
-    dragRef.current = null;
-    setResizing(false);
-    // Persist the final width (functional read — the last pointermove's
-    // setState may not have committed yet).
-    setSidebarState((s) => {
-      saveSidebarState(s);
-      return s;
-    });
-  };
-
-  const toggleSidebarCollapsed = () => {
-    // Collapsing unmounts the overlay surfaces but not their state — clear it
-    // so expanding doesn't resurrect a stale-anchored icon picker, an
-    // in-progress rename, or a tooltip.
-    setIconPicker(null);
-    setRenamingId(null);
-    setHover(null);
-    setSidebarState((s) => {
-      const next = { ...s, collapsed: !s.collapsed };
-      saveSidebarState(next);
-      return next;
-    });
-  };
 
   const [renamingId, setRenamingId] = useState<string | null>(null);
   // Bookmark just exported to disk: its save button shows ✓ for a moment.
@@ -454,30 +355,10 @@ export default function Sidebar({ config }: SidebarProps) {
   useEffect(() => {
     const id = takeLastAddedBookmarkId();
     if (!id) return;
-    // block: "nearest" scrolls the sidebar's own overflow container the
+    // block: "nearest" scrolls the section's own overflow container the
     // minimum amount, and won't drag the page around it.
     rowRefs.current.get(id)?.scrollIntoView({ block: "nearest" });
   }, [bookmarksVersion]);
-
-  // Recents (SPEC §29): last files opened. Display order is stable-slot
-  // (RC-11) — a shown file keeps its row for the session, only a genuinely
-  // new open moves anything — while the store underneath stays strict MRU.
-  const { collapsed: recentsCollapsed } = loadRecents();
-  const recents = displayRecents();
-
-  const onRecentsHeadingClick = () => {
-    // Persisted with the data itself (recents.json), like D44's folder
-    // collapse; the store notifies, so no explicit re-render call here.
-    void setRecentsCollapsed(!recentsCollapsed);
-  };
-
-  const onRecentClick = (e: React.MouseEvent<HTMLAnchorElement>, url: string) => {
-    // Plain navigation to the stored url verbatim — query preserved
-    // (navigateUrl, not navigate). href kept for middle-click/copy-link.
-    // Opening a recent arms nothing — it is not a bookmark.
-    e.preventDefault();
-    navigateUrl(url);
-  };
 
   const items = loadBookmarks(); // top-level items: bookmarks and folders
   // Folders at every depth, keyed by id — drop handlers resolve their
@@ -577,17 +458,6 @@ export default function Sidebar({ config }: SidebarProps) {
     else rowRefs.current.delete(id);
   };
 
-  const onFusedClick = (e: React.MouseEvent<HTMLAnchorElement>) => {
-    e.preventDefault();
-    if (config && config.fused_dir) navigate(config.fused_dir, { isDir: true });
-  };
-
-  // D123: landing logic shared with Home's Learn doorway lives in @apps/learn.
-  const onLearnClick = (e: React.MouseEvent<HTMLAnchorElement>) => {
-    e.preventDefault();
-    if (config) void openLearn(config);
-  };
-
   // --- bookmark row handlers -------------------------------------------------
 
   const onBookmarkNameClick = (e: React.MouseEvent<HTMLAnchorElement>, b: Bookmark) => {
@@ -606,7 +476,7 @@ export default function Sidebar({ config }: SidebarProps) {
     await deleteBookmark(id);
     if (armed && armed.id === id) {
       disarmBookmark();
-      // No breadcrumb import (one-way dep rule); let main.jsx re-sync.
+      // No breadcrumb import (one-way dep rule); let main.tsx re-sync.
       window.dispatchEvent(new Event("fused:urlchange"));
     }
     notifyBookmarksChanged();
@@ -726,7 +596,7 @@ export default function Sidebar({ config }: SidebarProps) {
       return;
     }
     if (isCollapsed(folder)) void applyToggle(folder); // expand only — never re-collapse
-    // No notifyBookmarksChanged() here: navigateUrl re-renders the sidebar
+    // No notifyBookmarksChanged() here: navigateUrl re-renders the section
     // via useUrlVersion (mirrors the vanilla route()-driven re-render).
     navigateUrl(composeFolderTabsUrl(tabChildren));
   };
@@ -992,278 +862,62 @@ export default function Sidebar({ config }: SidebarProps) {
       );
     });
 
-  if (sidebarCollapsed) {
-    // Collapsed: the whole sidebar shrinks to a slim strip that expands it
-    // back. Still the same #sidebar node, so the <=700px media hide applies.
-    return (
-      <nav id="sidebar" className={"sidebar-collapsed" + (resizing ? " sidebar-no-transition" : "")}>
-        <button
-          type="button"
-          className="sidebar-expand-strip"
-          aria-label="Expand sidebar"
-          title="Expand sidebar"
-          onClick={toggleSidebarCollapsed}
-        >
-          {/* Bubble protruding into the content area — the visible half of
-              the affordance; the whole strip is still the click target. */}
-          <span className="sidebar-expand-bubble" aria-hidden="true">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <path d="m9 18 6-6-6-6" />
-            </svg>
-          </span>
-        </button>
-      </nav>
-    );
-  }
-
   return (
-    // The collapse/expand width change glides (shell.css); a pointer DRAG must
-    // not, or every pointermove would chase a 200ms transition and the handle
-    // would lag the cursor. `sidebar-no-transition` is that suppression — the
-    // mechanism the comment on `resizing` above has always described.
-    <nav
-      id="sidebar"
-      className={resizing ? "sidebar-no-transition" : undefined}
-      style={{ flexBasis: sidebarWidth, width: sidebarWidth }}
-    >
-      <div className="sidebar-brand">
-        {/* Logo + name are one click target that goes Home — the front door is
-            always one click away from anywhere. The collapse button stays its
-            own control outside the link. */}
-        <a
-          href="/"
-          className="brand-home-link"
-          title="Home"
-          onClick={(e) => {
-            e.preventDefault();
-            navigateUrl("/");
-          }}
-        >
-          {/* Fused cube mark (brand asset logo-black-bg-transparent.svg), stroke
-              follows .logo's color so it stays on the accent token. */}
-          <span className="logo">
-            <svg width="20" height="20" viewBox="0 0 233 233" fill="none" aria-hidden="true">
-              <path
-                d="M43.916 84.6995L80.0899 105.742M43.916 84.6995L80.0899 64.13M43.916 84.6995V126.548M80.0899 105.742L114.383 125.69C115.548 126.368 116.264 127.613 116.264 128.96V162.056C116.264 164.973 113.101 166.793 110.579 165.326L43.916 126.548M80.0899 105.742V182.862C80.0899 185.779 76.9269 187.598 74.405 186.131L45.7968 169.49C44.6324 168.813 43.916 167.567 43.916 166.22V126.548M80.0899 105.742L152.674 64.13M80.0899 64.13L114.4 44.6204C115.556 43.9629 116.973 43.961 118.131 44.6152L152.674 64.13M80.0899 64.13L150.785 104.659C151.955 105.329 153.392 105.327 154.559 104.652L183.353 88.0121C185.887 86.5475 185.869 82.883 183.321 81.4432L152.674 64.13"
-                stroke="currentColor"
-                strokeWidth="12"
-              />
-            </svg>
-          </span>{" "}
-          <span className="brand-title">fused-render</span>
-        </a>
-        <span className="brand-version">v{config.version}</span>
-        <button
-          type="button"
-          className="icon-btn sidebar-collapse-btn"
-          aria-label="Collapse sidebar"
-          title="Collapse sidebar"
-          onClick={toggleSidebarCollapsed}
-        >
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-            <path d="m15 18-6-6 6-6" />
-          </svg>
-        </button>
-      </div>
-      <div className="sidebar-section">
-        <a
-          href="/"
-          id="home-link"
-          className={"sidebar-item" + (location.pathname === "/" ? " active" : "")}
-          onClick={(e) => {
-            e.preventDefault();
-            navigateUrl("/");
-          }}
-        >
-          <span className="icon">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-              <path d="M3 10.5 12 3l9 7.5" />
-              <path d="M5 9.5V21h14V9.5" />
-            </svg>
-          </span>{" "}
-          Home
-        </a>
-        <a href="#" id="fused-link" className="sidebar-item" onClick={onFusedClick}>
-          <span className="icon"><FolderIcon /></span> Fused
-        </a>
-        {learnMountReady && (
-          <a href="#" id="learn-link" className="sidebar-item" onClick={onLearnClick}>
-            <span className="icon"><LearnIcon /></span> Learn
-          </a>
-        )}
-      </div>
-      <div className="sidebar-section sidebar-bookmarks">
-        <div className="sidebar-heading">Bookmarks</div>
-        {items.length === 0 ? (
-          <div className="sidebar-empty">No bookmarks yet</div>
-        ) : (
-          <>
-            <div className="bookmark-search">
-              <input
-                type="search"
-                className="bookmark-search-input"
-                placeholder="Search bookmarks…"
-                value={bmQuery}
-                onChange={(e) => setBmQuery(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Escape") {
-                    e.preventDefault();
-                    setBmQuery("");
-                    e.currentTarget.blur();
-                  }
-                }}
-              />
-            </div>
-            {bmSearching ? (
-              matched.length ? (
-                matched.map(({ b, namePositions }) => (
-                  <BookmarkRow
-                    key={b.id}
-                    b={b}
-                    namePositions={namePositions}
-                    active={rowActive(b)}
-                    dirty={rowDirty(b)}
-                    missing={isBookmarkMissing(b.id)}
-                    isRenaming={renamingId === b.id}
-                    justSaved={savedId === b.id}
-                    registerRef={() => {}}
-                    onNameClick={(e) => onBookmarkNameClick(e, b)}
-                    onSave={(e) => onSaveBookmark(e, b)}
-                    onRename={(e) => onRenameBookmark(e, b.id)}
-                    onDelete={(e) => onDeleteBookmark(e, b.id)}
-                    onCommitRename={(value) => commitRename(b.id, value, b.name)}
-                    onCancelRename={cancelRename}
-                    onMouseEnter={(e) => onRowMouseEnter(e, b)}
-                    onMouseLeave={hideTooltip}
-                    onGlyphClick={(e) => onBookmarkGlyphClick(e, b.id)}
-                    dragProps={noDrag}
-                  />
-                ))
-              ) : (
-                <div className="sidebar-empty">No matches</div>
-              )
-            ) : (
-              renderItems(items, null)
-            )}
-          </>
-        )}
-      </div>
-      {/* Recents (SPEC §29) — below the bookmark tree, above the pinned
-          footer. Rows reuse the bookmark row classes so the section reads as
-          a native sibling: same height, padding, glyph slot, ellipsis and
-          hover treatment. Heading click toggles the fold; the count pill
-          carries the collapsed signal (no chevron — D44). */}
-      {recents.length > 0 && (
-        <div className="sidebar-section sidebar-recents">
-          <div
-            className="sidebar-heading recents-heading"
-            title={recentsCollapsed ? "Show recents" : "Hide recents"}
-            onClick={onRecentsHeadingClick}
-          >
-            Recents
-            {recentsCollapsed && <span className="recents-count">{recents.length}</span>}
+    <div className="sidebar-section sidebar-bookmarks">
+      <div className="sidebar-heading">Bookmarks</div>
+      {items.length === 0 ? (
+        <div className="sidebar-empty">No bookmarks yet</div>
+      ) : (
+        <>
+          <div className="bookmark-search">
+            <input
+              type="search"
+              className="bookmark-search-input"
+              placeholder="Search bookmarks…"
+              value={bmQuery}
+              onChange={(e) => setBmQuery(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Escape") {
+                  e.preventDefault();
+                  setBmQuery("");
+                  e.currentTarget.blur();
+                }
+              }}
+            />
           </div>
-          {!recentsCollapsed &&
-            recents.map((r) => {
-              const fsPath = bookmarkFsPath(r.url);
-              return (
-                <a
-                  // Keyed by fs path, not url: the url mutates on every live
-                  // param write, and a key change would remount (flash) the row.
-                  key={fsPath}
-                  // No active/selected state on recents rows (owner call —
-                  // unlike bookmark rows): the section is a jump list, not a
-                  // location indicator.
-                  className="bookmark-row recent-row"
-                  href={r.url}
-                  title={fsPath}
-                  onClick={(e) => onRecentClick(e, r.url)}
-                >
-                  <span className="bookmark-glyph recent-glyph" aria-hidden="true">
-                    {/* Clock in the star-glyph slot, inline so it follows
-                        currentColor like the folder icon. */}
-                    <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round">
-                      <circle cx="8" cy="8" r="6.2" />
-                      <path d="M8 4.8V8l2.3 1.6" />
-                    </svg>
-                  </span>
-                  <span className="bookmark-name">{r.title || basename(fsPath)}</span>
-                </a>
-              );
-            })}
-        </div>
+          {bmSearching ? (
+            matched.length ? (
+              matched.map(({ b, namePositions }) => (
+                <BookmarkRow
+                  key={b.id}
+                  b={b}
+                  namePositions={namePositions}
+                  active={rowActive(b)}
+                  dirty={rowDirty(b)}
+                  missing={isBookmarkMissing(b.id)}
+                  isRenaming={renamingId === b.id}
+                  justSaved={savedId === b.id}
+                  registerRef={() => {}}
+                  onNameClick={(e) => onBookmarkNameClick(e, b)}
+                  onSave={(e) => onSaveBookmark(e, b)}
+                  onRename={(e) => onRenameBookmark(e, b.id)}
+                  onDelete={(e) => onDeleteBookmark(e, b.id)}
+                  onCommitRename={(value) => commitRename(b.id, value, b.name)}
+                  onCancelRename={cancelRename}
+                  onMouseEnter={(e) => onRowMouseEnter(e, b)}
+                  onMouseLeave={hideTooltip}
+                  onGlyphClick={(e) => onBookmarkGlyphClick(e, b.id)}
+                  dragProps={noDrag}
+                />
+              ))
+            ) : (
+              <div className="sidebar-empty">No matches</div>
+            )
+          ) : (
+            renderItems(items, null)
+          )}
+        </>
       )}
-      {/* Preferences entry (SPEC §20) — pinned to the sidebar's bottom edge
-          (margin-top: auto), deliberately unobtrusive: a muted gear row that
-          navigates to the /view/_prefs sentinel. Three equal columns —
-          Templates, Mounts, Preferences. (Home lives at the sidebar's top,
-          not here — the footer was cramped at four.) */}
-      <div className="sidebar-footer">
-        <button
-          type="button"
-          title="Templates"
-          aria-label="Templates"
-          className={
-            "sidebar-item prefs-link" + (location.pathname === "/view/_templates" ? " active" : "")
-          }
-          onClick={() => navigateUrl("/view/_templates")}
-        >
-          <span className="icon">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-              <rect x="3" y="3" width="7" height="7" rx="1" />
-              <rect x="14" y="3" width="7" height="7" rx="1" />
-              <rect x="3" y="14" width="7" height="7" rx="1" />
-              <rect x="14" y="14" width="7" height="7" rx="1" />
-            </svg>
-          </span>
-          <span className="prefs-label">Templates</span>
-        </button>
-        {/* Open a deployed app (023 §8.3): paste a deployed page's URL and clone it into
-            the Fused folder. A modal rather than a view — it is a one-shot action with a
-            confirm step, not a place you navigate to and come back to. */}
-        {/* PROTOTYPE: mounts entry — remote mounts, /view/_mounts. */}
-        <button
-          type="button"
-          title="Mounts"
-          aria-label="Mounts"
-          className={
-            "sidebar-item prefs-link" + (location.pathname === "/view/_mounts" ? " active" : "")
-          }
-          onClick={() => navigateUrl("/view/_mounts")}
-        >
-          <span className="icon">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-              <path d="M17.5 19a4.5 4.5 0 1 0-.9-8.9 6 6 0 1 0-11.4 2.4A3.5 3.5 0 0 0 6.5 19h11z" />
-            </svg>
-          </span>
-          <span className="prefs-label">Mounts</span>
-        </button>
-        <button
-          type="button"
-          title="Preferences"
-          aria-label="Preferences"
-          className={
-            "sidebar-item prefs-link" + (location.pathname === "/view/_prefs" ? " active" : "")
-          }
-          onClick={() => navigateUrl("/view/_prefs")}
-        >
-          <span className="icon">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-              <circle cx="12" cy="12" r="3" />
-              <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h.01a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51h.01a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v.01a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
-            </svg>
-            {/* Fused-account signed-in signal (SPEC AC-1), folded onto the
-                Preferences entry now that account management lives there as
-                a tab rather than its own sidebar entry. Gated on Deploy
-                being enabled — that's the only reason a Fused account
-                matters here, and the dot rides the button's existing click
-                target rather than being its own (too small to hit on its
-                own). */}
-            {deployEnabled && accountLoggedIn && <span className="account-signedin-dot" />}
-          </span>
-          <span className="prefs-label">Preferences</span>
-        </button>
-      </div>
       <div id="bookmark-tooltip" ref={tooltipRef} style={hover ? { display: "block" } : undefined}>
         {hover && <TooltipContent bookmark={hover.bookmark} missing={isBookmarkMissing(hover.bookmark.id)} />}
       </div>
@@ -1275,18 +929,6 @@ export default function Sidebar({ config }: SidebarProps) {
           onClose={() => setIconPicker(null)}
         />
       )}
-      {/* Resize handle riding the right border: drag to resize (pointer
-          capture keeps the gesture even when the cursor leaves the strip),
-          double-press to collapse (detected in pointerdown — see
-          lastHandlePressRef). */}
-      <div
-        className={"sidebar-resize-handle" + (resizing ? " resizing" : "")}
-        style={{ left: sidebarWidth - 3 }}
-        onPointerDown={onHandlePointerDown}
-        onPointerMove={onHandlePointerMove}
-        onPointerUp={onHandlePointerUp}
-        onPointerCancel={onHandlePointerUp}
-      />
-    </nav>
+    </div>
   );
 }

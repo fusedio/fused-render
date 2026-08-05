@@ -26,7 +26,14 @@ import type { AppInfo } from "./api";
   pushState() {},
   replaceState() {},
 };
-(globalThis as { window?: unknown }).window ??= { dispatchEvent() {} };
+// The stub leaks to every other suite in the run (bun shares globals), so it
+// must carry what those suites' modules read off `window` — toast.ts calls
+// window.setTimeout, and a bare {dispatchEvent} broke its whole file.
+(globalThis as { window?: unknown }).window ??= {
+  dispatchEvent() {},
+  setTimeout: globalThis.setTimeout.bind(globalThis),
+  clearTimeout: globalThis.clearTimeout.bind(globalThis),
+};
 
 const { entryOf, hrefFor, isBrowserHandledClick, onAppCardClick, openTargetFor } =
   await import("./appEntry");
@@ -98,10 +105,11 @@ test("an app with no entry at all opens its folder", () => {
 
 test("href points at the same target a left click opens", () => {
   // The whole point of building both from openTargetFor: a new tab and an
-  // in-app click cannot land in different places.
-  expect(hrefFor(app())).toBe("/view/w/local/demo?_mode=claude_split");
+  // in-app click cannot land in different places. A project open lands in the
+  // BUILDER namespace (/apps/<tag>/<name>); fallbacks stay explorer URLs.
+  expect(hrefFor(app())).toBe("/apps/local/demo?_mode=claude_split");
   expect(hrefFor(app({ entry: "/w/local/demo/t.csv", entry_html: null }))).toBe(
-    "/view/w/local/demo/t.csv",
+    "/explorer/view/w/local/demo/t.csv",
   );
 });
 
@@ -109,10 +117,14 @@ test("href encodes a path the URL codec would otherwise break on", () => {
   // A space, a `#` and a non-ASCII name all have to survive into the href —
   // an unencoded `#` would truncate the URL at the fragment.
   expect(hrefFor(app({ path: "/w/local/my app #2", entry_html: null, entry: null }))).toBe(
-    "/view/w/local/my%20app%20%232",
+    "/explorer/view/w/local/my%20app%20%232",
   );
   expect(hrefFor(app({ path: "/w/local/日本", entry_html: null, entry: null }))).toBe(
-    "/view/w/local/%E6%97%A5%E6%9C%AC",
+    "/explorer/view/w/local/%E6%97%A5%E6%9C%AC",
+  );
+  // Builder-route segments encode too — tag/name are path segments.
+  expect(hrefFor(app({ tag: "my tag", name: "app#2" }))).toBe(
+    "/apps/my%20tag/app%232?_mode=claude_split",
   );
 });
 

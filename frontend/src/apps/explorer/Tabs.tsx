@@ -13,7 +13,7 @@
 // appends (new tab) or removes (close); src is frozen at mount and never
 // written again by React.
 import { useEffect, useRef, useState } from "react";
-import { navigateUrl, rootedFsPath, urlForFsPath, IS_EMBED, VIEW_PREFIX } from "@platform/lib/router";
+import { navigateUrl, rootedFsPath, urlForFsPath, IS_EMBED, VIEW_PREFIX, EMBED_PREFIX } from "@platform/lib/router";
 import { basename } from "@platform/lib/format";
 import {
   leaf,
@@ -35,7 +35,7 @@ import { ShareIcon } from "@platform/ui/ShareIcon";
 import PaneModeMenu from "@apps/explorer/PaneModeMenu";
 
 // Tab mode lives under the page's own prefix, like panel mode.
-const TAB_PATH = (IS_EMBED ? "/embed/" : "/view/") + "_tab";
+const TAB_PATH = (IS_EMBED ? EMBED_PREFIX : VIEW_PREFIX) + "_tab";
 
 // Compose a `/view/_tab` URL from a folder's child bookmarks (TM-8, sidebar
 // entry). Tab params are independent (TM-3/D47): each child's WHOLE saved

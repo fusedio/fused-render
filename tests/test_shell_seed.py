@@ -77,7 +77,7 @@ def _encoded(abs_path: str) -> str:
     # which owns the encoding rules and has its own tests (test_view_url_codec.py).
     from fused_render._view_url_codec import view_url_path
 
-    return view_url_path(abs_path)[len("/view"):]
+    return view_url_path(abs_path)[len("/explorer/view"):]
 
 
 def test_partial_seed_leftover_is_cleaned_and_reseeded(tmp_path, monkeypatch):
@@ -112,13 +112,13 @@ def test_idempotent_second_run_is_noop(tmp_path, monkeypatch):
 
 
 def test_first_launch_landing_is_showcase(tmp_path, monkeypatch):
-    # The one run that seeds the examples also reports the showcase /view/ URL
+    # The one run that seeds the examples also reports the showcase /explorer/view/ URL
     # so the entry points open the browser there on a brand-new install.
     fdir = _setup(tmp_path, monkeypatch)
     returned, landing = ensure_fused_dir_and_landing()
 
     assert returned == str(fdir)
-    assert landing == "/view" + _encoded(str(fdir / "examples" / "showcase" / "index.html"))
+    assert landing == "/explorer/view" + _encoded(str(fdir / "examples" / "showcase" / "index.html"))
 
 
 def test_no_landing_on_subsequent_runs(tmp_path, monkeypatch):

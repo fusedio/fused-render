@@ -637,9 +637,9 @@
     // session keeps routing under /embed/, never teleported to /view/.
     try {
       const p = window.top.location.pathname;
-      if (p.startsWith("/embed/") || p === "/embed") return "/embed/";
+      if (p.startsWith("/explorer/embed/") || p === "/explorer/embed") return "/explorer/embed/";
     } catch (e) { /* cross-origin — assume the normal shell */ }
-    return "/view/";
+    return "/explorer/view/";
   }
   function navigateShell(fsPath, search) {
     const url = urlForFsPath(fsPath, search);
