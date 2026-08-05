@@ -13,7 +13,7 @@ import { navigateUrl, EMBED_PREFIX, VIEW_PREFIX } from "@platform/lib/router";
 import { listDir, statPath } from "@platform/lib/api";
 import type { FsEntry } from "@platform/lib/api";
 import { basename } from "@platform/lib/format";
-import { iconForEntry, isAppEntry } from "@platform/ui/FileIcons";
+import { iconForEntry } from "@platform/ui/FileIcons";
 import { armBookmark, isBookmarkMissing, splitBookmarkUrl } from "@platform/lib/bookmarks";
 import type { Bookmark } from "@platform/lib/bookmarks";
 import { bookmarkFsPath } from "@apps/explorer/sidebar/BookmarksSection";
@@ -88,30 +88,45 @@ function teaserEntries(entries: FsEntry[]): FsEntry[] {
     );
 }
 
-// How many subfolders a file-less folder probes for an app to peek at.
+// How many subfolders a file-less folder probes for something to peek at.
 const APP_PROBE_LIMIT = 3;
 
-// A subfolder's app entry, if the subfolder reads as a fused-app: exactly one
-// html file inside (or an index.html among several). Null otherwise.
-function appEntryIn(entries: FsEntry[]): FsEntry | null {
-  const htmls = entries.filter((e) => isAppEntry(e.name, e.is_dir));
-  if (htmls.length === 1) return htmls[0];
-  return htmls.find((e) => e.name.toLowerCase() === "index.html") ?? null;
+// Peek priority: an html (the folder is a fused-app — show the app itself)
+// beats an md (the folder's story) beats a json beats anything else.
+const PEEK_EXT_ORDER = ["html", "htm", "md", "markdown", "json"];
+
+function peekRank(name: string): number {
+  const dot = name.lastIndexOf(".");
+  const ext = dot === -1 ? "" : name.slice(dot + 1).toLowerCase();
+  const idx = PEEK_EXT_ORDER.indexOf(ext);
+  return idx === -1 ? PEEK_EXT_ORDER.length : idx;
+}
+
+// The file worth peeking at among a folder's teaser entries: best extension
+// rank wins; entries arrive alphabetically sorted, so ties keep the first.
+function bestPeekFile(entries: FsEntry[]): FsEntry | null {
+  let best: FsEntry | null = null;
+  for (const e of entries) {
+    if (e.is_dir) continue;
+    if (!best || peekRank(e.name) < peekRank(best.name)) best = e;
+  }
+  return best;
 }
 
 // The stack body of a folder card: back-to-front fanned chips over an
 // optional live preview peeking out underneath the front chip. The peek is
-// the folder's first file child; a folder holding only subfolders (a deploy
-// dir of apps) probes its first few subfolders for a fused-app and peeks
-// that app's html instead.
+// the folder's best direct file child (PEEK_EXT_ORDER); a folder holding
+// only subfolders (a deploy dir of apps) probes its first few subfolders
+// and peeks the best-ranked file found there — an html anywhere (a fused
+// app) wins the probe outright.
 function FolderStack({ path }: { path: string }) {
   const [entries, setEntries] = useState<FsEntry[] | null>(null);
-  // Absolute fs path of a probed subfolder's app html — the fallback peek.
-  const [appPeek, setAppPeek] = useState<string | null>(null);
+  // Absolute fs path of a probed subfolder's best file — the fallback peek.
+  const [subPeek, setSubPeek] = useState<string | null>(null);
   useEffect(() => {
     let alive = true;
     setEntries(null);
-    setAppPeek(null);
+    setSubPeek(null);
     (async () => {
       let list: FsEntry[] = [];
       try {
@@ -123,6 +138,7 @@ function FolderStack({ path }: { path: string }) {
       setEntries(list);
       const teaser = teaserEntries(list);
       if (teaser.some((e) => !e.is_dir)) return; // a direct file child wins
+      let best: { path: string; rank: number } | null = null;
       for (const d of teaser.filter((e) => e.is_dir).slice(0, APP_PROBE_LIMIT)) {
         const subPath = joinPath(path, d.name);
         let sub: FsEntry[];
@@ -132,12 +148,13 @@ function FolderStack({ path }: { path: string }) {
           continue;
         }
         if (!alive) return;
-        const entry = appEntryIn(sub);
-        if (entry) {
-          setAppPeek(joinPath(subPath, entry.name));
-          return;
-        }
+        const f = bestPeekFile(teaserEntries(sub));
+        if (!f) continue;
+        const rank = peekRank(f.name);
+        if (!best || rank < best.rank) best = { path: joinPath(subPath, f.name), rank };
+        if (rank === 0) break; // an html — nothing can outrank it
       }
+      if (best) setSubPeek(best.path);
     })();
     return () => {
       alive = false;
@@ -146,8 +163,8 @@ function FolderStack({ path }: { path: string }) {
 
   const teaser = teaserEntries(entries ?? []);
   const shown = teaser.slice(0, MAX_CHIPS);
-  const firstFile = teaser.find((e) => !e.is_dir);
-  const peekPath = firstFile ? joinPath(path, firstFile.name) : appPeek;
+  const firstFile = bestPeekFile(teaser);
+  const peekPath = firstFile ? joinPath(path, firstFile.name) : subPeek;
   return (
     <span className="fhb-stack">
       {/* Back chip first: natural stacking keeps the front chip on top. */}
