@@ -97,10 +97,23 @@ def warm_fused_backend_venv(tmp_path_factory):
     import asyncio
     import time
 
-    from fused_render import engine
+    from fused_render import engine, envinstall
 
     if not engine.available():
         return  # the tests that ask for this are skipped anyway
+
+    # Build from THIS interpreter, whatever version it is (D214). Session-scoped, so
+    # the function-scoped pin below has not run yet and the real resolution would
+    # apply: on any runner that is not on the pinned 3.12 and has no uv-managed 3.12
+    # — the `fused-engine` CI job is exactly that, deliberately pinned to 3.11 as the
+    # extra's floor — `start()` correctly asks for the INTERPRETER first, under
+    # `PYTHON_BOOTSTRAP_KEY`, and this fixture polls the venv key and sees nothing
+    # ("the warm script venv was not built. last progress: None").
+    #
+    # Pinned rather than taught the two-round flow on purpose: what these tests need
+    # is *a* working venv, not a particular Python, and making CI download 30MB of
+    # CPython to satisfy a fixture buys nothing. The bootstrap flow has its own tests.
+    envinstall._script_python = (None, True)
 
     lock = tmp_path_factory.getbasetemp().parent / "fused-bare-venv.lock"
     stale_after = 600  # a cold `uv venv` + install can legitimately take minutes
