@@ -1126,6 +1126,7 @@ pdfjs.GlobalWorkerOptions.workerSrc = "/template-assets/pdfjs.worker.bundle.mjs"
   }
   async function showHome() {
     await saveNow();  // flush any pending autosave before leaving the workspace for the library
+    if (S.dirty && S.writable) { toast("Couldn't save your changes — staying on this document."); return; }
     const bootEl = $("boot"); if (bootEl) bootEl.remove();
     document.body.classList.add("has-home");
     $("topbar").classList.add("hidden"); $("main").classList.add("hidden");
@@ -1169,6 +1170,7 @@ pdfjs.GlobalWorkerOptions.workerSrc = "/template-assets/pdfjs.worker.bundle.mjs"
   // user can get back to the library; opts.title labels the doc.
   async function startWorkspace(fileAbs, opts = {}) {
     await saveNow();  // flush the outgoing buffer's pending autosave before we reset S.dirty/fileAbs (no-op on first entry)
+    if (S.dirty && S.writable) { toast("Couldn't save your changes — not switching documents."); return; }
     S.mainAbs = fileAbs;
     S.root = fileAbs.slice(0, Math.max(fileAbs.lastIndexOf("/"), fileAbs.lastIndexOf("\\")));
     if (S.pdf) { try { S.pdf.destroy(); } catch (e) {} S.pdf = null; }

@@ -255,7 +255,9 @@
   .skel-line.skel-title{height:26px;width:58%;margin-bottom:4px}
 
   /* modal + toast */
-  #overlay{position:fixed;inset:0;background:rgba(32,33,36,.4);display:none;z-index:100;
+  /* above #selbox (9999) and its .handle grips (10000) so a dialog opened with a
+     slide element selected isn't pierced by the resize handles */
+  #overlay{position:fixed;inset:0;background:rgba(32,33,36,.4);display:none;z-index:10050;
     align-items:center;justify-content:center}
   .modal{background:#fff;border-radius:12px;box-shadow:var(--shadow-2);padding:22px;
     width:min(460px,92vw)}
@@ -711,7 +713,9 @@
       if(res.conflict){ S.mtime=res.mtime; toast("Reloaded — file changed elsewhere");
         await reloadModel(); return; }
       S.mtime=res.mtime; S.dirty=false;
-      $("saved").textContent="All changes saved";
+      // Keep the draft hint up for an unsaved library draft — autosaving the
+      // model to cache is not the same as saving the deck to a real file.
+      $("saved").textContent=untitled?"Draft — Save to name & choose a location":"All changes saved";
     }catch(e){ $("saved").textContent="Save failed"; toast("Save failed: "+e.message); }
   }
   async function reloadModel(){
@@ -1216,7 +1220,13 @@
       </div>`;
       ov.style.display="flex";
       const nm=$("fbName"); nm.value=prevName!==undefined?prevName:startName;
-      const upd=()=>{ $("fbTarget").textContent=d.path.replace(/\/$/,"")+"/"+((nm.value.trim()||"deck").replace(/\.pptx$/i,""))+".pptx"; };
+      const upd=()=>{
+        // Honor a full/absolute path typed into the name box (Windows drive, POSIX
+        // root, or ~) — otherwise join the browsed folder to a bare name.
+        const raw=(nm.value.trim()||"deck").replace(/^["']|["']$/g,"");
+        const abs=/^([A-Za-z]:[\\/]|\/|~[\\/]?)/.test(raw);
+        const base=abs?raw.replace(/\\/g,"/"):d.path.replace(/\/$/,"")+"/"+raw;
+        $("fbTarget").textContent=base.replace(/\.pptx$/i,"")+".pptx"; };
       nm.oninput=upd; upd();
       ov.querySelectorAll("[data-dir]").forEach(r=>r.onclick=()=>render(r.dataset.dir));
       ov.querySelectorAll(".fb-file").forEach(r=>r.onclick=()=>{ nm.value=r.dataset.name; upd(); });
@@ -1228,6 +1238,9 @@
           // reopen from the new path so saves/export target it from now on.
           if(saveTimer){ clearTimeout(saveTimer); saveTimer=null; }
           try{
+            // Flush in-memory edits to the cache model first — save_new builds
+            // the .pptx from the cached model, so a queued edit would be lost.
+            if(S.dirty) await doSave();
             const r=await py({action:"save_new",doc:S.doc,name:v,directory:curDir,file:FILE});
             FILE=r.path; DEFAULT_TITLE=titleOf(r.path); untitled=false;
             fused.params.set("lib",r.path);
@@ -1309,6 +1322,7 @@
         else if(["ArrowLeft","ArrowUp","PageUp"].includes(e.key)){e.preventDefault();presentStep(-1);}
         return;
       }
+      if($("overlay").style.display==="flex")return;   // a dialog owns the keyboard (its input handles Ctrl+S, arrows, etc.)
       const editingText=document.activeElement&&(document.activeElement.isContentEditable||
         ["INPUT","TEXTAREA"].includes(document.activeElement.tagName));
       if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==="s"){e.preventDefault();saveDeck();return;}
@@ -1325,7 +1339,11 @@
     // nudge all selected elements with arrows
     document.addEventListener("keydown",e=>{
       if(!S.selIds.length||S.mode!=="edit")return;
-      const editingText=document.activeElement&&document.activeElement.isContentEditable;
+      if($("overlay").style.display==="flex")return;   // a dialog (Save as/Save deck) owns the keyboard
+      // Don't nudge while typing in a field — arrows must move the text caret,
+      // e.g. the Save dialog's file-name input or the toolbar font-size box.
+      const editingText=document.activeElement&&(document.activeElement.isContentEditable||
+        ["INPUT","TEXTAREA"].includes(document.activeElement.tagName));
       if(editingText)return;
       const step=e.shiftKey?10:1; let dx=0,dy=0;
       if(e.key==="ArrowLeft")dx=-step; else if(e.key==="ArrowRight")dx=step;

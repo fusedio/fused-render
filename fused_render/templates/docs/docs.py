@@ -198,6 +198,24 @@ def _cache_dir(file: str) -> str:
     return d
 
 
+def _resolve_dest(path: str, directory: str) -> str:
+    """Resolve the .docx destination for a Save dialog. `path` is either a bare
+    file name (joined onto `directory`) or a full/absolute path (used verbatim,
+    with any surrounding quotes stripped). Always lands on a .docx under an
+    existing directory."""
+    raw = (path or "").strip().strip('"').strip("'")
+    expanded = os.path.expanduser(raw)
+    if raw and (os.path.isabs(expanded) or re.match(r"^[A-Za-z]:[\\/]", raw)):
+        dest = os.path.abspath(expanded)
+    else:
+        joined = os.path.join(directory, raw) if directory else raw
+        dest = os.path.abspath(os.path.expanduser(joined))
+    if not dest.lower().endswith(".docx"):
+        dest += ".docx"
+    os.makedirs(os.path.dirname(dest) or ".", exist_ok=True)
+    return dest
+
+
 # -------------------------------------------------------------------- dispatcher
 # --- mount-safe directory listing ------------------------------------------
 # A kernel listing (os.listdir/os.scandir/os.walk) on a path under a remote
@@ -458,16 +476,14 @@ def main(action: str = "export", file: str = "", html: str = "", title: str = ""
     if action == "save_new":
         if not html:
             raise ValueError("nothing to save")
-        raw = os.path.join(directory, path) if directory else path
-        dest = os.path.abspath(os.path.expanduser(raw))
-        if not dest.lower().endswith(".docx"):
-            dest += ".docx"
-        os.makedirs(os.path.dirname(dest), exist_ok=True)
+        dest = _resolve_dest(path, directory)
         _pandoc(["-f", HTML_FROM, "-t", "docx", "--wrap=none",
                  "--standalone", "-o", dest], input_text=html)
+        # Drop the library scratch draft + its sidecar (in the shared sidecar
+        # store, home_dir()/sidecar — not adjacent to the .docx).
         if file and os.path.dirname(os.path.abspath(file)) == os.path.abspath(DOCS_DIR):
-            scratch = os.path.abspath(file)
-            for p in (scratch, scratch + ".json"):  # draft + its version sidecar
+            from appenv import sidecar_path
+            for p in (os.path.abspath(file), sidecar_path(file)):
                 with contextlib.suppress(OSError):
                     os.remove(p)
         return {"path": dest.replace(os.sep, "/"), "name": os.path.basename(dest),
@@ -477,13 +493,7 @@ def main(action: str = "export", file: str = "", html: str = "", title: str = ""
     if action == "save_as":
         if not html:
             raise ValueError("nothing to save")
-        # os.path.join resolves it: a full path in `path` wins, a bare name joins
-        # onto `directory` — handles absolute/relative and either separator.
-        raw = os.path.join(directory, path) if directory else path
-        dest = os.path.abspath(os.path.expanduser(raw))
-        if not dest.lower().endswith(".docx"):
-            dest += ".docx"
-        os.makedirs(os.path.dirname(dest), exist_ok=True)
+        dest = _resolve_dest(path, directory)
         _pandoc(["-f", HTML_FROM, "-t", "docx", "--wrap=none",
                  "--standalone", "-o", dest], input_text=html)
         return {"path": dest.replace(os.sep, "/"), "name": os.path.basename(dest)}

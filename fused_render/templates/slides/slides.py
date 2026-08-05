@@ -268,6 +268,26 @@ def _list_remote(origin, path, cap=5000):
     return entries, truncated
 
 
+def _resolve_save_dest(name, directory=None, default_dir=None):
+    """Resolve the .pptx destination for a Save dialog. `name` is either a bare
+    file name (joined onto `directory`) or a full/absolute path (used verbatim,
+    with any surrounding quotes stripped). Always lands on a .pptx under an
+    existing directory."""
+    raw = _to_native_path((name or "").strip().strip('"').strip("'"))
+    expanded = os.path.expanduser(raw)
+    if raw and (os.path.isabs(expanded) or re.match(r"^[A-Za-z]:[\\/]", raw)):
+        dst = os.path.abspath(expanded)
+    else:
+        base = re.sub(r"[^A-Za-z0-9._ -]", "_", raw).strip() or "Untitled"
+        d = (os.path.abspath(os.path.expanduser(_to_native_path(directory))) if directory
+             else (default_dir or os.path.expanduser("~")))
+        dst = os.path.join(d, base)
+    if not dst.lower().endswith(".pptx"):
+        dst += ".pptx"
+    os.makedirs(os.path.dirname(dst) or ".", exist_ok=True)
+    return dst
+
+
 def main(action: str = "open",
          file: str = "", doc: str = "",
          slide: str = "", el: str = "",
@@ -712,13 +732,7 @@ def main(action: str = "open",
     # location, carry the deck's title over, and drop the library scratch draft.
     if action == "save_new":
         model = _load_model(doc)
-        base = re.sub(r"[^a-zA-Z0-9._ -]", "_", (name or "Untitled")).strip() or "Untitled"
-        if not base.lower().endswith(".pptx"):
-            base += ".pptx"
-        dstdir = (os.path.abspath(os.path.expanduser(_to_native_path(directory))) if directory
-                  else os.path.expanduser("~"))
-        os.makedirs(dstdir, exist_ok=True)
-        dst = os.path.join(dstdir, base)
+        dst = _resolve_save_dest(name or "Untitled", directory)
         engine.build_pptx(model, dst, _media_dir(doc))
         src_file = _to_native_path(file) if file else ""
         if src_file:
@@ -735,15 +749,10 @@ def main(action: str = "open",
     if action == "save_as":
         model = _load_model(doc)
         default = _get_title(file) or (os.path.splitext(os.path.basename(file))[0] if file else "deck")
-        base = re.sub(r"[^a-zA-Z0-9._ -]", "_", (name or f"{default} copy")).strip()
-        if not base.lower().endswith(".pptx"):
-            base += ".pptx"
-        dstdir = (os.path.abspath(os.path.expanduser(_to_native_path(directory))) if directory
-                  else (os.path.dirname(_to_native_path(file)) or os.path.expanduser("~")))
-        os.makedirs(dstdir, exist_ok=True)
-        dst = os.path.join(dstdir, base)
+        dst = _resolve_save_dest(name or f"{default} copy", directory,
+                                 default_dir=os.path.dirname(_to_native_path(file)) or None)
         engine.build_pptx(model, dst, _media_dir(doc))
-        return {"path": dst, "name": base}
+        return {"path": dst.replace(os.sep, "/"), "name": os.path.basename(dst)}
 
     # ---------------------------------------------------------------- sidecar
     if action == "set_title":

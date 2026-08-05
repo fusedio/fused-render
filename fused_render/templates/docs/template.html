@@ -36,7 +36,11 @@
   .brand .mark { width: 22px; height: 22px; border-radius: 5px; background: var(--blue);
     color: #fff; display: grid; place-items: center; font-size: 12px; font-weight: 800; }
   #docTitle { font-weight: 600; font-size: 13.5px; max-width: 42vw; overflow: hidden;
-    text-overflow: ellipsis; white-space: nowrap; color: var(--ink); }
+    text-overflow: ellipsis; white-space: nowrap; color: var(--ink);
+    padding: 2px 6px; margin: -2px -2px -2px -6px; border-radius: 5px; }
+  #docTitle[contenteditable="true"] { cursor: text; }
+  #docTitle[contenteditable="true"]:hover { background: var(--hair-2); }
+  #docTitle:focus { outline: none; background: var(--hair-2); box-shadow: 0 0 0 2px var(--blue-2); }
   .spacer { flex: 1 1 auto; }
   .saved-tag { color: var(--ink-3); font-size: 12px; font-variant-numeric: tabular-nums; }
 
@@ -464,6 +468,10 @@
   // the library scratch file so nothing is lost, but the first manual Save
   // prompts for a real location + name (set from the import verdict below).
   let untitled = false;
+  // A user-facing display title, editable inline in the nav bar and stored in
+  // the sidecar (like slides' deck name). It also seeds the first-save filename.
+  let title = "";
+  const displayName = () => title || (untitled ? BASENAME.replace(DOC_EXT, "") : BASENAME);
   document.title = "Docs — " + BASENAME;
 
   // ---- vendored asset loading (relative src 404s inside the render iframe) ----
@@ -1486,7 +1494,7 @@
       const dirAt = (i) => { const q = segs.slice(0, i + 1).join("/"); return winRoot ? (i ? q : q + "/") : "/" + q; };
       const crumb = (winRoot ? "" : `<span data-dir="/" style="cursor:pointer">/</span>`) + segs.map((s, i) =>
         `${i || !winRoot ? " › " : ""}<span data-dir="${esc(dirAt(i))}" style="cursor:pointer">${esc(s)}</span>`).join("");
-      const prevName = card.querySelector("#fbName") ? card.querySelector("#fbName").value : BASENAME.replace(DOC_EXT, "");
+      const prevName = card.querySelector("#fbName") ? card.querySelector("#fbName").value : (firstSave ? displayName() : BASENAME.replace(DOC_EXT, ""));
       card.innerHTML = `<div style="font-weight:700;font-size:15px;margin-bottom:10px">${firstSave ? "Save document" : "Save a copy"}</div>
         <div style="font-size:12px;color:var(--ink-2);margin-bottom:8px;word-break:break-all">${crumb}</div>
         <div style="border:1px solid var(--hair);border-radius:6px;max-height:240px;overflow-y:auto;font-size:13px">
@@ -1655,7 +1663,25 @@
   const sidecar = await loadSidecar();
   S.author = sidecar.docs.author || "";
   untitled = !!res.library;
-  $("docTitle").textContent = untitled ? BASENAME.replace(DOC_EXT, "") : BASENAME;
+  title = sidecar.docs.title || "";
+  // Inline rename in the nav bar (like slides' deck name): the display title is
+  // a sidecar label, separate from the file name; it also seeds the first-save
+  // name. Committed on blur; Enter commits, Escape reverts.
+  const dt = $("docTitle");
+  dt.textContent = displayName();
+  document.title = "Docs — " + displayName();
+  dt.contentEditable = "true"; dt.spellcheck = false;
+  dt.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") { e.preventDefault(); dt.blur(); }
+    else if (e.key === "Escape") { e.preventDefault(); dt.textContent = displayName(); dt.blur(); }
+  });
+  dt.addEventListener("blur", () => {
+    const n = dt.textContent.replace(/\s+/g, " ").trim();
+    const t = (n && n !== BASENAME.replace(DOC_EXT, "")) ? n : "";
+    if (t === title) { dt.textContent = displayName(); return; }
+    title = t; dt.textContent = displayName(); document.title = "Docs — " + displayName();
+    saveSidecar((d) => { d.title = t; });  // best-effort; never rejects
+  });
   $("topbar").classList.remove("hidden"); $("toolbar").classList.remove("hidden"); $("main").classList.remove("hidden");
   mountEditor(importedDoc);
   // The reader's editability verdict (RO-4): lock before the initial setMode
