@@ -405,6 +405,44 @@ def test_the_interpreter_is_resolved_ONCE_per_process(
     assert len(calls) == 1, f"probed {len(calls)} times, not once: {calls}"
 
 
+def test_the_interpreter_is_never_ANOTHER_VENVS_python(
+    tmp_path, monkeypatch, _fresh_script_python
+):
+    """`--managed-python` alone is not enough, and this was measured.
+
+    A venv counts as managed to uv when its BASE interpreter is, so run from a
+    checkout whose own `.venv` is 3.12, `uv python find --managed-python` answers
+    `.venv/bin/python3`. Building script venvs from that would key them (via
+    `python_identity`) to a per-worktree path that `dev.sh` now DELETES on a version
+    mismatch — orphaning every script venv on the machine and re-downloading the lot.
+    `--system` excludes virtual environments; this pins that the flag is asked for,
+    because nothing else about the resolution would look wrong until a `.venv`
+    disappeared.
+    """
+    seen = []
+
+    class _Proc:
+        returncode = 0
+        stdout = str(_py312_stub(tmp_path))
+        stderr = ""
+
+    def spy(cmd, **kw):
+        seen.append(cmd)
+        return _Proc()
+
+    monkeypatch.setattr(envinstall, "uv_bin", lambda: "/usr/bin/uv")
+    monkeypatch.setattr(envinstall.subprocess, "run", spy)
+    monkeypatch.setattr(envinstall, "_probe_python", lambda p: True)
+    monkeypatch.setattr(envinstall, "_running_version", lambda: (3, 14))
+    envinstall.script_python()
+
+    find = next(c for c in seen if "find" in c)
+    assert "--system" in find, (
+        "without --system uv can answer with a virtual environment's python: " + repr(find)
+    )
+    assert "--managed-python" in find and "--no-project" in find, repr(find)
+
+
 def test_a_not_ready_verdict_is_never_CACHED(tmp_path, monkeypatch, _fresh_script_python):
     """"Nothing here yet" is a fact about this instant, not about the machine.
 

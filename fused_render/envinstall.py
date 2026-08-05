@@ -359,11 +359,19 @@ def _resolve_script_python() -> tuple[str | None, bool]:
         return None, True
     try:
         proc = subprocess.run(
-            # --no-project so the answer is about this MACHINE, not the directory
-            # the server happens to have been started from: `uv python find` will
-            # otherwise discover a project/workspace environment first, and which
-            # interpreter script venvs are built on must not depend on cwd.
-            [uv, "python", "find", "--managed-python", "--no-project",
+            # Every flag here is load-bearing.
+            #
+            # --no-project and --system both keep the answer about this MACHINE
+            # rather than about the directory the server was started from.
+            # `--managed-python` alone is NOT enough, and this was measured, not
+            # guessed: run from a checkout whose own `.venv` is 3.12, uv answers
+            # `.venv/bin/python3` — a venv counts as managed when its BASE
+            # interpreter is. Building script venvs from another venv's python would
+            # key them (via `python_identity`) to a per-worktree path that `dev.sh`
+            # now deletes outright on a version mismatch, orphaning every script venv
+            # on the machine. `--system` excludes virtual environments, which leaves
+            # the genuinely managed interpreter.
+            [uv, "python", "find", "--managed-python", "--no-project", "--system",
              SCRIPT_PYTHON_VERSION],
             capture_output=True, text=True,
             timeout=_SCRIPT_PYTHON_TIMEOUT_S, close_fds=False,
