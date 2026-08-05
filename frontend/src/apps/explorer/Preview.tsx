@@ -17,7 +17,7 @@ import {
 import type { Deployment, StatResult, TemplateEntry } from "@platform/lib/api";
 import { navigate, navigateUrl, urlForFsPath, replaceSearch } from "@platform/lib/router";
 import { formatSize, formatMtime, basename } from "@platform/lib/format";
-import { useRefreshOnReturn } from "@platform/lib/hooks";
+import { useRefreshOnReturn, useUrlVersion } from "@platform/lib/hooks";
 import { useDeployEnabled } from "@platform/lib/prefs";
 import {
   dirname,
@@ -420,6 +420,16 @@ function TemplatePreview({
     if (!templates.some((t) => t.mode === mode)) setModeState(defaultEntry.mode);
   }, [templates, mode, defaultEntry.mode]);
   const deployEnabled = useDeployEnabled();
+  // Re-render on URL changes (the pane toggle writes `preview` via
+  // replaceSearch, which fires fused:urlchange) so the switcher-hide below
+  // tracks the pane live.
+  useUrlVersion();
+  // When the listing's right preview pane is open (`?preview=true`), the pane
+  // header carries its own mode switcher — showing the top-bar one too is
+  // duplicate chrome, so it hides. Top-bar variant only; the in-body header
+  // (non-explorer hosts) never coexists with the pane.
+  const paneOpen =
+    !!actionsInTopbar && new URLSearchParams(location.search).get("preview") === "true";
   // `_listing` sentinel (D81): the shell's built-in directory listing, mounted
   // in place of the preview iframe — no iframe, no `_file`. Every directory
   // renders through this same header + body chrome (even a plain folder's
@@ -675,15 +685,17 @@ function TemplatePreview({
         deployEnabled &&
         templates.some((t) => t.mode === "_render") &&
         /\.html?$/i.test(fsPath) && <DeployButton fsPath={fsPath} />}
-      <ModeSwitcher
-        entries={templates.map((t) => ({ mode: t.mode, icon: templateModeIcon(t), pending: isPending(t) }))}
-        active={entry.mode}
-        /* Spinner from the click until the incoming frame has actually taken
-           over — the flush wait AND the new document's load are both time the
-           user is waiting on that button. */
-        busy={switchingTo ?? (shown !== mode ? mode : null)}
-        onSelect={setMode}
-      />
+      {!paneOpen && (
+        <ModeSwitcher
+          entries={templates.map((t) => ({ mode: t.mode, icon: templateModeIcon(t), pending: isPending(t) }))}
+          active={entry.mode}
+          /* Spinner from the click until the incoming frame has actually taken
+             over — the flush wait AND the new document's load are both time the
+             user is waiting on that button. */
+          busy={switchingTo ?? (shown !== mode ? mode : null)}
+          onSelect={setMode}
+        />
+      )}
     </>
   );
 

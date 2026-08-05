@@ -78,9 +78,21 @@ export function useListingSelection({
   // to this folder>` so a refreshed or shared URL restores the selection —
   // and with it the preview pane's content. navigate() drops the param on
   // folder navigation (only `preview` is sticky), so it never leaks.
-  //   • Seed ONCE, after the listing has loaded: a recalled (cross-remount)
-  //     selection outranks the URL, and a `sel` naming no current row is
-  //     simply ignored (no forced selection).
+  //   • Seed ONCE, after the listing has loaded. The URL is AUTHORITATIVE at
+  //     the seed: every navigation (a bookmark, back/forward, a typed URL)
+  //     remounts the Listing via the nav epoch, and what that URL says must be
+  //     what shows — a recalled (cross-remount) selection for the same folder
+  //     may be stale (e.g. switching between two bookmarks that differ only in
+  //     `sel`). The recall store's real job — carrying a selection across the
+  //     provisional→resolved swap — still works, because the provisional
+  //     Listing mirrored that selection into `sel` before the swap, so URL and
+  //     recall agree there (and an agreeing recall keeps its multi-selection,
+  //     which the single-path param can't carry). A `sel` naming no current
+  //     row is ignored (no forced selection); NO `sel` at all means none —
+  //     a recalled selection is dropped rather than resurrected onto a URL
+  //     that says otherwise. Selection can't change while the listing is
+  //     still loading (no rows to click/arrow onto), so nothing user-made can
+  //     be lost by the time this runs.
   //   • Mirror only after the seed decision, so the initial no-selection
   //     render can't wipe the param before it was read.
   const urlSelSeededRef = useRef(false);
@@ -88,9 +100,12 @@ export function useListingSelection({
     if (!urlSync || urlSelSeededRef.current || !listingLoaded) return;
     urlSelSeededRef.current = true;
     const rel = new URLSearchParams(location.search).get("sel");
-    if (!rel || selRef.current.paths.length) return;
+    if (!rel) {
+      if (selRef.current.paths.length) setSel(EMPTY_SELECTION);
+      return;
+    }
     const abs = fsPath.replace(/\/+$/, "") + "/" + rel;
-    if (navRows.includes(abs)) setSel(oneSelected(abs));
+    if (navRows.includes(abs) && selRef.current.lead !== abs) setSel(oneSelected(abs));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [urlSync, listingLoaded, navRows, fsPath]);
   useEffect(() => {

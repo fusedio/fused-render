@@ -208,7 +208,11 @@ function navigatePreservingMode(target: string): void {
   if (mode) {
     const params = new URLSearchParams({ _mode: mode });
     const preview = url.get("preview");
-    if (preview !== null) params.set("preview", preview);
+    if (preview !== null) {
+      params.set("preview", preview);
+      const panelMode = url.get("_panelMode");
+      if (panelMode !== null) params.set("_panelMode", panelMode);
+    }
     navigateUrl(urlForFsPath(target, "?" + params.toString()));
   } else {
     navigate(target, { isDir: true }); // breadcrumb targets are always dirs
