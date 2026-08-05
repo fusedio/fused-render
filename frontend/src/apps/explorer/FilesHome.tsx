@@ -272,31 +272,17 @@ export default function FilesHome({ config }: { config: Config }) {
   return (
     <div className="files-home">
       <div className="files-home-inner">
+        {/* Same shape as the /apps HomeHero: brand row, headline, composer —
+            the hero's only verb is the search prompt, mirroring how /apps
+            leads with its build prompt. */}
         <header className="home-hero files-hero">
           <div className="home-hero-brand">
             <img className="home-hero-logo" src={logoMark} alt="" aria-hidden="true" />
             <span className="home-hero-brand-name">Fused Explorer</span>
           </div>
           <h1 className="home-hero-title">
-            Browse and preview <span className="home-hero-accent">your files</span>
+            Find and preview <span className="home-hero-accent">your files</span>
           </h1>
-          <p className="files-hero-sub">
-            Open anything in your workspace — data, maps, images, notebooks. Preview it
-            instantly, split views side by side, and bookmark the places you keep coming
-            back to.
-          </p>
-          {config.fused_dir && (
-            <button
-              type="button"
-              className="files-hero-cta"
-              onClick={() => navigate(config.fused_dir!, { isDir: true })}
-            >
-              Browse workspace
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                <path d="M5 12h14M13 6l6 6-6 6" />
-              </svg>
-            </button>
-          )}
           <AiSearchComposer
             home={config.home}
             active={search !== null}
@@ -309,6 +295,27 @@ export default function FilesHome({ config }: { config: Config }) {
           <SearchResults home={config.home} query={search.query} result={search.result} />
         ) : (
           <>
+          {/* Browse lives with the content, not the hero (the hero is the
+              search prompt now) — and like the grids it yields to results. */}
+          {config.fused_dir && (
+            <section className="fh-section files-browse">
+              <p className="files-browse-sub">
+                Open anything in your workspace — data, maps, images, notebooks. Preview
+                it instantly, split views side by side, and bookmark the places you keep
+                coming back to.
+              </p>
+              <button
+                type="button"
+                className="files-hero-cta"
+                onClick={() => navigate(config.fused_dir!, { isDir: true })}
+              >
+                Browse workspace
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                  <path d="M5 12h14M13 6l6 6-6 6" />
+                </svg>
+              </button>
+            </section>
+          )}
           <section className="fh-section">
             <h2 className="fh-heading">Bookmarks</h2>
             {bookmarks.length ? (

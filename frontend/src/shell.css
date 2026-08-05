@@ -4301,7 +4301,14 @@ select.field-control:has(option[value=""]:checked) {
   color: var(--fg-muted);
 }
 
-.files-hero-sub {
+/* The browse-workspace block below the hero (it moved out of the hero when
+   the search composer became the hero's verb). Centered like the hero so the
+   page still reads as one column. */
+.files-browse {
+  text-align: center;
+}
+
+.files-browse-sub {
   margin: 0 auto 20px;
   max-width: 560px;
   font-size: 14px;
