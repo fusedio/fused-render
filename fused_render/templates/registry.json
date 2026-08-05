@@ -483,6 +483,7 @@
   "/": [
     "_listing",
     "claude_split",
+    "claude",
     "versions",
     "git",
     "graph",
