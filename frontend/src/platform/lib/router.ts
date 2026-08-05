@@ -134,7 +134,8 @@ export function navigate(fsPath: string, opts?: { isDir?: boolean; mode?: string
   const parts: string[] = [];
   if (opts?.isDir === true && preview !== null) parts.push("preview=" + encodeURIComponent(preview));
   // `opts.mode` picks the destination's template mode (`_mode`) — how the app
-  // cards open a project folder straight into the claude_split split view.
+  // cards open a project folder straight into the plain app view (appEntry's
+  // APP_OPEN_MODE) instead of the folder's file listing.
   if (opts?.mode) parts.push("_mode=" + encodeURIComponent(opts.mode));
   const search = parts.length ? "?" + parts.join("&") : "";
   // `opts.isDir` is a nav hint (the clicked listing row / breadcrumb already
