@@ -1,22 +1,29 @@
-// Route dispatch (the vanilla shell's main.js route()):
-//   "/"                  -> redirect (replaceState) to /view/<start-dir>
-//   /view|/embed/_panel  -> panel mode (sentinel, intercepted before stat)
-//   /view|/embed/_tab    -> tab mode (sentinel)
-//   "/view/<path>"       -> stat it: directory -> listing, file -> preview
+// Route dispatch (super-app step 2 — shell + three sub-apps):
+//   "/"                      -> redirect (replaceState) to /apps
+//   "/apps"                  -> apps homepage (the app home)
+//   "/apps/<tag>/<name>"     -> app builder (StatView variant "app")
+//   "/explorer"              -> file-explorer homepage (FilesHome)
+//   "/explorer/view/<path>"  -> stat it: directory -> listing, file -> preview
+//   "/explorer/embed/<path>" -> chrome-free embed variant
+//   "/learn"                 -> learn content, chrome-free (variant "learn")
+//   "/preferences|/templates|/mounts" -> settings pages
+// Legacy pre-rename urls (/view/..., /embed/..., /view/_prefs-family) are
+// rewritten in place at boot by router.ts before any of this runs.
 // The active view is keyed by the nav epoch: every navigation remounts it,
 // which is the React equivalent of the vanilla shell rebuilding the view DOM
 // on each route() call (fresh iframes, fresh fetches, dropped local state).
 import { useEffect, useRef, useState } from "react";
-import { IS_EMBED, fsPathFromLocation, navHintIsDir } from "@platform/lib/router";
+import { IS_EMBED, fsPathFromLocation, fsPathFromAppRoute, navHintIsDir } from "@platform/lib/router";
 import { useSessionRestore, useSessionTracking } from "@platform/lib/session";
-import { useRecentsTracking } from "@platform/lib/recents";
+import { useRecentsTracking } from "@apps/explorer/lib/recents";
+import { useAppRecentsTracking } from "@apps/builder/lib/recents";
 import { statPath, getMounts, reconnectMount, type Config, type Mount, type StatResult } from "@platform/lib/api";
-import { useNavEpoch, useDocumentTitle, useRefreshOnReturn } from "@platform/lib/hooks";
+import { useNavEpoch, useDocumentTitle, useRefreshOnReturn, useLearnMountReady } from "@platform/lib/hooks";
 import { useMountHealth } from "@platform/lib/mountHealth";
 import { basename } from "@platform/lib/format";
 import { maybeAutoStartTour } from "@platform/lib/tour";
 import { useThemeSync } from "@platform/lib/theme";
-import Sidebar from "@shell/Sidebar";
+import Sidebar, { type SidebarCtx } from "@shell/Sidebar";
 import CloneAppHost from "@platform/cloud/CloneAppHost";
 import NotificationHost from "@platform/ui/NotificationHost";
 import ShortcutsOverlay from "@platform/ui/ShortcutsOverlay";
@@ -32,8 +39,9 @@ import Tabs from "@apps/explorer/Tabs";
 import Preferences from "@shell/Preferences";
 import Templates from "@shell/templates/Templates";
 import Mounts from "@shell/Mounts";
-import Home from "@shell/Home";
 import Apps from "@apps/builder/Apps";
+import FilesHome from "@apps/explorer/FilesHome";
+import { learnEntryPath } from "@apps/learn";
 import BookmarkOpen from "@apps/explorer/BookmarkOpen";
 
 type StatState =
@@ -189,10 +197,33 @@ function LoadingScaffold({ fsPath, isDir }: { fsPath: string; isDir: boolean }) 
   );
 }
 
+// The mode list the app builder pins its views to — the two modes that make
+// sense over an app folder. The URL's `_mode` semantics are unchanged; this
+// only restricts what the switcher offers (Preview filters client-side).
+const APP_MODES = ["claude_split", "versions"];
+
 // Stat-backed views (listing/preview): breadcrumb + content under one hook
 // component so useStat only runs when the pathname is a real fs path, not a
 // sentinel.
-function StatView({ fsPath, epoch, home }: { fsPath: string; epoch: number; home: string }) {
+//
+// `variant` selects the sub-app chrome:
+//   "explorer" (default) — breadcrumb, full preview header, file recents.
+//   "app"                — no breadcrumb, header kept (mode switcher pinned to
+//                          APP_MODES), app recents (needs `fusedDir`).
+//   "learn"              — no breadcrumb, no preview header, no recents.
+function StatView({
+  fsPath,
+  epoch,
+  home,
+  variant = "explorer",
+  fusedDir = "",
+}: {
+  fsPath: string;
+  epoch: number;
+  home: string;
+  variant?: "explorer" | "app" | "learn";
+  fusedDir?: string;
+}) {
   // Bumped by StatErrorView to re-stat in place after reconnecting a mount.
   const [reloadKey, setReloadKey] = useState(0);
   // Directory hint from the navigation that mounted this view (see router
@@ -225,10 +256,13 @@ function StatView({ fsPath, epoch, home }: { fsPath: string; epoch: number; home
   // not on a `_mode` switch within the same file — TemplatePreview owns that.
   const [renderedTitle, setRenderedTitle] = useState<string | null>(null);
   useDocumentTitle(fsPath === "/" ? null : renderedTitle || basename(fsPath));
-  // Sidebar "Recents": record the open, then keep the entry's url (and its
-  // title, once known) live as params/title change — same confirmed-file
-  // gate as session tracking.
-  useRecentsTracking(fsPath, isDir, renderedTitle);
+  // Recents: each sub-app records into its OWN store. Explorer files use the
+  // confirmed-file gate (same as session tracking); the app builder records
+  // the app folder into apps/builder's store (fusedDir empty = disabled, so
+  // learn and explorer never write there). Both hooks are unconditional
+  // (hooks rules) and gate internally on their args.
+  useRecentsTracking(fsPath, variant === "explorer" ? isDir : null, renderedTitle);
+  useAppRecentsTracking(fsPath, variant === "app" ? fusedDir : "", renderedTitle);
   let content = null;
   if (stat.status === "loading") {
     // Not a blank screen: paint the scaffold immediately (Fix #1). A directory
@@ -262,17 +296,49 @@ function StatView({ fsPath, epoch, home }: { fsPath: string; epoch: number; home
       // mount this wait is ~2s and must never read as a blank/black screen.
       content = <LoadingScaffold fsPath={fsPath} isDir={false} />;
     } else {
-      content = <Preview fsPath={fsPath} stat={s} onRenderedTitle={setRenderedTitle} />;
+      content = (
+        <Preview
+          fsPath={fsPath}
+          stat={s}
+          onRenderedTitle={setRenderedTitle}
+          allowModes={variant === "app" ? APP_MODES : undefined}
+          hideHeader={variant === "learn"}
+        />
+      );
     }
   }
   return (
     <>
-      <div id="breadcrumb">
-        <Breadcrumb fsPath={fsPath} home={home} renderedTitle={renderedTitle} />
-      </div>
+      {/* Only the explorer carries a breadcrumb bar — the app builder and
+          learn render their content directly (no path chrome). */}
+      {variant === "explorer" && (
+        <div id="breadcrumb">
+          <Breadcrumb fsPath={fsPath} home={home} renderedTitle={renderedTitle} />
+        </div>
+      )}
       <div id="content">{content}</div>
     </>
   );
+}
+
+// /learn: the bundled learn content rendered chrome-free (no breadcrumb, no
+// preview header) inside the shell frame. Waits on the learn mount record
+// (useLearnMountReady) before statting the entry, so a boot-race never shows
+// a dead 404.
+function LearnView({ config, epoch }: { config: Config; epoch: number }) {
+  const ready = useLearnMountReady(config.learn_mount_ready);
+  const entry = learnEntryPath(config);
+  if (!ready || !entry) {
+    return (
+      <div id="content">
+        <div className="preview-resolving">
+          <span className="mode-icon-spinner" />
+          Preparing learn content…
+        </div>
+      </div>
+    );
+  }
+  return <StatView key={epoch + ":" + entry} fsPath={entry} epoch={epoch} home="" variant="learn" />;
 }
 
 export default function App({ config }: { config: Config }) {
@@ -363,37 +429,34 @@ export default function App({ config }: { config: Config }) {
     return () => document.removeEventListener("keydown", onKey, true);
   }, []);
 
-  // Home lives at "/" itself now (not a /view/_home sentinel) — old bookmarks
-  // and links to the sentinel redirect the same render-time way as _account
-  // below. Render-time write is safe — it changes pathname, so the re-render
-  // (via fused:urlchange) derives the real route.
-  if (location.pathname === "/view/_home") {
-    history.replaceState(null, "", "/");
-  }
-  // The old standalone Fused-account page folded into Preferences as a tab
-  // (D125) — redirect its sentinel the same render-time way so existing
-  // bookmarks and the Deploy modal's "Set up hosted environment" link still
-  // land somewhere real instead of a dead route.
-  if (location.pathname === "/view/_account") {
-    history.replaceState(null, "", "/view/_prefs?tab=account");
+  // The app home lives at /apps — "/" is just its front door. Render-time
+  // write is safe — it changes pathname, so the re-render (via fused:urlchange)
+  // derives the real route. (Legacy /view/_home, /view/_account, and the whole
+  // /view//embed namespaces are rewritten at boot by router.ts.)
+  if (location.pathname === "/") {
+    history.replaceState(null, "", "/apps");
   }
 
   const pathname = location.pathname;
-  const isPanel = pathname === "/view/_panel" || pathname === "/embed/_panel";
-  const isTabs = pathname === "/view/_tab" || pathname === "/embed/_tab";
-  const isPrefs = pathname === "/view/_prefs";
-  const isTemplates = pathname === "/view/_templates";
-  // PROTOTYPE: mounts sentinel (see views/Mounts.tsx).
-  const isMounts = pathname === "/view/_mounts";
-  const isHome = pathname === "/";
-  // Apps hub — chrome-free like Home (no sidebar/breadcrumb), all detected
-  // apps with search + tag filters.
+  const isPanel = pathname === "/explorer/view/_panel" || pathname === "/explorer/embed/_panel";
+  const isTabs = pathname === "/explorer/view/_tab" || pathname === "/explorer/embed/_tab";
+  const isPrefs = pathname === "/preferences";
+  const isTemplates = pathname === "/templates";
+  // PROTOTYPE: mounts page (see shell/Mounts.tsx).
+  const isMounts = pathname === "/mounts";
+  // Apps hub = the app home: all detected apps with search + tag filters.
   const isApps = pathname === "/apps";
-  const isBookmark = pathname === "/view/_bookmark";
-  const fsPath =
-    isPanel || isTabs || isPrefs || isTemplates || isMounts || isHome || isApps || isBookmark
-      ? null
-      : fsPathFromLocation();
+  // File-explorer homepage: the bookmark launcher.
+  const isExplorerHome = pathname === "/explorer";
+  const isLearn = pathname === "/learn";
+  const isBookmark = pathname === "/explorer/view/_bookmark";
+  // App-builder route: /apps/<tag>/<name> resolves to the app folder under
+  // the workspace — a pure codec, no server lookup (router.fsPathFromAppRoute).
+  const fusedDir = config.fused_dir.replace(/\\/g, "/");
+  const appFsPath = isApps ? null : fsPathFromAppRoute(pathname, fusedDir);
+  const isSentinel =
+    isPanel || isTabs || isPrefs || isTemplates || isMounts || isApps || isExplorerHome || isLearn || isBookmark;
+  const fsPath = isSentinel || appFsPath ? null : fsPathFromLocation();
   // Browsing to a `.bookmark` file in the explorer opens it like a Finder
   // double-click (SB-9): same component as the `_bookmark` sentinel, fed the
   // fs path directly — never StatView (the file describes a view, it isn't one).
@@ -410,15 +473,17 @@ export default function App({ config }: { config: Config }) {
             ? "Templates"
             : isMounts
               ? "Mounts"
-              : isHome
-                ? "Home"
-                : isApps
+              : isApps
                 ? "Apps"
-                : isBookmark || bookmarkFile
-                ? "Bookmark"
-                : fsPath
-                  ? undefined
-                  : null
+                : isExplorerHome
+                  ? "File Explorer"
+                  : isLearn
+                    ? "Learn"
+                    : isBookmark || bookmarkFile
+                      ? "Bookmark"
+                      : fsPath || appFsPath
+                        ? undefined
+                        : null
   );
 
   // First-run onboarding tour: fire after paint so the listing and breadcrumb
@@ -510,22 +575,37 @@ export default function App({ config }: { config: Config }) {
         </div>
       </>
     );
-  } else if (isHome) {
-    // Home (apps / templates / files) — the launch landing, lives at "/"
-    // itself (old /view/_home sentinel redirects here above). No breadcrumb
-    // bar: no path/bookmark actions make sense above a landing page.
-    main = (
-      <div id="content" key={epoch}>
-        <Home key={epoch} config={config} />
-      </div>
-    );
   } else if (isApps) {
-    // Apps hub — same chrome-free treatment as Home: no breadcrumb bar, no
-    // sidebar (excluded below), the page owns its own header and back link.
+    // Apps hub — the app home. No breadcrumb bar; the page owns its own
+    // header. The shell sidebar renders beside it.
     main = (
       <div id="content" key={epoch}>
         <Apps key={epoch} />
       </div>
+    );
+  } else if (isExplorerHome) {
+    // File-explorer homepage: the bookmark launcher (FilesHome).
+    main = (
+      <div id="content" key={epoch}>
+        <FilesHome key={epoch} config={config} />
+      </div>
+    );
+  } else if (isLearn) {
+    // Learn content, chrome-free (LearnView renders a StatView that carries
+    // its own #content).
+    main = <LearnView key={epoch} config={config} epoch={epoch} />;
+  } else if (appFsPath) {
+    // App builder: the app folder rendered in claude_split/versions, no
+    // breadcrumb (StatView variant "app" carries its own #content).
+    main = (
+      <StatView
+        key={epoch + ":" + appFsPath}
+        fsPath={appFsPath}
+        epoch={epoch}
+        home={config.home.replace(/\\/g, "/")}
+        variant="app"
+        fusedDir={fusedDir}
+      />
     );
   } else if (isBookmark || bookmarkFile) {
     // `.bookmark` open flow (SB-9, D99): Finder double-click lands on the
@@ -557,14 +637,22 @@ export default function App({ config }: { config: Config }) {
     );
   }
 
+  // Which sub-app owns the sidebar body: the builder route and explorer
+  // fs-path routes get their sub-app's sections; every shell page (homepages,
+  // settings, learn) gets the app-switcher list.
+  const ctx: SidebarCtx = appFsPath
+    ? "builder"
+    : fsPath || isPanel || isTabs || isBookmark
+      ? "explorer"
+      : "shell";
+
   return (
     <div id="app">
-      {!IS_EMBED && !isHome && !isApps && <Sidebar config={config} />}
+      {!IS_EMBED && <Sidebar config={config} ctx={ctx} />}
       <div id="main">{main}</div>
       <NotificationHost />
       {/* Opening a deployed app is requested from the path bar (a pasted https:// link) and
-          from the Apps page; the modal is mounted HERE so both reach one flow — Home and
-          Apps render without the sidebar, so it cannot live there (SPEC §35 CL-1). */}
+          from the Apps page; the modal is mounted HERE so both reach one flow (SPEC §35 CL-1). */}
       {!IS_EMBED && <CloneAppHost />}
       {shortcutsOpen && <ShortcutsOverlay onClose={() => setShortcutsOpen(false)} />}
     </div>

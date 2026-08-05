@@ -27,7 +27,7 @@ def test_view_url_no_path():
 
 def test_view_url_encodes_drive_path():
     assert winopen.view_url(1777, r"C:\data\sales.csv") == (
-        "http://127.0.0.1:1777/view/C%3A/data/sales.csv"
+        "http://127.0.0.1:1777/explorer/view/C%3A/data/sales.csv"
     )
 
 

@@ -339,7 +339,7 @@
     var norm = /^[A-Za-z]:[\\/]/.test(fsPath) ? fsPath.replace(/\\/g, "/") : fsPath;
     var rest = norm.replace(/^\/+/, "");
     var encoded = rest.split("/").filter(Boolean).map(encodeURIComponent).join("/");
-    return "/view/" + encoded;
+    return "/explorer/view/" + encoded;
   }
 
   // ---- data -------------------------------------------------------------

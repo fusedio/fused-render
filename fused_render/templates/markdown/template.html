@@ -767,9 +767,9 @@
     function shellPrefix() {
       try {
         const p = window.top.location.pathname;
-        if (p.startsWith("/embed/") || p === "/embed") return "/embed/";
+        if (p.startsWith("/explorer/embed/") || p === "/explorer/embed") return "/explorer/embed/";
       } catch (e) { /* cross-origin — assume the normal shell */ }
-      return "/view/";
+      return "/explorer/view/";
     }
     function urlForFsPath(fsPath, search) {
       const norm = /^[A-Za-z]:[\\/]/.test(fsPath) ? fsPath.replace(/\\/g, "/") : fsPath;

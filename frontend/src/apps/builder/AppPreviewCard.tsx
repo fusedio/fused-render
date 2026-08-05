@@ -6,7 +6,8 @@
 // blank. Iframes are lazy so a big workspace doesn't render everything at
 // once.
 import type { AppInfo } from "@platform/lib/api";
-import { navigate } from "@platform/lib/router";
+import { navigate, navigateUrl } from "@platform/lib/router";
+import { appRouteUrl } from "./AppCard";
 import { hueFor } from "@apps/builder/AppCard";
 
 // "3d ago" style stamp for the card meta line; null when the backend didn't
@@ -35,7 +36,7 @@ export function AppPreviewCard({ app }: { app: AppInfo }) {
   const open = () => {
     // Folder-first: an app with an entry opens in the claude_split view (app
     // beside a Claude chat); without one, the plain folder listing.
-    if (app.entry_html) navigate(app.path, { isDir: true, mode: "claude_split" });
+    if (app.entry_html) navigateUrl(appRouteUrl(app) + "?_mode=claude_split", { isDir: true });
     else navigate(app.path, { isDir: true });
   };
   const title = app.title || app.name;

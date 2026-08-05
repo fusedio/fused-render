@@ -11,11 +11,9 @@ import { getApps } from "@platform/lib/api";
 import type { AppInfo } from "@platform/lib/api";
 import { requestCloneApp } from "@platform/cloud/cloneApp";
 import { useDeployEnabled } from "@platform/lib/prefs";
-import { navigateUrl } from "@platform/lib/router";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { AppPreviewCard } from "@apps/builder/AppPreviewCard";
 import { HomeHero } from "./HomeHero";
-import { NewAppPanel } from "./NewAppPanel";
 import { SkeletonLines } from "@platform/ui/Skeleton";
 
 type Loaded<T> = { status: "loading" } | { status: "ok"; data: T } | { status: "error"; message: string };
@@ -42,7 +40,6 @@ export default function Apps() {
   const [query, setQuery] = useState("");
   const [tag, setTag] = useState<string | null>(null);
   const [sort, setSort] = useState<SortKey>("recent");
-  const [creating, setCreating] = useState(false);
   // Whether deploying is switched on at all — the import entry follows it (see the toolbar).
   const deployEnabled = useDeployEnabled();
   // Bumped when the panel creates an app: refetches the grid without clearing it.
@@ -81,19 +78,6 @@ export default function Apps() {
   return (
     <div className="apps-page">
       <div className="apps-inner">
-        <header className="apps-head">
-          <button type="button" className="apps-back" onClick={() => navigateUrl("/")}>
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-              <path d="M19 12H5M11 18l-6-6 6-6" />
-            </svg>
-            Home
-          </button>
-          <h1 className="apps-title">Apps</h1>
-          <p className="apps-sub">
-            Every app detected in your workspace — search by name or narrow by tag.
-          </p>
-        </header>
-
         {/* Same hero as Home: prompt composer that names, scaffolds, and lands
             in the new app's claude chat. Creating from here refreshes the grid. */}
         <HomeHero onCreated={() => setNonce((n) => n + 1)} />
@@ -124,12 +108,6 @@ export default function Apps() {
               </button>
             ))}
           </div>
-          <button type="button" className="btn btn-primary" onClick={() => setCreating(true)}>
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" aria-hidden="true">
-              <path d="M12 5v14M5 12h14" />
-            </svg>
-            New app
-          </button>
           {/* Gated on the Deploy-apps preference (SPEC §35 CL-1): with deploying switched
               off the whole surface that produces these links is hidden, so an entry for
               importing one would advertise a feature the user has turned away from. The
@@ -180,7 +158,7 @@ export default function Apps() {
             {shown.length === 0 ? (
               <div className="home-empty">
                 {all.length === 0
-                  ? "No apps yet. Hit “New app” above to create one."
+                  ? "No apps yet. Describe one in the composer above to create it."
                   : "No apps match — clear the search or tag filter."}
               </div>
             ) : (
@@ -193,10 +171,6 @@ export default function Apps() {
           </>
         )}
       </div>
-
-      {creating && (
-        <NewAppPanel onClose={() => setCreating(false)} onCreated={() => setNonce((n) => n + 1)} />
-      )}
     </div>
   );
 }

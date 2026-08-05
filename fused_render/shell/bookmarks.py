@@ -27,7 +27,7 @@ from fused_render.shell import pathops, storage
 
 router = APIRouter()
 
-_VIEW_PREFIXES = ("/view/", "/embed/")
+_VIEW_PREFIXES = ("/explorer/view/", "/explorer/embed/", "/view/", "/embed/")
 
 
 def _require_fused(x_fused: str | None) -> JSONResponse | None:

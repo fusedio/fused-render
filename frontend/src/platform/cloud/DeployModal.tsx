@@ -1026,7 +1026,7 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
               <button
                 type="button"
                 className="btn btn-primary"
-                onClick={() => navigateUrl("/view/_prefs?tab=account")}
+                onClick={() => navigateUrl("/preferences?tab=account")}
               >
                 Set up hosted environment
               </button>

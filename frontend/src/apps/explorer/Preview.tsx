@@ -380,12 +380,14 @@ function TemplatePreview({
   templates,
   conditions,
   onRenderedTitle,
+  hideHeader,
 }: {
   fsPath: string;
   stat: StatResult;
   templates: TemplateEntry[];
   conditions: Record<string, boolean> | null;
   onRenderedTitle?: (title: string | null) => void;
+  hideHeader?: boolean;
 }) {
   // Caller only renders this when `templates` (already sentinel-filtered by
   // Preview's dispatch, SPEC PT-12) is non-empty. Entries whose condition.py
@@ -633,6 +635,7 @@ function TemplatePreview({
 
   return (
     <>
+      {!hideHeader && (
       <Header
         fsPath={fsPath}
         stat={stat}
@@ -672,6 +675,7 @@ function TemplatePreview({
           onSelect={setMode}
         />
       </Header>
+      )}
       <div className="preview-body">
         {isPending(entry) ? (
           /* URL-requested a gated mode whose verdict is still in flight: hold
@@ -773,14 +777,26 @@ interface PreviewProps {
   // better tab title than the filename can use it (App's StatView). Undefined
   // for every dispatch branch that isn't the "_render"-carrying TemplatePreview.
   onRenderedTitle?: (title: string | null) => void;
+  // Sub-app mode allowlist: when set, only these modes from stat.templates are
+  // offered (the app-builder pins its views to claude_split/versions). The
+  // server keeps resolving the full list; this is a UI restriction only —
+  // `_mode` semantics on the URL are unchanged.
+  allowModes?: string[];
+  // Chrome-free render (the /learn page): no preview header, no mode switcher —
+  // the content fills the body directly.
+  hideHeader?: boolean;
 }
 
-export default function Preview({ fsPath, stat, onRenderedTitle }: PreviewProps) {
+export default function Preview({ fsPath, stat, onRenderedTitle, allowModes, hideHeader }: PreviewProps) {
   // Defensive filter (SPEC PT-12): an entry with path===null whose mode isn't
   // a recognized sentinel (`_render`, `_listing`) is dropped. Filtering here
   // keeps the non-empty dispatch check honest (an all-unknown list falls back
   // instead of crashing TemplatePreview).
-  const templates = stat.templates.filter((t) => t.path !== null || KNOWN_SENTINEL_MODES.has(t.mode));
+  const templates = stat.templates.filter(
+    (t) =>
+      (t.path !== null || KNOWN_SENTINEL_MODES.has(t.mode)) &&
+      (!allowModes || allowModes.includes(t.mode))
+  );
   // Deferred gates (CT-12): resolve condition.py verdicts in the background.
   // The first unconditional template renders immediately — only an
   // ALL-conditional list has nothing safe to show and waits here.
@@ -810,6 +826,7 @@ export default function Preview({ fsPath, stat, onRenderedTitle }: PreviewProps)
         templates={visible}
         conditions={conditions}
         onRenderedTitle={onRenderedTitle}
+        hideHeader={hideHeader}
       />
     );
   return <FallbackPreview fsPath={fsPath} stat={stat} />;

@@ -19,10 +19,17 @@ const STEPS: DriveStep[] = [
     },
   },
   {
-    element: "#fused-link",
+    element: "#apps-link",
     popover: {
-      title: "Fused workspace",
-      description: "Your Fused folder — example views and data live in here.",
+      title: "Apps",
+      description: "Your apps live here — build new ones with a prompt.",
+    },
+  },
+  {
+    element: "#explorer-link",
+    popover: {
+      title: "File Explorer",
+      description: "Browse and render your local files and bookmarks.",
     },
   },
   {

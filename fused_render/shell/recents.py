@@ -32,7 +32,9 @@ from fused_render.shell import storage
 
 router = APIRouter()
 
-VIEW_PREFIX = "/view/"
+# Current prefix first; the bare "/view/" accepts entries written before the
+# /explorer namespace rename (they open through the client's legacy rewrite).
+VIEW_PREFIXES = ("/explorer/view/", "/view/")
 
 # Cap well above the UI's 3 visible rows so enough valid entries remain after
 # missing-file filtering.
@@ -87,9 +89,10 @@ def _decoded_fs_path(url: str) -> str | None:
     except ValueError:
         return None
     path = parts.path
-    if not path.startswith(VIEW_PREFIX):
+    prefix = next((p for p in VIEW_PREFIXES if path.startswith(p)), None)
+    if prefix is None:
         return None
-    segments = [unquote(s) for s in path[len(VIEW_PREFIX):].split("/") if s]
+    segments = [unquote(s) for s in path[len(prefix):].split("/") if s]
     # Any `_`-prefixed top-level pathname is a shell sentinel (`_panel`,
     # `_prefs`, `_templates`, `_listing`, ...) — the whole namespace is
     # shell-owned, so reject the prefix rather than enumerating names.

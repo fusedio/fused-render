@@ -479,7 +479,7 @@ class PinController:
 
     def _pin_url(self) -> str:
         # Same URL shape shell panes iframe: chrome-free, registry-dispatched.
-        return f"http://127.0.0.1:{self._port}/embed{quote(self._pinned_path)}"
+        return f"http://127.0.0.1:{self._port}/explorer/embed{quote(self._pinned_path)}"
 
     def _load_body(self) -> None:
         """Point the webview at the right content for the current state.

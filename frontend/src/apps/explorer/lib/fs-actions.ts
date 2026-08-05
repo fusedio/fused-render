@@ -9,7 +9,7 @@
 import { listDir, deleteEntry, statPath, resolveConditions } from "@platform/lib/api";
 import type { ArchiveFormat, TemplateEntry } from "@platform/lib/api";
 import { getClipboard, setClipboard } from "@apps/explorer/lib/fs-clipboard";
-import { dropRecentsFor } from "@platform/lib/recents";
+import { dropRecentsFor } from "@apps/explorer/lib/recents";
 import type { MenuEntry, MenuItem } from "@platform/ui/ContextMenu";
 import { KNOWN_SENTINEL_MODES, modeTitle, templateModeIcon } from "@apps/explorer/ModeSwitcher";
 

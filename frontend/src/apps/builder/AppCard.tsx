@@ -4,7 +4,13 @@
 // a tile never changes colour across visits, and the hues are the same family
 // the listing already paints file icons with.
 import type { AppInfo } from "@platform/lib/api";
-import { navigate } from "@platform/lib/router";
+import { APP_ROUTE_PREFIX, navigate, navigateUrl } from "@platform/lib/router";
+
+// The builder route for an app — /apps/<tag>/<name>, straight from the
+// AppInfo identity (no fs-path round trip needed).
+export function appRouteUrl(app: Pick<AppInfo, "tag" | "name">): string {
+  return APP_ROUTE_PREFIX + encodeURIComponent(app.tag) + "/" + encodeURIComponent(app.name);
+}
 
 const APP_HUES = [
   "var(--icon-folder)",
@@ -25,10 +31,11 @@ export function hueFor(name: string): string {
 
 export function AppCard({ app }: { app: AppInfo }) {
   const open = () => {
-    // An app with an entry opens its FOLDER in the claude_split view — the
-    // app rendered beside a Claude chat; a manifest without one falls back to
-    // the plain folder listing so the card is never dead.
-    if (app.entry_html) navigate(app.path, { isDir: true, mode: "claude_split" });
+    // An app with an entry enters the BUILDER (/apps/<tag>/<name>) in the
+    // claude_split view — the app rendered beside a Claude chat; a folder
+    // without one falls back to the plain explorer listing so the card is
+    // never dead.
+    if (app.entry_html) navigateUrl(appRouteUrl(app) + "?_mode=claude_split", { isDir: true });
     else navigate(app.path, { isDir: true });
   };
   const title = app.title || app.name;

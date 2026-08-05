@@ -4,12 +4,34 @@
 // it lives in the builder app rather than the shell.
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { aiComplete, createApp } from "@platform/lib/api";
-import { navigate, navigateUrl } from "@platform/lib/router";
+import { APP_ROUTE_PREFIX, navigate, navigateUrl } from "@platform/lib/router";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { TextArea } from "@platform/ui/field/fields";
-import { claudeChatUrl } from "./NewAppPanel";
-import logoDark from "@assets/logo-text-black-bg-transparent.png";
-import logoLight from "@assets/logo-text-white-bg-transparent.png";
+import logoMark from "@assets/logo-black-bg-transparent.png";
+
+// URL of an app folder's claude_split chat, attached to a specific live run.
+// `_mode` is the shell's template selector; `run` is a plain view param the
+// claude_split template reads through fused.params (its boot resumes that
+// run, so a session started server-side is picked up exactly like one the
+// page started itself). Folder-scoped on purpose: the server starts the
+// scaffolding session via the claude_split agent on the app FOLDER, so the
+// re-attach must land in the same template — same runs dir, same
+// .claude-split.json sidecar — never the file-scoped claude template.
+// Lands in the BUILDER namespace (/apps/<tag>/<name>) — the app folder's last
+// two path segments ARE its tag/name by the server's workspace contract.
+export function claudeChatUrl(appDir: string, runId: string): string {
+  const segs = appDir.replace(/\/+$/, "").split("/");
+  const [tag, name] = segs.slice(-2);
+  const params = new URLSearchParams({ _mode: "claude_split", run: runId });
+  return (
+    APP_ROUTE_PREFIX +
+    encodeURIComponent(tag) +
+    "/" +
+    encodeURIComponent(name) +
+    "?" +
+    params.toString()
+  );
+}
 
 // -- Prompt-first creation (the hero composer) --------------------------------
 
@@ -294,10 +316,11 @@ function HeroComposer({ onCreated }: { onCreated: () => void }) {
 export function HomeHero({ onCreated }: { onCreated: () => void }) {
   return (
     <header className="home-hero">
-      {/* Fused wordmark, centered. Two theme-matched renders of the same
-          logo; CSS shows the one matching the active theme. */}
-      <img className="home-hero-logo home-hero-logo-dark" src={logoDark} alt="Fused" />
-      <img className="home-hero-logo home-hero-logo-light" src={logoLight} alt="Fused" />
+      {/* Fused mark + "Fused App" wordmark row, centered above the title. */}
+      <div className="home-hero-brand">
+        <img className="home-hero-logo" src={logoMark} alt="" aria-hidden="true" />
+        <span className="home-hero-brand-name">Fused App</span>
+      </div>
       <h1 className="home-hero-title">
         Build your next <span className="home-hero-accent">local app</span>
       </h1>

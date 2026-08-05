@@ -4252,6 +4252,34 @@ select.field-control:has(option[value=""]:checked) {
   background: rgba(var(--tint), 0.06);
 }
 
+/* Shell-ctx settings list (super-app step 2): Templates / Mounts /
+   Preferences as regular sidebar rows pinned to the bottom edge — the same
+   list treatment as the sub-app list at the top. */
+.sidebar-settings {
+  margin-top: auto;
+  padding-top: 6px;
+  border-top: 1px solid var(--border);
+  flex: 0 0 auto;
+}
+
+/* File-explorer homepage (/explorer): the bookmark launcher as a page. */
+.files-home {
+  height: 100%;
+  overflow-y: auto;
+  padding: 32px 20px;
+}
+
+.files-home-inner {
+  max-width: 560px;
+  margin: 0 auto;
+}
+
+.files-home-title {
+  font-size: 20px;
+  font-weight: 600;
+  margin: 0 0 16px;
+}
+
 /* driver.js popover — dark theme overrides scoped under .driver-popover. */
 .driver-popover {
   background: var(--bg-popover);
@@ -5837,23 +5865,26 @@ select.field-control:has(option[value=""]:checked) {
   position: relative;
 }
 
-/* Fused wordmark: centered above the title. The PNGs bake generous padding
-   into the canvas, so the rendered height runs larger than the visible mark.
-   Dark is the :root default theme, so the dark render shows by default and
-   the light one takes over under [data-theme="light"]. */
+/* Fused mark + "Fused App" name, one centered row above the title. The PNG
+   bakes generous padding into the canvas, so the rendered height runs larger
+   than the visible mark. */
+.home-hero-brand {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  margin: 0 0 10px;
+}
+
 .home-hero-logo {
   display: block;
-  height: 64px;
-  margin: 0 auto 10px;
+  height: 48px;
 }
 
-.home-hero-logo-light,
-:root[data-theme="light"] .home-hero-logo-dark {
-  display: none;
-}
-
-:root[data-theme="light"] .home-hero-logo-light {
-  display: block;
+.home-hero-brand-name {
+  font-size: 22px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
 }
 
 .home-hero-title {
@@ -6288,293 +6319,6 @@ select.field-control:has(option[value=""]:checked) {
   }
 }
 
-/* ---- New-app slide-over panel (views/Home.tsx) ---------------------------- */
-/* Notion-style panel: full-height, 60vw, pinned to the RIGHT edge over a dim
-   scrim, sliding in from the right. Deliberately its own chassis (not
-   the modal / deploy chrome) so the centred-dialog rules stay untouched for
-   their other consumers. */
-.app-panel-overlay {
-  position: fixed;
-  inset: 0;
-  z-index: 1000;
-  background: var(--scrim);
-  opacity: 0;
-  /* Bidirectional: NewAppPanel takes `is-open` back off (and defers its own
-     unmount by PANEL_EXIT_MS, lib/exit-animation) so the same rule slides the
-     panel out again. */
-  transition: opacity var(--dur-slow) var(--ease-out);
-}
-
-.app-panel-overlay.is-open {
-  opacity: 1;
-}
-
-.app-panel {
-  position: absolute;
-  top: 0;
-  right: 0;
-  height: 100%;
-  width: 60vw;
-  display: flex;
-  flex-direction: column;
-  background: var(--bg);
-  border-left: 1px solid var(--border);
-  box-shadow: 0 0 40px var(--shadow-lg);
-  transform: translateX(100%);
-  transition: transform var(--dur-slow) var(--ease-out);
-}
-
-.app-panel-overlay.is-open .app-panel {
-  transform: translateX(0);
-}
-
-@media (max-width: 800px) {
-  .app-panel {
-    width: 100vw;
-    border-left: none;
-  }
-}
-
-.app-panel-head {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 20px 28px 16px;
-  border-bottom: 1px solid var(--border);
-  flex: 0 0 auto;
-}
-
-.app-panel-head-text {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.app-panel-eyebrow {
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--fg-muted);
-}
-
-.app-panel-head h2 {
-  margin: 0;
-  font-size: 19px;
-  font-weight: 700;
-  letter-spacing: -0.01em;
-}
-
-.app-panel-close {
-  background: none;
-  border: 1px solid transparent;
-  border-radius: 8px;
-  color: var(--fg-muted);
-  font-size: 14px;
-  line-height: 1;
-  cursor: pointer;
-  padding: 6px 8px;
-}
-
-.app-panel-close:hover {
-  color: var(--fg);
-  background: var(--bg-alt);
-  border-color: var(--border);
-}
-
-.app-panel-body {
-  flex: 1 1 auto;
-  overflow-y: auto;
-  padding: 24px 28px 28px;
-  display: flex;
-  flex-direction: column;
-  gap: 24px;
-  font-size: 13px;
-}
-
-.app-panel-lede {
-  margin: 0;
-  max-width: 62ch;
-  font-size: 14px;
-  line-height: 1.6;
-  color: var(--fg-muted);
-}
-
-/* Section grouping: small uppercase label above each block of content. */
-.app-panel-section {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-
-.app-panel-section-title {
-  margin: 0;
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--fg-muted);
-}
-
-/* Numbered "how it works" timeline: badge column with a connecting rail. */
-.app-panel-steps {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-}
-
-.app-panel-step {
-  position: relative;
-  display: flex;
-  gap: 14px;
-  padding: 0 0 18px 0;
-}
-
-.app-panel-step:last-child {
-  padding-bottom: 0;
-}
-
-/* Rail connecting the badges, drawn behind them. */
-.app-panel-step:not(:last-child)::before {
-  content: "";
-  position: absolute;
-  left: 12px;
-  top: 26px;
-  bottom: -2px;
-  width: 1px;
-  background: var(--border);
-}
-
-.app-panel-step-num {
-  flex: 0 0 auto;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 25px;
-  height: 25px;
-  border-radius: 50%;
-  font-size: 12px;
-  font-weight: 650;
-  color: var(--fg-muted);
-  background: var(--bg-alt);
-  border: 1px solid var(--border);
-  z-index: 1;
-}
-
-.app-panel-step-text {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  padding-top: 2px;
-  min-width: 0;
-}
-
-.app-panel-step-title {
-  font-size: 13px;
-  font-weight: 650;
-}
-
-.app-panel-step-desc {
-  font-size: 12.5px;
-  line-height: 1.5;
-  color: var(--fg-muted);
-  max-width: 58ch;
-}
-
-/* Three explainer cards in a row; they stack once the panel is narrow. */
-.app-panel-facts {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 12px;
-}
-
-@media (max-width: 800px) {
-  .app-panel-facts {
-    grid-template-columns: 1fr;
-  }
-}
-
-.app-panel-fact {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 5px;
-  min-width: 0;
-  padding: 16px;
-  background: var(--bg-alt);
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  transition: border-color 120ms ease;
-}
-
-.app-panel-fact:hover {
-  border-color: color-mix(in srgb, var(--fg-muted) 35%, var(--border));
-}
-
-.app-panel-fact-glyph {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 32px;
-  height: 32px;
-  border-radius: 8px;
-  background: color-mix(in srgb, currentColor 12%, transparent);
-  border: 1px solid color-mix(in srgb, currentColor 22%, transparent);
-  margin-bottom: 4px;
-}
-
-.app-panel-fact-title {
-  font-size: 13px;
-  font-weight: 650;
-}
-
-.app-panel-fact-desc {
-  font-size: 12.5px;
-  line-height: 1.45;
-  color: var(--fg-muted);
-}
-
-.app-panel-form {
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-  max-width: 620px;
-}
-
-.app-panel-foot {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  align-items: center;
-  justify-content: flex-end;
-  padding: 14px 28px;
-  border-top: 1px solid var(--border);
-  background: var(--bg-alt);
-  flex: 0 0 auto;
-}
-
-/* Shortcut hint sits left of the buttons, pushed apart by the margin. */
-.app-panel-hint {
-  margin-right: auto;
-  font-size: 12px;
-  color: var(--fg-muted);
-}
-
-.app-panel-hint kbd {
-  display: inline-block;
-  padding: 1px 5px;
-  font-size: 11px;
-  font-family: inherit;
-  color: var(--fg-muted);
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-bottom-width: 2px;
-  border-radius: 5px;
-}
-
 /* -- Apps hub (/apps) -------------------------------------------------------
    Chrome-free page like Home: scrolling column, centered inner. Tiles reuse
    .home-app / .home-apps; the page adds its own header, search, and tag
@@ -6589,43 +6333,6 @@ select.field-control:has(option[value=""]:checked) {
   max-width: 1120px;
   margin: 0 auto;
   padding: 36px 28px 72px;
-}
-
-.apps-head {
-  margin-bottom: 22px;
-}
-
-.apps-back {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 5px 10px 5px 8px;
-  margin-left: -8px;
-  font-size: 12.5px;
-  color: var(--fg-muted);
-  background: none;
-  border: 1px solid transparent;
-  border-radius: 7px;
-  cursor: pointer;
-}
-
-.apps-back:hover {
-  color: var(--fg);
-  background: var(--bg-alt);
-  border-color: var(--border);
-}
-
-.apps-title {
-  margin: 14px 0 6px;
-  font-size: 24px;
-  font-weight: 700;
-  letter-spacing: -0.01em;
-}
-
-.apps-sub {
-  margin: 0;
-  font-size: 13.5px;
-  color: var(--fg-muted);
 }
 
 .apps-toolbar {

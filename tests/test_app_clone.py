@@ -621,7 +621,7 @@ def test_a_clone_lands_as_an_openable_local_page(h):
     # nothing reads it back (export recomputes it), so a copy here would be write-only clutter.
     assert sorted(p.name for p in pathlib.Path(dest).iterdir()) == ["page.html", "sine.py"]
     assert body["page"] == os.path.join(dest, "page.html")
-    assert body["view"].startswith("/view/")
+    assert body["view"].startswith("/explorer/view/")
     assert h.requests == ["https://open.fused.io/my-link/_clone"]
 
 

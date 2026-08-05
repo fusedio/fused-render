@@ -33,6 +33,7 @@ import subprocess
 import sys
 import threading
 import time
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Body, Header
 
@@ -145,6 +146,97 @@ def api_apps():
             })
     apps.sort(key=lambda a: (a["tag"].lower(), a["name"].lower()))
     return {"apps": apps}
+
+
+# ------------------------------------------------------------------- recents
+#
+# App-builder recents at ~/.fused-render/app_recents.json — its OWN store,
+# fully independent of the explorer's recents.json (shell/recents.py). Entries
+# identify an app by (tag, name), newest-first, deduped, capped. GET filters
+# entries whose app folder is gone (read-only — the folder may come back).
+# The workspace is always local, so plain isdir checks are safe here.
+
+APP_RECENTS_CAP = 20
+
+
+def _app_recents_path() -> str:
+    from fused_render.shell import storage
+
+    return os.path.join(storage.home_dir(), "app_recents.json")
+
+
+def _read_app_recents() -> dict:
+    from fused_render.shell import storage
+
+    data = storage.read_json(_app_recents_path())
+    if not isinstance(data, dict):
+        return {"entries": []}
+    entries = data.get("entries")
+    return {
+        "entries": [
+            e
+            for e in (entries if isinstance(entries, list) else [])
+            if isinstance(e, dict)
+            and isinstance(e.get("tag"), str)
+            and isinstance(e.get("name"), str)
+        ]
+    }
+
+
+@router.get("/api/apps/recents")
+def api_app_recents():
+    root = fused_dir()
+    entries = [
+        e
+        for e in _read_app_recents()["entries"]
+        if os.path.isdir(os.path.join(root, e["tag"], e["name"]))
+    ]
+    return {"entries": entries}
+
+
+@router.post("/api/apps/recents/open")
+def api_app_recent_open(
+    body: dict = Body(...), x_fused: str | None = Header(default=None)
+):
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    from fused_render.shell import storage
+
+    tag, name = body.get("tag"), body.get("name")
+    if not isinstance(tag, str) or not isinstance(name, str) or not tag or not name:
+        return _error("tag and name required", 400)
+    # Only real app folders are recorded — same benign no-op posture as the
+    # explorer's POST /api/recents/open for a non-file url.
+    if "/" in tag or "/" in name or tag.startswith(".") or name.startswith("."):
+        return {"recorded": False}
+    if not os.path.isdir(os.path.join(fused_dir(), tag, name)):
+        return {"recorded": False}
+    title_raw = body.get("title")
+    title = title_raw.strip() if isinstance(title_raw, str) and title_raw.strip() else None
+    data = _read_app_recents()
+    # Dedupe by (tag, name); a title-less re-record keeps the last known title.
+    existing_title = None
+    kept = []
+    for e in data["entries"]:
+        if e["tag"] == tag and e["name"] == name:
+            t = e.get("title")
+            if existing_title is None and isinstance(t, str) and t:
+                existing_title = t
+            continue
+        kept.append(e)
+    entry = {
+        "tag": tag,
+        "name": name,
+        "openedAt": datetime.now(timezone.utc).isoformat(),
+    }
+    if title is not None:
+        entry["title"] = title
+    elif existing_title is not None:
+        entry["title"] = existing_title
+    data["entries"] = [entry, *kept][:APP_RECENTS_CAP]
+    storage.write_json(_app_recents_path(), data)
+    return {"recorded": True}
 
 
 # ------------------------------------------------------------------ creation
