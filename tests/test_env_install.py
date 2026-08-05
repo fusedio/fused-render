@@ -233,6 +233,196 @@ def test_a_stale_uv_override_is_ignored(tmp_path, monkeypatch):
     assert envinstall.uv_bin() != str(tmp_path / "gone")
 
 
+# --- the interpreter script venvs are built on (D214) -------------------------
+
+
+@pytest.fixture
+def _fresh_script_python(monkeypatch):
+    """Drop the per-process interpreter resolution before and after each use.
+
+    The resolution is cached for the life of the process (it costs a subprocess),
+    so without this a test that patches `uv_bin` would either read a verdict a
+    previous test measured under different conditions, or leave its own behind.
+    """
+    envinstall.reset_script_python_cache()
+    yield
+    envinstall.reset_script_python_cache()
+
+
+def _uv_stub(tmp_path, monkeypatch, *, finds=None, installs=None):
+    """A fake `uv` on disk that answers `python find` (and optionally `install`).
+
+    A real subprocess rather than a patched `subprocess.run`: the resolver's whole
+    job is to decide whether an interpreter on this machine actually runs, and a
+    canned return value cannot fail the way a spawn can.
+    """
+    uv = tmp_path / "uv"
+    found = finds or ""
+    uv.write_text(
+        "#!/bin/sh\n"
+        'if [ "$1" = "python" ] && [ "$2" = "find" ]; then\n'
+        f'  [ -n "{found}" ] || exit 1\n'
+        f'  echo "{found}"\n'
+        "  exit 0\n"
+        "fi\n"
+        'if [ "$1" = "python" ] && [ "$2" = "install" ]; then\n'
+        f'  exit {0 if installs else 1}\n'
+        "fi\n"
+        "exit 2\n"
+    )
+    uv.chmod(0o755)
+    monkeypatch.setenv("FUSED_RENDER_UV_BIN", str(uv))
+    return uv
+
+
+def _py312_stub(tmp_path, name="py312", version="3.12"):
+    """An executable that reports `version` — stands in for a real interpreter."""
+    exe = tmp_path / name
+    exe.write_text(f"#!/bin/sh\necho '{version}'\n")
+    exe.chmod(0o755)
+    return exe
+
+
+def test_a_server_already_on_312_builds_script_venvs_from_ITSELF(
+    monkeypatch, _fresh_script_python
+):
+    """None, not a path — and that is the point.
+
+    Every packaged build (DMG's `python@3.12`, the AppImage's and the Windows
+    installer's `uv python install 3.12`) already runs 3.12, and `None` is exactly
+    what the backend has always been given, so `python_identity` produces the
+    IDENTICAL key it produces today. Resolving a uv-managed 3.12 for these users
+    instead would re-key every venv they own and re-download a second CPython to
+    reach a version they already had.
+    """
+    monkeypatch.setattr(envinstall, "_running_version", lambda: (3, 12))
+    assert envinstall.script_python() is None
+    assert envinstall.script_python_ready() is True
+
+
+def test_a_server_on_the_WRONG_version_resolves_a_uv_managed_312(
+    tmp_path, monkeypatch, _fresh_script_python
+):
+    """The reported bug: a 3.14 server built every script venv on cp314, and
+    anything without cp314 wheels (tensorflow) was an unresolvable dead end no
+    rebuild could fix. So a server that is not on 3.12 must not hand its own
+    interpreter to the builder."""
+    exe = _py312_stub(tmp_path)
+    _uv_stub(tmp_path, monkeypatch, finds=str(exe))
+    monkeypatch.setattr(envinstall, "_running_version", lambda: (3, 14))
+    assert envinstall.script_python() == str(exe)
+    assert envinstall.script_python_ready() is True
+
+
+def test_an_interpreter_uv_NAMES_but_that_does_not_run_is_refused(
+    tmp_path, monkeypatch, _fresh_script_python
+):
+    """Resolved is not the same as usable. A path that cannot be spawned would
+    otherwise reach upstream's `python_identity`, which runs it to build the key —
+    turning a bad resolution into a failure on the /api/run request path instead
+    of a fact we established once, ourselves, off it."""
+    _uv_stub(tmp_path, monkeypatch, finds=str(tmp_path / "not-there"))
+    monkeypatch.setattr(envinstall, "_running_version", lambda: (3, 14))
+    assert envinstall.script_python_ready() is False
+
+
+def test_an_interpreter_reporting_the_WRONG_version_is_refused(
+    tmp_path, monkeypatch, _fresh_script_python
+):
+    """One subprocess proves both things at once: that it runs, and that it is
+    the version we asked for. A 3.13 answering a 3.12 request means uv resolved
+    something we did not ask for, and building on it silently defeats the pin."""
+    exe = _py312_stub(tmp_path, name="py313", version="3.13")
+    _uv_stub(tmp_path, monkeypatch, finds=str(exe))
+    monkeypatch.setattr(envinstall, "_running_version", lambda: (3, 14))
+    assert envinstall.script_python_ready() is False
+
+
+def test_no_managed_312_yet_is_NOT_ready_rather_than_an_error(
+    tmp_path, monkeypatch, _fresh_script_python
+):
+    """The state that drives the download: nothing to build on yet, but nothing
+    wrong either. It has to be reportable rather than raised, because the caller
+    (`is_installed`) answers a yes/no question on the request path."""
+    _uv_stub(tmp_path, monkeypatch, finds=None)
+    monkeypatch.setattr(envinstall, "_running_version", lambda: (3, 14))
+    assert envinstall.script_python_ready() is False
+
+
+def test_a_machine_with_no_uv_at_all_keeps_working_as_before(
+    tmp_path, monkeypatch, _fresh_script_python
+):
+    """A source checkout without uv must not become unusable to gain a pin.
+
+    Without uv there is no way to find or fetch a managed 3.12, and upstream's
+    builder already falls back to `<python> -m venv` there. So the answer is the
+    pre-D214 behaviour — build from ours — which is worse than 3.12 but is what
+    that machine could always do, and is a working server rather than a broken one.
+    """
+    monkeypatch.setenv("FUSED_RENDER_UV_BIN", str(tmp_path / "no-uv-here"))
+    monkeypatch.setattr(envinstall, "uv_bin", lambda: None)
+    monkeypatch.setattr(envinstall, "_running_version", lambda: (3, 14))
+    assert envinstall.script_python() is None
+    assert envinstall.script_python_ready() is True
+
+
+def test_an_explicit_script_python_override_wins_but_is_still_probed(
+    tmp_path, monkeypatch, _fresh_script_python
+):
+    """Escape hatch and test seam, mirroring FUSED_RENDER_APP_PYTHON — and probed
+    for the same reason: an override that is not a usable 3.12 is a
+    misconfiguration to refuse, not a reason to build on it."""
+    good = _py312_stub(tmp_path, name="good")
+    monkeypatch.setenv(envinstall._SCRIPT_PYTHON_ENV, str(good))
+    monkeypatch.setattr(envinstall, "_running_version", lambda: (3, 14))
+    assert envinstall.script_python() == str(good)
+
+    envinstall.reset_script_python_cache()
+    monkeypatch.setenv(envinstall._SCRIPT_PYTHON_ENV, str(tmp_path / "absent"))
+    monkeypatch.setattr(envinstall, "uv_bin", lambda: None)
+    assert envinstall.script_python_ready() is False
+
+
+def test_the_interpreter_is_resolved_ONCE_per_process(
+    tmp_path, monkeypatch, _fresh_script_python
+):
+    """It costs a spawn (two, with a `uv python find`), and `is_installed` runs on
+    every /api/run pre-flight. Same reasoning as the venv probe: measure once."""
+    exe = _py312_stub(tmp_path)
+    _uv_stub(tmp_path, monkeypatch, finds=str(exe))
+    monkeypatch.setattr(envinstall, "_running_version", lambda: (3, 14))
+
+    calls = []
+    real = envinstall._probe_python
+
+    def counted(path):
+        calls.append(path)
+        return real(path)
+
+    monkeypatch.setattr(envinstall, "_probe_python", counted)
+    for _ in range(5):
+        envinstall.script_python()
+    assert len(calls) == 1, f"probed {len(calls)} times, not once: {calls}"
+
+
+@requires_fused
+def test_the_venv_key_folds_in_the_RESOLVED_script_interpreter(
+    tmp_path, monkeypatch, _fresh_script_python
+):
+    """The whole point of resolving one: the key the loader computes, and so the
+    directory it fills, must be the key upstream will look in when built from that
+    same interpreter. A resolution that did not reach the key would build 3.12
+    venvs into the 3.14 venv's directory."""
+    from fused.agent_core.backends.local.venvs import requirements_venv_id, venv_key
+
+    exe = _py312_stub(tmp_path)
+    monkeypatch.setattr(envinstall, "_python_executable", lambda: str(exe))
+    reqs = ["pip"]
+    assert envinstall.venv_key_for(reqs) == venv_key(
+        requirements_venv_id(reqs, str(exe))
+    )
+
+
 @requires_fused
 def test_the_ready_marker_is_the_index_of_readiness_not_the_directory(
     tmp_path, monkeypatch

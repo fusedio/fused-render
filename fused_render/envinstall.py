@@ -80,6 +80,50 @@ STAGES = ("spawn", "create", "install", "done")
 # here — a download whose length we cannot see.
 STAGE_PCT = {"spawn": 0, "create": 10, "install": 25, "done": 100}
 
+# The Python version every script venv is built on (D214).
+#
+# Pinned, and pinned to a version the app ALREADY ships, because the base
+# interpreter decides which wheels exist. Before this, the backend inherited
+# whatever interpreter ran the server (`_python_executable()` -> None ->
+# `sys.executable`), so a checkout whose venv uv had built on 3.14 resolved every
+# script venv against cp314 — and a script wanting tensorflow, which publishes no
+# cp314 wheels, was an unresolvable dead end that no rebuild could repair. The
+# error came from uv and named the real cause, but nothing in the flow could act
+# on it.
+#
+# 3.12 and not 3.13: all three installers already ship 3.12 (`python@3.12` in
+# build_dmg.sh, `uv python install 3.12` in build_linux_appimage.sh and
+# build_windows_installer.ps1), so pinning here needs no packaging change, and
+# both run paths — script venvs and the header-less app interpreter — end up on
+# one version instead of two.
+#
+# Deliberately NOT paired with uv's `--prerelease=allow`, which was considered for
+# the same bug: that flag is not "only when nothing else resolves" (that is
+# `if-necessary`) but "consider prereleases for every package", and since uv
+# prefers the highest compatible version it would resolve e.g. tensorflow
+# 2.21.0rc1 over stable 2.20.0. Shipping release-candidate scientific libraries to
+# every user of every app, to work around an interpreter choice, is worse than the
+# bug. On 3.12 the flag is moot anyway.
+SCRIPT_PYTHON_VERSION = "3.12"
+_SCRIPT_PYTHON_VERSION_INFO = tuple(int(p) for p in SCRIPT_PYTHON_VERSION.split("."))
+
+# Escape hatch and test seam: an explicit interpreter to build script venvs from.
+# Mirrors `engine._APP_PYTHON_ENV`, and like it the value is still PROBED — an
+# override that is not a usable 3.12 is a misconfiguration to refuse.
+_SCRIPT_PYTHON_ENV = "FUSED_RENDER_SCRIPT_PYTHON"
+
+# Budget for one interpreter probe (and for `uv python find`). Same 5s, and the
+# same reasoning, as `_VENV_PROBE_TIMEOUT_S`: cold start on a slow volume is why
+# it is not 1s, not why it would be 60.
+_SCRIPT_PYTHON_TIMEOUT_S = 5
+
+# The cached `(interpreter, ready)` resolution; `_UNRESOLVED` until first asked.
+# A sentinel rather than None because None is a MEANINGFUL answer here ("build
+# from ours"), so it cannot double as "not yet measured".
+_UNRESOLVED = object()
+_script_python: object = _UNRESOLVED
+_script_python_lock = threading.Lock()
+
 # How long a claim with no progress record yet is assumed to belong to a caller
 # still inside `Popen` (see _claim_is_stale). Normally microseconds; this only has
 # to exceed a slow spawn. Short, because the window it also covers — the server
@@ -210,6 +254,136 @@ def _python_executable() -> str | None:
     same value the backend will.
     """
     return _backend_attr("_python_executable")
+
+
+def _running_version() -> tuple[int, int]:
+    """This server's own `(major, minor)`. A seam so tests can pin it."""
+    return sys.version_info[:2]
+
+
+def _probe_python(path: str) -> bool:
+    """Does `path` run, AND report `SCRIPT_PYTHON_VERSION`? One subprocess, both.
+
+    Two facts from one spawn because they are one question: an interpreter we
+    cannot start and an interpreter of the wrong version are equally unusable as a
+    base, and asking separately would cost two spawns to learn less.
+
+    Proven here rather than left to upstream. `python_identity` runs the
+    interpreter itself to build the venv key and raises when it cannot — but that
+    happens inside `venv_key_for`, i.e. on the /api/run pre-flight path, so an
+    unusable resolution would surface as a failed *request* instead of a fact we
+    established once, off the request path, and answered `False` to.
+    """
+    try:
+        proc = subprocess.run(
+            [path, "-c", "import sys; print('%d.%d' % sys.version_info[:2])"],
+            capture_output=True, text=True,
+            timeout=_SCRIPT_PYTHON_TIMEOUT_S, close_fds=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        # A spawn that never happened (no such file, not executable) or never
+        # finished (timeout). Either way we have no evidence this is a usable
+        # 3.12, and the whole point of the pin is not to guess.
+        return False
+    return proc.returncode == 0 and proc.stdout.strip() == SCRIPT_PYTHON_VERSION
+
+
+def _resolve_script_python() -> tuple[str | None, bool]:
+    """`(interpreter, ready)` — what script venvs are built from, or why not yet.
+
+    `interpreter` is what the backend should be given: **None means "ours"**, the
+    value the backend has always had, so `python_identity` produces the identical
+    key it produces today. `ready` is False only when this machine has no usable
+    3.12 yet and one has to be downloaded before anything can be keyed at all.
+
+    The order is deliberate:
+
+    1. **An explicit override**, probed. Same contract as
+       `engine._APP_PYTHON_ENV`: an override that is not a usable 3.12 is a
+       misconfiguration to refuse, not a reason to build on it.
+    2. **Ourselves, when we are already 3.12** — and this is the common path, not a
+       shortcut. All three packaged builds run 3.12 (the DMG's `python@3.12`, the
+       AppImage's and the Windows installer's `uv python install 3.12`), and so does
+       a `scripts/dev.sh` checkout since D214. Resolving a uv-MANAGED 3.12 for them
+       instead would re-key every venv they own and download a second CPython to
+       reach a version they already had: `uv python find --managed-python` only
+       matches uv's own registry, and every bundled 3.12 is copied into the payload
+       rather than registered there.
+    3. **A uv-managed 3.12**, probed. This is the path that fixes the reported bug —
+       a server on 3.14 built every script venv on cp314, so a script wanting
+       tensorflow (no cp314 wheels) was an unresolvable dead end that no rebuild
+       could repair. Managed only: no Homebrew, no system python, no PATH search,
+       because the point is a known interpreter rather than whichever 3.12 a machine
+       happens to have.
+    4. **No uv at all -> ours, unpinned.** A source checkout without uv cannot find
+       or fetch a managed anything, and upstream's builder already falls back to
+       `<python> -m venv` there. Degrading to the pre-D214 behaviour leaves that
+       machine exactly as capable as it was; refusing to serve it would be a
+       regression bought with a pin it cannot honour.
+    """
+    override = os.environ.get(_SCRIPT_PYTHON_ENV)
+    if override:
+        return (override, True) if _probe_python(override) else (None, False)
+    if _running_version() == _SCRIPT_PYTHON_VERSION_INFO:
+        return None, True
+    uv = uv_bin()
+    if uv is None:
+        return None, True
+    try:
+        proc = subprocess.run(
+            # --no-project so the answer is about this MACHINE, not the directory
+            # the server happens to have been started from: `uv python find` will
+            # otherwise discover a project/workspace environment first, and which
+            # interpreter script venvs are built on must not depend on cwd.
+            [uv, "python", "find", "--managed-python", "--no-project",
+             SCRIPT_PYTHON_VERSION],
+            capture_output=True, text=True,
+            timeout=_SCRIPT_PYTHON_TIMEOUT_S, close_fds=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None, False
+    found = proc.stdout.strip()
+    if proc.returncode != 0 or not found:
+        # Nothing wrong — just nothing to build on yet. Reported, never raised:
+        # `is_installed` asks this on the request path and needs a yes/no.
+        return None, False
+    return (found, True) if _probe_python(found) else (None, False)
+
+
+def _script_python_resolution() -> tuple[str | None, bool]:
+    """The cached resolution, computed at most once per process.
+
+    Costs up to two spawns, and `is_installed` consults it on every /api/run
+    pre-flight — so, exactly as with the venv probe, it is measured once. The fast
+    path reads the cache unlocked, which is safe because the cache only ever goes
+    `_UNRESOLVED -> final`; the lock stops two concurrent pre-flights both paying
+    for the resolve (same shape, and the same reasoning, as
+    `engine._app_interpreter_lock`).
+    """
+    global _script_python
+    if _script_python is not _UNRESOLVED:
+        return _script_python  # type: ignore[return-value]
+    with _script_python_lock:
+        if _script_python is _UNRESOLVED:
+            _script_python = _resolve_script_python()
+        return _script_python  # type: ignore[return-value]
+
+
+def script_python() -> str | None:
+    """The interpreter script venvs are built from; None means "ours"."""
+    return _script_python_resolution()[0]
+
+
+def script_python_ready() -> bool:
+    """False iff a 3.12 has to be downloaded before any venv can be keyed."""
+    return _script_python_resolution()[1]
+
+
+def reset_script_python_cache() -> None:
+    """Forget the resolution. For tests, and for after an interpreter download."""
+    global _script_python
+    with _script_python_lock:
+        _script_python = _UNRESOLVED
 
 
 def venv_key_for(requirements: list[str]) -> str:
