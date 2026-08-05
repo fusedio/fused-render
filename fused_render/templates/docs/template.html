@@ -406,11 +406,18 @@
 
   fused.autoReload(false); // editor must not reload out from under the cursor — own autosave changes mtime; external edits are the conflict lock's job (SPEC LR-5)
 
-  // ---- home screen (no _file): create / open library documents --------------
+  // Open `path` in this template the way slides/excel do: switch the shell's
+  // settable `file` param (updates the address bar, survives a shell reload —
+  // `_file` is reserved and only the shell can set it), then reload to re-run
+  // boot against it. The breadcrumb is pathname-derived and stays on the
+  // launching file, same as slides/excel today.
+  const openPath = (path) => { fused.params.set("file", path); location.reload(); };
+
+  // ---- home screen (no file: create / open library documents) ---------------
   async function showHome() {
     $("home").classList.remove("hidden");
     const run = (params) => fused.runPython("./docs.py", params, { key: null });
-    const goHome = (path) => { const u = new URL(location.href); u.searchParams.set("_file", path); location.href = u.toString(); };
+    const goHome = openPath;
     const listEl = $("homeList");
     const FILE_IC = '<span class="home-card-ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg></span>';
     async function refresh() {
@@ -445,8 +452,10 @@
     await refresh();
   }
 
-  // The target file arrives as the read-only _file param (template contract).
-  const FILE = fused.params.get("_file") || "";
+  // The target file: the shell's read-only `_file` (template contract), unless a
+  // settable `file` param points elsewhere — set when we open/create a document
+  // from here, so it survives reload and shows in the URL (like slides/excel).
+  const FILE = fused.params.get("file") || fused.params.get("_file") || "";
   if (!FILE) {
     // No file: show the Home screen — create a new document, or open one from
     // the library. Selecting a doc renavigates this frame with its path as
@@ -1457,7 +1466,7 @@
     let res;
     try { res = await py({ action: "new", title: "Untitled document" }); }
     catch (e) { toast("Could not create document: " + e.message); return; }
-    const u = new URL(location.href); u.searchParams.set("_file", res.path); location.href = u.toString();
+    openPath(res.path);
   }
 
   // First manual Save of an untitled draft: same folder browser, but it binds
@@ -1536,7 +1545,7 @@
             const res = await py({ action: "save_new", html: docToSaveHtml(S.view.state.doc),
               path: name, directory: curDir, file: FILE });
             if (res.error) { toast("Save failed: " + res.error); return; }
-            const u = new URL(location.href); u.searchParams.set("_file", res.path); location.href = u.toString();
+            openPath(res.path);
             return;
           }
           const res = await py({ action: "save_as", html: docToSaveHtml(S.view.state.doc),
