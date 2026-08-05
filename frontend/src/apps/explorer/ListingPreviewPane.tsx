@@ -201,49 +201,40 @@ export default function ListingPreviewPane({
 
   // --- the pane's mode list ---------------------------------------------------
 
-  // Registry templates the pane can embed as an iframe. `_listing` gets its
-  // own PaneMode below (folders — it mounts the embedded Listing, no iframe);
-  // on a FILE a `_listing` bind (rare registry rebind) is dropped entirely:
-  // the pane has no slot for a full listing of a file.
+  // Mode order = pane priority. The special `_app` mode leads when a lone
+  // app exists; after it the template system's own order stands untouched —
+  // `_listing` stays exactly where the registry ranks it (typically ahead of
+  // claude/git), rendered as the embedded Listing rather than an iframe. On a
+  // FILE a `_listing` bind (rare registry rebind) is dropped entirely: the
+  // pane has no slot for a full listing of a file. Same for a SELF target's
+  // `_listing` — that listing is already on the left.
   const allowed = (e: TemplateEntry) =>
     !e.conditional || (info.conditions !== null && info.conditions[e.mode] === true);
   const embeddable = info.templates.filter((e) => e.mode !== "_listing" && allowed(e));
 
-  const modes: PaneMode[] = embeddable.map((e) => ({
-    mode: e.mode,
-    icon: templateModeIcon(e),
-  }));
-  if (row.isDir) {
-    // The lone app outranks the listing: it leads the switcher and wins the
-    // default below when the folder has no template of its own.
-    if (app) {
-      modes.push({ mode: APP_MODE, icon: APP_MODE_ICON });
+  const modes: PaneMode[] = [];
+  if (row.isDir && app) modes.push({ mode: APP_MODE, icon: APP_MODE_ICON });
+  for (const e of info.templates) {
+    if (e.mode === "_listing") {
+      if (row.isDir && !row.self) modes.push({ mode: "_listing", icon: templateModeIcon(e) });
+      continue;
     }
-    if (!row.self) {
-      modes.push({
-        mode: "_listing",
-        icon: templateModeIcon({ mode: "_listing", path: null } as TemplateEntry),
-      });
-    }
+    if (allowed(e)) modes.push({ mode: e.mode, icon: templateModeIcon(e) });
   }
 
-  // Default mode: the folder's/file's own first eligible template (same
-  // unconditional-first rule as Preview, CT-12); a folder without one falls
-  // back to its lone app, then `_listing`; a file to the metadata card
-  // (mode null). While the app probe is still in flight the default is
-  // undecided — skeleton below, so the pane never flashes the listing and
-  // then swaps to the app.
-  const defaultEntry = embeddable.find((e) => !e.conditional) ?? embeddable[0] ?? null;
-  if (row.isDir && !defaultEntry && modeOverride === null && app === undefined) {
+  // While the folder's app probe is still in flight the default is undecided
+  // (`_app` would lead the list) — skeleton, so the pane never flashes some
+  // other mode and then swaps to the app.
+  if (row.isDir && modeOverride === null && app === undefined) {
     return (
       <div className="listing-pane">
         <div className="pane-skel" />
       </div>
     );
   }
-  // A self target with nothing to show (no template, no lone app) gets the
+  // A self target with nothing to show (no app, no template) gets the
   // neutral hint — never its own listing, which is already on the left.
-  if (row.self && !defaultEntry && !app && modeOverride === null) {
+  if (row.self && modes.length === 0) {
     return (
       <div className="listing-pane">
         <div className="pane-center">
@@ -252,16 +243,12 @@ export default function ListingPreviewPane({
       </div>
     );
   }
+  // Default = the first mode in pane priority order; the menu override wins
+  // while it's still offered.
   const activeMode =
     modeOverride !== null && modes.some((m) => m.mode === modeOverride)
       ? modeOverride
-      : defaultEntry
-        ? defaultEntry.mode
-        : row.isDir
-          ? app
-            ? APP_MODE
-            : "_listing"
-          : null;
+      : (modes[0]?.mode ?? null);
   const activeEntry = embeddable.find((e) => e.mode === activeMode) ?? null;
 
   // All-conditional mode list, verdicts still in flight: keep the skeleton —
