@@ -1,6 +1,6 @@
 // The six provider setup flows and the picker that opens them. Each one ends by
 // handing a created remote back to the Add-mount form. Split out of
-// views/Mounts.tsx.
+// shell/Mounts.tsx.
 import { useEffect, useRef, useState } from "react";
 import {
   cancelRemoteOAuth,
@@ -8,21 +8,21 @@ import {
   createRemote,
   getRemoteOAuthStatus,
   startRemoteOAuth,
-} from "../../lib/api";
-import type { RcloneRemote, RemoteOAuthStatus, RemoteSuggestion } from "../../lib/api";
-import { oauthCancelOutcome, oauthTick } from "../../lib/oauth";
-import type { OAuthDecision, OAuthProvider, OAuthProviderKey } from "../../lib/oauth";
+} from "@platform/lib/api";
+import type { RcloneRemote, RemoteOAuthStatus, RemoteSuggestion } from "@platform/lib/api";
+import { oauthCancelOutcome, oauthStandDownTick, oauthTick } from "@platform/lib/oauth";
+import type { OAuthDecision, OAuthProvider, OAuthProviderKey } from "@platform/lib/oauth";
 import {
   clearGoogleClient,
   googleConsoleUrls,
   loadGoogleClient,
   parseGoogleClientJson,
   saveGoogleClient,
-} from "../../lib/google-client";
-import type { GoogleOAuthClient } from "../../lib/google-client";
-import { ErrorBanner } from "../../components/ErrorBanner";
-import { Field, TextInput } from "../../components/field/fields";
-import { ProviderIcon } from "../../components/ProviderIcons";
+} from "@platform/lib/google-client";
+import type { GoogleOAuthClient } from "@platform/lib/google-client";
+import { ErrorBanner } from "@platform/ui/ErrorBanner";
+import { Field, TextInput } from "@platform/ui/field/fields";
+import { ProviderIcon } from "@platform/ui/ProviderIcons";
 
 export function AddRemote({
   onCreated,
@@ -375,7 +375,7 @@ function GoogleClientSetup({
   );
 }
 
-// A browser sign-in for any OAuth provider (D205, D209). The server spawns
+// A browser sign-in for any OAuth provider (D219, D223). The server spawns
 // `rclone authorize "<backend>"`, which runs its own loopback callback server
 // and opens the SYSTEM browser itself — so unlike the Fused login
 // (lib/account.ts) there is no URL for us to window.open, and the client's whole
@@ -424,6 +424,15 @@ export function OAuthSignIn({
   const [name, setName] = useState(firstFree);
   const [replace, setReplace] = useState(false);
   const [connecting, setConnecting] = useState(false);
+  // True from an accepted Cancel until the server confirms the child is gone.
+  // Keeps the Cancel button in place (disabled) rather than restoring the
+  // sign-in button over a port that is still bound.
+  const [standingDown, setStandingDown] = useState(false);
+  // Set when a start was REFUSED because a sign-in is already in flight — some
+  // other attempt (a reloaded page, a closed modal) owns the callback port and
+  // this form has no `connecting` state of its own to cancel. Without a control
+  // here the only way out was the server's 300s timeout.
+  const [blockedByOther, setBlockedByOther] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const timer = useRef<number | null>(null);
   // Bounds on the poll, so a status endpoint that stops answering ends the
@@ -443,6 +452,7 @@ export function OAuthSignIn({
   const finish = (err: string | null) => {
     stopPolling();
     setConnecting(false);
+    setStandingDown(false);
     onBusyChange?.(false);
     setError(err);
   };
@@ -461,6 +471,12 @@ export function OAuthSignIn({
         return;
       case "cancelled":
         finish(null);
+        return;
+      case "standdown":
+        // The kill was accepted; hold the modal (and the port) until the
+        // server's own poll says the child is reaped.
+        setStandingDown(true);
+        startPolling("standdown");
         return;
       case "failed":
         finish(decision.message);
@@ -487,7 +503,10 @@ export function OAuthSignIn({
   // must not stand down (see oauthCancelOutcome). `startedAt` is deliberately
   // not reset by a resume — the wall-clock backstop belongs to the attempt, not
   // to this loop, or a cancel could extend the wait indefinitely.
-  const startPolling = () => {
+  // `mode` picks which rule set reads the tick: "wait" is the consent poll,
+  // "standdown" is the shorter one that runs after an accepted cancel, where a
+  // settled-and-failed status is the user's own click rather than a problem.
+  const startPolling = (mode: "wait" | "standdown" = "wait") => {
     stopPolling();
     failures.current = 0;
     timer.current = window.setInterval(async () => {
@@ -496,21 +515,24 @@ export function OAuthSignIn({
         status = await getRemoteOAuthStatus();
         failures.current = 0;
       } catch {
-        failures.current++; // a null status; oauthTick decides when that's fatal
+        failures.current++; // a null status; the tick decides when that's fatal
       }
       if (timer.current === null) return; // canceled while the fetch was in flight
+      const ctx = {
+        consecutiveFailures: failures.current,
+        elapsedMs: Date.now() - startedAt.current,
+      };
       apply(
-        oauthTick(status, {
-          consecutiveFailures: failures.current,
-          elapsedMs: Date.now() - startedAt.current,
-          label: provider.label,
-        })
+        mode === "standdown"
+          ? oauthStandDownTick(status, ctx)
+          : oauthTick(status, { ...ctx, label: provider.label })
       );
     }, OAUTH_POLL_MS);
   };
 
   const begin = async () => {
     setError(null);
+    setBlockedByOther(false);
     setConnecting(true);
     onBusyChange?.(true);
     failures.current = 0;
@@ -524,6 +546,17 @@ export function OAuthSignIn({
       });
     } catch (e) {
       finish((e as Error).message);
+      // The refusal we can do something about: the server says a sign-in is
+      // already in progress. Its message tells the user to cancel it, but this
+      // form just cleared `connecting`, so the Cancel button went away with it —
+      // leaving nothing to click until port 53682 frees itself 300s later. Ask
+      // the server whether one really is in flight (rather than matching on the
+      // error text) and offer the control if so.
+      try {
+        setBlockedByOther((await getRemoteOAuthStatus()).in_flight);
+      } catch {
+        // No status either — nothing to offer beyond the error already shown.
+      }
       return;
     }
     // Remembered only once the SERVER accepted it — a client it rejected out of
@@ -569,7 +602,24 @@ export function OAuthSignIn({
       startPolling();
       return;
     }
+    // "standdown" resumes the poll too — see apply().
     apply(decision);
+  };
+
+  // Cancel a sign-in this form does not own: the start above was refused
+  // because one is already in flight elsewhere. Deliberately NOT the `cancel`
+  // path — there is no poll to stop, no `connecting` to clear, and no outcome
+  // to report, since whatever remote that attempt creates belongs to the name
+  // IT was started with. All this does is free the port so a retry can work.
+  const cancelOther = async () => {
+    setError(null);
+    setBlockedByOther(false);
+    try {
+      await cancelRemoteOAuth();
+    } catch (e) {
+      setError((e as Error).message);
+      setBlockedByOther(true);
+    }
   };
 
   return (
@@ -612,8 +662,19 @@ export function OAuthSignIn({
           />
         </Field>
         {connecting ? (
-          <button type="button" className="btn btn-secondary" onClick={cancel}>
-            Cancel
+          // Disabled while standing down: the click has been accepted and the
+          // port is not free yet, so a second one has nothing to do.
+          <button
+            type="button"
+            className="btn btn-secondary"
+            onClick={cancel}
+            disabled={standingDown}
+          >
+            {standingDown ? "Canceling…" : "Cancel"}
+          </button>
+        ) : blockedByOther ? (
+          <button type="button" className="btn btn-secondary" onClick={cancelOther}>
+            Cancel that sign-in
           </button>
         ) : (
           <button
@@ -630,8 +691,9 @@ export function OAuthSignIn({
       )}
       {connecting && (
         <p className="mount-note" role="status">
-          Waiting for you to approve access in your browser… If no tab opened, check for a
-          blocked window.
+          {standingDown
+            ? "Canceling the sign-in — waiting for the server to let go of it."
+            : "Waiting for you to approve access in your browser… If no tab opened, check for a blocked window."}
         </p>
       )}
       {!connecting && collides && (

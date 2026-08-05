@@ -1,4 +1,4 @@
-// The browser sign-in poll's decisions (D205, D209), as pure functions so they
+// The browser sign-in poll's decisions (D219, D223), as pure functions so they
 // can be tested without a component renderer.
 //
 // The flow is: POST to start, then poll the status endpoint until `in_flight`
@@ -52,6 +52,11 @@ export type OAuthDecision =
   | { kind: "wait" } // keep waiting; nothing to show the user yet
   | { kind: "connected" } // the remote exists — refresh and close
   | { kind: "cancelled" } // stood down cleanly; clear state, say nothing
+  // The kill was accepted but the server has not finished recording it. NOT
+  // interchangeable with "cancelled": the callback port is still held, so the
+  // caller must keep waiting (oauthStandDownTick) instead of standing the
+  // sign-in button back up. Only oauthCancelOutcome produces this.
+  | { kind: "standdown" }
   | { kind: "failed"; message: string };
 
 // Consecutive status fetches that may fail before the wait is abandoned. A few
@@ -107,7 +112,11 @@ export function oauthCancelOutcome(
   canceled: boolean,
   status: RemoteOAuthStatus | null
 ): OAuthDecision {
-  if (canceled) return { kind: "cancelled" };
+  // A live child was terminated. The user is done here, but the SERVER is not:
+  // the watcher still has to reap it, and until `in_flight` drops rclone's
+  // callback port stays bound — so closing now hands the user a retry that 409s
+  // on the sign-in they just cancelled. Hand back a stand-down, not a done.
+  if (canceled) return { kind: "standdown" };
   if (status === null) return { kind: "cancelled" }; // can't tell; stand down quietly
   // Still in flight with nothing decided: the CHILD is gone (which is why the
   // cancel found nothing to kill) but the server's watcher is still finalizing
@@ -120,4 +129,37 @@ export function oauthCancelOutcome(
   if (status.in_flight) return { kind: "wait" };
   if (status.ok) return { kind: "connected" };
   return status.error ? { kind: "failed", message: status.error } : { kind: "cancelled" };
+}
+
+// One poll tick while STANDING DOWN (D225): the cancel WAS accepted (a live
+// child was killed) and we are waiting for the server to finish recording it.
+//
+// A separate function from oauthTick because here the expected outcome is a
+// failure — "the … sign-in was canceled" is the server's own error string for
+// precisely what the user just asked for, so raising it in an error banner
+// would be telling them off for their own click. And the wait is not optional
+// housekeeping: `in_flight` dropping is the moment rclone's callback port
+// (127.0.0.1:53682) is free, so standing the button back up before then hands
+// the user a retry that 409s on a sign-in they know they cancelled.
+//
+// Every way of losing the answer — a dead status endpoint, the wall-clock
+// backstop — resolves to `cancelled` rather than `failed`: the child is already
+// terminated, so there is nothing left to warn about.
+export function oauthStandDownTick(
+  status: RemoteOAuthStatus | null,
+  ctx: { consecutiveFailures: number; elapsedMs: number }
+): OAuthDecision {
+  if (status === null) {
+    return ctx.consecutiveFailures >= OAUTH_MAX_POLL_FAILURES
+      ? { kind: "cancelled" }
+      : { kind: "wait" };
+  }
+  if (status.in_flight) {
+    return ctx.elapsedMs > OAUTH_GIVE_UP_MS ? { kind: "cancelled" } : { kind: "wait" };
+  }
+  // Consent can succeed, rclone can print the token and the watcher can create
+  // the remote all before terminate() lands. That remote EXISTS; reporting the
+  // click instead would leave it invisible until a reload.
+  if (status.ok) return { kind: "connected" };
+  return { kind: "cancelled" };
 }

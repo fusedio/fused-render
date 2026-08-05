@@ -1039,7 +1039,7 @@ export interface Mount {
   //    restart (not Reconnect) re-reads the refreshed ones.
   // Both route the user to the single global Restart rclone button.
   restart_reason?: "params" | "credentials" | null;
-  // The mount's async upload queue (D207). null means the question does not
+  // The mount's async upload queue (D221). null means the question does not
   // APPLY — the mount is read-only or not healthy, so it can hold no queue.
   // A read that was attempted and failed comes back as {unknown: true}, which
   // is a different thing and must be shown, not swallowed: with a full VFS
@@ -1216,7 +1216,7 @@ export function createDetectedRemote(id: string): Promise<{ ok: boolean; name: s
   });
 }
 
-// -- Browser sign-in: Google Drive, Dropbox, Box (D205, D209) -----------------
+// -- Browser sign-in: Google Drive, Dropbox, Box (D219, D223) -----------------
 //
 // The server spawns `rclone authorize "<backend>"`, which runs its own loopback
 // callback server and opens the SYSTEM browser itself — unlike the Fused

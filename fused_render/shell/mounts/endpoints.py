@@ -79,7 +79,7 @@ def get_mounts():
                 if st in ("disconnected", "stale"):
                     cred_statuses[i] = _mount_credential_status(m, bin_)
                 elif st == "mounted" and not _effective_serve_read_only(m):
-                    # The async upload queue (D207): only a live, writable mount
+                    # The async upload queue (D221): only a live, writable mount
                     # can have one. Deliberately in THIS worker rather than a
                     # second poll loop — and mutually exclusive with the
                     # credential probe above, so the join budget is unchanged.
@@ -288,7 +288,7 @@ def create_remote(body: dict = Body(...), x_fused: str | None = Header(default=N
     return {"ok": True, "name": name + ":"}
 
 
-# -- OAuth sign-in: Google Drive, Dropbox, Box (D205, D209) ----------------------
+# -- OAuth sign-in: Google Drive, Dropbox, Box (D219, D223) ----------------------
 #
 # `rclone authorize "<backend>"` runs its OWN loopback callback server on
 # 127.0.0.1:53682, opens the system browser, and prints the OAuth token JSON on
@@ -617,7 +617,7 @@ def _authorize_outcome(job: _ActiveAuthorize) -> str | None:
     """Finish the attempt: the error message, or None when the remote was
     created. Runs on the watcher thread — the endpoint is long gone.
 
-    Every user-visible string names the PROVIDER's label (D209): these read
+    Every user-visible string names the PROVIDER's label (D223): these read
     "the Google sign-in …" for all three backends before the registry, which
     was simply wrong for a Dropbox or Box user."""
     label = _OAUTH_PROVIDERS[job.provider]["label"]
@@ -840,8 +840,8 @@ def start_remote_oauth(body: dict = Body(...), x_fused: str | None = Header(defa
     # opened, which is stale for the whole sign-in window and absent entirely
     # for any non-UI caller. Refused before the browser opens, not after the
     # user has consented to something we then throw away.
-    if not replace and any(r["name"] == f"{name}:"
-                           for r in _rclone_state().get("remotes", [])):
+    exists = any(r["name"] == f"{name}:" for r in _rclone_state().get("remotes", []))
+    if not replace and exists:
         return JSONResponse(
             {"error": f"a remote named '{name}' already exists — pick another name, "
                       f"or confirm replacing it"},
@@ -857,7 +857,16 @@ def start_remote_oauth(body: dict = Body(...), x_fused: str | None = Header(defa
                 {"error": "a sign-in is already in progress — finish or cancel it first"},
                 status_code=409)
         try:
-            _authorize = _start_authorize(bin_, name, provider, replacing=replace,
+            # `replacing` is what the ROLLBACK reads (D226), so it must mean "a remote
+            # was already here", not "the caller ticked a box". `replace` is only
+            # permission to overwrite: the checkbox stays ticked while the user
+            # edits the name to a free one, and a request that arrives with
+            # replace=true for a name that does not exist used to mark the
+            # brand-new remote as replacing — which is exactly the case the
+            # rollback skips, leaving behind the half-created remote it was
+            # added to prevent.
+            _authorize = _start_authorize(bin_, name, provider,
+                                          replacing=replace and exists,
                                           client_id=client_id,
                                           client_secret=client_secret)
         except OSError as e:

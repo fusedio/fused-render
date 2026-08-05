@@ -1,14 +1,14 @@
 // The mount list: one card per mount, with its health dot, upload queue and
-// per-mount actions. Split out of views/Mounts.tsx, which is now just the page.
+// per-mount actions. Split out of shell/Mounts.tsx, which is now just the page.
 import { useState } from "react";
-import { deleteMount, reconnectMount } from "../../lib/api";
-import type { Mount, MountUploads } from "../../lib/api";
-import type { RcloneRemote } from "../../lib/api";
-import { navigate } from "../../lib/router";
-import { uploadNotice } from "../../lib/uploads";
-import { ErrorBanner } from "../../components/ErrorBanner";
-import { ProviderIcon } from "../../components/ProviderIcons";
-import type { ProviderIconKey } from "../../components/ProviderIcons";
+import { deleteMount, reconnectMount } from "@platform/lib/api";
+import type { Mount, MountUploads } from "@platform/lib/api";
+import type { RcloneRemote } from "@platform/lib/api";
+import { navigate } from "@platform/lib/router";
+import { uploadNotice } from "@platform/lib/uploads";
+import { ErrorBanner } from "@platform/ui/ErrorBanner";
+import { ProviderIcon } from "@platform/ui/ProviderIcons";
+import type { ProviderIconKey } from "@platform/ui/ProviderIcons";
 
 // The card's mark, from the SERVER's classification of the remote behind the
 // mount — never from sniffing its name. The server only tells us the coarse
@@ -25,7 +25,7 @@ function markFor(remoteSpec: string, remotes: RcloneRemote[]): ProviderIconKey {
   return r.provider === "s3" || r.provider === "gcs" ? "detected" : "s3compat";
 }
 
-// Files written to this mount that haven't reached the remote yet (D207).
+// Files written to this mount that haven't reached the remote yet (D221).
 // Worth its own line because a mount caches writes locally and uploads them
 // afterwards: the user already saw the save succeed, so a rejection at the
 // remote (quota, permissions, a revoked token) is otherwise completely

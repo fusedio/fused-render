@@ -2,7 +2,7 @@
 // be tested without a renderer (the same split lib/oauth.ts and lib/uploads.ts
 // use). Everything here answers one question about a pasted link or an existing
 // set of remotes; nothing here touches React or the network.
-import type { RemoteKind, RemoteProvider } from "../../lib/api";
+import type { RemoteKind, RemoteProvider } from "@platform/lib/api";
 
 // A storage location pasted as a URL, reduced to the rclone-relative form the
 // Path field wants: a provider ("s3" | "gcs") and a `bucket/prefix` string (the
@@ -13,6 +13,11 @@ export type ParsedLink = { provider: "s3" | "gcs"; path: string };
 // Strip leading slashes and trailing whitespace; rclone paths are relative to
 // the remote and never start with "/".
 const stripLead = (p: string) => p.replace(/^\/+/, "").replace(/\s+$/, "");
+// The Google Cloud console's view state, as a matrix parameter on the segment
+// the view is about: ";tab=objects", ";tab=live_object", ";tab=permissions".
+// Anchored and narrow (a bare ";" is legal in an object name) so only console
+// chrome is removed.
+const TAB_PARAM = /;tab=[A-Za-z0-9_-]+$/;
 const joinPath = (bucket: string, rest: string) => {
   const r = stripLead(rest);
   return r ? `${bucket}/${r}` : bucket;
@@ -70,12 +75,22 @@ export function parseStorageUrl(raw: string): ParsedLink | null {
     // path no remote could ever serve.
     if (rest[0] === "_details") rest.shift();
     if (!rest.length) return null;
-    // The console hangs matrix parameters on the BUCKET segment
-    // ("my-bucket;tab=objects"). That is UI state, not part of the name.
-    // Stripped from the bucket only: ";" is legal in an object name, so doing
-    // this to every segment would corrupt real keys.
+    // The console hangs matrix parameters on whichever segment its current view
+    // is about: the BUCKET on a bucket view ("my-bucket;tab=objects") and the
+    // OBJECT on a details view (".../_details/b/k/file.csv;tab=live_object").
+    // Both are UI state, not part of the name — and leaving the object one on
+    // pointed the mount at a key that does not exist.
+    //
+    // Only the FIRST and LAST segments are cleaned, and the last one only of a
+    // trailing ";tab=<word>": ";" is legal in an object name, so a blanket
+    // split(";") over every segment would corrupt real keys.
     rest[0] = rest[0].split(";")[0];
     if (!rest[0]) return null;
+    const tail = rest.length - 1;
+    if (tail > 0) {
+      rest[tail] = rest[tail].replace(TAB_PARAM, "");
+      if (!rest[tail]) rest.pop();
+    }
     const base = rest.join("/");
     // ?prefix= appears on the BUCKET view, where it carries the whole key path;
     // a deeper URL already encodes that path in its segments, so appending

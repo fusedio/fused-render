@@ -829,7 +829,7 @@ def reconnect_mount(m: dict) -> str | None:
 PROBE_TIMEOUT = 3.0
 
 # How long a health listdir may be outstanding before the mount is called
-# disconnected rather than merely slow (D208).
+# disconnected rather than merely slow (D222).
 #
 # The number has to clear the worst SLOW-BUT-HEALTHY case by a comfortable
 # margin, because everything under it reports "mounted": measured on a real
@@ -863,7 +863,7 @@ def _claim_listdir(mp: str) -> dict | None:
 
     2. It records SINCE WHEN, which is what lets a join timeout distinguish
        "slow" from "never coming back". Without it the two are indistinguishable
-       from outside, and D208's fix — publish "mounted" before the listdir —
+       from outside, and D222's fix — publish "mounted" before the listdir —
        would report a green dot for the entire duration of a dead backend.
     """
     with _LISTDIR_LOCK:
@@ -905,7 +905,7 @@ def _mount_upload_status(m: dict) -> dict:
     "failed", "failed_names"} — or _upload_unknown(...) when the queue could not
     be read.
 
-    Why this exists (D207): VFS_OPT sets CacheMode "full", so a write returns
+    Why this exists (D221): VFS_OPT sets CacheMode "full", so a write returns
     success the moment it lands in the local cache and the actual upload happens
     afterwards. A quota or permission rejection at the remote therefore shows up
     nowhere the user looks — they saw the save succeed. rcd's `vfs/queue` is the
@@ -1033,7 +1033,7 @@ def mount_state(m: dict, rcd_mounts: set, timeout: float = PROBE_TIMEOUT,
                 out["state"] = "disconnected"
             else:
                 # The fast verdict is published BEFORE the slow listdir runs,
-                # and that ordering is the whole point (D208). A probe that
+                # and that ordering is the whole point (D222). A probe that
                 # merely OUTRUNS `timeout` proves nothing about health — but
                 # the join below can only fall back to out's default, so an
                 # unwritten `out` reads "disconnected". Measured on a real
@@ -1067,7 +1067,7 @@ def mount_state(m: dict, rcd_mounts: set, timeout: float = PROBE_TIMEOUT,
                 if inflight is not None:
                     # Someone else's listdir is still out. How long it has been
                     # out is the whole signal: under the threshold it is the
-                    # slow-Drive case D208 exists to keep green; over it, the
+                    # slow-Drive case D222 exists to keep green; over it, the
                     # readdir is not slow, it is gone.
                     waiting = time.monotonic() - inflight["since"]
                     if waiting >= LISTDIR_STUCK_AFTER:
@@ -1092,7 +1092,7 @@ def mount_state(m: dict, rcd_mounts: set, timeout: float = PROBE_TIMEOUT,
             out["state"] = "disconnected"
         except Exception:
             # NOT redundant with the OSError branch. Because "mounted" is
-            # committed BEFORE the risky call (that is D208's whole mechanism),
+            # committed BEFORE the risky call (that is D222's whole mechanism),
             # any other escape would leave a false healthy behind and then die
             # via threading.excepthook — never reaching logger, and never
             # reaching get_mounts' own `except Exception`, which is on a
@@ -1195,7 +1195,7 @@ def mount_view(m: dict, rcd_mounts: set | None = None, state: str | None = None,
         # a cred_status probed off the serial path, so building a view never
         # blocks on a per-mount `rclone lsd`.
         "restart_reason": mount_restart_reason(m, listed, state, cred_status),
-        # Async upload queue (D207), or None when it wasn't read (an unhealthy
+        # Async upload queue (D221), or None when it wasn't read (an unhealthy
         # or read-only mount) or couldn't be. NEVER probed here — only the bulk
         # get_mounts path, which threads it off the serial view-building loop,
         # supplies it; a per-view rc call would put one on every mount_view

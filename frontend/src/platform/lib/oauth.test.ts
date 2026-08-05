@@ -2,7 +2,7 @@
 // waiting forever: a poll that only stops on a good answer leaves the user on a
 // spinner with no way to learn whether their account was connected.
 //
-// Provider-generic since D209: the label travels with the poll, so the same
+// Provider-generic since D223: the label travels with the poll, so the same
 // rules cover Google Drive, Dropbox and Box.
 import { expect, test } from "bun:test";
 
@@ -13,6 +13,7 @@ import {
   genericFailMsg,
   lostContactMsg,
   oauthCancelOutcome,
+  oauthStandDownTick,
   oauthTick,
   timedOutMsg,
 } from "./oauth";
@@ -102,8 +103,12 @@ test("a success arriving on the same tick as the deadline still counts", () => {
 
 // -- cancel --------------------------------------------------------------------
 
-test("a cancel that killed a live child stands down quietly", () => {
-  expect(oauthCancelOutcome(true, null)).toEqual({ kind: "cancelled" });
+test("a cancel that killed a live child waits for the server to stand down", () => {
+  // NOT "cancelled": terminate() only starts the teardown. Until in_flight
+  // drops, rclone's callback server still holds 127.0.0.1:53682, so a button
+  // handed straight back to the user buys them a 409 on the sign-in they just
+  // cancelled.
+  expect(oauthCancelOutcome(true, null)).toEqual({ kind: "standdown" });
 });
 
 test("cancelling AFTER the sign-in completed reports the connection", () => {
@@ -168,8 +173,53 @@ test("a settled status still decides, even when the cancel found nothing to kill
   });
 });
 
-test("a cancel that DID kill a live child never waits", () => {
-  // canceled:true means the child is gone by our own hand; there is nothing
-  // left to finalize and no outcome worth deferring for.
-  expect(oauthCancelOutcome(true, inFlight)).toEqual({ kind: "cancelled" });
+test("a cancel that DID kill a live child never re-enters the normal wait", () => {
+  // canceled:true is decided without consulting the status at all: the child is
+  // gone by our own hand, so there is no consent outcome left to wait FOR — only
+  // the server's own teardown, which is a different poll (oauthStandDownTick).
+  expect(oauthCancelOutcome(true, inFlight)).toEqual({ kind: "standdown" });
+  expect(oauthCancelOutcome(true, succeeded)).toEqual({ kind: "standdown" });
+});
+
+// -- standing down after an accepted cancel ------------------------------------
+
+test("standing down waits while the server is still reaping the child", () => {
+  expect(oauthStandDownTick(inFlight, { consecutiveFailures: 0, elapsedMs: 0 })).toEqual({
+    kind: "wait",
+  });
+});
+
+test("standing down completes silently once in_flight drops", () => {
+  // The server's own error string here is "the … sign-in was canceled" — the
+  // user's own click. Surfacing it in the error banner would be telling them off
+  // for it, so a settled-and-failed stand-down is just `cancelled`.
+  expect(
+    oauthStandDownTick(failed("the Google Drive sign-in was canceled"), {
+      consecutiveFailures: 0,
+      elapsedMs: 0,
+    })
+  ).toEqual({ kind: "cancelled" });
+});
+
+test("a remote created before the kill landed is still reported", () => {
+  // Consent can succeed, rclone can print the token and the watcher can create
+  // the remote all inside the gap before terminate() arrives. That remote is
+  // real; dropping it on the floor leaves it invisible until a reload.
+  expect(oauthStandDownTick(succeeded, { consecutiveFailures: 0, elapsedMs: 0 })).toEqual({
+    kind: "connected",
+  });
+});
+
+test("a stand-down that loses contact ends quietly rather than warning", () => {
+  // Both give-up paths resolve to cancelled: the child is already terminated, so
+  // there is nothing left for a warning to be about.
+  expect(
+    oauthStandDownTick(null, { consecutiveFailures: OAUTH_MAX_POLL_FAILURES, elapsedMs: 0 })
+  ).toEqual({ kind: "cancelled" });
+  expect(
+    oauthStandDownTick(null, { consecutiveFailures: 1, elapsedMs: 0 })
+  ).toEqual({ kind: "wait" });
+  expect(
+    oauthStandDownTick(inFlight, { consecutiveFailures: 0, elapsedMs: OAUTH_GIVE_UP_MS + 1 })
+  ).toEqual({ kind: "cancelled" });
 });

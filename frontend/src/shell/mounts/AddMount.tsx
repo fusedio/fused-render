@@ -12,10 +12,10 @@
 // taxonomy, so connecting Drive and then mounting from it read as two unrelated
 // features; they are the "no link yet" branch of one flow.
 import { useEffect, useRef, useState } from "react";
-import { createDetectedRemote, createMount } from "../../lib/api";
-import type { RcloneRemote, RemoteKind, RemoteSuggestion } from "../../lib/api";
-import { ErrorBanner } from "../../components/ErrorBanner";
-import { Field, Select, TextInput } from "../../components/field/fields";
+import { createDetectedRemote, createMount } from "@platform/lib/api";
+import type { RcloneRemote, RemoteKind, RemoteSuggestion } from "@platform/lib/api";
+import { ErrorBanner } from "@platform/ui/ErrorBanner";
+import { Field, Select, TextInput } from "@platform/ui/field/fields";
 import { ProviderPicker } from "./setup";
 import type { SetupKey } from "./setup";
 import {

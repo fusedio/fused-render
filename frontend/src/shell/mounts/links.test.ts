@@ -58,6 +58,35 @@ test("a GCS console link strips the matrix parameter off the bucket", () => {
   ).toEqual({ provider: "gcs", path: "my-bucket" });
 });
 
+test("a GCS console object-detail link strips the matrix parameter off the OBJECT", () => {
+  // The regression: ";tab=…" was only ever taken off the bucket segment, but a
+  // real address-bar copy of the object view hangs it on the KEY. The suffix
+  // survived into `path`, so the mount pointed at a key that does not exist —
+  // and, since ".tif;tab=live_object" no longer looks like a file extension,
+  // mountRootForLink stopped trimming to the dataset root as well.
+  expect(
+    parseStorageUrl(
+      "https://console.cloud.google.com/storage/browser/_details/my-bucket/a/x.tif;tab=live_object",
+    ),
+  ).toEqual({ provider: "gcs", path: "my-bucket/a/x.tif" });
+  expect(
+    parseStorageUrl(
+      "https://console.cloud.google.com/storage/browser/_details/my-bucket/a/x.tif;tab=live_object?project=p",
+    ),
+  ).toEqual({ provider: "gcs", path: "my-bucket/a/x.tif" });
+});
+
+test("a semicolon INSIDE an object name is left alone", () => {
+  // The reason the strip is anchored on ";tab=<word>" rather than a split(";"):
+  // ";" is a legal character in a GCS object name, and cutting at the first one
+  // would silently truncate a real key.
+  expect(
+    parseStorageUrl(
+      "https://console.cloud.google.com/storage/browser/_details/my-bucket/odd;name.csv",
+    ),
+  ).toEqual({ provider: "gcs", path: "my-bucket/odd;name.csv" });
+});
+
 test("a GCS console bucket link honors ?prefix=, like the S3 branch", () => {
   expect(
     parseStorageUrl(

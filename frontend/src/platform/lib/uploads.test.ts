@@ -1,4 +1,4 @@
-// The mount upload queue's two UI decisions (D207). Both are about telling
+// The mount upload queue's two UI decisions (D221). Both are about telling
 // "verified clear" apart from "we don't know", which is the difference between
 // an honest card and a false all-clear over files that never left the machine.
 import { expect, test } from "bun:test";

@@ -1398,7 +1398,7 @@ def test_mounted_paths_empty_when_rcd_down(home):
     assert mounts_mod.mounted_paths() == set()
 
 
-# -- async upload queue (D207) ---------------------------------------------------
+# -- async upload queue (D221) ---------------------------------------------------
 #
 # With CacheMode "full" a write returns success once it lands in the local VFS
 # cache, so a quota/permission rejection at the remote is invisible: the user
@@ -1700,7 +1700,7 @@ def _spawn_python(monkeypatch, script, record=None):
 
     `record` collects (bin_, backend, env_extra) so a test can assert BOTH the
     argv the child would have had and the environment the client id/secret
-    travel in (D209) — the two halves of "no secret on argv"."""
+    travel in (D223) — the two halves of "no secret on argv"."""
     import subprocess
     import sys
 
@@ -1715,7 +1715,7 @@ def _spawn_python(monkeypatch, script, record=None):
     monkeypatch.setattr(mounts_mod.endpoints, "_spawn_authorize", spawn)
 
 
-# Drive now REQUIRES a user-supplied OAuth client (D205 as rewritten): rclone's
+# Drive now REQUIRES a user-supplied OAuth client (D219 as rewritten): rclone's
 # shared client ID is being retired, so every Drive request below carries one.
 DRIVE_BODY = {"name": "gdrive", "client_id": "cid.apps.googleusercontent.com",
               "client_secret": "csecret"}
@@ -1831,7 +1831,7 @@ def test_drive_oauth_creates_the_remote_over_rcd(client, rcd, monkeypatch):
     # ever sees files this app created), and skip_gdocs because Docs/Sheets have
     # no byte representation and would look editable but never round-trip.
     # The client id/secret are persisted with the remote so rclone can refresh
-    # the token later — its shared client ID is being retired (D205).
+    # the token later — its shared client ID is being retired (D219).
     assert body["parameters"] == {
         "token": DRIVE_TOKEN, "scope": "drive", "skip_gdocs": "true",
         "client_id": DRIVE_BODY["client_id"],
@@ -1960,6 +1960,30 @@ def test_drive_oauth_does_not_roll_back_over_a_replaced_remote(client, rcd, monk
     assert not any(meth == "config/delete" for meth, _ in rcd.calls)
 
 
+def test_drive_oauth_rolls_back_when_replace_was_asked_for_a_FREE_name(
+        client, rcd, monkeypatch):
+    """`replacing` must mean "a remote was already here", not "the caller ticked
+    the box". The Replace checkbox stays ticked while the user edits the name to
+    a free one, so replace=true arrives for a name that does not exist — and
+    reading the flag verbatim marked that brand-new remote as replacing, which
+    is precisely the case the rollback skips. The half-created remote the
+    rollback exists to prevent was left behind."""
+    _drive_ready(monkeypatch, rcd)
+    # gdrive exists; the request names gdrive-2, which does not.
+    _fake_rclone(monkeypatch, existing_remotes=("gdrive:",))
+    rcd.responses["config/create"] = (500, {"error": "timed out"})
+    rcd.responses["config/delete"] = {}
+    _spawn_python(monkeypatch, f'print("{AUTHORIZE_OK}")')
+    r = client.post("/api/mounts/remotes/oauth",
+                    json={**DRIVE_BODY, "name": "gdrive-2", "replace": True},
+                    headers=FUSED)
+    assert r.status_code == 200
+    s = _wait_oauth(client)
+    assert s["ok"] is False
+    deleted = [b for meth, b in rcd.calls if meth == "config/delete"]
+    assert deleted == [{"name": "gdrive-2"}]
+
+
 def test_drive_oauth_never_leaks_the_token_into_an_error(client, rcd, monkeypatch):
     # The token blob lands on stdout; error text is built from stderr (plus
     # token-free stdout), so a failure message can't carry the credential into
@@ -2057,7 +2081,7 @@ def test_drive_oauth_cancel_with_nothing_in_flight_is_a_no_op(client):
     assert r.status_code == 200 and r.json()["canceled"] is False
 
 
-# -- the provider registry: Drive, Dropbox, Box (D209) ---------------------------
+# -- the provider registry: Drive, Dropbox, Box (D223) ---------------------------
 #
 # The same authorize child for all three; what differs is the rclone backend
 # type, the extra config params, and — for Drive alone — a user-supplied OAuth
@@ -2128,7 +2152,7 @@ def test_oauth_drive_client_id_must_be_a_string(client, rcd, monkeypatch):
 
 def test_oauth_client_credentials_travel_in_the_env_not_argv(client, rcd,
                                                              monkeypatch):
-    """D209. `rclone authorize drive <id> <secret>` takes them POSITIONALLY,
+    """D223. `rclone authorize drive <id> <secret>` takes them POSITIONALLY,
     and /proc/<pid>/cmdline is world-readable (-r--r--r--) while
     /proc/<pid>/environ is owner-only (-r--------). So the secret goes in the
     environment; argv must stay exactly what it was."""
@@ -2684,7 +2708,7 @@ def _fake_remote_config(monkeypatch, cfg):
 def test_mount_credential_status_probes_a_drive_remote(monkeypatch):
     """A Drive mount's token is exactly the kind of credential that goes bad on
     its own (revoked in the Google account, or expired because the OAuth client
-    was left in Testing mode). Before D205 the gate was env_auth-only, so a
+    was left in Testing mode). Before D219 the gate was env_auth-only, so a
     revoked Drive token returned "n/a" and fell through to the generic
     "reconnect" message — which cannot fix it. Reconnect never re-authorizes;
     only signing in again does."""
@@ -3129,7 +3153,7 @@ def test_state_disconnected_when_a_slow_listing_then_fails(home, rcd, monkeypatc
 
 # -- the blackhole: a listdir that never answers ---------------------------------
 #
-# D208 publishes "mounted" from the fast checks BEFORE the slow listdir runs, so
+# D222 publishes "mounted" from the fast checks BEFORE the slow listdir runs, so
 # a slow-but-progressing Drive listing stops reading as disconnected. The hole
 # that leaves is a readdir that never returns AT ALL — laptop suspend, VPN drop,
 # dead DNS — where rcd is alive and listing, ismount is true, and _mount_wedged's
@@ -3167,7 +3191,7 @@ def test_state_disconnected_once_a_listdir_has_blackholed_past_the_threshold(
     try:
         live = mounts_mod.mounted_paths()
         # First poll: outstanding but not yet stuck — this is exactly the
-        # slow-Drive case D208 exists to keep green.
+        # slow-Drive case D222 exists to keep green.
         assert mounts_mod.mount_state(c, live, timeout=0.05) == "mounted"
         time.sleep(0.35)
         # Past the threshold the listdir is not slow, it is gone. The user needs
