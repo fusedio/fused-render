@@ -656,8 +656,23 @@ def build_code(user_code: str, script_dir: str, script_path: str = "script") -> 
     The user's source is embedded as a literal and ``exec``'d as **its own
     compile unit under its real filename** — so a leading ``from __future__``
     import stays the first statement of its unit, and every user traceback
-    frame carries the real file and exact line (no offset bookkeeping). The
-    wrapper must NOT chdir before the user code runs: the backend's runner
+    frame carries the real file and exact line (no offset bookkeeping).
+
+    The preamble also defines the module globals the built-in executor's worker
+    gets for free, because it loads the file through
+    ``spec_from_file_location("__fused_module__", path)`` and CPython's import
+    machinery sets them. ``exec(compile(...))`` sets neither: ``compile()``'s
+    filename argument only *labels* code objects for tracebacks, so a script
+    doing ``os.path.dirname(__file__)`` — the ordinary way to find a data file
+    next to your ``.py`` — raised ``NameError`` here while working under the
+    other engine. ``__name__`` is set for the same parity reason; it was
+    inherited from the backend's runner namespace as ``"builtins"``. Neither
+    engine makes ``__name__`` ``"__main__"``, so ``if __name__ ==
+    "__main__":`` blocks stay dormant — templates such as
+    ``geotiff/tile_server.py`` rely on that, using the guard for the
+    subprocess they spawn of themselves.
+
+    The wrapper must NOT chdir before the user code runs: the backend's runner
     reads _params.json from the exec cwd after module-level code finishes, so
     cwd stays on the exec dir until an entrypoint is actually invoked. The
     epilogue then:
@@ -683,6 +698,8 @@ def build_code(user_code: str, script_dir: str, script_path: str = "script") -> 
     preamble = (
         f"import os as _fused_os, sys as _fused_sys\n"
         f"_fused_sys.path.insert(0, {script_dir!r})\n"
+        f"__file__ = {script_path!r}\n"
+        f'__name__ = "__fused_module__"\n'
         f"exec(compile({user_code!r}, {script_path!r}, 'exec'), globals())\n"
     )
     epilogue = f"""

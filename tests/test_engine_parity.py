@@ -87,6 +87,22 @@ CASES = [
         {"x": "7"},
         {"result": ["7", "str"]},
     ),
+    # The module globals a script runs under are part of the contract too, not
+    # just the params. The built-in worker loads the file through
+    # `spec_from_file_location`, so CPython's import machinery defines `__file__`
+    # and `__name__`; the fused wrapper `exec`s a compiled string, where neither
+    # is defined unless the wrapper puts it there. It didn't, so `__file__` was a
+    # NameError under one engine and the script's real path under the other —
+    # the single most common thing a page's `.py` reaches for, since it is how
+    # you find a data file sitting next to your script. Basenames, not full
+    # paths: each engine writes its target under its own tmp subdir.
+    (
+        "dunder-file-at-module-level",
+        "import os\n_HERE = os.path.basename(os.path.abspath(__file__))\ndef main():\n    return _HERE\n",
+        {},
+        {"result": "target.py"},
+    ),
+    ("dunder-name", "_N = __name__\ndef main():\n    return _N\n", {}, {"result": "__fused_module__"}),
     ("missing-required", "def main(x: int):\n    return x\n", {}, {"type": "ParamError"}),
     ("uncoercible-int", "def main(n: int = 1):\n    return n\n", {"n": "abc"}, {"type": "ParamError"}),
     ("uncoercible-float", "def main(f: float = 0.0):\n    return f\n", {"f": "not-a-number"}, {"type": "ParamError"}),

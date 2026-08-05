@@ -152,6 +152,37 @@ def test_binding_logic_comes_from_binding_py_not_a_copy(tmp_path, monkeypatch):
         _run_wrapped(tmp_path, "def main(x: int):\n    return x\n", {})
 
 
+def test_the_script_gets_its_own_path_as_dunder_file(tmp_path):
+    """`__file__` must be the script's real absolute path, at module level.
+
+    Passing the path as `compile()`'s filename — which the wrapper already did —
+    only labels code objects for tracebacks; it does not define the *name*
+    `__file__` in the exec globals. So `os.path.dirname(__file__)`, the ordinary
+    way a page finds a data file next to its `.py`, raised NameError under this
+    engine while working under the built-in one.
+    """
+    g = _run_wrapped(tmp_path, "_F = __file__\ndef main():\n    return _F\n", {})
+    assert g["result"] == str(tmp_path / "page" / "target.py")
+
+
+def test_the_script_gets_the_same_dunder_name_as_the_builtin_worker(tmp_path):
+    # _child.py loads the file as spec_from_file_location("__fused_module__"),
+    # so that is the name to match. Before this it was inherited from the
+    # backend's runner namespace and came out as "builtins" — which no script
+    # could sensibly branch on, and which differed from the other engine.
+    g = _run_wrapped(tmp_path, "_N = __name__\ndef main():\n    return _N\n", {})
+    assert g["result"] == "__fused_module__"
+
+
+def test_neither_dunder_makes_a_script_look_like_main(tmp_path):
+    # `if __name__ == "__main__":` blocks stay dormant under both engines —
+    # templates like geotiff/tile_server.py use that guard for the *subprocess*
+    # they spawn of themselves, and it must not fire on the exec'd entry.
+    src = "_RAN = False\nif __name__ == '__main__':\n    _RAN = True\ndef main():\n    return _RAN\n"
+    g = _run_wrapped(tmp_path, src, {})
+    assert g["result"] is False
+
+
 def test_result_script_untouched(tmp_path):
     g = _run_wrapped(tmp_path, "result = {'x': 1}\n", {"ignored": "1"})
     assert g["result"] == {"x": 1}
