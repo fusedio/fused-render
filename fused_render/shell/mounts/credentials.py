@@ -55,14 +55,14 @@ def _credential_suggestions() -> list[dict]:
     from fused_render.shell.mounts import _aws_profiles
     out: list[dict] = [{
         "id": "aws-open-public",
-        "label": "AWS S3 — public buckets (no credentials)",
+        "label": "AWS S3 — public datasets (no credentials)",
         "remote_name": "aws-open",
         "backend": "s3",
         "kind": "public",
         "params": {"provider": "AWS", "env_auth": "false", "region": "us-west-2"},
     }, {
         "id": "gcs-open-public",
-        "label": "Google Cloud Storage — public buckets (no credentials)",
+        "label": "Google Cloud Storage — public datasets (no credentials)",
         "remote_name": "gcs-open",
         "backend": "google cloud storage",
         "kind": "public",
@@ -119,40 +119,85 @@ def _rclone_config_dump(bin_: str) -> dict:
         return {}
 
 
-def _remote_label(remote: str, suggestions: list[dict], configs: dict) -> str:
-    """Friendly label for a materialized rclone remote, so it presents under the
-    SAME human name the suggestion used across its whole lifecycle (e.g. the
-    built-in public option shows as "AWS S3 — public buckets…", not the cryptic
-    "aws-open:" it materializes into). Match against the FULL suggestion set —
-    including ones already materialized, which _suggestions_view drops.
+# rclone backend type → the coarse cloud the client groups a pasted s3://
+# or gs:// link by. Everything else is "other".
+_BACKEND_PROVIDERS = {"s3": "s3", "google cloud storage": "gcs"}
+
+# Backends reached by signing in rather than by credentials on disk, mapped to
+# the name the user knows them by — a browser-connected remote would otherwise
+# show as a bare "gdrive:" with no clue which account or service it is.
+# `type` is the ONLY config key read for these: the rest of their stored config
+# is the OAuth token, which must never reach a client payload.
+_OAUTH_BACKENDS = {"drive": "Google Drive", "dropbox": "Dropbox", "box": "Box"}
+
+
+def _remote_view(remote: str, suggestions: list[dict], configs: dict) -> dict:
+    """{name, label, kind, provider} for a materialized rclone remote.
+
+    `label` presents it under the SAME human name its suggestion used across its
+    whole lifecycle (the built-in public option shows as "AWS S3 — public
+    datasets…", not the cryptic "aws-open:" it materializes into). Match against
+    the FULL suggestion set — including ones already materialized
+    (_suggestions_view flags those `exists`, and this is the label they show
+    under).
 
     Matching is by PROVENANCE, not name alone: the remote's stored config (from
     `rclone config dump`, keyed by bare name) must match the suggestion's backend
     and every param it was created with. A user's own remote that merely happens
     to be named `aws`/`gcs` therefore keeps its bare name instead of inheriting a
     credential-source label it never came from. Values compare case-insensitively
-    (rclone normalizes booleans). No match (e.g. "myminio:") → the bare string."""
+    (rclone normalizes booleans).
+
+    `kind` and `provider` exist so the client can group and match remotes on
+    PROVENANCE too. It used to sniff both out of the name and label ("starts
+    with aws", "label contains 'public'"), which mis-sorted anyone's own remote
+    named `aws-something` — and, worse, made created-ness the grouping axis,
+    since only suggestions carried a real kind. `kind` is the matched
+    suggestion's ('public' / 'detected') or 'other' for a remote the user
+    brought themselves; `provider` comes from the rclone backend type."""
     cfg = configs.get(remote.rstrip(":"), {})
+    backend = str(cfg.get("type", "")).lower()
+    provider = _BACKEND_PROVIDERS.get(backend, "other")
     for s in suggestions:
         if (f'{s["remote_name"]}:' == remote
-                and str(cfg.get("type", "")).lower() == s["backend"].lower()
+                and backend == s["backend"].lower()
                 and all(str(cfg.get(k, "")).lower() == str(v).lower()
                         for k, v in s["params"].items())):
-            return s["label"]
-    return remote
+            return {"name": remote, "label": s["label"],
+                    "kind": s.get("kind", "detected"), "provider": provider}
+    bare = remote.rstrip(":")
+    label = (f"{_OAUTH_BACKENDS[backend]} — {bare}" if backend in _OAUTH_BACKENDS
+             else remote)
+    return {"name": remote, "label": label, "kind": "other",
+            "provider": provider}
 
 
 def _suggestions_view(remotes: list[str]) -> list[dict]:
-    """Public shape, minus any suggestion already materialized as a remote (so
-    the built-in aws-open drops out of the suggestions once created and shows
-    under Remotes instead). `kind` groups them in the dropdown: 'public' vs the
-    default 'detected'."""
+    """Public shape of EVERY suggestion, each flagged with `exists`: whether its
+    remote has already been materialized.
+
+    Nothing is dropped. This used to omit the already-created ones, which broke
+    the "Public datasets" panel: that panel describes what is POSSIBLE, so once
+    aws-open: existed it silently showed a single lone GCS card and read as
+    half-loaded. The panel now renders the created ones in an "already added"
+    state instead.
+
+    Consumers that CREATE from a suggestion (the Add-mount Remote dropdown,
+    which submits `suggest:<id>`) must filter on `exists` themselves — offering
+    an existing one would 409 or duplicate.
+
+    `kind` ('public' vs the default 'detected') and `provider` are the SAME
+    fields _remote_view puts on a materialized remote, and mean the same thing:
+    the dropdown groups a suggestion and the remote it becomes into one group,
+    because created-ness is an implementation detail and not something a user
+    thinks in."""
     from fused_render.shell.mounts import _credential_suggestions
     return [
         {"id": s["id"], "label": s["label"], "remote_name": s["remote_name"],
-         "kind": s.get("kind", "detected")}
+         "kind": s.get("kind", "detected"),
+         "provider": _BACKEND_PROVIDERS.get(s["backend"].lower(), "other"),
+         "exists": f'{s["remote_name"]}:' in remotes}
         for s in _credential_suggestions()
-        if f'{s["remote_name"]}:' not in remotes
     ]
 
 
@@ -160,21 +205,22 @@ def _rclone_state_view(version: str | None, names: list[str],
                        bin_: str | None) -> dict:
     """Assemble the available:True payload from a version string and the remote
     names (each carrying its verbatim rclone spec, incl trailing ':', used
-    unchanged as the mount base). Each remote also gets a friendly `label` so it
-    reads under one stable human name whatever its lifecycle stage. Compute the
-    suggestion set and the config dump once, then label every remote against them
-    (both do I/O, so a per-remote call would be O(N)). `bin_` may be None when a
-    live daemon vouched for rclone but the binary didn't resolve on PATH — the
-    config dump is then skipped and labels degrade to bare names."""
+    unchanged as the mount base). Each remote also gets a friendly `label`, plus
+    the `kind`/`provider` the client groups and matches on — see _remote_view.
+    Compute the suggestion set and the config dump once, then classify every
+    remote against them (both do I/O, so a per-remote call would be O(N)).
+    `bin_` may be None when a live daemon vouched for rclone but the binary
+    didn't resolve on PATH — the config dump is then skipped, so every remote
+    degrades to a bare name under kind 'other'."""
     from fused_render.shell.mounts import (
         _credential_suggestions,
         _rclone_config_dump,
+        _remote_view,
         _suggestions_view,
     )
     suggestions = _credential_suggestions()
     configs = _rclone_config_dump(bin_) if bin_ else {}
-    remotes = [{"name": n, "label": _remote_label(n, suggestions, configs)}
-               for n in names]
+    remotes = [_remote_view(n, suggestions, configs) for n in names]
     return {"available": True, "version": version, "remotes": remotes,
             "suggested": _suggestions_view(names)}
 
@@ -255,7 +301,7 @@ def broken_mount_error(path: str) -> str | None:
         # One probe, three outcomes (see _credential_probe):
         cred_status = _mount_credential_status(m)
         if cred_status == "bad":
-            return f"mount '{name}' — {_CRED_EXPIRED_MSG}"
+            return f"mount '{name}' — {_bad_credential_advice(m)}"
         # "valid": the user re-authed, but the long-lived daemon still holds the
         # pre-refresh keys, so Reconnect (which reuses that daemon) can't help —
         # only a daemon restart re-reads them. "inconclusive"/"n/a" fall through
@@ -390,6 +436,45 @@ _CRED_EXPIRED_MSG = (
 )
 
 
+def _oauth_backend_labels() -> dict[str, str]:
+    """{rclone backend type: display label} for every provider reached through a
+    browser sign-in, read off the ONE registry that defines them
+    (endpoints._OAUTH_PROVIDERS). Imported inside the function because
+    endpoints imports this module — a top-level import would be a cycle — and
+    derived rather than restated so adding a provider there cannot silently
+    leave it with the wrong credential advice here."""
+    from .endpoints import _OAUTH_PROVIDERS
+    return {str(spec["backend"]).lower(): str(spec["label"])
+            for spec in _OAUTH_PROVIDERS.values()}
+
+
+def _oauth_expired_msg(label: str) -> str:
+    """Advice for a revoked/expired OAuth grant. Signing in again is the ONLY
+    remedy — neither Reconnect nor a credential refresh touches it."""
+    return (f"the {label} sign-in has expired or was revoked — sign in to "
+            f"{label} again from the Mounts page in the sidebar")
+
+
+# Kept for the Drive-specific wording callers may still reference.
+_OAUTH_EXPIRED_MSG = _oauth_expired_msg("Google Drive")
+
+
+def _bad_credential_advice(m: dict) -> str:
+    """What to actually DO about a mount whose credentials probe bad. The
+    remedy is not the same for every backend and naming the wrong one is the
+    bug this whole path exists to avoid: a revoked Drive token is not fixed by
+    `aws sso login` any more than it is by Reconnect — and neither is a revoked
+    Dropbox or Box one, which is why this is keyed off the whole provider
+    registry rather than a `type == "drive"` special case."""
+    from fused_render.shell.mounts import _remote_config
+    cfg = _remote_config(m["remote"].partition(":")[0])
+    if isinstance(cfg, dict):
+        label = _oauth_backend_labels().get(str(cfg.get("type", "")).lower())
+        if label:
+            return _oauth_expired_msg(label)
+    return _CRED_EXPIRED_MSG
+
+
 def _credential_probe(bin_: str, name: str) -> str:
     """Tri-state result of a top-level `lsd` against an env_auth remote:
 
@@ -436,12 +521,13 @@ def _detected_credential_error(bin_: str, name: str) -> str | None:
 def _mount_credential_status(m: dict, bin_: str | None = None) -> str:
     """Tri-state credential health of a broken mount's remote, or "n/a":
 
-      "valid" / "bad" / "inconclusive" — the _credential_probe outcome, for an
-                       env_auth remote (see there).
-      "n/a"          — not an env_auth remote (anonymous/public or key-carrying
-                       remotes don't expire this way), or no rclone binary.
+      "valid" / "bad" / "inconclusive" — the _credential_probe outcome, for a
+                       remote whose credentials can expire on their own (see
+                       there and _EXPIRABLE below).
+      "n/a"          — nothing here expires by itself (anonymous/public, or a
+                       key-carrying remote), or no rclone binary.
 
-    Only env_auth remotes are probed, and the probe (an rclone `lsd`) is paid
+    Only expirable remotes are probed, and the probe (an rclone `lsd`) is paid
     only on an already-broken mount, never on a healthy listing. Callers may
     pass a resolved `bin_` to avoid re-resolving rclone per mount."""
     from fused_render.shell.mounts import _remote_config, rclone_bin
@@ -451,6 +537,26 @@ def _mount_credential_status(m: dict, bin_: str | None = None) -> str:
         return "n/a"
     name = m["remote"].partition(":")[0]
     cfg = _remote_config(name)
-    if not isinstance(cfg, dict) or str(cfg.get("env_auth", "")).lower() != "true":
+    if not isinstance(cfg, dict) or not _has_expirable_credentials(cfg):
         return "n/a"
     return _credential_probe(bin_, name)
+
+
+def _has_expirable_credentials(cfg: dict) -> bool:
+    """Whether a remote's config carries a credential that can go bad on its own
+    — the gate on paying for a credential probe.
+
+    Two kinds qualify. `env_auth=true` remotes borrow the ambient AWS/gcloud
+    credential, which is routinely a short-lived SSO/STS token. And OAuth
+    backends — EVERY provider in the registry, not just Drive — hold a refresh
+    token the USER can revoke (or the provider can expire: a Google OAuth client
+    left in Testing mode drops refresh tokens after 7 days). Without them here a
+    revoked token returned "n/a" and the mount fell through to the generic
+    "reconnect" advice, and Reconnect cannot re-authorize anything — only
+    signing in again can.
+
+    Keys pasted into rclone's config are excluded on purpose: they don't expire
+    on their own, so probing them would just spend an `rclone lsd` per broken
+    mount to learn nothing."""
+    return (str(cfg.get("env_auth", "")).lower() == "true"
+            or str(cfg.get("type", "")).lower() in _oauth_backend_labels())
