@@ -28,7 +28,10 @@ Two deliberate choices:
 commands.** That function owns the ready marker, the half-built-directory
 rebuild and the disk-quota diagnostics; a second implementation here would be a
 second thing to keep correct, and — worse — could disagree with the venv key the
-run then looks for.
+run then looks for. It reaches that function by loading upstream's `venvs.py`
+straight off disk (`_venvs_module`) instead of importing it through the `fused`
+package, which drags pandas in for ~500ms; it is the same file either way, so the
+key stays identical.
 
 **Its error text is upstream's, unedited.** `venvs._run_step` raises
 `RuntimeError("Failed to <step>:\\n<stderr>")` with uv's or pip's own stderr in
@@ -135,11 +138,91 @@ def _acquire_python(version):
         )
 
 
+_VENVS_MODULE = "fused.agent_core.backends.local.venvs"
+_VENVS_RELPATH = ("agent_core", "backends", "local", "venvs.py")
+
+# Memoised so a retry inside one worker run does not re-exec the file. One worker
+# builds one venv, so this is thrift rather than necessity — but `_build` is also
+# what the tests call, and a second module object would mean a second identity for
+# `venv_key`, which is the one thing here that must be singular.
+_venvs_cache = []
+
+
+def _venvs_module():
+    """Upstream's `venvs.py`, loaded from its FILE rather than through `fused`.
+
+    Why not the obvious import: `from fused.agent_core.backends.local.venvs
+    import ...` imports every parent package on the way down, so `fused/__init__`
+    runs → `fused.api` → `fused._auth` → `fused.core._cache` →
+    `fused._optional_deps` → **pandas**. Measured with `-X importtime`: ~520ms of
+    the 543ms this worker spent installing one tiny pure-Python package was that
+    chain, to reach a module whose own import costs ~100µs. `venvs.py` imports
+    only stdlib (errno, hashlib, json, logging, os, shutil, subprocess, sys,
+    threading, pathlib), so nothing about it needs the package around it.
+
+    Why this is safe, and the crux of the whole change: it is **literally the same
+    file**, so `venv_key` / `requirements_venv_id` / `ensure_requirements_venv`
+    stay byte-identical to what the server's `envinstall.venv_key_for` composes
+    through the package import. A reimplementation of the key here would agree
+    until upstream changed the recipe and then build a venv `is_installed()` never
+    looks in — the page would install, retry, and be told to install again forever,
+    with a fully built venv sitting on disk.
+
+    An already-imported `venvs` wins: in a host that has `fused` loaded anyway (the
+    test session, or an embedding process) a second module object would be a second
+    set of module-level locks and caches guarding the same directories, and any
+    monkeypatch of the real module would silently not apply to the copy.
+    """
+    if _venvs_cache:
+        return _venvs_cache[0]
+    mod = sys.modules.get(_VENVS_MODULE)
+    if mod is None:
+        mod = _load_venvs_by_path()
+    _venvs_cache.append(mod)
+    return mod
+
+
+def _load_venvs_by_path():
+    """`venvs.py` off disk, having executed no `fused` module at all.
+
+    `find_spec("fused")` is the top-level name only, which resolves through the
+    meta path finders WITHOUT executing `fused/__init__`; asking for the dotted
+    submodule instead would import every parent and defeat the point, and so would
+    reading `fused.__file__`. The remaining path segments are joined literally.
+    """
+    import importlib.util
+
+    spec = importlib.util.find_spec("fused")
+    locations = list(getattr(spec, "submodule_search_locations", None) or [])
+    if not locations:
+        raise ImportError("cannot locate the `fused` package directory")
+    path = os.path.join(locations[0], *_VENVS_RELPATH)
+    # Loaded under a private name, not the real dotted one: registering
+    # `fused.agent_core.backends.local.venvs` in sys.modules with none of its
+    # parents there would make a later real `import fused...venvs` hand out this
+    # copy from a half-built package tree.
+    sub = importlib.util.spec_from_file_location("_fused_venvs_direct", path)
+    if sub is None or sub.loader is None:
+        raise ImportError("no loader for %s" % path)
+    mod = importlib.util.module_from_spec(sub)
+    sub.loader.exec_module(mod)
+    return mod
+
+
 def _build(venvs_path, requirements, python_executable):
-    """Upstream's builder, in one place (and imported at call time, not at module
+    """Upstream's builder, in one place (and resolved at call time, not at module
     import, so a missing `fused` surfaces as a progress error rather than an
     unexplained non-zero exit)."""
-    from fused.agent_core.backends.local.venvs import ensure_requirements_venv
+    try:
+        ensure_requirements_venv = _venvs_module().ensure_requirements_venv
+    except Exception as e:  # noqa: BLE001
+        # LOUD, not silent: an install that still works but has quietly gone back to
+        # paying ~500ms of pandas import per build is a regression with no symptom,
+        # and stderr here lands in `progress_dir/worker.log` where it can be found.
+        # Falling back rather than failing, because a slow install beats none.
+        print("env-install: could not load %s by path (%s: %s); falling back to the "
+              "package import" % (_VENVS_MODULE, type(e).__name__, e), file=sys.stderr)
+        from fused.agent_core.backends.local.venvs import ensure_requirements_venv
 
     return ensure_requirements_venv(venvs_path, list(requirements), python_executable)
 

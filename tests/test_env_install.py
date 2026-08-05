@@ -1605,6 +1605,79 @@ def test_the_worker_builds_the_venv_the_server_will_look_for(tmp_path, monkeypat
     )
 
 
+# --- the worker's builder is loaded by FILE, not through the `fused` package ---
+#
+# `from fused.agent_core.backends.local.venvs import ...` imports every parent,
+# so `fused/__init__` runs → `fused.api` → `fused._auth` → `fused._optional_deps`
+# → pandas. Measured: ~520ms of the 543ms it took this worker to install one tiny
+# pure-Python package was that import chain, to reach a module whose own import
+# costs microseconds. `venvs.py` is stdlib-only, so it can be loaded straight off
+# disk — and being the SAME FILE is what keeps `venv_key` identical to the key
+# `envinstall.venv_key_for` computes. These two tests protect both halves.
+
+
+@requires_fused
+def test_the_worker_loads_venvs_without_importing_the_fused_package(tmp_path):
+    """A fresh process must reach `ensure_requirements_venv` with no `fused` import.
+
+    Asserted in a SUBPROCESS because this test session has `fused` (and pandas)
+    imported already — in-process the absence could never be observed, which is
+    precisely why the cost went unnoticed.
+    """
+    worker_path = os.path.join(os.path.dirname(envinstall.__file__),
+                               "_env_install_worker.py")
+    probe = tmp_path / "probe.py"
+    probe.write_text(
+        "import importlib.util, json, sys\n"
+        f"spec = importlib.util.spec_from_file_location('_w', {worker_path!r})\n"
+        "w = importlib.util.module_from_spec(spec)\n"
+        "spec.loader.exec_module(w)\n"
+        "mod = w._venvs_module()\n"
+        "print(json.dumps({\n"
+        "    'has_builder': hasattr(mod, 'ensure_requirements_venv'),\n"
+        "    'has_key': hasattr(mod, 'venv_key'),\n"
+        "    'fused': 'fused' in sys.modules,\n"
+        "    'pandas': 'pandas' in sys.modules,\n"
+        "}))\n",
+        encoding="utf-8",
+    )
+    proc = subprocess.run([sys.executable, str(probe)], capture_output=True, text=True)
+    assert proc.returncode == 0, proc.stderr
+    got = json.loads(proc.stdout.strip().splitlines()[-1])
+    assert got["has_builder"] and got["has_key"], "the loaded module is not venvs.py"
+    assert got["fused"] is False, (
+        "loading venvs.py executed fused/__init__ — the ~500ms this avoids is back"
+    )
+    assert got["pandas"] is False, "pandas was imported to install a package"
+
+
+@requires_fused
+def test_the_directly_loaded_venvs_keys_a_venv_exactly_like_the_server_does():
+    """The invariant that makes the file load safe: same file, same key.
+
+    `envinstall.venv_key_for` composes upstream's `requirements_venv_id`/`venv_key`
+    through the package import; the worker now composes them from a module loaded
+    off disk. If those two ever disagreed the worker would fill a directory
+    `is_installed()` never looks in — the page would install, retry, and be told to
+    install again forever, with a fully built venv on disk (the same failure the
+    argv-borne `python_executable` exists to prevent).
+    """
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "_env_install_worker_keycheck",
+        os.path.join(os.path.dirname(envinstall.__file__), "_env_install_worker.py"),
+    )
+    worker = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(worker)
+
+    mod = worker._venvs_module()
+    reqs = ["pandas>=2.0.0", "pyarrow>=14.0.0"]
+    assert mod.venv_key(
+        mod.requirements_venv_id(list(reqs), envinstall._python_executable())
+    ) == envinstall.venv_key_for(reqs)
+
+
 # --- the worker's heartbeat (D213) --------------------------------------------
 #
 # `ensure_requirements_venv` runs uv behind `capture_output=True`, so between the
