@@ -4282,6 +4282,25 @@ select.field-control:has(option[value=""]:checked) {
   text-align: center;
 }
 
+/* AI search composer on the files homepage: the /apps hero composer's shell
+   (.home-composer) narrowed and centered under the CTA. */
+.files-search-wrap {
+  max-width: 560px;
+  margin: 22px auto 0;
+  text-align: left;
+}
+
+.files-search-input {
+  font-family: inherit;
+}
+
+/* The "Understood as: …" echo line above search results. */
+.fh-search-summary {
+  margin: -4px 0 14px;
+  font-size: 12.5px;
+  color: var(--fg-muted);
+}
+
 .files-hero-sub {
   margin: 0 auto 20px;
   max-width: 560px;

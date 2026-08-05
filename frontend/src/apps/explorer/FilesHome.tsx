@@ -3,9 +3,9 @@
 // one accent moment) over card grids for the two things worth jumping to:
 // bookmarks and recent files. Entering any target navigates into
 // /explorer/view/... (the explorer proper).
-import { useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import { navigate, navigateUrl } from "@platform/lib/router";
+import { navigate, navigateUrl, urlForFsPath } from "@platform/lib/router";
 import { basename } from "@platform/lib/format";
 import { iconForEntry } from "@platform/ui/FileIcons";
 import type { Config } from "@platform/lib/api";
@@ -13,6 +13,8 @@ import { allBookmarks, loadBookmarks } from "@platform/lib/bookmarks";
 import { useBookmarksVersion } from "@platform/lib/hooks";
 import { loadRecents, recentFsPath, useRecentsVersion } from "@apps/explorer/lib/recents";
 import { BookmarkPreviewCard } from "@apps/explorer/BookmarkCards";
+import { describeSpec, runAiSearch, type AiSearchResult } from "@apps/explorer/lib/ai-search";
+import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import logoMark from "@assets/logo-black-bg-transparent.png";
 
 // How many recent files earn a card. The sidebar shows a tight top-3; the
@@ -81,6 +83,169 @@ function LaunchCard({
   );
 }
 
+// -- AI search (the files-home composer) --------------------------------------
+
+type SearchPhase = "idle" | "searching";
+
+// The hero's search box, styled after the /apps hero composer: one line of
+// natural language in, one haiku call to interpret it, one bounded walk to
+// answer it (see lib/ai-search.ts). While a result is showing, the homepage's
+// bookmark/recent grids yield to the result grid; Clear (or emptying the box)
+// brings them back.
+function AiSearchComposer({
+  root,
+  onResult,
+  onClear,
+  active,
+}: {
+  root: string;
+  onResult: (query: string, r: AiSearchResult) => void;
+  onClear: () => void;
+  active: boolean;
+}) {
+  const [query, setQuery] = useState("");
+  const [phase, setPhase] = useState<SearchPhase>("idle");
+  const [error, setError] = useState<string | null>(null);
+  // One in-flight search at a time: a new submit aborts the previous walk.
+  const abortRef = useRef<AbortController | null>(null);
+  useEffect(() => () => abortRef.current?.abort(), []);
+
+  const clear = () => {
+    abortRef.current?.abort();
+    setQuery("");
+    setPhase("idle");
+    setError(null);
+    onClear();
+  };
+
+  const submit = async () => {
+    const q = query.trim();
+    if (!q || phase === "searching") return;
+    abortRef.current?.abort();
+    const ctl = new AbortController();
+    abortRef.current = ctl;
+    setError(null);
+    setPhase("searching");
+    try {
+      const res = await runAiSearch(root, q, ctl.signal);
+      if (ctl.signal.aborted) return;
+      setPhase("idle");
+      onResult(q, res);
+    } catch (e) {
+      if (ctl.signal.aborted) return;
+      setPhase("idle");
+      setError((e as Error).message);
+    }
+  };
+
+  const busy = phase === "searching";
+  return (
+    <div className="home-composer-wrap files-search-wrap">
+      <div className={"home-composer files-search" + (busy ? " is-busy" : "")}>
+        <input
+          className="home-composer-input files-search-input"
+          type="text"
+          placeholder="Search your files — “big csv from last week”, “notebook about weather”…"
+          aria-label="Search your files"
+          value={query}
+          disabled={busy}
+          onChange={(e) => setQuery(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              submit();
+            } else if (e.key === "Escape" && active) {
+              e.preventDefault();
+              clear();
+            }
+          }}
+        />
+        <div className="home-composer-bar">
+          <span className="home-composer-hint">
+            {busy ? (
+              "Searching…"
+            ) : (
+              <>
+                <kbd>↵</kbd> to search{active && (
+                  <>
+                    {" · "}
+                    <kbd>esc</kbd> to clear
+                  </>
+                )}
+              </>
+            )}
+          </span>
+          {active && !busy && (
+            <button type="button" className="home-composer-sample" onClick={clear}>
+              Clear
+            </button>
+          )}
+          <button
+            type="button"
+            className="home-composer-send"
+            aria-label="Search"
+            title="Search"
+            disabled={!query.trim() || busy}
+            onClick={submit}
+          >
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <circle cx="11" cy="11" r="7" />
+              <path d="M21 21l-4.3-4.3" />
+            </svg>
+          </button>
+        </div>
+      </div>
+      {error && <ErrorBanner>{error}</ErrorBanner>}
+    </div>
+  );
+}
+
+// Result grid: the same LaunchCard shape as recents, so hits read as one
+// system with the rest of the homepage.
+function SearchResults({
+  root,
+  query,
+  result,
+}: {
+  root: string;
+  query: string;
+  result: AiSearchResult;
+}) {
+  const summary = describeSpec(result.spec);
+  return (
+    <section className="fh-section">
+      <h2 className="fh-heading">Results for “{query}”</h2>
+      <p className="fh-search-summary">
+        {result.usedFallback
+          ? "AI unavailable — matched your words directly."
+          : summary
+            ? `Understood as: ${summary}`
+            : "No filters — showing closest matches."}
+        {result.truncated && " · Large workspace: search covered only part of it."}
+      </p>
+      {result.hits.length ? (
+        <div className="fh-grid">
+          {result.hits.map((h) => {
+            const fsPath = root.replace(/\/+$/, "") + "/" + h.rel;
+            return (
+              <LaunchCard
+                key={h.rel}
+                href={urlForFsPath(fsPath)}
+                icon={iconForEntry(basename(h.rel), h.is_dir)}
+                name={basename(h.rel)}
+                path={h.rel}
+                onOpen={() => navigate(fsPath, { isDir: h.is_dir })}
+              />
+            );
+          })}
+        </div>
+      ) : (
+        <p className="fh-empty">Nothing matched. Try different words, or fewer of them.</p>
+      )}
+    </section>
+  );
+}
+
 export default function FilesHome({ config }: { config: Config }) {
   useBookmarksVersion();
   useRecentsVersion();
@@ -97,6 +262,9 @@ export default function FilesHome({ config }: { config: Config }) {
   // Raw MRU, not the sidebar's stable-slot top-3 — a full page doesn't jump
   // under the pointer the way a always-visible sidebar section does.
   const recents = loadRecents().entries.slice(0, MAX_RECENT_CARDS);
+  // A committed AI search result takes over the page body (bookmarks/recents
+  // hide behind it) until cleared — the homepage becomes the result page.
+  const [search, setSearch] = useState<{ query: string; result: AiSearchResult } | null>(null);
 
   return (
     <div className="files-home">
@@ -126,68 +294,82 @@ export default function FilesHome({ config }: { config: Config }) {
               </svg>
             </button>
           )}
+          {config.fused_dir && (
+            <AiSearchComposer
+              root={config.fused_dir}
+              active={search !== null}
+              onResult={(query, result) => setSearch({ query, result })}
+              onClear={() => setSearch(null)}
+            />
+          )}
         </header>
 
-        <section className="fh-section">
-          <h2 className="fh-heading">Bookmarks</h2>
-          {bookmarks.length ? (
-            <>
-              <div className="fhb-grid" ref={gridRef}>
-                {shownBookmarks.map((b) => (
-                  <BookmarkPreviewCard key={b.id} b={b} />
-                ))}
-              </div>
-              {bookmarks.length > fold && (
-                <button type="button" className="fhb-more" onClick={() => setExpanded((v) => !v)}>
-                  {expanded ? "Show less" : "Show more"}
-                  <svg
-                    width="12"
-                    height="12"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="2.2"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    aria-hidden="true"
-                    style={expanded ? { transform: "rotate(180deg)" } : undefined}
-                  >
-                    <path d="M6 9l6 6 6-6" />
-                  </svg>
-                </button>
-              )}
-            </>
-          ) : (
-            <p className="fh-empty">
-              No bookmarks yet. While browsing, use the star in the breadcrumb to save a
-              spot — it'll show up here.
-            </p>
-          )}
-        </section>
+        {search && config.fused_dir ? (
+          <SearchResults root={config.fused_dir} query={search.query} result={search.result} />
+        ) : (
+          <>
+          <section className="fh-section">
+            <h2 className="fh-heading">Bookmarks</h2>
+            {bookmarks.length ? (
+              <>
+                <div className="fhb-grid" ref={gridRef}>
+                  {shownBookmarks.map((b) => (
+                    <BookmarkPreviewCard key={b.id} b={b} />
+                  ))}
+                </div>
+                {bookmarks.length > fold && (
+                  <button type="button" className="fhb-more" onClick={() => setExpanded((v) => !v)}>
+                    {expanded ? "Show less" : "Show more"}
+                    <svg
+                      width="12"
+                      height="12"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="2.2"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      aria-hidden="true"
+                      style={expanded ? { transform: "rotate(180deg)" } : undefined}
+                    >
+                      <path d="M6 9l6 6 6-6" />
+                    </svg>
+                  </button>
+                )}
+              </>
+            ) : (
+              <p className="fh-empty">
+                No bookmarks yet. While browsing, use the star in the breadcrumb to save a
+                spot — it'll show up here.
+              </p>
+            )}
+          </section>
 
-        <section className="fh-section">
-          <h2 className="fh-heading">Recent files</h2>
-          {recents.length ? (
-            <div className="fh-grid">
-              {recents.map((r) => {
-                const fsPath = recentFsPath(r.url);
-                const name = r.title || basename(fsPath);
-                return (
-                  <LaunchCard
-                    key={fsPath}
-                    href={r.url}
-                    icon={iconForEntry(basename(fsPath), false)}
-                    name={name}
-                    path={fsPath}
-                    onOpen={() => navigateUrl(r.url)}
-                  />
-                );
-              })}
-            </div>
-          ) : (
-            <p className="fh-empty">Nothing opened yet. Files you view will show up here.</p>
-          )}
-        </section>
+          <section className="fh-section">
+            <h2 className="fh-heading">Recent files</h2>
+            {recents.length ? (
+              <div className="fh-grid">
+                {recents.map((r) => {
+                  const fsPath = recentFsPath(r.url);
+                  const name = r.title || basename(fsPath);
+                  return (
+                    <LaunchCard
+                      key={fsPath}
+                      href={r.url}
+                      icon={iconForEntry(basename(fsPath), false)}
+                      name={name}
+                      path={fsPath}
+                      onOpen={() => navigateUrl(r.url)}
+                    />
+                  );
+                })}
+              </div>
+            ) : (
+              <p className="fh-empty">Nothing opened yet. Files you view will show up here.</p>
+            )}
+          </section>
+          </>
+        )}
       </div>
     </div>
   );
