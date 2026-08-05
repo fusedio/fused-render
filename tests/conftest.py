@@ -238,6 +238,34 @@ def _isolate_appenv_contract_vars():
                 os.environ[var] = value
 
 
+@pytest.fixture(autouse=True)
+def _pin_the_script_interpreter_resolution():
+    """Every test starts believing this machine's pinned Python is available.
+
+    `envinstall.script_python()` (D214) resolves the interpreter script venvs are
+    built from, and its answer depends on TWO things a test has no business
+    depending on: the version of Python running the suite, and whether uv's managed
+    registry happens to hold a 3.12 on this machine. Left alone, the whole suite
+    would behave differently per interpreter — CI runs the matrix on 3.10/3.11/3.13,
+    where the resolution goes to "no 3.12 yet", and `is_installed` then answers False
+    for every requirement set, so tests about markers, probes and rebuild budgets
+    would fail for a reason unrelated to what they assert.
+
+    Pinned to `(None, True)` — "build from ours, and it is fine" — because that is
+    what the resolution is for the interpreters this project ships on, and it is the
+    pre-D214 behaviour, so tests written before the pin keep testing what they meant
+    to. Tests that are ABOUT the resolution reset it (see `_fresh_script_python` in
+    tests/test_env_install.py) and drive it explicitly.
+    """
+    from fused_render import envinstall
+
+    envinstall._script_python = (None, True)
+    try:
+        yield
+    finally:
+        envinstall.reset_script_python_cache()
+
+
 @pytest.fixture(scope="session", autouse=True)
 def _reap_test_rcd_daemons():
     """Kill any REAL rclone rcd daemon a test spawned, on session teardown.
