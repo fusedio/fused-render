@@ -20,7 +20,7 @@ import types
 import pytest
 
 import conftest
-from fused_render import engine
+from fused_render import engine, envinstall
 
 
 def _toml_available() -> bool:
@@ -150,6 +150,37 @@ def test_binding_logic_comes_from_binding_py_not_a_copy(tmp_path, monkeypatch):
     monkeypatch.setattr(engine, "_binding_source", lambda: patched)
     with pytest.raises(TypeError, match="sentinel straight from _binding.py"):
         _run_wrapped(tmp_path, "def main(x: int):\n    return x\n", {})
+
+
+def test_the_script_gets_its_own_path_as_dunder_file(tmp_path):
+    """`__file__` must be the script's real absolute path, at module level.
+
+    Passing the path as `compile()`'s filename — which the wrapper already did —
+    only labels code objects for tracebacks; it does not define the *name*
+    `__file__` in the exec globals. So `os.path.dirname(__file__)`, the ordinary
+    way a page finds a data file next to its `.py`, raised NameError under this
+    engine while working under the built-in one.
+    """
+    g = _run_wrapped(tmp_path, "_F = __file__\ndef main():\n    return _F\n", {})
+    assert g["result"] == str(tmp_path / "page" / "target.py")
+
+
+def test_the_script_gets_the_same_dunder_name_as_the_builtin_worker(tmp_path):
+    # _child.py loads the file as spec_from_file_location("__fused_module__"),
+    # so that is the name to match. Before this it was inherited from the
+    # backend's runner namespace and came out as "builtins" — which no script
+    # could sensibly branch on, and which differed from the other engine.
+    g = _run_wrapped(tmp_path, "_N = __name__\ndef main():\n    return _N\n", {})
+    assert g["result"] == "__fused_module__"
+
+
+def test_neither_dunder_makes_a_script_look_like_main(tmp_path):
+    # `if __name__ == "__main__":` blocks stay dormant under both engines —
+    # templates like geotiff/tile_server.py use that guard for the *subprocess*
+    # they spawn of themselves, and it must not fire on the exec'd entry.
+    src = "_RAN = False\nif __name__ == '__main__':\n    _RAN = True\ndef main():\n    return _RAN\n"
+    g = _run_wrapped(tmp_path, src, {})
+    assert g["result"] is False
 
 
 def test_result_script_untouched(tmp_path):
@@ -416,6 +447,39 @@ def test_ci_claiming_to_cover_this_engine_actually_runs_it():
 
 
 @requires_fused
+def test_the_backend_is_built_from_the_RESOLVED_script_interpreter(monkeypatch):
+    """D214: the pin only exists if it reaches the backend.
+
+    `envinstall._python_executable()` reads this attribute straight back off the
+    live backend, and `venv_key_for` folds it into the venv key — so the resolution
+    and the key are one value with one source. A resolver whose answer never
+    reached the constructor would leave every venv still keyed on whatever
+    interpreter happened to run the server, which is the bug D214 is about.
+    """
+    monkeypatch.setattr(engine, "_backend", None)
+    monkeypatch.setattr(envinstall, "script_python", lambda: "/pinned/python3.12")
+    backend = engine.get_backend()
+    assert backend._python_executable == "/pinned/python3.12"
+    # And read back through the loader, which is what actually keys the venv.
+    assert envinstall._python_executable() == "/pinned/python3.12"
+
+
+@requires_fused
+def test_a_server_already_on_312_leaves_the_backend_default_untouched(monkeypatch):
+    """None must stay None all the way to the constructor.
+
+    This is the packaged-build path, and `None` is what makes it a no-op: it is
+    the value the backend has always been given, so `python_identity` produces the
+    identical key and no existing venv is orphaned. Passing something merely
+    equivalent (`sys.executable`) instead would re-key every venv on every
+    installed app for no behavioural gain.
+    """
+    monkeypatch.setattr(engine, "_backend", None)
+    monkeypatch.setattr(envinstall, "script_python", lambda: None)
+    assert engine.get_backend()._python_executable is None
+
+
+@requires_fused
 def test_real_backend_runs_bare_main(monkeypatch, tmp_path):
     monkeypatch.setattr(engine, "_backend", None)
     target = tmp_path / "sine.py"
@@ -660,6 +724,77 @@ def test_a_header_is_the_complete_requirement_list(monkeypatch, tmp_path):
     call = backend.calls[0]
     assert call["via"] == "execute"
     assert call["requirements"] == ["imagecodecs", "pyproj"]
+
+
+@requires_tomllib
+def test_the_install_preflight_does_not_run_on_the_event_loop(monkeypatch, tmp_path):
+    """`is_installed` can spawn a subprocess, so it must not block the loop.
+
+    Since D212 the pre-flight is not a single `os.path.exists` any more: the first
+    call for a venv probes its interpreter with `subprocess.run(..., timeout=5)`.
+    `/api/run` awaits this coroutine directly (`routers/run.py`), so running that
+    inline stalls the ENTIRE server — websockets, the file watcher, every other
+    request — for up to five seconds. The header-LESS branch of the same `if` was
+    moved off the loop for exactly this reason (`await asyncio.to_thread(
+    app_interpreter)`); this pins that the header branch matches it.
+
+    Asserted by thread identity rather than by timing: no sleeps, no flakiness.
+    """
+    target = tmp_path / "declared.py"
+    target.write_text(
+        '# /// script\n# dependencies = ["imagecodecs"]\n# ///\n'
+        "def main():\n    return 1\n"
+    )
+    backend = _FakeBackend(_FakeResult(return_value="1"))
+    monkeypatch.setattr(engine, "get_backend", lambda: backend)
+    seen = {}
+
+    def _where_am_i(reqs):
+        seen["ident"] = threading.get_ident()
+        return True
+
+    monkeypatch.setattr("fused_render.envinstall.is_installed", _where_am_i)
+
+    async def _drive():
+        return threading.get_ident(), await engine.run_python(str(target), {})
+
+    loop_ident, out = asyncio.run(_drive())
+    assert out["ok"] is True
+    assert seen["ident"] != loop_ident, "the pre-flight probe ran ON the event loop"
+
+
+@requires_tomllib
+@pytest.mark.parametrize("exc", [ImportError("no fused"), RuntimeError("no attr")])
+def test_a_preflight_that_raises_is_still_contained_off_thread(
+    monkeypatch, tmp_path, exc
+):
+    """Moving the pre-flight to a thread must not widen what escapes /api/run.
+
+    `is_installed` -> `venv_key_for` reaches into `fused.agent_core...` unguarded,
+    and `_backend_attr` raises RuntimeError BY DESIGN when an upstream private
+    attribute disappears. Uncontained, that made /api/run an unhandled 500 whose
+    body is `{"error": "<string>"}`, which runtime.js renders as the literal word
+    `undefined`. `asyncio.to_thread` re-raises in the awaiting frame, so the
+    existing `try` still covers it — verified here rather than assumed, because
+    "the exception surfaces somewhere else now" is exactly the kind of regression
+    a thread hop hides.
+    """
+    target = tmp_path / "declared.py"
+    target.write_text(
+        '# /// script\n# dependencies = ["imagecodecs"]\n# ///\n'
+        "def main():\n    return 1\n"
+    )
+    backend = _FakeBackend(_FakeResult(return_value="1"))
+    monkeypatch.setattr(engine, "get_backend", lambda: backend)
+
+    def _raise(reqs):
+        raise exc
+
+    monkeypatch.setattr("fused_render.envinstall.is_installed", _raise)
+    out = asyncio.run(engine.run_python(str(target), {}))
+    assert out["ok"] is False
+    assert out["error"]["message"], out
+    assert "traceback" in out["error"]
 
 
 def test_no_resolvable_interpreter_is_a_loud_error_not_a_venv(monkeypatch, tmp_path):

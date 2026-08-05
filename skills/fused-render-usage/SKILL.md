@@ -11,7 +11,7 @@ This skill assumes **the FusedRender desktop app is already running** — there'
 
 ## Opening a file, view, or directory
 
-Hand the path to the app — it opens as a full-shell view (`/view/<path>`) in a browser tab, reusing the running instance:
+Hand the path to the app — it opens as a full-shell view (`/explorer/view/<path>`) in a browser tab, reusing the running instance:
 
 | Platform | Open a path |
 |---|---|
@@ -25,17 +25,19 @@ Opening a directory lands the explorer there; opening a file previews it; openin
 
 Everything the app shows is a URL, so any view is bookmarkable and shareable. The running app already has a tab open — reuse its `http://127.0.0.1:<port>` from the address bar and swap the path.
 
-The filesystem path rides in the URL after a **mode prefix**, with its **leading slash dropped** and each segment URL-encoded (space → `%20`). `/Users/me/proj/dash.html` → `…/view/Users/me/proj/dash.html`.
+The filesystem path rides in the URL after a **mode prefix**, with its **leading slash dropped** and each segment URL-encoded (space → `%20`). `/Users/me/proj/dash.html` → `…/explorer/view/Users/me/proj/dash.html`.
 
 | Path | Renders |
 |---|---|
-| `/` | The explorer at `start_dir` — click to browse. |
-| `/view/<path>` | **Full-shell mode** — the page wrapped in explorer chrome (sidebar, breadcrumb, preview header). What the app opens when you hand it a path. |
-| `/embed/<path>` | **Embed mode** — the page chrome-free (no sidebar/breadcrumb/header). Best for opening a specific view on its own or for a screenshot. |
+| `/` | Redirects to `/apps` (the app hub). `/explorer` is the file-explorer homepage — click to browse. |
+| `/explorer/view/<path>` | **Full-shell mode** — the page wrapped in explorer chrome (sidebar, breadcrumb, preview header). What the app opens when you hand it a path. |
+| `/explorer/embed/<path>` | **Embed mode** — the page chrome-free (no sidebar/breadcrumb/header). Best for opening a specific view on its own or for a screenshot. |
+
+Legacy prefixes `/view/<path>` and `/embed/<path>` (pre-rename) still redirect to the `/explorer/...` forms, so old links keep working — but write the new ones.
 
 View vs embed is a fixed page-load mode set by the prefix — it can't toggle without a full navigation. Both serve the same page and sync URL params the same way; embed just hides the chrome.
 
-**Preview templates** (parquet/image/text viewers, etc.) open at the *target file's* path — `…/view/<abs path to the data file>` — and the shell resolves the template by extension, handing it the file via a read-only `_file` param. Point at the data file, not the template html. When a file has more than one mode, add `?_mode=<name>` to open a specific one (or use the switcher in the preview header).
+**Preview templates** (parquet/image/text viewers, etc.) open at the *target file's* path — `…/explorer/view/<abs path to the data file>` — and the shell resolves the template by extension, handing it the file via a read-only `_file` param. Point at the data file, not the template html. When a file has more than one mode, add `?_mode=<name>` to open a specific one (or use the switcher in the preview header).
 
 ## Params are the shareable state
 

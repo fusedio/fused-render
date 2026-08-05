@@ -16,7 +16,7 @@ import { BookmarkPreviewCard } from "@apps/explorer/BookmarkCards";
 import { describeSpec, runAiSearch, type AiSearchResult } from "@apps/explorer/lib/ai-search";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { TextArea } from "@platform/ui/field/fields";
-import logoMark from "@assets/logo-black-bg-transparent.png";
+import { HeroBrand } from "@platform/ui/HeroBrand";
 
 // How many recent files earn a card. The sidebar shows a tight top-3; the
 // homepage has room to be a real jump-off point.
@@ -333,10 +333,7 @@ export default function FilesHome({ config }: { config: Config }) {
             the hero's only verb is the search prompt, mirroring how /apps
             leads with its build prompt. */}
         <header className="home-hero files-hero">
-          <div className="home-hero-brand">
-            <img className="home-hero-logo" src={logoMark} alt="" aria-hidden="true" />
-            <span className="home-hero-brand-name">Fused Explorer</span>
-          </div>
+          <HeroBrand name="Fused Explorer" />
           <h1 className="home-hero-title">
             Find and preview <span className="home-hero-accent">your files</span>
           </h1>

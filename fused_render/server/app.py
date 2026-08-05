@@ -96,6 +96,7 @@ def export_app_env() -> None:
     separately by ``shell.mounts.export_ro_mounts_env`` because it has to be
     refreshed on every store write, not just at startup.
     """
+    from fused_render import skill_plugin
     from fused_render.shell import mounts as shell_mounts
     from fused_render.shell import seed as shell_seed
     from fused_render.shell import storage as shell_storage
@@ -106,6 +107,11 @@ def export_app_env() -> None:
     # into the containing app's repo, and scopes that to this workspace.
     os.environ["FUSED_RENDER_WORKSPACE_DIR"] = shell_seed.fused_dir()
     shell_mounts.export_ro_mounts_env()
+    # The skill plugin the chats we spawn are handed (D216). Here rather than in
+    # a startup event because this is the export path: it assembles the root,
+    # probes the local `claude` once for `--plugin-dir` support, and publishes
+    # the answer as one more FUSED_RENDER_* var for every child to inherit.
+    skill_plugin.export_skill_plugin_env()
     _export_bundled_uv_path()
 
 
@@ -188,10 +194,12 @@ def create_app(start_dir: str) -> FastAPI:
         prewarm_ai()
 
     # User-level skill sync (D185): install/refresh the canonical fused-render
-    # skills in Claude Code's skills dir so app/template sessions can invoke
-    # them by name. A startup event (not create_app body) on purpose — tests
-    # build the app without running lifespan, so they never write outside the
-    # redirected dirs.
+    # skills in Claude Code's skills dir. Since D216 this is for sessions
+    # fused-render did NOT launch — the user's own `claude` in their app folder
+    # — because the ones it does launch are handed the plugin root instead
+    # (export_app_env above). A startup event (not create_app body) on purpose
+    # — tests build the app without running lifespan, so they never write
+    # outside the redirected dirs.
     @app.on_event("startup")
     async def _startup_sync_user_skills():
         sync_user_skills()

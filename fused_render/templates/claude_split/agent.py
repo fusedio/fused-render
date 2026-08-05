@@ -64,6 +64,7 @@ if "__file__" not in globals():
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(HERE), "shared"))
+from appenv import skill_plugin_dir as _skill_plugin_dir
 from appenv import workspace_dir as _workspace_dir
 from procutil import pid_alive as _pid_alive
 
@@ -100,6 +101,12 @@ RUNS = _runs_root()
 # Under our own 0700 root (never the user's project — a screenshot is not their
 # file), so the same privacy argument as the run dir covers it: another local
 # account cannot read the pixels of the app on this user's screen.
+#
+# It holds the app-state DOM outlines too, which the page writes here rather than
+# into the message (D217). Same kind of artifact under the same argument — a
+# private, short-lived record of what was on the user's screen, handed to the
+# agent and junk once the turn is over — and sharing this directory means one
+# 0700 enforcement, one pruner and one `Read(...)` rule rather than two of each.
 SHOTS = os.path.join(os.path.dirname(RUNS), "shots")
 
 # How long a crop is kept, and how many are kept at all. Both are cleanup, not
@@ -253,6 +260,22 @@ def _claude_bin() -> str:
     )
 
 
+def _plugin_argv() -> list:
+    """`["--plugin-dir", <root>]` when fused-render has a skill plugin to hand
+    this session, else `[]`.
+
+    This is how a session we launch gets the fused-render skills with certainty
+    instead of hoping the user-level sync landed somewhere the CLI reads (D216).
+    The path (and the decision to pass it at all — see appenv) arrives through
+    the env contract, so `_start` neither imports the app nor shells out to
+    interrogate the CLI. A `--plugin-dir` load is session-scoped and additive:
+    the user's own skills, plugins, CLAUDE.md and settings are all untouched,
+    and a user who installed the published plugin themselves just sees the same
+    skills listed twice."""
+    root = _skill_plugin_dir()
+    return ["--plugin-dir", root] if root else []
+
+
 def _bad_id(value: str) -> bool:
     """Whether an id from the page is unsafe to join into a filesystem path.
 
@@ -287,27 +310,37 @@ def _system_prompt(file: str) -> str:
 
 
 def _split_system_prompt() -> str:
-    """The DIRECTORY target's prompt, and it says one thing only: the app-state
-    tool exists.
+    """The DIRECTORY target's prompt. It says two things: what kind of project
+    this is, and that the app-state tool exists.
 
     A tool the model is never told about is a tool it never calls, and the
     tool's own description is not enough on its own — nothing in an ordinary
-    session suggests that the page being edited can be read back. Deliberately
-    nothing else in here: the split view is a whole project and the file-scoping
-    prompt above is exactly what the directory branch of `_start` exists to
-    avoid (see the comment there).
+    session suggests that the page being edited can be read back.
+
+    Naming fused-render is the other half, and it belongs HERE rather than being
+    left to the starter `CLAUDE.md`: that file is the user's, in their folder,
+    and a session opened on a project whose CLAUDE.md was edited away — or that
+    predates it — otherwise has nothing telling it the HTML in front of it is an
+    app with a Python bridge behind it. Same reliability argument as the skill
+    plugin (D216): the thing the model must know cannot depend on a file we do
+    not own. Still deliberately short of the file-scoping prompt above, which the
+    directory branch of `_start` exists to avoid (see the comment there) — this
+    says what the project IS, not what to work on.
     """
     tool = "mcp__%s__%s" % (PERMISSION_SERVER, APP_STATE_TOOL)
     return (
-        "This session is a split view: the user is looking at this project's "
-        f"app rendered live beside the chat. The `{tool}` tool reports what "
-        "that page is doing right now — console errors, its URL params and an "
-        "outline of its DOM. Call it after changing anything that affects the "
-        "rendered page (the page reloads itself, so this is how you find out "
-        "whether the change worked), and whenever the user reports something "
-        "visibly wrong. The user's message may also arrive with a "
-        f"<{APP_STATE_TAG}> block: that is the same snapshot, taken the moment "
-        "they hit send, and it is stale as soon as you edit anything."
+        "This is a fused-render project: its HTML is an app fused-render serves, "
+        "calling local Python through fused-render's bridge rather than a server "
+        "you write. The `fused-render-authoring` skill documents that bridge — "
+        "use it rather than inferring the API. "
+        "The user sees the app rendered live beside this chat. "
+        f"`{tool}` reports what that page is doing now: console errors, URL "
+        "params, a DOM outline. Call it after any change that affects the page "
+        "(it reloads itself — this is how you see whether the change worked), "
+        "and whenever the user reports something visibly wrong. A "
+        f"<{APP_STATE_TAG}> block on their message is the same reading taken at "
+        "send time; it carries the outline either inline or as a `dom_path` to "
+        "read, and goes stale as soon as you edit anything."
     )
 
 
@@ -1114,6 +1147,7 @@ def _start(file: str, message: str, session_id: str, model: str,
            # directory, and the prompt bridge stays wired for everything else.
            "--allowed-tools",
            f"mcp__{PERMISSION_SERVER}__{APP_STATE_TOOL}," + _read_rule(SHOTS)]
+    cmd += _plugin_argv()
     # BOTH targets get an --append-system-prompt here, and they get different
     # ones. A FILE target gets the scoping prompt. A DIRECTORY target (the
     # claude_split app template) still does NOT get that one — the session
@@ -1259,11 +1293,85 @@ def _alive(run_dir: str) -> bool:
         return False
 
 
+def _retry_info(row: dict):
+    """One `api_retry` row as the page's view of it, or None if unreadable.
+
+    The CLI retries an overloaded or rate-limited request on its own and reports
+    every attempt. `status` travels because 529 and 429 are different news for
+    the user — the API is swamped vs. we are being throttled — and so does
+    `max_retries`, because that budget is the CLI's and not ours to assume.
+    """
+    try:
+        return {"attempt": int(row["attempt"]),
+                "max_retries": int(row.get("max_retries") or 0),
+                "delay_ms": int(row.get("retry_delay_ms") or 0),
+                "status": int(row.get("error_status") or 0),
+                "error": str(row.get("error") or "")}
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def _overload_error(error: str, info) -> str:
+    """`error` rewritten to say what actually happened, for a run that died with a
+    retry still in flight.
+
+    The raw text is "API Error: 529 Overloaded" — accurate, but it reads as a bug
+    in this app, says nothing about the attempts already spent on the user's
+    behalf, and gives no hint that waiting a moment IS the remedy. The original is
+    kept in parentheses because it is the part a bug report can be matched on.
+
+    `info` is the retry that was live when the end arrived, NOT the run's retry
+    tally. Keying off the tally was a bug: it survives a mid-turn retry that
+    SUCCEEDED, so a later unrelated failure — a crashed tool, a bad edit, an auth
+    error — was dressed up as an API overload and the real cause was buried. The
+    tally still rides in the payload for the page; it just cannot decide this.
+    """
+    if info is None or not error:
+        return error
+    status = info.get("status") or 0
+    spent = info.get("attempt") or 0
+    what = ("the API was overloaded" if status == 529
+            else "we were rate limited" if status == 429
+            else "the API call kept failing")
+    return ("Could not reach the API: %s, and %d retr%s did not clear it. "
+            "Trying again in a moment usually works. (%s)"
+            % (what, spent, "y" if spent == 1 else "ies", error))
+
+
+def _skill_calls(row: dict) -> list:
+    """The Skill invocations in one FINALIZED `assistant` row.
+
+    This row rather than the streamed `content_block_start` for the same call:
+    that one arrives with `input: {}` and the skill name only turns up as
+    `input_json_delta` fragments that would have to be reassembled, while this
+    one is already whole. Both are in the file, so reading only this one is also
+    what keeps a call from being reported twice.
+
+    A call whose name we cannot read is dropped rather than reported blank — an
+    empty note row in the log would say less than no row at all.
+    """
+    message = row.get("message")
+    content = message.get("content") if isinstance(message, dict) else None
+    if not isinstance(content, list):
+        return []
+    out = []
+    for block in content:
+        if not isinstance(block, dict) or block.get("type") != "tool_use":
+            continue
+        if block.get("name") != "Skill":
+            continue
+        skill = (block.get("input") or {}).get("skill")
+        if isinstance(skill, str) and skill and block.get("id"):
+            out.append({"id": str(block["id"]), "skill": skill})
+    return out
+
+
 def _poll(run_id: str) -> dict:
     run_dir = os.path.join(RUNS, run_id)
     if _bad_id(run_id) or not os.path.isdir(run_dir):
         return {"text": "", "done": True, "session_id": "", "error": "unknown run_id",
-                "permissions": [], "app_state": []}
+                "permissions": [], "app_state": [], "skills": [], "retry": None,
+                "retry_total": 0, "retry_status": 0}
 
     text_parts = []
     result_text = None
@@ -1274,6 +1382,11 @@ def _poll(run_id: str) -> dict:
     tokens_current = 0   # cumulative usage of the in-flight message
     phase = "thinking"
     pending_sep = False  # a message ended; separate it from the next one's text
+    skills = []          # Skill invocations, in call order (see _skill_calls)
+    retry = None         # the api_retry the request is sitting in RIGHT NOW
+    retry_total = 0      # how many retries this run has seen at all
+    retry_status = 0     # HTTP status of the last one (529 overloaded, 429 …)
+    gave_up = None       # the retry still in flight when the run ended badly
 
     try:
         lines = open(os.path.join(run_dir, "out.jsonl"), encoding="utf-8",
@@ -1287,8 +1400,30 @@ def _poll(run_id: str) -> dict:
         except json.JSONDecodeError:
             continue  # half-written last line; next poll gets it
         t = row.get("type")
+        # Any of these means the request the retries were for went THROUGH.
+        # Rows are in file order, so anything the model produced after an
+        # `api_retry` ends it: the live retry state has to be transient, or the
+        # page would go on saying "retrying" for the rest of the turn — a lie
+        # for far longer than it was ever true. The TALLY below is deliberately
+        # not cleared; "this turn was retried four times" is what makes a final
+        # failure explainable.
+        if t in ("stream_event", "assistant", "result"):
+            # Kept for one row: a `result` clears the retry like anything else,
+            # so without this the terminal row would erase the very evidence that
+            # the run died mid-retry (see `gave_up` below).
+            was_retrying, retry = retry, None
+        else:
+            was_retrying = None
         if t == "system":
             new_session = row.get("session_id", new_session)
+            if row.get("subtype") == "api_retry":
+                info = _retry_info(row)
+                if info is not None:
+                    retry = info
+                    retry_total += 1
+                    retry_status = info["status"]
+        elif t == "assistant":
+            skills += _skill_calls(row)
         elif t == "stream_event":
             ev = row.get("event", {})
             et = ev.get("type")
@@ -1321,6 +1456,15 @@ def _poll(run_id: str) -> dict:
             result_text = row.get("result")
             if row.get("is_error"):
                 error = str(result_text or "claude exited with an error")
+                # Only if the failure arrived DURING a retry. A retry earlier in
+                # the turn that then succeeded says nothing about why this ended.
+                gave_up = was_retrying
+
+    # Last word on the verb: a run sitting in a retry is not thinking, and
+    # saying so is the whole point — "Thinking…" with a frozen token count is
+    # indistinguishable from a hang, which is what an overload used to look like.
+    if retry is not None:
+        phase = "retrying"
 
     if not done and not _alive(run_dir):
         # Dead without a `result` row = abnormal exit (crash, OOM, cancel),
@@ -1335,6 +1479,12 @@ def _poll(run_id: str) -> dict:
             tail = ""
         error = tail or ("claude exited before completing the reply"
                          if text_parts else "claude exited unexpectedly")
+
+    # Both error paths above converge here: if the end arrived with a retry in
+    # flight then THAT is the story and the raw text does not tell it. `retry`
+    # covers the abnormal exit — a process killed mid-backoff never writes the
+    # `result` row that would have moved it into `gave_up`.
+    error = _overload_error(error, gave_up or retry)
 
     # Approvals, after `done` is final. A card the user never answered is only
     # still live while the run is: once it ends, whatever the request was
@@ -1423,7 +1573,9 @@ def _poll(run_id: str) -> dict:
     return {"text": text, "done": done, "session_id": new_session, "error": error,
             "tokens": tokens_done + tokens_current, "phase": phase,
             "message": meta.get("message", ""), "permissions": permissions,
-            "app_state": app_state, "mode": _live_mode(meta, permissions)}
+            "app_state": app_state, "mode": _live_mode(meta, permissions),
+            "skills": skills, "retry": retry, "retry_total": retry_total,
+            "retry_status": retry_status}
 
 
 # ------------------------------------------------------- sessions & history

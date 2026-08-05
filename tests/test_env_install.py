@@ -23,8 +23,11 @@ What these tests are really protecting:
     of making this visible; folding it into a generic message would leave the
     user exactly where they started.
 """
+import errno
 import json
+import logging
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -52,8 +55,15 @@ def _isolated_install_state(tmp_path, monkeypatch):
     which conftest sets ONCE for the whole session — so two tests using the same
     requirement set (several here use `["pip"]`) would otherwise share one
     progress record and one claim file, and pass or fail depending on order.
+
+    Also drops the per-process venv-validation memo (D212). That cache is keyed by
+    venv DIRECTORY, and `venvs_path` is monkeypatched per test to a tmp dir, so
+    real collisions are unlikely — but a memo that outlives the directory it
+    describes is exactly the thing these tests are about, and a leaked verdict
+    would make a later test pass or fail on ordering.
     """
     monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
+    envinstall.reset_venv_validation_cache()
 
 
 # --- the venv key must be the backend's own -----------------------------------
@@ -223,13 +233,372 @@ def test_a_stale_uv_override_is_ignored(tmp_path, monkeypatch):
     assert envinstall.uv_bin() != str(tmp_path / "gone")
 
 
+# --- the interpreter script venvs are built on (D214) -------------------------
+
+
+@pytest.fixture
+def _fresh_script_python(monkeypatch):
+    """Drop the per-process interpreter resolution before and after each use.
+
+    The resolution is cached for the life of the process (it costs a subprocess),
+    so without this a test that patches `uv_bin` would either read a verdict a
+    previous test measured under different conditions, or leave its own behind.
+    """
+    envinstall.reset_script_python_cache()
+    yield
+    envinstall.reset_script_python_cache()
+
+
+def _uv_stub(tmp_path, monkeypatch, *, finds=None, installs=None):
+    """A fake `uv` on disk that answers `python find` (and optionally `install`).
+
+    A real subprocess rather than a patched `subprocess.run`: the resolver's whole
+    job is to decide whether an interpreter on this machine actually runs, and a
+    canned return value cannot fail the way a spawn can.
+    """
+    uv = tmp_path / "uv"
+    found = finds or ""
+    uv.write_text(
+        "#!/bin/sh\n"
+        'if [ "$1" = "python" ] && [ "$2" = "find" ]; then\n'
+        f'  [ -n "{found}" ] || exit 1\n'
+        f'  echo "{found}"\n'
+        "  exit 0\n"
+        "fi\n"
+        'if [ "$1" = "python" ] && [ "$2" = "install" ]; then\n'
+        f'  exit {0 if installs else 1}\n'
+        "fi\n"
+        "exit 2\n"
+    )
+    uv.chmod(0o755)
+    monkeypatch.setenv("FUSED_RENDER_UV_BIN", str(uv))
+    return uv
+
+
+def _py312_stub(tmp_path, name="py312", version="3.12"):
+    """An executable that reports `version` — stands in for a real interpreter."""
+    exe = tmp_path / name
+    exe.write_text(f"#!/bin/sh\necho '{version}'\n")
+    exe.chmod(0o755)
+    return exe
+
+
+def test_a_server_already_on_312_builds_script_venvs_from_ITSELF(
+    monkeypatch, _fresh_script_python
+):
+    """None, not a path — and that is the point.
+
+    Every packaged build (DMG's `python@3.12`, the AppImage's and the Windows
+    installer's `uv python install 3.12`) already runs 3.12, and `None` is exactly
+    what the backend has always been given, so `python_identity` produces the
+    IDENTICAL key it produces today. Resolving a uv-managed 3.12 for these users
+    instead would re-key every venv they own and re-download a second CPython to
+    reach a version they already had.
+    """
+    monkeypatch.setattr(envinstall, "_running_version", lambda: (3, 12))
+    assert envinstall.script_python() is None
+    assert envinstall.script_python_ready() is True
+
+
+def test_a_server_on_the_WRONG_version_resolves_a_uv_managed_312(
+    tmp_path, monkeypatch, _fresh_script_python
+):
+    """The reported bug: a 3.14 server built every script venv on cp314, and
+    anything without cp314 wheels (tensorflow) was an unresolvable dead end no
+    rebuild could fix. So a server that is not on 3.12 must not hand its own
+    interpreter to the builder."""
+    exe = _py312_stub(tmp_path)
+    _uv_stub(tmp_path, monkeypatch, finds=str(exe))
+    monkeypatch.setattr(envinstall, "_running_version", lambda: (3, 14))
+    assert envinstall.script_python() == str(exe)
+    assert envinstall.script_python_ready() is True
+
+
+def test_an_interpreter_uv_NAMES_but_that_does_not_run_is_refused(
+    tmp_path, monkeypatch, _fresh_script_python
+):
+    """Resolved is not the same as usable. A path that cannot be spawned would
+    otherwise reach upstream's `python_identity`, which runs it to build the key —
+    turning a bad resolution into a failure on the /api/run request path instead
+    of a fact we established once, ourselves, off it."""
+    _uv_stub(tmp_path, monkeypatch, finds=str(tmp_path / "not-there"))
+    monkeypatch.setattr(envinstall, "_running_version", lambda: (3, 14))
+    assert envinstall.script_python_ready() is False
+
+
+def test_an_interpreter_reporting_the_WRONG_version_is_refused(
+    tmp_path, monkeypatch, _fresh_script_python
+):
+    """One subprocess proves both things at once: that it runs, and that it is
+    the version we asked for. A 3.13 answering a 3.12 request means uv resolved
+    something we did not ask for, and building on it silently defeats the pin."""
+    exe = _py312_stub(tmp_path, name="py313", version="3.13")
+    _uv_stub(tmp_path, monkeypatch, finds=str(exe))
+    monkeypatch.setattr(envinstall, "_running_version", lambda: (3, 14))
+    assert envinstall.script_python_ready() is False
+
+
+def test_no_managed_312_yet_is_NOT_ready_rather_than_an_error(
+    tmp_path, monkeypatch, _fresh_script_python
+):
+    """The state that drives the download: nothing to build on yet, but nothing
+    wrong either. It has to be reportable rather than raised, because the caller
+    (`is_installed`) answers a yes/no question on the request path."""
+    _uv_stub(tmp_path, monkeypatch, finds=None)
+    monkeypatch.setattr(envinstall, "_running_version", lambda: (3, 14))
+    assert envinstall.script_python_ready() is False
+
+
+def test_a_machine_with_no_uv_at_all_keeps_working_as_before(
+    tmp_path, monkeypatch, _fresh_script_python
+):
+    """A source checkout without uv must not become unusable to gain a pin.
+
+    Without uv there is no way to find or fetch a managed 3.12, and upstream's
+    builder already falls back to `<python> -m venv` there. So the answer is the
+    pre-D214 behaviour — build from ours — which is worse than 3.12 but is what
+    that machine could always do, and is a working server rather than a broken one.
+    """
+    monkeypatch.setenv("FUSED_RENDER_UV_BIN", str(tmp_path / "no-uv-here"))
+    monkeypatch.setattr(envinstall, "uv_bin", lambda: None)
+    monkeypatch.setattr(envinstall, "_running_version", lambda: (3, 14))
+    assert envinstall.script_python() is None
+    assert envinstall.script_python_ready() is True
+
+
+def test_an_explicit_script_python_override_wins_but_is_still_probed(
+    tmp_path, monkeypatch, _fresh_script_python
+):
+    """Escape hatch and test seam, mirroring FUSED_RENDER_APP_PYTHON — and probed
+    for the same reason: an override that is not a usable 3.12 is a
+    misconfiguration to refuse, not a reason to build on it."""
+    good = _py312_stub(tmp_path, name="good")
+    monkeypatch.setenv(envinstall._SCRIPT_PYTHON_ENV, str(good))
+    monkeypatch.setattr(envinstall, "_running_version", lambda: (3, 14))
+    assert envinstall.script_python() == str(good)
+
+    envinstall.reset_script_python_cache()
+    monkeypatch.setenv(envinstall._SCRIPT_PYTHON_ENV, str(tmp_path / "absent"))
+    monkeypatch.setattr(envinstall, "uv_bin", lambda: None)
+    assert envinstall.script_python_ready() is False
+
+
+def test_the_interpreter_is_resolved_ONCE_per_process(
+    tmp_path, monkeypatch, _fresh_script_python
+):
+    """It costs a spawn (two, with a `uv python find`), and `is_installed` runs on
+    every /api/run pre-flight. Same reasoning as the venv probe: measure once."""
+    exe = _py312_stub(tmp_path)
+    _uv_stub(tmp_path, monkeypatch, finds=str(exe))
+    monkeypatch.setattr(envinstall, "_running_version", lambda: (3, 14))
+
+    calls = []
+    real = envinstall._probe_python
+
+    def counted(path):
+        calls.append(path)
+        return real(path)
+
+    monkeypatch.setattr(envinstall, "_probe_python", counted)
+    for _ in range(5):
+        envinstall.script_python()
+    assert len(calls) == 1, f"probed {len(calls)} times, not once: {calls}"
+
+
+def test_the_interpreter_is_never_ANOTHER_VENVS_python(
+    tmp_path, monkeypatch, _fresh_script_python
+):
+    """`--managed-python` alone is not enough, and this was measured.
+
+    A venv counts as managed to uv when its BASE interpreter is, so run from a
+    checkout whose own `.venv` is 3.12, `uv python find --managed-python` answers
+    `.venv/bin/python3`. Building script venvs from that would key them (via
+    `python_identity`) to a per-worktree path that `dev.sh` now DELETES on a version
+    mismatch — orphaning every script venv on the machine and re-downloading the lot.
+    `--system` excludes virtual environments; this pins that the flag is asked for,
+    because nothing else about the resolution would look wrong until a `.venv`
+    disappeared.
+    """
+    seen = []
+
+    class _Proc:
+        returncode = 0
+        stdout = str(_py312_stub(tmp_path))
+        stderr = ""
+
+    def spy(cmd, **kw):
+        seen.append(cmd)
+        return _Proc()
+
+    monkeypatch.setattr(envinstall, "uv_bin", lambda: "/usr/bin/uv")
+    monkeypatch.setattr(envinstall.subprocess, "run", spy)
+    monkeypatch.setattr(envinstall, "_probe_python", lambda p: True)
+    monkeypatch.setattr(envinstall, "_running_version", lambda: (3, 14))
+    envinstall.script_python()
+
+    find = next(c for c in seen if "find" in c)
+    assert "--system" in find, (
+        "without --system uv can answer with a virtual environment's python: " + repr(find)
+    )
+    assert "--managed-python" in find and "--no-project" in find, repr(find)
+
+
+def test_a_not_ready_verdict_is_never_CACHED(tmp_path, monkeypatch, _fresh_script_python):
+    """"Nothing here yet" is a fact about this instant, not about the machine.
+
+    The download that fixes it happens in another PROCESS, so nothing in here can
+    be notified when it lands. Caching the negative would leave this server
+    convinced there is no 3.12 for the rest of its life — the install would
+    complete and every later pre-flight would still route back to the bootstrap.
+    Positive verdicts are cached (they cost a spawn); negative ones are re-measured,
+    which is the same three-valued discipline the venv probe uses for the same
+    reason.
+    """
+    exe = _py312_stub(tmp_path)
+    _uv_stub(tmp_path, monkeypatch, finds=None)
+    monkeypatch.setattr(envinstall, "_running_version", lambda: (3, 14))
+    assert envinstall.script_python_ready() is False
+
+    # The download lands — a later `find` now answers — with nothing telling us.
+    _uv_stub(tmp_path, monkeypatch, finds=str(exe))
+    assert envinstall.script_python_ready() is True
+    assert envinstall.script_python() == str(exe)
+
+
 @requires_fused
-def test_readiness_follows_the_ready_marker_not_the_directory(tmp_path, monkeypatch):
+def test_no_312_yet_reports_NOT_installed_whatever_the_marker_says(
+    tmp_path, monkeypatch, _fresh_script_python
+):
+    """And it short-circuits ahead of the D212 validation machinery.
+
+    With no 3.12 there is no venv directory to name: the key folds in the base
+    interpreter, so any directory computed in this state belongs to a venv nobody
+    will build. Probing it, unlinking its marker, or spending the one-rebuild-per-
+    process budget on it would all be acting on a venv that does not exist — so this
+    answers False before any of that runs.
+    """
+    reqs = ["pip"]
+    venv_dir = _marked_venv(tmp_path, monkeypatch, reqs, runnable=True)
+    # The baseline is about the MARKER, so the interpreter must be pinned ready
+    # rather than measured: `_fresh_script_python` drops conftest's pin, and on a
+    # runner that is neither 3.12 nor holding a uv-managed 3.12 the real
+    # resolution answers "not ready" — which is the very short-circuit under test,
+    # so the baseline would assert the post-condition and pass for the wrong
+    # reason on 3.12 while failing outright on 3.11 (which is what CI's
+    # fused-engine job pins, and the only job where @requires_fused runs at all).
+    monkeypatch.setattr(envinstall, "script_python_ready", lambda: True)
+    assert envinstall.is_installed(reqs) is True  # baseline: the marker is trusted
+
+    envinstall.reset_venv_validation_cache()
+    monkeypatch.setattr(envinstall, "script_python_ready", lambda: False)
+    probed = []
+    monkeypatch.setattr(envinstall, "_venv_is_usable",
+                        lambda d: probed.append(d) or True)
+    assert envinstall.is_installed(reqs) is False
+    assert not probed, "validated a venv that cannot even be named yet"
+    assert os.path.exists(os.path.join(venv_dir, envinstall.READY_MARKER)), (
+        "unlinked the marker of a venv the missing interpreter says nothing about"
+    )
+
+
+@requires_fused
+def test_an_empty_requirement_set_never_needs_an_interpreter(
+    monkeypatch, _fresh_script_python
+):
+    """No header means no venv, so the pin is irrelevant — and must not block."""
+    monkeypatch.setattr(envinstall, "script_python_ready", lambda: False)
+    assert envinstall.is_installed([]) is True
+
+
+@requires_fused
+def test_the_bootstrap_reports_under_its_OWN_key_not_a_venv_key(
+    tmp_path, monkeypatch, _fresh_script_python
+):
+    """The one place a venv key genuinely cannot be computed.
+
+    `progress.json` lives under the venv key, and the key folds in the base
+    interpreter — so while that interpreter is what is missing, there is no key to
+    report under. Deriving one from the 3.14 that happens to be running would name
+    the directory of a venv nobody will ever build, and the real install (once 3.12
+    lands) would report somewhere else entirely, leaving the page polling a file
+    that never changes again.
+    """
+    monkeypatch.setattr(envinstall, "script_python_ready", lambda: False)
+    spawned = []
+    monkeypatch.setattr(envinstall, "_spawn",
+                        lambda key, reqs, **kw: spawned.append((key, reqs, kw)) or 4242)
+
+    rec = envinstall.start(["pip"])
+    assert spawned, "no installer was started"
+    key, _, kw = spawned[0]
+    assert key == envinstall.PYTHON_BOOTSTRAP_KEY
+    assert key != envinstall.venv_key_for(["pip"])
+    assert envinstall.valid_key(key), "the bootstrap key must still be key-SHAPED"
+    assert kw.get("acquire_python") == envinstall.SCRIPT_PYTHON_VERSION
+    assert rec["stage"] == "spawn"
+    # And it is pollable under that key, which is what the page will do.
+    assert envinstall.progress(envinstall.PYTHON_BOOTSTRAP_KEY) is not None
+
+
+@requires_fused
+def test_start_REPORTS_the_key_it_used_rather_than_leaving_it_to_be_recomputed(
+    tmp_path, monkeypatch, _fresh_script_python
+):
+    """The caller must not re-derive it, and this is why.
+
+    /api/env/install hands the client a key to poll. Recomputing that key means two
+    independent answers to "which key" — and in bootstrap mode they DISAGREE by
+    design, so the page would poll the venv key while the worker reported under the
+    interpreter key, read no record, and fail an install that was running fine.
+    Recomputing is also racy even when both agree: readiness can flip between the
+    two calls, which is exactly the window a fast download opens.
+    """
+    monkeypatch.setattr(envinstall, "_spawn", lambda *a, **kw: os.getpid())
+
+    monkeypatch.setattr(envinstall, "script_python_ready", lambda: False)
+    assert envinstall.start(["pip"])["key"] == envinstall.PYTHON_BOOTSTRAP_KEY
+
+    monkeypatch.setattr(envinstall, "script_python_ready", lambda: True)
+    envinstall.reset_venv_validation_cache()
+    assert envinstall.start(["pip"])["key"] == envinstall.venv_key_for(["pip"])
+
+
+@requires_fused
+def test_the_venv_key_folds_in_the_RESOLVED_script_interpreter(
+    tmp_path, monkeypatch, _fresh_script_python
+):
+    """The whole point of resolving one: the key the loader computes, and so the
+    directory it fills, must be the key upstream will look in when built from that
+    same interpreter. A resolution that did not reach the key would build 3.12
+    venvs into the 3.14 venv's directory."""
+    from fused.agent_core.backends.local.venvs import requirements_venv_id, venv_key
+
+    exe = _py312_stub(tmp_path)
+    monkeypatch.setattr(envinstall, "_python_executable", lambda: str(exe))
+    reqs = ["pip"]
+    assert envinstall.venv_key_for(reqs) == venv_key(
+        requirements_venv_id(reqs, str(exe))
+    )
+
+
+@requires_fused
+def test_the_ready_marker_is_the_index_of_readiness_not_the_directory(
+    tmp_path, monkeypatch
+):
     """A half-built venv (no marker) must read as NOT ready.
 
     `ensure_requirements_venv` deletes and rebuilds a marker-less directory, so
     treating "the directory exists" as installed would skip the loader and hand
     the request the very build it was meant to move off the request path.
+
+    Renamed (was `..._follows_the_ready_marker_not_the_directory`): the marker is
+    still the INDEX — the only thing consulted to find a venv, and its absence is
+    still final — but since D212 it is a *claim* that is verified once per process
+    rather than proof on its own. So this test now supplies a venv whose
+    interpreter actually runs, and the marker-is-not-enough half lives in
+    `test_a_marked_venv_that_cannot_run_...` below. Its original intent (a
+    directory is not readiness) is unchanged and still pinned by the middle
+    assertion.
     """
     monkeypatch.setattr(envinstall, "venvs_path", lambda: str(tmp_path))
     reqs = ["some-dist"]
@@ -239,8 +608,583 @@ def test_readiness_follows_the_ready_marker_not_the_directory(tmp_path, monkeypa
     venv_dir.mkdir()
     assert not envinstall.is_installed(reqs), "a marker-less dir is half-built"
 
+    _runnable_venv_python(str(venv_dir))
     (venv_dir / ".openfused-ready").write_text("{}")
     assert envinstall.is_installed(reqs)
+
+
+# --- a marker is a claim, and the claim is verified once (D212) ----------------
+#
+# The macOS DMG shipped an interpreter that could not self-locate without
+# PYTHONHOME, and `python_compute` strips PYTHONHOME from every child — so a venv
+# built from it recorded a base prefix that does not exist on the user's machine
+# and every child of that venv died with `ModuleNotFoundError`. The venv cache key
+# folds in only the interpreter path and version, both constants inside the .app,
+# so an app upgrade did not change the key and nothing ever revalidated: the
+# marker was permanent and so was the breakage. These tests pin the two halves of
+# the fix — the probe, and the marker deletion that lets upstream rebuild.
+
+
+def _runnable_venv_python(venv_dir: str) -> str:
+    """Put a genuinely runnable interpreter where a venv keeps its own.
+
+    A symlink to THIS interpreter rather than a stub script: the probe is a real
+    `-c ""` spawn, so the thing being validated has to be a real python — a stub
+    that exits 0 would pass a probe that had regressed into `os.path.exists`.
+    """
+    exe = envinstall._venv_python(venv_dir)
+    os.makedirs(os.path.dirname(exe), exist_ok=True)
+    os.symlink(sys.executable, exe)
+    return exe
+
+
+@requires_fused
+def test_a_marked_venv_that_cannot_run_is_not_installed_and_loses_its_marker(
+    tmp_path, monkeypatch
+):
+    """The DMG bug, reduced: a marker over a venv whose python does not work.
+
+    Deleting the marker is load-bearing, not tidying. Upstream's
+    `ensure_requirements_venv` returns immediately when the marker exists, so
+    reporting "not installed" while leaving it in place would make `/api/run`
+    answer `needs_install`, the loader run the install worker, the worker find the
+    marker and do nothing, and the page ask to install again — forever. The
+    missing marker is what makes upstream rmtree and rebuild.
+    """
+    monkeypatch.setattr(envinstall, "venvs_path", lambda: str(tmp_path))
+    reqs = ["some-dist"]
+    venv_dir = tmp_path / envinstall.venv_key_for(reqs)
+    marker = venv_dir / envinstall.READY_MARKER
+    venv_dir.mkdir()
+    marker.write_text("{}")
+    # No interpreter at all is the cheapest unrunnable venv and the one shape that
+    # behaves the same on every OS; the exits-nonzero shape is covered below.
+    assert not envinstall.is_installed(reqs)
+    assert not marker.exists(), "the marker must go, or upstream will not rebuild"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="needs a POSIX #! stub interpreter")
+@requires_fused
+def test_a_marked_venv_whose_python_FAILS_is_not_installed(tmp_path, monkeypatch):
+    """Present but broken, which is what the real bug looked like.
+
+    The DMG's venv python existed and was executable; it died on startup because
+    its recorded base prefix was gone. So "the file is there" is not the question
+    the probe asks — it has to actually run something.
+    """
+    monkeypatch.setattr(envinstall, "venvs_path", lambda: str(tmp_path))
+    reqs = ["some-dist"]
+    venv_dir = tmp_path / envinstall.venv_key_for(reqs)
+    exe = envinstall._venv_python(str(venv_dir))
+    os.makedirs(os.path.dirname(exe), exist_ok=True)
+    with open(exe, "w", encoding="utf-8") as fh:
+        fh.write("#!/bin/sh\necho \"No module named 'encodings'\" >&2\nexit 1\n")
+    os.chmod(exe, 0o755)
+    (venv_dir / envinstall.READY_MARKER).write_text("{}")
+
+    assert not envinstall.is_installed(reqs)
+    assert not (venv_dir / envinstall.READY_MARKER).exists()
+
+
+@requires_fused
+def test_the_venv_probe_runs_at_most_once_per_venv_per_process(tmp_path, monkeypatch):
+    """The cost ceiling. A probe per request would be a subprocess per request.
+
+    `/api/run`'s pre-flight calls `is_installed` on every run of every PEP 723
+    script, so the validation has to be memoized per venv directory per process —
+    the same shape as `engine.app_interpreter()`'s one-probe-per-process cache.
+    """
+    monkeypatch.setattr(envinstall, "venvs_path", lambda: str(tmp_path))
+    reqs = ["some-dist"]
+    venv_dir = tmp_path / envinstall.venv_key_for(reqs)
+    venv_dir.mkdir()
+    _runnable_venv_python(str(venv_dir))
+    (venv_dir / envinstall.READY_MARKER).write_text("{}")
+
+    probes = []
+    real = envinstall._venv_runs
+    monkeypatch.setattr(
+        envinstall, "_venv_runs", lambda d: (probes.append(d), real(d))[1]
+    )
+    for _ in range(5):
+        assert envinstall.is_installed(reqs)
+    assert probes == [str(venv_dir)]
+
+
+@requires_fused
+def test_a_missing_marker_never_probes(tmp_path, monkeypatch):
+    """Nothing to validate: the marker's absence is already the whole answer.
+
+    Also the common case by count — every first open of a PEP 723 script — so it
+    must stay a single stat, not a spawn.
+    """
+    monkeypatch.setattr(envinstall, "venvs_path", lambda: str(tmp_path))
+    probes = []
+    monkeypatch.setattr(envinstall, "_venv_runs", lambda d: probes.append(d) or True)
+    assert not envinstall.is_installed(["some-dist"])
+    assert probes == []
+
+
+@requires_fused
+def test_a_rebuilt_venv_is_not_stuck_on_the_earlier_failed_verdict(
+    tmp_path, monkeypatch
+):
+    """The other half of "never loop forever".
+
+    A negative verdict cached for the life of the process would be just as
+    permanent as the marker it deleted: the worker would rebuild the venv
+    correctly and `is_installed` would keep saying no. The memo is dropped
+    whenever the marker is absent, so a rebuild is judged on its own merits.
+    """
+    monkeypatch.setattr(envinstall, "venvs_path", lambda: str(tmp_path))
+    reqs = ["some-dist"]
+    venv_dir = tmp_path / envinstall.venv_key_for(reqs)
+    marker = venv_dir / envinstall.READY_MARKER
+    venv_dir.mkdir()
+    marker.write_text("{}")
+    assert not envinstall.is_installed(reqs)  # no interpreter -> marker removed
+
+    _runnable_venv_python(str(venv_dir))  # what the rebuild leaves behind
+    marker.write_text("{}")
+    assert envinstall.is_installed(reqs)
+
+
+# --- the probe has THREE answers, and the rebuild is bounded (D212) ------------
+#
+# Both of these came out of review, and both are about the same thing: the
+# deletion at the end of `is_installed` destroys a venv the user paid a
+# multi-hundred-MB download for, so it may only ever happen on *definite*
+# evidence, and it may only ever happen once per venv per process.
+
+
+def _marked_venv(tmp_path, monkeypatch, reqs, *, runnable=False):
+    """A venv dir carrying a ready marker, with or without a working python."""
+    monkeypatch.setattr(envinstall, "venvs_path", lambda: str(tmp_path))
+    venv_dir = tmp_path / envinstall.venv_key_for(reqs)
+    venv_dir.mkdir(exist_ok=True)
+    if runnable:
+        _runnable_venv_python(str(venv_dir))
+    (venv_dir / envinstall.READY_MARKER).write_text("{}")
+    return venv_dir
+
+
+@requires_fused
+def test_a_probe_that_TIMES_OUT_destroys_nothing_and_reports_installed(
+    tmp_path, monkeypatch
+):
+    """An inconclusive probe is not permission to destroy state.
+
+    `TimeoutExpired` is a `SubprocessError`, and the budget is 5s: several
+    concurrent `/api/run` calls on a loaded machine can produce one without the
+    venv being wrong about anything. Treating that as corruption would unlink the
+    marker of a HEALTHY venv and cost the user a full uv re-download. So the
+    verdict is `None`, nothing is cached (a timeout says nothing worth
+    remembering), and `is_installed` says yes so the run proceeds and surfaces
+    whatever really happens — the same policy as `engine._probe`, which reports a
+    failed probe and destroys nothing.
+    """
+    reqs = ["some-dist"]
+    venv_dir = _marked_venv(tmp_path, monkeypatch, reqs, runnable=True)
+
+    def _timeout(*a, **k):
+        raise subprocess.TimeoutExpired(cmd="python", timeout=5)
+
+    monkeypatch.setattr(envinstall.subprocess, "run", _timeout)
+    assert envinstall.is_installed(reqs) is True
+    assert (venv_dir / envinstall.READY_MARKER).exists()
+    assert str(venv_dir) not in envinstall._VALIDATED
+
+
+@requires_fused
+def test_a_probe_that_cannot_be_SPAWNED_destroys_nothing_and_reports_installed(
+    tmp_path, monkeypatch
+):
+    """EAGAIN/EMFILE/EINTR are facts about the SERVER, not about the venv.
+
+    `OSError` covers "could not fork under load" and "out of file descriptors"
+    just as much as "no such interpreter", and only the last of those is evidence
+    about the venv. So the generic `OSError` is inconclusive; the exe-specific
+    ones are classified as definite by the test below.
+    """
+    reqs = ["some-dist"]
+    venv_dir = _marked_venv(tmp_path, monkeypatch, reqs, runnable=True)
+
+    def _eagain(*a, **k):
+        raise OSError(errno.EAGAIN, "Resource temporarily unavailable")
+
+    monkeypatch.setattr(envinstall.subprocess, "run", _eagain)
+    assert envinstall.is_installed(reqs) is True
+    assert (venv_dir / envinstall.READY_MARKER).exists()
+    assert str(venv_dir) not in envinstall._VALIDATED
+
+
+@requires_fused
+def test_a_missing_or_unexecutable_interpreter_IS_definite_corruption(
+    tmp_path, monkeypatch
+):
+    """The exe-specific OSErrors keep their old meaning.
+
+    `FileNotFoundError`/`PermissionError`/`NotADirectoryError` out of the spawn
+    are about the path we asked to execute, so they are evidence about the venv —
+    and making the inconclusive case safe must not accidentally make the definite
+    case a no-op, which would leave the DMG bug unfixed.
+    """
+    for exc in (FileNotFoundError(), PermissionError(), NotADirectoryError()):
+        reqs = [f"some-dist-{type(exc).__name__}"]
+        venv_dir = _marked_venv(tmp_path, monkeypatch, reqs, runnable=True)
+
+        def _raise(*a, _exc=exc, **k):
+            raise _exc
+
+        monkeypatch.setattr(envinstall.subprocess, "run", _raise)
+        assert envinstall.is_installed(reqs) is False
+        assert not (venv_dir / envinstall.READY_MARKER).exists()
+        monkeypatch.undo()  # restore subprocess.run (and venvs_path) per iteration
+
+
+@requires_fused
+def test_only_ONE_rebuild_is_attempted_per_venv_per_process(tmp_path, monkeypatch):
+    """The bound that stops a futile download loop across runs.
+
+    For a user on a pre-symlink `.app` the rebuild reproduces the identical
+    breakage — the property that failed is the interpreter's own base prefix,
+    which is invariant under rebuild, and the venv key folds in only that
+    interpreter's path and version, both constants inside the bundle. Without a
+    bound, every page reload, every `watchPath` auto-reload and every param change
+    would pay another multi-hundred-MB download, guaranteed futile; before D212
+    that cohort got one instant permanent error, so an unbounded rebuild would be
+    a regression.
+
+    So the SECOND definite failure for the same venv dir leaves the marker alone
+    and reports installed: the run goes ahead and the user sees the interpreter's
+    own stderr instead of another download. And no further probe is spawned —
+    `is_installed` is called on every run of every PEP 723 script.
+    """
+    reqs = ["some-dist"]
+    venv_dir = _marked_venv(tmp_path, monkeypatch, reqs)  # no interpreter at all
+    marker = venv_dir / envinstall.READY_MARKER
+
+    probes = []
+    real = envinstall._venv_runs
+    monkeypatch.setattr(
+        envinstall, "_venv_runs", lambda d: (probes.append(d), real(d))[1]
+    )
+
+    assert envinstall.is_installed(reqs) is False
+    assert not marker.exists(), "the first failure earns one rebuild"
+
+    # What the install worker leaves behind on a bundle that cannot be fixed by
+    # rebuilding: the same broken venv, re-marked ready.
+    marker.write_text("{}")
+    assert envinstall.is_installed(reqs) is True, "no second rebuild"
+    assert marker.exists(), "the marker must survive, or the loader downloads again"
+
+    for _ in range(3):
+        assert envinstall.is_installed(reqs) is True
+    assert len(probes) == 2, probes
+
+
+@requires_fused
+def test_reset_venv_validation_cache_clears_the_rebuild_bound(tmp_path, monkeypatch):
+    """A fresh process gets a fresh rebuild — that is what heals a fixed DMG.
+
+    The bound is per PROCESS on purpose: a user who installs a build with the
+    `Contents/lib` symlink starts a new server, hence an empty set, hence exactly
+    one rebuild, which this time works. `reset_venv_validation_cache` is the test
+    seam for that lifecycle, so it has to clear the bound as well as the verdicts —
+    otherwise it would only half-reset and every test after it would inherit the
+    other half.
+    """
+    reqs = ["some-dist"]
+    venv_dir = _marked_venv(tmp_path, monkeypatch, reqs)
+    marker = venv_dir / envinstall.READY_MARKER
+
+    assert envinstall.is_installed(reqs) is False
+    marker.write_text("{}")
+    assert envinstall.is_installed(reqs) is True  # bound engaged
+
+    envinstall.reset_venv_validation_cache()
+    assert envinstall.is_installed(reqs) is False, "a new process retries the repair"
+    assert not marker.exists()
+
+
+@requires_fused
+def test_a_caller_that_LOSES_the_unmark_race_reports_not_installed(
+    tmp_path, monkeypatch
+):
+    """The bound must be consulted against a marker that is still THERE.
+
+    "stat the marker -> probe -> consult the bound -> unlink" is not atomic, and
+    the endpoints run in FastAPI's threadpool, so two pre-flights genuinely
+    interleave: A passes the marker check, probes, records the attempt and unlinks;
+    B passed the marker check BEFORE A's unlink but reaches the bound AFTER A's
+    add. B would then see `already_tried`, announce that a rebuild had already been
+    tried (it had not — A's rebuild has not even been requested yet) and return
+    True, executing a venv known to be broken instead of joining the install A just
+    asked for.
+
+    Driven deterministically rather than with threads and sleeps: the probe unlinks
+    the marker as its side effect, which is exactly A's unlink landing inside B's
+    window. With the marker re-checked inside the critical section, B answers False
+    and joins the install.
+    """
+    reqs = ["some-dist"]
+    venv_dir = _marked_venv(tmp_path, monkeypatch, reqs)  # no interpreter at all
+    marker = venv_dir / envinstall.READY_MARKER
+
+    # "A, earlier in this process": one definite failure, so the venv dir is in the
+    # rebuild set — the precondition the racing branch needs.
+    assert envinstall.is_installed(reqs) is False
+    marker.write_text("{}")  # what the install worker leaves behind
+
+    def _probe_that_loses_the_race(venv):
+        os.unlink(os.path.join(venv, envinstall.READY_MARKER))  # A's unlink lands
+        return False
+
+    monkeypatch.setattr(envinstall, "_venv_runs", _probe_that_loses_the_race)
+    assert envinstall.is_installed(reqs) is False, "join the install, do not run"
+    assert not marker.exists()
+
+
+@requires_fused
+def test_the_bound_warns_ONCE_per_venv_however_many_requests_arrive(
+    tmp_path, monkeypatch, caplog
+):
+    """The log has to stay readable for the incident it exists to diagnose.
+
+    Once the bound engages, `is_installed` answers from the cached verdict on every
+    subsequent call — every page reload, every `watchPath` auto-reload, every param
+    change — so warning each time would repeat the same multi-line message forever
+    and bury the one occurrence that matters. Warn on the transition, debug after.
+    The user-facing behaviour is unchanged: still True, still marker in place.
+    """
+    reqs = ["some-dist"]
+    venv_dir = _marked_venv(tmp_path, monkeypatch, reqs)
+    marker = venv_dir / envinstall.READY_MARKER
+
+    assert envinstall.is_installed(reqs) is False  # the one rebuild it gets
+    marker.write_text("{}")  # the rebuild reproduced the same breakage
+
+    needle = "still cannot run its own python after a rebuild"
+    with caplog.at_level(logging.WARNING, logger="fused_render.envinstall"):
+        caplog.clear()
+        for _ in range(4):
+            assert envinstall.is_installed(reqs) is True
+    warnings = [r for r in caplog.records if needle in r.getMessage()]
+    assert len(warnings) == 1, [r.getMessage() for r in caplog.records]
+    assert marker.exists()
+
+
+@requires_fused
+def test_concurrent_callers_still_pay_no_probe_per_request(tmp_path, monkeypatch):
+    """The ceiling, under threads: probes are per venv, not per call.
+
+    The endpoints are sync `def` and run in FastAPI's threadpool, so this is the
+    real shape of the traffic. A handful of duplicate probes in the initial race is
+    accepted by design (see `_venv_is_usable`: the probe runs OUTSIDE the lock now,
+    and a duplicated read-only `-c ""` is a far better trade than a global stall) —
+    what must never happen is a probe per call, which is what an unmemoized or
+    wrongly-invalidated cache would give.
+    """
+    reqs = ["some-dist"]
+    venv_dir = _marked_venv(tmp_path, monkeypatch, reqs, runnable=True)
+
+    probes = []
+    probe_lock = threading.Lock()
+    real = envinstall._venv_runs
+
+    def _counting(d):
+        with probe_lock:
+            probes.append(d)
+        return real(d)
+
+    monkeypatch.setattr(envinstall, "_venv_runs", _counting)
+
+    results = []
+    def _hammer():
+        for _ in range(20):
+            results.append(envinstall.is_installed(reqs))
+
+    threads = [threading.Thread(target=_hammer) for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=30)
+    assert all(results) and len(results) == 160
+    racing = len(probes)
+    assert racing <= len(threads), f"{racing} probes for one venv across 8 threads"
+
+    # Steady state: once a verdict is stored, further calls must add nothing.
+    for _ in range(10):
+        assert envinstall.is_installed(reqs) is True
+    assert len(probes) == racing, "a probe per request in the steady state"
+
+
+@requires_fused
+def test_a_verdict_probed_ACROSS_a_discard_is_never_cached(tmp_path, monkeypatch):
+    """The invariant: a verdict is only ever cached against the generation it judged.
+
+    The probe runs outside the lock, so a concurrent `is_installed` can discard this
+    venv — end its generation — while we are still probing it. Storing our verdict
+    then would attach an answer about a DESTROYED venv to whatever replaces it under
+    the same key, which is the same defect class as caching an inconclusive probe:
+    the cache answers a question nobody asked it, and nothing ever re-asks.
+
+    So a generation change means: return our answer to our own caller (it is what we
+    genuinely measured) and store NOTHING. The next call re-probes. Deliberately no
+    cleverness about which verdict is "fresher" — there is no evidence either way.
+
+    Driven by making the probe itself perform the discard, which is exactly what a
+    racing caller's discard looks like from here: no threads, no sleeps.
+    """
+    reqs = ["some-dist"]
+    venv_dir = _marked_venv(tmp_path, monkeypatch, reqs, runnable=True)
+
+    probes = []
+    real = envinstall._venv_runs
+
+    def _probe_then_someone_else_discards(d):
+        verdict = real(d)
+        with envinstall._validated_lock:
+            envinstall._discard_verdict(d)  # what a concurrent discard does
+        probes.append(d)
+        return verdict
+
+    monkeypatch.setattr(envinstall, "_venv_runs", _probe_then_someone_else_discards)
+    assert envinstall.is_installed(reqs) is True, "our own caller still gets an answer"
+    assert str(venv_dir) not in envinstall._VALIDATED, "stored against a dead generation"
+    assert envinstall.is_installed(reqs) is True
+    assert len(probes) == 2, "the next call must re-probe, not trust the stale verdict"
+
+
+@requires_fused
+def test_a_marker_REPLACED_during_the_probe_is_not_unlinked(tmp_path, monkeypatch):
+    """Identity, not existence: the marker we answer about must be the one we judged.
+
+    Inside the probe window the install worker can finish a rebuild and write a
+    FRESH marker. A boolean `exists()` re-check reads True for that, so the bound
+    would be consulted against a verdict describing the venv that was destroyed —
+    and the first-failure branch would unlink the marker of a freshly rebuilt,
+    possibly healthy venv and force another download. Comparing
+    `(st_ino, st_mtime_ns)` sees the swap that `exists()` cannot.
+    """
+    reqs = ["some-dist"]
+    venv_dir = _marked_venv(tmp_path, monkeypatch, reqs)  # no interpreter -> False
+    marker = venv_dir / envinstall.READY_MARKER
+    before = envinstall._marker_stamp(str(marker))
+
+    def _probe_while_the_worker_re_marks(d):
+        m = os.path.join(d, envinstall.READY_MARKER)
+        os.unlink(m)  # the rebuild starts
+        with open(m + ".new", "w") as fh:  # ... and finishes, marker and all
+            fh.write("{}")
+        os.replace(m + ".new", m)
+        return False
+
+    monkeypatch.setattr(envinstall, "_venv_runs", _probe_while_the_worker_re_marks)
+    assert envinstall._marker_stamp(str(marker)) == before, "setup: stamp not captured"
+
+    assert envinstall.is_installed(reqs) is False, "answer about the venv we judged"
+    assert marker.exists(), "the REBUILT venv's marker must survive"
+    assert envinstall._marker_stamp(str(marker)) != before, "setup: stamp unchanged"
+
+
+@requires_fused
+def test_a_TRUE_verdict_is_not_returned_once_the_marker_has_VANISHED(
+    tmp_path, monkeypatch
+):
+    """A "ready" answer requires the marker to still be there when we answer.
+
+    `is_installed` stamps the marker, probes, then answers. If the worker un-marks
+    and starts rebuilding inside that window, answering True hands `/api/run` a
+    directory being rebuilt underneath it — a confusing mid-rebuild failure instead
+    of the install loader. So the answer is False: the caller reports
+    `needs_install` and joins the install already in flight (`start()` joins rather
+    than duplicating), which is the same conclusion the replaced-marker branch
+    reaches, through the same code path.
+    """
+    reqs = ["some-dist"]
+    venv_dir = _marked_venv(tmp_path, monkeypatch, reqs, runnable=True)
+    marker = venv_dir / envinstall.READY_MARKER
+    real = envinstall._venv_runs
+
+    def _probe_while_the_worker_unmarks(d):
+        verdict = real(d)
+        os.unlink(os.path.join(d, envinstall.READY_MARKER))
+        return verdict
+
+    monkeypatch.setattr(envinstall, "_venv_runs", _probe_while_the_worker_unmarks)
+    assert envinstall.is_installed(reqs) is False, "do not run against a rebuild"
+    assert str(venv_dir) not in envinstall._VALIDATED, "and do not keep the verdict"
+    assert not marker.exists()
+
+
+@requires_fused
+def test_reset_ends_every_generation_so_an_inflight_probe_cannot_store(
+    tmp_path, monkeypatch
+):
+    """`reset_venv_validation_cache` has to END generations, not just empty the dict.
+
+    A probe already in flight when the reset lands measured the world before it. If
+    the reset merely cleared `_VALIDATED`, that probe would find the key absent
+    afterwards and happily insert a pre-reset verdict — the reset would be undone by
+    the very call it was meant to invalidate.
+    """
+    reqs = ["some-dist"]
+    venv_dir = _marked_venv(tmp_path, monkeypatch, reqs, runnable=True)
+    real = envinstall._venv_runs
+
+    def _probe_then_reset(d):
+        verdict = real(d)
+        envinstall.reset_venv_validation_cache()
+        return verdict
+
+    monkeypatch.setattr(envinstall, "_venv_runs", _probe_then_reset)
+    assert envinstall.is_installed(reqs) is True
+    assert str(venv_dir) not in envinstall._VALIDATED
+
+
+@requires_fused
+def test_a_stalled_probe_of_one_venv_does_not_block_another(tmp_path, monkeypatch):
+    """One wedged venv must not freeze `is_installed` for every other venv.
+
+    The probe budget is 5s and a venv can live on a wedged network mount — a
+    failure mode this repo fights elsewhere. With the module-global lock held
+    ACROSS the probe, that one stalled probe blocked EVERY `is_installed`,
+    including cached hits for venvs that are perfectly fine; combined with the
+    pre-flight running on the event loop, one stuck venv froze the whole app.
+
+    Driven by an `Event` rather than by timing, so there is no race to lose: the
+    probe of A parks inside the critical region for as long as this test says, and
+    the answer for B has to arrive anyway.
+    """
+    reqs_a, reqs_b = ["dist-a"], ["dist-b"]
+    _marked_venv(tmp_path, monkeypatch, reqs_a, runnable=True)
+    _marked_venv(tmp_path, monkeypatch, reqs_b, runnable=True)
+    assert envinstall.is_installed(reqs_b) is True  # B's verdict is now cached
+
+    in_probe, release = threading.Event(), threading.Event()
+
+    def _stall(venv_dir):
+        in_probe.set()
+        release.wait(timeout=30)
+        return True
+
+    monkeypatch.setattr(envinstall, "_venv_runs", _stall)
+
+    stalled = threading.Thread(target=envinstall.is_installed, args=(reqs_a,))
+    stalled.start()
+    try:
+        assert in_probe.wait(timeout=10), "the probe of A never started"
+        answered = []
+        b = threading.Thread(target=lambda: answered.append(
+            envinstall.is_installed(reqs_b)))
+        b.start()
+        b.join(timeout=10)
+        assert answered == [True], "B waited on A's stalled probe"
+    finally:
+        release.set()
+        stalled.join(timeout=30)
 
 
 # --- /api/run's pre-flight ----------------------------------------------------
@@ -661,6 +1605,393 @@ def test_the_worker_builds_the_venv_the_server_will_look_for(tmp_path, monkeypat
     )
 
 
+# --- the worker's heartbeat (D213) --------------------------------------------
+#
+# `ensure_requirements_venv` runs uv behind `capture_output=True`, so between the
+# `install` record and the terminal one NOTHING was emitted — minutes on a cold
+# cache with imagecodecs/pyproj. The client polled every 500ms and repainted an
+# identical record, which is the whole "stuck for a long time" report. The
+# heartbeat proves liveness; these tests protect the ORDERING it introduces,
+# because a heartbeat landing after the terminal record puts `done: false` back on
+# the wire and the page then polls forever — the same symptom, made permanent.
+
+
+def _worker_module(name="_env_install_worker_hb"):
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        name, os.path.join(os.path.dirname(envinstall.__file__), "_env_install_worker.py")
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _record(progress_dir):
+    with open(os.path.join(progress_dir, "progress.json"), encoding="utf-8") as fh:
+        return json.load(fh)
+
+
+# A heartbeat record, told apart from the FIRST `install` record by its elapsed
+# suffix — "package(s)" means a bare "(" in the detail cannot be the signal.
+_BEAT_RE = re.compile(r"\((?:\d+m)?\d+s\)$")
+
+
+def _is_beat(stage, detail):
+    return stage == "install" and _BEAT_RE.search(detail or "") is not None
+
+
+def test_the_heartbeat_refreshes_ts_and_detail_without_faking_progress(
+    tmp_path, monkeypatch
+):
+    """Liveness, not advancement.
+
+    `pct` stays at 25 for the whole download because there IS no computable
+    percentage — upstream captures uv's output, so nothing here can see per-package
+    progress. Animating the number upward would be inventing data, and the number
+    is what a user trusts most. What changes instead is elapsed time and `ts`: the
+    record proves the install is alive without claiming to know how far along it is.
+    """
+    worker = _worker_module()
+    monkeypatch.setattr(worker, "_HEARTBEAT_S", 0.02)
+    d = str(tmp_path / "prog")
+    beats = threading.Event()
+    seen = []
+
+    real_write = worker._write
+
+    def _watch(progress_dir, stage, pct, detail="", done=False, error=None):
+        out = real_write(progress_dir, stage, pct, detail, done, error)
+        if _is_beat(stage, detail):
+            # `ts` is read back off DISK, because that is what the client polls.
+            seen.append((pct, detail, _record(progress_dir)["ts"]))
+            if len(seen) >= 2:
+                beats.set()
+        return out
+
+    monkeypatch.setattr(worker, "_write", _watch)
+    monkeypatch.setattr(
+        worker, "_build",
+        lambda venvs_path, requirements, python_executable: (
+            (beats.wait(10), "/x/venv/bin/python")[1]
+        ),
+    )
+    worker.install("k", d, str(tmp_path / "venvs"), ["pandas", "pyproj"])
+
+    assert len(seen) >= 2, f"the heartbeat did not repeat: {seen}"
+    assert all(pct == worker._INSTALL_PCT for pct, _, _ in seen), seen
+    stamps = [ts for _, _, ts in seen]
+    assert stamps == sorted(stamps) and stamps[0] < stamps[-1], (
+        f"ts never moved, so nothing on the wire proves the install is alive: {stamps}"
+    )
+    assert all("pandas, pyproj" in detail for _, detail, _ in seen), seen
+    # An elapsed suffix, which is the only thing that changes between beats.
+    assert _BEAT_RE.search(seen[0][1]), seen[0][1]
+    assert _record(d)["done"] is True
+
+
+def test_the_terminal_record_is_written_last_even_with_a_heartbeat_running(
+    tmp_path, monkeypatch
+):
+    """The ordering the whole feature stands on.
+
+    Heartbeat and terminal write both `os.replace` onto `progress.json`, so if a
+    beat lands afterwards the client sees `done: false` again and polls a finished
+    install forever. Pinned on both the success and the failure path, since the
+    error record is written from an exception handler and is the easier one to get
+    wrong.
+    """
+    worker = _worker_module()
+    monkeypatch.setattr(worker, "_HEARTBEAT_S", 0.02)
+    calls = []
+    real_write = worker._write
+
+    def _log(progress_dir, stage, pct, detail="", done=False, error=None):
+        out = real_write(progress_dir, stage, pct, detail, done, error)
+        calls.append((stage, done))
+        return out
+
+    monkeypatch.setattr(worker, "_write", _log)
+
+    beats = threading.Event()
+    monkeypatch.setattr(
+        worker, "_build",
+        lambda venvs_path, requirements, python_executable: (
+            (beats.wait(10), "/x/venv/bin/python")[1]
+        ),
+    )
+
+    def _wait_for_beats(progress_dir, stage, pct, detail="", done=False, error=None):
+        if _is_beat(stage, detail) and len(
+                [c for c in calls if c == ("install", False)]) >= 2:
+            beats.set()
+        return _log(progress_dir, stage, pct, detail, done, error)
+
+    monkeypatch.setattr(worker, "_write", _wait_for_beats)
+    ok_dir = str(tmp_path / "ok")
+    worker.install("k", ok_dir, str(tmp_path / "venvs"), ["pandas"])
+    assert calls[-1] == ("done", True), calls
+    assert _record(ok_dir)["done"] is True
+
+    calls.clear()
+    beats.clear()
+
+    def _boom(venvs_path, requirements, python_executable):
+        beats.wait(10)
+        raise RuntimeError("Failed to install: no wheels for imagecodecs")
+
+    monkeypatch.setattr(worker, "_build", _boom)
+    bad_dir = str(tmp_path / "bad")
+    with pytest.raises(RuntimeError):
+        worker.install("k", bad_dir, str(tmp_path / "venvs"), ["imagecodecs"])
+    assert calls[-1] == ("error", True), calls
+    assert [c for c in calls if c[0] == "error"] == [("error", True)], (
+        "more than one terminal error record"
+    )
+    rec = _record(bad_dir)
+    assert rec["done"] is True
+    assert "no wheels for imagecodecs" in rec["error"]
+
+
+def test_a_late_heartbeat_cannot_undo_the_terminal_record(tmp_path, monkeypatch):
+    """The guarantee, not the hope.
+
+    `join(timeout=…)` can return with a beat still inside its own write (a slow
+    filesystem, a suspended thread), so ordering cannot rest on the join alone.
+    Writes therefore go through one lock and a latch: once a terminal record is
+    written, nothing else may write. Driven by blocking a beat INSIDE `_write`
+    until after the build has finished, which is exactly the interleaving the join
+    cannot prevent.
+    """
+    worker = _worker_module()
+    monkeypatch.setattr(worker, "_HEARTBEAT_S", 0.01)
+    d = str(tmp_path / "prog")
+    held = threading.Event()
+    first_beat = threading.Event()
+    real_write = worker._write
+
+    def _hold_the_first_beat(progress_dir, stage, pct, detail="", done=False, error=None):
+        if _is_beat(stage, detail) and not first_beat.is_set():
+            first_beat.set()
+            held.wait(10)  # the build finishes while this beat is parked here
+        return real_write(progress_dir, stage, pct, detail, done, error)
+
+    monkeypatch.setattr(worker, "_write", _hold_the_first_beat)
+    monkeypatch.setattr(
+        worker, "_build",
+        lambda venvs_path, requirements, python_executable: (
+            (first_beat.wait(10), "/x/venv/bin/python")[1]
+        ),
+    )
+    # Released from a timer: the main thread is inside `install()`, which is where
+    # the contention this test creates has to be resolved.
+    threading.Timer(0.2, held.set).start()
+    worker.install("k", d, str(tmp_path / "venvs"), ["pandas"])
+    assert _record(d)["done"] is True, "a late heartbeat put done:false back on the wire"
+    assert _record(d)["stage"] == "done"
+
+
+def test_the_python_stage_is_in_STAGES_and_before_create():
+    """Order is the contract the client renders against, not decoration.
+
+    The interpreter download happens BEFORE anything can be created, and
+    `runtime.js` reads position in `STAGES` to decide what is behind and what is
+    ahead. A `python` stage appended after `install` would render as progress going
+    backwards.
+    """
+    assert "python" in envinstall.STAGES
+    assert envinstall.STAGES.index("python") < envinstall.STAGES.index("create")
+    assert envinstall.STAGE_PCT["python"] < envinstall.STAGE_PCT["create"]
+    assert set(envinstall.STAGE_PCT) == set(envinstall.STAGES)
+
+
+def test_the_worker_acquires_the_interpreter_and_builds_NO_venv(tmp_path, monkeypatch):
+    """Bootstrap mode is one job, not a prelude to the other.
+
+    It cannot do both in one run: the venv it would go on to build belongs under a
+    key folding in the interpreter it has only just fetched, which is not the key it
+    was spawned under. Building anyway would fill a directory `is_installed` never
+    looks at, and the page would install, retry and be told to install again.
+    """
+    worker = _worker_module("_env_install_worker_py")
+    d = str(tmp_path / "prog")
+    ran = []
+    monkeypatch.setattr(worker, "_acquire_python", lambda v: ran.append(v))
+    monkeypatch.setattr(worker, "_build", lambda *a, **k: pytest.fail("built a venv"))
+
+    worker.install("k", d, str(tmp_path / "venvs"), ["tensorflow"],
+                   acquire_python="3.12")
+    assert ran == ["3.12"]
+    rec = _record(d)
+    assert rec["stage"] == "done" and rec["done"] is True
+    assert "3.12" in rec["detail"]
+
+
+def test_the_python_stage_reports_LIVENESS_not_an_invented_percentage(
+    tmp_path, monkeypatch
+):
+    """Same rule as the install stage (D213), and the same reason.
+
+    uv's download progress is not observable from here, so the only honest thing to
+    refresh is the elapsed time and `ts`. A bar creeping upward on made-up numbers is
+    worse than one that does not move — the number is what a waiting user trusts most.
+    """
+    worker = _worker_module("_env_install_worker_py2")
+    d = str(tmp_path / "prog")
+    seen = []
+    real_write = worker._write
+
+    def record_every(progress_dir, stage, pct, detail="", done=False, error=None):
+        seen.append((stage, pct, detail))
+        return real_write(progress_dir, stage, pct, detail, done, error)
+
+    monkeypatch.setattr(worker, "_write", record_every)
+    monkeypatch.setattr(worker, "_HEARTBEAT_S", 0.05)
+    monkeypatch.setattr(worker, "_acquire_python", lambda v: time.sleep(0.3))
+
+    worker.install("k", d, str(tmp_path / "venvs"), ["tensorflow"],
+                   acquire_python="3.12")
+
+    beats = [s for s in seen if s[0] == "python"]
+    assert len(beats) >= 2, f"the python stage never beat: {seen}"
+    assert len({pct for _, pct, _ in beats}) == 1, (
+        f"the python stage invented a percentage: {beats}"
+    )
+    assert any(_BEAT_RE.search(detail or "") for _, _, detail in beats), (
+        f"no elapsed time on any python beat: {beats}"
+    )
+
+
+def test_an_interpreter_download_that_FAILS_reports_the_reason(tmp_path, monkeypatch):
+    """Verbatim, like every other install error in this flow — a proxy refusing
+    uv's download is the actual answer the user needs, not "install failed"."""
+    worker = _worker_module("_env_install_worker_py3")
+    d = str(tmp_path / "prog")
+
+    def boom(version):
+        raise RuntimeError("Failed to download Python 3.12: 403 Forbidden")
+
+    monkeypatch.setattr(worker, "_acquire_python", boom)
+    with pytest.raises(RuntimeError):
+        worker.install("k", d, str(tmp_path / "venvs"), ["tensorflow"],
+                       acquire_python="3.12")
+    rec = _record(d)
+    assert rec["done"] is True and rec["stage"] == "error"
+    assert "403 Forbidden" in rec["error"]
+
+
+def test_the_worker_maps_an_EMPTY_acquire_slot_back_to_no_acquisition(tmp_path, monkeypatch):
+    """argv cannot carry None, so "" means "nothing to acquire" — the same idiom
+    slot 4 already uses for the interpreter, translated in `main` and nowhere else.
+    A slot read as the literal string "" would try to install a Python called
+    nothing."""
+    worker = _worker_module("_env_install_worker_py4")
+    seen = {}
+    monkeypatch.setattr(
+        worker, "install",
+        lambda *a, **kw: seen.update(args=a, kwargs=kw),
+    )
+    worker.main(["k", str(tmp_path), str(tmp_path / "venvs"), "", "", "pandas"])
+    assert seen["kwargs"]["acquire_python"] is None
+
+    seen.clear()
+    worker.main(["k", str(tmp_path), str(tmp_path / "venvs"), "", "3.12", "pandas"])
+    assert seen["kwargs"]["acquire_python"] == "3.12"
+
+
+def test_a_failed_terminal_write_does_not_latch_out_the_error_record(tmp_path, monkeypatch):
+    """The latch closes on evidence the record landed, not on the attempt.
+
+    If it engaged before `_write` returned, a terminal `done` write that FAILED
+    would still shut the file, and the `except` path's error record — the only one
+    carrying the reason — would no-op. The wire would keep the last heartbeat's
+    `done: false` forever: the same stuck poll the latch exists to prevent, reached
+    from the other side.
+    """
+    worker = _worker_module()
+    d = str(tmp_path / "prog")
+    real_write = worker._write
+
+    def _fail_the_done_record(progress_dir, stage, pct, detail="", done=False, error=None):
+        if stage == "done":
+            raise OSError(28, "No space left on device")
+        return real_write(progress_dir, stage, pct, detail, done, error)
+
+    monkeypatch.setattr(worker, "_write", _fail_the_done_record)
+    monkeypatch.setattr(
+        worker, "_build",
+        lambda venvs_path, requirements, python_executable: "/x/venv/bin/python",
+    )
+    with pytest.raises(OSError):
+        worker.install("k", d, str(tmp_path / "venvs"), ["pandas"])
+
+    rec = _record(d)
+    assert rec["done"] is True, "the failed done-write latched the error record out"
+    assert rec["stage"] == "error"
+    assert "No space left on device" in rec["error"], (
+        "the error record must name the real failure, not the install it was reporting"
+    )
+
+
+def test_the_heartbeat_thread_does_not_outlive_the_install(tmp_path, monkeypatch):
+    """Stopped and joined on BOTH paths, and a daemon so a wedged one cannot keep
+    the worker process alive after the record says done."""
+    worker = _worker_module()
+    monkeypatch.setattr(worker, "_HEARTBEAT_S", 0.01)
+    threads = []
+    real_thread = worker.threading.Thread
+
+    def _capture(*a, **kw):
+        t = real_thread(*a, **kw)
+        threads.append(t)
+        return t
+
+    monkeypatch.setattr(worker.threading, "Thread", _capture)
+    monkeypatch.setattr(
+        worker, "_build",
+        lambda venvs_path, requirements, python_executable: "/x/venv/bin/python",
+    )
+    worker.install("k", str(tmp_path / "a"), str(tmp_path / "venvs"), ["pandas"])
+    assert threads and all(t.daemon for t in threads)
+    assert not any(t.is_alive() for t in threads), "the heartbeat outlived the install"
+
+    def _boom(venvs_path, requirements, python_executable):
+        raise RuntimeError("nope")
+
+    monkeypatch.setattr(worker, "_build", _boom)
+    with pytest.raises(RuntimeError):
+        worker.install("k", str(tmp_path / "b"), str(tmp_path / "venvs"), ["pandas"])
+    assert not any(t.is_alive() for t in threads), (
+        "the heartbeat outlived a FAILED install"
+    )
+
+
+def test_the_workers_temp_file_is_unique_per_writer_not_just_per_process(
+    tmp_path, monkeypatch
+):
+    """Two writers now live in ONE process (heartbeat + main), so a pid-unique temp
+    name is no longer unique: the first `os.replace` consumes the other's file and
+    its own replace fails with FileNotFoundError — a crashed installer whose venv
+    was fine. Thread id, matching `envinstall._write`.
+    """
+    worker = _worker_module()
+    d = tmp_path / "prog"
+    d.mkdir()
+    names = []
+    real_replace = worker.os.replace
+    monkeypatch.setattr(worker.os, "replace",
+                        lambda src, dst: (names.append(src), real_replace(src, dst))[1])
+
+    def _write_from_a_thread():
+        worker._write(str(d), "install", 25, "x")
+
+    t = threading.Thread(target=_write_from_a_thread)
+    t.start()
+    t.join(10)
+    worker._write(str(d), "install", 25, "y")
+    assert len(names) == 2 and names[0] != names[1], names
+
+
 def test_the_worker_reads_an_empty_interpreter_argument_as_none(tmp_path, monkeypatch):
     """"" is how "the backend's default interpreter" crosses argv.
 
@@ -684,9 +2015,9 @@ def test_the_worker_reads_an_empty_interpreter_argument_as_none(tmp_path, monkey
         ),
     )
     d = str(tmp_path / "prog")
-    worker.main(["k", d, str(tmp_path / "venvs"), "", "pip"])
+    worker.main(["k", d, str(tmp_path / "venvs"), "", "", "pip"])
     assert seen == [None]
-    worker.main(["k", d, str(tmp_path / "venvs"), "/usr/bin/python3", "pip"])
+    worker.main(["k", d, str(tmp_path / "venvs"), "/usr/bin/python3", "", "pip"])
     assert seen == [None, "/usr/bin/python3"]
 
 
@@ -702,7 +2033,8 @@ def test_starting_twice_does_not_spawn_a_second_worker(tmp_path, monkeypatch):
     # Our own pid, because it is provably alive: a made-up one would be reaped by
     # the liveness check in `progress()` and the second start would legitimately
     # re-spawn, which would pass this test for the wrong reason.
-    monkeypatch.setattr(envinstall, "_spawn", lambda *a: spawned.append(a) or os.getpid())
+    monkeypatch.setattr(envinstall, "_spawn",
+                        lambda *a, **kw: spawned.append(a) or os.getpid())
     reqs = ["pip"]
     envinstall.start(reqs)
     envinstall.start(reqs)
@@ -726,7 +2058,7 @@ def test_concurrent_starts_spawn_exactly_one_worker(tmp_path, monkeypatch):
     spawned = []
     lock = threading.Lock()
 
-    def fake_spawn(key, reqs):
+    def fake_spawn(key, reqs, **kw):
         with lock:
             spawned.append(key)
         return os.getpid()  # provably alive, so `_in_flight` stays true
@@ -765,7 +2097,7 @@ def test_a_stale_claim_from_a_dead_installer_is_taken_over(tmp_path, monkeypatch
     key = envinstall.venv_key_for(reqs)
     spawned = []
     monkeypatch.setattr(
-        envinstall, "_spawn", lambda k, r: spawned.append(k) or (2 ** 31 - 1)
+        envinstall, "_spawn", lambda k, r, **kw: spawned.append(k) or (2 ** 31 - 1)
     )
     envinstall.start(reqs)
     assert len(spawned) == 1
@@ -903,7 +2235,7 @@ def test_the_spawn_record_never_overwrites_a_record_the_worker_already_wrote(
         "pid": 2 ** 31 - 1, "ts": time.time(),
     }
 
-    def _spawn_then_report(k, r):
+    def _spawn_then_report(k, r, **kw):
         envinstall._write(k, worker_record)
         return 2 ** 31 - 1
 
@@ -930,7 +2262,7 @@ def test_a_retry_does_not_inherit_the_previous_attempt_s_record(tmp_path, monkey
     monkeypatch.setattr(envinstall, "venvs_path", lambda: str(tmp_path / "venvs"))
     reqs = ["pip"]
     key = envinstall.venv_key_for(reqs)
-    monkeypatch.setattr(envinstall, "_spawn", lambda k, r: 2 ** 31 - 1)
+    monkeypatch.setattr(envinstall, "_spawn", lambda k, r, **kw: 2 ** 31 - 1)
     envinstall.start(reqs)
     assert envinstall.progress(key)["error"], "the first attempt reads as crashed"
 
@@ -939,7 +2271,8 @@ def test_a_retry_does_not_inherit_the_previous_attempt_s_record(tmp_path, monkey
     old = time.time() - envinstall._CLAIM_GRACE_S - 60
     os.utime(claim, (old, old))
     live = []
-    monkeypatch.setattr(envinstall, "_spawn", lambda k, r: live.append(k) or os.getpid())
+    monkeypatch.setattr(envinstall, "_spawn",
+                        lambda k, r, **kw: live.append(k) or os.getpid())
     record = envinstall.start(reqs)
     assert live == [key], "the retry must spawn"
     assert record["error"] is None, record
@@ -952,10 +2285,14 @@ def test_start_is_a_no_op_once_the_venv_is_installed(tmp_path, monkeypatch):
     reqs = ["pip"]
     venv_dir = os.path.join(str(tmp_path / "venvs"), envinstall.venv_key_for(reqs))
     os.makedirs(venv_dir, exist_ok=True)
+    # A runnable interpreter, not just the marker: since D212 `is_installed`
+    # verifies the claim once, and a marker over an empty directory now reads
+    # (correctly) as "not installed" — which is a different test than this one.
+    _runnable_venv_python(venv_dir)
     with open(os.path.join(venv_dir, ".openfused-ready"), "w") as f:
         f.write("{}")
     spawned = []
-    monkeypatch.setattr(envinstall, "_spawn", lambda *a: spawned.append(a) or 1)
+    monkeypatch.setattr(envinstall, "_spawn", lambda *a, **kw: spawned.append(a) or 1)
     envinstall.start(reqs)
     assert spawned == []
 
@@ -967,9 +2304,10 @@ def test_progress_stages_are_the_ones_we_can_actually_observe():
     """`venvs._run_step` uses capture_output=True, so pip's per-package output
     is unavailable without changing `fused`. The stage list is therefore coarse
     ON PURPOSE, and named here so a future "62%" that implies per-package
-    resolution has to argue with a test first.
+    resolution has to argue with a test first. `python` (D214) is coarse for the
+    same reason: our own `uv python install` captures its output too.
     """
-    assert envinstall.STAGES == ("spawn", "create", "install", "done")
+    assert envinstall.STAGES == ("spawn", "python", "create", "install", "done")
 
 
 def _wait_done(key, timeout):

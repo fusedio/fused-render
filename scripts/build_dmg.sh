@@ -430,6 +430,74 @@ find "$APP_DIR" -type f \( -name '*.so' -o -name '*.dylib' \) \
 echo "    pruned; app now $(du -sh "$APP_DIR" | cut -f1)"
 
 # ---------------------------------------------------------------------------
+# 4a-ter. Make the bundled interpreter SELF-LOCATING: Contents/lib -> Resources/lib.
+#
+#     py2app puts the runtime (stdlib zip + `lib/python3.12/` with the packages
+#     and `config-3.12-darwin`) under `Contents/Resources/lib`, but the
+#     interpreter itself at `Contents/MacOS/python`. CPython's landmark search
+#     for `sys.prefix` walks up from the executable looking for
+#     `<prefix>/lib/python3.12/...` — i.e. it checks `Contents/lib/python3.12`,
+#     which does not exist — misses, and falls back to the prefix compiled into
+#     the binary at build time: the BUILD MACHINE's Homebrew framework
+#     (`/opt/homebrew/opt/python@3.12/...`), a path no user has. Measured on an
+#     installed DMG, with the env stripped: `sys.prefix` was exactly that
+#     Homebrew path. One relative symlink makes the landmark resolve inside the
+#     .app and the interpreter fully self-locating with NO environment variables
+#     at all (verified: `sys.prefix` = `<App>/Contents`, and `import
+#     fused_render, duckdb, rasterio` all work).
+#
+#     The app itself worked WITHOUT this, because py2app's launcher stub exports
+#     `PYTHONHOME=.../Contents/Resources` for the app process. What did not work
+#     is everything downstream of that: `fused`'s `python_compute` STRIPS
+#     PYTHONHOME/PYTHONPATH/VIRTUAL_ENV/PYTHONSTARTUP from its children, so a
+#     `uv venv --python Contents/MacOS/python` (which is how the install loader
+#     builds a venv for a PEP 723 header — SPEC PY-18, D176) recorded that
+#     nonexistent Homebrew prefix as its base, and every child of that venv died
+#     with `ModuleNotFoundError: No module named 'pandas'` / an encodings failure.
+#     DMG users hit permanent "python execution" failures for exactly the pages
+#     whose .py carries a header, with switching the engine pref to `local` as
+#     the only workaround. So this symlink is what makes PEP 723 venvs built from
+#     the bundled interpreter usable at all; it is not a tidiness fix.
+#
+#     Zero runtime cost: no probe, no wrapper, no extra subprocess — the symlink
+#     is resolved by the interpreter's own startup path search.
+#
+#     Placement, exactly as it stands: AFTER the pruning in 4a, and BEFORE the
+#     smoke tests and the codesign sweep (step 5) so the link is sealed into the
+#     signature rather than added to a signed bundle. Note that package staging
+#     (4a-bis) still runs AFTER this step despite coming later in the numbering —
+#     that is fine and is the whole reason to be precise here: every one of those
+#     steps writes INSIDE `Contents/Resources/lib/python3.12`, and this link lives
+#     one level up at `Contents/lib`, so none of them can clobber it whichever
+#     order they run in. What would break the link is a step that replaced
+#     `Contents/Resources/lib` itself or wrote its own `Contents/lib`; there is no
+#     such step today, and a future one must run before this line.
+#     Both sweeps that enumerate files by magic bytes — the Mach-O-as-.py sanity
+#     check and the signing loop — use `find <dir> -type f`, and `find` does not
+#     follow symlinks without `-L`, so the link is neither signed as nested code
+#     nor traversed a second time. Verified against a copy of an installed
+#     bundle: adding the link and re-running `codesign --force --deep -s -` +
+#     `codesign --verify --strict` gives "valid on disk / satisfies its
+#     Designated Requirement", i.e. the bundle seal is happy with it (Apple's
+#     bundle format seals symlinks through the resource rules).
+#
+#     RELATIVE (`Resources/lib`, not an absolute path): the .app is copied to
+#     /Applications, mounted from a DMG, and run from a temp dir by CI. An
+#     absolute link would point at whatever machine built it.
+# ---------------------------------------------------------------------------
+
+echo "==> making the bundled interpreter self-locating (Contents/lib -> Resources/lib)"
+if [[ ! -d "$APP_DIR/Contents/Resources/lib" ]]; then
+  echo "FATAL: $APP_DIR/Contents/Resources/lib does not exist — py2app's layout" >&2
+  echo "       changed, so the landmark this symlink creates would point at" >&2
+  echo "       nothing and the bundled interpreter could not self-locate." >&2
+  exit 1
+fi
+# -f: py2app rebuilds into a fresh dist dir, but a re-run over an existing tree
+# must not fail on (or nest inside) a link that is already there.
+ln -sfn "Resources/lib" "$APP_DIR/Contents/lib"
+
+# ---------------------------------------------------------------------------
 # 4b. Bundle sanity checks.
 #     a) No Mach-O binary masquerading as a .py: py2app's `packages` option
 #        mis-copies a bare C-extension module (e.g. _duckdb) to
@@ -535,6 +603,59 @@ if ! echo "$SMOKE_OUT" | grep -q '"ok": true'; then
 fi
 echo "    $SMOKE_OUT"
 rm -rf "$SMOKE_DIR"
+
+# ---------------------------------------------------------------------------
+# 4b-bis. The regression guard for 4a-ter: the bundled interpreter must locate
+#     its own runtime with NO environment help.
+#
+#     Every other smoke above runs the bundled python WITH
+#     `PYTHONHOME=Contents/Resources` — which is exactly why this bug shipped
+#     invisibly. With PYTHONHOME set, a bundle whose landmark search resolves to
+#     the build machine's Homebrew prefix passes every one of them. So this check
+#     strips the four variables `python_compute` strips from its children
+#     (PYTHONHOME/PYTHONPATH/VIRTUAL_ENV — PYTHONSTARTUP only affects interactive
+#     sessions, so `-c` cannot see it) and asserts the two things that actually
+#     matter:
+#       a) `sys.prefix` is INSIDE this .app, not on some absolute path belonging
+#          to the machine that built it. Compared against $APP_DIR by prefix,
+#          because the build tree's path is not the install path;
+#       b) the app's own package plus one heavy native package (duckdb, the same
+#          one the _child.py smoke above uses) actually import — a prefix that
+#          merely looks right is not proof that the runtime under it is complete.
+#
+#     A failure here is FATAL, not a warning: without this property, PEP 723
+#     script venvs built from `Contents/MacOS/python` are unusable on every
+#     user's machine (see 4a-ter), and the symptom — "python execution failed"
+#     only for pages whose .py has a header — is nowhere near the cause.
+# ---------------------------------------------------------------------------
+
+echo "==> bundle sanity: interpreter self-locates with PYTHONHOME stripped"
+# `|| true` inside the substitution for the same reason as the smokes above:
+# `set -euo pipefail` would abort on the ASSIGNMENT — the very case this exists
+# for — and take the diagnostic with it. The grep IS the check.
+SELFLOC_OUT="$(env -u PYTHONHOME -u PYTHONPATH -u VIRTUAL_ENV \
+  "$APP_DIR/Contents/MacOS/python" -c '
+import sys
+import fused_render, duckdb
+print("prefix", sys.prefix)
+print("selflocating OK", fused_render.__version__, duckdb.__version__)
+' 2>&1 || true)"
+if ! echo "$SELFLOC_OUT" | grep -q "^selflocating OK"; then
+  echo "FATAL: the bundled interpreter cannot run without PYTHONHOME:" >&2
+  echo "$SELFLOC_OUT" >&2
+  echo "       (is Contents/lib -> Resources/lib missing? see step 4a-ter)" >&2
+  exit 1
+fi
+SELFLOC_PREFIX="$(echo "$SELFLOC_OUT" | sed -n 's/^prefix //p')"
+if [[ "$SELFLOC_PREFIX" != "$APP_DIR"* ]]; then
+  echo "FATAL: the bundled interpreter's sys.prefix is OUTSIDE the app:" >&2
+  echo "       $SELFLOC_PREFIX" >&2
+  echo "       (that is the BUILD MACHINE's python — it does not exist on a" >&2
+  echo "        user's disk, so every PEP 723 script venv built from this" >&2
+  echo "        interpreter would be dead on arrival. See step 4a-ter.)" >&2
+  exit 1
+fi
+echo "    $(echo "$SELFLOC_OUT" | tail -1) (prefix $SELFLOC_PREFIX)"
 
 # ---------------------------------------------------------------------------
 # 4c. Bundled fused CLI (SPEC §19 DP-3): the `fused` package installed above
