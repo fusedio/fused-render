@@ -150,6 +150,25 @@ def origin() -> str | None:
     return os.environ.get("FUSED_RENDER_ORIGIN") or None
 
 
+def skill_plugin_dir() -> str | None:
+    """The Claude Code plugin root to hand a session we spawn (`--plugin-dir`),
+    or None when there is none to hand it.
+
+    fused-render assembles the canonical skills into a plugin under its home dir
+    and exports the path here (`skill_plugin.export_skill_plugin_env`, D216), so
+    a chat this app launches knows the `fused` bridge contract regardless of the
+    state of the user's `~/.claude`.
+
+    The var is absent in exactly the cases where the flag must not be passed:
+    no server around to have synced anything, a sync that failed, or a `claude`
+    whose `--help` does not list `--plugin-dir` (passing an unknown option makes
+    the CLI exit before the turn starts). Deciding any of that is the server's
+    job — the answer arrives here already made, like every other value in this
+    module.
+    """
+    return os.environ.get("FUSED_RENDER_SKILL_PLUGIN_DIR") or None
+
+
 def _sidecar_subpath(abs_path: str) -> str:
     """Mirrors shell/storage.py:_sidecar_subpath; keep the two in step.
 

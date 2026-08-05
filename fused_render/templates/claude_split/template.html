@@ -1262,13 +1262,61 @@ function appStatePull() {
 // joining, so there is exactly one place that decides the message's shape.
 function appStateBlock(state) {
   if (!state) return "";
+  // `dom_path` where the outline was written to a file (appStateFile), `dom`
+  // where it had to stay inline. The preamble has to describe whichever one
+  // actually arrived, or the model goes looking for a key that is not there.
+  const outline = state.dom_path
+    ? "The DOM outline is the JSON file at `dom_path` — read it when you need "
+      + "the structure. "
+    : "";
   return "<" + APP_STATE_TAG + ">\n"
     + "A snapshot of the app the user is looking at in the left pane, taken as "
-    + "they sent this message. `path` on each node is the same anchorPath the "
+    + "they sent this message. " + outline
+    + "`path` on each node is the same anchorPath the "
     + "annotations use, so a pin and an outline node name the same element. It "
     + "goes stale the moment you edit anything — call the app_state tool for a "
     + "fresh read.\n"
     + JSON.stringify(state) + "\n</" + APP_STATE_TAG + ">";
+}
+
+// Distinct names within the same millisecond; two sends cannot share a file.
+let appStateSeq = 0;
+
+// The snapshot with its DOM outline moved OUT to a file, or unchanged if that
+// could not be done.
+//
+// The outline is by far the largest thing the page sends, and composeOutgoing
+// puts it in the MESSAGE — so the CLI keeps it in its own session transcript and
+// re-reads it on every later turn of the session. A ten-message conversation
+// carried ten full outlines in context permanently, all but the newest already
+// stale, and the block's own preamble says as much. A path costs the model one
+// Read when it actually wants the tree and nothing at all when it does not.
+//
+// It goes in the screenshot directory, which is the same kind of artifact under
+// the same argument: a private, short-lived record of what was on the user's
+// screen, handed to the agent and junk once the turn is over. That directory is
+// already 0700-enforced, already pruned on a TTL and a count, and already the
+// one path `--allowed-tools` lets Read touch without raising a card — none of
+// which is worth a second copy of for a second kind of file.
+//
+// Falls back to the inline outline rather than dropping it: no directory, or a
+// failed write, must not leave the agent knowing LESS about the user's screen
+// than it did before this existed.
+async function appStateFile(state) {
+  if (!state || !state.dom) return state;
+  try {
+    const dir = await shotDirPath();
+    const path = shotJoin(dir, "appstate-" + Date.now() + "-"
+                               + (++appStateSeq) + ".json");
+    await fused.uploadFile(path, new Blob([JSON.stringify(state.dom)],
+                                          { type: "application/json" }));
+    const out = Object.assign({}, state, { dom_path: path });
+    delete out.dom;
+    return out;
+  } catch (err) {
+    console.warn("app-state outline kept inline:", err && err.message);
+    return state;
+  }
 }
 
 // ── left pane: the file's ordinary preview ─────────────────────
@@ -2699,6 +2747,7 @@ document.getElementById("back").onclick = () => {
   showSession();
   log.innerHTML = "";
   permCards.clear();  // the cards went with the log; don't keep handles to them
+  notedSkills.clear();  // and the skill rows; a rebuilt log re-announces them
   chatEl.classList.add("home");
   document.getElementById("recentlist").innerHTML = "";
   document.getElementById("recent").style.display = "";
@@ -2979,12 +3028,24 @@ function syncPermissions(list, run_id, working, liveMode) {
   }
 }
 
+// What a LIVE api_retry says on the status line. The status code picks the
+// words, because 529 and 429 send the user looking in different places: the API
+// is swamped and waiting helps, versus we are being throttled. `max_retries` is
+// the CLI's budget and is only shown when it told us one.
+function retryVerb(retry) {
+  const what = retry.status === 429 ? "Rate limited"
+             : retry.status === 529 ? "Overloaded"
+             : "API error";
+  const budget = retry.max_retries ? "/" + retry.max_retries : "";
+  return what + " — retrying (" + retry.attempt + budget + ")";
+}
+
 function addWorking() {
   const d = document.createElement("div");
   d.className = "turn working";
   const thinkVerb = VERBS[Math.floor(Math.random() * VERBS.length)];
   const start = Date.now();
-  let stats = { tokens: 0, phase: "thinking" };
+  let stats = { tokens: 0, phase: "thinking", retry: null };
   let stopping = false;
   d.innerHTML = '<span class="star">✻</span> <span class="verb"></span><span class="meta"></span>'
     // The key rides on the label, not in a hint row: same reasoning as the
@@ -2997,7 +3058,10 @@ function addWorking() {
   stopBtn.addEventListener("click", () => stopRun());
   const draw = () => {
     const secs = Math.round((Date.now() - start) / 1000);
+    // A live retry outranks every phase but the user's own stop: it is the only
+    // one of these that explains why nothing is happening.
     verbEl.textContent = (stopping ? "Stopping" :
+                          stats.retry ? retryVerb(stats.retry) :
                           stats.phase === "awaiting" ? "Waiting for your approval" :
                           stats.phase === "composing" ? "Composing" :
                           stats.phase === "tooling" ? "Working" : thinkVerb) + "…";
@@ -3013,7 +3077,7 @@ function addWorking() {
   scrollBottom();
   return {
     el: d,
-    setStats(tokens, phase) { stats = { tokens, phase }; draw(); },
+    setStats(tokens, phase, retry) { stats = { tokens, phase, retry: retry || null }; draw(); },
     // Reversible: the kill can fail, and a run that is still streaming must not
     // be left wearing a "Stopping…" line it will never honour.
     setStopping(on) { stopping = on; stopBtn.disabled = on; draw(); },
@@ -3133,6 +3197,27 @@ const nullStatePolls = new Map();  // req.id -> polls seen with nothing to repor
 const APP_STATE_MEMO_MAX = 200;
 function appStateTrim(memo) {
   while (memo.size > APP_STATE_MEMO_MAX) memo.delete(memo.keys().next().value);
+}
+
+// Skill invocations already announced in the log, by `tool_use` id. Poll replays
+// every call in the file on each 400 ms tick, so without this the same skill
+// would append a row per tick — the same reason `notedStates` exists next door.
+// Trimmed on the shared cap: the ids are unique per run and a turn that invokes
+// two hundred skills is not a thing, so the oldest can never come back.
+const notedSkills = new Set();
+
+// Which skills the model reached for, as they happen. Worth a row of its own
+// because a skill silently changes how the reply was produced: without this the
+// only visible difference between a session that loaded the fused-render
+// authoring skill and one that did not is that the answers are better.
+function noteSkills(list, working) {
+  for (const call of list || []) {
+    if (!call || !call.id || !call.skill || notedSkills.has(call.id)) continue;
+    notedSkills.add(call.id);
+    appStateTrim(notedSkills);
+    // Skill names are model-authored text; addNote puts them in via textContent.
+    addNote("skill · " + call.skill, working, "◆");
+  }
 }
 
 async function answerAppState(list, run_id, working) {
@@ -3291,8 +3376,9 @@ async function pollLoop(run_id) {
       if (data.session_id) { fused.params.set("session_id", String(data.session_id)); showSession(); }
       // usage arrives only at message end; estimate from streamed text meanwhile
       const tokens = Math.max(data.tokens || 0, Math.round((data.text || "").length / 4));
-      w.setStats(tokens, data.phase || "thinking");
+      w.setStats(tokens, data.phase || "thinking", data.retry);
       syncPermissions(data.permissions, run_id, w, data.mode);
+      noteSkills(data.skills, w);
       // Not awaited: a snapshot must never hold up the streaming reply, and the
       // answered-set makes a second poll arriving mid-answer a no-op.
       if (data.app_state && data.app_state.length) answerAppState(data.app_state, run_id, w);
@@ -3384,7 +3470,11 @@ async function sendMessage(message) {
   // The view is NOT folded into the annotations: it is not an anchor's property, it
   // is never persisted to the annotations param, and so it has no stale-path case
   // to clear — it lives exactly as long as this send.
-  const outgoing = composeOutgoing(message, pending, state, shots && shots.view);
+  // Write the DOM outline to a file and send its path instead of its bytes. Here
+  // rather than inside composeOutgoing because that function is sync and pure —
+  // it is the exact inverse of stripBlocks, and both halves have to stay that way.
+  const sentState = await appStateFile(state);
+  const outgoing = composeOutgoing(message, pending, sentState, shots && shots.view);
   if (pending.length) {
     for (const c of pending) c.sent = 1;
     annSave();
@@ -3647,6 +3737,7 @@ async function loadHistory(session_id) {
   if (sending) return;
   sending = true;
   permCards.clear();
+  notedSkills.clear();
   renderLogSkeleton();  // replace the visible conversation, don't append to it
   try {
     const { turns } = await fused.runPython(AGENT, { action: "history", file: FILE, session_id }, { key: null });

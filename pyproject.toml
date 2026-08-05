@@ -268,7 +268,10 @@ packages = ["fused_render"]
 # The Vite-built shell is gitignored (D54) but must ship in the wheel;
 # `artifacts` overrides hatchling's VCS-based exclusion for it. The starter
 # kit's authoring skills are copied in at build time from skills/ (D106) — also
-# gitignored, also shipped here.
+# gitignored, also shipped here, together with the flat plugin.json that
+# skill_plugin.py (D212) turns back into a .claude-plugin/ manifest. Nothing
+# under a dot-prefixed path is listed here on purpose: see hatch_build.py's
+# _copy_starter_skills.
 artifacts = [
     "fused_render/static/shell-dist/**",
     "fused_render/skills/**",
