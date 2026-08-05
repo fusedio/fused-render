@@ -45,6 +45,7 @@ deliberately not built.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -73,12 +74,75 @@ READY_MARKER = ".openfused-ready"
 # Every stage the worker can report, in order. Coarse on purpose: see the module
 # docstring. `spawn` is written by start() so the first poll after the click has
 # something to show even before the worker's first write lands.
-STAGES = ("spawn", "create", "install", "done")
+STAGES = ("spawn", "python", "create", "install", "done")
 
-# Percent per stage. Four numbers, not a continuous bar: they mark which step is
-# running, and the gap between `install` and `done` is honestly unmeasurable
-# here — a download whose length we cannot see.
-STAGE_PCT = {"spawn": 0, "create": 10, "install": 25, "done": 100}
+# Percent per stage. Numbers that mark which step is running, NOT a continuous bar:
+# the gaps after `python` and after `install` are both honestly unmeasurable here —
+# downloads whose length we cannot see. `python` sits before `create` because the
+# interpreter has to exist before anything can be built from it, and `runtime.js`
+# reads position in STAGES to decide what is behind and what is ahead.
+STAGE_PCT = {"spawn": 0, "python": 5, "create": 10, "install": 25, "done": 100}
+
+# The Python version every script venv is built on (D214).
+#
+# Pinned, and pinned to a version the app ALREADY ships, because the base
+# interpreter decides which wheels exist. Before this, the backend inherited
+# whatever interpreter ran the server (`_python_executable()` -> None ->
+# `sys.executable`), so a checkout whose venv uv had built on 3.14 resolved every
+# script venv against cp314 — and a script wanting tensorflow, which publishes no
+# cp314 wheels, was an unresolvable dead end that no rebuild could repair. The
+# error came from uv and named the real cause, but nothing in the flow could act
+# on it.
+#
+# 3.12 and not 3.13: all three installers already ship 3.12 (`python@3.12` in
+# build_dmg.sh, `uv python install 3.12` in build_linux_appimage.sh and
+# build_windows_installer.ps1), so pinning here needs no packaging change, and
+# both run paths — script venvs and the header-less app interpreter — end up on
+# one version instead of two.
+#
+# Deliberately NOT paired with uv's `--prerelease=allow`, which was considered for
+# the same bug: that flag is not "only when nothing else resolves" (that is
+# `if-necessary`) but "consider prereleases for every package", and since uv
+# prefers the highest compatible version it would resolve e.g. tensorflow
+# 2.21.0rc1 over stable 2.20.0. Shipping release-candidate scientific libraries to
+# every user of every app, to work around an interpreter choice, is worse than the
+# bug. On 3.12 the flag is moot anyway.
+SCRIPT_PYTHON_VERSION = "3.12"
+_SCRIPT_PYTHON_VERSION_INFO = tuple(int(p) for p in SCRIPT_PYTHON_VERSION.split("."))
+
+# Escape hatch and test seam: an explicit interpreter to build script venvs from.
+# Mirrors `engine._APP_PYTHON_ENV`, and like it the value is still PROBED — an
+# override that is not a usable 3.12 is a misconfiguration to refuse.
+_SCRIPT_PYTHON_ENV = "FUSED_RENDER_SCRIPT_PYTHON"
+
+# Budget for one interpreter probe (and for `uv python find`). Same 5s, and the
+# same reasoning, as `_VENV_PROBE_TIMEOUT_S`: cold start on a slow volume is why
+# it is not 1s, not why it would be 60.
+_SCRIPT_PYTHON_TIMEOUT_S = 5
+
+# The cached `(interpreter, ready)` resolution; `_UNRESOLVED` until first asked.
+# A sentinel rather than None because None is a MEANINGFUL answer here ("build
+# from ours"), so it cannot double as "not yet measured".
+_UNRESOLVED = object()
+_script_python: object = _UNRESOLVED
+_script_python_lock = threading.Lock()
+
+# The progress key the interpreter download reports under (D214).
+#
+# A fixed, key-SHAPED constant rather than a venv key, because this is the one
+# state where a venv key genuinely cannot be computed: `progress.json` lives under
+# the key, the key folds in the base interpreter, and the base interpreter is
+# exactly what is missing. Deriving one from whatever interpreter happens to be
+# running would name the directory of a venv nobody will ever build — and the real
+# install, once 3.12 lands, would report somewhere else entirely, leaving the page
+# polling a file that never changes again.
+#
+# Key-shaped so `valid_key`, `progress_dir`, `progress()` and `cancel()` all work on
+# it unchanged: the interpreter download is a different THING to install, not a
+# different mechanism for reporting one.
+PYTHON_BOOTSTRAP_KEY = hashlib.sha256(
+    b"fused-render:script-python-bootstrap"
+).hexdigest()[:16]
 
 # How long a claim with no progress record yet is assumed to belong to a caller
 # still inside `Popen` (see _claim_is_stale). Normally microseconds; this only has
@@ -104,6 +168,69 @@ _SPAWNED: set[int] = set()
 # Backend attributes the loader reads to stay in step with it. Named here so
 # `test_the_backend_attributes_this_module_reads_still_exist` can pin them.
 BACKEND_ATTRS = ("_venvs_path", "_python_executable")
+
+# venv directory -> "does its own python actually run" (D212). Populated by
+# `_venv_is_usable`, which is the ONLY reader/writer, and dropped by
+# `is_installed` when the marker goes away. In-process and never persisted: the
+# thing it remembers is a property of THIS machine's filesystem as it is right
+# now, and a persisted verdict would need its own invalidation story to avoid
+# becoming the very stale-forever fact the marker already was.
+_VALIDATED: dict[str, bool] = {}
+
+# venv directory -> how many times its verdict has been discarded, i.e. which
+# GENERATION of that directory the cache is allowed to describe. Bumped by
+# `_discard_verdict`, the only way an entry leaves `_VALIDATED`.
+#
+# This exists because the probe runs outside the lock (see `_venv_is_usable`), so a
+# verdict can be measured against a venv that is destroyed before it is stored. The
+# invariant it buys is small and absolute: **a verdict is only ever cached against
+# the generation it judged.** Without it the cache could hold an answer about a
+# directory that no longer exists, attached to whatever replaced it under the same
+# key — the same defect class as caching an inconclusive probe, where the cache ends
+# up answering a question nobody asked it and nothing ever re-asks.
+#
+# Deliberately not leaning on `_REBUILD_ATTEMPTED` to absorb that instead: the
+# rebuild budget is a POLICY (D212 records it as one, and policies get tuned), and
+# quietly making it double as the staleness backstop means a later change to the
+# budget resurfaces staleness somewhere unrelated to the change that caused it.
+_GENERATION: dict[str, int] = {}
+
+# Bumped by `reset_venv_validation_cache`, and folded into every generation read
+# (`_generation_of`). A per-directory counter alone cannot express "invalidate
+# everything", because a probe on its first look at a venv has no entry to bump —
+# and that is the majority of in-flight probes. One epoch covers them all.
+_EPOCH = 0
+
+# venv directories whose ready marker this process has already discarded once
+# (D212). The bound on the repair: one rebuild per venv per process, because for
+# the cohort this whole mechanism exists for the rebuild is guaranteed to reproduce
+# the same breakage, and re-downloading hundreds of MB on every page reload is
+# worse than the error it is trying to avoid. See `is_installed`.
+#
+# Deliberately NOT cleared when the marker goes absent — the marker's absence is
+# the *expected* state immediately after we unlink it, so clearing the bound there
+# would mean the bound could never engage at all.
+_REBUILD_ATTEMPTED: set[str] = set()
+
+# venv directories whose bound has already been announced, so the warning is
+# emitted once per venv per process instead of once per request. Kept separate from
+# `_REBUILD_ATTEMPTED` because they answer different questions — "may I still
+# repair this" vs "have I already said this out loud" — and folding the second into
+# the first would make the log line depend on the repair policy.
+_BOUND_LOGGED: set[str] = set()
+
+# Guards all three of the above together: they are read and written as one
+# decision, and (since the fix for the unmark race) so is the marker's existence.
+_validated_lock = threading.Lock()
+
+# The probe is `<venv>/bin/python -c ""` on the local filesystem: a working
+# interpreter answers in well under a second, and a broken one fails immediately.
+# Small on purpose — it is paid on the request path of the first PEP 723 run in a
+# process, so a generous budget would turn a pathological interpreter (one that
+# hangs rather than exits) into a page that looks hung. Same 5s, and the same
+# reasoning, as `engine._PROBE_TIMEOUT_S`: cold start on a slow volume is why it
+# is not 1s, not why it would be 60.
+_VENV_PROBE_TIMEOUT_S = 5
 
 
 def _backend_attr(name: str):
@@ -149,6 +276,165 @@ def _python_executable() -> str | None:
     return _backend_attr("_python_executable")
 
 
+def _running_version() -> tuple[int, int]:
+    """This server's own `(major, minor)`. A seam so tests can pin it."""
+    return sys.version_info[:2]
+
+
+def _probe_python(path: str) -> bool:
+    """Does `path` run, AND report `SCRIPT_PYTHON_VERSION`? One subprocess, both.
+
+    Two facts from one spawn because they are one question: an interpreter we
+    cannot start and an interpreter of the wrong version are equally unusable as a
+    base, and asking separately would cost two spawns to learn less.
+
+    Proven here rather than left to upstream. `python_identity` runs the
+    interpreter itself to build the venv key and raises when it cannot — but that
+    happens inside `venv_key_for`, i.e. on the /api/run pre-flight path, so an
+    unusable resolution would surface as a failed *request* instead of a fact we
+    established once, off the request path, and answered `False` to.
+    """
+    try:
+        proc = subprocess.run(
+            [path, "-c", "import sys; print('%d.%d' % sys.version_info[:2])"],
+            capture_output=True, text=True,
+            # close_fds=False for posix_spawn instead of fork()+exec, the discipline
+            # `venvs.py` documents at module level: this server has almost certainly
+            # touched pyproj/rasterio, and a forked child runs PROJ's atfork handler,
+            # which closes an inherited-but-invalid proj.db handle and SIGSEGVs before
+            # exec. posix_spawn also needs a dir-qualified argv[0], which uv's output
+            # and any sane override are; a bare name would fork despite the flag, and
+            # the resulting -11 reads here as "not a usable interpreter" — wrong for
+            # the right reason, and safe, since refusing is the conservative answer.
+            timeout=_SCRIPT_PYTHON_TIMEOUT_S, close_fds=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        # A spawn that never happened (no such file, not executable) or never
+        # finished (timeout). Either way we have no evidence this is a usable
+        # 3.12, and the whole point of the pin is not to guess.
+        return False
+    return proc.returncode == 0 and proc.stdout.strip() == SCRIPT_PYTHON_VERSION
+
+
+def _resolve_script_python() -> tuple[str | None, bool]:
+    """`(interpreter, ready)` — what script venvs are built from, or why not yet.
+
+    `interpreter` is what the backend should be given: **None means "ours"**, the
+    value the backend has always had, so `python_identity` produces the identical
+    key it produces today. `ready` is False only when this machine has no usable
+    3.12 yet and one has to be downloaded before anything can be keyed at all.
+
+    The order is deliberate:
+
+    1. **An explicit override**, probed. Same contract as
+       `engine._APP_PYTHON_ENV`: an override that is not a usable 3.12 is a
+       misconfiguration to refuse, not a reason to build on it.
+    2. **Ourselves, when we are already 3.12** — and this is the common path, not a
+       shortcut. All three packaged builds run 3.12 (the DMG's `python@3.12`, the
+       AppImage's and the Windows installer's `uv python install 3.12`), and so does
+       a `scripts/dev.sh` checkout since D214. Resolving a uv-MANAGED 3.12 for them
+       instead would re-key every venv they own and download a second CPython to
+       reach a version they already had: `uv python find --managed-python` only
+       matches uv's own registry, and every bundled 3.12 is copied into the payload
+       rather than registered there.
+    3. **A uv-managed 3.12**, probed. This is the path that fixes the reported bug —
+       a server on 3.14 built every script venv on cp314, so a script wanting
+       tensorflow (no cp314 wheels) was an unresolvable dead end that no rebuild
+       could repair. Managed only: no Homebrew, no system python, no PATH search,
+       because the point is a known interpreter rather than whichever 3.12 a machine
+       happens to have.
+    4. **No uv at all -> ours, unpinned.** A source checkout without uv cannot find
+       or fetch a managed anything, and upstream's builder already falls back to
+       `<python> -m venv` there. Degrading to the pre-D214 behaviour leaves that
+       machine exactly as capable as it was; refusing to serve it would be a
+       regression bought with a pin it cannot honour.
+    """
+    override = os.environ.get(_SCRIPT_PYTHON_ENV)
+    if override:
+        return (override, True) if _probe_python(override) else (None, False)
+    if _running_version() == _SCRIPT_PYTHON_VERSION_INFO:
+        return None, True
+    uv = uv_bin()
+    if uv is None:
+        return None, True
+    try:
+        proc = subprocess.run(
+            # Every flag here is load-bearing.
+            #
+            # --no-project and --system both keep the answer about this MACHINE
+            # rather than about the directory the server was started from.
+            # `--managed-python` alone is NOT enough, and this was measured, not
+            # guessed: run from a checkout whose own `.venv` is 3.12, uv answers
+            # `.venv/bin/python3` — a venv counts as managed when its BASE
+            # interpreter is. Building script venvs from another venv's python would
+            # key them (via `python_identity`) to a per-worktree path that `dev.sh`
+            # now deletes outright on a version mismatch, orphaning every script venv
+            # on the machine. `--system` excludes virtual environments, which leaves
+            # the genuinely managed interpreter.
+            [uv, "python", "find", "--managed-python", "--no-project", "--system",
+             SCRIPT_PYTHON_VERSION],
+            capture_output=True, text=True,
+            timeout=_SCRIPT_PYTHON_TIMEOUT_S, close_fds=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None, False
+    found = proc.stdout.strip()
+    if proc.returncode != 0 or not found:
+        # Nothing wrong — just nothing to build on yet. Reported, never raised:
+        # `is_installed` asks this on the request path and needs a yes/no.
+        return None, False
+    return (found, True) if _probe_python(found) else (None, False)
+
+
+def _script_python_resolution() -> tuple[str | None, bool]:
+    """The resolution, measured at most once per process — **while it succeeds**.
+
+    A READY answer is cached: it costs up to two spawns and `is_installed` consults
+    it on every /api/run pre-flight, so it is measured once, exactly as the venv
+    probe is. The fast path reads the cache unlocked, which is safe because a cached
+    entry never changes; the lock stops two concurrent pre-flights both paying for
+    the resolve (same shape, same reasoning, as `engine._app_interpreter_lock`).
+
+    A NOT-READY answer is deliberately **not** cached, and that asymmetry is the
+    whole mechanism by which the interpreter download takes effect. The download
+    runs in a detached worker — a different PROCESS — so nothing in here can be
+    notified when it lands. Remembering "there is no 3.12" would leave this server
+    convinced of it for the rest of its life: the download would finish, and every
+    later pre-flight would still route back to the bootstrap instead of installing
+    the packages. Re-measuring costs two spawns per pre-flight, but only while the
+    machine genuinely has no 3.12, which is a transient state by construction.
+    (Same rule as the three-valued venv probe: an answer that says "I found nothing"
+    is not evidence to memoize.)
+    """
+    global _script_python
+    if _script_python is not _UNRESOLVED:
+        return _script_python  # type: ignore[return-value]
+    with _script_python_lock:
+        if _script_python is not _UNRESOLVED:
+            return _script_python  # type: ignore[return-value]
+        resolution = _resolve_script_python()
+        if resolution[1]:
+            _script_python = resolution
+        return resolution
+
+
+def script_python() -> str | None:
+    """The interpreter script venvs are built from; None means "ours"."""
+    return _script_python_resolution()[0]
+
+
+def script_python_ready() -> bool:
+    """False iff a 3.12 has to be downloaded before any venv can be keyed."""
+    return _script_python_resolution()[1]
+
+
+def reset_script_python_cache() -> None:
+    """Forget the resolution. For tests, and for after an interpreter download."""
+    global _script_python
+    with _script_python_lock:
+        _script_python = _UNRESOLVED
+
+
 def venv_key_for(requirements: list[str]) -> str:
     """The backend's own cache key for a venv with `requirements` installed."""
     from fused.agent_core.backends.local.venvs import requirements_venv_id, venv_key
@@ -160,11 +446,412 @@ def venv_dir_for(requirements: list[str]) -> str:
     return os.path.join(os.path.expanduser(venvs_path()), venv_key_for(requirements))
 
 
+def _venv_python(venv_dir: str) -> str:
+    """Where a venv keeps its own interpreter, on this OS."""
+    if os.name == "nt":
+        return os.path.join(venv_dir, "Scripts", "python.exe")
+    return os.path.join(venv_dir, "bin", "python")
+
+
+def _venv_runs(venv_dir: str) -> bool | None:
+    """Can this venv's own interpreter start at all? One subprocess, no imports.
+
+    THREE answers, not two, because the caller destroys state on a False:
+
+      True  — the probe completed and the interpreter exited 0.
+      False — DEFINITE evidence there is no usable interpreter here: the probe
+              completed with a non-zero exit, or the spawn failed on the exe
+              itself (`FileNotFoundError`/`PermissionError`/`NotADirectoryError`).
+      None  — INCONCLUSIVE: we could not complete the probe. A timeout, or any
+              other `OSError` — `EAGAIN` (cannot fork under load), `EMFILE` (the
+              server is out of descriptors), `EINTR`. None of those are facts
+              about the venv, and the caller must not act on them.
+
+    The two-valued version of this was a real hazard, not a hypothetical:
+    `subprocess.TimeoutExpired` IS a `SubprocessError` and the budget is 5s, so a
+    handful of concurrent `/api/run` calls on a loaded machine was enough to
+    unlink the ready marker of a perfectly healthy venv and charge the user a full
+    uv re-download for it. `engine._probe` is the precedent — it reports a failed
+    probe and destroys nothing.
+
+    `-c ""` deliberately: the question is not "are the requirements importable"
+    (that is upstream's job and would cost a real import) but the far more basic
+    "does this interpreter reach the point of executing a program". A venv whose
+    `home`/base prefix no longer exists dies before that — in the DMG case with
+    `ModuleNotFoundError: No module named 'encodings'` or a bare fatal error — so
+    the emptiest possible program is a complete test of the property that broke.
+
+    Run with `PYTHONHOME`/`PYTHONPATH`/`VIRTUAL_ENV`/`PYTHONSTARTUP` scrubbed,
+    borrowed from `engine._child_env()` rather than restated here: that is derived
+    from `python_compute._STRIPPED_ENV_VARS` when fused is importable, so the probe
+    cannot drift from the environment the child actually gets. Running it with OUR
+    env is the whole reason the bug was invisible — inside the .app, PYTHONHOME is
+    set and makes a broken venv look fine (build_dmg.sh's smokes made the same
+    mistake, which is why one of them now strips the env too).
+    """
+    exe = _venv_python(venv_dir)
+    try:
+        from fused_render.engine import _child_env
+
+        proc = subprocess.run(
+            [exe, "-c", ""],
+            capture_output=True, text=True,
+            timeout=_VENV_PROBE_TIMEOUT_S, env=_child_env(),
+        )
+    except (FileNotFoundError, PermissionError, NotADirectoryError) as e:
+        # About the PATH we asked to execute, so evidence about the venv. Listed
+        # before the generic OSError below, which they are all subclasses of.
+        logger.warning("script venv %s cannot run its own python: %s", venv_dir, e)
+        return False
+    except (OSError, subprocess.SubprocessError) as e:
+        # Deliberately distinct wording from every "cannot run its own python"
+        # message above: an operator reading the log has to be able to tell "the
+        # venv is broken" (state was destroyed, a rebuild is coming) apart from
+        # "we never got an answer" (nothing was touched).
+        logger.warning(
+            "could not complete the readiness probe of script venv %s (%s: %s) — "
+            "leaving it alone; the run will surface any real failure itself",
+            venv_dir, type(e).__name__, e,
+        )
+        return None
+    if proc.returncode != 0:
+        logger.warning(
+            "script venv %s cannot run its own python (exit %s): %s",
+            venv_dir, proc.returncode, (proc.stderr or proc.stdout or "").strip(),
+        )
+        return False
+    return True
+
+
+def _marker_stamp(marker: str) -> tuple[int, int] | None:
+    """Which ready marker this is — `(st_ino, st_mtime_ns)` — or None if absent.
+
+    The marker's IDENTITY, because its existence is not enough: the install worker is
+    a different PROCESS, and inside one probe window it can un-mark a venv, rebuild
+    it and write a fresh marker. `os.path.exists` reads True before and after that
+    and so cannot see it, while inode + nanosecond mtime changes on any rewrite,
+    replace or recreate. Named to match openfused's `_marker_stamp`, which closes the
+    same hole on its side, so the two read alike.
+
+    None (absent) is a value like any other here: comparing a captured None against a
+    later stamp correctly reports "a marker appeared", and vice versa.
+    """
+    try:
+        st = os.stat(marker)
+    except OSError:
+        return None
+    return (st.st_ino, st.st_mtime_ns)
+
+
+def _generation_of(venv_dir: str) -> tuple[int, int]:
+    """Which generation of `venv_dir` the cache may currently describe.
+
+    The pair, never either half alone: `_GENERATION` ends one directory's generation
+    (a discard), `_EPOCH` ends all of them at once (a reset). Caller holds
+    `_validated_lock`.
+    """
+    return (_EPOCH, _GENERATION.get(venv_dir, 0))
+
+
+def _discard_verdict(venv_dir: str) -> None:
+    """Forget `venv_dir`'s cached verdict and END the generation it described.
+
+    The ONLY way an entry may leave `_VALIDATED`, so that "the verdict is gone" and
+    "the generation moved" can never disagree — a bare `pop` elsewhere would silently
+    re-open the window `_GENERATION` exists to close. The caller must already hold
+    `_validated_lock`: both dicts are one piece of state.
+    """
+    _VALIDATED.pop(venv_dir, None)
+    _GENERATION[venv_dir] = _GENERATION.get(venv_dir, 0) + 1
+
+
+def _venv_is_usable(venv_dir: str) -> bool | None:
+    """`_venv_runs`, memoized per venv directory **per process**.
+
+    The ceiling this guarantees: at most ONE probe per venv per server process,
+    and NEVER one per request. `/api/run`'s pre-flight calls `is_installed` on
+    every run of every PEP 723 script, so an unmemoized probe would put a
+    subprocess spawn on the request path of the app's hottest execution path —
+    which is precisely the cost the install loader exists to remove.
+
+    Double-checked locking: read the cache under the lock, probe OUTSIDE it, then
+    re-acquire to store. The lock is module-global, so holding it across the probe
+    (as this first did, copying `engine._app_interpreter_lock`'s shape) serialized
+    the first probes of completely UNRELATED venvs — and with a 5s budget, one venv
+    whose directory sits on a wedged network mount then blocked every
+    `is_installed` in the process for up to five seconds, cached hits for healthy
+    venvs included. Clicking through eight PEP 723 pages is eight first-probes, and
+    the tail is what hurts, not the ~15-30ms each.
+
+    The cost of the looser lock is that two threads racing on the SAME venv can
+    both probe. That is accepted deliberately: the probe is a read-only `-c ""`
+    with no side effects, so a duplicate costs one extra spawn in a rare race —
+    a much better trade than a global stall. If the other thread stored a verdict
+    while we were probing, theirs wins and ours is discarded, so every caller in
+    the race still sees ONE answer.
+
+    Probing outside the lock also means the venv can be DESTROYED mid-probe, so the
+    generation is read before the probe and re-checked after (`_generation_of`), and
+    the invariant is absolute: **a verdict is only ever cached against the generation
+    it judged.** If it moved, this returns its own measurement to its own caller and
+    stores nothing — no window in which the cache describes a venv that is gone, and
+    nothing for `_REBUILD_ATTEMPTED` to have to absorb.
+
+    Negative verdicts are cached too — and `is_installed` drops the entry whenever
+    the marker is absent, which is what stops a cached "no" from outliving the
+    venv it judged. See the comment there.
+
+    An INCONCLUSIVE probe (`None`) is deliberately not cached: it says nothing
+    about the venv, so there is nothing to remember, and caching it would turn one
+    unlucky fork under load into a permanently unvalidated venv. `_VALIDATED` maps
+    to real booleans only, which is also why `.get()` returning None can safely
+    mean "not probed yet".
+    """
+    with _validated_lock:
+        cached = _VALIDATED.get(venv_dir)
+        generation = _generation_of(venv_dir)
+    if cached is not None:
+        return cached
+    verdict = _venv_runs(venv_dir)
+    if verdict is None:
+        return None  # inconclusive: nothing to store, nothing to agree about
+    with _validated_lock:
+        if _generation_of(venv_dir) != generation:
+            # The venv we judged was discarded while we were judging it, so this
+            # verdict describes a directory that is gone. Return it to OUR caller —
+            # it is what we genuinely measured, and answering it is strictly better
+            # than a second probe on the request path — but store nothing, so the
+            # next call re-probes the venv that now stands here. No attempt to
+            # decide which verdict is "fresher": there is no evidence either way,
+            # and the cheap, always-correct move is to cache neither.
+            return verdict
+        # Same generation, so whatever landed while we probed describes the same
+        # venv and either answer is right. `setdefault` makes "store only if still
+        # absent, and tell me which won" one atomic step, so every caller in the
+        # race returns the SAME verdict rather than each its own.
+        return _VALIDATED.setdefault(venv_dir, verdict)
+
+
+def reset_venv_validation_cache() -> None:
+    """Forget every venv verdict AND every rebuild attempt, so the next
+    `is_installed` re-probes and is willing to repair again.
+
+    A test seam (mirroring `engine.reset_app_interpreter_cache`). Nothing in the
+    server needs it: the verdict cache self-invalidates through the marker, and the
+    rebuild bound is meant to last exactly as long as the process. All three sets
+    are cleared together on purpose — resetting only the verdicts would leave a
+    bound that silently suppresses the repair the re-probe just asked for, and
+    leaving `_BOUND_LOGGED` behind would silence the announcement of a bound that
+    can now engage again.
+
+    Bumps `_EPOCH` rather than only emptying the dicts, so every generation actually
+    ENDS — including those of venvs that have no `_VALIDATED` entry yet, which is
+    every probe currently in flight on its FIRST look at a venv. A bare clear would
+    be undone by exactly the calls it means to invalidate: such a probe measured the
+    pre-reset world, would find its key absent afterwards, and would insert that
+    pre-reset verdict. With the epoch moved, `_GENERATION` can be emptied too — the
+    epoch already invalidates everything it held.
+    """
+    global _EPOCH
+
+    with _validated_lock:
+        _EPOCH += 1
+        _VALIDATED.clear()
+        _GENERATION.clear()
+        _REBUILD_ATTEMPTED.clear()
+        _BOUND_LOGGED.clear()
+
+
 def is_installed(requirements: list[str]) -> bool:
-    """True iff the venv for `requirements` exists AND is complete."""
+    """True iff the venv for `requirements` exists, is complete AND can run.
+
+    The ready marker is the INDEX of installed venvs — the only thing consulted to
+    find one, and its absence is final — but since D212 it is treated as a *claim*
+    that gets verified once per process rather than as proof. The macOS DMG is why:
+    its bundled interpreter could not self-locate without PYTHONHOME, which
+    `python_compute` strips from every child, so a venv built from it recorded a
+    base prefix that does not exist on the user's machine and every child of that
+    venv died. And the venv cache key folds in only the interpreter's path and
+    version — both constants inside the .app — so upgrading the app did not change
+    the key, nothing ever revalidated, and the breakage was permanent with no
+    repair action anywhere in the UI. `Contents/lib -> Resources/lib`
+    (`scripts/build_dmg.sh`) stops NEW venvs from being built that way; this stops
+    an EXISTING bad one from being trusted forever.
+
+    Two guarantees bound what that costs when it is wrong, both pinned by tests:
+    the probe is three-valued, so an INCONCLUSIVE result (`_venv_runs` -> None:
+    a timeout, a fork that failed under load) answers True and touches nothing;
+    and the repair is attempted at most ONCE per venv per process, so a venv that
+    cannot be fixed by rebuilding stops asking to be rebuilt. Both are contracts,
+    not defensive padding — see the comments at each branch below.
+
+    And ONE rule covers every branch that acts on a verdict: **a verdict may only be
+    acted on while the generation it judged is still current, and a "ready" answer
+    requires the marker to still be there at the moment we answer.** The probe is a
+    subprocess, so between stamping the marker and answering, the install worker (a
+    different PROCESS) can un-mark this venv, rebuild it, and re-mark it — none of
+    which touches `_GENERATION`/`_EPOCH`, because those only know what THIS process
+    did. That asymmetry is why both mechanisms exist: the counters keep the cache
+    honest about our own discards, and the marker stamp keeps us honest about
+    everyone else's. So the stamp is captured before the probe and re-checked, by
+    IDENTITY not existence, before either answer that depends on it.
+    """
     if not requirements:
         return True  # nothing to install; the bare/interpreter paths handle it
-    return os.path.exists(os.path.join(venv_dir_for(requirements), READY_MARKER))
+    if not script_python_ready():
+        # No 3.12 on this machine yet (D214), so there is no venv DIRECTORY to name:
+        # the key folds in the base interpreter, and any directory computed in this
+        # state belongs to a venv nobody will build. Answered here, ahead of
+        # everything below, because every one of those steps would be acting on a
+        # venv that does not exist — probing its interpreter, unlinking its marker,
+        # or spending the one-rebuild-per-process budget (D212) on it. The install
+        # this False triggers acquires the interpreter first; see `start`.
+        return False
+    venv_dir = venv_dir_for(requirements)
+    marker = os.path.join(venv_dir, READY_MARKER)
+    stamp = _marker_stamp(marker)
+    if stamp is None:
+        # No marker at all, so there is no claim to validate — and this is the common
+        # case by count (every first open of a PEP 723 script), which stays a single
+        # stat rather than a spawn. Also a place a cached verdict is dropped: a
+        # marker that is absent now means the directory is being (or is about to be)
+        # rebuilt, and the rebuild must not inherit the failed verdict of what stood
+        # there before. Without this, deleting the marker below would trade a permanently
+        # bad venv for a permanently negative answer — the loader would install
+        # successfully and `is_installed` would still say no, forever.
+        with _validated_lock:
+            _discard_verdict(venv_dir)
+        return False
+    verdict = _venv_is_usable(venv_dir)
+    if verdict is None:
+        # The probe could not be completed (a timeout, a fork that failed under
+        # load). That is a fact about this server at this instant, not about the
+        # venv, so the marker's claim stands unexamined and the answer is yes: the
+        # run proceeds and surfaces whatever really happens, exactly as it did
+        # before any of this validation existed. Destroying a multi-hundred-MB venv
+        # requires evidence, and "I could not look" is not evidence.
+        #
+        # No stamp re-check on this path: it neither answers FROM a verdict nor acts
+        # on one. It says "I learned nothing", and that is true whatever the marker
+        # has done in the meantime.
+        return True
+    # Both remaining answers act on the verdict — one says "ready", the other spends
+    # the repair budget and may unlink — so both are gated on the marker still being
+    # the SAME one that was judged. Shared, not duplicated per branch: the rule is
+    # one rule (see this function's docstring), and two copies of it would be two
+    # places to get the identity comparison subtly different.
+    #
+    # A definite failure means the repair is allowed exactly ONCE per venv dir per
+    # process. Beyond that, the download is known-futile: for the cohort D212 exists
+    # for (a pre-symlink `.app`) the rebuild reproduces the identical breakage,
+    # because the property that failed is the bundled interpreter's own base prefix
+    # and the venv key folds in only that interpreter's path and version — both
+    # constants inside the bundle. `runtime.js` bounds the retry WITHIN one
+    # `runPython` call, but nothing bounded it across calls, so every page reload,
+    # every `watchPath` auto-reload and every param change would pay another full
+    # download. Before this validation existed that cohort got one instant permanent
+    # error; an unbounded rebuild would be strictly worse than the bug.
+    #
+    # So the second and later failures leave the marker in place and report
+    # installed: the script runs and the user sees the interpreter's own stderr,
+    # which is the truthful outcome. Per PROCESS, deliberately — a user who installs
+    # a fixed DMG gets a fresh server, hence an empty set, hence one rebuild that
+    # actually works.
+    with _validated_lock:
+        # Re-stamp the marker HERE, inside the critical section, before anything is
+        # answered or spent. "stamp the marker -> probe -> decide -> unlink" is not
+        # atomic, in two independent ways:
+        #
+        #   * ANOTHER THREAD of this server. The endpoints are sync `def` running in
+        #     FastAPI's threadpool, so two pre-flights for one script interleave: A
+        #     stamps, probes, records the attempt and unlinks, while B — which
+        #     stamped BEFORE A's unlink — arrives here AFTER A's add. Ungated, B
+        #     reads `already_tried`, announces a rebuild that has not happened (A's
+        #     has not even been requested yet) and returns True, running a venv known
+        #     to be broken instead of joining the install A just asked for.
+        #   * ANOTHER PROCESS. The install worker can un-mark this venv and start
+        #     rebuilding (so a True verdict must NOT be answered — /api/run would
+        #     execute against a directory being rebuilt underneath it), or finish a
+        #     rebuild and write a FRESH marker (so a False verdict must NOT be acted
+        #     on — the first-failure branch would unlink the marker of a just-rebuilt,
+        #     possibly healthy venv and force another multi-hundred-MB download).
+        #
+        # Compared by IDENTITY, `(st_ino, st_mtime_ns)`, not by existence: the
+        # un-mark-and-re-mark case leaves a marker present the whole time this side
+        # can observe, so a boolean `exists()` sees nothing at all. This is what
+        # `_marker_stamp` is for, and openfused's copy carries the same name so the
+        # two read alike.
+        #
+        # Either way the conclusion is the same, which is why one branch serves both:
+        # this verdict is about a venv that is no longer the one on disk, so drop it
+        # and answer not-installed. The caller reports `needs_install` and joins the
+        # install already in flight (`start()` joins rather than duplicating). The
+        # bound question, likewise, only makes sense against the marker it was asked
+        # about — "did the rebuild of THIS marked venv already fail".
+        #
+        # A stat under the lock is a deliberate, bounded cost: it is the same syscall
+        # this function already makes unguarded on entry, so if that one returned, the
+        # filesystem was answering microseconds ago. Not a cross-process lock, for the
+        # reasons above — this module's only mutual exclusion is `threading.Lock`, and
+        # a file lock would need a stale-lock policy of its own.
+        if _marker_stamp(marker) != stamp:
+            _discard_verdict(venv_dir)  # that generation is over
+            return False
+        if verdict is True:
+            return True
+        already_tried = venv_dir in _REBUILD_ATTEMPTED
+        _REBUILD_ATTEMPTED.add(venv_dir)
+        if already_tried:
+            # Warn on the TRANSITION only. Past this point `is_installed` answers
+            # from the cached verdict on every call — every page reload, every
+            # `watchPath` auto-reload, every param change — so warning each time
+            # would repeat this multi-line message forever and bury the one
+            # occurrence that matters in the log of exactly the incident it exists
+            # to diagnose. Demoted to debug afterwards rather than dropped: the
+            # state is still abnormal, and a debug run should still show it.
+            first_bound_hit = venv_dir not in _BOUND_LOGGED
+            _BOUND_LOGGED.add(venv_dir)
+        else:
+            first_bound_hit = False
+            # See the marker-absent branch above: the verdict must not outlive the
+            # generation it judged. Kept on the already-tried path, so repeated
+            # calls answer from the cache instead of spawning a probe apiece.
+            _discard_verdict(venv_dir)
+    if already_tried:
+        (logger.warning if first_bound_hit else logger.debug)(
+            "script venv %s still cannot run its own python after a rebuild, so "
+            "the ready marker is being LEFT in place: rebuilding it again cannot "
+            "help (the interpreter it was built from is the problem). The script "
+            "will run and report the interpreter's own error.", venv_dir,
+        )
+        return True
+    # The marker MUST go before we answer False, and this is not tidying up.
+    # Upstream's `ensure_requirements_venv`/`ensure_bare_venv` short-circuit on
+    # `if marker.exists(): return` — rebuilding only when it is ABSENT. So a
+    # "not installed" answer with the marker left in place would make `/api/run`
+    # reply `needs_install`, the page POST /api/env/install, the worker call
+    # upstream, upstream see the marker and return without doing anything, and the
+    # page be told to install again: a loop with no exit, against an unchanged
+    # `fused`. Removing the marker is what makes upstream rmtree the directory and
+    # build it again, which is the actual repair.
+    #
+    # (The cached verdict was dropped just above, for the same reason the
+    # marker-absent branch drops it: deleting the marker ends this venv's
+    # generation, and the directory that appears under the same key next is a
+    # different venv that has to be judged on its own.)
+    try:
+        os.unlink(marker)
+        logger.warning(
+            "discarded the ready marker of script venv %s: its interpreter does "
+            "not run, so the venv will be rebuilt on the next install", venv_dir,
+        )
+    except OSError as e:
+        # Only worth saying out loud. A marker we cannot delete (read-only volume,
+        # a race with the rebuild that already removed it) leaves the caller's
+        # answer correct — this venv is not usable — and the next call re-reads
+        # the filesystem, so nothing here is latched.
+        logger.warning("could not remove the ready marker of %s: %s", venv_dir, e)
+    return False
 
 
 def valid_key(key) -> bool:
@@ -614,7 +1301,7 @@ def _worker_env() -> dict:
     return env
 
 
-def _spawn(key: str, requirements: list[str]) -> int:
+def _spawn(key: str, requirements: list[str], acquire_python: str | None = None) -> int:
     """Launch the detached worker; returns its pid.
 
     Detached (`start_new_session` / DETACHED_PROCESS) so the build outlives the
@@ -628,6 +1315,13 @@ def _spawn(key: str, requirements: list[str]) -> int:
     one set would build a venv `is_installed()` never finds — the page would
     install, retry, be told to install again, forever. argv cannot carry None, so
     the empty string stands for it; `_env_install_worker.main` maps it back.
+
+    `acquire_python` (slot 5, same empty-string-means-nothing idiom) asks the worker
+    to DOWNLOAD that Python version and stop, rather than build a venv (D214). It
+    cannot do both in one run: the venv it would build belongs under a key that folds
+    in the interpreter it has only just fetched, which is not the key this worker was
+    spawned under. So the interpreter is one job, reported under
+    `PYTHON_BOOTSTRAP_KEY`, and the packages are the next.
     """
     worker = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_env_install_worker.py")
     d = progress_dir(key)
@@ -639,7 +1333,7 @@ def _spawn(key: str, requirements: list[str]) -> int:
     with open(os.path.join(d, "worker.log"), "ab") as logf:
         child = subprocess.Popen(
             [sys.executable, worker, key, d, venvs_path(),
-             _python_executable() or "", *requirements],
+             _python_executable() or "", acquire_python or "", *requirements],
             stdout=logf, stderr=logf, stdin=subprocess.DEVNULL,
             env=_worker_env(), **detach,
         )
@@ -650,6 +1344,24 @@ def _spawn(key: str, requirements: list[str]) -> int:
     return child.pid
 
 
+def _reported(key: str, record: dict) -> dict:
+    """`record` plus the key it belongs to, for the response body only.
+
+    The caller (/api/env/install) hands the client a key to poll with, and it must
+    be the key this install actually reports under rather than one recomputed from
+    the requirements. Two independent derivations is one too many: in bootstrap mode
+    they disagree BY DESIGN (`PYTHON_BOOTSTRAP_KEY` vs the venv key), so the page
+    would poll for a record that does not exist and fail an install running fine —
+    and even when they agree, readiness can flip between the two calls, which is
+    exactly the window a fast interpreter download opens.
+
+    Added to the returned copy only, never to what `_write` puts on disk: the record
+    ON DISK is the shape `templates/docs/install_worker.py` also writes, and the page
+    shell polls one shape.
+    """
+    return {**record, "key": key}
+
+
 def start(requirements: list[str]) -> dict:
     """Begin (or join) the install for `requirements`; returns its progress.
 
@@ -657,13 +1369,21 @@ def start(requirements: list[str]) -> dict:
     install already running is joined rather than duplicated. Two workers
     building one venv directory is the race `fused`'s in-process lock cannot
     cover — the loser dies on a half-built `<venv>/bin/python`.
+
+    When this machine has no pinned Python yet (D214) the FIRST thing installed is
+    that interpreter, under `PYTHON_BOOTSTRAP_KEY` — every step below is written
+    against a key rather than against a venv, so the claim, the join, the spawn
+    record and the polling all apply unchanged. The client then re-runs, the
+    interpreter resolves, and this function is called again for the packages
+    themselves. Two visible rounds, because they are two downloads.
     """
-    key = venv_key_for(requirements)
+    acquire_python = None if script_python_ready() else SCRIPT_PYTHON_VERSION
+    key = PYTHON_BOOTSTRAP_KEY if acquire_python else venv_key_for(requirements)
     if is_installed(requirements):
         record = {"stage": "done", "pct": 100, "detail": "already installed",
                   "done": True, "error": None, "pid": os.getpid(), "ts": time.time()}
         _write(key, record)
-        return record
+        return _reported(key, record)
     if not _claim(key):
         # Someone else owns this install — join it, and report exactly what a poll
         # would see. No synthetic record here any more: `progress()` covers the
@@ -685,7 +1405,7 @@ def start(requirements: list[str]) -> dict:
                 "could not start or join an installer for these packages: "
                 f"{progress_dir(key)} is not writable"
             )
-        return joined
+        return _reported(key, joined)
     # This attempt owns the key now, so the PREVIOUS attempt's record must go.
     # `_write_if_absent` below deliberately cannot overwrite a record, so a failed
     # attempt's error left in place would become this attempt's answer: the loader
@@ -696,7 +1416,7 @@ def start(requirements: list[str]) -> dict:
         os.unlink(_progress_path(key))
     except OSError:
         pass
-    pid = _spawn(key, list(requirements))
+    pid = _spawn(key, list(requirements), acquire_python=acquire_python)
     # Written by the PARENT, before the worker's first write lands, so the very
     # first poll after the click shows "starting" instead of "never started" —
     # and so `_in_flight` is true immediately, closing the double-click window.
@@ -716,8 +1436,8 @@ def start(requirements: list[str]) -> dict:
         # rule as the join branch above, and for the same reason: a record shape
         # written only into this response body could disagree with the GET that
         # follows it.
-        return progress(key) or record
-    return record
+        return _reported(key, progress(key) or record)
+    return _reported(key, record)
 
 
 def cancel(key: str) -> bool:

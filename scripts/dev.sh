@@ -85,6 +85,26 @@ fi
 # came to report `supported: false` on every dev machine while the tests that
 # would have caught it skipped for the same missing dependency.
 
+# The interpreter version a dev venv is built on (D214), and NOT merely a
+# preference: the server hands its own interpreter to `fused`'s venv builder as the
+# base for every PEP 723 script venv, so this version decides which wheels those
+# venvs can resolve. A bare `uv venv` takes uv's default, which is the newest
+# CPython it knows about — and a .venv built on 3.14 made every script venv cp314,
+# so a script declaring tensorflow (no cp314 wheels) hit an unresolvable dead end
+# that no rebuild could repair. 3.12 is what all three packaged builds already
+# ship, so a dev checkout on it behaves like the shipped app rather than like a
+# machine nobody tests on.
+DEV_PYTHON_VERSION="3.12"
+
+# Is the venv at $1 on DEV_PYTHON_VERSION? Asked of the venv's OWN interpreter
+# rather than inferred from a `lib/python3.x` directory name, because that is the
+# interpreter the server will actually run under.
+venv_is_pinned_version() {
+  local found
+  found="$("$1/bin/python" -c 'import sys; print("%d.%d" % sys.version_info[:2])' 2>/dev/null || true)"
+  [[ "$found" == "$DEV_PYTHON_VERSION" ]]
+}
+
 # Install the pinned dependency set into $1 (a venv dir). Runs from REPO_ROOT
 # with the `.[extras]` form: uv rejects an absolute path carrying extras (parses
 # it as a PEP508 requirement). Shared by the bootstrap and the staleness resync
@@ -100,15 +120,54 @@ install_python_deps() {
 if [[ -n "${VIRTUAL_ENV:-}" ]]; then
   PY="$VIRTUAL_ENV/bin/python"
   VENV_DIR="$VIRTUAL_ENV"
-elif [[ -x "$REPO_ROOT/.venv/bin/python" ]]; then
+  # WARN, never rebuild. An activated venv is the developer's explicit choice and
+  # may hold work this script knows nothing about; destroying it to enforce a pin
+  # would be a far worse surprise than running on the wrong version. The server
+  # still copes — it resolves a uv-managed 3.12 for script venvs (D214) — so this
+  # is a heads-up about a download, not a broken setup.
+  if ! venv_is_pinned_version "$VIRTUAL_ENV"; then
+    echo "==> NOTE: the active venv is not Python $DEV_PYTHON_VERSION." >&2
+    echo "    PEP 723 script venvs are pinned to $DEV_PYTHON_VERSION, so the server will" >&2
+    echo "    resolve a uv-managed $DEV_PYTHON_VERSION for them and download one on first" >&2
+    echo "    use if this machine has none. Deactivate to use $REPO_ROOT/.venv," >&2
+    echo "    or rebuild this venv on $DEV_PYTHON_VERSION, to avoid that." >&2
+  fi
+elif [[ -x "$REPO_ROOT/.venv/bin/python" ]] && venv_is_pinned_version "$REPO_ROOT/.venv"; then
   PY="$REPO_ROOT/.venv/bin/python"
   VENV_DIR="$REPO_ROOT/.venv"
 else
-  echo "==> no venv found — creating $REPO_ROOT/.venv with the [dev,fused,bundled] extras"
-  if command -v uv >/dev/null 2>&1; then
-    uv venv "$REPO_ROOT/.venv"
+  # A wrong-version .venv is REBUILT rather than adopted, and that is the half of
+  # this change that actually reaches existing checkouts: the branch above used to
+  # adopt `.venv` on existence alone, so pinning the creation below would have
+  # fixed nothing on any machine that already had one — including the machine the
+  # tensorflow report came from. Safe to delete because the directory is
+  # gitignored and its entire contents are what `install_python_deps` puts there;
+  # same reasoning as the dependency resync further down, which already rewrites
+  # it unasked.
+  if [[ -x "$REPO_ROOT/.venv/bin/python" ]]; then
+    echo "==> $REPO_ROOT/.venv is not Python $DEV_PYTHON_VERSION — rebuilding it"
+    rm -rf "$REPO_ROOT/.venv"
   else
-    python3 -m venv "$REPO_ROOT/.venv"
+    echo "==> no venv found — creating $REPO_ROOT/.venv with the [dev,fused,bundled] extras"
+  fi
+  if command -v uv >/dev/null 2>&1; then
+    # --python: a bare `uv venv` takes uv's newest known CPython, which is how a
+    # 3.14 dev venv came to exist in the first place. uv downloads a managed
+    # interpreter here if the machine has none.
+    uv venv --python "$DEV_PYTHON_VERSION" "$REPO_ROOT/.venv"
+  else
+    # No uv, so no interpreter downloads: the pinned python has to already be here.
+    # Failing loudly beats silently building on `python3` — that is the exact
+    # substitution this whole change exists to undo.
+    BASE_PY="$(command -v "python$DEV_PYTHON_VERSION" || true)"
+    if [[ -z "$BASE_PY" ]]; then
+      echo "FATAL: need Python $DEV_PYTHON_VERSION to create $REPO_ROOT/.venv, and neither" >&2
+      echo "       uv nor python$DEV_PYTHON_VERSION is on PATH." >&2
+      echo "       Install uv (https://docs.astral.sh/uv/) — it will fetch $DEV_PYTHON_VERSION" >&2
+      echo "       itself — or install python$DEV_PYTHON_VERSION and re-run." >&2
+      exit 1
+    fi
+    "$BASE_PY" -m venv "$REPO_ROOT/.venv"
     "$REPO_ROOT/.venv/bin/python" -m pip install --upgrade pip
   fi
   install_python_deps "$REPO_ROOT/.venv"

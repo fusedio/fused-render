@@ -7,7 +7,7 @@ description: Use when setting up a fused-render checkout or git worktree for the
 
 ## Overview
 
-Every fresh checkout/worktree needs a **3.14 venv** and a **built React shell** — both are gitignored, so they don't carry into a worktree. Without them, `pytest`/`python` silently run against the wrong interpreter or fail on missing deps, and every server test dies with `RuntimeError: React shell not built`.
+Every fresh checkout/worktree needs a **3.12 venv** and a **built React shell** — both are gitignored, so they don't carry into a worktree. Without them, `pytest`/`python` silently run against the wrong interpreter or fail on missing deps, and every server test dies with `RuntimeError: React shell not built`.
 
 ## Running the Dev Server
 
@@ -23,7 +23,7 @@ scripts/dev.sh --port 9000     # extra args pass through to the server
 `dev.sh` covers the server, but its auto-venv has `[fused,bundled]` only — **not the `dev` extra** (pytest/xdist). And tests need a built `shell-dist/` or `create_app()` refuses to start. So the venv install is the one manual step:
 
 ```bash
-uv venv --python 3.14 .venv                                         # 3.14 wheels now exist for the whole stack
+uv venv --python 3.12 .venv                                         # pinned: matches what dev.sh and all three installers use
 uv pip install --python .venv/bin/python -e ".[dev,bundled,fused]"  # dev extra now includes pytest-xdist
 uv pip install --python .venv/bin/python pip                        # uv venv doesn't seed pip; test_deploy.py needs it
 ```
@@ -40,7 +40,7 @@ Verify: `ls fused_render/static/shell-dist/index.html` and `.venv/bin/python -m 
 
 | Item | Why |
 |------|-----|
-| Python 3.14 | whole stack (duckdb, rasterio, geopandas, shapely, zarr, scipy, pymupdf…) now ships 3.14 wheels; fused wheel is pure-python `py3-none-any` (marker needs ≥3.11). requires-python is ≥3.10, so 3.12/3.13 also work — 3.14 is just the current default |
+| Python 3.12 | **pinned, not a default** (D214): the server hands its own interpreter to `fused`'s venv builder as the base for every PEP 723 script venv, so this version decides which wheels those venvs can resolve. A 3.14 venv made script venvs cp314, and a script declaring `tensorflow` (no cp314 wheels) was an unresolvable dead end. 3.12 is what all three installers already ship, so a dev checkout matches the shipped app. `scripts/dev.sh` enforces it and rebuilds a `.venv` that is on anything else |
 | `dev` extra | pytest + httpx (backs TestClient) |
 | `bundled` extra | duckdb, rasterio, zarr, pandas, geopandas… (templates + daemons) |
 | `fused` extra | compute-engine wheel for `/api/run` |
