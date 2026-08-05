@@ -19,7 +19,12 @@ export interface AiSearchSpec {
   // extension-filtered; a dir hit passes regardless.
   extensions: string[];
   kind: "file" | "dir" | "any";
-  modified_within_days: number | null;
+  // Inclusive YYYY-MM-DD date ranges; either end may be open (null).
+  // Modified = last content change; created = filesystem birth time.
+  modified_after: string | null;
+  modified_before: string | null;
+  created_after: string | null;
+  created_before: string | null;
   min_size_bytes: number | null;
   max_size_bytes: number | null;
   // Directory-name hints ("in my photos folder", "downloaded" → downloads) —
@@ -53,7 +58,10 @@ export function aiSearchSystemPrompt(): string {
     '{"name_terms": [words likely to appear IN the file\'s name],\n' +
     ' "extensions": [bare lowercase extensions like "csv", empty if any],\n' +
     ' "kind": "file" | "dir" | "any",\n' +
-    ' "modified_within_days": number or null,\n' +
+    ' "modified_after": "YYYY-MM-DD" or null,\n' +
+    ' "modified_before": "YYYY-MM-DD" or null,\n' +
+    ' "created_after": "YYYY-MM-DD" or null,\n' +
+    ' "created_before": "YYYY-MM-DD" or null,\n' +
     ' "min_size_bytes": number or null,\n' +
     ' "max_size_bytes": number or null,\n' +
     ' "path_hints": [folder-name words the query implies, empty if none]}\n' +
@@ -66,8 +74,14 @@ export function aiSearchSystemPrompt(): string {
     "photo/image/screenshot→png,jpg,jpeg,heic,gif; audio/song→mp3,m4a,wav,flac; " +
     "spreadsheet→csv,xlsx; notebook→ipynb; doc/document→pdf,docx,md,txt; " +
     "presentation→pptx,key.\n" +
-    "- Dates: today→modified_within_days 1; yesterday→2; this week / last " +
-    "few days→7; last week→14; this month→31; recently→7.\n" +
+    "- Dates are inclusive YYYY-MM-DD ranges computed from today's date; " +
+    "leave an end null when the query only bounds one side. today→" +
+    "modified_after today; yesterday→after yesterday, before yesterday; " +
+    "'in June'→after 06-01, before 06-30; last week / recently→after " +
+    "(today-7d); 'before March'→modified_before 02-28 only. Phrases about " +
+    "when a file was made/added/downloaded ('created', 'made', 'saved', " +
+    "'downloaded') use the created_* fields instead; when unsure, use " +
+    "modified_*.\n" +
     "- Sizes: big/large→min_size_bytes 10000000; huge→100000000; " +
     "small/tiny→max_size_bytes 100000.\n" +
     "- 'folder'/'directory'→kind \"dir\".\n" +
@@ -98,6 +112,13 @@ export function parseAiSearchSpec(text: string): AiSearchSpec | null {
       : [];
   const posNum = (v: unknown): number | null =>
     typeof v === "number" && isFinite(v) && v > 0 ? v : null;
+  // A real calendar date, not just the shape of one (the Date round-trip
+  // rejects 2026-02-31); anything else from the model degrades to null.
+  const dateStr = (v: unknown): string | null => {
+    if (typeof v !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(v)) return null;
+    const d = new Date(v + "T00:00:00Z");
+    return isNaN(d.getTime()) || d.toISOString().slice(0, 10) !== v ? null : v;
+  };
   const kind = o.kind === "file" || o.kind === "dir" ? o.kind : "any";
   return {
     name_terms: strings(o.name_terms).slice(0, 8),
@@ -106,7 +127,10 @@ export function parseAiSearchSpec(text: string): AiSearchSpec | null {
       .filter((e) => /^[a-z0-9]{1,12}$/.test(e))
       .slice(0, 8),
     kind,
-    modified_within_days: posNum(o.modified_within_days),
+    modified_after: dateStr(o.modified_after),
+    modified_before: dateStr(o.modified_before),
+    created_after: dateStr(o.created_after),
+    created_before: dateStr(o.created_before),
     min_size_bytes: posNum(o.min_size_bytes),
     max_size_bytes: posNum(o.max_size_bytes),
     path_hints: strings(o.path_hints).slice(0, 4),
@@ -120,11 +144,21 @@ export function fallbackSpec(query: string): AiSearchSpec {
     name_terms: query.split(/\s+/).filter(Boolean).slice(0, 8),
     extensions: [],
     kind: "any",
-    modified_within_days: null,
+    modified_after: null,
+    modified_before: null,
+    created_after: null,
+    created_before: null,
     min_size_bytes: null,
     max_size_bytes: null,
     path_hints: [],
   };
+}
+
+// "2026-06-01 → 2026-06-30", "since 2026-08-04", "until 2026-03-01".
+function fmtRange(after: string | null, before: string | null): string {
+  if (after !== null && before !== null)
+    return after === before ? `on ${after}` : `${after} → ${before}`;
+  return after !== null ? `since ${after}` : `until ${before}`;
 }
 
 // Human-readable echo of what the model understood, shown next to results so
@@ -134,8 +168,10 @@ export function describeSpec(spec: AiSearchSpec): string {
   if (spec.name_terms.length) parts.push(`“${spec.name_terms.join(" ")}”`);
   if (spec.extensions.length) parts.push("." + spec.extensions.join(" ."));
   if (spec.kind !== "any") parts.push(spec.kind === "dir" ? "folders" : "files");
-  if (spec.modified_within_days !== null)
-    parts.push(`modified ≤${spec.modified_within_days}d`);
+  if (spec.modified_after !== null || spec.modified_before !== null)
+    parts.push(`modified ${fmtRange(spec.modified_after, spec.modified_before)}`);
+  if (spec.created_after !== null || spec.created_before !== null)
+    parts.push(`created ${fmtRange(spec.created_after, spec.created_before)}`);
   if (spec.min_size_bytes !== null) parts.push(`≥${fmtBytes(spec.min_size_bytes)}`);
   if (spec.max_size_bytes !== null) parts.push(`≤${fmtBytes(spec.max_size_bytes)}`);
   if (spec.path_hints.length) parts.push("near " + spec.path_hints.join(", "));
@@ -156,7 +192,10 @@ function fmtBytes(n: number): string {
 export function hasNonNameFilters(spec: AiSearchSpec): boolean {
   return (
     spec.extensions.length > 0 ||
-    spec.modified_within_days !== null ||
+    spec.modified_after !== null ||
+    spec.modified_before !== null ||
+    spec.created_after !== null ||
+    spec.created_before !== null ||
     spec.min_size_bytes !== null ||
     spec.max_size_bytes !== null
   );

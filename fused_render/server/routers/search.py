@@ -18,9 +18,11 @@ becoming a match-everything query.
 """
 
 import os
+import re
 import subprocess
 import sys
 import time
+from datetime import date, datetime, timedelta
 
 from fastapi import APIRouter, Body
 from fastapi.concurrency import run_in_threadpool
@@ -43,6 +45,32 @@ SEARCH_WALK_MAX_ENTRIES = 200_000
 SEARCH_WALK_MAX_DEPTH = 12
 
 _EXT_ALLOWED = set("abcdefghijklmnopqrstuvwxyz0123456789")
+
+# Date-range spec fields: (key, mdfind attribute, is_range_end). Modified uses
+# the fs content-change date, created the fs creation date (birthtime).
+_DATE_FIELDS = (
+    ("modified_after", "kMDItemFSContentChangeDate", False),
+    ("modified_before", "kMDItemFSContentChangeDate", True),
+    ("created_after", "kMDItemFSCreationDate", False),
+    ("created_before", "kMDItemFSCreationDate", True),
+)
+_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def _day_bound_epoch(date_str: str, end: bool) -> float:
+    """Epoch seconds of the LOCAL midnight starting `date_str` — or, for a
+    range end, the midnight AFTER it, so 'before 2026-08-05' includes all of
+    the 5th (dates are inclusive on both sides)."""
+    d = date.fromisoformat(date_str)
+    if end:
+        d = d + timedelta(days=1)
+    return datetime(d.year, d.month, d.day).astimezone().timestamp()
+
+
+def _time_iso(epoch: float) -> str:
+    """The mdfind $time.iso(...) literal for an epoch, in local offset form
+    (probed: mdfind accepts 2026-08-05T00:00:00+05:30)."""
+    return datetime.fromtimestamp(epoch).astimezone().isoformat()
 
 
 def _parse_spec(body: dict):
@@ -80,17 +108,34 @@ def _parse_spec(body: dict):
         v = v.strip().lstrip(".").lower()
         return v if 0 < len(v) <= 12 and set(v) <= _EXT_ALLOWED else ""
 
+    def date_str(key):
+        v = body.get(key)
+        if v is None:
+            return None
+        if not isinstance(v, str) or not _DATE_RE.match(v):
+            raise ValueError(f"'{key}' must be a YYYY-MM-DD date or null")
+        try:
+            date.fromisoformat(v)
+        except ValueError:
+            raise ValueError(f"'{key}' is not a real date")
+        return v
+
     kind = body.get("kind", "any")
     if kind not in ("file", "dir", "any"):
         raise ValueError("'kind' must be 'file', 'dir', or 'any'")
-    return {
+    spec = {
         "name_terms": strings("name_terms", 8, clean_term),
         "extensions": strings("extensions", 8, clean_ext),
         "kind": kind,
+        # Legacy field, still honored: older clients (and a model told about
+        # both shapes) may send it. Ranges are the primary form.
         "modified_within_days": pos_num("modified_within_days"),
         "min_size_bytes": pos_num("min_size_bytes"),
         "max_size_bytes": pos_num("max_size_bytes"),
     }
+    for key, _attr, _end in _DATE_FIELDS:
+        spec[key] = date_str(key)
+    return spec
 
 
 def _mdfind_query(spec) -> str | None:
@@ -116,6 +161,11 @@ def _mdfind_query(spec) -> str | None:
     if spec["modified_within_days"] is not None:
         secs = int(spec["modified_within_days"] * 86400)
         pieces.append(f"kMDItemFSContentChangeDate >= $time.now(-{secs})")
+    for key, attr, end in _DATE_FIELDS:
+        if spec[key] is not None:
+            epoch = _day_bound_epoch(spec[key], end)
+            op = "<" if end else ">="
+            pieces.append(f"{attr} {op} $time.iso({_time_iso(epoch)})")
     if spec["min_size_bytes"] is not None:
         pieces.append(f"kMDItemFSSize >= {int(spec['min_size_bytes'])}")
     if spec["max_size_bytes"] is not None:
@@ -255,11 +305,49 @@ def _match_walk_entry(entry, spec, now_s):
         cutoff = now_s - spec["modified_within_days"] * 86400
         if entry["mtime"] is None or entry["mtime"] < cutoff:
             return False
+    if spec["modified_after"] is not None:
+        if entry["mtime"] is None or entry["mtime"] < _day_bound_epoch(spec["modified_after"], False):
+            return False
+    if spec["modified_before"] is not None:
+        if entry["mtime"] is None or entry["mtime"] >= _day_bound_epoch(spec["modified_before"], True):
+            return False
     if not entry["is_dir"]:
         size = entry["size"] or 0
         if spec["min_size_bytes"] is not None and size < spec["min_size_bytes"]:
             return False
         if spec["max_size_bytes"] is not None and size > spec["max_size_bytes"]:
+            return False
+    return True
+
+
+def _created_epoch(path: str) -> float | None:
+    """Best-effort creation time: st_birthtime where the OS has one (macOS,
+    some BSDs), st_ctime on Windows (creation there), else None."""
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    birth = getattr(st, "st_birthtime", None)
+    if birth is not None:
+        return birth
+    return st.st_ctime if sys.platform == "win32" else None
+
+
+def _match_created_range(path: str, spec) -> bool:
+    """Created-range check for the walk engine (walk entries carry no
+    creation time, so it costs a stat — only paid when the spec asks). On a
+    platform with no creation time the filter is skipped rather than
+    silently emptying every search."""
+    if spec["created_after"] is None and spec["created_before"] is None:
+        return True
+    created = _created_epoch(path)
+    if created is None:
+        return True
+    if spec["created_after"] is not None:
+        if created < _day_bound_epoch(spec["created_after"], False):
+            return False
+    if spec["created_before"] is not None:
+        if created >= _day_bound_epoch(spec["created_before"], True):
             return False
     return True
 
@@ -281,9 +369,12 @@ def _search_walk_home(spec):
             continue
         if not _match_walk_entry(entry, spec, now_s):
             continue
+        abs_path = os.path.join(home, entry["rel"].replace("/", os.sep))
+        if not _match_created_range(abs_path, spec):
+            continue
         entries.append(
             {
-                "path": os.path.join(home, entry["rel"].replace("/", os.sep)),
+                "path": abs_path,
                 "is_dir": entry["is_dir"],
                 "size": entry["size"],
                 "mtime": entry["mtime"],

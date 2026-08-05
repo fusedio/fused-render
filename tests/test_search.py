@@ -23,6 +23,10 @@ def spec(**over):
         "extensions": [],
         "kind": "any",
         "modified_within_days": None,
+        "modified_after": None,
+        "modified_before": None,
+        "created_after": None,
+        "created_before": None,
         "min_size_bytes": None,
         "max_size_bytes": None,
     }
@@ -59,6 +63,9 @@ def test_parse_spec_cleans_terms_extensions_and_numbers():
         {"kind": "everything"},
         {"modified_within_days": -1},
         {"min_size_bytes": True},
+        {"modified_after": "last week"},
+        {"created_before": "2026-02-31"},
+        {"modified_before": 20260805},
     ],
 )
 def test_parse_spec_rejects_malformed_bodies(body):
@@ -84,6 +91,40 @@ def test_mdfind_query_composes_all_constraints():
     assert "kMDItemFSContentChangeDate >= $time.now(-86400)" in q
     assert "kMDItemFSSize >= 100" in q
     assert " && " in q
+
+
+def test_mdfind_query_date_ranges_are_inclusive_local_days():
+    from fused_render.server.routers.search import _day_bound_epoch, _time_iso
+
+    q = _mdfind_query(
+        spec(modified_after="2026-06-01", modified_before="2026-06-30",
+             created_after="2026-05-01")
+    )
+    # after → >= that day's local midnight; before → < the NEXT day's
+    # midnight, so the whole named day is included.
+    assert (
+        f"kMDItemFSContentChangeDate >= $time.iso({_time_iso(_day_bound_epoch('2026-06-01', False))})"
+        in q
+    )
+    assert (
+        f"kMDItemFSContentChangeDate < $time.iso({_time_iso(_day_bound_epoch('2026-06-30', True))})"
+        in q
+    )
+    assert "kMDItemFSCreationDate >= " in q
+    assert _day_bound_epoch("2026-06-30", True) - _day_bound_epoch("2026-06-30", False) == 86400.0
+
+
+def test_match_walk_entry_modified_range():
+    from fused_render.server.routers.search import _day_bound_epoch
+
+    s = spec(modified_after="2026-06-01", modified_before="2026-06-30")
+    inside = _day_bound_epoch("2026-06-15", False)
+    before = _day_bound_epoch("2026-06-01", False) - 1
+    after = _day_bound_epoch("2026-06-30", True) + 1
+    now = after + 86400
+    assert _match_walk_entry(walk_entry("a.txt", mtime=inside), s, now)
+    assert not _match_walk_entry(walk_entry("a.txt", mtime=before), s, now)
+    assert not _match_walk_entry(walk_entry("a.txt", mtime=after), s, now)
 
 
 def test_mdfind_query_requires_a_narrowing_constraint():
