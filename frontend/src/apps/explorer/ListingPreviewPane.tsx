@@ -14,7 +14,7 @@
 import { useEffect, useState } from "react";
 import { listDir, resolveConditions, statPath } from "@platform/lib/api";
 import type { TemplateEntry } from "@platform/lib/api";
-import { navigate } from "@platform/lib/router";
+import { navigate, replaceSearch } from "@platform/lib/router";
 import { formatSize } from "@platform/lib/format";
 import { iconForEntry, isAppEntry } from "@platform/ui/FileIcons";
 import ModeSwitcher, { KNOWN_SENTINEL_MODES, templateModeIcon } from "@apps/explorer/ModeSwitcher";
@@ -96,10 +96,21 @@ export default function ListingPreviewPane({
   // Lone-app probe result for a folder: undefined = still loading, null =
   // no unambiguous app. Only drives the `_app` menu entry, never a default.
   const [app, setApp] = useState<AppTarget | null | undefined>(undefined);
-  // Pane-local mode override from the mode menu; null = the default mode.
-  // The component is keyed on the previewed path (Listing), so this resets
-  // with every new selection — deliberately transient.
-  const [modeOverride, setModeOverride] = useState<string | null>(null);
+  // Mode override from the mode menu, synced to the URL as `_panelMode` so
+  // the chosen pane mode SURVIVES selection switches: the component is keyed
+  // on the previewed path (Listing) and remounts per selection, but each
+  // mount re-seeds from the URL. A selection that doesn't offer the mode
+  // falls back to its default (activeMode below) while the param stays put —
+  // the next selection that does offer it picks it up again.
+  const [modeOverride, setModeOverride] = useState<string | null>(
+    () => new URLSearchParams(location.search).get("_panelMode")
+  );
+  const selectMode = (m: string) => {
+    setModeOverride(m);
+    const params = new URLSearchParams(location.search);
+    params.set("_panelMode", m);
+    replaceSearch(location.pathname + "?" + params.toString());
+  };
 
   // Stat the selection — files and folders alike carry a template mode list
   // (folders at minimum the `_listing` sentinel). The cleanup flag is the
@@ -267,7 +278,7 @@ export default function ListingPreviewPane({
       </span>
       {/* Horizontal icon strip, same look as the shell preview header (PT-10):
           every available mode side by side, active one highlighted. */}
-      <ModeSwitcher entries={modes} active={activeMode ?? ""} onSelect={(m) => setModeOverride(m)} />
+      <ModeSwitcher entries={modes} active={activeMode ?? ""} onSelect={selectMode} />
       {/* One label for every mode. Self target: "Open" would navigate to the
           folder already open, so it hides. */}
       {!row.self && (

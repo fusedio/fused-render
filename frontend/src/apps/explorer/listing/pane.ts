@@ -98,7 +98,11 @@ export function usePreviewPane(fsPath: string, enabled = true) {
       const next = { ...prev, on: !prev.on };
       const params = new URLSearchParams(location.search);
       if (next.on) params.set("preview", "true");
-      else params.delete("preview");
+      else {
+        params.delete("preview");
+        // The pane's mode param has no pane to describe once it's closed.
+        params.delete("_panelMode");
+      }
       const qs = params.toString();
       replaceSearch(location.pathname + (qs ? "?" + qs : ""));
       savePaneState(fsPath, next.on, paneSized.current ? next.width : null);
