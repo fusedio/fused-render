@@ -8,8 +8,11 @@ ones — see search.py's module docstring.
 import pytest
 
 from fused_render.server.routers.search import (
+    _drop_gitignored,
+    _junk_path,
     _match_walk_entry,
     _mdfind_query,
+    _nearest_repo,
     _parse_spec,
 )
 
@@ -109,3 +112,47 @@ def test_match_walk_entry_enforces_hard_filters():
 def test_match_walk_entry_dirs_skip_extension_and_size():
     s = spec(extensions=["csv"], min_size_bytes=500)
     assert _match_walk_entry(walk_entry("data", is_dir=True), s, 2000.0)
+
+
+# -- Spotlight hit screening (junk, hidden, gitignored) --------------------------
+
+def test_junk_path_drops_ignore_dirs_and_hidden_segments():
+    assert _junk_path("/Users/me/proj/node_modules/a/b.mov")
+    assert _junk_path("/Users/me/proj/.venv/lib/x.mp4")
+    assert _junk_path("/Users/me/.config/thing.mov")  # hidden segment
+    assert not _junk_path("/Users/me/Downloads/clip.mov")
+
+
+def test_nearest_repo_memoizes_ancestors(tmp_path):
+    repo = tmp_path / "repo"
+    (repo / "a" / "b").mkdir(parents=True)
+    (repo / ".git").mkdir()
+    memo = {}
+    assert _nearest_repo(str(repo / "a" / "b"), memo) == str(repo)
+    # every probed ancestor is memoized, including the hit itself
+    assert memo[str(repo / "a")] == str(repo)
+    outside = tmp_path / "plain"
+    outside.mkdir()
+    assert _nearest_repo(str(outside), memo) is None
+
+
+def test_drop_gitignored_filters_repo_ignored_hits(tmp_path):
+    import subprocess as sp
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    sp.run(["git", "init", "-q", str(repo)], check=True)
+    (repo / ".gitignore").write_text("out/\n")
+    (repo / "out").mkdir()
+    (repo / "out" / "junk.mov").write_bytes(b"x")
+    (repo / "keep.mov").write_bytes(b"x")
+    loose = tmp_path / "loose.mov"
+    loose.write_bytes(b"x")
+
+    entries = [
+        {"path": str(repo / "out" / "junk.mov"), "is_dir": False, "size": 1, "mtime": 1.0},
+        {"path": str(repo / "keep.mov"), "is_dir": False, "size": 1, "mtime": 1.0},
+        {"path": str(loose), "is_dir": False, "size": 1, "mtime": 1.0},
+    ]
+    kept = _drop_gitignored(entries)
+    assert [e["path"] for e in kept] == [str(repo / "keep.mov"), str(loose)]

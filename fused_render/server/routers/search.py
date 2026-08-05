@@ -26,7 +26,8 @@ from fastapi import APIRouter, Body
 from fastapi.concurrency import run_in_threadpool
 
 from fused_render.server.common import _error
-from fused_render.server.walk import _WALK_TRUNCATED, _walk_bfs
+from fused_render.server.gitignore import _IgnoreOracle
+from fused_render.server.walk import _WALK_TRUNCATED, _walk_bfs, WALK_IGNORE_DIRS
 
 router = APIRouter()
 
@@ -143,30 +144,99 @@ def _stat_entry(path):
     }
 
 
+# Path segments that mark a hit as machine-managed junk or hidden data.
+# Spotlight has no gitignore/hidden notion, so its hits are re-screened with
+# the same standards the walk enforces during traversal: WALK_IGNORE_DIRS
+# segments and dot-segments never surface (matching /api/fs/walk's default).
+def _junk_path(path: str) -> bool:
+    for seg in path.split(os.sep):
+        if seg in WALK_IGNORE_DIRS:
+            return True
+        if seg.startswith(".") and seg not in (".", ".."):
+            return True
+    return False
+
+
+def _nearest_repo(dirpath: str, memo: dict) -> str | None:
+    """The closest ancestor (including `dirpath`) containing a `.git` marker,
+    or None. Pure filesystem probes with memoization — a `git rev-parse` per
+    unique hit directory would cost a subprocess each."""
+    probe = dirpath
+    chain = []
+    result = None
+    while True:
+        if probe in memo:
+            result = memo[probe]
+            break
+        chain.append(probe)
+        if os.path.exists(os.path.join(probe, ".git")):
+            result = probe
+            break
+        parent = os.path.dirname(probe)
+        if parent == probe:
+            break
+        probe = parent
+    for p in chain:
+        memo[p] = result
+    return result
+
+
+def _drop_gitignored(entries):
+    """Filter out entries a containing repo's own gitignore rules ignore,
+    batched through one check-ignore co-process per repo (_IgnoreOracle)."""
+    repo_memo: dict = {}
+    by_repo: dict = {}
+    for i, e in enumerate(entries):
+        repo = _nearest_repo(os.path.dirname(e["path"]), repo_memo)
+        if repo is not None:
+            by_repo.setdefault(repo, []).append(i)
+    dropped = set()
+    for repo, indices in by_repo.items():
+        oracle = _IgnoreOracle(repo)
+        try:
+            rels = [os.path.relpath(entries[i]["path"], repo).replace(os.sep, "/")
+                    for i in indices]
+            ignored = oracle.ignored(rels)
+            for i, rel in zip(indices, rels):
+                if rel in ignored:
+                    dropped.add(i)
+        finally:
+            oracle.close()
+    return [e for i, e in enumerate(entries) if i not in dropped]
+
+
 def _search_mdfind(spec):
     query = _mdfind_query(spec)
     if query is None:
         raise ValueError("spec has no narrowing constraints")
-    try:
-        proc = subprocess.run(
-            ["mdfind", "-0", query],
-            capture_output=True,
-            timeout=SEARCH_MDFIND_TIMEOUT_S,
-        )
-    except subprocess.TimeoutExpired:
-        raise RuntimeError("Spotlight search timed out")
-    except FileNotFoundError:
-        raise RuntimeError("mdfind not available")
+    # mdfind has been seen to die with SIGSEGV depending on the launch
+    # context; a signal death (negative returncode) gets one retry before
+    # the caller falls back to the walk engine.
+    for attempt in (1, 2):
+        try:
+            proc = subprocess.run(
+                ["mdfind", "-0", query],
+                capture_output=True,
+                timeout=SEARCH_MDFIND_TIMEOUT_S,
+            )
+        except subprocess.TimeoutExpired:
+            raise RuntimeError("Spotlight search timed out")
+        except FileNotFoundError:
+            raise RuntimeError("mdfind not available")
+        if proc.returncode >= 0 or attempt == 2:
+            break
     if proc.returncode != 0:
         err = proc.stderr.decode("utf-8", "replace").strip()
         raise RuntimeError(f"mdfind failed: {err or proc.returncode}")
     paths = [p for p in proc.stdout.decode("utf-8", "replace").split("\0") if p]
-    truncated = len(paths) > SEARCH_MAX_RESULTS
+    kept = [p for p in paths if not _junk_path(p)]
+    truncated = len(kept) > SEARCH_MAX_RESULTS
     entries = []
-    for p in paths[:SEARCH_MAX_RESULTS]:
+    for p in kept[:SEARCH_MAX_RESULTS]:
         e = _stat_entry(p)
         if e is not None:
             entries.append(e)
+    entries = _drop_gitignored(entries)
     return {"entries": entries, "truncated": truncated, "engine": "spotlight"}
 
 
@@ -232,9 +302,15 @@ async def api_search_files(body: dict = Body(...)):
     except ValueError as e:
         return _error(str(e))
     # Both engines block (subprocess / disk walk); keep the event loop free.
+    # A Spotlight failure (crash, timeout, missing mdfind) degrades to the
+    # home-walk engine rather than a 502 — narrower coverage, labeled via
+    # `engine`, beats a dead search box.
     try:
         if sys.platform == "darwin":
-            result = await run_in_threadpool(_search_mdfind, spec)
+            try:
+                result = await run_in_threadpool(_search_mdfind, spec)
+            except RuntimeError:
+                result = await run_in_threadpool(_search_walk_home, spec)
         else:
             result = await run_in_threadpool(_search_walk_home, spec)
     except ValueError as e:
