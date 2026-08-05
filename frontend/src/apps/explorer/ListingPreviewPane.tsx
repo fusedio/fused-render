@@ -14,7 +14,7 @@
 import { useEffect, useState } from "react";
 import { listDir, resolveConditions, statPath } from "@platform/lib/api";
 import type { TemplateEntry } from "@platform/lib/api";
-import { navigate, VIEW_PREFIX } from "@platform/lib/router";
+import { navigate } from "@platform/lib/router";
 import { formatSize } from "@platform/lib/format";
 import { iconForEntry, isAppEntry } from "@platform/ui/FileIcons";
 import ModeSwitcher, { KNOWN_SENTINEL_MODES, templateModeIcon } from "@apps/explorer/ModeSwitcher";
@@ -81,20 +81,6 @@ interface AppTarget {
 interface PaneMode {
   mode: string;
   icon: React.ReactNode;
-}
-
-// Always the plain /view/ route, never /embed/ — an embed URL is meant to be
-// framed by a host page, so it would be the wrong thing to land in a fresh
-// tab. Same drive-letter normalization as lib/router's urlForFsPath.
-function viewUrlFor(fsPath: string): string {
-  const norm = /^[A-Za-z]:[\\/]/.test(fsPath) ? fsPath.replace(/\\/g, "/") : fsPath;
-  const encoded = norm
-    .replace(/^\/+/, "")
-    .split("/")
-    .filter((s) => s.length > 0)
-    .map(encodeURIComponent)
-    .join("/");
-  return VIEW_PREFIX + encoded;
 }
 
 export default function ListingPreviewPane({
@@ -304,16 +290,9 @@ export default function ListingPreviewPane({
       {/* Horizontal icon strip, same look as the shell preview header (PT-10):
           every available mode side by side, active one highlighted. */}
       <ModeSwitcher entries={modes} active={activeMode ?? ""} onSelect={(m) => setModeOverride(m)} />
-      {activeMode === APP_MODE && app ? (
-        <button
-          type="button"
-          className="pane-header-btn"
-          onClick={() => window.open(viewUrlFor(app.path), "_blank", "noopener")}
-        >
-          Open app
-        </button>
-      ) : row.self ? null : (
-        // Self target: "Open" would navigate to the folder already open.
+      {/* One label for every mode. Self target: "Open" would navigate to the
+          folder already open, so it hides. */}
+      {!row.self && (
         <button
           type="button"
           className="pane-header-btn"
