@@ -31,7 +31,15 @@ export function timeAgo(epochSeconds: number | null | undefined): string | null 
 // exactly the .app-pcard-thumb box, whatever the grid column resolves to.
 const PREVIEW_SCALE = 0.25;
 
-export function AppPreviewCard({ app }: { app: AppInfo }) {
+export function AppPreviewCard({
+  app,
+  onContextMenu,
+}: {
+  app: AppInfo;
+  // Right-click: the card only forwards the event and its own app — the menu
+  // state lives one level up (Apps.tsx), so the whole grid shares one portal.
+  onContextMenu?: (e: React.MouseEvent, app: AppInfo) => void;
+}) {
   const title = app.title || app.name;
   const ago = timeAgo(app.updated_at);
   // An anchor, not a button — see AppCard. The href is what makes middle-click
@@ -41,6 +49,10 @@ export function AppPreviewCard({ app }: { app: AppInfo }) {
       className="app-pcard"
       href={hrefFor(app)}
       onClick={(e) => onAppCardClick(e, app)}
+      // On the <a>, not on the body: the thumbnail's pointer-events shield sits
+      // INSIDE this element, so a right-click over the preview bubbles up here
+      // (the iframe itself never sees it) and one handler covers the whole card.
+      onContextMenu={onContextMenu && ((e) => onContextMenu(e, app))}
       title={openTargetFor(app).path}
     >
       <span className="app-pcard-body">

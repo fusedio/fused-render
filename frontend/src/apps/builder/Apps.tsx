@@ -9,8 +9,10 @@
 import { useEffect, useMemo, useState } from "react";
 import { getApps } from "@platform/lib/api";
 import type { AppInfo } from "@platform/lib/api";
+import { appCardMenu } from "@platform/lib/appCardMenu";
 import { requestCloneApp } from "@platform/cloud/cloneApp";
 import { useDeployEnabled } from "@platform/lib/prefs";
+import ContextMenu, { type MenuEntry } from "@platform/ui/ContextMenu";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { AppPreviewCard } from "@apps/builder/AppPreviewCard";
 import { HomeHero } from "./HomeHero";
@@ -44,6 +46,15 @@ export default function Apps() {
   const deployEnabled = useDeployEnabled();
   // Bumped when the panel creates an app: refetches the grid without clearing it.
   const [nonce, setNonce] = useState(0);
+  // One context-menu portal for the whole grid, at the cursor coords — same
+  // shape as the explorer listing's (Listing.tsx openRowMenu).
+  const [menu, setMenu] = useState<{ x: number; y: number; items: MenuEntry[] } | null>(null);
+
+  const openCardMenu = (e: React.MouseEvent, app: AppInfo) => {
+    // The card is an anchor: without this the browser's own link menu wins.
+    e.preventDefault();
+    setMenu({ x: e.clientX, y: e.clientY, items: appCardMenu(app) });
+  };
 
   useEffect(() => {
     let alive = true;
@@ -164,13 +175,17 @@ export default function Apps() {
             ) : (
               <div className="apps-cards">
                 {shown.map((app) => (
-                  <AppPreviewCard key={app.path} app={app} />
+                  <AppPreviewCard key={app.path} app={app} onContextMenu={openCardMenu} />
                 ))}
               </div>
             )}
           </>
         )}
       </div>
+
+      {menu && (
+        <ContextMenu x={menu.x} y={menu.y} items={menu.items} onClose={() => setMenu(null)} />
+      )}
     </div>
   );
 }
