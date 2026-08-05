@@ -339,8 +339,8 @@ def _split_system_prompt() -> str:
         "(it reloads itself — this is how you see whether the change worked), "
         "and whenever the user reports something visibly wrong. A "
         f"<{APP_STATE_TAG}> block on their message is the same reading taken at "
-        "send time, with the outline at a path it gives you; it goes stale as "
-        "soon as you edit anything."
+        "send time; it carries the outline either inline or as a `dom_path` to "
+        "read, and goes stale as soon as you edit anything."
     )
 
 
@@ -1311,25 +1311,31 @@ def _retry_info(row: dict):
         return None
 
 
-def _overload_error(error: str, total: int, status: int) -> str:
-    """`error` rewritten to say what actually happened, for a run that died while
-    the CLI was retrying.
+def _overload_error(error: str, info) -> str:
+    """`error` rewritten to say what actually happened, for a run that died with a
+    retry still in flight.
 
     The raw text is "API Error: 529 Overloaded" — accurate, but it reads as a bug
-    in this app, says nothing about the ten attempts already spent on the user's
-    behalf, and gives no hint that waiting a moment IS the remedy. Rewritten only
-    when we actually saw retry rows, so this is never string-sniffing the CLI's
-    error text; the original is kept in parentheses because it is the part a bug
-    report can be matched on.
+    in this app, says nothing about the attempts already spent on the user's
+    behalf, and gives no hint that waiting a moment IS the remedy. The original is
+    kept in parentheses because it is the part a bug report can be matched on.
+
+    `info` is the retry that was live when the end arrived, NOT the run's retry
+    tally. Keying off the tally was a bug: it survives a mid-turn retry that
+    SUCCEEDED, so a later unrelated failure — a crashed tool, a bad edit, an auth
+    error — was dressed up as an API overload and the real cause was buried. The
+    tally still rides in the payload for the page; it just cannot decide this.
     """
-    if not total or not error:
+    if info is None or not error:
         return error
+    status = info.get("status") or 0
+    spent = info.get("attempt") or 0
     what = ("the API was overloaded" if status == 529
             else "we were rate limited" if status == 429
             else "the API call kept failing")
     return ("Could not reach the API: %s, and %d retr%s did not clear it. "
             "Trying again in a moment usually works. (%s)"
-            % (what, total, "y" if total == 1 else "ies", error))
+            % (what, spent, "y" if spent == 1 else "ies", error))
 
 
 def _skill_calls(row: dict) -> list:
@@ -1380,6 +1386,7 @@ def _poll(run_id: str) -> dict:
     retry = None         # the api_retry the request is sitting in RIGHT NOW
     retry_total = 0      # how many retries this run has seen at all
     retry_status = 0     # HTTP status of the last one (529 overloaded, 429 …)
+    gave_up = None       # the retry still in flight when the run ended badly
 
     try:
         lines = open(os.path.join(run_dir, "out.jsonl"), encoding="utf-8",
@@ -1401,7 +1408,12 @@ def _poll(run_id: str) -> dict:
         # not cleared; "this turn was retried four times" is what makes a final
         # failure explainable.
         if t in ("stream_event", "assistant", "result"):
-            retry = None
+            # Kept for one row: a `result` clears the retry like anything else,
+            # so without this the terminal row would erase the very evidence that
+            # the run died mid-retry (see `gave_up` below).
+            was_retrying, retry = retry, None
+        else:
+            was_retrying = None
         if t == "system":
             new_session = row.get("session_id", new_session)
             if row.get("subtype") == "api_retry":
@@ -1444,6 +1456,9 @@ def _poll(run_id: str) -> dict:
             result_text = row.get("result")
             if row.get("is_error"):
                 error = str(result_text or "claude exited with an error")
+                # Only if the failure arrived DURING a retry. A retry earlier in
+                # the turn that then succeeded says nothing about why this ended.
+                gave_up = was_retrying
 
     # Last word on the verb: a run sitting in a retry is not thinking, and
     # saying so is the whole point — "Thinking…" with a frozen token count is
@@ -1465,10 +1480,11 @@ def _poll(run_id: str) -> dict:
         error = tail or ("claude exited before completing the reply"
                          if text_parts else "claude exited unexpectedly")
 
-    # Both error paths above converge here: whatever went wrong, if the CLI had
-    # been retrying an overloaded or throttled API then THAT is the story, and
-    # the raw text does not tell it.
-    error = _overload_error(error, retry_total, retry_status)
+    # Both error paths above converge here: if the end arrived with a retry in
+    # flight then THAT is the story and the raw text does not tell it. `retry`
+    # covers the abnormal exit — a process killed mid-backoff never writes the
+    # `result` row that would have moved it into `gave_up`.
+    error = _overload_error(error, gave_up or retry)
 
     # Approvals, after `done` is final. A card the user never answered is only
     # still live while the run is: once it ends, whatever the request was

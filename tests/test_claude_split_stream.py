@@ -291,6 +291,29 @@ def test_an_ordinary_failure_is_left_exactly_as_it_was(agent, run_dir):
     assert data["error"] == "no such tool: Frobnicate"
 
 
+def test_a_recovered_retry_does_not_explain_a_later_unrelated_failure(
+        agent, run_dir):
+    """The bug this replaced: the rewrite keyed off the run's retry TALLY, which
+    survives a mid-turn retry that succeeded. A crash, a tool error or an auth
+    error arriving later was then dressed up as an API overload and the real
+    cause was buried. Only a retry still in flight at the end may explain it."""
+    rows = [_retry(1), _retry(2), _text("recovered fine"),
+            _failed("Edit failed: string not found in file")]
+    data = _poll(agent, run_dir, rows, alive=False)
+    assert data["error"] == "Edit failed: string not found in file"
+    assert "overloaded" not in data["error"]
+    # the tally still rides along for the page — it just cannot decide the wording
+    assert data["retry_total"] == 2
+
+
+def test_a_run_killed_mid_backoff_still_explains_itself(agent, run_dir):
+    """No `result` row to move the live retry into `gave_up`, so the abnormal-exit
+    path has to read the still-live one."""
+    data = _poll(agent, run_dir, [_retry(3)], alive=False)
+    assert "overloaded" in data["error"]
+    assert "3 retries" in data["error"]
+
+
 def test_a_clean_run_that_was_retried_reports_no_error_at_all(agent, run_dir):
     """Retries that SUCCEEDED are not a failure. Rewriting on `retry_total`
     alone would invent an error for a turn that worked."""
@@ -356,6 +379,14 @@ def test_no_budget_means_no_invented_denominator(html):
 
 
 # ------------------------------------------------------------ the page's wiring
+
+def test_the_prompt_does_not_promise_a_path_the_fallback_may_not_send(agent):
+    """appStateFile falls back to an inline `dom` when the write fails, so a
+    prompt that states the outline is always at a path would send the model
+    hunting for a `dom_path` that was never sent."""
+    prompt = agent._split_system_prompt()
+    assert "inline" in prompt and "dom_path" in prompt
+
 
 def test_the_page_hands_the_live_retry_to_the_status_line(html):
     """Without the third argument the status line can only say "Thinking…",

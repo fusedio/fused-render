@@ -46,6 +46,7 @@ import logging
 import os
 import shutil
 import subprocess
+import tempfile
 
 from fused_render.shell.storage import home_dir
 
@@ -193,11 +194,27 @@ def _fingerprint(sources: dict) -> str:
     return json.dumps(entries, sort_keys=True)
 
 
-def _is_loadable(root: str) -> bool:
-    """Whether `root` is a plugin the CLI would actually load — i.e. the
-    manifest is there. The caller returns None instead of a path that would make
-    `claude --plugin-dir` fail on a tree we half-wrote."""
-    return os.path.isfile(os.path.join(root, MANIFEST_DIR, MANIFEST_NAME))
+def _is_loadable(root: str, expected=()) -> bool:
+    """Whether `root` is a plugin the CLI would actually load. The caller returns
+    None instead of a path that would make `claude --plugin-dir` fail on a tree
+    we half-wrote.
+
+    `expected` names the skills that must ALSO be present, and exists because the
+    manifest alone is not evidence of a complete tree: a build interrupted between
+    writing the manifest and copying the skills leaves a root that loads fine and
+    teaches the model nothing. Pass it wherever a "yes" would be trusted — above
+    all before the stamp short-circuit, which would otherwise keep handing out a
+    gutted plugin until the sources happened to change again. Left empty on the
+    failure paths on purpose: there, a partial tree is being compared against
+    nothing at all, and some skills beat none.
+    """
+    if not os.path.isfile(os.path.join(root, MANIFEST_DIR, MANIFEST_NAME)):
+        return False
+    for name in expected:
+        if not os.path.isfile(
+                os.path.join(root, SKILLS_SUBDIR, name, "SKILL.md")):
+            return False
+    return True
 
 
 def _build(staging: str, sources: dict) -> None:
@@ -227,10 +244,11 @@ def sync_skill_plugin() -> str | None:
         logger.debug("no skill sources found; leaving %s as is", root)
         return root if _is_loadable(root) else None
 
+    staging = None
     try:
         stamp = _fingerprint(sources)
         stamp_path = _stamp_path()
-        if _is_loadable(root):
+        if _is_loadable(root, sources):
             try:
                 with open(stamp_path, encoding="utf-8") as fh:
                     if fh.read() == stamp:
@@ -238,7 +256,15 @@ def sync_skill_plugin() -> str | None:
             except OSError:
                 pass  # no stamp (or unreadable): rebuild
 
-        staging = root + ".new"
+        # A staging directory NOBODY else can be building into. A fixed
+        # `<root>.new` was a real race: `export_skill_plugin_env` is called from
+        # the create-app and create-template routes, which FastAPI runs on a
+        # threadpool, so two scaffolds at once could each rmtree the other's
+        # half-copied staging and publish whichever fragment won. mkdtemp is the
+        # cheap way to be unique across both processes and threads.
+        os.makedirs(os.path.dirname(root), exist_ok=True)
+        staging = tempfile.mkdtemp(prefix=os.path.basename(root) + ".new-",
+                                   dir=os.path.dirname(root))
         _build(staging, sources)
         # Delete-then-rename, not a rename over the top: os.replace refuses a
         # non-empty destination directory on POSIX, and there is no atomic
@@ -246,15 +272,18 @@ def sync_skill_plugin() -> str | None:
         # the only reader is a `claude` process starting up, which either sees
         # the old complete tree or the new one.
         shutil.rmtree(root, ignore_errors=True)
-        os.makedirs(os.path.dirname(root), exist_ok=True)
         os.replace(staging, root)
+        staging = None
         with open(stamp_path, "w", encoding="utf-8") as fh:
             fh.write(stamp)
         return root
     except OSError as exc:
         logger.warning("could not assemble the skill plugin at %s: %s", root, exc)
-        shutil.rmtree(root + ".new", ignore_errors=True)
         return root if _is_loadable(root) else None
+    finally:
+        # Ours alone, so this cannot take a concurrent build's tree with it.
+        if staging is not None:
+            shutil.rmtree(staging, ignore_errors=True)
 
 
 # ------------------------------------------- handing the root to the sessions

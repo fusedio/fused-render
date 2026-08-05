@@ -20,6 +20,8 @@ Three groups of properties, and they fail in different places:
 import importlib.util
 import json
 import os
+import shutil
+import threading
 
 import pytest
 
@@ -68,6 +70,72 @@ def sources(tmp_path, monkeypatch):
     monkeypatch.setattr(skill_plugin, "_PACKAGED_MANIFEST",
                         str(tmp_path / "no-such-dir" / "plugin.json"))
     return repo
+
+
+# --------------------------------------------- concurrency and partial trees
+
+def test_a_gutted_root_is_rebuilt_rather_than_trusted(home, sources):
+    """A manifest is not evidence of a complete tree. Left unchecked, a root that
+    lost its skills — an interrupted build, a concurrent rebuild — still looked
+    loadable, and a matching stamp then short-circuited every later sync, so
+    sessions kept being handed a plugin that teaches the model nothing until the
+    sources happened to change again."""
+    root = skill_plugin.sync_skill_plugin()
+    shutil.rmtree(os.path.join(root, "skills", skill_plugin.SKILLS[0]))
+
+    assert skill_plugin.sync_skill_plugin() == root
+    assert os.path.isfile(os.path.join(root, "skills", skill_plugin.SKILLS[0],
+                                       "SKILL.md"))
+
+
+def test_the_manifest_alone_is_not_called_loadable(home, sources):
+    root = skill_plugin.plugin_dir()
+    os.makedirs(os.path.join(root, ".claude-plugin"))
+    open(os.path.join(root, ".claude-plugin", "plugin.json"), "w").close()
+    assert skill_plugin._is_loadable(root) is True          # nothing expected
+    assert skill_plugin._is_loadable(root, skill_plugin.SKILLS) is False
+
+
+def test_two_syncs_at_once_do_not_stage_into_the_same_directory(home, sources):
+    """`<root>.new` was shared. export_skill_plugin_env is called from the
+    create-app and create-template routes, which FastAPI runs on a threadpool, so
+    two scaffolds at once could each rmtree the other's half-copied staging and
+    publish whichever fragment won."""
+    seen = []
+    real_build = skill_plugin._build
+
+    def spy(staging, sources_map):
+        seen.append(staging)
+        return real_build(staging, sources_map)
+
+    skill_plugin._build = spy
+    try:
+        barrier = threading.Barrier(2)
+
+        def run():
+            barrier.wait()
+            skill_plugin.sync_skill_plugin()
+
+        threads = [threading.Thread(target=run) for _ in range(2)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+    finally:
+        skill_plugin._build = real_build
+
+    assert len(seen) == 2 and seen[0] != seen[1], seen
+    # and whoever won, what is published is whole
+    root = skill_plugin.plugin_dir()
+    assert skill_plugin._is_loadable(root, skill_plugin.SKILLS)
+
+
+def test_a_staging_directory_is_not_left_behind(home, sources):
+    """It lives beside the root, so a leaked one is litter in the user's home
+    dir — and mkdtemp names are unique, so they would accumulate."""
+    skill_plugin.sync_skill_plugin()
+    leftovers = [n for n in os.listdir(home) if ".new-" in n]
+    assert leftovers == [], leftovers
 
 
 # ------------------------------------------------------- the assembled shape
