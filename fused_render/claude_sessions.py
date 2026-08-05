@@ -513,14 +513,66 @@ def _session_summary(transcript: dict, idx: dict) -> dict:
     }
 
 
+def _session_groups() -> list:
+    """The consulted transcripts grouped by SESSION ID, newest first.
+
+    A session resumed from a different directory has one transcript per cwd
+    slug, all sharing one id. The SESSION — not the transcript file — is the
+    unit every public function reports, so the shards merge here, once. The
+    first version merged only inside `session_files`, so a resumed session
+    appeared twice in `list_sessions` while both rows expanded to the same
+    merged file list (raised in review).
+    """
+    order: list[str] = []
+    groups: dict[str, list] = {}
+    for pair in _indexes():
+        sid = pair[0]["session"]
+        if sid not in groups:
+            order.append(sid)
+            groups[sid] = []
+        groups[sid].append(pair)
+    return [(sid, groups[sid]) for sid in order]
+
+
+def _merged_summary(shards: list) -> dict:
+    """One session's summary across its transcript shards.
+
+    The newest shard names the session (transcript/updated_at); an older
+    shard fills in a cwd or prompt the newest doesn't know — a resumed
+    transcript can open without restating the original question — and
+    `file_count` counts DISTINCT paths across all shards, so the row always
+    agrees with what `session_files` returns for the same id."""
+    head, head_idx = shards[0]
+    summary = _session_summary(head, head_idx)
+    if len(shards) > 1:
+        paths: set[str] = set()
+        for _t, idx in shards:
+            paths.update(idx["files"])
+        summary["file_count"] = len(paths)
+        for _t, idx in shards[1:]:
+            summary["cwd"] = summary["cwd"] or idx["cwd"]
+            summary["prompt"] = summary["prompt"] or idx["prompt"]
+    return summary
+
+
+def _merge_meta(into: dict, meta: dict) -> None:
+    """Fold one shard's per-file meta into an accumulator: writes sum, the
+    first/last span widens, and an unknown timestamp never narrows it."""
+    into["writes"] += meta["writes"]
+    for key, pick in (("first_ts", min), ("last_ts", max)):
+        stamps = [s for s in (into[key], meta[key]) if s is not None]
+        into[key] = pick(stamps) if stamps else None
+
+
 def list_sessions() -> list[dict]:
     """The consulted sessions, newest first — the index a UI starts from.
 
+    One row per SESSION (`_session_groups`), never per transcript file.
     Each: `{session, cwd, prompt, transcript, updated_at, file_count}`.
     `prompt` is the session's first human message, squashed to one capped
     line: it is the only label a session has that a person would recognise.
     """
-    return [_session_summary(t, idx) for t, idx in _indexes()]
+    return [_merged_summary(shards) for _sid, shards in _session_groups()]
 
 
 def _file_record(path: str, meta: dict) -> dict:
@@ -542,49 +594,52 @@ def _file_record(path: str, meta: dict) -> dict:
 
 
 def session_files(session_id: str) -> dict | None:
-    """Transcript → every file it touched; None for an unknown session.
+    """The session's transcripts → every file it touched; None for an unknown
+    id.
 
     The id is MATCHED against the enumerated window, never joined into a path
     (`file_history._resolve`'s confinement rule): a crafted id simply matches
-    nothing. A session resumed from more than one directory has one transcript
-    per slug; they merge here, newest transcript's cwd/prompt winning.
+    nothing. A resumed session's shards merge through `_session_groups`, so
+    this and `list_sessions` describe the same unit — one session.
     """
-    matched = [(t, idx) for t, idx in _indexes() if t["session"] == session_id]
-    if not matched:
+    for sid, shards in _session_groups():
+        if sid == session_id:
+            break
+    else:
         return None
-    head, head_idx = matched[0]
     files: dict[str, dict] = {}
-    for _t, idx in matched:
+    for _t, idx in shards:
         for path, meta in idx["files"].items():
-            _note = files.get(path)
-            if _note is None:
-                files[path] = dict(meta)
+            if path in files:
+                _merge_meta(files[path], meta)
             else:
-                _note["writes"] += meta["writes"]
-                for key, pick in (("first_ts", min), ("last_ts", max)):
-                    stamps = [s for s in (_note[key], meta[key]) if s is not None]
-                    _note[key] = pick(stamps) if stamps else None
+                files[path] = dict(meta)
     records = [_file_record(path, meta) for path, meta in files.items()]
     records.sort(key=lambda r: (r["last_ts"] or 0.0, r["path"]), reverse=True)
-    return dict(_session_summary(head, head_idx),
-                file_count=len(records), files=records)
+    return dict(_merged_summary(shards), file_count=len(records), files=records)
 
 
 def sessions_for_file(path: str) -> list[dict]:
     """File → every consulted session that touched it, newest first.
 
     Each: the `list_sessions` summary plus this file's `{first_ts, last_ts,
-    writes}` within that session.
+    writes}` within that session — merged across a resumed session's shards,
+    like everything else keyed by session id.
     """
     target = os.path.abspath(path)
     out = []
-    for transcript, idx in _indexes():
-        meta = idx["files"].get(target)
-        if meta is None:
-            continue
-        out.append(dict(_session_summary(transcript, idx),
-                        first_ts=meta["first_ts"], last_ts=meta["last_ts"],
-                        writes=meta["writes"]))
+    for _sid, shards in _session_groups():
+        merged: dict | None = None
+        for _t, idx in shards:
+            meta = idx["files"].get(target)
+            if meta is None:
+                continue
+            if merged is None:
+                merged = dict(meta)
+            else:
+                _merge_meta(merged, meta)
+        if merged is not None:
+            out.append(dict(_merged_summary(shards), **merged))
     return out
 
 

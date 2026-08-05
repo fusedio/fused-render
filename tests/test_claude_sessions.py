@@ -275,6 +275,31 @@ def test_session_files_lists_everything_with_a_viewable_hint(store, tmp_path):
     assert all(f["exists"] for f in data["files"])
 
 
+def test_a_resumed_session_is_ONE_row_everywhere(store, tmp_path):
+    """A session resumed from another directory has one transcript per cwd
+    slug, all sharing the id. The SESSION is the unit: `list_sessions` used
+    to emit one row per shard while `session_files` merged them — a resumed
+    session listed twice, both rows expanding identically (raised in review).
+    """
+    page = _saved(tmp_path, "shared.html")
+    notes = _saved(tmp_path, "later.md", "# notes")
+    _transcript(store, "s1", [_user_line(tmp_path / "work", "the question"),
+                              _write_line(page)], slug="-home-a")
+    # Resumed elsewhere: this shard opens with no prompt of its own.
+    _transcript(store, "s1", [_write_line(page), _write_line(notes)],
+                slug="-home-b")
+    sessions = claude_sessions.list_sessions()
+    assert len(sessions) == 1
+    assert sessions[0]["session"] == "s1"
+    assert sessions[0]["file_count"] == 2, "DISTINCT files across both shards"
+    assert sessions[0]["prompt"] == "the question", \
+        "an older shard fills the prompt the newest shard doesn't know"
+    hits = claude_sessions.sessions_for_file(str(page))
+    assert len(hits) == 1
+    assert hits[0]["writes"] == 2, "one write per shard, merged"
+    assert claude_sessions.session_files("s1")["file_count"] == 2
+
+
 def test_a_crafted_session_id_matches_nothing(store, tmp_path):
     _transcript(store, "s1", [_user_line(tmp_path, "x")])
     assert claude_sessions.session_files("nope") is None
