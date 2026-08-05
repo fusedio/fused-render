@@ -298,6 +298,14 @@ def _probe_python(path: str) -> bool:
         proc = subprocess.run(
             [path, "-c", "import sys; print('%d.%d' % sys.version_info[:2])"],
             capture_output=True, text=True,
+            # close_fds=False for posix_spawn instead of fork()+exec, the discipline
+            # `venvs.py` documents at module level: this server has almost certainly
+            # touched pyproj/rasterio, and a forked child runs PROJ's atfork handler,
+            # which closes an inherited-but-invalid proj.db handle and SIGSEGVs before
+            # exec. posix_spawn also needs a dir-qualified argv[0], which uv's output
+            # and any sane override are; a bare name would fork despite the flag, and
+            # the resulting -11 reads here as "not a usable interpreter" — wrong for
+            # the right reason, and safe, since refusing is the conservative answer.
             timeout=_SCRIPT_PYTHON_TIMEOUT_S, close_fds=False,
         )
     except (OSError, subprocess.SubprocessError):

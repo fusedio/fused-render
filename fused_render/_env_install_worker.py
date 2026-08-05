@@ -117,8 +117,14 @@ def _acquire_python(version):
             "(https://docs.astral.sh/uv/), or start the server on Python %s."
             % (version, version)
         )
+    # close_fds=False to get posix_spawn rather than fork()+exec, matching the spawn
+    # discipline `venvs.py` documents at module level: a forked child runs PROJ's
+    # pthread_atfork handler, which closes an inherited-but-invalid proj.db sqlite
+    # handle and SIGSEGVs before exec — a bare returncode -11 with no stderr. `uv` is
+    # dir-qualified here (it comes from `shutil.which`), which posix_spawn also
+    # requires; a bare command name forks despite the flag.
     proc = subprocess.run([uv, "python", "install", version],
-                          capture_output=True, text=True)
+                          capture_output=True, text=True, close_fds=False)
     if proc.returncode != 0:
         # Verbatim, exactly like the requirements install below: uv's own text names
         # the real problem (an offline machine, a proxy refusing the download, no
