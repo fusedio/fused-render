@@ -11,6 +11,7 @@
 import { getBookmarks, putBookmarks, recordBookmarkHistory } from "@platform/lib/api";
 import { notifyArmedChanged } from "@platform/lib/hooks";
 import { splitShellSearch } from "@platform/lib/layout-codec";
+import { rewriteLegacyUrl } from "@platform/lib/router";
 
 export interface Bookmark {
   id: string;
@@ -80,6 +81,19 @@ function enqueue<T>(op: () => Promise<T>): Promise<T> {
   return run;
 }
 
+// Urls saved before the /explorer prefix rename ("/view/...", "/embed/...")
+// normalized to their current shape. In-memory only, applied to every tree
+// that arrives from the server — the shell compares bookmark urls against
+// location by string equality (active-row highlight, breadcrumb star, and the
+// armed pathname check that otherwise PERMANENTLY disarms on first open), so
+// a stale prefix breaks all three. Disk self-heals for free: the next
+// mutation commits the normalized cache.
+function normalizeUrls(items: BookmarkItem[]): BookmarkItem[] {
+  return items.map((it) =>
+    isFolder(it) ? { ...it, children: normalizeUrls(it.children) } : { ...it, url: rewriteLegacyUrl(it.url) }
+  );
+}
+
 // Load the cache from the server once at boot (idempotent; enqueued so it wins
 // the race against any early mutation).
 export function hydrateBookmarks(): Promise<void> {
@@ -87,7 +101,7 @@ export function hydrateBookmarks(): Promise<void> {
     if (hydrated) return;
     try {
       const { exists, bookmarks, missing } = await getBookmarks();
-      cache = exists ? (bookmarks as BookmarkItem[]) : [];
+      cache = exists ? normalizeUrls(bookmarks as BookmarkItem[]) : [];
       missingIds = new Set(missing);
       hydrated = true;
     } catch (e) {
@@ -107,7 +121,10 @@ export function refreshBookmarks(): Promise<boolean> {
   return enqueue(async () => {
     try {
       const { bookmarks, missing } = await getBookmarks();
-      const next = bookmarks as BookmarkItem[];
+      // Same normalization as hydrate — the poll would otherwise resurrect
+      // legacy urls right after hydrate cleaned them (tree-changed compare is
+      // against the normalized cache).
+      const next = normalizeUrls(bookmarks as BookmarkItem[]);
       const nextMissing = new Set(missing);
       const treeChanged = JSON.stringify(next) !== JSON.stringify(cache);
       const missingChanged =
