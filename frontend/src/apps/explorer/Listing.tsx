@@ -229,6 +229,7 @@ export default function Listing({
     selectOnly,
     toggleSelected,
     extendTo,
+    clearSelection,
     pendingSelectRef,
   } = useListingSelection({
     fsPath,
@@ -441,6 +442,15 @@ export default function Listing({
     const rows = inSelection && selectedRows.length > 1 ? selectedRows : [row];
     if (!inSelection) selectOnly(row.path);
     setMenu({ x: e.clientX, y: e.clientY, items: rowMenu(row, rows) });
+  };
+
+  // Clicking the listing background (the empty area below/beside the rows)
+  // deselects, like Finder. Row clicks land on tr.row, header/sort clicks on
+  // th, and Load more on a button — none of those should clear.
+  const onBackgroundClick = (e: React.MouseEvent) => {
+    const t = e.target as HTMLElement;
+    if (t.closest("tr.row, th, button, input")) return;
+    if (sel.paths.length) clearSelection();
   };
 
   // Fires only for the listing background (rows stopPropagation above).
@@ -771,7 +781,8 @@ export default function Listing({
               "listing-scroll" +
               (isStale || showingHeld ? " listing-stale" : "")
             }
-            onContextMenu={openBackgroundMenu}
+            onClick={onBackgroundClick}
+          onContextMenu={openBackgroundMenu}
           >
             <table className="listing-table">
               <thead>

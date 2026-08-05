@@ -347,6 +347,7 @@ export function useListingSelection({
     selectOnly,
     toggleSelected,
     extendTo,
+    clearSelection,
     pendingSelectRef,
   };
 }
