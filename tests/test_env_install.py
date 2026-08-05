@@ -405,6 +405,95 @@ def test_the_interpreter_is_resolved_ONCE_per_process(
     assert len(calls) == 1, f"probed {len(calls)} times, not once: {calls}"
 
 
+def test_a_not_ready_verdict_is_never_CACHED(tmp_path, monkeypatch, _fresh_script_python):
+    """"Nothing here yet" is a fact about this instant, not about the machine.
+
+    The download that fixes it happens in another PROCESS, so nothing in here can
+    be notified when it lands. Caching the negative would leave this server
+    convinced there is no 3.12 for the rest of its life — the install would
+    complete and every later pre-flight would still route back to the bootstrap.
+    Positive verdicts are cached (they cost a spawn); negative ones are re-measured,
+    which is the same three-valued discipline the venv probe uses for the same
+    reason.
+    """
+    exe = _py312_stub(tmp_path)
+    _uv_stub(tmp_path, monkeypatch, finds=None)
+    monkeypatch.setattr(envinstall, "_running_version", lambda: (3, 14))
+    assert envinstall.script_python_ready() is False
+
+    # The download lands — a later `find` now answers — with nothing telling us.
+    _uv_stub(tmp_path, monkeypatch, finds=str(exe))
+    assert envinstall.script_python_ready() is True
+    assert envinstall.script_python() == str(exe)
+
+
+@requires_fused
+def test_no_312_yet_reports_NOT_installed_whatever_the_marker_says(
+    tmp_path, monkeypatch, _fresh_script_python
+):
+    """And it short-circuits ahead of the D212 validation machinery.
+
+    With no 3.12 there is no venv directory to name: the key folds in the base
+    interpreter, so any directory computed in this state belongs to a venv nobody
+    will build. Probing it, unlinking its marker, or spending the one-rebuild-per-
+    process budget on it would all be acting on a venv that does not exist — so this
+    answers False before any of that runs.
+    """
+    reqs = ["pip"]
+    venv_dir = _marked_venv(tmp_path, monkeypatch, reqs, runnable=True)
+    assert envinstall.is_installed(reqs) is True  # baseline: the marker is trusted
+
+    envinstall.reset_venv_validation_cache()
+    monkeypatch.setattr(envinstall, "script_python_ready", lambda: False)
+    probed = []
+    monkeypatch.setattr(envinstall, "_venv_is_usable",
+                        lambda d: probed.append(d) or True)
+    assert envinstall.is_installed(reqs) is False
+    assert not probed, "validated a venv that cannot even be named yet"
+    assert os.path.exists(os.path.join(venv_dir, envinstall.READY_MARKER)), (
+        "unlinked the marker of a venv the missing interpreter says nothing about"
+    )
+
+
+@requires_fused
+def test_an_empty_requirement_set_never_needs_an_interpreter(
+    monkeypatch, _fresh_script_python
+):
+    """No header means no venv, so the pin is irrelevant — and must not block."""
+    monkeypatch.setattr(envinstall, "script_python_ready", lambda: False)
+    assert envinstall.is_installed([]) is True
+
+
+@requires_fused
+def test_the_bootstrap_reports_under_its_OWN_key_not_a_venv_key(
+    tmp_path, monkeypatch, _fresh_script_python
+):
+    """The one place a venv key genuinely cannot be computed.
+
+    `progress.json` lives under the venv key, and the key folds in the base
+    interpreter — so while that interpreter is what is missing, there is no key to
+    report under. Deriving one from the 3.14 that happens to be running would name
+    the directory of a venv nobody will ever build, and the real install (once 3.12
+    lands) would report somewhere else entirely, leaving the page polling a file
+    that never changes again.
+    """
+    monkeypatch.setattr(envinstall, "script_python_ready", lambda: False)
+    spawned = []
+    monkeypatch.setattr(envinstall, "_spawn",
+                        lambda key, reqs, **kw: spawned.append((key, reqs, kw)) or 4242)
+
+    rec = envinstall.start(["pip"])
+    assert spawned, "no installer was started"
+    key, _, kw = spawned[0]
+    assert key == envinstall.PYTHON_BOOTSTRAP_KEY
+    assert key != envinstall.venv_key_for(["pip"])
+    assert envinstall.valid_key(key), "the bootstrap key must still be key-SHAPED"
+    assert kw.get("acquire_python") == envinstall.SCRIPT_PYTHON_VERSION
+    assert rec["stage"] == "spawn"
+    # And it is pollable under that key, which is what the page will do.
+    assert envinstall.progress(envinstall.PYTHON_BOOTSTRAP_KEY) is not None
+
+
 @requires_fused
 def test_the_venv_key_folds_in_the_RESOLVED_script_interpreter(
     tmp_path, monkeypatch, _fresh_script_python
@@ -1633,6 +1722,114 @@ def test_a_late_heartbeat_cannot_undo_the_terminal_record(tmp_path, monkeypatch)
     assert _record(d)["stage"] == "done"
 
 
+def test_the_python_stage_is_in_STAGES_and_before_create():
+    """Order is the contract the client renders against, not decoration.
+
+    The interpreter download happens BEFORE anything can be created, and
+    `runtime.js` reads position in `STAGES` to decide what is behind and what is
+    ahead. A `python` stage appended after `install` would render as progress going
+    backwards.
+    """
+    assert "python" in envinstall.STAGES
+    assert envinstall.STAGES.index("python") < envinstall.STAGES.index("create")
+    assert envinstall.STAGE_PCT["python"] < envinstall.STAGE_PCT["create"]
+    assert set(envinstall.STAGE_PCT) == set(envinstall.STAGES)
+
+
+def test_the_worker_acquires_the_interpreter_and_builds_NO_venv(tmp_path, monkeypatch):
+    """Bootstrap mode is one job, not a prelude to the other.
+
+    It cannot do both in one run: the venv it would go on to build belongs under a
+    key folding in the interpreter it has only just fetched, which is not the key it
+    was spawned under. Building anyway would fill a directory `is_installed` never
+    looks at, and the page would install, retry and be told to install again.
+    """
+    worker = _worker_module("_env_install_worker_py")
+    d = str(tmp_path / "prog")
+    ran = []
+    monkeypatch.setattr(worker, "_acquire_python", lambda v: ran.append(v))
+    monkeypatch.setattr(worker, "_build", lambda *a, **k: pytest.fail("built a venv"))
+
+    worker.install("k", d, str(tmp_path / "venvs"), ["tensorflow"],
+                   acquire_python="3.12")
+    assert ran == ["3.12"]
+    rec = _record(d)
+    assert rec["stage"] == "done" and rec["done"] is True
+    assert "3.12" in rec["detail"]
+
+
+def test_the_python_stage_reports_LIVENESS_not_an_invented_percentage(
+    tmp_path, monkeypatch
+):
+    """Same rule as the install stage (D213), and the same reason.
+
+    uv's download progress is not observable from here, so the only honest thing to
+    refresh is the elapsed time and `ts`. A bar creeping upward on made-up numbers is
+    worse than one that does not move — the number is what a waiting user trusts most.
+    """
+    worker = _worker_module("_env_install_worker_py2")
+    d = str(tmp_path / "prog")
+    seen = []
+    real_write = worker._write
+
+    def record_every(progress_dir, stage, pct, detail="", done=False, error=None):
+        seen.append((stage, pct, detail))
+        return real_write(progress_dir, stage, pct, detail, done, error)
+
+    monkeypatch.setattr(worker, "_write", record_every)
+    monkeypatch.setattr(worker, "_HEARTBEAT_S", 0.05)
+    monkeypatch.setattr(worker, "_acquire_python", lambda v: time.sleep(0.3))
+
+    worker.install("k", d, str(tmp_path / "venvs"), ["tensorflow"],
+                   acquire_python="3.12")
+
+    beats = [s for s in seen if s[0] == "python"]
+    assert len(beats) >= 2, f"the python stage never beat: {seen}"
+    assert len({pct for _, pct, _ in beats}) == 1, (
+        f"the python stage invented a percentage: {beats}"
+    )
+    assert any(_BEAT_RE.search(detail or "") for _, _, detail in beats), (
+        f"no elapsed time on any python beat: {beats}"
+    )
+
+
+def test_an_interpreter_download_that_FAILS_reports_the_reason(tmp_path, monkeypatch):
+    """Verbatim, like every other install error in this flow — a proxy refusing
+    uv's download is the actual answer the user needs, not "install failed"."""
+    worker = _worker_module("_env_install_worker_py3")
+    d = str(tmp_path / "prog")
+
+    def boom(version):
+        raise RuntimeError("Failed to download Python 3.12: 403 Forbidden")
+
+    monkeypatch.setattr(worker, "_acquire_python", boom)
+    with pytest.raises(RuntimeError):
+        worker.install("k", d, str(tmp_path / "venvs"), ["tensorflow"],
+                       acquire_python="3.12")
+    rec = _record(d)
+    assert rec["done"] is True and rec["stage"] == "error"
+    assert "403 Forbidden" in rec["error"]
+
+
+def test_the_worker_maps_an_EMPTY_acquire_slot_back_to_no_acquisition(tmp_path, monkeypatch):
+    """argv cannot carry None, so "" means "nothing to acquire" — the same idiom
+    slot 4 already uses for the interpreter, translated in `main` and nowhere else.
+    A slot read as the literal string "" would try to install a Python called
+    nothing."""
+    worker = _worker_module("_env_install_worker_py4")
+    seen = {}
+    monkeypatch.setattr(
+        worker, "install",
+        lambda *a, **kw: seen.update(args=a, kwargs=kw),
+    )
+    worker.main(["k", str(tmp_path), str(tmp_path / "venvs"), "", "", "pandas"])
+    assert seen["kwargs"]["acquire_python"] is None
+
+    seen.clear()
+    worker.main(["k", str(tmp_path), str(tmp_path / "venvs"), "", "3.12", "pandas"])
+    assert seen["kwargs"]["acquire_python"] == "3.12"
+
+
 def test_a_failed_terminal_write_does_not_latch_out_the_error_record(tmp_path, monkeypatch):
     """The latch closes on evidence the record landed, not on the attempt.
 
@@ -1749,9 +1946,9 @@ def test_the_worker_reads_an_empty_interpreter_argument_as_none(tmp_path, monkey
         ),
     )
     d = str(tmp_path / "prog")
-    worker.main(["k", d, str(tmp_path / "venvs"), "", "pip"])
+    worker.main(["k", d, str(tmp_path / "venvs"), "", "", "pip"])
     assert seen == [None]
-    worker.main(["k", d, str(tmp_path / "venvs"), "/usr/bin/python3", "pip"])
+    worker.main(["k", d, str(tmp_path / "venvs"), "/usr/bin/python3", "", "pip"])
     assert seen == [None, "/usr/bin/python3"]
 
 
@@ -1767,7 +1964,8 @@ def test_starting_twice_does_not_spawn_a_second_worker(tmp_path, monkeypatch):
     # Our own pid, because it is provably alive: a made-up one would be reaped by
     # the liveness check in `progress()` and the second start would legitimately
     # re-spawn, which would pass this test for the wrong reason.
-    monkeypatch.setattr(envinstall, "_spawn", lambda *a: spawned.append(a) or os.getpid())
+    monkeypatch.setattr(envinstall, "_spawn",
+                        lambda *a, **kw: spawned.append(a) or os.getpid())
     reqs = ["pip"]
     envinstall.start(reqs)
     envinstall.start(reqs)
@@ -1791,7 +1989,7 @@ def test_concurrent_starts_spawn_exactly_one_worker(tmp_path, monkeypatch):
     spawned = []
     lock = threading.Lock()
 
-    def fake_spawn(key, reqs):
+    def fake_spawn(key, reqs, **kw):
         with lock:
             spawned.append(key)
         return os.getpid()  # provably alive, so `_in_flight` stays true
@@ -1830,7 +2028,7 @@ def test_a_stale_claim_from_a_dead_installer_is_taken_over(tmp_path, monkeypatch
     key = envinstall.venv_key_for(reqs)
     spawned = []
     monkeypatch.setattr(
-        envinstall, "_spawn", lambda k, r: spawned.append(k) or (2 ** 31 - 1)
+        envinstall, "_spawn", lambda k, r, **kw: spawned.append(k) or (2 ** 31 - 1)
     )
     envinstall.start(reqs)
     assert len(spawned) == 1
@@ -1968,7 +2166,7 @@ def test_the_spawn_record_never_overwrites_a_record_the_worker_already_wrote(
         "pid": 2 ** 31 - 1, "ts": time.time(),
     }
 
-    def _spawn_then_report(k, r):
+    def _spawn_then_report(k, r, **kw):
         envinstall._write(k, worker_record)
         return 2 ** 31 - 1
 
@@ -1995,7 +2193,7 @@ def test_a_retry_does_not_inherit_the_previous_attempt_s_record(tmp_path, monkey
     monkeypatch.setattr(envinstall, "venvs_path", lambda: str(tmp_path / "venvs"))
     reqs = ["pip"]
     key = envinstall.venv_key_for(reqs)
-    monkeypatch.setattr(envinstall, "_spawn", lambda k, r: 2 ** 31 - 1)
+    monkeypatch.setattr(envinstall, "_spawn", lambda k, r, **kw: 2 ** 31 - 1)
     envinstall.start(reqs)
     assert envinstall.progress(key)["error"], "the first attempt reads as crashed"
 
@@ -2004,7 +2202,8 @@ def test_a_retry_does_not_inherit_the_previous_attempt_s_record(tmp_path, monkey
     old = time.time() - envinstall._CLAIM_GRACE_S - 60
     os.utime(claim, (old, old))
     live = []
-    monkeypatch.setattr(envinstall, "_spawn", lambda k, r: live.append(k) or os.getpid())
+    monkeypatch.setattr(envinstall, "_spawn",
+                        lambda k, r, **kw: live.append(k) or os.getpid())
     record = envinstall.start(reqs)
     assert live == [key], "the retry must spawn"
     assert record["error"] is None, record
@@ -2024,7 +2223,7 @@ def test_start_is_a_no_op_once_the_venv_is_installed(tmp_path, monkeypatch):
     with open(os.path.join(venv_dir, ".openfused-ready"), "w") as f:
         f.write("{}")
     spawned = []
-    monkeypatch.setattr(envinstall, "_spawn", lambda *a: spawned.append(a) or 1)
+    monkeypatch.setattr(envinstall, "_spawn", lambda *a, **kw: spawned.append(a) or 1)
     envinstall.start(reqs)
     assert spawned == []
 
@@ -2036,9 +2235,10 @@ def test_progress_stages_are_the_ones_we_can_actually_observe():
     """`venvs._run_step` uses capture_output=True, so pip's per-package output
     is unavailable without changing `fused`. The stage list is therefore coarse
     ON PURPOSE, and named here so a future "62%" that implies per-package
-    resolution has to argue with a test first.
+    resolution has to argue with a test first. `python` (D214) is coarse for the
+    same reason: our own `uv python install` captures its output too.
     """
-    assert envinstall.STAGES == ("spawn", "create", "install", "done")
+    assert envinstall.STAGES == ("spawn", "python", "create", "install", "done")
 
 
 def _wait_done(key, timeout):

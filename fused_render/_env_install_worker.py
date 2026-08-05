@@ -1,7 +1,7 @@
 """Detached worker that builds one script venv, spawned by envinstall.start().
 
 Run as:  python _env_install_worker.py <key> <progress_dir> <venvs_path>
-                                      <python_executable> <req>...
+                                      <python_executable> <acquire_python> <req>...
 
 `<python_executable>` is the base interpreter the venv is built from, and it must
 be the value `envinstall._python_executable()` returned — `python_identity` folds
@@ -9,6 +9,13 @@ it into the venv key, so a different one here builds a venv the server never
 looks for and `is_installed()` never turns true. argv cannot carry None, so the
 EMPTY STRING stands for "the backend's default"; `main` is the one place that
 mapping happens.
+
+`<acquire_python>` (same empty-string idiom) switches this worker to its OTHER job:
+DOWNLOAD that Python version, report it, and stop without building anything (D214).
+The two cannot be one run — the venv would belong under a key folding in the
+interpreter just fetched, which is not the key this worker was spawned under — so
+the interpreter is installed under `envinstall.PYTHON_BOOTSTRAP_KEY` and the
+packages follow in a second run under the real venv key.
 
 Reports through `<progress_dir>/progress.json` — the same
 `{stage, pct, detail, done, error, pid, ts}` record
@@ -36,6 +43,8 @@ on, so what it can import is what the server could.
 """
 import json
 import os
+import shutil
+import subprocess
 import sys
 import threading
 import time
@@ -45,6 +54,7 @@ import time
 # importable-free of the package (it is spawned as a plain script, and
 # `import fused_render` in a detached child is exactly the bootstrap that broke
 # once already — see D152).
+_PYTHON_PCT = 5
 _CREATE_PCT = 10
 _INSTALL_PCT = 25
 
@@ -87,6 +97,38 @@ def _elapsed(seconds):
     return "%dm%02ds" % (minutes, secs) if minutes else "%ds" % secs
 
 
+def _acquire_python(version):
+    """Download a uv-managed CPython `version`. Raises with uv's own stderr.
+
+    `shutil.which`, because `envinstall._worker_env()` has already put the bundled
+    uv on this process's PATH — the same route `fused`'s own builder finds it by, so
+    there is one answer to "which uv" rather than two.
+
+    No uv means no download is possible, and saying so beats a `FileNotFoundError`
+    from the spawn: on a machine with no uv the server would not have asked for this
+    interpreter in the first place (`envinstall._resolve_script_python` degrades to
+    the running one), so reaching here without uv means something moved underneath
+    us and the message should say which thing.
+    """
+    uv = shutil.which("uv")
+    if uv is None:
+        raise RuntimeError(
+            "cannot download Python %s: no uv on PATH. Install uv "
+            "(https://docs.astral.sh/uv/), or start the server on Python %s."
+            % (version, version)
+        )
+    proc = subprocess.run([uv, "python", "install", version],
+                          capture_output=True, text=True)
+    if proc.returncode != 0:
+        # Verbatim, exactly like the requirements install below: uv's own text names
+        # the real problem (an offline machine, a proxy refusing the download, no
+        # build for this platform), and that is the answer the user needs.
+        raise RuntimeError(
+            "Failed to download Python %s:\n%s"
+            % (version, (proc.stderr or proc.stdout).strip())
+        )
+
+
 def _build(venvs_path, requirements, python_executable):
     """Upstream's builder, in one place (and imported at call time, not at module
     import, so a missing `fused` surfaces as a progress error rather than an
@@ -96,7 +138,8 @@ def _build(venvs_path, requirements, python_executable):
     return ensure_requirements_venv(venvs_path, list(requirements), python_executable)
 
 
-def install(key, progress_dir, venvs_path, requirements, python_executable=None):
+def install(key, progress_dir, venvs_path, requirements, python_executable=None,
+            acquire_python=None):
     os.makedirs(progress_dir, exist_ok=True)
     summary = ", ".join(requirements)
 
@@ -129,24 +172,24 @@ def install(key, progress_dir, venvs_path, requirements, python_executable=None)
             if done:
                 finished.append(True)
 
-    try:
-        # `create` and `install` are reported as one call because that is the
-        # truth: ensure_requirements_venv does both behind capture_output=True,
-        # so the transition between them is not observable from out here. The
-        # two stages exist so the UI can say "preparing" before the long wait,
-        # not to imply progress inside it.
-        write("create", _CREATE_PCT, f"preparing an environment for {summary}")
-        detail = f"downloading and installing {len(requirements)} package(s): {summary}"
-        write("install", _INSTALL_PCT, detail)
+    def with_heartbeat(stage, pct, detail, work):
+        """Run `work()` while `stage` beats liveness onto the wire; returns its result.
 
-        # The heartbeat. `pct` STAYS at _INSTALL_PCT for the whole download, and the
-        # stage stays `install`: there is no computable percentage in here, since
-        # upstream captures uv's output, and a bar creeping upward on invented
-        # numbers is worse than an honest one that does not move — the number is the
-        # thing a waiting user trusts most. What it refreshes is the elapsed time and
-        # `ts`, which is the only evidence of liveness that reaches the wire. The
-        # client renders the stage as an indeterminate bar (runtime.js), so "alive
-        # but unquantified" is expressible without lying.
+        `pct` STAYS put for the whole step and the stage never changes: neither long
+        step in here has a computable percentage — upstream captures uv's output for
+        the packages, and `_acquire_python` captures it for the interpreter — and a
+        bar creeping upward on invented numbers is worse than an honest one that does
+        not move, because the number is the thing a waiting user trusts most. What
+        the beat refreshes is the elapsed time and `ts`, which is the only evidence
+        of liveness that reaches the wire. The client renders these stages as
+        indeterminate bars (runtime.js), so "alive but unquantified" is expressible
+        without lying.
+
+        One helper for both steps rather than two copies of the thread: the beat's
+        correctness is subtle (the daemon flag, the `finally`, the interaction with
+        the latch above), and two copies of subtle is two things to keep right.
+        """
+        write(stage, pct, detail)
         stop = threading.Event()
         started = time.time()
 
@@ -156,8 +199,7 @@ def install(key, progress_dir, venvs_path, requirements, python_executable=None)
             # beat that fires during teardown is exactly what the latch above exists
             # to absorb.
             while not stop.wait(_HEARTBEAT_S):
-                write("install", _INSTALL_PCT,
-                      "%s (%s)" % (detail, _elapsed(time.time() - started)))
+                write(stage, pct, "%s (%s)" % (detail, _elapsed(time.time() - started)))
 
         # Daemon: a heartbeat wedged in a write must never keep this process alive
         # after its record says done, or `_pid_alive` reads the installer as still
@@ -166,16 +208,45 @@ def install(key, progress_dir, venvs_path, requirements, python_executable=None)
                                 daemon=True)
         beat.start()
         try:
-            # `python_executable` is the server's own `_python_executable()`, handed
-            # over rather than re-decided: the venv key folds it in, so a value that
-            # differs from the server's builds a directory no run ever reads.
-            venv_python = _build(venvs_path, requirements, python_executable)
+            return work()
         finally:
             # In a `finally`, so the failure path stops the beat too — and it runs as
             # the exception propagates, i.e. BEFORE the `except` below writes the
             # error record. Both terminal writes are therefore behind the join.
             stop.set()
             beat.join(_HEARTBEAT_JOIN_S)
+
+    try:
+        if acquire_python:
+            # Interpreter-only run (D214), and it deliberately stops here rather than
+            # going on to build the venv: the venv belongs under a key that folds in
+            # the interpreter just fetched, which is NOT the key this worker was
+            # spawned under (`envinstall.PYTHON_BOOTSTRAP_KEY`). Building anyway would
+            # fill a directory `is_installed` never looks at, and the page would
+            # install, retry, and be told to install again. The server re-resolves
+            # once this lands and starts the real install under the real key.
+            with_heartbeat(
+                "python", _PYTHON_PCT,
+                "downloading Python %s (needed by %s)" % (acquire_python, summary),
+                lambda: _acquire_python(acquire_python),
+            )
+            write("done", 100, "downloaded Python %s" % acquire_python, done=True)
+            return
+
+        # `create` and `install` are reported as one call because that is the
+        # truth: ensure_requirements_venv does both behind capture_output=True,
+        # so the transition between them is not observable from out here. The
+        # two stages exist so the UI can say "preparing" before the long wait,
+        # not to imply progress inside it.
+        write("create", _CREATE_PCT, f"preparing an environment for {summary}")
+        # `python_executable` is the server's own `_python_executable()`, handed
+        # over rather than re-decided: the venv key folds it in, so a value that
+        # differs from the server's builds a directory no run ever reads.
+        venv_python = with_heartbeat(
+            "install", _INSTALL_PCT,
+            f"downloading and installing {len(requirements)} package(s): {summary}",
+            lambda: _build(venvs_path, requirements, python_executable),
+        )
         write("done", 100, f"installed into {os.path.dirname(os.path.dirname(venv_python))}",
               done=True)
     except BaseException as e:  # noqa: BLE001
@@ -188,16 +259,19 @@ def install(key, progress_dir, venvs_path, requirements, python_executable=None)
 
 
 def main(args):
-    """`<key> <progress_dir> <venvs_path> <python_executable> <req>...`
+    """`<key> <progress_dir> <venvs_path> <python_executable> <acquire_python> <req>...`
 
-    The empty string in the interpreter slot means None (argv cannot carry it):
-    translated here and nowhere else, so `install` receives the real value.
+    The empty string means None in BOTH optional slots (argv cannot carry it):
+    translated here and nowhere else, so `install` receives the real values. Read as
+    the literal `""` instead, slot 5 would have this worker try to download a Python
+    version called nothing on every ordinary install.
     """
-    if len(args) < 5:
+    if len(args) < 6:
         print(__doc__, file=sys.stderr)
         sys.exit(2)
-    key, progress_dir, venvs_path, python_executable = args[:4]
-    install(key, progress_dir, venvs_path, args[4:], python_executable or None)
+    key, progress_dir, venvs_path, python_executable, acquire_python = args[:5]
+    install(key, progress_dir, venvs_path, args[5:], python_executable or None,
+            acquire_python=acquire_python or None)
 
 
 if __name__ == "__main__":

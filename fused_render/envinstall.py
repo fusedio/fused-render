@@ -45,6 +45,7 @@ deliberately not built.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -73,12 +74,14 @@ READY_MARKER = ".openfused-ready"
 # Every stage the worker can report, in order. Coarse on purpose: see the module
 # docstring. `spawn` is written by start() so the first poll after the click has
 # something to show even before the worker's first write lands.
-STAGES = ("spawn", "create", "install", "done")
+STAGES = ("spawn", "python", "create", "install", "done")
 
-# Percent per stage. Four numbers, not a continuous bar: they mark which step is
-# running, and the gap between `install` and `done` is honestly unmeasurable
-# here — a download whose length we cannot see.
-STAGE_PCT = {"spawn": 0, "create": 10, "install": 25, "done": 100}
+# Percent per stage. Numbers that mark which step is running, NOT a continuous bar:
+# the gaps after `python` and after `install` are both honestly unmeasurable here —
+# downloads whose length we cannot see. `python` sits before `create` because the
+# interpreter has to exist before anything can be built from it, and `runtime.js`
+# reads position in STAGES to decide what is behind and what is ahead.
+STAGE_PCT = {"spawn": 0, "python": 5, "create": 10, "install": 25, "done": 100}
 
 # The Python version every script venv is built on (D214).
 #
@@ -123,6 +126,23 @@ _SCRIPT_PYTHON_TIMEOUT_S = 5
 _UNRESOLVED = object()
 _script_python: object = _UNRESOLVED
 _script_python_lock = threading.Lock()
+
+# The progress key the interpreter download reports under (D214).
+#
+# A fixed, key-SHAPED constant rather than a venv key, because this is the one
+# state where a venv key genuinely cannot be computed: `progress.json` lives under
+# the key, the key folds in the base interpreter, and the base interpreter is
+# exactly what is missing. Deriving one from whatever interpreter happens to be
+# running would name the directory of a venv nobody will ever build — and the real
+# install, once 3.12 lands, would report somewhere else entirely, leaving the page
+# polling a file that never changes again.
+#
+# Key-shaped so `valid_key`, `progress_dir`, `progress()` and `cancel()` all work on
+# it unchanged: the interpreter download is a different THING to install, not a
+# different mechanism for reporting one.
+PYTHON_BOOTSTRAP_KEY = hashlib.sha256(
+    b"fused-render:script-python-bootstrap"
+).hexdigest()[:16]
 
 # How long a claim with no progress record yet is assumed to belong to a caller
 # still inside `Popen` (see _claim_is_stale). Normally microseconds; this only has
@@ -351,22 +371,35 @@ def _resolve_script_python() -> tuple[str | None, bool]:
 
 
 def _script_python_resolution() -> tuple[str | None, bool]:
-    """The cached resolution, computed at most once per process.
+    """The resolution, measured at most once per process — **while it succeeds**.
 
-    Costs up to two spawns, and `is_installed` consults it on every /api/run
-    pre-flight — so, exactly as with the venv probe, it is measured once. The fast
-    path reads the cache unlocked, which is safe because the cache only ever goes
-    `_UNRESOLVED -> final`; the lock stops two concurrent pre-flights both paying
-    for the resolve (same shape, and the same reasoning, as
-    `engine._app_interpreter_lock`).
+    A READY answer is cached: it costs up to two spawns and `is_installed` consults
+    it on every /api/run pre-flight, so it is measured once, exactly as the venv
+    probe is. The fast path reads the cache unlocked, which is safe because a cached
+    entry never changes; the lock stops two concurrent pre-flights both paying for
+    the resolve (same shape, same reasoning, as `engine._app_interpreter_lock`).
+
+    A NOT-READY answer is deliberately **not** cached, and that asymmetry is the
+    whole mechanism by which the interpreter download takes effect. The download
+    runs in a detached worker — a different PROCESS — so nothing in here can be
+    notified when it lands. Remembering "there is no 3.12" would leave this server
+    convinced of it for the rest of its life: the download would finish, and every
+    later pre-flight would still route back to the bootstrap instead of installing
+    the packages. Re-measuring costs two spawns per pre-flight, but only while the
+    machine genuinely has no 3.12, which is a transient state by construction.
+    (Same rule as the three-valued venv probe: an answer that says "I found nothing"
+    is not evidence to memoize.)
     """
     global _script_python
     if _script_python is not _UNRESOLVED:
         return _script_python  # type: ignore[return-value]
     with _script_python_lock:
-        if _script_python is _UNRESOLVED:
-            _script_python = _resolve_script_python()
-        return _script_python  # type: ignore[return-value]
+        if _script_python is not _UNRESOLVED:
+            return _script_python  # type: ignore[return-value]
+        resolution = _resolve_script_python()
+        if resolution[1]:
+            _script_python = resolution
+        return resolution
 
 
 def script_python() -> str | None:
@@ -649,6 +682,15 @@ def is_installed(requirements: list[str]) -> bool:
     """
     if not requirements:
         return True  # nothing to install; the bare/interpreter paths handle it
+    if not script_python_ready():
+        # No 3.12 on this machine yet (D214), so there is no venv DIRECTORY to name:
+        # the key folds in the base interpreter, and any directory computed in this
+        # state belongs to a venv nobody will build. Answered here, ahead of
+        # everything below, because every one of those steps would be acting on a
+        # venv that does not exist — probing its interpreter, unlinking its marker,
+        # or spending the one-rebuild-per-process budget (D212) on it. The install
+        # this False triggers acquires the interpreter first; see `start`.
+        return False
     venv_dir = venv_dir_for(requirements)
     marker = os.path.join(venv_dir, READY_MARKER)
     stamp = _marker_stamp(marker)
@@ -1243,7 +1285,7 @@ def _worker_env() -> dict:
     return env
 
 
-def _spawn(key: str, requirements: list[str]) -> int:
+def _spawn(key: str, requirements: list[str], acquire_python: str | None = None) -> int:
     """Launch the detached worker; returns its pid.
 
     Detached (`start_new_session` / DETACHED_PROCESS) so the build outlives the
@@ -1257,6 +1299,13 @@ def _spawn(key: str, requirements: list[str]) -> int:
     one set would build a venv `is_installed()` never finds — the page would
     install, retry, be told to install again, forever. argv cannot carry None, so
     the empty string stands for it; `_env_install_worker.main` maps it back.
+
+    `acquire_python` (slot 5, same empty-string-means-nothing idiom) asks the worker
+    to DOWNLOAD that Python version and stop, rather than build a venv (D214). It
+    cannot do both in one run: the venv it would build belongs under a key that folds
+    in the interpreter it has only just fetched, which is not the key this worker was
+    spawned under. So the interpreter is one job, reported under
+    `PYTHON_BOOTSTRAP_KEY`, and the packages are the next.
     """
     worker = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_env_install_worker.py")
     d = progress_dir(key)
@@ -1268,7 +1317,7 @@ def _spawn(key: str, requirements: list[str]) -> int:
     with open(os.path.join(d, "worker.log"), "ab") as logf:
         child = subprocess.Popen(
             [sys.executable, worker, key, d, venvs_path(),
-             _python_executable() or "", *requirements],
+             _python_executable() or "", acquire_python or "", *requirements],
             stdout=logf, stderr=logf, stdin=subprocess.DEVNULL,
             env=_worker_env(), **detach,
         )
@@ -1286,8 +1335,16 @@ def start(requirements: list[str]) -> dict:
     install already running is joined rather than duplicated. Two workers
     building one venv directory is the race `fused`'s in-process lock cannot
     cover — the loser dies on a half-built `<venv>/bin/python`.
+
+    When this machine has no pinned Python yet (D214) the FIRST thing installed is
+    that interpreter, under `PYTHON_BOOTSTRAP_KEY` — every step below is written
+    against a key rather than against a venv, so the claim, the join, the spawn
+    record and the polling all apply unchanged. The client then re-runs, the
+    interpreter resolves, and this function is called again for the packages
+    themselves. Two visible rounds, because they are two downloads.
     """
-    key = venv_key_for(requirements)
+    acquire_python = None if script_python_ready() else SCRIPT_PYTHON_VERSION
+    key = PYTHON_BOOTSTRAP_KEY if acquire_python else venv_key_for(requirements)
     if is_installed(requirements):
         record = {"stage": "done", "pct": 100, "detail": "already installed",
                   "done": True, "error": None, "pid": os.getpid(), "ts": time.time()}
@@ -1325,7 +1382,7 @@ def start(requirements: list[str]) -> dict:
         os.unlink(_progress_path(key))
     except OSError:
         pass
-    pid = _spawn(key, list(requirements))
+    pid = _spawn(key, list(requirements), acquire_python=acquire_python)
     # Written by the PARENT, before the worker's first write lands, so the very
     # first poll after the click shows "starting" instead of "never started" —
     # and so `_in_flight` is true immediately, closing the double-click window.
