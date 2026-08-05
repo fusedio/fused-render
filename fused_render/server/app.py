@@ -47,6 +47,7 @@ from fused_render.server.fs_mutate import router as fs_mutate_router
 from fused_render.server.routers.fs_read import router as fs_read_router
 from fused_render.server.routers.render import router as render_router
 from fused_render.server.routers.run import router as run_router
+from fused_render.server.routers.search import router as search_router
 from fused_render.server.session import router as session_router
 from fused_render.server.routers.shell import router as shell_router
 # The MODULE, not `from … import TEMPLATES_DIR`: that constant is a live seam
@@ -320,6 +321,7 @@ def create_app(start_dir: str) -> FastAPI:
     # (_server_ai.py), and /api/export (_server_export.py).
     app.include_router(session_router)
     app.include_router(fs_read_router)
+    app.include_router(search_router)
     app.include_router(fs_mutate_router)
     app.include_router(render_router)
     app.include_router(run_router)

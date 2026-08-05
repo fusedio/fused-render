@@ -1,17 +1,19 @@
 // AI-assisted file search (pattern "query understanding"): one haiku call
 // through /api/ai translates a natural-language query into a strict, tiny
-// filter spec; the spec then runs against the SAME bounded /api/fs/walk the
-// listing search uses, ranked client-side with the shared fuzzy matcher. The
-// model never sees the filesystem and never returns anything executable —
-// its output is data, validated field by field, and a garbage reply degrades
-// to a plain fuzzy search on the user's own words.
-import { aiComplete, walkDirStream, type WalkEntry } from "@platform/lib/api";
+// filter spec; the spec then runs SYSTEM-WIDE through /api/search/files
+// (Spotlight on macOS, a bounded home walk elsewhere), and the hits are
+// ranked client-side with the shared fuzzy matcher. The model never sees the
+// filesystem and never returns anything executable — its output is data,
+// validated field by field on BOTH sides of the wire (here at the parse
+// boundary, and again in the server's _parse_spec), and a garbage reply
+// degrades to a plain term search on the user's own words.
+import { aiComplete, searchFiles, type SearchFileEntry } from "@platform/lib/api";
 import { fuzzyMatch } from "@platform/lib/fuzzy";
 
 export interface AiSearchSpec {
-  // Substrings/terms to fuzzy-match against the entry's relative path. Empty
-  // means "no name constraint" (a pure date/type query like "files from
-  // today"), in which case results order by recency instead of match score.
+  // Terms to match against file names — only words likely to appear IN the
+  // name. Concept words ("video", "spreadsheet") belong in extensions, not
+  // here; the system prompt is explicit about the split.
   name_terms: string[];
   // Bare extensions (no dot), lowercase. Empty = any. Only files are ever
   // extension-filtered; a dir hit passes regardless.
@@ -20,23 +22,21 @@ export interface AiSearchSpec {
   modified_within_days: number | null;
   min_size_bytes: number | null;
   max_size_bytes: number | null;
-  // Directory-name hints ("in my photos folder") — soft boosts, never hard
-  // filters, because the model is guessing at folder names it cannot see.
+  // Directory-name hints ("in my photos folder", "downloaded" → downloads) —
+  // soft ranking boosts, never hard filters, because the model is guessing
+  // at folder names it cannot see.
   path_hints: string[];
 }
 
-export interface AiSearchHit {
-  rel: string;
-  is_dir: boolean;
-  size: number | null;
-  mtime: number | null;
+export interface AiSearchHit extends SearchFileEntry {
   score: number;
 }
 
 export interface AiSearchResult {
   hits: AiSearchHit[];
-  truncated: boolean; // the walk hit its server-side entry cap
-  usedFallback: boolean; // the model reply was unusable; plain fuzzy ran
+  truncated: boolean; // the engine hit its result cap
+  usedFallback: boolean; // the model reply was unusable; plain term search ran
+  engine: string; // "spotlight" | "walk" — the server says which ran
   spec: AiSearchSpec;
 }
 
@@ -46,22 +46,35 @@ const MAX_HITS = 60;
 // resolve without the model guessing the current date.
 export function aiSearchSystemPrompt(): string {
   return (
-    "You translate a natural-language file-search query into a JSON filter. " +
+    "You translate a natural-language file-search query into a JSON filter " +
+    "for a whole-computer file search. " +
     `Today's date is ${new Date().toISOString().slice(0, 10)}. ` +
     "Reply with ONLY a JSON object — no prose, no code fences — with exactly these keys:\n" +
-    '{"name_terms": [strings to match in file names/paths],\n' +
+    '{"name_terms": [words likely to appear IN the file\'s name],\n' +
     ' "extensions": [bare lowercase extensions like "csv", empty if any],\n' +
     ' "kind": "file" | "dir" | "any",\n' +
     ' "modified_within_days": number or null,\n' +
     ' "min_size_bytes": number or null,\n' +
     ' "max_size_bytes": number or null,\n' +
     ' "path_hints": [folder-name words the query implies, empty if none]}\n' +
-    "Guidelines: keep name_terms to the distinctive content words of the query " +
-    "(never filler like 'file', 'show', 'find', 'my'); map format words to " +
-    "extensions (spreadsheet→csv,xlsx; photo/screenshot→png,jpg,jpeg; " +
-    "notebook→ipynb; doc→md,pdf,docx); 'big'/'large'→min_size_bytes 10000000; " +
-    "'folder'/'directory'→kind dir. When the query is only a name, everything " +
-    "except name_terms stays at its empty/null default."
+    "Guidelines:\n" +
+    "- name_terms is ONLY for words plausibly in the filename itself " +
+    "(a project name, a topic, 'resume'). NEVER put file-type or media-type " +
+    "words there — a video file is rarely named 'video'. Filler ('file', " +
+    "'show', 'find', 'my', 'downloaded') never goes in name_terms.\n" +
+    "- Map type words to extensions: video→mov,mp4,m4v,webm,avi,mkv; " +
+    "photo/image/screenshot→png,jpg,jpeg,heic,gif; audio/song→mp3,m4a,wav,flac; " +
+    "spreadsheet→csv,xlsx; notebook→ipynb; doc/document→pdf,docx,md,txt; " +
+    "presentation→pptx,key.\n" +
+    "- Dates: today→modified_within_days 1; yesterday→2; this week / last " +
+    "few days→7; last week→14; this month→31; recently→7.\n" +
+    "- Sizes: big/large→min_size_bytes 10000000; huge→100000000; " +
+    "small/tiny→max_size_bytes 100000.\n" +
+    "- 'folder'/'directory'→kind \"dir\".\n" +
+    "- Location words go to path_hints: downloaded/downloads→downloads; " +
+    "desktop→desktop; documents→documents; photos/pictures→pictures.\n" +
+    "- When the query is only a name, everything except name_terms stays at " +
+    "its empty/null default."
   );
 }
 
@@ -136,65 +149,72 @@ function fmtBytes(n: number): string {
   return `${n}B`;
 }
 
-// Hard filters first (cheap, prune early), then fuzzy score. With name_terms
-// present at least ONE term must match — requiring all would punish the
-// model's habit of listing synonyms ("resume", "cv") as separate terms.
-export function scoreEntry(e: WalkEntry, spec: AiSearchSpec, nowS: number): number | null {
-  if (spec.kind === "file" && e.is_dir) return null;
-  if (spec.kind === "dir" && !e.is_dir) return null;
-  if (!e.is_dir && spec.extensions.length) {
-    const dot = e.rel.lastIndexOf(".");
-    const ext = dot === -1 ? "" : e.rel.slice(dot + 1).toLowerCase();
-    if (!spec.extensions.includes(ext)) return null;
-  }
-  if (spec.modified_within_days !== null) {
-    if (e.mtime === null || e.mtime < nowS - spec.modified_within_days * 86400) return null;
-  }
-  if (!e.is_dir && spec.min_size_bytes !== null && (e.size ?? 0) < spec.min_size_bytes)
-    return null;
-  if (!e.is_dir && spec.max_size_bytes !== null && (e.size ?? 0) > spec.max_size_bytes)
-    return null;
-  let score = 0;
-  if (spec.name_terms.length) {
-    let matched = 0;
-    for (const term of spec.name_terms) {
-      const m = fuzzyMatch(term, e.rel);
-      // A subsequence match with no real run is noise ("csv" matching
-      // scattered letters of a long path); demand some substance.
-      if (m && (m.longestRun >= Math.min(3, term.length) || term.length <= 2)) {
-        matched++;
-        score += m.score;
-      }
-    }
-    if (matched === 0) return null;
-  }
-  const dirPart = e.rel.slice(0, e.rel.lastIndexOf("/") + 1).toLowerCase();
-  for (const hint of spec.path_hints) {
-    if (dirPart.includes(hint.toLowerCase())) score += 10;
-  }
-  return score;
+// Whether the spec constrains anything besides name terms. When it does,
+// name terms turn SOFT (boost-only): "video downloaded today" already pins
+// extension+date, and a hard name filter would reject IMG_1234.mov for not
+// containing "video".
+export function hasNonNameFilters(spec: AiSearchSpec): boolean {
+  return (
+    spec.extensions.length > 0 ||
+    spec.modified_within_days !== null ||
+    spec.min_size_bytes !== null ||
+    spec.max_size_bytes !== null
+  );
 }
 
-export function rankEntries(
-  entries: WalkEntry[],
+// Rank the engine's hits: fuzzy name-term score + path-hint boost, recency
+// tie-break (and the whole order when the spec has no name terms). The
+// engine already applied the HARD filters (ext/kind/date/size); name terms
+// are re-scored here because Spotlight matched them with a dumb *term* glob
+// and can't rank, and the walk fallback didn't match them at all.
+export function rankHits(
+  entries: SearchFileEntry[],
   spec: AiSearchSpec,
-  nowS: number = Date.now() / 1000,
+  home: string,
 ): AiSearchHit[] {
+  const soft = hasNonNameFilters(spec);
   const hits: AiSearchHit[] = [];
   for (const e of entries) {
-    const score = scoreEntry(e, spec, nowS);
-    if (score !== null) hits.push({ ...e, score });
+    // Score against the home-relative path — rooting at "/" would let
+    // /Users/<name> segments match name terms.
+    const rel = e.path.startsWith(home + "/") ? e.path.slice(home.length + 1) : e.path;
+    let score = 0;
+    if (spec.name_terms.length) {
+      let matched = 0;
+      for (const term of spec.name_terms) {
+        const m = fuzzyMatch(term, rel);
+        // A subsequence match with no real run is noise ("csv" matching
+        // scattered letters of a long path); demand some substance.
+        if (m && (m.longestRun >= Math.min(3, term.length) || term.length <= 2)) {
+          matched++;
+          score += m.score;
+        }
+      }
+      if (matched === 0 && !soft) continue;
+    }
+    const dirPart = rel.slice(0, rel.lastIndexOf("/") + 1).toLowerCase();
+    for (const hint of spec.path_hints) {
+      if (dirPart.includes(hint.toLowerCase())) score += 10;
+    }
+    hits.push({ ...e, score });
   }
-  // Tie-break (and the whole order for term-less specs) is recency.
   hits.sort((a, b) => b.score - a.score || (b.mtime ?? 0) - (a.mtime ?? 0));
   return hits.slice(0, MAX_HITS);
 }
 
-// The full pipeline: model → spec → bounded walk → rank. The walk streams,
-// but ranking waits for the end — a homepage search is one-shot, not
-// search-as-you-type, so there is no partial-paint pressure here.
+// The engine treats name terms as a hard glob, so a spec that ALSO carries
+// real filters retries without the terms when the first pass comes up empty
+// — same rationale as the soft-term ranking above.
+async function queryEngine(spec: AiSearchSpec, signal?: AbortSignal) {
+  const first = await searchFiles(spec, signal);
+  if (first.entries.length || !spec.name_terms.length || !hasNonNameFilters(spec))
+    return first;
+  return searchFiles({ ...spec, name_terms: [] }, signal);
+}
+
+// The full pipeline: model → spec → system-wide engine → rank.
 export async function runAiSearch(
-  root: string,
+  home: string,
   query: string,
   signal?: AbortSignal,
 ): Promise<AiSearchResult> {
@@ -207,10 +227,12 @@ export async function runAiSearch(
   const usedFallback = spec === null;
   if (spec === null) spec = fallbackSpec(query);
   if (signal?.aborted) throw new DOMException("aborted", "AbortError");
-  const entries: WalkEntry[] = [];
-  const end = await walkDirStream(root, {
-    signal,
-    onBatch: (batch) => entries.push(...batch),
-  });
-  return { hits: rankEntries(entries, spec), truncated: end.truncated, usedFallback, spec };
+  const res = await queryEngine(spec, signal);
+  return {
+    hits: rankHits(res.entries, spec, home),
+    truncated: res.truncated,
+    usedFallback,
+    engine: res.engine,
+    spec,
+  };
 }

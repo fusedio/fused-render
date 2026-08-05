@@ -1,16 +1,17 @@
 import { describe, expect, it } from "bun:test";
 import {
   fallbackSpec,
+  hasNonNameFilters,
   parseAiSearchSpec,
-  rankEntries,
-  scoreEntry,
+  rankHits,
 } from "./ai-search";
-import type { WalkEntry } from "@platform/lib/api";
+import type { SearchFileEntry } from "@platform/lib/api";
 
-const NOW = 1_800_000_000; // fixed "now" (epoch seconds) for date filters
+const HOME = "/Users/me";
+const NOW = 1_800_000_000; // epoch seconds, for mtime ordering only
 
-function entry(rel: string, over: Partial<WalkEntry> = {}): WalkEntry {
-  return { rel, is_dir: false, size: 1000, mtime: NOW - 3600, ...over };
+function entry(rel: string, over: Partial<SearchFileEntry> = {}): SearchFileEntry {
+  return { path: `${HOME}/${rel}`, is_dir: false, size: 1000, mtime: NOW - 3600, ...over };
 }
 
 describe("parseAiSearchSpec", () => {
@@ -61,52 +62,70 @@ describe("parseAiSearchSpec", () => {
   });
 });
 
-describe("scoreEntry filters", () => {
-  it("enforces kind, extension, date, and size", () => {
-    const spec = {
-      ...fallbackSpec(""),
-      extensions: ["csv"],
-      kind: "file" as const,
-      modified_within_days: 7,
-      min_size_bytes: 500,
-    };
-    expect(scoreEntry(entry("data/report.csv"), spec, NOW)).not.toBeNull();
-    expect(scoreEntry(entry("data/report.txt"), spec, NOW)).toBeNull();
-    expect(scoreEntry(entry("data", { is_dir: true, size: null }), spec, NOW)).toBeNull();
-    expect(
-      scoreEntry(entry("old.csv", { mtime: NOW - 30 * 86400 }), spec, NOW),
-    ).toBeNull();
-    expect(scoreEntry(entry("tiny.csv", { size: 10 }), spec, NOW)).toBeNull();
-  });
-
-  it("dir hits ignore extension and size filters", () => {
-    const spec = { ...fallbackSpec("data"), extensions: ["csv"], min_size_bytes: 500 };
-    expect(scoreEntry(entry("data", { is_dir: true, size: null }), spec, NOW)).not.toBeNull();
-  });
-
-  it("requires at least one name term but not all (synonym lists)", () => {
-    const spec = fallbackSpec("resume cv");
-    expect(scoreEntry(entry("docs/resume-2024.pdf"), spec, NOW)).not.toBeNull();
-    expect(scoreEntry(entry("docs/notes.txt"), spec, NOW)).toBeNull();
+describe("hasNonNameFilters", () => {
+  it("is false for a name-only spec, true once any real filter is set", () => {
+    expect(hasNonNameFilters(fallbackSpec("weather"))).toBe(false);
+    expect(hasNonNameFilters({ ...fallbackSpec(""), extensions: ["mov"] })).toBe(true);
+    expect(hasNonNameFilters({ ...fallbackSpec(""), modified_within_days: 1 })).toBe(true);
   });
 });
 
-describe("rankEntries", () => {
-  it("orders by score then recency; term-less specs order by recency", () => {
-    const spec = fallbackSpec("weather");
-    const hits = rankEntries(
-      [entry("misc/weather-old.csv", { mtime: NOW - 9999 }), entry("weather.csv")],
+describe("rankHits", () => {
+  it("hard-drops non-matching entries when name terms are the only filter", () => {
+    const spec = fallbackSpec("resume cv");
+    const hits = rankHits(
+      [entry("docs/resume-2024.pdf"), entry("docs/notes.txt")],
       spec,
-      NOW,
+      HOME,
     );
-    // Direct name hit at a segment start beats the longer buried path.
-    expect(hits[0].rel).toBe("weather.csv");
+    expect(hits.map((h) => h.path)).toEqual([`${HOME}/docs/resume-2024.pdf`]);
+  });
 
-    const recent = rankEntries(
-      [entry("a.txt", { mtime: NOW - 5000 }), entry("b.txt", { mtime: NOW - 10 })],
-      fallbackSpec(""),
-      NOW,
+  it("keeps unmatched entries when other filters exist (soft terms)", () => {
+    // "video downloaded today": extension+date pinned, "video" not in the
+    // filename — IMG_1234.mov must survive and matching names rank first.
+    const spec = {
+      ...fallbackSpec("video"),
+      extensions: ["mov", "mp4"],
+      modified_within_days: 1,
+    };
+    const hits = rankHits(
+      [entry("Downloads/IMG_1234.mov"), entry("Movies/video-final.mp4")],
+      spec,
+      HOME,
     );
-    expect(recent[0].rel).toBe("b.txt");
+    expect(hits).toHaveLength(2);
+    expect(hits[0].path).toBe(`${HOME}/Movies/video-final.mp4`);
+  });
+
+  it("boosts path hints and orders term-less specs by recency", () => {
+    const spec = { ...fallbackSpec(""), extensions: ["mov"], path_hints: ["downloads"] };
+    const hits = rankHits(
+      [
+        entry("Movies/a.mov", { mtime: NOW - 10 }),
+        entry("Downloads/b.mov", { mtime: NOW - 9999 }),
+      ],
+      spec,
+      HOME,
+    );
+    // The hint boost outweighs recency; without hints recency would win.
+    expect(hits[0].path).toBe(`${HOME}/Downloads/b.mov`);
+
+    const noHints = rankHits(
+      [
+        entry("Movies/a.mov", { mtime: NOW - 10 }),
+        entry("Downloads/b.mov", { mtime: NOW - 9999 }),
+      ],
+      { ...spec, path_hints: [] },
+      HOME,
+    );
+    expect(noHints[0].path).toBe(`${HOME}/Movies/a.mov`);
+  });
+
+  it("scores against the home-relative path, not /Users/<name>", () => {
+    // "me" appears in /Users/me — rooting at "/" would match every entry.
+    const spec = fallbackSpec("me");
+    const hits = rankHits([entry("Downloads/movie.mov"), entry("notes.txt")], spec, HOME);
+    expect(hits.map((h) => h.path)).toEqual([`${HOME}/Downloads/movie.mov`]);
   });
 });

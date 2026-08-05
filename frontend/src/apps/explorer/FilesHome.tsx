@@ -93,12 +93,12 @@ type SearchPhase = "idle" | "searching";
 // bookmark/recent grids yield to the result grid; Clear (or emptying the box)
 // brings them back.
 function AiSearchComposer({
-  root,
+  home,
   onResult,
   onClear,
   active,
 }: {
-  root: string;
+  home: string;
   onResult: (query: string, r: AiSearchResult) => void;
   onClear: () => void;
   active: boolean;
@@ -127,7 +127,7 @@ function AiSearchComposer({
     setError(null);
     setPhase("searching");
     try {
-      const res = await runAiSearch(root, q, ctl.signal);
+      const res = await runAiSearch(home, q, ctl.signal);
       if (ctl.signal.aborted) return;
       setPhase("idle");
       onResult(q, res);
@@ -203,11 +203,11 @@ function AiSearchComposer({
 // Result grid: the same LaunchCard shape as recents, so hits read as one
 // system with the rest of the homepage.
 function SearchResults({
-  root,
+  home,
   query,
   result,
 }: {
-  root: string;
+  home: string;
   query: string;
   result: AiSearchResult;
 }) {
@@ -221,20 +221,23 @@ function SearchResults({
           : summary
             ? `Understood as: ${summary}`
             : "No filters — showing closest matches."}
-        {result.truncated && " · Large workspace: search covered only part of it."}
+        {result.engine === "walk" && " · Searched your home folder."}
+        {result.truncated && " · Broad query: showing the first slice of matches."}
       </p>
       {result.hits.length ? (
         <div className="fh-grid">
           {result.hits.map((h) => {
-            const fsPath = root.replace(/\/+$/, "") + "/" + h.rel;
+            const display = h.path.startsWith(home + "/")
+              ? "~/" + h.path.slice(home.length + 1)
+              : h.path;
             return (
               <LaunchCard
-                key={h.rel}
-                href={urlForFsPath(fsPath)}
-                icon={iconForEntry(basename(h.rel), h.is_dir)}
-                name={basename(h.rel)}
-                path={h.rel}
-                onOpen={() => navigate(fsPath, { isDir: h.is_dir })}
+                key={h.path}
+                href={urlForFsPath(h.path)}
+                icon={iconForEntry(basename(h.path), h.is_dir)}
+                name={basename(h.path)}
+                path={display}
+                onOpen={() => navigate(h.path, { isDir: h.is_dir })}
               />
             );
           })}
@@ -294,18 +297,16 @@ export default function FilesHome({ config }: { config: Config }) {
               </svg>
             </button>
           )}
-          {config.fused_dir && (
-            <AiSearchComposer
-              root={config.fused_dir}
-              active={search !== null}
-              onResult={(query, result) => setSearch({ query, result })}
-              onClear={() => setSearch(null)}
-            />
-          )}
+          <AiSearchComposer
+            home={config.home}
+            active={search !== null}
+            onResult={(query, result) => setSearch({ query, result })}
+            onClear={() => setSearch(null)}
+          />
         </header>
 
-        {search && config.fused_dir ? (
-          <SearchResults root={config.fused_dir} query={search.query} result={search.result} />
+        {search ? (
+          <SearchResults home={config.home} query={search.query} result={search.result} />
         ) : (
           <>
           <section className="fh-section">

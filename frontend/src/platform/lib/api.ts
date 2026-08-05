@@ -231,6 +231,39 @@ export async function walkDirStream(
   return end;
 }
 
+// One hit from POST /api/search/files (the AI search's execution engine —
+// Spotlight on macOS, a bounded home walk elsewhere). `path` is absolute.
+export interface SearchFileEntry {
+  path: string;
+  is_dir: boolean;
+  size: number | null;
+  mtime: number | null;
+}
+
+export interface SearchFilesResult {
+  entries: SearchFileEntry[];
+  truncated: boolean;
+  engine: string; // "spotlight" | "walk"
+}
+
+// System-wide file search from a filter spec (see apps/explorer/lib/ai-search).
+// Takes a signal because a new search must be able to abandon the previous
+// engine run mid-flight (Spotlight on a broad query can take seconds).
+export async function searchFiles(
+  spec: unknown,
+  signal?: AbortSignal,
+): Promise<SearchFilesResult> {
+  const res = await fetch("/api/search/files", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-Fused": "1" },
+    body: JSON.stringify(spec),
+    signal,
+  });
+  const data = await res.json();
+  if (!res.ok) throw httpError(data, res.status);
+  return data as SearchFilesResult;
+}
+
 export function statPath(fsPath: string): Promise<StatResult> {
   return getJson<StatResult>("/api/fs/stat?path=" + encodeURIComponent(fsPath));
 }
