@@ -1,9 +1,16 @@
 """Sync the canonical fused-render skills into Claude Code's **user-level**
 skills directory (``<CLAUDE_CONFIG_DIR or ~/.claude>/skills/<name>/``), so any
 Claude session — an app folder, a template folder, a plain terminal in the
-workspace — can invoke them by name. This is the ONLY place skills are copied
-to (D185): scaffolded app and template folders carry no ``.claude/`` of their
-own any more.
+workspace — can invoke them by name. Scaffolded app and template folders carry
+no ``.claude/`` of their own any more (D185).
+
+This sync is no longer load-bearing. It cannot be: writing into a dir we
+*resolved* is a guess about the machine, and every way it can miss is silent
+(see D212). The sessions fused-render itself spawns get the skills from
+``skill_plugin.py``'s plugin root instead, passed explicitly as
+``--plugin-dir``. What survives here is the case that mechanism cannot reach —
+a session fused-render did NOT launch, e.g. the user's own ``claude`` in their
+app folder — which is worth a best-effort copy and nothing more.
 
 Source resolution keeps D106's single-source rule: the repo-level
 ``skills/<name>/`` wins whenever it is resolvable (editable/dev installs —

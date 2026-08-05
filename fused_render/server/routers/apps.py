@@ -25,10 +25,13 @@ to ``index.html`` and the existing claude template UI lists and resumes it
 with no new machinery. "local" is just this feature's own tag — nothing about
 the listing side treats it specially.
 
-An app folder carries no ``.claude/`` of its own (D185): the canonical skills
-are synced to Claude Code's user-level skills dir instead (user_skills.py) —
-once per machine, refreshed at server startup and again here at create time —
-and the starter ``CLAUDE.md`` references them by name.
+An app folder carries no ``.claude/`` of its own (D185); the starter
+``CLAUDE.md`` references the canonical skills by name and fused-render supplies
+them. The scaffolding session below gets them the way every session
+fused-render spawns does — from the plugin root under the app's home dir,
+loaded with ``--plugin-dir`` (skill_plugin.py, D212) — and the user-level copy
+(user_skills.py) covers the user's own later ``claude`` in the folder. Both are
+refreshed at server startup and again here at create time.
 """
 import json
 import os
@@ -47,7 +50,8 @@ from fused_render.shell.seed import fused_dir
 router = APIRouter()
 
 # The packaged app starter kit: index.html + CLAUDE.md, both committed. No
-# .claude/ ships in it (D185) — skills live at the user level (user_skills.py).
+# .claude/ ships in it (D185) — skills are supplied by fused-render instead
+# (skill_plugin.py for the sessions it spawns, user_skills.py for the rest).
 _APP_STARTER_DIR = os.path.join(
     os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "app_starter"
 )
@@ -253,12 +257,15 @@ def api_new_app(body: dict = Body(...), x_fused: str | None = Header(default=Non
         shutil.rmtree(dest, ignore_errors=True)
         return _error(f"failed to create app {name!r}: {exc}")
 
-    # Refresh the user-level skills the starter CLAUDE.md references (D185).
-    # Startup already synced them; doing it again here repairs a deletion
-    # before the session below starts. Best-effort inside — never fails
-    # creation over a skill copy.
+    # Refresh the skills the starter CLAUDE.md references: the plugin root the
+    # scaffolding session below is handed (D212) and the user-level copy for the
+    # user's own sessions (D185). Startup already synced both; doing it again
+    # here repairs a deletion in the window before that session starts.
+    # Best-effort inside — never fails creation over a skill copy.
+    from fused_render.skill_plugin import export_skill_plugin_env
     from fused_render.user_skills import sync_user_skills
 
+    export_skill_plugin_env()
     sync_user_skills()
 
     # Version control from birth: every new app is a git repo whose first
