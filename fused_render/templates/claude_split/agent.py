@@ -64,6 +64,7 @@ if "__file__" not in globals():
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(HERE), "shared"))
+from appenv import skill_plugin_dir as _skill_plugin_dir
 from appenv import workspace_dir as _workspace_dir
 from procutil import pid_alive as _pid_alive
 
@@ -251,6 +252,22 @@ def _claude_bin() -> str:
         "FUSED_RENDER_CLAUDE_BIN to its full path. Also looked in: "
         + ", ".join(candidates)
     )
+
+
+def _plugin_argv() -> list:
+    """`["--plugin-dir", <root>]` when fused-render has a skill plugin to hand
+    this session, else `[]`.
+
+    This is how a session we launch gets the fused-render skills with certainty
+    instead of hoping the user-level sync landed somewhere the CLI reads (D212).
+    The path (and the decision to pass it at all — see appenv) arrives through
+    the env contract, so `_start` neither imports the app nor shells out to
+    interrogate the CLI. A `--plugin-dir` load is session-scoped and additive:
+    the user's own skills, plugins, CLAUDE.md and settings are all untouched,
+    and a user who installed the published plugin themselves just sees the same
+    skills listed twice."""
+    root = _skill_plugin_dir()
+    return ["--plugin-dir", root] if root else []
 
 
 def _bad_id(value: str) -> bool:
@@ -1114,6 +1131,7 @@ def _start(file: str, message: str, session_id: str, model: str,
            # directory, and the prompt bridge stays wired for everything else.
            "--allowed-tools",
            f"mcp__{PERMISSION_SERVER}__{APP_STATE_TOOL}," + _read_rule(SHOTS)]
+    cmd += _plugin_argv()
     # BOTH targets get an --append-system-prompt here, and they get different
     # ones. A FILE target gets the scoping prompt. A DIRECTORY target (the
     # claude_split app template) still does NOT get that one — the session

@@ -43,8 +43,9 @@ def _write_baked_ref(root: str, ref: str, build_data: dict) -> None:
 
 
 # The three canonical skills ship ONLY as a package-level copy at
-# fused_render/skills/ — the wheel-install source for the user-level skill
-# sync (fused_render/user_skills.py, D185). The skills live once at
+# fused_render/skills/ — the wheel-install source for both the user-level skill
+# sync (fused_render/user_skills.py, D185) and the plugin root assembled under
+# home_dir() (fused_render/skill_plugin.py, D212). The skills live once at
 # skills/<name>/ (single source, D106); the copy is gitignored and shipped via
 # the `artifacts` glob in pyproject — the same not-committed-but-packaged
 # pattern as the Vite shell (D54). Scaffolded folders (apps AND templates)
@@ -94,13 +95,21 @@ class ShellBuildHook(BuildHookInterface):
 
     def _copy_starter_skills(self) -> None:
         """Copy the canonical skills to fused_render/skills/ — the wheel-install
-        source for the user-level skill sync (user_skills.py, D185). Source is
+        source for the user-level skill sync (user_skills.py, D185) and for the
+        plugin root assembled under home_dir() (skill_plugin.py, D212). Source is
         the single repo-level skills/<name>/; the copy is gitignored and shipped
         via pyproject's `artifacts` glob. Refresh each time so a packaged build
         always reflects the current skill. Starter kits (app and template) carry
         no .claude/ any more — scaffolded folders rely on the user-level sync —
         so any stale pre-D185 build copy is deleted rather than shipped (or
         copytree'd into new folders by a dev install).
+
+        The plugin manifest travels alongside them, as a FLAT
+        fused_render/skills/plugin.json rather than a packaged .claude-plugin/
+        dir: nothing in the wheel may live under a dot-prefixed path, because
+        whether a hidden path survives the backend's include globs is exactly
+        the kind of thing that fails silently in a built wheel and nowhere else.
+        skill_plugin.py mkdirs the dotted dir in its output instead.
         """
         for kit in ("app_starter", "template_starter"):
             shutil.rmtree(
@@ -114,6 +123,11 @@ class ShellBuildHook(BuildHookInterface):
             if os.path.isdir(dest):
                 shutil.rmtree(dest)
             shutil.copytree(src, dest)
+        os.makedirs(dest_root, exist_ok=True)
+        shutil.copyfile(
+            os.path.join(self.root, ".claude-plugin", "plugin.json"),
+            os.path.join(dest_root, "plugin.json"),
+        )
 
     def _bake_branch_ref(self, build_data: dict) -> None:
         """Resolve the ref from ``FUSED_RENDER_BRANCH`` and bake it into the
