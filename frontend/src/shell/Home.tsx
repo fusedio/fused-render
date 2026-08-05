@@ -10,9 +10,9 @@
 //      once per fetch so the grid never reorders under interaction; keys
 //      are stable paths.
 import { useEffect, useState, type ReactNode } from "react";
-import { getApps } from "@platform/lib/api";
+import { appSourceLabel, getApps } from "@platform/lib/api";
 import type { AppInfo, Config } from "@platform/lib/api";
-import { hrefFor, onAppCardClick, openTargetFor } from "@platform/lib/appEntry";
+import { entryOf, hrefFor, onAppCardClick } from "@platform/lib/appEntry";
 import { navigate, navigateUrl } from "@platform/lib/router";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { basename } from "@platform/lib/format";
@@ -101,14 +101,20 @@ function Doorway({
 // and a row and a card for the same app must not open different things.
 function RecentRow({ app }: { app: AppInfo }) {
   const title = app.title || app.name;
+  // openApp, not a local copy of the rule: this row had its own inline version
+  // and it diverged — it sent a Claude Science figure to its own directory (a
+  // folder named after a UUID) while the hub's card opened the file (D212).
   return (
     <a
       className="home-recent"
       href={hrefFor(app)}
       onClick={(e) => onAppCardClick(e, app)}
-      title={openTargetFor(app).path}
+      title={entryOf(app) ?? app.path}
     >
       <span className="home-recent-name">{title}</span>
+      {appSourceLabel(app.source) && (
+        <span className="app-source">{appSourceLabel(app.source)}</span>
+      )}
       <span className="home-app-tag">{app.tag}</span>
       <span className="home-recent-when">{timeAgo(app.updated_at) ?? "—"}</span>
     </a>
@@ -148,7 +154,7 @@ export default function Home({ config }: { config: Config }) {
           <Doorway
             hue="var(--icon-code)"
             title="Apps"
-            desc={`Every folder inside a tag folder in ${basename(config.fused_dir)} is a project with its own entry page.`}
+            desc={`Every folder inside a tag folder in ${basename(config.fused_dir)} is a project with its own entry page — plus any found elsewhere on this machine.`}
             titleAttr={config.fused_dir}
             onClick={() => navigateUrl("/apps")}
             glyph={

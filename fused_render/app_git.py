@@ -59,7 +59,19 @@ _IDENTITY = ["-c", "user.name=Fused", "-c", "user.email=apps@fused.io"]
 # Session sidecars are chat bookkeeping, not app content — keep them out of
 # history: <file>.json next to the entry html (claude template agent.py) and
 # the folder-level .claude-split.json (claude_split agent.py).
-_GITIGNORE = "*.html.json\n.claude-split.json\n"
+#
+# `__pycache__/` for the same reason, one layer down: the executor no longer
+# writes one (_child.py sets dont_write_bytecode), but an app can still acquire
+# one from outside — a user running `python compute.py` in a terminal, an
+# editor's language server, a `pytest` in the folder — and `commit()` is a
+# blanket `git add -A`. Apps that already committed .pyc files keep them until
+# the next commit: _ensure_excludes untracks them once (see below), because an
+# ignore rule alone does nothing to a path git is already tracking.
+_PYCACHE_PATTERN = "__pycache__/"
+_GITIGNORE = "*.html.json\n.claude-split.json\n" + _PYCACHE_PATTERN + "\n"
+
+#: Matches the pattern above at any depth — see `_untrack_pycache`.
+_PYCACHE_PATHSPEC = "*__pycache__/*"
 
 
 def _git(app_dir: str, *args: str) -> subprocess.CompletedProcess:
@@ -124,8 +136,34 @@ def _ensure_excludes(app_dir: str) -> None:
         if missing:
             with open(path, "a", encoding="utf-8") as f:
                 f.write("\n".join(missing) + "\n")
+        if _PYCACHE_PATTERN in missing:
+            _untrack_pycache(app_dir)
     except Exception:
         logger.warning("ensure_excludes failed for %s", app_dir, exc_info=True)
+
+
+def _untrack_pycache(app_dir: str) -> None:
+    """Drop already-committed `__pycache__` entries from the index, once.
+
+    Called only on the commit that first appends the pattern above, so it is a
+    one-shot migration per repo rather than a git invocation on every commit —
+    and so it cannot keep fighting a user who deliberately re-adds one.
+
+    An ignore rule does nothing to a path git already tracks, and every app
+    whose page ran Python before this change has .pyc blobs in its history.
+    `--cached` touches the INDEX ONLY: the files stay on disk untouched, git
+    just stops carrying them. `--ignore-unmatch` makes the common case (a repo
+    with none) a clean no-op rather than an error. The pathspec's `*` matches
+    `/` — git's default fnmatch here is not FNM_PATHNAME — so one pattern
+    covers `__pycache__/x.pyc` at the root and `sub/__pycache__/x.pyc` alike.
+
+    Best-effort like the rest of this module: the caller's `git add -A` and
+    commit proceed either way."""
+    result = _git(app_dir, "rm", "-r", "--cached", "--ignore-unmatch", "-q",
+                  "--", _PYCACHE_PATHSPEC)
+    if result.returncode != 0:
+        logger.debug("untracking __pycache__ in %s: %s", app_dir,
+                     result.stderr.strip())
 
 
 def init_repo(app_dir: str) -> bool:

@@ -846,6 +846,12 @@ export interface Prefs {
   // Whether the Reader (listen-to-files) accessibility mode is offered (opt-in,
   // default off).
   reader: { enabled: boolean };
+  // The optional sources GET /api/apps merges beside the workspace (D216).
+  // Both default ON — they surface work the user already has rather than
+  // adding an affordance, so opt-out is the honest default. `available` says
+  // whether the source is installed at all, which is what lets the page
+  // distinguish "switched off" from "nothing to find".
+  discovery: Record<DiscoverySource, { enabled: boolean; available: boolean }>;
   // The app call log (fused_render/calls.py): capture state, how much of a
   // run's params is kept, retention window, and where the store lives.
   calls: CallsPrefs;
@@ -887,6 +893,36 @@ export function putEnginePref(engine: "builtin" | "fused"): Promise<Prefs> {
 
 export function putDeployEnabled(enabled: boolean): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { deploy_enabled: enabled });
+}
+
+//: The switchable app-discovery sources, in the order the page lists them.
+//: Keyed off the same strings the backend stores (`discover_<source>`) and the
+//: listing tags apps with, so the three cannot drift apart.
+export const DISCOVERY_SOURCES = [
+  "claude_code",
+  "claude_sessions",
+  "claude_uploads",
+  "claude_science",
+] as const;
+export type DiscoverySource = (typeof DISCOVERY_SOURCES)[number];
+
+//: Each row is named for the tool whose name is on the card badge
+//: (APP_SOURCE_LABELS). That correspondence is the whole job of these strings:
+//: a user who wants to stop seeing cards marked "Claude Code" looks for
+//: "Claude Code" here, and a row called "Other Fused folders" left them with
+//: nothing to match against.
+export const DISCOVERY_LABELS: Record<DiscoverySource, string> = {
+  claude_code: "Claude Code artifacts",
+  claude_sessions: "Claude Code session files",
+  claude_uploads: "Claude Code uploads",
+  claude_science: "Claude Science artifacts",
+};
+
+export function putDiscoveryEnabled(
+  source: DiscoverySource,
+  enabled: boolean,
+): Promise<Prefs> {
+  return putJson<Prefs>("/api/prefs", { [`discover_${source}`]: enabled });
 }
 
 export function putReaderEnabled(enabled: boolean): Promise<Prefs> {
@@ -1427,6 +1463,41 @@ export function openTemplateInClaude(name: string): Promise<{ url: string }> {
 // path), null when the folder has no single resolvable .html entry; `title`
 // comes from that file's <title>, null falls back to the folder name in the
 // UI.
+//
+// The listing merges five sources. **claude-science** (D212) is the local
+// Claude Science store's artifacts, tagged by the project that produced them:
+// read-only and mostly not pages, so `entry` — the file a card opens and
+// previews — is the field to reach for, while `entry_html` is the narrower
+// "this entry is a renderable page" claim the /render iframe and the
+// claude_split open path key off. **claude-code** (D214) is an app in another
+// Fused-shaped folder, found from Claude Code's project list; it is an
+// ordinary Fused app in a folder the user owns, so it behaves exactly like a
+// workspace one and differs only in its badge. **claude-session** (D217) is a
+// single viewable FILE a Claude Code session wrote (found from the session
+// transcripts) and **claude-upload** a file the user attached to a
+// conversation — for both, `path` IS the file, so neither ever opens as a
+// project.
+export type AppSource =
+  | "workspace"
+  | "claude-science"
+  | "claude-code"
+  | "claude-session"
+  | "claude-upload";
+
+//: The badge a card shows for a non-workspace source. Keyed off the union so a
+//: new source is a type error here rather than an unlabelled card.
+export const APP_SOURCE_LABELS: Record<Exclude<AppSource, "workspace">, string> = {
+  "claude-science": "Claude Science",
+  "claude-code": "Claude Code",
+  "claude-session": "Claude session",
+  "claude-upload": "Claude upload",
+};
+
+export function appSourceLabel(source: AppSource | undefined): string | null {
+  if (!source || source === "workspace") return null;
+  return APP_SOURCE_LABELS[source] ?? null;
+}
+
 export interface AppInfo {
   name: string;
   tag: string;
@@ -1437,15 +1508,102 @@ export interface AppInfo {
   // the narrower claim that the entry is a renderable page and so the only one
   // the HTML-only /render iframe may be pointed at. Optional for older backends
   // that predate the key — read it through entryOf(), never directly.
+  // For a Claude Science artifact it is the newest version file, which may
+  // be a figure or a table rather than a page — the case `entry` exists for.
   entry?: string | null;
   title: string | null;
   // Last-modified time, epoch seconds. Optional/null for servers that don't
   // report it (older backends) — those sort last in the Home grid.
   updated_at?: number | null;
+  // Which listing source produced this app. Absent on older backends, which
+  // only ever listed the workspace.
+  source?: AppSource;
 }
 
 export function getApps(): Promise<{ apps: AppInfo[] }> {
   return getJson<{ apps: AppInfo[] }>("/api/apps");
+}
+
+// -- Claude Code related parts (server/routers/claude_code.py) ---------------
+// Read-only pivots over the local Claude Code store: sessions -> files,
+// file -> sessions + checkpointed versions. The logic lives server-side in
+// fused_render/claude_sessions.py; these are 1:1 fetchers so any view can
+// consume the same payloads.
+
+// One session, as the index lists it. `prompt` is the session's first human
+// message squashed to one line — the only label a session has that a person
+// would recognise.
+export interface ClaudeSessionInfo {
+  session: string;
+  cwd: string | null;
+  prompt: string | null;
+  transcript: string;
+  updated_at: number;
+  file_count: number;
+}
+
+// One file a session touched. `viewable` says whether the apps listing would
+// card it — a hint for de-emphasis, not a filter: this pivot deliberately
+// lists everything, source code included.
+export interface ClaudeSessionFile {
+  path: string;
+  exists: boolean;
+  viewable: boolean;
+  first_ts: number | null;
+  last_ts: number | null;
+  writes: number;
+}
+
+// A session's involvement with one specific file (getClaudeRelated).
+export interface ClaudeFileSession extends ClaudeSessionInfo {
+  first_ts: number | null;
+  last_ts: number | null;
+  writes: number;
+}
+
+// One checkpointed version of a file, from Claude Code's file-history store
+// (templates/shared/file_history.py's timeline entry). Version numbers are
+// per-session and RESTART across sessions — order by mtime, never by version.
+export interface ClaudeFileVersion {
+  id: string;
+  session: string;
+  version: number;
+  existed: boolean;
+  // The checkpoint file itself (a FULL copy, never a diff). A view that wants
+  // the version's bytes — a diff pane, a preview — reads them through the
+  // existing /api/fs/raw (rawUrl in appEntry). Null for a did-not-exist
+  // boundary entry, which has no content by definition.
+  path: string | null;
+  mtime: number;
+  size: number;
+  lines: number | null;
+  differs: boolean;
+  added: number | null;
+  removed: number | null;
+  exact: boolean;
+}
+
+export interface ClaudeRelated {
+  file: string;
+  exists: boolean;
+  sessions: ClaudeFileSession[];
+  versions: ClaudeFileVersion[];
+}
+
+export function getClaudeSessions(): Promise<{ sessions: ClaudeSessionInfo[] }> {
+  return getJson<{ sessions: ClaudeSessionInfo[] }>("/api/claude/sessions");
+}
+
+export function getClaudeSessionFiles(
+  sessionId: string,
+): Promise<ClaudeSessionInfo & { files: ClaudeSessionFile[] }> {
+  return getJson<ClaudeSessionInfo & { files: ClaudeSessionFile[] }>(
+    `/api/claude/sessions/${encodeURIComponent(sessionId)}/files`,
+  );
+}
+
+export function getClaudeRelated(path: string): Promise<ClaudeRelated> {
+  return getJson<ClaudeRelated>(`/api/claude/related?path=${encodeURIComponent(path)}`);
 }
 
 // Scaffold a new app folder and (optionally) kick off a Claude session seeded

@@ -1,12 +1,28 @@
-// Big preview card for the /apps hub. The thumbnail is the app itself: its
-// entry HTML rendered live in a sandboxed iframe at desktop width (1280px)
-// and scaled down to fit the card — display only, a pointer-events shield
-// keeps every click on the card, which opens the app. Apps without an entry
-// file fall back to the Home grid's tinted monogram so the card is never
-// blank. Iframes are lazy so a big workspace doesn't render everything at
-// once.
-import type { AppInfo } from "@platform/lib/api";
-import { hrefFor, onAppCardClick, openTargetFor } from "@platform/lib/appEntry";
+// Big preview card for the /apps hub. The thumbnail is the app itself, by
+// whichever of three routes its entry needs:
+//
+//   * a PAGE — rendered live in a sandboxed iframe at desktop width (1280px)
+//     and scaled down to fit the card. Display only: a pointer-events shield
+//     keeps every click on the card, which opens the app. Iframes are lazy so
+//     a big workspace doesn't render everything at once.
+//   * an IMAGE — the bytes straight from /api/fs/raw. A Claude Science figure
+//     artifact is a real PNG, and /render is HTML-only (it decodes the file as
+//     UTF-8 text), so the iframe route cannot serve one.
+//   * anything else (a .csv table, say) — the tinted monogram, labelled with
+//     the entry's extension, rather than booting a whole template per card in
+//     a grid of them.
+//
+// Apps with no entry at all get the monogram too (their initial, there being
+// no extension to name), so a card is never blank.
+import { appSourceLabel, type AppInfo } from "@platform/lib/api";
+import {
+  entryOf,
+  extLabel,
+  hrefFor,
+  isImageEntry,
+  onAppCardClick,
+  rawUrl,
+} from "@platform/lib/appEntry";
 import { hueFor } from "@apps/builder/AppCard";
 
 // "3d ago" style stamp for the card meta line; null when the backend didn't
@@ -31,9 +47,23 @@ export function timeAgo(epochSeconds: number | null | undefined): string | null 
 // exactly the .app-pcard-thumb box, whatever the grid column resolves to.
 const PREVIEW_SCALE = 0.25;
 
-export function AppPreviewCard({ app }: { app: AppInfo }) {
+export function AppPreviewCard({
+  app,
+  onHistory,
+}: {
+  app: AppInfo;
+  // When provided, the card offers a History button (the /apps hub passes it;
+  // Home's tiles don't) opening the Claude Code checkpoint/session view for
+  // the card's entry file. On the card rather than only on Claude-sourced
+  // ones: a workspace app's entry has checkpoints too, whenever a session
+  // edited it.
+  onHistory?: (app: AppInfo) => void;
+}) {
   const title = app.title || app.name;
   const ago = timeAgo(app.updated_at);
+  const sourceLabel = appSourceLabel(app.source);
+  const entry = entryOf(app);
+  const ext = extLabel(entry);
   // An anchor, not a button — see AppCard. The href is what makes middle-click
   // and "Open in new tab" land on the same place a left click does.
   return (
@@ -41,7 +71,7 @@ export function AppPreviewCard({ app }: { app: AppInfo }) {
       className="app-pcard"
       href={hrefFor(app)}
       onClick={(e) => onAppCardClick(e, app)}
-      title={openTargetFor(app).path}
+      title={entry ?? app.path}
     >
       <span className="app-pcard-thumb" aria-hidden="true">
         {app.entry_html ? (
@@ -63,18 +93,53 @@ export function AppPreviewCard({ app }: { app: AppInfo }) {
                 keeps middle-click over the preview a new tab for the app. */}
             <span className="app-pcard-shield" />
           </>
+        ) : isImageEntry(entry) ? (
+          <img className="app-pcard-image" src={rawUrl(entry as string)} loading="lazy" alt="" />
         ) : (
-          <span className="app-pcard-monogram" style={{ color: hueFor(app.name) }}>
-            {title.charAt(0).toUpperCase()}
+          // The extension when the entry has one — "CSV" tells you what the
+          // card holds; the initial of its filename doesn't, and a grid of
+          // tables all reading "O" tells you nothing at all.
+          <span
+            className={`app-pcard-monogram${ext ? " is-ext" : ""}`}
+            style={{ color: hueFor(app.name) }}
+          >
+            {ext ?? title.charAt(0).toUpperCase()}
           </span>
         )}
       </span>
       <span className="app-pcard-body">
         <span className="app-pcard-title">{title}</span>
         <span className="app-pcard-meta">
+          {/* Provenance, because the tag says nothing about where an app came
+              from: for a Claude Science artifact it is the project's name, and
+              for a discovered folder it is just a tag that another workspace
+              also happens to use. Absent for a workspace app — the default
+              needs no label. */}
+          {sourceLabel && <span className="app-source">{sourceLabel}</span>}
           <span className="app-pcard-tag">{app.tag}</span>
           {title !== app.name && <span className="app-pcard-name">{app.name}</span>}
           {ago && <span className="app-pcard-ago">{ago}</span>}
+          {onHistory && entry && (
+            // A button inside the card's anchor: preventDefault + stop so the
+            // click opens the panel and never rides on to the card's href
+            // (onAppCardClick already yields to a defaultPrevented event).
+            <button
+              type="button"
+              className="app-pcard-history"
+              title="History — Claude Code checkpoints and sessions for this file"
+              aria-label="History"
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                onHistory(app);
+              }}
+            >
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <circle cx="12" cy="12" r="9" />
+                <path d="M12 7v5l3 3" />
+              </svg>
+            </button>
+          )}
         </span>
       </span>
     </a>

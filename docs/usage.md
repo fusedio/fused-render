@@ -55,6 +55,12 @@ The gear at the sidebar's bottom-left opens **Preferences**:
   buttons. **Your own `.html` views are never touched** — their CSS stays
   entirely yours; see the authoring skill for how to follow the desktop
   preference if you want to.
+- **App discovery** — which optional sources Home and the Apps hub list beside
+  your workspace: Claude Code artifacts and Claude Science artifacts. Both on by
+  default; your workspace is always listed and has no switch. Turning one off
+  skips it entirely — it isn't scanned, so nothing is read from it. A source
+  that isn't installed says so rather than offering a toggle that changes
+  nothing.
 - **Deploy to Fused account** — the opt-in toggle for the preview header's
   Deploy button.
 - **Call log** — whether the app records the API calls your pages make, how
@@ -103,6 +109,75 @@ specific binary per process. If the CLI isn't installed, calls reject with an
 `ai_unavailable` error saying what to install or set.
 `fused.ai` is local-only: exported/hosted pages can't use it (see
 [EXPORT.md](EXPORT.md)). A working example ships in `examples_seed/ai_demo/`.
+
+## Claude Science artifacts
+
+If [Claude Science](https://claude.com/product/claude-science) is installed, the
+artifacts it has saved show up as apps — on Home and in the **Apps** hub —
+alongside the ones in your Fused workspace. Nothing to connect or configure:
+the store is read on each listing, and an empty or absent one simply
+contributes nothing.
+
+Each **artifact** is one card. Its name is the filename your analysis saved
+(`building_h3_compare.png`, from `v6f4b965a_building_h3_compare.png`), its tag
+is the project that produced it — so the hub's tag chips become per-project
+filters — and it carries a **Claude Science** badge to distinguish it from a
+workspace app. The extension is part of the name on purpose: an analysis that
+saves a figure and its underlying table gives them the same base name, and they
+are two different artifacts. Only the newest version of an artifact is listed;
+the older ones stay where they are, in the same folder.
+
+Claude Science's own **sample project is not listed** — it ships with the app
+and its artifacts would outnumber yours. Set
+`FUSED_RENDER_CLAUDE_SCIENCE_EXAMPLES=1` to include it.
+
+Opening a card opens the artifact in the matching preview template: a figure in
+the image viewer, a table in the DuckDB table view, an HTML report as a
+rendered page. Figure cards show the figure itself as their thumbnail. Unlike a
+workspace app — which opens its folder beside a Claude chat — an artifact opens
+the file: the folder is a versioned store belonging to another application, not
+a project to edit in place.
+
+This is **read-only**. fused-render never writes to, scaffolds into, commits to
+or deploys from the Claude Science store — it reads the files another
+application owns and shows them to you. To iterate on an artifact as your own
+app, copy it into your workspace first.
+
+`FUSED_RENDER_CLAUDE_SCIENCE_DIR` overrides the store location (default
+`~/.claude-science`) for a Claude Science installed somewhere else. To stop
+listing these entirely, switch them off in **Preferences → App discovery**.
+
+## Claude Code artifacts
+
+Your workspace (`~/Documents/Fused`) is not the only place an app can live. If
+you keep a second folder of the same shape — on an external drive, in a shared
+directory, or one you made before you knew where the default was — fused-render
+finds it and lists its apps alongside the rest, with a **Claude Code** badge.
+
+It finds them by reading the folder paths Claude Code already records in
+`~/.claude.json`, so the only thing that makes a folder discoverable is having
+opened Claude Code in it once. Nothing is copied and nothing is written: a
+discovered app is an ordinary Fused app in a folder you own, and it opens the
+same way as any other.
+
+A folder counts as holding apps when **most of its subdirectories are apps** —
+at least two of them, each with a single `.html` inside. That shape test is what
+separates a folder of little apps from a source tree that happens to contain a
+page, and it is checked both on the folder you opened and one level below it, so
+either `render/soccer/soccer.html` or `workspace/local/soccer/soccer.html`
+is found. Being inside a git repository makes no difference: plenty of app
+folders live in one.
+
+Two consequences worth knowing. A folder with exactly **one** app in it is not
+discovered — a lone `docs/index.html` is indistinguishable from a real
+workspace, and guessing wrong fills Home with directories that aren't apps. And
+only the subdirectories that really are apps are listed; a `notes/` or `data/`
+beside them is not turned into a card, unlike in your own workspace where
+everything shows.
+
+To stop listing these, switch them off in **Preferences → App discovery**.
+`FUSED_RENDER_CLAUDE_CONFIG` points at a different config file, and pointing it
+at a path that does not exist turns the source off for that process.
 
 ## Export for hosted serving
 

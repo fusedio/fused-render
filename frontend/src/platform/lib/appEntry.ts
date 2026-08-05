@@ -25,11 +25,68 @@ export function entryOf(app: AppInfo): string | null {
   return app.entry ?? app.entry_html;
 }
 
+// Sources whose card is a FOLDER the user owns — the only ones a page entry
+// may open as a project. An allowlist rather than the blocklist it began as:
+// when claude-session/claude-upload arrived (cards whose `path` IS the file,
+// not a folder), a blocklist would have opened claude_split on a file path —
+// the same class of breakage the claude-science exclusion already fixed once.
+// A new source now defaults to the safe behaviour (open the file) until it is
+// added here deliberately.
+const PROJECT_SOURCES = new Set(["workspace", "claude-code"]);
+
 // Whether opening this app means opening its folder beside a Claude chat, which
 // is what a page entry earns: claude_split rediscovers the entry from the folder
 // and wants exactly one top-level .html there.
+//
+// A page entry is necessary but not sufficient. A Claude Science artifact opens
+// the FILE even when it is a page, for two independent reasons: that folder
+// holds one file per VERSION, so claude_split's "exactly one top-level .html"
+// resolves to nothing the moment a report is saved twice; and the chat would
+// run cwd'd inside ~/.claude-science, a store this app only ever reads. A
+// claude-session or claude-upload card is a single file outright.
 function opensAsProject(app: AppInfo): boolean {
-  return Boolean(app.entry_html);
+  return Boolean(app.entry_html) && (!app.source || PROJECT_SOURCES.has(app.source));
+}
+
+// Image types the thumbnail can paint directly through /api/fs/raw. Kept to
+// what a browser renders in an <img> unaided — anything else falls back to the
+// monogram rather than risking an empty box.
+const IMAGE_SUFFIXES = [".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".avif", ".bmp"];
+
+export function isImageEntry(path: string | null): boolean {
+  if (!path) return false;
+  const lower = path.toLowerCase();
+  return IMAGE_SUFFIXES.some((suffix) => lower.endsWith(suffix));
+}
+
+// The extension a thumbnail can label itself with when it has nothing to show —
+// "CSV" says what the card holds where the first letter of its filename says
+// nothing. Null when there is no usable extension (bare name, dotfile, or one
+// too long to be one), leaving the monogram as the fallback.
+//
+// The ceiling is set by the longest extension that actually turns up here
+// rather than by taste: `parquet` and `geojson` are everyday files in this app,
+// and a limit that quietly dropped them would leave exactly the cards that most
+// need a label without one.
+const EXT_MAX = 8;
+
+export function extLabel(path: string | null): string | null {
+  if (!path) return null;
+  const base = path.slice(path.lastIndexOf("/") + 1);
+  const dot = base.lastIndexOf(".");
+  if (dot <= 0) return null; // no dot, or a dotfile whose "extension" is its name
+  const ext = base.slice(dot + 1);
+  return ext.length >= 1 && ext.length <= EXT_MAX && /^[a-z0-9]+$/i.test(ext)
+    ? ext.toUpperCase()
+    : null;
+}
+
+// Bytes for an image entry. /api/fs/raw serves any absolute path with a
+// content-type guessed from its name; it sends `nosniff` and downgrades
+// scriptable types, but only for document loads — an <img> is not one, so an
+// image still arrives as an image (server/proxy.py _harden_raw).
+export function rawUrl(path: string): string {
+  return `/api/fs/raw?path=${encodeURIComponent(path)}`;
 }
 
 export interface OpenTarget {

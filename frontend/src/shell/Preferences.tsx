@@ -18,15 +18,18 @@
 // Template bindings live in the dedicated /view/_templates view.
 import { useEffect, useState } from "react";
 import {
+  DISCOVERY_LABELS,
+  DISCOVERY_SOURCES,
   getPrefs,
   putCallsEnabled,
   putCallsParamsMode,
   putCallsRetentionDays,
   putDeployEnabled,
+  putDiscoveryEnabled,
   putEnginePref,
   putReaderEnabled,
 } from "@platform/lib/api";
-import type { CallsParamsMode, Prefs } from "@platform/lib/api";
+import type { CallsParamsMode, DiscoverySource, Prefs } from "@platform/lib/api";
 import { navigate, navigateUrl } from "@platform/lib/router";
 import { notifyPrefsChanged } from "@platform/lib/prefs";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
@@ -244,6 +247,89 @@ function ReaderToggle({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs) 
       </label>
       {error && <ErrorBanner>{error}</ErrorBanner>}
     </>
+  );
+}
+
+// One switchable app-discovery source (D216). Both default ON, so these read
+// as "stop showing me these" rather than "enable a feature" — which is why the
+// copy names what disappears rather than what appears.
+function DiscoveryToggle({
+  source,
+  prefs,
+  onChange,
+}: {
+  source: DiscoverySource;
+  prefs: Prefs;
+  onChange: (p: Prefs) => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  // An older server has no `discovery` block; treat that as on-and-available so
+  // the row never renders as a broken-looking off switch against one.
+  const state = prefs.discovery?.[source] ?? { enabled: true, available: true };
+
+  const toggle = async () => {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      onChange(await putDiscoveryEnabled(source, !state.enabled));
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <>
+      <label className="prefs-radio">
+        <input type="checkbox" checked={state.enabled} disabled={busy} onChange={toggle} />
+        <span>
+          <b>{DISCOVERY_LABELS[source]}</b>. {DISCOVERY_BLURBS[source]}
+          {/* Not installed is not the same as switched off, and a toggle that
+              changes nothing visible is the most confusing control there is. */}
+          {!state.available && (
+            <span className="deploy-muted"> (nothing found on this machine)</span>
+          )}
+        </span>
+      </label>
+      {error && <ErrorBanner>{error}</ErrorBanner>}
+    </>
+  );
+}
+
+const DISCOVERY_BLURBS: Record<DiscoverySource, string> = {
+  claude_code:
+    "Show apps from other Fused-shaped folders you have opened Claude Code in.",
+  claude_sessions:
+    "Show the pages, figures and reports your recent Claude Code sessions wrote, wherever they were saved.",
+  claude_uploads:
+    "Show the local copies of files you attached to Claude Code conversations.",
+  claude_science:
+    "Show the figures, tables and reports Claude Science has saved, alongside your own apps.",
+};
+
+function AppDiscoverySection({
+  prefs,
+  onChange,
+}: {
+  prefs: Prefs;
+  onChange: (p: Prefs) => void;
+}) {
+  return (
+    <section className="prefs-section">
+      <h2>App discovery</h2>
+      <p className="deploy-muted">
+        Home and the Apps hub list your workspace (
+        <code>~/Documents/Fused</code>) plus the sources below. Your workspace is
+        always listed. Turning a source off skips it entirely — it is not
+        scanned, so nothing is read from it.
+      </p>
+      {DISCOVERY_SOURCES.map((source) => (
+        <DiscoveryToggle key={source} source={source} prefs={prefs} onChange={onChange} />
+      ))}
+    </section>
   );
 }
 
@@ -484,6 +570,7 @@ export default function Preferences() {
             {tab === "render" && (
               <>
                 <AppearanceSection />
+                <AppDiscoverySection prefs={prefs} onChange={setPrefs} />
                 <CallLogSection prefs={prefs} onChange={setPrefs} />
                 <DeploymentsSection
                   prefs={prefs}
