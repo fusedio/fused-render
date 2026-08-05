@@ -53,6 +53,9 @@ import engine  # sibling module; cwd is set to the .py's dir
 CACHE_ROOT = os.path.expanduser(os.path.join("~", ".fused-render", "cache", "slides"))
 UPLOADS = os.path.join(tempfile.gettempdir(), "fused_render_slides_uploads")
 EXPORTS = os.path.join(tempfile.gettempdir(), "fused_render_slides_exports")
+# Decks created from the home screen (no `_file`) live here, as real .pptx files
+# next to the script; each then flows through the ordinary `open` path.
+LIBRARY = os.path.join(_HERE, "library")
 
 # Translate a stored path (may be WSL /mnt/c/... or native C:\...) to this OS's convention.
 _WSL_MOUNT_RE = re.compile(r"^/mnt/([A-Za-z])(/.*)?$")
@@ -303,6 +306,30 @@ def main(action: str = "open",
                 "editable": editable, "readonly_message": ro_msg,
                 "readonly_tooltip": ro_tip,
                 "sidecar_writable": _sidecar_writable(file)}
+
+    # --------------------------------------------- new blank deck (home screen)
+    if action == "new_deck":
+        os.makedirs(LIBRARY, exist_ok=True)
+        model = engine.blank_model(name or "Untitled")
+        base = re.sub(r"[^a-zA-Z0-9._ -]", "_", (name or "Untitled")).strip() or "Untitled"
+        tok = hashlib.sha1(f"{name}{time.time()}".encode()).hexdigest()[:6]
+        dst = os.path.join(LIBRARY, f"{base}-{tok}.pptx")
+        engine.build_pptx(model, dst, LIBRARY)
+        return {"file": dst.replace(os.sep, "/")}
+
+    # ---------------------------------------- list library decks (home screen)
+    if action == "library":
+        os.makedirs(LIBRARY, exist_ok=True)
+        decks = []
+        for nm in os.listdir(LIBRARY):
+            if not nm.lower().endswith(".pptx"):
+                continue
+            full = os.path.join(LIBRARY, nm)
+            decks.append({"file": full.replace(os.sep, "/"),
+                          "name": _get_title(full) or os.path.splitext(nm)[0],
+                          "mtime": os.path.getmtime(full)})
+        decks.sort(key=lambda r: -r["mtime"])
+        return {"decks": decks}
 
     # ----------------------------------------- directory browser (Save as)
     if action == "listdir":
@@ -727,6 +754,9 @@ SCHEMA_DOC = {
 ACTIONS = {
     "open": "file -> {doc, model, mtime, media_dir, title}: parse (or reuse the "
            "cached) model for a .pptx",
+    "new_deck": "name? -> {file}: write a new blank .pptx into the library dir, "
+                "then open it via `open`",
+    "library": "-> {decks:[{file,name,mtime}]}: decks created from the home screen",
     "describe": "doc? -> schema + action list + compact per-slide element index",
     "get_model": "doc -> {model, mtime, media_dir}",
     "update_element": "doc, el, patch(json) -> semantic patch: geometry keys, "

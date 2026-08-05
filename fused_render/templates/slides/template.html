@@ -231,7 +231,14 @@
   .welcome-card{background:#fff;border:1px solid var(--hair);border-radius:14px;
     box-shadow:var(--shadow-2);padding:34px;width:min(560px,92vw)}
   .welcome-card h1{margin:0 0 4px;font-size:22px}
-  .welcome-card p{margin:0;color:var(--ink-2)}
+  .welcome-card p{margin:0 0 18px;color:var(--ink-2)}
+  .lib-h{margin-top:18px;color:var(--ink-2);font-weight:600;font-size:11px;
+    text-transform:uppercase;letter-spacing:.5px}
+  .recent{margin-top:8px;max-height:240px;overflow:auto}
+  .recent .r{display:flex;align-items:center;gap:10px;padding:9px 10px;border-radius:8px;cursor:pointer}
+  .recent .r:hover{background:var(--hair-2)}
+  .recent .r .ico{width:30px;height:30px;border-radius:6px;background:var(--blue-soft);
+    color:var(--blue-ink);display:grid;place-items:center;font-size:15px;flex:0 0 auto}
 
   /* loading skeleton — shown over the stage (and as filmstrip rows) while a
      deck is being opened/parsed on the Python side; mirrors the eventual
@@ -302,6 +309,8 @@
       <div class="filebox">
         <button class="btn" id="fileBtn">File<svg viewBox="0 0 24 24" style="width:13px;height:13px"><path d="M6 9l6 6 6-6"/></svg></button>
         <div id="fileMenu" class="menu hidden">
+          <button class="mi" data-file="new">New blank deck</button>
+          <div class="msep"></div>
           <button class="mi" data-file="save">Save<span class="mi-k">Ctrl+S</span></button>
           <button class="mi" data-file="saveas">Save as…</button>
           <div class="msep"></div>
@@ -471,8 +480,13 @@
   // this helper; default per-file cancellation would abort in-flight writes (D114).
   const py=(params)=>fused.runPython(PY,params,{key:null});
   const PT2PX=96/72;
-  const FILE=fused.params.get("_file")||"";
-  const DEFAULT_TITLE=FILE?FILE.split(/[\\/]/).pop().replace(/\.pptx$/i,""):"Untitled";
+  // `_file` (an existing deck) is the read-only open path; `lib` (a deck created
+  // from the home screen and living in the library dir) is our own param, so it
+  // survives reload where `_file` can't be re-set. FILE repoints when a library
+  // deck is opened, so save/export/rename all target it exactly like a _file open.
+  const titleOf=(f)=>f?f.split(/[\\/]/).pop().replace(/\.pptx$/i,""):"Untitled";
+  let FILE=fused.params.get("_file")||fused.params.get("lib")||"";
+  let DEFAULT_TITLE=titleOf(FILE);
 
   // ---------------- state ----------------
   const S={ doc:null, title:null, model:null, mediaDir:"", mtime:0, cur:0, sel:null, selIds:[],
@@ -1077,19 +1091,64 @@
   }
   function hideLoadingSkeleton(){ $("stageSkeleton").classList.add("hidden"); }
 
-  // ---------------- empty state (no _file, or open failed) ----------------
+  // ---------------- error state (open failed) ----------------
   function showEmpty(msg){
     hideLoadingSkeleton();
     $("app").classList.add("home");
     const w=$("welcome"); w.classList.remove("hidden");
-    w.innerHTML=`<div class="welcome-card"><h1>Slides Studio</h1><p>${esc(msg)}</p></div>`;
+    w.innerHTML=`<div class="welcome-card"><h1>Slides Studio</h1><p>${esc(msg)}</p>
+      <button class="btn primary" id="newDeckBtn">＋ New blank deck</button></div>`;
+    $("newDeckBtn").onclick=createDeck;
+  }
+
+  // ---------------- home state (no _file / no lib) ----------------
+  async function showHome(){
+    hideLoadingSkeleton();
+    $("app").classList.add("home");
+    const w=$("welcome"); w.classList.remove("hidden");
+    w.innerHTML=`<div class="welcome-card">
+      <h1>Slides Studio</h1>
+      <p>Start a new deck, or open this template on an existing <b>.pptx</b> file.</p>
+      <button class="btn primary" id="newDeckBtn">＋ New blank deck</button>
+      <div id="libWrap"></div></div>`;
+    $("newDeckBtn").onclick=createDeck;
+    try{
+      const {decks}=await py({action:"library"});
+      const lw=$("libWrap"); if(!lw||!decks.length) return;
+      lw.innerHTML=`<div class="lib-h">Your decks</div>
+        <div class="recent">${decks.map(d=>`<div class="r" data-file="${esc(d.file)}">
+          <span class="ico">▣</span><div style="flex:1">
+          <div style="font-weight:600">${esc(d.name)}</div>
+          <div style="color:var(--ink-3);font-size:11px">${esc(new Date(d.mtime*1000).toLocaleString())}</div>
+          </div></div>`).join("")}</div>`;
+      lw.querySelectorAll(".recent .r").forEach(n=>n.onclick=()=>openLibrary(n.dataset.file));
+    }catch(e){}
+  }
+
+  // Create a blank .pptx in the library dir, then open it through the normal path.
+  async function createDeck(){
+    try{ toast("Creating deck…");
+      const r=await py({action:"new_deck",name:"Untitled"});
+      openLibrary(r.file);
+    }catch(e){ toast("Create failed: "+e.message); }
+  }
+  // Repoint the document to a library deck (a real .pptx), keep it in the URL via
+  // the `lib` param so reload reopens it, and drive it through `open` like any file.
+  async function openLibrary(path){
+    FILE=path; DEFAULT_TITLE=titleOf(path);
+    fused.params.set("lib",path);
+    $("welcome").classList.add("hidden");
+    showLoadingSkeleton();
+    try{ load(await py({action:"open",file:FILE})); }
+    catch(e){ showEmpty("Could not open "+FILE+": "+(e.message||e)); }
   }
 
   // ========================================================= File menu
   function toggleFileMenu(){ $("fileMenu").classList.toggle("hidden"); }
   async function fileAction(a){
     $("fileMenu").classList.add("hidden");
-    if(a==="save") saveDeck();
+    if(a==="new") createDeck();
+    else if(a==="save") saveDeck();
     else if(a==="saveas") saveAsDeck();
   }
   async function saveDeck(){ if(!S.doc)return;
@@ -1248,7 +1307,7 @@
   // ========================================================= start
   $("boot").classList.add("hidden"); $("app").classList.remove("hidden");
   wire(); initDrag();
-  if(!FILE){ showEmpty("No file selected. Open this template on a .pptx file."); }
+  if(!FILE){ showHome(); }
   else{
     showLoadingSkeleton();
     try{ load(await py({action:"open", file:FILE})); }

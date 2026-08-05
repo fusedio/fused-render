@@ -169,8 +169,37 @@
   .modal-bg { position: fixed; inset: 0; background: rgba(15,23,42,.35); display: grid; place-items: center; z-index: 100; }
   .modal { background: #fff; border-radius: var(--radius-lg); box-shadow: var(--shadow-2); padding: 20px; width: 380px; }
   .modal h3 { margin: 0 0 14px; font-size: 16px; }
+  .modal label { display: block; font-size: 12px; color: var(--ink-2); font-weight: 600; margin: 10px 0 4px; }
+  .modal input, .modal select { width: 100%; padding: 8px 10px; border: 1px solid var(--hair); border-radius: var(--radius); font: inherit; }
   .modal .row { display: flex; gap: 8px; justify-content: flex-end; margin-top: 18px; }
   .modal.wide { width: 560px; max-width: 92vw; }
+
+  /* ---- home / library (shown when opened without a _file) ---- */
+  #home { position: fixed; inset: 0; z-index: 300; overflow-y: auto; background: var(--canvas); padding: 48px 24px; }
+  #home.hidden { display: none !important; }
+  .home-inner { max-width: 780px; margin: 0 auto; }
+  .home-inner h1 { font-size: 24px; margin: 0 0 4px; }
+  .home-inner .lede { color: var(--ink-3); margin: 0 0 8px; }
+  .tpl-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin: 20px 0 30px; }
+  .tpl { border: 1px solid var(--hair); border-radius: var(--radius-lg); padding: 16px 12px; text-align: center;
+    cursor: pointer; background: #fff; transition: .12s; }
+  .tpl:hover { border-color: var(--blue); background: var(--blue-soft); }
+  .tpl .ti { color: var(--blue); display: flex; justify-content: center; }
+  .tpl .ti svg { width: 26px; height: 26px; }
+  .tpl .tn { font-weight: 600; margin-top: 6px; }
+  .tpl .td { color: var(--ink-3); font-size: 11.5px; margin-top: 2px; }
+  .home-inner h4 { text-transform: uppercase; letter-spacing: .7px; font-size: 11px; color: var(--ink-3); margin: 0 0 10px; }
+  .lib-row { display: flex; align-items: center; gap: 12px; padding: 11px 12px; border: 1px solid var(--hair);
+    border-radius: var(--radius); margin-bottom: 8px; cursor: pointer; background: #fff; }
+  .lib-row:hover { border-color: var(--blue); background: var(--blue-soft); }
+  .lib-row .ic { color: var(--blue); font-weight: 800; font-size: 10px; font-family: var(--mono); border: 1.5px solid var(--blue); border-radius: 4px; padding: 2px 5px; }
+  .lib-row .n { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
+  .lib-row .meta { color: var(--ink-3); font-size: 12px; }
+  .lib-empty { color: var(--ink-3); }
+  .brand .home-btn { border: none; background: none; padding: 4px; border-radius: 5px; color: var(--ink-3); display: none; }
+  .brand .home-btn:hover { background: var(--hair-2); color: var(--blue); }
+  .brand .home-btn svg { width: 16px; height: 16px; display: block; }
+  body.has-home .brand .home-btn { display: inline-flex; }
 
   /* ---- file browser ---- */
   .fb-crumbs { display: flex; align-items: center; gap: 2px; flex-wrap: wrap; font-size: 12px;
@@ -200,7 +229,6 @@
 
   #toast { position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%); background: var(--ink); color: #fff;
     padding: 9px 16px; border-radius: 8px; font-size: 13px; box-shadow: var(--shadow-2); z-index: 200; display: none; }
-  #empty { position: fixed; inset: 0; display: grid; place-items: center; color: var(--ink-3); font-size: 14px; background: var(--canvas); z-index: 300; }
 
   /* ---- boot skeleton: mimics the topbar + sidebar + editor + PDF workspace
      shape while the vendored CodeMirror bundle is still loading, instead of a
@@ -209,8 +237,8 @@
   #boot { position: fixed; inset: 0; z-index: 300; background: var(--canvas);
     display: flex; flex-direction: column; overflow: hidden; }
   /* A load failure replaces #boot's skeleton children with a plain error
-     string (see the codemirror import catch below) — switch back to the
-     centered/muted layout #empty uses instead of staying a flex column. */
+     string (see the codemirror import catch below) — center the muted text
+     instead of staying a flex column. */
   #boot.boot-error { display: grid; place-items: center; text-align: center;
     color: var(--ink-3); font-size: 14px; padding: 20px; }
   .boot-topbar { flex: 0 0 auto; display: flex; align-items: center; gap: 10px;
@@ -267,11 +295,13 @@
     <div class="boot-pdf"><div class="sk-page"></div></div>
   </div>
 </div>
-<div id="empty" class="hidden">No file selected (missing _file param).</div>
 
 <!-- ============ top bar ============ -->
 <div id="topbar" class="hidden">
-  <div class="brand"><span class="mark">TeX</span></div>
+  <div class="brand">
+    <span class="mark">TeX</span>
+    <button class="home-btn" id="homeBtn" title="All documents"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9.5 12 3l9 6.5"/><path d="M5 10v10h14V10"/></svg></button>
+  </div>
   <span class="docname" id="docName"></span>
   <div class="spacer"></div>
   <div id="status"><span class="dot"></span><span class="txt">idle</span></div>
@@ -346,6 +376,17 @@
   </div>
 </div>
 
+<!-- ============ home / library (no _file: create or open a project) ============ -->
+<div id="home" class="hidden">
+  <div class="home-inner">
+    <h1>LaTeX</h1>
+    <p class="lede">A local, live-preview LaTeX editor. Start a new document below, or open one you created earlier — source on the left, compiled PDF on the right.</p>
+    <div class="tpl-grid" id="tplGrid"></div>
+    <h4>Your projects</h4>
+    <div id="libList"></div>
+  </div>
+</div>
+
 <div id="modalHost"></div>
 <div id="toast"></div>
 
@@ -356,11 +397,9 @@ pdfjs.GlobalWorkerOptions.workerSrc = "/template-assets/pdfjs.worker.bundle.mjs"
 (async () => {
   fused.autoReload(false); // editor must not reload out from under the cursor — own autosave changes mtime; external edits are the conflict lock's job (SPEC LR-5)
   const FILE = fused.params.get("_file") || "";
-  if (!FILE) {
-    document.getElementById("boot").remove();
-    document.getElementById("empty").classList.remove("hidden");
-    throw new Error("latex template: missing _file");
-  }
+  // No _file: this template was opened directly (not as a preview of a .tex).
+  // Instead of dead-ending, we show the Home library and let the user create or
+  // reopen a project — its main.tex then drives the exact same workspace below.
 
   // ---- vendored CodeMirror loading (relative <script src> 404s inside the
   // render iframe — resolve against this template's own directory instead).
@@ -406,8 +445,8 @@ pdfjs.GlobalWorkerOptions.workerSrc = "/template-assets/pdfjs.worker.bundle.mjs"
 
   // ---- state
   const S = {
-    root: FILE.slice(0, Math.max(FILE.lastIndexOf("/"), FILE.lastIndexOf("\\"))),  // the .tex file's own directory — also the compile cwd
-    mainAbs: FILE,          // the entrypoint this template was opened for (fixed for its lifetime)
+    root: "",               // the .tex file's own directory — also the compile cwd (set in startWorkspace)
+    mainAbs: "",            // the entrypoint the workspace is compiling (the _file, or a project's main.tex)
     fileAbs: "",            // currently open buffer (abs) — may be an \input child
     mtime: 0,               // optimistic-lock mtime of the open buffer
     writable: true,         // stat.writable of the open buffer — false locks the editor (SPEC §13.5)
@@ -1059,30 +1098,123 @@ pdfjs.GlobalWorkerOptions.workerSrc = "/template-assets/pdfjs.worker.bundle.mjs"
     });
   })();
 
-  // =========================================================== boot
-  $("boot").remove();
-  $("topbar").classList.remove("hidden"); $("main").classList.remove("hidden");
-  document.title = baseName(FILE) + " — LaTeX";
-  $("docName").textContent = baseName(FILE);
+  // =========================================================== home / library
+  // Only reached when opened without a _file. Projects created here live under
+  // engine.py's ./projects; opening one hands its main.tex to startWorkspace,
+  // so the editor/compile path below is identical to the _file case.
+  const TPLS = [
+    { id: "article", name: "Article", desc: "amsmath, hyperref" },
+    { id: "report",  name: "Report",  desc: "chapters + TOC" },
+    { id: "beamer",  name: "Beamer",  desc: "slide deck" },
+    { id: "letter",  name: "Letter",  desc: "formal letter" },
+  ];
+  function renderTemplates() {
+    $("tplGrid").innerHTML = TPLS.map(t =>
+      `<div class="tpl" data-tpl="${esc(t.id)}"><div class="ti">${ICON.file}</div><div class="tn">${esc(t.name)}</div><div class="td">${esc(t.desc)}</div></div>`).join("");
+    $("tplGrid").querySelectorAll(".tpl").forEach(el => el.addEventListener("click", () => newProjectModal(el.dataset.tpl)));
+  }
+  async function refreshLibrary() {
+    const list = $("libList");
+    list.innerHTML = '<div class="lib-empty">Loading…</div>';
+    let projects = [];
+    try { ({ projects } = await py({ action: "list_projects" })); }
+    catch (e) { list.innerHTML = '<div class="lib-empty">Couldn\'t load your projects.</div>'; return; }
+    if (!projects.length) { list.innerHTML = '<div class="lib-empty">No projects yet — pick a template above to start one.</div>'; return; }
+    list.innerHTML = projects.map(p =>
+      `<div class="lib-row" data-slug="${esc(p.slug)}"><span class="ic">TEX</span><span class="n">${esc(p.title)}</span><span class="meta">${esc(p.main)}</span></div>`).join("");
+    list.querySelectorAll(".lib-row").forEach(r => r.addEventListener("click", () => openProject(r.dataset.slug)));
+  }
+  function showHome() {
+    const bootEl = $("boot"); if (bootEl) bootEl.remove();
+    document.body.classList.add("has-home");
+    $("topbar").classList.add("hidden"); $("main").classList.add("hidden");
+    $("home").classList.remove("hidden");
+    fused.params.set("project", ""); fused.params.set("open", "");
+    document.title = "LaTeX";
+    renderTemplates();
+    refreshLibrary();
+  }
+  async function openProject(slug) {
+    const r = await py({ action: "open_project", slug });
+    if (!r || r.error || !r.main_path) { toast((r && r.error) || "Open failed."); return; }
+    fused.params.set("project", slug); fused.params.set("open", "");
+    await startWorkspace(r.main_path, { home: true, title: r.title });
+  }
+  function newProjectModal(tpl) {
+    const host = modal(`<h3>New document</h3>
+      <label>Title</label><input id="npTitle" placeholder="My Paper" autofocus>
+      <label>Template</label><select id="npTpl">${TPLS.map(t=>`<option value="${esc(t.id)}"${t.id===tpl?" selected":""}>${esc(t.name)}</option>`).join("")}</select>
+      <div class="row"><button class="btn ghost" id="npCancel">Cancel</button><button class="btn primary" id="npCreate">Create</button></div>`);
+    const create = async () => {
+      const title = host.querySelector("#npTitle").value.trim() || "Untitled";
+      const template = host.querySelector("#npTpl").value;
+      closeModal();
+      const r = await py({ action: "new_project", title, template });
+      if (!r || r.error || !r.main_path) { toast((r && r.error) || "Create failed."); return; }
+      fused.params.set("project", r.slug); fused.params.set("open", "");
+      await startWorkspace(r.main_path, { home: true, title: r.title });
+    };
+    host.querySelector("#npCancel").addEventListener("click", closeModal);
+    host.querySelector("#npCreate").addEventListener("click", create);
+    host.querySelector("#npTitle").addEventListener("keydown", (e) => { if (e.key === "Enter") create(); });
+    setTimeout(() => host.querySelector("#npTitle").focus(), 30);
+  }
+  $("homeBtn").addEventListener("click", showHome);
 
-  const qMode = fused.params.get("mode") || "edit";
-  const qZoom = parseInt(fused.params.get("zoom") || "100", 10);
-  const qSplit = parseFloat(fused.params.get("split") || "50");
-  const qDrawer = fused.params.get("drawer");
-  setMode(qMode);
-  S.scale = Math.max(0.4, Math.min(3, qZoom / 100));
-  $("zoomLbl").textContent = Math.round(S.scale * 100) + "%";
-  $("editPane").style.flex = `1 1 ${qSplit}%`; $("pdfPane").style.flex = `1 1 ${100 - qSplit}%`;
-  if (qDrawer) $("drawer").classList.toggle("collapsed", qDrawer === "collapsed");
+  // =========================================================== workspace start
+  // Bring up the editor/PDF workspace for `fileAbs` (the _file, or a project's
+  // main.tex). Re-entrant: switching projects from Home calls this again, so it
+  // resets the per-document state first. opts.home shows the Home button so the
+  // user can get back to the library; opts.title labels the doc.
+  async function startWorkspace(fileAbs, opts = {}) {
+    S.mainAbs = fileAbs;
+    S.root = fileAbs.slice(0, Math.max(fileAbs.lastIndexOf("/"), fileAbs.lastIndexOf("\\")));
+    if (S.pdf) { try { S.pdf.destroy(); } catch (e) {} S.pdf = null; }
+    S.tree = []; S.outline = null; S.bib = []; S.lastPdf = ""; S.dirty = false; S.fileAbs = ""; S.mtime = 0;
+    $("pdfpages").innerHTML = "";
+    $("toc").innerHTML = '<div class="side-empty">Compile to build the outline.</div>';
 
-  addOpenFile(S.mainAbs);
+    const bootEl = $("boot"); if (bootEl) bootEl.remove();
+    $("home").classList.add("hidden");
+    document.body.classList.toggle("has-home", !!opts.home);
+    $("topbar").classList.remove("hidden"); $("main").classList.remove("hidden");
+    const label = opts.title || baseName(fileAbs);
+    document.title = label + " — LaTeX";
+    $("docName").textContent = label;
 
-  // Resume where the user left off: `open` param wins, else sidecar, else main.
-  let openRel = fused.params.get("open");
-  if (openRel === undefined) openRel = await loadSidecarOpen();
-  const openAbs = openRel ? (openRel.startsWith("/") ? openRel : S.root + "/" + openRel) : S.mainAbs;
-  await openFile((await fused.stat(openAbs).catch(() => null)) ? openAbs : S.mainAbs);
-  compile();
+    const qMode = fused.params.get("mode") || "edit";
+    const qZoom = parseInt(fused.params.get("zoom") || "100", 10);
+    const qSplit = parseFloat(fused.params.get("split") || "50");
+    const qDrawer = fused.params.get("drawer");
+    setMode(qMode);
+    S.scale = Math.max(0.4, Math.min(3, qZoom / 100));
+    $("zoomLbl").textContent = Math.round(S.scale * 100) + "%";
+    $("editPane").style.flex = `1 1 ${qSplit}%`; $("pdfPane").style.flex = `1 1 ${100 - qSplit}%`;
+    if (qDrawer) $("drawer").classList.toggle("collapsed", qDrawer === "collapsed");
+
+    addOpenFile(S.mainAbs);
+
+    // Resume where the user left off: `open` param wins, else sidecar, else main.
+    let openRel = fused.params.get("open");
+    if (openRel === undefined) openRel = await loadSidecarOpen();
+    const openAbs = openRel ? (openRel.startsWith("/") ? openRel : S.root + "/" + openRel) : S.mainAbs;
+    await openFile((await fused.stat(openAbs).catch(() => null)) ? openAbs : S.mainAbs);
+    compile();
+  }
+
+  // =========================================================== route
+  if (FILE) {
+    await startWorkspace(FILE);                       // preview of a .tex — unchanged behavior
+  } else {
+    const proj = fused.params.get("project");
+    if (proj) {
+      const r = await py({ action: "open_project", slug: proj }).catch(() => null);
+      if (r && r.main_path && !r.error) await startWorkspace(r.main_path, { home: true, title: r.title });
+      else showHome();
+    } else {
+      showHome();
+    }
+  }
 })();
 </script>
 </body>

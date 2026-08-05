@@ -62,6 +62,7 @@ BUILDS = os.path.join(CACHE_ROOT, "builds")                  # per-doc aux outpu
 EXPORTS = os.path.join(CACHE_ROOT, "exports")                # per-doc pandoc exports, hashed
 INSTALL_DIR = os.path.join(CACHE_ROOT, "_install")           # tectonic download staging
 BIN_DIR = os.path.expanduser("~/.fused-render/bin")          # user-owned install location
+LIBRARY = os.path.join(HERE, "projects")                     # one folder per project created from Home
 
 TECTONIC_VERSION = "0.16.9"
 
@@ -590,15 +591,186 @@ def _synctex_forward(synctex_gz: str, target_file: str, line: int):
             "hits": len(hits)}
 
 
+# ----------------------------------------------------------------- projects ---
+# Home-screen projects: a scaffold is pure file-writing, so a new blank document
+# succeeds even when tectonic isn't installed (compilation then fails gracefully
+# through the usual missing-tectonic path). Projects live in ./projects next to
+# this script, one folder each with a main.tex + meta.json.
+PROJECT_TEMPLATES = {
+    "article": r"""\documentclass[11pt]{article}
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage[margin=1in]{geometry}
+\usepackage{graphicx}
+\usepackage[colorlinks=true,linkcolor=blue,citecolor=teal,urlcolor=magenta]{hyperref}
+\usepackage{booktabs}
+
+\title{__TITLE__}
+\author{Your Name}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+A short abstract. Edit on the left, the PDF recompiles on the right.
+\end{abstract}
+
+\section{Introduction}\label{sec:intro}
+Hello, \LaTeX! Inline math like $E = mc^2$ and display math:
+\begin{equation}\label{eq:euler}
+  e^{i\pi} + 1 = 0.
+\end{equation}
+See Section~\ref{sec:intro} and Equation~\eqref{eq:euler}.
+
+\section{Method}
+\begin{itemize}
+  \item First point.
+  \item Second point.
+\end{itemize}
+
+\end{document}
+""",
+    "report": r"""\documentclass[11pt]{report}
+\usepackage{amsmath,amssymb}
+\usepackage[margin=1in]{geometry}
+\usepackage{graphicx}
+\usepackage[colorlinks=true]{hyperref}
+\title{__TITLE__}
+\author{Your Name}
+\date{\today}
+\begin{document}
+\maketitle
+\tableofcontents
+\chapter{Introduction}\label{ch:intro}
+Text of the first chapter.
+\chapter{Background}
+More text.
+\end{document}
+""",
+    "beamer": r"""\documentclass{beamer}
+\usetheme{Madrid}
+\usepackage{amsmath}
+\title{__TITLE__}
+\author{Your Name}
+\date{\today}
+\begin{document}
+\frame{\titlepage}
+\begin{frame}{Overview}
+  \begin{itemize}
+    \item A point.
+    \item Another point with math: $\sum_{i=1}^n i = \frac{n(n+1)}{2}$.
+  \end{itemize}
+\end{frame}
+\end{document}
+""",
+    "letter": r"""\documentclass{letter}
+\usepackage[margin=1in]{geometry}
+\signature{Your Name}
+\address{Your Street \\ Your City}
+\begin{document}
+\begin{letter}{Recipient \\ Their Address}
+\opening{Dear Recipient,}
+Body of the letter.
+\closing{Sincerely,}
+\end{letter}
+\end{document}
+""",
+}
+
+
+def _fwd(p):
+    return p.replace(os.sep, "/")
+
+
+def _safe_slug(s):
+    slug = re.sub(r"[^A-Za-z0-9_-]", "-", (s or "").strip())[:64].strip("-")
+    return slug or "untitled"
+
+
+def _project_dir(slug):
+    return os.path.join(LIBRARY, _safe_slug(slug))
+
+
+def _project_meta(d):
+    mp = os.path.join(d, "meta.json")
+    if os.path.exists(mp):
+        try:
+            with open(mp, encoding="utf-8") as f:
+                return json.load(f)
+        except (OSError, json.JSONDecodeError):
+            pass
+    return {}
+
+
+def _list_projects():
+    os.makedirs(LIBRARY, exist_ok=True)
+    out = []
+    for name in sorted(os.listdir(LIBRARY)):
+        d = os.path.join(LIBRARY, name)
+        if not os.path.isdir(d):
+            continue
+        meta = _project_meta(d)
+        main_rel = meta.get("main", "main.tex")
+        mainp = os.path.join(d, main_rel)
+        out.append({"slug": name, "title": meta.get("title", name),
+                    "main": main_rel,
+                    "main_path": _fwd(mainp) if os.path.exists(mainp) else "",
+                    "mtime": os.path.getmtime(mainp) if os.path.exists(mainp)
+                    else os.path.getmtime(d)})
+    out.sort(key=lambda e: -(e["mtime"] or 0))
+    return out
+
+
+def _new_project(title, template):
+    os.makedirs(LIBRARY, exist_ok=True)
+    slug = _safe_slug(title or "untitled")
+    if os.path.exists(os.path.join(_project_dir(slug), "main.tex")):
+        i = 2
+        while os.path.exists(_project_dir(f"{slug}-{i}")):
+            i += 1
+        slug = f"{slug}-{i}"
+    d = _project_dir(slug)
+    os.makedirs(d, exist_ok=True)
+    body = PROJECT_TEMPLATES.get(template, PROJECT_TEMPLATES["article"]).replace(
+        "__TITLE__", (title or slug).replace("{", "").replace("}", ""))
+    with open(os.path.join(d, "main.tex"), "w", encoding="utf-8") as f:
+        f.write(body)
+    with open(os.path.join(d, "meta.json"), "w", encoding="utf-8") as f:
+        json.dump({"title": title or slug, "main": "main.tex",
+                   "created": time.time(), "template": template}, f)
+    return {"slug": slug, "title": title or slug, "main": "main.tex",
+            "main_path": _fwd(os.path.join(d, "main.tex"))}
+
+
 # -------------------------------------------------------------------- dispatcher
 def main(action: str = "tectonic_status", path: str = "", target: str = "",
          line: int = 0, synctex: bool = True, name: str = "", force: int = 0,
-         src: str = ""):
+         src: str = "", title: str = "", slug: str = "", template: str = ""):
     if action == "tectonic_status":
         return _tectonic_status()
 
     if action == "tectonic_install":
         return _tectonic_install()
+
+    if action == "list_projects":
+        return {"projects": _list_projects(), "dir": _fwd(LIBRARY)}
+
+    if action == "new_project":
+        return _new_project(title, template or "article")
+
+    if action == "open_project":
+        d = _project_dir(slug)
+        if not os.path.isdir(d):
+            return {"error": "no such project"}
+        meta = _project_meta(d)
+        main_rel = meta.get("main", "main.tex")
+        mainp = os.path.join(d, main_rel)
+        if not os.path.exists(mainp):
+            return {"error": "project has no main file"}
+        return {"slug": slug, "title": meta.get("title", slug), "main": main_rel,
+                "main_path": _fwd(mainp)}
 
     if action == "browse":
         # List one directory for the file-browser modal. `path` = dir to show

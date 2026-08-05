@@ -189,6 +189,32 @@
     padding: 10px 16px; border-radius: var(--radius); display: none; z-index: 60; box-shadow: var(--shadow-2); max-width: 80vw; }
   #nofile { padding: 44px; color: var(--ink-3); }
   .kbd { font-family: ui-monospace, monospace; background: var(--hair-2); border-radius: 4px; padding: 1px 5px; font-size: 11px; color: var(--ink-2); margin-left: auto; }
+
+  /* ---- home screen (shown when no _file: create / open library docs) ---- */
+  #home { flex: 1 1 auto; overflow: auto; }
+  .home-wrap { max-width: 760px; margin: 0 auto; padding: 56px 24px 80px; }
+  .home-head { display: flex; align-items: center; gap: 12px; margin-bottom: 28px; }
+  .home-head h1 { margin: 0; font-size: 22px; font-weight: 700; letter-spacing: .2px; }
+  .home-new { display: inline-flex; align-items: center; gap: 8px; background: var(--blue); color: #fff;
+    border: 1px solid var(--blue); border-radius: var(--radius-lg); padding: 12px 18px; font-size: 14px;
+    font-weight: 600; box-shadow: var(--shadow-1); }
+  .home-new:hover { background: var(--blue-ink); }
+  .home-new:disabled { opacity: .55; cursor: progress; }
+  .home-lib { margin-top: 34px; }
+  .home-lib-head { font-size: 11px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase;
+    color: var(--ink-3); margin-bottom: 12px; }
+  .home-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; }
+  .home-empty { color: var(--ink-3); font-size: 13px; padding: 8px 0; }
+  .home-card { display: flex; align-items: center; gap: 11px; text-align: left; background: var(--chrome);
+    border: 1px solid var(--hair); border-radius: var(--radius-lg); padding: 13px 14px; box-shadow: var(--shadow-1); }
+  .home-card:hover { border-color: var(--blue-2); background: var(--blue-soft); }
+  .home-card-ic { flex: 0 0 auto; width: 30px; height: 30px; border-radius: 6px; background: var(--blue-soft);
+    color: var(--blue); display: grid; place-items: center; }
+  .home-card-ic svg { width: 17px; height: 17px; }
+  .home-card-main { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+  .home-card-title { font-weight: 600; font-size: 13.5px; color: var(--ink); overflow: hidden;
+    text-overflow: ellipsis; white-space: nowrap; }
+  .home-card-sub { font-size: 11.5px; color: var(--ink-3); }
   /* .ro-badge / .ro-tip styles inject from /template-shared/ro-badge.js. */
 
   /* ---- boot skeleton: mirrors the topbar/toc/page shell that mounts once the
@@ -268,12 +294,31 @@
   </div>
   <div id="nofile" class="hidden">No file selected.</div>
 
+  <!-- home screen (no _file): create a new document or open one from the library -->
+  <div id="home" class="hidden">
+    <div class="home-wrap">
+      <div class="home-head">
+        <span class="brand"><span class="mark">D</span></span>
+        <h1>Docs</h1>
+      </div>
+      <button id="btnNew" class="home-new">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:18px;height:18px"><path d="M12 5v14M5 12h14"/></svg>
+        New document
+      </button>
+      <div class="home-lib">
+        <div class="home-lib-head">Your documents</div>
+        <div id="homeList" class="home-list"><div class="home-empty">Loading…</div></div>
+      </div>
+    </div>
+  </div>
+
   <!-- top bar -->
   <div id="topbar" class="hidden">
     <span class="brand"><span class="mark">D</span></span>
     <div class="menu-wrap">
       <button id="btnFileMenu" class="btn ghost" title="File">File <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:12px;height:12px"><path d="M6 9l6 6 6-6"/></svg></button>
       <div id="fileMenu" class="menu hidden" style="left:0;right:auto;min-width:220px">
+        <button data-file="new">New document</button>
         <button data-file="save">Save <span class="kbd">⌘S</span></button>
         <button data-file="saveas">Save a copy… <span class="kbd">⌘⇧S</span></button>
         <button data-file="print">Print <span class="kbd">⌘P</span></button>
@@ -357,12 +402,53 @@
 
   fused.autoReload(false); // editor must not reload out from under the cursor — own autosave changes mtime; external edits are the conflict lock's job (SPEC LR-5)
 
+  // ---- home screen (no _file): create / open library documents --------------
+  async function showHome() {
+    $("home").classList.remove("hidden");
+    const run = (params) => fused.runPython("./docs.py", params, { key: null });
+    const goHome = (path) => { const u = new URL(location.href); u.searchParams.set("_file", path); location.href = u.toString(); };
+    const listEl = $("homeList");
+    const FILE_IC = '<span class="home-card-ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg></span>';
+    async function refresh() {
+      let res;
+      try { res = await run({ action: "list" }); }
+      catch (e) { listEl.innerHTML = '<div class="home-empty"></div>'; listEl.firstChild.textContent = "Could not load documents: " + e.message; return; }
+      const docs = res.docs || [];
+      if (!docs.length) { listEl.innerHTML = '<div class="home-empty">No documents yet — create one to get started.</div>'; return; }
+      listEl.innerHTML = "";
+      for (const d of docs) {
+        const card = document.createElement("button");
+        card.className = "home-card";
+        card.innerHTML = FILE_IC + '<span class="home-card-main"><span class="home-card-title"></span><span class="home-card-sub"></span></span>';
+        card.querySelector(".home-card-title").textContent = d.title || d.name;
+        card.querySelector(".home-card-sub").textContent = "Edited " + new Date((d.mtime || 0) * 1000).toLocaleString();
+        card.addEventListener("click", () => goHome(d.path));
+        listEl.appendChild(card);
+      }
+    }
+    $("btnNew").addEventListener("click", async () => {
+      const btn = $("btnNew");
+      btn.disabled = true;
+      try {
+        const res = await run({ action: "new", title: "Untitled document" });
+        goHome(res.path);
+      } catch (e) {
+        btn.disabled = false;
+        listEl.innerHTML = '<div class="home-empty"></div>';
+        listEl.firstChild.textContent = "Could not create document: " + e.message;
+      }
+    });
+    await refresh();
+  }
+
   // The target file arrives as the read-only _file param (template contract).
   const FILE = fused.params.get("_file") || "";
   if (!FILE) {
+    // No file: show the Home screen — create a new document, or open one from
+    // the library. Selecting a doc renavigates this frame with its path as
+    // _file, which re-runs boot() down the normal editor path below.
     $("boot").classList.add("hidden");
-    $("nofile").classList.remove("hidden");
-    $("nofile").textContent = "No file selected (missing _file param).";
+    await showHome();
     return;
   }
   const BASENAME = FILE.split(/[\\/]/).pop();
@@ -1345,6 +1431,16 @@
     } catch (e) { toast("Export failed: " + e.message, 5000); }
   }
   // Directory-browser popup: pick a folder + name, write a .docx copy there —
+  // ---- new document (File ▸ New): create a blank doc in the library and open
+  // it. Flush a pending autosave first so the current file keeps its edits.
+  async function doNew() {
+    if (S.dirty && !RO) { clearTimeout(saveTimer); await doSave("auto"); }
+    let res;
+    try { res = await py({ action: "new", title: "Untitled document" }); }
+    catch (e) { toast("Could not create document: " + e.message); return; }
+    const u = new URL(location.href); u.searchParams.set("_file", res.path); location.href = u.toString();
+  }
+
   // this never changes what `_file` points to, it just exports a copy.
   async function doSaveAs() {
     if (!S.view) return;
@@ -1470,6 +1566,7 @@
   $("fileMenu").querySelectorAll("[data-file]").forEach((b) => b.addEventListener("click", () => {
     $("fileMenu").classList.add("hidden"); const a = b.dataset.file;
     if (a === "save") doSave("manual"); else if (a === "saveas") doSaveAs();
+    else if (a === "new") doNew();
     else if (a === "print") doPrint(); else if (a === "shortcuts") openShortcutsDialog();
   }));
   $("fileMenu").querySelectorAll("[data-fmt]").forEach((b) => b.addEventListener("click", () => { $("fileMenu").classList.add("hidden"); b.closest(".menu-sub").classList.remove("open"); doExport(b.dataset.fmt); }));
