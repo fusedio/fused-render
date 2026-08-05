@@ -928,10 +928,40 @@ a.bookmark-name::after {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
+  gap: 10px;
   padding: 10px 16px;
   border-bottom: 1px solid var(--border);
   background: var(--bg-alt);
+  /* Pin to the tallest state (28px mode-switcher button + 10px×2 padding) so
+     the bar can't grow when the portaled switcher lands after stat resolves. */
+  min-height: 48px;
+  box-sizing: border-box;
+}
+
+/* ★ bookmark button, leftmost in the bar. Subtle: bare glyph, no box —
+   muted until hovered; accent-yellow (filled star) when the view is
+   bookmarked or an armed bookmark is live. */
+.bookmark-star-btn {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2px;
+  border: none;
+  border-radius: 4px;
+  background: none;
+  color: var(--fg-muted);
+  cursor: pointer;
+  transition: color var(--dur-fast) var(--ease-out);
+}
+
+.bookmark-star-btn:hover {
+  color: var(--fg);
+}
+
+.bookmark-star-btn.active,
+.bookmark-star-btn.active:hover {
+  color: var(--accent);
 }
 
 /* Shared with the panel path bar (.panel-crumbs/.panel-crumb*, Panel.tsx):
@@ -1068,6 +1098,12 @@ a.bookmark-name::after {
   gap: 8px;
 }
 
+/* The portal target collapses entirely when no view has filled it (loading,
+   fallback card, static pages) — no stray gap at the bar's right edge. */
+#topbar-mode-slot:empty {
+  display: none;
+}
+
 .star-btn {
   flex: 0 0 auto;
   font: inherit;
@@ -1081,25 +1117,10 @@ a.bookmark-name::after {
   cursor: pointer;
 }
 
-/* Icon-only split buttons: same chrome as .star-btn, tighter padding so the
-   14px glyph sits centred at the text buttons' height. The pair sits closer
-   together than the 8px crumb-actions gap, with matching extra room on both
-   sides; hover is a quiet light-grey lift, not the accent of text buttons. */
-.star-btn.split-dir {
-  display: inline-flex;
-  align-items: center;
-  padding: 4px 7px;
-  margin-left: 6px;
-}
-
-.star-btn.split-dir + .star-btn.split-dir {
-  margin-left: -5px;
-  margin-right: 6px;
-}
-
-.star-btn.split-dir:hover {
-  color: var(--fg);
-  border-color: var(--fg-muted);
+/* Icon-only split buttons at the crumbs' tail, after the Finder glyph — same
+   boxless .reveal-btn chrome, sitting slightly tighter as a pair. */
+.reveal-btn.split-dir {
+  margin-left: 2px;
 }
 
 .star-btn:hover {
@@ -1911,6 +1932,22 @@ table.listing-table td.mtime {
 }
 
 .open-as-app-btn:hover {
+  background: rgba(var(--accent-rgb), 0.16);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+/* In the explorer the button portals into the breadcrumb's actions slot
+   (.preview-actions): re-assert the accent chrome over the slot's generic
+   `.preview-actions button` rules, which otherwise outrank the class above. */
+.preview-actions .open-as-app-btn {
+  font-size: 12px;
+  border: 1px solid rgba(var(--accent-rgb), 0.35);
+  background: rgba(var(--accent-rgb), 0.08);
+  color: var(--accent-soft);
+}
+
+.preview-actions .open-as-app-btn:hover {
   background: rgba(var(--accent-rgb), 0.16);
   border-color: var(--accent);
   color: var(--accent);
