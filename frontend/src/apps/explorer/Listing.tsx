@@ -96,7 +96,7 @@ export default function Listing({
   const [{ sort, order }, setSortState] = useState<{
     sort: SortKey;
     order: SortOrder;
-  }>(() => resolveSort(fsPath));
+  }>(() => resolveSort(fsPath, !embedded));
   // When the sort was restored from saved state (URL carried none), reflect it
   // in the URL so the address bar, bookmarks, and Back-button history match
   // what's shown — as if the column had been clicked. Only syncs a genuinely

@@ -222,10 +222,16 @@ export default function ListingPreviewPane({
     if (allowed(e)) modes.push({ mode: e.mode, icon: templateModeIcon(e) });
   }
 
-  // While the folder's app probe is still in flight the default is undecided
-  // (`_app` would lead the list) — skeleton, so the pane never flashes some
-  // other mode and then swaps to the app.
-  if (row.isDir && modeOverride === null && app === undefined) {
+  // While the default is still undecided, hold the skeleton — the pane must
+  // never settle on an interim mode and then jump. Undecided means: the
+  // folder's app probe is in flight (`_app` would lead the list), or any
+  // gated template's verdict is unresolved (a higher-ranked conditional mode
+  // may still enter the list — and for a self target, an all-conditional
+  // list must not flash the "no preview" hint while a gate may yet allow).
+  const gatesPending =
+    info.conditions === null &&
+    info.templates.some((e) => e.conditional && e.mode !== "_listing");
+  if (modeOverride === null && (gatesPending || (row.isDir && app === undefined))) {
     return (
       <div className="listing-pane">
         <div className="pane-skel" />
@@ -250,21 +256,6 @@ export default function ListingPreviewPane({
       ? modeOverride
       : (modes[0]?.mode ?? null);
   const activeEntry = embeddable.find((e) => e.mode === activeMode) ?? null;
-
-  // All-conditional mode list, verdicts still in flight: keep the skeleton —
-  // the pane must not claim "no preview" while a gate may still allow one.
-  if (
-    !row.isDir &&
-    activeEntry === null &&
-    info.conditions === null &&
-    info.templates.some((e) => e.mode !== "_listing" && e.conditional)
-  ) {
-    return (
-      <div className="listing-pane">
-        <div className="pane-skel" />
-      </div>
-    );
-  }
 
   // Header: name + mode menu + Open. Shown for every mode except the file
   // metadata card, which carries its own big-icon layout instead.
