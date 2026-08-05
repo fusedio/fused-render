@@ -61,6 +61,7 @@ import { useListingShortcuts } from "@apps/explorer/listing/useListingShortcuts"
 export default function Listing({
   fsPath,
   provisional = false,
+  embedded = false,
   onSingleApp,
 }: {
   fsPath: string;
@@ -74,6 +75,13 @@ export default function Listing({
   // let stat commit the real view. Absent/false (the committed post-stat
   // render), errors show normally.
   provisional?: boolean;
+  // `embedded`: this Listing renders INSIDE another view (the preview pane's
+  // `_listing` mode), not as the shell's main view. It must not touch the
+  // address bar (no sort/q/preview URL reflection), never opens its own
+  // preview pane (no nesting), and registers no document-level keyboard
+  // handlers — those belong to the host's Listing. Mouse interaction stays:
+  // clicks select/navigate, right-click menus and dialogs work as usual.
+  embedded?: boolean;
   // Reports the path of this directory's lone top-level HTML file (an
   // "app"), or null when there isn't exactly one — the caller (Preview's
   // header) uses this to surface an "Open as app" button. Fires whenever the
@@ -95,6 +103,7 @@ export default function Listing({
   // saved order; an unsorted folder keeps its clean, param-free URL. replaceState
   // (not navigate) so the view doesn't remount.
   useEffect(() => {
+    if (embedded) return; // the URL belongs to the host view
     if (new URLSearchParams(location.search).get("sort")) return; // URL is authoritative
     const s = new URLSearchParams(getViewState(fsPath));
     // No stored SORT → leave default sort + clean URL. (The stored string may
@@ -104,10 +113,13 @@ export default function Listing({
     params.set("sort", s.get("sort") || "name");
     params.set("order", s.get("order") === "desc" ? "desc" : "asc");
     replaceSearch(location.pathname + "?" + params.toString());
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fsPath]);
   // Same URL reflection for a pane restored from saved viewstate.
   useEffect(() => {
+    if (embedded) return;
     reflectPaneInUrl(fsPath);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fsPath]);
 
   const setSort = (key: SortKey) => {
@@ -115,6 +127,12 @@ export default function Listing({
       sort: key,
       order: key === sort && order === "asc" ? "desc" : "asc",
     };
+    if (embedded) {
+      // Pane-local: no URL write, no persisted per-folder choice — a glance
+      // in the preview must not re-sort the folder's real listing later.
+      setSortState(next);
+      return;
+    }
     const params = new URLSearchParams(location.search);
     params.set("sort", next.sort);
     params.set("order", next.order);
@@ -145,10 +163,17 @@ export default function Listing({
     searchSort,
     setSearchSort,
     setSearchSortKey,
-  } = useWalkSearch(fsPath, refresh);
+  } = useWalkSearch(fsPath, refresh, !embedded);
 
-  const { pane, splitRef, togglePane, onDividerPointerDown } =
-    usePreviewPane(fsPath);
+  const {
+    pane: paneResolved,
+    splitRef,
+    togglePane,
+    onDividerPointerDown,
+  } = usePreviewPane(fsPath);
+  // An embedded Listing never opens its own pane (no nesting), whatever the
+  // folder's saved viewstate says.
+  const pane = embedded ? { on: false, width: null } : paneResolved;
 
   const clipboard = useClipboard();
 
@@ -238,6 +263,7 @@ export default function Listing({
     searchInputRef,
     rowCtxByPathRef,
     overlayOpenRef,
+    globalKeys: !embedded,
   });
 
   const {
@@ -378,6 +404,7 @@ export default function Listing({
     doTrash,
     startRename,
     startNewFolder,
+    globalKeys: !embedded,
   });
 
   // Mouse selection on a row:
@@ -763,15 +790,17 @@ export default function Listing({
                   : "relevance"}
               </button>
             )}
-            <button
-              type="button"
-              className={"listing-pane-toggle" + (pane.on ? " active" : "")}
-              title={pane.on ? "Hide preview pane" : "Show preview pane"}
-              aria-pressed={pane.on}
-              onClick={togglePane}
-            >
-              <SplitRightIcon />
-            </button>
+            {!embedded && (
+              <button
+                type="button"
+                className={"listing-pane-toggle" + (pane.on ? " active" : "")}
+                title={pane.on ? "Hide preview pane" : "Show preview pane"}
+                aria-pressed={pane.on}
+                onClick={togglePane}
+              >
+                <SplitRightIcon />
+              </button>
+            )}
           </div>
           <div
             ref={scrollRef}

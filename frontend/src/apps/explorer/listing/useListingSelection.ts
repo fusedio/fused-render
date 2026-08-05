@@ -23,6 +23,7 @@ export function useListingSelection({
   searchInputRef,
   rowCtxByPathRef,
   overlayOpenRef,
+  globalKeys = true,
 }: {
   fsPath: string;
   // Flat, ordered list of the paths the arrow keys step through (the rendered
@@ -39,6 +40,10 @@ export function useListingSelection({
   // document-level nav handler hard-guards on this so an open overlay owns the
   // keyboard — a stray Enter can't navigate a row behind the dialog.
   overlayOpenRef: React.MutableRefObject<boolean>;
+  // False for an EMBEDDED Listing (the preview pane's `_listing` mode): the
+  // document-level keyboard belongs to the host view's own Listing, so the
+  // embedded one keeps mouse selection but registers no global handlers.
+  globalKeys?: boolean;
 }) {
   // The selected rows (see Selection): one for a plain click / arrow move, many
   // for a Shift-range, Mod-click toggle or Select All. Seeded from the
@@ -143,6 +148,7 @@ export function useListingSelection({
   // are deliberately left to the shortcut handler (see Listing.tsx).
   // Bound to `document` so it also drives the plain listing with nothing focused.
   useEffect(() => {
+    if (!globalKeys) return;
     function onKeyDown(e: KeyboardEvent) {
       // While an IME is composing, Enter confirms a candidate and the arrows
       // move through the candidate list — never repurpose them for navigation.
@@ -245,7 +251,8 @@ export function useListingSelection({
     }
     document.addEventListener("keydown", onKeyDown);
     return () => document.removeEventListener("keydown", onKeyDown);
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [globalKeys]);
 
   // Keep the keyboard selection scrolled into view as it moves. Follows the LEAD
   // row (`.lead`), not merely the first selected one: extending a Shift-range
