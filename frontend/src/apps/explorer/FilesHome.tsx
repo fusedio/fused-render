@@ -6,7 +6,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { navigate, navigateUrl, replaceSearch, urlForFsPath } from "@platform/lib/router";
-import { basename } from "@platform/lib/format";
+import { basename, formatMtime, formatSize } from "@platform/lib/format";
 import { iconForEntry } from "@platform/ui/FileIcons";
 import type { Config } from "@platform/lib/api";
 import { allBookmarks, loadBookmarks } from "@platform/lib/bookmarks";
@@ -251,23 +251,43 @@ function SearchResults({
         {result.truncated && " · Broad query: showing the first slice of matches."}
       </p>
       {result.hits.length ? (
-        <div className="fh-grid">
+        // A flat list, not the launcher card grid: results are scanned
+        // top-to-bottom by relevance, and a row gives the path and dates
+        // room the cards don't have.
+        <ul className="fh-results">
           {result.hits.map((h) => {
             const display = h.path.startsWith(home + "/")
               ? "~/" + h.path.slice(home.length + 1)
               : h.path;
             return (
-              <LaunchCard
-                key={h.path}
-                href={urlForFsPath(h.path)}
-                icon={iconForEntry(basename(h.path), h.is_dir)}
-                name={basename(h.path)}
-                path={display}
-                onOpen={() => navigate(h.path, { isDir: h.is_dir })}
-              />
+              <li key={h.path}>
+                <a
+                  className="fh-result"
+                  href={urlForFsPath(h.path)}
+                  title={h.path}
+                  onClick={(e) => {
+                    if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey)
+                      return;
+                    e.preventDefault();
+                    navigate(h.path, { isDir: h.is_dir });
+                  }}
+                >
+                  <span className="fh-result-icon" aria-hidden="true">
+                    {iconForEntry(basename(h.path), h.is_dir)}
+                  </span>
+                  <span className="fh-result-name">{basename(h.path)}</span>
+                  <span className="fh-result-path">{display}</span>
+                  <span className="fh-result-meta">
+                    {h.is_dir ? "" : formatSize(h.size)}
+                    {h.mtime !== null && (
+                      <span className="fh-result-date">{formatMtime(h.mtime)}</span>
+                    )}
+                  </span>
+                </a>
+              </li>
             );
           })}
-        </div>
+        </ul>
       ) : (
         <p className="fh-empty">Nothing matched. Try different words, or fewer of them.</p>
       )}
