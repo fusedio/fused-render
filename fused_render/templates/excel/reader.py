@@ -686,7 +686,7 @@ def _write_xlsx_streamed(dest, file, sheets_payload, meta):
             if sh["nrows"] > XLSX_SAVE_MAX_ROWS:
                 raise ValueError(
                     f"Sheet “{sp['name']}” has {sh['nrows']:,} rows — too large to write back "
-                    f"as .xlsx within the call budget. Use File ▸ Download as CSV/Parquet, or "
+                    f"as .xlsx within the call budget. Use File > Download as CSV/Parquet, or "
                     f"open the data as .csv/.parquet (saves at any size)."
                 )
     wb = openpyxl.Workbook(write_only=True)
