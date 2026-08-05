@@ -233,16 +233,22 @@ export default function ListingPreviewPane({
     if (allowed(e)) modes.push({ mode: e.mode, icon: templateModeIcon(e) });
   }
 
-  // While the default is still undecided, hold the skeleton — the pane must
+  // While the mode list is still undecided, hold the skeleton — the pane must
   // never settle on an interim mode and then jump. Undecided means: the
   // folder's app probe is in flight (`_app` would lead the list), or any
   // gated template's verdict is unresolved (a higher-ranked conditional mode
   // may still enter the list — and for a self target, an all-conditional
   // list must not flash the "no preview" hint while a gate may yet allow).
+  // This holds even with a `_panelMode` override seeded from the URL: the
+  // override's mode may itself still be absent from the interim list (a gated
+  // entry), so rendering before the list settles could show the default and
+  // then jump. Both signals resolve exactly once per mount (the component is
+  // keyed on the previewed path), and a user's switcher click can only happen
+  // after they resolve, so this never re-shows the skeleton post-settle.
   const gatesPending =
     info.conditions === null &&
     info.templates.some((e) => e.conditional && e.mode !== "_listing");
-  if (modeOverride === null && (gatesPending || (row.isDir && app === undefined))) {
+  if (gatesPending || (row.isDir && app === undefined)) {
     return (
       <div className="listing-pane">
         <div className="pane-skel" />
