@@ -16,6 +16,30 @@ the file a card opens and previews, ``entry_html`` the narrower claim that the
 entry is a renderable page (the only one the HTML-only ``/render`` iframe may be
 pointed at). For an app of this shape they are the same file.
 
+The workspace is not the only source. ``GET /api/apps`` merges five, each
+tagging its apps with a ``source`` so the shell can badge them and branch its
+open rule:
+
+* ``workspace`` — the two-level walk above, over ``fused_dir()``.
+* ``claude-science`` — artifacts in the local Claude Science store
+  (``claude_science.py``), tagged by the project that produced them. Most are
+  figures and tables rather than pages, which is what ``entry`` exists for.
+* ``claude-code`` — apps in *other* Fused-shaped folders, found from the
+  absolute paths in Claude Code's ``~/.claude.json`` project list
+  (``claude_projects.py``). A folder contributes when most of its
+  subdirectories are apps, which keeps ordinary source trees out of Home.
+* ``claude-session`` — individual viewable FILES that recent Claude Code
+  sessions wrote, found from the session transcripts
+  (``claude_sessions.py``) — the pages, figures and reports that never land
+  in an app-shaped folder at all.
+* ``claude-upload`` — the local copies of files the user attached to Claude
+  Code conversations (``claude_uploads.py``).
+
+Every discovered source is read-only — nothing here scaffolds, commits or
+deploys into them — and each is switchable off from Preferences
+(``prefs.discovery_enabled``), checked per request so a toggle applies to the
+next listing and an off source is never walked at all.
+
 POST /api/apps/new scaffolds ``<workspace>/local/<name>/`` from the packaged
 app starter kit (``fused_render/app_starter/`` — an ``index.html`` entry view
 plus a ``CLAUDE.md``) and — when the request carries a prompt — starts a
@@ -31,6 +55,7 @@ once per machine, refreshed at server startup and again here at create time —
 and the starter ``CLAUDE.md`` references them by name.
 """
 import json
+import logging
 import os
 import shutil
 import subprocess
@@ -40,9 +65,18 @@ import time
 
 from fastapi import APIRouter, Body, Header
 
-from fused_render import app_listing
+from fused_render import (
+    app_listing,
+    claude_projects,
+    claude_science,
+    claude_sessions,
+    claude_uploads,
+)
 from fused_render.server.common import _error, _require_fused
+from fused_render.shell import prefs
 from fused_render.shell.seed import fused_dir
+
+logger = logging.getLogger("fused_render")
 
 router = APIRouter()
 
@@ -60,9 +94,36 @@ _APP_STARTER_DIR = os.path.join(
 # not the right place for the rules about what an app IS. See that module.
 
 
+def _from(label: str, fn) -> list[dict]:
+    """One optional source's apps — [] on any failure, never a 500.
+
+    Each module already skips what it cannot read, so reaching this guard means
+    something unforeseen went wrong in a store this app does not own. Home is
+    the landing screen: it degrades to the sources that did work, and the reason
+    lands in the log instead of on the user."""
+    try:
+        return fn()
+    except Exception:
+        logger.warning("listing %s apps failed", label, exc_info=True)
+        return []
+
+
 @router.get("/api/apps")
 def api_apps():
-    apps = app_listing.two_level_apps(fused_dir())
+    root = fused_dir()
+    apps = app_listing.two_level_apps(root)
+    # Read the pref BEFORE calling the source, not as a filter on its result:
+    # someone switching a source off is usually objecting to the WALK — reading
+    # folders they did not ask this app to read — and a filter afterwards would
+    # keep paying exactly the cost they turned off.
+    if prefs.discovery_enabled("claude_science"):
+        apps += _from("Claude Science", claude_science.list_apps)
+    if prefs.discovery_enabled("claude_code"):
+        apps += _from("Claude Code project", lambda: claude_projects.list_apps(root))
+    if prefs.discovery_enabled("claude_sessions"):
+        apps += _from("Claude Code session", lambda: claude_sessions.list_apps(root))
+    if prefs.discovery_enabled("claude_uploads"):
+        apps += _from("Claude Code upload", claude_uploads.list_apps)
     apps.sort(key=lambda a: (a["tag"].lower(), a["name"].lower()))
     return {"apps": apps}
 

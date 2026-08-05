@@ -17,6 +17,28 @@ import re
 
 _TITLE_RE = re.compile(rb"<title[^>]*>(.*?)</title>", re.IGNORECASE | re.DOTALL)
 
+#: Suffixes the shell renders as a page (registry.json binds both to `_render`).
+#: `.htm` alongside `.html` because the template registry binds both — an entry
+#: the shell renders as a page is one this listing should treat as one.
+HTML_SUFFIXES = (".html", ".htm")
+
+#: Machine bookkeeping, never the user's work. Two consumers, same reason: a
+#: name here is not an app (`two_level_apps`), and its mtime is not an edit
+#: (`dir_updated_at`). `__pycache__` is why the set exists — a folder of .pyc
+#: files listed as an entry-less card of its own (seen on a real user's tree,
+#: where it was the ENTIRE listing for the shallower of two plausible roots),
+#: and its mtime moves whenever Python imports a sibling, so an app you merely
+#: OPENED reported as touched-just-now and displaced one you had actually
+#: edited from the top of Recent. `.git` is here for the same reason: a commit
+#: rewrites it, and the edit that triggered that commit has already moved a
+#: real file's mtime.
+IGNORED_CHILDREN = frozenset({"__pycache__", ".git"})
+
+
+def is_html(path: str) -> bool:
+    """Whether `path` names a renderable HTML page (by extension alone — no I/O)."""
+    return path.lower().endswith(HTML_SUFFIXES)
+
 
 def app_entry(dir_path: str) -> str | None:
     """An app folder's entry: the single non-hidden direct-child `.html`, or None
@@ -34,7 +56,8 @@ def app_entry(dir_path: str) -> str | None:
     return os.path.abspath(os.path.join(dir_path, htmls[0]))
 
 
-def app_dict(path: str, name: str, tag: str, entry_html: str | None) -> dict:
+def app_dict(path: str, name: str, tag: str, entry_html: str | None,
+             source: str = "workspace") -> dict:
     """One app's listing entry — the single place the shape is built.
 
     `entry_html` is resolved by the CALLER, deliberately. Resolving it in here
@@ -57,10 +80,14 @@ def app_dict(path: str, name: str, tag: str, entry_html: str | None) -> dict:
         "entry_html": entry_html,
         "title": entry_title(entry_html) if entry_html else None,
         "updated_at": dir_updated_at(path),
+        # Which source produced this app, so the shell can badge it and branch
+        # its open rule (a read-only artifact must not open as a project).
+        # Defaulted, so a caller that only ever lists the workspace need not say.
+        "source": source,
     }
 
 
-def two_level_apps(root: str) -> list[dict]:
+def two_level_apps(root: str, source: str = "workspace") -> list[dict]:
     """Every app in a Fused-shaped folder: `<root>/<tag>/<name>/`.
 
     A "tag" is any non-hidden top-level directory, an "app" any non-hidden
@@ -77,7 +104,7 @@ def two_level_apps(root: str) -> list[dict]:
     except OSError:
         return apps
     for tag in sorted(tag_names):
-        if tag.startswith("."):
+        if tag.startswith(".") or tag in IGNORED_CHILDREN:
             continue
         tag_path = os.path.join(root, tag)
         try:
@@ -87,7 +114,12 @@ def two_level_apps(root: str) -> list[dict]:
         except OSError:
             continue  # unreadable/racing tag dir: skip, never fail the listing
         for name in sorted(names):
-            if name.startswith("."):
+            # A machine-written directory is never an app, at either level.
+            # Hidden names already go (that covers `.git`); `__pycache__` does
+            # not start with a dot and did not, so a folder of .pyc files came
+            # back as an entry-less card — seen on a real user's tree, where
+            # `render/soccer/__pycache__` listed as the app `soccer/__pycache__`.
+            if name.startswith(".") or name in IGNORED_CHILDREN:
                 continue
             path = os.path.join(tag_path, name)
             try:
@@ -99,7 +131,7 @@ def two_level_apps(root: str) -> list[dict]:
                 # card. Resolving the entry inside this guard is what makes
                 # that distinction — see `app_dict`.
                 continue
-            apps.append(app_dict(path, name, tag, entry_html))
+            apps.append(app_dict(path, name, tag, entry_html, source))
     return apps
 
 
@@ -125,12 +157,21 @@ def dir_updated_at(dir_path: str) -> float | None:
     only moves on add/remove/rename, so editing index.html in place wouldn't
     register; a deep walk is unbounded work per listing for marginal gain (edits
     in an app land overwhelmingly in top-level files). One extra stat per child,
-    no recursion. None when nothing stats (racing delete)."""
+    no recursion. None when nothing stats (racing delete).
+
+    `IGNORED_CHILDREN` are skipped: a `__pycache__` moves whenever Python
+    imports a sibling and `.git` moves on every commit, so counting either made
+    an app you merely OPENED outrank one you had actually edited. The dir's OWN
+    mtime still counts — that is one add/remove-shaped event, not a per-run
+    signal, and dropping it would lose the add/remove/rename this exists to
+    catch."""
     latest = None
     try:
         latest = os.stat(dir_path).st_mtime
         with os.scandir(dir_path) as it:
             for child in it:
+                if child.name in IGNORED_CHILDREN:
+                    continue
                 try:
                     latest = max(latest, child.stat().st_mtime)
                 except OSError:
