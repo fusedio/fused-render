@@ -6209,6 +6209,17 @@ select.field-control:has(option[value=""]:checked) {
   height: 48px;
 }
 
+/* Theme pair: dark mark is the :root default; the light one takes over under
+   [data-theme="light"] (stamped on <html> by the pre-paint bootstrap). */
+.home-hero-logo-light,
+:root[data-theme="light"] .home-hero-logo-dark {
+  display: none;
+}
+
+:root[data-theme="light"] .home-hero-logo-light {
+  display: block;
+}
+
 .home-hero-brand-name {
   font-size: 22px;
   font-weight: 700;
