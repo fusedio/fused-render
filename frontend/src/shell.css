@@ -4393,6 +4393,195 @@ select.field-control:has(option[value=""]:checked) {
   text-overflow: ellipsis;
 }
 
+/* -- Bookmark preview cards (BookmarkCards.tsx) -------------------------------
+   Bookmarks get a bigger card than the flat recents launcher: header row
+   (reusing the .fh-card-icon/-text pieces) over a live body. A file bookmark's
+   body is the file itself in a scaled embed iframe (the .app-pcard trick); a
+   folder bookmark's body is a fanned stack of its first entries with the first
+   file child peeking out underneath. */
+.fhb-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 14px;
+}
+
+.fhb-card {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  color: var(--fg);
+  text-decoration: none;
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  overflow: hidden;
+  transition:
+    border-color 0.15s ease,
+    box-shadow 0.15s ease,
+    transform 0.15s ease;
+}
+
+.fhb-card:hover {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+  box-shadow: 0 6px 22px var(--shadow-sm);
+  transform: translateY(-2px);
+}
+
+.fhb-card-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  min-width: 0;
+}
+
+.fhb-card-head .bookmark-missing-badge {
+  flex: 0 0 auto;
+  margin-left: auto;
+}
+
+/* File body: the live preview filling the card bottom. */
+.fhb-thumb {
+  position: relative;
+  display: block;
+  aspect-ratio: 16 / 10;
+  background: var(--bg);
+  border-top: 1px solid var(--border);
+  overflow: hidden;
+}
+
+.fhb-preview {
+  position: absolute;
+  inset: 0;
+  display: block;
+  overflow: hidden;
+}
+
+.fhb-preview iframe {
+  position: absolute;
+  top: 0;
+  left: 0;
+  border: none;
+  background: var(--bg-panel);
+  transform-origin: top left;
+  pointer-events: none;
+}
+
+/* Keeps every pointer event on the card link, never inside the preview. */
+.fhb-shield {
+  position: absolute;
+  inset: 0;
+}
+
+/* Folder body: inset panel holding the fanned chip stack. Chips overlap
+   upward (front chip on top via z-index by depth) and spread apart while the
+   card is hovered — the ref design's "contents fan". */
+.fhb-stack {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  aspect-ratio: 16 / 10;
+  padding: 12px 12px 0;
+  background: rgba(var(--tint), 0.04);
+  border-top: 1px solid var(--border);
+  overflow: hidden;
+}
+
+.fhb-chip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex: 0 0 auto;
+  padding: 6px 10px;
+  font-size: 12px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  box-shadow: 0 1px 3px var(--shadow-sm);
+  transition: margin 0.18s ease;
+}
+
+/* Depth fan: the front chip (d0) is full width; each step back is narrower
+   and tucked under the one in front of it. */
+.fhb-chip-d0 {
+  width: 100%;
+  z-index: 3;
+}
+
+.fhb-chip-d1 {
+  width: 90%;
+  margin-bottom: -7px;
+  z-index: 2;
+}
+
+.fhb-chip-d2 {
+  width: 80%;
+  margin-bottom: -7px;
+  z-index: 1;
+}
+
+.fhb-card:hover .fhb-chip-d1,
+.fhb-card:hover .fhb-chip-d2 {
+  margin-bottom: 2px;
+}
+
+.fhb-chip-icon {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  color: var(--fg-muted);
+}
+
+.fhb-chip-icon svg {
+  width: 13px;
+  height: 13px;
+}
+
+.fhb-chip-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The first file child's view peeking out underneath the front chip. */
+.fhb-stack .fhb-preview {
+  position: relative;
+  inset: auto;
+  flex: 1 1 auto;
+  width: calc(100% - 8px);
+  margin-top: -3px;
+  min-height: 60px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-bottom: none;
+  border-radius: 9px 9px 0 0;
+  z-index: 0;
+}
+
+/* Placeholder body: missing target, stat in flight, or an empty folder. */
+.fhb-note {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  aspect-ratio: 16 / 10;
+  padding: 12px;
+  font-size: 12px;
+  color: var(--fg-muted);
+  background: rgba(var(--tint), 0.04);
+  border-top: 1px solid var(--border);
+  text-align: center;
+}
+
+.fhb-stack .fhb-note {
+  flex: 1 1 auto;
+  aspect-ratio: auto;
+  border-top: none;
+  background: none;
+}
+
 /* driver.js popover — dark theme overrides scoped under .driver-popover. */
 .driver-popover {
   background: var(--bg-popover);

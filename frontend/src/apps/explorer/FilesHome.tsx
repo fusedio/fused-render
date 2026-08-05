@@ -8,10 +8,10 @@ import { navigate, navigateUrl } from "@platform/lib/router";
 import { basename } from "@platform/lib/format";
 import { iconForEntry } from "@platform/ui/FileIcons";
 import type { Config } from "@platform/lib/api";
-import { allBookmarks, loadBookmarks, type Bookmark } from "@platform/lib/bookmarks";
+import { allBookmarks, loadBookmarks } from "@platform/lib/bookmarks";
 import { useBookmarksVersion } from "@platform/lib/hooks";
 import { loadRecents, recentFsPath, useRecentsVersion } from "@apps/explorer/lib/recents";
-import { bookmarkFsPath } from "@apps/explorer/sidebar/BookmarksSection";
+import { BookmarkPreviewCard } from "@apps/explorer/BookmarkCards";
 import logoMark from "@assets/logo-black-bg-transparent.png";
 
 // How many recent files earn a card. The sidebar shows a tight top-3; the
@@ -54,29 +54,6 @@ function LaunchCard({
         <span className="fh-card-path">{path}</span>
       </span>
     </a>
-  );
-}
-
-function BookmarkCard({ b }: { b: Bookmark }) {
-  const fsPath = bookmarkFsPath(b.url);
-  return (
-    <LaunchCard
-      href={b.url}
-      // The bookmark's own emoji when it has one, else the star every
-      // default bookmark row wears.
-      icon={
-        b.icon ? (
-          <span className="fh-card-emoji">{b.icon}</span>
-        ) : (
-          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
-            <path d="M8 1.6l1.9 3.9 4.3.6-3.1 3 .7 4.3L8 11.4l-3.8 2 .7-4.3-3.1-3 4.3-.6L8 1.6z" />
-          </svg>
-        )
-      }
-      name={b.name}
-      path={fsPath}
-      onOpen={() => navigateUrl(b.url)}
-    />
   );
 }
 
@@ -123,9 +100,9 @@ export default function FilesHome({ config }: { config: Config }) {
         <section className="fh-section">
           <h2 className="fh-heading">Bookmarks</h2>
           {bookmarks.length ? (
-            <div className="fh-grid">
+            <div className="fhb-grid">
               {bookmarks.map((b) => (
-                <BookmarkCard key={b.id} b={b} />
+                <BookmarkPreviewCard key={b.id} b={b} />
               ))}
             </div>
           ) : (
