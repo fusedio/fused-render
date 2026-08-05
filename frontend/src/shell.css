@@ -1178,8 +1178,19 @@ a.bookmark-name::after {
    resize that narrows the container under an already-sized pane. Scoped to the
    split-with-pane case — a paneless listing in a narrow panel/tab keeps
    shrinking as it always did. */
-.listing-split:has(.listing-pane-slot) > .listing-scroll {
+.listing-split:has(.listing-pane-slot) > .listing-main {
   min-width: 220px;
+}
+
+/* Left column of the split: search header pinned above the scrolling table.
+   With the pane on, the pane spans the template's full height while search
+   and the split toggle stay in this column. */
+.listing-main {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
 }
 
 /* Split body when the preview pane is on: table on the left, a draggable
@@ -1309,6 +1320,42 @@ a.bookmark-name::after {
 .listing-pane .pane-header-icon {
   flex: 0 0 auto;
   display: inline-flex;
+}
+
+/* The pane header's mode switcher: same icon strip as the preview header
+   (PT-10) but compact and quiet, sized to the slim pane bar — borderless
+   ghost buttons, accent only on the active mode. */
+.listing-pane .pane-header .mode-switcher {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.listing-pane .pane-header .mode-switcher-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--fg-muted);
+  cursor: pointer;
+}
+
+.listing-pane .pane-header .mode-switcher-btn:hover {
+  background: var(--bg);
+  border-color: var(--border);
+  color: var(--fg);
+}
+
+.listing-pane .pane-header .mode-switcher-btn.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--on-accent);
 }
 
 .listing-pane .pane-header-name {

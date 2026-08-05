@@ -30,8 +30,11 @@ function currentQuery(): string {
   return new URLSearchParams(location.search).get("q") || "";
 }
 
-export function useWalkSearch(fsPath: string, refresh: number) {
-  const [query, setQueryState] = useState<string>(currentQuery);
+// `urlSync=false` (an embedded Listing, e.g. the preview pane's `_listing`
+// mode) keeps the query fully local: it neither seeds from ?q nor mirrors
+// keystrokes back to the address bar — that URL belongs to the host view.
+export function useWalkSearch(fsPath: string, refresh: number, urlSync = true) {
+  const [query, setQueryState] = useState<string>(() => (urlSync ? currentQuery() : ""));
   const [walk, setWalk] = useState<WalkState>(IDLE_WALK);
   // Which refresh generation of the walk has been REQUESTED (null = none).
   // The fetch effect keys on this, not on `refresh` itself: a dir-watch bump
@@ -39,7 +42,7 @@ export function useWalkSearch(fsPath: string, refresh: number) {
   // happens only while search is active (auto-request effect) or on the next
   // gesture — an idle listing must not re-walk the tree on every watch event.
   const [walkReq, setWalkReq] = useState<number | null>(() =>
-    currentQuery().trim() !== "" ? 0 : null
+    urlSync && currentQuery().trim() !== "" ? 0 : null
   );
   // Bumped to re-run the stream effect after an error, from a real user
   // gesture only (focus / typing) — an effect-driven retry would loop forever.
@@ -174,6 +177,7 @@ export function useWalkSearch(fsPath: string, refresh: number) {
       setWalkReq(refresh);
       setRetryNonce((n) => n + 1);
     }
+    if (!urlSync) return;
     if (urlTimer.current !== null) clearTimeout(urlTimer.current);
     urlTimer.current = setTimeout(() => {
       const params = new URLSearchParams(location.search);

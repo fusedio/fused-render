@@ -2,7 +2,7 @@
 // selection model, the document-level arrow/Home/End/PageUp/Enter handler,
 // the post-mutation reconcile (re-anchor by path), and scroll-into-view.
 import { useEffect, useMemo, useRef, useState } from "react";
-import { navigate } from "@platform/lib/router";
+import { navigate, replaceSearch } from "@platform/lib/router";
 import { isMod } from "@platform/lib/platform";
 import { isOverlayOpen } from "@platform/lib/ui-overlay";
 import type { RowCtx } from "@apps/explorer/listing/types";
@@ -23,6 +23,8 @@ export function useListingSelection({
   searchInputRef,
   rowCtxByPathRef,
   overlayOpenRef,
+  globalKeys = true,
+  urlSync = true,
 }: {
   fsPath: string;
   // Flat, ordered list of the paths the arrow keys step through (the rendered
@@ -39,6 +41,13 @@ export function useListingSelection({
   // document-level nav handler hard-guards on this so an open overlay owns the
   // keyboard — a stray Enter can't navigate a row behind the dialog.
   overlayOpenRef: React.MutableRefObject<boolean>;
+  // False for an EMBEDDED Listing (the preview pane's `_listing` mode): the
+  // document-level keyboard belongs to the host view's own Listing, so the
+  // embedded one keeps mouse selection but registers no global handlers.
+  globalKeys?: boolean;
+  // False for an embedded Listing: the address bar belongs to the host view,
+  // so the lead row is never mirrored to (or seeded from) `?sel`.
+  urlSync?: boolean;
 }) {
   // The selected rows (see Selection): one for a plain click / arrow move, many
   // for a Shift-range, Mod-click toggle or Select All. Seeded from the
@@ -64,6 +73,39 @@ export function useListingSelection({
   useEffect(() => {
     rememberSelection(fsPath, sel);
   }, [fsPath, sel]);
+
+  // URL sync for the lead row (like `preview`/`sort`): `?sel=<path relative
+  // to this folder>` so a refreshed or shared URL restores the selection —
+  // and with it the preview pane's content. navigate() drops the param on
+  // folder navigation (only `preview` is sticky), so it never leaks.
+  //   • Seed ONCE, after the listing has loaded: a recalled (cross-remount)
+  //     selection outranks the URL, and a `sel` naming no current row is
+  //     simply ignored (no forced selection).
+  //   • Mirror only after the seed decision, so the initial no-selection
+  //     render can't wipe the param before it was read.
+  const urlSelSeededRef = useRef(false);
+  useEffect(() => {
+    if (!urlSync || urlSelSeededRef.current || !listingLoaded) return;
+    urlSelSeededRef.current = true;
+    const rel = new URLSearchParams(location.search).get("sel");
+    if (!rel || selRef.current.paths.length) return;
+    const abs = fsPath.replace(/\/+$/, "") + "/" + rel;
+    if (navRows.includes(abs)) setSel(oneSelected(abs));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [urlSync, listingLoaded, navRows, fsPath]);
+  useEffect(() => {
+    if (!urlSync || !urlSelSeededRef.current) return;
+    const base = fsPath.replace(/\/+$/, "");
+    const rel =
+      sel.lead && sel.lead.startsWith(base + "/") ? sel.lead.slice(base.length + 1) : null;
+    const params = new URLSearchParams(location.search);
+    if (params.get("sel") === rel) return; // already in step (incl. both absent)
+    if (rel !== null) params.set("sel", rel);
+    else params.delete("sel");
+    const qs = params.toString();
+    replaceSearch(location.pathname + (qs ? "?" + qs : ""));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [urlSync, sel.lead, fsPath]);
 
   // A path the selection should jump to once it appears in the reloaded rows
   // (a rename/duplicate target — its row doesn't exist until the refetch lands).
@@ -143,6 +185,7 @@ export function useListingSelection({
   // are deliberately left to the shortcut handler (see Listing.tsx).
   // Bound to `document` so it also drives the plain listing with nothing focused.
   useEffect(() => {
+    if (!globalKeys) return;
     function onKeyDown(e: KeyboardEvent) {
       // While an IME is composing, Enter confirms a candidate and the arrows
       // move through the candidate list — never repurpose them for navigation.
@@ -245,7 +288,8 @@ export function useListingSelection({
     }
     document.addEventListener("keydown", onKeyDown);
     return () => document.removeEventListener("keydown", onKeyDown);
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [globalKeys]);
 
   // Keep the keyboard selection scrolled into view as it moves. Follows the LEAD
   // row (`.lead`), not merely the first selected one: extending a Shift-range
@@ -347,6 +391,7 @@ export function useListingSelection({
     selectOnly,
     toggleSelected,
     extendTo,
+    clearSelection,
     pendingSelectRef,
   };
 }
