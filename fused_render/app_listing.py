@@ -43,7 +43,18 @@ def is_html(path: str) -> bool:
 def app_entry(dir_path: str) -> str | None:
     """An app folder's entry: the single non-hidden direct-child `.html`, or None
     when the folder has zero or several (ambiguous — the UI opens the folder).
-    Raises OSError when the dir can't be listed; every caller skips those."""
+    Raises OSError when the dir can't be listed; every caller skips those.
+
+    `.html` ONLY — deliberately narrower than `is_html`, which also takes
+    `.htm` (asked in review). They answer different questions: `is_html` is
+    "may the /render iframe display this FILE" (the template registry binds
+    both suffixes), while this is the FOLDER-APP contract — and the
+    claude_split view rediscovers the entry with its own copy of exactly this
+    filter (templates/claude_split/app.py, which cites this function).
+    Widening one side alone turns an `.htm`-only folder's card into a split
+    view whose left pane finds no entry — the same shape as the
+    versioned-artifact bug D212's open rule exists to prevent. Widen both in
+    lockstep or neither; today, neither."""
     children = os.listdir(dir_path)
     htmls = [
         c for c in sorted(children)
