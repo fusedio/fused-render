@@ -60,7 +60,10 @@ function savePaneState(fsPath: string, on: boolean, width: number | null): void 
   setViewState(fsPath, qs ? "?" + qs : "");
 }
 
-export function usePreviewPane(fsPath: string) {
+// `enabled=false` (an embedded Listing — the preview pane's own `_listing`
+// mode) turns the whole feature off at the source: the pane never resolves
+// from URL/viewstate, stays off, and the toggle is inert — no nesting.
+export function usePreviewPane(fsPath: string, enabled = true) {
   // Visibility restores URL-first (resolvePane: `?preview=true` wins, then the
   // folder's saved viewstate); width is viewstate-only. Toggling writes BOTH:
   // the URL (replaceSearch, like setSort — on sets `preview=true`, off deletes
@@ -68,7 +71,9 @@ export function usePreviewPane(fsPath: string) {
   // sticky) and the viewstate (so a folder re-opened from a clean URL
   // remembers). Width is clamped live during the divider drag; the max
   // fraction is enforced against the split container's current size.
-  const [pane, setPane] = useState<{ on: boolean; width: number | null }>(() => resolvePane(fsPath));
+  const [pane, setPane] = useState<{ on: boolean; width: number | null }>(() =>
+    enabled ? resolvePane(fsPath) : { on: false, width: null }
+  );
   const splitRef = useRef<HTMLDivElement>(null);
   // Is `pane.width` a width the USER chose (restored from `panew`, or dragged
   // this session), as opposed to the measured half-container default? Only a
@@ -88,6 +93,7 @@ export function usePreviewPane(fsPath: string) {
   }, [pane.on, pane.width]);
 
   const togglePane = () => {
+    if (!enabled) return;
     setPane((prev) => {
       const next = { ...prev, on: !prev.on };
       const params = new URLSearchParams(location.search);

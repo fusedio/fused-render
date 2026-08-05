@@ -165,15 +165,12 @@ export default function Listing({
     setSearchSortKey,
   } = useWalkSearch(fsPath, refresh, !embedded);
 
-  const {
-    pane: paneResolved,
-    splitRef,
-    togglePane,
-    onDividerPointerDown,
-  } = usePreviewPane(fsPath);
-  // An embedded Listing never opens its own pane (no nesting), whatever the
-  // folder's saved viewstate says.
-  const pane = embedded ? { on: false, width: null } : paneResolved;
+  // An embedded Listing never opens its own pane (no nesting): the feature is
+  // disabled at the hook, whatever the folder's saved viewstate says.
+  const { pane, splitRef, togglePane, onDividerPointerDown } = usePreviewPane(
+    fsPath,
+    !embedded
+  );
 
   const clipboard = useClipboard();
 
