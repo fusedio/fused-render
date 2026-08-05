@@ -40,6 +40,14 @@ export const MenuIcons: Record<string, ReactNode> = {
       <rect x="13" y="13" width="7" height="7" rx="1.5" />
     </svg>
   ),
+  // Open in Explorer — plain folder (newFolder's body without the plus): the
+  // internal explorer's listing of a directory, as opposed to `reveal`, which
+  // is the OS file manager.
+  folder: (
+    <svg {...svgProps}>
+      <path d="M4 8V6a2 2 0 0 1 2-2h3l2 2h7a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V8z" />
+    </svg>
+  ),
   // Move to Bin — trash can with lid + two ribs.
   trash: (
     <svg {...svgProps}>

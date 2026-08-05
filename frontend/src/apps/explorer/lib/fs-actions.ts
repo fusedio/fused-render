@@ -147,18 +147,11 @@ export function claudeDeepLink(path: string, isDir: boolean, name: string, paren
   return "claude-cli://open?cwd=" + encodeURIComponent(normDir(parentDir)) + "&q=" + encodeURIComponent(q);
 }
 
-// Write text to the system clipboard; resolves true on success, false when the
-// Clipboard API is missing or the write is denied. Callers decide whether to
-// toast (a failure stays silent — the path is still reachable via Reveal).
-export async function copyToClipboard(text: string): Promise<boolean> {
-  if (!navigator.clipboard) return false;
-  try {
-    await navigator.clipboard.writeText(text);
-    return true;
-  } catch {
-    return false;
-  }
-}
+// Re-exported, not defined here: the app-card context menu needs the same
+// clipboard write and lives in another app, which may not import this one, so
+// the implementation moved to @platform/lib/clipboard. Kept exported from here
+// so every existing `from "./fs-actions"` call site is untouched.
+export { copyToClipboard } from "@platform/lib/clipboard";
 
 // Drop every path that lives INSIDE another path of the same set, keeping the
 // outermost ancestors (input order preserved).

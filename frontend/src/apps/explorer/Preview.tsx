@@ -778,8 +778,9 @@ interface PreviewProps {
   // for every dispatch branch that isn't the "_render"-carrying TemplatePreview.
   onRenderedTitle?: (title: string | null) => void;
   // Sub-app mode allowlist: when set, only these modes from stat.templates are
-  // offered (the app-builder pins its views to claude_split/versions). The
-  // server keeps resolving the full list; this is a UI restriction only —
+  // offered (the app-builder pins its views to the app modes, App.tsx
+  // APP_MODES). The server keeps resolving the full list; this is a UI
+  // restriction only —
   // `_mode` semantics on the URL are unchanged.
   allowModes?: string[];
   // Chrome-free render (the /learn page): no preview header, no mode switcher —

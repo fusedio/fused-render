@@ -2,26 +2,18 @@ def main(dir: str = ""):
     """Resolve the project folder's app entry: the html file the left pane
     should render. Mirrors the shell's "Open as app" rule — index.html first,
     else the folder's single top-level .html — so the split view opens the
-    same page that button would. Returns {"entry": <abs path> | None}."""
+    same page the `app` mode and that button open. The rule itself lives in
+    ../shared/app_entry.py, shared with the `app` template so the two views can
+    never disagree about which page an app folder is.
+    Returns {"entry": <abs path> | None}."""
     import os
+    import sys
 
-    dir = os.path.abspath(dir)
-    if not os.path.isdir(dir):
-        return {"entry": None}
-    try:
-        names = os.listdir(dir)
-    except OSError:
-        return {"entry": None}
-    # Same filter as the listing's `app_entry` (fused_render/app_listing.py):
-    # non-hidden direct children, `.html` only — a hidden html or a sibling
-    # `.htm` must not change which folders count as apps.
-    htmls = [n for n in sorted(names)
-             if not n.startswith(".")
-             and n.lower().endswith(".html")
-             and os.path.isfile(os.path.join(dir, n))]
-    for n in htmls:
-        if n.lower() == "index.html":
-            return {"entry": os.path.join(dir, n)}
-    if len(htmls) == 1:
-        return {"entry": os.path.join(dir, htmls[0])}
-    return {"entry": None}
+    shared = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "shared")
+    # Guarded insert: /api/run may exec this module repeatedly in one worker.
+    if shared not in sys.path:
+        sys.path.insert(0, shared)
+    from app_entry import entry_html
+
+    return {"entry": entry_html(dir)}

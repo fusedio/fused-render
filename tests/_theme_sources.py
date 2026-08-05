@@ -29,6 +29,7 @@ OPT_IN_ATTR = "data-fused-theme"
 TIER_ONE_TEMPLATES = (
     "annotate",
     "api",
+    "app",
     "bundle",
     "claude",
     "claude_split",

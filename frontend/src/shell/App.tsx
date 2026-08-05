@@ -199,10 +199,13 @@ function LoadingScaffold({ fsPath, isDir }: { fsPath: string; isDir: boolean }) 
   );
 }
 
-// The mode list the app builder pins its views to — the two modes that make
-// sense over an app folder. The URL's `_mode` semantics are unchanged; this
-// only restricts what the switcher offers (Preview filters client-side).
-const APP_MODES = ["claude_split", "versions"];
+// The mode list the app builder pins its views to — the modes that make sense
+// over an app folder, in switcher order. `app` (the app itself, full-bleed) is
+// first because it is what opening an app lands on; `claude_split` is where an
+// app is built. A mode absent from this list is filtered out of the switcher
+// entirely (Preview's allowModes), so this is what makes the plain view
+// reachable. The URL's `_mode` semantics are unchanged.
+const APP_MODES = ["app", "claude_split", "versions"];
 
 // Stat-backed views (listing/preview): breadcrumb + content under one hook
 // component so useStat only runs when the pathname is a real fs path, not a
@@ -581,8 +584,8 @@ export default function App({ config }: { config: Config }) {
     // its own #content).
     main = <LearnView key={epoch} config={config} epoch={epoch} />;
   } else if (appFsPath) {
-    // App builder: the app folder rendered in claude_split/versions, no
-    // breadcrumb (StatView variant "app" carries its own #content).
+    // App builder: the app folder rendered in one of APP_MODES, no breadcrumb
+    // (StatView variant "app" carries its own #content).
     main = (
       <StatView
         key={epoch + ":" + appFsPath}
