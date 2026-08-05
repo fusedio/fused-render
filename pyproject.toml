@@ -47,6 +47,15 @@ dependencies = [
     # main path, not a corner. Core rather than an extra: the parser runs on
     # every /api/run under either engine.
     "tomli>=2.0; python_version < '3.11'",
+    # PEP 508 requirement/specifier parsing, for deciding whether the app
+    # interpreter already satisfies a script's PEP 723 header (engine.app_satisfies
+    # — a header it already meets runs with no venv at all). Core rather than an
+    # extra, and declared rather than borrowed: it arrives transitively from
+    # geopandas/matplotlib/rasterio/zarr today, so a plain `pip install
+    # fused-render` had it by luck. Without it every header silently falls back to
+    # building its own venv — a permanent slowdown with no failing test, which is
+    # exactly the shape of the `httpx`/`tomli` mistakes above.
+    "packaging>=22",
     # AppKit, for the macOS half of the OS clipboard bridge
     # (shell/pasteboard/_darwin.py reads and writes NSPasteboard file URLs).
     # Core rather than an extra, and marked rather than optional, because the

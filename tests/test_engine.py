@@ -1019,6 +1019,64 @@ def test_the_app_package_probe_runs_at_most_once_per_process(monkeypatch):
     assert "pandas" in first, first
 
 
+class _NoSyncBackend:
+    """A backend with only the async half — a `fused` lacking `_execute_sync`."""
+
+    def __init__(self, result):
+        self._result = result
+        self.calls = []
+
+    async def execute(self, **kw):
+        self.calls.append({"via": "execute", **kw})
+        return self._result
+
+
+@requires_tomllib
+@requires_fused
+def test_a_satisfied_header_falls_back_to_the_venv_without_execute_sync(
+    monkeypatch, tmp_path
+):
+    """No `_execute_sync` must cost speed, never the run.
+
+    `_execute_sync` is the only way to run on an interpreter WE pick, so without it
+    the fast path is impossible. The header-less path treats that as fatal (D175:
+    an empty venv has no data stack, so there is nothing to fall back to) — and
+    applying the same rule here regressed a header that worked perfectly well before
+    the fast path existed, turning a `pandas` script into an EngineError whose
+    message claimed it had "no dependencies of its own".
+
+    The fallback must also be the FULL venv path, pre-flight included: dropping
+    straight into `execute(requirements=…)` would build the venv inline, a blocking
+    download inside /api/run, which is the exact thing PY-18 moved out of it.
+    """
+    target = tmp_path / "declared.py"
+    target.write_text(_satisfied_header(["pandas>=2.0.0"]) + "def main():\n    return 1\n")
+    backend = _NoSyncBackend(_FakeResult(return_value="1"))
+    monkeypatch.setattr(engine, "get_backend", lambda: backend)
+    seen = _preflight_spy(monkeypatch)
+
+    out = asyncio.run(engine.run_python(str(target), {}))
+    assert out["ok"] is True, out
+    assert seen == [["pandas>=2.0.0"]], (
+        "the pre-flight was skipped, so a missing venv would be built inline"
+    )
+    assert backend.calls[0]["via"] == "execute"
+    assert backend.calls[0]["requirements"] == ["pandas>=2.0.0"]
+
+
+@requires_fused
+def test_the_fast_path_is_not_taken_when_the_backend_cannot_run_on_an_interpreter(
+    monkeypatch,
+):
+    """The gate itself, independent of any script."""
+    monkeypatch.setattr(engine, "get_backend",
+                        lambda: _NoSyncBackend(_FakeResult(return_value="1")))
+    assert engine._interpreter_path_available() is False
+    monkeypatch.setattr(engine, "get_backend",
+                        lambda: _FakeBackend(_FakeResult(return_value="1")))
+    assert engine._interpreter_path_available() is True
+
+
 @requires_fused
 def test_an_unparseable_requirement_is_not_satisfied():
     """"I could not read it" must never read as "it is already there"."""

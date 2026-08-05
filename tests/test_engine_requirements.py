@@ -109,6 +109,10 @@ _IMPORT_TO_DIST = {
     # it maps a name nothing provides — harmless, and listing it is what keeps
     # `test_the_import_map_covers_everything_the_app_ships` honest either way.
     "tomli": "tomli",
+    # PEP 508 parsing for `engine.app_satisfies`, which decides whether the app
+    # interpreter already meets a script's header (and so whether a venv is needed
+    # at all). Import name and distribution name coincide.
+    "packaging": "packaging",
     # AppKit, for the macOS clipboard bridge (shell/pasteboard/_darwin.py).
     # Only installed on darwin, so on Linux and Windows these map names nothing
     # provides — the same harmless shape as `tomli` above, and listing them is

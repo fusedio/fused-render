@@ -537,10 +537,23 @@ def app_satisfies(requirements: list[str]) -> bool:
     installed = app_packages()
     if installed is None:
         return False
+    # Split out of the catch-all below, and NOT logged as an exception: a missing
+    # parser is a packaging fault, not a bug in this call, and it would otherwise
+    # write a full traceback on every run of every header while silently disabling
+    # the fast path — a permanent slowdown whose only evidence is a stack trace that
+    # looks like a crash. `packaging` is a declared dependency (pyproject.toml), so
+    # this is a broken install rather than a supported configuration.
     try:
         from packaging.requirements import InvalidRequirement, Requirement
         from packaging.utils import canonicalize_name
-
+    except ImportError as e:
+        logger.warning(
+            "cannot check whether the app interpreter satisfies %r: %s. Every "
+            "header will build its own venv until `packaging` is importable.",
+            requirements, e,
+        )
+        return False
+    try:
         for spec in requirements:
             try:
                 req = Requirement(spec)
@@ -566,6 +579,29 @@ def app_satisfies(requirements: list[str]) -> bool:
         logger.exception("app_satisfies failed for %r; treating as unsatisfied",
                          requirements)
         return False
+
+
+def _interpreter_path_available() -> bool:
+    """Can this backend run code on an interpreter WE choose?
+
+    `_execute_sync` is the only route to that (`execute()` derives an interpreter
+    only from a uv workflow project, which a standalone .py has none of), so
+    without it the fast path cannot be taken at all.
+
+    Asked before the pre-flight rather than discovered inside `_execute`, and that
+    ordering is the whole point: a header that declines the fast path must still
+    reach `is_installed`, so a missing venv comes back as `needs_install` and the
+    loader builds it off the request path. Discovering it later would leave
+    `execute(requirements=…)` to build the venv INLINE — a blocking download inside
+    /api/run, which is the exact failure PY-18 exists to remove.
+
+    Note this is a strictly weaker requirement than the header-LESS path's: there,
+    no `_execute_sync` is fatal (D175 — an empty venv has no data stack, so running
+    the script anyway would fail on `import numpy`), because there is nothing to
+    fall back TO. Here the venv path is a perfectly good fallback: slower, more
+    isolated, and exactly what this header did before the fast path existed.
+    """
+    return hasattr(get_backend(), "_execute_sync")
 
 
 def _app_interpreter_if_satisfies(requirements: list[str]) -> str | None:
@@ -1105,13 +1141,6 @@ async def run_python(path: str, params: dict) -> dict:
     # `requirements` are mutually exclusive upstream (the interpreter branch
     # ignores requirements silently), so they are never both set here.
     interpreter = None
-    if requirements:
-        # A header the app interpreter already meets needs no venv, no download and
-        # no loader — see the `app_satisfies` block above for why this fails closed
-        # and what it trades. Off the event loop because both probes behind it are
-        # subprocess-backed on their first call, exactly as `app_interpreter` and
-        # `is_installed` below are.
-        interpreter = await asyncio.to_thread(_app_interpreter_if_satisfies, requirements)
     if not requirements:
         # Off the event loop: `app_interpreter` is sync (it is called from sync
         # contexts and tests) and its first call in a process runs up to two
@@ -1165,11 +1194,30 @@ async def run_python(path: str, params: dict) -> dict:
         # full budget. `to_thread` re-raises in this frame, so the guard above still
         # contains the ImportError/RuntimeError pair (pinned by a test, because "the
         # exception now surfaces somewhere else" is exactly what a thread hop hides).
+        # The app-interpreter fast path: a header this interpreter already meets
+        # needs no venv, no download and no loader. See the `app_satisfies` block
+        # above for why it fails closed and what it trades.
+        #
+        # Inside the try and BEFORE the pre-flight, both deliberately.
+        # `_interpreter_path_available` calls `get_backend()`, which imports the
+        # backend and can raise — out here that would be an unhandled 500 rather
+        # than the house wire shape. And declining the fast path has to fall through
+        # to `is_installed` below, so a missing venv still becomes `needs_install`
+        # instead of an inline download inside this request.
+        #
+        # Off the event loop for the same reason `app_interpreter` and
+        # `is_installed` are: both probes behind it spawn a subprocess on their
+        # first call.
+        if requirements and _interpreter_path_available():
+            interpreter = await asyncio.to_thread(
+                _app_interpreter_if_satisfies, requirements
+            )
+
         # `interpreter is None` and not merely `requirements`: a header the app
-        # interpreter already satisfies resolved one above, and it has nothing to
-        # install — asking `is_installed` about it would name a venv directory that
-        # is never going to be built and answer `needs_install`, putting the loader
-        # in front of a run that was ready to go.
+        # interpreter already satisfies resolved one just above, and it has nothing
+        # to install — asking `is_installed` about it would name a venv directory
+        # that is never going to be built and answer `needs_install`, putting the
+        # loader in front of a run that was ready to go.
         if requirements and interpreter is None:
             from fused_render import envinstall
 
