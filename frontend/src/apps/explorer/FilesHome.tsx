@@ -183,13 +183,10 @@ function AiSearchComposer({
             <button
               type="button"
               className="files-search-clear"
-              aria-label="Clear search"
-              title="Clear search"
+              title="Clear search (esc)"
               onClick={clear}
             >
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" aria-hidden="true">
-                <path d="M6 6l12 12M18 6L6 18" />
-              </svg>
+              Clear
             </button>
           )}
         </div>
