@@ -112,6 +112,9 @@
     text-align:left;font-size:13px}
   .trigger .caret{flex:none;width:12px;height:12px;stroke:#9a9a9a;stroke-width:2;fill:none}
   #styleTrigger{min-width:104px} #fontTrigger{width:150px}
+  /* anchor the absolutely-positioned .pop under its trigger — without this the
+     pop resolves against the page and drops to the bottom of the slide */
+  .fontbox{position:relative}
 
   /* shared popup primitive (Style / Font) */
   .pop{position:absolute;top:calc(100% + 4px);z-index:70;width:264px;background:#fff;

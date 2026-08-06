@@ -115,6 +115,12 @@ window.__t = (() => {
   const md=(n)=>n.dispatchEvent(new MouseEvent('mousedown',{bubbles:true,cancelable:true,view:w}));
   const clk=(n)=>n.dispatchEvent(new MouseEvent('click',{bubbles:true,cancelable:true,view:w}));
   const firstText=()=>qa('#canvas .el-text')[0];
+  // a picker pop must sit just under its trigger, left-aligned — not drop to the
+  // bottom of the slide (which happens when its container isn't position:relative)
+  const geom=(trig,pop)=>{const t=trig.getBoundingClientRect(), p=pop.getBoundingClientRect();
+    return {anchoredBelow: p.top>=t.bottom-1 && p.top<=t.bottom+8,
+            leftAligned: Math.abs(p.left-t.left)<3,
+            droppedAway: p.top>t.bottom+100}; };
   return {
     selectBox(){ const e=firstText(); fire(e,'mousedown'); fire(e,'mouseup');
       return q('#canvas').querySelectorAll('.el.selected').length; },
@@ -128,6 +134,8 @@ window.__t = (() => {
     clickBold(){ clk(q('#bBtn')); return q('#bBtn').classList.contains('on'); },
     ctrlA(){ document.dispatchEvent(new KeyboardEvent('keydown',
       {key:'a',code:'KeyA',ctrlKey:true,bubbles:true,cancelable:true})); },
+    styleGeom(){ clk(q('#styleTrigger')); return geom(q('#styleTrigger'), q('#stylePop')); },
+    fontGeom(){ clk(q('#fontTrigger')); return geom(q('#fontTrigger'), q('#fontPop')); },
     editingCount(){ return qa('#canvas .el-text[contenteditable="true"]').length; },
     selectedEls(){ return q('#canvas').querySelectorAll('.el.selected').length; },
     textSelLen(){ return (w.getSelection()+'').length; },
@@ -165,6 +173,15 @@ def test_style_preset_applies_size(frame):
 def test_font_applies(frame):
     frame.evaluate("window.__t.selectBox()")
     assert frame.evaluate("window.__t.pickFont('Georgia')") == "Georgia"
+
+
+def test_pickers_anchor_under_trigger(frame):
+    # both pops must open directly under their trigger, not drop to the bottom
+    frame.evaluate("window.__t.selectBox()")
+    s = frame.evaluate("window.__t.styleGeom()")
+    assert s["anchoredBelow"] and s["leftAligned"] and not s["droppedAway"], s
+    f = frame.evaluate("window.__t.fontGeom()")
+    assert f["anchoredBelow"] and f["leftAligned"] and not f["droppedAway"], f
 
 
 def test_bold_toggles(frame):
