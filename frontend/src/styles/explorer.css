@@ -1,0 +1,1019 @@
+/* Main column */
+#main {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+#breadcrumb {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-alt);
+  /* Pin to the tallest state (28px mode-switcher button + 10px×2 padding) so
+     the bar can't grow when the portaled switcher lands after stat resolves. */
+  min-height: 48px;
+  box-sizing: border-box;
+}
+
+/* ★ bookmark button, leftmost in the bar. Subtle: bare glyph, no box —
+   muted until hovered; accent-yellow (filled star) when the view is
+   bookmarked or an armed bookmark is live. */
+.bookmark-star-btn {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2px;
+  border: none;
+  border-radius: 4px;
+  background: none;
+  color: var(--fg-muted);
+  cursor: pointer;
+  transition: color var(--dur-fast) var(--ease-out);
+}
+
+.bookmark-star-btn:hover {
+  color: var(--fg);
+}
+
+.bookmark-star-btn.active,
+.bookmark-star-btn.active:hover {
+  color: var(--accent);
+}
+
+/* Shared with the panel path bar (.panel-crumbs/.panel-crumb*, Panel.tsx):
+   same monospace, tight slash-separated segment styling, muted with the last
+   segment emphasized. Only the hover affordance differs per surface — this
+   bar avoids the accent-yellow the panel pane hover uses (see
+   #breadcrumb .path-crumb:hover below); the panel's own hover rule further
+   down is untouched. */
+#breadcrumb .crumbs,
+.panel-crumbs {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  overflow-x: auto;
+  white-space: nowrap;
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-size: 12px;
+}
+
+/* GNOME-path-bar behaviour, main bar only (the panel pane does the same at
+   .panel-crumbs below). flex:1 1 auto makes the strip own the bar's free
+   width — the whitespace right of the last crumb is the click-to-edit target.
+   The scrollbar is hidden (scrollbar-width + ::-webkit-scrollbar) so the
+   wheel-scrollable strip carries no chrome; the tail is pinned into view from
+   JS on every path change. */
+#breadcrumb .crumbs {
+  flex: 1 1 auto;
+  scrollbar-width: none;
+}
+
+#breadcrumb .crumbs::-webkit-scrollbar {
+  display: none;
+}
+
+/* Click-to-edit / Ctrl+L path field: swaps in for the crumb row. Same
+   monospace as the crumbs, fills the strip, and takes the bar's own
+   background so it reads as the bar turning editable rather than a popped-in
+   widget; a quiet border picks up the accent on focus. */
+#breadcrumb .crumb-edit {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-size: 12px;
+  padding: 2px 6px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg-alt);
+  color: var(--fg);
+}
+
+#breadcrumb .crumb-edit:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.path-crumb,
+.panel-crumb {
+  color: var(--fg-muted);
+  text-decoration: none;
+  cursor: pointer;
+  padding: 2px 1px;
+  border-radius: 3px;
+}
+
+/* GNOME-style compress-then-scroll truncation, main bar only (the panel pane
+   keeps its crumbs untruncated). Crumbs never shrink by default; ones marked
+   .shrink (names longer than 1.5x their floor, Breadcrumb.tsx) may compress
+   under space pressure down to a min-width floor, ellipsizing as they go.
+   The floors are load-bearing twice over: overflow:hidden zeroes a flex
+   item's automatic minimum size (without a floor everything squeezes to
+   slivers), and flex can't shrink below min-width, so once every .shrink
+   crumb hits its floor the strip genuinely overflows and scrolling takes
+   over. The current dir's 4x floor makes the tail compress last; full names
+   stay reachable via the title tooltip. */
+#breadcrumb .path-crumb {
+  flex: 0 0 auto;
+}
+
+#breadcrumb .path-crumb.shrink {
+  flex-shrink: 1;
+  min-width: 7ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+#breadcrumb .path-crumb.last.shrink {
+  min-width: 28ch;
+}
+
+.path-crumb.last,
+.panel-crumb.last,
+#breadcrumb .current {
+  color: var(--fg);
+  font-weight: 600;
+}
+
+.path-crumb-sep,
+.panel-crumb-sep {
+  color: var(--border);
+  margin: 0 1px;
+}
+
+/* Main breadcrumb hover only — subtle fg brighten + underline, no accent
+   yellow. */
+#breadcrumb .path-crumb:hover {
+  color: var(--fg);
+  text-decoration: underline;
+}
+
+/* Share/export glyph at the end of the crumb trail (reveal in file manager). */
+.reveal-btn {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin-left: 4px;
+  padding: 3px;
+  border: none;
+  border-radius: 4px;
+  background: none;
+  color: var(--fg-muted);
+  cursor: pointer;
+}
+
+.reveal-btn:hover {
+  background: var(--border);
+  color: var(--fg);
+}
+
+.crumb-actions {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* The portal target collapses entirely when no view has filled it (loading,
+   fallback card, static pages) — no stray gap at the bar's right edge. */
+#topbar-mode-slot:empty {
+  display: none;
+}
+
+.star-btn {
+  flex: 0 0 auto;
+  font: inherit;
+  font-size: 12.5px;
+  white-space: nowrap;
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--fg-muted);
+  cursor: pointer;
+}
+
+/* Icon-only split buttons at the crumbs' tail, after the Finder glyph — same
+   boxless .reveal-btn chrome, sitting slightly tighter as a pair. */
+.reveal-btn.split-dir {
+  margin-left: 2px;
+}
+
+.star-btn:hover {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.star-btn.starred {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: rgba(var(--accent-rgb), 0.13);
+}
+
+#content {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  /* Route fade (App.tsx): routes hard-remount per navigation, so there is no
+     old-and-new overlap to cross-fade — a short fade-in on the content area
+     alone makes the cut read as intentional. Shorter than --dur-med on purpose:
+     it must not delay reading the page. The sidebar and breadcrumb chrome sit
+     OUTSIDE this element and never flash. Replays because App keys this node on
+     the nav epoch (an iframe's param write doesn't bump it). */
+  animation: content-in 110ms var(--ease-out);
+}
+
+@keyframes content-in {
+  from {
+    opacity: 0;
+  }
+}
+
+/* Listing view — a fixed search header above a scrolling table, so the search
+   box stays put as the table scrolls and the columns never jump between
+   listing and results. */
+.listing {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.listing-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+}
+
+/* The list's floor: with the pane on, flexbox must refuse to shrink the table
+   below this sliver however wide the pane is. The drag clamps to the same
+   number (clampPaneWidth's LIST_MIN_W), so this only backstops a window
+   resize that narrows the container under an already-sized pane. Scoped to the
+   split-with-pane case — a paneless listing in a narrow panel/tab keeps
+   shrinking as it always did. */
+.listing-split:has(.listing-pane-slot) > .listing-main {
+  min-width: 60px;
+}
+
+/* Left column of the split: search header pinned above the scrolling table.
+   With the pane on, the pane spans the template's full height while search
+   and the split toggle stay in this column. */
+.listing-main {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  /* Size container so the table's columns can respond to THIS column's width
+     (not the window's): a wide preview pane squeezes the list, and the size /
+     modified columns drop out below to keep the name readable. */
+  container-type: inline-size;
+}
+
+/* Squeezed list: shed the modified column first, then size, leaving just the
+   name at the narrowest. Header cells carry col-<key> classes to pair with
+   their td counterparts. */
+@container (max-width: 380px) {
+  table.listing-table td.mtime,
+  table.listing-table th.col-mtime {
+    display: none;
+  }
+}
+
+@container (max-width: 300px) {
+  table.listing-table td.size,
+  table.listing-table th.col-size {
+    display: none;
+  }
+}
+
+/* Split body when the preview pane is on: table on the left, a draggable
+   divider, the pane on the right. Without the pane the split holds just the
+   scroller, so the plain listing is untouched. */
+.listing-split {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+}
+
+.listing-divider {
+  flex: 0 0 5px;
+  cursor: col-resize;
+  background: transparent;
+  margin: 0 -2px;
+  z-index: 2;
+  /* The drag is pointer-captured; without this, touch scrolling fights it. */
+  touch-action: none;
+}
+
+.listing-divider:hover,
+.listing-divider.dragging {
+  background: var(--border);
+}
+
+/* While the divider drags, the pane's iframe must not swallow the captured
+   pointer stream (capture keeps events flowing, but an iframe is a separate
+   document — inert it for the drag's duration). */
+.listing-split:has(.listing-divider.dragging) .pane-frame {
+  pointer-events: none;
+}
+
+/* Fixed-width slot the pane renders into; width set inline (flex-basis) from
+   the drag, clamped by clampPaneWidth() to at least 220px and at most
+   container - 60px so the LIST keeps its own sliver floor. The min-width
+   here is the pane's floor, not the list's — see .listing-main. */
+.listing-pane-slot {
+  flex: 0 0 auto;
+  min-width: 220px;
+  min-height: 0;
+  display: flex;
+}
+
+/* The pane itself: header bar + iframe / mini list / placeholder card. */
+.listing-pane {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: auto;
+  background: var(--bg-alt);
+  border-left: 1px solid var(--border);
+}
+
+/* Fills whatever the pane has left — the whole pane for a file preview, the
+   space under the header bar for a folder's embedded app. flex (not
+   height:100%) so the header can't push it past the pane's bottom edge. */
+.listing-pane .pane-frame {
+  flex: 1 1 auto;
+  min-height: 0;
+  width: 100%;
+  border: 0;
+  display: block;
+  background: var(--bg);
+}
+
+/* Placeholder / metadata card centered in the pane. */
+.listing-pane .pane-center {
+  margin: auto;
+  text-align: center;
+  color: var(--fg-muted);
+  padding: 32px;
+}
+
+.listing-pane .pane-big-icon {
+  display: inline-flex;
+  margin-bottom: 12px;
+}
+
+.listing-pane .pane-big-icon .file-icon {
+  width: 48px;
+  height: 48px;
+  stroke-width: 1.5;
+}
+
+.listing-pane .pane-title {
+  color: var(--fg);
+  font-size: 15px;
+  margin-bottom: 4px;
+  word-break: break-all;
+}
+
+.listing-pane .pane-hint {
+  font-size: 12.5px;
+}
+
+.listing-pane .pane-open-btn {
+  margin-top: 14px;
+  font: inherit;
+  padding: 6px 14px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--fg);
+  cursor: pointer;
+}
+
+.listing-pane .pane-open-btn:hover {
+  background: var(--bg-alt);
+}
+
+/* Folder preview: a slim bar above the embedded app / mini list carrying its
+   name and the Open action. */
+.listing-pane .pane-header {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-alt);
+}
+
+.listing-pane .pane-header-icon {
+  flex: 0 0 auto;
+  display: inline-flex;
+}
+
+/* The pane header's mode switcher: same icon strip as the preview header
+   (PT-10) but compact and quiet, sized to the slim pane bar — borderless
+   ghost buttons, accent only on the active mode. */
+.listing-pane .pane-header .mode-switcher {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.listing-pane .pane-header .mode-switcher-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--fg-muted);
+  cursor: pointer;
+}
+
+.listing-pane .pane-header .mode-switcher-btn:hover {
+  background: var(--bg);
+  border-color: var(--border);
+  color: var(--fg);
+}
+
+.listing-pane .pane-header .mode-switcher-btn.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--on-accent);
+}
+
+.listing-pane .pane-header-name {
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg);
+}
+
+.listing-pane .pane-header-btn {
+  flex: 0 0 auto;
+  font: inherit;
+  font-size: 12px;
+  padding: 4px 10px;
+  border: 1px solid rgba(var(--accent-rgb), 0.35);
+  border-radius: 5px;
+  background: var(--bg);
+  color: var(--fg);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.listing-pane .pane-header-btn:hover {
+  background: var(--sel);
+}
+
+/* Folder preview fallback: the folder's own entries, read-only. Narrower
+   padding than the main table since it lives in the smaller pane. */
+.listing-pane .pane-mini-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+}
+
+table.pane-mini-list {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+table.pane-mini-list td {
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+table.pane-mini-list tr.row {
+  cursor: pointer;
+}
+
+table.pane-mini-list tr.row:hover {
+  background: var(--sel);
+}
+
+table.pane-mini-list tr.row.ignored td.name {
+  opacity: 0.5;
+}
+
+table.pane-mini-list td.name {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+table.pane-mini-list td.name .label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+table.pane-mini-list td.size {
+  color: var(--fg-muted);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  width: 1%;
+}
+
+table.pane-mini-list td.status-message {
+  padding: 14px 10px;
+}
+
+/* Pane toggle in the search row: small icon button. Stays subtle when the
+   pane is open — the chevron's direction is the state indicator. */
+.listing-pane-toggle {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--fg-muted);
+  cursor: pointer;
+}
+
+.listing-pane-toggle:hover {
+  color: var(--fg);
+  border-color: var(--fg-muted);
+}
+
+/* Skeleton loading state: shimmering bars shaped like the real listing rows
+   (icon + name + size + mtime), plus a full-pane placeholder while a preview
+   loads. Token-derived (--bg-alt/--border) so it reads as part of the UI. */
+.skel-bar {
+  display: inline-block;
+  height: 10px;
+  border-radius: 3px;
+  background: linear-gradient(90deg, var(--bg-alt) 25%, var(--border) 50%, var(--bg-alt) 75%);
+  background-size: 200% 100%;
+  animation: skel-shimmer 1.2s ease-in-out infinite;
+}
+
+.skel-bar.icon-skel {
+  width: 16px;
+  height: 16px;
+  border-radius: 4px;
+  flex: 0 0 auto;
+}
+
+@keyframes skel-shimmer {
+  from {
+    background-position: 200% 0;
+  }
+  to {
+    background-position: -200% 0;
+  }
+}
+
+table.listing-table tr.skel-row td {
+  cursor: default;
+}
+
+table.listing-table tr.skel-row:hover {
+  background: transparent;
+}
+
+/* Shared "content is loading" block (components/Skeleton.tsx): a few ragged
+   shimmer bars, used where a bare "Loading…" line used to sit. */
+.skel-lines {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-width: 420px;
+  padding: 6px 0;
+}
+
+.listing-pane .pane-skel {
+  flex: 1 1 auto;
+  margin: 14px;
+  border-radius: 8px;
+  background: linear-gradient(90deg, var(--bg-alt) 25%, var(--border) 50%, var(--bg-alt) 75%);
+  background-size: 200% 100%;
+  animation: skel-shimmer 1.2s ease-in-out infinite;
+}
+
+.listing-search {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg);
+}
+
+/* Wraps the input plus its pinned chips (count / spinner), so the preview-pane
+   toggle can sit beside them without disturbing the inside-the-input pin. */
+.listing-search-box {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.listing-search .listing-search-input {
+  width: 100%;
+  /* Reserves room for the count chip / spinner pinned inside the right edge —
+     sized for the longest count text ("showing 250 of 7734 matches"). Esc
+     clears the query. */
+  padding-right: 116px;
+}
+
+/* Native WebKit cancel × collides with the absolutely-positioned count chip;
+   hidden (Esc clears the query instead). */
+.listing-search-input::-webkit-search-cancel-button {
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+/* Match count pinned inside the input's right edge (no layout shift). */
+.listing-search-count {
+  position: absolute;
+  right: 26px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--fg-muted);
+  font-size: 12px;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+/* Small spinner shown while the recursive walk is still in flight, so a
+   search on a huge folder doesn't look stalled while the input stays
+   fully interactive. */
+.listing-search-spinner {
+  position: absolute;
+  right: 26px;
+  top: 50%;
+  width: 11px;
+  height: 11px;
+  margin-top: -5.5px;
+  border: 1.5px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  pointer-events: none;
+  animation: listing-search-spin 0.6s linear infinite;
+}
+
+@keyframes listing-search-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* Dims the results briefly while a background render (React's deferred
+   value) is catching up to the latest keystroke on a large search. */
+.listing-stale {
+  opacity: 0.6;
+  transition: opacity 0.1s ease-out;
+}
+
+/* Shared search-input chrome (explorer header + sidebar bookmarks). */
+.listing-search-input,
+.bookmark-search-input {
+  width: 100%;
+  font: inherit;
+  font-size: 13px;
+  color: var(--fg);
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 10px;
+}
+
+.listing-search-input::placeholder,
+.bookmark-search-input::placeholder {
+  color: var(--fg-muted);
+}
+
+/* Focus affordance: a muted border brighten, not the accent yellow — still
+   clearly perceivable against the resting --border, just not loud. */
+.listing-search-input:focus,
+.bookmark-search-input:focus {
+  outline: none;
+  border-color: var(--fg-muted);
+}
+
+/* Matched-substring highlight in search results (explorer + bookmarks). */
+.search-mark {
+  background: rgba(var(--accent-rgb), 0.22);
+  color: var(--fg);
+  border-radius: 2px;
+}
+
+/* Relative path shown in an explorer search row, in place of a bare name. */
+.search-path {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Sidebar bookmark search box: sits just under the "Bookmarks" heading,
+   aligned with the row padding. */
+.bookmark-search {
+  padding: 0 8px 6px;
+}
+
+table.listing-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+table.listing-table th {
+  text-align: left;
+  font-weight: 600;
+  color: var(--fg-muted);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  padding: 8px 16px;
+  position: sticky;
+  top: 0;
+  z-index: 1; /* stay above rows scrolling underneath */
+  background: var(--bg);
+  /* border-collapse drops the sticky cell's own border as rows scroll under
+     it, leaving a 1px bleed gap — paint the divider as an inset shadow so it
+     rides with the header instead. */
+  box-shadow: inset 0 -1px 0 var(--border);
+  cursor: pointer;
+  user-select: none;
+}
+
+table.listing-table th.sortable:hover {
+  color: var(--fg);
+}
+
+table.listing-table th.sorted {
+  color: var(--accent);
+}
+
+/* One glyph (▲) for both directions: desc rotates it, so flipping the order
+   turns the arrow over instead of swapping one character for another (a swap
+   replaces the element, and a replaced element can only pop). Moving the arrow
+   to a different column DOES replace it — that one fades in. */
+table.listing-table .sort-arrow {
+  display: inline-block;
+  margin-left: 5px;
+  font-size: 9px;
+  transition: transform 100ms var(--ease-out);
+  animation: sort-arrow-in 100ms var(--ease-out);
+}
+
+table.listing-table .sort-arrow.desc {
+  transform: rotate(180deg);
+}
+
+@keyframes sort-arrow-in {
+  from {
+    opacity: 0;
+  }
+}
+
+/* A row that just appeared in the folder (dir-watch refresh, views/Listing.tsx):
+   an accent wash that fades out over ROW_NEW_MS, so a file that landed while you
+   were looking elsewhere is visible instead of silently slotting in. On the cells
+   rather than the row, because the row's own background is the hover/selection
+   channel and must keep working underneath. Removals need no cue beyond the
+   FLIP. Reduced motion collapses the animation, which drops the cue entirely —
+   correct: it is decoration, and nothing depends on seeing it. */
+table.listing-table tr.row.row-new > td {
+  animation: row-new-fade 1.5s var(--ease-out);
+}
+
+@keyframes row-new-fade {
+  from {
+    background-color: rgba(var(--accent-rgb), 0.2);
+  }
+  to {
+    background-color: rgba(var(--accent-rgb), 0);
+  }
+}
+
+/* Rows glide to their new slots after a reorder (lib/flip). Higher specificity
+   than the shared hover-transition rule so it wins for the length of the
+   animation; the class is added for exactly FLIP_MS and then removed. */
+table.listing-table tr.row.flip-animating {
+  transition: transform var(--dur-slow) var(--ease-out);
+}
+
+/* Current ordering of the search results, and the click that restores relevance
+   (views/Listing.tsx). Disabled = already in relevance order, i.e. a readout. */
+.listing-sort-chip {
+  flex: 0 0 auto;
+  font: inherit;
+  font-size: 11px;
+  line-height: 1;
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg-alt);
+  color: var(--fg-muted);
+  cursor: pointer;
+  white-space: nowrap;
+  transition:
+    color var(--dur-fast) var(--ease-out),
+    border-color var(--dur-fast) var(--ease-out);
+}
+
+.listing-sort-chip:disabled {
+  cursor: default;
+}
+
+.listing-sort-chip.sorted {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.listing-sort-chip:hover:not(:disabled) {
+  color: var(--fg);
+}
+
+table.listing-table td {
+  padding: 9px 16px;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+table.listing-table tr.row {
+  cursor: pointer;
+  /* Rows are a selection widget, not prose — don't let a drag paint a text
+     highlight over them. Necessary but not sufficient on its own: this stops the
+     rows' own text being selectable, but a Shift+click can still set a selection
+     ENDPOINT here and have the browser paint a range anchored somewhere outside
+     the table. Listing.tsx's onRowMouseDown handles that half. */
+  user-select: none;
+}
+
+/* Files matched by .gitignore inside a git repo: dimmed, but still clickable
+   and readable on hover (the row keeps full opacity while hovered). */
+table.listing-table tr.row.ignored {
+  opacity: 0.45;
+}
+
+table.listing-table tr.row:hover {
+  background: var(--bg-alt);
+  opacity: 1;
+}
+
+/* Keyboard-selected row (arrow-key navigation). Distinct from :hover so the
+   selection stays visible while the cursor is elsewhere; full opacity so a
+   selected .ignored row is still readable. */
+table.listing-table tr.row.selected {
+  background: var(--sel);
+  opacity: 1;
+}
+
+/* A row whose entry is on the in-app clipboard as a CUT: dimmed until it's
+   pasted (moved), like Finder's faded cut icon, plus a dashed left edge so the
+   pending state is a MARK and not just "this row looks faint". Dashed vs. the
+   copy's solid bar is the whole tell between the two ops at a glance. Stays
+   fully readable on hover.
+   0.6 rather than a deeper fade: the row still has to be legible, and the badge
+   + edge now carry the signal that the dimming used to carry alone. */
+table.listing-table tr.row.cut {
+  opacity: 0.6;
+}
+table.listing-table tr.row.cut:hover {
+  opacity: 1;
+}
+/* Same surface as the copy bar below (the first cell's inset shadow), so it
+   survives :hover and .selected untouched; dashed is faked with two stacked
+   insets since box-shadow has no dash. */
+table.listing-table tr.row.cut > td:first-child {
+  background-image: repeating-linear-gradient(
+    to bottom,
+    var(--fg-muted) 0 5px,
+    transparent 5px 9px
+  );
+  background-repeat: no-repeat;
+  background-size: 3px 100%;
+  background-position: left top;
+}
+
+/* A row whose entry is on the clipboard as a COPY. Dimming would be wrong here
+   (nothing is leaving), so a copy is marked positively — a SOLID bar down the
+   row's left edge, against the cut's dashed one.
+ *
+ * Deliberately the same muted grey as the cut bar, not the accent: an accent bar
+ * plus an accent row wash (both of which this used to carry) shouted, and a copy
+ * is transient state, not a highlight. With the wash gone the row background is
+ * left entirely to :hover and .selected, so there is no specificity dance to get
+ * right; the bar is an inset shadow on the first CELL, a surface neither the row
+ * background nor the hover/selected rules touch, so the mark survives every
+ * combination including selected+copied. */
+table.listing-table tr.row.copied > td:first-child {
+  box-shadow: inset 3px 0 0 var(--fg-muted);
+}
+
+table.listing-table td.name {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  /* Positioning context for .clip-mark below. */
+  position: relative;
+}
+
+/* "Cut" / "Copied" badge in the name cell of a row on the in-app clipboard
+   (Listing.tsx ClipMark). This and the row styling above are the ONLY pending-
+   clipboard UI — no chrome-level chip — so the badge carries the Esc-to-cancel
+   tooltip, which is also why it must not get `pointer-events: none`. Small
+   caps-y type keeps it subordinate to the name it annotates.
+ *
+ * BOTH ops use the same muted grey on --bg-alt — the accent (which copy used to
+ * carry here and on its edge bar) read as a highlight rather than as transient
+ * state. The op is told by the border, matching the row's edge bar: solid for
+ * copy, dashed for cut. Opaque base, not a translucent wash: the badge is out of
+ * flow (below), so a long filename can run beneath it and a see-through pill
+ * would show that text through the label.
+ *
+ * Pinned to the name column's right edge rather than sitting inline after the
+ * filename: the table is auto-layout, so an in-flow badge widens the name column
+ * and shoves SIZE/MODIFIED sideways the instant you press Copy — a whole-table
+ * jump on a keystroke (the no-jumpy-lists rule). Out of flow it costs zero
+ * layout. Accepted edge case: a filename long enough to define the column's
+ * width runs under the badge; the badge is on top and stays readable. */
+.clip-mark {
+  position: absolute;
+  right: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  line-height: 1;
+  /* 2px + the 1px border = the 3px the pill reads as */
+  padding: 2px 5px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  color: var(--fg-muted);
+  background: var(--bg-alt);
+  cursor: default;
+  user-select: none;
+}
+.clip-mark.cut {
+  border-style: dashed;
+}
+
+table.listing-table .icon {
+  flex: 0 0 auto;
+  opacity: 0.9;
+}
+
+/* Per-filetype icons (components/FileIcons.tsx): monochrome inline SVGs tinted
+   by a muted, desaturated per-category colour that sits calmly on the dark
+   shell — folder brightest, generic file dimmest. Only html leans toward the
+   accent yellow: those files launch as apps, so they get to stand out. The
+   SVG is a block so it has no inline-baseline gap; the parent .icon span lives
+   in a flex row (td.name / .sidebar-item) that vertically centres it. */
+.file-icon {
+  display: block;
+  width: 16px;
+  height: 16px;
+}
+.file-icon--folder  { color: var(--icon-folder); }
+.file-icon--code    { color: var(--icon-code); }
+.file-icon--data    { color: var(--icon-data); }
+.file-icon--json    { color: var(--icon-json); }
+.file-icon--html    { color: var(--accent-soft); } /* launchable app — leans toward --accent */
+.file-icon--image   { color: var(--icon-image); }
+.file-icon--doc     { color: var(--icon-doc); }
+.file-icon--media   { color: var(--icon-media); }
+.file-icon--geo     { color: var(--icon-geo); }
+.file-icon--archive { color: var(--icon-archive); }
+.file-icon--db      { color: var(--icon-db); }
+.file-icon--file    { color: var(--icon-file); }
+
+table.listing-table td.size,
+table.listing-table td.mtime {
+  color: var(--fg-muted);
+  font-variant-numeric: tabular-nums;
+}
+

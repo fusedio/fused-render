@@ -1,0 +1,593 @@
+/* ---- Preferences page (SPEC §20) ------------------------------------------ */
+
+/* Bottom-left entry: pinned to the sidebar's bottom edge, muted until hover. */
+/* Footer: Templates, Mounts, and Preferences as three equal columns, each a
+   centered icon over a small muted label. Deliberately understated (D80) —
+   the label just disambiguates the icons. Fused account (D125) no longer
+   gets its own column — its signed-in dot moved onto Preferences — which is
+   what keeps this back down to a single row instead of the 2×2 grid a 4th
+   entry needed. */
+.sidebar-footer {
+  margin-top: auto;
+  padding: 6px;
+  border-top: 1px solid var(--border);
+  flex: 0 0 auto;
+  display: flex;
+  gap: 4px;
+}
+
+.sidebar-footer .prefs-link {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 8px 4px;
+  border-radius: 6px;
+  background: none;
+  border: none;
+  font: inherit;
+  color: var(--fg-muted);
+  cursor: pointer;
+}
+
+.sidebar-footer .prefs-link .icon {
+  margin: 0;
+  display: flex;
+}
+
+.sidebar-footer .prefs-label {
+  font-size: 10.5px;
+  line-height: 1;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sidebar-footer .prefs-link:hover,
+.sidebar-footer .prefs-link.active {
+  color: var(--fg);
+  background: rgba(var(--tint), 0.06);
+}
+
+/* Shell-ctx settings list (super-app step 2): Templates / Mounts /
+   Preferences as regular sidebar rows pinned to the bottom edge — the same
+   list treatment as the sub-app list at the top. */
+.sidebar-settings {
+  margin-top: auto;
+  padding-top: 6px;
+  border-top: 1px solid var(--border);
+  flex: 0 0 auto;
+}
+
+/* File-explorer homepage (/explorer): hero + bookmark/recents card grids.
+   The hero reuses the /apps .home-hero chassis (brand row, accent wash);
+   .files-hero only adjusts what differs. */
+.files-home {
+  height: 100%;
+  overflow-y: auto;
+}
+
+/* Mirrors .apps-inner exactly (same max-width WITH the padding inside it) so
+   the two homepages' heroes render at identical width. */
+.files-home-inner {
+  max-width: 1120px;
+  margin: 0 auto;
+  padding: 36px 28px 72px;
+}
+
+.files-hero {
+  text-align: center;
+}
+
+.files-hero-sub {
+  margin: 0 auto 20px;
+  max-width: 560px;
+  font-size: 14px;
+  line-height: 1.55;
+  color: var(--fg-muted);
+}
+
+.files-hero-cta {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 18px;
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--on-accent);
+  background: var(--accent);
+  border: none;
+  border-radius: 10px;
+  cursor: pointer;
+}
+
+.files-hero-cta:hover {
+  filter: brightness(1.08);
+}
+
+.fh-section {
+  margin-top: 30px;
+}
+
+.fh-heading {
+  margin: 0 0 12px;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--fg-muted);
+}
+
+.fh-empty {
+  margin: 0;
+  font-size: 13.5px;
+  color: var(--fg-muted);
+}
+
+.fh-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 12px;
+}
+
+/* One launcher card: icon tile on the left, name over path on the right. */
+.fh-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  text-decoration: none;
+  color: var(--fg);
+  min-width: 0;
+  transition: border-color 120ms ease, background 120ms ease;
+}
+
+.fh-card:hover {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+  background: color-mix(in srgb, var(--accent) 4%, var(--bg-alt));
+}
+
+.fh-card-icon {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--fg) 5%, transparent);
+  color: var(--accent);
+}
+
+.fh-card-emoji {
+  font-size: 17px;
+  line-height: 1;
+}
+
+.fh-card-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.fh-card-name {
+  font-size: 13.5px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.fh-card-path {
+  font-size: 11.5px;
+  color: var(--fg-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* -- Bookmark preview cards (BookmarkCards.tsx) -------------------------------
+   Bookmarks get a bigger card than the flat recents launcher: header row
+   (reusing the .fh-card-icon/-text pieces) over a live body. A file bookmark's
+   body is the file itself in a scaled embed iframe (the .app-pcard trick); a
+   folder bookmark's body is a fanned stack of its first entries with the first
+   file child peeking out underneath. */
+.fhb-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 14px;
+}
+
+.fhb-card {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  color: var(--fg);
+  text-decoration: none;
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  overflow: hidden;
+  transition:
+    border-color 0.15s ease,
+    box-shadow 0.15s ease,
+    transform 0.15s ease;
+}
+
+.fhb-card:hover {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+  box-shadow: 0 6px 22px var(--shadow-sm);
+  transform: translateY(-2px);
+}
+
+.fhb-card-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  min-width: 0;
+}
+
+.fhb-card-head .bookmark-missing-badge {
+  flex: 0 0 auto;
+  margin-left: auto;
+}
+
+/* File body: the live preview filling the card bottom. */
+.fhb-thumb {
+  position: relative;
+  display: block;
+  aspect-ratio: 16 / 10;
+  background: var(--bg);
+  border-top: 1px solid var(--border);
+  overflow: hidden;
+}
+
+.fhb-preview {
+  position: absolute;
+  inset: 0;
+  display: block;
+  overflow: hidden;
+}
+
+.fhb-preview iframe {
+  position: absolute;
+  top: 0;
+  left: 0;
+  border: none;
+  background: var(--bg-panel);
+  transform-origin: top left;
+  pointer-events: none;
+}
+
+/* Keeps every pointer event on the card link, never inside the preview. */
+.fhb-shield {
+  position: absolute;
+  inset: 0;
+}
+
+/* Folder body: inset panel holding the fanned chip stack. Chips overlap
+   upward (front chip on top via z-index by depth) and spread apart while the
+   card is hovered — the ref design's "contents fan". */
+.fhb-stack {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  aspect-ratio: 16 / 10;
+  padding: 12px 12px 0;
+  background: rgba(var(--tint), 0.04);
+  border-top: 1px solid var(--border);
+  overflow: hidden;
+}
+
+.fhb-chip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex: 0 0 auto;
+  padding: 6px 10px;
+  font-size: 12px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  box-shadow: 0 1px 3px var(--shadow-sm);
+  transition: margin 0.18s ease;
+}
+
+/* Depth fan: the front chip (d0) is full width; each step back is narrower
+   and tucked under the one in front of it. */
+.fhb-chip-d0 {
+  width: 100%;
+  z-index: 3;
+}
+
+.fhb-chip-d1 {
+  width: 90%;
+  margin-bottom: -7px;
+  z-index: 2;
+}
+
+.fhb-chip-d2 {
+  width: 80%;
+  margin-bottom: -7px;
+  z-index: 1;
+}
+
+.fhb-card:hover .fhb-chip-d1,
+.fhb-card:hover .fhb-chip-d2 {
+  margin-bottom: 2px;
+}
+
+.fhb-chip-icon {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  color: var(--fg-muted);
+}
+
+.fhb-chip-icon svg {
+  width: 13px;
+  height: 13px;
+}
+
+.fhb-chip-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The first file child's view peeking out underneath the front chip. */
+.fhb-stack .fhb-preview {
+  position: relative;
+  inset: auto;
+  flex: 1 1 auto;
+  width: calc(100% - 8px);
+  margin-top: -3px;
+  min-height: 60px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-bottom: none;
+  border-radius: 9px 9px 0 0;
+  z-index: 0;
+}
+
+/* Placeholder body: missing target, stat in flight, or an empty folder. */
+.fhb-note {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  aspect-ratio: 16 / 10;
+  padding: 12px;
+  font-size: 12px;
+  color: var(--fg-muted);
+  background: rgba(var(--tint), 0.04);
+  border-top: 1px solid var(--border);
+  text-align: center;
+}
+
+.fhb-stack .fhb-note {
+  flex: 1 1 auto;
+  aspect-ratio: auto;
+  border-top: none;
+  background: none;
+}
+
+/* The two-row fold's "Show more": a quiet pill centered under the grid. */
+.fhb-more {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 14px auto 0;
+  padding: 5px 14px;
+  font-size: 12px;
+  color: var(--fg-muted);
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  cursor: pointer;
+  transition: color 0.12s ease, border-color 0.12s ease;
+}
+
+.fhb-more:hover {
+  color: var(--fg);
+  border-color: color-mix(in srgb, var(--fg-muted) 35%, var(--border));
+}
+
+/* driver.js popover — dark theme overrides scoped under .driver-popover. */
+.driver-popover {
+  background: var(--bg-popover);
+  color: var(--tour-fg);
+  border: 1px solid rgba(var(--tint), 0.12);
+  border-radius: 10px;
+  box-shadow: 0 8px 30px var(--shadow-lg);
+}
+
+.driver-popover-title {
+  color: var(--tour-fg);
+}
+
+.driver-popover-description {
+  color: var(--tour-desc);
+}
+
+.driver-popover-progress-text {
+  color: var(--tour-dim);
+}
+
+/* Arrow triangle: driver.js colors it via one border side. Tint every side to
+   the popover bg so whichever side is shown matches the dark theme. */
+.driver-popover-arrow-side-left.driver-popover-arrow {
+  border-left-color: var(--bg-popover);
+}
+.driver-popover-arrow-side-right.driver-popover-arrow {
+  border-right-color: var(--bg-popover);
+}
+.driver-popover-arrow-side-top.driver-popover-arrow {
+  border-top-color: var(--bg-popover);
+}
+.driver-popover-arrow-side-bottom.driver-popover-arrow {
+  border-bottom-color: var(--bg-popover);
+}
+
+.driver-popover .driver-popover-close-btn {
+  color: var(--tour-dim);
+}
+
+.driver-popover .driver-popover-close-btn:hover {
+  color: var(--tour-fg);
+}
+
+.driver-popover .driver-popover-navigation-btns button {
+  background: transparent;
+  color: var(--tour-desc);
+  border: 1px solid rgba(var(--tint), 0.12);
+  border-radius: 6px;
+  text-shadow: none;
+}
+
+.driver-popover .driver-popover-navigation-btns button:hover {
+  background: rgba(var(--tint), 0.06);
+  color: var(--tour-fg);
+}
+
+/* Primary next / done button on the accent token, dark text. */
+.driver-popover .driver-popover-navigation-btns button.driver-popover-next-btn {
+  background: var(--accent);
+  color: var(--bg);
+  border-color: var(--accent);
+  font-weight: 600;
+}
+
+.driver-popover .driver-popover-navigation-btns button.driver-popover-next-btn:hover {
+  background: var(--tour-next-hover);
+  color: var(--bg);
+}
+
+.prefs-page {
+  padding: 18px 22px 32px;
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  /* Full-width scroll container so the scrollbar sits at the window edge, not
+     inset at the 760px content boundary. The content column is capped by the
+     child rule below (previously max-width lived here, which made the narrow
+     760px box itself the scroller — a mid-page scrollbar). */
+  overflow-y: auto;
+  font-size: 13px;
+}
+
+/* Cap the settings/mounts content column while the scroller stays full-width.
+   Left-aligned (no auto margin), matching the previous look. */
+.prefs-page > * {
+  max-width: 760px;
+  width: 100%;
+}
+
+/* Render preferences / Fused account tabs (D125) — same look as the
+   Templates page's bindings/library tabs. */
+.prefs-tabs {
+  display: flex;
+  gap: 4px;
+  border-bottom: 1px solid var(--border);
+}
+
+.prefs-tab {
+  font: inherit;
+  font-size: 13px;
+  padding: 9px 4px;
+  margin-right: 20px;
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--fg-muted);
+  cursor: pointer;
+}
+
+.prefs-tab:hover {
+  color: var(--fg);
+}
+
+.prefs-tab.active {
+  color: var(--fg);
+  border-bottom-color: var(--accent);
+}
+
+.prefs-tabpanel {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+.prefs-section {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.prefs-section h2 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--border);
+}
+
+.prefs-section p {
+  margin: 0;
+}
+
+.prefs-section code {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 1px 5px;
+  font-size: 12px;
+  /* `anywhere`, not `word-break: break-all`: both stop a long path or client ID
+     from overflowing, but break-all also split short tokens that would have fit
+     on the next line — "env_auth" rendered as "en / v_auth" mid-sentence in the
+     detected-credentials panel. */
+  overflow-wrap: anywhere;
+}
+
+.prefs-section button {
+  font: inherit;
+  padding: 5px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--fg);
+  cursor: pointer;
+  align-self: flex-start;
+}
+
+.prefs-section button:hover:not(:disabled) {
+  background: var(--bg-alt);
+  border-color: var(--accent);
+}
+
+.prefs-section button:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+/* Safety net for unmigrated selects only — .field-control selects carry their
+   own canonical skin + custom chevron. */
+.prefs-section select:not(.field-control) {
+  font: inherit;
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 7px 10px;
+}
+

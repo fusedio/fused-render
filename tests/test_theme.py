@@ -33,12 +33,14 @@ classification.
 
 Shared helpers live in `_theme_sources`, mirroring `_mount_safe_helpers`.
 """
+import os
 import re
 
 import pytest
 
 from _theme_sources import (
     DEFERRED_TEMPLATES,
+    REPO_ROOT,
     EXEMPT_TEMPLATES,
     OPT_IN_ATTR,
     SELF_TOGGLING_TEMPLATES,
@@ -141,12 +143,36 @@ def test_theme_persistence_is_best_effort():
 
 
 # ---------------------------------------------------------------- shell.css
+# shell.css is an @import barrel over frontend/src/styles/*.css (import order =
+# cascade order). The palettes live in styles/tokens.css; the no-literals
+# invariant applies to every section file.
+
+
+def _shell_style_sources():
+    """(relative_path, source) for every section file, in barrel import order."""
+    barrel = read_repo_file("frontend/src/shell.css")
+    names = re.findall(r'@import\s+"\./styles/([^"]+)";', barrel)
+    assert names, "shell.css must be an @import barrel over styles/"
+    return [
+        (f"frontend/src/styles/{n}", read_repo_file(f"frontend/src/styles/{n}"))
+        for n in names
+    ]
+
+
+def test_shell_barrel_imports_every_styles_file():
+    imported = {path.rsplit("/", 1)[1] for path, _ in _shell_style_sources()}
+    styles_dir = os.path.join(REPO_ROOT, "frontend", "src", "styles")
+    on_disk = {n for n in os.listdir(styles_dir) if n.endswith(".css")}
+    assert imported == on_disk, (
+        f"barrel vs styles/ mismatch — not imported: {sorted(on_disk - imported)}, "
+        f"imported but missing: {sorted(imported - on_disk)}"
+    )
 
 
 def test_shell_css_light_palette_redefines_every_dark_token():
-    dark, light = palette_blocks(read_repo_file("frontend/src/shell.css"))
-    assert dark, "shell.css must declare a dark :root palette"
-    assert light, 'shell.css must declare a :root[data-theme="light"] palette'
+    dark, light = palette_blocks(read_repo_file("frontend/src/styles/tokens.css"))
+    assert dark, "styles/tokens.css must declare a dark :root palette"
+    assert light, 'styles/tokens.css must declare a :root[data-theme="light"] palette'
     assert dark.pop("color-scheme", None) == "dark"
     assert light.pop("color-scheme", None) == "light"
     missing = sorted(set(dark) - set(light))
@@ -156,11 +182,12 @@ def test_shell_css_light_palette_redefines_every_dark_token():
 
 
 def test_shell_css_has_no_colour_literals_outside_the_palettes():
-    literals = style_color_literals(read_repo_file("frontend/src/shell.css"))
-    assert not literals, (
-        "every colour in shell.css must come from a palette token, or light "
-        f"mode cannot repaint it — found: {sorted(set(literals))}"
-    )
+    for path, source in _shell_style_sources():
+        literals = style_color_literals(source)
+        assert not literals, (
+            f"every colour in {path} must come from a palette token, or light "
+            f"mode cannot repaint it — found: {sorted(set(literals))}"
+        )
 
 
 # ---------------------------------------------------------------- runtime push

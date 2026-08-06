@@ -1,0 +1,938 @@
+/* ---- Templates management view (TEMPLATE_MGMT_SPEC §3) -------------------- */
+
+.templates-page {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  max-width: 880px;
+  width: 100%;
+  margin: 0 auto;
+  padding: 32px 24px;
+}
+
+.templates-header h1 {
+  margin: 0 0 6px;
+  font-size: 20px;
+  font-weight: 600;
+}
+
+.templates-subtitle {
+  margin: 0;
+  color: var(--fg-muted);
+}
+
+/* Tabs. */
+.templates-tabs {
+  display: flex;
+  gap: 4px;
+  margin-top: 20px;
+  border-bottom: 1px solid var(--border);
+}
+
+.templates-tab {
+  font: inherit;
+  font-size: 13px;
+  padding: 9px 4px;
+  margin-right: 20px;
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--fg-muted);
+  cursor: pointer;
+}
+
+.templates-tab:hover {
+  color: var(--fg);
+}
+
+.templates-tab.active {
+  color: var(--fg);
+  border-bottom-color: var(--accent);
+}
+
+.templates-tabpanel {
+  padding-top: 18px;
+}
+
+/* Toolbar (both tabs). */
+.templates-toolbar {
+  display: flex;
+  align-items: stretch;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 14px;
+}
+
+.templates-toolbar-push {
+  margin-left: auto;
+}
+
+/* Right-aligned action cluster: keeps New template / Import / Export grouped so
+   they wrap as one unit under the search+filters instead of a lone button
+   floating onto its own row (margin-left:auto on a single wrapped flex item). */
+.templates-toolbar-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  align-items: stretch;
+  margin-left: auto;
+}
+
+.templates-search {
+  font: inherit;
+  font-size: 13px;
+  height: 32px;
+  background: var(--bg-alt);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0 10px;
+  flex: 1 1 200px;
+  min-width: 150px;
+}
+
+.templates-search:focus {
+  outline: none;
+  border-color: var(--fg-muted);
+}
+
+.templates-toolbar select {
+  font: inherit;
+  font-size: 13px;
+  height: 32px;
+  background: var(--bg-alt);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0 8px;
+}
+
+/* Segmented control (filters, key-shape picker, import resolutions):
+   a quiet container pill; the active segment is a subtly raised inner pill —
+   no accent borders. */
+.templates-seg {
+  display: inline-flex;
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-alt);
+}
+
+.templates-seg-btn {
+  font: inherit;
+  font-size: 12px;
+  line-height: 1;
+  padding: 6px 11px;
+  background: none;
+  color: var(--fg-muted);
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.templates-seg-btn:hover {
+  color: var(--fg);
+}
+
+.templates-seg-btn.active {
+  color: var(--fg);
+  background: rgba(var(--tint), 0.09);
+  font-weight: 600;
+}
+
+.templates-seg-btn.danger.active {
+  color: var(--error);
+}
+
+
+/* Delete-confirm modal options (D109): the two default-checked checkboxes. */
+.templates-delete-opts {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 2px 0 10px;
+}
+
+.templates-delete-opt {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.templates-add-btn {
+  font: inherit;
+  font-size: 12px;
+  padding: 5px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-alt);
+  color: var(--fg);
+  cursor: pointer;
+}
+
+.templates-add-btn:hover {
+  border-color: var(--accent);
+}
+
+/* Shared table used for bindings + inventory + import manifest. */
+.templates-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.templates-table thead th {
+  text-align: left;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--fg-muted);
+  padding: 0 10px 8px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.templates-table td {
+  padding: 10px 10px 10px 0;
+  border-bottom: 1px solid var(--border);
+  vertical-align: middle;
+}
+
+.templates-row {
+  cursor: default;
+}
+
+.templates-table tr.templates-row {
+  cursor: pointer;
+}
+
+.templates-row:hover {
+  background: rgba(var(--tint), 0.03);
+}
+
+.templates-col-pattern {
+  white-space: nowrap;
+  width: 1%;
+}
+
+.templates-col-pattern .templates-dot {
+  margin-right: 7px;
+  vertical-align: middle;
+}
+
+.templates-col-templates .templates-chip {
+  margin: 2px 5px 2px 0;
+  vertical-align: middle;
+}
+
+.templates-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  flex: 0 0 auto;
+}
+
+.templates-key-pill {
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 2px 6px;
+  font-size: 12px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+/* Template chips (bindings table + row editor). */
+.templates-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 9px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg-alt);
+  font-size: 12px;
+}
+
+.templates-chip.small {
+  padding: 2px 8px;
+}
+
+.templates-chip.default {
+  border-color: rgba(var(--accent-rgb), 0.35);
+}
+
+.templates-chip.broken {
+  border-color: var(--error);
+  color: var(--error);
+}
+
+.templates-chip[draggable="true"] {
+  cursor: grab;
+}
+
+.templates-chip-badge {
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--accent);
+}
+
+.templates-chip-x {
+  font: inherit;
+  font-size: 10px;
+  line-height: 1;
+  border: none;
+  background: none;
+  color: var(--fg-muted);
+  cursor: pointer;
+  padding: 0 0 0 2px;
+}
+
+.templates-chip-x:hover {
+  color: var(--error);
+}
+
+.templates-pill {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  border: 1px solid var(--border);
+  color: var(--fg-muted);
+  white-space: nowrap;
+}
+
+.templates-pill.warn {
+  color: var(--error);
+  border-color: var(--error);
+}
+
+/* Row editor modal internals. */
+.templates-editor,
+.templates-import {
+  width: min(640px, 100%);
+}
+
+.templates-new {
+  width: min(520px, 100%);
+}
+
+.templates-editor .deploy-body,
+.templates-import .deploy-body,
+.templates-new .deploy-body {
+  gap: 16px;
+}
+
+/* The row-editor / import step content is wrapped in a <form> (so Enter
+   submits); keep the fields laid out with the same column gap the body used. */
+.templates-editor .deploy-body > form,
+.templates-import .deploy-body > form {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.templates-field-hint {
+  font-size: 12px;
+}
+
+/* Quick-pick extensions already in the registry: chip buttons under the tag
+   input, capped to ~3 rows with the overflow scrolling. */
+.templates-ext-suggest-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.templates-ext-suggestions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: flex-start;
+  align-content: flex-start;
+  /* Truncate at exactly 3 chip rows: chips are pinned to 24px tall below, so
+     rows start every 30px (24px + 6px gap) and the 4th row begins at 90px —
+     fully past this cutoff, no partial row peeking. Typing filters the list,
+     so hidden extensions are still reachable. */
+  max-height: 84px;
+  overflow: hidden;
+}
+
+.templates-ext-suggestion {
+  font: inherit;
+  cursor: pointer;
+  color: var(--fg);
+  /* Fixed height keeps suggestion rows on the 30px grid the container's
+     max-height counts on. */
+  height: 24px;
+  box-sizing: border-box;
+}
+
+.templates-ext-suggestion:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+
+.templates-ext-suggestion:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* Tag-style extension input: chips + a borderless draft field inside one box
+   that reads as a single text input (matches .templates-search framing). */
+.templates-chip-input {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+}
+
+.templates-chip-input:focus-within {
+  border-color: var(--fg-muted);
+}
+
+.templates-chip-draft {
+  flex: 1 1 80px;
+  min-width: 80px;
+  font: inherit;
+  border: none;
+  background: none;
+  color: var(--fg);
+  padding: 2px 0;
+}
+
+.templates-chip-draft:focus {
+  outline: none;
+}
+
+/* The row editor hosts the "Add template" popover, which is absolutely
+   positioned. A scroll container (overflow != visible) would clip it, so the
+   editor's body must NOT clip — the form is short and the dialog's own 85vh
+   cap keeps it on screen. (The import wizard keeps the default scrolling body
+   for its potentially long manifest table.) */
+.templates-editor .deploy-body {
+  overflow: visible;
+}
+
+.templates-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.templates-field > label,
+.templates-field-label {
+  color: var(--fg-muted);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.templates-key-fixed {
+  font-size: 13px;
+}
+
+.templates-keybuilder {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.templates-key-input {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0 8px;
+  background: var(--bg);
+  align-self: flex-start;
+}
+
+.templates-key-input input {
+  font: inherit;
+  background: none;
+  color: var(--fg);
+  border: none;
+  padding: 7px 2px;
+  min-width: 120px;
+}
+
+.templates-key-input input:focus {
+  outline: none;
+}
+
+.templates-key-input:focus-within {
+  border-color: var(--fg-muted);
+}
+
+.templates-key-fix {
+  color: var(--fg-muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.templates-key-preview {
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+
+.templates-broken-note {
+  margin-top: 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--error);
+  border-radius: 6px;
+  background: rgba(var(--error-rgb), 0.08);
+  color: var(--error);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.templates-key-error {
+  font-size: 12px;
+  color: var(--error);
+}
+
+.templates-chiplist {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  min-height: 24px;
+}
+
+.templates-add-wrap {
+  position: relative;
+  align-self: flex-start;
+}
+
+.templates-reorder-hint {
+  font-size: 11px;
+}
+
+/* Add-template picker popover (row editor). */
+.templates-picker {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: 1100;
+  width: 260px;
+  max-height: 240px;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px var(--shadow-lg);
+}
+
+.templates-picker-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+.templates-picker-body {
+  flex: 1 1 auto;
+  min-height: 0; /* let the list scroll inside the bounded picker, not spill */
+  max-height: 240px;
+  overflow-y: auto;
+  padding: 6px;
+}
+
+.templates-picker-cat {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--fg-muted);
+  padding: 6px 6px 3px;
+}
+
+.templates-picker-cell {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  text-align: left;
+  font: inherit;
+  font-size: 13px;
+  padding: 6px 8px;
+  border: none;
+  border-radius: 6px;
+  background: none;
+  color: var(--fg);
+  cursor: pointer;
+}
+
+.templates-picker-cell:hover {
+  background: rgba(var(--tint), 0.06);
+}
+
+.templates-icon-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  opacity: 0.7;
+  flex: 0 0 auto;
+}
+
+/* Library tab (inventory). */
+.templates-inv-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 20px;
+}
+
+.templates-inv-group:first-child {
+  margin-top: 0;
+}
+
+.templates-inv-grouphead {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--fg-muted);
+  padding-bottom: 8px;
+}
+
+.templates-inv-count {
+  font-weight: 400;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.templates-lock {
+  font-size: 11px;
+}
+
+.templates-inv-check {
+  width: 24px;
+}
+
+.templates-inv-name {
+  white-space: nowrap;
+  width: 1%;
+}
+
+.templates-inv-name > * {
+  vertical-align: middle;
+}
+
+.templates-inv-name .templates-icon-dot {
+  margin-right: 7px;
+}
+
+.templates-inv-name .templates-pill {
+  margin-left: 8px;
+}
+
+.templates-inv-usedby .templates-usedby-chip {
+  display: inline-block;
+  margin: 2px 4px 2px 0;
+}
+
+.templates-usedby-chip {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 1px 5px;
+  font-size: 11px;
+  color: var(--fg-muted);
+}
+
+.templates-inv-actions {
+  text-align: right;
+  white-space: nowrap;
+  width: 1%;
+}
+
+.templates-inv-actions .templates-ghost-btn {
+  margin-left: 6px;
+}
+
+/* Ghost action buttons. */
+.templates-ghost-btn {
+  font: inherit;
+  font-size: 12px;
+  padding: 3px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: none;
+  color: var(--fg-muted);
+  cursor: pointer;
+}
+
+.templates-ghost-btn.danger:hover {
+  color: var(--error);
+  border-color: var(--error);
+}
+
+.templates-ghost-btn:hover {
+  color: var(--fg);
+  border-color: var(--fg-muted);
+}
+
+.templates-hint {
+  margin-top: 18px;
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+
+/* Import wizard. */
+.templates-import-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.templates-import-table td {
+  padding: 6px 10px 6px 0;
+  border-top: 1px solid var(--border);
+  vertical-align: middle;
+}
+
+.templates-import-name {
+  font-weight: 500;
+}
+
+.templates-import-invalid {
+  opacity: 0.6;
+}
+
+.templates-warnings {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 12px;
+}
+
+/* Recommended-binding chips (import wizard step 2). */
+.templates-recs-toggle {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.templates-recs-toggle-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.templates-recs-subline {
+  font-size: 12px;
+}
+
+/* The strip visually belongs to the manifest row above it: dashed separator
+   instead of the table's solid row border. */
+.templates-import-table tr.templates-rec-strip td {
+  border-top: 1px dashed var(--border);
+  padding: 5px 0 8px;
+}
+
+.templates-rec-strip.inert .templates-rec-row,
+.templates-rec-strip.inert .templates-rec-warn {
+  opacity: 0.45;
+}
+
+.templates-rec-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+
+.templates-rec-label {
+  font-size: 11px;
+  color: var(--fg-muted);
+}
+
+/* Chips fight the generic .deploy-body button skin (see note below) — match
+   its specificity and re-assert the pill look for both <button> and <span>. */
+.deploy-body .templates-rec-chip,
+.templates-rec-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  padding: 2px 9px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: none;
+  color: var(--fg-muted);
+  align-self: auto;
+}
+
+.deploy-body button.templates-rec-chip {
+  cursor: pointer;
+}
+
+.deploy-body button.templates-rec-chip:hover:not(:disabled) {
+  background: none;
+  border-color: var(--fg-muted);
+}
+
+.deploy-body button.templates-rec-chip.on {
+  border-color: rgba(var(--accent-rgb), 0.5);
+  background: rgba(var(--accent-rgb), 0.07);
+  color: var(--accent);
+}
+
+.deploy-body button.templates-rec-chip.on:hover:not(:disabled) {
+  background: rgba(var(--accent-rgb), 0.12);
+  border-color: var(--accent);
+}
+
+.templates-rec-chip.off .templates-rec-key {
+  text-decoration: line-through;
+}
+
+.deploy-body button.templates-rec-chip.add {
+  border-style: dashed;
+}
+
+.templates-rec-badge {
+  display: inline-block;
+  font-family: system-ui, sans-serif;
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+}
+
+.templates-rec-badge.bound {
+  color: var(--success-soft);
+}
+
+.templates-rec-badge.disabled {
+  color: var(--warning-soft);
+}
+
+.deploy-body .templates-rec-add-input {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  width: 90px;
+  padding: 2px 9px;
+  border: 1px solid var(--accent);
+  border-radius: 999px;
+  background: var(--bg-alt);
+  color: var(--fg);
+}
+
+.deploy-body .templates-rec-add-input:focus {
+  outline: none;
+}
+
+.deploy-body .templates-rec-add-input.err {
+  border-color: var(--error);
+}
+
+.templates-rec-warn {
+  margin-top: 5px;
+  font-size: 11px;
+  color: var(--warning-soft);
+}
+
+.templates-result-bindings {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+
+.templates-result {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 13px;
+}
+
+.templates-result-line {
+  word-break: break-word;
+}
+
+/* The generic .deploy-body button skin bleeds into templates controls inside
+   the modals (picker cells, chip ✕, segmented, footer buttons) — re-assert
+   their intended looks at higher specificity. */
+.deploy-body .templates-picker-cell {
+  border: none;
+  border-radius: 6px;
+  background: none;
+  padding: 6px 8px;
+  width: 100%;
+}
+
+.deploy-body .templates-picker-cell:hover:not(:disabled) {
+  background: rgba(var(--tint), 0.06);
+  border-color: transparent;
+}
+
+.deploy-body .templates-chip-x {
+  border: none;
+  background: none;
+  padding: 0 0 0 2px;
+  font-size: 10px;
+  color: var(--fg-muted);
+}
+
+.deploy-body .templates-chip-x:hover:not(:disabled) {
+  background: none;
+  border-color: transparent;
+  color: var(--error);
+}
+
+.deploy-body .templates-seg-btn {
+  padding: 6px 11px;
+  border: none;
+  border-radius: 4px;
+  background: none;
+  color: var(--fg-muted);
+}
+
+.deploy-body .templates-seg-btn:hover:not(:disabled) {
+  background: none;
+  border-color: transparent;
+  color: var(--fg);
+}
+
+.deploy-body .templates-seg-btn.active,
+.deploy-body .templates-seg-btn.active:hover:not(:disabled) {
+  color: var(--fg);
+  background: rgba(var(--tint), 0.09);
+  border-color: transparent;
+  font-weight: 600;
+}
+
+.deploy-body .templates-seg-btn.danger.active {
+  color: var(--error);
+}
+
+.templates-inv-icon {
+  display: inline-flex;
+  margin-right: 8px;
+  color: var(--fg-muted);
+  vertical-align: middle;
+}
+
+.templates-row:hover .templates-inv-icon {
+  color: var(--fg);
+}
+

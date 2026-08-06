@@ -1,0 +1,250 @@
+/* ---- Notification stack (fixed, bottom-right) ---------------------------- */
+/* The one surface every notification shares: transient toasts with the
+   server-health card at its foot (NotificationHost). Nothing inside positions
+   itself — the column owns placement and stacking, which is the whole point of
+   folding the old bottom-centre toast host and the separately-pinned server
+   card into it. pointer-events: none on the column so its empty region never
+   swallows clicks on the view beneath; each entry takes them back. */
+.notif-host {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  z-index: 2000;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+  max-width: min(360px, calc(100vw - 32px));
+  pointer-events: none;
+}
+
+.notif-host > * {
+  pointer-events: auto;
+}
+
+/* ---- Transient toast ----------------------------------------------------- */
+/* Default is the error variant (red border); .toast-info is the neutral
+   confirmation variant (e.g. "Path copied"). Capped at the column's width so
+   the stack reads as one system rather than a ragged pile. */
+/* One row of the stack. The card fades/slides; the SLOT is what collapses its
+   height (grid row 1fr → 0fr, plus a negative bottom margin that eats the
+   column's 8px gap), so dismissing a toast makes the ones below it glide up
+   instead of snapping. lib/toast keeps a dismissed toast in the queue for
+   TOAST_EXIT_MS — the same --dur-med these transitions run for. */
+.toast-slot {
+  display: grid;
+  grid-template-rows: 1fr;
+  max-width: 100%;
+  transition:
+    grid-template-rows var(--dur-med) var(--ease-out),
+    margin-bottom var(--dur-med) var(--ease-out);
+}
+
+.toast-slot > .toast {
+  min-height: 0;
+  overflow: hidden;
+}
+
+.toast-slot.leaving {
+  grid-template-rows: 0fr;
+  margin-bottom: -8px; /* cancels .notif-host's gap as the row closes */
+}
+
+.toast {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  max-width: 100%;
+  padding: 8px 10px 8px 12px;
+  font-size: 12px;
+  color: var(--fg);
+  background: var(--bg-alt);
+  border: 1px solid var(--error);
+  border-radius: 8px;
+  box-shadow: 0 6px 20px var(--shadow-lg);
+  animation: toast-in var(--dur-med) var(--ease-out);
+}
+
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+}
+
+.toast.toast-leaving {
+  /* A toast dismissed inside its own enter window would otherwise keep being
+     driven by the animation above, which wins over a transition. */
+  animation: none;
+  opacity: 0;
+  transform: translateY(4px);
+  transition:
+    opacity var(--dur-med) var(--ease-out),
+    transform var(--dur-med) var(--ease-out);
+}
+
+.toast-info {
+  border-color: var(--border);
+}
+
+/* Wraps instead of ellipsising to one line. These messages are sentences —
+   "no mount covers s3://<bucket> — add one from the Mounts page in the
+   sidebar" — and a single-line clip cuts exactly the half that says what to
+   do, which was already true at the old 520px and is worse in a 360px column.
+   Clamped so a pathological message still can't own the screen. */
+.toast-msg {
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 4;
+  line-height: 1.45;
+}
+
+.toast-close {
+  flex: 0 0 auto;
+  background: none;
+  border: none;
+  color: var(--fg-muted);
+  font-size: 12px;
+  cursor: pointer;
+  padding: 0 2px;
+}
+
+.toast-close:hover {
+  color: var(--fg);
+}
+
+/* Manual action inside a toast (e.g. the mount-health "Reconnect"). */
+.toast-action {
+  flex: 0 0 auto;
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--fg);
+  font-size: 12px;
+  cursor: pointer;
+  padding: 3px 8px;
+}
+
+.toast-action:hover {
+  border-color: var(--fg-muted);
+}
+
+/* ---- Server-status card (foot of the notification stack) ----------------- */
+/* Shown by ServerStatusBanner after two failed /api/config probes; the green
+   -reconnected variant auto-dismisses. Placement and stacking belong to
+   .notif-host — this only describes the card. */
+.server-status {
+  max-width: 100%;
+  padding: 10px 12px;
+  font-size: 12px;
+  color: var(--fg);
+  background: var(--bg-alt);
+  border: 1px solid var(--error);
+  border-radius: 8px;
+  box-shadow: 0 6px 20px var(--shadow-lg);
+  animation: server-status-in 0.15s ease-out;
+}
+
+@keyframes server-status-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.server-status-title {
+  font-weight: 600;
+  color: var(--error);
+  margin-bottom: 4px;
+}
+
+.server-status-body {
+  color: var(--fg-muted);
+  line-height: 1.5;
+}
+
+.server-status-retry,
+.server-status-launch {
+  margin-top: 8px;
+  padding: 3px 10px;
+  font-size: 12px;
+  color: var(--fg);
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.server-status-retry:hover,
+.server-status-launch:hover {
+  border-color: var(--fg-muted);
+}
+
+/* The "Start fused-render" fused-render://launch link (D128): an anchor
+   dressed as the sibling button; inline-block so padding/margin apply. */
+.server-status-launch {
+  display: inline-block;
+  margin-right: 8px;
+  color: inherit;
+  text-decoration: none;
+}
+
+.server-status-reconnected {
+  border-color: var(--success);
+  color: var(--fg);
+}
+
+.tab-add {
+  flex: 0 0 auto;
+  background: none;
+  border: none;
+  color: var(--fg-muted);
+  cursor: pointer;
+  padding: 4px 8px;
+  font-size: 15px;
+  line-height: 1;
+}
+
+.tab-add:hover {
+  color: var(--fg);
+}
+
+.tabs-body {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.tabs-body iframe {
+  width: 100%;
+  height: 100%;
+  border: none;
+  background: var(--bg);
+}
+
+/* First paint of a lazily-mounted tab (and of an imperative src rewrite from
+   the tab bar's mode menu) fades in rather than snapping from an unpainted
+   frame; views/Tabs.tsx adds `.is-loaded` on the iframe's own load event.
+   Inactive tabs stay hidden with `display: none` (TM-5) — an iframe must be
+   layout-hidden, not merely transparent — so this opacity is only ever the
+   load fade, never the tab-visibility mechanism. */
+.tabs-body iframe.tab-frame {
+  opacity: 0;
+  transition: opacity var(--dur-med) var(--ease-out);
+}
+
+.tabs-body iframe.tab-frame.is-loaded {
+  opacity: 1;
+}
+
+/* React mount point (frontend/index.html) — transparent to the flex layout
+   above: #app stays the layout root exactly as in the vanilla shell. */
+#root {
+  display: contents;
+}
+
