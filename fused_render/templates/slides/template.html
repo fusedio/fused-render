@@ -794,16 +794,29 @@
       commitInlineEdit(el, lines.length?lines:[node.innerText.replace(/​/g,"")]); commit(); };
     node.addEventListener("blur",finish);
   }
+  // Commit any in-progress inline text/cell edit now. Dispatches the blur EVENT
+  // (runs the finish handler) rather than .blur(), which no-ops when the node
+  // isn't actually focused — so this is reliable however the edit is left.
+  function commitCanvasEdit(){
+    $("canvas").querySelectorAll('[contenteditable="true"]').forEach(
+      n=>n.dispatchEvent(new FocusEvent("blur")));
+  }
 
   // ========================================================= drag / resize / marquee
   function initDrag(){
     const cv=$("canvas");
     cv.addEventListener("mousedown",e=>{
       if(S.mode!=="edit")return;
-      if(e.target.closest('[contenteditable="true"]')) return; // editing text/cell
+      if(e.target.closest('[contenteditable="true"]')) return; // click inside the active edit — leave it
       const node=e.target.closest(".el");
-      if(!node){ startMarquee(e); return; }          // empty canvas → rubber-band select
-      const id=node.dataset.id;
+      const id=node?node.dataset.id:null;
+      // Commit any active inline edit before a marquee/drag starts: the
+      // e.preventDefault() below suppresses the native blur, which would leave
+      // that box stuck in contenteditable — un-selectable and un-draggable after.
+      // Dispatch the blur EVENT (runs the finish handler) rather than .blur(),
+      // which no-ops unless the node is actually focused.
+      commitCanvasEdit();
+      if(!id){ startMarquee(e); return; }            // empty canvas → rubber-band select
       if(e.shiftKey){ select(id,true); e.preventDefault(); return; }  // toggle in/out
       if(!isSel(id)) select(id);                     // click outside selection → select it
       // remember which table cell was clicked (row/col context for table ops)
@@ -1361,7 +1374,13 @@
         if(node) beginTextEdit(node, el, true); else selectAll();
         return;
       }
-      if(editingText)return;
+      if(editingText){
+        // Escape leaves an inline edit (commit it) — the box stays selected so
+        // it can be moved/resized right away.
+        if(e.key==="Escape" && document.activeElement && document.activeElement.closest
+           && document.activeElement.closest("#canvas")){ e.preventDefault(); commitCanvasEdit(); }
+        return;
+      }
       if((e.key==="Delete"||e.key==="Backspace")&&S.selIds.length&&S.mode==="edit"){e.preventDefault();delSel();}
       if(e.key==="Escape")select(null);
       if(e.key==="ArrowLeft"&&!S.selIds.length)gotoSlide(S.cur-1);

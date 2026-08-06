@@ -136,6 +136,23 @@ window.__t = (() => {
       {key:'a',code:'KeyA',ctrlKey:true,bubbles:true,cancelable:true})); },
     styleGeom(){ clk(q('#styleTrigger')); return geom(q('#styleTrigger'), q('#stylePop')); },
     fontGeom(){ clk(q('#fontTrigger')); return geom(q('#fontTrigger'), q('#fontPop')); },
+    enterEdit(){ const e=firstText(); fire(e,'mousedown'); fire(e,'mouseup'); fire(e,'dblclick');
+      const ed=qa('#canvas .el-text[contenteditable="true"]')[0]; if(ed) ed.focus();
+      return qa('#canvas .el-text[contenteditable="true"]').length; },
+    editableCount(){ return qa('#canvas .el-text[contenteditable="true"]').length; },
+    selectedEls(){ return q('#canvas').querySelectorAll('.el.selected').length; },
+    clickEmpty(){ const r=q('#canvas').getBoundingClientRect(), x=r.left+8, y=r.top+r.height-8;
+      const cv=q('#canvas');
+      cv.dispatchEvent(new MouseEvent('mousedown',{bubbles:true,cancelable:true,view:w,clientX:x,clientY:y}));
+      cv.dispatchEvent(new MouseEvent('mouseup',{bubbles:true,cancelable:true,view:w,clientX:x,clientY:y}));
+      return qa('#canvas .el-text[contenteditable="true"]').length; },
+    pressEscape(){ document.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true,cancelable:true})); },
+    dragBox(dx,dy){ const e=firstText(); const b=e.getBoundingClientRect();
+      const cx=b.left+b.width/2, cy=b.top+b.height/2;
+      e.dispatchEvent(new MouseEvent('mousedown',{bubbles:true,cancelable:true,view:w,clientX:cx,clientY:cy}));
+      document.dispatchEvent(new MouseEvent('mousemove',{bubbles:true,view:w,clientX:cx+dx,clientY:cy+dy}));
+      document.dispatchEvent(new MouseEvent('mouseup',{bubbles:true,view:w,clientX:cx+dx,clientY:cy+dy}));
+      return Math.round(firstText().getBoundingClientRect().left-b.left); },
     editingCount(){ return qa('#canvas .el-text[contenteditable="true"]').length; },
     selectedEls(){ return q('#canvas').querySelectorAll('.el.selected').length; },
     textSelLen(){ return (w.getSelection()+'').length; },
@@ -189,6 +206,23 @@ def test_bold_toggles(frame):
     before = frame.evaluate("window.__t.boldOn()")
     after = frame.evaluate("window.__t.clickBold()")
     assert after != before
+
+
+def test_click_out_of_edit_leaves_box_movable(frame):
+    # edit a box, then click empty canvas: the edit must commit (not stay stuck
+    # in contenteditable), and the box must be re-selectable and draggable.
+    assert frame.evaluate("window.__t.enterEdit()") == 1
+    assert frame.evaluate("window.__t.clickEmpty()") == 0        # committed, no editable left
+    assert frame.evaluate("window.__t.selectBox()") == 1         # re-selectable
+    assert frame.evaluate("window.__t.dragBox(40, 0)") >= 25     # and draggable
+
+
+def test_escape_exits_edit_and_keeps_box_selected(frame):
+    assert frame.evaluate("window.__t.enterEdit()") == 1
+    frame.evaluate("window.__t.pressEscape()")
+    assert _wait_for(lambda: frame.evaluate("window.__t.editableCount()") == 0 or None, 3)
+    assert frame.evaluate("window.__t.selectedEls()") == 1       # stays selected
+    assert frame.evaluate("window.__t.dragBox(40, 0)") >= 25     # movable right away
 
 
 def test_ctrl_a_selects_box_text_not_all_elements(frame):
