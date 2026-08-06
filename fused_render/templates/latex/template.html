@@ -752,15 +752,25 @@ pdfjs.GlobalWorkerOptions.workerSrc = "/template-assets/pdfjs.worker.bundle.mjs"
       const st = await py({ action: "warm_status" });
       const p = st.progress;
       if (p && (p.detail || p.stage) && $("warmDetail")) $("warmDetail").textContent = p.detail || p.stage;
-      if (p && p.done && p.error) {
+      // Stop only when the warm run WE are waiting on has finished (progress.done,
+      // which the worker resets per run). The `.warmed` marker (st.warm) can't be
+      // the signal: it persists across runs, so a warm triggered by a compile
+      // timeout already sees it on the first poll and would recompile in a tight
+      // loop against a still-cold cache, racing the worker on the build dir.
+      if (p && p.done) {
         warmPolling = false;
-        if ($("warmErr")) { $("warmErr").textContent = p.error; $("warmErr").classList.remove("hidden"); }
-        setStatus("err", "package fetch failed");
-        return;
+        // A genuine fetch failure leaves the cache unwarmed (no .warmed marker).
+        // If the marker IS set, packages are cached — treat a stray progress
+        // error (e.g. a Windows os.replace race on the final write) as success.
+        if (p.error && !st.warm) {
+          if ($("warmErr")) { $("warmErr").textContent = p.error; $("warmErr").classList.remove("hidden"); }
+          setStatus("err", "package fetch failed");
+          return;
+        }
+        // Packages are ready — the foreground recompile serves the PDF the worker
+        // produced, or surfaces the document's real diagnostics.
+        toast("LaTeX packages ready."); compile(); return;
       }
-      // Ready when the scaffold warm set the marker, or a document warm finished
-      // (it compiled the doc into the build dir — a plain recompile serves that PDF).
-      if (st.warm || (p && p.done)) { warmPolling = false; toast("LaTeX packages ready."); compile(); return; }
     } catch (e) { /* transient — keep polling */ }
     setTimeout(pollWarm, 1500);
   }
@@ -940,7 +950,10 @@ pdfjs.GlobalWorkerOptions.workerSrc = "/template-assets/pdfjs.worker.bundle.mjs"
       // entrypoint, so Recompile reflects what you're looking at; only a fragment
       // keeps the entrypoint on the main, so the whole document still compiles
       // from a child buffer.
-      let promote = abs !== S.mainAbs;
+      // Only a .tex file can be a compile entrypoint. A .bib/.cls/.sty/image you
+      // open to edit alongside the document must never become the target — it
+      // isn't a document, and Recompile stays on the real main.
+      let promote = abs !== S.mainAbs && /\.tex$/i.test(abs);
       if (promote && !/\\documentclass/.test(text.slice(0, 4000)) && await inMainGraph(abs)) {
         promote = false;
       }
@@ -1272,7 +1285,10 @@ pdfjs.GlobalWorkerOptions.workerSrc = "/template-assets/pdfjs.worker.bundle.mjs"
     };
     host.querySelector("#npCancel").addEventListener("click", closeModal);
     host.querySelector("#npCreate").addEventListener("click", create);
-    host.querySelector("#npTitle").addEventListener("keydown", (e) => { if (e.key === "Enter") create(); });
+    host.querySelector("#npTitle").addEventListener("keydown", (e) => {
+      if (e.isComposing || e.keyCode === 229) return;   // don't fire mid-IME-composition
+      if (e.key === "Enter") create();
+    });
     setTimeout(() => host.querySelector("#npTitle").focus(), 30);
   }
   $("homeBtn").addEventListener("click", showHome);
