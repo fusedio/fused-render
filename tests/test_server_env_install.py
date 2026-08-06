@@ -424,6 +424,9 @@ def test_cancelling_cancels_the_install_that_is_actually_running():
     result = _run_loader("""
 const cancelled = [];
 let polls = 0;
+// Assigned when the row exists; `showInstall` runs synchronously inside
+// `installEnv`, so it is there from the first poll onwards.
+let row = null;
 globalThis.fetch = (url, opts) => {
   if (url === "/api/env/install")
     return Promise.resolve({ ok: true, json: () => Promise.resolve(
@@ -431,8 +434,11 @@ globalThis.fetch = (url, opts) => {
   if (url.startsWith("/api/env/progress")) {
     polls += 1;
     if (polls === 1) {
-      // The user clicks Cancel while the install is genuinely in flight.
-      installUi.cancel._h.click[0]();
+      // The user clicks Cancel while the install is genuinely in flight. Reached
+      // through the ROW for this key: each install owns its own button now, so
+      // there is no single `installUi.cancel` to press.
+      row = installing.get("%(a)s").row;
+      row.cancel._h.click[0]();
       return Promise.resolve({ json: () => Promise.resolve({ ok: true,
         progress: { stage: "install", pct: 25, done: false } })});
     }
@@ -469,6 +475,7 @@ def test_a_cancel_the_server_could_not_honour_is_never_silent():
     """
     result = _run_loader("""
 let polls = 0;
+let row = null;
 globalThis.fetch = (url, opts) => {
   if (url === "/api/env/install")
     return Promise.resolve({ ok: true, json: () => Promise.resolve(
@@ -476,8 +483,10 @@ globalThis.fetch = (url, opts) => {
   if (url.startsWith("/api/env/progress")) {
     polls += 1;
     if (polls === 1) {
-      // Cancel lands inside the spawn window: nothing to kill yet.
-      installUi.cancel._h.click[0]();
+      // Cancel lands inside the spawn window: nothing to kill yet. Reached through
+      // the ROW for this key, since each install owns its own button now.
+      row = installing.get("%(a)s").row;
+      row.cancel._h.click[0]();
       return Promise.resolve({ json: () => Promise.resolve({ ok: true,
         progress: { stage: "install", pct: 25, detail: "downloading", done: false } })});
     }
@@ -490,8 +499,8 @@ globalThis.fetch = (url, opts) => {
     { ok: true, cancelled: false }) });
 };
 installEnv({ key: "%(a)s", requirements: ["x"] }, "a.py", "a.html").then(
-  () => console.log(JSON.stringify({ resolved: true, detail: installUi.detail.textContent })),
-  (e) => console.log(JSON.stringify({ type: e.type, detail: installUi.detail.textContent })));
+  () => console.log(JSON.stringify({ resolved: true, detail: row.detail.textContent })),
+  (e) => console.log(JSON.stringify({ type: e.type, detail: row.detail.textContent })));
 """ % {"a": _KEY_A, "b": _KEY_B})
     assert result.get("type") == "EnvInstallCancelled", (
         "the install resolved after the user cancelled it, so the script ran"
@@ -506,20 +515,36 @@ def test_one_finished_install_does_not_tear_the_overlay_off_another():
     """Two .py files with identical requirement sets share one venv key, so both
     calls track the SAME entry. A plain Set means the first to settle deletes it,
     `installing.size` hits 0, and the second install polls on with no UI and no
-    cancel button."""
+    cancel button.
+
+    Asserted across the mount delay rather than synchronously, because the overlay
+    no longer appears the instant an install starts: it is scheduled and mounts only
+    if something is still running when the timer fires. So the sequence checked here
+    is the whole lifecycle — the entry survives the first settle, the overlay does
+    appear while a waiter is live, and it goes on the LAST settle.
+    """
     result = _run_loader("""
 const need = { key: "%(a)s", requirements: ["x"] };
 showInstall(need);
 showInstall(need);
 hideInstall(need.key);
-const afterFirst = installUi.mounted;
-hideInstall(need.key);
-console.log(JSON.stringify({ afterFirst, afterSecond: installUi.mounted }));
+const afterFirst = installing.has(need.key);
+setTimeout(() => {
+  const mountedWhileLive = installUi.mounted;
+  hideInstall(need.key);
+  console.log(JSON.stringify({ afterFirst, mountedWhileLive,
+                               afterSecond: installUi.mounted,
+                               live: installing.size }));
+}, 900);
 """ % {"a": _KEY_A})
     assert result["afterFirst"] is True, (
-        "the overlay was removed while a second install with the same key was live"
+        "the shared entry was dropped while a second install with the same key was live"
+    )
+    assert result["mountedWhileLive"] is True, (
+        "the overlay never appeared for an install that outlived the mount delay"
     )
     assert result["afterSecond"] is False, "the overlay must go once the last one ends"
+    assert result["live"] == 0, "the entry outlived its last waiter"
 
 
 # --- the install stage has no percentage, so the bar must not claim one (D213) --
@@ -540,7 +565,7 @@ def test_the_install_stage_paints_an_indeterminate_bar():
     width, or a finished install would animate forever.
     """
     result = _run_loader("""
-const ui = installOverlay();
+const ui = installRow();
 const seen = [];
 const snap = (label) => seen.push([label, ui.bar.dataset.indeterminate || null,
                                    ui.bar.style.width]);
@@ -572,7 +597,7 @@ def test_the_python_stage_paints_an_indeterminate_bar_too():
     sweep.
     """
     result = _run_loader("""
-const ui = installOverlay();
+const ui = installRow();
 const seen = [];
 const snap = (label) => seen.push([label, ui.bar.dataset.indeterminate || null,
                                    ui.bar.style.width]);
@@ -684,12 +709,17 @@ def test_an_install_that_is_already_running_is_not_painted_as_zero_percent():
     percentage at all, and the first real paint comes from the server's own record.
     """
     result = _run_loader("""
-// installOverlay is memoised, so grabbing it first hands us the very bar the
-// loader will paint — and a recording setter then sees every width it assigns.
+// The row for this key is registered BEFORE installEnv runs, so the recording
+// setter is in place for `showInstall`'s own paints — which is where the
+// zero-percent bug lived. Attaching it afterwards would still pass while leaving
+// that exact regression invisible. `showInstall` reuses an existing entry for the key rather
+// than building a second row, so the loader paints into this very bar.
 const ui = installOverlay();
+const row = installRow();
+installing.set("%(a)s", { row, count: 0 });
 const widths = [];
-let w = ui.bar.style.width;
-Object.defineProperty(ui.bar.style, "width", {
+let w = row.bar.style.width;
+Object.defineProperty(row.bar.style, "width", {
   get: () => w,
   set: (v) => { w = v; widths.push(v); },
 });
@@ -719,6 +749,170 @@ installEnv({ key: "%(a)s", requirements: ["a", "b"] }, "a.py", "a.html").then(
         f"a joined install was painted as 0% first: {result['widths']}"
     )
     assert result["widths"][-1] == "100%", result["widths"]
+
+
+# --- several installs at once, each with its own row --------------------------
+#
+# The gap that let the shared-overlay bug ship: the only multi-install test above
+# passes the SAME key twice, because two .py files with identical requirement sets
+# share one venv key. That is a real case and it is covered. The case nobody
+# covered is the one users actually hit — an HTML view calling several .py files
+# with DIFFERENT headers, so N installs with N distinct keys run concurrently
+# against what used to be one title, one detail line and one Cancel button.
+
+
+def test_two_distinct_installs_get_their_own_rows():
+    """Distinct keys must not share nodes.
+
+    With one shared set, the title named whichever install started last and the
+    detail line flipped between N pollers at 2Hz. This asserts the structural fix:
+    two entries, two rows, two bars, both attached to the overlay.
+    """
+    result = _run_loader("""
+const ui = installOverlay();
+const a = showInstall({ key: "%(a)s", requirements: ["imagecodecs"] });
+const b = showInstall({ key: "%(b)s", requirements: ["s3fs"] });
+console.log(JSON.stringify({
+  live: installing.size,
+  rows: ui.rows.children.length,
+  sameRow: a === b,
+  sameBar: a.bar === b.bar,
+  sameCancel: a.cancel === b.cancel,
+  titleA: a.title.textContent,
+  titleB: b.title.textContent,
+}));
+""" % {"a": _KEY_A, "b": _KEY_B})
+    assert result["live"] == 2, result
+    assert result["rows"] == 2, "both installs must be visible at once"
+    assert result["sameRow"] is False
+    assert result["sameBar"] is False
+    assert result["sameCancel"] is False, (
+        "one shared Cancel button means a single click cancels every install"
+    )
+    assert result["titleA"] == "Installing imagecodecs"
+    assert result["titleB"] == "Installing s3fs", (
+        "the second install overwrote the first install's title"
+    )
+
+
+def test_painting_one_install_does_not_touch_another():
+    """Each poller writes only its own row.
+
+    Two pollers on one detail line is what made a legitimate pair of installs read
+    as a single flickering one, so this pins the isolation directly rather than
+    through the DOM shape alone.
+    """
+    result = _run_loader("""
+const a = showInstall({ key: "%(a)s", requirements: ["imagecodecs"] });
+const b = showInstall({ key: "%(b)s", requirements: ["s3fs"] });
+paintInstall(a, { stage: "install", pct: 25, detail: "fetching imagecodecs",
+                  done: false });
+paintInstall(b, { stage: "create", pct: 10, detail: "preparing s3fs", done: false });
+console.log(JSON.stringify({
+  detailA: a.detail.textContent, detailB: b.detail.textContent,
+  indetA: a.bar.dataset.indeterminate || null,
+  indetB: b.bar.dataset.indeterminate || null,
+  widthB: b.bar.style.width,
+}));
+""" % {"a": _KEY_A, "b": _KEY_B})
+    assert result["detailA"] == "fetching imagecodecs"
+    assert result["detailB"] == "preparing s3fs", "one poller overwrote the other's detail"
+    assert result["indetA"] == "1", "the install stage must stay indeterminate"
+    assert result["indetB"] is None, "a stage with a real pct must not animate"
+    assert result["widthB"] == "10%"
+
+
+def test_finishing_one_install_leaves_the_other_row_alone():
+    """The row goes with its own key, and only that key."""
+    result = _run_loader("""
+const ui = installOverlay();
+showInstall({ key: "%(a)s", requirements: ["imagecodecs"] });
+const b = showInstall({ key: "%(b)s", requirements: ["s3fs"] });
+paintInstall(b, { stage: "install", pct: 25, detail: "fetching s3fs", done: false });
+hideInstall("%(a)s");
+console.log(JSON.stringify({
+  live: installing.size,
+  stillB: installing.has("%(b)s"),
+  detailB: b.detail.textContent,
+  removedB: b.el.removed || false,
+}));
+""" % {"a": _KEY_A, "b": _KEY_B})
+    assert result["live"] == 1
+    assert result["stillB"] is True
+    assert result["removedB"] is False, "the surviving install's row was torn out"
+    assert result["detailB"] == "fetching s3fs", (
+        "the finished install wiped the running one's detail"
+    )
+
+
+def test_a_fast_install_never_mounts_the_overlay():
+    """An install that beats the mount delay must not flash a modal.
+
+    The overlay used to mount synchronously, before anything was known about
+    duration, so a warm-cache install measured in tens of milliseconds still threw a
+    full-screen modal over the page and pulled it down again.
+    """
+    result = _run_loader("""
+const need = { key: "%(a)s", requirements: ["x"] };
+showInstall(need);
+const duringInstall = installUi.mounted;
+hideInstall(need.key);
+// Past the delay: the cancelled timer must not mount an overlay after the fact.
+setTimeout(() => {
+  console.log(JSON.stringify({ duringInstall, afterDelay: installUi.mounted,
+                               timer: installUi.mountTimer }));
+}, 900);
+""" % {"a": _KEY_A})
+    assert result["duringInstall"] is False, "the overlay mounted before the delay"
+    assert result["afterDelay"] is False, (
+        "a finished install mounted the overlay after the fact"
+    )
+    assert result["timer"] is None, "the pending mount timer was left armed"
+
+
+def test_the_poll_interval_ramps_then_backs_off():
+    """The first second is polled fast, then it settles to the slow grid.
+
+    A fixed 500ms grid meant a ~540ms install was not noticed until its second
+    poll. What is asserted is the observable SCHEDULE — the gaps the loader asks
+    for — because wall-clock timing in a test would be measuring the machine.
+
+    Both the timer and the clock are stubbed, and the clock is the important one:
+    the ramp is keyed on the INSTALL's age rather than on a poll count, so with
+    real time frozen by an instant-firing timer it would stay in its fast phase
+    forever and this test would assert nothing about the back-off.
+    """
+    result = _run_loader("""
+const gaps = [];
+const realSetTimeout = globalThis.setTimeout;
+globalThis.setTimeout = (fn, ms) => { gaps.push(ms); return realSetTimeout(fn, 0); };
+// A controllable clock: 200ms of install age per poll, so the 1000ms fast window
+// is crossed on the fifth one.
+let now = 0;
+Date.now = () => now;
+let polls = 0;
+globalThis.fetch = (url) => {
+  if (url === "/api/env/install")
+    return Promise.resolve({ ok: true, json: () => Promise.resolve(
+      { ok: true, key: "%(b)s", progress: { stage: "install", pct: 25, done: false } })});
+  polls += 1;
+  now += 200;
+  // Twelve unfinished polls, so the ramp has to cross its window and back off.
+  return Promise.resolve({ json: () => Promise.resolve({ ok: true,
+    progress: polls < 12
+      ? { stage: "install", pct: 25, done: false }
+      : { stage: "done", pct: 100, done: true, error: null } })});
+};
+installEnv({ key: "%(a)s", requirements: ["x"] }, "a.py", "a.html").then(
+  () => console.log(JSON.stringify({ gaps })),
+  (e) => console.log(JSON.stringify({ error: e.message, gaps })));
+""" % {"a": _KEY_A, "b": _KEY_B})
+    gaps = [g for g in result.get("gaps", []) if g in (100, 500)]
+    assert gaps, result
+    assert gaps[0] == 100, f"the first poll waited the full grid: {gaps}"
+    assert 500 in gaps, f"the interval never backed off: {gaps}"
+    # Monotonic: fast first, slow after — never back to fast.
+    assert gaps == sorted(gaps), f"the ramp went backwards: {gaps}"
 
 
 def test_the_runtime_drives_the_loader():
