@@ -1,0 +1,714 @@
+/* Preview view */
+.preview {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.preview-header {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--border);
+  gap: 12px;
+  /* Pin the height to the tallest state (28px mode-switcher button + 10px×2
+     padding + 1px border) so the header can't grow when the loading spinner is
+     replaced by the real switcher on stat resolve — otherwise the name and the
+     whole body below shift down on every navigation. */
+  min-height: 49px;
+}
+
+/* Groups the name with whatever renders right after it (e.g. the directory
+   listing's "Open as app" button, D81's `_listing` header) — min-width:0 so
+   the group (and h1's own ellipsis) can still shrink to make room for
+   .preview-actions on narrow windows. */
+.preview-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.preview-header h1 {
+  font-size: 15px;
+  font-weight: 600;
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Rendered right after the directory name (D81's `_listing` header) — shown
+   only when the folder holds exactly one HTML file. Same accent tint the old
+   per-row "App" chip used, so the launchable-app language carries over to
+   its replacement. */
+.open-as-app-btn {
+  flex: 0 0 auto;
+  font: inherit;
+  font-size: 12px;
+  padding: 5px 10px;
+  border: 1px solid rgba(var(--accent-rgb), 0.35);
+  border-radius: 6px;
+  background: rgba(var(--accent-rgb), 0.08);
+  color: var(--accent-soft);
+  cursor: pointer;
+}
+
+.open-as-app-btn:hover {
+  background: rgba(var(--accent-rgb), 0.16);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+/* In the explorer the button portals into the breadcrumb's actions slot
+   (.preview-actions): re-assert the accent chrome over the slot's generic
+   `.preview-actions button` rules, which otherwise outrank the class above. */
+.preview-actions .open-as-app-btn {
+  font-size: 12px;
+  border: 1px solid rgba(var(--accent-rgb), 0.35);
+  background: rgba(var(--accent-rgb), 0.08);
+  color: var(--accent-soft);
+}
+
+.preview-actions .open-as-app-btn:hover {
+  background: rgba(var(--accent-rgb), 0.16);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.preview-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+
+.preview-actions button,
+.preview-actions a {
+  font: inherit;
+  padding: 5px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--fg);
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.preview-actions button.active {
+  background: var(--accent);
+  color: var(--on-accent);
+  border-color: var(--accent);
+}
+
+.preview-actions button:hover,
+.preview-actions a:hover {
+  background: var(--bg-alt);
+}
+
+/* Icon-only mode switcher (PT-10) — same border/bg/hover/active language as
+   .preview-actions buttons above, sized as compact squares. Selectors carry
+   the .preview-actions ancestor so they win over the generic button rules
+   above at equal-or-lower specificity conflicts (e.g. padding). */
+.preview-actions .mode-switcher {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.preview-actions .mode-switcher-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--fg);
+  cursor: pointer;
+}
+
+.preview-actions .mode-switcher-btn:hover {
+  background: var(--bg-alt);
+}
+
+.preview-actions .mode-switcher-btn.active {
+  background: var(--accent);
+  color: var(--on-accent);
+  border-color: var(--accent);
+}
+
+/* Loading placeholder in the header actions slot (App.tsx LoadingScaffold):
+   a borderless box the size of one .mode-switcher-btn so the header holds the
+   switcher's height while stat is in flight — no growth/shift when the real
+   switcher lands. */
+.preview-actions .mode-switcher-placeholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+}
+
+/* Template-mode icon: monochrome SVG tinted via mask-image + currentColor
+   (mask-image url set inline per icon, PT-11). */
+.mode-icon-mask {
+  display: inline-block;
+  width: 16px;
+  height: 16px;
+  background-color: currentColor;
+  -webkit-mask-position: center;
+  -webkit-mask-repeat: no-repeat;
+  -webkit-mask-size: contain;
+  mask-position: center;
+  mask-repeat: no-repeat;
+  mask-size: contain;
+}
+
+/* Placeholder for a mode with no icon.svg: first letter in a small rounded box. */
+.mode-icon-placeholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border: 1.5px solid currentColor;
+  border-radius: 4px;
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+/* Conditional template whose gate is still resolving (CT-12): a small
+   currentColor ring spinner in place of the mode icon. */
+.mode-icon-spinner {
+  display: inline-block;
+  width: 13px;
+  height: 13px;
+  border: 2px solid currentColor;
+  border-top-color: transparent;
+  border-radius: 50%;
+  opacity: 0.6;
+  animation: mode-spin 0.8s linear infinite;
+}
+
+@keyframes mode-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.preview-actions .mode-switcher-btn.pending,
+.pane-mode-item.pending {
+  opacity: 0.55;
+  cursor: default;
+}
+
+/* Body placeholder while a URL-requested gated mode (or an all-conditional
+   list) is still resolving. */
+.preview-resolving {
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  color: var(--fg-muted);
+  font-size: 13px;
+}
+
+
+.preview-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  /* Positioning context for the embed-only .preview-browse-chip pinned over
+     the iframe. */
+  position: relative;
+}
+
+/* Held-frame mode swap (views/Preview.tsx): during a switch the outgoing frame
+   and the incoming one are BOTH mounted, so they stack absolutely inside this
+   wrapper instead of sharing the flex row. The visible one is `.is-shown`
+   (z-index above the frame it replaces); the other fades to nothing and is
+   unmounted a beat later. `background: var(--bg)` is what kills the white flash
+   an unpainted iframe shows on its own. */
+.preview-frames {
+  flex: 1 1 auto;
+  position: relative;
+  min-width: 0;
+}
+
+.preview-body iframe {
+  flex: 1 1 auto;
+  width: 100%;
+  height: 100%;
+  border: none;
+  background: var(--bg);
+}
+
+.preview-frames iframe.preview-frame {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  z-index: 0;
+  transition: opacity var(--dur-med) var(--ease-out);
+}
+
+.preview-frames iframe.preview-frame.is-shown {
+  opacity: 1;
+  z-index: 1;
+}
+
+.metadata-card {
+  margin: 24px;
+  padding: 20px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-alt);
+  max-width: 480px;
+}
+
+.metadata-card dl {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 6px 16px;
+  margin: 0 0 16px 0;
+}
+
+.metadata-card dt {
+  color: var(--fg-muted);
+}
+
+.metadata-card dd {
+  margin: 0;
+  word-break: break-all;
+}
+
+.status-message {
+  padding: 24px;
+  color: var(--fg-muted);
+}
+
+/* Partial-listing banner: a slim, muted row after the entries of a directory
+   whose listing hit the server cap. Its Load more button fetches the next
+   page (resumable S3-direct route only). */
+.listing-truncated .status-message {
+  padding: 10px 16px;
+  font-size: 12px;
+  border-top: 1px solid var(--border);
+}
+.listing-load-more {
+  margin-left: 10px;
+  padding: 3px 10px;
+  background: transparent;
+  color: var(--accent);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.listing-load-more:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+.listing-load-more:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* Error panel: dark maroon card + red border + mono red text, matching the
+   fused_render/static/runtime.js overlay reference. Canonical error style —
+   every error rendered in the shell (stat/preview failures, listing/search
+   failures, config-load failures) uses this class so the visual language
+   stays consistent. */
+.status-message.error {
+  background: var(--error-page-bg);
+  border: 2px solid var(--error-page-border);
+  border-radius: 10px;
+  padding: 14px 16px;
+  color: var(--error-page-fg);
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-size: 13px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow: visible;
+  text-overflow: clip;
+}
+
+/* Embed mode (/embed/<path>): content only — all shell chrome hidden.
+   Views still render breadcrumb/header into the DOM; hiding here keeps
+   view modules embed-unaware. */
+body.embed #sidebar,
+body.embed #breadcrumb,
+body.embed .preview-header {
+  display: none;
+}
+
+/* Directory templates (.zarr etc.) surface their member listing through the
+   "Browse contents" header button. Embed mode hides that whole header, so the
+   same action also rides as an unobtrusive corner chip pinned over the preview,
+   revealed only in embed. File (non-directory) previews render no chip, so
+   embed chrome stays empty for them (PT-13/D65). */
+.preview-browse-chip {
+  display: none;
+}
+
+body.embed .preview-browse-chip {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  z-index: 2;
+  display: inline-flex;
+  align-items: center;
+  font: inherit;
+  font-size: 11px;
+  line-height: 1;
+  padding: 5px 9px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-alt);
+  color: var(--fg-muted);
+  cursor: pointer;
+}
+
+body.embed .preview-browse-chip:hover {
+  color: var(--fg);
+  border-color: var(--accent);
+}
+
+/* Embed counterpart of .open-as-app-btn (embed hides .preview-header, so the
+   header button can't reach it) — opposite corner from .preview-browse-chip
+   so a directory carrying both can show both at once. Same accent tint as
+   the header button / the old per-row "App" chip. */
+.open-as-app-chip {
+  display: none;
+}
+
+body.embed .open-as-app-chip {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  z-index: 2;
+  display: inline-flex;
+  align-items: center;
+  font: inherit;
+  font-size: 11px;
+  line-height: 1;
+  padding: 5px 9px;
+  border: 1px solid rgba(var(--accent-rgb), 0.45);
+  border-radius: 8px;
+  /* Opaque (unlike .open-as-app-btn's translucent tint) — this one is pinned
+     OVER the listing's search input, and a see-through fill let its
+     placeholder text bleed through underneath. */
+  background: var(--bg-alt);
+  color: var(--accent-soft);
+  cursor: pointer;
+}
+
+body.embed .open-as-app-chip:hover {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+/* Panel mode (/view/_panel, /embed/_panel): a split-pane grid of /embed iframes (SPEC §14).
+   Modeled on the reference grid-viewer's pane styles, using our palette. The
+   root is position:relative so a maximized pane fills the panel area (inside
+   #content) without covering the sidebar or breadcrumb. */
+.panel-root {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: 6px;
+}
+
+.panel-root > * {
+  width: 100%;
+  height: 100%;
+}
+
+.panel-split {
+  display: flex;
+  gap: 6px;
+  width: 100%;
+  height: 100%;
+}
+
+.panel-split.row {
+  flex-direction: row;
+}
+
+.panel-split.col {
+  flex-direction: column;
+}
+
+.panel-split > * {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+}
+
+.panel-pane {
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.panel-pane.maximized {
+  position: absolute;
+  inset: 6px;
+  z-index: 50;
+}
+
+.panel-bar {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-height: 28px;
+  padding: 3px 6px;
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+  user-select: none;
+}
+
+/* Base layout/color rules for .panel-crumbs/.panel-crumb/.panel-crumb-sep/
+   .panel-crumb.last are shared with the main breadcrumb above (search
+   "Shared with the panel path bar"). Only what's genuinely panel-specific
+   lives here: pane-local flex sizing, a tighter font-size, hidden scrollbar,
+   and the accent-yellow hover (left as-is — the main breadcrumb gets its own
+   non-yellow hover instead of reusing this one). */
+.panel-crumbs {
+  flex: 1 1 auto;
+  scrollbar-width: none;
+  font-size: 11px;
+}
+
+.panel-crumbs::-webkit-scrollbar {
+  display: none;
+}
+
+.panel-crumb:hover {
+  color: var(--accent);
+  text-decoration: underline;
+}
+
+.panel-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  background: none;
+  border: none;
+  color: var(--fg-muted);
+  cursor: pointer;
+  padding: 4px 5px;
+  border-radius: 4px;
+}
+
+.panel-btn svg {
+  display: block;
+}
+
+.panel-btn:hover {
+  background: rgba(var(--tint), 0.08);
+  color: var(--fg);
+}
+
+.panel-btn.close:hover {
+  color: var(--error);
+}
+
+.panel-pane iframe {
+  flex: 1 1 auto;
+  width: 100%;
+  border: none;
+  background: var(--bg);
+  /* Fade in on load; views/Panel.tsx arms/clears `.is-loaded` around every
+     (imperative) src write. */
+  opacity: 0;
+  transition: opacity var(--dur-med) var(--ease-out);
+}
+
+.panel-pane iframe.is-loaded {
+  opacity: 1;
+}
+
+/* Tab mode (/view/_tab, /embed/_tab): a tabbed set of /embed iframes, one
+   visible at a time (SPEC §15). Bar of tab buttons on top, iframes fill the
+   rest; the active tab's iframe is shown, the others display:none. */
+.tabs-root {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.tabs-bar {
+  display: flex;
+  align-items: stretch;
+  gap: 2px;
+  min-height: 30px;
+  padding: 3px 6px 0;
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+  overflow-x: auto;
+  scrollbar-width: none;
+  white-space: nowrap;
+  user-select: none;
+}
+
+.tabs-bar::-webkit-scrollbar {
+  display: none;
+}
+
+.tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+  max-width: 200px;
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--fg-muted);
+  cursor: pointer;
+  padding: 5px 8px;
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-size: 12px;
+}
+
+.tab:hover {
+  color: var(--fg);
+}
+
+.tab.active {
+  color: var(--fg);
+  border-bottom-color: var(--accent);
+  background: var(--bg-alt);
+}
+
+.tab-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.panel-btn.open-plain {
+  margin-left: 3px;
+}
+
+.tab-open-plain {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 15px;
+  height: 15px;
+  border-radius: 3px;
+  color: var(--fg-muted);
+}
+
+.tab-open-plain:hover {
+  color: var(--fg);
+  background: rgba(var(--tint), 0.08);
+}
+
+.tab-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 15px;
+  height: 15px;
+  border-radius: 3px;
+  color: var(--fg-muted);
+  font-size: 14px;
+  line-height: 1;
+}
+
+.tab-close:hover {
+  color: var(--error);
+  background: rgba(var(--tint), 0.08);
+}
+
+/* Pane/tab template-mode menu: the trigger shows the active mode's icon; the
+   dropdown lists icon + name per mode. Dropdown is position:fixed (inline
+   top/left from the trigger's rect) — .panel-pane clips overflow, and the tab
+   bar would too. */
+.pane-mode-menu {
+  display: inline-flex;
+  flex: 0 0 auto;
+}
+
+.pane-mode-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  color: var(--fg-muted);
+  cursor: pointer;
+  padding: 4px 5px;
+  border-radius: 4px;
+}
+
+.pane-mode-btn:hover {
+  background: rgba(var(--tint), 0.08);
+  color: var(--fg);
+}
+
+/* Inside a tab button: match the tab-open-plain / tab-close chrome sizing. */
+.tab .pane-mode-btn {
+  width: 15px;
+  height: 15px;
+  padding: 0;
+}
+
+.tab .pane-mode-btn .mode-icon-mask,
+.tab .pane-mode-btn .mode-icon-placeholder,
+.tab .pane-mode-btn svg {
+  width: 13px;
+  height: 13px;
+}
+
+.pane-mode-dropdown {
+  position: fixed;
+  z-index: 200;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 120px;
+  padding: 4px;
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: 0 4px 16px var(--shadow-md);
+}
+
+.pane-mode-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-size: 12px;
+  color: var(--fg-muted);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.pane-mode-item:hover {
+  background: rgba(var(--tint), 0.08);
+  color: var(--fg);
+}
+
+.pane-mode-item.active {
+  color: var(--fg);
+}
+

@@ -1,0 +1,195 @@
+/* ---- Field primitives (components/field/fields.tsx) ---------------------- */
+/* .field-control is the canonical field style above, extracted as an explicit
+   class so native controls (notably <select>) render identically everywhere.
+   The :where() rules stay as the safety net for unmigrated fields. */
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.field-label {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--fg-muted);
+}
+
+.field-label .req {
+  color: var(--accent);
+}
+
+.field-hint {
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+
+.field-control {
+  font: inherit;
+  font-size: 13px;
+  color: var(--fg);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 7px 10px;
+}
+
+input.field-control,
+select.field-control {
+  height: 32px;
+}
+
+.field-control:focus {
+  outline: none;
+  border-color: var(--fg-muted);
+}
+
+.field-select-wrap {
+  display: inline-flex;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.field-select-wrap > select {
+  min-width: 0;
+  max-width: 100%;
+}
+
+/* De-nativize the select: drop the platform chevron/metrics, draw our own
+   (muted-gray inline SVG) so it sits flush with sibling inputs. */
+select.field-control {
+  appearance: none;
+  padding-right: 30px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='M3 4.5l3 3 3-3' fill='none' stroke='%239aa0a6' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+}
+
+/* Placeholder option selected → muted, matching input placeholders. */
+select.field-control:has(option[value=""]:checked) {
+  color: var(--fg-muted);
+}
+
+.deploy-body p {
+  margin: 0;
+}
+
+.deploy-body code {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 1px 5px;
+  font-size: 12px;
+}
+
+.deploy-body button {
+  font: inherit;
+  padding: 5px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--fg);
+  cursor: pointer;
+  align-self: flex-start;
+}
+
+.deploy-body button:hover:not(:disabled) {
+  background: var(--bg-alt);
+  border-color: var(--accent);
+}
+
+.deploy-body button:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.deploy-section {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.deploy-muted {
+  color: var(--fg-muted);
+}
+
+/* Inline hint under the "Link name" input when it fails the token-shape check
+   — a plain color swap, not the bordered .deploy-error card (too heavy for an
+   inline field hint that appears/disappears on every keystroke). */
+.deploy-token-hint.err {
+  color: var(--error);
+}
+
+/* The random-vs-named link picker: a borderless fieldset (the enclosing
+   .deploy-files card already frames it) with a small caption and two stacked
+   radio rows. */
+.deploy-token-modes {
+  border: 0;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.deploy-token-modes > legend {
+  padding: 0;
+  color: var(--fg-muted);
+}
+
+.deploy-token-mode {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  cursor: pointer;
+}
+
+.deploy-token-mode input {
+  /* Keep the control aligned with the first text line of a wrapping label. */
+  margin: 0;
+  position: relative;
+  top: 2px;
+  flex: 0 0 auto;
+}
+
+/* The public/no-auth note that sits directly under the Link section — snug it
+   up against that card (overriding the body's 12px gap) so it reads as the
+   section's footnote, not a section of its own. */
+.deploy-about {
+  margin-top: -6px;
+  font-size: 12px;
+}
+
+/* Error card (also rendered by components/ErrorBanner.tsx as .error-banner):
+   full 1px error-tinted border + a subtle error-tinted wash, no left stripe. */
+.deploy-error,
+.error-banner {
+  color: var(--error);
+  border: 1px solid var(--error);
+  border-radius: 6px;
+  background: rgba(var(--error-rgb), 0.07);
+  padding: 8px 10px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 180px;
+  overflow-y: auto;
+}
+
+/* Quiet note/info card — a full bordered card (no side stripe). */
+.deploy-note {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 10px;
+  background: rgba(var(--tint), 0.02);
+}
+
+/* A note that carries its own remedy (e.g. the account page's "sign in again"
+   when stored credentials no longer work). Separated from the message text so
+   the action reads as an action, not as a run-on sentence. */
+.deploy-note-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  flex-wrap: wrap;
+}
+
