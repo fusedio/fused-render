@@ -774,6 +774,24 @@
       runs:[{text:"",bold:false,italic:false,underline:false,size:18,color:"#262626",font:null}]}];
   }
 
+  // Enter inline text editing on a text element's rendered node. Shared by
+  // double-click and Ctrl+A. `selectAll` puts the caret across all the box's
+  // text so a subsequent keystroke replaces it (matching a desktop editor).
+  function beginTextEdit(node, el, selectAll){
+    if(!node||!el) return;
+    select(el.id);
+    node.setAttribute("contenteditable","true"); node.focus();
+    if(selectAll){
+      try{ const rg=document.createRange(); rg.selectNodeContents(node);
+        const sc=window.getSelection(); sc.removeAllRanges(); sc.addRange(rg); }catch(_){}
+    }
+    pushUndo();
+    const finish=()=>{ node.removeAttribute("contenteditable"); node.removeEventListener("blur",finish);
+      const lines=[...node.querySelectorAll(".para")].map(p=>p.innerText.replace(/​/g,""));
+      commitInlineEdit(el, lines.length?lines:[node.innerText.replace(/​/g,"")]); commit(); };
+    node.addEventListener("blur",finish);
+  }
+
   // ========================================================= drag / resize / marquee
   function initDrag(){
     const cv=$("canvas");
@@ -817,15 +835,8 @@
         td.addEventListener("blur",fin); return;
       }
       const node=e.target.closest(".el-text"); if(!node)return;
-      const id=node.dataset.id; const el=findEl(id); if(!el)return; select(id);
-      node.setAttribute("contenteditable","true"); node.focus();
-      const range=document.createRange(); range.selectNodeContents(node);
-      const selc=window.getSelection(); selc.removeAllRanges(); selc.addRange(range);
-      pushUndo();
-      const finish=()=>{ node.removeAttribute("contenteditable"); node.removeEventListener("blur",finish);
-        const lines=[...node.querySelectorAll(".para")].map(p=>p.innerText.replace(/​/g,""));
-        commitInlineEdit(el, lines.length?lines:[node.innerText.replace(/​/g,"")]); commit(); };
-      node.addEventListener("blur",finish);
+      const el=findEl(node.dataset.id); if(!el)return;
+      beginTextEdit(node, el, /*selectAll*/true);
     });
     // resize handles
     $("selbox").querySelectorAll(".handle").forEach(h=>{
@@ -1337,7 +1348,16 @@
       if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==="s"){e.preventDefault();saveDeck();return;}
       if((e.ctrlKey||e.metaKey)&&e.key==="z"){e.preventDefault();e.shiftKey?redo():undo();return;}
       if((e.ctrlKey||e.metaKey)&&e.key==="y"){e.preventDefault();redo();return;}
-      if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==="a"&&S.mode==="edit"){e.preventDefault();selectAll();return;}
+      // Ctrl+A: while editing a box, let the browser select that box's text
+      // (don't hijack). With a single text box selected but not editing, enter
+      // edit and select all its text. Otherwise select all elements on the slide.
+      if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==="a"&&S.mode==="edit"&&!editingText){
+        const el=S.selIds.length===1?findEl(S.sel):null;
+        const node=el&&el.type==="text"?$("canvas").querySelector(`.el-text[data-id="${el.id}"]`):null;
+        e.preventDefault();
+        if(node) beginTextEdit(node, el, true); else selectAll();
+        return;
+      }
       if(editingText)return;
       if((e.key==="Delete"||e.key==="Backspace")&&S.selIds.length&&S.mode==="edit"){e.preventDefault();delSel();}
       if(e.key==="Escape")select(null);

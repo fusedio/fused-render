@@ -1,0 +1,185 @@
+"""End-to-end tests for the slides editor's text-format toolbar and selection,
+driven through Playwright against a real server (FUSED_RENDER_CORE_TEMPLATES
+points at this checkout's templates). These pin the behaviours reported broken
+on the create-new-flows branch:
+
+  * picking a Style preset applies its size to the selected text box,
+  * picking a Font applies it,
+  * the Bold button toggles,
+  * Ctrl+A with a text box selected selects that box's TEXT (enters inline edit)
+    instead of selecting every element on the slide.
+
+Skipped when playwright, python-pptx, or the built React shell is missing.
+
+Run serially: PYTHONPATH=<checkout> python -m pytest tests/test_slides_editor_e2e.py -o addopts=""
+"""
+import os
+import socket
+import subprocess
+import sys
+import time
+import urllib.request
+from urllib.parse import quote
+
+import pytest
+
+pytest.importorskip("playwright.sync_api")
+pytest.importorskip("pptx")
+from playwright.sync_api import sync_playwright
+from pptx import Presentation
+from pptx.util import Inches
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+SHELL = os.path.join(ROOT, "fused_render", "static", "shell-dist", "index.html")
+
+pytestmark = pytest.mark.skipif(
+    not os.path.exists(SHELL), reason="React shell not built")
+
+
+def _free_port():
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
+def _sample_pptx(path):
+    prs = Presentation()
+    slide = prs.slides.add_slide(prs.slide_layouts[6])  # blank
+    tb = slide.shapes.add_textbox(Inches(1), Inches(1), Inches(6), Inches(2))
+    tf = tb.text_frame
+    tf.text = "Hello world"
+    tf.add_paragraph().text = "Second line"
+    prs.save(path)
+
+
+@pytest.fixture(scope="module")
+def server(tmp_path_factory):
+    home = tmp_path_factory.mktemp("slides-home")
+    work = tmp_path_factory.mktemp("slides-work")
+    port = _free_port()
+    env = dict(os.environ)
+    env["PYTHONPATH"] = ROOT
+    env["FUSED_RENDER_HOME"] = str(home)
+    env["FUSED_RENDER_CORE_TEMPLATES"] = os.path.join(ROOT, "fused_render", "templates")
+    log_path = home / "server.log"
+    with open(log_path, "ab") as log:
+        proc = subprocess.Popen(
+            [sys.executable, "-m", "fused_render.cli", "serve",
+             "--port", str(port), "--no-browser", "--start-dir", str(work)],
+            env=env, stdout=log, stderr=subprocess.STDOUT)
+    deadline = time.time() + 60
+    while time.time() < deadline:
+        try:
+            urllib.request.urlopen(f"http://127.0.0.1:{port}/api/config", timeout=2).read()
+            break
+        except OSError:
+            if proc.poll() is not None:
+                raise RuntimeError(
+                    "server exited:\n" + log_path.read_text("utf-8", errors="replace")[-2000:])
+            time.sleep(0.3)
+    else:
+        proc.kill()
+        raise RuntimeError("server did not come up")
+    yield {"port": port, "work": work}
+    proc.kill()
+    proc.wait(timeout=15)
+
+
+def _wait_for(fn, timeout, step=0.2):
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        value = fn()
+        if value:
+            return value
+        time.sleep(step)
+    raise AssertionError(f"condition not met within {timeout}s")
+
+
+def _find_frame(page):
+    def frame_or_escape():
+        page.keyboard.press("Escape")  # dismiss the shell welcome tour
+        return next((f for f in page.frames if "/render" in f.url), None)
+    return _wait_for(frame_or_escape, 30, step=0.5)
+
+
+# Synthetic-event helpers injected into the frame: the canvas elements are
+# CSS-transform-scaled and the pickers use mousedown handlers, so we drive them
+# the way the app itself dispatches, then read state back.
+_HELPERS = r"""
+window.__t = (() => {
+  const q=(s)=>document.querySelector(s), qa=(s)=>[...document.querySelectorAll(s)];
+  const w=window;
+  const fire=(n,t)=>{const r=n.getBoundingClientRect();
+    n.dispatchEvent(new MouseEvent(t,{bubbles:true,cancelable:true,
+      clientX:r.left+r.width/2,clientY:r.top+r.height/2,view:w}));};
+  const md=(n)=>n.dispatchEvent(new MouseEvent('mousedown',{bubbles:true,cancelable:true,view:w}));
+  const clk=(n)=>n.dispatchEvent(new MouseEvent('click',{bubbles:true,cancelable:true,view:w}));
+  const firstText=()=>qa('#canvas .el-text')[0];
+  return {
+    selectBox(){ const e=firstText(); fire(e,'mousedown'); fire(e,'mouseup');
+      return q('#canvas').querySelectorAll('.el.selected').length; },
+    pickStyle(label){ clk(q('#styleTrigger'));
+      const o=qa('#styleList > *').find(x=>x.textContent.trim().replace('✓','')===label);
+      if(o) md(o); return q('#fontSize').value; },
+    pickFont(name){ clk(q('#fontTrigger'));
+      const o=qa('#fontList .pop-item').find(x=>x.textContent.includes(name));
+      if(o) md(o); return q('#fontName').textContent; },
+    boldOn(){ return q('#bBtn').classList.contains('on'); },
+    clickBold(){ clk(q('#bBtn')); return q('#bBtn').classList.contains('on'); },
+    ctrlA(){ document.dispatchEvent(new KeyboardEvent('keydown',
+      {key:'a',code:'KeyA',ctrlKey:true,bubbles:true,cancelable:true})); },
+    editingCount(){ return qa('#canvas .el-text[contenteditable="true"]').length; },
+    selectedEls(){ return q('#canvas').querySelectorAll('.el.selected').length; },
+    textSelLen(){ return (w.getSelection()+'').length; },
+    fontSizeVal(){ return q('#fontSize').value; },
+  };
+})();
+"""
+
+
+@pytest.fixture(scope="module")
+def frame(server):
+    pptx_path = os.path.join(str(server["work"]), "deck.pptx")
+    _sample_pptx(pptx_path)
+    url_path = "/".join(quote(seg, safe="") for seg in
+                        pptx_path.replace("\\", "/").split("/") if seg)
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch()
+        page = browser.new_page()
+        page.goto(f"http://127.0.0.1:{server['port']}/view/{url_path}?mode=edit")
+        fr = _find_frame(page)
+        _wait_for(lambda: fr.locator("#canvas .el-text").count() or None, 30)
+        fr.evaluate(_HELPERS)
+        yield fr
+        browser.close()
+
+
+def test_style_preset_applies_size(frame):
+    assert frame.evaluate("window.__t.selectBox()") == 1
+    # Caption preset is 12pt; the size box reflects the applied run size.
+    assert frame.evaluate("window.__t.pickStyle('Caption')") == "12"
+    frame.evaluate("window.__t.selectBox()")
+    assert frame.evaluate("window.__t.pickStyle('Title')") == "44"
+
+
+def test_font_applies(frame):
+    frame.evaluate("window.__t.selectBox()")
+    assert frame.evaluate("window.__t.pickFont('Georgia')") == "Georgia"
+
+
+def test_bold_toggles(frame):
+    frame.evaluate("window.__t.selectBox()")
+    before = frame.evaluate("window.__t.boldOn()")
+    after = frame.evaluate("window.__t.clickBold()")
+    assert after != before
+
+
+def test_ctrl_a_selects_box_text_not_all_elements(frame):
+    # a single text box selected, not editing
+    assert frame.evaluate("window.__t.selectBox()") == 1
+    frame.evaluate("window.__t.ctrlA()")
+    # Ctrl+A enters inline edit on that box and selects its text …
+    assert _wait_for(lambda: frame.evaluate("window.__t.editingCount()") == 1 or None, 3)
+    assert frame.evaluate("window.__t.textSelLen()") > 0
+    # … and does NOT turn into a select-all-elements (only the one box stays selected)
+    assert frame.evaluate("window.__t.selectedEls()") == 1
