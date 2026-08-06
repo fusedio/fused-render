@@ -369,12 +369,12 @@ def _compile(main_path: str, synctex: bool = True, force: bool = False, remote: 
                 "error": "Preparing the LaTeX packages (one-time, ~1–2 min). "
                          "Your document compiles automatically when they're ready."}
     build = _build_dir_for(main_path)
+    stem = os.path.splitext(os.path.basename(main_path))[0]
+    pdf = os.path.join(build, stem + ".pdf")
     # A compile costs ~10s (tectonic runs several passes), so skip it when the
     # last PDF is newer than every file under the doc's directory — page
     # reloads become instant. `force` (the Recompile button) always runs it.
     if not force:
-        stem = os.path.splitext(os.path.basename(main_path))[0]
-        pdf = os.path.join(build, stem + ".pdf")
         if os.path.exists(pdf):
             # Never os.walk a mount-backed project dir (unbounded S3 enumeration
             # can drop the mount). Remote -> treat mtimes as unknown and compile.
@@ -395,6 +395,13 @@ def _compile(main_path: str, synctex: bool = True, force: bool = False, remote: 
     if synctex:
         cmd.append("--synctex")
     cmd.append(main_path)
+    # Drop any PDF from a previous compile first: Tectonic keeps the old PDF when
+    # a run fails, so its mere presence can't be read as this run having produced
+    # one — a crash must not leave a stale PDF looking current.
+    try:
+        os.remove(pdf)
+    except OSError:
+        pass
     t0 = time.time()
     try:
         # cwd = the .tex file's own directory, so relative \input/\includegraphics
@@ -413,33 +420,37 @@ def _compile(main_path: str, synctex: bool = True, force: bool = False, remote: 
                 "error": "Fetching the LaTeX packages this document needs (one-time). "
                          "It compiles automatically when they're ready."}
     seconds = round(time.time() - t0, 2)
-    stem = os.path.splitext(os.path.basename(main_path))[0]
-    pdf = os.path.join(build, stem + ".pdf")
     logf = os.path.join(build, stem + ".log")
     diags = _dedup(_parse_tectonic_stderr(p.stderr) + _parse_tex_log(logf))
     # A missing cached package is the one error worth phrasing helpfully.
     for d in diags:
         if "not found" in d["message"] and (".sty" in d["message"] or ".cls" in d["message"]):
             d["message"] += "  (package unavailable — offline, or not in the TeX repo)"
-    ok = os.path.exists(pdf) and p.returncode == 0
+    # A viewable result is one where a PDF was produced and nothing error-level
+    # was reported. Tectonic's exit code isn't part of this: a warnings-only run
+    # can still exit non-zero yet write a perfectly good PDF, and the stale PDF is
+    # already gone (removed above), so a present PDF is this run's.
+    pdf_exists = os.path.exists(pdf)
+    has_error = any(d.get("severity") == "error" for d in diags)
     # Tectonic prints its "note:" progress to stdout and errors to stderr —
     # include both so the tail is actually useful (a crash often leaves only a
     # stdout "note: Running TeX ..." with an empty stderr).
     combined = "\n".join(x for x in (p.stdout, p.stderr) if x).strip()
     log_tail = "\n".join(combined.splitlines()[-40:])
     result = {
-        "ok": ok,
-        "pdf": pdf if os.path.exists(pdf) else "",
+        "ok": pdf_exists and not has_error,
+        "pdf": pdf if pdf_exists else "",
         "synctex": os.path.join(build, stem + ".synctex.gz"),
         "log_tail": log_tail,
         "errors": diags,
         "seconds": seconds,
     }
-    # A failure Tectonic didn't explain — a non-zero exit with no PDF and no
-    # parseable diagnostics (e.g. it crashed before writing the .log) — would
-    # otherwise surface as a blank "? errors" with an empty Problems list. Give
-    # the user the exit code and output tail so it's actionable.
-    if not ok and not any(d.get("severity") == "error" for d in diags):
+    # A failure Tectonic didn't explain — no PDF and no parseable diagnostics
+    # (e.g. it crashed before writing the .log) — would otherwise surface as a
+    # blank "? errors" with an empty Problems list. Give the user the exit code
+    # and output tail so it's actionable. Only when there's genuinely no PDF:
+    # a run that produced one is served above, warnings and all.
+    if not pdf_exists and not has_error:
         detail = f":\n{log_tail}" if log_tail else "."
         result["error"] = (
             f"Tectonic exited with code {p.returncode} and produced no PDF{detail}\n\n"
