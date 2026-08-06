@@ -17,18 +17,18 @@ import { replaceSearch } from "@platform/lib/router";
 import { getViewState, setViewState } from "@platform/lib/viewstate";
 
 const PANE_MIN_W = 220;
-const LIST_MIN_W = 120;
+const LIST_MIN_W = 60;
 // Dragging the divider within this many pixels of the container's right edge
 // closes the pane on release (the clamp holds the pane at PANE_MIN_W during
 // the drag, so the intent is read from the raw cursor position instead).
 const PANE_CLOSE_W = 110;
-const PANE_MAX_FRAC = 0.65;
+const PANE_MAX_FRAC = 0.9;
 export const PANE_DEFAULT_FRAC = 0.5;
 const PANE_FALLBACK_W = 420;
 
 // The one place the FS-12 clamps live, so the drag and the measured default
-// cannot disagree. Two independent ceilings: the 65 % fraction (the list stays
-// the primary surface) and the LIST_MIN_W floor the list needs in pixels — on
+// cannot disagree. Two independent ceilings: the 90 % fraction (a sliver of
+// list always stays) and the LIST_MIN_W floor the list needs in pixels — on
 // a narrow window 65 % of the container leaves the list under its floor, so
 // the pixel ceiling is the binding one there. PANE_MIN_W is applied last: in
 // the degenerate case (a container too small to satisfy both minimums) the
