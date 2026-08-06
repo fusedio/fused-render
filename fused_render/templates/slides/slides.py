@@ -278,7 +278,7 @@ def _resolve_save_dest(name, directory=None, default_dir=None):
     if raw and (os.path.isabs(expanded) or re.match(r"^[A-Za-z]:[\\/]", raw)):
         dst = os.path.abspath(expanded)
     else:
-        base = re.sub(r"[^A-Za-z0-9._ -]", "_", raw).strip() or "Untitled"
+        base = re.sub(r'[\\/:*?"<>|]+', "", raw).strip() or "Untitled"
         d = (os.path.abspath(os.path.expanduser(_to_native_path(directory))) if directory
              else (default_dir or os.path.expanduser("~")))
         dst = os.path.join(d, base)

@@ -208,10 +208,11 @@ def _resolve_dest(path: str, directory: str) -> str:
     if raw and (os.path.isabs(expanded) or re.match(r"^[A-Za-z]:[\\/]", raw)):
         dest = os.path.abspath(expanded)
     else:
-        # A bare name is seeded from the free-text document title, so strip
-        # characters that aren't valid in a filename (a title like "Q3: report"
-        # would otherwise be a Windows-invalid path and fail the write).
-        base = re.sub(r"[^A-Za-z0-9._ -]", "_", raw).strip() or "Untitled document"
+        # A bare name is seeded from the free-text document title, so strip only
+        # the characters a filesystem forbids (a title like "Q3: report" would
+        # otherwise be a Windows-invalid path and fail the write). Same rule as
+        # _unique_path — don't touch Unicode or other legal characters.
+        base = re.sub(r'[\\/:*?"<>|]+', "", raw).strip() or "Untitled document"
         joined = os.path.join(directory, base) if directory else base
         dest = os.path.abspath(os.path.expanduser(joined))
     # The writer only produces .docx, so normalize a typed .docx/.odt to .docx

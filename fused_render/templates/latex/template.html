@@ -913,16 +913,28 @@ pdfjs.GlobalWorkerOptions.workerSrc = "/template-assets/pdfjs.worker.bundle.mjs"
   // visited set and a file budget keep an \input cycle or a huge tree from
   // hanging the open.
   async function inMainGraph(abs) {
-    const norm = (p) => p.replace(/\\/g, "/").replace(/\.tex$/i, "").toLowerCase();
+    // Collapse . and .. segments (and normalize separators + a trailing .tex) so
+    // references written different ways — \input{./ch/x}, \input{../x} — compare
+    // equal to the opened file's absolute path instead of being missed.
+    const norm = (p) => {
+      const out = [];
+      for (const seg of p.replace(/\\/g, "/").split("/")) {
+        if (seg === "" || seg === ".") continue;
+        if (seg === "..") { out.pop(); continue; }
+        out.push(seg);
+      }
+      return out.join("/").replace(/\.tex$/i, "").toLowerCase();
+    };
     const targetKey = norm(abs);
     const seen = new Set();
     const queue = [S.mainAbs];
     let budget = 60;
-    while (queue.length && budget-- > 0) {
+    while (queue.length) {
       const f = queue.shift();
       const key = norm(f);
-      if (seen.has(key)) continue;
+      if (seen.has(key)) continue;              // a duplicate enqueue — skip without spending budget
       seen.add(key);
+      if (budget-- <= 0) break;                 // budget counts files we actually read, not skips
       let txt;
       try { txt = await fused.readFile(f); } catch (e) { continue; }
       const re = /\\(?:input|include|subfile)\s*\{([^}]+)\}/g;
@@ -931,8 +943,9 @@ pdfjs.GlobalWorkerOptions.workerSrc = "/template-assets/pdfjs.worker.bundle.mjs"
         let ref = m[1].trim();
         if (!/\.[A-Za-z0-9]+$/.test(ref)) ref += ".tex";          // \input{chap} -> chap.tex
         const child = /^([A-Za-z]:[\\/]|\/)/.test(ref) ? ref : (S.root + "/" + ref);
-        if (norm(child) === targetKey) return true;
-        queue.push(child);
+        const childKey = norm(child);
+        if (childKey === targetKey) return true;
+        if (!seen.has(childKey)) queue.push(child);   // don't re-queue a file already processed
       }
     }
     return false;
