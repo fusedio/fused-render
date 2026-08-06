@@ -60,8 +60,10 @@ Actions
 import hashlib
 import json
 import os
+import random
 import re
 import shutil
+import time
 
 # NOTE: bare `def main` (no @fused.udf) is deliberate — under the built-in
 # executor the worker calls main() by its own signature; @fused.udf hides that
@@ -110,6 +112,23 @@ def _unique_path(directory, name):
         dest = os.path.join(directory, f"{stem}-{i}{ext}")
         i += 1
     return dest
+
+
+def _replace(tmp, dst):
+    """os.replace, retried until a 1.5s deadline: on Windows the rename fails
+    outright while anyone else still holds a handle on dst — a superseded worker
+    on its way out, an AV scanner that opened the file behind us. The waits are
+    short and randomized on purpose, to sample many small windows rather than a
+    handful of long ones (a backoff can resonate with a periodic holder)."""
+    deadline = time.monotonic() + 1.5
+    while True:
+        try:
+            os.replace(tmp, dst)
+            return
+        except OSError:
+            if time.monotonic() >= deadline:
+                raise
+            time.sleep(random.uniform(0.01, 0.04))
 
 
 def _parse_pages(spec: str, n: int):
@@ -231,7 +250,7 @@ def _work_rename(old, new):
     ow, om = _work_paths(old)
     nw, _ = _work_paths(new)
     if os.path.exists(ow):
-        os.replace(ow, nw)
+        _replace(ow, nw)
     meta["src"] = _fwd(os.path.abspath(new))
     _work_save_state(new, meta)
     os.remove(om)
@@ -254,7 +273,7 @@ def _save(doc, force):
         return {"conflict": True}
     tmp = src + ".tmp"
     shutil.copyfile(wpath, tmp)
-    os.replace(tmp, src)
+    _replace(tmp, src)
     meta["base_mtime"] = os.path.getmtime(src)
     meta["dirty"] = False
     _work_save_state(src, meta)
@@ -325,7 +344,7 @@ def _push_snapshot(doc, op, pre):
 def _restore(doc, snap):
     tmp = doc + ".tmp"
     shutil.copyfile(snap, tmp)
-    os.replace(tmp, doc)
+    _replace(tmp, doc)
 
 
 def _undo(doc):
@@ -411,10 +430,12 @@ def _rotate_pages(doc, pages, degrees):
     import pikepdf
 
     def fn(path):
-        with pikepdf.open(path, allow_overwriting_input=True) as pdf:
+        tmp = path + ".tmp"
+        with pikepdf.open(path) as pdf:
             for i in _parse_pages(pages, len(pdf.pages)):
                 pdf.pages[i].rotate(degrees, relative=True)
-            pdf.save(path)
+            pdf.save(tmp)
+        _replace(tmp, path)
     return fn(doc)
 
 
@@ -422,13 +443,15 @@ def _delete_pages(doc, pages):
     import pikepdf
 
     def fn(path):
-        with pikepdf.open(path, allow_overwriting_input=True) as pdf:
+        tmp = path + ".tmp"
+        with pikepdf.open(path) as pdf:
             idxs = _parse_pages(pages, len(pdf.pages))
             if len(idxs) >= len(pdf.pages):
                 raise ValueError("cannot delete every page")
             for i in reversed(idxs):
                 del pdf.pages[i]
-            pdf.save(path)
+            pdf.save(tmp)
+        _replace(tmp, path)
     return fn(doc)
 
 
@@ -436,7 +459,8 @@ def _reorder_pages(doc, order):
     import pikepdf
 
     def fn(path):
-        with pikepdf.open(path, allow_overwriting_input=True) as pdf:
+        tmp = path + ".tmp"
+        with pikepdf.open(path) as pdf:
             n = len(pdf.pages)
             idxs = [int(t) - 1 for t in order.split(",") if t.strip()]
             if sorted(idxs) != list(range(n)):
@@ -444,7 +468,8 @@ def _reorder_pages(doc, order):
             for i in idxs:
                 pdf.pages.append(pdf.pages[i])
             del pdf.pages[0:n]
-            pdf.save(path)
+            pdf.save(tmp)
+        _replace(tmp, path)
     return fn(doc)
 
 
@@ -460,7 +485,7 @@ def _insert_blank(doc, at, width, height):
         tmp = path + ".tmp"
         d.save(tmp, deflate=True, encryption=fitz.PDF_ENCRYPT_KEEP)
         d.close()
-        os.replace(tmp, path)
+        _replace(tmp, path)
     return fn(doc)
 
 
@@ -561,7 +586,7 @@ def _compress(doc, level):
             os.remove(tmp)
             raise ValueError(
                 f"already optimized — {level} compression would not shrink the file")
-        os.replace(tmp, path)
+        _replace(tmp, path)
         return {"before": before, "after": after}
     return fn(doc)
 
