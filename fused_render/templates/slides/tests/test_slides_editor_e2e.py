@@ -11,7 +11,9 @@ on the create-new-flows branch:
 
 Skipped when playwright, python-pptx, or the built React shell is missing.
 
-Run serially: PYTHONPATH=<checkout> python -m pytest tests/test_slides_editor_e2e.py -o addopts=""
+Lives with the slides template. Run it explicitly:
+  PYTHONPATH=<checkout> python -m pytest \
+    fused_render/templates/slides/tests/test_slides_editor_e2e.py -o addopts=""
 """
 import os
 import socket
@@ -29,7 +31,8 @@ from playwright.sync_api import sync_playwright
 from pptx import Presentation
 from pptx.util import Inches
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# repo root is four levels up: slides/tests → slides → templates → fused_render → root
+ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", ".."))
 SHELL = os.path.join(ROOT, "fused_render", "static", "shell-dist", "index.html")
 
 pytestmark = pytest.mark.skipif(
