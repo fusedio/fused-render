@@ -323,8 +323,8 @@
   flex: 0 0 auto;
   padding: 6px 10px;
   font-size: 12px;
-  /* Lifted a step above --bg-panel (and greyed off white in light mode) so
-     the chips separate from the stack's --bg well in both themes. */
+  /* Lifted a step above --bg-panel so the chips separate from the stack's
+     --bg well. */
   background: color-mix(in srgb, var(--fg) 6%, var(--bg-panel));
   border: 1px solid color-mix(in srgb, var(--fg) 14%, var(--border));
   border-radius: 9px;
@@ -349,6 +349,17 @@
   width: 80%;
   margin-bottom: -7px;
   z-index: 1;
+}
+
+/* In light theme --bg and --bg-panel are both white, so the dark-theme
+   "darker well, lighter chips" collapses; invert it — grey well (--bg-alt),
+   plain white chips. */
+:root[data-theme="light"] .fhb-stack {
+  background: var(--bg-alt);
+}
+
+:root[data-theme="light"] .fhb-chip {
+  background: var(--bg);
 }
 
 .fhb-card:hover .fhb-chip-d1,
