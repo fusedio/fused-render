@@ -112,6 +112,9 @@
     text-align:left;font-size:13px}
   .trigger .caret{flex:none;width:12px;height:12px;stroke:#9a9a9a;stroke-width:2;fill:none}
   #styleTrigger{min-width:104px} #fontTrigger{width:150px}
+  /* anchor the absolutely-positioned .pop under its trigger — without this the
+     pop resolves against the page and drops to the bottom of the slide */
+  .fontbox{position:relative}
 
   /* shared popup primitive (Style / Font) */
   .pop{position:absolute;top:calc(100% + 4px);z-index:70;width:264px;background:#fff;
@@ -231,7 +234,14 @@
   .welcome-card{background:#fff;border:1px solid var(--hair);border-radius:14px;
     box-shadow:var(--shadow-2);padding:34px;width:min(560px,92vw)}
   .welcome-card h1{margin:0 0 4px;font-size:22px}
-  .welcome-card p{margin:0;color:var(--ink-2)}
+  .welcome-card p{margin:0 0 18px;color:var(--ink-2)}
+  .lib-h{margin-top:18px;color:var(--ink-2);font-weight:600;font-size:11px;
+    text-transform:uppercase;letter-spacing:.5px}
+  .recent{margin-top:8px;max-height:240px;overflow:auto}
+  .recent .r{display:flex;align-items:center;gap:10px;padding:9px 10px;border-radius:8px;cursor:pointer}
+  .recent .r:hover{background:var(--hair-2)}
+  .recent .r .ico{width:30px;height:30px;border-radius:6px;background:var(--blue-soft);
+    color:var(--blue-ink);display:grid;place-items:center;font-size:15px;flex:0 0 auto}
 
   /* loading skeleton — shown over the stage (and as filmstrip rows) while a
      deck is being opened/parsed on the Python side; mirrors the eventual
@@ -248,7 +258,9 @@
   .skel-line.skel-title{height:26px;width:58%;margin-bottom:4px}
 
   /* modal + toast */
-  #overlay{position:fixed;inset:0;background:rgba(32,33,36,.4);display:none;z-index:100;
+  /* above #selbox (9999) and its .handle grips (10000) so a dialog opened with a
+     slide element selected isn't pierced by the resize handles */
+  #overlay{position:fixed;inset:0;background:rgba(32,33,36,.4);display:none;z-index:10050;
     align-items:center;justify-content:center}
   .modal{background:#fff;border-radius:12px;box-shadow:var(--shadow-2);padding:22px;
     width:min(460px,92vw)}
@@ -302,6 +314,8 @@
       <div class="filebox">
         <button class="btn" id="fileBtn">File<svg viewBox="0 0 24 24" style="width:13px;height:13px"><path d="M6 9l6 6 6-6"/></svg></button>
         <div id="fileMenu" class="menu hidden">
+          <button class="mi" data-file="new">New blank deck</button>
+          <div class="msep"></div>
           <button class="mi" data-file="save">Save<span class="mi-k">Ctrl+S</span></button>
           <button class="mi" data-file="saveas">Save as…</button>
           <div class="msep"></div>
@@ -471,8 +485,20 @@
   // this helper; default per-file cancellation would abort in-flight writes (D114).
   const py=(params)=>fused.runPython(PY,params,{key:null});
   const PT2PX=96/72;
-  const FILE=fused.params.get("_file")||"";
-  const DEFAULT_TITLE=FILE?FILE.split(/[\\/]/).pop().replace(/\.pptx$/i,""):"Untitled";
+  // `_file` (an existing deck) is the read-only open path; `lib` (a deck created
+  // from the home screen and living in the library dir) is our own param, so it
+  // survives reload where `_file` can't be re-set. `lib` wins when both are set,
+  // so after creating/opening a library deck a reload stays on it rather than
+  // snapping back to a `_file` preview — matching docs/excel (`file` over `_file`).
+  // FILE repoints when a library deck is opened, so save/export/rename all target
+  // it exactly like a _file open.
+  const titleOf=(f)=>f?f.split(/[\\/]/).pop().replace(/\.pptx$/i,""):"Untitled";
+  let FILE=fused.params.get("lib")||fused.params.get("_file")||"";
+  let DEFAULT_TITLE=titleOf(FILE);
+  // An unsaved draft living in the New-deck library: edits autosave into the
+  // scratch file so nothing is lost, but the first manual Save prompts for a
+  // real location + name (set from the open verdict in load()).
+  let untitled=false;
 
   // ---------------- state ----------------
   const S={ doc:null, title:null, model:null, mediaDir:"", mtime:0, cur:0, sel:null, selIds:[],
@@ -693,7 +719,9 @@
       if(res.conflict){ S.mtime=res.mtime; toast("Reloaded — file changed elsewhere");
         await reloadModel(); return; }
       S.mtime=res.mtime; S.dirty=false;
-      $("saved").textContent="All changes saved";
+      // Keep the draft hint up for an unsaved library draft — autosaving the
+      // model to cache is not the same as saving the deck to a real file.
+      $("saved").textContent=untitled?"Draft — Save to name & choose a location":"All changes saved";
     }catch(e){ $("saved").textContent="Save failed"; toast("Save failed: "+e.message); }
   }
   async function reloadModel(){
@@ -752,15 +780,46 @@
       runs:[{text:"",bold:false,italic:false,underline:false,size:18,color:"#262626",font:null}]}];
   }
 
+  // Enter inline text editing on a text element's rendered node. Shared by
+  // double-click and Ctrl+A. `selectAll` puts the caret across all the box's
+  // text so a subsequent keystroke replaces it (matching a desktop editor).
+  function beginTextEdit(node, el, selectAll){
+    if(!node||!el) return;
+    select(el.id);
+    node.setAttribute("contenteditable","true"); node.focus();
+    if(selectAll){
+      try{ const rg=document.createRange(); rg.selectNodeContents(node);
+        const sc=window.getSelection(); sc.removeAllRanges(); sc.addRange(rg); }catch(_){}
+    }
+    pushUndo();
+    const finish=()=>{ node.removeAttribute("contenteditable"); node.removeEventListener("blur",finish);
+      const lines=[...node.querySelectorAll(".para")].map(p=>p.innerText.replace(/​/g,""));
+      commitInlineEdit(el, lines.length?lines:[node.innerText.replace(/​/g,"")]); commit(); };
+    node.addEventListener("blur",finish);
+  }
+  // Commit any in-progress inline text/cell edit now. Dispatches the blur EVENT
+  // (runs the finish handler) rather than .blur(), which no-ops when the node
+  // isn't actually focused — so this is reliable however the edit is left.
+  function commitCanvasEdit(){
+    $("canvas").querySelectorAll('[contenteditable="true"]').forEach(
+      n=>n.dispatchEvent(new FocusEvent("blur")));
+  }
+
   // ========================================================= drag / resize / marquee
   function initDrag(){
     const cv=$("canvas");
     cv.addEventListener("mousedown",e=>{
       if(S.mode!=="edit")return;
-      if(e.target.closest('[contenteditable="true"]')) return; // editing text/cell
+      if(e.target.closest('[contenteditable="true"]')) return; // click inside the active edit — leave it
       const node=e.target.closest(".el");
-      if(!node){ startMarquee(e); return; }          // empty canvas → rubber-band select
-      const id=node.dataset.id;
+      const id=node?node.dataset.id:null;
+      // Commit any active inline edit before a marquee/drag starts: the
+      // e.preventDefault() below suppresses the native blur, which would leave
+      // that box stuck in contenteditable — un-selectable and un-draggable after.
+      // Dispatch the blur EVENT (runs the finish handler) rather than .blur(),
+      // which no-ops unless the node is actually focused.
+      commitCanvasEdit();
+      if(!id){ startMarquee(e); return; }            // empty canvas → rubber-band select
       if(e.shiftKey){ select(id,true); e.preventDefault(); return; }  // toggle in/out
       if(!isSel(id)) select(id);                     // click outside selection → select it
       // remember which table cell was clicked (row/col context for table ops)
@@ -795,15 +854,8 @@
         td.addEventListener("blur",fin); return;
       }
       const node=e.target.closest(".el-text"); if(!node)return;
-      const id=node.dataset.id; const el=findEl(id); if(!el)return; select(id);
-      node.setAttribute("contenteditable","true"); node.focus();
-      const range=document.createRange(); range.selectNodeContents(node);
-      const selc=window.getSelection(); selc.removeAllRanges(); selc.addRange(range);
-      pushUndo();
-      const finish=()=>{ node.removeAttribute("contenteditable"); node.removeEventListener("blur",finish);
-        const lines=[...node.querySelectorAll(".para")].map(p=>p.innerText.replace(/​/g,""));
-        commitInlineEdit(el, lines.length?lines:[node.innerText.replace(/​/g,"")]); commit(); };
-      node.addEventListener("blur",finish);
+      const el=findEl(node.dataset.id); if(!el)return;
+      beginTextEdit(node, el, /*selectAll*/true);
     });
     // resize handles
     $("selbox").querySelectorAll(".handle").forEach(h=>{
@@ -1047,6 +1099,7 @@
   function load(p){
     hideLoadingSkeleton();
     S.doc=p.doc; S.model=p.model; S.mtime=p.mtime; S.mediaDir=p.media_dir; S.title=p.title||null;
+    untitled=!!p.library;
     S.cur=Math.min(Math.max(0,parseInt(fused.params.get("slide")||"0",10)),S.model.slides.length-1);
     S.selIds=[]; S.sel=null; S.undo.length=0; S.redo.length=0; refreshUndoBtns();
     $("welcome").classList.add("hidden");
@@ -1058,11 +1111,14 @@
     fusedRoBadge.update($("ro"), S.editable?"":(p.readonly_message||"Read-only"),
       S.editable?"":((p.readonly_tooltip||"")+" Changes can be saved to a new file via File ▸ Save as."));
     document.querySelector('#fileMenu [data-file="save"]').disabled=!S.editable;
-    // The deck title lives in the <file>.json sidecar — gate the rename UI on
-    // ITS writability (RO-6), independent of the .pptx verdict.
-    $("deckName").contentEditable=S.sidecarWritable?"true":"false";
-    $("deckName").title=S.sidecarWritable?"Rename deck":"Rename disabled — the deck's sidecar file is read-only";
-    $("saved").textContent="All changes saved";
+    // Rename only applies to a new/untitled draft, where the name seeds the
+    // first-save file name. Once the deck is a real saved file, its name is its
+    // identity — Save won't rename it, so relabelling the title here is
+    // confusing; keep it fixed. (Also gated on sidecar writability, RO-6.)
+    const canRename=untitled&&S.sidecarWritable;
+    $("deckName").contentEditable=canRename?"true":"false";
+    $("deckName").title=canRename?"Name this deck — used as the file name when you first save":"";
+    $("saved").textContent=untitled?"Draft — Save to name & choose a location":"All changes saved";
     preloadFonts(S.model);
     setMode(fused.params.get("mode")||"view");
     renderFilm(); renderCanvas(); updateToolbar();
@@ -1077,22 +1133,74 @@
   }
   function hideLoadingSkeleton(){ $("stageSkeleton").classList.add("hidden"); }
 
-  // ---------------- empty state (no _file, or open failed) ----------------
+  // ---------------- error state (open failed) ----------------
   function showEmpty(msg){
     hideLoadingSkeleton();
     $("app").classList.add("home");
     const w=$("welcome"); w.classList.remove("hidden");
-    w.innerHTML=`<div class="welcome-card"><h1>Slides Studio</h1><p>${esc(msg)}</p></div>`;
+    w.innerHTML=`<div class="welcome-card"><h1>Slides Studio</h1><p>${esc(msg)}</p>
+      <button class="btn primary" id="newDeckBtn">＋ New blank deck</button></div>`;
+    $("newDeckBtn").onclick=createDeck;
+  }
+
+  // ---------------- home state (no _file / no lib) ----------------
+  async function showHome(){
+    hideLoadingSkeleton();
+    $("app").classList.add("home");
+    const w=$("welcome"); w.classList.remove("hidden");
+    w.innerHTML=`<div class="welcome-card">
+      <h1>Slides Studio</h1>
+      <p>Start a new deck, or open this template on an existing <b>.pptx</b> file.</p>
+      <button class="btn primary" id="newDeckBtn">＋ New blank deck</button>
+      <div id="libWrap"></div></div>`;
+    $("newDeckBtn").onclick=createDeck;
+    try{
+      const {decks}=await py({action:"library"});
+      const lw=$("libWrap"); if(!lw||!decks.length) return;
+      lw.innerHTML=`<div class="lib-h">Your decks</div>
+        <div class="recent">${decks.map(d=>`<div class="r" data-file="${esc(d.file)}">
+          <span class="ico">▣</span><div style="flex:1">
+          <div style="font-weight:600">${esc(d.name)}</div>
+          <div style="color:var(--ink-3);font-size:11px">${esc(new Date(d.mtime*1000).toLocaleString())}</div>
+          </div></div>`).join("")}</div>`;
+      lw.querySelectorAll(".recent .r").forEach(n=>n.onclick=()=>openLibrary(n.dataset.file));
+    }catch(e){}
+  }
+
+  // Create a blank .pptx in the library dir, then open it through the normal path.
+  async function createDeck(){
+    try{ toast("Creating deck…");
+      const r=await py({action:"new_deck",name:"Untitled"});
+      openLibrary(r.file);
+    }catch(e){ toast("Create failed: "+e.message); }
+  }
+  // Repoint the document to a library deck (a real .pptx), keep it in the URL via
+  // the `lib` param so reload reopens it, and drive it through `open` like any file.
+  async function openLibrary(path){
+    // Flush a pending autosave of the current deck before repointing — otherwise
+    // File ▸ New blank deck (or opening another library deck) drops queued edits.
+    if(saveTimer){ clearTimeout(saveTimer); saveTimer=null; }
+    if(S.dirty && S.doc){ await doSave(); if(S.dirty) return; }
+    FILE=path; DEFAULT_TITLE=titleOf(path);
+    fused.params.set("lib",path);
+    $("welcome").classList.add("hidden");
+    showLoadingSkeleton();
+    try{ load(await py({action:"open",file:FILE})); }
+    catch(e){ showEmpty("Could not open "+FILE+": "+(e.message||e)); }
   }
 
   // ========================================================= File menu
   function toggleFileMenu(){ $("fileMenu").classList.toggle("hidden"); }
   async function fileAction(a){
     $("fileMenu").classList.add("hidden");
-    if(a==="save") saveDeck();
+    if(a==="new") createDeck();
+    else if(a==="save") saveDeck();
     else if(a==="saveas") saveAsDeck();
   }
   async function saveDeck(){ if(!S.doc)return;
+    // First Save of an untitled draft: prompt for a real location + name instead
+    // of overwriting the library scratch. Autosave keeps the scratch safe until then.
+    if(untitled){ saveAsDeck(true); return; }
     if(!S.editable){ toast("Read-only — the file can't be overwritten. Use File ▸ Save as."); return; }
     await doSave();
     try{ $("saved").textContent="Saving…"; const r=await py({action:"save",doc:S.doc,file:FILE});
@@ -1102,11 +1210,14 @@
     catch(e){ toast("Save failed: "+e.message); } }
 
   // In-app directory browser for Save as (no native dialogs).
-  async function saveAsDeck(){ if(!S.doc)return;
+  async function saveAsDeck(firstSave=false){ if(!S.doc)return;
     const ov=$("overlay");
     const fileDir=FILE.slice(0,Math.max(FILE.lastIndexOf("/"),FILE.lastIndexOf("\\"))+1).replace(/\\/g,"/");
-    let curDir=fileDir;
-    const startName=(S.title||DEFAULT_TITLE)+" copy";
+    // First save of a draft starts in Home (the scratch's own folder is the
+    // hidden library — never a place to offer as the default), and defaults the
+    // name to the deck's title; a copy starts beside the current file.
+    let curDir=firstSave?"":fileDir;
+    const startName=firstSave?(S.title||"Untitled"):(S.title||DEFAULT_TITLE)+" copy";
     async function render(p){
       // src (origin only) lets the worker route a mount-backed dir via
       // /api/fs/list instead of a kernel scan that could drop the mount.
@@ -1120,9 +1231,9 @@
         `${i||!winRoot?`<span class="sepc">›</span>`:""}<span class="seg" data-dir="${esc(dirAt(i))}">${esc(s)}</span>`).join("");
       const prevName=(ov.querySelector("#fbName")||{}).value;
       ov.innerHTML=`<div class="modal" style="width:min(580px,94vw)">
-        <h3>Save as</h3>
+        <h3>${firstSave?"Save deck":"Save as"}</h3>
         <div class="fb-quick">
-          <button data-dir="${esc(fileDir)}">📁 This file's folder</button>
+          ${firstSave?"":`<button data-dir="${esc(fileDir)}">📁 This file's folder</button>`}
           <button data-dir="${esc(d.home)}">🏠 Home</button>
         </div>
         <div class="fb-crumb">${crumb}</div>
@@ -1142,13 +1253,39 @@
       </div>`;
       ov.style.display="flex";
       const nm=$("fbName"); nm.value=prevName!==undefined?prevName:startName;
-      const upd=()=>{ $("fbTarget").textContent=d.path.replace(/\/$/,"")+"/"+((nm.value.trim()||"deck").replace(/\.pptx$/i,""))+".pptx"; };
+      const upd=()=>{
+        // Honor a full/absolute path typed into the name box (Windows drive, POSIX
+        // root, or ~) — otherwise join the browsed folder to a bare name.
+        const raw=(nm.value.trim()||"deck").replace(/^["']|["']$/g,"");
+        const abs=/^([A-Za-z]:[\\/]|\/|~[\\/]?)/.test(raw);
+        const base=abs?raw.replace(/\\/g,"/"):d.path.replace(/\/$/,"")+"/"+raw;
+        $("fbTarget").textContent=base.replace(/\.pptx$/i,"")+".pptx"; };
       nm.oninput=upd; upd();
       ov.querySelectorAll("[data-dir]").forEach(r=>r.onclick=()=>render(r.dataset.dir));
       ov.querySelectorAll(".fb-file").forEach(r=>r.onclick=()=>{ nm.value=r.dataset.name; upd(); });
       $("fbCancel").onclick=()=>{ ov.style.display="none"; };
       $("fbSave").onclick=async()=>{ const v=nm.value.trim(); if(!v){toast("Enter a file name");return;}
         ov.style.display="none";
+        if(firstSave){
+          // Bind the draft to the chosen file, drop the library scratch, then
+          // reopen from the new path so saves/export target it from now on.
+          if(saveTimer){ clearTimeout(saveTimer); saveTimer=null; }
+          try{
+            // Flush in-memory edits to the cache model first — save_new builds
+            // the .pptx from the cached model, so a queued edit would be lost.
+            // If the flush fails, abort: building from the stale model and then
+            // dropping the scratch would lose those edits silently.
+            if(S.dirty) await doSave();
+            if(S.dirty){ toast("Couldn't save your changes — staying on this draft."); return; }
+            const r=await py({action:"save_new",doc:S.doc,name:v,directory:curDir,file:FILE});
+            FILE=r.path; DEFAULT_TITLE=titleOf(r.path); untitled=false;
+            fused.params.set("lib",r.path);
+            showLoadingSkeleton();
+            load(await py({action:"open",file:FILE}));
+            toast("Saved to "+r.path);
+          }catch(e){ toast("Save failed: "+e.message); }
+          return;
+        }
         try{ const r=await py({action:"save_as",doc:S.doc,name:v,directory:curDir,file:FILE});
           toast("Saved a copy to "+r.path); }
         catch(e){ toast("Save as failed: "+e.message); } };
@@ -1205,6 +1342,13 @@
     // stuck covering the app with no way back in.
     document.addEventListener("fullscreenchange",()=>{ if(P.on&&!document.fullscreenElement)exitPresent(); });
     window.addEventListener("resize",()=>{ if(P.on)renderPresent(); });
+    // Enter commits the rename (blur) instead of inserting a newline into the
+    // title; Escape reverts. Only fires while the name box is being edited.
+    $("deckName").onkeydown=e=>{
+      if(e.isComposing||e.keyCode===229) return;  // let an IME confirm its candidate on Enter
+      if(e.key==="Enter"){ e.preventDefault(); $("deckName").blur(); }
+      else if(e.key==="Escape"){ e.preventDefault(); $("deckName").textContent=S.title||DEFAULT_TITLE; $("deckName").blur(); }
+    };
     $("deckName").onblur=async()=>{ const n=$("deckName").textContent.trim();
       if(!S.sidecarWritable){ // belt-and-braces: contentEditable is already off
         $("deckName").textContent=S.title||DEFAULT_TITLE;
@@ -1221,13 +1365,29 @@
         else if(["ArrowLeft","ArrowUp","PageUp"].includes(e.key)){e.preventDefault();presentStep(-1);}
         return;
       }
+      if($("overlay").style.display==="flex")return;   // a dialog owns the keyboard (its input handles Ctrl+S, arrows, etc.)
       const editingText=document.activeElement&&(document.activeElement.isContentEditable||
         ["INPUT","TEXTAREA"].includes(document.activeElement.tagName));
       if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==="s"){e.preventDefault();saveDeck();return;}
       if((e.ctrlKey||e.metaKey)&&e.key==="z"){e.preventDefault();e.shiftKey?redo():undo();return;}
       if((e.ctrlKey||e.metaKey)&&e.key==="y"){e.preventDefault();redo();return;}
-      if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==="a"&&S.mode==="edit"){e.preventDefault();selectAll();return;}
-      if(editingText)return;
+      // Ctrl+A: while editing a box, let the browser select that box's text
+      // (don't hijack). With a single text box selected but not editing, enter
+      // edit and select all its text. Otherwise select all elements on the slide.
+      if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==="a"&&S.mode==="edit"&&!editingText){
+        const el=S.selIds.length===1?findEl(S.sel):null;
+        const node=el&&el.type==="text"?$("canvas").querySelector(`.el-text[data-id="${el.id}"]`):null;
+        e.preventDefault();
+        if(node) beginTextEdit(node, el, true); else selectAll();
+        return;
+      }
+      if(editingText){
+        // Escape leaves an inline edit (commit it) — the box stays selected so
+        // it can be moved/resized right away.
+        if(e.key==="Escape" && document.activeElement && document.activeElement.closest
+           && document.activeElement.closest("#canvas")){ e.preventDefault(); commitCanvasEdit(); }
+        return;
+      }
       if((e.key==="Delete"||e.key==="Backspace")&&S.selIds.length&&S.mode==="edit"){e.preventDefault();delSel();}
       if(e.key==="Escape")select(null);
       if(e.key==="ArrowLeft"&&!S.selIds.length)gotoSlide(S.cur-1);
@@ -1237,7 +1397,11 @@
     // nudge all selected elements with arrows
     document.addEventListener("keydown",e=>{
       if(!S.selIds.length||S.mode!=="edit")return;
-      const editingText=document.activeElement&&document.activeElement.isContentEditable;
+      if($("overlay").style.display==="flex")return;   // a dialog (Save as/Save deck) owns the keyboard
+      // Don't nudge while typing in a field — arrows must move the text caret,
+      // e.g. the Save dialog's file-name input or the toolbar font-size box.
+      const editingText=document.activeElement&&(document.activeElement.isContentEditable||
+        ["INPUT","TEXTAREA"].includes(document.activeElement.tagName));
       if(editingText)return;
       const step=e.shiftKey?10:1; let dx=0,dy=0;
       if(e.key==="ArrowLeft")dx=-step; else if(e.key==="ArrowRight")dx=step;
@@ -1248,7 +1412,7 @@
   // ========================================================= start
   $("boot").classList.add("hidden"); $("app").classList.remove("hidden");
   wire(); initDrag();
-  if(!FILE){ showEmpty("No file selected. Open this template on a .pptx file."); }
+  if(!FILE){ showHome(); }
   else{
     showLoadingSkeleton();
     try{ load(await py({action:"open", file:FILE})); }

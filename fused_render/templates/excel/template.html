@@ -307,6 +307,8 @@
 
   <div id="menubar">
     <div class="menu" data-menu>File<div class="dropdown">
+      <div class="mi" data-act="new">New spreadsheet…</div>
+      <div class="msep"></div>
       <div class="mi" data-act="save">Save<span class="kbd">Ctrl+S</span></div>
       <div class="mi" data-act="saveAs">Save as…</div>
       <div class="msep"></div>
@@ -484,7 +486,10 @@ function markDirty(d = true) {
   $("savedState").textContent = book ? (d ? "● Unsaved changes" : "All changes saved") : "";
   $("savedState").className = d ? "dirty" : "";
 }
-function currentFile() { return fused.params.get("_file") || ""; }
+// `_file` is the preview-template target (read-only, set by the shell). `file`
+// is the settable param a freshly-created workbook navigates to — so opening
+// the template with no target still leads somewhere. A live `file` wins.
+function currentFile() { return fused.params.get("file") || fused.params.get("_file") || ""; }
 
 // ================= formula engine (small sheets) =================
 function FErr(code) { const e = new Error(code); e.isFErr = true; e.code = code; return e; }
@@ -2185,8 +2190,9 @@ async function load() {
   if (!file) {
     book = null; markDirty(false);
     setReadOnly(false, "", "");
-    $("gridWrap").innerHTML = `<div id="emptyState">No workbook selected.<br><br>
-      Open an .xlsx file from the explorer to edit it here.</div>`;
+    $("gridWrap").innerHTML = `<div id="emptyState">No workbook selected.<br>
+      Open an .xlsx file from the explorer to edit it here.<br><br>
+      <button class="action primary" onclick="act('new')">New spreadsheet</button></div>`;
     $("tabs").innerHTML = "";
     updateChip();
     return;
@@ -2627,11 +2633,61 @@ async function saveAsDialog() {
   show(dir);
 }
 
+// ---- new spreadsheet (File ▸ New spreadsheet…) — pick where to create it; it saves there from then on ----
+async function newWorkbookDialog() {
+  openModal("Create a new spreadsheet", `<div id="crumbs"></div><div class="flist" id="flist">${flistSkelHtml()}</div>
+    <div class="dlgRow" style="align-items:center;margin-top:10px">
+      <input type="text" id="newName" /><span style="color:var(--faint);font-size:12px">.xlsx</span>
+      <button class="action primary" id="newOk">Create</button>
+    </div>
+    <div class="help">Choose a folder, name the file, and Create — Save writes back to it from then on.</div>`);
+  $("newName").value = "untitled";
+  let dir = startDir();
+  async function show(path) {
+    $("flist").innerHTML = flistSkelHtml();
+    try {
+      const res = await pyRun( { action: "listdir", file: path,
+        src: `${location.origin}/api/fs/raw?path=${encodeURIComponent(path || "")}` });
+      if (res.error) { $("flist").textContent = res.error; return; }
+      dir = res.path;
+      $("crumbs").innerHTML = crumbHtml(res.path);
+      $("crumbs").querySelectorAll("a").forEach((a) => (a.onclick = () => show(a.dataset.p)));
+      const box = $("flist"); box.innerHTML = "";
+      const join = (n) => dir.replace(/\/$/, "") + "/" + n;
+      const add = (ic, name, cb) => {
+        const d = document.createElement("div"); d.className = "fitem";
+        d.innerHTML = `<span class="ic">${ic}</span><span>${escHtml(name)}</span>`;
+        d.onclick = cb; box.appendChild(d);
+      };
+      if (res.parent && res.parent !== res.path) add("↰", "..", () => show(res.parent));
+      res.dirs.forEach((n) => add("▸", n, () => show(join(n))));
+      res.files.forEach((f) => add("▤", f.name, () => { $("newName").value = f.name.replace(/\.(xlsx|xlsm|csv|parquet)$/i, ""); }));
+      if (!res.dirs.length && !res.files.length) box.innerHTML = '<div class="fitem" style="color:var(--faint)">— empty folder —</div>';
+    } catch (e) { $("flist").textContent = e.message; }
+  }
+  $("newOk").onclick = async () => {
+    const nm = $("newName").value.trim();
+    if (!nm) return;
+    // Flush unsaved edits to the current workbook before navigating away —
+    // Excel has no autosave, so a new file would otherwise silently drop them.
+    if (dirty && book && !readOnly) { await save(false); if (dirty) return; }
+    closeModal();
+    setStatus("Creating…");
+    try {
+      const res = await pyRun( { action: "new", name: nm, directory: dir });
+      fused.params.set("sheet", ""); fused.params.set("file", res.file);
+      setStatus("");
+    } catch (err) { setStatus(`${err.type || "error"}: ${err.message}`, "err"); }
+  };
+  show(dir);
+}
+
 // ================= actions =================
 async function act(name) {
   const acts = {
     save: () => save(false),
     saveAs: saveAsDialog,
+    new: newWorkbookDialog,
     undo, redo,
     dlCsv: () => download("csv"), dlXlsx: () => download("xlsx"),
     dlPdf: () => download("pdf"), dlParquet: () => download("parquet"),
@@ -2719,10 +2775,10 @@ async function act(name) {
   // above mutates the model (RO-5). `save` keeps its own, more specific gate;
   // sort routes through sortSheet, which blocks only the in-place small-sheet
   // branch (big-sheet sort is a server-side view op).
-  const RO_SAFE = new Set(["save", "saveAs", "dlCsv", "dlXlsx", "dlPdf", "dlParquet",
+  const RO_SAFE = new Set(["save", "saveAs", "new", "dlCsv", "dlXlsx", "dlPdf", "dlParquet",
                            "sortAsc", "sortDesc", "sortOff", "toggleFilter", "loadAll"]);
   if (readOnly && !RO_SAFE.has(name) && roBlocked()) return;
-  if (book) {
+  if (book || name === "new") {
     if (!["save", "undo", "redo"].includes(name)) commitEdit();
     await acts[name]?.();
   }
@@ -3034,8 +3090,8 @@ document.addEventListener("keydown", (e) => {
 window.addEventListener("beforeunload", (e) => { if (dirty) e.preventDefault(); });
 
 let lastFile = null;
-fused.params.onChange((p) => {
-  const f = p._file || "";
+fused.params.onChange(() => {
+  const f = currentFile();
   if (f !== lastFile) { lastFile = f; load(); }
 });
 lastFile = currentFile();

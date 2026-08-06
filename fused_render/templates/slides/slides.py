@@ -32,6 +32,7 @@ AI-native surface (call these directly to edit a deck without the browser):
 from __future__ import annotations
 
 import base64
+import contextlib
 import hashlib
 import json
 import os
@@ -53,6 +54,10 @@ import engine  # sibling module; cwd is set to the .py's dir
 CACHE_ROOT = os.path.expanduser(os.path.join("~", ".fused-render", "cache", "slides"))
 UPLOADS = os.path.join(tempfile.gettempdir(), "fused_render_slides_uploads")
 EXPORTS = os.path.join(tempfile.gettempdir(), "fused_render_slides_exports")
+# Decks created from the home screen (no `_file`) live here, as real .pptx files
+# under the user's ~/.fused-render dir (never the package tree, which is
+# read-only and wiped on upgrade); each then flows through the ordinary `open` path.
+LIBRARY = os.path.expanduser(os.path.join("~", ".fused-render", "slides"))
 
 # Translate a stored path (may be WSL /mnt/c/... or native C:\...) to this OS's convention.
 _WSL_MOUNT_RE = re.compile(r"^/mnt/([A-Za-z])(/.*)?$")
@@ -263,6 +268,26 @@ def _list_remote(origin, path, cap=5000):
     return entries, truncated
 
 
+def _resolve_save_dest(name, directory=None, default_dir=None):
+    """Resolve the .pptx destination for a Save dialog. `name` is either a bare
+    file name (joined onto `directory`) or a full/absolute path (used verbatim,
+    with any surrounding quotes stripped). Always lands on a .pptx under an
+    existing directory."""
+    raw = _to_native_path((name or "").strip().strip('"').strip("'"))
+    expanded = os.path.expanduser(raw)
+    if raw and (os.path.isabs(expanded) or re.match(r"^[A-Za-z]:[\\/]", raw)):
+        dst = os.path.abspath(expanded)
+    else:
+        base = re.sub(r'[\\/:*?"<>|]+', "", raw).strip() or "Untitled"
+        d = (os.path.abspath(os.path.expanduser(_to_native_path(directory))) if directory
+             else (default_dir or os.path.expanduser("~")))
+        dst = os.path.join(d, base)
+    if not dst.lower().endswith(".pptx"):
+        dst += ".pptx"
+    os.makedirs(os.path.dirname(dst) or ".", exist_ok=True)
+    return dst
+
+
 def main(action: str = "open",
          file: str = "", doc: str = "",
          slide: str = "", el: str = "",
@@ -297,12 +322,40 @@ def main(action: str = "open",
             with open(mp, "w", encoding="utf-8") as f:
                 json.dump(model, f, ensure_ascii=False)
         editable, ro_msg, ro_tip = _editability(file)
+        # `library`: an unsaved draft in the New-deck library (~/.fused-render/
+        # slides), so the first manual Save prompts for a real location + name
+        # instead of overwriting the scratch draft in place.
+        library = os.path.dirname(os.path.abspath(file)) == os.path.abspath(LIBRARY)
         return {"doc": d, "model": model, "mtime": os.path.getmtime(mp),
                 "media_dir": _media_dir(d).replace(os.sep, "/"),
-                "title": _get_title(file),
+                "title": _get_title(file), "library": library,
                 "editable": editable, "readonly_message": ro_msg,
                 "readonly_tooltip": ro_tip,
                 "sidecar_writable": _sidecar_writable(file)}
+
+    # --------------------------------------------- new blank deck (home screen)
+    if action == "new_deck":
+        os.makedirs(LIBRARY, exist_ok=True)
+        model = engine.blank_model(name or "Untitled")
+        base = re.sub(r"[^a-zA-Z0-9._ -]", "_", (name or "Untitled")).strip() or "Untitled"
+        tok = hashlib.sha1(f"{name}{time.time()}".encode()).hexdigest()[:6]
+        dst = os.path.join(LIBRARY, f"{base}-{tok}.pptx")
+        engine.build_pptx(model, dst, LIBRARY)
+        return {"file": dst.replace(os.sep, "/")}
+
+    # ---------------------------------------- list library decks (home screen)
+    if action == "library":
+        os.makedirs(LIBRARY, exist_ok=True)
+        decks = []
+        for nm in os.listdir(LIBRARY):
+            if not nm.lower().endswith(".pptx"):
+                continue
+            full = os.path.join(LIBRARY, nm)
+            decks.append({"file": full.replace(os.sep, "/"),
+                          "name": _get_title(full) or os.path.splitext(nm)[0],
+                          "mtime": os.path.getmtime(full)})
+        decks.sort(key=lambda r: -r["mtime"])
+        return {"decks": decks}
 
     # ----------------------------------------- directory browser (Save as)
     if action == "listdir":
@@ -675,19 +728,37 @@ def main(action: str = "open",
             shutil.rmtree(_cache_dir(doc), ignore_errors=True)
         return {"path": file, "doc": new_doc, "mtime": os.path.getmtime(_model_path(new_doc))}
 
+    # --------- first save of a new/untitled draft: write the .pptx to the chosen
+    # location, carry the deck's title over, and drop the library scratch draft.
+    if action == "save_new":
+        model = _load_model(doc)
+        dst = _resolve_save_dest(name or "Untitled", directory)
+        engine.build_pptx(model, dst, _media_dir(doc))
+        src_file = _to_native_path(file) if file else ""
+        if src_file:
+            title_carry = _get_title(src_file)
+            if title_carry:
+                _set_title(dst, title_carry)
+            # Drop the scratch draft + its sidecar — but never when the user saved
+            # back onto the scratch itself (browsing into LIBRARY under the same
+            # name), which would delete the deck (and title) we just wrote.
+            saved_onto_scratch = (os.path.normcase(os.path.abspath(dst))
+                                  == os.path.normcase(os.path.abspath(src_file)))
+            if (not saved_onto_scratch
+                    and os.path.dirname(os.path.abspath(src_file)) == os.path.abspath(LIBRARY)):
+                for p in (os.path.abspath(src_file), _sidecar_path(src_file)):
+                    with contextlib.suppress(OSError):
+                        os.remove(p)
+        return {"path": dst.replace(os.sep, "/"), "name": os.path.basename(dst)}
+
     # --------- Save as = write a NEW .pptx elsewhere; the open document is unchanged
     if action == "save_as":
         model = _load_model(doc)
         default = _get_title(file) or (os.path.splitext(os.path.basename(file))[0] if file else "deck")
-        base = re.sub(r"[^a-zA-Z0-9._ -]", "_", (name or f"{default} copy")).strip()
-        if not base.lower().endswith(".pptx"):
-            base += ".pptx"
-        dstdir = (os.path.abspath(os.path.expanduser(_to_native_path(directory))) if directory
-                  else (os.path.dirname(_to_native_path(file)) or os.path.expanduser("~")))
-        os.makedirs(dstdir, exist_ok=True)
-        dst = os.path.join(dstdir, base)
+        dst = _resolve_save_dest(name or f"{default} copy", directory,
+                                 default_dir=os.path.dirname(_to_native_path(file)) or None)
         engine.build_pptx(model, dst, _media_dir(doc))
-        return {"path": dst, "name": base}
+        return {"path": dst.replace(os.sep, "/"), "name": os.path.basename(dst)}
 
     # ---------------------------------------------------------------- sidecar
     if action == "set_title":
@@ -727,6 +798,9 @@ SCHEMA_DOC = {
 ACTIONS = {
     "open": "file -> {doc, model, mtime, media_dir, title}: parse (or reuse the "
            "cached) model for a .pptx",
+    "new_deck": "name? -> {file}: write a new blank .pptx into the library dir, "
+                "then open it via `open`",
+    "library": "-> {decks:[{file,name,mtime}]}: decks created from the home screen",
     "describe": "doc? -> schema + action list + compact per-slide element index",
     "get_model": "doc -> {model, mtime, media_dir}",
     "update_element": "doc, el, patch(json) -> semantic patch: geometry keys, "
