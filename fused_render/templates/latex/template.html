@@ -589,13 +589,14 @@ pdfjs.GlobalWorkerOptions.workerSrc = "/template-assets/pdfjs.worker.bundle.mjs"
 
   // =========================================================== edit / save
   const scheduleSave = debounce(() => saveNow(), 1200);
-  const scheduleCompileAfterSave = debounce(() => compile(), 1600);
   const RO_TOOLTIP = "The file is read-only — its permissions don't allow writing, so it can't be edited here.";
   const showRoBadge = (on) => fusedRoBadge.update($("ro"), on ? "Read-only" : "", on ? RO_TOOLTIP : "");
   function onEdit() {
     if (!S.writable) return;  // read-only buffer never arms autosave (belt — the locked facets are braces)
     S.dirty = true; $("dirtyDot").classList.remove("hidden");
-    scheduleSave(); scheduleCompileAfterSave();
+    // Autosave to disk, but do NOT auto-compile — compiling is manual (the
+    // Recompile button / Ctrl+Enter), so edits don't kick off a compile each time.
+    scheduleSave();
   }
   async function saveNow() {
     if (!S.view || !S.fileAbs || !S.dirty || !S.writable) return;
