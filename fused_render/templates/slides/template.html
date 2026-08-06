@@ -1081,10 +1081,13 @@
     fusedRoBadge.update($("ro"), S.editable?"":(p.readonly_message||"Read-only"),
       S.editable?"":((p.readonly_tooltip||"")+" Changes can be saved to a new file via File ▸ Save as."));
     document.querySelector('#fileMenu [data-file="save"]').disabled=!S.editable;
-    // The deck title lives in the <file>.json sidecar — gate the rename UI on
-    // ITS writability (RO-6), independent of the .pptx verdict.
-    $("deckName").contentEditable=S.sidecarWritable?"true":"false";
-    $("deckName").title=S.sidecarWritable?"Rename deck":"Rename disabled — the deck's sidecar file is read-only";
+    // Rename only applies to a new/untitled draft, where the name seeds the
+    // first-save file name. Once the deck is a real saved file, its name is its
+    // identity — Save won't rename it, so relabelling the title here is
+    // confusing; keep it fixed. (Also gated on sidecar writability, RO-6.)
+    const canRename=untitled&&S.sidecarWritable;
+    $("deckName").contentEditable=canRename?"true":"false";
+    $("deckName").title=canRename?"Name this deck — used as the file name when you first save":"";
     $("saved").textContent=untitled?"Draft — Save to name & choose a location":"All changes saved";
     preloadFonts(S.model);
     setMode(fused.params.get("mode")||"view");
@@ -1306,6 +1309,12 @@
     // stuck covering the app with no way back in.
     document.addEventListener("fullscreenchange",()=>{ if(P.on&&!document.fullscreenElement)exitPresent(); });
     window.addEventListener("resize",()=>{ if(P.on)renderPresent(); });
+    // Enter commits the rename (blur) instead of inserting a newline into the
+    // title; Escape reverts. Only fires while the name box is being edited.
+    $("deckName").onkeydown=e=>{
+      if(e.key==="Enter"){ e.preventDefault(); $("deckName").blur(); }
+      else if(e.key==="Escape"){ e.preventDefault(); $("deckName").textContent=S.title||DEFAULT_TITLE; $("deckName").blur(); }
+    };
     $("deckName").onblur=async()=>{ const n=$("deckName").textContent.trim();
       if(!S.sidecarWritable){ // belt-and-braces: contentEditable is already off
         $("deckName").textContent=S.title||DEFAULT_TITLE;
