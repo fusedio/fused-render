@@ -739,7 +739,13 @@ def main(action: str = "open",
             title_carry = _get_title(src_file)
             if title_carry:
                 _set_title(dst, title_carry)
-            if os.path.dirname(os.path.abspath(src_file)) == os.path.abspath(LIBRARY):
+            # Drop the scratch draft + its sidecar — but never when the user saved
+            # back onto the scratch itself (browsing into LIBRARY under the same
+            # name), which would delete the deck (and title) we just wrote.
+            saved_onto_scratch = (os.path.normcase(os.path.abspath(dst))
+                                  == os.path.normcase(os.path.abspath(src_file)))
+            if (not saved_onto_scratch
+                    and os.path.dirname(os.path.abspath(src_file)) == os.path.abspath(LIBRARY)):
                 for p in (os.path.abspath(src_file), _sidecar_path(src_file)):
                     with contextlib.suppress(OSError):
                         os.remove(p)

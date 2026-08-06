@@ -487,10 +487,13 @@
   const PT2PX=96/72;
   // `_file` (an existing deck) is the read-only open path; `lib` (a deck created
   // from the home screen and living in the library dir) is our own param, so it
-  // survives reload where `_file` can't be re-set. FILE repoints when a library
-  // deck is opened, so save/export/rename all target it exactly like a _file open.
+  // survives reload where `_file` can't be re-set. `lib` wins when both are set,
+  // so after creating/opening a library deck a reload stays on it rather than
+  // snapping back to a `_file` preview — matching docs/excel (`file` over `_file`).
+  // FILE repoints when a library deck is opened, so save/export/rename all target
+  // it exactly like a _file open.
   const titleOf=(f)=>f?f.split(/[\\/]/).pop().replace(/\.pptx$/i,""):"Untitled";
-  let FILE=fused.params.get("_file")||fused.params.get("lib")||"";
+  let FILE=fused.params.get("lib")||fused.params.get("_file")||"";
   let DEFAULT_TITLE=titleOf(FILE);
   // An unsaved draft living in the New-deck library: edits autosave into the
   // scratch file so nothing is lost, but the first manual Save prompts for a
@@ -1270,7 +1273,10 @@
           try{
             // Flush in-memory edits to the cache model first — save_new builds
             // the .pptx from the cached model, so a queued edit would be lost.
+            // If the flush fails, abort: building from the stale model and then
+            // dropping the scratch would lose those edits silently.
             if(S.dirty) await doSave();
+            if(S.dirty){ toast("Couldn't save your changes — staying on this draft."); return; }
             const r=await py({action:"save_new",doc:S.doc,name:v,directory:curDir,file:FILE});
             FILE=r.path; DEFAULT_TITLE=titleOf(r.path); untitled=false;
             fused.params.set("lib",r.path);

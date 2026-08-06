@@ -208,7 +208,11 @@ def _resolve_dest(path: str, directory: str) -> str:
     if raw and (os.path.isabs(expanded) or re.match(r"^[A-Za-z]:[\\/]", raw)):
         dest = os.path.abspath(expanded)
     else:
-        joined = os.path.join(directory, raw) if directory else raw
+        # A bare name is seeded from the free-text document title, so strip
+        # characters that aren't valid in a filename (a title like "Q3: report"
+        # would otherwise be a Windows-invalid path and fail the write).
+        base = re.sub(r"[^A-Za-z0-9._ -]", "_", raw).strip() or "Untitled document"
+        joined = os.path.join(directory, base) if directory else base
         dest = os.path.abspath(os.path.expanduser(joined))
     # The writer only produces .docx, so normalize a typed .docx/.odt to .docx
     # (matches the dialog's "Will save to" preview, which strips both).
@@ -481,8 +485,13 @@ def main(action: str = "export", file: str = "", html: str = "", title: str = ""
         _pandoc(["-f", HTML_FROM, "-t", "docx", "--wrap=none",
                  "--standalone", "-o", dest], input_text=html)
         # Drop the library scratch draft + its sidecar (in the shared sidecar
-        # store, home_dir()/sidecar — not adjacent to the .docx).
-        if file and os.path.dirname(os.path.abspath(file)) == os.path.abspath(DOCS_DIR):
+        # store, home_dir()/sidecar — not adjacent to the .docx). Never when the
+        # user saved back onto the scratch itself (browsing into DOCS_DIR under
+        # the same name) — that would delete the document we just wrote.
+        saved_onto_scratch = (file and os.path.normcase(os.path.abspath(dest))
+                              == os.path.normcase(os.path.abspath(file)))
+        if (file and not saved_onto_scratch
+                and os.path.dirname(os.path.abspath(file)) == os.path.abspath(DOCS_DIR)):
             from appenv import sidecar_path
             for p in (os.path.abspath(file), sidecar_path(file)):
                 with contextlib.suppress(OSError):
