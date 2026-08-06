@@ -847,7 +847,7 @@ export default function Listing({
                         <th
                           key={key}
                           className={
-                            "sortable" +
+                            `sortable col-${key}` +
                             (searchSort?.sort === key ? " sorted" : "")
                           }
                           title={
@@ -877,7 +877,8 @@ export default function Listing({
                         <th
                           key={key}
                           className={
-                            "sortable" + (key === sort ? " sorted" : "")
+                            `sortable col-${key}` +
+                            (key === sort ? " sorted" : "")
                           }
                           onClick={() => setSort(key)}
                         >
