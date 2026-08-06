@@ -40,6 +40,17 @@ def warm(bin_path, cache_dir, warm_dir, main_path, build_dir):
     try:
         _progress(warm_dir, "warm", "downloading the LaTeX packages this document needs (one-time)")
         env = dict(os.environ, TECTONIC_CACHE_DIR=cache_dir)
+        # Clear a prior run's PDF and log first so their presence reflects THIS
+        # warm run, not an earlier success. Otherwise a warm that fails before
+        # TeX even starts (offline during the fetch) would find a stale .log,
+        # wrongly mark the cache warmed, and the page would loop retrying an
+        # unwarmed cache with the last good PDF already gone.
+        stem = os.path.splitext(os.path.basename(main_path))[0]
+        for leftover in (stem + ".pdf", stem + ".log"):
+            try:
+                os.remove(os.path.join(build_dir, leftover))
+            except OSError:
+                pass
         subprocess.run(
             [bin_path, "-X", "compile", "--keep-logs", "--synctex",
              "--outdir", build_dir, main_path],
@@ -53,7 +64,6 @@ def warm(bin_path, cache_dir, warm_dir, main_path, build_dir):
         # page runs next surfaces the real LaTeX diagnostics, rather than us
         # blaming a genuine document error on the network. Only a run that never
         # wrote a log truly failed to fetch (offline / repo unreachable).
-        stem = os.path.splitext(os.path.basename(main_path))[0]
         if os.path.exists(os.path.join(build_dir, stem + ".log")):
             _mark_warmed(cache_dir)
             _progress(warm_dir, "done", "LaTeX packages ready", done=True)
