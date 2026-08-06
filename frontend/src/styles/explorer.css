@@ -255,14 +255,14 @@
   overflow: auto;
 }
 
-/* FS-12's floor is on the LIST, not the pane: with the pane on, flexbox must
-   refuse to shrink the table below 220 px however wide the pane is. The drag
-   clamps to the same number (clampPaneWidth), so this only backstops a window
+/* The list's floor: with the pane on, flexbox must refuse to shrink the table
+   below this sliver however wide the pane is. The drag clamps to the same
+   number (clampPaneWidth's LIST_MIN_W), so this only backstops a window
    resize that narrows the container under an already-sized pane. Scoped to the
    split-with-pane case — a paneless listing in a narrow panel/tab keeps
    shrinking as it always did. */
 .listing-split:has(.listing-pane-slot) > .listing-main {
-  min-width: 220px;
+  min-width: 60px;
 }
 
 /* Left column of the split: search header pinned above the scrolling table.
@@ -274,6 +274,27 @@
   min-height: 0;
   display: flex;
   flex-direction: column;
+  /* Size container so the table's columns can respond to THIS column's width
+     (not the window's): a wide preview pane squeezes the list, and the size /
+     modified columns drop out below to keep the name readable. */
+  container-type: inline-size;
+}
+
+/* Squeezed list: shed the modified column first, then size, leaving just the
+   name at the narrowest. Header cells carry col-<key> classes to pair with
+   their td counterparts. */
+@container (max-width: 380px) {
+  table.listing-table td.mtime,
+  table.listing-table th.col-mtime {
+    display: none;
+  }
+}
+
+@container (max-width: 300px) {
+  table.listing-table td.size,
+  table.listing-table th.col-size {
+    display: none;
+  }
 }
 
 /* Split body when the preview pane is on: table on the left, a draggable
@@ -309,12 +330,11 @@
 
 /* Fixed-width slot the pane renders into; width set inline (flex-basis) from
    the drag, clamped by clampPaneWidth() to at least 220px and at most
-   min(65%, container - 220px) so the LIST keeps its own 220px floor. The
-   min-width here is the pane's floor, not the list's — see .listing-scroll. */
+   container - 60px so the LIST keeps its own sliver floor. The min-width
+   here is the pane's floor, not the list's — see .listing-main. */
 .listing-pane-slot {
   flex: 0 0 auto;
   min-width: 220px;
-  max-width: 65%;
   min-height: 0;
   display: flex;
 }
@@ -521,7 +541,8 @@ table.pane-mini-list td.status-message {
   padding: 14px 10px;
 }
 
-/* Pane toggle in the search row: small icon button, accent when active. */
+/* Pane toggle in the search row: small icon button. Stays subtle when the
+   pane is open — the chevron's direction is the state indicator. */
 .listing-pane-toggle {
   flex: 0 0 auto;
   display: flex;
@@ -540,11 +561,6 @@ table.pane-mini-list td.status-message {
 .listing-pane-toggle:hover {
   color: var(--fg);
   border-color: var(--fg-muted);
-}
-
-.listing-pane-toggle.active {
-  color: var(--accent);
-  border-color: var(--accent);
 }
 
 /* Skeleton loading state: shimmering bars shaped like the real listing rows
