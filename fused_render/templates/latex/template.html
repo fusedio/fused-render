@@ -894,15 +894,34 @@ pdfjs.GlobalWorkerOptions.workerSrc = "/template-assets/pdfjs.worker.bundle.mjs"
     });
   }
 
+  // Does the workspace's main document pull `abs` in with \input/\include/
+  // \subfile? Such a file is a fragment of the open document — compiling it means
+  // compiling the main — not a separate document. Matched by basename, with or
+  // without the .tex extension, the way LaTeX resolves these references.
+  async function mainInputsFile(abs) {
+    try {
+      const esc = baseName(abs).replace(/\.tex$/i, "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const re = new RegExp("\\\\(?:input|include|subfile)\\s*\\{[^}]*" + esc + "(?:\\.tex)?\\}");
+      return re.test(await fused.readFile(S.mainAbs));
+    } catch (e) { return false; }
+  }
+
   async function openFile(abs) {
     try {
       const st = await fused.stat(abs);
       const text = await fused.readFile(abs);
-      // A file with its own \documentclass is a standalone document, so opening
-      // one makes it the compile entrypoint — Recompile builds the document
-      // you're looking at, not one opened earlier. \input fragments (no preamble)
-      // leave the entrypoint alone so they still compile through their parent.
-      if (abs !== S.mainAbs && /\\documentclass/.test(text.slice(0, 4000))) {
+      // Opening a file can change what Recompile builds. A file with its own
+      // \documentclass is a document in its own right; a file the current main
+      // pulls in with \input/\include is a fragment of that document. Anything
+      // else is an independent file the user opened to work on. In the first and
+      // last cases the opened file becomes the compile entrypoint, so Recompile
+      // reflects what you're looking at; only a fragment keeps the entrypoint on
+      // the main, so the whole document still compiles from a child buffer.
+      let promote = abs !== S.mainAbs;
+      if (promote && !/\\documentclass/.test(text.slice(0, 4000)) && await mainInputsFile(abs)) {
+        promote = false;
+      }
+      if (promote) {
         S.mainAbs = abs;
         S.root = abs.slice(0, Math.max(abs.lastIndexOf("/"), abs.lastIndexOf("\\")));
         S.lastPdf = "";
