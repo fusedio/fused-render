@@ -1172,9 +1172,9 @@ a.bookmark-name::after {
   overflow: auto;
 }
 
-/* FS-12's floor is on the LIST, not the pane: with the pane on, flexbox must
-   refuse to shrink the table below 220 px however wide the pane is. The drag
-   clamps to the same number (clampPaneWidth), so this only backstops a window
+/* The list's floor: with the pane on, flexbox must refuse to shrink the table
+   below this sliver however wide the pane is. The drag clamps to the same
+   number (clampPaneWidth's LIST_MIN_W), so this only backstops a window
    resize that narrows the container under an already-sized pane. Scoped to the
    split-with-pane case — a paneless listing in a narrow panel/tab keeps
    shrinking as it always did. */
@@ -1252,7 +1252,6 @@ a.bookmark-name::after {
 .listing-pane-slot {
   flex: 0 0 auto;
   min-width: 220px;
-  max-width: 65%;
   min-height: 0;
   display: flex;
 }

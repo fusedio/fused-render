@@ -22,20 +22,18 @@ const LIST_MIN_W = 60;
 // closes the pane on release (the clamp holds the pane at PANE_MIN_W during
 // the drag, so the intent is read from the raw cursor position instead).
 const PANE_CLOSE_W = 110;
-const PANE_MAX_FRAC = 0.9;
 export const PANE_DEFAULT_FRAC = 0.5;
 const PANE_FALLBACK_W = 420;
 
-// The one place the FS-12 clamps live, so the drag and the measured default
-// cannot disagree. Two independent ceilings: the 90 % fraction (a sliver of
-// list always stays) and the LIST_MIN_W floor the list needs in pixels — on
-// a narrow window 65 % of the container leaves the list under its floor, so
-// the pixel ceiling is the binding one there. PANE_MIN_W is applied last: in
-// the degenerate case (a container too small to satisfy both minimums) the
-// pane keeps its floor and the list scrolls, which is what the old template's
-// `min-width` did.
+// The one place the clamps live, so the drag and the measured default cannot
+// disagree: the pane keeps at least PANE_MIN_W, and the list keeps at least
+// LIST_MIN_W (a sliver — the columns shed themselves via container queries as
+// it narrows). PANE_MIN_W is applied last: in the degenerate case (a container
+// too small for both minimums) the pane keeps its floor and the list scrolls.
+// CSS mirrors both floors (.listing-pane-slot / .listing-main min-width) as a
+// backstop for window resizes, which never re-run this clamp.
 function clampPaneWidth(containerW: number, width: number): number {
-  return Math.max(PANE_MIN_W, Math.min(containerW * PANE_MAX_FRAC, containerW - LIST_MIN_W, width));
+  return Math.max(PANE_MIN_W, Math.min(containerW - LIST_MIN_W, width));
 }
 
 function resolvePane(fsPath: string): { on: boolean; width: number | null } {
