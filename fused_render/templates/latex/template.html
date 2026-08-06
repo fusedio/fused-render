@@ -143,6 +143,9 @@
   .install-box .d { font-size: 12.5px; margin-bottom: 14px; }
   .install-box .bar { height: 6px; border-radius: 4px; background: var(--hair-2); overflow: hidden; margin: 12px 0; }
   .install-box .bar > div { height: 100%; background: var(--blue); width: 0%; transition: width .2s; }
+  /* indeterminate bar for the package warm — a cold Tectonic fetch reports no % */
+  .install-box .bar.indet > div { width: 40%; transition: none; animation: warmslide 1.1s ease-in-out infinite; }
+  @keyframes warmslide { 0% { margin-left: -45%; } 100% { margin-left: 105%; } }
   .install-box .err { color: var(--danger); font-size: 12px; margin-top: 10px; word-break: break-word; }
 
   /* bottom log/errors drawer */
@@ -638,6 +641,7 @@ pdfjs.GlobalWorkerOptions.workerSrc = "/template-assets/pdfjs.worker.bundle.mjs"
       if (S.dirty) await saveNow();
       const r = await py({ action: "compile", path: S.mainAbs, force: force ? 1 : 0, src: rawURL(S.mainAbs) });
       if (r.missing_tectonic) { setStatus("err", "no compiler"); renderMissingTectonic(); return; }
+      if (r.warming) { setStatus("busy", "preparing packages…"); renderWarming(r.progress); return; }
       if (r.error) { setStatus("err", "error"); renderDiags([{ severity:"error", message:r.error, line:0, file:"" }], ""); return; }
       renderDiags(r.errors || [], r.log_tail || "");
       const hardErrors = (r.errors || []).filter(e => e.severity === "error");
@@ -707,6 +711,44 @@ pdfjs.GlobalWorkerOptions.workerSrc = "/template-assets/pdfjs.worker.bundle.mjs"
       }
     } catch (e) { /* transient — keep polling */ }
     setTimeout(pollInstall, 800);
+  }
+
+  // ---- Package cache warming: the first compile on a fresh Tectonic install
+  // fetches ~30 MB of packages/fonts (a minute or two). It runs in a detached
+  // worker; we show a one-time "preparing…" panel and recompile when it lands.
+  let warmPolling = false;
+  function renderWarming(progress) {
+    $("pdfpages").innerHTML = `
+      <div class="install-box">
+        <div class="t">Preparing LaTeX packages…</div>
+        <div class="d">The first compile downloads the common LaTeX packages and fonts
+          (~30&nbsp;MB) and caches them. This is a one-time step and can take a minute or
+          two — your document compiles automatically when it's ready. You can keep editing
+          in the meantime.</div>
+        <div class="bar indet"><div></div></div>
+        <div class="d" id="warmDetail"></div>
+        <div class="err hidden" id="warmErr"></div>
+      </div>`;
+    const d = progress && (progress.detail || progress.stage);
+    if (d) $("warmDetail").textContent = d;
+    if (warmPolling) return;
+    warmPolling = true;
+    pollWarm();
+  }
+  async function pollWarm() {
+    try {
+      const st = await py({ action: "warm_status" });
+      const p = st.progress;
+      if (p && (p.detail || p.stage) && $("warmDetail")) $("warmDetail").textContent = p.detail || p.stage;
+      if (st.warm) { warmPolling = false; toast("LaTeX packages ready."); compile(true); return; }
+      if (p && p.done && p.error) {
+        warmPolling = false;
+        if ($("warmErr")) { $("warmErr").textContent = p.error; $("warmErr").classList.remove("hidden"); }
+        setStatus("err", "package fetch failed");
+        return;
+      }
+    } catch (e) { /* transient — keep polling */ }
+    setTimeout(pollWarm, 1500);
   }
 
   // =========================================================== PDF render (pdf.js)

@@ -61,6 +61,8 @@ TECTONIC_CACHE = os.path.join(CACHE_ROOT, "tectonic-cache")  # shared package/fo
 BUILDS = os.path.join(CACHE_ROOT, "builds")                  # per-doc aux output, hashed
 EXPORTS = os.path.join(CACHE_ROOT, "exports")                # per-doc pandoc exports, hashed
 INSTALL_DIR = os.path.join(CACHE_ROOT, "_install")           # tectonic download staging
+WARM_DIR = os.path.join(CACHE_ROOT, "_warm")                 # cache-warm worker progress staging
+WARM_MARKER = os.path.join(TECTONIC_CACHE, ".warmed")        # written once the common packages are cached
 BIN_DIR = os.path.expanduser("~/.fused-render/bin")          # user-owned install location
 LIBRARY = os.path.expanduser("~/.fused-render/latex/projects")  # user-owned; one folder per project created from Home
 
@@ -128,6 +130,60 @@ def _tectonic_install():
     os.replace(stamp + ".tmp", stamp)
     time.sleep(0.3)
     return _tectonic_status()
+
+
+# ------------------------------------------------------------- cache warm ---
+# The FIRST compile on a fresh Tectonic install fetches ~30 MB of packages and
+# fonts from the network — measured at ~2 min, far beyond the 60s runPython
+# budget, so it can never complete inside a compile call. We fetch them once in
+# a detached worker (like the installer), leaving a marker; compiles then hit a
+# warm cache (~4s). Until the marker exists, _compile defers with a warming
+# status instead of attempting (and timing out on) the cold fetch.
+def _cache_warm() -> bool:
+    return os.path.exists(WARM_MARKER)
+
+
+def _warm_progress():
+    path = os.path.join(WARM_DIR, "progress.json")
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not data.get("done") and not _pid_alive(data.get("pid", -1)):
+        data["done"] = True
+        data["error"] = data.get("error") or "cache warm exited unexpectedly"
+    return data
+
+
+def _warm_running() -> bool:
+    prog = _warm_progress()
+    return bool(prog and not prog.get("done"))
+
+
+def _ensure_warming():
+    """Spawn the detached cache-warm worker if the cache isn't warm and no warm
+    is already running. Idempotent and cheap to call on every cold compile."""
+    if _cache_warm() or _warm_running() or not _tectonic_bin():
+        return
+    os.makedirs(WARM_DIR, exist_ok=True)
+    worker = os.path.join(HERE, "warm_worker.py")
+    logf = open(os.path.join(WARM_DIR, "worker.log"), "ab")
+    detach_kwargs = (
+        {"creationflags": subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP}
+        if os.name == "nt" else {"start_new_session": True}
+    )
+    child = subprocess.Popen(
+        [sys.executable, worker, _tectonic_bin(), TECTONIC_CACHE, WARM_DIR],
+        stdout=logf, stderr=logf, stdin=subprocess.DEVNULL, cwd=HERE, **detach_kwargs)
+    logf.close()
+    stamp = os.path.join(WARM_DIR, "progress.json")
+    with open(stamp + ".tmp", "w", encoding="utf-8") as f:
+        json.dump({"stage": "spawn", "detail": "starting package fetch",
+                   "done": False, "error": None, "pid": child.pid}, f)
+    os.replace(stamp + ".tmp", stamp)
 
 
 # ---------------------------------------------------------------- helpers ---
@@ -301,6 +357,13 @@ def _compile(main_path: str, synctex: bool = True, force: bool = False, remote: 
         return {"ok": False, "missing_tectonic": True, "errors": [],
                 "error": "Tectonic isn't installed — install it to compile."}
     os.makedirs(TECTONIC_CACHE, exist_ok=True)
+    # Cold cache: the package fetch can't fit the compile budget. Warm it in the
+    # background and defer — the page polls warm_status and recompiles when ready.
+    if not _cache_warm():
+        _ensure_warming()
+        return {"ok": False, "warming": True, "progress": _warm_progress(), "errors": [],
+                "error": "Preparing the LaTeX package cache (one-time, ~1–2 min). "
+                         "Your document compiles automatically when it's ready."}
     build = _build_dir_for(main_path)
     # A compile costs ~10s (tectonic runs several passes), so skip it when the
     # last PDF is newer than every file under the doc's directory — page
@@ -754,6 +817,9 @@ def main(action: str = "tectonic_status", path: str = "", target: str = "",
          src: str = "", title: str = "", slug: str = "", template: str = ""):
     if action == "tectonic_status":
         return _tectonic_status()
+
+    if action == "warm_status":
+        return {"warm": _cache_warm(), "progress": _warm_progress()}
 
     if action == "tectonic_install":
         return _tectonic_install()
