@@ -1200,14 +1200,14 @@ a.bookmark-name::after {
 /* Squeezed list: shed the modified column first, then size, leaving just the
    name at the narrowest. Header cells carry col-<key> classes to pair with
    their td counterparts. */
-@container (max-width: 480px) {
+@container (max-width: 380px) {
   table.listing-table td.mtime,
   table.listing-table th.col-mtime {
     display: none;
   }
 }
 
-@container (max-width: 340px) {
+@container (max-width: 300px) {
   table.listing-table td.size,
   table.listing-table th.col-size {
     display: none;
