@@ -1438,7 +1438,8 @@ table.pane-mini-list td.status-message {
   padding: 14px 10px;
 }
 
-/* Pane toggle in the search row: small icon button, accent when active. */
+/* Pane toggle in the search row: small icon button. Stays subtle when the
+   pane is open — the chevron's direction is the state indicator. */
 .listing-pane-toggle {
   flex: 0 0 auto;
   display: flex;
@@ -1457,11 +1458,6 @@ table.pane-mini-list td.status-message {
 .listing-pane-toggle:hover {
   color: var(--fg);
   border-color: var(--fg-muted);
-}
-
-.listing-pane-toggle.active {
-  color: var(--accent);
-  border-color: var(--accent);
 }
 
 /* Skeleton loading state: shimmering bars shaped like the real listing rows

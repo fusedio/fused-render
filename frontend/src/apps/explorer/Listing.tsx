@@ -31,7 +31,6 @@ import { useFlip, FLIP_KEY_ATTR } from "@platform/lib/flip";
 import { useClipboard } from "@apps/explorer/lib/fs-clipboard";
 import ContextMenu from "@platform/ui/ContextMenu";
 import { PromptDialog, ConfirmDialog } from "@apps/explorer/FsDialogs";
-import { SplitRightIcon } from "@platform/ui/SplitIcons";
 import ListingPreviewPane from "@apps/explorer/ListingPreviewPane";
 import {
   FLIP_MAX_ROWS,
@@ -802,12 +801,26 @@ export default function Listing({
               {!embedded && (
                 <button
                   type="button"
-                  className={"listing-pane-toggle" + (pane.on ? " active" : "")}
+                  className="listing-pane-toggle"
                   title={pane.on ? "Hide preview pane" : "Show preview pane"}
                   aria-pressed={pane.on}
                   onClick={togglePane}
                 >
-                  <SplitRightIcon />
+                  {/* Subtle chevron, no accent highlight: points left when the
+                      pane is closed (it slides in from the right), right when
+                      open (collapse back to the edge). */}
+                  <svg
+                    viewBox="0 0 24 24"
+                    width="14"
+                    height="14"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  >
+                    <polyline points={pane.on ? "9 6 15 12 9 18" : "15 6 9 12 15 18"} />
+                  </svg>
                 </button>
               )}
             </div>

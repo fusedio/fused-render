@@ -17,7 +17,11 @@ import { replaceSearch } from "@platform/lib/router";
 import { getViewState, setViewState } from "@platform/lib/viewstate";
 
 const PANE_MIN_W = 220;
-const LIST_MIN_W = 220;
+const LIST_MIN_W = 120;
+// Dragging the divider within this many pixels of the container's right edge
+// closes the pane on release (the clamp holds the pane at PANE_MIN_W during
+// the drag, so the intent is read from the raw cursor position instead).
+const PANE_CLOSE_W = 110;
 const PANE_MAX_FRAC = 0.65;
 export const PANE_DEFAULT_FRAC = 0.5;
 const PANE_FALLBACK_W = 420;
@@ -25,7 +29,7 @@ const PANE_FALLBACK_W = 420;
 // The one place the FS-12 clamps live, so the drag and the measured default
 // cannot disagree. Two independent ceilings: the 65 % fraction (the list stays
 // the primary surface) and the LIST_MIN_W floor the list needs in pixels — on
-// a narrow window 65 % of the container leaves the list well under 220 px, so
+// a narrow window 65 % of the container leaves the list under its floor, so
 // the pixel ceiling is the binding one there. PANE_MIN_W is applied last: in
 // the degenerate case (a container too small to satisfy both minimums) the
 // pane keeps its floor and the list scrolls, which is what the old template's
@@ -117,7 +121,9 @@ export function usePreviewPane(fsPath: string, enabled = true) {
     const divider = e.currentTarget;
     divider.setPointerCapture(e.pointerId);
     divider.classList.add("dragging");
+    const startWidth = pane.width;
     let width = pane.width;
+    let raw = Infinity;
     let moved = false;
     const onMove = (ev: PointerEvent) => {
       const rect = splitRef.current?.getBoundingClientRect();
@@ -125,7 +131,8 @@ export function usePreviewPane(fsPath: string, enabled = true) {
       moved = true;
       // The pane is the right side: its width is the distance from the cursor
       // to the container's right edge, run through the shared FS-12 clamps.
-      width = clampPaneWidth(rect.width, rect.right - ev.clientX);
+      raw = rect.right - ev.clientX;
+      width = clampPaneWidth(rect.width, raw);
       setPane((prev) => (prev.width === width ? prev : { ...prev, width }));
     };
     const onUp = () => {
@@ -133,6 +140,18 @@ export function usePreviewPane(fsPath: string, enabled = true) {
       divider.removeEventListener("pointermove", onMove);
       divider.removeEventListener("pointerup", onUp);
       divider.removeEventListener("pointercancel", onUp);
+      // Released with the cursor (nearly) at the right edge: close the pane,
+      // keeping the pre-drag width so re-opening restores it.
+      if (moved && raw < PANE_CLOSE_W) {
+        const params = new URLSearchParams(location.search);
+        params.delete("preview");
+        params.delete("_panelMode");
+        const qs = params.toString();
+        replaceSearch(location.pathname + (qs ? "?" + qs : ""));
+        setPane({ on: false, width: startWidth });
+        savePaneState(fsPath, false, paneSized.current ? startWidth : null);
+        return;
+      }
       // Only a drag that actually moved the divider is a chosen width; a bare
       // click on it leaves the measured default unpersisted.
       if (moved) paneSized.current = true;
