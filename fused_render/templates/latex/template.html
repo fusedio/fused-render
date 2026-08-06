@@ -894,16 +894,38 @@ pdfjs.GlobalWorkerOptions.workerSrc = "/template-assets/pdfjs.worker.bundle.mjs"
     });
   }
 
-  // Does the workspace's main document pull `abs` in with \input/\include/
-  // \subfile? Such a file is a fragment of the open document — compiling it means
-  // compiling the main — not a separate document. Matched by basename, with or
-  // without the .tex extension, the way LaTeX resolves these references.
-  async function mainInputsFile(abs) {
-    try {
-      const esc = baseName(abs).replace(/\.tex$/i, "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-      const re = new RegExp("\\\\(?:input|include|subfile)\\s*\\{[^}]*" + esc + "(?:\\.tex)?\\}");
-      return re.test(await fused.readFile(S.mainAbs));
-    } catch (e) { return false; }
+  // Is `abs` part of the current main's compile graph — i.e. transitively pulled
+  // in via \input/\include/\subfile starting from the main document (main →
+  // chapter → section, at any depth)? Such a file is a fragment of the open
+  // document (compiling it means compiling the main), not a separate document.
+  // Tectonic resolves those references relative to the main's directory (the
+  // compile cwd), so children resolve against S.root regardless of nesting. A
+  // visited set and a file budget keep an \input cycle or a huge tree from
+  // hanging the open.
+  async function inMainGraph(abs) {
+    const norm = (p) => p.replace(/\\/g, "/").replace(/\.tex$/i, "").toLowerCase();
+    const targetKey = norm(abs);
+    const seen = new Set();
+    const queue = [S.mainAbs];
+    let budget = 60;
+    while (queue.length && budget-- > 0) {
+      const f = queue.shift();
+      const key = norm(f);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      let txt;
+      try { txt = await fused.readFile(f); } catch (e) { continue; }
+      const re = /\\(?:input|include|subfile)\s*\{([^}]+)\}/g;
+      let m;
+      while ((m = re.exec(txt))) {
+        let ref = m[1].trim();
+        if (!/\.[A-Za-z0-9]+$/.test(ref)) ref += ".tex";          // \input{chap} -> chap.tex
+        const child = /^([A-Za-z]:[\\/]|\/)/.test(ref) ? ref : (S.root + "/" + ref);
+        if (norm(child) === targetKey) return true;
+        queue.push(child);
+      }
+    }
+    return false;
   }
 
   async function openFile(abs) {
@@ -912,13 +934,14 @@ pdfjs.GlobalWorkerOptions.workerSrc = "/template-assets/pdfjs.worker.bundle.mjs"
       const text = await fused.readFile(abs);
       // Opening a file can change what Recompile builds. A file with its own
       // \documentclass is a document in its own right; a file the current main
-      // pulls in with \input/\include is a fragment of that document. Anything
-      // else is an independent file the user opened to work on. In the first and
-      // last cases the opened file becomes the compile entrypoint, so Recompile
-      // reflects what you're looking at; only a fragment keeps the entrypoint on
-      // the main, so the whole document still compiles from a child buffer.
+      // pulls in with \input/\include (at any nesting depth) is a fragment of
+      // that document. Anything else is an independent file the user opened to
+      // work on. In the first and last cases the opened file becomes the compile
+      // entrypoint, so Recompile reflects what you're looking at; only a fragment
+      // keeps the entrypoint on the main, so the whole document still compiles
+      // from a child buffer.
       let promote = abs !== S.mainAbs;
-      if (promote && !/\\documentclass/.test(text.slice(0, 4000)) && await mainInputsFile(abs)) {
+      if (promote && !/\\documentclass/.test(text.slice(0, 4000)) && await inMainGraph(abs)) {
         promote = false;
       }
       if (promote) {
