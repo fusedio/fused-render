@@ -740,13 +740,15 @@ pdfjs.GlobalWorkerOptions.workerSrc = "/template-assets/pdfjs.worker.bundle.mjs"
       const st = await py({ action: "warm_status" });
       const p = st.progress;
       if (p && (p.detail || p.stage) && $("warmDetail")) $("warmDetail").textContent = p.detail || p.stage;
-      if (st.warm) { warmPolling = false; toast("LaTeX packages ready."); compile(true); return; }
       if (p && p.done && p.error) {
         warmPolling = false;
         if ($("warmErr")) { $("warmErr").textContent = p.error; $("warmErr").classList.remove("hidden"); }
         setStatus("err", "package fetch failed");
         return;
       }
+      // Ready when the scaffold warm set the marker, or a document warm finished
+      // (it compiled the doc into the build dir — a plain recompile serves that PDF).
+      if (st.warm || (p && p.done)) { warmPolling = false; toast("LaTeX packages ready."); compile(); return; }
     } catch (e) { /* transient — keep polling */ }
     setTimeout(pollWarm, 1500);
   }

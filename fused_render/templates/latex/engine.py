@@ -163,21 +163,29 @@ def _warm_running() -> bool:
     return bool(prog and not prog.get("done"))
 
 
-def _ensure_warming():
-    """Spawn the detached cache-warm worker if the cache isn't warm and no warm
-    is already running. Idempotent and cheap to call on every cold compile."""
-    if _cache_warm() or _warm_running() or not _tectonic_bin():
+def _ensure_warming(main_path: str = ""):
+    """Spawn the detached warm worker if none is running. With `main_path`, the
+    worker compiles that document (fetching whatever packages it needs) into its
+    build dir; without it, it warms the common scaffold and drops the marker.
+    A scaffold warm is skipped once the marker exists; a document warm always
+    runs (the marker doesn't imply this doc's packages are cached)."""
+    bin_path = _tectonic_bin()
+    if not bin_path or _warm_running():
+        return
+    if not main_path and _cache_warm():
         return
     os.makedirs(WARM_DIR, exist_ok=True)
     worker = os.path.join(HERE, "warm_worker.py")
+    args = [sys.executable, worker, bin_path, TECTONIC_CACHE, WARM_DIR]
+    if main_path:
+        args += [os.path.abspath(main_path), _build_dir_for(main_path)]
     logf = open(os.path.join(WARM_DIR, "worker.log"), "ab")
     detach_kwargs = (
         {"creationflags": subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP}
         if os.name == "nt" else {"start_new_session": True}
     )
     child = subprocess.Popen(
-        [sys.executable, worker, _tectonic_bin(), TECTONIC_CACHE, WARM_DIR],
-        stdout=logf, stderr=logf, stdin=subprocess.DEVNULL, cwd=HERE, **detach_kwargs)
+        args, stdout=logf, stderr=logf, stdin=subprocess.DEVNULL, cwd=HERE, **detach_kwargs)
     logf.close()
     stamp = os.path.join(WARM_DIR, "progress.json")
     with open(stamp + ".tmp", "w", encoding="utf-8") as f:
@@ -401,9 +409,13 @@ def _compile(main_path: str, synctex: bool = True, force: bool = False, remote: 
                            cwd=os.path.dirname(main_path), timeout=28,
                            creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
     except subprocess.TimeoutExpired:
-        return {"ok": False, "error": "compile exceeded 28s (too complex, or a "
-                "cold package fetch) — simplify, or recompile once the fetch "
-                "has warmed the cache", "errors": [], "seconds": round(time.time() - t0, 2)}
+        # Didn't fit the budget — almost always a cold fetch of this document's
+        # packages. Compile it in the background (no timeout) so the cache warms
+        # and the PDF lands in the build dir; the page polls and serves it.
+        _ensure_warming(main_path)
+        return {"ok": False, "warming": True, "progress": _warm_progress(), "errors": [],
+                "error": "Fetching the LaTeX packages this document needs (one-time). "
+                         "It compiles automatically when they're ready."}
     seconds = round(time.time() - t0, 2)
     stem = os.path.splitext(os.path.basename(main_path))[0]
     pdf = os.path.join(build, stem + ".pdf")
