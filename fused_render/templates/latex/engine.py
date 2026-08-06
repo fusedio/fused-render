@@ -422,8 +422,12 @@ def _compile(main_path: str, synctex: bool = True, force: bool = False, remote: 
         if "not found" in d["message"] and (".sty" in d["message"] or ".cls" in d["message"]):
             d["message"] += "  (package unavailable — offline, or not in the TeX repo)"
     ok = os.path.exists(pdf) and p.returncode == 0
-    log_tail = "\n".join((p.stderr or "").splitlines()[-40:])
-    return {
+    # Tectonic prints its "note:" progress to stdout and errors to stderr —
+    # include both so the tail is actually useful (a crash often leaves only a
+    # stdout "note: Running TeX ..." with an empty stderr).
+    combined = "\n".join(x for x in (p.stdout, p.stderr) if x).strip()
+    log_tail = "\n".join(combined.splitlines()[-40:])
+    result = {
         "ok": ok,
         "pdf": pdf if os.path.exists(pdf) else "",
         "synctex": os.path.join(build, stem + ".synctex.gz"),
@@ -431,6 +435,17 @@ def _compile(main_path: str, synctex: bool = True, force: bool = False, remote: 
         "errors": diags,
         "seconds": seconds,
     }
+    # A failure Tectonic didn't explain — a non-zero exit with no PDF and no
+    # parseable diagnostics (e.g. it crashed before writing the .log) — would
+    # otherwise surface as a blank "? errors" with an empty Problems list. Give
+    # the user the exit code and output tail so it's actionable.
+    if not ok and not any(d.get("severity") == "error" for d in diags):
+        detail = f":\n{log_tail}" if log_tail else "."
+        result["error"] = (
+            f"Tectonic exited with code {p.returncode} and produced no PDF{detail}\n\n"
+            "The document may use a package or font Tectonic can't build, or the "
+            "compiler crashed on this input.")
+    return result
 
 
 # ---------------------------------------------------------------- source index
