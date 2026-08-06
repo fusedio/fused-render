@@ -269,6 +269,34 @@ if (-not ($LearnListing -match 'assets/')) {
     # -match on the line array filters; -not(non-empty) is the membership test.
     throw "learn.zip nested entries are not forward-slash separated (assets/ missing)"
 }
+
+# Bundle sessions.zip the same way (the Sessions sub-app content; mirrors
+# build_dmg.sh). child_environment points FUSED_RENDER_SESSIONS_ZIP here.
+$SessionsSrc = Join-Path $RepoRoot "sessions"
+if (-not (Test-Path -LiteralPath $SessionsSrc -PathType Container)) {
+    throw "sessions/ content is missing - it is part of the app"
+}
+$SessionsZip = Join-Path $StageDir "assets\sessions.zip"
+$SessionsSrcFull = (Resolve-Path -LiteralPath $SessionsSrc).Path
+$SessionsArchive = [System.IO.Compression.ZipFile]::Open(
+    $SessionsZip, [System.IO.Compression.ZipArchiveMode]::Create)
+try {
+    foreach ($file in Get-ChildItem -LiteralPath $SessionsSrcFull -Recurse -File) {
+        if ($file.FullName -match '__pycache__') { continue }
+        $rel = $file.FullName.Substring($SessionsSrcFull.Length + 1).Replace('\', '/')
+        [void][System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile(
+            $SessionsArchive, $file.FullName, $rel)
+    }
+} finally {
+    $SessionsArchive.Dispose()
+}
+$SessionsListing = & (Join-Path $PythonRoot "rclone.exe") lsf -R ":archive:$SessionsZip"
+if ($LASTEXITCODE -ne 0) {
+    throw "bundled rclone cannot read sessions.zip via :archive:"
+}
+if (-not ($SessionsListing -match 'sessions/')) {
+    throw "sessions.zip nested entries are not forward-slash separated (sessions/ missing)"
+}
 # --no-project: the script is stdlib-only (plus its sibling file_associations),
 # so a plain `uv run` would resolve+install the WHOLE project — minutes of work
 # whose only effect on this build is a new way to fail. It is how v0.3.13 lost

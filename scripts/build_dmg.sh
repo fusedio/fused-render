@@ -815,6 +815,25 @@ if ! LEARN_SMOKE_OUT="$("$RCLONE_DEST" lsf ":archive:${LEARN_DEST}" 2>&1)"; then
 fi
 echo "    learn.zip OK ($(echo "$LEARN_SMOKE_OUT" | wc -l | tr -d ' ') top-level entries)"
 
+# Same treatment for the Sessions sub-app content (repo sessions/ →
+# Contents/Resources/sessions.zip, mounted by ensure_builtin_mounts).
+echo "==> bundling sessions.zip"
+SESSIONS_SRC="$REPO_ROOT/sessions"
+if [[ ! -d "$SESSIONS_SRC" ]]; then
+  echo "FATAL: $SESSIONS_SRC does not exist — the sessions/ content is part of the app." >&2
+  exit 1
+fi
+SESSIONS_DEST="$APP_DIR/Contents/Resources/sessions.zip"
+rm -f "$SESSIONS_DEST"
+(cd "$SESSIONS_SRC" && zip -qr -X "$SESSIONS_DEST" . -x '.DS_Store' -x '*/.DS_Store' -x '__pycache__/*' -x '*/__pycache__/*')
+
+if ! SESSIONS_SMOKE_OUT="$("$RCLONE_DEST" lsf ":archive:${SESSIONS_DEST}" 2>&1)"; then
+  echo "FATAL: bundled rclone cannot read the bundled sessions.zip via :archive: :" >&2
+  echo "$SESSIONS_SMOKE_OUT" >&2
+  exit 1
+fi
+echo "    sessions.zip OK ($(echo "$SESSIONS_SMOKE_OUT" | wc -l | tr -d ' ') top-level entries)"
+
 # ---------------------------------------------------------------------------
 # 5. Code signing (D73, realizes the D35 hook). Two modes:
 #

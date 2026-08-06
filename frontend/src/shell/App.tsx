@@ -18,7 +18,7 @@ import { useSessionRestore, useSessionTracking } from "@platform/lib/session";
 import { useRecentsTracking } from "@apps/explorer/lib/recents";
 import { useAppRecentsTracking } from "@apps/builder/lib/recents";
 import { statPath, getMounts, reconnectMount, type Config, type Mount, type StatResult } from "@platform/lib/api";
-import { useNavEpoch, useDocumentTitle, useRefreshOnReturn, useLearnMountReady } from "@platform/lib/hooks";
+import { useNavEpoch, useDocumentTitle, useRefreshOnReturn, useLearnMountReady, useSessionsMountReady } from "@platform/lib/hooks";
 import { useMountHealth } from "@platform/lib/mountHealth";
 import { basename } from "@platform/lib/format";
 import { maybeAutoStartTour } from "@platform/lib/tour";
@@ -44,6 +44,7 @@ import Mounts from "@shell/Mounts";
 import Apps from "@apps/builder/Apps";
 import FilesHome from "@apps/explorer/FilesHome";
 import { learnEntryPath } from "@apps/learn";
+import { sessionsEntryPath } from "@apps/sessions";
 import BookmarkOpen from "@apps/explorer/BookmarkOpen";
 
 type StatState =
@@ -351,6 +352,26 @@ function LearnView({ config, epoch }: { config: Config; epoch: number }) {
   return <StatView key={epoch + ":" + entry} fsPath={entry} epoch={epoch} home="" variant="learn" />;
 }
 
+// /sessions: the bundled Claude Sessions inbox, same chrome-free treatment as
+// learn (variant "learn" — no breadcrumb, no preview header, no recents).
+// Waits on the sessions mount record before statting the entry, so a
+// boot-race never shows a dead 404.
+function SessionsView({ config, epoch }: { config: Config; epoch: number }) {
+  const ready = useSessionsMountReady(config.sessions_mount_ready);
+  const entry = sessionsEntryPath(config);
+  if (!ready || !entry) {
+    return (
+      <div id="content">
+        <div className="preview-resolving">
+          <span className="mode-icon-spinner" />
+          Preparing sessions content…
+        </div>
+      </div>
+    );
+  }
+  return <StatView key={epoch + ":" + entry} fsPath={entry} epoch={epoch} home="" variant="learn" />;
+}
+
 export default function App({ config }: { config: Config }) {
   const epoch = useNavEpoch();
 
@@ -459,13 +480,14 @@ export default function App({ config }: { config: Config }) {
   // File-explorer homepage: the bookmark launcher.
   const isExplorerHome = pathname === "/explorer";
   const isLearn = pathname === "/learn";
+  const isSessions = pathname === "/sessions";
   const isBookmark = pathname === "/explorer/view/_bookmark";
   // App-builder route: /apps/<tag>/<name> resolves to the app folder under
   // the workspace — a pure codec, no server lookup (router.fsPathFromAppRoute).
   const fusedDir = config.fused_dir.replace(/\\/g, "/");
   const appFsPath = isApps ? null : fsPathFromAppRoute(pathname, fusedDir);
   const isSentinel =
-    isPanel || isTabs || isPrefs || isTemplates || isMounts || isApps || isExplorerHome || isLearn || isBookmark;
+    isPanel || isTabs || isPrefs || isTemplates || isMounts || isApps || isExplorerHome || isLearn || isSessions || isBookmark;
   const fsPath = isSentinel || appFsPath ? null : fsPathFromLocation();
   // Browsing to a `.bookmark` file in the explorer opens it like a Finder
   // double-click (SB-9): same component as the `_bookmark` sentinel, fed the
@@ -489,7 +511,9 @@ export default function App({ config }: { config: Config }) {
                   ? "File Explorer"
                   : isLearn
                     ? "Learn"
-                    : isBookmark || bookmarkFile
+                    : isSessions
+                      ? "Sessions"
+                      : isBookmark || bookmarkFile
                       ? "Bookmark"
                       : fsPath || appFsPath
                         ? undefined
@@ -588,6 +612,9 @@ export default function App({ config }: { config: Config }) {
     // Learn content, chrome-free (LearnView renders a StatView that carries
     // its own #content).
     main = <LearnView key={epoch} config={config} epoch={epoch} />;
+  } else if (isSessions) {
+    // Claude Sessions inbox, same chrome-free treatment as learn.
+    main = <SessionsView key={epoch} config={config} epoch={epoch} />;
   } else if (appFsPath) {
     // App builder: the app folder rendered in one of APP_MODES, no breadcrumb
     // (StatView variant "app" carries its own #content).

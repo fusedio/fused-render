@@ -6,7 +6,7 @@
 import { SidebarFrame, NavItem } from "@platform/ui/sidebar/SidebarFrame";
 import { FolderIcon, LearnIcon } from "@platform/ui/FileIcons";
 import type { Config } from "@platform/lib/api";
-import { useUrlVersion, useLearnMountReady } from "@platform/lib/hooks";
+import { useUrlVersion, useLearnMountReady, useSessionsMountReady } from "@platform/lib/hooks";
 import { useAccountLoggedIn } from "@platform/lib/account";
 import { useDeployEnabled } from "@platform/lib/prefs";
 
@@ -16,6 +16,14 @@ const APPS_ICON = (
     <rect x="13" y="3" width="8" height="8" rx="2" />
     <rect x="3" y="13" width="8" height="8" rx="2" />
     <circle cx="17" cy="17" r="4" />
+  </svg>
+);
+
+// Inbox tray — the Sessions app is a triage inbox for Claude Code sessions.
+const SESSIONS_ICON = (
+  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <path d="M22 12h-6l-2 3h-4l-2-3H2" />
+    <path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z" />
   </svg>
 );
 
@@ -31,12 +39,14 @@ export default function ShellSidebar({ config }: { config: Config }) {
   // Bounded /api/config re-poll for the learn mount (see useLearnMountReady
   // for the full race notes — the boot snapshot is stale in both directions).
   const learnMountReady = useLearnMountReady(config.learn_mount_ready);
+  const sessionsMountReady = useSessionsMountReady(config.sessions_mount_ready);
 
   return (
     <SidebarFrame title="Fused Render" version={config.version}>
       <div className="sidebar-section">
         <NavItem href="/apps" id="apps-link" label="Apps" icon={APPS_ICON} />
         <NavItem href="/explorer" id="explorer-link" label="File Explorer" icon={<FolderIcon />} />
+        {sessionsMountReady && <NavItem href="/sessions" id="sessions-link" label="Sessions" icon={SESSIONS_ICON} />}
         {learnMountReady && <NavItem href="/learn" id="learn-link" label="Learn" icon={<LearnIcon />} />}
       </div>
       {/* Settings — pinned to the bottom edge (margin-top: auto), the same
