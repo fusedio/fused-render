@@ -1695,6 +1695,7 @@
     dt.contentEditable = "true"; dt.spellcheck = false;
     dt.title = "Name this document — used as the file name when you first save";
     dt.addEventListener("keydown", (e) => {
+      if (e.isComposing || e.keyCode === 229) return;  // let an IME confirm its candidate on Enter
       if (e.key === "Enter") { e.preventDefault(); dt.blur(); }
       else if (e.key === "Escape") { e.preventDefault(); dt.textContent = displayName(); dt.blur(); }
     });
