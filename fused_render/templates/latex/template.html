@@ -636,12 +636,15 @@ pdfjs.GlobalWorkerOptions.workerSrc = "/template-assets/pdfjs.worker.bundle.mjs"
     // First compile of this doc (no PDF rendered yet): swap the blank pane for
     // a shimmering page placeholder instead of leaving it empty. Recompiles of
     // an already-rendered doc intentionally keep the stale PDF up (see below).
-    if (!S.lastPdf) $("pdfpages").innerHTML = '<div class="sk-page pdf-skel"></div>';
+    // While packages are preparing, keep the warming panel — don't flash the
+    // skeleton over it on every debounced autosave recompile.
+    if (!S.lastPdf && !S.warming) $("pdfpages").innerHTML = '<div class="sk-page pdf-skel"></div>';
     try {
       if (S.dirty) await saveNow();
       const r = await py({ action: "compile", path: S.mainAbs, force: force ? 1 : 0, src: rawURL(S.mainAbs) });
+      S.warming = false;
       if (r.missing_tectonic) { setStatus("err", "no compiler"); renderMissingTectonic(); return; }
-      if (r.warming) { setStatus("busy", "preparing packages…"); renderWarming(r.progress); return; }
+      if (r.warming) { S.warming = true; setStatus("busy", "preparing packages…"); renderWarming(r.progress); return; }
       if (r.error) { setStatus("err", "error"); renderDiags([{ severity:"error", message:r.error, line:0, file:"" }], ""); return; }
       renderDiags(r.errors || [], r.log_tail || "");
       const hardErrors = (r.errors || []).filter(e => e.severity === "error");
@@ -718,20 +721,24 @@ pdfjs.GlobalWorkerOptions.workerSrc = "/template-assets/pdfjs.worker.bundle.mjs"
   // worker; we show a one-time "preparing…" panel and recompile when it lands.
   let warmPolling = false;
   function renderWarming(progress) {
+    if (warmPolling) {   // panel already up + polling — just refresh the detail, don't re-render (flash)
+      const d = progress && (progress.detail || progress.stage);
+      if (d && $("warmDetail")) $("warmDetail").textContent = d;
+      return;
+    }
     $("pdfpages").innerHTML = `
       <div class="install-box">
         <div class="t">Preparing LaTeX packages…</div>
-        <div class="d">The first compile downloads the common LaTeX packages and fonts
-          (~30&nbsp;MB) and caches them. This is a one-time step and can take a minute or
-          two — your document compiles automatically when it's ready. You can keep editing
-          in the meantime.</div>
+        <div class="d">The first compile downloads the LaTeX packages and fonts this
+          document needs (up to ~30&nbsp;MB) and caches them. This is a one-time step and
+          can take a minute or two — your document compiles automatically when it's ready.
+          You can keep editing in the meantime.</div>
         <div class="bar indet"><div></div></div>
         <div class="d" id="warmDetail"></div>
         <div class="err hidden" id="warmErr"></div>
       </div>`;
     const d = progress && (progress.detail || progress.stage);
     if (d) $("warmDetail").textContent = d;
-    if (warmPolling) return;
     warmPolling = true;
     pollWarm();
   }

@@ -133,12 +133,13 @@ def _tectonic_install():
 
 
 # ------------------------------------------------------------- cache warm ---
-# The FIRST compile on a fresh Tectonic install fetches ~30 MB of packages and
-# fonts from the network — measured at ~2 min, far beyond the 60s runPython
-# budget, so it can never complete inside a compile call. We fetch them once in
-# a detached worker (like the installer), leaving a marker; compiles then hit a
-# warm cache (~4s). Until the marker exists, _compile defers with a warming
-# status instead of attempting (and timing out on) the cold fetch.
+# A cold compile fetches the packages/fonts a document needs (~30 MB, ~2 min) —
+# far beyond the 60s runPython budget, so it can never finish inside a compile.
+# When that happens we compile the document in a detached worker (no timeout)
+# into its build dir; the page polls warm_status and, when it finishes, a plain
+# recompile serves the produced PDF. `.warmed` records that the cache has been
+# populated once, so a fresh install's first compile skips the doomed inline
+# attempt and defers straight to the background compile.
 def _cache_warm() -> bool:
     return os.path.exists(WARM_MARKER)
 
@@ -163,22 +164,17 @@ def _warm_running() -> bool:
     return bool(prog and not prog.get("done"))
 
 
-def _ensure_warming(main_path: str = ""):
-    """Spawn the detached warm worker if none is running. With `main_path`, the
-    worker compiles that document (fetching whatever packages it needs) into its
-    build dir; without it, it warms the common scaffold and drops the marker.
-    A scaffold warm is skipped once the marker exists; a document warm always
-    runs (the marker doesn't imply this doc's packages are cached)."""
+def _ensure_warming(main_path: str):
+    """Spawn the detached worker to compile `main_path` (fetching whatever
+    packages it needs, no timeout) into its build dir, unless one is already
+    running. The worker drops the `.warmed` marker on success."""
     bin_path = _tectonic_bin()
-    if not bin_path or _warm_running():
-        return
-    if not main_path and _cache_warm():
+    if not bin_path or not main_path or _warm_running():
         return
     os.makedirs(WARM_DIR, exist_ok=True)
     worker = os.path.join(HERE, "warm_worker.py")
-    args = [sys.executable, worker, bin_path, TECTONIC_CACHE, WARM_DIR]
-    if main_path:
-        args += [os.path.abspath(main_path), _build_dir_for(main_path)]
+    args = [sys.executable, worker, bin_path, TECTONIC_CACHE, WARM_DIR,
+            os.path.abspath(main_path), _build_dir_for(main_path)]
     logf = open(os.path.join(WARM_DIR, "worker.log"), "ab")
     detach_kwargs = (
         {"creationflags": subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP}
@@ -365,13 +361,13 @@ def _compile(main_path: str, synctex: bool = True, force: bool = False, remote: 
         return {"ok": False, "missing_tectonic": True, "errors": [],
                 "error": "Tectonic isn't installed — install it to compile."}
     os.makedirs(TECTONIC_CACHE, exist_ok=True)
-    # Cold cache: the package fetch can't fit the compile budget. Warm it in the
-    # background and defer — the page polls warm_status and recompiles when ready.
+    # Fresh install (nothing cached yet): the fetch can't fit the compile budget,
+    # so skip the doomed inline attempt and compile in the background instead.
     if not _cache_warm():
-        _ensure_warming()
+        _ensure_warming(main_path)
         return {"ok": False, "warming": True, "progress": _warm_progress(), "errors": [],
-                "error": "Preparing the LaTeX package cache (one-time, ~1–2 min). "
-                         "Your document compiles automatically when it's ready."}
+                "error": "Preparing the LaTeX packages (one-time, ~1–2 min). "
+                         "Your document compiles automatically when they're ready."}
     build = _build_dir_for(main_path)
     # A compile costs ~10s (tectonic runs several passes), so skip it when the
     # last PDF is newer than every file under the doc's directory — page
