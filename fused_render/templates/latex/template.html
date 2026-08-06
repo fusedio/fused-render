@@ -502,9 +502,13 @@ pdfjs.GlobalWorkerOptions.workerSrc = "/template-assets/pdfjs.worker.bundle.mjs"
     "&": { color: "#1d2025", backgroundColor: "#ffffff" },
     ".cm-content": { caretColor: "#166ee1" },
     ".cm-gutters": { backgroundColor: "#fafbfc", color: "#b0b6bf", border: "none" },
-    ".cm-activeLine": { backgroundColor: "#f4f8ff" },
+    // Translucent, not solid: drawSelection paints the selection in a layer
+    // *behind* the text, so a solid active-line background would hide it on the
+    // very line the cursor sits on (where you Shift-select). A faint tint lets
+    // the selection show through.
+    ".cm-activeLine": { backgroundColor: "rgba(22,110,225,.05)" },
     ".cm-activeLineGutter": { backgroundColor: "#eaf1fe", color: "#166ee1" },
-    ".cm-selectionBackground, &.cm-focused .cm-selectionBackground, ::selection": { backgroundColor: "#cfe2ff !important" },
+    ".cm-selectionBackground, &.cm-focused .cm-selectionBackground, ::selection": { backgroundColor: "#b6d4fb !important" },
     ".cm-matchingBracket": { backgroundColor: "#d7e9ff", outline: "1px solid #9dc4ff" },
     ".cm-tooltip": { border: "1px solid #e0e3e8", background: "#fff", boxShadow: "0 6px 24px rgba(15,23,42,.16)", borderRadius: "6px" },
     ".cm-tooltip-autocomplete ul li[aria-selected]": { background: "#e8f0fe", color: "#0f5bc4" },
@@ -894,6 +898,18 @@ pdfjs.GlobalWorkerOptions.workerSrc = "/template-assets/pdfjs.worker.bundle.mjs"
     try {
       const st = await fused.stat(abs);
       const text = await fused.readFile(abs);
+      // A file with its own \documentclass is a standalone document, so opening
+      // one makes it the compile entrypoint — Recompile builds the document
+      // you're looking at, not one opened earlier. \input fragments (no preamble)
+      // leave the entrypoint alone so they still compile through their parent.
+      if (abs !== S.mainAbs && /\\documentclass/.test(text.slice(0, 4000))) {
+        S.mainAbs = abs;
+        S.root = abs.slice(0, Math.max(abs.lastIndexOf("/"), abs.lastIndexOf("\\")));
+        S.lastPdf = "";
+        document.title = baseName(abs) + " — LaTeX";
+        $("docName").textContent = baseName(abs);
+        $("pdfpages").innerHTML = '<div class="side-empty" style="padding:40px">Recompile to preview this document.</div>';
+      }
       S.fileAbs = abs; S.mtime = st.mtime; S.dirty = false; $("dirtyDot").classList.add("hidden");
       S.writable = st.writable !== false; // absent field (older server) → editable
       showRoBadge(!S.writable);           // badge tracks the OPEN buffer; hide again on a writable file
@@ -1113,6 +1129,10 @@ pdfjs.GlobalWorkerOptions.workerSrc = "/template-assets/pdfjs.worker.bundle.mjs"
     if (S.lastPdf) setTimeout(() => renderPdf(S.lastPdf), 60);   // reflow at new width
   }
   $("modeSeg").querySelectorAll("button").forEach(b => b.addEventListener("click", () => setMode(b.dataset.mode)));
+  // preventDefault on mousedown so clicking Recompile doesn't pull focus out of
+  // the editor — otherwise the button takes focus and the next Ctrl+Z/Ctrl+Y
+  // goes nowhere, looking like the undo history was lost on recompile.
+  $("compileBtn").addEventListener("mousedown", (e) => e.preventDefault());
   $("compileBtn").addEventListener("click", () => compile(true));
   $("zoomIn").addEventListener("click", () => setZoom(S.scale + 0.15));
   $("zoomOut").addEventListener("click", () => setZoom(S.scale - 0.15));
