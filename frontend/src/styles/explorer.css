@@ -15,8 +15,8 @@
   padding: 10px 16px;
   border-bottom: 1px solid var(--border);
   background: var(--bg-alt);
-  /* Pin to the tallest state (28px mode-switcher button + 10px×2 padding) so
-     the bar can't grow when the portaled switcher lands after stat resolves. */
+  /* Pin to the tallest state (28px control + 10px×2 padding) so the bar can't
+     grow when the portaled mode control lands after stat resolves. */
   min-height: 48px;
   box-sizing: border-box;
 }
@@ -186,6 +186,12 @@
    resolving its stat) shows no stray hairline floating in the bar. */
 #topbar-mode-slot:empty + .bar-rule {
   display: none;
+}
+
+/* #breadcrumb already spaces its children with `gap`, so the rule brings no
+   margin of its own here (it does in .panel-bar, whose gap is 2px). */
+#breadcrumb .bar-rule {
+  margin: 0;
 }
 
 /* ---- One control recipe for the explorer's bars --------------------------
@@ -758,8 +764,7 @@ table.pane-mini-list td.status-message {
    recipe); all that is left here is the pane toggle's negative right margin,
    which pulls the labelled control out to the row's padding edge. */
 .listing-pane-toggle {
-  margin-left: 8px;
-  margin-right: -6px;
+  margin-right: -8px;
 }
 
 /* Skeleton loading state: shimmering bars shaped like the real listing rows

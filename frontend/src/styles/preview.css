@@ -14,7 +14,7 @@
   padding: 10px 16px;
   border-bottom: 1px solid var(--border);
   gap: 12px;
-  /* Pin the height to the tallest state (28px mode-switcher button + 10px×2
+  /* Pin the height to the tallest state (28px mode control + 10px×2
      padding + 1px border) so the header can't grow when the loading spinner is
      replaced by the real switcher on stat resolve — otherwise the name and the
      whole body below shift down on every navigation. */
