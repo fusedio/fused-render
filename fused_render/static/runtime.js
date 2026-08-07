@@ -592,19 +592,22 @@
   let installUi = null;
   // Live installs, as key -> { row, count }.
   //
-  // The key is the PROJECT FOLDER (SPEC PY-16), so the common case is now the
-  // ref-counted one: a page calling five .py files from one folder produces five
-  // waiters on ONE key, one row and one install. The count lives inside the entry
-  // so both facts — which row, how many waiters — are one piece of state that
-  // cannot disagree with itself, and the row may only go when the LAST waiter
-  // settles.
-  //
-  // Distinct keys still happen — a page can call scripts from two different
-  // projects, and the D214 interpreter round reports under its own key — so each
-  // key keeps its own ROW: its own title, detail, bar and Cancel. One shared set
-  // of nodes made concurrent installs illegible: the title named whichever
+  // One ROW per key — its own title, detail, bar and Cancel. Concurrent installs
+  // with DISTINCT keys are real: a page can call scripts from two different
+  // projects, and the D214 interpreter round reports under its own key. One
+  // shared set of nodes made those illegible: the title named whichever install
   // started last, N pollers rewrote one detail line at 2Hz, and one Cancel button
   // carried N listeners, so a single click cancelled every install.
+  //
+  // The count is what lets the row outlive an individual waiter. It is normally 1
+  // now, because `installEnv` dedups by key before `showInstall` is ever reached
+  // (SPEC PY-16 makes five scripts in one folder ONE key, and they join one
+  // promise rather than each opening a row). It is kept rather than removed
+  // because the invariant it encodes — the row goes when the LAST waiter settles,
+  // never when the first does — is the one that has to hold if anything ever
+  // reaches `showInstall` twice for a key, and it costs a single integer. Living
+  // inside the entry means "which row" and "how many waiters" are one piece of
+  // state that cannot disagree with itself.
   const installing = new Map();
 
   // The indeterminate bar (D213). The worker parks at pct 25 for the WHOLE download
@@ -690,6 +693,23 @@
   function shouldInstall(need, installed) {
     return Boolean(need && need.key) && !installed.has(need.key);
   }
+
+  // Keys this PAGE has already installed once, module-scoped rather than created
+  // per `runPython` call.
+  //
+  // The rule above is unchanged; what changes is who it applies to. The key is
+  // the project folder now, so five scripts from one folder share it — and with a
+  // per-call set, a genuinely stuck install (one that reports success and still
+  // comes back as `needs_install`) was re-attempted once PER SCRIPT: five
+  // downloads, five failures, five error overlays, for one broken environment.
+  // Hoisted, the page fails once and says so once.
+  //
+  // Per page rather than per call is the right lifetime for the same reason the
+  // rule is progress-not-count: the fact being remembered is "this page already
+  // asked for that key and got nowhere", and that stays true for as long as the
+  // page is loaded. A reload is a fresh attempt, which is what a user pressing
+  // reload after fixing their pyproject.toml expects.
+  const installedKeys = new Set();
 
   // The backdrop, and the container every install's row is appended to. It owns no
   // title/detail/bar of its own any more — those belong to a row, because there is
@@ -780,13 +800,23 @@
     entry.count += 1;
     mountInstallSoon(ui);
     const row = entry.row;
-    // Name what is actually being fetched. On the interpreter round (D214) the
-    // packages are NOT downloading yet, and titling that round with their names is
-    // the kind of small lie that makes a four-minute wait feel broken — the user
-    // watches "Installing tensorflow" and nothing about tensorflow is happening.
+    // Name what is actually being prepared. The environment belongs to the
+    // PROJECT (SPEC PY-16), and every script in it waits on this one row, so the
+    // row is titled with the project — "Preparing my-app" — rather than with a
+    // joined package list that would (a) grow unbounded as a folder gains
+    // dependencies and (b) imply the row belongs to one script. The packages are
+    // demoted to the detail line, where the poller's own text takes over a beat
+    // later anyway.
+    //
+    // On the interpreter round (D214) the packages are NOT downloading yet, and
+    // titling that round with them is the kind of small lie that makes a
+    // four-minute wait feel broken — the user watches "Installing tensorflow"
+    // and nothing about tensorflow is happening. So that round keeps its own
+    // distinct title.
+    const requirements = (need.requirements || []).join(", ");
     row.title.textContent = need.python
       ? "Installing Python " + need.python
-      : "Installing " + (need.requirements || []).join(", ");
+      : "Preparing " + (need.name || "the environment");
     // Deliberately NOT "starting…" at 0%. `/api/env/install` JOINS an install
     // already in flight rather than duplicating it, so re-opening a page whose
     // download is four minutes old used to paint 0% and then jump to 25% on the
@@ -795,7 +825,9 @@
     // state therefore asserts no percentage at all: indeterminate until the
     // server's own record arrives (installEnv paints the POST response, which
     // carries it), so the first honest paint is the only paint.
-    row.detail.textContent = "contacting the installer…";
+    row.detail.textContent = requirements && !need.python
+      ? "contacting the installer… (" + requirements + ")"
+      : "contacting the installer…";
     installBarIndeterminate(row, true);
     return row;
   }
@@ -834,12 +866,53 @@
     }).then((res) => res.json().then((data) => ({ res, data })));
   }
 
+  // Installs this page has in flight, as key -> Promise. See `installEnv`.
+  const installInFlight = new Map();
+
   // Run the install to completion. Resolves when the venv is ready; rejects with
   // the installer's VERBATIM message otherwise — a resolver failure ("no wheels
   // with a matching platform tag for imagecodecs") is the actual answer the user
   // needs, and rewriting it into something friendlier is what made this opaque
   // in the first place.
+  //
+  // Deduplicated per key: a page calling five scripts from one project resolves
+  // to ONE key (SPEC PY-16), and every caller after the first joins the promise
+  // already running instead of starting its own chain. Without this each caller
+  // built its own `activeKey`, its own poller and its own cancel listener against
+  // a SHARED row — five POSTs to /api/env/install, five pollers hitting
+  // /api/env/progress at 2Hz apiece, and five listeners on one Cancel button, so
+  // one click fired five cancels and each chain's message overwrote the others'.
+  //
+  // The server was never at risk of doing the work twice — `start()` claims the
+  // key atomically and joins an install already in flight — which is exactly why
+  // the fix belongs here: the duplication is N requests and N timers originating
+  // on the client, not N `uv sync` runs. A second locking layer server-side would
+  // duplicate a mechanism that already works.
+  //
+  // The entry is removed when the promise SETTLES, not when a caller consumes it,
+  // so a later run (a retry after a fixed pyproject.toml, a `watchPath` reload)
+  // starts a fresh install rather than replaying a stale result. Rejections are
+  // shared too: every waiter gets the installer's verbatim error, and each one's
+  // `.catch` attaches before the promise can reject unhandled because the
+  // registry is written synchronously with the chain that fills it.
   function installEnv(need, pyPath, ownPath) {
+    const joined = installInFlight.get(need.key);
+    if (joined) return joined;
+    const promise = startInstall(need, pyPath, ownPath);
+    installInFlight.set(need.key, promise);
+    const forget = () => {
+      if (installInFlight.get(need.key) === promise) installInFlight.delete(need.key);
+    };
+    // `.then(f, f)` rather than `.finally`: `finally` returns a NEW promise that
+    // re-raises, and if nothing were attached to that one a shared rejection
+    // would surface as an unhandled rejection in the console on top of the error
+    // the caller is already showing. This variant settles the bookkeeping without
+    // creating a second chain for anyone to have to handle.
+    promise.then(forget, forget);
+    return promise;
+  }
+
+  function startInstall(need, pyPath, ownPath) {
     const row = showInstall(need);
     let cancelled = false;
     // The key to poll and to cancel is the INSTALLER's, not the pre-flight's.
@@ -1012,6 +1085,9 @@
     // installed yet is a new thing to install, and the SAME key coming back after we
     // installed it means nothing changed — which is the real loop, and still one
     // clear failure rather than installing forever.
+    //
+    // The set is `installedKeys`, shared by the whole page — see its definition
+    // for why a per-call one made a stuck install fail once per script.
     const handle = (data, installed) => {
       if (data.stdout) {
         console.log("[python]", data.stdout);
@@ -1037,7 +1113,7 @@
     };
 
     return attempt()
-      .then((data) => handle(data, new Set()))
+      .then((data) => handle(data, installedKeys))
       .then(
         (result) => {
           cleanup();
