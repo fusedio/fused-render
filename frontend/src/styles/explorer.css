@@ -169,26 +169,6 @@
   text-decoration: underline;
 }
 
-/* Share/export glyph at the end of the crumb trail (reveal in file manager). */
-.reveal-btn {
-  flex: 0 0 auto;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  margin-left: 4px;
-  padding: 3px;
-  border: none;
-  border-radius: 4px;
-  background: none;
-  color: var(--fg-muted);
-  cursor: pointer;
-}
-
-.reveal-btn:hover {
-  background: var(--border);
-  color: var(--fg);
-}
-
 .crumb-actions {
   flex: 0 0 auto;
   display: flex;
@@ -199,6 +179,12 @@
 /* The portal target collapses entirely when no view has filled it (loading,
    fallback card, static pages) — no stray gap at the bar's right edge. */
 #topbar-mode-slot:empty {
+  display: none;
+}
+
+/* …and takes the zone divider with it, so a static page (or a view still
+   resolving its stat) shows no stray hairline floating in the bar. */
+#topbar-mode-slot:empty + .bar-rule {
   display: none;
 }
 
@@ -457,12 +443,6 @@
   background: var(--bg);
   color: var(--fg-muted);
   cursor: pointer;
-}
-
-/* Icon-only split buttons at the crumbs' tail, after the Finder glyph — same
-   boxless .reveal-btn chrome, sitting slightly tighter as a pair. */
-.reveal-btn.split-dir {
-  margin-left: 2px;
 }
 
 .star-btn:hover {
