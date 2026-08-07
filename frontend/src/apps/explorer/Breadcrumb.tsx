@@ -158,8 +158,9 @@ function LayoutZone({ fsPath }: { fsPath: string }) {
 // chrome-level readout lingered in the corner with no way to dismiss it, and
 // the row marking is where the user is already looking.
 
-// ★ bookmark button, leftmost in the bar. Highlighted (accent-yellow, filled)
-// only when a bookmark matches the current view exactly (same pathname AND
+// ★ bookmark button, leftmost in the bar. Filled (foreground, not accent —
+// see explorer.css) only when a bookmark matches the current view exactly
+// (same pathname AND
 // same params, via sameSearch) — a param change empties the star, so the user
 // can save the changed view as a new bookmark. Clicking a filled star deletes
 // the matching bookmark (toggle), disarming it if it was armed. `name` is the
@@ -169,7 +170,11 @@ function LayoutZone({ fsPath }: { fsPath: string }) {
 // star (which bookmarks the whole `_layout` URL) moved into the pane bars.
 // Every pane renders one and they all reflect the same layout bookmark —
 // deliberately, since they all describe the same URL.
-export function BookmarkStar({ name }: { name: string }) {
+//
+// Which is exactly why `id` is a prop and not baked in: the bar renders ONE
+// star and passes the id, a split panel renders one per pane and passes none.
+// A hardcoded id would emit duplicate `#bookmark-btn` nodes in a split.
+export function BookmarkStar({ name, id }: { name: string; id?: string }) {
   useUrlVersion();
   useBookmarksVersion();
   const matchesCurrent = (b: { url: string }) => {
@@ -192,7 +197,7 @@ export function BookmarkStar({ name }: { name: string }) {
 
   return (
     <button
-      id="bookmark-btn"
+      id={id}
       className={"bookmark-star-btn" + (starred ? " active" : "")}
       title={starred ? "Remove bookmark" : "Bookmark this view"}
       onClick={onBookmark}
@@ -460,7 +465,7 @@ export function Breadcrumb({
 
   return (
     <>
-      <BookmarkStar name={renderedTitle || basename(fsPath)} />
+      <BookmarkStar id="bookmark-btn" name={renderedTitle || basename(fsPath)} />
       {editing ? (
         <input
           className="crumb-edit"
@@ -508,7 +513,7 @@ export function Breadcrumb({
 export function StaticBreadcrumb({ label }: { label: string }) {
   return (
     <>
-      <BookmarkStar name={label} />
+      <BookmarkStar id="bookmark-btn" name={label} />
       <div className="crumbs">
         <span className="current">{label}</span>
       </div>

@@ -756,7 +756,7 @@ export default function Listing({
             <div className="listing-search">
               <button
                 type="button"
-                className="bar-ctl bar-ctl-icon listing-up-button"
+                className="bar-ctl bar-ctl-icon"
                 title={atRoot ? "Already at the root" : "Up to parent folder"}
                 aria-label="Up to parent folder"
                 disabled={atRoot}

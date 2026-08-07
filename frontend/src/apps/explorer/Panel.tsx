@@ -223,8 +223,14 @@ function Pane({ node, ctx, first }: { node: LayoutLeaf; ctx: PaneCtx; first: boo
           (★ + crumbs) · mode · layout. The 48px shell row that said only
           "Panel" is gone, so the layout bookmark's ★ lives here now. */}
       <div className="panel-bar">
-        <BookmarkStar name="Panel" />
-        {first && <UpdateBookmarkButton />}
+        {/* Bookmark chrome is shell-only. It used to live in #breadcrumb, which
+            `body.embed #breadcrumb` hid outright; the pane bar has no such rule,
+            so without this an EMBEDDED panel (a panel inside a pane or a tab)
+            would offer to bookmark its own chromeless /embed/_panel URL —
+            opening that bookmark later lands on a page with no navigation at
+            all. IS_EMBED is the same gate useUpdateButton already applies. */}
+        {!IS_EMBED && <BookmarkStar name="Panel" />}
+        {!IS_EMBED && first && <UpdateBookmarkButton />}
         <div className="panel-crumbs" ref={crumbsRef}>
           {crumbs}
         </div>
