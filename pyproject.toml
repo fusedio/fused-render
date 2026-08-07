@@ -121,6 +121,7 @@ bundled = [
     "fpdf2>=2.8.7",
     "msgpack>=1.0",
     "rasterio",
+    "rio-tiler",
     # Matches zarr_aoi/tile_server.py's header (and its DAEMON_DEPS): it reads
     # v3 stores through the 3.x API, so a bare pin could resolve to 2.x here.
     # Marked 3.11+ like the `fused` pins below: every zarr 3.x requires

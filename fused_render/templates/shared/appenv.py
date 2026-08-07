@@ -196,11 +196,9 @@ def skill_plugin_dir() -> str | None:
     state of the user's `~/.claude`.
 
     The var is absent in exactly the cases where the flag must not be passed:
-    no server around to have synced anything, a sync that failed, or a `claude`
-    whose `--help` does not list `--plugin-dir` (passing an unknown option makes
-    the CLI exit before the turn starts). Deciding any of that is the server's
-    job — the answer arrives here already made, like every other value in this
-    module.
+    no server around to have synced anything, or a sync that failed. Deciding
+    that is the server's job — the answer arrives here already made, like every
+    other value in this module.
     """
     return os.environ.get("FUSED_RENDER_SKILL_PLUGIN_DIR") or None
 

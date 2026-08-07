@@ -78,16 +78,36 @@
   padding: 36px 28px 72px;
 }
 
-.files-hero {
+/* Doubled selector: home.css loads after this file, so plain .files-hero
+   would lose to .home-hero's own card styles at equal specificity. The
+   explorer hero sits flat on the page — no fill, border, or accent wash —
+   but keeps .home-hero's padding/size so the layout doesn't shift. */
+.home-hero.files-hero {
+  text-align: center;
+  background: none;
+  border-color: transparent;
+  /* With the card invisible, its bottom padding + margin read as dead air
+     before the browse button — tightened so search bar → button sits closer
+     than button → tab bar (30px, the .fh-section gap). */
+  padding-bottom: 10px;
+  margin-bottom: 0;
+}
+
+.home-hero.files-hero::before {
+  content: none;
+}
+
+/* The browse-workspace block below the hero (it moved out of the hero when
+   the search composer became the hero's verb). Centered like the hero so the
+   page still reads as one column. */
+.files-browse {
   text-align: center;
 }
 
-.files-hero-sub {
-  margin: 0 auto 20px;
-  max-width: 560px;
-  font-size: 14px;
-  line-height: 1.55;
-  color: var(--fg-muted);
+/* Sits right under the hero's search bar — tighter than the default
+   .fh-section gap. */
+.fh-section.files-browse {
+  margin-top: 0;
 }
 
 .files-hero-cta {
@@ -106,6 +126,39 @@
 
 .files-hero-cta:hover {
   filter: brightness(1.08);
+}
+
+.files-search-wrap {
+  text-align: left;
+}
+
+/* Anchor for the clear ✕ riding the input's right edge. */
+.files-search-field {
+  position: relative;
+}
+
+/* Keep typed text from running under the Clear pill. */
+.files-search-field .home-composer-input,
+.files-search-field .home-composer-input:focus {
+  padding-right: 70px;
+}
+
+.files-search-clear {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  padding: 3px 10px;
+  font-size: 11.5px;
+  font-weight: 600;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg-alt);
+  color: var(--fg-muted);
+  cursor: pointer;
+}
+
+.files-search-clear:hover {
+  color: var(--fg);
 }
 
 .fh-section {
@@ -127,54 +180,108 @@
   color: var(--fg-muted);
 }
 
-/* Recents: a plain list — name, path, last-opened stamp per row. */
-.fh-recents {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
+/* Search results: a flat scannable list (relevance order), not the launcher
+   card grid — icon, name, path, then size/date pushed to the right edge. */
+.fh-results {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
 }
 
-.fh-recent {
+.fh-results li + li {
+  border-top: 1px solid var(--border);
+}
+
+.fh-result {
   display: flex;
-  align-items: baseline;
-  gap: 12px;
-  padding: 7px 10px;
-  min-width: 0;
-  color: var(--fg);
+  align-items: center;
+  gap: 10px;
+  padding: 8px 14px;
   text-decoration: none;
-  border-radius: 8px;
+  color: inherit;
 }
 
-.fh-recent:hover {
-  background: rgba(var(--tint), 0.05);
+.fh-result:hover {
+  background: var(--bg-alt);
 }
 
-.fh-recent-name {
-  flex: 0 1 auto;
-  font-size: 13.5px;
-  font-weight: 600;
-  white-space: nowrap;
+.fh-result-icon {
+  flex: none;
+  display: inline-flex;
+}
+
+.fh-result-name {
+  flex: none;
+  max-width: 40%;
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  font-weight: 600;
 }
 
-.fh-recent-path {
+.fh-result-path {
   flex: 1 1 auto;
   min-width: 0;
-  font-size: 11.5px;
-  color: var(--fg-muted);
-  white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  color: var(--fg-muted);
 }
 
-.fh-recent-when {
-  flex: 0 0 auto;
-  margin-left: auto;
-  font-family: ui-monospace, Menlo, Consolas, monospace;
-  font-size: 11px;
+.fh-result-meta {
+  flex: none;
+  display: inline-flex;
+  gap: 12px;
+  font-size: 11.5px;
   color: var(--fg-muted);
-  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.fh-result-date {
+  min-width: 88px;
+  text-align: right;
+}
+
+/* The "Understood as: …" echo line above search results. */
+.fh-search-summary {
+  margin: -4px 0 14px;
+  font-size: 12.5px;
+  color: var(--fg-muted);
+}
+
+/* Bookmarks/Recents tab strip atop the launcher grid — plain text tabs, the
+   accent underline is the only thing marking the active one. */
+.fh-tabs {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 14px;
+  border-bottom: 1px solid var(--border);
+}
+
+.fh-tab {
+  padding: 0 2px 10px;
+  margin-right: 14px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--fg-muted);
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  cursor: pointer;
+}
+
+.fh-tab:hover {
+  color: var(--fg);
+}
+
+.fh-tab.active {
+  color: var(--fg);
+  border-bottom-color: var(--accent);
 }
 
 /* Icon tile + name-over-path text block, shared by the bookmark card heads. */
@@ -422,7 +529,7 @@
   background: none;
 }
 
-/* The two-row fold's "Show more": a quiet pill centered under the grid. */
+/* The MAX_CARDS fold's "Show more": a quiet pill centered under the grid. */
 .fhb-more {
   display: flex;
   align-items: center;

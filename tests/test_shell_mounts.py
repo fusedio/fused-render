@@ -17,6 +17,7 @@ import pytest
 
 import fused_render.shell.gcssign as gcssign_mod
 import fused_render.shell.mounts as mounts_mod
+import fused_render.shell.mounts.rcd as rcd_mod
 
 
 @pytest.fixture(autouse=True)
@@ -190,10 +191,42 @@ def rcd(home, monkeypatch):
     exactly when the stub reports mount/mount success. A test that needs a
     different ismount view (stale/disconnected, adopt-an-existing-mount) still
     monkeypatches os.path.ismount itself in its body — that runs after this and
-    wins."""
+    wins.
+
+    rclone_bin is pinned to None so the ensure_rcd spawn path is IMPOSSIBLE
+    here: a transient core/pid probe failure (a loaded CI runner slipping the
+    3s deadline under xdist) otherwise falls through to spawning the REAL
+    rclone that CI installs — a cryptic port-mismatch assert plus a leaked
+    daemon. With the pin, that path fails loudly as "rclone is not installed"
+    instead."""
     stub = StubRcd()
+    monkeypatch.setattr(mounts_mod, "rclone_bin", lambda: None)
     mounts_mod.write_rcd_state(stub.port, 4242)
     monkeypatch.setattr(mounts_mod.os.path, "ismount", lambda p: p in stub.mounted)
+    # "Is this daemon alive?" is a real loopback HTTP call with a 3s socket
+    # timeout, and a timed-out probe does NOT fail — _ensure_rcd_locked reads it
+    # as "no daemon" and spawns rclone for real. Against this in-process stub a
+    # timeout can only ever mean the runner was busy, and under `-n auto` plus
+    # coverage tracing (CI's 3.11 job, the only one with --cov) 3s was not always
+    # enough: test_ensure_rcd_reuses_live_daemon compared the stub's port against
+    # a freshly spawned real daemon's (`assert 58095 == 42609`, 2026-08-07). Give
+    # the stub room rather than leaving the suite's pass/fail on a latency race.
+    monkeypatch.setattr(rcd_mod, "_LIVE_PORT_PROBE_TIMEOUT_S", 60.0)
+    # And make the fall-through impossible to miss if it ever happens again.
+    # CI installs real rclone, so the spawn path SUCCEEDS there — it starts a
+    # daemon whose home is a tmp_path pytest then deletes, so nothing reaps it
+    # and it outlives the run. This file's contract is "real rclone is never
+    # invoked" (module docstring); trip on it loudly instead of leaking.
+    real_popen = mounts_mod.subprocess.Popen
+
+    def no_real_rcd(args, **kwargs):
+        if len(args) > 1 and args[1] == "rcd":
+            raise AssertionError(
+                "a test holding the stub rcd fell through to spawning a REAL "
+                "rclone rcd — the liveness probe of the stub must have failed")
+        return real_popen(args, **kwargs)
+
+    monkeypatch.setattr(mounts_mod.subprocess, "Popen", no_real_rcd)
     yield stub
     stub.close()
 
