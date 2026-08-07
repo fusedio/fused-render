@@ -106,12 +106,18 @@ body:has(.sidebar-resize-handle.resizing) {
   background: rgba(var(--tint), 0.06);
 }
 
-/* Circular expand bubble, vertically centered, half overlapping the strip's
-   right edge (classic collapsed-panel pill). Purely visual — the strip is
-   the button; hover/focus styling keys off the strip's state. */
+/* Circular expand bubble, half overlapping the strip's right edge (classic
+   collapsed-panel pill). Purely visual — the strip is the button; hover/focus
+   styling keys off the strip's state.
+
+   Pinned to the top bar's centre line, not the viewport's: at `top: 50%` it
+   floated in the middle of a full-height strip with nothing around it,
+   reading as unanchored. 24px is half of the 48px the sidebar header and
+   #breadcrumb both stand at, so collapsed and expanded put the control on the
+   same line — the toggle stays where the hand left it. */
 .sidebar-expand-bubble {
   position: absolute;
-  top: 50%;
+  top: 24px;
   left: 100%;
   transform: translate(-50%, -50%);
   display: flex;

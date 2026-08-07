@@ -110,13 +110,17 @@
 /* Ancestor crumbs sit one step BRIGHTER than plain muted: at --fg-muted the
    path read as disabled text, which is the opposite of what a click target
    should say. color-mix over the two tokens keeps it theme-following (no new
-   literal — tests/test_theme.py). */
+   literal — tests/test_theme.py).
+
+   4px of horizontal padding, not 1px: it gives the hover pill something to
+   hug (at 1px it clamped the glyphs), and it is half of the crumb rhythm —
+   see the separator rule below. */
 .path-crumb,
 .panel-crumb {
   color: color-mix(in srgb, var(--fg) 60%, var(--fg-muted));
   text-decoration: none;
   cursor: pointer;
-  padding: 2px 1px;
+  padding: 2px 4px;
   border-radius: 6px;
 }
 
@@ -153,11 +157,19 @@
 }
 
 /* Separators at full muted strength with room to breathe. At --border they
-   were near-invisible, so the path read as one run-on string. */
+   were near-invisible, so the path read as one run-on string.
+
+   4px + the crumbs' own 4px padding = 8px of air on each side of every "/",
+   and that pairing is what makes the leading segment come out even for free.
+   An absolute path's ROOT crumb is itself a "/" with no separator element
+   after it (Breadcrumb.tsx: "root already carries the leading slash"), so the
+   gap it opens is root-padding + next-crumb-padding = the same 8px. Splitting
+   the rhythm between the two elements is deliberate; putting it all on the
+   separator's margin is what made "/home / iamsdas" read as jammed-then-airy. */
 .path-crumb-sep,
 .panel-crumb-sep {
   color: var(--fg-muted);
-  margin: 0 6px;
+  margin: 0 4px;
 }
 
 /* Crumb hover, both bars — fg brighten + underline, no accent yellow. The
@@ -292,8 +304,11 @@
 }
 
 /* ---- The mode control ---------------------------------------------------
-   One self-describing button in every bar: the active mode's icon in a lime
-   chip, its name, a caret. The chip is the only accent in the chrome. */
+   One self-describing button in every bar: the active mode's icon, its name,
+   a caret. The icon is plain currentColor at the bars' standard 16px — it
+   spent one iteration inside a filled accent chip, which turned the quietest
+   row in the app into a badge competing for attention. The accent's only
+   remaining job here is the checkmark on the dropdown's active row. */
 .mode-menu {
   position: relative;
   flex: 0 0 auto;
@@ -302,35 +317,28 @@
 
 .mode-menu-btn {
   gap: 7px;
+  padding: 0 10px;
 }
 
-.mode-menu-chip {
+.mode-menu-icon {
   flex: 0 0 auto;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 18px;
-  height: 18px;
-  border-radius: 4px;
-  background: var(--accent);
-  color: var(--on-accent);
+  width: 16px;
+  height: 16px;
 }
 
-.mode-menu-chip svg,
-.mode-menu-chip .mode-icon-mask,
-.mode-menu-chip .mode-icon-placeholder {
+.mode-menu-icon svg,
+.mode-menu-icon .mode-icon-mask,
+.mode-menu-icon .mode-icon-placeholder {
+  width: 16px;
+  height: 16px;
+}
+
+.mode-menu-icon .mode-icon-spinner {
   width: 12px;
   height: 12px;
-}
-
-.mode-menu-chip .mode-icon-placeholder {
-  border-width: 1px;
-  font-size: 8px;
-}
-
-.mode-menu-chip .mode-icon-spinner {
-  width: 10px;
-  height: 10px;
   border-width: 1.5px;
 }
 
@@ -393,44 +401,44 @@
   cursor: default;
 }
 
+/* Plain glyph, no box: the row's own hover wash and the checkmark carry the
+   state, and a bordered well around every icon made the list read as a grid
+   of buttons rather than a set of choices. */
 .bar-menu-item-icon {
   flex: 0 0 auto;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 20px;
-  height: 20px;
-  border: 1px solid var(--border);
-  border-radius: 5px;
+  width: 16px;
+  height: 16px;
   color: var(--fg-muted);
 }
 
 .bar-menu-item-icon svg,
 .bar-menu-item-icon .mode-icon-mask,
 .bar-menu-item-icon .mode-icon-placeholder {
-  width: 13px;
-  height: 13px;
+  width: 16px;
+  height: 16px;
 }
 
 .bar-menu-item-icon .mode-icon-spinner {
-  width: 11px;
-  height: 11px;
+  width: 12px;
+  height: 12px;
 }
 
 .bar-menu-item-label {
   flex: 1 1 auto;
 }
 
-/* The active row is the mode you are looking at — the one place the accent
-   still means something, so it carries both the lime chip and the tick. */
+/* The active row is the mode you are looking at — semibold, brighter glyph,
+   and the accent tick. That tick is the last accent left in this chrome, and
+   it still means exactly one thing: the active view mode. */
 .bar-menu-item.active {
   font-weight: 600;
 }
 
 .bar-menu-item.active .bar-menu-item-icon {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: var(--on-accent);
+  color: var(--fg);
 }
 
 .bar-menu-check {
@@ -655,14 +663,21 @@
   background: var(--bg-alt);
 }
 
-/* Folder preview: a slim bar above the embedded app / mini list carrying its
-   name and the Open action. */
+/* Folder preview: the bar above the embedded app / mini list, carrying the
+   name, the mode control and Open.
+
+   It sits directly beside .listing-search — they are one visual row split by
+   the pane divider — so the two MUST agree on height, or the pane's bottom
+   border runs 7px above the listing's and the row reads as broken. The search
+   row's height is content-derived (8px padding + a 30px input); this pins to
+   the same number and centres whatever it holds. Keep the two in step. */
 .listing-pane .pane-header {
   flex: 0 0 auto;
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 7px 10px;
+  padding: 8px 10px;
+  min-height: 46px;
   border-bottom: 1px solid var(--border);
   background: var(--bg-alt);
 }
@@ -670,24 +685,6 @@
 .listing-pane .pane-header-icon {
   flex: 0 0 auto;
   display: inline-flex;
-}
-
-/* The pane header runs the shared bar recipe one size down, like .panel-bar:
-   the header is a slim strip and a 28px control would set its height. */
-.listing-pane .pane-header .bar-ctl {
-  height: 24px;
-}
-
-.listing-pane .pane-header .mode-menu-chip {
-  width: 16px;
-  height: 16px;
-}
-
-.listing-pane .pane-header .mode-menu-chip svg,
-.listing-pane .pane-header .mode-menu-chip .mode-icon-mask,
-.listing-pane .pane-header .mode-menu-chip .mode-icon-placeholder {
-  width: 10px;
-  height: 10px;
 }
 
 .listing-pane .pane-header-name {
@@ -822,11 +819,14 @@ table.listing-table tr.skel-row:hover {
   animation: skel-shimmer 1.2s ease-in-out infinite;
 }
 
+/* Row 2, listing side. Its height is the reference the preview pane's header
+   pins itself to (.listing-pane .pane-header) — the two are one row. */
 .listing-search {
   flex: 0 0 auto;
   display: flex;
   align-items: center;
   gap: 8px;
+  min-height: 46px;
   padding: 8px 16px;
   border-bottom: 1px solid var(--border);
   background: var(--bg);
