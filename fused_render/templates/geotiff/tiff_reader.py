@@ -8,10 +8,10 @@ viewport histograms client-side.
 Decode engine is shared with v1 via _tiff_core (pure-Python TIFF decoder
 with overview-pyramid reads; rasterio system-python fallback for LZW/JPEG/
 BigTIFF).
+Dependencies are declared once for the whole folder in `pyproject.toml`
+(SPEC PY-16), not in a per-file header — this file, `_tiff_core.py` and
+`_raster_common.py` all run in that one environment.
 """
-# /// script
-# dependencies = ["numpy", "pyproj", "imagecodecs"]
-# ///
 
 import os
 import sys

@@ -1,0 +1,23 @@
+# The pano template's environment (SPEC PY-16). pano.py is the only .py here.
+#
+# py360convert is the reason this folder declares anything at all — it is in
+# neither `[bundled]` nor the core deps, so the app's own interpreter cannot
+# supply it (PY-17). numpy and pillow ARE in `[bundled]`, and are declared here
+# anyway because this declaration is the COMPLETE list: the venv contains exactly
+# these three, and pano.py imports all of them (numpy throughout, pillow as
+# `PIL.Image`). They used to be supplied by a baseline set installed alongside
+# every header, which is gone (D172).
+[project]
+name = "fused-render-template-pano"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "py360convert>=1.0.4",
+    "numpy",
+    "pillow",
+]
+
+# Not a distribution — this folder is a set of scripts, not something to build
+# and install. Without this uv would try to build the "project" itself and fail.
+[tool.uv]
+package = false

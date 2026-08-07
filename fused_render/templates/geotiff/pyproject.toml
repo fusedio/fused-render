@@ -1,0 +1,28 @@
+# The geotiff template's environment (SPEC PY-16). Every .py in this folder runs
+# in the venv built from this file: tiff_reader.py (the runPython entrypoint),
+# _tiff_core.py and _raster_common.py, which it imports.
+#
+# imagecodecs and pyproj are the reason this folder declares anything at all —
+# neither is in `[bundled]` nor the core dependencies, so the app's own
+# interpreter cannot supply them (PY-17). numpy IS in `[bundled]` and is declared
+# anyway because this declaration is the COMPLETE list (D172): the venv contains
+# exactly what is here, with no baseline unioned in.
+#
+# rasterio is deliberately absent even though tile_server.py imports it: that
+# daemon manages its own venv (DAEMON_VENV, D174) and its heavy imports all live
+# in the `--serve` half that runs under it. Only the stdlib-only `ensure()` call
+# reaches this environment.
+[project]
+name = "fused-render-template-geotiff"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "numpy",
+    "pyproj",
+    "imagecodecs",
+]
+
+# Not a distribution — this folder is a set of scripts, not something to build
+# and install. Without this uv would try to build the "project" itself and fail.
+[tool.uv]
+package = false

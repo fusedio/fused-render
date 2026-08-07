@@ -39,13 +39,13 @@ dependencies = [
     # (TASK F) — and fastapi.testclient needs it too — so a plain
     # `pip install fused-render` is broken without it. Core, not an extra.
     "httpx",
-    # PEP 723 header parsing (engine.script_requirements). tomllib is 3.11+
-    # stdlib, requires-python is >=3.10, and the deferred `import tomllib` only
-    # avoided the crash for scripts with NO header — any script that HAD one
-    # raised ModuleNotFoundError on 3.10. Since headers are now the mechanism by
-    # which a template declares deps the app doesn't ship (PY-16), that was the
-    # main path, not a corner. Core rather than an extra: the parser runs on
-    # every /api/run under either engine.
+    # Reading a project's `pyproject.toml` (projectenv._load_manifest). tomllib is
+    # 3.11+ stdlib and requires-python is >=3.10, so on 3.10 this supplies it.
+    # Still core rather than an extra, and now more so than when it was added for
+    # PEP 723 headers: a folder's manifest is how a project declares deps the app
+    # doesn't ship (PY-16), and the parser runs on every /api/run under either
+    # engine. Without it every declaration reads as absent and every project
+    # silently falls back to the app interpreter.
     "tomli>=2.0; python_version < '3.11'",
     # PEP 508 requirement/specifier parsing, for deciding whether the app
     # interpreter already satisfies a script's PEP 723 header (engine.app_satisfies
@@ -158,7 +158,7 @@ bundled = [
     # The requirement string must stay byte-identical to `[fused]`'s — see the
     # comment there and
     # tests/test_bundle_contents.py::test_the_bundled_and_fused_extras_pin_the_same_wheel.
-    'fused @ https://fused-magic.s3.us-west-2.amazonaws.com/fused-2.9.3.post13-py3-none-any.whl ; python_version >= "3.11"',
+    'fused==2.9.3b3 ; python_version >= "3.11"',
 ]
 # Private-cloud credential chains (optional). botocore buys the AWS provider
 # chain (SSO / credential_process / assume-role / IMDS) for s3sign's resolver
@@ -195,7 +195,7 @@ app = [
 # (README, docs/usage.md) and CI's `fused-engine` job (`.[dev,fused]`), both of
 # which want the engine WITHOUT the ~650 MB scientific stack.
 fused = [
-    'fused @ https://fused-magic.s3.us-west-2.amazonaws.com/fused-2.9.3.post13-py3-none-any.whl ; python_version >= "3.11"',
+    'fused==2.9.3b3 ; python_version >= "3.11"',
 ]
 # Windows desktop supervisor backend (fused_render/supervisor/_win32,
 # docs/DESKTOP_SUPERVISOR.md). Windows-only; not a core dependency so

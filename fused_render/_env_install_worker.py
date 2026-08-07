@@ -1,49 +1,60 @@
-"""Detached worker that builds one script venv, spawned by envinstall.start().
+"""Detached worker that builds one project venv, spawned by envinstall.start().
 
-Run as:  python _env_install_worker.py <key> <progress_dir> <venvs_path>
-                                      <python_executable> <acquire_python> <req>...
+Run as:  python _env_install_worker.py <key> <progress_dir> <project_dir>
+                                      <venv_dir> <uv_cache_dir>
+                                      <python_executable> <acquire_python>
 
-`<python_executable>` is the base interpreter the venv is built from, and it must
-be the value `envinstall._python_executable()` returned — `python_identity` folds
-it into the venv key, so a different one here builds a venv the server never
-looks for and `is_installed()` never turns true. argv cannot carry None, so the
-EMPTY STRING stands for "the backend's default"; `main` is the one place that
-mapping happens.
+Every path arrives in argv rather than being derived here, because this file
+must stay free of any `fused_render` import (D152 — importing the package in a
+detached child is a bootstrap that broke once already) and so cannot call
+`projectenv`. Re-deriving the venv directory would also be a second derivation
+of a cache key, which is how a loader ends up filling a directory no run reads.
+
+`<python_executable>` is the base interpreter the environment is built on, and it
+must be the value `envinstall._python_executable()` returned — the backend runs
+the code, so its interpreter and the environment's have to be one choice. argv
+cannot carry None, so the EMPTY STRING stands for it; `install` is the one place
+that mapping happens, and it maps to this worker's OWN `sys.executable` (see
+`_PINNED_PYTHON_VERSION` for why not a version string).
 
 `<acquire_python>` (same empty-string idiom) switches this worker to its OTHER job:
 DOWNLOAD that Python version, report it, and stop without building anything (D214).
-The two cannot be one run — the venv would belong under a key folding in the
-interpreter just fetched, which is not the key this worker was spawned under — so
-the interpreter is installed under `envinstall.PYTHON_BOOTSTRAP_KEY` and the
-packages follow in a second run under the real venv key.
+The two cannot be one run — the interpreter is reported under
+`envinstall.PYTHON_BOOTSTRAP_KEY` and the packages under the project's own key,
+and one worker reports under one key.
 
 Reports through `<progress_dir>/progress.json` — the same
 `{stage, pct, detail, done, error, pid, ts}` record
 `fused_render/templates/docs/install_worker.py` writes for the typst download,
 so the page shell polls one shape.
 
-Two deliberate choices:
+Three deliberate choices:
 
-**It builds through `fused`'s `ensure_requirements_venv`, not its own uv
-commands.** That function owns the ready marker, the half-built-directory
-rebuild and the disk-quota diagnostics; a second implementation here would be a
-second thing to keep correct, and — worse — could disagree with the venv key the
-run then looks for. It reaches that function by loading upstream's `venvs.py`
-straight off disk (`_venvs_module`) instead of importing it through the `fused`
-package, which drags pandas in for ~500ms; it is the same file either way, so the
-key stays identical.
+**It builds with `uv sync`, in the project directory.** The declaration is the
+folder's `pyproject.toml`; `uv sync` is the command that turns one into an
+environment, resolves it, and writes the `uv.lock` the user commits. It is
+pointed at a venv OUTSIDE the folder through `UV_PROJECT_ENVIRONMENT` (see
+`projectenv` for why derived state never lands in the user's tree) and at a
+cache on the same filesystem through `UV_CACHE_DIR`, which is what lets uv
+hardlink wheels instead of silently copying them. `UV_LINK_MODE` is deliberately
+left UNSET — uv's default already prefers hardlinks and falls back on its own.
 
-**Its error text is upstream's, unedited.** `venvs._run_step` raises
-`RuntimeError("Failed to <step>:\\n<stderr>")` with uv's or pip's own stderr in
-it. That string goes into `progress.json` verbatim, because a resolver failure
-("no wheels with a matching platform tag for imagecodecs") is the actual answer
-the user needs — the whole reason this install is a visible flow instead of a
-30-second timeout inside /api/run.
+**The ready marker and the source sidecar are written HERE, in that order.**
+The sidecar records what the venv was built from and is what makes a later
+declaration edit detectable; writing it after the marker would leave a window in
+which the venv reads as installed but cannot say what it holds. An unmarked
+directory is half-built and is removed before syncing, which is what makes
+D212's repair a real replacement rather than a reconcile in place.
 
-Stdlib + `fused` only: no `fused_render` import. It runs on whatever
-`sys.executable` the server used, which is also the interpreter the venv keys
-on, so what it can import is what the server could.
+**Its error text is uv's, unedited.** uv's stderr goes into `progress.json`
+verbatim, because a resolver failure ("no wheels with a matching platform tag
+for imagecodecs") is the actual answer the user needs — the whole reason this
+install is a visible flow instead of a 30-second timeout inside /api/run.
+
+Stdlib only: no `fused_render` import, and (since the switch to `uv sync`) no
+`fused` import either. It runs on whatever `sys.executable` the server used.
 """
+import hashlib
 import json
 import os
 import shutil
@@ -74,6 +85,35 @@ _HEARTBEAT_S = 2
 # against is a beat parked inside its own `_write`; the latch in `install` is what
 # makes correctness independent of this number.
 _HEARTBEAT_JOIN_S = 5
+
+# Kept in step with fused_render/envinstall.READY_MARKER and
+# projectenv.SIDECAR_NAME. Duplicated for the same reason the stage percentages
+# are: this file must stay importable-free of the package (D152).
+_READY_MARKER = ".openfused-ready"
+_SIDECAR_NAME = ".fused-source.json"
+
+# NOT a fallback interpreter — deliberately not used as one, and kept only to
+# document why.
+#
+# An empty interpreter slot means the backend's `python_executable` was None, and
+# None has always meant "the backend's own interpreter", never a version. It is
+# also the COMMON case: `envinstall._resolve_script_python` answers `(None, True)`
+# whenever the server is already on the pinned version, which is every packaged
+# build (the DMG's `python@3.12`, the AppImage's and the Windows installer's
+# `uv python install 3.12`) and every `scripts/dev.sh` checkout since D214.
+#
+# Translating that None into the literal "3.12" was a real bug: `uv sync --python
+# 3.12` then resolves against PATH and uv's managed registry rather than the
+# bundled app interpreter, and with uv's default download behaviour it fetches a
+# managed CPython the app never uses as its base — so the venv is built on one
+# interpreter and the code runs on another. `install` maps the empty slot to
+# `sys.executable`, which IS the server's interpreter because `envinstall._spawn`
+# launches this worker with it.
+#
+# The pin itself still exists and still matters; it lives at
+# `envinstall.SCRIPT_PYTHON_VERSION` (D214), where it is what
+# `_resolve_script_python` probes FOR and what the bootstrap round downloads.
+_PINNED_PYTHON_VERSION = "3.12"
 
 
 def _write(progress_dir, stage, pct, detail="", done=False, error=None):
@@ -138,99 +178,159 @@ def _acquire_python(version):
         )
 
 
-_VENVS_MODULE = "fused.agent_core.backends.local.venvs"
-_VENVS_RELPATH = ("agent_core", "backends", "local", "venvs.py")
+def _venv_python(venv_dir):
+    """Where a venv keeps its own interpreter, on this OS.
 
-# Memoised so a retry inside one worker run does not re-exec the file. One worker
-# builds one venv, so this is thrift rather than necessity — but `_build` is also
-# what the tests call, and a second module object would mean a second identity for
-# `venv_key`, which is the one thing here that must be singular.
-_venvs_cache = []
-
-
-def _venvs_module():
-    """Upstream's `venvs.py`, loaded from its FILE rather than through `fused`.
-
-    Why not the obvious import: `from fused.agent_core.backends.local.venvs
-    import ...` imports every parent package on the way down, so `fused/__init__`
-    runs → `fused.api` → `fused._auth` → `fused.core._cache` →
-    `fused._optional_deps` → **pandas**. Measured with `-X importtime`: ~520ms of
-    the 543ms this worker spent installing one tiny pure-Python package was that
-    chain, to reach a module whose own import costs ~100µs. `venvs.py` imports
-    only stdlib (errno, hashlib, json, logging, os, shutil, subprocess, sys,
-    threading, pathlib), so nothing about it needs the package around it.
-
-    Why this is safe, and the crux of the whole change: it is **literally the same
-    file**, so `venv_key` / `requirements_venv_id` / `ensure_requirements_venv`
-    stay byte-identical to what the server's `envinstall.venv_key_for` composes
-    through the package import. A reimplementation of the key here would agree
-    until upstream changed the recipe and then build a venv `is_installed()` never
-    looks in — the page would install, retry, and be told to install again forever,
-    with a fully built venv sitting on disk.
-
-    An already-imported `venvs` wins: in a host that has `fused` loaded anyway (the
-    test session, or an embedding process) a second module object would be a second
-    set of module-level locks and caches guarding the same directories, and any
-    monkeypatch of the real module would silently not apply to the copy.
+    Kept in step with `envinstall._venv_python`; duplicated rather than imported
+    for the same reason the stage percentages are (D152).
     """
-    if _venvs_cache:
-        return _venvs_cache[0]
-    mod = sys.modules.get(_VENVS_MODULE)
-    if mod is None:
-        mod = _load_venvs_by_path()
-    _venvs_cache.append(mod)
-    return mod
+    if os.name == "nt":
+        return os.path.join(venv_dir, "Scripts", "python.exe")
+    return os.path.join(venv_dir, "bin", "python")
 
 
-def _load_venvs_by_path():
-    """`venvs.py` off disk, having executed no `fused` module at all.
+def _state_digest(project_dir):
+    """sha256 of `pyproject.toml` — the declaration this environment was built from.
 
-    `find_spec("fused")` is the top-level name only, which resolves through the
-    meta path finders WITHOUT executing `fused/__init__`; asking for the dotted
-    submodule instead would import every parent and defeat the point, and so would
-    reading `fused.__file__`. The remaining path segments are joined literally.
+    The manifest only, never `uv.lock`: the lock is an OUTPUT of the sync, so
+    folding it in would make the environment's own side effect a reason to
+    rebuild it. That also means this no longer has to be read at any particular
+    moment relative to `uv sync` — the sync does not touch the manifest.
+
+    Byte-identical to `projectenv._compute_state_digest`, which READS what this
+    writes. A divergence is not a subtle bug: every request would read its own
+    just-built venv as stale and ask to rebuild it, forever. Duplicated rather
+    than imported because this file must stay free of any `fused_render` import
+    (D152).
     """
-    import importlib.util
-
-    spec = importlib.util.find_spec("fused")
-    locations = list(getattr(spec, "submodule_search_locations", None) or [])
-    if not locations:
-        raise ImportError("cannot locate the `fused` package directory")
-    path = os.path.join(locations[0], *_VENVS_RELPATH)
-    # Loaded under a private name, not the real dotted one: registering
-    # `fused.agent_core.backends.local.venvs` in sys.modules with none of its
-    # parents there would make a later real `import fused...venvs` hand out this
-    # copy from a half-built package tree.
-    sub = importlib.util.spec_from_file_location("_fused_venvs_direct", path)
-    if sub is None or sub.loader is None:
-        raise ImportError("no loader for %s" % path)
-    mod = importlib.util.module_from_spec(sub)
-    sub.loader.exec_module(mod)
-    return mod
-
-
-def _build(venvs_path, requirements, python_executable):
-    """Upstream's builder, in one place (and resolved at call time, not at module
-    import, so a missing `fused` surfaces as a progress error rather than an
-    unexplained non-zero exit)."""
     try:
-        ensure_requirements_venv = _venvs_module().ensure_requirements_venv
-    except Exception as e:  # noqa: BLE001
-        # LOUD, not silent: an install that still works but has quietly gone back to
-        # paying ~500ms of pandas import per build is a regression with no symptom,
-        # and stderr here lands in `progress_dir/worker.log` where it can be found.
-        # Falling back rather than failing, because a slow install beats none.
-        print("env-install: could not load %s by path (%s: %s); falling back to the "
-              "package import" % (_VENVS_MODULE, type(e).__name__, e), file=sys.stderr)
-        from fused.agent_core.backends.local.venvs import ensure_requirements_venv
-
-    return ensure_requirements_venv(venvs_path, list(requirements), python_executable)
+        with open(os.path.join(project_dir, "pyproject.toml"), "rb") as f:
+            return hashlib.sha256(f.read()).hexdigest()
+    except OSError:
+        return ""
 
 
-def install(key, progress_dir, venvs_path, requirements, python_executable=None,
-            acquire_python=None):
+def _build(project_dir, venv_dir, uv_cache_dir, python_executable):
+    """`uv sync` the project into `venv_dir`; returns that venv's interpreter.
+
+    An UNMARKED but existing venv directory is removed first. That is the D212
+    repair, and it has to be a removal rather than a reconcile: the failure it
+    exists for is a venv whose recorded base prefix does not exist, which
+    `uv sync` would happily leave in place because the packages inside it are
+    already correct. The marker's absence is the only signal that the directory
+    is not to be trusted, and `envinstall.is_installed` is what unlinks it.
+
+    Environment, not flags, for the two directories, because uv reads both itself
+    and a flag would only cover the invocation we remember to put it on:
+
+      UV_PROJECT_ENVIRONMENT  the venv lives in the home dir, never in the user's
+                              folder (MD-7). Without it uv writes `<project>/.venv`,
+                              which for a core template would be destroyed by the
+                              release-time re-stage and cost a full re-download of
+                              numpy/pyproj/imagecodecs on every upgrade.
+      UV_CACHE_DIR            a sibling of the venv store, so cache and target are
+                              on ONE filesystem and uv's hardlinks actually dedupe.
+                              Across filesystems uv silently falls back to full
+                              copies and every project pays for numpy again.
+
+    `UV_LINK_MODE` is deliberately NOT set: uv already prefers hardlinks and
+    degrades on its own, and pinning it here would override a user who had a
+    reason to choose otherwise.
+
+    A bare `uv sync`, with no `--frozen`. That is not a relaxation of
+    reproducibility — uv uses an existing `uv.lock` as-is whenever it still
+    matches the manifest, and re-resolves only the parts a manifest edit actually
+    moved. Which is exactly the required behaviour: nothing changed means the
+    committed versions, and a dependency added to `pyproject.toml` is picked up
+    automatically. `--frozen` was here at first and had to go: it turns a
+    manifest edit into a hard "the lockfile is out of date" error instead of
+    reconciling it, and the whole point of the folder rule is that a user never
+    has to run `uv sync` by hand (doing so would create an in-folder `.venv` and
+    diverge from the home-dir store). Without a lock at all uv resolves and
+    WRITES one, which is how a folder gains reproducibility by being run once.
+    """
+    uv = shutil.which("uv")
+    if uv is None:
+        # Plainly, because this is a supported configuration losing a capability
+        # rather than a transient failure (D231): uv IS the builder, so without it
+        # a folder that declares dependencies cannot get an environment at all.
+        # Everything else still works — a folder with no pyproject.toml runs on
+        # the app's own interpreter (PY-17) and needs nothing installed — so the
+        # message says which half is affected and how to get it back.
+        raise RuntimeError(
+            "cannot build an environment for %s: uv is not installed, and uv is "
+            "what builds project environments (`uv sync`).\n\n"
+            "Install uv (https://docs.astral.sh/uv/getting-started/installation/) "
+            "and try again. Until then, scripts in folders WITHOUT a "
+            "pyproject.toml still run normally on this app's own interpreter — "
+            "only folders that declare their own dependencies are affected.\n\n"
+            "(The packaged macOS, Windows and Linux builds ship uv, so this only "
+            "happens in a source checkout.)" % project_dir
+        )
+    if os.path.isdir(venv_dir) and not os.path.exists(os.path.join(venv_dir, _READY_MARKER)):
+        shutil.rmtree(venv_dir, ignore_errors=True)
+
+    # `--no-default-groups` because PY-16 makes `[project].dependencies` the whole
+    # declaration, and without it uv also installs the default dependency-groups
+    # (`[dependency-groups] dev`, which `uv init` and `uv add --dev` write). That
+    # would put packages in the venv that `applicable_dependencies_of` never
+    # reported — so the loader's "not installed yet: …" list and the environment
+    # it builds would describe different things, and the marker/`app_satisfies`
+    # fast path would be deciding against an incomplete list. One declaration, one
+    # place. A folder whose dependencies live only in a group installs nothing,
+    # which is the same answer PY-16 already gives it.
+    cmd = [uv, "sync", "--no-default-groups", "--python", python_executable]
+
+    env = dict(os.environ)
+    env["UV_PROJECT_ENVIRONMENT"] = venv_dir
+    env["UV_CACHE_DIR"] = uv_cache_dir
+    env.pop("VIRTUAL_ENV", None)  # else uv warns and may target the server's own venv
+
+    os.makedirs(os.path.dirname(venv_dir), exist_ok=True)
+    os.makedirs(uv_cache_dir, exist_ok=True)
+    # close_fds=False for posix_spawn rather than fork()+exec — the same discipline
+    # every other spawn in this codebase follows; see `_acquire_python` above.
+    proc = subprocess.run(cmd, cwd=project_dir, env=env,
+                          capture_output=True, text=True, close_fds=False)
+    if proc.returncode != 0:
+        # Verbatim: uv's own text names the real problem (no wheel for this
+        # platform, a bad pin, no network, a lock that no longer matches the
+        # manifest), and that is the answer the user needs.
+        raise RuntimeError(
+            "Failed to build the environment for %s:\n%s"
+            % (project_dir, (proc.stderr or proc.stdout).strip())
+        )
+
+    venv_python = _venv_python(venv_dir)
+    if not os.path.exists(venv_python):
+        raise RuntimeError(
+            "`uv sync` reported success for %s but left no interpreter at %s"
+            % (project_dir, venv_python)
+        )
+
+    # Sidecar BEFORE the marker. The marker means "installed"; the sidecar is what
+    # a later request compares the declaration against. Marking first would leave
+    # a window in which the venv reads as ready and cannot say what it holds, and
+    # `is_installed` would call it stale and rebuild it immediately.
+    tmp = os.path.join(venv_dir, _SIDECAR_NAME + ".tmp")
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump({"path": os.path.abspath(project_dir),
+                   "digest": _state_digest(project_dir)}, f)
+    os.replace(tmp, os.path.join(venv_dir, _SIDECAR_NAME))
+    with open(os.path.join(venv_dir, _READY_MARKER), "w", encoding="utf-8") as f:
+        f.write("")
+    return venv_python
+
+
+def install(key, progress_dir, project_dir, venv_dir, uv_cache_dir,
+            python_executable=None, acquire_python=None):
     os.makedirs(progress_dir, exist_ok=True)
-    summary = ", ".join(requirements)
+    summary = os.path.basename(os.path.abspath(project_dir)) or project_dir
+    # None means "the backend's own interpreter", and this worker was spawned
+    # with it (`envinstall._spawn` uses `sys.executable`), so our own is the
+    # faithful translation. See `_PINNED_PYTHON_VERSION` for why a version
+    # string here would build the environment on the wrong python.
+    python_executable = python_executable or sys.executable
 
     # Every record goes through this, and a terminal one LATCHES the file shut.
     #
@@ -323,18 +423,18 @@ def install(key, progress_dir, venvs_path, requirements, python_executable=None,
             return
 
         # `create` and `install` are reported as one call because that is the
-        # truth: ensure_requirements_venv does both behind capture_output=True,
-        # so the transition between them is not observable from out here. The
-        # two stages exist so the UI can say "preparing" before the long wait,
-        # not to imply progress inside it.
-        write("create", _CREATE_PCT, f"preparing an environment for {summary}")
+        # truth: `uv sync` does both behind capture_output=True, so the
+        # transition between them is not observable from out here. The two stages
+        # exist so the UI can say "preparing" before the long wait, not to imply
+        # progress inside it.
+        write("create", _CREATE_PCT, f"preparing the environment for {summary}")
         # `python_executable` is the server's own `_python_executable()`, handed
-        # over rather than re-decided: the venv key folds it in, so a value that
-        # differs from the server's builds a directory no run ever reads.
+        # over rather than re-decided: the backend runs the code, so a different
+        # interpreter here builds an environment the run cannot use.
         venv_python = with_heartbeat(
             "install", _INSTALL_PCT,
-            f"downloading and installing {len(requirements)} package(s): {summary}",
-            lambda: _build(venvs_path, requirements, python_executable),
+            f"resolving and installing the dependencies of {summary}",
+            lambda: _build(project_dir, venv_dir, uv_cache_dir, python_executable),
         )
         write("done", 100, f"installed into {os.path.dirname(os.path.dirname(venv_python))}",
               done=True)
@@ -348,19 +448,21 @@ def install(key, progress_dir, venvs_path, requirements, python_executable=None,
 
 
 def main(args):
-    """`<key> <progress_dir> <venvs_path> <python_executable> <acquire_python> <req>...`
+    """`<key> <progress_dir> <project_dir> <venv_dir> <uv_cache_dir>
+    <python_executable> <acquire_python>`
 
     The empty string means None in BOTH optional slots (argv cannot carry it):
     translated here and nowhere else, so `install` receives the real values. Read as
-    the literal `""` instead, slot 5 would have this worker try to download a Python
-    version called nothing on every ordinary install.
+    the literal `""` instead, the last slot would have this worker try to download a
+    Python version called nothing on every ordinary install.
     """
-    if len(args) < 6:
+    if len(args) < 7:
         print(__doc__, file=sys.stderr)
         sys.exit(2)
-    key, progress_dir, venvs_path, python_executable, acquire_python = args[:5]
-    install(key, progress_dir, venvs_path, args[5:], python_executable or None,
-            acquire_python=acquire_python or None)
+    (key, progress_dir, project_dir, venv_dir, uv_cache_dir,
+     python_executable, acquire_python) = args[:7]
+    install(key, progress_dir, project_dir, venv_dir, uv_cache_dir,
+            python_executable or None, acquire_python=acquire_python or None)
 
 
 if __name__ == "__main__":

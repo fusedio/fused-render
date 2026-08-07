@@ -1,0 +1,19 @@
+# The docs template's environment (SPEC PY-16). docs.py is the runPython
+# entrypoint; install_worker.py is spawned beside it and is stdlib-only.
+#
+# `pypandoc-binary`, NOT `pypandoc`: the plain wheel ships no pandoc executable,
+# and docs.py calls `pypandoc.convert_file`, which needs one. See the latex
+# template's pyproject for the full reasoning — the two templates hit the same
+# trap.
+[project]
+name = "fused-render-template-docs"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "pypandoc-binary",
+]
+
+# Not a distribution — this folder is a set of scripts, not something to build
+# and install. Without this uv would try to build the "project" itself and fail.
+[tool.uv]
+package = false

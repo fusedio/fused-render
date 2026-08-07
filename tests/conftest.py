@@ -50,21 +50,33 @@ for _var, _prefix in (("FUSED_RENDER_HOME", "fused-render-tests-"),
 os.environ.setdefault("FUSED_RENDER_ENGINE", "builtin")
 
 
-# The PEP 723 header the warm fixture (and the tests that ask for it) declare.
+# What the warm fixture's project folder declares (SPEC PY-16 — the environment
+# is the FOLDER's, so the fixture hands back a directory rather than a header).
 # `pip` because the dev-env recipe seeds it into this venv already, so uv resolves
 # it from cache and the real-backend venv tests stay offline-safe — the assertions
 # are about WHICH interpreter ran, never about the package.
-WARM_HEADER = '# /// script\n# dependencies = ["pip"]\n# ///\n'
+WARM_DEPS = ["pip"]
+WARM_PYPROJECT = (
+    "[project]\nname = 'fused-render-warm'\nversion = '0.1.0'\n"
+    'dependencies = ["pip"]\n'
+)
+
+# The FUSED_RENDER_HOME the warm venv was actually built under. The venv store is
+# `<home_dir()>/venvs`, so a test whose own fixture redirects the home would look
+# for the warm venv in a directory nobody built — this is what it restores.
+WARM_HOME = None
 
 
 @pytest.fixture(scope="session")
 def warm_fused_backend_venv(tmp_path_factory):
-    """Build the fused backend's script venv once, serialized across xdist workers.
+    """Build one project venv once, serialized across xdist workers.
 
-    Every real-backend test that needs a venv at all declares `WARM_HEADER`, so
-    they all want the same venv under ~/.openfused/venvs (a script with NO header
-    runs on the app's own interpreter now — PY-17 — and builds nothing, which is
-    why the header is what makes this fixture necessary). Creating it is guarded
+    Returns the PROJECT FOLDER it warmed: the environment belongs to the folder
+    (SPEC PY-16), so a test that wants the warm venv puts its `.py` inside this
+    directory. Every real-backend test that needs a venv at all uses this one
+    folder, so they all want the same venv (a script in a folder with no
+    `pyproject.toml` runs on the app's own interpreter — PY-17 — and builds
+    nothing, which is why the declaration is what makes this fixture necessary). Creating it is guarded
     only by an in-process lock inside `fused`, which is no guard at all against
     `-n auto`: on a cold cache (a CI runner, always) N worker processes each
     find no ready-marker, each start building the same directory, and the losers
@@ -100,7 +112,7 @@ def warm_fused_backend_venv(tmp_path_factory):
     from fused_render import engine, envinstall
 
     if not engine.available():
-        return  # the tests that ask for this are skipped anyway
+        return None  # the tests that ask for this are skipped anyway
 
     # Build from THIS interpreter, whatever version it is (D214). Session-scoped, so
     # the function-scoped pin below has not run yet and the real resolution would
@@ -115,7 +127,19 @@ def warm_fused_backend_venv(tmp_path_factory):
     # CPython to satisfy a fixture buys nothing. The bootstrap flow has its own tests.
     envinstall._script_python = (None, True)
 
-    lock = tmp_path_factory.getbasetemp().parent / "fused-bare-venv.lock"
+    # One shared project folder for every worker, in xdist's common base temp dir.
+    # The venv key IS this path (projectenv), so all workers agree on the venv only
+    # while they agree on the directory — which is why it is not per-worker tmp.
+    global WARM_HOME
+    WARM_HOME = os.environ.get("FUSED_RENDER_HOME")
+
+    shared = tmp_path_factory.getbasetemp().parent
+    project_dir = str(shared / "fused-render-warm-project")
+    os.makedirs(project_dir, exist_ok=True)
+    with open(os.path.join(project_dir, "pyproject.toml"), "w", encoding="utf-8") as fh:
+        fh.write(WARM_PYPROJECT)
+
+    lock = shared / "fused-bare-venv.lock"
     stale_after = 600  # a cold `uv venv` + install can legitimately take minutes
     give_up_at = time.monotonic() + 1800
 
@@ -171,12 +195,9 @@ def warm_fused_backend_venv(tmp_path_factory):
         # still done through our own API rather than fused internals.
         from fused_render import envinstall
 
-        requirements = sorted(set(engine.script_requirements(WARM_HEADER)))
-        if not requirements:  # no toml parser here; the tests that need it skip
-            return
-        if not envinstall.is_installed(requirements):
-            envinstall.start(requirements)
-            key = envinstall.venv_key_for(requirements)
+        if not envinstall.is_installed(project_dir):
+            envinstall.start(project_dir)
+            key = envinstall.venv_key_for(project_dir)
             # Bounded and DIAGNOSTIC. `is_installed()` is the authority, not the
             # progress record: the venv existing is the thing the tests need, and
             # making bookkeeping the success condition is how a wait turns into a
@@ -187,7 +208,7 @@ def warm_fused_backend_venv(tmp_path_factory):
             deadline = time.monotonic() + 300
             progress = None
             while time.monotonic() < deadline:
-                if envinstall.is_installed(requirements):
+                if envinstall.is_installed(project_dir):
                     break
                 progress = envinstall.progress(key)
                 if progress and progress.get("done"):
@@ -199,7 +220,7 @@ def warm_fused_backend_venv(tmp_path_factory):
                     "real-backend tests would race on a half-built one: "
                     f"{progress['error']}"
                 )
-            if not envinstall.is_installed(requirements):
+            if not envinstall.is_installed(project_dir):
                 log = os.path.join(envinstall.progress_dir(key), "worker.log")
                 tail = ""
                 try:
@@ -208,9 +229,9 @@ def warm_fused_backend_venv(tmp_path_factory):
                 except OSError as e:
                     tail = f"(no worker log: {e})"
                 pytest.fail(
-                    f"the warm script venv ({requirements}) was not built.\n"
+                    f"the warm project venv ({project_dir}) was not built.\n"
                     f"last progress: {progress}\n"
-                    f"venv dir: {envinstall.venv_dir_for(requirements)}\n"
+                    f"venv dir: {envinstall.venv_dir_for(project_dir)}\n"
                     f"uv: {envinstall.uv_bin()}\n"
                     f"--- worker.log ---\n{tail}"
                 )
@@ -222,6 +243,7 @@ def warm_fused_backend_venv(tmp_path_factory):
             os.unlink(str(lock))
         except OSError:
             pass
+    return project_dir
 # The template<->app env contract (SPEC PY-15): the server exports these before
 # it serves, and `templates/shared/appenv.py` is the only reader. They are set
 # with a plain os.environ assignment by design — every child process has to

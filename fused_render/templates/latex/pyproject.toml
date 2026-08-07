@@ -1,0 +1,23 @@
+# The latex template's environment (SPEC PY-16). engine.py is the runPython
+# entrypoint; install_worker.py and warm_worker.py are spawned beside it and are
+# stdlib-only.
+#
+# `pypandoc-binary`, NOT `pypandoc`: the two are the same import name and the
+# same version, but the plain wheel is 0.0 MB of pure Python with NO pandoc
+# executable, while pypandoc-binary is ~41 MB and ships one. engine.py calls
+# `pypandoc.convert_file`, which needs the binary — so with the plain
+# distribution the venv builds cleanly and then fails at RUNTIME on any machine
+# without a system pandoc. This is why the completeness invariant cannot rest on
+# "is it importable".
+[project]
+name = "fused-render-template-latex"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "pypandoc-binary",
+]
+
+# Not a distribution — this folder is a set of scripts, not something to build
+# and install. Without this uv would try to build the "project" itself and fail.
+[tool.uv]
+package = false

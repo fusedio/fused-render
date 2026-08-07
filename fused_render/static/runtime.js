@@ -555,14 +555,14 @@
     }
   }
 
-  // ---- the script-venv install loader (SPEC PY-18, D173) --------------------
+  // ---- the project-venv install loader (SPEC PY-16, PY-18) ------------------
   //
   // Most .py files run on the app's own interpreter and install nothing. A file
-  // that declares a `# /// script` header naming something the app doesn't ship
-  // (geotiff's imagecodecs, zarr_aoi's s3fs, pano's py360convert…) needs a
-  // one-time download, and /api/run answers `needs_install` rather than blocking
-  // past runPython's ~30s budget. Handled HERE, in the shell, so every template
-  // gets it without a line of its own code.
+  // whose FOLDER declares dependencies the app doesn't ship (geotiff's
+  // imagecodecs, pano's py360convert…) needs a one-time download, and /api/run
+  // answers `needs_install` rather than blocking past runPython's ~30s budget.
+  // Handled HERE, in the shell, so every template gets it without a line of its
+  // own code.
   //
   // Shape follows the docs template's typst install (a detached worker writing
   // progress.json, polled) — one pattern in this app, not two.
@@ -582,7 +582,7 @@
   // long the install would take — so an install that finishes in tens of
   // milliseconds still threw a full-screen modal over the page and tore it down
   // again, which reads as a flicker/flash rather than as progress. Now that a
-  // header the app interpreter already satisfies installs NOTHING (see engine.py's
+  // declaration the app interpreter already satisfies installs NOTHING (see engine.py's
   // `app_satisfies`), the installs that remain are either genuinely long (a real
   // download, where 600ms of delay is imperceptible) or genuinely short (a warm uv
   // cache, where the modal was pure noise). Delay separates the two without having
@@ -592,23 +592,26 @@
   let installUi = null;
   // Live installs, as key -> { row, count }.
   //
-  // A page can call several .py files, each with its OWN header, so N installs
-  // with N DISTINCT keys run at once. Each therefore gets its own ROW — its own
-  // title, detail, bar and Cancel — because one shared set of nodes made N
-  // installs illegible: the title named whichever install started last, N pollers
-  // rewrote one detail line at 2Hz, and one Cancel button carried N listeners, so
-  // a single click cancelled every install while each chain's message overwrote
-  // the others'.
+  // One ROW per key — its own title, detail, bar and Cancel. Concurrent installs
+  // with DISTINCT keys are real: a page can call scripts from two different
+  // projects, and the D214 interpreter round reports under its own key. One
+  // shared set of nodes made those illegible: the title named whichever install
+  // started last, N pollers rewrote one detail line at 2Hz, and one Cancel button
+  // carried N listeners, so a single click cancelled every install.
   //
-  // Still ref-COUNTED per key, which is a different case and remains real: two .py
-  // files with IDENTICAL requirement sets share one venv key, so they share one
-  // row, and the row may only go when the LAST of them settles. The count lives
-  // inside the entry so both facts — which row, how many waiters — are one piece of
+  // The count is what lets the row outlive an individual waiter. It is normally 1
+  // now, because `installEnv` dedups by key before `showInstall` is ever reached
+  // (SPEC PY-16 makes five scripts in one folder ONE key, and they join one
+  // promise rather than each opening a row). It is kept rather than removed
+  // because the invariant it encodes — the row goes when the LAST waiter settles,
+  // never when the first does — is the one that has to hold if anything ever
+  // reaches `showInstall` twice for a key, and it costs a single integer. Living
+  // inside the entry means "which row" and "how many waiters" are one piece of
   // state that cannot disagree with itself.
   const installing = new Map();
 
   // The indeterminate bar (D213). The worker parks at pct 25 for the WHOLE download
-  // — `ensure_requirements_venv` runs uv behind captured output, so there is no
+  // — `uv sync` runs behind captured output, so there is no
   // per-package progress to report — and a bar sitting at 25% for four minutes reads
   // as frozen, which is what users reported. An indeterminate bar says the true
   // thing: this is alive, and its remaining time is unknown.
@@ -687,6 +690,35 @@
   // about the venv key". Named and at module scope for the same reason `paintInstall`
   // is: one definition of a subtle rule, directly testable, rather than a condition
   // buried in a promise chain.
+  //
+  // `installed` belongs to ONE `runPython` call, and that lifetime is the whole
+  // correctness argument — a page-scoped set was tried and broke the case this
+  // flow exists for. The question here is "did THIS chain already install that key
+  // and get told to install it again", which is a loop. Widened to the page it
+  // answers a different question badly, because the key is now the project folder
+  // (PY-16) and every script in the folder shares it:
+  //
+  //   * FIVE CONCURRENT SCRIPTS. All five /api/run's are answered from the same
+  //     pre-install snapshot. The first response installs and records the key; the
+  //     other four then read it as already-attempted, fall through to the
+  //     `!data.ok` branch, and reject with the raw "declares dependencies that are
+  //     not installed yet" text. The multi-script case failed precisely because it
+  //     was multi-script.
+  //   * A LATE RESPONSE. A call answered before the install began but delivered
+  //     after it finished is not a loop — it has not run at all yet — and must
+  //     re-attempt rather than report a stale snapshot as a failure.
+  //   * A MANIFEST EDIT. The key used to be derived from the requirement set, so
+  //     editing dependencies minted a NEW key and a legitimate second install. It
+  //     is stable per project now, so a page-scoped set refused the install for a
+  //     user who had just fixed their `pyproject.toml`.
+  //
+  // Deduplication — the actual "one install per page, not one per script" — lives
+  // in `installEnv`'s `installInFlight` registry instead, which is the right
+  // mechanism for it: concurrent callers JOIN one promise, so there is one POST,
+  // one poller, one row and one download however many scripts wait. What a
+  // page-scoped set bought on top of that was only collapsing N error messages
+  // into one for a genuinely stuck install, and that is not worth failing the
+  // healthy path for.
   function shouldInstall(need, installed) {
     return Boolean(need && need.key) && !installed.has(need.key);
   }
@@ -780,13 +812,23 @@
     entry.count += 1;
     mountInstallSoon(ui);
     const row = entry.row;
-    // Name what is actually being fetched. On the interpreter round (D214) the
-    // packages are NOT downloading yet, and titling that round with their names is
-    // the kind of small lie that makes a four-minute wait feel broken — the user
-    // watches "Installing tensorflow" and nothing about tensorflow is happening.
+    // Name what is actually being prepared. The environment belongs to the
+    // PROJECT (SPEC PY-16), and every script in it waits on this one row, so the
+    // row is titled with the project — "Preparing my-app" — rather than with a
+    // joined package list that would (a) grow unbounded as a folder gains
+    // dependencies and (b) imply the row belongs to one script. The packages are
+    // demoted to the detail line, where the poller's own text takes over a beat
+    // later anyway.
+    //
+    // On the interpreter round (D214) the packages are NOT downloading yet, and
+    // titling that round with them is the kind of small lie that makes a
+    // four-minute wait feel broken — the user watches "Installing tensorflow"
+    // and nothing about tensorflow is happening. So that round keeps its own
+    // distinct title.
+    const requirements = (need.requirements || []).join(", ");
     row.title.textContent = need.python
       ? "Installing Python " + need.python
-      : "Installing " + (need.requirements || []).join(", ");
+      : "Preparing " + (need.name || "the environment");
     // Deliberately NOT "starting…" at 0%. `/api/env/install` JOINS an install
     // already in flight rather than duplicating it, so re-opening a page whose
     // download is four minutes old used to paint 0% and then jump to 25% on the
@@ -795,7 +837,9 @@
     // state therefore asserts no percentage at all: indeterminate until the
     // server's own record arrives (installEnv paints the POST response, which
     // carries it), so the first honest paint is the only paint.
-    row.detail.textContent = "contacting the installer…";
+    row.detail.textContent = requirements && !need.python
+      ? "contacting the installer… (" + requirements + ")"
+      : "contacting the installer…";
     installBarIndeterminate(row, true);
     return row;
   }
@@ -834,19 +878,60 @@
     }).then((res) => res.json().then((data) => ({ res, data })));
   }
 
+  // Installs this page has in flight, as key -> Promise. See `installEnv`.
+  const installInFlight = new Map();
+
   // Run the install to completion. Resolves when the venv is ready; rejects with
   // the installer's VERBATIM message otherwise — a resolver failure ("no wheels
   // with a matching platform tag for imagecodecs") is the actual answer the user
   // needs, and rewriting it into something friendlier is what made this opaque
   // in the first place.
+  //
+  // Deduplicated per key: a page calling five scripts from one project resolves
+  // to ONE key (SPEC PY-16), and every caller after the first joins the promise
+  // already running instead of starting its own chain. Without this each caller
+  // built its own `activeKey`, its own poller and its own cancel listener against
+  // a SHARED row — five POSTs to /api/env/install, five pollers hitting
+  // /api/env/progress at 2Hz apiece, and five listeners on one Cancel button, so
+  // one click fired five cancels and each chain's message overwrote the others'.
+  //
+  // The server was never at risk of doing the work twice — `start()` claims the
+  // key atomically and joins an install already in flight — which is exactly why
+  // the fix belongs here: the duplication is N requests and N timers originating
+  // on the client, not N `uv sync` runs. A second locking layer server-side would
+  // duplicate a mechanism that already works.
+  //
+  // The entry is removed when the promise SETTLES, not when a caller consumes it,
+  // so a later run (a retry after a fixed pyproject.toml, a `watchPath` reload)
+  // starts a fresh install rather than replaying a stale result. Rejections are
+  // shared too: every waiter gets the installer's verbatim error, and each one's
+  // `.catch` attaches before the promise can reject unhandled because the
+  // registry is written synchronously with the chain that fills it.
   function installEnv(need, pyPath, ownPath) {
+    const joined = installInFlight.get(need.key);
+    if (joined) return joined;
+    const promise = startInstall(need, pyPath, ownPath);
+    installInFlight.set(need.key, promise);
+    const forget = () => {
+      if (installInFlight.get(need.key) === promise) installInFlight.delete(need.key);
+    };
+    // `.then(f, f)` rather than `.finally`: `finally` returns a NEW promise that
+    // re-raises, and if nothing were attached to that one a shared rejection
+    // would surface as an unhandled rejection in the console on top of the error
+    // the caller is already showing. This variant settles the bookkeeping without
+    // creating a second chain for anyone to have to handle.
+    promise.then(forget, forget);
+    return promise;
+  }
+
+  function startInstall(need, pyPath, ownPath) {
     const row = showInstall(need);
     let cancelled = false;
     // The key to poll and to cancel is the INSTALLER's, not the pre-flight's.
-    // /api/env/install re-derives the requirements from the .py on disk and
-    // returns its own key, and editing a .py and letting live-reload re-run it is
-    // this app's core workflow — so the file really can change between /api/run's
-    // needs_install and this POST. Polling the stale key then reads a null
+    // /api/env/install re-derives the project from the .py on disk and returns its
+    // own key, and editing a folder's pyproject.toml and letting live-reload
+    // re-run it is this app's core workflow — so the answer really can change
+    // between /api/run's needs_install and this POST. Polling the stale key then reads a null
     // progress record and fails an install that is running fine; cancelling the
     // stale key leaves the real download running. Mutable because the cancel
     // handler is registered BEFORE the POST resolves and must see the update.
@@ -1012,6 +1097,9 @@
     // installed yet is a new thing to install, and the SAME key coming back after we
     // installed it means nothing changed — which is the real loop, and still one
     // clear failure rather than installing forever.
+    //
+    // The set is created per call, not per page — see `shouldInstall` for the
+    // three ways a page-scoped one failed the healthy multi-script path.
     const handle = (data, installed) => {
       if (data.stdout) {
         console.log("[python]", data.stdout);
@@ -1020,6 +1108,15 @@
       // broken py that gets fixed must still trigger a reload. Read before
       // the ok check so it's recorded either way.
       if (data.resolved_py) watchPath(data.resolved_py);
+      // Watch the project's MANIFEST too, so fixing a dependency reloads the page
+      // the same way fixing the .py does. Without it the only feedback for "I
+      // added the package it asked for" is the same error overlay, still up, with
+      // nothing saying a reload is needed. Server-supplied (engine.py puts it in
+      // `needs_install`) rather than joined client-side, because the project root
+      // is the server's answer and the path separator is the server's platform.
+      if (data.needs_install && data.needs_install.pyproject) {
+        watchPath(data.needs_install.pyproject);
+      }
       if (shouldInstall(data.needs_install, installed)) {
         installed.add(data.needs_install.key);
         return installEnv(data.needs_install, pyPath, ownPath).then(() =>
