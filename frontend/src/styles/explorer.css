@@ -22,29 +22,35 @@
 }
 
 /* ★ bookmark button, leftmost in the bar. Subtle: bare glyph, no box —
-   muted until hovered; accent-yellow (filled star) when the view is
-   bookmarked or an armed bookmark is live. */
+   muted until hovered; a FILLED FOREGROUND star when the view is bookmarked
+   or an armed bookmark is live. Deliberately not accent-yellow any more: the
+   accent means exactly one thing in this chrome, the active view mode.
+   Bookmarking is state, not "the thing you are looking at". */
 .bookmark-star-btn {
   flex: 0 0 auto;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  padding: 2px;
+  padding: 4px;
   border: none;
-  border-radius: 4px;
+  border-radius: 6px;
   background: none;
   color: var(--fg-muted);
   cursor: pointer;
-  transition: color var(--dur-fast) var(--ease-out);
+  transition:
+    color var(--dur-fast) var(--ease-out),
+    background-color var(--dur-fast) var(--ease-out);
 }
 
 .bookmark-star-btn:hover {
   color: var(--fg);
+  background: rgba(var(--tint), 0.08);
 }
 
 .bookmark-star-btn.active,
 .bookmark-star-btn.active:hover {
-  color: var(--accent);
+  color: var(--fg);
+  background: rgba(var(--tint), 0.08);
 }
 
 /* Shared with the panel path bar (.panel-crumbs/.panel-crumb*, Panel.tsx):
@@ -82,7 +88,8 @@
 /* Click-to-edit / Ctrl+L path field: swaps in for the crumb row. Same
    monospace as the crumbs, fills the strip, and takes the bar's own
    background so it reads as the bar turning editable rather than a popped-in
-   widget; a quiet border picks up the accent on focus. */
+   widget; the border brightens to --fg-muted on focus (not the accent — that
+   is reserved for the active view mode). */
 #breadcrumb .crumb-edit {
   flex: 1 1 auto;
   min-width: 0;
@@ -97,16 +104,20 @@
 
 #breadcrumb .crumb-edit:focus {
   outline: none;
-  border-color: var(--accent);
+  border-color: var(--fg-muted);
 }
 
+/* Ancestor crumbs sit one step BRIGHTER than plain muted: at --fg-muted the
+   path read as disabled text, which is the opposite of what a click target
+   should say. color-mix over the two tokens keeps it theme-following (no new
+   literal — tests/test_theme.py). */
 .path-crumb,
 .panel-crumb {
-  color: var(--fg-muted);
+  color: color-mix(in srgb, var(--fg) 60%, var(--fg-muted));
   text-decoration: none;
   cursor: pointer;
   padding: 2px 1px;
-  border-radius: 3px;
+  border-radius: 6px;
 }
 
 /* GNOME-style compress-then-scroll truncation, main bar only (the panel pane
@@ -141,15 +152,19 @@
   font-weight: 600;
 }
 
+/* Separators at full muted strength with room to breathe. At --border they
+   were near-invisible, so the path read as one run-on string. */
 .path-crumb-sep,
 .panel-crumb-sep {
-  color: var(--border);
-  margin: 0 1px;
+  color: var(--fg-muted);
+  margin: 0 6px;
 }
 
-/* Main breadcrumb hover only — subtle fg brighten + underline, no accent
-   yellow. */
-#breadcrumb .path-crumb:hover {
+/* Crumb hover, both bars — fg brighten + underline, no accent yellow. The
+   panel pane used to hover accent-yellow; unified here so a path behaves the
+   same wherever it appears. */
+#breadcrumb .path-crumb:hover,
+.panel-crumb:hover {
   color: var(--fg);
   text-decoration: underline;
 }
@@ -207,14 +222,16 @@
 }
 
 .star-btn:hover {
-  color: var(--accent);
-  border-color: var(--accent);
+  color: var(--fg);
+  border-color: var(--fg-muted);
 }
 
+/* Neutral, like the ★ itself: bookmark state is not the active view mode, so
+   it carries no accent. */
 .star-btn.starred {
-  color: var(--accent);
-  border-color: var(--accent);
-  background: rgba(var(--accent-rgb), 0.13);
+  color: var(--fg);
+  border-color: var(--border);
+  background: rgba(var(--tint), 0.08);
 }
 
 #content {
@@ -703,7 +720,7 @@ table.listing-table tr.skel-row:hover {
   height: 11px;
   margin-top: -5.5px;
   border: 1.5px solid var(--border);
-  border-top-color: var(--accent);
+  border-top-color: var(--fg-muted);
   border-radius: 50%;
   pointer-events: none;
   animation: listing-search-spin 0.6s linear infinite;
@@ -858,7 +875,7 @@ table.listing-table tr.row.flip-animating {
   line-height: 1;
   padding: 4px 8px;
   border: 1px solid var(--border);
-  border-radius: 999px;
+  border-radius: 6px;
   background: var(--bg-alt);
   color: var(--fg-muted);
   cursor: pointer;
@@ -872,9 +889,11 @@ table.listing-table tr.row.flip-animating {
   cursor: default;
 }
 
+/* Sorted is a QUIET readout, not a highlight: it says how the results are
+   ordered, which is nothing like "this is the view you are looking at". */
 .listing-sort-chip.sorted {
-  color: var(--accent);
-  border-color: var(--accent);
+  color: var(--fg-muted);
+  border-color: var(--border);
 }
 
 .listing-sort-chip:hover:not(:disabled) {

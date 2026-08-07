@@ -480,10 +480,10 @@ body.embed .open-as-app-chip:hover {
 
 /* Base layout/color rules for .panel-crumbs/.panel-crumb/.panel-crumb-sep/
    .panel-crumb.last are shared with the main breadcrumb above (search
-   "Shared with the panel path bar"). Only what's genuinely panel-specific
-   lives here: pane-local flex sizing, a tighter font-size, hidden scrollbar,
-   and the accent-yellow hover (left as-is — the main breadcrumb gets its own
-   non-yellow hover instead of reusing this one). */
+   "Shared with the panel path bar"), hover included — the pane bar used to
+   hover accent-yellow and now speaks the same dialect as every other bar.
+   Only what's genuinely panel-specific lives here: pane-local flex sizing, a
+   tighter font-size, hidden scrollbar. */
 .panel-crumbs {
   flex: 1 1 auto;
   scrollbar-width: none;
@@ -492,11 +492,6 @@ body.embed .open-as-app-chip:hover {
 
 .panel-crumbs::-webkit-scrollbar {
   display: none;
-}
-
-.panel-crumb:hover {
-  color: var(--accent);
-  text-decoration: underline;
 }
 
 .panel-btn {
