@@ -119,7 +119,7 @@ function AiSearchComposer({
         <div className="files-search-field">
           <TextArea
             className="home-composer-input"
-            placeholder="Search your files — “big csv from last week”, “notebook about weather”…"
+            placeholder="Search your files — “big csv from last week” — or paste a path like ~/Downloads"
             aria-label="Search your files"
             value={query}
             rows={1}
