@@ -378,7 +378,7 @@ export default function FilesHome({ config }: { config: Config }) {
             the hero's only verb is the search prompt, mirroring how /apps
             leads with its build prompt. */}
         <header className="home-hero files-hero">
-          <HeroBrand name="Fused Explorer" />
+          <HeroBrand name="Explorer" />
           <h1 className="home-hero-title">
             Find and preview <span className="home-hero-accent">your files</span>
           </h1>

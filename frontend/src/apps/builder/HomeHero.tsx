@@ -323,7 +323,7 @@ export function HomeHero({ onCreated }: { onCreated: () => void }) {
   return (
     <header className="home-hero">
       {/* Fused mark + "Fused App" wordmark row, centered above the title. */}
-      <HeroBrand name="Fused App" />
+      <HeroBrand name="App" />
       <h1 className="home-hero-title">
         Build your next <span className="home-hero-accent">local app</span>
       </h1>
