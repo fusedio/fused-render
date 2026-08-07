@@ -104,17 +104,22 @@ def test_two_syncs_at_once_do_not_stage_into_the_same_directory(home, sources):
     publish whichever fragment won."""
     seen = []
     real_build = skill_plugin._build
+    # The barrier lives INSIDE the spy so both threads must be inside _build
+    # before either finishes: without it, the first sync could publish + stamp
+    # before the second even checked loadability, and the second would take the
+    # legitimate short-circuit — one _build call, spurious failure. It can't
+    # deadlock: the first thread blocked here has published nothing, so the
+    # second's stamp check must fail and bring it into _build too.
+    barrier = threading.Barrier(2, timeout=30)
 
     def spy(staging, sources_map):
         seen.append(staging)
+        barrier.wait()
         return real_build(staging, sources_map)
 
     skill_plugin._build = spy
     try:
-        barrier = threading.Barrier(2)
-
         def run():
-            barrier.wait()
             skill_plugin.sync_skill_plugin()
 
         threads = [threading.Thread(target=run) for _ in range(2)]

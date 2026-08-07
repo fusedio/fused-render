@@ -314,6 +314,58 @@ def _no_background_mount_threads(monkeypatch):
 
 
 @pytest.fixture(scope="session", autouse=True)
+def _no_real_rcd_spawn():
+    """Make spawning a REAL rclone rcd from the suite impossible, loudly.
+
+    The flake this kills (PR #407's own CI run proved the mechanism): a
+    background mount thread leaked by an earlier test finishes its ensure_rcd
+    spawn-wait AFTER the FUSED_RENDER_HOME env var has moved on to a later
+    test's home, so write_rcd_state (rcd.py, post-liveness) lands a real
+    daemon's {port, pid} in THAT test's rcd.json — and its ensure_rcd then
+    "reuses" a foreign daemon (assert 55455 == 37291). Per-test patches can't
+    stop it: env vars and monkeypatches are process-global, so a leaked thread
+    always sees whatever the current test sees. The only sound boundary is the
+    spawn itself: no real daemon can ever exist, so no foreign state write can
+    ever land — and the leaked thread now raises, which pytest surfaces as an
+    unhandled-thread-exception warning NAMING the leaking thread.
+
+    Session-scoped and applied to rcd's module namespace only, so:
+      * tests that fake the spawn by patching `mounts_mod.subprocess.Popen`
+        (the stdlib module object — test_mounts_rcd_persist/_auth,
+        test_mount_nfs_handle_cache) still work: the shim delegates whenever
+        global Popen is not the real one;
+      * every other user of subprocess (StubRcd helpers, node runners, the
+        reaper's `ps` via subprocess.run) is untouched.
+    """
+    import subprocess as _sp
+
+    from fused_render.shell.mounts import rcd as _rcd
+
+    real_popen = _sp.Popen
+    real_module = _rcd.subprocess
+
+    class _NoRealSpawn:
+        def __getattr__(self, name):
+            return getattr(_sp, name)
+
+        @staticmethod
+        def Popen(*args, **kwargs):
+            popen = _sp.Popen
+            if popen is real_popen:
+                raise AssertionError(
+                    "test attempted to spawn a real rclone rcd daemon "
+                    "(patch subprocess.Popen or rclone_bin, or fix the "
+                    "leaked background thread this raised in)")
+            return popen(*args, **kwargs)
+
+    _rcd.subprocess = _NoRealSpawn()
+    try:
+        yield
+    finally:
+        _rcd.subprocess = real_module
+
+
+@pytest.fixture(scope="session", autouse=True)
 def _reap_test_rcd_daemons():
     """Kill any REAL rclone rcd daemon a test spawned, on session teardown.
 
