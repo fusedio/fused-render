@@ -213,15 +213,18 @@ def test_link_status_tracks_the_lifecycle(client, tmp_path, workspace):
     d = _folder(tmp_path, "notes")
     st = lambda p: client.get("/api/apps/link-status", params={"path": p}).json()
 
-    assert st(str(d)) == {"status": "unlinked", "name": None}
+    assert st(str(d)) == {"status": "unlinked", "name": None, "tag": None}
     client.post("/api/apps/link", json={"path": str(d)}, headers=HDRS)
-    assert st(str(d)) == {"status": "linked", "name": "notes"}
+    assert st(str(d)) == {"status": "linked", "name": "notes", "tag": "linked"}
     client.post("/api/apps/unlink", json={"name": "notes"}, headers=HDRS)
-    assert st(str(d)) == {"status": "unlinked", "name": None}
+    assert st(str(d)) == {"status": "unlinked", "name": None, "tag": None}
 
+    # A workspace app dir carries its route identity; the root and a tag
+    # folder don't (the button falls back to the fs path there).
     inside = workspace / "local" / "real-app"
     inside.mkdir(parents=True)
-    assert st(str(inside))["status"] == "workspace"
+    assert st(str(inside)) == {"status": "workspace", "name": "real-app", "tag": "local"}
+    assert st(str(workspace / "local")) == {"status": "workspace", "name": None, "tag": None}
 
 
 # ------------------------------------------------------------------- recents
