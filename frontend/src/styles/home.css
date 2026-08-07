@@ -63,6 +63,7 @@
      group, so it stays centered when the tagline wraps). */
   gap: 4px 18px;
   margin: 0 0 18px;
+  text-align: center;
 }
 
 .home-hero-brand-mark {
@@ -92,17 +93,23 @@
   letter-spacing: -0.02em;
 }
 
-/* Tagline shares the brand line but reads secondary: smaller, lighter weight,
-   dimmer color, set off from the name by a little extra space. */
+/* Tagline shares the brand line at the name's size; it reads secondary
+   through weight and the muted grey alone. */
 .home-hero-tagline {
-  font-size: 16px;
+  font-size: 22px;
   font-weight: 500;
-  letter-spacing: -0.01em;
+  letter-spacing: -0.02em;
   color: var(--fg-muted);
 }
 
 .home-hero-accent {
   color: var(--accent);
+}
+
+/* Inside the subtle grey tagline the accent words go quiet too — one step
+   brighter than the muted body so they still read as the emphasis. */
+.home-hero-tagline .home-hero-accent {
+  color: var(--fg);
 }
 
 /* The hero's prompt composer — the claude.ai/v0 "what do you want to build?"
