@@ -534,7 +534,8 @@ def app_satisfies(requirements: list[str]) -> bool:
       must never arrive as "it is already there".
 
     Environment markers are ignored on purpose: `run_python` has already dropped
-    the requirements whose markers do not hold (via `_marker_applies`) and passes
+    the requirements whose markers do not hold (via
+    `projectenv.applicable_dependencies_of`) and passes
     the survivors verbatim, markers included, so re-evaluating one here would be a
     second implementation of a decision that is already made.
     """
@@ -800,46 +801,6 @@ async def _execute(code: str, requirements: list[str], interpreter: str | None, 
     )
 
 
-def _marker_applies(requirement: str) -> bool:
-    """Does this PEP 508 requirement's environment marker hold here?
-
-    A requirement with no marker always applies. Markers exist so a template can
-    declare a dependency **only where the app doesn't already ship it**:
-
-        dependencies = ["python-pptx; sys_platform == 'darwin'"]
-
-    No template needs that today — all three platform builds now ship the whole
-    `[bundled]` extra (D176, as amended), so a `[bundled]` distribution is
-    present everywhere and a template that only needed one would carry no header
-    at all. Support stays because the situation is one packaging decision away:
-    the moment a build holds something back (`BUNDLED_EXCLUDED`), a header that
-    ignored the marker would make the other platforms build a venv and
-    re-download a package already on their interpreter.
-
-    An unparseable or unevaluatable marker is treated as APPLYING: the dependency
-    then gets installed where it might not have been needed, which is wasteful.
-    Guessing the other way would drop a dependency the script really needs and
-    fail at import — the worse of the two.
-    """
-    if ";" not in requirement:
-        return True
-    marker = requirement.split(";", 1)[1].strip()
-    if not marker:
-        return True
-    try:
-        from packaging.markers import InvalidMarker, Marker
-    except ImportError:
-        return True
-    try:
-        return bool(Marker(marker).evaluate())
-    except (InvalidMarker, KeyError, ValueError):
-        logger.warning(
-            "could not evaluate the environment marker %r in a `# /// script` "
-            "dependency; treating it as applying", marker,
-        )
-        return True
-
-
 def _binding_source() -> str:
     """The text of `fused_render/_binding.py`, for embedding into the wrapper.
 
@@ -1026,7 +987,11 @@ def _needs_install_dict(project_dir: str, abs_path: str) -> dict:
     """
     from fused_render import envinstall, projectenv
 
-    requirements = projectenv.dependencies_of(project_dir)
+    # The APPLICABLE ones — the same list the routing decision used and the same
+    # list `uv sync` will install. Naming the raw declaration here meant the
+    # loader row and the error message could promise a package (a
+    # `sys_platform == 'darwin'` entry on Linux) that the install would skip.
+    requirements = projectenv.applicable_dependencies_of(project_dir)
     name = projectenv.display_name(project_dir)
 
     # Two rounds are possible (D214): with no pinned Python on this machine the
@@ -1122,16 +1087,14 @@ async def run_python(path: str, params: dict) -> dict:
     # under a root resolves to the same answer however deep it sits, which is
     # what makes one page calling five scripts one install.
     project = projectenv.project_env_for(path)
-    # Markers applied HERE rather than in `projectenv`, which stays free of
-    # `packaging`: a dependency whose PEP 508 marker does not hold on this
-    # platform is not one this platform needs, and leaving it in would make
-    # `app_satisfies` refuse a fast path over a package that will never be
-    # installed. uv applies the same markers itself when it syncs, so the two
-    # sides agree about what the environment actually contains.
-    requirements = (
-        [d for d in projectenv.dependencies_of(project) if _marker_applies(d)]
-        if project else []
-    )
+    # The APPLICABLE dependencies, from the one helper every caller shares
+    # (`_needs_install_dict` and `has_project_env` use it too). A dependency whose
+    # PEP 508 marker does not hold here is not one this platform needs: leaving it
+    # in would make `app_satisfies` refuse a fast path over a package that will
+    # never be installed, and would let the loader name it. uv applies the same
+    # markers when it syncs, so every side agrees about what the environment
+    # actually contains.
+    requirements = projectenv.applicable_dependencies_of(project) if project else []
 
     # No project -> the app's own interpreter, no venv (PY-17). `interpreter` and
     # `requirements` are mutually exclusive upstream (the interpreter branch

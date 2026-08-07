@@ -200,13 +200,53 @@ def test_unparseable_manifest_is_not_an_environment(home):
     assert projectenv.dependencies_of(str(proj)) == []
 
 
-def test_project_table_without_dependencies_still_has_an_environment(home):
+def test_a_project_table_with_no_dependencies_is_not_an_environment(home):
+    """A `uv init` scaffold must not force an empty venv.
+
+    `[project]` with no dependencies declares nothing to install, so building a
+    venv for it is all cost and no benefit — and worse than neutral: the venv is
+    EMPTY, so a script that worked on the app interpreter (numpy, pandas, duckdb,
+    geopandas, the whole bundled stack) fails on its first import. The pre-flight
+    also renders the empty list as "…are not installed yet: . They need a
+    one-time download."
+
+    An empty declaration is PY-17: run on the app's own interpreter.
+    """
     proj = home / "proj"
     proj.mkdir()
     (proj / "pyproject.toml").write_text("[project]\nname='x'\nversion='1'\n", encoding="utf-8")
+    (proj / "a.py").write_text("x = 1\n", encoding="utf-8")
 
-    assert projectenv.has_project_env(str(proj)) is True
+    assert projectenv.has_project_env(str(proj)) is False
     assert projectenv.dependencies_of(str(proj)) == []
+    assert projectenv.project_env_for(str(proj / "a.py")) is None
+    # The BOUNDARY is still that folder — it is a project, it just has no
+    # environment of its own.
+    assert projectenv.project_root_for(str(proj / "a.py")) == str(proj)
+
+
+def test_an_explicitly_empty_dependency_list_is_not_an_environment(home):
+    proj = _write_project(home / "proj", [])
+    (proj / "a.py").write_text("x = 1\n", encoding="utf-8")
+
+    assert projectenv.has_project_env(str(proj)) is False
+    assert projectenv.project_env_for(str(proj / "a.py")) is None
+
+
+def test_a_dependency_whose_marker_excludes_this_platform_is_not_an_environment(home):
+    """Nothing to install HERE means nothing to build here.
+
+    A folder whose only dependency is `; sys_platform == 'darwin'` has an empty
+    resolved list on Linux, and building an empty venv for it would take the
+    script off the app interpreter for no gain — the same trap as an empty
+    `[project]` table, reached by a different route.
+    """
+    proj = _write_project(home / "proj", ["python-pptx; sys_platform == 'never'"])
+    (proj / "a.py").write_text("x = 1\n", encoding="utf-8")
+
+    assert projectenv.applicable_dependencies_of(str(proj)) == []
+    assert projectenv.has_project_env(str(proj)) is False
+    assert projectenv.project_env_for(str(proj / "a.py")) is None
 
 
 # ---------------------------------------------------------------------------

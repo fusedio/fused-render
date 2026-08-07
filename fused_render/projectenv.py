@@ -270,18 +270,38 @@ def _load_manifest(project_dir: str) -> dict | None:
 
 
 def has_project_env(project_dir: str) -> bool:
-    """Does this folder declare an environment?
+    """Does this folder declare an environment WORTH BUILDING?
 
-    A `pyproject.toml` with a `[project]` table. A manifest that only carries
-    `[tool.*]` configuration (black, ruff, mypy) is not a dependency
-    declaration and must not build a venv.
+    Three things have to hold: a `pyproject.toml`, a `[project]` table in it, and
+    at least one dependency that applies on this platform.
+
+    The last one is not a nicety. An empty declaration — a bare `uv init`
+    scaffold, or a manifest added only for `[tool.*]` config that happens to
+    carry `[project]` — would otherwise take the script OFF the app interpreter
+    and onto an empty venv: no numpy, no pandas, no duckdb, no geopandas, so a
+    script that worked yesterday fails on its first import. The pre-flight would
+    also render the empty list as "…are not installed yet: . They need a one-time
+    download." Nothing to install means PY-17: run on the app's own interpreter,
+    which already has everything.
+
+    Markers are applied for the same reason, one step further out: a folder whose
+    only dependency is `; sys_platform == 'darwin'` has nothing to install on
+    Linux, and building an empty venv there is the identical trap reached by a
+    different route.
     """
     meta = _load_manifest(project_dir)
-    return isinstance(meta, dict) and isinstance(meta.get("project"), dict)
+    if not (isinstance(meta, dict) and isinstance(meta.get("project"), dict)):
+        return False
+    return bool(applicable_dependencies_of(project_dir))
 
 
 def dependencies_of(project_dir: str) -> list[str]:
-    """`[project].dependencies`, or [] when there is no manifest or no table."""
+    """`[project].dependencies` verbatim, markers included.
+
+    For tooling that must reason about ALL platforms (the packaging invariants in
+    tests/). Anything deciding what THIS machine will install wants
+    `applicable_dependencies_of`.
+    """
     meta = _load_manifest(project_dir)
     if not isinstance(meta, dict):
         return []
@@ -292,6 +312,65 @@ def dependencies_of(project_dir: str) -> list[str]:
     if not isinstance(deps, list):
         return []
     return [d for d in deps if isinstance(d, str)]
+
+
+def marker_applies(requirement: str) -> bool:
+    """Does this PEP 508 requirement's environment marker hold here?
+
+    A requirement with no marker always applies. Markers exist so a template can
+    declare a dependency **only where the app doesn't already ship it**:
+
+        dependencies = ["python-pptx; sys_platform == 'darwin'"]
+
+    No template needs that today — all three platform builds now ship the whole
+    `[bundled]` extra (D176, as amended), so a `[bundled]` distribution is
+    present everywhere and a template that only needed one would declare nothing
+    at all. Support stays because the situation is one packaging decision away:
+    the moment a build holds something back (`BUNDLED_EXCLUDED`), a declaration
+    that ignored the marker would make the other platforms build a venv and
+    re-download a package already on their interpreter.
+
+    An unparseable or unevaluatable marker is treated as APPLYING: the dependency
+    then gets installed where it might not have been needed, which is wasteful.
+    Guessing the other way would drop a dependency the script really needs and
+    fail at import — the worse of the two.
+
+    Lives here rather than in `engine.py` (where it used to) so that the one
+    filter serves every caller: the run's routing decision, the pre-flight's
+    message, and `has_project_env`. Two of those disagreed before — the loader
+    row named packages `uv sync` would never install. `packaging` is imported
+    lazily and only for a requirement that actually carries a marker, so the
+    common case stays free on the request path.
+    """
+    if ";" not in requirement:
+        return True
+    marker = requirement.split(";", 1)[1].strip()
+    if not marker:
+        return True
+    try:
+        from packaging.markers import InvalidMarker, Marker
+    except ImportError:
+        return True
+    try:
+        return bool(Marker(marker).evaluate())
+    except (InvalidMarker, KeyError, ValueError):
+        logger.warning(
+            "could not evaluate the environment marker %r in a pyproject.toml "
+            "dependency; treating it as applying", marker,
+        )
+        return True
+
+
+def applicable_dependencies_of(project_dir: str) -> list[str]:
+    """The declared dependencies that apply on THIS platform, markers included.
+
+    The single answer to "what will `uv sync` put in this environment here", used
+    by the routing decision, by `has_project_env`, and by the pre-flight's
+    message — so the loader can never name a package the install will skip.
+    Markers are kept on the strings: `app_satisfies` parses them itself, and
+    stripping them would lose information for no gain.
+    """
+    return [d for d in dependencies_of(project_dir) if marker_applies(d)]
 
 
 # --------------------------------------------------------------------------

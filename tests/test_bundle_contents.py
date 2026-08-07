@@ -38,7 +38,7 @@ def _import_toml():
 
 tomllib = _import_toml()
 
-from fused_render import engine  # noqa: E402
+from fused_render import engine, projectenv  # noqa: E402
 
 _REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _TEMPLATES = os.path.join(_REPO, "fused_render", "templates")
@@ -110,7 +110,7 @@ def _declared_dists_installable_here() -> frozenset[str]:
     raw = list(pp["project"]["optional-dependencies"]["bundled"]) + list(
         pp["project"]["dependencies"]
     )
-    return frozenset(_norm(d) for d in raw if engine._marker_applies(d))
+    return frozenset(_norm(d) for d in raw if projectenv.marker_applies(d))
 
 
 @functools.lru_cache(maxsize=1)
