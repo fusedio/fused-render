@@ -139,6 +139,17 @@
   line-height: 1.5;
 }
 
+/* Explorer's search composer is a one-line query box, not a build prompt —
+   trim the vertical padding so it reads shorter than the /apps composer. */
+.files-search .home-composer-input,
+.files-search .home-composer-input:focus {
+  padding: 9px 16px 2px;
+}
+
+.files-search .home-composer-bar {
+  padding: 2px 8px 6px 16px;
+}
+
 .home-composer-bar {
   display: flex;
   align-items: center;
