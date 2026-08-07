@@ -3377,6 +3377,68 @@ function runEnding(data, stopped) {
   return { error: "", note: "The turn finished before the stop landed.", keepText: true };
 }
 
+async function stopRun() {
+  const run_id = activeRun;
+  if (!run_id || stoppedRun === run_id) return;  // nothing live, or already going
+  stoppedRun = run_id;
+  // Detach the queue BEFORE the await — a drain racing the cancel must find it
+  // empty — but move nothing to the composer until the stop actually lands:
+  // a failed cancel leaves the run live, and the queue (bubbles untouched, the
+  // array put back) has to keep auto-draining when that run really ends.
+  const held = queuedMsgs.splice(0);
+  if (activeWorking) activeWorking.setStopping(true);
+  try {
+    await fused.runPython(AGENT, { action: "cancel", run_id }, { key: null });
+    unqueueAll(held);
+  } catch (err) {
+    // The kill never reached the backend, so the run is still going and the poll
+    // loop is still streaming it. Take the claim back: leaving it set would
+    // relabel this run's real ending as a stop the user never got.
+    stoppedRun = "";
+    // unshift, not push: anything queued DURING the await went to the array's
+    // tail, and its bubble sits below the held ones — the held entries go back
+    // to the front so drain order keeps matching both typed and screen order.
+    queuedMsgs.unshift(...held.filter((q) => !q.dead));
+    if (activeWorking) activeWorking.setStopping(false);
+    addError("Could not stop the run: " + err.message);
+  }
+}
+
+// Escape has three claimants in this pane: the annotation composer, annotate
+// mode, and a live run. Ordered least-destructive first — dismissing a popover is
+// small and repeatable, leaving annotate mode costs one click to undo, killing a
+// turn costs the turn. So a user reaching for Escape with a text box in front of
+// them means the text box, and one reaching for it while annotating means
+// annotate mode, not the run they may also have going. Split out as a pure
+// decision so the precedence is a tested rule and not an ordering accident.
+function escapeAction(composerOpen, annotating, runId) {
+  if (composerOpen) return "close-composer";
+  if (annotating) return "exit-annotate";
+  return runId ? "stop-run" : "";
+}
+
+// Gated on there being something to do, so the binding is inert the rest of the
+// time — this page sits in an iframe and must not swallow Escape from the shell
+// around it for nothing.
+function onEscape(e) {
+  if (e.key !== "Escape") return;
+  // The textarea's own Escape handler stops propagation, so what reaches here
+  // with the popover open is an Escape pressed with focus somewhere else.
+  const act = escapeAction(annPop.style.display === "block", annOn, activeRun);
+  if (!act) return;
+  e.preventDefault();
+  if (act === "close-composer") annCloseComposer();
+  else if (act === "exit-annotate") annSetMode(false);
+  else stopRun();
+}
+
+// Bound on BOTH documents. Annotate mode is driven with the pointer over the
+// iframe, so that is where the keydown lands, and a keydown in the frame's
+// document does not bubble across the boundary to this one — the same reason the
+// mousedown/mousemove/click handlers all hang off `doc`. The frame-side binding
+// is (re)attached on every frame load; see the load handler.
+document.addEventListener("keydown", onEscape);
+
 // ── message queue: text typed while a run is live ──
 // In-memory only (a reload drops it — the composer is where durable drafts
 // live), text-only by design: annotations and the pane-shot toggle are folded
@@ -3387,6 +3449,11 @@ function runEnding(data, stopped) {
 // a SIBLING after #log, not inside it, so queued messages always sit below
 // every turn, including turns appended to the log while they wait; the ×
 // unqueues it back into the composer.
+//
+// Sited BELOW stopRun (which calls into it — fine, the calls happen at click
+// time) because test_claude_stop_run.py extracts `runEnding` as "everything up
+// to `async function stopRun`" and runs it under node: anything between the
+// two that touches `document` breaks that extraction.
 const queueEl = document.getElementById("queue");
 const queuedMsgs = [];  // [{ text, el }]
 
@@ -3428,7 +3495,7 @@ function queueMessage(text) {
 // sendMessage AND resumeRun — a message queued against a re-attached run has
 // to drain too. Draining after an errored turn is deliberate (the user queued
 // it knowing less than we do now, but un-sending their words is worse); a
-// STOPPED turn is the exception, handled in stopRun below.
+// STOPPED turn is the exception, handled in stopRun above.
 function drainQueue() {
   if (sending || activeRun || !queuedMsgs.length) return;
   const next = queuedMsgs.shift();
@@ -3438,7 +3505,7 @@ function drainQueue() {
 
 // Stop means halt: give queued text back to the composer instead of firing it
 // at the session a second after the user said stop. Takes the entries rather
-// than reading queuedMsgs, because stopRun detaches them first (see below).
+// than reading queuedMsgs, because stopRun detaches them first.
 function unqueueAll(entries) {
   for (const q of entries) {  // head first: composer keeps typed order
     if (q.dead) continue;  // × was clicked while this entry was detached
@@ -3447,65 +3514,6 @@ function unqueueAll(entries) {
   }
   growBox();
 }
-
-async function stopRun() {
-  const run_id = activeRun;
-  if (!run_id || stoppedRun === run_id) return;  // nothing live, or already going
-  stoppedRun = run_id;
-  // Detach the queue BEFORE the await — a drain racing the cancel must find it
-  // empty — but move nothing to the composer until the stop actually lands:
-  // a failed cancel leaves the run live, and the queue (bubbles untouched, the
-  // array put back) has to keep auto-draining when that run really ends.
-  const held = queuedMsgs.splice(0);
-  if (activeWorking) activeWorking.setStopping(true);
-  try {
-    await fused.runPython(AGENT, { action: "cancel", run_id }, { key: null });
-    unqueueAll(held);
-  } catch (err) {
-    // The kill never reached the backend, so the run is still going and the poll
-    // loop is still streaming it. Take the claim back: leaving it set would
-    // relabel this run's real ending as a stop the user never got.
-    stoppedRun = "";
-    queuedMsgs.push(...held.filter((q) => !q.dead));
-    if (activeWorking) activeWorking.setStopping(false);
-    addError("Could not stop the run: " + err.message);
-  }
-}
-
-// Escape has three claimants in this pane: the annotation composer, annotate
-// mode, and a live run. Ordered least-destructive first — dismissing a popover is
-// small and repeatable, leaving annotate mode costs one click to undo, killing a
-// turn costs the turn. So a user reaching for Escape with a text box in front of
-// them means the text box, and one reaching for it while annotating means
-// annotate mode, not the run they may also have going. Split out as a pure
-// decision so the precedence is a tested rule and not an ordering accident.
-function escapeAction(composerOpen, annotating, runId) {
-  if (composerOpen) return "close-composer";
-  if (annotating) return "exit-annotate";
-  return runId ? "stop-run" : "";
-}
-
-// Gated on there being something to do, so the binding is inert the rest of the
-// time — this page sits in an iframe and must not swallow Escape from the shell
-// around it for nothing.
-function onEscape(e) {
-  if (e.key !== "Escape") return;
-  // The textarea's own Escape handler stops propagation, so what reaches here
-  // with the popover open is an Escape pressed with focus somewhere else.
-  const act = escapeAction(annPop.style.display === "block", annOn, activeRun);
-  if (!act) return;
-  e.preventDefault();
-  if (act === "close-composer") annCloseComposer();
-  else if (act === "exit-annotate") annSetMode(false);
-  else stopRun();
-}
-
-// Bound on BOTH documents. Annotate mode is driven with the pointer over the
-// iframe, so that is where the keydown lands, and a keydown in the frame's
-// document does not bubble across the boundary to this one — the same reason the
-// mousedown/mousemove/click handlers all hang off `doc`. The frame-side binding
-// is (re)attached on every frame load; see the load handler.
-document.addEventListener("keydown", onEscape);
 
 // ── send one message: start detached claude, poll + stream ──
 // One turn at a time: concurrent turns would share the session_id param and
