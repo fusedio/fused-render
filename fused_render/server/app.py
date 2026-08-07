@@ -39,6 +39,7 @@ from fused_render.server.common import (
     _forced_engine,
 )
 from fused_render.server.routers.apps import router as apps_router
+from fused_render.server.routers.claude_sessions import router as claude_sessions_router
 from fused_render.server.routers.clipboard import router as clipboard_router
 from fused_render.server.routers.config import router as config_router
 from fused_render.server.routers.env import router as env_router
@@ -47,6 +48,7 @@ from fused_render.server.fs_mutate import router as fs_mutate_router
 from fused_render.server.routers.fs_read import router as fs_read_router
 from fused_render.server.routers.render import router as render_router
 from fused_render.server.routers.run import router as run_router
+from fused_render.server.routers.search import router as search_router
 from fused_render.server.session import router as session_router
 from fused_render.server.routers.shell import router as shell_router
 # The MODULE, not `from … import TEMPLATES_DIR`: that constant is a live seam
@@ -294,6 +296,9 @@ def create_app(start_dir: str) -> FastAPI:
     # The Home view's apps backend (routers/apps.py): list workspace app
     # folders + scaffold new ones from the app starter kit.
     app.include_router(apps_router)
+    # Claude Code project folders for the Explorer homepage's "Claude
+    # sessions" tab (routers/claude_sessions.py) — read-only, no auth guard.
+    app.include_router(claude_sessions_router)
     # GitHub deep links (SPEC §26, D110): GET /clone confirm page +
     # POST /api/clone sparse-clone into ~/Documents/Fused. deeplink.py never
     # imports server, so the include stays acyclic like shell/*.
@@ -330,6 +335,7 @@ def create_app(start_dir: str) -> FastAPI:
     # (_server_ai.py), and /api/export (_server_export.py).
     app.include_router(session_router)
     app.include_router(fs_read_router)
+    app.include_router(search_router)
     app.include_router(fs_mutate_router)
     app.include_router(render_router)
     app.include_router(run_router)
