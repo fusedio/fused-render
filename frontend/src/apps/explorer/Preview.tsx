@@ -6,7 +6,9 @@
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import {
+  getAppLinkStatus,
   getDeployStatus,
+  linkApp,
   rawUrl,
   resolveConditions,
   renameEntry,
@@ -659,14 +661,43 @@ function TemplatePreview({
     Promise.resolve(buildOpenWithItems(templates, (m) => void setMode(m)));
   const fileMenu = usePreviewFileMenu(fsPath, stat, loadOpenWith);
 
+  // How the listed folder relates to the app system, for the button below:
+  // "workspace"/"linked" folders open as an app, an "unlinked" one offers
+  // "Convert to app" (registers it in the linked-apps registry — it then shows
+  // up on the Home grid under the "linked" tag). Fetched per folder, only when
+  // the single-HTML button would show at all; a fetch failure (older backend)
+  // falls back to "workspace" so the button degrades to plain "Open as app".
+  const [linkStatus, setLinkStatus] = useState<"workspace" | "linked" | "unlinked" | null>(null);
+  useEffect(() => {
+    setLinkStatus(null);
+    if (!isListing || !singleAppPath) return;
+    let stale = false;
+    getAppLinkStatus(fsPath).then(
+      (s) => { if (!stale) setLinkStatus(s.status); },
+      () => { if (!stale) setLinkStatus("workspace"); }
+    );
+    return () => { stale = true; };
+  }, [isListing, singleAppPath, fsPath]);
+
+  const convertToApp = async () => {
+    try {
+      const { app } = await linkApp(fsPath);
+      setLinkStatus("linked");
+      pushToast({ msg: `Linked as app “${app.name}” — it's on the Home grid now`, tone: "info" });
+    } catch (e) {
+      pushToast({ msg: (e as Error).message, tone: "error" });
+    }
+  };
+  const appBtnLabel = linkStatus === "unlinked" ? "Convert to app" : "Open as app";
+  const appBtnAction =
+    linkStatus === "unlinked"
+      ? convertToApp
+      : () => navigate(singleAppPath as string, { isDir: false });
+
   const openAsAppBtn =
-    isListing && singleAppPath ? (
-      <button
-        type="button"
-        className="open-as-app-btn"
-        onClick={() => navigate(singleAppPath, { isDir: false })}
-      >
-        Open as app
+    isListing && singleAppPath && linkStatus ? (
+      <button type="button" className="open-as-app-btn" onClick={appBtnAction}>
+        {appBtnLabel}
       </button>
     ) : null;
 
@@ -767,13 +798,9 @@ function TemplatePreview({
             preview-browse-chip. Opposite corner so the two can coexist (a
             directory can have both a browsable counterpart mode AND a lone
             HTML file). */}
-        {isListing && singleAppPath && (
-          <button
-            type="button"
-            className="open-as-app-chip"
-            onClick={() => navigate(singleAppPath, { isDir: false })}
-          >
-            Open as app
+        {isListing && singleAppPath && linkStatus && (
+          <button type="button" className="open-as-app-chip" onClick={appBtnAction}>
+            {appBtnLabel}
           </button>
         )}
       </div>
