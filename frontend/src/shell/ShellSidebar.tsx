@@ -46,7 +46,7 @@ export default function ShellSidebar({ config }: { config: Config }) {
       <div className="sidebar-section">
         <NavItem href="/explorer" id="explorer-link" label="Fused Explorer" icon={<FolderIcon />} />
         <NavItem href="/apps" id="apps-link" label="Fused App" icon={APPS_ICON} />
-        {sessionsMountReady && <NavItem href="/sessions" id="sessions-link" label="Claude Sessions" icon={SESSIONS_ICON} />}
+        {sessionsMountReady && <NavItem href="/sessions" id="sessions-link" label="Session Inbox" icon={SESSIONS_ICON} />}
         {learnMountReady && <NavItem href="/learn" id="learn-link" label="Learn More" icon={<LearnIcon />} />}
       </div>
       {/* Settings — pinned to the bottom edge (margin-top: auto), the same
