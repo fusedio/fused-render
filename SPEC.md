@@ -3940,7 +3940,10 @@ hygiene and the theme still holds for it unchanged.
   uncommitted changes + the first page of the scoped log, one round trip), `log`
   (a later page), `commit` (metadata + a diff restricted to the scope),
   `worktree` (working tree vs HEAD for one uncommitted entry), `branches` (the
-  local branches, D229) and `stashes` (the stash list, D229). The branch list is
+  local branches, D229) and `stashes` (the stash list, D229 — every entry
+  carrying its commit id `%H` as well as its index, because an index is a
+  *position* and a destructive op has to be able to prove it is acting on the
+  entry the user saw; GT-16). The branch list is
   read from **`for-each-ref` with a machine format**, never from `git branch`,
   whose output is a *human* format — column-aligned, colourable through a key
   `color.ui=false` does not cover, and marking the current branch with a leading
@@ -4190,10 +4193,31 @@ hygiene and the theme still holds for it unchanged.
   listing a change and changing it are different acts, so the row is shown
   without its action buttons. The reader's *ancestor* case is likewise absent: a
   collapsed `dir/` row that is an ancestor of the scope covers files outside it,
-  and discarding it would reach them. **`branch_checkout` is exempt by nature**
-  and does not go through the path rule at all — a branch *is* a repository
-  concept, and there is no such thing as checking one out "just for `pkg/`".
-  That is expected, not a hole.
+  and discarding it would reach them. **The view MIRRORS this rule rather than
+  approximating it** — a row the module would refuse renders without its action
+  buttons, because a button that always refuses is worse than no button: it
+  advertises an act ("delete this whole directory") that cannot happen.
+  **`branch_checkout` is exempt by nature** and does not go through the path rule
+  at all — a branch *is* a repository concept, and there is no such thing as
+  checking one out "just for `pkg/`". That is expected, not a hole.
+- **GT-13a** **A name GIT produced is validated exactly like a name the user
+  typed, and `--` still precedes it.** git echoes refnames and remote names
+  **verbatim** out of files inside `.git`, and those files are content, not API:
+  a hand-written `.git/HEAD` holding `ref: refs/heads/--upload-pack=cmd` makes
+  `symbolic-ref --short HEAD` print `--upload-pack=cmd`, and a hand-written
+  `[remote "--receive-pack=cmd"]` makes `git remote` print that. Neither is
+  reachable through git's own porcelain — `git branch` and `git remote add` both
+  reject them — so a repository carrying one arrived some other way (a tarball, a
+  zip, a shared drive; `git clone` does not copy config). Both values flow into
+  the argv of `fetch` / `pull` / `push`, so a **leading-dash refusal is applied
+  to them centrally** and the whole repository is refused rather than the bad
+  name filtered out: silently using the *other* remote would hide that the
+  repository is malformed. **Every** repo-derived value is additionally written
+  after a `--` terminator. The two are independent guarantees and both are kept,
+  because relying on either alone is precisely how one missing `--` turns a
+  hostile repository into local command execution. Same class, same reasoning as
+  GT-6's rule that a non-hex `sha` never becomes argv — the difference is only
+  that the untrusted input arrives from the *repository* rather than from a URL.
 - **GT-14** **Commit is index-based, and the UI is honest about it.** `git
   commit -m <msg>` with **no pathspec, ever**. The alternative — `git commit --
   <paths>` — is not a scoped commit but a different operation: it bypasses the
@@ -4247,6 +4271,19 @@ hygiene and the theme still holds for it unchanged.
   the branch's own, else the sole configured one, else `origin`; with several
   remotes, no `origin` and no upstream there is no defensible guess, so the
   answer is "no remote" and no button rather than a choice made for the user.
+  **Every network command names its remote AND its refspec explicitly** —
+  `push -- <remote> HEAD:refs/heads/<upstream branch>` and
+  `pull --ff-only -- <remote> <upstream branch>`, never the bare form. A bare
+  `git push` means whatever `push.default` and `remote.pushDefault` say, which
+  can be "every matching local branch" or "a different remote than the success
+  message names": in both cases doing more, or something else, than the button
+  said, decided by config this view never shows. `--ff-only` bounds the
+  *outcome*; naming the refspec bounds the *input*, and both are wanted. The
+  refspec is written `HEAD:refs/heads/<name>` so it preserves the recorded
+  upstream mapping when the local and remote branch names differ, is fully
+  qualified against matching a remote ref of another kind, and — being prefixed
+  by `HEAD:` — cannot be option-shaped whatever the refnames in the repository
+  are (GT-13a).
 - **GT-16** **Anything that can lose uncommitted work is confirmed in-view, and
   is individually addressable in the module.** Exactly three ops are destructive
   — `discard`, `discard_all`, `stash_drop` — and the module names them in one
@@ -4258,10 +4295,30 @@ hygiene and the theme still holds for it unchanged.
   where a native dialog is at best chrome the view cannot place and at worst
   suppressed — and inline puts the question next to the row it is about, which is
   why it is being asked. Its pending state lives in a param (`ask`), so a refresh
-  reproduces the question rather than silently dropping it. Discarding a **staged**
+  reproduces the question rather than silently dropping it.
+  **A confirmation carries IDENTITY, not position, and it says which row it is
+  about.** The confirmation is not modal and its param can sit in the URL
+  indefinitely, so the world may move between the question and the answer, and
+  the `ask` key has to be self-sufficient. Two ways it was not, both fixed by
+  putting the missing fact in the key: a **stash** is addressed by index *and*
+  commit id (`log.py` puts `%H` on every entry, `ops.py` verifies it and refuses
+  with "that stash moved" otherwise), because `stash@{n}` means "the nth entry
+  right now" and any `stash push` — from this view, another tab, or a terminal —
+  renumbers every entry, so a merely bounds-checked index would irreversibly drop
+  a different, still-wanted stash; and a **discard** names the SECTION its row
+  was in (`discard:staged:<path>` vs `discard:worktree:<path>`), because an `MM`
+  file appears in both lists and a key of just the path could not tell the two ↩
+  buttons apart — the CHANGES row's, whose question mentioned only the unstaged
+  edit, was composing the staged form and throwing the staged version away too.
+  Each row's question text states exactly what its own call will do. `ask` is
+  also cleared after every mutation, so an answered question cannot be re-asked
+  over freshly-fetched lists or leave a stale index behind. Discarding a **staged**
   change is two explicit calls — `unstage`, then `discard` — composed by the view
   behind ONE confirmation, because `restore --worktree` restores from the *index*
   and a single-call discard would put back the very content being thrown away.
+  When the second half fails the first has still **happened**, so the failure
+  message says so ("the change was unstaged, but discarding it failed: …")
+  instead of leaving the user believing nothing moved.
   `branch_delete` is deliberately **not** in the confirmed set: `-d` cannot lose
   work, so git's own refusal is already the safety step and a second one would be
   the kind of ceremony that trains people to click through.

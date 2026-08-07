@@ -191,7 +191,13 @@ _TRACK_BEHIND = re.compile(r"behind (\d+)")
 # worth surfacing (a stash applied onto the wrong branch is a bad afternoon), and
 # it is the only part of that string with a stable shape, so it is the only part
 # parsed — the remainder is passed through as the message rather than re-derived.
-_STASH_FORMAT = "%gs%x00%cr"
+#
+# `%H` first, and it is not decoration: a stash's positional index is the ONLY
+# thing `stash@{n}` means, and the position shifts under a `stash push` from
+# anywhere — this view, another tab, a terminal. So the entry carries its commit
+# id, and a destructive op quotes it back (ops.py `_stash_at`) to prove it is
+# dropping the entry the user actually looked at.
+_STASH_FORMAT = "%H%x00%gs%x00%cr"
 _STASH_SUBJECT = re.compile(r"^(?:WIP on|On) ([^:]+): (.*)$", re.DOTALL)
 
 # A rename with only ONE side inside the open scope is a MOVE relative to that
@@ -653,13 +659,15 @@ def _stashes(root):
     stashes = []
     for index, line in enumerate(records[:MAX_STASHES]):
         parts = line.split("\0")
-        if len(parts) != 2:
+        if len(parts) != 3:
             continue
-        subject, relative = parts
+        sha, subject, relative = parts
         matched = _STASH_SUBJECT.match(subject)
         stashes.append({
             "index": index,
             "ref": f"stash@{{{index}}}",
+            # The stable identity of this entry, independent of its position.
+            "sha": sha,
             "message": matched.group(2) if matched else subject,
             "relative": relative,
             "branch": matched.group(1) if matched else None,

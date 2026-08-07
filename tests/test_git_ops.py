@@ -157,6 +157,78 @@ def test_stage_all_and_unstage_all_use_the_scope(ops, repo):
     assert status(repo)["pkg/mod.py"] == " M"
 
 
+def test_unstage_all_before_the_first_commit(ops, tmp_path):
+    # The unborn-HEAD path meets the `:/` scope pathspec here, and `git rm
+    # --cached` treats a pathspec matching nothing as exit 128 — so this is the
+    # one combination where the two correct-in-isolation pieces fail together.
+    root = str(tmp_path / "unborn-all")
+    os.makedirs(root)
+    git(root, "init", "-q")
+    write(root, "draft.md", "hello\n")
+    git(root, "add", "-A")
+    assert ops.main(root, op="unstage_all")["ok"] is True
+    assert status(root)["draft.md"] == "??"
+    # …and again, with nothing left in the index: "already how you asked for it"
+    # is not a failure.
+    assert ops.main(root, op="unstage_all")["ok"] is True
+
+
+def test_discard_all_where_git_tracks_nothing_yet(ops, tmp_path):
+    # `git restore --worktree` calls a pathspec matching nothing tracked an ERROR
+    # (exit 1), which is wrong for a scope holding only untracked files — there
+    # the `clean` half is the entire operation.
+    root = str(tmp_path / "untracked-only")
+    os.makedirs(root)
+    git(root, "init", "-q")
+    write(root, "loose.txt", "junk\n")
+    got = ops.main(root, op="discard_all")
+    assert got["ok"] is True, got
+    assert not os.path.exists(os.path.join(root, "loose.txt"))
+
+
+def test_a_git_without_switch_falls_back_to_checkout(ops, repo, monkeypatch):
+    # `switch` needs git >= 2.23. The fallback is detected from the attempt's own
+    # answer rather than by parsing `git --version` — a version string is one
+    # more format to get wrong, and "did this git understand the verb" is the
+    # question that matters.
+    git(repo, "branch", "legacy-target")
+    real_run = ops._run
+    seen = []
+
+    def old_git(root, *args):
+        seen.append(list(args))
+        if args and args[0] == "switch":
+            return 1, b"", "git: 'switch' is not a git command. See 'git --help'."
+        return real_run(root, *args)
+
+    monkeypatch.setattr(ops, "_run", old_git)
+    got = ops.main(repo, op="branch_checkout", name="legacy-target")
+    assert got["ok"] is True, got
+    assert git(repo, "symbolic-ref", "--short", "HEAD").strip() == "legacy-target"
+    assert any(a and a[0] == "switch" for a in seen), "switch is tried first"
+
+
+def test_the_legacy_fallback_spells_branch_creation_with_b_not_c(ops, repo, monkeypatch):
+    # `-c` is `switch`'s flag; `checkout`'s is `-b`. Translating it is the only
+    # difference between the two spellings for the calls this module makes.
+    real_run = ops._run
+    seen = []
+
+    def old_git(root, *args):
+        if args and args[0] == "switch":
+            return 1, b"", "git: 'switch' is not a git command."
+        seen.append(list(args))
+        return real_run(root, *args)
+
+    monkeypatch.setattr(ops, "_run", old_git)
+    assert ops.main(repo, op="branch_create", name="legacy-new",
+                    checkout=True)["ok"] is True
+    checkouts = [a for a in seen if a and a[0] == "checkout"]
+    assert checkouts, seen
+    assert "-b" in checkouts[0] and "-c" not in checkouts[0]
+    assert git(repo, "symbolic-ref", "--short", "HEAD").strip() == "legacy-new"
+
+
 def test_stage_all_at_the_repository_root_stages_everything(ops, repo):
     write(repo, "pkg/mod.py", "two\n")
     write(repo, "top.txt", "changed\n")
@@ -492,7 +564,8 @@ def test_stash_push_is_scoped_and_apply_brings_it_back(ops, reader, repo):
     listed = reader.main(repo, op="stashes")
     assert listed["stashes"][0]["message"] == "scoped work"
 
-    applied = ops.main(os.path.join(repo, "pkg"), op="stash_apply", index=0)
+    applied = ops.main(os.path.join(repo, "pkg"), op="stash_apply", index=0,
+                       sha=listed["stashes"][0]["sha"])
     assert applied["ok"] is True
     assert status(repo)["pkg/mod.py"] == " M"
     # apply KEEPS the entry; that is the difference from pop.
@@ -514,7 +587,8 @@ def test_stash_push_with_nothing_to_stash_is_a_clean_refusal(ops, repo):
 def test_stash_pop_restores_and_removes_the_entry(ops, reader, repo):
     write(repo, "pkg/mod.py", "stashable\n")
     ops.main(repo, op="stash_push", message="popme")
-    got = ops.main(repo, op="stash_pop", index=0)
+    sha = reader.main(repo, op="stashes")["stashes"][0]["sha"]
+    got = ops.main(repo, op="stash_pop", index=0, sha=sha)
     assert got["ok"] is True, got
     assert status(repo)["pkg/mod.py"] == " M"
     assert reader.main(repo, op="stashes")["stashes"] == []
@@ -523,7 +597,8 @@ def test_stash_pop_restores_and_removes_the_entry(ops, reader, repo):
 def test_stash_drop_removes_the_entry_without_restoring_it(ops, reader, repo):
     write(repo, "pkg/mod.py", "stashable\n")
     ops.main(repo, op="stash_push", message="dropme")
-    got = ops.main(repo, op="stash_drop", index=0)
+    sha = reader.main(repo, op="stashes")["stashes"][0]["sha"]
+    got = ops.main(repo, op="stash_drop", index=0, sha=sha)
     assert got["ok"] is True, got
     assert status(repo) == {}, "dropped, not restored"
     assert reader.main(repo, op="stashes")["stashes"] == []
@@ -531,10 +606,59 @@ def test_stash_drop_removes_the_entry_without_restoring_it(ops, reader, repo):
 
 def test_a_negative_or_absurd_stash_index_is_refused(ops, repo):
     for bad in (-1, -99):
-        got = ops.main(repo, op="stash_drop", index=bad)
+        got = ops.main(repo, op="stash_drop", index=bad, sha="0" * 40)
         assert got["ok"] is False and got["reason"] == "bad-index", bad
-    missing = ops.main(repo, op="stash_apply", index=7)
+    missing = ops.main(repo, op="stash_apply", index=7, sha="0" * 40)
     assert missing["ok"] is False and missing["reason"] == "no-such-stash"
+
+
+def test_a_stash_op_without_an_entry_id_is_refused(ops, repo):
+    # A bare index is a POSITION, and a position is not an identity. Refusing the
+    # id-less call is what makes the identity check unskippable.
+    write(repo, "pkg/mod.py", "stashable\n")
+    ops.main(repo, op="stash_push", message="anon")
+    for op in ("stash_apply", "stash_pop", "stash_drop"):
+        got = ops.main(repo, op=op, index=0)
+        assert got["ok"] is False, op
+        assert got["reason"] == "bad-stash-id", (op, got)
+
+
+def test_a_stash_that_shifted_under_the_request_is_refused_not_dropped(
+        ops, reader, repo):
+    # THE bug this guards. `stash@{0}` means "the newest entry right now", so a
+    # `stash push` from anywhere — this view, another tab, a terminal — renumbers
+    # every entry. A confirmation can sit in the URL indefinitely, so a
+    # bounds-checked index alone would drop whatever happens to be at position 0
+    # when the user finally clicks Yes: a different, still-wanted stash, gone for
+    # good.
+    write(repo, "pkg/mod.py", "first\n")
+    ops.main(repo, op="stash_push", message="the one the user looked at")
+    seen = reader.main(repo, op="stashes")["stashes"][0]
+    assert seen["index"] == 0
+
+    # …and now something else is stashed, so index 0 is a DIFFERENT entry.
+    write(repo, "pkg/keep.py", "second\n")
+    ops.main(repo, op="stash_push", message="an unrelated, newer stash")
+    shifted = reader.main(repo, op="stashes")
+    assert shifted["stashes"][0]["message"] == "an unrelated, newer stash"
+    assert shifted["stashes"][1]["sha"] == seen["sha"], "it moved to index 1"
+
+    got = ops.main(repo, op="stash_drop", index=0, sha=seen["sha"])
+    assert got["ok"] is False, got
+    assert got["reason"] == "stash-moved"
+    # Both entries survive: the one the user meant AND the one they did not.
+    after = reader.main(repo, op="stashes")["stashes"]
+    assert len(after) == 2
+    assert {s["sha"] for s in after} == {seen["sha"], shifted["stashes"][0]["sha"]}
+
+
+def test_a_stash_id_that_is_not_an_object_name_never_reaches_git(ops, repo):
+    write(repo, "pkg/mod.py", "stashable\n")
+    ops.main(repo, op="stash_push", message="x")
+    for bad in ("--upload-pack=touch /tmp/x", "stash@{0}", "zzzz", "HEAD"):
+        got = ops.main(repo, op="stash_drop", index=0, sha=bad)
+        assert got["ok"] is False, bad
+        assert got["reason"] == "bad-stash-id", (bad, got)
 
 
 # -------------------------------------------------------------- fetch / pull / push
@@ -636,6 +760,31 @@ def test_a_repository_with_no_remote_refuses_the_network_ops(ops, repo):
         got = ops.main(repo, op=op)
         assert got["ok"] is False, op
         assert got["reason"] == "no-remote", (op, got)
+
+
+def test_several_remotes_with_no_origin_and_no_upstream_is_refused(ops, repo, tmp_path):
+    # This branch decides whether fetch/pull/push are offered at all, and there
+    # is no defensible guess here — picking one for the user is how work lands on
+    # the wrong server. The refusal names the situation instead.
+    for name in ("upstream", "fork"):
+        git(repo, "remote", "add", name, str(tmp_path / (name + ".git")))
+    for op in ("fetch", "pull", "push"):
+        got = ops.main(repo, op=op)
+        assert got["ok"] is False, op
+        assert got["reason"] == "no-remote", (op, got)
+        assert "several" in got["message"].lower(), got
+
+
+def test_a_sole_remote_that_is_not_called_origin_is_used(ops, repo, tmp_path):
+    # The other side of the same rule: one remote is not a guess.
+    remote = str(tmp_path / "elsewhere.git")
+    from _git_repo import bare_repo
+
+    bare_repo(remote)
+    git(repo, "remote", "add", "elsewhere", remote)
+    got = ops.main(repo, op="push")
+    assert got["ok"] is True, got
+    assert "elsewhere" in got["detail"]
 
 
 # ------------------------------------------------------------------ refusals
@@ -764,6 +913,116 @@ def test_optional_locks_are_not_disabled_for_a_mutating_command(ops, repo, monke
     assert seen
     for env in seen:
         assert env.get("GIT_OPTIONAL_LOCKS") != "0"
+
+
+# ------------------------------------------- argument injection from the REPO
+#
+# The rule that user-typed names may not start with a dash has to apply just as
+# hard to names GIT hands back, because git echoes them verbatim out of files
+# inside `.git`, and those files are content. Neither shape below is reachable
+# through git's own porcelain (`git branch` and `git remote add` both reject
+# them), so a repository carrying one arrived some other way — a tarball, a zip,
+# a shared drive; `git clone` does not copy config. That is a malformed or
+# hostile repository, and the right answer is to stop.
+
+
+def test_a_dash_leading_branch_name_from_git_head_is_refused(ops, repo):
+    # `git symbolic-ref --short HEAD` prints whatever `.git/HEAD` names, so a
+    # hand-written ref yields the string `-evil` — which, in the argv position
+    # `push` puts a branch in, is an option.
+    # No space in the payload: a refname may not contain one, so git would refuse
+    # to resolve HEAD at all and the interesting case would never be reached. An
+    # option-shaped name without a space resolves fine, which is the point.
+    with open(os.path.join(repo, ".git", "HEAD"), "w", encoding="utf-8") as handle:
+        handle.write("ref: refs/heads/--upload-pack=cmd\n")
+    for op in ("fetch", "pull", "push"):
+        got = ops.main(repo, op=op)
+        assert got["ok"] is False, op
+        assert got["reason"] == "unsafe-name", (op, got)
+        assert "--upload-pack=cmd" in got["message"]
+
+
+def test_a_dash_leading_remote_name_from_git_config_is_refused(ops, repo):
+    # `git remote` prints the config SECTION names verbatim, so a hand-written
+    # `[remote "--receive-pack=<cmd>"]` is a name this list can contain. Without
+    # the guard, one click of Push runs that command locally and the view reports
+    # success.
+    with open(os.path.join(repo, ".git", "config"), "a", encoding="utf-8") as handle:
+        handle.write('[remote "--receive-pack=cmd"]\n'
+                     "\turl = /tmp/nowhere\n"
+                     "\tfetch = +refs/heads/*:refs/remotes/x/*\n")
+    for op in ("fetch", "pull", "push"):
+        got = ops.main(repo, op=op)
+        assert got["ok"] is False, op
+        assert got["reason"] == "unsafe-name", (op, got)
+        assert "--receive-pack=cmd" in got["message"]
+
+
+def test_a_hostile_remote_name_refuses_the_whole_repository_not_just_that_remote(
+        ops, repo, tmp_path):
+    # Filtering the bad name out and quietly using the good remote would hide
+    # the fact that the repository is malformed — and would make the guard
+    # depend on which remote happened to be picked.
+    with_remote(repo, str(tmp_path / "good.git"))
+    with open(os.path.join(repo, ".git", "config"), "a", encoding="utf-8") as handle:
+        handle.write('[remote "--upload-pack=cmd"]\n\turl = /tmp/nowhere\n')
+    got = ops.main(repo, op="fetch")
+    assert got["ok"] is False and got["reason"] == "unsafe-name", got
+
+
+def test_every_repo_derived_name_reaching_argv_is_preceded_by_a_terminator(
+        ops, wired, monkeypatch):
+    # The other half of the same guarantee. `_repo_name` refuses an option-shaped
+    # value; `--` means an ordinary one can never be read as an option either.
+    # Depending on only one of them is how a single missing terminator turns a
+    # hostile repository into local command execution, so both are pinned.
+    root, _, _ = wired
+    seen = []
+    real_run = subprocess.run
+
+    def spy_run(argv, **kwargs):
+        seen.append(list(argv))
+        return real_run(argv, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", spy_run)
+    ops.main(root, op="fetch")
+    ops.main(root, op="pull")
+    ops.main(root, op="push")
+    network = [argv for argv in seen
+               if {"fetch", "pull", "push"} & set(argv[:6] + argv[-6:])]
+    assert network, "no network command was observed"
+    for argv in network:
+        verb = next(a for a in argv if a in ("fetch", "pull", "push"))
+        tail = argv[argv.index(verb) + 1:]
+        # Every positional (remote / refspec) sits after `--`. A command with no
+        # positionals at all is fine; one with positionals and no `--` is not.
+        positional = [a for a in tail if not a.startswith("-")]
+        if positional:
+            assert "--" in tail, argv
+            assert all(a in tail[tail.index("--") + 1:] for a in positional), argv
+
+
+def test_no_network_command_lets_config_decide_what_it_does(ops, wired, monkeypatch):
+    # A bare `git push` means whatever `push.default` / `remote.pushDefault` say,
+    # which can be "every matching branch" or "a different remote than the
+    # success message names". Every network command here names its remote and its
+    # refspec instead.
+    root, _, _ = wired
+    seen = []
+    real_run = subprocess.run
+
+    def spy_run(argv, **kwargs):
+        seen.append(list(argv))
+        return real_run(argv, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", spy_run)
+    assert ops.main(root, op="push")["ok"] is True
+    pushes = [argv for argv in seen if "push" in argv]
+    assert pushes
+    for argv in pushes:
+        tail = argv[argv.index("push") + 1:]
+        assert "origin" in tail, argv
+        assert any(a.startswith("HEAD:refs/heads/") for a in tail), argv
 
 
 def test_no_op_can_reach_a_history_rewriting_verb(ops):

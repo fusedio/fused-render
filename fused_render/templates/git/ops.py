@@ -58,8 +58,17 @@ The security rules, each one a way this could go wrong:
   The one rule that CANNOT be delegated is a leading `-`: `check-ref-format` has
   no `--` terminator, so a dash-leading name would be read as its own option.
   That check therefore runs first, in Python.
+* **A name GIT produced gets the same leading-dash rule** (`_repo_name`), because
+  git echoes refnames and remote names verbatim out of files inside `.git`, and
+  those files are content: a hand-written `.git/HEAD` makes `symbolic-ref` print
+  `-evil`, and a hand-written `[remote "--receive-pack=<cmd>"]` makes `git remote`
+  print that. Both then flow into argv. `--` before every such value is the other
+  half of the same guarantee, and both halves are kept — depending on either
+  alone is how one missing terminator becomes local command execution.
 * **A stash index is a non-negative int** and is formatted into `stash@{n}` by
-  us, so nothing user-shaped ever reaches a revision position.
+  us, so nothing user-shaped ever reaches a revision position — and it is
+  additionally paired with the entry's **commit id**, because an index is a
+  POSITION and every `stash push` renumbers every entry (see `_stash_at`).
 * **A commit message is one argv element** to `-m` and may contain anything —
   newlines, quotes, `$(...)`, backticks. There is no shell for any of it to mean
   something to.
@@ -75,6 +84,7 @@ anything could shadow. So the shared primitives below are DUPLICATED from
 `log.py` on purpose, each carrying a pointer to its twin. Keep the two in step.
 """
 import os
+import re
 import subprocess
 import sys
 
@@ -153,6 +163,11 @@ _CONFIG = (
 # `log.py`'s twin. Every field is single-line, so the newline separates records.
 _COMMIT_FORMAT = "%h%x00%s"
 
+# A hex object name, full or abbreviated (log.py's twin). Here it validates the
+# stash id a destructive call quotes back — see `_stash_at` — so an id that is
+# not an object name never reaches a revision position.
+_SHA_RE = re.compile(r"^[0-9a-fA-F]{4,64}$")
+
 # The ops, split by what they can cost. The split is not cosmetic: the view keys
 # its confirmation step off `DESTRUCTIVE`, and a new op that can lose work must
 # be added here or it silently ships without a confirmation.
@@ -213,16 +228,42 @@ def _popen_kwargs():
 
 
 def _clean(raw):
-    """git's stderr, trimmed to something that can sit in a sentence.
+    """Everything git said on stderr, minus `hint:` lines. One line per line.
 
     `hint:` lines are dropped: they are advice for a terminal ("use 'git branch
     -D'…") and repeating them in a GUI that deliberately does not offer that
     verb would be telling the user to do something this view refuses to do.
+
+    Deliberately NOT trimmed to a sentence here. Two situations are recognised by
+    matching git's words (`_said`), so the text those matches run against must be
+    whole; `_brief` does the trimming, at the point a message is built.
     """
     text = raw[:MAX_STDERR_BYTES].decode("utf-8", "replace")
     lines = [line.strip() for line in text.splitlines() if line.strip()]
-    kept = [line for line in lines if not line.lower().startswith("hint:")]
-    return " ".join(kept[:3])
+    return "\n".join(line for line in lines
+                     if not line.lower().startswith("hint:"))
+
+
+def _brief(text):
+    """The lines of `_clean`'s output a refusal should actually show.
+
+    git puts its DIAGNOSIS on a `fatal:` / `error:` / `warning:` line and its
+    progress chatter ("From /srv/repo", "* branch main -> FETCH_HEAD",
+    "a1b2c3d..e4f5g6h main -> origin/main") on the lines around it — and how many
+    of those there are depends on whether the fetch had anything to do, so their
+    position varies between two runs of the same command.
+
+    Picking the diagnosis rather than the first N lines is what keeps the
+    sentence the user sees the one that explains the failure. The version that
+    took the first three lines put `fatal: Not possible to fast-forward` fourth
+    on a first-attempt pull, so the refusal arrived wearing the generic
+    "git-failed" instead of the specific "your branches have diverged, do it in a
+    terminal" — the message that was the whole point of refusing.
+    """
+    lines = [line for line in text.split("\n") if line]
+    diagnostic = [line for line in lines
+                  if line.lower().startswith(("fatal:", "error:", "warning:"))]
+    return " ".join((diagnostic or lines)[:3])
 
 
 def _run(root, *args):
@@ -258,6 +299,19 @@ def _run(root, *args):
     return proc.returncode, proc.stdout, _clean(proc.stderr)
 
 
+def _said(out, err):
+    """Everything git said, lowercased, across BOTH streams.
+
+    Two situations here are recognisable only from git's WORDS — "No local
+    changes to save" (which it reports with exit 0) and "Not possible to
+    fast-forward". Which stream each lands on is not part of git's interface, and
+    a guard watching only one would vanish silently if it ever moved. The failure
+    mode that would produce is a button reporting success and doing nothing, so
+    both streams are read.
+    """
+    return (out.decode("utf-8", "replace") + " " + err).lower()
+
+
 def _git_ok(root, *args, allow=(0,)):
     """`_run`, but any exit code outside `allow` is a refusal in git's own words.
 
@@ -268,7 +322,7 @@ def _git_ok(root, *args, allow=(0,)):
     """
     code, out, err = _run(root, *args)
     if code not in allow:
-        raise _Refused("git-failed", err or f"git exited {code}.")
+        raise _Refused("git-failed", _brief(err) or f"git exited {code}.")
     return out
 
 
@@ -490,6 +544,39 @@ def _resolve_paths(root, scope, scope_is_dir, paths):
     return resolved
 
 
+def _repo_name(kind, value):
+    """Refuse an option-shaped name that GIT produced, before it becomes argv.
+
+    The rule `_check_strings` applies to a name the USER typed has to apply just
+    as hard to a name git handed back, because git hands these back VERBATIM
+    from files inside `.git`, and those files are content:
+
+      * `git symbolic-ref --short HEAD` prints whatever `.git/HEAD` names. A
+        hand-written `ref: refs/heads/-evil` yields the string `-evil`.
+      * `git remote` prints the config section names. A hand-written
+        `[remote "--upload-pack=<cmd>"]` yields `--upload-pack=<cmd>`.
+
+    Neither is reachable through git's own porcelain — `git branch` and `git
+    remote add` both reject these — so a repository containing one arrived some
+    other way (a tarball, a zip, a shared drive; `git clone` does not copy
+    config). That is a malformed or hostile repository, and the honest answer is
+    to stop rather than to sanitize and continue: any name we "fixed" would no
+    longer be the thing the user is looking at.
+
+    `--` before every such value is the other half of this, and both halves are
+    kept: `--` is the guarantee for the commands that have it, and this is the
+    guarantee for the ones where a terminator does not exist or was forgotten.
+    Depending on either alone is how one missing `--` becomes command execution.
+    """
+    if value and value.startswith("-"):
+        raise _Refused(
+            "unsafe-name",
+            f"This repository's {kind} is named {value!r}, which git would read "
+            "as a command-line option. Nothing here will run against it — the "
+            "name almost certainly did not come from git itself.")
+    return value
+
+
 def _check_branch_name(root, name):
     """git decides whether a branch name is valid; we only ask.
 
@@ -511,8 +598,14 @@ def _has_commits(root):
 
 
 def _current_branch(root):
+    """The checked-out branch, or None when HEAD is detached.
+
+    Guarded by `_repo_name`: this string is whatever `.git/HEAD` names, which is
+    file CONTENT, so an option-shaped branch is a thing a repository can carry
+    and every caller here feeds the result into argv.
+    """
     _, out, _ = _run(root, "symbolic-ref", "--quiet", "--short", "HEAD")
-    return out.decode("utf-8", "replace").strip() or None
+    return _repo_name("branch", out.decode("utf-8", "replace").strip()) or None
 
 
 def _has_staged(root):
@@ -543,6 +636,28 @@ def _tracked(root, rels):
     return tracked, [rel for rel in rels if rel not in tracked]
 
 
+def _knows_anything(root, spec):
+    """Whether git tracks any file under this pathspec.
+
+    A probe rather than a fallback, because the commands that need it treat "the
+    pathspec matched nothing tracked" as an ERROR rather than as an empty answer,
+    and that error is wrong for every state this view can legitimately be in:
+
+      * `git restore --worktree -- <spec>` exits 1 with "did not match any
+        file(s) known to git" — so `discard_all` in a scope holding only
+        UNTRACKED files (or in a repository with no commits) would fail, even
+        though the whole job there belongs to the `clean` half that follows it.
+      * `git rm --cached -- <spec>` exits 128 for the same situation, which is
+        what `unstage_all` does before the first commit.
+
+    The `rm` calls additionally carry `--ignore-unmatch` so an unstage of
+    something that is not staged is a no-op rather than a failure — "it is
+    already the way you asked for" is not an error a button should report.
+    """
+    out = _git_ok(root, "ls-files", "-z", *spec)
+    return bool(out.strip(b"\0"))
+
+
 def _stash_count(root):
     out = _git_ok(root, "stash", "list", "--format=%gd")
     return len([line for line in out.decode("utf-8", "replace").split("\n") if line])
@@ -552,11 +667,19 @@ def _remote_of(root, branch):
     """The remote to talk to: the branch's own, else the sole one, else origin.
 
     `branch.<name>.remote` is read through `git config --get`, which takes the
-    key as ONE argv element — so the branch name, which git itself produced,
-    still never lands in a position where it could be anything but a value.
+    key as ONE argv element — and the branch is interpolated into the MIDDLE of
+    that key, so even a dash-leading branch could not make the key dash-leading.
+    (It is refused upstream of here anyway; this is why it would not matter.)
+
+    EVERY remote name is `_repo_name`-guarded, not just the one that gets picked.
+    `git remote` echoes config section names verbatim, so a hand-written
+    `[remote "--upload-pack=<cmd>"]` is a name this list can contain — and the
+    whole list is refused rather than filtered, because a repository carrying one
+    is malformed or hostile and silently using its other remote would hide that.
     """
     out = _git_ok(root, "remote")
-    remotes = [line.strip() for line in out.decode("utf-8", "replace").split("\n")
+    remotes = [_repo_name("remote", line.strip())
+               for line in out.decode("utf-8", "replace").split("\n")
                if line.strip()]
     if branch:
         code, configured, _ = _run(root, "config", "--get",
@@ -610,7 +733,8 @@ def _unstage(root, rels, scope_label):
         # the entry from the index (keeping the file, `--cached`) is what
         # "unstage" means when the index has no baseline: the file goes back to
         # being untracked, which is exactly where it came from.
-        _git_ok(root, "rm", "--cached", "-r", "--quiet", *_spec(rels))
+        _git_ok(root, "rm", "--cached", "-r", "--quiet", "--ignore-unmatch",
+                *_spec(rels))
     return _ok("unstage", f"Unstaged {scope_label}.")
 
 
@@ -689,7 +813,7 @@ def _switch(root, *args):
         return
     # Any other failure is git refusing for a real reason ("Your local changes
     # would be overwritten…"), and its sentence is the one to show.
-    raise _Refused("git-failed", err or f"git exited {code}.")
+    raise _Refused("git-failed", _brief(err) or f"git exited {code}.")
 
 
 def _branch_checkout(root, name):
@@ -715,25 +839,44 @@ def _stash_push(root, rel, message, include_untracked):
     if (message or "").strip():
         args += ["-m", message]
     # Scoped by pathspec exactly like every other write here. At the repository
-    # root there is no pathspec at all rather than a bare `--`, which older git
-    # treats as an empty path list rather than as "everything".
+    # root there is no pathspec at all rather than a bare `--`: `--` with nothing
+    # after it is the EMPTY path list and not "everything" — the same trap
+    # `_scope_spec` exists for, and true of current git, not only of old git.
     if rel:
         args += _pathspec(rel)
-    out = _git_ok(root, *args)
-    text = out.decode("utf-8", "replace")
-    if _NOTHING_TO_STASH in text.lower():
+    code, out, err = _run(root, *args)
+    if code != 0:
+        raise _Refused("git-failed", _brief(err) or f"git exited {code}.")
+    if _NOTHING_TO_STASH in _said(out, err):
         # git exits 0 for this, so the exit code cannot carry it. Reported as a
         # refusal because from the UI it is indistinguishable from a no-op, and a
-        # button that silently does nothing is a bug report.
+        # button that silently does nothing is a bug report. Read across BOTH
+        # streams: today it lands on stdout, and the day that changes this guard
+        # would disappear without a sound.
         raise _Refused("nothing-to-stash",
                        "There is nothing to stash under this path.")
     return _ok("stash_push", "Stashed the changes under this path.")
 
 
-def _stash_at(root, index):
-    """`stash@{n}`, once n is known to name an entry that exists.
+def _stash_at(root, index, sha):
+    """`stash@{n}`, once n is known to name the entry the CALLER meant.
 
-    The bound check is ours rather than git's because git's own message for a
+    A position is not an identity. `stash@{n}` means "the nth entry of the stash
+    reflog *right now*", and every `stash push` — from this view, from another
+    tab, from a terminal — shifts every index by one. Between the moment a row is
+    drawn (or a confirmation is asked, which can sit in the URL indefinitely) and
+    the moment the call lands, a merely bounds-checked index can therefore
+    address a DIFFERENT, still-wanted entry — and for `drop` that loss has no
+    undo. Bounds-checking answers "does something exist there", which is not the
+    question.
+
+    So the caller quotes back the commit id the reader gave it (`log.py`'s
+    `_stashes` puts `%H` on every entry) and this verifies it. A mismatch is a
+    refusal telling the user to look again, deliberately NOT a "find that sha and
+    use its real index" repair: the list they were reading is stale, and silently
+    acting on a redrawn one is the same class of surprise in a new costume.
+
+    The bound check stays ours rather than git's because git's own message for a
     missing entry is `fatal: log for 'refs/stash' only has 2 entries`, which is
     plumbing talking. `n` is already an int, so the formatted ref cannot be
     anything but a stash reference.
@@ -743,11 +886,25 @@ def _stash_at(root, index):
         raise _Refused("no-such-stash",
                        f"There is no stash@{{{index}}} — this repository has "
                        f"{_n(count, 'stash', 'stashes')}.")
-    return f"stash@{{{index}}}"
+    ref = f"stash@{{{index}}}"
+    if not _SHA_RE.match(sha or ""):
+        raise _Refused("bad-stash-id",
+                       "That request did not say which stash entry it meant.")
+    # `^{commit}` so the comparison is against the entry's commit id whatever the
+    # reflog holds, and `--verify --quiet` so a vanished entry is exit 1 rather
+    # than a failure payload — it is the same "the list moved" answer.
+    actual = _git_ok(root, "rev-parse", "--verify", "--quiet", ref + "^{commit}",
+                     allow=(0, 1)).decode("utf-8", "replace").strip()
+    if not actual or not actual.startswith(sha):
+        raise _Refused(
+            "stash-moved",
+            f"{ref} is not the stash entry this was about any more — the list "
+            "changed since it was read. Check the stashes again.")
+    return ref
 
 
-def _stash_apply(root, index, pop):
-    ref = _stash_at(root, index)
+def _stash_apply(root, index, sha, pop):
+    ref = _stash_at(root, index, sha)
     # `pop` = apply + drop, and git does it atomically: a conflicting apply
     # leaves the entry in place rather than dropping work that did not land.
     _git_ok(root, "stash", "pop" if pop else "apply", ref)
@@ -755,9 +912,9 @@ def _stash_apply(root, index, pop):
                f"{'Popped' if pop else 'Applied'} {ref}.")
 
 
-def _stash_drop(root, index):
+def _stash_drop(root, index, sha):
     """DESTRUCTIVE. The stashed work is gone (bar the reflog, which is not a UI)."""
-    ref = _stash_at(root, index)
+    ref = _stash_at(root, index, sha)
     _git_ok(root, "stash", "drop", ref)
     return _ok("stash_drop", f"Dropped {ref}.")
 
@@ -772,13 +929,40 @@ def _fetch(root):
     return _ok("fetch", f"Fetched from {remote}.")
 
 
+def _upstream_target(root, remote, branch):
+    """`(remote-side branch name, whether an upstream is recorded)`.
+
+    Both network calls name their refspec explicitly (see `_push`), and the local
+    and remote names are allowed to differ — plain `git push` honours the
+    recorded mapping, so an explicit form that assumed the names matched would
+    quietly push somewhere else. With no upstream, the branch's own name is the
+    only defensible target, which is also what `--set-upstream` would record.
+    """
+    code, out, _ = _run(root, "rev-parse", "--abbrev-ref",
+                        "--symbolic-full-name", "@{upstream}")
+    upstream = out.decode("utf-8", "replace").strip() if code == 0 else ""
+    if upstream.startswith(remote + "/"):
+        return upstream[len(remote) + 1:], True
+    return branch, bool(upstream)
+
+
 def _pull(root):
     branch = _current_branch(root)
-    _require_remote(root, branch)
-    code, _, err = _run(root, "pull", "--ff-only")
+    if not branch:
+        raise _Refused("detached",
+                       "HEAD is detached, so there is nothing to pull into. "
+                       "Check out a branch first.")
+    remote = _require_remote(root, branch)
+    target, _ = _upstream_target(root, remote, branch)
+    # Explicit remote and refspec, for the same reason `_push` is explicit: a
+    # bare `git pull` takes its target from `branch.<name>.merge` and its style
+    # from `pull.rebase`, so what this button did would be decided by config the
+    # view never shows. `--ff-only` bounds the OUTCOME; naming the refspec bounds
+    # the INPUT, and both are wanted.
+    code, out, err = _run(root, "pull", "--ff-only", "--", remote, target)
     if code == 0:
-        return _ok("pull", "Pulled — the branch fast-forwarded.")
-    if _NOT_FF in err.lower() or "diverge" in err.lower():
+        return _ok("pull", f"Pulled {remote}/{target} — the branch fast-forwarded.")
+    if _NOT_FF in _said(out, err) or "diverge" in _said(out, err):
         # A divergence is a decision, not an error. Both automatic answers are
         # wrong to take on someone's behalf: a merge writes a commit they did not
         # ask for, a rebase rewrites commits they already have. So this stops.
@@ -787,7 +971,7 @@ def _pull(root):
             "Your branch and its upstream have diverged, so this cannot "
             "fast-forward. Merging or rebasing is a decision this view will not "
             "make for you — do it in a terminal.")
-    raise _Refused("git-failed", err or f"git exited {code}.")
+    raise _Refused("git-failed", _brief(err) or f"git exited {code}.")
 
 
 def _push(root):
@@ -797,11 +981,20 @@ def _push(root):
                        "HEAD is detached, so there is no branch to push. "
                        "Check out a branch first.")
     remote = _require_remote(root, branch)
-    code, _, upstream = _run(root, "rev-parse", "--abbrev-ref",
-                             "--symbolic-full-name", "@{upstream}")
-    if code == 0:
-        _git_ok(root, "push")
-        return _ok("push", f"Pushed to {remote}.")
+    target, has_upstream = _upstream_target(root, remote, branch)
+    if has_upstream:
+        # The remote and the refspec are NAMED, and `--` comes before them. A
+        # bare `git push` is the one command in this module whose meaning is
+        # decided by config the view never shows: under `push.default=matching`
+        # it pushes every matching local branch, and under `remote.pushDefault`
+        # it pushes to a different remote than the success message names — in
+        # both cases doing more, or something else, than the button said.
+        # `HEAD:refs/heads/<target>` is "this branch, to where it tracks",
+        # fully qualified so no remote ref of another kind can be matched, and
+        # prefixed by `HEAD:` so no part of it can be option-shaped whatever the
+        # refnames in this repository are.
+        _git_ok(root, "push", "--", remote, "HEAD:refs/heads/" + target)
+        return _ok("push", f"Pushed to {remote}/{target}.")
     # No upstream recorded. git's own answer here is advice ("use --set-upstream
     # to push and track"), which is a sentence a GUI button cannot act on — so
     # this DOES set it. That is a deliberate decision and a narrow one: setting
@@ -809,7 +1002,16 @@ def _push(root):
     # it is not a force, and it cannot overwrite anyone's work. If the remote
     # branch does exist and has commits we do not have, git refuses exactly as it
     # would for any other non-fast-forward push, and that refusal is shown.
-    _git_ok(root, "push", "--set-upstream", remote, branch)
+    #
+    # `--` before the remote and the refspec, exactly as above, and for a reason
+    # that is not style: both values are REPO-DERIVED (`git remote` echoes config
+    # section names, `symbolic-ref` echoes `.git/HEAD`), so a hand-written
+    # `[remote "--receive-pack=<cmd>"]` would otherwise turn this one click into
+    # local command execution. `_repo_name` already refuses such a name, and the
+    # terminator is kept anyway: two independent guarantees, because depending on
+    # either alone is exactly how a single missing `--` becomes that bug.
+    _git_ok(root, "push", "--set-upstream", "--", remote,
+            "HEAD:refs/heads/" + branch)
     return _ok("push", f"Published {branch} to {remote}.")
 
 
@@ -825,6 +1027,7 @@ def main(
     index: int = -1,
     include_untracked: bool = False,
     checkout: bool = True,
+    sha: str = "",
 ) -> dict:
     """One mutation, or a refusal payload.
 
@@ -854,14 +1057,21 @@ def main(
                 return _ok("stage_all", f"Staged everything in {label}.")
             if op == "unstage_all":
                 if _has_commits(root):
-                    _git_ok(root, "restore", "--staged", *spec)
+                    if _knows_anything(root, spec):
+                        _git_ok(root, "restore", "--staged", *spec)
                 else:
-                    _git_ok(root, "rm", "--cached", "-r", "--quiet", *spec)
+                    _git_ok(root, "rm", "--cached", "-r", "--quiet",
+                            "--ignore-unmatch", *spec)
                 return _ok("unstage_all", f"Unstaged everything in {label}.")
             # discard_all — DESTRUCTIVE, and the one place the scope pathspec
             # goes to `clean`. Still no `-x`: an ignored file is never in scope
             # for a discard, whatever the scope is.
-            _git_ok(root, "restore", "--worktree", *spec)
+            #
+            # The restore is SKIPPED when git tracks nothing here rather than
+            # allowed to fail: a scope holding only untracked files is ordinary,
+            # and there the `clean` below is the entire operation.
+            if _knows_anything(root, spec):
+                _git_ok(root, "restore", "--worktree", *spec)
             _git_ok(root, "clean", "-fd", *spec)
             return _ok("discard_all", f"Discarded all changes in {label}.")
 
@@ -876,11 +1086,11 @@ def main(
         if op == "stash_push":
             return _stash_push(root, scope, message, bool(include_untracked))
         if op == "stash_apply":
-            return _stash_apply(root, index, pop=False)
+            return _stash_apply(root, index, sha, pop=False)
         if op == "stash_pop":
-            return _stash_apply(root, index, pop=True)
+            return _stash_apply(root, index, sha, pop=True)
         if op == "stash_drop":
-            return _stash_drop(root, index)
+            return _stash_drop(root, index, sha)
         if op == "fetch":
             return _fetch(root)
         if op == "pull":

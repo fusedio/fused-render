@@ -987,7 +987,25 @@ function commit(message) {
 
 /* ------------------------------------------------- uncommitted change lists */
 
-function changeLine(change, selected, kind) {
+/* Whether `ops.py` would let this row be CHANGED — the mirror of that module's
+   `_in_scope`, and it has to be a mirror rather than an approximation, because a
+   button that is always refused is worse than no button: it advertises an action
+   ("delete this whole directory") the module is guaranteed to decline.
+
+   Two rows the reader deliberately lists fail this. A rename with only one side
+   in the scope is shown because "this file left the folder you are looking at"
+   is the change a scoped view exists for — but its path is elsewhere. And a
+   wholly-untracked directory git collapsed to `dir/` can be an ANCESTOR of the
+   scope, so it covers files outside it and discarding it would reach them. Both
+   still open their diff; neither offers an action. */
+function writable(repo, path) {
+  if (!repo.rel) return true;                     // the whole repo is the scope
+  const rel = path.replace(/\/+$/, "");           // a collapsed `dir/` row
+  if (rel === repo.rel) return true;
+  return repo.is_dir && rel.startsWith(repo.rel + "/");
+}
+
+function changeLine(repo, change, selected, kind) {
   const letter = change.untracked ? "?" : (change.x !== " " ? change.x : change.y);
   const label = change.orig ? change.orig + " -> " + change.path : change.path;
   const line = el("div", { className: "line" });
@@ -1004,36 +1022,44 @@ function changeLine(change, selected, kind) {
     change.moved
       ? el("span", { className: "where is-moved", textContent: "moved " + change.moved })
       : null);
-  /* A moved-OUT row's `path` is outside the scope, but the diff is `-- <path>`
-     against HEAD and git resolves it from the repo ROOT, so the row still opens
-     the right diff: the pathspec is repo-relative, not scope-relative. Its
-     ACTIONS are a different matter — ops.py refuses to change anything outside
-     the scope, so the buttons are not offered on a row it would refuse. */
+  /* An out-of-scope row's `path` is outside the scope, but the diff is
+     `-- <path>` against HEAD and git resolves it from the repo ROOT, so the row
+     still opens the right diff: the pathspec is repo-relative, not
+     scope-relative. Its ACTIONS are a different matter — see `writable`. */
   row.addEventListener("click", () => setParams({ wt: change.path, sel: null }));
   if (selected) line.setAttribute("aria-current", "true");
   line.append(row);
 
   const acts = el("div", { className: "acts" });
   const path = change.path;
-  const mutable = change.moved !== "out";
-  if (mutable && kind === "staged") {
-    acts.append(action("unstage:" + path, "−", {
-      className: "icon", label: "Unstage " + path,
-      onClick: () => run("unstage:" + path, { op: "unstage", paths: [path] }),
-    }));
-    acts.append(confirmable("discard:" + path, "↩",
-      "Unstage and discard " + path + "? This cannot be undone.",
-      { className: "icon", label: "Discard " + path }));
-  } else if (mutable) {
-    acts.append(action("stage:" + path, "+", {
-      className: "icon", label: "Stage " + path,
-      onClick: () => run("stage:" + path, { op: "stage", paths: [path] }),
-    }));
-    acts.append(confirmable("discard:" + path, "↩",
-      (change.untracked ? "Delete the untracked file " + path + "?"
-                        : "Discard changes in " + path + "?")
-      + " This cannot be undone.",
-      { className: "icon", label: "Discard " + path }));
+  if (writable(repo, path)) {
+    if (kind === "staged") {
+      acts.append(action("unstage:" + path, "−", {
+        className: "icon", label: "Unstage " + path,
+        onClick: () => run("unstage:" + path, { op: "unstage", paths: [path] }),
+      }));
+      /* The section is in the KEY, not derived from the entry later. An `MM`
+         file is in both lists and both rows would otherwise build the identical
+         `discard:<path>`, so the confirmation could not tell which ↩ was
+         clicked — it re-derived "staged" from the entry, and the CHANGES row's
+         ↩, whose question says only "discard changes in <path>", quietly threw
+         away the staged version as well. */
+      acts.append(confirmable("discard:staged:" + path, "↩",
+        "Unstage and discard " + path + "? Both the staged version and the "
+        + "working-tree version go. This cannot be undone.",
+        { className: "icon", label: "Unstage and discard " + path }));
+    } else {
+      acts.append(action("stage:" + path, "+", {
+        className: "icon", label: "Stage " + path,
+        onClick: () => run("stage:" + path, { op: "stage", paths: [path] }),
+      }));
+      acts.append(confirmable("discard:worktree:" + path, "↩",
+        (change.untracked ? "Delete the untracked file " + path + "?"
+                          : "Discard the unstaged changes in " + path
+                            + "? Anything staged for it is kept.")
+        + " This cannot be undone.",
+        { className: "icon", label: "Discard " + path }));
+    }
   }
   line.append(acts);
   return line;
@@ -1063,16 +1089,24 @@ function stashLine(stash) {
     el("span", { className: "path", textContent: stash.message }),
     stash.branch ? el("span", { className: "where", textContent: stash.branch }) : null,
     el("span", { className: "when", textContent: stash.relative })));
+  /* Every stash call carries the entry's COMMIT ID as well as its index.
+     `stash@{n}` is a position, and a `stash push` from anywhere — this view,
+     another tab, a terminal — renumbers every entry, so an index alone can
+     address a different, still-wanted stash by the time the call lands. That is
+     survivable for apply and unrecoverable for drop, which is why the id travels
+     with all three and ops.py verifies it before touching anything. */
   line.append(el("div", { className: "acts" },
     action("apply:" + stash.index, "apply", {
       title: "Apply " + stash.ref + " and keep it",
-      onClick: () => run("apply:" + stash.index, { op: "stash_apply", index: stash.index }),
+      onClick: () => run("apply:" + stash.index,
+                         { op: "stash_apply", index: stash.index, sha: stash.sha }),
     }),
     action("pop:" + stash.index, "pop", {
       title: "Apply " + stash.ref + " and remove it",
-      onClick: () => run("pop:" + stash.index, { op: "stash_pop", index: stash.index }),
+      onClick: () => run("pop:" + stash.index,
+                         { op: "stash_pop", index: stash.index, sha: stash.sha }),
     }),
-    confirmable("stash_drop:" + stash.index, "drop",
+    confirmable("stash_drop:" + stash.index + ":" + stash.sha, "drop",
       "Drop " + stash.ref + "? The stashed changes are gone for good.",
       { label: "Drop " + stash.ref })));
   return line;
@@ -1243,12 +1277,31 @@ function renderRefusal(payload) {
 }
 
 /* The pending confirmation, if any, rendered inside the section it belongs to.
-   `ask` is a key like "discard:pkg/mod.py"; the map below is what turns it back
-   into a question and a call, so the URL never carries a callable. */
+ *
+ * `ask` is a key the button wrote and this reads back, so the URL never carries
+ * a callable. Its GRAMMAR is the fix for two bugs that were both "the key did
+ * not say enough", so it now says everything the question needs:
+ *
+ *   discard_all
+ *   discard:staged:<path>      the row in STAGED CHANGES
+ *   discard:worktree:<path>    the row in CHANGES or UNTRACKED
+ *   stash_drop:<index>:<sha>
+ *
+ * The section is IN the key rather than re-derived from the entry, because an
+ * `MM` file appears in both lists and the two rows were building the same key.
+ * The stash's commit id is in the key for the same reason ops.py wants it: a
+ * confirmation can sit in the URL indefinitely, and a `stash push` in the
+ * meantime renumbers every entry.
+ *
+ * Fields are split off the FRONT, never with a plain `split(":")`, because the
+ * last field is a path and a path may contain a colon.
+ */
 function pendingConfirm(data) {
   const ask = param("ask");
   if (!ask) return null;
-  const [op, rest] = [ask.split(":", 1)[0], ask.slice(ask.indexOf(":") + 1)];
+  const cut = ask.indexOf(":");
+  const op = cut === -1 ? ask : ask.slice(0, cut);
+  const rest = cut === -1 ? "" : ask.slice(cut + 1);
   if (!DESTRUCTIVE.has(op)) {
     /* A hand-written `ask=` for a non-destructive op is not a confirmation of
        anything; drop it rather than render a question about it. */
@@ -1265,35 +1318,47 @@ function pendingConfirm(data) {
     };
   }
   if (op === "stash_drop") {
-    const index = parseInt(rest, 10);
-    if (!Number.isFinite(index)) return null;
+    const split = rest.indexOf(":");
+    if (split === -1) return null;
+    const index = parseInt(rest.slice(0, split), 10);
+    const sha = rest.slice(split + 1);
+    if (!Number.isFinite(index) || !sha) return null;
     return {
       where: "stashes",
       node: confirmBar("Drop stash@{" + index + "}? The stashed changes are gone "
                        + "for good.",
-                       () => run("stash_drop", { op: "stash_drop", index })),
+                       () => run("stash_drop", { op: "stash_drop", index, sha })),
     };
   }
-  const path = rest;
+  const split = rest.indexOf(":");
+  if (split === -1) return null;
+  const which = rest.slice(0, split);
+  const path = rest.slice(split + 1);
+  if (which !== "staged" && which !== "worktree") return null;
   const entry = data.changes.find((c) => c.path === path);
-  const staged = entry && entry.staged;
   return {
-    where: staged ? "staged" : (entry && entry.untracked ? "untracked" : "changes"),
+    where: which === "staged" ? "staged"
+      : (entry && entry.untracked ? "untracked" : "changes"),
     node: confirmBar(
-      (entry && entry.untracked)
-        ? "Delete the untracked file " + path + "? This cannot be undone."
-        : staged
-          ? "Unstage and discard " + path + "? This cannot be undone."
-          : "Discard changes in " + path + "? This cannot be undone.",
+      which === "staged"
+        ? "Unstage and discard " + path + "? Both the staged version and the "
+          + "working-tree version go. This cannot be undone."
+        : (entry && entry.untracked)
+          ? "Delete the untracked file " + path + "? This cannot be undone."
+          : "Discard the unstaged changes in " + path + "? Anything staged for "
+            + "it is kept. This cannot be undone.",
       () => {
-        /* Two calls, deliberately. `discard` restores from the INDEX, so a
-           staged change has to leave the index first or the discard silently
-           restores the very content being thrown away. Each half is its own
-           addressable op in ops.py — the view composes them behind ONE
-           confirmation, it does not ask the backend for a compound verb. */
-        if (staged) {
+        /* Two calls for the staged row, deliberately. `discard` restores from
+           the INDEX, so a staged change has to leave the index first or the
+           discard silently restores the very content being thrown away. Each
+           half is its own addressable op in ops.py — the view composes them
+           behind ONE confirmation, it does not ask the backend for a compound
+           verb. The CHANGES row does exactly one of them, which is why the two
+           rows can no longer share a key. */
+        if (which === "staged") {
           run("discard:" + path, { op: "unstage", paths: [path] }, () => {
-            run("discard:" + path, { op: "discard", paths: [path] });
+            run("discard:" + path, { op: "discard", paths: [path] },
+                null, "The change was unstaged, but discarding it failed");
             return true;
           });
         } else {
@@ -1347,7 +1412,7 @@ function render(data, stashes, diff) {
     staged.length ? action("unstage_all", "− Unstage all", {
       onClick: () => run("unstage_all", { op: "unstage_all" }),
     }) : null,
-    staged.map((c) => changeLine(c, c.path === wt, "staged")),
+    staged.map((c) => changeLine(data.repo, c, c.path === wt, "staged")),
     "Nothing is staged under this path.",
     ask && ask.where === "staged" ? ask.node : null,
     headState(data.repo) + (data.repo.has_commits ? "" : " · no commits yet"));
@@ -1360,18 +1425,23 @@ function render(data, stashes, diff) {
       confirmable("discard_all", "↩ Discard all",
                   "Discard every change under this path?", {}),
     ] : null,
-    unstaged.map((c) => changeLine(c, c.path === wt, "changes")),
+    unstaged.map((c) => changeLine(data.repo, c, c.path === wt, "changes")),
     data.repo.dirty ? "No unstaged changes under this path."
                     : "Working tree is clean.",
     ask && ask.where === "changes" ? ask.node : truncNote);
 
+  /* This one section stages an explicit path LIST rather than the scope
+     pathspec, so it has to apply `writable` itself — one out-of-scope row in the
+     list would make ops.py refuse the whole call, taking the in-scope ones with
+     it. */
+  const stageableUntracked = untracked.filter((c) => writable(data.repo, c.path));
   const untrackedSection = listSection("Untracked", String(untracked.length),
-    untracked.length ? action("stage_untracked", "+ Stage all", {
+    stageableUntracked.length ? action("stage_untracked", "+ Stage all", {
       onClick: () => run("stage_untracked", {
-        op: "stage", paths: untracked.map((c) => c.path),
+        op: "stage", paths: stageableUntracked.map((c) => c.path),
       }),
     }) : null,
-    untracked.map((c) => changeLine(c, c.path === wt, "untracked")),
+    untracked.map((c) => changeLine(data.repo, c, c.path === wt, "untracked")),
     "Nothing untracked under this path.",
     ask && ask.where === "untracked" ? ask.node : null);
 
@@ -1410,7 +1480,7 @@ function render(data, stashes, diff) {
  * DOM from the op's own reply, because git is the authority on what the
  * repository now looks like and a locally-guessed state is how a UI drifts out
  * of sync with the repo it claims to show. */
-async function run(key, args, then) {
+async function run(key, args, then, context) {
   if (busy !== null) return;
   busy = key;
   flash = null;
@@ -1424,15 +1494,25 @@ async function run(key, args, then) {
     payload = { ok: false, message: err && err.message ? err.message : String(err) };
   }
   busy = null;
+  /* `context` is what the caller already did before this call. The staged
+     discard is two ops behind one confirmation, and when the second fails the
+     first has still HAPPENED — reporting only "discard failed" would leave the
+     user believing nothing moved when the file is now unstaged. The lists below
+     do show the truth; the sentence has to as well. */
   flash = { ok: payload.ok === true,
             message: payload.ok ? (payload.detail || "Done.")
-                                : (payload.message || "git refused that.") };
+                                : (context ? context + ": " : "")
+                                  + (payload.message || "git refused that.") };
   announce(flash.message);
   /* Bump the serial BEFORE refetching so any overview still in flight from
      before the mutation cannot repaint stale data over the fresh one. */
   seq += 1;
   snapshot = null;
   branchCache = null;
+  /* The question has been answered — by acting on it. Leaving `ask` set would
+     re-render the confirmation over the fresh lists, and (for a stash) leave a
+     stale index/sha pair sitting in the URL for the next click to act on. */
+  setParams({ ask: null });
   // A continuation that returns `true` owns the repaint (the staged-discard
   // chain, which repaints at the end of its SECOND call). Anything else falls
   // through to the repaint here — which the commit path needs, because clearing
