@@ -16,8 +16,11 @@ from fused_render.server import create_app
 @pytest.fixture(autouse=True)
 def _isolated_home(tmp_path, monkeypatch):
     # The registry lives in the shell home; the conftest default is one shared
-    # dir for the whole session, which would leak links across tests.
+    # dir for the whole session, which would leak links across tests. The env
+    # export (write_entries) mutates os.environ — seed it through monkeypatch
+    # so the mutation is rolled back per test.
     monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("FUSED_RENDER_LINKED_APPS", "")
 
 
 @pytest.fixture()
@@ -25,6 +28,9 @@ def workspace(tmp_path, monkeypatch):
     fdir = tmp_path / "Fused"
     fdir.mkdir()
     monkeypatch.setenv("FUSED_RENDER_DIR", str(fdir))
+    # What the template gates read (appenv.workspace_dir prefers it): another
+    # test's create_app may have exported a stale value into this process.
+    monkeypatch.setenv("FUSED_RENDER_WORKSPACE_DIR", str(fdir))
     return fdir
 
 
@@ -235,6 +241,59 @@ def test_recents_resolve_linked_tag_through_the_registry(client, tmp_path):
     # unlink: the recent stops resolving and is filtered from GET
     client.post("/api/apps/unlink", json={"name": "notes"}, headers=HDRS)
     assert client.get("/api/apps/recents").json()["entries"] == []
+
+
+# ------------------------------------------------------------ template gates
+#
+# The app/claude_split gates accept a linked folder through the
+# FUSED_RENDER_LINKED_APPS env var (exported on every registry write) — pure
+# env membership, no file reads. versions stays workspace-only on purpose:
+# its backend writes git history with the Fused identity, and a linked folder
+# is the user's own repository.
+
+
+def _condition(name):
+    import importlib.util
+
+    path = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        "fused_render", "templates", name, "condition.py",
+    )
+    spec = importlib.util.spec_from_file_location(f"test_{name}_condition", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_link_and_unlink_export_the_env_var(client, tmp_path):
+    d = _folder(tmp_path, "notes")
+    client.post("/api/apps/link", json={"path": str(d)}, headers=HDRS)
+    assert os.environ["FUSED_RENDER_LINKED_APPS"] == str(d)
+    client.post("/api/apps/unlink", json={"name": "notes"}, headers=HDRS)
+    assert os.environ["FUSED_RENDER_LINKED_APPS"] == ""
+
+
+@pytest.mark.parametrize("template", ["app", "claude_split"])
+def test_app_gates_accept_a_linked_folder(client, tmp_path, workspace, template):
+    d = _folder(tmp_path, "notes")
+    cond = _condition(template)
+    assert cond.main(str(d)) is False  # not linked yet
+    client.post("/api/apps/link", json={"path": str(d)}, headers=HDRS)
+    assert cond.main(str(d)) is True
+    # only the registered folder itself — never its parent or children
+    assert cond.main(str(d.parent)) is False
+    assert cond.main(str(d / "sub")) is False
+    # the workspace two-level rule is untouched
+    app_dir = workspace / "local" / "real"
+    app_dir.mkdir(parents=True)
+    assert cond.main(str(app_dir)) is True
+
+
+def test_versions_gate_stays_workspace_only(client, tmp_path):
+    d = _folder(tmp_path, "notes")
+    (d / ".git").mkdir()
+    client.post("/api/apps/link", json={"path": str(d)}, headers=HDRS)
+    assert _condition("versions").main(str(d)) is False
 
 
 def test_git_scoping_ignores_linked_folders(client, tmp_path, workspace):

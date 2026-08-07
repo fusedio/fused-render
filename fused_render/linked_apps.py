@@ -55,6 +55,25 @@ def read_entries() -> list[dict]:
 
 def write_entries(entries: list[dict]) -> None:
     storage.write_json(_registry_path(), {"entries": entries})
+    export_linked_apps_env()
+
+
+def export_linked_apps_env() -> None:
+    """Publish the registered folders to the environment for template children
+    (SPEC PY-15 / D166) — same contract as `export_ro_mounts_env`.
+
+    Template gates (app/condition.py, claude_split/condition.py) must decide
+    "is this folder an app?" with pure path arithmetic — no file reads — and
+    they can't import fused_render. So the DERIVED PATH LIST travels as
+    `FUSED_RENDER_LINKED_APPS` (os.pathsep-joined, the platform's own
+    list-in-one-var convention, matching FUSED_RENDER_RO_MOUNTS), read back by
+    `templates/shared/appenv.py`. Exported on every registry write and once at
+    server startup, so a value is always present — possibly empty — rather
+    than an unset var a child couldn't tell from "no linked apps".
+    """
+    os.environ["FUSED_RENDER_LINKED_APPS"] = os.pathsep.join(
+        e["path"] for e in read_entries()
+    )
 
 
 def linked_path(name: str) -> str | None:
