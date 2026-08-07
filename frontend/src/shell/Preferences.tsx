@@ -153,8 +153,9 @@ function EngineSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs)
           onChange={() => select("fused")}
         />
         <span>
-          <b>Fused engine (default)</b> — the fused package's local runner: PEP 723 inline requirements
-          resolved into cached venvs (<code>~/.openfused/venvs</code>), plus{" "}
+          <b>Fused engine (default)</b> — the fused package's local runner: a folder's{" "}
+          <code>pyproject.toml</code> dependencies resolved into cached venvs
+          (<code>~/.fused-render/venvs</code>), plus{" "}
           <code>@fused.udf</code> / <code>result</code> entrypoints.
           {!engine.fused_available && (
             <span className="deploy-muted"> (unavailable — the fused package isn't installed)</span>

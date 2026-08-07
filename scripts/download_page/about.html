@@ -268,8 +268,8 @@
           <li><b>Every .html gets a runtime.</b> A small injected bridge:
           <code>fused.runPython(file, params)</code>, with
           <code>fused.params</code> synced to the URL.</li>
-          <li><b>Python runs in worker subprocesses.</b> Files declare their
-          own deps (PEP 723); results stream back as JSON.</li>
+          <li><b>Python runs in worker subprocesses.</b> A folder declares its
+          own deps (<code>pyproject.toml</code>); results stream back as JSON.</li>
           <li><b>Views are just file pairs.</b> <code>.html</code> next to
           <code>.py</code> = a live app. No bundler, no build.</li>
         </ul>
@@ -294,7 +294,7 @@ draw(data);  <span class="c">// freq rides in the URL</span></code></pre>
             <div class="darrow">↓ <small>renders</small></div>
             <div class="node"><span class="nlabel">Browser</span><span class="nsub">views · maps · tables · state in the URL</span></div>
             <div class="darrow">⇅ <small>runPython</small></div>
-            <div class="node"><span class="nlabel">Python workers</span><span class="nsub">subprocess · PEP 723 · JSON back</span></div>
+            <div class="node"><span class="nlabel">Python workers</span><span class="nsub">subprocess · pyproject.toml · JSON back</span></div>
           </div>
         </div>
       </section>
@@ -376,7 +376,7 @@ draw(data);  <span class="c">// freq rides in the URL</span></code></pre>
             <div class="darrow">↓ <small>renders</small></div>
             <div class="node"><span class="nlabel">Browser</span><span class="nsub">views · maps · tables · state in the URL</span></div>
             <div class="darrow">⇅ <small>runPython</small></div>
-            <div class="node"><span class="nlabel">Python workers</span><span class="nsub">subprocess · PEP 723 · JSON back</span></div>
+            <div class="node"><span class="nlabel">Python workers</span><span class="nsub">subprocess · pyproject.toml · JSON back</span></div>
           </div>
         </div>
 

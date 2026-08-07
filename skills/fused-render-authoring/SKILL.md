@@ -56,7 +56,7 @@ Rules that matter (each has a reason):
 
 ### Available Python libraries
 
-Write `main()` against **stdlib plus the supported library set** below — the packaged app bundles exactly these (its users cannot pip install), and dev installs get the same set via `pip install -e ".[bundled]"` (the authoritative list is the `[bundled]` extra in `pyproject.toml`, plus core deps):
+Write `main()` against **stdlib plus the supported library set** below — a folder with no `pyproject.toml` runs on the app's own interpreter, which ships exactly these with no download and no first-run wait. Dev installs get the same set via `pip install -e ".[bundled]"` (the authoritative list is the `[bundled]` extra in the repo's `pyproject.toml`, plus core deps):
 
 - **Data:** numpy, pandas, polars, pyarrow, duckdb, scipy, openpyxl, msgpack
 - **Geospatial:** shapely, geopandas, rasterio, zarr
@@ -65,7 +65,34 @@ Write `main()` against **stdlib plus the supported library set** below — the p
 - **Network & cloud:** requests, httpx, botocore, google-auth
 - **Logs:** drain3
 
-Anything outside this set (e.g. torch, sklearn, xarray, plotly) may be missing — don't reach for it unless the user confirms it's installed in the Python that launched the server. If a needed import fails, prefer rewriting with the supported set over asking the user to install packages.
+Anything outside this set (e.g. torch, sklearn, xarray, plotly) is missing by default. Reaching for one is a deliberate choice with a cost, so prefer rewriting with the supported set — but when the set genuinely cannot do the job, the folder can declare its own dependencies (next section).
+
+### Declaring extra dependencies: `pyproject.toml`
+
+A `.py`'s environment is decided by **the folder it belongs to**, never by anything written in the file. Put a `pyproject.toml` at the project root and every `.py` under it shares one venv:
+
+```toml
+[project]
+name = "my-view"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = ["xarray", "netCDF4"]
+
+# This folder is a set of scripts, not a distribution to build and install.
+[tool.uv]
+package = false
+```
+
+Four things to know before you write one:
+
+- **The declaration is the COMPLETE list.** The venv contains exactly what you name and nothing else — the bundled set above is *not* unioned in. Declare numpy if you import numpy, even though the app ships it.
+- **It is all-or-nothing per folder.** Adding a `pyproject.toml` to get one extra package means every import in every `.py` under that folder must be listed. A folder with no manifest runs on the app's own interpreter and gets the whole bundled set for free — which is why the supported set is still the better default.
+- **Only the project root counts.** That's the app folder, a template folder, or the *topmost* ancestor holding a `pyproject.toml`. One in a subfolder is inert; the inspector flags it.
+- **First render triggers an install.** The user sees a loader while `uv sync` runs, then the run is retried automatically. Commit the `uv.lock` it writes — that's what makes the folder resolve identically elsewhere.
+
+Adding a dependency later is just an edit: save `pyproject.toml`, re-render, and the environment is reconciled. Never run `uv sync` by hand in the folder — it would create an in-folder `.venv` that diverges from the one the app actually uses (venvs live centrally under `~/.fused-render/`).
+
+**Per-file `# /// script` headers are not read.** A file that still carries one is refused with an error naming the `pyproject.toml` to create; move the block's `dependencies` into the project root's manifest and delete the block.
 
 Versions are not pinned — each install resolves its own. When a version matters (an API that changed between majors, a feature gated on a release), **probe the live environment** instead of guessing: `/api/run` executes in the exact interpreter that runs page code. Write a throwaway probe and POST it:
 

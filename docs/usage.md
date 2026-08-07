@@ -110,8 +110,9 @@ The gear at the sidebar's bottom-left opens **Preferences**:
 - **Template registry** — the merged extension → templates bindings (built-in
   plus your own overrides), read-only.
 - **Execution engine** — switch `fused.runPython` between the built-in
-  executor (fresh subprocess per call) and the fused engine (PEP 723 inline
-  requirements in cached venvs). Applied to the next run, no restart; setting
+  executor (fresh subprocess per call) and the fused engine (a folder's
+  `pyproject.toml` dependencies in cached venvs). Applied to the next run, no
+  restart; setting
   `FUSED_RENDER_ENGINE` pins the engine and locks the switch.
 
 Execution engine sits last, since builtin suits almost everyone. The guided tour

@@ -145,8 +145,8 @@ See `examples_seed/sine/sine.py` + `examples_seed/sine/sine.html` for a complete
 Runtime features and settings live in [docs/usage.md](docs/usage.md):
 
 - [Execution engine](docs/usage.md#execution-engine) — built-in subprocess
-  runner vs. the `fused` local compute backend (PEP 723 inline requirements in
-  cached venvs), and `FUSED_RENDER_ENGINE`.
+  runner vs. the `fused` local compute backend (folder-level `pyproject.toml`
+  dependencies in cached venvs), and `FUSED_RENDER_ENGINE`.
 - [Remote storage (mounts)](docs/usage.md#remote-storage-mounts) — mount
   S3-compatible stores, Google Drive, and anything else rclone speaks, as local
   folders.
