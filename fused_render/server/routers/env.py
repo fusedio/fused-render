@@ -62,7 +62,11 @@ def api_env_install(body: dict = Body(...), x_fused: str | None = Header(default
         )
     from fused_render import envinstall, projectenv
 
-    reqs = projectenv.dependencies_of(project)
+    # The APPLICABLE ones, matching what `/api/run`'s `needs_install` reported and
+    # what `uv sync` will actually install. Reporting the raw declaration here
+    # would let this endpoint's answer disagree with the pre-flight's over a
+    # marker-scoped dependency.
+    reqs = projectenv.applicable_dependencies_of(project)
 
     # envinstall speaks to the fused backend: `_backend_attr` raises RuntimeError
     # BY DESIGN when an upstream attribute is missing (guessing would build the
