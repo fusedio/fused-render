@@ -233,6 +233,7 @@
       <span style="flex:1"></span>
       <button class="peek-btn" id="peek-analyze" title="Review this session with a fresh Claude run">Analyze session</button>
       <button class="peek-btn" id="peek-continue" title="Copy a terminal command that resumes this session">Continue with Claude ⧉</button>
+      <button class="peek-btn" id="peek-open-dir" title="Open the folder this session worked in, in Fused Explorer">Open in explorer</button>
     </div>
     <div class="peek-body" id="peek-body"></div>
   </div>
@@ -821,6 +822,19 @@ function renderPeek() {
   const cdPrefix = cwd ? `cd ${q(cwd)} && ` : "";
   $("peek-continue").onclick = copyCmd("peek-continue",
     `${cdPrefix}claude --resume ${id}`);
+
+  // open the session's working directory in Fused Explorer — same /view/
+  // codec the shell's router uses (segment-wise encode of the abs path).
+  // Navigates the TOP window: the inbox is an iframe inside the shell, and
+  // "open in explorer" means leaving the inbox for the explorer.
+  const openDirBtn = $("peek-open-dir");
+  openDirBtn.style.display = cwd ? "" : "none";
+  openDirBtn.onclick = () => {
+    const norm = /^[A-Za-z]:[\\/]/.test(cwd) ? cwd.replace(/\\/g, "/") : cwd;
+    const encoded = norm.replace(/^\/+/, "").split("/")
+      .filter(Boolean).map(encodeURIComponent).join("/");
+    window.open("/explorer/view/" + encoded, "_top");
+  };
 
   // launch a new detached Claude session that analyzes this one — it appears
   // in the inbox as its own session, so it's tracked there like any other
