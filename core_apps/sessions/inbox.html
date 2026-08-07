@@ -239,7 +239,22 @@
   </div>
 
 <script>
-const SESSIONS_VIEW = "/explorer/view/Users/sinakashuk/fused/sandbox/Sina/ClaudeSessions/sessions/sessions.html";
+// The full sessions viewer (./sessions/sessions.html) as a shell explorer
+// route, derived from this page's own fs path so it works wherever the app
+// content lives (the builtin mount, a dev checkout, a copied folder). The
+// page renders either through /render?path=<abs> (the shell's iframe) or
+// directly at /explorer/view/<path>.
+function ownHtmlPath() {
+  if (location.pathname === "/render")
+    return new URLSearchParams(location.search).get("path") || "";
+  const m = location.pathname.match(/^\/explorer\/(?:view|embed)\/(.*)$/);
+  return m ? "/" + decodeURIComponent(m[1]).replace(/^\/+/, "") : "";
+}
+const SESSIONS_VIEW = (() => {
+  const own = ownHtmlPath();
+  const dir = own.slice(0, own.lastIndexOf("/"));
+  return dir ? `/explorer/view${dir}/sessions/sessions.html` : "";
+})();
 const STATUSES = ["in_progress", "done", "archived"];
 const STATUS_LABELS = {
   in_progress: "In Progress", done: "Done", archived: "Archive",
@@ -807,6 +822,7 @@ function renderPeek() {
   const s = DATA.sessions.find((x) => x.sessionId === id);
   if (!s) { $("peek-body").innerHTML = `<div id="empty">Session not found</div>`; return; }
 
+  $("peek-external").style.display = SESSIONS_VIEW ? "" : "none";
   $("peek-external").onclick = () =>
     window.open(`${SESSIONS_VIEW}?session=${encodeURIComponent(id)}`, "_blank");
 

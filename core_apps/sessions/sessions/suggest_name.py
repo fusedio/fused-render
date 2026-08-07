@@ -5,13 +5,27 @@ boots a full Node app per call)."""
 import json
 import os
 import re
+import shutil
 import subprocess
 import urllib.request
 import uuid
 
 PROJECTS_DIR = os.path.expanduser("~/.claude/projects")
-CLAUDE_BIN = os.path.expanduser("~/.local/bin/claude")
 MODEL = "claude-haiku-4-5-20251001"
+
+
+# the app's Python runs with a minimal PATH — find claude in the usual spots
+# (same resolution as ../analyze.py)
+def _claude_bin() -> str:
+    found = shutil.which("claude")
+    if found:
+        return found
+    home = os.path.expanduser("~")
+    for p in (os.path.join(home, ".local", "bin", "claude"),
+              "/opt/homebrew/bin/claude", "/usr/local/bin/claude"):
+        if os.access(p, os.X_OK):
+            return p
+    return ""
 
 
 def _find_session_path(session_id: str):
@@ -68,14 +82,16 @@ def _api_key():
     key = os.environ.get("ANTHROPIC_API_KEY")
     if key:
         return key
-    # The render app doesn't inherit shell env; pull the export from zshrc.
-    try:
-        with open(os.path.expanduser("~/.zshrc")) as f:
-            m = re.search(r'ANTHROPIC_API_KEY=["\']?([A-Za-z0-9_-]+)', f.read())
-            if m:
-                return m.group(1)
-    except OSError:
-        pass
+    # The render app doesn't inherit shell env; pull the export from the
+    # common shell rc files (whichever shell the user runs).
+    for rc in ("~/.zshrc", "~/.bashrc", "~/.bash_profile", "~/.profile"):
+        try:
+            with open(os.path.expanduser(rc)) as f:
+                m = re.search(r'ANTHROPIC_API_KEY=["\']?([A-Za-z0-9_-]+)', f.read())
+                if m:
+                    return m.group(1)
+        except OSError:
+            continue
     return None
 
 
@@ -136,10 +152,13 @@ def main(session: str = "", instruction: str = "") -> dict:
         # CLI fallback. Run under a session id we choose, so we can delete the
         # transcript the headless call leaves in ~/.claude/projects — otherwise
         # every Suggest click shows up as a junk "titling assistant…" session.
+        claude = _claude_bin()
+        if not claude:
+            return {"ok": False, "error": "no ANTHROPIC_API_KEY and claude CLI not found"}
         helper_session = str(uuid.uuid4())
         try:
             result = subprocess.run(
-                [CLAUDE_BIN, "-p", "--model", MODEL, "--session-id", helper_session],
+                [claude, "-p", "--model", MODEL, "--session-id", helper_session],
                 input=prompt,
                 capture_output=True,
                 text=True,
