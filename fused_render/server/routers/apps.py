@@ -86,6 +86,15 @@ def api_apps():
 # fused_render/linked_apps.py; these routes are thin.
 
 
+@router.get("/api/apps/linked-path")
+def api_linked_path(name: str):
+    """Resolve a linked app's registry name to its real folder — what the
+    shell's /apps/linked/<name> route needs, since that route can't be the
+    pure fused_dir codec the other tags use. `path` is null for an unknown
+    name; read-only, no X-Fused guard (same posture as GET /api/apps)."""
+    return {"path": linked_apps.linked_path(name)}
+
+
 @router.get("/api/apps/link-status")
 def api_link_status(path: str):
     """How a folder relates to the app system, for the explorer's topbar

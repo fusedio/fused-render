@@ -101,18 +101,13 @@ test("an app with no entry at all opens its folder", () => {
   });
 });
 
-test("a linked app never takes the builder route — its folder is outside the workspace", () => {
-  // /apps/<tag>/<name> is a pure codec against fused_dir (fsPathFromAppRoute),
-  // so /apps/linked/<name> would resolve to a workspace path that doesn't
-  // exist. A linked app opens through the explorer URL of its REAL folder,
-  // still in the full-bleed app view.
-  const linked = app({ tag: "linked", path: "/elsewhere/notes",
+test("a linked app takes the builder route like any other app", () => {
+  // /apps/linked/<name> is resolved by the SHELL through the registry
+  // (App.tsx + GET /api/apps/linked-path) rather than the fused_dir codec, so
+  // the card's URL and open experience stay identical to workspace apps.
+  const linked = app({ tag: "linked", name: "notes", path: "/elsewhere/notes",
     entry: "/elsewhere/notes/index.html", entry_html: "/elsewhere/notes/index.html" });
-  expect(hrefFor(linked)).toBe("/explorer/view/elsewhere/notes?_mode=app");
-  expect(openTargetFor(linked)).toEqual({
-    path: "/elsewhere/notes",
-    opts: { isDir: true, mode: "app" },
-  });
+  expect(hrefFor(linked)).toBe("/apps/linked/notes?_mode=app");
 });
 
 // -------------------------------------------------------------- the new tab

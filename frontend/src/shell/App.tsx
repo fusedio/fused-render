@@ -13,11 +13,12 @@
 // which is the React equivalent of the vanilla shell rebuilding the view DOM
 // on each route() call (fresh iframes, fresh fetches, dropped local state).
 import { useEffect, useRef, useState } from "react";
-import { IS_EMBED, fsPathFromLocation, fsPathFromAppRoute, navHintIsDir } from "@platform/lib/router";
+import { IS_EMBED, appRouteSegments, fsPathFromLocation, fsPathFromAppRoute, navHintIsDir } from "@platform/lib/router";
 import { useSessionRestore, useSessionTracking } from "@platform/lib/session";
 import { useRecentsTracking } from "@apps/explorer/lib/recents";
 import { useAppRecentsTracking } from "@apps/builder/lib/recents";
-import { statPath, getMounts, reconnectMount, type Config, type Mount, type StatResult } from "@platform/lib/api";
+import { statPath, getLinkedAppPath, getMounts, reconnectMount, type Config, type Mount, type StatResult } from "@platform/lib/api";
+import { LINKED_TAG } from "@platform/lib/appEntry";
 import { useNavEpoch, useDocumentTitle, useRefreshOnReturn, useLearnMountReady, useSessionsMountReady } from "@platform/lib/hooks";
 import { useMountHealth } from "@platform/lib/mountHealth";
 import { basename } from "@platform/lib/format";
@@ -484,8 +485,31 @@ export default function App({ config }: { config: Config }) {
   const isBookmark = pathname === "/explorer/view/_bookmark";
   // App-builder route: /apps/<tag>/<name> resolves to the app folder under
   // the workspace — a pure codec, no server lookup (router.fsPathFromAppRoute).
+  // EXCEPT the virtual "linked" tag: those folders live anywhere on disk, so
+  // the name resolves through the registry (GET /api/apps/linked-path) — one
+  // async hop, after which the exact same StatView/app view renders on the
+  // real folder. An unknown name (or a fetch failure) falls back to the codec
+  // path, which doesn't exist — the same missing-folder card a bad workspace
+  // app route gets.
   const fusedDir = config.fused_dir.replace(/\\/g, "/");
-  const appFsPath = isApps ? null : fsPathFromAppRoute(pathname, fusedDir);
+  const appSegs = isApps ? null : appRouteSegments(pathname);
+  const linkedName = appSegs && appSegs.tag === LINKED_TAG ? appSegs.name : null;
+  const [linkedPath, setLinkedPath] = useState<string | null>(null);
+  useEffect(() => {
+    setLinkedPath(null);
+    if (!linkedName) return;
+    let stale = false;
+    const fallback = fusedDir.replace(/\/+$/, "") + "/" + LINKED_TAG + "/" + linkedName;
+    getLinkedAppPath(linkedName).then(
+      (r) => { if (!stale) setLinkedPath((r.path ?? fallback).replace(/\\/g, "/")); },
+      () => { if (!stale) setLinkedPath(fallback); }
+    );
+    return () => { stale = true; };
+  }, [linkedName, fusedDir]);
+  const appFsPath = linkedName ? linkedPath : fsPathFromAppRoute(pathname, fusedDir);
+  // Registry lookup in flight: hold the route (spinner below) instead of
+  // letting it fall through to the "Unrecognized URL" branch for a frame.
+  const linkedResolving = linkedName !== null && linkedPath === null;
   const isSentinel =
     isPanel || isTabs || isPrefs || isTemplates || isMounts || isApps || isExplorerHome || isLearn || isSessions || isBookmark;
   const fsPath = isSentinel || appFsPath ? null : fsPathFromLocation();
@@ -642,6 +666,16 @@ export default function App({ config }: { config: Config }) {
         </div>
       </>
     );
+  } else if (linkedResolving) {
+    // /apps/linked/<name> with the registry lookup still in flight — a blank
+    // beat, never the "Unrecognized URL" error for a URL that is about to
+    // resolve.
+    main = (
+      <>
+        <div id="breadcrumb" />
+        <div id="content" key={epoch} />
+      </>
+    );
   } else if (!fsPath) {
     main = (
       <>
@@ -661,7 +695,7 @@ export default function App({ config }: { config: Config }) {
   // Each sub-app owns its sidebar; the shell only picks which one matches the
   // active route: builder on /apps/<tag>/<name>, explorer on fs-path routes,
   // the shell's own app-switcher everywhere else (homepages, settings, learn).
-  const sidebar = appFsPath ? (
+  const sidebar = appFsPath || linkedResolving ? (
     <BuilderSidebar config={config} />
   ) : fsPath || isPanel || isTabs || isBookmark ? (
     <ExplorerSidebar config={config} />

@@ -8,7 +8,8 @@
 import { useEffect } from "react";
 
 import { useEventCounter } from "@platform/lib/hooks";
-import { IS_EMBED, appUrlForFsPath } from "@platform/lib/router";
+import { IS_EMBED, appRouteSegments, appUrlForFsPath } from "@platform/lib/router";
+import { LINKED_TAG } from "@platform/lib/appEntry";
 
 export interface AppRecentEntry {
   tag: string;
@@ -88,6 +89,15 @@ export function useAppRecentsTracking(
     // `fusedDir` empty = tracking disabled (the host view isn't a builder
     // route) — the whole effect is a no-op then.
     if (IS_EMBED || !fusedDir) return;
+    // A linked app's route (/apps/linked/<name>) carries its identity
+    // directly — its folder lives outside the workspace, so the fs-path
+    // derivation below can never reconstruct it. The server resolves the
+    // "linked" tag through the registry on both record and read.
+    const segs = appRouteSegments(location.pathname);
+    if (segs?.tag === LINKED_TAG) {
+      void recordAppOpen(segs.tag, segs.name, title);
+      return;
+    }
     const url = appUrlForFsPath(fsPath, fusedDir);
     if (url === null || location.pathname !== url.split("?")[0]) return;
     const [tag, name] = fsPath

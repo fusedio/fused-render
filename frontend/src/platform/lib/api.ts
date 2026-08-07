@@ -1593,6 +1593,15 @@ export interface AppLinkStatus {
   name: string | null;
 }
 
+// Resolve a linked app's registry name to its real folder (null = unknown
+// name) — backs the shell's /apps/linked/<name> route, which can't use the
+// fused_dir codec the other tags do.
+export function getLinkedAppPath(name: string): Promise<{ path: string | null }> {
+  return getJson<{ path: string | null }>(
+    "/api/apps/linked-path?name=" + encodeURIComponent(name)
+  );
+}
+
 export function getAppLinkStatus(path: string): Promise<AppLinkStatus> {
   return getJson<AppLinkStatus>(
     "/api/apps/link-status?path=" + encodeURIComponent(path)

@@ -188,6 +188,18 @@ def test_unlink_unknown_name_reports_removed_false(client):
     assert r.status_code == 200 and r.json()["removed"] is False
 
 
+def test_linked_path_resolves_names_for_the_shell_route(client, tmp_path):
+    """GET /api/apps/linked-path backs /apps/linked/<name>: registry name ->
+    real folder, null for unknown names."""
+    d = _folder(tmp_path, "notes")
+    client.post("/api/apps/link", json={"path": str(d)}, headers=HDRS)
+    r = client.get("/api/apps/linked-path", params={"name": "notes"})
+    assert r.json() == {"path": str(d)}
+    assert client.get("/api/apps/linked-path", params={"name": "nope"}).json() == {
+        "path": None
+    }
+
+
 # --------------------------------------------------------------- link status
 
 

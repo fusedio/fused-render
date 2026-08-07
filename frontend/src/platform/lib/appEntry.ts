@@ -42,15 +42,12 @@ function opensAsProject(app: AppInfo): boolean {
 }
 
 // The virtual tag for registry-backed linked apps (fused_render/linked_apps.py).
-// Their folders live OUTSIDE the workspace, so the builder's pretty route
-// (/apps/<tag>/<name>) can never resolve them — fsPathFromAppRoute is a pure
-// codec against fused_dir. A linked app therefore opens through the explorer
-// URL of its real folder (still `_mode=app`, the same full-bleed view).
+// Their folders live OUTSIDE the workspace, so /apps/linked/<name> can't be
+// the pure fused_dir codec the other tags use — the shell resolves that tag
+// through the registry instead (App.tsx + GET /api/apps/linked-path). Cards
+// still take the builder route like every other app, so the URL and the
+// experience are identical.
 export const LINKED_TAG = "linked";
-
-function usesBuilderRoute(app: AppInfo): boolean {
-  return opensAsProject(app) && app.tag !== LINKED_TAG;
-}
 
 export interface OpenTarget {
   path: string;
@@ -93,14 +90,14 @@ export function hrefFor(app: AppInfo): string {
   // A project open lands in the BUILDER namespace (/apps/<tag>/<name>) — the
   // app under the builder's own sidebar, with the header's mode switcher pinned
   // to the app modes; the fallbacks stay explorer URLs (folder / single file).
-  if (usesBuilderRoute(app)) return appRouteUrl(app) + "?_mode=" + APP_OPEN_MODE;
+  if (opensAsProject(app)) return appRouteUrl(app) + "?_mode=" + APP_OPEN_MODE;
   const { path, opts } = openTargetFor(app);
   const search = opts?.mode ? "?_mode=" + encodeURIComponent(opts.mode) : "";
   return urlForFsPath(path, search);
 }
 
 export function openApp(app: AppInfo): void {
-  if (usesBuilderRoute(app)) {
+  if (opensAsProject(app)) {
     // navigateUrl, not navigate: the builder URL is already fully formed
     // (navigate speaks fs paths and would re-encode into the explorer prefix).
     navigateUrl(hrefFor(app), { isDir: true });
