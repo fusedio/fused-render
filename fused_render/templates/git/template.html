@@ -1475,6 +1475,23 @@ function render(data, stashes, diff) {
 
 /* ------------------------------------------------------------------ mutations */
 
+/* The runPython CHANNEL for one operation, and the reason this view names them.
+ *
+ * `fused.runPython` supersedes by channel, and the default channel is the .py
+ * PATH — so two calls to the same reader are the same channel whether or not
+ * they ask it different questions. Superseding is not a cancel: the older call
+ * gets a promise that NEVER SETTLES (runtime.js: "hang forever so the stale
+ * continuation never runs"), which is right for a stale repaint and fatal for a
+ * concurrent one. This view reads the same log.py several ways, so on the
+ * default channel `Promise.all([overview, stashes])` deadlocks — the stashes
+ * call supersedes the overview, the overview never resolves, and the page sits
+ * on its skeleton forever with both HTTP requests answered 200.
+ *
+ * One channel per OP is what this view actually wants: a newer overview still
+ * supersedes an older overview (the staleness guard, kept), while overview and
+ * stashes no longer collide (the deadlock, gone). */
+const chan = (op) => ({ key: READER + "#" + op });
+
 /* One path for every write. A mutation is: disable the control, call ops.py,
  * record what happened, then REFETCH the overview and repaint — never patch the
  * DOM from the op's own reply, because git is the authority on what the
@@ -1528,7 +1545,8 @@ async function loadDiff(data) {
   const wt = param("wt");
   if (sel) {
     const known = data.commits.find((c) => c.sha === sel);
-    const payload = await fused.runPython(READER, { file, op: "commit", sha: sel })
+    const payload = await fused.runPython(READER, { file, op: "commit", sha: sel },
+                                          chan("commit"))
       .catch((err) => ({ ok: false, message: err.message }));
     const meta = payload.ok ? payload.commit : known;
     return diffPane(
@@ -1537,7 +1555,8 @@ async function loadDiff(data) {
       payload);
   }
   if (wt) {
-    const payload = await fused.runPython(READER, { file, op: "worktree", entry: wt })
+    const payload = await fused.runPython(READER, { file, op: "worktree", entry: wt },
+                                          chan("worktree"))
       .catch((err) => ({ ok: false, message: err.message }));
     const sub = !payload.ok ? null
       : payload.kind === "untracked-dir" ? "untracked directory — contents"
@@ -1553,7 +1572,8 @@ async function loadDiff(data) {
    nothing. */
 async function loadBranches(mine) {
   if (param("panel") !== "branch" || branchCache) return false;
-  const payload = await fused.runPython(READER, { file, op: "branches" })
+  const payload = await fused.runPython(READER, { file, op: "branches" },
+                                        chan("branches"))
     .catch((err) => ({ ok: false, message: err.message }));
   if (mine !== seq) return false;
   branchCache = payload;
@@ -1596,10 +1616,15 @@ async function draw(force) {
     let stashPayload;
     try {
       /* Two reads, one round of latency: the overview is the view, and the
-         stash list is a section of it. */
+         stash list is a section of it.
+         Concurrently, so they MUST be on different channels — see `chan`. Run
+         on the default channel this deadlocks: the second call supersedes the
+         first, the first then hangs forever by design, and `Promise.all` waits
+         on it for the life of the page. */
       [payload, stashPayload] = await Promise.all([
-        fused.runPython(READER, { file, op: "overview", limit: PAGE_SIZE * pages, page: 0 }),
-        fused.runPython(READER, { file, op: "stashes" }),
+        fused.runPython(READER, { file, op: "overview", limit: PAGE_SIZE * pages, page: 0 },
+                        chan("overview")),
+        fused.runPython(READER, { file, op: "stashes" }, chan("stashes")),
       ]);
     } catch (err) {
       /* A crash in the reader is still an empty state here, not the red
