@@ -1189,6 +1189,7 @@ function searchParamsOf(search) {
 // user's notes, already sent in their own block.
 const CHAT_PARAMS = new Set(["_file", "_mode", "session_id", "run", "split",
                              "model", "effort", "permission", "annotations",
+                             "annmode", "annshow", "annautosend",
                              "path"]);
 
 function appParamsOf(all) {
@@ -3583,7 +3584,12 @@ function setRunningUi(on) {
   document.body.classList.toggle("running", on);
   document.querySelectorAll(".send").forEach((b) => {
     b.setAttribute("aria-label", on ? "Stop" : "Send");
-    b.title = on ? "Stop this turn (Esc)" : "";
+    // No "(Esc)" hint: Escape's first claim is the annotation composer, then
+    // annotate mode (default ON) — during a normal run it disarms annotating,
+    // not the turn. Advertising it here would teach a keystroke that usually
+    // does something else; the working line's own stop control stays the
+    // keyboard-adjacent path.
+    b.title = on ? "Stop this turn" : "";
   });
 }
 
