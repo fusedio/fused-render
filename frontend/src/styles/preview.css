@@ -440,8 +440,10 @@ body.embed .open-as-app-chip:hover {
   display: flex;
   align-items: center;
   gap: 2px;
-  min-height: 28px;
-  padding: 3px 6px;
+  /* Pins to the tallest state (24px control + 4px x 2 padding) so the bar
+     can't grow when the mode control lands after the pane's stat resolves. */
+  min-height: 32px;
+  padding: 4px 6px;
   background: var(--bg);
   border-bottom: 1px solid var(--border);
   user-select: none;
@@ -461,32 +463,6 @@ body.embed .open-as-app-chip:hover {
 
 .panel-crumbs::-webkit-scrollbar {
   display: none;
-}
-
-.panel-btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  flex: 0 0 auto;
-  background: none;
-  border: none;
-  color: var(--fg-muted);
-  cursor: pointer;
-  padding: 4px 5px;
-  border-radius: 4px;
-}
-
-.panel-btn svg {
-  display: block;
-}
-
-.panel-btn:hover {
-  background: rgba(var(--tint), 0.08);
-  color: var(--fg);
-}
-
-.panel-btn.close:hover {
-  color: var(--error);
 }
 
 /* The shared bar recipe (explorer.css) at pane scale: 24px controls, 14px
@@ -527,6 +503,22 @@ body.embed .open-as-app-chip:hover {
 
 .panel-bar .bar-rule {
   margin: 0 6px;
+}
+
+/* The layout bookmark's ★, at the pane bar's left edge — pane scale, and it
+   must not be squeezed by the flex:1 crumbs beside it. */
+.panel-bar .bookmark-star-btn {
+  padding: 3px;
+}
+
+.panel-bar .bookmark-star-btn svg {
+  width: 13px;
+  height: 13px;
+}
+
+.panel-bar .star-btn {
+  font-size: 11px;
+  padding: 2px 8px;
 }
 
 /* Close keeps the right-most slot and its error-red hover. */
@@ -607,10 +599,6 @@ body.embed .open-as-app-chip:hover {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.panel-btn.open-plain {
-  margin-left: 3px;
 }
 
 .tab-open-plain {

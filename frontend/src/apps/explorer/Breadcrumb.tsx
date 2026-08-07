@@ -164,7 +164,12 @@ function LayoutZone({ fsPath }: { fsPath: string }) {
 // can save the changed view as a new bookmark. Clicking a filled star deletes
 // the matching bookmark (toggle), disarming it if it was armed. `name` is the
 // default bookmark name.
-function BookmarkStar({ name }: { name: string }) {
+//
+// Exported for Panel: panel mode dropped its 48px "Panel" title row, and the
+// star (which bookmarks the whole `_layout` URL) moved into the pane bars.
+// Every pane renders one and they all reflect the same layout bookmark —
+// deliberately, since they all describe the same URL.
+export function BookmarkStar({ name }: { name: string }) {
   useUrlVersion();
   useBookmarksVersion();
   const matchesCurrent = (b: { url: string }) => {
@@ -199,7 +204,10 @@ function BookmarkStar({ name }: { name: string }) {
 
 // "Update bookmark" text button, after the crumbs strip, before the actions
 // slot. Visible only when the armed bookmark's params have drifted (D38).
-function UpdateBookmarkButton() {
+// Exported for Panel, which lost the title row that used to carry it — it
+// renders in the FIRST pane's bar only (unlike the star, this one is wide
+// enough that one per pane would be noise).
+export function UpdateBookmarkButton() {
   const urlVersion = useUrlVersion();
   const bookmarksVersion = useBookmarksVersion();
   const showUpdate = useUpdateButton(urlVersion, bookmarksVersion);
