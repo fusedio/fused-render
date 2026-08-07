@@ -2808,6 +2808,16 @@ const PERMISSION_LABELS = {
 };
 const DEFAULT_MODEL = "sonnet";
 const DEFAULT_EFFORT = "medium";
+// What the user ACTUALLY last used with Claude Code for this project — via this
+// template or the CLI directly — detected by the agent from the project's
+// session transcripts and settings files. A hardcoded "default" tells the user
+// nothing; the real config is worth preselecting. An explicit pane param (the
+// user touched the selector) always outranks detection; the constants above are
+// the last-resort fallback when nothing was detected.
+let detectedModel = "";
+let detectedEffort = "";
+const curModel = () => fused.params.get("model") || detectedModel || DEFAULT_MODEL;
+const curEffort = () => fused.params.get("effort") || detectedEffort || DEFAULT_EFFORT;
 // The strictest mode is the default: more auto-approval is opted into, never
 // handed out by a missing param.
 const DEFAULT_PERMISSION = "prompt";
@@ -2831,8 +2841,8 @@ document.querySelectorAll(".perm-sel").forEach((el) => {
 });
 
 function syncSelects() {
-  document.querySelectorAll(".model-sel").forEach((el) => { el.value = fused.params.get("model") || DEFAULT_MODEL; });
-  document.querySelectorAll(".effort-sel").forEach((el) => { el.value = fused.params.get("effort") || DEFAULT_EFFORT; });
+  document.querySelectorAll(".model-sel").forEach((el) => { el.value = curModel(); });
+  document.querySelectorAll(".effort-sel").forEach((el) => { el.value = curEffort(); });
   const perm = fused.params.get("permission");
   document.querySelectorAll(".perm-sel").forEach((el) => {
     el.value = PERMISSION_MODES.includes(perm) ? perm : DEFAULT_PERMISSION;
@@ -2845,6 +2855,16 @@ document.querySelectorAll(".effort-sel").forEach((el) =>
 document.querySelectorAll(".perm-sel").forEach((el) =>
   el.addEventListener("change", () => { fused.params.set("permission", el.value); syncSelects(); }));
 syncSelects();
+
+// Detection is async and best-effort: the selects show the fallback until it
+// lands, then snap to the real config — unless a pane param already pinned a
+// choice, which curModel/curEffort rank higher. Values are validated against
+// the selector's own lists so a config this build doesn't know stays fallback.
+fused.runPython(AGENT, { action: "defaults", file: FILE }, { key: null }).then((d) => {
+  if (d && d.model && MODELS.includes(d.model)) detectedModel = d.model;
+  if (d && d.effort && EFFORTS.includes(d.effort)) detectedEffort = d.effort;
+  if (detectedModel || detectedEffort) syncSelects();
+}).catch(() => {});
 
 // The split param changes on drag too — applySplit on every change is cheap
 // and idempotent.
@@ -3187,7 +3207,7 @@ function addWorking() {
                           stats.phase === "awaiting" ? "Waiting for your approval" :
                           stats.phase === "composing" ? "Composing" :
                           stats.phase === "tooling" ? "Working" : thinkVerb) + "…";
-    const effort = fused.params.get("effort") || DEFAULT_EFFORT;
+    const effort = curEffort();
     const parts = [secs + "s"];
     if (stats.tokens) parts.push("↓ " + stats.tokens + " tokens");
     if (stats.phase === "thinking" && effort) parts.push(effort + " effort");
@@ -3705,8 +3725,8 @@ async function sendMessage(message) {
       file: FILE,
       message: outgoing,
       session_id: fused.params.get("session_id") || "",
-      model: fused.params.get("model") || DEFAULT_MODEL,
-      effort: fused.params.get("effort") || DEFAULT_EFFORT,
+      model: curModel(),
+      effort: curEffort(),
       permission_mode: fused.params.get("permission") || DEFAULT_PERMISSION,
       // key:null — all agent calls opt out of default per-file cancellation
       // (D114): start/poll/history/sessions share one file, and superseding an
