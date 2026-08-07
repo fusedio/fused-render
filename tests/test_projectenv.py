@@ -1,0 +1,368 @@
+"""A .py's project folder, and that folder's central venv (fused_render/projectenv.py).
+
+The environment a script runs in is decided by the folder it belongs to, not by
+anything in the file. That makes the boundary rule the whole contract: get it
+wrong and two scripts in one app silently run in two environments, or a stray
+manifest three levels down hijacks the app's.
+
+Isolation: every test points FUSED_RENDER_HOME and FUSED_RENDER_DIR at tmp_path,
+so the real ~/.fused-render and ~/Documents/Fused are never touched — the same
+discipline as tests/test_core_templates.py.
+"""
+import hashlib
+import os
+
+import pytest
+
+from fused_render import projectenv
+
+
+@pytest.fixture
+def home(tmp_path, monkeypatch):
+    """A throwaway shell home + workspace, and a place to build project trees."""
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("FUSED_RENDER_DIR", str(tmp_path / "workspace"))
+    monkeypatch.delenv("FUSED_RENDER_CORE_TEMPLATES", raising=False)
+    work = tmp_path / "work"
+    work.mkdir()
+    return work
+
+
+def _write_project(d, deps=("cowsay",), *, table=True):
+    d.mkdir(parents=True, exist_ok=True)
+    body = "" if not table else (
+        "[project]\nname = 'x'\nversion = '0.1.0'\n"
+        "dependencies = [%s]\n" % ", ".join(repr(x) for x in deps)
+    )
+    (d / "pyproject.toml").write_text(body or "[tool.black]\nline-length = 88\n", encoding="utf-8")
+    return d
+
+
+# ---------------------------------------------------------------------------
+# Boundary rule 1: an app folder is a project root
+# ---------------------------------------------------------------------------
+
+
+def test_app_dir_is_the_project_root(home, tmp_path):
+    app = tmp_path / "workspace" / "tag" / "my-app"
+    _write_project(app)
+    (app / "page.py").write_text("x = 1\n", encoding="utf-8")
+
+    assert projectenv.project_root_for(str(app / "page.py")) == str(app)
+
+
+def test_app_dir_wins_however_deep_the_script_sits(home, tmp_path):
+    app = tmp_path / "workspace" / "tag" / "my-app"
+    _write_project(app)
+    nested = app / "readers" / "deep"
+    nested.mkdir(parents=True)
+    (nested / "tiff.py").write_text("x = 1\n", encoding="utf-8")
+
+    assert projectenv.project_root_for(str(nested / "tiff.py")) == str(app)
+
+
+def test_nested_pyproject_inside_an_app_is_ignored(home, tmp_path):
+    """A stray manifest below the root must not shadow the app's own."""
+    app = tmp_path / "workspace" / "tag" / "my-app"
+    _write_project(app, ["cowsay"])
+    sub = app / "readers"
+    _write_project(sub, ["altair"])
+    (sub / "tiff.py").write_text("x = 1\n", encoding="utf-8")
+
+    assert projectenv.project_root_for(str(sub / "tiff.py")) == str(app)
+    assert projectenv.dependencies_of(str(app)) == ["cowsay"]
+
+
+def test_app_dir_without_a_manifest_has_no_environment(home, tmp_path):
+    app = tmp_path / "workspace" / "tag" / "plain-app"
+    app.mkdir(parents=True)
+    (app / "page.py").write_text("x = 1\n", encoding="utf-8")
+
+    assert projectenv.project_root_for(str(app / "page.py")) == str(app)
+    assert projectenv.has_project_env(str(app)) is False
+    assert projectenv.project_env_for(str(app / "page.py")) is None
+
+
+# ---------------------------------------------------------------------------
+# Boundary rule 2/3: the two template dirs
+# ---------------------------------------------------------------------------
+
+
+def test_user_template_dir_is_a_project_root(home, tmp_path):
+    tpl = tmp_path / "home" / "templates" / "mine"
+    _write_project(tpl)
+    (tpl / "helper.py").write_text("x = 1\n", encoding="utf-8")
+
+    assert projectenv.project_root_for(str(tpl / "helper.py")) == str(tpl)
+
+
+def test_core_template_dir_is_a_project_root(home, tmp_path):
+    tpl = tmp_path / "home" / ".core-templates" / "geotiff"
+    _write_project(tpl)
+    deep = tpl / "lib"
+    deep.mkdir()
+    (deep / "reader.py").write_text("x = 1\n", encoding="utf-8")
+
+    assert projectenv.project_root_for(str(deep / "reader.py")) == str(tpl)
+
+
+def test_packaged_template_dir_is_a_project_root(home):
+    """The in-bundle templates/ tree is a root too — tests and the dev override
+    read templates from there rather than from the staged copy."""
+    from fused_render import core_templates
+
+    pkg = core_templates.PACKAGE_TEMPLATES_DIR
+    py = os.path.join(pkg, "geotiff", "tiff_reader.py")
+    if not os.path.exists(py):
+        pytest.skip("packaged geotiff template not present")
+    assert projectenv.project_root_for(py) == os.path.join(pkg, "geotiff")
+
+
+def test_template_registry_json_is_not_a_root(home, tmp_path):
+    """A file sitting directly in a template root has no template folder."""
+    root = tmp_path / "home" / "templates"
+    root.mkdir(parents=True)
+    (root / "registry.json").write_text("{}", encoding="utf-8")
+
+    assert projectenv.project_root_for(str(root / "registry.json")) is None
+
+
+# ---------------------------------------------------------------------------
+# Boundary rule 4: the TOPMOST ancestor declaring a pyproject.toml
+# ---------------------------------------------------------------------------
+
+
+def test_topmost_ancestor_wins_not_nearest(home):
+    outer = _write_project(home / "outer", ["cowsay"])
+    inner = _write_project(outer / "inner", ["altair"])
+    (inner / "a.py").write_text("x = 1\n", encoding="utf-8")
+
+    assert projectenv.project_root_for(str(inner / "a.py")) == str(outer)
+
+
+def test_no_manifest_anywhere_is_no_project(home):
+    d = home / "loose"
+    d.mkdir()
+    (d / "a.py").write_text("x = 1\n", encoding="utf-8")
+
+    assert projectenv.project_root_for(str(d / "a.py")) is None
+    assert projectenv.project_env_for(str(d / "a.py")) is None
+
+
+def test_walk_stops_below_the_home_dirs_parent(home, tmp_path):
+    """A manifest at the ceiling must not swallow everything beneath it.
+
+    The ceiling is the shell home's parent — in production the user's home dir,
+    where a stray pyproject.toml would otherwise turn the entire home into one
+    project.
+    """
+    (tmp_path / "pyproject.toml").write_text("[project]\nname='x'\nversion='1'\n", encoding="utf-8")
+    d = home / "loose"
+    d.mkdir()
+    (d / "a.py").write_text("x = 1\n", encoding="utf-8")
+
+    assert projectenv.project_root_for(str(d / "a.py")) is None
+
+
+def test_a_directory_argument_resolves_to_itself(home):
+    proj = _write_project(home / "proj")
+    assert projectenv.project_root_for(str(proj)) == str(proj)
+
+
+# ---------------------------------------------------------------------------
+# "Has an environment": a [project] table, not merely a pyproject.toml
+# ---------------------------------------------------------------------------
+
+
+def test_manifest_without_a_project_table_is_not_an_environment(home):
+    proj = _write_project(home / "proj", table=False)
+    (proj / "a.py").write_text("x = 1\n", encoding="utf-8")
+
+    assert projectenv.has_project_env(str(proj)) is False
+    assert projectenv.project_env_for(str(proj / "a.py")) is None
+
+
+def test_manifest_with_a_project_table_is_an_environment(home):
+    proj = _write_project(home / "proj", ["cowsay", "altair"])
+    (proj / "a.py").write_text("x = 1\n", encoding="utf-8")
+
+    assert projectenv.has_project_env(str(proj)) is True
+    assert projectenv.project_env_for(str(proj / "a.py")) == str(proj)
+    assert projectenv.dependencies_of(str(proj)) == ["cowsay", "altair"]
+
+
+def test_unparseable_manifest_is_not_an_environment(home):
+    proj = home / "proj"
+    proj.mkdir()
+    (proj / "pyproject.toml").write_text("this is not [ valid toml", encoding="utf-8")
+
+    assert projectenv.has_project_env(str(proj)) is False
+    assert projectenv.dependencies_of(str(proj)) == []
+
+
+def test_project_table_without_dependencies_still_has_an_environment(home):
+    proj = home / "proj"
+    proj.mkdir()
+    (proj / "pyproject.toml").write_text("[project]\nname='x'\nversion='1'\n", encoding="utf-8")
+
+    assert projectenv.has_project_env(str(proj)) is True
+    assert projectenv.dependencies_of(str(proj)) == []
+
+
+# ---------------------------------------------------------------------------
+# The venv key: the folder's absolute path, hashed as given
+# ---------------------------------------------------------------------------
+
+
+def test_venv_dir_is_under_the_home_dir_never_in_the_project(home, tmp_path):
+    proj = _write_project(home / "proj")
+    venv = projectenv.venv_dir_for(str(proj))
+
+    assert venv.startswith(os.path.join(str(tmp_path / "home"), "venvs") + os.sep)
+    assert not venv.startswith(str(proj) + os.sep)
+
+
+def test_venv_key_is_the_sha256_of_the_absolute_path(home):
+    proj = _write_project(home / "proj")
+    expected = hashlib.sha256(str(proj).encode("utf-8")).hexdigest()[:16]
+    assert projectenv.venv_key_for(str(proj)) == expected
+
+
+def test_renaming_the_folder_gives_a_new_key(home):
+    a = _write_project(home / "before")
+    key_a = projectenv.venv_key_for(str(a))
+    a.rename(home / "after")
+    key_b = projectenv.venv_key_for(str(home / "after"))
+
+    assert key_a != key_b
+
+
+def test_key_is_not_canonicalised_through_a_symlink(home):
+    """Two names for one directory key differently — move-means-reset depends on it."""
+    real = _write_project(home / "real")
+    link = home / "link"
+    try:
+        link.symlink_to(real, target_is_directory=True)
+    except OSError:
+        pytest.skip("symlinks unavailable")
+
+    assert projectenv.venv_key_for(str(link)) != projectenv.venv_key_for(str(real))
+
+
+def test_key_is_stable_across_calls_and_relative_spellings(home, monkeypatch):
+    proj = _write_project(home / "proj")
+    monkeypatch.chdir(home)
+    assert projectenv.venv_key_for("proj") == projectenv.venv_key_for(str(proj))
+
+
+def test_uv_cache_dir_sits_beside_the_venvs(home, tmp_path):
+    """One filesystem, so uv hardlinks instead of silently copying."""
+    assert os.path.dirname(projectenv.uv_cache_dir()) == os.path.dirname(
+        projectenv.venvs_root()
+    )
+    assert projectenv.uv_cache_dir().startswith(str(tmp_path / "home"))
+
+
+# ---------------------------------------------------------------------------
+# Staleness: a digest of the declaration, not an mtime
+# ---------------------------------------------------------------------------
+
+
+def test_digest_tracks_the_lock_when_one_exists(home):
+    proj = _write_project(home / "proj")
+    (proj / "uv.lock").write_text("version = 1\n", encoding="utf-8")
+    first = projectenv.state_digest(str(proj))
+
+    (proj / "uv.lock").write_text("version = 2\n", encoding="utf-8")
+    assert projectenv.state_digest(str(proj)) != first
+
+
+def test_digest_ignores_the_manifest_when_a_lock_exists(home):
+    """The lock is the resolved truth; a comment edit to pyproject must not resync."""
+    proj = _write_project(home / "proj")
+    (proj / "uv.lock").write_text("version = 1\n", encoding="utf-8")
+    first = projectenv.state_digest(str(proj))
+
+    with open(proj / "pyproject.toml", "a", encoding="utf-8") as f:
+        f.write("\n# a comment\n")
+    assert projectenv.state_digest(str(proj)) == first
+
+
+def test_digest_falls_back_to_the_manifest_without_a_lock(home):
+    proj = _write_project(home / "proj", ["cowsay"])
+    first = projectenv.state_digest(str(proj))
+    _write_project(home / "proj", ["cowsay", "altair"])
+    assert projectenv.state_digest(str(proj)) != first
+
+
+def test_digest_is_not_an_mtime(home):
+    """Touching the files without changing them must not invalidate the venv.
+
+    core_templates' copytree uses copy2, so every release stamps a template's
+    pyproject newer than its venv. An mtime chain would resync all of them.
+    """
+    proj = _write_project(home / "proj")
+    (proj / "uv.lock").write_text("version = 1\n", encoding="utf-8")
+    first = projectenv.state_digest(str(proj))
+    os.utime(proj / "uv.lock", (1, 1))
+    os.utime(proj / "pyproject.toml", (1, 1))
+    assert projectenv.state_digest(str(proj)) == first
+
+
+def test_digest_of_a_projectless_dir_is_empty(home):
+    d = home / "nothing"
+    d.mkdir()
+    assert projectenv.state_digest(str(d)) == ""
+
+
+# ---------------------------------------------------------------------------
+# The sidecar: what a built venv says it was built from
+# ---------------------------------------------------------------------------
+
+
+def test_sidecar_roundtrips_path_and_digest(home):
+    proj = _write_project(home / "proj")
+    venv = projectenv.venv_dir_for(str(proj))
+    os.makedirs(venv, exist_ok=True)
+
+    projectenv.write_sidecar(venv, str(proj), "deadbeef")
+    got = projectenv.read_sidecar(venv)
+
+    assert got == {"path": str(proj), "digest": "deadbeef"}
+
+
+def test_sidecar_is_none_when_absent_or_corrupt(home):
+    proj = _write_project(home / "proj")
+    venv = projectenv.venv_dir_for(str(proj))
+    assert projectenv.read_sidecar(venv) is None
+
+    os.makedirs(venv, exist_ok=True)
+    with open(os.path.join(venv, projectenv.SIDECAR_NAME), "w", encoding="utf-8") as f:
+        f.write("{not json")
+    assert projectenv.read_sidecar(venv) is None
+
+
+def test_sidecar_lands_inside_the_venv_not_the_project(home):
+    proj = _write_project(home / "proj")
+    venv = projectenv.venv_dir_for(str(proj))
+    os.makedirs(venv, exist_ok=True)
+    projectenv.write_sidecar(venv, str(proj), projectenv.state_digest(str(proj)))
+
+    assert os.path.exists(os.path.join(venv, projectenv.SIDECAR_NAME))
+    assert not os.path.exists(os.path.join(str(proj), projectenv.SIDECAR_NAME))
+
+
+# ---------------------------------------------------------------------------
+# The module stays cheap on the request path
+# ---------------------------------------------------------------------------
+
+
+def test_module_does_not_import_the_fused_engine():
+    """projectenv is consulted on every /api/run; importing fused.* would cost
+    a geopandas/pyproj import on the request path."""
+    import inspect
+
+    src = inspect.getsource(projectenv)
+    assert "import fused\n" not in src
+    assert "from fused." not in src
+    assert "import fused." not in src
