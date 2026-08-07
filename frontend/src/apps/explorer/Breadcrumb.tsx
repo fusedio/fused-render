@@ -12,15 +12,15 @@ import { isMod } from "@platform/lib/platform";
 import {
   addBookmark,
   allBookmarks,
+  deleteBookmark,
   updateBookmarkUrl,
   armBookmark,
   disarmBookmark,
   getArmedBookmark,
-  getArmedBookmarkFor,
   sameSearch,
   splitBookmarkUrl,
 } from "@platform/lib/bookmarks";
-import { useUrlVersion, useBookmarksVersion, useArmedVersion, notifyBookmarksChanged } from "@platform/lib/hooks";
+import { useUrlVersion, useBookmarksVersion, notifyBookmarksChanged } from "@platform/lib/hooks";
 import { urlScheme, isCloudScheme, fileUrlToPath } from "@platform/lib/path-url";
 import { resolveCloudUrl } from "@platform/lib/api";
 import { pushToast } from "@platform/lib/toast";
@@ -112,31 +112,40 @@ function RevealButton({ fsPath }: { fsPath: string }) {
 // the row marking is where the user is already looking.
 
 // ★ bookmark button, leftmost in the bar. Highlighted (accent-yellow, filled)
-// when the current view is bookmarked or an armed bookmark is live. `name` is
-// the default bookmark name.
+// only when a bookmark matches the current view exactly (same pathname AND
+// same params, via sameSearch) — a param change empties the star, so the user
+// can save the changed view as a new bookmark. Clicking a filled star deletes
+// the matching bookmark (toggle), disarming it if it was armed. `name` is the
+// default bookmark name.
 function BookmarkStar({ name }: { name: string }) {
   useUrlVersion();
   useBookmarksVersion();
-  useArmedVersion();
-  const starred = allBookmarks().some((b) => b.url === currentUrl());
-  // Pathname-gated (getArmedBookmarkFor): an armed bookmark lights the star
-  // only on ITS view, and useArmedVersion re-renders this when a disarm fires.
-  const armed = !IS_EMBED && getArmedBookmarkFor(location.pathname) !== null;
-  const active = starred || armed;
+  const matchesCurrent = (b: { url: string }) => {
+    const { pathname, search } = splitBookmarkUrl(b.url);
+    return pathname === location.pathname && sameSearch(search, location.search);
+  };
+  const existing = allBookmarks().find(matchesCurrent);
+  const starred = existing !== undefined;
 
   const onBookmark = async () => {
-    await addBookmark(name, currentUrl());
+    if (existing) {
+      await deleteBookmark(existing.id);
+      const armed = getArmedBookmark();
+      if (armed && armed.id === existing.id) disarmBookmark();
+    } else {
+      await addBookmark(name, currentUrl());
+    }
     notifyBookmarksChanged();
   };
 
   return (
     <button
       id="bookmark-btn"
-      className={"bookmark-star-btn" + (active ? " active" : "")}
-      title={starred ? "View is bookmarked (★ adds another)" : "Bookmark this view"}
+      className={"bookmark-star-btn" + (starred ? " active" : "")}
+      title={starred ? "Remove bookmark" : "Bookmark this view"}
       onClick={onBookmark}
     >
-      <StarIcon filled={active} />
+      <StarIcon filled={starred} />
     </button>
   );
 }
