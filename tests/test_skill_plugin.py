@@ -21,6 +21,7 @@ import importlib.util
 import json
 import os
 import shutil
+import subprocess
 import threading
 
 import pytest
@@ -103,17 +104,22 @@ def test_two_syncs_at_once_do_not_stage_into_the_same_directory(home, sources):
     publish whichever fragment won."""
     seen = []
     real_build = skill_plugin._build
+    # The barrier lives INSIDE the spy so both threads must be inside _build
+    # before either finishes: without it, the first sync could publish + stamp
+    # before the second even checked loadability, and the second would take the
+    # legitimate short-circuit — one _build call, spurious failure. It can't
+    # deadlock: the first thread blocked here has published nothing, so the
+    # second's stamp check must fail and bring it into _build too.
+    barrier = threading.Barrier(2, timeout=30)
 
     def spy(staging, sources_map):
         seen.append(staging)
+        barrier.wait()
         return real_build(staging, sources_map)
 
     skill_plugin._build = spy
     try:
-        barrier = threading.Barrier(2)
-
         def run():
-            barrier.wait()
             skill_plugin.sync_skill_plugin()
 
         threads = [threading.Thread(target=run) for _ in range(2)]
@@ -340,10 +346,10 @@ def test_a_spawned_session_is_handed_the_plugin(agent, tmp_path, monkeypatch):
 
 
 def test_an_unpublished_root_means_no_flag(agent, tmp_path, monkeypatch):
-    """No var is the state before any server started, a sync that failed, and a
-    CLI that cannot take the flag — all three must spawn a plain turn. `_start`
-    does NOT re-derive or re-check any of that: it would mean a subprocess per
-    turn, and every one of these tests fakes Popen."""
+    """No var is the state before any server started and after a sync that
+    failed — both must spawn a plain turn. `_start` does NOT re-derive or
+    re-check any of that: it would mean a subprocess per turn, and every one of
+    these tests fakes Popen."""
     monkeypatch.delenv(skill_plugin.PLUGIN_DIR_ENV, raising=False)
     assert "--plugin-dir" not in _spawn_argv(agent, tmp_path, monkeypatch)
 
@@ -364,32 +370,10 @@ def test_the_spawn_path_never_shells_out_to_the_cli(agent, tmp_path, monkeypatch
 
 # ------------------------------------------- publishing the root to a session
 
-def test_the_export_publishes_the_root(home, sources, monkeypatch):
-    monkeypatch.setattr(skill_plugin, "_claude_bin", lambda: None)
+def test_the_export_publishes_the_root(home, sources):
     root = skill_plugin.export_skill_plugin_env()
     assert root == skill_plugin.plugin_dir()
     assert os.environ[skill_plugin.PLUGIN_DIR_ENV] == root
-
-
-def test_a_cli_that_cannot_take_the_flag_is_not_given_it(home, sources,
-                                                         monkeypatch):
-    """Fail CLOSED. An unknown option makes the CLI exit before the turn starts,
-    so an older install loses the skills rather than every chat."""
-    monkeypatch.setattr(skill_plugin, "_claude_bin", lambda: "/bin/claude")
-    monkeypatch.setattr(skill_plugin, "_supports_plugin_dir", lambda _b: False)
-    assert skill_plugin.export_skill_plugin_env() is None
-    assert skill_plugin.PLUGIN_DIR_ENV not in os.environ
-
-
-def test_a_claude_we_cannot_find_still_gets_the_flag(home, sources, monkeypatch):
-    """"Not on the server's PATH" is the NORMAL state on Windows — the templates
-    search install locations this side deliberately does not — so an unfindable
-    binary must not be read as an unsupporting one, or the skills get withheld
-    from exactly the users least able to notice."""
-    monkeypatch.setattr(skill_plugin, "_claude_bin", lambda: None)
-    monkeypatch.setattr(skill_plugin, "_supports_plugin_dir",
-                        lambda _b: pytest.fail("should not probe a missing bin"))
-    assert skill_plugin.export_skill_plugin_env() == skill_plugin.plugin_dir()
 
 
 def test_a_failed_sync_clears_a_stale_publication(home, tmp_path, monkeypatch):
@@ -404,43 +388,38 @@ def test_a_failed_sync_clears_a_stale_publication(home, tmp_path, monkeypatch):
     assert skill_plugin.PLUGIN_DIR_ENV not in os.environ
 
 
-def test_the_probe_fails_closed_and_is_cached(monkeypatch):
-    calls = []
+def test_the_export_never_spawns_a_subprocess(home, sources, monkeypatch):
+    """The scar. `export_app_env` runs this BEFORE uvicorn binds its socket, so
+    anything slow here delays the bind — and the desktop supervisor gives the
+    whole child 20s (`supervisor/core.py:_READY_TIMEOUT_S`) before killing it and
+    retrying. A `claude --help` probe used to live here; on a cold 279MB binary
+    behind a Windows Defender first-touch scan it answered in ~53s, so the
+    supervisor killed a healthy server three times and showed a startup-failure
+    dialog. Keep this path filesystem-only."""
+    def no_spawn(*a, **kw):
+        raise AssertionError("export_skill_plugin_env must not run a subprocess")
 
-    def fake_run(argv, **kwargs):
-        calls.append(argv)
-        raise OSError("no such binary")
-
-    monkeypatch.setattr(skill_plugin.subprocess, "run", fake_run)
-    monkeypatch.setattr(skill_plugin, "_PLUGIN_DIR_SUPPORT", {})
-    assert skill_plugin._supports_plugin_dir("/bin/nope") is False
-    assert skill_plugin._supports_plugin_dir("/bin/nope") is False
-    assert len(calls) == 1 and calls[0] == ["/bin/nope", "--help"]
-
-
-@pytest.mark.parametrize("stdout,stderr,expected", [
-    ("  --plugin-dir <path>\n", "", True),
-    # stderr too: a shim that prints usage there is not an unsupporting CLI.
-    ("", "  --plugin-dir <path>\n", True),
-    ("  --verbose\n", "", False),
-])
-def test_the_probe_reads_the_help_text(stdout, stderr, expected, monkeypatch):
-    monkeypatch.setattr(skill_plugin, "_PLUGIN_DIR_SUPPORT", {})
-    monkeypatch.setattr(
-        skill_plugin.subprocess, "run",
-        lambda *a, **k: type("R", (), {"stdout": stdout, "stderr": stderr})())
-    assert skill_plugin._supports_plugin_dir("/bin/claude") is expected
+    for name in ("run", "Popen", "check_output", "call", "check_call"):
+        monkeypatch.setattr(subprocess, name, no_spawn)
+    assert skill_plugin.export_skill_plugin_env() == skill_plugin.plugin_dir()
 
 
-def test_the_real_cli_advertises_the_flag():
-    """The one assertion here about the OUTSIDE world. Everything else mocks the
-    probe, which means nothing above would notice if `--plugin-dir` were renamed
-    or dropped — the feature would just quietly stop being used."""
-    binary = skill_plugin._claude_bin()
+def test_the_real_cli_still_takes_the_flag():
+    """The one assertion here about the OUTSIDE world, and the only thing now
+    standing behind the assumption that replaced the probe: we pass
+    `--plugin-dir` unconditionally, and an unknown option makes the CLI exit
+    before the turn starts. If it is ever renamed or dropped, every spawned chat
+    dies — so fail here, loudly, rather than in a user's session.
+
+    `--plugin-dir` has shipped since the plugin system itself (CLI 2.0.12,
+    Oct 2025) on a binary that auto-updates, which is why the runtime no longer
+    checks. This test is where that bet gets re-examined."""
+    binary = shutil.which("claude")
     if binary is None:
         pytest.skip("no claude on PATH")
-    skill_plugin._PLUGIN_DIR_SUPPORT.pop(binary, None)
-    assert skill_plugin._supports_plugin_dir(binary) is True
+    out = subprocess.run([binary, "--help"], capture_output=True, text=True,
+                         timeout=120)
+    assert "--plugin-dir" in ((out.stdout or "") + (out.stderr or ""))
 
 
 @pytest.mark.parametrize("template", ["claude", "claude_split"])
