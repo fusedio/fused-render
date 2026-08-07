@@ -3,11 +3,14 @@
 // sidebar's recents) so they can never disagree about what clicking a card does.
 //
 // They did disagree. Each carried its own inline copy of the rule, and Home's
-// Recent row had already drifted from the hub's card. The rule itself is
-// unchanged: an app with a page entry opens its FOLDER in the claude_split view
-// (the app beside a Claude chat) — that is what an app is for — and one without
-// a resolvable entry falls back to the plain folder listing so a card is never
-// dead.
+// Recent row had already drifted from the hub's card. The rule: an app with a
+// page entry opens its FOLDER in the `app` view — the app itself, full-bleed,
+// for USING it — and one without a resolvable entry falls back to the plain
+// folder listing so a card is never dead.
+//
+// OPENING an app is not BUILDING one: the `claude_split` view (the app beside a
+// Claude chat) is where a new app is created and iterated on, and the create
+// path still lands there (HomeHero). Everything in this module is the open path.
 //
 // The cards are ANCHORS, not buttons, so the browser's own "open in a new tab"
 // gestures work on them: middle-click, Cmd/Ctrl-click, and the context menu's
@@ -31,9 +34,9 @@ export function entryOf(app: AppInfo): string | null {
   return app.entry ?? app.entry_html;
 }
 
-// Whether opening this app means opening its folder beside a Claude chat, which
-// is what a page entry earns: claude_split rediscovers the entry from the folder
-// and wants exactly one top-level .html there.
+// Whether opening this app means opening its FOLDER in an app view, which is
+// what a page entry earns: those templates rediscover the entry from the folder
+// and want an index.html or exactly one top-level .html there.
 function opensAsProject(app: AppInfo): boolean {
   return Boolean(app.entry_html);
 }
@@ -43,13 +46,19 @@ export interface OpenTarget {
   opts?: { isDir?: boolean; mode?: string };
 }
 
+// The template an app folder opens in: the app itself, full-bleed
+// (fused_render/templates/app). Set EXPLICITLY rather than left to the default —
+// with `_mode` absent, Preview's defaultTemplate picks the first UNCONDITIONAL
+// entry, which for a directory is `_listing`, i.e. the folder's file list.
+export const APP_OPEN_MODE = "app";
+
 // Where a card goes when activated, AS A VALUE. Split out from openApp so the
 // rule can be tested without touching `navigate`: mocking a module that half
 // the shell imports is process-wide in bun, and it leaks into whichever suite
 // runs next. A pure function needs no mock at all.
 export function openTargetFor(app: AppInfo): OpenTarget {
   if (opensAsProject(app)) {
-    return { path: app.path, opts: { isDir: true, mode: "claude_split" } };
+    return { path: app.path, opts: { isDir: true, mode: APP_OPEN_MODE } };
   }
   // A single file entry that isn't a page opens as the file. No workspace app
   // reaches this today (its entry is its .html or it has none), but the branch
@@ -64,16 +73,16 @@ export function openTargetFor(app: AppInfo): OpenTarget {
 // open it in a new tab without the shell's help.
 //
 // `_mode` rides along because it selects the destination's template (the
-// claude_split split view); the `preview` param navigate() keeps sticky across
+// plain app view); the `preview` param navigate() keeps sticky across
 // folder navigation deliberately does NOT, since it is in-session layout the
 // user toggled and a new tab is a fresh session. Built through the router's own
 // codec, so an app path with a space, a `#` or a non-ASCII name encodes exactly
 // as in-app navigation encodes it.
 export function hrefFor(app: AppInfo): string {
   // A project open lands in the BUILDER namespace (/apps/<tag>/<name>) — the
-  // app rendered beside a Claude chat under the builder's own sidebar; the
-  // fallbacks stay explorer URLs (plain folder listing / single file).
-  if (opensAsProject(app)) return appRouteUrl(app) + "?_mode=claude_split";
+  // app under the builder's own sidebar, with the header's mode switcher pinned
+  // to the app modes; the fallbacks stay explorer URLs (folder / single file).
+  if (opensAsProject(app)) return appRouteUrl(app) + "?_mode=" + APP_OPEN_MODE;
   const { path, opts } = openTargetFor(app);
   const search = opts?.mode ? "?_mode=" + encodeURIComponent(opts.mode) : "";
   return urlForFsPath(path, search);

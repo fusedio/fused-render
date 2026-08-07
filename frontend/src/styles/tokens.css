@@ -1,0 +1,152 @@
+/* Appearance — System / Light / Dark (SPEC §30, D134).
+ *
+ * Every colour in this file comes from a token below; nothing is hardcoded in
+ * a rule any more, because a hardcoded colour is a colour light mode cannot
+ * repaint (tests/test_theme.py enforces that). The dark block IS the app's
+ * historical appearance, value for value — this change adds a light palette,
+ * it does not restyle dark.
+ *
+ * `data-theme` is stamped on <html> by the pre-paint bootstrap in index.html
+ * and kept current by lib/theme.ts. Dark is the `:root` default so a document
+ * with no attribute at all still renders as it always did.
+ *
+ * The `--*-rgb`/`--tint` tokens are bare "r, g, b" triples, substituted
+ * textually into `rgba(var(--tint), .06)`: the many translucent washes in this
+ * file assumed a dark backdrop (white over dark), and in light mode the same
+ * wash has to be black over light. That flip is what `--tint` is for.
+ */
+:root {
+  color-scheme: dark;
+  --fg: #e8eaed;
+  --fg-muted: #9aa0a6;
+  --border: #2a2d33;
+  --bg: #131417;
+  --bg-alt: #1b1d21;
+  --sel: #2b3a52;
+  --accent: #E5FF44;
+  --error: #ff6b6b;
+  --success: #3fb950;
+  --warning: #d29922;
+
+  /* rgb triples for the translucent washes (see the note above). */
+  --tint: 255, 255, 255;
+  --accent-rgb: 229, 255, 68;
+  --error-rgb: 255, 107, 107;
+  --fg-muted-rgb: 154, 160, 166;
+
+  /* Elevation. Dark-tuned: a near-opaque black drop reads as depth against a
+     dark page but as dirt against a light one, hence the light overrides. */
+  --shadow-sm: rgba(0, 0, 0, 0.25);
+  --shadow-md: rgba(0, 0, 0, 0.4);
+  --shadow-lg: rgba(0, 0, 0, 0.5);
+  --scrim: rgba(0, 0, 0, 0.55); /* modal backdrop — stays dark in both modes */
+
+  /* Surfaces floating above --bg-alt: the bookmark tooltip and icon/template
+     pickers (--bg-panel), the tour popover (--bg-popover). */
+  --bg-panel: #202329;
+  --bg-popover: #1c1e24;
+  /* Opaque row fills, pre-composited: a stretched-link row can't stack a
+     translucent wash over its own background, so the flat result is a token. */
+  --row-bg-hover: #26282c; /* --bg-alt under the neutral 0.06 wash */
+  --row-bg-active: #353a25; /* --bg-alt under the accent 0.13 wash */
+
+  --on-accent: #10131a; /* text/glyph on an --accent fill */
+  --on-fg: #ffffff; /* .btn-primary hover: one step further from --bg than --fg */
+  --accent-soft: #c9d95e; /* the accent as readable body text */
+  --success-bright: #3fca6b; /* live/signed-in dots */
+  --success-soft: #86d786;
+  --warning-soft: #dfb054;
+  --warning-strong: #e0a33e;
+
+  /* Full-page failure card (.status-message.error). */
+  --error-page-bg: rgba(30, 5, 5, 0.9);
+  --error-page-border: #c0392b;
+  --error-page-fg: #ffdede;
+
+  /* Tour popover chrome (driver.js overrides). */
+  --tour-fg: #e8e8e8;
+  --tour-desc: #b4b6bd;
+  --tour-dim: #7c7f88;
+  --tour-next-hover: #d8f238;
+
+  /* File-type icon hues (FileIcons.tsx). Tuned bright for a dark listing;
+     the light palette darkens each one to the same relative weight. */
+  --icon-folder: #9fb1d2;
+  --icon-code: #7fb2a6;
+  --icon-data: #a898cb;
+  --icon-json: #c3a96b;
+  --icon-html: #c9d95e;
+  --icon-image: #cd93b6;
+  --icon-doc: #9aa0a6;
+  --icon-media: #d0939b;
+  --icon-geo: #88bf95;
+  --icon-archive: #baa386;
+  --icon-db: #82abbf;
+  --icon-file: #868c93;
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+  --fg: #1f2023;
+  --fg-muted: #61656c;
+  --border: #d8dade;
+  --bg: #ffffff;
+  --bg-alt: #f4f5f7;
+  --sel: #cfe0f7;
+  /* The brand lime is unreadable as text on white and near-invisible as a
+     hairline, so light mode uses a deep olive-lime of the same hue: it clears
+     4.5:1 against both --bg and white, so it works as text, border, fill and
+     wash from the one token — no second accent needed. */
+  --accent: #5f7300;
+  --error: #c62828;
+  --success: #1a7f37;
+  --warning: #8f6a10;
+
+  --tint: 0, 0, 0;
+  --accent-rgb: 95, 115, 0;
+  --error-rgb: 198, 40, 40;
+  --fg-muted-rgb: 97, 101, 108;
+
+  --shadow-sm: rgba(0, 0, 0, 0.1);
+  --shadow-md: rgba(0, 0, 0, 0.14);
+  --shadow-lg: rgba(0, 0, 0, 0.18);
+  --scrim: rgba(0, 0, 0, 0.4);
+
+  /* Floating surfaces lift by going *lighter* than --bg-alt here, i.e. all the
+     way to --bg; their existing borders + shadow carry the separation. */
+  --bg-panel: #ffffff;
+  --bg-popover: #ffffff;
+  --row-bg-hover: #e5e6e8; /* --bg-alt under the neutral 0.06 wash */
+  --row-bg-active: #e1e4d7; /* --bg-alt under the accent 0.13 wash */
+
+  --on-accent: #ffffff;
+  --on-fg: #000000;
+  --accent-soft: #5f7300;
+  --success-bright: #1a8f45;
+  --success-soft: #1f7a3a;
+  --warning-soft: #8a6410;
+  --warning-strong: #9a6a10;
+
+  --error-page-bg: rgba(255, 236, 236, 0.95);
+  --error-page-border: #c0392b;
+  --error-page-fg: #7f1d1d;
+
+  --tour-fg: #1f2023;
+  --tour-desc: #4a4e55;
+  --tour-dim: #6f747c;
+  --tour-next-hover: #4e5f00;
+
+  --icon-folder: #45689e;
+  --icon-code: #2f7a6b;
+  --icon-data: #6b57a0;
+  --icon-json: #8a6d1f;
+  --icon-html: #6f7c14;
+  --icon-image: #9c4d78;
+  --icon-doc: #61656c;
+  --icon-media: #a34a56;
+  --icon-geo: #2f7d47;
+  --icon-archive: #806341;
+  --icon-db: #3d7b93;
+  --icon-file: #6b7178;
+}
+

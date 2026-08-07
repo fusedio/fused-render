@@ -28,6 +28,7 @@ export function useListingShortcuts({
   doTrash,
   startRename,
   startNewFolder,
+  globalKeys = true,
 }: {
   base: string;
   clipboard: Clipboard | null;
@@ -44,6 +45,9 @@ export function useListingShortcuts({
   doTrash: (rows: RowCtx[]) => void;
   startRename: (row: RowCtx) => void;
   startNewFolder: (dir: string) => void;
+  // False for an embedded Listing (preview pane): the document-level file-op
+  // chords belong to the host view's Listing.
+  globalKeys?: boolean;
 }) {
   const shortcutRef = useRef<(e: KeyboardEvent) => void>(() => {});
   shortcutRef.current = (e: KeyboardEvent) => {
@@ -146,8 +150,9 @@ export function useListingShortcuts({
     }
   };
   useEffect(() => {
+    if (!globalKeys) return;
     const h = (e: KeyboardEvent) => shortcutRef.current(e);
     document.addEventListener("keydown", h);
     return () => document.removeEventListener("keydown", h);
-  }, []);
+  }, [globalKeys]);
 }

@@ -80,10 +80,10 @@ test("entryOf prefers entry and falls back to entry_html", () => {
 
 // ------------------------------------------------------- where a click lands
 
-test("an app with a page entry opens its folder beside a Claude chat", () => {
+test("an app with a page entry opens its folder in the plain app view", () => {
   expect(openTargetFor(app())).toEqual({
     path: "/w/local/demo",
-    opts: { isDir: true, mode: "claude_split" },
+    opts: { isDir: true, mode: "app" },
   });
 });
 
@@ -107,7 +107,7 @@ test("href points at the same target a left click opens", () => {
   // The whole point of building both from openTargetFor: a new tab and an
   // in-app click cannot land in different places. A project open lands in the
   // BUILDER namespace (/apps/<tag>/<name>); fallbacks stay explorer URLs.
-  expect(hrefFor(app())).toBe("/apps/local/demo?_mode=claude_split");
+  expect(hrefFor(app())).toBe("/apps/local/demo?_mode=app");
   expect(hrefFor(app({ entry: "/w/local/demo/t.csv", entry_html: null }))).toBe(
     "/explorer/view/w/local/demo/t.csv",
   );
@@ -124,7 +124,7 @@ test("href encodes a path the URL codec would otherwise break on", () => {
   );
   // Builder-route segments encode too — tag/name are path segments.
   expect(hrefFor(app({ tag: "my tag", name: "app#2" }))).toBe(
-    "/apps/my%20tag/app%232?_mode=claude_split",
+    "/apps/my%20tag/app%232?_mode=app",
   );
 });
 

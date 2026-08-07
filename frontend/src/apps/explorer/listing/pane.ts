@@ -17,21 +17,23 @@ import { replaceSearch } from "@platform/lib/router";
 import { getViewState, setViewState } from "@platform/lib/viewstate";
 
 const PANE_MIN_W = 220;
-const LIST_MIN_W = 220;
-const PANE_MAX_FRAC = 0.65;
+const LIST_MIN_W = 60;
+// Dragging the divider within this many pixels of the container's right edge
+// closes the pane on release (the clamp holds the pane at PANE_MIN_W during
+// the drag, so the intent is read from the raw cursor position instead).
+const PANE_CLOSE_W = 110;
 export const PANE_DEFAULT_FRAC = 0.5;
 const PANE_FALLBACK_W = 420;
 
-// The one place the FS-12 clamps live, so the drag and the measured default
-// cannot disagree. Two independent ceilings: the 65 % fraction (the list stays
-// the primary surface) and the LIST_MIN_W floor the list needs in pixels — on
-// a narrow window 65 % of the container leaves the list well under 220 px, so
-// the pixel ceiling is the binding one there. PANE_MIN_W is applied last: in
-// the degenerate case (a container too small to satisfy both minimums) the
-// pane keeps its floor and the list scrolls, which is what the old template's
-// `min-width` did.
+// The one place the clamps live, so the drag and the measured default cannot
+// disagree: the pane keeps at least PANE_MIN_W, and the list keeps at least
+// LIST_MIN_W (a sliver — the columns shed themselves via container queries as
+// it narrows). PANE_MIN_W is applied last: in the degenerate case (a container
+// too small for both minimums) the pane keeps its floor and the list scrolls.
+// CSS mirrors both floors (.listing-pane-slot / .listing-main min-width) as a
+// backstop for window resizes, which never re-run this clamp.
 function clampPaneWidth(containerW: number, width: number): number {
-  return Math.max(PANE_MIN_W, Math.min(containerW * PANE_MAX_FRAC, containerW - LIST_MIN_W, width));
+  return Math.max(PANE_MIN_W, Math.min(containerW - LIST_MIN_W, width));
 }
 
 function resolvePane(fsPath: string): { on: boolean; width: number | null } {
@@ -60,7 +62,10 @@ function savePaneState(fsPath: string, on: boolean, width: number | null): void 
   setViewState(fsPath, qs ? "?" + qs : "");
 }
 
-export function usePreviewPane(fsPath: string) {
+// `enabled=false` (an embedded Listing — the preview pane's own `_listing`
+// mode) turns the whole feature off at the source: the pane never resolves
+// from URL/viewstate, stays off, and the toggle is inert — no nesting.
+export function usePreviewPane(fsPath: string, enabled = true) {
   // Visibility restores URL-first (resolvePane: `?preview=true` wins, then the
   // folder's saved viewstate); width is viewstate-only. Toggling writes BOTH:
   // the URL (replaceSearch, like setSort — on sets `preview=true`, off deletes
@@ -68,7 +73,9 @@ export function usePreviewPane(fsPath: string) {
   // sticky) and the viewstate (so a folder re-opened from a clean URL
   // remembers). Width is clamped live during the divider drag; the max
   // fraction is enforced against the split container's current size.
-  const [pane, setPane] = useState<{ on: boolean; width: number | null }>(() => resolvePane(fsPath));
+  const [pane, setPane] = useState<{ on: boolean; width: number | null }>(() =>
+    enabled ? resolvePane(fsPath) : { on: false, width: null }
+  );
   const splitRef = useRef<HTMLDivElement>(null);
   // Is `pane.width` a width the USER chose (restored from `panew`, or dragged
   // this session), as opposed to the measured half-container default? Only a
@@ -88,11 +95,16 @@ export function usePreviewPane(fsPath: string) {
   }, [pane.on, pane.width]);
 
   const togglePane = () => {
+    if (!enabled) return;
     setPane((prev) => {
       const next = { ...prev, on: !prev.on };
       const params = new URLSearchParams(location.search);
       if (next.on) params.set("preview", "true");
-      else params.delete("preview");
+      else {
+        params.delete("preview");
+        // The pane's mode param has no pane to describe once it's closed.
+        params.delete("_panelMode");
+      }
       const qs = params.toString();
       replaceSearch(location.pathname + (qs ? "?" + qs : ""));
       savePaneState(fsPath, next.on, paneSized.current ? next.width : null);
@@ -107,7 +119,9 @@ export function usePreviewPane(fsPath: string) {
     const divider = e.currentTarget;
     divider.setPointerCapture(e.pointerId);
     divider.classList.add("dragging");
+    const startWidth = pane.width;
     let width = pane.width;
+    let raw = Infinity;
     let moved = false;
     const onMove = (ev: PointerEvent) => {
       const rect = splitRef.current?.getBoundingClientRect();
@@ -115,7 +129,8 @@ export function usePreviewPane(fsPath: string) {
       moved = true;
       // The pane is the right side: its width is the distance from the cursor
       // to the container's right edge, run through the shared FS-12 clamps.
-      width = clampPaneWidth(rect.width, rect.right - ev.clientX);
+      raw = rect.right - ev.clientX;
+      width = clampPaneWidth(rect.width, raw);
       setPane((prev) => (prev.width === width ? prev : { ...prev, width }));
     };
     const onUp = () => {
@@ -123,6 +138,18 @@ export function usePreviewPane(fsPath: string) {
       divider.removeEventListener("pointermove", onMove);
       divider.removeEventListener("pointerup", onUp);
       divider.removeEventListener("pointercancel", onUp);
+      // Released with the cursor (nearly) at the right edge: close the pane,
+      // keeping the pre-drag width so re-opening restores it.
+      if (moved && raw < PANE_CLOSE_W) {
+        const params = new URLSearchParams(location.search);
+        params.delete("preview");
+        params.delete("_panelMode");
+        const qs = params.toString();
+        replaceSearch(location.pathname + (qs ? "?" + qs : ""));
+        setPane({ on: false, width: startWidth });
+        savePaneState(fsPath, false, paneSized.current ? startWidth : null);
+        return;
+      }
       // Only a drag that actually moved the divider is a chosen width; a bare
       // click on it leaves the measured default unpersisted.
       if (moved) paneSized.current = true;

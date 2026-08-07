@@ -1,6 +1,9 @@
-// Crumb bar + "+ Bookmark" / "Update bookmark" / split right/down buttons.
-// Rendered by every view: path crumbs for listing/preview, a static label for
-// the layout modes (LM-11 / TM-9 — ★/update still operate on currentUrl()).
+// Crumb bar: ★ bookmark button on the left, path crumbs, split right/down +
+// reveal-in-Finder icons at the crumbs' tail, and the `#topbar-mode-slot`
+// portal target on the right (Preview portals its mode switcher/deploy actions
+// there). Rendered by every view: path crumbs for listing/preview, a static
+// label for the layout modes (LM-11 / TM-9 — ★/update still operate on
+// currentUrl()).
 import React, { useEffect, useRef, useState } from "react";
 import { requestCloneApp } from "@platform/cloud/cloneApp";
 import { navigate, navigateUrl, urlForFsPath, currentUrl, IS_EMBED } from "@platform/lib/router";
@@ -13,10 +16,11 @@ import {
   armBookmark,
   disarmBookmark,
   getArmedBookmark,
+  getArmedBookmarkFor,
   sameSearch,
   splitBookmarkUrl,
 } from "@platform/lib/bookmarks";
-import { useUrlVersion, useBookmarksVersion, notifyBookmarksChanged } from "@platform/lib/hooks";
+import { useUrlVersion, useBookmarksVersion, useArmedVersion, notifyBookmarksChanged } from "@platform/lib/hooks";
 import { urlScheme, isCloudScheme, fileUrlToPath } from "@platform/lib/path-url";
 import { resolveCloudUrl } from "@platform/lib/api";
 import { pushToast } from "@platform/lib/toast";
@@ -60,12 +64,20 @@ function useUpdateButton(urlVersion: number, bookmarksVersion: number): boolean 
   return visible;
 }
 
-// Shared action block (present on every view). `name` is the default bookmark
-// name; `onSplit` present adds the panel-mode entry points (the layout modes
-// themselves pass none).
-interface CrumbActionsProps {
-  name: string;
-  onSplit?: (dir: "row" | "col") => void;
+function StarIcon({ filled }: { filled: boolean }) {
+  return (
+    <svg
+      width="15"
+      height="15"
+      viewBox="0 0 16 16"
+      fill={filled ? "currentColor" : "none"}
+      stroke="currentColor"
+      strokeWidth="1.3"
+      strokeLinejoin="round"
+    >
+      <path d="M8 1.8l1.9 3.9 4.3.6-3.1 3 .7 4.3L8 11.6l-3.8 2 .7-4.3-3.1-3 4.3-.6z" />
+    </svg>
+  );
 }
 
 // Browsers block file:// navigation from http pages, so revealing in the OS
@@ -99,16 +111,45 @@ function RevealButton({ fsPath }: { fsPath: string }) {
 // chrome-level readout lingered in the corner with no way to dismiss it, and
 // the row marking is where the user is already looking.
 
-function CrumbActions({ name, onSplit }: CrumbActionsProps) {
-  const urlVersion = useUrlVersion();
-  const bookmarksVersion = useBookmarksVersion();
-  const showUpdate = useUpdateButton(urlVersion, bookmarksVersion);
+// ★ bookmark button, leftmost in the bar. Highlighted (accent-yellow, filled)
+// when the current view is bookmarked or an armed bookmark is live. `name` is
+// the default bookmark name.
+function BookmarkStar({ name }: { name: string }) {
+  useUrlVersion();
+  useBookmarksVersion();
+  useArmedVersion();
   const starred = allBookmarks().some((b) => b.url === currentUrl());
+  // Pathname-gated (getArmedBookmarkFor): an armed bookmark lights the star
+  // only on ITS view, and useArmedVersion re-renders this when a disarm fires.
+  const armed = !IS_EMBED && getArmedBookmarkFor(location.pathname) !== null;
+  const active = starred || armed;
 
   const onBookmark = async () => {
     await addBookmark(name, currentUrl());
     notifyBookmarksChanged();
   };
+
+  return (
+    <button
+      id="bookmark-btn"
+      className={"bookmark-star-btn" + (active ? " active" : "")}
+      title={starred ? "View is bookmarked (★ adds another)" : "Bookmark this view"}
+      onClick={onBookmark}
+    >
+      <StarIcon filled={active} />
+    </button>
+  );
+}
+
+// "Update bookmark" text button, after the crumbs strip (and its finder/split
+// icons), before the actions slot. Visible only when the armed bookmark's
+// params have drifted (D38).
+function UpdateBookmarkButton() {
+  const urlVersion = useUrlVersion();
+  const bookmarksVersion = useBookmarksVersion();
+  const showUpdate = useUpdateButton(urlVersion, bookmarksVersion);
+  if (!showUpdate) return null;
+
   const onUpdate = async () => {
     const armed = getArmedBookmark();
     if (!armed) return;
@@ -119,47 +160,22 @@ function CrumbActions({ name, onSplit }: CrumbActionsProps) {
   };
 
   return (
-    <div className="crumb-actions">
-      {showUpdate && (
-        <button
-          id="update-bookmark-btn"
-          className="star-btn starred"
-          title="Update bookmark to current params"
-          onClick={onUpdate}
-        >
-          Update bookmark
-        </button>
-      )}
-      {onSplit && (
-        <>
-          <button
-            id="split-right-btn"
-            className="star-btn split-dir"
-            title="Open this view in panel mode, split right"
-            onClick={() => onSplit("row")}
-          >
-            <SplitRightIcon />
-          </button>
-          <button
-            id="split-down-btn"
-            className="star-btn split-dir"
-            title="Open this view in panel mode, split down"
-            onClick={() => onSplit("col")}
-          >
-            <SplitDownIcon />
-          </button>
-        </>
-      )}
-      <button
-        id="bookmark-btn"
-        className={"star-btn" + (starred ? " starred" : "")}
-        title={starred ? "View is bookmarked (★ adds another)" : "Bookmark this view"}
-        onClick={onBookmark}
-      >
-        + Bookmark
-      </button>
-    </div>
+    <button
+      id="update-bookmark-btn"
+      className="star-btn starred"
+      title="Update bookmark to current params"
+      onClick={onUpdate}
+    >
+      Update bookmark
+    </button>
   );
+}
+
+// Portal target for the view's header actions (mode switcher, deploy, "Open as
+// app") — Preview renders into this via TopbarActions. Carries
+// .preview-actions so the existing switcher/button styling applies unchanged.
+function TopbarActionsSlot() {
+  return <div id="topbar-mode-slot" className="crumb-actions preview-actions" />;
 }
 
 // Split entry (LM-10): two panes side by side (`dir` "row", `,` in the codec)
@@ -192,7 +208,11 @@ function navigatePreservingMode(target: string): void {
   if (mode) {
     const params = new URLSearchParams({ _mode: mode });
     const preview = url.get("preview");
-    if (preview !== null) params.set("preview", preview);
+    if (preview !== null) {
+      params.set("preview", preview);
+      const panelMode = url.get("_panelMode");
+      if (panelMode !== null) params.set("_panelMode", panelMode);
+    }
     navigateUrl(urlForFsPath(target, "?" + params.toString()));
   } else {
     navigate(target, { isDir: true }); // breadcrumb targets are always dirs
@@ -377,6 +397,7 @@ export function Breadcrumb({
 
   return (
     <>
+      <BookmarkStar name={renderedTitle || basename(fsPath)} />
       {editing ? (
         <input
           className="crumb-edit"
@@ -413,9 +434,26 @@ export function Breadcrumb({
         >
           {pieces}
           <RevealButton fsPath={fsPath} />
+          <button
+            id="split-right-btn"
+            className="reveal-btn split-dir"
+            title="Open this view in panel mode, split right"
+            onClick={() => enterPanel(fsPath, "row")}
+          >
+            <SplitRightIcon />
+          </button>
+          <button
+            id="split-down-btn"
+            className="reveal-btn split-dir"
+            title="Open this view in panel mode, split down"
+            onClick={() => enterPanel(fsPath, "col")}
+          >
+            <SplitDownIcon />
+          </button>
         </div>
       )}
-      <CrumbActions name={renderedTitle || basename(fsPath)} onSplit={(dir) => enterPanel(fsPath, dir)} />
+      <UpdateBookmarkButton />
+      <TopbarActionsSlot />
     </>
   );
 }
@@ -423,10 +461,12 @@ export function Breadcrumb({
 export function StaticBreadcrumb({ label }: { label: string }) {
   return (
     <>
+      <BookmarkStar name={label} />
       <div className="crumbs">
         <span className="current">{label}</span>
       </div>
-      <CrumbActions name={label} />
+      <UpdateBookmarkButton />
+      <TopbarActionsSlot />
     </>
   );
 }

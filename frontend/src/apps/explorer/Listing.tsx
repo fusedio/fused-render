@@ -31,7 +31,6 @@ import { useFlip, FLIP_KEY_ATTR } from "@platform/lib/flip";
 import { useClipboard } from "@apps/explorer/lib/fs-clipboard";
 import ContextMenu from "@platform/ui/ContextMenu";
 import { PromptDialog, ConfirmDialog } from "@apps/explorer/FsDialogs";
-import { SplitRightIcon } from "@platform/ui/SplitIcons";
 import ListingPreviewPane from "@apps/explorer/ListingPreviewPane";
 import {
   FLIP_MAX_ROWS,
@@ -41,8 +40,17 @@ import {
   type SortOrder,
 } from "@apps/explorer/listing/types";
 import { resolveSort, sortEntries } from "@apps/explorer/listing/sorting";
-import { skeletonRows, ClipMark, renderHighlight, measureScrollAnchor } from "@apps/explorer/listing/bits";
-import { usePreviewPane, reflectPaneInUrl, PANE_DEFAULT_FRAC } from "@apps/explorer/listing/pane";
+import {
+  skeletonRows,
+  ClipMark,
+  renderHighlight,
+  measureScrollAnchor,
+} from "@apps/explorer/listing/bits";
+import {
+  usePreviewPane,
+  reflectPaneInUrl,
+  PANE_DEFAULT_FRAC,
+} from "@apps/explorer/listing/pane";
 import { useDirListing } from "@apps/explorer/listing/useDirListing";
 import { useWalkSearch } from "@apps/explorer/listing/useWalkSearch";
 import { useListingSelection } from "@apps/explorer/listing/useListingSelection";
@@ -52,6 +60,7 @@ import { useListingShortcuts } from "@apps/explorer/listing/useListingShortcuts"
 export default function Listing({
   fsPath,
   provisional = false,
+  embedded = false,
   onSingleApp,
 }: {
   fsPath: string;
@@ -65,25 +74,35 @@ export default function Listing({
   // let stat commit the real view. Absent/false (the committed post-stat
   // render), errors show normally.
   provisional?: boolean;
+  // `embedded`: this Listing renders INSIDE another view (the preview pane's
+  // `_listing` mode), not as the shell's main view. It must not touch the
+  // address bar (no sort/q/preview URL reflection), never opens its own
+  // preview pane (no nesting), and registers no document-level keyboard
+  // handlers — those belong to the host's Listing. Mouse interaction stays:
+  // clicks select/navigate, right-click menus and dialogs work as usual.
+  embedded?: boolean;
   // Reports the path of this directory's lone top-level HTML file (an
   // "app"), or null when there isn't exactly one — the caller (Preview's
   // header) uses this to surface an "Open as app" button. Fires whenever the
   // plain (non-search) listing settles, so it tracks dir-watch refreshes too.
   onSingleApp?: (path: string | null) => void;
 }) {
-  const { state, refresh, refetch, loadMore, loadingMore, newNames } = useDirListing(fsPath);
+  const { state, refresh, refetch, loadMore, loadingMore, newNames } =
+    useDirListing(fsPath);
 
   // Sort lives in the URL; mirror it in state so clicks re-render without a
   // navigation (vanilla re-ran renderListing after its replaceState).
-  const [{ sort, order }, setSortState] = useState<{ sort: SortKey; order: SortOrder }>(() =>
-    resolveSort(fsPath)
-  );
+  const [{ sort, order }, setSortState] = useState<{
+    sort: SortKey;
+    order: SortOrder;
+  }>(() => resolveSort(fsPath, !embedded));
   // When the sort was restored from saved state (URL carried none), reflect it
   // in the URL so the address bar, bookmarks, and Back-button history match
   // what's shown — as if the column had been clicked. Only syncs a genuinely
   // saved order; an unsorted folder keeps its clean, param-free URL. replaceState
   // (not navigate) so the view doesn't remount.
   useEffect(() => {
+    if (embedded) return; // the URL belongs to the host view
     if (new URLSearchParams(location.search).get("sort")) return; // URL is authoritative
     const s = new URLSearchParams(getViewState(fsPath));
     // No stored SORT → leave default sort + clean URL. (The stored string may
@@ -93,10 +112,13 @@ export default function Listing({
     params.set("sort", s.get("sort") || "name");
     params.set("order", s.get("order") === "desc" ? "desc" : "asc");
     replaceSearch(location.pathname + "?" + params.toString());
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fsPath]);
   // Same URL reflection for a pane restored from saved viewstate.
   useEffect(() => {
+    if (embedded) return;
     reflectPaneInUrl(fsPath);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fsPath]);
 
   const setSort = (key: SortKey) => {
@@ -104,6 +126,12 @@ export default function Listing({
       sort: key,
       order: key === sort && order === "asc" ? "desc" : "asc",
     };
+    if (embedded) {
+      // Pane-local: no URL write, no persisted per-folder choice — a glance
+      // in the preview must not re-sort the folder's real listing later.
+      setSortState(next);
+      return;
+    }
     const params = new URLSearchParams(location.search);
     params.set("sort", next.sort);
     params.set("order", next.order);
@@ -134,9 +162,14 @@ export default function Listing({
     searchSort,
     setSearchSort,
     setSearchSortKey,
-  } = useWalkSearch(fsPath, refresh);
+  } = useWalkSearch(fsPath, refresh, !embedded);
 
-  const { pane, splitRef, togglePane, onDividerPointerDown } = usePreviewPane(fsPath);
+  // An embedded Listing never opens its own pane (no nesting): the feature is
+  // disabled at the hook, whatever the folder's saved viewstate says.
+  const { pane, splitRef, togglePane, onDividerPointerDown } = usePreviewPane(
+    fsPath,
+    !embedded
+  );
 
   const clipboard = useClipboard();
 
@@ -158,8 +191,9 @@ export default function Listing({
   // this branch even displays) was pure waste when `state`/sort/order hadn't
   // changed.
   const sortedEntries = useMemo(
-    () => (state.status === "ok" ? sortEntries(state.entries, sort, order) : []),
-    [state, sort, order]
+    () =>
+      state.status === "ok" ? sortEntries(state.entries, sort, order) : [],
+    [state, sort, order],
   );
 
   const base = fsPath.replace(/\/$/, "");
@@ -194,7 +228,7 @@ export default function Listing({
       searching
         ? visibleHits.map(({ entry }) => base + "/" + entry.rel)
         : sortedEntries.map((entry) => base + "/" + entry.name),
-    [searching, visibleHits, sortedEntries, base]
+    [searching, visibleHits, sortedEntries, base],
   );
 
   // Whether navRows reflects a LOADED listing (not a transient empty while the
@@ -216,6 +250,7 @@ export default function Listing({
     selectOnly,
     toggleSelected,
     extendTo,
+    clearSelection,
     pendingSelectRef,
   } = useListingSelection({
     fsPath,
@@ -224,6 +259,8 @@ export default function Listing({
     searchInputRef,
     rowCtxByPathRef,
     overlayOpenRef,
+    globalKeys: !embedded,
+    urlSync: !embedded,
   });
 
   const {
@@ -269,7 +306,11 @@ export default function Listing({
   // had. The anchor is re-measured on EVERY commit (it has to be current), but
   // the correction is applied only when the refresh generation changed: a sort
   // or a page reveal is the user's own gesture and must not be undone.
-  const anchorRef = useRef<{ key: string; top: number; scrollTop: number } | null>(null);
+  const anchorRef = useRef<{
+    key: string;
+    top: number;
+    scrollTop: number;
+  } | null>(null);
   const anchorGenRef = useRef(refresh);
   useLayoutEffect(() => {
     const scroller = scrollRef.current;
@@ -292,7 +333,7 @@ export default function Listing({
   // several paths, so this is a set rather than one path.
   const cutSet = useMemo(
     () => new Set(clipboard?.op === "cut" ? clipboard.paths : []),
-    [clipboard]
+    [clipboard],
   );
 
   // The copy counterpart: marked with an accent edge + wash rather than dimmed
@@ -300,7 +341,7 @@ export default function Listing({
   // one of cutSet/copiedSet is ever non-empty — the clipboard holds one op.
   const copiedSet = useMemo(
     () => new Set(clipboard?.op === "copy" ? clipboard.paths : []),
-    [clipboard]
+    [clipboard],
   );
 
   // Map every rendered row's path to its RowCtx, so a keyboard shortcut can
@@ -339,7 +380,10 @@ export default function Listing({
   // the user can actually see selected.
   const selectedRows = useMemo(() => {
     const chosen = new Set(sel.paths);
-    return navRows.filter((p) => chosen.has(p)).map((p) => rowCtxByPath.get(p)!).filter(Boolean);
+    return navRows
+      .filter((p) => chosen.has(p))
+      .map((p) => rowCtxByPath.get(p)!)
+      .filter(Boolean);
   }, [sel.paths, navRows, rowCtxByPath]);
   // The lead row, for the single-entry operations (Rename, paste target).
   const leadRow = sel.lead ? rowCtxByPath.get(sel.lead) : undefined;
@@ -357,6 +401,7 @@ export default function Listing({
     doTrash,
     startRename,
     startNewFolder,
+    globalKeys: !embedded,
   });
 
   // Mouse selection on a row:
@@ -423,6 +468,15 @@ export default function Listing({
     setMenu({ x: e.clientX, y: e.clientY, items: rowMenu(row, rows) });
   };
 
+  // Clicking the listing background (the empty area below/beside the rows)
+  // deselects, like Finder. Row clicks land on tr.row, header/sort clicks on
+  // th, and Load more on a button — none of those should clear.
+  const onBackgroundClick = (e: React.MouseEvent) => {
+    const t = e.target as HTMLElement;
+    if (t.closest("tr.row, th, button, input")) return;
+    if (sel.paths.length) clearSelection();
+  };
+
   // Fires only for the listing background (rows stopPropagation above).
   const openBackgroundMenu = (e: React.MouseEvent) => {
     e.preventDefault();
@@ -446,64 +500,76 @@ export default function Listing({
       // query while a refresh-invalidated walk re-runs (showingHeld).
       body = (
         <>
-            {visibleHits.map(({ entry, positions }) => {
-              const childPath = base + "/" + entry.rel;
-              return (
-                <tr
-                  key={entry.rel}
-                  data-flip-key={childPath}
-                  className={
-                    "row" +
-                    (selectedSet.has(childPath) ? " selected" : "") +
-                    // Marker only (no styling of its own): the lead row is what
-                    // the scroll-into-view effect tracks.
-                    (childPath === selectedPath ? " lead" : "") +
-                    (cutSet.has(childPath) ? " cut" : "") +
-                    (copiedSet.has(childPath) ? " copied" : "")
-                  }
-                  onClick={(e) =>
-                    onRowClick(e, childPath, {
-                      path: childPath,
-                      name: entry.rel.split("/").pop() ?? entry.rel,
-                      isDir: entry.is_dir,
-                      parentDir: dirname(childPath),
-                    })
-                  }
-                  onDoubleClick={() =>
-                    onRowDoubleClick({
-                      path: childPath,
-                      name: entry.rel.split("/").pop() ?? entry.rel,
-                      isDir: entry.is_dir,
-                      parentDir: dirname(childPath),
-                    })
-                  }
-                  onMouseDown={onRowMouseDown}
-                  onContextMenu={(e) =>
-                    openRowMenu(e, {
-                      path: childPath,
-                      name: entry.rel.split("/").pop() ?? entry.rel,
-                      isDir: entry.is_dir,
-                      parentDir: dirname(childPath),
-                    })
-                  }
-                >
-                  <td className="name">
-                    <span className="icon">{iconForEntry(entry.rel.split("/").pop() ?? entry.rel, entry.is_dir)}</span>
-                    <span className="search-path">{renderHighlight(entry.rel, positions)}</span>
-                    <ClipMark cut={cutSet.has(childPath)} copied={copiedSet.has(childPath)} />
-                  </td>
-                  <td className="size">{entry.is_dir ? "" : formatSize(entry.size)}</td>
-                  <td className="mtime">{formatMtime(entry.mtime)}</td>
-                </tr>
-              );
-            })}
-            {hasMore && (
-              <tr ref={sentinelRef}>
-                <td colSpan={3} className="status-message">
-                  Scroll for more…
+          {visibleHits.map(({ entry, positions }) => {
+            const childPath = base + "/" + entry.rel;
+            return (
+              <tr
+                key={entry.rel}
+                data-flip-key={childPath}
+                className={
+                  "row" +
+                  (selectedSet.has(childPath) ? " selected" : "") +
+                  // Marker only (no styling of its own): the lead row is what
+                  // the scroll-into-view effect tracks.
+                  (childPath === selectedPath ? " lead" : "") +
+                  (cutSet.has(childPath) ? " cut" : "") +
+                  (copiedSet.has(childPath) ? " copied" : "")
+                }
+                onClick={(e) =>
+                  onRowClick(e, childPath, {
+                    path: childPath,
+                    name: entry.rel.split("/").pop() ?? entry.rel,
+                    isDir: entry.is_dir,
+                    parentDir: dirname(childPath),
+                  })
+                }
+                onDoubleClick={() =>
+                  onRowDoubleClick({
+                    path: childPath,
+                    name: entry.rel.split("/").pop() ?? entry.rel,
+                    isDir: entry.is_dir,
+                    parentDir: dirname(childPath),
+                  })
+                }
+                onMouseDown={onRowMouseDown}
+                onContextMenu={(e) =>
+                  openRowMenu(e, {
+                    path: childPath,
+                    name: entry.rel.split("/").pop() ?? entry.rel,
+                    isDir: entry.is_dir,
+                    parentDir: dirname(childPath),
+                  })
+                }
+              >
+                <td className="name">
+                  <span className="icon">
+                    {iconForEntry(
+                      entry.rel.split("/").pop() ?? entry.rel,
+                      entry.is_dir,
+                    )}
+                  </span>
+                  <span className="search-path">
+                    {renderHighlight(entry.rel, positions)}
+                  </span>
+                  <ClipMark
+                    cut={cutSet.has(childPath)}
+                    copied={copiedSet.has(childPath)}
+                  />
                 </td>
+                <td className="size">
+                  {entry.is_dir ? "" : formatSize(entry.size)}
+                </td>
+                <td className="mtime">{formatMtime(entry.mtime)}</td>
               </tr>
-            )}
+            );
+          })}
+          {hasMore && (
+            <tr ref={sentinelRef}>
+              <td colSpan={3} className="status-message">
+                Scroll for more…
+              </td>
+            </tr>
+          )}
         </>
       );
     } else if (validWalk.status === "ok" || validWalk.status === "streaming") {
@@ -515,8 +581,8 @@ export default function Listing({
         validWalk.status === "streaming"
           ? `No matches yet — still searching (${validWalk.count.toLocaleString()} entries scanned)`
           : validWalk.truncated
-          ? `No matches in the first ${validWalk.total.toLocaleString()} entries — this folder tree is too large to search fully`
-          : "No matches";
+            ? `No matches in the first ${validWalk.total.toLocaleString()} entries — this folder tree is too large to search fully`
+            : "No matches";
       body = (
         <tr>
           <td colSpan={3} className="status-message">
@@ -592,9 +658,14 @@ export default function Listing({
           }
         >
           <td className="name">
-            <span className="icon">{iconForEntry(entry.name, entry.is_dir)}</span>
+            <span className="icon">
+              {iconForEntry(entry.name, entry.is_dir)}
+            </span>
             {entry.name}
-            <ClipMark cut={cutSet.has(childPath)} copied={copiedSet.has(childPath)} />
+            <ClipMark
+              cut={cutSet.has(childPath)}
+              copied={copiedSet.has(childPath)}
+            />
           </td>
           <td className="size">{entry.is_dir ? "" : formatSize(entry.size)}</td>
           <td className="mtime">{formatMtime(entry.mtime)}</td>
@@ -608,7 +679,8 @@ export default function Listing({
     const banner = state.truncated ? (
       <tr key="__truncated__" className="listing-truncated">
         <td colSpan={3} className="status-message">
-          Showing first {sortedEntries.length} entries — directory listing is partial.
+          Showing first {sortedEntries.length} entries — directory listing is
+          partial.
           {state.cursor && (
             <button
               type="button"
@@ -656,119 +728,178 @@ export default function Listing({
 
   return (
     <div className="listing">
-      <div className="listing-search">
-        {/* The box wraps input + pinned chips so the pane toggle can sit to
+      <div className="listing-split" ref={splitRef}>
+        <div className="listing-main">
+          {/* Embedded (preview pane): no search row — the pane is a glance,
+              and the host listing's search/toggle already own that chrome. */}
+          {!embedded && (
+            <div className="listing-search">
+              {/* The box wraps input + pinned chips so the pane toggle can sit to
             their right without disturbing the chips' inside-the-input pin. */}
-        <div className="listing-search-box">
-          <input
-            ref={searchInputRef}
-            type="search"
-            className="listing-search-input"
-            placeholder="Start typing to search…"
-            value={query}
-            onFocus={prefetchWalk}
-            onChange={(e) => setQuery(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Escape") {
-                e.preventDefault();
-                setQuery("");
-                e.currentTarget.blur();
-              }
-            }}
-          />
-          {searching && (validWalk.status === "idle" || validWalk.status === "streaming") && (
-            <span className="listing-search-spinner" aria-hidden="true" />
-          )}
-          {searchCount !== null && (
-            <span className="listing-search-count" title={searchCountTitle}>
-              {searchCount}
-            </span>
-          )}
-          {/* Multi-selection readout — a single selected row needs no count. */}
-          {sel.paths.length > 1 && (
-            <span className="listing-search-count">{sel.paths.length} selected</span>
-          )}
-        </div>
-        {/* Current result ordering, and the way back to relevance. Without it
+              <div className="listing-search-box">
+                <input
+                  ref={searchInputRef}
+                  type="search"
+                  className="listing-search-input"
+                  placeholder="Start typing to search…"
+                  value={query}
+                  onFocus={prefetchWalk}
+                  onChange={(e) => setQuery(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Escape") {
+                      e.preventDefault();
+                      setQuery("");
+                      e.currentTarget.blur();
+                    }
+                  }}
+                />
+                {searching &&
+                  (validWalk.status === "idle" ||
+                    validWalk.status === "streaming") && (
+                    <span
+                      className="listing-search-spinner"
+                      aria-hidden="true"
+                    />
+                  )}
+                {searchCount !== null && (
+                  <span
+                    className="listing-search-count"
+                    title={searchCountTitle}
+                  >
+                    {searchCount}
+                  </span>
+                )}
+                {/* Multi-selection readout — a single selected row needs no count. */}
+                {sel.paths.length > 1 && (
+                  <span className="listing-search-count">
+                    {sel.paths.length} selected
+                  </span>
+                )}
+              </div>
+              {/* Current result ordering, and the way back to relevance. Without it
             "no arrow anywhere" was the only signal that results were in fuzzy
             rank order, and a column sort had no explicit escape. */}
-        {searching && (
-          <button
-            type="button"
-            className={"listing-sort-chip" + (searchSort ? " sorted" : "")}
-            disabled={!searchSort}
-            title={
-              searchSort
-                ? "Results are column-sorted — click for relevance order"
-                : "Results are in relevance order (best match first)"
-            }
-            onClick={() => setSearchSort(null)}
-          >
-            {searchSort
-              ? `${SORT_KEYS[searchSort.sort].toLowerCase()} ${searchSort.order}`
-              : "relevance"}
-          </button>
-        )}
-        <button
-          type="button"
-          className={"listing-pane-toggle" + (pane.on ? " active" : "")}
-          title={pane.on ? "Hide preview pane" : "Show preview pane"}
-          aria-pressed={pane.on}
-          onClick={togglePane}
-        >
-          <SplitRightIcon />
-        </button>
-      </div>
-      <div className="listing-split" ref={splitRef}>
-        <div
-          ref={scrollRef}
-          /* Dimmed both when the deferred render lags a keystroke and while
+              {searching && (
+                <button
+                  type="button"
+                  className={
+                    "listing-sort-chip" + (searchSort ? " sorted" : "")
+                  }
+                  disabled={!searchSort}
+                  title={
+                    searchSort
+                      ? "Results are column-sorted — click for relevance order"
+                      : "Results are in relevance order (best match first)"
+                  }
+                  onClick={() => setSearchSort(null)}
+                >
+                  {searchSort
+                    ? `${SORT_KEYS[searchSort.sort].toLowerCase()} ${searchSort.order}`
+                    : "relevance"}
+                </button>
+              )}
+              {!embedded && (
+                <button
+                  type="button"
+                  className="listing-pane-toggle"
+                  title={pane.on ? "Hide preview pane" : "Show preview pane"}
+                  aria-pressed={pane.on}
+                  onClick={togglePane}
+                >
+                  {/* Subtle chevron, no accent highlight: points left when the
+                      pane is closed (it slides in from the right), right when
+                      open (collapse back to the edge). */}
+                  <svg
+                    viewBox="0 0 24 24"
+                    width="14"
+                    height="14"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  >
+                    <polyline points={pane.on ? "9 6 15 12 9 18" : "15 6 9 12 15 18"} />
+                  </svg>
+                </button>
+              )}
+            </div>
+          )}
+          <div
+            ref={scrollRef}
+            /* Dimmed both when the deferred render lags a keystroke and while
              held (pre-refresh) results stand in for a re-running walk. */
-          className={"listing-scroll" + (isStale || showingHeld ? " listing-stale" : "")}
-          onContextMenu={openBackgroundMenu}
-        >
-          <table className="listing-table">
-            <thead>
-              <tr>
-                {(Object.entries(SORT_KEYS) as [SortKey, string][]).map(([key, label]) =>
-                  searching ? (
-                    // While searching, headers sort the results; no active arrow
-                    // means relevance (fuzzy-rank) order.
-                    <th
-                      key={key}
-                      className={"sortable" + (searchSort?.sort === key ? " sorted" : "")}
-                      title={
-                        searchSort?.sort === key && searchSort.order === "desc"
-                          ? `Back to relevance order`
-                          : `Sort results by ${label.toLowerCase()}`
-                      }
-                      onClick={() => setSearchSortKey(key)}
-                    >
-                      {label}
-                      {/* One glyph that ROTATES for desc (see .sort-arrow):
+            className={
+              "listing-scroll" +
+              (isStale || showingHeld ? " listing-stale" : "")
+            }
+            onClick={onBackgroundClick}
+            onContextMenu={openBackgroundMenu}
+          >
+            <table className="listing-table">
+              <thead>
+                <tr>
+                  {(Object.entries(SORT_KEYS) as [SortKey, string][]).map(
+                    ([key, label]) =>
+                      searching ? (
+                        // While searching, headers sort the results; no active arrow
+                        // means relevance (fuzzy-rank) order.
+                        <th
+                          key={key}
+                          className={
+                            `sortable col-${key}` +
+                            (searchSort?.sort === key ? " sorted" : "")
+                          }
+                          title={
+                            searchSort?.sort === key &&
+                            searchSort.order === "desc"
+                              ? `Back to relevance order`
+                              : `Sort results by ${label.toLowerCase()}`
+                          }
+                          onClick={() => setSearchSortKey(key)}
+                        >
+                          {label}
+                          {/* One glyph that ROTATES for desc (see .sort-arrow):
                           swapping ▲ for ▼ replaced the element, so the change
                           could only ever pop. */}
-                      {searchSort?.sort === key && (
-                        <span className={"sort-arrow" + (searchSort.order === "desc" ? " desc" : "")}>▲</span>
-                      )}
-                    </th>
-                  ) : (
-                    <th
-                      key={key}
-                      className={"sortable" + (key === sort ? " sorted" : "")}
-                      onClick={() => setSort(key)}
-                    >
-                      {label}
-                      {key === sort && (
-                        <span className={"sort-arrow" + (order === "desc" ? " desc" : "")}>▲</span>
-                      )}
-                    </th>
-                  )
-                )}
-              </tr>
-            </thead>
-            <tbody>{body}</tbody>
-          </table>
+                          {searchSort?.sort === key && (
+                            <span
+                              className={
+                                "sort-arrow" +
+                                (searchSort.order === "desc" ? " desc" : "")
+                              }
+                            >
+                              ▲
+                            </span>
+                          )}
+                        </th>
+                      ) : (
+                        <th
+                          key={key}
+                          className={
+                            `sortable col-${key}` +
+                            (key === sort ? " sorted" : "")
+                          }
+                          onClick={() => setSort(key)}
+                        >
+                          {label}
+                          {key === sort && (
+                            <span
+                              className={
+                                "sort-arrow" + (order === "desc" ? " desc" : "")
+                              }
+                            >
+                              ▲
+                            </span>
+                          )}
+                        </th>
+                      ),
+                  )}
+                </tr>
+              </thead>
+              <tbody>{body}</tbody>
+            </table>
+          </div>
         </div>
         {pane.on && (
           <>
@@ -787,10 +918,31 @@ export default function Listing({
             >
               {/* Keyed on the previewed path: switching rows remounts the pane,
                   so a stale iframe never lingers a frame while the new row's
-                  stat/list resolves. */}
+                  stat/list resolves. Nothing selected → the pane previews THIS
+                  folder itself (self: its template or lone app — never its
+                  listing, which is already on the left). */}
               <ListingPreviewPane
-                key={sel.paths.length === 1 && leadRow ? leadRow.path : "none"}
-                row={sel.paths.length === 1 && leadRow ? leadRow : null}
+                key={
+                  sel.paths.length === 1 && leadRow
+                    ? leadRow.path
+                    : sel.paths.length === 0
+                      ? "self:" + fsPath
+                      : "none"
+                }
+                row={
+                  sel.paths.length === 1 && leadRow
+                    ? leadRow
+                    : sel.paths.length === 0
+                      ? {
+                          path: fsPath,
+                          name:
+                            fsPath.replace(/\/+$/, "").split("/").pop() ||
+                            fsPath,
+                          isDir: true,
+                          self: true,
+                        }
+                      : null
+                }
                 selCount={sel.paths.length}
               />
             </div>
@@ -799,7 +951,12 @@ export default function Listing({
       </div>
 
       {menu && (
-        <ContextMenu x={menu.x} y={menu.y} items={menu.items} onClose={() => setMenu(null)} />
+        <ContextMenu
+          x={menu.x}
+          y={menu.y}
+          items={menu.items}
+          onClose={() => setMenu(null)}
+        />
       )}
 
       {dialog?.kind === "prompt" && (
@@ -830,7 +987,6 @@ export default function Listing({
           onCancel={() => setDialog(null)}
         />
       )}
-
     </div>
   );
 }

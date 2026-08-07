@@ -9,9 +9,16 @@ import { SORT_KEYS, type SortKey, type SortOrder } from "@apps/explorer/listing/
 // folder shows its own remembered order regardless of how it was reached
 // (clicked into, a breadcrumb, Back, or a fresh URL), and sibling folders keep
 // independent sorts.
-export function resolveSort(fsPath: string): { sort: SortKey; order: SortOrder } {
+// `urlWins=false` (an embedded Listing): the address bar belongs to the HOST
+// view, so its sort/order must not seed the previewed folder — only that
+// folder's own saved viewstate (or the default) applies.
+export function resolveSort(
+  fsPath: string,
+  urlWins = true
+): { sort: SortKey; order: SortOrder } {
   const url = new URLSearchParams(location.search);
-  const src = url.get("sort") ? url : new URLSearchParams(getViewState(fsPath));
+  const src =
+    urlWins && url.get("sort") ? url : new URLSearchParams(getViewState(fsPath));
   const key = src.get("sort");
   const sort: SortKey = key && key in SORT_KEYS ? (key as SortKey) : "name";
   const order: SortOrder = src.get("order") === "desc" ? "desc" : "asc";

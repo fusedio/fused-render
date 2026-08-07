@@ -21,6 +21,7 @@ Actions (dispatched via the `action` param):
   rows        — windowed batch: offset/limit + server-side sort/filter
   save        — write back: rich xlsx / streamed xlsx / csv / parquet
   save_as     — write to a user-chosen directory + name, return the new path
+  new         — create a blank .xlsx and return its path
   export      — write csv / xlsx / pdf / parquet into the exports cache dir
   run_script  — exec a user Python script against (small-)sheet data
   listdir     — directory listing for the save-as folder browser
@@ -43,6 +44,11 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 # copies) lives under the user's cache dir, never next to the template.
 CACHE_ROOT = os.path.expanduser(os.path.join("~", ".fused-render", "cache", "excel"))
 EXPORTS = os.path.join(CACHE_ROOT, "exports")
+
+# New workbooks created from scratch land here by default — a real, user-owned
+# library dir, never next to the template and never in the disposable cache.
+# The create dialog can point `directory` elsewhere.
+NEW_DIR = os.path.expanduser(os.path.join("~", ".fused-render", "excel"))
 
 SMALL_ROWS = 10_000        # a sheet bigger than this in either measure ...
 SMALL_CELLS = 200_000      # ... goes to the DuckDB path instead of inline JSON
@@ -680,7 +686,7 @@ def _write_xlsx_streamed(dest, file, sheets_payload, meta):
             if sh["nrows"] > XLSX_SAVE_MAX_ROWS:
                 raise ValueError(
                     f"Sheet “{sp['name']}” has {sh['nrows']:,} rows — too large to write back "
-                    f"as .xlsx within the call budget. Use File ▸ Download as CSV/Parquet, or "
+                    f"as .xlsx within the call budget. Use File > Download as CSV/Parquet, or "
                     f"open the data as .csv/.parquet (saves at any size)."
                 )
     wb = openpyxl.Workbook(write_only=True)
@@ -817,6 +823,27 @@ def _save_as(src, directory, name, sheets_payload):
     out = _save(dest, sheets_payload, "")
     out["file"] = dest.replace(os.sep, "/")
     return out
+
+
+def _new(name, directory=None):
+    """Create a blank .xlsx and return its path; the editor opens it and saves
+    back to it from then on."""
+    import openpyxl
+
+    name = _safe_name(name, "untitled")
+    if not name.lower().endswith(".xlsx"):
+        name += ".xlsx"
+    base_dir = os.path.abspath(os.path.expanduser(directory)) if directory else NEW_DIR
+    os.makedirs(base_dir, exist_ok=True)
+    dest = os.path.join(base_dir, name)
+    if os.path.exists(dest):
+        stem, ext = os.path.splitext(dest)
+        i = 2
+        while os.path.exists(f"{stem}-{i}{ext}"):
+            i += 1
+        dest = f"{stem}-{i}{ext}"
+    openpyxl.Workbook().save(dest)
+    return {"file": dest.replace(os.sep, "/")}
 
 
 # ---------- file browsing (Save as… folder picker) ----------
@@ -1103,6 +1130,8 @@ def main(
         return _save(file, json.loads(data), expected_mtime)
     if action == "save_as":
         return _save_as(file, directory, name, json.loads(data))
+    if action == "new":
+        return _new(name, directory)
     if action == "listdir":
         # `src` carries the server ORIGIN for mount-safe routing.
         return _listdir(file, src)

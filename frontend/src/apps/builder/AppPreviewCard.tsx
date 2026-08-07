@@ -9,29 +9,22 @@ import type { AppInfo } from "@platform/lib/api";
 import { hrefFor, onAppCardClick, openTargetFor } from "@platform/lib/appEntry";
 import { hueFor } from "@apps/builder/AppCard";
 
-// "3d ago" style stamp for the card meta line; null when the backend didn't
-// report a modified time.
-export function timeAgo(epochSeconds: number | null | undefined): string | null {
-  if (!epochSeconds) return null;
-  const s = Math.max(0, Date.now() / 1000 - epochSeconds);
-  if (s < 60) return "just now";
-  const m = Math.floor(s / 60);
-  if (m < 60) return `${m}m ago`;
-  const h = Math.floor(m / 60);
-  if (h < 24) return `${h}h ago`;
-  const d = Math.floor(h / 24);
-  if (d < 30) return `${d}d ago`;
-  const mo = Math.floor(d / 30);
-  if (mo < 12) return `${mo}mo ago`;
-  return `${Math.floor(mo / 12)}y ago`;
-}
+import { timeAgo } from "@platform/lib/format";
 
 // The iframe renders at a fixed desktop width and is scaled to the card by a
 // pure-CSS trick: 400% width/height + scale(0.25) means the visual size is
 // exactly the .app-pcard-thumb box, whatever the grid column resolves to.
 const PREVIEW_SCALE = 0.25;
 
-export function AppPreviewCard({ app }: { app: AppInfo }) {
+export function AppPreviewCard({
+  app,
+  onContextMenu,
+}: {
+  app: AppInfo;
+  // Right-click: the card only forwards the event and its own app — the menu
+  // state lives one level up (Apps.tsx), so the whole grid shares one portal.
+  onContextMenu?: (e: React.MouseEvent, app: AppInfo) => void;
+}) {
   const title = app.title || app.name;
   const ago = timeAgo(app.updated_at);
   // An anchor, not a button — see AppCard. The href is what makes middle-click
@@ -41,6 +34,10 @@ export function AppPreviewCard({ app }: { app: AppInfo }) {
       className="app-pcard"
       href={hrefFor(app)}
       onClick={(e) => onAppCardClick(e, app)}
+      // On the <a>, not on the body: the thumbnail's pointer-events shield sits
+      // INSIDE this element, so a right-click over the preview bubbles up here
+      // (the iframe itself never sees it) and one handler covers the whole card.
+      onContextMenu={onContextMenu && ((e) => onContextMenu(e, app))}
       title={openTargetFor(app).path}
     >
       <span className="app-pcard-body">

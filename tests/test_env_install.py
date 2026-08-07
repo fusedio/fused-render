@@ -168,6 +168,115 @@ def test_the_stripped_env_vars_are_read_off_fused_not_guessed():
     assert set(engine._stripped_env_vars()) == set(python_compute._STRIPPED_ENV_VARS)
 
 
+# --- the precedence `run_python`'s interpreter fast path rests on --------------
+#
+# `run_python` skips the venv entirely when the app interpreter already satisfies
+# every requirement in a header, and it does that by passing `interpreter=` and NO
+# requirements. That is only correct because upstream reads `interpreter` FIRST and
+# never looks at `requirements` once it is set (`_execute_sync`, and stated in
+# `compute_base.py`: "`interpreter`, when set … wins over `requirements`"). Nothing
+# tested that precedence. If upstream ever flipped it to union the two, every
+# fast-path run would silently start building the multi-GB venv the fast path
+# exists to avoid — no error, just the old bill back. These two tests fail loudly
+# instead.
+#
+# Related hazard, deliberately NOT exercised here because we never trigger it:
+# `compute_base.execute()` sets `resolved_interpreter` from a uv workflow venv when
+# `project`/`project_dir` is passed, AND swaps the cache `env_component` to
+# `wv.env_component` — so with a project, requirements drop out of both the venv
+# and the cache identity. `engine._execute` passes neither argument; were it ever
+# to, "requirements were honoured" would stop being true on the venv path too.
+
+
+class _StopBeforeSpawn(BaseException):
+    """Aborts `_execute_sync` at the child spawn.
+
+    A `BaseException`, so the broad `except` blocks inside `_execute_sync` cannot
+    swallow it and turn a failed assertion into a plausible-looking result.
+    """
+
+
+@requires_fused
+def test_upstream_still_lets_the_interpreter_win_over_requirements(monkeypatch):
+    """Both arguments given: the interpreter runs the child, no venv is built."""
+    from fused.agent_core.backends.local import python_compute as pc
+
+    built = []
+    monkeypatch.setattr(
+        pc, "ensure_requirements_venv",
+        lambda *a, **k: built.append(a) or "/nonexistent/venv/bin/python",
+    )
+
+    backend = engine.get_backend()
+    monkeypatch.setattr(type(backend), "_ensure_dispatcher",
+                        lambda self: type("D", (), {"host_dir": "/tmp"})(),
+                        raising=True)
+    monkeypatch.setattr(type(backend), "_ensure_venv",
+                        lambda self: pytest.fail("built the bare venv"),
+                        raising=True)
+
+    spawned = []
+
+    def _run(cmd, **kw):
+        spawned.append(cmd)
+        raise _StopBeforeSpawn()
+
+    monkeypatch.setattr(pc.subprocess, "run", _run)
+
+    with pytest.raises(_StopBeforeSpawn):
+        backend._execute_sync(
+            code="print(1)",
+            interpreter="/the/app/interpreter",
+            requirements=["pandas>=2.0.0"],
+        )
+
+    assert not built, (
+        "upstream built a requirements venv despite `interpreter` being set; the "
+        "app-interpreter fast path in run_python is no longer safe"
+    )
+    assert spawned and spawned[0][0] == "/the/app/interpreter", (
+        f"the child ran on {spawned[0][0] if spawned else None}, not the interpreter"
+    )
+
+
+@requires_fused
+def test_engine_never_hands_the_backend_both_interpreter_and_requirements(monkeypatch):
+    """Our side of the same contract: the two are mutually exclusive at the call.
+
+    Passing both would read as "install these INTO that interpreter", which is not
+    what upstream does with it — and on the fast path the requirements are exactly
+    the set we have just proven is already present.
+    """
+    import asyncio
+
+    calls = {}
+
+    class _Backend:
+        def _execute_sync(self, **kw):
+            calls["sync"] = kw
+            return "ok"
+
+        async def execute(self, **kw):
+            calls["execute"] = kw
+            return "ok"
+
+    monkeypatch.setattr(engine, "get_backend", lambda: _Backend())
+
+    asyncio.run(engine._execute("code", ["pandas>=2.0.0"], "/the/app/interpreter", {}))
+    assert calls["sync"]["interpreter"] == "/the/app/interpreter"
+    assert "requirements" not in calls["sync"], (
+        "requirements travelled alongside interpreter; upstream would ignore them, "
+        "so passing them can only mislead a future reader"
+    )
+
+    calls.clear()
+    asyncio.run(engine._execute("code", ["pandas>=2.0.0"], None, {}))
+    assert calls["execute"]["requirements"] == ["pandas>=2.0.0"]
+    assert not calls["execute"].get("interpreter"), (
+        "the venv path must not pin an interpreter, or requirements stop mattering"
+    )
+
+
 def test_the_bundled_uv_is_found_beside_the_interpreter(tmp_path, monkeypatch):
     """The macOS bundle has no `venv`/`ensurepip`/`pip`, so uv is not optional.
 
@@ -1603,6 +1712,79 @@ def test_the_worker_builds_the_venv_the_server_will_look_for(tmp_path, monkeypat
     assert built["dir"] == envinstall.venv_dir_for(reqs), (
         "the worker built a venv under a different key than the server looks for"
     )
+
+
+# --- the worker's builder is loaded by FILE, not through the `fused` package ---
+#
+# `from fused.agent_core.backends.local.venvs import ...` imports every parent,
+# so `fused/__init__` runs → `fused.api` → `fused._auth` → `fused._optional_deps`
+# → pandas. Measured: ~520ms of the 543ms it took this worker to install one tiny
+# pure-Python package was that import chain, to reach a module whose own import
+# costs microseconds. `venvs.py` is stdlib-only, so it can be loaded straight off
+# disk — and being the SAME FILE is what keeps `venv_key` identical to the key
+# `envinstall.venv_key_for` computes. These two tests protect both halves.
+
+
+@requires_fused
+def test_the_worker_loads_venvs_without_importing_the_fused_package(tmp_path):
+    """A fresh process must reach `ensure_requirements_venv` with no `fused` import.
+
+    Asserted in a SUBPROCESS because this test session has `fused` (and pandas)
+    imported already — in-process the absence could never be observed, which is
+    precisely why the cost went unnoticed.
+    """
+    worker_path = os.path.join(os.path.dirname(envinstall.__file__),
+                               "_env_install_worker.py")
+    probe = tmp_path / "probe.py"
+    probe.write_text(
+        "import importlib.util, json, sys\n"
+        f"spec = importlib.util.spec_from_file_location('_w', {worker_path!r})\n"
+        "w = importlib.util.module_from_spec(spec)\n"
+        "spec.loader.exec_module(w)\n"
+        "mod = w._venvs_module()\n"
+        "print(json.dumps({\n"
+        "    'has_builder': hasattr(mod, 'ensure_requirements_venv'),\n"
+        "    'has_key': hasattr(mod, 'venv_key'),\n"
+        "    'fused': 'fused' in sys.modules,\n"
+        "    'pandas': 'pandas' in sys.modules,\n"
+        "}))\n",
+        encoding="utf-8",
+    )
+    proc = subprocess.run([sys.executable, str(probe)], capture_output=True, text=True)
+    assert proc.returncode == 0, proc.stderr
+    got = json.loads(proc.stdout.strip().splitlines()[-1])
+    assert got["has_builder"] and got["has_key"], "the loaded module is not venvs.py"
+    assert got["fused"] is False, (
+        "loading venvs.py executed fused/__init__ — the ~500ms this avoids is back"
+    )
+    assert got["pandas"] is False, "pandas was imported to install a package"
+
+
+@requires_fused
+def test_the_directly_loaded_venvs_keys_a_venv_exactly_like_the_server_does():
+    """The invariant that makes the file load safe: same file, same key.
+
+    `envinstall.venv_key_for` composes upstream's `requirements_venv_id`/`venv_key`
+    through the package import; the worker now composes them from a module loaded
+    off disk. If those two ever disagreed the worker would fill a directory
+    `is_installed()` never looks in — the page would install, retry, and be told to
+    install again forever, with a fully built venv on disk (the same failure the
+    argv-borne `python_executable` exists to prevent).
+    """
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "_env_install_worker_keycheck",
+        os.path.join(os.path.dirname(envinstall.__file__), "_env_install_worker.py"),
+    )
+    worker = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(worker)
+
+    mod = worker._venvs_module()
+    reqs = ["pandas>=2.0.0", "pyarrow>=14.0.0"]
+    assert mod.venv_key(
+        mod.requirements_venv_id(list(reqs), envinstall._python_executable())
+    ) == envinstall.venv_key_for(reqs)
 
 
 # --- the worker's heartbeat (D213) --------------------------------------------

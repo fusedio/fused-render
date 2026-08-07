@@ -482,7 +482,9 @@
   ],
   "/": [
     "_listing",
+    "app",
     "claude_split",
+    "claude",
     "versions",
     "git",
     "graph",

@@ -4,9 +4,8 @@
 // bookmarks and recent files. Entering any target navigates into
 // /explorer/view/... (the explorer proper).
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import type { ReactNode } from "react";
 import { navigate, navigateUrl, replaceSearch, urlForFsPath } from "@platform/lib/router";
-import { basename, formatMtime, formatSize } from "@platform/lib/format";
+import { basename, formatMtime, formatSize, timeAgo } from "@platform/lib/format";
 import { iconForEntry } from "@platform/ui/FileIcons";
 import type { Config } from "@platform/lib/api";
 import { allBookmarks, loadBookmarks } from "@platform/lib/bookmarks";
@@ -18,9 +17,9 @@ import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { TextArea } from "@platform/ui/field/fields";
 import { HeroBrand } from "@platform/ui/HeroBrand";
 
-// How many recent files earn a card. The sidebar shows a tight top-3; the
-// homepage has room to be a real jump-off point.
-const MAX_RECENT_CARDS = 8;
+// How many recent files the list shows. The sidebar shows a tight top-3; the
+// homepage list stays short too — a jump-off point, not a history browser.
+const MAX_RECENTS = 5;
 
 // How many bookmark-grid rows show before the "Show more" fold.
 const BOOKMARK_ROWS = 2;
@@ -45,25 +44,25 @@ function useGridColumns(ref: React.RefObject<HTMLDivElement | null>, mounted: bo
   return cols;
 }
 
-// A launcher card: icon tile + name + path. Shared shape for bookmarks,
-// recents, and the workspace root so the grids read as one system. An anchor
-// so middle-click / Cmd-click open a new tab (same rationale as app cards).
-function LaunchCard({
+// One recents row: name, path, last-opened stamp. An anchor so middle-click /
+// Cmd-click open a new tab (same rationale as app cards).
+function RecentRow({
   href,
-  icon,
   name,
   path,
+  openedAt,
   onOpen,
 }: {
   href: string;
-  icon: ReactNode;
   name: string;
   path: string;
+  openedAt: string;
   onOpen: () => void;
 }) {
+  const when = timeAgo(Date.parse(openedAt) / 1000);
   return (
     <a
-      className="fh-card"
+      className="fh-recent"
       href={href}
       title={path}
       onClick={(e) => {
@@ -73,13 +72,9 @@ function LaunchCard({
         onOpen();
       }}
     >
-      <span className="fh-card-icon" aria-hidden="true">
-        {icon}
-      </span>
-      <span className="fh-card-text">
-        <span className="fh-card-name">{name}</span>
-        <span className="fh-card-path">{path}</span>
-      </span>
+      <span className="fh-recent-name">{name}</span>
+      <span className="fh-recent-path">{path}</span>
+      {when && <span className="fh-recent-when">{when}</span>}
     </a>
   );
 }
@@ -226,8 +221,8 @@ function AiSearchComposer({
   );
 }
 
-// Result grid: the same LaunchCard shape as recents, so hits read as one
-// system with the rest of the homepage.
+// Result list: a flat scannable list (relevance order), not the launcher card
+// grid, so hits get room for path and dates.
 function SearchResults({
   home,
   query,
@@ -310,7 +305,7 @@ export default function FilesHome({ config }: { config: Config }) {
   const shownBookmarks = expanded ? bookmarks : bookmarks.slice(0, fold);
   // Raw MRU, not the sidebar's stable-slot top-3 — a full page doesn't jump
   // under the pointer the way a always-visible sidebar section does.
-  const recents = loadRecents().entries.slice(0, MAX_RECENT_CARDS);
+  const recents = loadRecents().entries.slice(0, MAX_RECENTS);
   // A committed AI search result takes over the page body (bookmarks/recents
   // hide behind it) until cleared — the homepage becomes the result page.
   const [search, setSearch] = useState<{ query: string; result: AiSearchResult } | null>(null);
@@ -417,17 +412,17 @@ export default function FilesHome({ config }: { config: Config }) {
           <section className="fh-section">
             <h2 className="fh-heading">Recent files</h2>
             {recents.length ? (
-              <div className="fh-grid">
+              <div className="fh-recents">
                 {recents.map((r) => {
                   const fsPath = recentFsPath(r.url);
                   const name = r.title || basename(fsPath);
                   return (
-                    <LaunchCard
+                    <RecentRow
                       key={fsPath}
                       href={r.url}
-                      icon={iconForEntry(basename(fsPath), false)}
                       name={name}
                       path={fsPath}
+                      openedAt={r.openedAt}
                       onOpen={() => navigateUrl(r.url)}
                     />
                   );

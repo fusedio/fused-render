@@ -1072,7 +1072,40 @@ export interface Mount {
   //    restart (not Reconnect) re-reads the refreshed ones.
   // Both route the user to the single global Restart rclone button.
   restart_reason?: "params" | "credentials" | null;
+  // The mount's async upload queue (D221). null means the question does not
+  // APPLY — the mount is read-only or not healthy, so it can hold no queue.
+  // A read that was attempted and failed comes back as {unknown: true}, which
+  // is a different thing and must be shown, not swallowed: with a full VFS
+  // cache a save completes locally and uploads afterwards, so "we don't know"
+  // can hide files that never reached the remote.
+  uploads?: MountUploads | null;
 }
+
+// Files written to a mount that haven't reached the remote yet. A discriminated
+// union on `unknown` on purpose: the unknown case carries NO counts, so it
+// cannot be read as zero by a caller that forgets to check.
+export type MountUploads =
+  | {
+      unknown: false;
+      pending: number;
+      // Items whose upload already came back unsuccessfully (quota,
+      // permissions). The number that matters — a save the user saw succeed
+      // did not stick. Always <= pending; rclone re-queues a failed item
+      // rather than dropping it, so it stays counted in both.
+      failed: number;
+      failed_names: string[]; // capped by the server; `failed` carries the rest
+    }
+  | { unknown: true; reason: string };
+
+// How a remote is reached, which is what the Remote dropdown groups by:
+// "public" = anonymous, no credentials at all; "detected" = the user's own
+// AWS/gcloud credentials, read where they already live; "other" = a remote the
+// user set up themselves (only a materialized remote can be this).
+export type RemoteKind = "public" | "detected" | "other";
+
+// The cloud behind a remote, from its rclone backend type — used to match a
+// pasted s3:// or gs:// link to a remote that can actually serve it.
+export type RemoteProvider = "s3" | "gcs" | "other";
 
 // A remote we can offer from credentials already present in the user's
 // dotfiles (AWS profiles/env, gcloud ADC). Materialized on first use into a
@@ -1081,9 +1114,13 @@ export interface RemoteSuggestion {
   id: string;
   label: string;
   remote_name: string;
-  // "public" = anonymous, no-credentials remote (public buckets); "detected" =
-  // materialized from the user's own AWS/gcloud credentials. Groups the dropdown.
-  kind: "public" | "detected";
+  kind: RemoteKind;
+  provider: RemoteProvider;
+  // Whether `remote_name` has ALREADY been materialized. The server returns
+  // every suggestion either way, so the setup panels can show what is possible;
+  // anything that CREATES from a suggestion (the "suggest:<id>" options in Add
+  // mount) must offer only `!exists` ones or it 409s on a remote that's there.
+  exists: boolean;
 }
 
 // An existing rclone remote. `name` is the verbatim rclone spec (incl trailing
@@ -1092,6 +1129,13 @@ export interface RemoteSuggestion {
 export interface RcloneRemote {
   name: string;
   label: string;
+  // Same two fields a RemoteSuggestion carries, meaning the same thing: the
+  // server classifies a remote by PROVENANCE (its stored rclone config matched
+  // against the suggestion that would have created it), so the client groups
+  // and link-matches on facts rather than sniffing names and label substrings.
+  // "other" = a remote the user brought themselves (custom S3, an OAuth account).
+  kind: RemoteKind;
+  provider: RemoteProvider;
 }
 
 export interface MountsResult {
@@ -1185,8 +1229,8 @@ export function deleteMount(id: string): Promise<void> {
 }
 
 // S3-compatible only: keys are written straight into rclone's own config.
-// OAuth backends (Google Drive, …) are set up with `rclone config` in a
-// terminal instead — the Mounts page explains that.
+// OAuth backends (Google Drive, …) have no keys to paste and go through
+// startRemoteOAuth below instead.
 export function createRemote(
   name: string,
   params: Record<string, string>
@@ -1203,6 +1247,71 @@ export function createDetectedRemote(id: string): Promise<{ ok: boolean; name: s
   return postJson<{ ok: boolean; name: string }>("/api/mounts/remotes/detect", {
     id,
   });
+}
+
+// -- Browser sign-in: Google Drive, Dropbox, Box (D219, D223) -----------------
+//
+// The server spawns `rclone authorize "<backend>"`, which runs its own loopback
+// callback server and opens the SYSTEM browser itself — unlike the Fused
+// login there is no URL for us to window.open. So the client's whole job is
+// to start it, poll, and report; the same shape as lib/account.ts otherwise.
+//
+// The provider keys and their labels live in lib/oauth.ts; this module only
+// moves the request and the status.
+
+export interface RemoteOAuthStatus {
+  in_flight: boolean;
+  name: string | null;
+  // Which provider the attempt is for ("drive" | "dropbox" | "box"), so a page
+  // that polls a sign-in it did not start still labels it correctly.
+  provider: string | null;
+  backend: string | null;
+  // Both null while in flight. `ok` false with a message is the failure the UI
+  // must show — INCLUDING the child that exited having produced no token at
+  // all (browser tab closed, consent never granted, timed out), which is
+  // retryable and says so in `error`.
+  ok: boolean | null;
+  error: string | null;
+}
+
+// Starts the browser sign-in and returns immediately. 409 when one is already
+// in flight (rclone's callback port can only be bound once), and 409 when
+// `name` is already taken unless `replace` is set — config/create overwrites,
+// so replacing a working remote takes an explicit opt-in rather than a stale
+// client-side snapshot.
+//
+// `client` is the user's OWN OAuth client. It is REQUIRED for Drive (a 400
+// otherwise): Google is retiring rclone's built-in shared client ID, so a Drive
+// sign-in without one is refused before the browser ever opens. Dropbox and Box
+// take none — omit it, and rclone uses its own.
+export function startRemoteOAuth(
+  name: string,
+  opts: {
+    provider?: string;
+    replace?: boolean;
+    clientId?: string;
+    clientSecret?: string;
+  } = {}
+): Promise<{ ok: boolean; name: string; provider: string }> {
+  return postJson<{ ok: boolean; name: string; provider: string }>(
+    "/api/mounts/remotes/oauth",
+    {
+      name,
+      provider: opts.provider ?? "drive",
+      replace: opts.replace ?? false,
+      client_id: opts.clientId ?? "",
+      client_secret: opts.clientSecret ?? "",
+    }
+  );
+}
+
+// Open GET like getMounts — a pure in-memory read with no side effects.
+export function getRemoteOAuthStatus(): Promise<RemoteOAuthStatus> {
+  return getJson<RemoteOAuthStatus>("/api/mounts/remotes/oauth/status");
+}
+
+export function cancelRemoteOAuth(): Promise<{ ok: boolean; canceled: boolean }> {
+  return postJson<{ ok: boolean; canceled: boolean }>("/api/mounts/remotes/oauth/cancel", {});
 }
 
 // -- Template management (fused_render/templates_api.py; TEMPLATE_MGMT_SPEC) --

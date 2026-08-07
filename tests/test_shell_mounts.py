@@ -1398,6 +1398,85 @@ def test_mounted_paths_empty_when_rcd_down(home):
     assert mounts_mod.mounted_paths() == set()
 
 
+# -- async upload queue (D221) ---------------------------------------------------
+#
+# With CacheMode "full" a write returns success once it lands in the local VFS
+# cache, so a quota/permission rejection at the remote is invisible: the user
+# saw the save succeed. rcd's vfs/queue is the only authority on whether the
+# bytes actually left.
+
+
+def _queue(*items):
+    return {"queue": list(items)}
+
+
+def _q(name, tries=0, uploading=False, size=10, id_=1):
+    return {"name": name, "id": id_, "size": size, "expiry": 1.0,
+            "tries": tries, "delay": 5.0, "uploading": uploading}
+
+
+def test_upload_status_counts_pending_and_failed(home, rcd):
+    # tries>=1 with uploading false means an attempt has already come back and
+    # the item was requeued (writeback.go doubles the delay on failure) — that
+    # is a FAILING upload. A first attempt still in flight is merely pending.
+    rcd.responses["vfs/queue"] = _queue(
+        _q("fresh.tif", tries=0),
+        _q("in-flight.tif", tries=1, uploading=True),
+        _q("rejected.tif", tries=4),
+    )
+    st = mounts_mod._mount_upload_status({"remote": "gdrive:docs"})
+    assert st == {"unknown": False, "pending": 3, "failed": 1,
+                  "failed_names": ["rejected.tif"]}
+    method, body = next(c for c in rcd.calls if c[0] == "vfs/queue")
+    assert body == {"fs": "gdrive:docs"}
+
+
+def test_upload_status_empty_queue_is_all_clear(home, rcd):
+    rcd.responses["vfs/queue"] = _queue()
+    assert mounts_mod._mount_upload_status({"remote": "gdrive:"}) == {
+        "unknown": False, "pending": 0, "failed": 0, "failed_names": []}
+
+
+def test_upload_status_is_unknown_when_the_queue_cannot_be_read(home, rcd, caplog):
+    """No VFS for that fs, an old rclone without vfs/queue, cache mode off: all
+    mean "we don't know", which is NOT "nothing pending". It must come back as a
+    positive unknown — a bare None is indistinguishable from the
+    not-applicable None get_mounts uses for read-only/unhealthy mounts, and the
+    UI would draw both as a clean card."""
+    rcd.responses["vfs/queue"] = (500, {"error": 'no VFS found with name "gdrive:"'})
+    with caplog.at_level("WARNING"):
+        st = mounts_mod._mount_upload_status({"remote": "gdrive:", "name": "gd"})
+    assert st["unknown"] is True and st["reason"]
+    assert "pending" not in st  # no number a caller could mistake for a count
+    # The rc error was the only record of WHY, and it used to be discarded.
+    assert "no VFS found" in caplog.text
+
+
+def test_upload_status_is_unknown_on_a_non_json_reply(home, rcd, monkeypatch):
+    """_rc lets json.loads' ValueError escape unwrapped on a 200 with a
+    non-JSON body. Uncaught it would kill the get_mounts probe thread, leaving
+    the mount's uploads unset — the same false all-clear by another route."""
+    def bad_json(port, method, params=None, timeout=30, auth=None):
+        raise ValueError("Expecting value: line 1 column 1 (char 0)")
+
+    monkeypatch.setattr(mounts_mod, "_rc", bad_json)
+    st = mounts_mod._mount_upload_status({"remote": "gdrive:", "name": "gd"})
+    assert st["unknown"] is True
+
+
+def test_upload_status_is_unknown_without_a_daemon(home):
+    st = mounts_mod._mount_upload_status({"remote": "gdrive:", "name": "gd"})
+    assert st["unknown"] is True
+
+
+def test_upload_status_caps_the_names_it_reports(home, rcd):
+    rcd.responses["vfs/queue"] = _queue(
+        *[_q(f"f{i}.tif", tries=2, id_=i) for i in range(10)])
+    st = mounts_mod._mount_upload_status({"remote": "gdrive:"})
+    assert st["failed"] == 10
+    assert len(st["failed_names"]) == 3  # enough to name, not a wall of text
+
+
 # -- endpoints -------------------------------------------------------------------
 
 FUSED = {"X-Fused": "1"}  # D3 guard header required on writes
@@ -1458,7 +1537,88 @@ def test_mount_view_has_no_automount_field(client, rcd):
     # automount is implicit for every mount now — the field is gone.
     assert "automount" not in m
     assert set(m) == {"id", "name", "remote", "mountpoint", "mounted", "state",
-                      "read_only", "builtin", "restart_reason"}
+                      "read_only", "builtin", "restart_reason", "uploads"}
+
+
+def test_get_mounts_surfaces_the_upload_queue(client, rcd):
+    """The Mounts page already polls GET /api/mounts, and that handler already
+    fans a worker out per mount — so the queue read rides along there rather
+    than becoming a second poll loop."""
+    rcd.responses["vfs/queue"] = _queue(_q("a.tif", tries=0),
+                                        _q("b.tif", tries=3))
+    created = client.post("/api/mounts", json={"name": "data", "remote": "gdrive:docs"},
+                          headers=FUSED).json()
+    rcd.responses["mount/listmounts"] = {
+        "mountPoints": [{"Fs": "gdrive:docs", "MountPoint": created["mountpoint"]}]}
+    m = client.get("/api/mounts").json()["mounts"][0]
+    assert m["state"] == "mounted"
+    assert m["uploads"] == {"unknown": False, "pending": 2, "failed": 1,
+                            "failed_names": ["b.tif"]}
+
+
+def test_get_mounts_reports_an_unreadable_queue_as_unknown(client, rcd):
+    """The two Nones must not collide on the wire: null means "not applicable"
+    (read-only or unhealthy), while a queue we tried and failed to read comes
+    back as a positive unknown so the page can say so."""
+    rcd.responses["vfs/queue"] = (500, {"error": "no VFS found"})
+    created = client.post("/api/mounts", json={"name": "data", "remote": "gdrive:docs"},
+                          headers=FUSED).json()
+    rcd.responses["mount/listmounts"] = {
+        "mountPoints": [{"Fs": "gdrive:docs", "MountPoint": created["mountpoint"]}]}
+    m = client.get("/api/mounts").json()["mounts"][0]
+    assert m["uploads"]["unknown"] is True
+
+
+def test_get_mounts_reads_the_queue_when_the_record_read_only_flag_is_stale(
+        client, rcd):
+    """read_only on the RECORD can drift ahead of what the live mount baked
+    (config.py's _effective_serve_read_only documents exactly this). A mount
+    recorded read-only but actually mounted read-write can still have queued
+    writes, and skipping it there is another false all-clear."""
+    rcd.responses["vfs/queue"] = _queue(_q("stuck.tif", tries=3))
+    created = client.post("/api/mounts",
+                          json={"name": "drifted", "remote": "gdrive:docs"},
+                          headers=FUSED).json()
+    rcd.responses["mount/listmounts"] = {
+        "mountPoints": [{"Fs": "gdrive:docs", "MountPoint": created["mountpoint"]}]}
+    # The record now says read-only; the LIVE mount was baked read-write.
+    rec = mounts_mod.get_mount(created["id"])
+    rec["read_only"] = True
+    assert rec.get("mounted_read_only") is False
+    mounts_mod._update_mount(rec)
+
+    m = client.get("/api/mounts").json()["mounts"][0]
+    assert m["uploads"] == {"unknown": False, "pending": 1, "failed": 1,
+                            "failed_names": ["stuck.tif"]}
+
+
+def test_get_mounts_skips_the_queue_read_for_a_read_only_mount(client, rcd):
+    """A read-only mount can't have queued writes; the rc call would be pure
+    latency inside the handler's per-mount timeout budget."""
+    rcd.responses["vfs/queue"] = _queue(_q("a.tif"))
+    created = client.post("/api/mounts",
+                          json={"name": "ro", "remote": "pub:b", "read_only": True},
+                          headers=FUSED).json()
+    rcd.responses["mount/listmounts"] = {
+        "mountPoints": [{"Fs": "pub:b", "MountPoint": created["mountpoint"]}]}
+    m = client.get("/api/mounts").json()["mounts"][0]
+    assert m["state"] == "mounted" and m["read_only"] is True
+    assert m["uploads"] is None
+    assert not any(c[0] == "vfs/queue" for c in rcd.calls)
+
+
+def test_get_mounts_skips_the_queue_read_for_a_broken_mount(client, rcd,
+                                                            monkeypatch):
+    """A disconnected mount pays the credential probe instead — the two probes
+    are mutually exclusive, so the handler's join budget is unchanged."""
+    rcd.responses["vfs/queue"] = _queue(_q("a.tif"))
+    client.post("/api/mounts", json={"name": "data", "remote": "gdrive:docs"},
+                headers=FUSED)
+    monkeypatch.setattr(mounts_mod, "mount_state", lambda m, live, **k: "disconnected")
+    monkeypatch.setattr(mounts_mod, "_mount_credential_status", lambda m, b=None: "n/a")
+    m = client.get("/api/mounts").json()["mounts"][0]
+    assert m["uploads"] is None
+    assert not any(c[0] == "vfs/queue" for c in rcd.calls)
 
 
 def test_delete_unmounts_and_removes(client, rcd):
@@ -1514,6 +1674,721 @@ def test_create_remote_rejects_bad_name(client):
     assert r.status_code == 400
 
 
+# -- Google Drive sign-in (`rclone authorize drive`) -----------------------------
+#
+# The browser round-trip itself can't be exercised (no browser, no Google
+# account), so the real child is replaced at the _spawn_authorize seam: the
+# lifecycle (pumps, exit watcher, SIGTERM->SIGKILL cancel), the stdout parsing
+# and the rc call shape are what these cover. The success/failure children are
+# REAL subprocesses (`python -c`) so the pipes, threads and exit codes are the
+# genuine article; only the hang-then-cancel case uses a stub, so a stuck test
+# can never leak a five-minute child.
+
+# What `rclone authorize drive` prints on success (verified against rclone
+# v1.74.4, fs/config/authorize.go: the token JSON between two marker lines).
+DRIVE_TOKEN = ('{"access_token":"ya29.tok","token_type":"Bearer",'
+               '"refresh_token":"1//ref","expiry":"2026-08-04T12:00:00Z"}')
+AUTHORIZE_OK = (
+    "Paste the following into your remote machine --->\\n"
+    + DRIVE_TOKEN.replace('"', '\\"')
+    + "\\n<---End paste"
+)
+
+
+def _spawn_python(monkeypatch, script, record=None):
+    """Point the authorize spawn seam at a real `python -c` child.
+
+    `record` collects (bin_, backend, env_extra) so a test can assert BOTH the
+    argv the child would have had and the environment the client id/secret
+    travel in (D223) — the two halves of "no secret on argv"."""
+    import subprocess
+    import sys
+
+    def spawn(bin_, backend, env_extra=None):
+        if record is not None:
+            record.append((bin_, backend, env_extra))
+        return subprocess.Popen(
+            [sys.executable, "-c", script],
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE, text=True)
+
+    monkeypatch.setattr(mounts_mod.endpoints, "_spawn_authorize", spawn)
+
+
+# Drive now REQUIRES a user-supplied OAuth client (D219 as rewritten): rclone's
+# shared client ID is being retired, so every Drive request below carries one.
+DRIVE_BODY = {"name": "gdrive", "client_id": "cid.apps.googleusercontent.com",
+              "client_secret": "csecret"}
+
+
+def _drive_ready(monkeypatch, rcd_stub):
+    """rclone present (with NO remotes yet) + rcd answering config/create.
+
+    _fake_rclone, not a bare rclone_bin stub: the name-collision check calls
+    `rclone listremotes` for real, so on a developer machine that genuinely has
+    a `gdrive:` remote every sign-in test 409'd on the tester's own config. The
+    stub makes the starting remote set an input to the test instead of a
+    property of the machine — a test that wants a collision asks for one by
+    calling _fake_rclone(..., existing_remotes=(…)) after this."""
+    _fake_rclone(monkeypatch, existing_remotes=())
+    rcd_stub.responses["config/create"] = {}
+
+
+def _wait_oauth(client, deadline=10.0):
+    """Poll the status endpoint the way the Mounts page does, until the
+    attempt is no longer in flight."""
+    end = time.monotonic() + deadline
+    while True:
+        s = client.get("/api/mounts/remotes/oauth/status").json()
+        if not s["in_flight"]:
+            return s
+        assert time.monotonic() < end, f"timed out; last status: {s}"
+        time.sleep(0.05)
+
+
+@pytest.fixture(autouse=True)
+def _reset_oauth_state():
+    # The in-flight authorize child is process-global state; a stub left by one
+    # test must never leak into the next.
+    yield
+    mounts_mod.endpoints._cancel_active_authorize()
+    job = mounts_mod.endpoints._authorize
+    if job is not None and job.proc.poll() is None:
+        job.proc.kill()
+        job.proc.wait()
+    mounts_mod.endpoints._authorize = None
+
+
+def test_authorize_argv_is_rclone_authorize_backend():
+    assert mounts_mod.endpoints._authorize_argv("/usr/bin/rclone", "drive") == [
+        "/usr/bin/rclone", "authorize", "drive"]
+
+
+def test_parse_authorize_token_reads_the_marked_blob():
+    out = ("2026/08/04 12:00:00 NOTICE: Waiting for code...\n"
+           "Paste the following into your remote machine --->\n"
+           f"{DRIVE_TOKEN}\n"
+           "<---End paste\n")
+    assert mounts_mod.endpoints._parse_authorize_token(out) == DRIVE_TOKEN
+
+
+def test_parse_authorize_token_tolerates_a_bare_json_line():
+    # Defensive: the markers are rclone's wording, not a contract we control.
+    assert mounts_mod.endpoints._parse_authorize_token(
+        f"noise\n{DRIVE_TOKEN}\n") == DRIVE_TOKEN
+
+
+def test_parse_authorize_token_rejects_output_without_a_token():
+    assert mounts_mod.endpoints._parse_authorize_token("") is None
+    assert mounts_mod.endpoints._parse_authorize_token('{"error":"denied"}') is None
+    assert mounts_mod.endpoints._parse_authorize_token("Failed to get token") is None
+
+
+def test_drive_oauth_writes_require_fused_header(client):
+    assert client.post("/api/mounts/remotes/oauth", json=DRIVE_BODY).status_code == 403
+    assert client.post("/api/mounts/remotes/oauth/cancel").status_code == 403
+
+
+def test_drive_oauth_rejects_bad_name_before_probing_rclone(client, monkeypatch):
+    # Same deliberate ordering as create_remote: a bad name is a 400 on every
+    # platform, and a missing rclone must not mask it with a 502.
+    monkeypatch.setattr(mounts_mod, "rclone_bin", lambda: None)
+    for bad in ("", "a:b", "a/b"):
+        r = client.post("/api/mounts/remotes/oauth", json={"name": bad}, headers=FUSED)
+        assert r.status_code == 400, bad
+
+
+def test_drive_oauth_502_when_rclone_missing(client, monkeypatch):
+    monkeypatch.setattr(mounts_mod, "rclone_bin", lambda: None)
+    r = client.post("/api/mounts/remotes/oauth", json=DRIVE_BODY, headers=FUSED)
+    assert r.status_code == 502
+
+
+def test_drive_oauth_status_idle_before_any_attempt(client):
+    s = client.get("/api/mounts/remotes/oauth/status").json()
+    assert s == {"in_flight": False, "name": None, "provider": None,
+                 "backend": None, "ok": None, "error": None}
+
+
+def test_drive_oauth_creates_the_remote_over_rcd(client, rcd, monkeypatch):
+    # The token must travel over the rc daemon's loopback HTTP body, never a
+    # subprocess argv where `ps` would show it to any other local user.
+    _drive_ready(monkeypatch, rcd)
+    seen = []
+    _spawn_python(monkeypatch, f'print("{AUTHORIZE_OK}")', record=seen)
+    r = client.post("/api/mounts/remotes/oauth", json=DRIVE_BODY, headers=FUSED)
+    assert r.status_code == 200, r.text
+    assert r.json()["name"] == "gdrive"
+
+    s = _wait_oauth(client)
+    assert s["ok"] is True and s["error"] is None and s["name"] == "gdrive"
+    assert [(b, backend) for b, backend, _ in seen] == [("/usr/bin/rclone", "drive")]
+
+    method, body = next(c for c in rcd.calls if c[0] == "config/create")
+    assert body["name"] == "gdrive"
+    assert body["type"] == "drive"
+    # Full read-write drive scope (drive.readonly can't write; drive.file only
+    # ever sees files this app created), and skip_gdocs because Docs/Sheets have
+    # no byte representation and would look editable but never round-trip.
+    # The client id/secret are persisted with the remote so rclone can refresh
+    # the token later — its shared client ID is being retired (D219).
+    assert body["parameters"] == {
+        "token": DRIVE_TOKEN, "scope": "drive", "skip_gdocs": "true",
+        "client_id": DRIVE_BODY["client_id"],
+        "client_secret": DRIVE_BODY["client_secret"]}
+
+
+def test_drive_oauth_invalidates_upstream_caches(client, rcd, monkeypatch):
+    _drive_ready(monkeypatch, rcd)
+    _spawn_python(monkeypatch, f'print("{AUTHORIZE_OK}")')
+    calls = []
+    monkeypatch.setattr(mounts_mod.endpoints, "_invalidate_upstream_caches",
+                        lambda: calls.append(1))
+    client.post("/api/mounts/remotes/oauth", json=DRIVE_BODY, headers=FUSED)
+    assert _wait_oauth(client)["ok"] is True
+    assert calls == [1]
+
+
+def test_drive_oauth_child_exiting_without_a_token_is_a_retryable_error(
+        client, rcd, monkeypatch):
+    # The abandoned-browser-tab case: rclone exits 0 having printed nothing.
+    # in_flight drops WITHOUT success, and the message must say to try again
+    # rather than leaving the page spinning forever.
+    _drive_ready(monkeypatch, rcd)
+    _spawn_python(monkeypatch, "pass")
+    client.post("/api/mounts/remotes/oauth", json=DRIVE_BODY, headers=FUSED)
+    s = _wait_oauth(client)
+    assert s["ok"] is False
+    assert "try again" in s["error"].lower()
+    assert not any(c[0] == "config/create" for c in rcd.calls)
+
+
+def test_drive_oauth_reports_the_child_failure(client, rcd, monkeypatch):
+    _drive_ready(monkeypatch, rcd)
+    _spawn_python(
+        monkeypatch,
+        'import sys; sys.stderr.write("Failed to configure token: oauth2: denied\\n");'
+        ' sys.exit(1)')
+    client.post("/api/mounts/remotes/oauth", json=DRIVE_BODY, headers=FUSED)
+    s = _wait_oauth(client)
+    assert s["ok"] is False
+    assert "oauth2: denied" in s["error"]
+
+
+def test_drive_oauth_reports_an_rc_failure(client, rcd, monkeypatch):
+    _fake_rclone(monkeypatch, existing_remotes=())
+    rcd.responses["config/create"] = (500, {"error": "couldn't decode token"})
+    _spawn_python(monkeypatch, f'print("{AUTHORIZE_OK}")')
+    client.post("/api/mounts/remotes/oauth", json=DRIVE_BODY, headers=FUSED)
+    s = _wait_oauth(client)
+    assert s["ok"] is False
+    assert "couldn't decode token" in s["error"]
+
+
+def test_drive_oauth_does_not_retain_the_token_after_using_it(client, rcd, monkeypatch):
+    """The token is consumed by config/create and must not outlive that call.
+    _authorize is a module global that deliberately persists (the status
+    endpoint reads the last outcome from it), so without an explicit clear the
+    raw access/refresh token stayed reachable for the life of the process —
+    which is what turns a future crash dump or an added diagnostic into a real
+    credential leak."""
+    _drive_ready(monkeypatch, rcd)
+    _spawn_python(monkeypatch, f'print("{AUTHORIZE_OK}")')
+    client.post("/api/mounts/remotes/oauth", json=DRIVE_BODY, headers=FUSED)
+    assert _wait_oauth(client)["ok"] is True
+
+    job = mounts_mod.endpoints._authorize
+    assert list(job.out) == []
+    assert "ya29.tok" not in repr(vars(job))
+
+
+def test_drive_oauth_clears_stdout_even_when_no_token_arrived(client, rcd, monkeypatch):
+    """Same invariant on the failure path: whatever the child put on stdout is
+    dropped once it has been parsed, so nothing half-token-shaped lingers."""
+    _drive_ready(monkeypatch, rcd)
+    _spawn_python(monkeypatch, 'print("some unexpected stdout")')
+    client.post("/api/mounts/remotes/oauth", json=DRIVE_BODY, headers=FUSED)
+    assert _wait_oauth(client)["ok"] is False
+    assert list(mounts_mod.endpoints._authorize.out) == []
+
+
+def test_drive_oauth_rolls_back_a_half_created_remote(client, rcd, monkeypatch):
+    """_rc turns BOTH an HTTP error and a socket timeout into RuntimeError, so
+    "the remote could not be created" can be a lie: a timeout against a daemon
+    that nonetheless finished config/create leaves a remote that exists while
+    the user is told it does not. create_detected_remote handles exactly this
+    class by rolling back; so does this."""
+    _drive_ready(monkeypatch, rcd)
+    rcd.responses["config/create"] = (500, {"error": "timed out"})
+    rcd.responses["config/delete"] = {}
+    _spawn_python(monkeypatch, f'print("{AUTHORIZE_OK}")')
+    client.post("/api/mounts/remotes/oauth", json=DRIVE_BODY, headers=FUSED)
+    s = _wait_oauth(client)
+    assert s["ok"] is False
+    deleted = [b for meth, b in rcd.calls if meth == "config/delete"]
+    assert deleted == [{"name": "gdrive"}]
+
+
+def test_drive_oauth_says_so_when_the_rollback_also_fails(client, rcd, monkeypatch):
+    """A rollback that itself fails may leave the remote behind. Saying only
+    "could not be created" would invite a doomed mount against a half-written
+    remote the user was told did not exist."""
+    _drive_ready(monkeypatch, rcd)
+    rcd.responses["config/create"] = (500, {"error": "timed out"})
+    rcd.responses["config/delete"] = (500, {"error": "nope"})
+    _spawn_python(monkeypatch, f'print("{AUTHORIZE_OK}")')
+    client.post("/api/mounts/remotes/oauth", json=DRIVE_BODY, headers=FUSED)
+    s = _wait_oauth(client)
+    assert s["ok"] is False
+    err = s["error"].lower()
+    assert "could not be removed" in err or "manually" in err
+
+
+def test_drive_oauth_does_not_roll_back_over_a_replaced_remote(client, rcd, monkeypatch):
+    """Rollback deletes a remote we believe WE created. When the user asked to
+    replace an existing one, a delete would destroy their previous working
+    config on top of a failed sign-in — strictly worse than leaving it."""
+    _drive_ready(monkeypatch, rcd)
+    _fake_rclone(monkeypatch, existing_remotes=("gdrive:",))
+    rcd.responses["config/create"] = (500, {"error": "timed out"})
+    rcd.responses["config/delete"] = {}
+    _spawn_python(monkeypatch, f'print("{AUTHORIZE_OK}")')
+    client.post("/api/mounts/remotes/oauth",
+                json={**DRIVE_BODY, "replace": True}, headers=FUSED)
+    s = _wait_oauth(client)
+    assert s["ok"] is False
+    assert not any(meth == "config/delete" for meth, _ in rcd.calls)
+
+
+def test_drive_oauth_rolls_back_when_replace_was_asked_for_a_FREE_name(
+        client, rcd, monkeypatch):
+    """`replacing` must mean "a remote was already here", not "the caller ticked
+    the box". The Replace checkbox stays ticked while the user edits the name to
+    a free one, so replace=true arrives for a name that does not exist — and
+    reading the flag verbatim marked that brand-new remote as replacing, which
+    is precisely the case the rollback skips. The half-created remote the
+    rollback exists to prevent was left behind."""
+    _drive_ready(monkeypatch, rcd)
+    # gdrive exists; the request names gdrive-2, which does not.
+    _fake_rclone(monkeypatch, existing_remotes=("gdrive:",))
+    rcd.responses["config/create"] = (500, {"error": "timed out"})
+    rcd.responses["config/delete"] = {}
+    _spawn_python(monkeypatch, f'print("{AUTHORIZE_OK}")')
+    r = client.post("/api/mounts/remotes/oauth",
+                    json={**DRIVE_BODY, "name": "gdrive-2", "replace": True},
+                    headers=FUSED)
+    assert r.status_code == 200
+    s = _wait_oauth(client)
+    assert s["ok"] is False
+    deleted = [b for meth, b in rcd.calls if meth == "config/delete"]
+    assert deleted == [{"name": "gdrive-2"}]
+
+
+def test_drive_oauth_never_leaks_the_token_into_an_error(client, rcd, monkeypatch):
+    # The token blob lands on stdout; error text is built from stderr (plus
+    # token-free stdout), so a failure message can't carry the credential into
+    # the UI, a log, or a bug report.
+    _drive_ready(monkeypatch, rcd)
+    _spawn_python(
+        monkeypatch,
+        f'print("{AUTHORIZE_OK}");'
+        ' import sys; sys.stderr.write("boom\\n"); sys.exit(1)')
+    client.post("/api/mounts/remotes/oauth", json=DRIVE_BODY, headers=FUSED)
+    s = _wait_oauth(client)
+    assert s["ok"] is False
+    assert "ya29.tok" not in s["error"] and "1//ref" not in s["error"]
+
+
+def test_drive_oauth_refuses_to_overwrite_an_existing_remote(client, rcd, monkeypatch):
+    """config/create OVERWRITES a same-named remote. The only collision check
+    was client-side, against a snapshot taken when the modal opened — stale for
+    the whole five-minute sign-in window, and absent for any non-UI caller. A
+    re-sign-in under the same name would silently replace a working remote."""
+    _drive_ready(monkeypatch, rcd)
+    _fake_rclone(monkeypatch, existing_remotes=("gdrive:",))
+    spawned = []
+    _spawn_python(monkeypatch, "pass", record=spawned)
+    r = client.post("/api/mounts/remotes/oauth", json=DRIVE_BODY, headers=FUSED)
+    assert r.status_code == 409
+    assert "already" in r.json()["error"].lower()
+    # Refused BEFORE the browser is opened — not after the user consents.
+    assert spawned == []
+
+
+def test_drive_oauth_overwrites_only_when_replace_is_explicit(client, rcd, monkeypatch):
+    _drive_ready(monkeypatch, rcd)
+    _fake_rclone(monkeypatch, existing_remotes=("gdrive:",))
+    _spawn_python(monkeypatch, f'print("{AUTHORIZE_OK}")')
+    r = client.post("/api/mounts/remotes/oauth",
+                    json={**DRIVE_BODY, "replace": True}, headers=FUSED)
+    assert r.status_code == 200
+    assert _wait_oauth(client)["ok"] is True
+    assert any(c[0] == "config/create" for c in rcd.calls)
+
+
+def test_drive_oauth_replace_must_be_a_real_boolean(client, rcd, monkeypatch):
+    """A truthy string from a sloppy caller must not be able to authorize an
+    overwrite — the same strictness add_mount applies to read_only."""
+    _drive_ready(monkeypatch, rcd)
+    _fake_rclone(monkeypatch, existing_remotes=("gdrive:",))
+    r = client.post("/api/mounts/remotes/oauth",
+                    json={**DRIVE_BODY, "replace": "yes"}, headers=FUSED)
+    assert r.status_code == 400
+
+
+def test_drive_oauth_rejects_a_second_sign_in_while_one_is_in_flight(
+        client, rcd, monkeypatch):
+    # rclone's callback server binds 127.0.0.1:53682; a second child would just
+    # fail to bind, so the single-flight rejection is the honest answer.
+    _drive_ready(monkeypatch, rcd)
+    _spawn_python(monkeypatch, "import time; time.sleep(30)")
+    assert client.post("/api/mounts/remotes/oauth", json=DRIVE_BODY,
+                       headers=FUSED).status_code == 200
+    r = client.post("/api/mounts/remotes/oauth",
+                    json={**DRIVE_BODY, "name": "other"}, headers=FUSED)
+    assert r.status_code == 409
+    assert client.get("/api/mounts/remotes/oauth/status").json()["in_flight"] is True
+
+
+def test_drive_oauth_cancel_terminates_the_child(client, rcd, monkeypatch):
+    _drive_ready(monkeypatch, rcd)
+    _spawn_python(monkeypatch, "import time; time.sleep(30)")
+    client.post("/api/mounts/remotes/oauth", json=DRIVE_BODY, headers=FUSED)
+    r = client.post("/api/mounts/remotes/oauth/cancel", headers=FUSED)
+    assert r.status_code == 200 and r.json()["canceled"] is True
+    s = _wait_oauth(client)
+    assert s["ok"] is False and "cancel" in s["error"].lower()
+    assert not any(c[0] == "config/create" for c in rcd.calls)
+
+
+def test_drive_oauth_cancel_after_success_reports_canceled_false(client, rcd, monkeypatch):
+    """The race the client reconciles against: cancel arriving after the
+    round-trip already landed. The server must report canceled=false (nothing
+    was live to kill) while status still says ok — otherwise the UI would
+    discard a remote that now exists and tell the user nothing."""
+    _drive_ready(monkeypatch, rcd)
+    _spawn_python(monkeypatch, f'print("{AUTHORIZE_OK}")')
+    client.post("/api/mounts/remotes/oauth", json=DRIVE_BODY, headers=FUSED)
+    assert _wait_oauth(client)["ok"] is True
+
+    r = client.post("/api/mounts/remotes/oauth/cancel", headers=FUSED)
+    assert r.status_code == 200 and r.json()["canceled"] is False
+    assert client.get("/api/mounts/remotes/oauth/status").json()["ok"] is True
+
+
+def test_drive_oauth_cancel_with_nothing_in_flight_is_a_no_op(client):
+    r = client.post("/api/mounts/remotes/oauth/cancel", headers=FUSED)
+    assert r.status_code == 200 and r.json()["canceled"] is False
+
+
+# -- the provider registry: Drive, Dropbox, Box (D223) ---------------------------
+#
+# The same authorize child for all three; what differs is the rclone backend
+# type, the extra config params, and — for Drive alone — a user-supplied OAuth
+# client. Dropbox and Box must NEVER be asked for a client id/secret: rclone
+# still says "Leave blank normally" for both, and only Google's shared client
+# ID is being retired.
+
+
+def test_oauth_provider_registry_covers_the_three_backends():
+    reg = mounts_mod.endpoints._OAUTH_PROVIDERS
+    assert set(reg) == {"drive", "dropbox", "box"}
+    assert reg["drive"]["needs_client"] is True
+    # The explicit user decision: no client id/secret UI for these two.
+    assert reg["dropbox"]["needs_client"] is False
+    assert reg["box"]["needs_client"] is False
+    assert reg["drive"]["params"] == {"scope": "drive", "skip_gdocs": "true"}
+    assert reg["dropbox"]["params"] == {} and reg["box"]["params"] == {}
+
+
+def test_oauth_rejects_an_unknown_provider(client, rcd, monkeypatch):
+    _drive_ready(monkeypatch, rcd)
+    spawned = []
+    _spawn_python(monkeypatch, "pass", record=spawned)
+    r = client.post("/api/mounts/remotes/oauth",
+                    json={"name": "x", "provider": "onedrive"}, headers=FUSED)
+    assert r.status_code == 400
+    assert "onedrive" in r.json()["error"]
+    assert spawned == []
+
+
+def test_oauth_defaults_to_drive_for_a_body_without_a_provider(client, rcd,
+                                                              monkeypatch):
+    # Backwards compatibility: the pre-registry client sent no `provider`.
+    _drive_ready(monkeypatch, rcd)
+    _spawn_python(monkeypatch, f'print("{AUTHORIZE_OK}")')
+    client.post("/api/mounts/remotes/oauth", json=DRIVE_BODY, headers=FUSED)
+    assert _wait_oauth(client)["ok"] is True
+    _, body = next(c for c in rcd.calls if c[0] == "config/create")
+    assert body["type"] == "drive"
+
+
+def test_oauth_drive_requires_a_client_id_and_secret(client, rcd, monkeypatch):
+    """rclone's shared Google client ID is being retired, so Drive cannot be
+    signed into without the user's own. The 400 must EXPLAIN that rather than
+    read as a bare validation slip — the user has real work to do in the Google
+    Cloud console before they can retry."""
+    _drive_ready(monkeypatch, rcd)
+    spawned = []
+    _spawn_python(monkeypatch, "pass", record=spawned)
+    for body in ({"name": "gdrive"},
+                 {"name": "gdrive", "client_id": "cid"},
+                 {"name": "gdrive", "client_secret": "sec"},
+                 {"name": "gdrive", "client_id": " ", "client_secret": "sec"}):
+        r = client.post("/api/mounts/remotes/oauth", json=body, headers=FUSED)
+        assert r.status_code == 400, body
+        msg = r.json()["error"].lower()
+        assert "client id" in msg and "retir" in msg
+    assert spawned == []  # refused before the browser is opened
+
+
+def test_oauth_drive_client_id_must_be_a_string(client, rcd, monkeypatch):
+    _drive_ready(monkeypatch, rcd)
+    r = client.post("/api/mounts/remotes/oauth",
+                    json={"name": "gdrive", "client_id": {"a": 1},
+                          "client_secret": "sec"}, headers=FUSED)
+    assert r.status_code == 400
+
+
+def test_oauth_client_credentials_travel_in_the_env_not_argv(client, rcd,
+                                                             monkeypatch):
+    """D223. `rclone authorize drive <id> <secret>` takes them POSITIONALLY,
+    and /proc/<pid>/cmdline is world-readable (-r--r--r--) while
+    /proc/<pid>/environ is owner-only (-r--------). So the secret goes in the
+    environment; argv must stay exactly what it was."""
+    _drive_ready(monkeypatch, rcd)
+    seen = []
+    _spawn_python(monkeypatch, f'print("{AUTHORIZE_OK}")', record=seen)
+    client.post("/api/mounts/remotes/oauth", json=DRIVE_BODY, headers=FUSED)
+    assert _wait_oauth(client)["ok"] is True
+    bin_, backend, env_extra = seen[0]
+    assert env_extra == {
+        "RCLONE_DRIVE_CLIENT_ID": DRIVE_BODY["client_id"],
+        "RCLONE_DRIVE_CLIENT_SECRET": DRIVE_BODY["client_secret"]}
+    # The argv builder never sees them at all.
+    argv = mounts_mod.endpoints._authorize_argv(bin_, backend)
+    assert argv == ["/usr/bin/rclone", "authorize", "drive"]
+    assert not any(DRIVE_BODY["client_secret"] in a for a in argv)
+
+
+def test_spawn_authorize_overlays_the_env_onto_os_environ(monkeypatch):
+    """The child still needs PATH/HOME to run at all, so the extras are an
+    OVERLAY on os.environ, not a replacement."""
+    captured = {}
+
+    class _P:
+        def __init__(self, *a, **kw):
+            captured.update(kw)
+
+    monkeypatch.setattr(mounts_mod.endpoints.subprocess, "Popen", _P)
+    monkeypatch.setenv("FUSED_TEST_MARKER", "present")
+    mounts_mod.endpoints._spawn_authorize(
+        "/usr/bin/rclone", "drive", {"RCLONE_DRIVE_CLIENT_ID": "cid"})
+    env = captured["env"]
+    assert env["FUSED_TEST_MARKER"] == "present"
+    assert env["RCLONE_DRIVE_CLIENT_ID"] == "cid"
+
+
+@pytest.mark.parametrize("provider,label", [("dropbox", "Dropbox"), ("box", "Box")])
+def test_oauth_non_drive_providers_need_no_client_credentials(
+        client, rcd, monkeypatch, provider, label):
+    _drive_ready(monkeypatch, rcd)
+    seen = []
+    _spawn_python(monkeypatch, f'print("{AUTHORIZE_OK}")', record=seen)
+    r = client.post("/api/mounts/remotes/oauth",
+                    json={"name": provider, "provider": provider}, headers=FUSED)
+    assert r.status_code == 200, r.text
+    assert _wait_oauth(client)["ok"] is True
+    assert seen[0][1] == provider
+    # No client id/secret means NO env overlay — rclone falls back to its own
+    # built-in client, which is exactly right for these two.
+    assert seen[0][2] == {}
+    _, body = next(c for c in rcd.calls if c[0] == "config/create")
+    assert body["type"] == provider
+    assert body["parameters"] == {"token": DRIVE_TOKEN}
+
+
+@pytest.mark.parametrize("provider,label", [
+    ("drive", "Google Drive"), ("dropbox", "Dropbox"), ("box", "Box")])
+def test_oauth_error_strings_name_the_provider(client, rcd, monkeypatch,
+                                               provider, label):
+    # The user-visible text used to hardcode "Google" for every backend.
+    _drive_ready(monkeypatch, rcd)
+    _spawn_python(monkeypatch, "import time; time.sleep(30)")
+    body = {"name": "r", "provider": provider}
+    if provider == "drive":
+        body |= {"client_id": "cid", "client_secret": "sec"}
+    client.post("/api/mounts/remotes/oauth", json=body, headers=FUSED)
+    client.post("/api/mounts/remotes/oauth/cancel", headers=FUSED)
+    s = _wait_oauth(client)
+    assert s["error"] == f"the {label} sign-in was canceled"
+    assert s["provider"] == provider
+
+
+def test_oauth_status_reports_the_provider(client, rcd, monkeypatch):
+    _drive_ready(monkeypatch, rcd)
+    _spawn_python(monkeypatch, f'print("{AUTHORIZE_OK}")')
+    client.post("/api/mounts/remotes/oauth",
+                json={"name": "db", "provider": "dropbox"}, headers=FUSED)
+    s = _wait_oauth(client)
+    assert s["provider"] == "dropbox" and s["backend"] == "dropbox"
+    assert client.get("/api/mounts/remotes/oauth/status").json()["provider"] == "dropbox"
+
+
+def test_oauth_does_not_retain_the_client_secret_after_using_it(client, rcd,
+                                                                monkeypatch):
+    """Same discipline as the token: `_authorize` outlives the attempt (the
+    status endpoint reads the last outcome from it), so the secret's lifetime
+    has to be bounded explicitly rather than by the record's."""
+    _drive_ready(monkeypatch, rcd)
+    _spawn_python(monkeypatch, f'print("{AUTHORIZE_OK}")')
+    client.post("/api/mounts/remotes/oauth", json=DRIVE_BODY, headers=FUSED)
+    assert _wait_oauth(client)["ok"] is True
+    job = mounts_mod.endpoints._authorize
+    assert job.client_id == "" and job.client_secret == ""
+
+
+# -- the token must not survive ANY exit path -----------------------------------
+#
+# The stdout pump appends the token the moment rclone prints it, which is BEFORE
+# the attempt is known to have succeeded. Every way out of the watcher therefore
+# has to clear it, not just the one that consumed it — `_authorize` is a module
+# global that deliberately outlives the attempt, so anything left in `out` is
+# reachable for the life of the process.
+
+
+def _token_then(script_tail: str) -> str:
+    """A child that prints the token (as rclone would, on success) and then does
+    something that is NOT a clean exit-0."""
+    return f'print("{AUTHORIZE_OK}"); import sys; sys.stdout.flush(); {script_tail}'
+
+
+def test_oauth_clears_the_token_when_canceled_after_it_arrived(client, rcd,
+                                                               monkeypatch):
+    """The real race: consent SUCCEEDS, rclone prints the token, and the user
+    clicks Cancel before the child has exited. _cancel_active_authorize still
+    sees a live process, so the outcome takes the `canceled` early return — which
+    used to skip the clear entirely and strand a live OAuth credential in a
+    process-lifetime global."""
+    _drive_ready(monkeypatch, rcd)
+    _spawn_python(monkeypatch, _token_then("import time; time.sleep(30)"))
+    client.post("/api/mounts/remotes/oauth", json=DRIVE_BODY, headers=FUSED)
+    # Let the pump actually pick the token up before cancelling, or the test
+    # would pass for the wrong reason (nothing to clear).
+    end = time.monotonic() + 5.0
+    while not any("access_token" in line for line in mounts_mod.endpoints._authorize.out):
+        assert time.monotonic() < end, "the token never reached the stdout pump"
+        time.sleep(0.02)
+    client.post("/api/mounts/remotes/oauth/cancel", headers=FUSED)
+    s = _wait_oauth(client)
+    assert s["ok"] is False and "cancel" in s["error"].lower()
+    assert list(mounts_mod.endpoints._authorize.out) == []
+
+
+def test_oauth_clears_the_token_when_the_attempt_times_out(client, rcd,
+                                                           monkeypatch):
+    _drive_ready(monkeypatch, rcd)
+    monkeypatch.setattr(mounts_mod.endpoints, "OAUTH_TIMEOUT", 0.3)
+    _spawn_python(monkeypatch, _token_then("import time; time.sleep(30)"))
+    client.post("/api/mounts/remotes/oauth", json=DRIVE_BODY, headers=FUSED)
+    s = _wait_oauth(client)
+    assert s["ok"] is False
+    assert list(mounts_mod.endpoints._authorize.out) == []
+
+
+def test_oauth_clears_the_token_when_the_child_exits_nonzero(client, rcd,
+                                                             monkeypatch):
+    # rclone can print a token and still fail afterwards (e.g. writing its own
+    # config). The token is out on stdout either way.
+    _drive_ready(monkeypatch, rcd)
+    _spawn_python(monkeypatch, _token_then('sys.stderr.write("boom\\n"); sys.exit(1)'))
+    client.post("/api/mounts/remotes/oauth", json=DRIVE_BODY, headers=FUSED)
+    s = _wait_oauth(client)
+    assert s["ok"] is False
+    assert list(mounts_mod.endpoints._authorize.out) == []
+    assert DRIVE_TOKEN not in (s["error"] or "")
+
+
+# -- rc failure shapes and truncated output -------------------------------------
+
+
+def test_oauth_reports_a_value_error_from_the_rc_call(client, rcd, monkeypatch):
+    """_rc raises RuntimeError for an HTTP error but lets json.loads' ValueError
+    escape UNWRAPPED when a 200 carries a non-JSON body (the shape _delete_remote
+    and _mount_upload_status both already catch). Catching only RuntimeError here
+    meant such a reply skipped the rollback AND _invalidate_upstream_caches, so a
+    remote that WAS created got reported as failed and then stayed invisible
+    until a server restart."""
+    _drive_ready(monkeypatch, rcd)
+    _spawn_python(monkeypatch, f'print("{AUTHORIZE_OK}")')
+    invalidated = []
+    monkeypatch.setattr(mounts_mod.endpoints, "_invalidate_upstream_caches",
+                        lambda: invalidated.append(1))
+    deleted = []
+
+    def rc(port, method, params=None, **kw):
+        if method == "config/create":
+            raise ValueError("Expecting value: line 1 column 1 (char 0)")
+        deleted.append(method)
+        return {"pid": 4242}
+
+    monkeypatch.setattr(mounts_mod, "_rc", rc)
+    monkeypatch.setattr(mounts_mod, "ensure_rcd", lambda: 5572)
+    client.post("/api/mounts/remotes/oauth", json=DRIVE_BODY, headers=FUSED)
+    s = _wait_oauth(client)
+    assert s["ok"] is False
+    assert "could not be created" in s["error"]
+    assert invalidated, "the memoized config view must be dropped either way"
+    assert "config/delete" in deleted, "the half-created remote must be rolled back"
+
+
+def test_delete_remote_logs_why_the_rollback_failed(monkeypatch, caplog):
+    # The user-facing "delete it manually" text is right, but the rc error was
+    # the only record of WHY cleanup failed and it went nowhere — leaving a
+    # remote that keeps reappearing after a failed sign-in undiagnosable.
+    def boom(*a, **kw):
+        raise RuntimeError("config/delete exploded")
+
+    monkeypatch.setattr(mounts_mod, "_rc", boom)
+    monkeypatch.setattr(mounts_mod, "ensure_rcd", lambda: 5572)
+    assert mounts_mod.endpoints._delete_remote("gdrive") is False
+    assert "config/delete exploded" in caplog.text and "gdrive" in caplog.text
+
+
+def test_oauth_admits_the_output_may_be_truncated_when_a_pump_is_still_running(
+        client, rcd, monkeypatch, caplog):
+    """`rclone authorize` opens the browser via xdg-open/open, and a grandchild
+    that inherits the stdout pipe can hold it open past the pump join. The token
+    then goes unread and the user is told "no account was connected (the browser
+    tab was closed, or approval was not granted)" for a sign-in they completed.
+    We cannot un-truncate it, but we must not assert the confident wrong cause."""
+    _drive_ready(monkeypatch, rcd)
+    # A child that exits immediately while a "grandchild" keeps stdout open.
+    _spawn_python(
+        monkeypatch,
+        'import os, subprocess, sys; '
+        'subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"], '
+        'stdout=1); os._exit(0)')
+    monkeypatch.setattr(mounts_mod.endpoints, "OAUTH_PUMP_JOIN", 0.2)
+    client.post("/api/mounts/remotes/oauth", json=DRIVE_BODY, headers=FUSED)
+    s = _wait_oauth(client)
+    assert s["ok"] is False
+    assert "may be incomplete" in s["error"]
+    assert "still running" in caplog.text
+
+
+def test_oauth_never_leaks_the_client_secret_into_an_error(client, rcd,
+                                                           monkeypatch):
+    _drive_ready(monkeypatch, rcd)
+    _spawn_python(
+        monkeypatch,
+        'import sys; sys.stderr.write("oauth2: denied\\n"); sys.exit(1)')
+    client.post("/api/mounts/remotes/oauth", json=DRIVE_BODY, headers=FUSED)
+    s = _wait_oauth(client)
+    assert s["ok"] is False
+    assert DRIVE_BODY["client_secret"] not in (s["error"] or "")
+
+
 # -- credential auto-detection (keyless env_auth remotes) ------------------------
 
 
@@ -1535,16 +2410,21 @@ def test_aws_profiles_and_suggestions_from_dotfiles(tmp_path, monkeypatch):
         "provider": "AWS", "env_auth": "true", "profile": "prod"}
 
 
-def test_suggestions_view_hides_already_materialized(monkeypatch):
+def test_suggestions_view_flags_already_materialized(monkeypatch):
+    """An already-created suggestion stays in the view, flagged `exists` — the
+    setup panels show it as "already added" rather than silently omitting it."""
     monkeypatch.setattr(mounts_mod, "_credential_suggestions", lambda: [
         {"id": "aws-env", "label": "L", "remote_name": "aws-env",
          "backend": "s3", "params": {"provider": "AWS", "env_auth": "true"}},
     ])
-    # kind defaults to "detected" for entries that don't set it.
+    # kind defaults to "detected" for entries that don't set it; provider comes
+    # from the rclone backend, the same way a materialized remote's does.
     assert mounts_mod._suggestions_view([]) == [
         {"id": "aws-env", "label": "L", "remote_name": "aws-env",
-         "kind": "detected"}]
-    assert mounts_mod._suggestions_view(["aws-env:"]) == []
+         "kind": "detected", "provider": "s3", "exists": False}]
+    assert mounts_mod._suggestions_view(["aws-env:"]) == [
+        {"id": "aws-env", "label": "L", "remote_name": "aws-env",
+         "kind": "detected", "provider": "s3", "exists": True}]
 
 
 def test_public_bucket_suggestion_always_present(monkeypatch):
@@ -1563,57 +2443,81 @@ def test_public_bucket_suggestion_always_present(monkeypatch):
     assert not any("secret" in k or "key" in k for k in pub["params"])
 
 
-def test_public_suggestion_hidden_once_materialized(monkeypatch):
+def test_public_suggestion_flagged_once_materialized(monkeypatch):
     monkeypatch.setattr(mounts_mod, "_aws_profiles", lambda: [])
     monkeypatch.delenv("AWS_ACCESS_KEY_ID", raising=False)
     monkeypatch.setattr(mounts_mod.os.path, "exists", lambda p: False)
-    # not yet created → shown under kind="public"
-    assert any(s["id"] == "aws-open-public" and s["kind"] == "public"
-               for s in mounts_mod._suggestions_view([]))
-    # once aws-open: exists it drops out (shows under Remotes instead)
-    assert not any(s["id"] == "aws-open-public"
-                   for s in mounts_mod._suggestions_view(["aws-open:"]))
+
+    def by_id(remotes):
+        return {s["id"]: s for s in mounts_mod._suggestions_view(remotes)}
+
+    # not yet created → offerable, under kind="public"
+    fresh = by_id([])["aws-open-public"]
+    assert fresh["kind"] == "public" and fresh["exists"] is False
+    # once aws-open: exists it stays listed, flagged — so the public panel can
+    # still show BOTH options (it showed a lone GCS card when this dropped out).
+    assert by_id(["aws-open:"])["aws-open-public"]["exists"] is True
+    assert by_id(["aws-open:"])["gcs-open-public"]["exists"] is False
 
 
 _AWS_OPEN_SUGG = {
     "id": "aws-open-public",
-    "label": "AWS S3 — public buckets (no credentials)",
+    "label": "AWS S3 — public datasets (no credentials)",
     "remote_name": "aws-open", "backend": "s3", "kind": "public",
     "params": {"provider": "AWS", "env_auth": "false"},
 }
 
 
-def test_remote_label_matches_suggestion():
+def test_remote_view_matches_suggestion():
     """A remote whose stored config matches a suggestion's backend+params reuses
-    that suggestion's friendly label — one stable human name across its lifecycle."""
+    that suggestion's friendly label AND its kind — one stable human name, and
+    one stable dropdown group, across its whole lifecycle."""
     configs = {"aws-open": {"type": "s3", "provider": "AWS", "env_auth": "false"}}
-    assert (mounts_mod._remote_label("aws-open:", [_AWS_OPEN_SUGG], configs)
-            == "AWS S3 — public buckets (no credentials)")
+    assert mounts_mod._remote_view("aws-open:", [_AWS_OPEN_SUGG], configs) == {
+        "name": "aws-open:",
+        "label": "AWS S3 — public datasets (no credentials)",
+        "kind": "public", "provider": "s3"}
 
 
-def test_remote_label_falls_back_to_bare_name():
+def test_remote_view_falls_back_to_bare_name():
     """An unknown/custom remote (no matching suggestion) keeps its bare rclone
-    name as the label."""
-    assert mounts_mod._remote_label("myminio:", [], {}) == "myminio:"
+    name as the label and groups as the user's own."""
+    assert mounts_mod._remote_view("myminio:", [], {}) == {
+        "name": "myminio:", "label": "myminio:", "kind": "other",
+        "provider": "other"}
 
 
-def test_remote_label_ignores_name_collision():
+def test_remote_view_labels_oauth_backend():
+    """A browser-connected remote showed as a bare "gdrive:" with no hint of
+    which service it was. The backend `type` names it — and it is the ONLY key
+    read from these configs, the rest of which is the OAuth token."""
+    configs = {"gdrive": {"type": "drive", "token": "SECRET"}}
+    view = mounts_mod._remote_view("gdrive:", [], configs)
+    assert view == {"name": "gdrive:", "label": "Google Drive — gdrive",
+                    "kind": "other", "provider": "other"}
+    assert "SECRET" not in json.dumps(view)
+
+
+def test_remote_view_ignores_name_collision():
     """Provenance, not name: a user's own remote merely named `aws` whose config
-    differs from the default-profile suggestion must NOT inherit that label —
-    the dropdown would otherwise claim the wrong credential source for the mount."""
+    differs from the default-profile suggestion must NOT inherit that label or
+    its kind — the dropdown would otherwise claim the wrong credential source
+    for the mount and file it under Detected credentials."""
     sugg = {"id": "aws-profile:default", "label": "AWS S3 — default profile",
             "remote_name": "aws", "backend": "s3",
             "params": {"provider": "AWS", "env_auth": "true", "profile": "default"}}
     # a custom MinIO remote that just happens to be named "aws"
     configs = {"aws": {"type": "s3", "provider": "Minio",
                        "endpoint": "http://localhost:9000"}}
-    assert mounts_mod._remote_label("aws:", [sugg], configs) == "aws:"
+    assert mounts_mod._remote_view("aws:", [sugg], configs) == {
+        "name": "aws:", "label": "aws:", "kind": "other", "provider": "s3"}
 
 
 def test_rclone_state_labels_materialized_remote(monkeypatch):
-    """_rclone_state exposes remotes as {name,label}: a materialized suggestion
-    (aws-open:, config matches) carries its friendly label, a custom remote
-    (myminio:) its bare name. The name stays the verbatim rclone mount base."""
+    """_rclone_state exposes remotes as {name,label,kind,provider}: a
+    materialized suggestion (aws-open:, config matches) carries its friendly
+    label and its kind, a custom remote (myminio:) its bare name under 'other'.
+    The name stays the verbatim rclone mount base."""
     monkeypatch.setattr(mounts_mod, "_credential_suggestions",
                         lambda: [_AWS_OPEN_SUGG])
     _fake_rclone(monkeypatch, existing_remotes=("aws-open:", "myminio:"),
@@ -1623,11 +2527,14 @@ def test_rclone_state_labels_materialized_remote(monkeypatch):
 
     state = mounts_mod._rclone_state()
     assert state["remotes"] == [
-        {"name": "aws-open:", "label": "AWS S3 — public buckets (no credentials)"},
-        {"name": "myminio:", "label": "myminio:"},
+        {"name": "aws-open:", "label": "AWS S3 — public datasets (no credentials)",
+         "kind": "public", "provider": "s3"},
+        {"name": "myminio:", "label": "myminio:", "kind": "other",
+         "provider": "s3"},
     ]
-    # the materialized aws-open drops out of the suggestions (shown under Remotes)
-    assert not any(s["id"] == "aws-open-public" for s in state["suggested"])
+    # the materialized aws-open stays in the suggestions, flagged exists (it
+    # also shows under Remotes); the client filters it out of what it offers.
+    assert [s["exists"] for s in state["suggested"] if s["id"] == "aws-open-public"] == [True]
 
 
 def test_detect_materializes_public_anonymous_remote(client, monkeypatch):
@@ -1790,6 +2697,86 @@ def test_detect_accepts_access_denied_probe(client, monkeypatch):
                     json={"id": "aws-env"}, headers=FUSED)
     assert r.status_code == 200
     assert r.json()["name"] == "aws-env:"
+
+
+def _fake_remote_config(monkeypatch, cfg):
+    monkeypatch.setattr(mounts_mod, "rclone_bin", lambda: "/usr/bin/rclone")
+    # _mount_credential_status resolves _remote_config through the package.
+    monkeypatch.setattr(mounts_mod, "_remote_config", lambda name: cfg)
+
+
+def test_mount_credential_status_probes_a_drive_remote(monkeypatch):
+    """A Drive mount's token is exactly the kind of credential that goes bad on
+    its own (revoked in the Google account, or expired because the OAuth client
+    was left in Testing mode). Before D219 the gate was env_auth-only, so a
+    revoked Drive token returned "n/a" and fell through to the generic
+    "reconnect" message — which cannot fix it. Reconnect never re-authorizes;
+    only signing in again does."""
+    _fake_remote_config(monkeypatch, {"type": "drive", "token": "{...}"})
+    monkeypatch.setattr(mounts_mod.credentials, "_credential_probe",
+                        lambda bin_, name: "bad")
+    assert mounts_mod._mount_credential_status({"remote": "gdrive:docs"}) == "bad"
+
+
+def test_mount_credential_status_drive_valid_drives_the_restart_prompt(monkeypatch):
+    """A re-signed-in Drive remote probes valid while the long-lived daemon
+    still holds the dead token — the same stale-daemon case env_auth remotes
+    have, and it routes to the same Restart prompt."""
+    _fake_remote_config(monkeypatch, {"type": "drive"})
+    monkeypatch.setattr(mounts_mod.credentials, "_credential_probe",
+                        lambda bin_, name: "valid")
+    m = {"remote": "gdrive:", "name": "gdrive"}
+    assert mounts_mod._mount_credential_status(m) == "valid"
+    assert mounts_mod.mount_restart_reason(m, state="disconnected") == "credentials"
+
+
+def test_bad_credential_advice_is_backend_specific(monkeypatch):
+    """Naming the wrong remedy is the exact bug this path exists to avoid: a
+    revoked Drive token is no more fixed by `aws sso login` than by Reconnect."""
+    _fake_remote_config(monkeypatch, {"type": "drive"})
+    drive = mounts_mod.credentials._bad_credential_advice({"remote": "gdrive:"})
+    assert "sign in to google drive again" in drive.lower()
+    assert "aws sso" not in drive.lower()
+
+    _fake_remote_config(monkeypatch, {"type": "s3", "env_auth": "true"})
+    aws = mounts_mod.credentials._bad_credential_advice({"remote": "aws:b"})
+    assert aws == mounts_mod._CRED_EXPIRED_MSG
+
+
+@pytest.mark.parametrize("type_,label", [("dropbox", "Dropbox"), ("box", "Box")])
+def test_bad_credential_advice_covers_every_oauth_provider(monkeypatch, type_,
+                                                           label):
+    """The advice is keyed off the provider registry, not a Drive special case:
+    an expired Dropbox token must not be met with the S3 "refresh them (e.g.
+    `aws sso login`)" text, which cannot fix it."""
+    _fake_remote_config(monkeypatch, {"type": type_})
+    advice = mounts_mod.credentials._bad_credential_advice({"remote": f"{type_}:"})
+    assert f"sign in to {label.lower()} again" in advice.lower()
+    assert "aws sso" not in advice.lower()
+
+
+@pytest.mark.parametrize("type_", ["drive", "dropbox", "box"])
+def test_oauth_remotes_are_all_treated_as_expirable(type_):
+    # They hold a refresh token the user can revoke (or the provider expire),
+    # so they must be PROBED — otherwise the mount falls through to the generic
+    # "reconnect" advice, and Reconnect cannot re-authorize anything.
+    assert mounts_mod._has_expirable_credentials({"type": type_}) is True
+
+
+def test_non_oauth_keyed_remotes_stay_unprobed():
+    assert mounts_mod._has_expirable_credentials(
+        {"type": "s3", "access_key_id": "AK"}) is False
+
+
+def test_mount_credential_status_still_na_for_key_carrying_remotes(monkeypatch):
+    """Widening the gate to Drive must not start probing every remote: keys
+    written into rclone's config don't expire this way, and the probe is an
+    `rclone lsd` paid per broken mount."""
+    _fake_remote_config(monkeypatch, {"type": "s3", "access_key_id": "AK"})
+    monkeypatch.setattr(
+        mounts_mod.credentials, "_credential_probe",
+        lambda bin_, name: pytest.fail("must not probe a key-carrying remote"))
+    assert mounts_mod._mount_credential_status({"remote": "mys3:b"}) == "n/a"
 
 
 def test_detect_skips_probe_for_public_remotes(client, monkeypatch):
@@ -2121,8 +3108,15 @@ def test_state_stale_when_rcd_tracks_a_dropped_kernel_mount(home, rcd):
     assert mounts_mod.mount_state(c, mounts_mod.mounted_paths()) == "stale"
 
 
-def test_state_disconnected_when_listing_hangs(home, rcd, monkeypatch):
-    # A wedged NFS mount blocks listdir forever; the probe times out instead.
+def test_state_mounted_when_a_slow_listing_outruns_the_probe_timeout(home, rcd,
+                                                                    monkeypatch):
+    # A probe that TIMES OUT proves nothing about health, and must not be read
+    # as "disconnected". Measured on a real Drive mount: a cold subdirectory
+    # listing takes ~18s and a root listing after DirCacheTime (30s) expires
+    # ~35s, against a PROBE_TIMEOUT of 3s — so a perfectly healthy Drive mount
+    # reported disconnected (a 503 out of the fs-listing endpoint) every 30
+    # seconds, forever. The fast checks below already classify every genuine
+    # failure mode, so the slow listdir may only ever DOWNGRADE their verdict.
     # POSIX-pinned: only POSIX enumerates the mount.
     c, mp = _make_mount(home, rcd)
     monkeypatch.setattr(mounts_mod.sys, "platform", "linux")
@@ -2138,6 +3132,155 @@ def test_state_disconnected_when_listing_hangs(home, rcd, monkeypatch):
         state = mounts_mod.mount_state(c, mounts_mod.mounted_paths(), timeout=0.2)
     finally:
         ev.set()  # release the probe thread
+    assert state == "mounted"
+
+
+def test_state_disconnected_when_a_slow_listing_then_fails(home, rcd, monkeypatch):
+    # The other half of the above: the optimistic "mounted" is provisional, so
+    # a listdir that actually FAILS still downgrades — even after outrunning
+    # nothing, i.e. when the caller does wait for it.
+    c, mp = _make_mount(home, rcd)
+    monkeypatch.setattr(mounts_mod.sys, "platform", "linux")
+    monkeypatch.setattr(mounts_mod.os.path, "ismount", lambda p: p == mp)
+
+    def slow_then_fail(p):
+        time.sleep(0.05)
+        raise OSError(errno.ENOTCONN, "Transport endpoint is not connected")
+
+    monkeypatch.setattr(mounts_mod.os, "listdir", slow_then_fail)
+    assert mounts_mod.mount_state(c, mounts_mod.mounted_paths()) == "disconnected"
+
+
+# -- the blackhole: a listdir that never answers ---------------------------------
+#
+# D222 publishes "mounted" from the fast checks BEFORE the slow listdir runs, so
+# a slow-but-progressing Drive listing stops reading as disconnected. The hole
+# that leaves is a readdir that never returns AT ALL — laptop suspend, VPN drop,
+# dead DNS — where rcd is alive and listing, ismount is true, and _mount_wedged's
+# lstat is served from the dentry cache. Every fast check passes, only the
+# readdir touches the network, and it blocks forever: no exception is ever
+# raised, so nothing can downgrade the committed "mounted".
+
+
+@pytest.fixture(autouse=True)
+def _reset_listdir_inflight():
+    # Per-mountpoint in-flight state is module-global; a stuck probe from one
+    # test must not decide the next one's verdict.
+    yield
+    mounts_mod.lifecycle._LISTDIR_INFLIGHT.clear()
+
+
+def _blackhole_listdir(monkeypatch, release: threading.Event, calls: list):
+    """os.listdir that blocks until `release` is set, counting its calls."""
+    def blocked(p):
+        calls.append(p)
+        release.wait(10)
+        return []
+
+    monkeypatch.setattr(mounts_mod.os, "listdir", blocked)
+
+
+def test_state_disconnected_once_a_listdir_has_blackholed_past_the_threshold(
+        home, rcd, monkeypatch, caplog):
+    c, mp = _make_mount(home, rcd)
+    monkeypatch.setattr(mounts_mod.sys, "platform", "linux")
+    monkeypatch.setattr(mounts_mod.os.path, "ismount", lambda p: p == mp)
+    monkeypatch.setattr(mounts_mod.lifecycle, "LISTDIR_STUCK_AFTER", 0.3)
+    release, calls = threading.Event(), []
+    _blackhole_listdir(monkeypatch, release, calls)
+    try:
+        live = mounts_mod.mounted_paths()
+        # First poll: outstanding but not yet stuck — this is exactly the
+        # slow-Drive case D222 exists to keep green.
+        assert mounts_mod.mount_state(c, live, timeout=0.05) == "mounted"
+        time.sleep(0.35)
+        # Past the threshold the listdir is not slow, it is gone. The user needs
+        # the red dot and the Reconnect it unlocks.
+        assert mounts_mod.mount_state(c, live, timeout=0.05) == "disconnected"
+        assert "stuck" in caplog.text.lower() and c["name"] in caplog.text
+    finally:
+        release.set()
+
+
+def test_state_starts_only_one_listdir_per_mountpoint(home, rcd, monkeypatch):
+    """A readdir into a blackhole is an UNINTERRUPTIBLE syscall — the probe
+    thread cannot be cancelled and never exits. Without this cap, every poll
+    (~30s per mount) would strand another one for the whole outage."""
+    c, mp = _make_mount(home, rcd)
+    monkeypatch.setattr(mounts_mod.sys, "platform", "linux")
+    monkeypatch.setattr(mounts_mod.os.path, "ismount", lambda p: p == mp)
+    monkeypatch.setattr(mounts_mod.lifecycle, "LISTDIR_STUCK_AFTER", 0.3)
+    release, calls = threading.Event(), []
+    _blackhole_listdir(monkeypatch, release, calls)
+    try:
+        live = mounts_mod.mounted_paths()
+        for _ in range(5):
+            mounts_mod.mount_state(c, live, timeout=0.05)
+            time.sleep(0.1)
+        assert calls == [mp], f"one outstanding listdir, got {len(calls)}"
+    finally:
+        release.set()
+
+
+def test_state_recovers_when_a_stuck_listdir_finally_returns(home, rcd,
+                                                             monkeypatch):
+    # Self-healing: nothing needs to notice the network came back.
+    c, mp = _make_mount(home, rcd)
+    monkeypatch.setattr(mounts_mod.sys, "platform", "linux")
+    monkeypatch.setattr(mounts_mod.os.path, "ismount", lambda p: p == mp)
+    monkeypatch.setattr(mounts_mod.lifecycle, "LISTDIR_STUCK_AFTER", 0.3)
+    release, calls = threading.Event(), []
+    _blackhole_listdir(monkeypatch, release, calls)
+    try:
+        live = mounts_mod.mounted_paths()
+        mounts_mod.mount_state(c, live, timeout=0.05)
+        time.sleep(0.35)
+        assert mounts_mod.mount_state(c, live, timeout=0.05) == "disconnected"
+    finally:
+        release.set()
+    # Let the stranded probe thread run its `finally` and release the claim.
+    end = time.monotonic() + 5.0
+    while mounts_mod.lifecycle._LISTDIR_INFLIGHT:
+        assert time.monotonic() < end, "the claim was never released"
+        time.sleep(0.02)
+    monkeypatch.setattr(mounts_mod.os, "listdir", lambda p: [])
+    assert mounts_mod.mount_state(c, mounts_mod.mounted_paths()) == "mounted"
+
+
+def test_state_disconnected_when_the_probe_raises_a_non_oserror(home, rcd,
+                                                                monkeypatch,
+                                                                caplog):
+    """`out["state"] = "mounted"` is COMMITTED before the risky call, so an
+    escape that isn't an OSError used to leave a false healthy behind and die via
+    threading.excepthook — nothing reaching logger, and get_mounts' own
+    `except Exception` being on a different thread entirely. Real shapes: a
+    ValueError on a name with an embedded NUL, a UnicodeDecodeError on a
+    surrogate-hostile FUSE filename, a MemoryError on a pathological listing."""
+    c, mp = _make_mount(home, rcd)
+    monkeypatch.setattr(mounts_mod.sys, "platform", "linux")
+    monkeypatch.setattr(mounts_mod.os.path, "ismount", lambda p: p == mp)
+
+    def boom(p):
+        raise ValueError("embedded null byte")
+
+    monkeypatch.setattr(mounts_mod.os, "listdir", boom)
+    assert mounts_mod.mount_state(c, mounts_mod.mounted_paths()) == "disconnected"
+    assert "embedded null byte" in caplog.text
+
+
+def test_state_disconnected_when_the_fast_checks_themselves_hang(home, rcd,
+                                                                monkeypatch):
+    # The hard wedge: a mount whose backend is gone blocks in the KERNEL, so
+    # even ismount/stat never return and no fast verdict is ever written. That
+    # timeout must still read "disconnected" — the default is what carries it.
+    c, mp = _make_mount(home, rcd)
+    monkeypatch.setattr(mounts_mod.sys, "platform", "linux")
+    ev = threading.Event()
+    monkeypatch.setattr(mounts_mod.os.path, "ismount", lambda p: (ev.wait(5), True)[1])
+    try:
+        state = mounts_mod.mount_state(c, mounts_mod.mounted_paths(), timeout=0.2)
+    finally:
+        ev.set()
     assert state == "disconnected"
 
 

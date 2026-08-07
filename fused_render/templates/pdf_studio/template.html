@@ -92,6 +92,12 @@
   #side h4 .add { margin-left: auto; border: none; background: none; color: var(--ink-3); font-size: 15px;
     line-height: 1; padding: 0 4px; border-radius: 4px; }
   #side h4 .add:hover { background: var(--hair-2); color: var(--blue); }
+  #side h4 .sec-toggle { display: flex; align-items: center; gap: 4px; border: none; background: none;
+    font: inherit; color: inherit; text-transform: inherit; letter-spacing: inherit; cursor: pointer; padding: 0; }
+  #side h4 .sec-toggle:hover { color: var(--ink); }
+  #side h4 .caret { width: 11px; height: 11px; flex: 0 0 auto; transition: transform .15s; }
+  body.recent-off #side h4 .caret { transform: rotate(-90deg); }
+  body.recent-off #docList { display: none; }
 
   .doc-row { display: flex; align-items: center; gap: 7px; width: 100%; border: none; background: none;
     color: var(--ink-2); padding: 5px 6px; border-radius: 5px; font-size: 12.5px; cursor: pointer; position: relative; }
@@ -467,7 +473,7 @@
 <div id="main">
   <div id="side">
     <div>
-      <h4>Documents <button class="add" id="importBtn" title="Add a PDF">＋</button></h4>
+      <h4><button class="sec-toggle" id="recentToggle" title="Show/hide recent"><svg class="caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>Recent</button><button class="add" id="importBtn" title="Add a PDF">＋</button></h4>
       <div id="docList"></div>
     </div>
     <div>
@@ -1127,7 +1133,7 @@ async function openDoc(path) {
     return openDoc(res.path);
   }
   state.doc = info.path; state.work = info.work; state.info = info; state.mtime = info.mtime;
-  state.dirty = !!info.dirty;
+  state.docs = info.docs; state.dirty = !!info.dirty;
   state.curPage = 1; state.spans = {};
   state.undoDepth = info.undo_depth; state.redoDepth = info.redo_depth;
   dropInspect();
@@ -1498,6 +1504,10 @@ const acts = {
   togglePanel: () => {
     document.body.classList.toggle("panel-off");
     fused.params.set("panel", document.body.classList.contains("panel-off") ? "0" : "1");
+  },
+  toggleRecent: () => {
+    document.body.classList.toggle("recent-off");
+    fused.params.set("recent", document.body.classList.contains("recent-off") ? "0" : "1");
   },
   zoomIn: () => setZoom(state.zoom + 15),
   zoomOut: () => setZoom(state.zoom - 15),
@@ -2133,6 +2143,7 @@ function setMode(mode) {
 
 $("exportBtn").addEventListener("click", () => act("export"));
 $("importBtn").addEventListener("click", () => act("addPdf"));
+$("recentToggle").addEventListener("click", () => act("toggleRecent"));
 $("toolsBtn").addEventListener("click", () => act("tools"));
 $("toolsClose").addEventListener("click", () => showTools(false));
 $("inspectBtn").addEventListener("click", insToggle);
@@ -2222,6 +2233,7 @@ async function boot() {
     }
     state.zoom = +(fused.params.get("zoom") || 100) || 100;
     if (fused.params.get("panel") === "0") document.body.classList.add("panel-off");
+    if (fused.params.get("recent") === "0") document.body.classList.add("recent-off");
     await libP;
     setMode(fused.params.get("mode") === "edit" ? "edit" : "view");
     const tab = fused.params.get("itab");

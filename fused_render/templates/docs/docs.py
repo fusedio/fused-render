@@ -39,6 +39,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(HERE), "shared"))
 from procutil import pid_alive as _pid_alive
 
 CACHE_ROOT = os.path.join(os.path.expanduser("~"), ".fused-render", "cache", "docs")
+DOCS_DIR = os.path.join(os.path.expanduser("~"), ".fused-render", "docs")  # user-owned library of docs created from the Home screen
 BIN_DIR = os.path.expanduser(os.path.join("~", ".fused-render", "bin"))
 TYPST_INSTALL_DIR = os.path.join(CACHE_ROOT, "_typst_install")
 TYPST_VERSION = "v0.13.1"
@@ -140,6 +141,44 @@ def _source_fmt(file: str) -> str:
     return ext if ext in SOURCE_EXTS else "docx"
 
 
+def _blank_docx() -> bytes:
+    """A minimal, valid empty .docx built with the stdlib only — so creating a
+    new document never needs pandoc or typst installed."""
+    import io
+    import zipfile
+    ct = ('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+          '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+          '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
+          '<Default Extension="xml" ContentType="application/xml"/>'
+          '<Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>'
+          '</Types>')
+    rels = ('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+            '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>'
+            '</Relationships>')
+    doc = ('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+           '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+           '<w:body><w:p/><w:sectPr/></w:body></w:document>')
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("[Content_Types].xml", ct)
+        z.writestr("_rels/.rels", rels)
+        z.writestr("word/document.xml", doc)
+    return buf.getvalue()
+
+
+def _unique_path(directory: str, stem: str, ext: str) -> str:
+    """A collision-free path for <stem>.<ext> in directory, appending ' 2', ' 3',
+    … the way a desktop 'New document' does."""
+    stem = re.sub(r'[\\/:*?"<>|]+', "", stem).strip() or "Untitled document"
+    cand = os.path.join(directory, f"{stem}.{ext}")
+    n = 2
+    while os.path.exists(cand):
+        cand = os.path.join(directory, f"{stem} {n}.{ext}")
+        n += 1
+    return cand
+
+
 def _editability(file: str):
     """Editability verdict for the reader (SPEC RO-4): fold fs writability into
     editable + readonly_message (badge) + readonly_tooltip (hover)."""
@@ -157,6 +196,30 @@ def _cache_dir(file: str) -> str:
     d = os.path.join(CACHE_ROOT, digest)
     os.makedirs(d, exist_ok=True)
     return d
+
+
+def _resolve_dest(path: str, directory: str) -> str:
+    """Resolve the .docx destination for a Save dialog. `path` is either a bare
+    file name (joined onto `directory`) or a full/absolute path (used verbatim,
+    with any surrounding quotes stripped). Always lands on a .docx under an
+    existing directory."""
+    raw = (path or "").strip().strip('"').strip("'")
+    expanded = os.path.expanduser(raw)
+    if raw and (os.path.isabs(expanded) or re.match(r"^[A-Za-z]:[\\/]", raw)):
+        dest = os.path.abspath(expanded)
+    else:
+        # A bare name is seeded from the free-text document title, so strip only
+        # the characters a filesystem forbids (a title like "Q3: report" would
+        # otherwise be a Windows-invalid path and fail the write). Same rule as
+        # _unique_path — don't touch Unicode or other legal characters.
+        base = re.sub(r'[\\/:*?"<>|]+', "", raw).strip() or "Untitled document"
+        joined = os.path.join(directory, base) if directory else base
+        dest = os.path.abspath(os.path.expanduser(joined))
+    # The writer only produces .docx, so normalize a typed .docx/.odt to .docx
+    # (matches the dialog's "Will save to" preview, which strips both).
+    dest = re.sub(r"\.(docx|odt)$", "", dest, flags=re.IGNORECASE) + ".docx"
+    os.makedirs(os.path.dirname(dest) or ".", exist_ok=True)
+    return dest
 
 
 # -------------------------------------------------------------------- dispatcher
@@ -234,6 +297,28 @@ def main(action: str = "export", file: str = "", html: str = "", title: str = ""
     if action == "typst_install":
         return _typst_install()
 
+    # ---- create a blank document in the local library (no pandoc/typst needed)
+    if action == "new":
+        os.makedirs(DOCS_DIR, exist_ok=True)
+        dest = _unique_path(DOCS_DIR, title or "Untitled document", "docx")
+        with open(dest, "wb") as f:
+            f.write(_blank_docx())
+        return {"path": dest.replace(os.sep, "/"), "name": os.path.basename(dest)}
+
+    # ---- library listing for the Home screen (docs created via "new")
+    if action == "list":
+        os.makedirs(DOCS_DIR, exist_ok=True)
+        docs = []
+        for nm in os.listdir(DOCS_DIR):
+            full = os.path.join(DOCS_DIR, nm)
+            if not os.path.isfile(full) or not nm.lower().endswith((".docx", ".odt")):
+                continue
+            docs.append({"path": full.replace(os.sep, "/"), "name": nm,
+                         "title": nm.rsplit(".", 1)[0],
+                         "mtime": os.path.getmtime(full), "size": os.path.getsize(full)})
+        docs.sort(key=lambda e: -e["mtime"])
+        return {"docs": docs, "dir": DOCS_DIR.replace(os.sep, "/")}
+
     # ---- directory listing for the "Save a copy…" browser
     if action == "listdir":
         base = os.path.abspath(os.path.expanduser(path)) if path else os.path.expanduser("~")
@@ -284,9 +369,13 @@ def main(action: str = "export", file: str = "", html: str = "", title: str = ""
         out = _pandoc(["-f", _source_fmt(file), "-t", "html+tex_math_dollars", "--mathjax",
                        "--track-changes=all", "--embed-resources",
                        "--wrap=none", file])
+        # `library`: the file is an unsaved draft in the New-document library
+        # (~/.fused-render/docs), so the editor prompts for a real location on
+        # the first manual Save instead of writing back into the library.
+        library = os.path.dirname(os.path.abspath(file)) == os.path.abspath(DOCS_DIR)
         return {"html": out.decode("utf-8", "replace"), "mtime": os.path.getmtime(file),
                 "editable": editable, "readonly_message": ro_msg,
-                "readonly_tooltip": ro_tip}
+                "readonly_tooltip": ro_tip, "library": library}
 
     # ---- export/convert: browser sends serialized HTML, we fan out to formats
     if action == "export":
@@ -387,17 +476,35 @@ def main(action: str = "export", file: str = "", html: str = "", title: str = ""
         with open(vpath, encoding="utf-8") as f:
             return {"html": f.read()}
 
+    # ---- first save of a new/untitled draft: write the .docx to the location
+    # the user browsed to and bind to it, then drop the library scratch draft we
+    # were autosaving into (only ever a file directly under DOCS_DIR).
+    if action == "save_new":
+        if not html:
+            raise ValueError("nothing to save")
+        dest = _resolve_dest(path, directory)
+        _pandoc(["-f", HTML_FROM, "-t", "docx", "--wrap=none",
+                 "--standalone", "-o", dest], input_text=html)
+        # Drop the library scratch draft + its sidecar (in the shared sidecar
+        # store, home_dir()/sidecar — not adjacent to the .docx). Never when the
+        # user saved back onto the scratch itself (browsing into DOCS_DIR under
+        # the same name) — that would delete the document we just wrote.
+        saved_onto_scratch = (file and os.path.normcase(os.path.abspath(dest))
+                              == os.path.normcase(os.path.abspath(file)))
+        if (file and not saved_onto_scratch
+                and os.path.dirname(os.path.abspath(file)) == os.path.abspath(DOCS_DIR)):
+            from appenv import sidecar_path
+            for p in (os.path.abspath(file), sidecar_path(file)):
+                with contextlib.suppress(OSError):
+                    os.remove(p)
+        return {"path": dest.replace(os.sep, "/"), "name": os.path.basename(dest),
+                "mtime": os.path.getmtime(dest)}
+
     # ---- "Save a copy…": write a .docx to a location the user browsed to
     if action == "save_as":
         if not html:
             raise ValueError("nothing to save")
-        # os.path.join resolves it: a full path in `path` wins, a bare name joins
-        # onto `directory` — handles absolute/relative and either separator.
-        raw = os.path.join(directory, path) if directory else path
-        dest = os.path.abspath(os.path.expanduser(raw))
-        if not dest.lower().endswith(".docx"):
-            dest += ".docx"
-        os.makedirs(os.path.dirname(dest), exist_ok=True)
+        dest = _resolve_dest(path, directory)
         _pandoc(["-f", HTML_FROM, "-t", "docx", "--wrap=none",
                  "--standalone", "-o", dest], input_text=html)
         return {"path": dest.replace(os.sep, "/"), "name": os.path.basename(dest)}

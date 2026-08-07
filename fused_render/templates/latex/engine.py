@@ -61,7 +61,10 @@ TECTONIC_CACHE = os.path.join(CACHE_ROOT, "tectonic-cache")  # shared package/fo
 BUILDS = os.path.join(CACHE_ROOT, "builds")                  # per-doc aux output, hashed
 EXPORTS = os.path.join(CACHE_ROOT, "exports")                # per-doc pandoc exports, hashed
 INSTALL_DIR = os.path.join(CACHE_ROOT, "_install")           # tectonic download staging
+WARM_DIR = os.path.join(CACHE_ROOT, "_warm")                 # cache-warm worker progress staging
+WARM_MARKER = os.path.join(TECTONIC_CACHE, ".warmed")        # written once the common packages are cached
 BIN_DIR = os.path.expanduser("~/.fused-render/bin")          # user-owned install location
+LIBRARY = os.path.expanduser("~/.fused-render/latex/projects")  # user-owned; one folder per project created from Home
 
 TECTONIC_VERSION = "0.16.9"
 
@@ -127,6 +130,64 @@ def _tectonic_install():
     os.replace(stamp + ".tmp", stamp)
     time.sleep(0.3)
     return _tectonic_status()
+
+
+# ------------------------------------------------------------- cache warm ---
+# A cold compile fetches the packages/fonts a document needs (~30 MB, ~2 min) —
+# far beyond the 60s runPython budget, so it can never finish inside a compile.
+# When that happens we compile the document in a detached worker (no timeout)
+# into its build dir; the page polls warm_status and, when it finishes, a plain
+# recompile serves the produced PDF. `.warmed` records that the cache has been
+# populated once, so a fresh install's first compile skips the doomed inline
+# attempt and defers straight to the background compile.
+def _cache_warm() -> bool:
+    return os.path.exists(WARM_MARKER)
+
+
+def _warm_progress():
+    path = os.path.join(WARM_DIR, "progress.json")
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not data.get("done") and not _pid_alive(data.get("pid", -1)):
+        data["done"] = True
+        data["error"] = data.get("error") or "cache warm exited unexpectedly"
+    return data
+
+
+def _warm_running() -> bool:
+    prog = _warm_progress()
+    return bool(prog and not prog.get("done"))
+
+
+def _ensure_warming(main_path: str):
+    """Spawn the detached worker to compile `main_path` (fetching whatever
+    packages it needs, no timeout) into its build dir, unless one is already
+    running. The worker drops the `.warmed` marker on success."""
+    bin_path = _tectonic_bin()
+    if not bin_path or not main_path or _warm_running():
+        return
+    os.makedirs(WARM_DIR, exist_ok=True)
+    worker = os.path.join(HERE, "warm_worker.py")
+    args = [sys.executable, worker, bin_path, TECTONIC_CACHE, WARM_DIR,
+            os.path.abspath(main_path), _build_dir_for(main_path)]
+    logf = open(os.path.join(WARM_DIR, "worker.log"), "ab")
+    detach_kwargs = (
+        {"creationflags": subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP}
+        if os.name == "nt" else {"start_new_session": True}
+    )
+    child = subprocess.Popen(
+        args, stdout=logf, stderr=logf, stdin=subprocess.DEVNULL, cwd=HERE, **detach_kwargs)
+    logf.close()
+    stamp = os.path.join(WARM_DIR, "progress.json")
+    with open(stamp + ".tmp", "w", encoding="utf-8") as f:
+        json.dump({"stage": "spawn", "detail": "starting package fetch",
+                   "done": False, "error": None, "pid": child.pid}, f)
+    os.replace(stamp + ".tmp", stamp)
 
 
 # ---------------------------------------------------------------- helpers ---
@@ -300,13 +361,20 @@ def _compile(main_path: str, synctex: bool = True, force: bool = False, remote: 
         return {"ok": False, "missing_tectonic": True, "errors": [],
                 "error": "Tectonic isn't installed — install it to compile."}
     os.makedirs(TECTONIC_CACHE, exist_ok=True)
+    # Fresh install (nothing cached yet): the fetch can't fit the compile budget,
+    # so skip the doomed inline attempt and compile in the background instead.
+    if not _cache_warm():
+        _ensure_warming(main_path)
+        return {"ok": False, "warming": True, "progress": _warm_progress(), "errors": [],
+                "error": "Preparing the LaTeX packages (one-time, ~1–2 min). "
+                         "Your document compiles automatically when they're ready."}
     build = _build_dir_for(main_path)
+    stem = os.path.splitext(os.path.basename(main_path))[0]
+    pdf = os.path.join(build, stem + ".pdf")
     # A compile costs ~10s (tectonic runs several passes), so skip it when the
     # last PDF is newer than every file under the doc's directory — page
     # reloads become instant. `force` (the Recompile button) always runs it.
     if not force:
-        stem = os.path.splitext(os.path.basename(main_path))[0]
-        pdf = os.path.join(build, stem + ".pdf")
         if os.path.exists(pdf):
             # Never os.walk a mount-backed project dir (unbounded S3 enumeration
             # can drop the mount). Remote -> treat mtimes as unknown and compile.
@@ -327,6 +395,13 @@ def _compile(main_path: str, synctex: bool = True, force: bool = False, remote: 
     if synctex:
         cmd.append("--synctex")
     cmd.append(main_path)
+    # Drop any PDF from a previous compile first: Tectonic keeps the old PDF when
+    # a run fails, so its mere presence can't be read as this run having produced
+    # one — a crash must not leave a stale PDF looking current.
+    try:
+        os.remove(pdf)
+    except OSError:
+        pass
     t0 = time.time()
     try:
         # cwd = the .tex file's own directory, so relative \input/\includegraphics
@@ -337,28 +412,51 @@ def _compile(main_path: str, synctex: bool = True, force: bool = False, remote: 
                            cwd=os.path.dirname(main_path), timeout=28,
                            creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
     except subprocess.TimeoutExpired:
-        return {"ok": False, "error": "compile exceeded 28s (too complex, or a "
-                "cold package fetch) — simplify, or recompile once the fetch "
-                "has warmed the cache", "errors": [], "seconds": round(time.time() - t0, 2)}
+        # Didn't fit the budget — almost always a cold fetch of this document's
+        # packages. Compile it in the background (no timeout) so the cache warms
+        # and the PDF lands in the build dir; the page polls and serves it.
+        _ensure_warming(main_path)
+        return {"ok": False, "warming": True, "progress": _warm_progress(), "errors": [],
+                "error": "Fetching the LaTeX packages this document needs (one-time). "
+                         "It compiles automatically when they're ready."}
     seconds = round(time.time() - t0, 2)
-    stem = os.path.splitext(os.path.basename(main_path))[0]
-    pdf = os.path.join(build, stem + ".pdf")
     logf = os.path.join(build, stem + ".log")
     diags = _dedup(_parse_tectonic_stderr(p.stderr) + _parse_tex_log(logf))
     # A missing cached package is the one error worth phrasing helpfully.
     for d in diags:
         if "not found" in d["message"] and (".sty" in d["message"] or ".cls" in d["message"]):
             d["message"] += "  (package unavailable — offline, or not in the TeX repo)"
-    ok = os.path.exists(pdf) and p.returncode == 0
-    log_tail = "\n".join((p.stderr or "").splitlines()[-40:])
-    return {
-        "ok": ok,
-        "pdf": pdf if os.path.exists(pdf) else "",
+    # A viewable result is one where a PDF was produced and nothing error-level
+    # was reported. Tectonic's exit code isn't part of this: a warnings-only run
+    # can still exit non-zero yet write a perfectly good PDF, and the stale PDF is
+    # already gone (removed above), so a present PDF is this run's.
+    pdf_exists = os.path.exists(pdf)
+    has_error = any(d.get("severity") == "error" for d in diags)
+    # Tectonic prints its "note:" progress to stdout and errors to stderr —
+    # include both so the tail is actually useful (a crash often leaves only a
+    # stdout "note: Running TeX ..." with an empty stderr).
+    combined = "\n".join(x for x in (p.stdout, p.stderr) if x).strip()
+    log_tail = "\n".join(combined.splitlines()[-40:])
+    result = {
+        "ok": pdf_exists and not has_error,
+        "pdf": pdf if pdf_exists else "",
         "synctex": os.path.join(build, stem + ".synctex.gz"),
         "log_tail": log_tail,
         "errors": diags,
         "seconds": seconds,
     }
+    # A failure Tectonic didn't explain — no PDF and no parseable diagnostics
+    # (e.g. it crashed before writing the .log) — would otherwise surface as a
+    # blank "? errors" with an empty Problems list. Give the user the exit code
+    # and output tail so it's actionable. Only when there's genuinely no PDF:
+    # a run that produced one is served above, warnings and all.
+    if not pdf_exists and not has_error:
+        detail = f":\n{log_tail}" if log_tail else "."
+        result["error"] = (
+            f"Tectonic exited with code {p.returncode} and produced no PDF{detail}\n\n"
+            "The document may use a package or font Tectonic can't build, or the "
+            "compiler crashed on this input.")
+    return result
 
 
 # ---------------------------------------------------------------- source index
@@ -590,15 +688,193 @@ def _synctex_forward(synctex_gz: str, target_file: str, line: int):
             "hits": len(hits)}
 
 
+# ----------------------------------------------------------------- projects ---
+# Home-screen projects: a scaffold is pure file-writing, so a new blank document
+# succeeds even when tectonic isn't installed (compilation then fails gracefully
+# through the usual missing-tectonic path). Projects live under LIBRARY
+# (~/.fused-render/latex/projects), one folder each with a main.tex + meta.json.
+PROJECT_TEMPLATES = {
+    "article": r"""\documentclass[11pt]{article}
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage[margin=1in]{geometry}
+\usepackage{graphicx}
+\usepackage[colorlinks=true,linkcolor=blue,citecolor=teal,urlcolor=magenta]{hyperref}
+\usepackage{booktabs}
+
+\title{__TITLE__}
+\author{Your Name}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+A short abstract. Edit on the left, the PDF recompiles on the right.
+\end{abstract}
+
+\section{Introduction}\label{sec:intro}
+Hello, \LaTeX! Inline math like $E = mc^2$ and display math:
+\begin{equation}\label{eq:euler}
+  e^{i\pi} + 1 = 0.
+\end{equation}
+See Section~\ref{sec:intro} and Equation~\eqref{eq:euler}.
+
+\section{Method}
+\begin{itemize}
+  \item First point.
+  \item Second point.
+\end{itemize}
+
+\end{document}
+""",
+    "report": r"""\documentclass[11pt]{report}
+\usepackage{amsmath,amssymb}
+\usepackage[margin=1in]{geometry}
+\usepackage{graphicx}
+\usepackage[colorlinks=true]{hyperref}
+\title{__TITLE__}
+\author{Your Name}
+\date{\today}
+\begin{document}
+\maketitle
+\tableofcontents
+\chapter{Introduction}\label{ch:intro}
+Text of the first chapter.
+\chapter{Background}
+More text.
+\end{document}
+""",
+    "beamer": r"""\documentclass{beamer}
+\usetheme{Madrid}
+\usepackage{amsmath}
+\title{__TITLE__}
+\author{Your Name}
+\date{\today}
+\begin{document}
+\frame{\titlepage}
+\begin{frame}{Overview}
+  \begin{itemize}
+    \item A point.
+    \item Another point with math: $\sum_{i=1}^n i = \frac{n(n+1)}{2}$.
+  \end{itemize}
+\end{frame}
+\end{document}
+""",
+    "letter": r"""\documentclass{letter}
+\usepackage[margin=1in]{geometry}
+\signature{Your Name}
+\address{Your Street \\ Your City}
+\begin{document}
+\begin{letter}{Recipient \\ Their Address}
+\opening{Dear Recipient,}
+Body of the letter.
+\closing{Sincerely,}
+\end{letter}
+\end{document}
+""",
+}
+
+
+def _fwd(p):
+    return p.replace(os.sep, "/")
+
+
+def _safe_slug(s):
+    slug = re.sub(r"[^A-Za-z0-9_-]", "-", (s or "").strip())[:64].strip("-")
+    return slug or "untitled"
+
+
+def _project_dir(slug):
+    return os.path.join(LIBRARY, _safe_slug(slug))
+
+
+def _project_meta(d):
+    mp = os.path.join(d, "meta.json")
+    if os.path.exists(mp):
+        try:
+            with open(mp, encoding="utf-8") as f:
+                return json.load(f)
+        except (OSError, json.JSONDecodeError):
+            pass
+    return {}
+
+
+def _list_projects():
+    os.makedirs(LIBRARY, exist_ok=True)
+    out = []
+    for name in sorted(os.listdir(LIBRARY)):
+        d = os.path.join(LIBRARY, name)
+        if not os.path.isdir(d):
+            continue
+        meta = _project_meta(d)
+        main_rel = meta.get("main", "main.tex")
+        mainp = os.path.join(d, main_rel)
+        out.append({"slug": name, "title": meta.get("title", name),
+                    "main": main_rel,
+                    "main_path": _fwd(mainp) if os.path.exists(mainp) else "",
+                    "mtime": os.path.getmtime(mainp) if os.path.exists(mainp)
+                    else os.path.getmtime(d)})
+    out.sort(key=lambda e: -(e["mtime"] or 0))
+    return out
+
+
+def _new_project(title, template):
+    os.makedirs(LIBRARY, exist_ok=True)
+    # Build a unique dir directly under LIBRARY. The suffix is applied to a base
+    # trimmed to leave room for it, so a title that already fills the 64-char
+    # slug budget can't collapse back onto the existing dir and spin forever.
+    base = _safe_slug(title or "untitled")
+    slug = base
+    n = 2
+    while os.path.exists(os.path.join(LIBRARY, slug)):
+        suffix = f"-{n}"
+        slug = base[: 64 - len(suffix)].rstrip("-") + suffix
+        n += 1
+    d = os.path.join(LIBRARY, slug)
+    os.makedirs(d, exist_ok=True)
+    body = PROJECT_TEMPLATES.get(template, PROJECT_TEMPLATES["article"]).replace(
+        "__TITLE__", (title or slug).replace("{", "").replace("}", ""))
+    with open(os.path.join(d, "main.tex"), "w", encoding="utf-8") as f:
+        f.write(body)
+    with open(os.path.join(d, "meta.json"), "w", encoding="utf-8") as f:
+        json.dump({"title": title or slug, "main": "main.tex",
+                   "created": time.time(), "template": template}, f)
+    return {"slug": slug, "title": title or slug, "main": "main.tex",
+            "main_path": _fwd(os.path.join(d, "main.tex"))}
+
+
 # -------------------------------------------------------------------- dispatcher
 def main(action: str = "tectonic_status", path: str = "", target: str = "",
          line: int = 0, synctex: bool = True, name: str = "", force: int = 0,
-         src: str = ""):
+         src: str = "", title: str = "", slug: str = "", template: str = ""):
     if action == "tectonic_status":
         return _tectonic_status()
 
+    if action == "warm_status":
+        return {"warm": _cache_warm(), "progress": _warm_progress()}
+
     if action == "tectonic_install":
         return _tectonic_install()
+
+    if action == "list_projects":
+        return {"projects": _list_projects(), "dir": _fwd(LIBRARY)}
+
+    if action == "new_project":
+        return _new_project(title, template or "article")
+
+    if action == "open_project":
+        d = _project_dir(slug)
+        if not os.path.isdir(d):
+            return {"error": "no such project"}
+        meta = _project_meta(d)
+        main_rel = meta.get("main", "main.tex")
+        mainp = os.path.join(d, main_rel)
+        if not os.path.exists(mainp):
+            return {"error": "project has no main file"}
+        return {"slug": slug, "title": meta.get("title", slug), "main": main_rel,
+                "main_path": _fwd(mainp)}
 
     if action == "browse":
         # List one directory for the file-browser modal. `path` = dir to show

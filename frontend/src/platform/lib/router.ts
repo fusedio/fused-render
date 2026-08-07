@@ -130,11 +130,20 @@ export function navigate(fsPath: string, opts?: { isDir?: boolean; mode?: string
   // always hosts one, so carrying it there would shadow a user template's own
   // `preview` param. Going back (history) or re-entering a folder restores the
   // pane from that entry's URL / the folder's viewstate instead.
-  const preview = new URLSearchParams(location.search).get("preview");
+  const current = new URLSearchParams(location.search);
+  const preview = current.get("preview");
   const parts: string[] = [];
-  if (opts?.isDir === true && preview !== null) parts.push("preview=" + encodeURIComponent(preview));
+  if (opts?.isDir === true && preview !== null) {
+    parts.push("preview=" + encodeURIComponent(preview));
+    // The pane's chosen mode (`_panelMode`) travels with the pane itself: a
+    // folder hop with the pane open keeps previewing in the same mode.
+    // Reserved (`_`-prefixed) name, so no template-param shadowing concern.
+    const panelMode = current.get("_panelMode");
+    if (panelMode !== null) parts.push("_panelMode=" + encodeURIComponent(panelMode));
+  }
   // `opts.mode` picks the destination's template mode (`_mode`) — how the app
-  // cards open a project folder straight into the claude_split split view.
+  // cards open a project folder straight into the plain app view (appEntry's
+  // APP_OPEN_MODE) instead of the folder's file listing.
   if (opts?.mode) parts.push("_mode=" + encodeURIComponent(opts.mode));
   const search = parts.length ? "?" + parts.join("&") : "";
   // `opts.isDir` is a nav hint (the clicked listing row / breadcrumb already

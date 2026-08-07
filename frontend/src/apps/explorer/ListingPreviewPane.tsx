@@ -1,19 +1,24 @@
 // Right-hand preview pane for the directory listing (views/Listing.tsx) —
 // selection-driven: previews the listing's lead row when exactly one row is
-// selected, and shows a neutral placeholder otherwise. Ported from the old
-// `preview` directory template so the pane reuses the app's own template
-// pipeline: a file is stat'ed to discover its default template and embedded
-// as the normal /render iframe; a folder shows its lone HTML "app" rendered
-// in place, or a read-only mini list of its children. Wire-up state (pane
-// visibility, width, the divider drag) stays in Listing — this component only
-// owns what the pane shows for a given selection.
+// selected, and shows a neutral placeholder otherwise. Reuses the app's own
+// template pipeline for FILES AND FOLDERS alike: the selection is stat'ed to
+// discover its template modes and the default embeds as the normal /render
+// iframe. A folder's `_listing` mode mounts the real shell Listing component
+// (embedded — no URL writes, no nested pane, no global keyboard); a folder
+// with a lone top-level HTML "app" additionally offers the pane-only `_app`
+// mode that renders that app in place. The header carries a mode menu so the
+// previewed mode can be switched (pane-local, transient — it never touches
+// the URL or saved viewstate). Wire-up state (pane visibility, width, the
+// divider drag) stays in Listing — this component only owns what the pane
+// shows for a given selection.
 import { useEffect, useState } from "react";
 import { listDir, resolveConditions, statPath } from "@platform/lib/api";
-import type { FsEntry, TemplateEntry } from "@platform/lib/api";
-import { navigate, VIEW_PREFIX } from "@platform/lib/router";
+import type { TemplateEntry } from "@platform/lib/api";
+import { navigate, replaceSearch } from "@platform/lib/router";
 import { formatSize } from "@platform/lib/format";
 import { iconForEntry, isAppEntry } from "@platform/ui/FileIcons";
-import { KNOWN_SENTINEL_MODES } from "@apps/explorer/ModeSwitcher";
+import ModeSwitcher, { KNOWN_SENTINEL_MODES, templateModeIcon } from "@apps/explorer/ModeSwitcher";
+import Listing from "@apps/explorer/Listing";
 
 // The selected row, as the pane needs it. Structurally a subset of Listing's
 // RowCtx, so the lead row can be passed straight through.
@@ -21,51 +26,61 @@ export interface PaneTarget {
   path: string;
   name: string;
   isDir: boolean;
+  // True when the target is the listing's OWN folder (nothing selected): the
+  // same mode logic runs, except `_listing` is never offered — that listing
+  // is already on the left side of the split.
+  self?: boolean;
 }
 
-// A folder child with its absolute path attached (listDir returns bare names).
-interface PaneChild extends FsEntry {
+// The pane-only sentinel for a folder's lone HTML app rendered in place. Not
+// a registry mode — it exists only in this menu, so the constant is local.
+const APP_MODE = "_app";
+
+// Monochrome switcher icon for the `_app` mode — currentColor like the other
+// mode icons, so it takes the switcher's muted/active tinting instead of the
+// colored file icon (which read as an odd yellow button in the strip).
+const APP_MODE_ICON = (
+  <svg
+    viewBox="0 0 24 24"
+    width="16"
+    height="16"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="2"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+  >
+    <rect x="3" y="3" width="18" height="18" rx="3" />
+    <path d="M10 8.5l6 3.5-6 3.5z" />
+  </svg>
+);
+
+// The stat'ed template picture for the selected row. `conditions` is null
+// while gated entries are still resolving (CT-12 deferred verdicts).
+interface PaneInfo {
+  templates: TemplateEntry[];
+  conditions: Record<string, boolean> | null;
+  size: number | null;
+  remote: boolean;
+}
+
+type InfoState =
+  | { status: "loading" }
+  | { status: "error"; message: string }
+  | ({ status: "ok" } & PaneInfo);
+
+// Lone-app detection for a folder: null while loading or when the folder has
+// no single unambiguous app (a truncated listing never proves uniqueness).
+interface AppTarget {
+  name: string;
   path: string;
 }
 
-// What the pane is currently showing for the selected row. Every async
-// resolution (stat for a file, listDir for a folder) lands in exactly one of
-// these; the loading skeleton covers the gap.
-type PaneState =
-  | { status: "loading" }
-  // A file with a bound template, or a folder's lone HTML app: an embedded
-  // /render iframe. The app case also carries a slim header (name + Open app).
-  | { status: "frame"; src: string; app: PaneChild | null }
-  // A file with no bound template: metadata card (icon, name, size, Open).
-  | { status: "meta"; size: number | null }
-  // A folder without a single app: its children, read-only.
-  | { status: "children"; children: PaneChild[]; truncated: boolean }
-  | { status: "error"; message: string };
-
-// Always the plain /view/ route, never /embed/ — an embed URL is meant to be
-// framed by a host page, so it would be the wrong thing to land in a fresh
-// tab. Same drive-letter normalization as lib/router's urlForFsPath.
-function viewUrlFor(fsPath: string): string {
-  const norm = /^[A-Za-z]:[\\/]/.test(fsPath) ? fsPath.replace(/\\/g, "/") : fsPath;
-  const encoded = norm
-    .replace(/^\/+/, "")
-    .split("/")
-    .filter((s) => s.length > 0)
-    .map(encodeURIComponent)
-    .join("/");
-  return VIEW_PREFIX + encoded;
-}
-
-// Mini-list order: dot-entries last, dirs first within each, then name asc —
-// the pane is a glance, not a sortable table, so the order is fixed.
-function sortChildren(children: PaneChild[]): PaneChild[] {
-  return [...children].sort((a, b) => {
-    const aDot = a.name.startsWith(".");
-    const bDot = b.name.startsWith(".");
-    if (aDot !== bDot) return aDot ? 1 : -1;
-    if (a.is_dir !== b.is_dir) return a.is_dir ? -1 : 1;
-    return a.name.localeCompare(b.name, undefined, { sensitivity: "base" });
-  });
+// One entry of the pane's mode switcher (template modes + pane sentinels) —
+// the shape ModeSwitcher takes.
+interface PaneMode {
+  mode: string;
+  icon: React.ReactNode;
 }
 
 export default function ListingPreviewPane({
@@ -77,95 +92,89 @@ export default function ListingPreviewPane({
   // Total selected rows, for the multi-selection placeholder.
   selCount: number;
 }) {
-  const [state, setState] = useState<PaneState>({ status: "loading" });
+  const [info, setInfo] = useState<InfoState>({ status: "loading" });
+  // Lone-app probe result for a folder: undefined = still loading, null =
+  // no unambiguous app. Only drives the `_app` menu entry, never a default.
+  const [app, setApp] = useState<AppTarget | null | undefined>(undefined);
+  // Mode override from the mode menu, synced to the URL as `_panelMode` so
+  // the chosen pane mode SURVIVES selection switches: the component is keyed
+  // on the previewed path (Listing) and remounts per selection, but each
+  // mount re-seeds from the URL. A selection that doesn't offer the mode
+  // falls back to its default (activeMode below) while the param stays put —
+  // the next selection that does offer it picks it up again.
+  const [modeOverride, setModeOverride] = useState<string | null>(
+    () => new URLSearchParams(location.search).get("_panelMode")
+  );
+  const selectMode = (m: string) => {
+    setModeOverride(m);
+    const params = new URLSearchParams(location.search);
+    params.set("_panelMode", m);
+    replaceSearch(location.pathname + "?" + params.toString());
+  };
 
-  // Resolve what the selected row previews as. The cleanup flag is the
+  // Stat the selection — files and folders alike carry a template mode list
+  // (folders at minimum the `_listing` sentinel). The cleanup flag is the
   // superseded-click guard: a stale async result for a row that's no longer
-  // selected must not render (the effect for the NEW row has already reset
-  // state to loading).
+  // selected must not render.
   const path = row?.path;
   const isDir = row?.isDir;
   useEffect(() => {
     if (!path) return;
     let alive = true;
-    setState({ status: "loading" });
-    if (isDir) {
-      listDir(path).then(
-        (data) => {
-          if (!alive) return;
-          const dir = (data.path || path).replace(/\/+$/, "");
-          const children = data.entries.map((e) => ({ ...e, path: dir + "/" + e.name }));
-          // A truncated listing is only a partial page (server cap), so a lone
-          // HTML match in it doesn't prove it is the folder's ONLY one — fall
-          // through to the child list rather than render a maybe-wrong app
-          // (mirrors Listing's onSingleApp guard).
-          const apps = children.filter((e) => isAppEntry(e.name, e.is_dir));
-          if (!data.truncated && apps.length === 1) {
-            const app = apps[0];
-            setState({
-              status: "frame",
-              src: `/render?path=${encodeURIComponent(app.path)}`,
-              app,
-            });
-          } else {
-            setState({ status: "children", children: sortChildren(children), truncated: !!data.truncated });
-          }
-        },
-        (err: Error) => alive && setState({ status: "error", message: err.message })
-      );
-    } else {
-      statPath(path).then(
-        (st) => {
-          if (!alive) return;
-          const show = (t: TemplateEntry) => {
-            const remote = st.remote ? "&_remote=1" : "";
-            const src =
-              t.mode === "_render"
-                ? `/render?path=${encodeURIComponent(path)}`
-                : `/render?path=${encodeURIComponent(t.path as string)}&_file=${encodeURIComponent(path)}${remote}`;
-            setState({ status: "frame", src, app: null });
-          };
-          // Same defensive filter as Preview (SPEC PT-12): an entry with
-          // path===null whose mode isn't a recognized sentinel would build a
-          // `path=null` render URL, so drop it before choosing.
-          const templates = st.templates.filter(
-            (e) => e.path !== null || KNOWN_SENTINEL_MODES.has(e.mode)
-          );
-          // "_listing" mounts the shell's Listing component full-screen
-          // (Preview.tsx), not an iframe — the pane has no slot for that, so
-          // a registry bind putting "_listing" on a file (rare, but legal)
-          // must not fall into `show()` and build a `path=null` render URL.
-          // Skip it here; the pane still tries the file's other templates.
-          const embeddable = templates.filter((e) => e.mode !== "_listing");
-          // Same default-mode rule as Preview (CT-12): the first UNCONDITIONAL
-          // entry, which renders without waiting on any gate.
-          const t = embeddable.find((e) => !e.conditional);
-          if (t) {
-            show(t);
-            return;
-          }
-          // No unconditional entry. An ALL-conditional list still previews
-          // full-screen (Preview.defaultTemplate falls back to templates[0]
-          // once verdicts land), so the pane must not claim "no preview" —
-          // resolve the gates and show the first allowed one. Fail closed on
-          // an empty list or a broken gate: metadata card.
-          if (embeddable.length === 0) {
-            setState({ status: "meta", size: st.size });
-            return;
-          }
-          resolveConditions(path).then(
-            (r) => {
-              if (!alive) return;
-              const allowed = embeddable.find((e) => r.conditions[e.mode] === true);
-              if (allowed) show(allowed);
-              else setState({ status: "meta", size: st.size });
-            },
-            () => alive && setState({ status: "meta", size: st.size })
-          );
-        },
-        (err: Error) => alive && setState({ status: "error", message: err.message })
-      );
-    }
+    setInfo({ status: "loading" });
+    statPath(path).then(
+      (st) => {
+        if (!alive) return;
+        // Same defensive filter as Preview (SPEC PT-12): an entry with
+        // path===null whose mode isn't a recognized sentinel would build a
+        // `path=null` render URL, so drop it before choosing.
+        const templates = st.templates.filter(
+          (e) => e.path !== null || KNOWN_SENTINEL_MODES.has(e.mode)
+        );
+        const base: InfoState = {
+          status: "ok",
+          templates,
+          conditions: templates.some((e) => e.conditional) ? null : {},
+          size: st.size,
+          remote: !!st.remote,
+        };
+        setInfo(base);
+        if (base.conditions !== null) return;
+        resolveConditions(path).then(
+          (r) => alive && setInfo({ ...base, conditions: r.conditions }),
+          // Fail closed, like a broken gate: every gated entry reads denied.
+          () => alive && setInfo({ ...base, conditions: {} })
+        );
+      },
+      (err: Error) => alive && setInfo({ status: "error", message: err.message })
+    );
+    return () => {
+      alive = false;
+    };
+  }, [path]);
+
+  // Folder lone-app probe, for the `_app` mode. A truncated listing is only a
+  // partial page (server cap), so a lone HTML match in it doesn't prove it is
+  // the folder's ONLY one — offer no `_app` mode then (mirrors Listing's
+  // onSingleApp guard). Errors also just drop the mode; the embedded Listing
+  // surfaces the folder's real error itself.
+  useEffect(() => {
+    if (!path || !isDir) return;
+    let alive = true;
+    setApp(undefined);
+    listDir(path).then(
+      (data) => {
+        if (!alive) return;
+        const dir = (data.path || path).replace(/\/+$/, "");
+        const apps = data.entries.filter((e) => isAppEntry(e.name, e.is_dir));
+        setApp(
+          !data.truncated && apps.length === 1
+            ? { name: apps[0].name, path: dir + "/" + apps[0].name }
+            : null
+        );
+      },
+      () => alive && setApp(null)
+    );
     return () => {
       alive = false;
     };
@@ -184,102 +193,174 @@ export default function ListingPreviewPane({
     );
   }
 
-  let body: React.ReactNode;
-  if (state.status === "loading") {
-    body = <div className="pane-skel" />;
-  } else if (state.status === "error") {
-    body = (
-      <div className="pane-center">
-        <div className="status-message error">{state.message}</div>
+  if (info.status === "loading") {
+    return (
+      <div className="listing-pane">
+        <div className="pane-skel" />
       </div>
     );
-  } else if (state.status === "frame") {
+  }
+  if (info.status === "error") {
+    return (
+      <div className="listing-pane">
+        <div className="pane-center">
+          <div className="status-message error">{info.message}</div>
+        </div>
+      </div>
+    );
+  }
+
+  // --- the pane's mode list ---------------------------------------------------
+
+  // Mode order = pane priority. The special `_app` mode leads when a lone
+  // app exists; after it the template system's own order stands untouched —
+  // `_listing` stays exactly where the registry ranks it (typically ahead of
+  // claude/git), rendered as the embedded Listing rather than an iframe. On a
+  // FILE a `_listing` bind (rare registry rebind) is dropped entirely: the
+  // pane has no slot for a full listing of a file. Same for a SELF target's
+  // `_listing` — that listing is already on the left.
+  const allowed = (e: TemplateEntry) =>
+    !e.conditional || (info.conditions !== null && info.conditions[e.mode] === true);
+  const embeddable = info.templates.filter((e) => e.mode !== "_listing" && allowed(e));
+
+  const modes: PaneMode[] = [];
+  if (row.isDir && app) modes.push({ mode: APP_MODE, icon: APP_MODE_ICON });
+  for (const e of info.templates) {
+    if (e.mode === "_listing") {
+      if (row.isDir && !row.self) modes.push({ mode: "_listing", icon: templateModeIcon(e) });
+      continue;
+    }
+    if (allowed(e)) modes.push({ mode: e.mode, icon: templateModeIcon(e) });
+  }
+
+  // While the mode list is still undecided, hold the skeleton — the pane must
+  // never settle on an interim mode and then jump. Undecided means: the
+  // folder's app probe is in flight (`_app` would lead the list), or any
+  // gated template's verdict is unresolved (a higher-ranked conditional mode
+  // may still enter the list — and for a self target, an all-conditional
+  // list must not flash the "no preview" hint while a gate may yet allow).
+  // This holds even with a `_panelMode` override seeded from the URL: the
+  // override's mode may itself still be absent from the interim list (a gated
+  // entry), so rendering before the list settles could show the default and
+  // then jump. Both signals resolve exactly once per mount (the component is
+  // keyed on the previewed path), and a user's switcher click can only happen
+  // after they resolve, so this never re-shows the skeleton post-settle.
+  const gatesPending =
+    info.conditions === null &&
+    info.templates.some((e) => e.conditional && e.mode !== "_listing");
+  if (gatesPending || (row.isDir && app === undefined)) {
+    return (
+      <div className="listing-pane">
+        <div className="pane-skel" />
+      </div>
+    );
+  }
+  // A self target with nothing to show (no app, no template) gets the
+  // neutral hint — never its own listing, which is already on the left.
+  if (row.self && modes.length === 0) {
+    return (
+      <div className="listing-pane">
+        <div className="pane-center">
+          <div className="pane-hint">Select a file to preview.</div>
+        </div>
+      </div>
+    );
+  }
+  // Default = the first mode in pane priority order; the menu override wins
+  // while it's still offered.
+  const activeMode =
+    modeOverride !== null && modes.some((m) => m.mode === modeOverride)
+      ? modeOverride
+      : (modes[0]?.mode ?? null);
+  const activeEntry = embeddable.find((e) => e.mode === activeMode) ?? null;
+
+  // Header: name + mode menu + Open. Shown for every mode except the file
+  // metadata card, which carries its own big-icon layout instead.
+  const header = (
+    <div className="pane-header">
+      <span className="pane-header-icon">{iconForEntry(row.name, row.isDir)}</span>
+      <span className="pane-header-name" title={row.name}>
+        {row.name}
+      </span>
+      {/* Horizontal icon strip, same look as the shell preview header (PT-10):
+          every available mode side by side, active one highlighted. */}
+      <ModeSwitcher entries={modes} active={activeMode ?? ""} onSelect={selectMode} />
+      {/* One label for every mode. Self target: "Open" would navigate to the
+          folder already open, so it hides. */}
+      {!row.self && (
+        <button
+          type="button"
+          className="pane-header-btn"
+          onClick={() => navigate(row.path, { isDir: row.isDir })}
+        >
+          Open
+        </button>
+      )}
+    </div>
+  );
+
+  // The /render embed URL for a chosen template entry. "_render" renders the
+  // file itself (PT-12); a template mode renders the template against _file.
+  const srcFor = (t: TemplateEntry): string => {
+    if (t.mode === "_render") return `/render?path=${encodeURIComponent(row.path)}`;
+    const remote = info.remote ? "&_remote=1" : "";
+    return `/render?path=${encodeURIComponent(t.path as string)}&_file=${encodeURIComponent(row.path)}${remote}`;
+  };
+
+  let body: React.ReactNode;
+  if (activeEntry) {
+    // Keyed on mode so switching modes replaces the iframe outright — never
+    // reuse a live frame across different templates.
     body = (
       <>
-        {state.app && (
-          <div className="pane-header">
-            <span className="pane-header-icon">{iconForEntry(state.app.name, false)}</span>
-            <span className="pane-header-name" title={state.app.name}>
-              {state.app.name}
-            </span>
-            <button
-              type="button"
-              className="pane-header-btn"
-              onClick={() => window.open(viewUrlFor(state.app!.path), "_blank", "noopener")}
-            >
-              Open app
-            </button>
-          </div>
-        )}
-        <iframe className="pane-frame" src={state.src} title={row.name} />
+        {header}
+        <iframe
+          key={activeEntry.mode}
+          className="pane-frame"
+          src={srcFor(activeEntry)}
+          title={row.name}
+        />
       </>
     );
-  } else if (state.status === "meta") {
+  } else if (activeMode === APP_MODE && app) {
+    body = (
+      <>
+        {header}
+        <iframe
+          key={APP_MODE}
+          className="pane-frame"
+          src={`/render?path=${encodeURIComponent(app.path)}`}
+          title={app.name}
+        />
+      </>
+    );
+  } else if (activeMode === "_listing" && row.isDir) {
+    // The real shell Listing, embedded: full sorting/search/selection UI, but
+    // URL-silent, paneless and without document-level keyboard (see Listing's
+    // `embedded` prop).
+    body = (
+      <>
+        {header}
+        <Listing key={row.path} fsPath={row.path} embedded />
+      </>
+    );
+  } else {
+    // No embeddable template for a file: metadata card (icon, name, size, Open).
     body = (
       <div className="pane-center">
         <div className="pane-big-icon">{iconForEntry(row.name, false)}</div>
         <div className="pane-title">{row.name}</div>
         <div className="pane-hint">
-          No preview for this file type{state.size !== null ? ` — ${formatSize(state.size)}` : ""}.
+          No preview for this file type{info.size !== null ? ` — ${formatSize(info.size)}` : ""}.
         </div>
-        <button type="button" className="pane-open-btn" onClick={() => navigate(row.path, { isDir: false })}>
+        <button
+          type="button"
+          className="pane-open-btn"
+          onClick={() => navigate(row.path, { isDir: false })}
+        >
           Open
         </button>
       </div>
-    );
-  } else {
-    // Folder children. Clicking a child navigates the shell to it — the user
-    // is already one level in, so a click here means "go there".
-    body = (
-      <>
-        <div className="pane-header">
-          <span className="pane-header-icon">{iconForEntry(row.name, true)}</span>
-          <span className="pane-header-name" title={row.name}>
-            {row.name}
-          </span>
-          <button
-            type="button"
-            className="pane-header-btn"
-            onClick={() => navigate(row.path, { isDir: true })}
-          >
-            Open folder
-          </button>
-        </div>
-        <div className="pane-mini-scroll">
-          <table className="pane-mini-list">
-            <tbody>
-              {state.children.length === 0 ? (
-                <tr>
-                  <td colSpan={2} className="status-message">
-                    Empty folder
-                  </td>
-                </tr>
-              ) : (
-                state.children.map((c) => (
-                  <tr
-                    key={c.name}
-                    className={c.ignored ? "row ignored" : "row"}
-                    onClick={() => navigate(c.path, { isDir: c.is_dir })}
-                  >
-                    <td className="name">
-                      <span className="icon">{iconForEntry(c.name, c.is_dir)}</span>
-                      <span className="label">{c.name}</span>
-                    </td>
-                    <td className="size">{c.is_dir ? "" : formatSize(c.size)}</td>
-                  </tr>
-                ))
-              )}
-              {state.truncated && (
-                <tr>
-                  <td colSpan={2} className="status-message">
-                    Showing first {state.children.length} entries — folder listing is partial.
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
-        </div>
-      </>
     );
   }
 

@@ -88,7 +88,7 @@ def _classify(w, h, raw_head, img):
         return abs(a - b) <= b * tol
 
     if close(ratio, 2.0):
-        reasons.append(f"aspect ratio {ratio:.3f} ≈ 2:1 (full equirectangular)")
+        reasons.append(f"aspect ratio {ratio:.3f} ~= 2:1 (full equirectangular)")
         return "equirect", True, reasons
     if close(ratio, 6.0):
         reasons.append("aspect ratio 6:1 (horizontal cube strip)")
