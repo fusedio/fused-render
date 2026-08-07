@@ -73,7 +73,20 @@ _APP_STARTER_DIR = os.path.join(
 
 @router.get("/api/apps")
 def api_apps():
-    apps = app_listing.two_level_apps(fused_dir()) + linked_apps.linked_apps()
+    # "linked" is the registry's reserved tag, but nothing stops a user from
+    # creating a real <workspace>/linked/<name> folder. On a name collision
+    # the two cards would share the /apps/linked/<name> route, which resolves
+    # through the registry — so the workspace twin is dropped rather than
+    # listed as a card that opens a different folder. Non-colliding workspace
+    # "linked" apps keep listing: their route falls back to the fused_dir
+    # codec path, which IS their folder.
+    registry = linked_apps.linked_apps()
+    taken = {a["name"] for a in registry}
+    workspace = [
+        a for a in app_listing.two_level_apps(fused_dir())
+        if not (a["tag"] == linked_apps.LINKED_TAG and a["name"] in taken)
+    ]
+    apps = workspace + registry
     apps.sort(key=lambda a: (a["tag"].lower(), a["name"].lower()))
     return {"apps": apps}
 
@@ -112,6 +125,13 @@ def api_link_status(path: str):
         parts = [p for p in os.path.relpath(folder, root).split(os.sep)
                  if p not in ("", ".")]
         if len(parts) == 2 and not any(p.startswith(".") for p in parts):
+            # A workspace folder under a literal "linked" tag dir whose name
+            # a registry entry has claimed: the /apps/linked/<name> route
+            # would resolve to the REGISTRY folder, not this one — withhold
+            # the identity so the caller falls back to path navigation.
+            if (parts[0] == linked_apps.LINKED_TAG
+                    and linked_apps.linked_path(parts[1]) is not None):
+                return {"status": "workspace", "name": None, "tag": None}
             return {"status": "workspace", "name": parts[1], "tag": parts[0]}
         return {"status": "workspace", "name": None, "tag": None}
     for e in linked_apps.read_entries():

@@ -123,6 +123,35 @@ def test_link_rejects_non_folders_and_workspace_paths(client, tmp_path, workspac
     assert "workspace" in r.json()["error"]
 
 
+def test_workspace_linked_tag_collision_registry_wins(client, tmp_path, workspace):
+    """A real <workspace>/linked/<name> folder colliding with a registry
+    entry: the listing drops the workspace twin (both would route to
+    /apps/linked/<name>, which resolves through the registry), and
+    link-status withholds the workspace folder's identity so the explorer
+    falls back to path navigation. Non-colliding names are untouched."""
+    ws_twin = workspace / "linked" / "notes"
+    ws_twin.mkdir(parents=True)
+    (ws_twin / "index.html").write_text("<html></html>")
+    ws_free = workspace / "linked" / "solo"
+    ws_free.mkdir(parents=True)
+
+    d = _folder(tmp_path, "notes")
+    client.post("/api/apps/link", json={"path": str(d)}, headers=HDRS)
+
+    listed = [(a["tag"], a["name"], a["path"]) for a in
+              client.get("/api/apps").json()["apps"]]
+    assert ("linked", "notes", str(d)) in listed
+    assert ("linked", "notes", str(ws_twin)) not in listed
+    assert ("linked", "solo", str(ws_free)) in listed
+
+    # colliding workspace folder: no route identity
+    r = client.get("/api/apps/link-status", params={"path": str(ws_twin)}).json()
+    assert r == {"status": "workspace", "name": None, "tag": None}
+    # non-colliding one keeps it (route falls back to the codec path)
+    r = client.get("/api/apps/link-status", params={"path": str(ws_free)}).json()
+    assert r == {"status": "workspace", "name": "solo", "tag": "linked"}
+
+
 def test_link_rejects_ancestors_of_the_workspace(client, tmp_path, workspace):
     """Linking the workspace's parent would make linked_app_dir_for claim
     every workspace path, shadowing real apps in the template gates."""
