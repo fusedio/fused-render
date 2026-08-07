@@ -41,6 +41,14 @@ function opensAsProject(app: AppInfo): boolean {
   return Boolean(app.entry_html);
 }
 
+// The virtual tag for registry-backed linked apps (fused_render/linked_apps.py).
+// Their folders live OUTSIDE the workspace, so /apps/linked/<name> can't be
+// the pure fused_dir codec the other tags use — the shell resolves that tag
+// through the registry instead (App.tsx + GET /api/apps/linked-path). Cards
+// still take the builder route like every other app, so the URL and the
+// experience are identical.
+export const LINKED_TAG = "linked";
+
 export interface OpenTarget {
   path: string;
   opts?: { isDir?: boolean; mode?: string };

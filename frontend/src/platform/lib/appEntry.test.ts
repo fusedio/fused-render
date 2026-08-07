@@ -101,6 +101,15 @@ test("an app with no entry at all opens its folder", () => {
   });
 });
 
+test("a linked app takes the builder route like any other app", () => {
+  // /apps/linked/<name> is resolved by the SHELL through the registry
+  // (App.tsx + GET /api/apps/linked-path) rather than the fused_dir codec, so
+  // the card's URL and open experience stay identical to workspace apps.
+  const linked = app({ tag: "linked", name: "notes", path: "/elsewhere/notes",
+    entry: "/elsewhere/notes/index.html", entry_html: "/elsewhere/notes/index.html" });
+  expect(hrefFor(linked)).toBe("/apps/linked/notes?_mode=app");
+});
+
 // -------------------------------------------------------------- the new tab
 
 test("href points at the same target a left click opens", () => {

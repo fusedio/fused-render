@@ -1613,6 +1613,48 @@ export function createApp(name: string, prompt: string): Promise<NewAppResult> {
   return postJson<NewAppResult>("/api/apps/new", { name, prompt });
 }
 
+// -- Linked apps (registry-backed apps living anywhere on disk) ---------------
+// A folder outside the workspace registered as an app under the virtual
+// "linked" tag (~/.fused-render/linked_apps.json — see fused_render/
+// linked_apps.py for why a registry, not a symlink).
+
+// How a folder relates to the app system: "workspace" (under the Fused
+// workspace — is/can be a real app already), "linked" (registered, `name`
+// carries its registry name), "unlinked" (linkable).
+export interface AppLinkStatus {
+  status: "workspace" | "linked" | "unlinked";
+  name: string | null;
+  // The app identity for building the /apps/<tag>/<name> route: set for a
+  // linked folder ("linked"/<registry name>) and for a folder that is exactly
+  // a workspace app dir; null otherwise (and on older backends).
+  tag?: string | null;
+}
+
+// Resolve a linked app's registry name to its real folder (null = unknown
+// name) — backs the shell's /apps/linked/<name> route, which can't use the
+// fused_dir codec the other tags do.
+export function getLinkedAppPath(name: string): Promise<{ path: string | null }> {
+  return getJson<{ path: string | null }>(
+    "/api/apps/linked-path?name=" + encodeURIComponent(name)
+  );
+}
+
+export function getAppLinkStatus(path: string): Promise<AppLinkStatus> {
+  return getJson<AppLinkStatus>(
+    "/api/apps/link-status?path=" + encodeURIComponent(path)
+  );
+}
+
+// Register a folder as a linked app. 409 = name/folder already linked,
+// 400 = not a folder / inside the workspace / bad name.
+export function linkApp(path: string, name?: string): Promise<{ app: AppInfo }> {
+  return postJson<{ app: AppInfo }>("/api/apps/link", { path, name });
+}
+
+export function unlinkApp(name: string): Promise<{ removed: boolean }> {
+  return postJson<{ removed: boolean }>("/api/apps/unlink", { name });
+}
+
 // -- Claude sessions (GET /api/claude-sessions) -------------------------------
 // Project folders that hold Claude Code session transcripts, for the
 // Explorer homepage's "Claude sessions" tab — one entry per folder, newest

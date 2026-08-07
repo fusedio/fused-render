@@ -65,7 +65,12 @@ export function appUrlForFsPath(fsPath: string, fusedDir: string): string | null
   return APP_ROUTE_PREFIX + segs.map(encodeURIComponent).join("/");
 }
 
-export function fsPathFromAppRoute(pathname: string, fusedDir: string): string | null {
+// The (tag, name) identity a builder-route pathname carries, or null when the
+// pathname isn't one. Split out of fsPathFromAppRoute because the "linked"
+// tag can't use the fused_dir codec at all — its folders live anywhere on
+// disk, so the shell resolves that tag through the registry instead
+// (GET /api/apps/linked-path, see App.tsx).
+export function appRouteSegments(pathname: string): { tag: string; name: string } | null {
   if (!pathname.startsWith(APP_ROUTE_PREFIX)) return null;
   const segs = pathname
     .slice(APP_ROUTE_PREFIX.length)
@@ -73,7 +78,13 @@ export function fsPathFromAppRoute(pathname: string, fusedDir: string): string |
     .filter((s) => s.length > 0)
     .map(decodeURIComponent);
   if (segs.length !== 2) return null;
-  return fusedDir.replace(/\/+$/, "") + "/" + segs.join("/");
+  return { tag: segs[0], name: segs[1] };
+}
+
+export function fsPathFromAppRoute(pathname: string, fusedDir: string): string | null {
+  const segs = appRouteSegments(pathname);
+  if (!segs) return null;
+  return fusedDir.replace(/\/+$/, "") + "/" + segs.tag + "/" + segs.name;
 }
 
 export const NAV_EVENT = "fused:navigate";
