@@ -105,11 +105,20 @@ def api_link_status(path: str):
     folder = os.path.abspath(os.path.expanduser(path))
     root = os.path.abspath(fused_dir())
     if folder == root or folder.startswith(root + os.sep):
-        return {"status": "workspace", "name": None}
+        # `tag`/`name` are set when the folder is EXACTLY an app dir
+        # (<workspace>/<tag>/<name>) — what the explorer's "Open as app"
+        # button needs to build the /apps/<tag>/<name> route. Null for the
+        # root, a tag dir, or anything nested deeper.
+        parts = [p for p in os.path.relpath(folder, root).split(os.sep)
+                 if p not in ("", ".")]
+        if len(parts) == 2 and not any(p.startswith(".") for p in parts):
+            return {"status": "workspace", "name": parts[1], "tag": parts[0]}
+        return {"status": "workspace", "name": None, "tag": None}
     for e in linked_apps.read_entries():
         if os.path.abspath(e["path"]) == folder:
-            return {"status": "linked", "name": e["name"]}
-    return {"status": "unlinked", "name": None}
+            return {"status": "linked", "name": e["name"],
+                    "tag": linked_apps.LINKED_TAG}
+    return {"status": "unlinked", "name": None, "tag": None}
 
 
 @router.post("/api/apps/link")

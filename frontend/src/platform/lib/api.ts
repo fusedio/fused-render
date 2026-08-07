@@ -1591,6 +1591,10 @@ export function createApp(name: string, prompt: string): Promise<NewAppResult> {
 export interface AppLinkStatus {
   status: "workspace" | "linked" | "unlinked";
   name: string | null;
+  // The app identity for building the /apps/<tag>/<name> route: set for a
+  // linked folder ("linked"/<registry name>) and for a folder that is exactly
+  // a workspace app dir; null otherwise (and on older backends).
+  tag?: string | null;
 }
 
 // Resolve a linked app's registry name to its real folder (null = unknown

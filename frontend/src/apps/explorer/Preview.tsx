@@ -7,6 +7,7 @@ import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "re
 import { createPortal } from "react-dom";
 import {
   getAppLinkStatus,
+  type AppLinkStatus,
   getDeployStatus,
   linkApp,
   rawUrl,
@@ -18,6 +19,7 @@ import {
 } from "@platform/lib/api";
 import type { Deployment, StatResult, TemplateEntry } from "@platform/lib/api";
 import { navigate, navigateUrl, urlForFsPath, replaceSearch } from "@platform/lib/router";
+import { appRouteUrl, APP_OPEN_MODE } from "@platform/lib/appEntry";
 import { formatSize, formatMtime, basename } from "@platform/lib/format";
 import { useRefreshOnReturn, useUrlVersion } from "@platform/lib/hooks";
 import { useDeployEnabled } from "@platform/lib/prefs";
@@ -398,6 +400,7 @@ function TemplatePreview({
   onRenderedTitle,
   hideHeader,
   actionsInTopbar,
+  appChrome,
 }: {
   fsPath: string;
   stat: StatResult;
@@ -405,6 +408,9 @@ function TemplatePreview({
   conditions: Record<string, boolean> | null;
   onRenderedTitle?: (title: string | null) => void;
   hideHeader?: boolean;
+  // True in the app-builder variant (allowModes pinned): adds the "Open in
+  // explorer" header action.
+  appChrome?: boolean;
   actionsInTopbar?: boolean;
 }) {
   // Caller only renders this when `templates` (already sentinel-filtered by
@@ -667,14 +673,14 @@ function TemplatePreview({
   // up on the Home grid under the "linked" tag). Fetched per folder, only when
   // the single-HTML button would show at all; a fetch failure (older backend)
   // falls back to "workspace" so the button degrades to plain "Open as app".
-  const [linkStatus, setLinkStatus] = useState<"workspace" | "linked" | "unlinked" | null>(null);
+  const [linkStatus, setLinkStatus] = useState<AppLinkStatus | null>(null);
   useEffect(() => {
     setLinkStatus(null);
     if (!isListing || !singleAppPath) return;
     let stale = false;
     getAppLinkStatus(fsPath).then(
-      (s) => { if (!stale) setLinkStatus(s.status); },
-      () => { if (!stale) setLinkStatus("workspace"); }
+      (s) => { if (!stale) setLinkStatus(s); },
+      () => { if (!stale) setLinkStatus({ status: "workspace", name: null }); }
     );
     return () => { stale = true; };
   }, [isListing, singleAppPath, fsPath]);
@@ -682,17 +688,29 @@ function TemplatePreview({
   const convertToApp = async () => {
     try {
       const { app } = await linkApp(fsPath);
-      setLinkStatus("linked");
+      setLinkStatus({ status: "linked", name: app.name, tag: app.tag });
       pushToast({ msg: `Linked as app “${app.name}” — it's on the Home grid now`, tone: "info" });
     } catch (e) {
       pushToast({ msg: (e as Error).message, tone: "error" });
     }
   };
-  const appBtnLabel = linkStatus === "unlinked" ? "Convert to app" : "Open as app";
-  const appBtnAction =
-    linkStatus === "unlinked"
-      ? convertToApp
-      : () => navigate(singleAppPath as string, { isDir: false });
+  // "Open as app" goes to the builder route (/apps/<tag>/<name>?_mode=app) —
+  // the same 1:1 app experience a Home card opens — whenever the status
+  // carries the identity; the fs-path fallback covers older backends and
+  // workspace folders that aren't exactly an app dir.
+  const openAsApp = () => {
+    if (linkStatus?.tag && linkStatus.name) {
+      navigateUrl(
+        appRouteUrl({ tag: linkStatus.tag, name: linkStatus.name }) +
+          "?_mode=" + APP_OPEN_MODE,
+        { isDir: true }
+      );
+    } else {
+      navigate(singleAppPath as string, { isDir: false });
+    }
+  };
+  const appBtnLabel = linkStatus?.status === "unlinked" ? "Convert to app" : "Open as app";
+  const appBtnAction = linkStatus?.status === "unlinked" ? convertToApp : openAsApp;
 
   const openAsAppBtn =
     isListing && singleAppPath && linkStatus ? (
@@ -703,6 +721,19 @@ function TemplatePreview({
 
   const headerActions = (
     <>
+      {/* App-builder chrome only (appChrome — the variant that pins the mode
+          list): the counterpart of the explorer's "Open as app" — jump from
+          the app experience back to the folder in the explorer
+          (/explorer/view/...), where the full template/mode surface lives. */}
+      {appChrome && stat.is_dir && (
+        <button
+          type="button"
+          className="open-as-app-btn"
+          onClick={() => navigate(fsPath, { isDir: true })}
+        >
+          Open in explorer
+        </button>
+      )}
       {/* Deployable = the mode list carries the "_render" sentinel AND the
           file is .html/.htm — the exporter's actual contract. The extension
           check matters because a registry rebind can put "_render" on any
@@ -901,6 +932,7 @@ export default function Preview({ fsPath, stat, onRenderedTitle, allowModes, hid
         onRenderedTitle={onRenderedTitle}
         hideHeader={hideHeader}
         actionsInTopbar={actionsInTopbar}
+        appChrome={!!allowModes}
       />
     );
   return <FallbackPreview fsPath={fsPath} stat={stat} actionsInTopbar={actionsInTopbar} />;
