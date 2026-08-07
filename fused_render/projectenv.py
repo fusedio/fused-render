@@ -32,11 +32,13 @@ reclaimed by `gc()`. The dangerous direction — two different folders colliding
 on one key — remains impossible.
 
 Staleness is a DIGEST comparison, never an mtime chain: `.fused-source.json`
-inside the venv records the path and the sha256 of `uv.lock` (or of
-`pyproject.toml` when unlocked) that it was built from. mtimes are wrong here
-because `core_templates`' `copytree` uses `copy2`, so every release stamps a
-template's `pyproject.toml` newer than its venv and an mtime rule would resync
-byte-identical dependencies on every upgrade.
+inside the venv records the path and the sha256 of the `pyproject.toml` it was
+built from. The MANIFEST, and only the manifest — `uv.lock` is an OUTPUT of
+`uv sync`, so folding it in would make the environment's own side effect a reason
+to rebuild the environment. mtimes are wrong here for a different reason:
+`core_templates`' `copytree` uses `copy2`, so every release stamps a template's
+`pyproject.toml` newer than its venv and an mtime rule would resync
+byte-identical dependencies on every upgrade. See `state_digest`.
 
 This module is consulted on every `/api/run`, so it imports nothing from
 `fused.*` — pulling the engine in would cost a geopandas/pyproj import on the

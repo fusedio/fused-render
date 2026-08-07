@@ -9,10 +9,12 @@ announces itself:
     at build time — and a resolution that can differ between two users of the
     same release.
   * **A stale lock** — one whose declared dependencies no longer match the
-    manifest — is worse, because the worker syncs a locked project `--frozen`.
-    uv refuses outright, so a template that "just needs one more package" fails
-    with a lockfile error rather than installing it, and nothing in review would
-    have caught the missing `uv lock`.
+    manifest — silently costs the shipped build the thing the lock is for. The
+    worker syncs BARE (not `--frozen`), so uv reconciles the difference on the
+    user's machine: it resolves the missing part against PyPI at render time and
+    rewrites the lock. Nothing fails, which is exactly why this has to be caught
+    here — the release ships a lock that does not describe what users get, and
+    two users of the same build can resolve different versions.
 
 Both are checked against the FOLDER, which is where the environment is declared
 (SPEC PY-16).
@@ -89,8 +91,9 @@ def test_the_lock_matches_the_manifest(folder):
     assert locked == declared, (
         f"fused_render/templates/{folder}/uv.lock is out of step with its "
         f"pyproject.toml (lock: {sorted(locked)}, manifest: {sorted(declared)}). "
-        "The install worker syncs a locked project with `--frozen`, so uv will "
-        f"refuse rather than install the difference. Run `uv lock` in "
+        "The worker syncs bare, so uv would silently resolve the difference "
+        "against PyPI on a user's machine and rewrite the lock — the shipped "
+        "lock would not describe what users actually get. Run `uv lock` in "
         f"fused_render/templates/{folder} and commit the result."
     )
 

@@ -7,13 +7,60 @@ running, see the [README](../README.md); for building and development, see
 ## Execution engine
 
 Python runs in a fresh subprocess per call through the built-in runner by
-default. Opt into fused's local compute backend — which resolves PEP 723
-`# /// script` inline requirements into cached venvs — with
+default. Opt into fused's local compute backend — which gives a folder its own
+cached virtual environment (see [Dependencies](#dependencies)) — with
 `FUSED_RENDER_ENGINE=auto` (use it when `fused` is importable, else the builtin)
 or `=fused` (require it); `pip install "fused-render[fused]"` first. Under the
 fused engine a file may also expose a `@fused.udf`-decorated function or assign
 `result = ...` directly instead of defining `main()`. You can also switch the
 engine in [Preferences](#preferences).
+
+## Dependencies
+
+Under the fused engine, **a folder declares its dependencies once, in a
+`pyproject.toml` at the project root**, and every `.py` beneath it shares one
+environment however deep it sits:
+
+```toml
+# my-app/pyproject.toml
+[project]
+name = "my-app"
+version = "0.1.0"
+dependencies = ["altair", "cowsay"]
+
+[tool.uv]
+package = false
+```
+
+A folder with no `pyproject.toml` — or one that declares no dependencies — runs
+on the app's own interpreter, which already ships numpy, pandas, duckdb,
+geopandas, rasterio and the rest. That is the common case and it needs no
+download and no waiting.
+
+When a folder does declare dependencies, the first render shows a one-time
+install (one progress row for the whole project, however many scripts the page
+calls) and every later render is instant. The environment is built by
+[uv](https://docs.astral.sh/uv/) and stored under
+`~/.fused-render/venvs/`, **never inside your folder** — your folder gains only
+`pyproject.toml` and `uv.lock`, both of which belong in git. Committing the lock
+is what makes the same folder resolve to the same versions on another machine.
+
+Adding a dependency is just an edit: save `pyproject.toml` and re-render, and
+the environment is reconciled for you. Moving or renaming a folder gives it a
+fresh environment by design; the old one is reclaimed automatically.
+
+The project root is the app folder or the template folder a script belongs to,
+otherwise the outermost folder above it holding a `pyproject.toml`. A
+`pyproject.toml` in a *subfolder* of a project is ignored — the inspector shows
+when that happens.
+
+> **Breaking change (unreleased).** Per-file PEP 723 `# /// script` headers are
+> no longer read. A file that still has one is refused with an error naming the
+> `pyproject.toml` to create and the packages to put in it; move the block's
+> `dependencies` into the project root's manifest and delete the block. There is
+> no automatic migration — the union of several files' headers is a guess at a
+> dependency set nobody wrote, so the change is one you make with the error in
+> front of you. Folders whose scripts had no header are unaffected.
 
 ## Remote storage (mounts)
 

@@ -70,11 +70,6 @@ import traceback
 
 logger = logging.getLogger(__name__)
 
-# PEP 723 reference regex (verbatim from the spec) for inline script metadata.
-_PEP723_BLOCK = re.compile(
-    r"(?m)^# /// (?P<type>[a-zA-Z0-9-]+)$\s(?P<content>(^#(| .*)$\s)+)^# ///$"
-)
-
 # A traceback frame header: `  File "<path>", line N[, in func]`. SyntaxError
 # frames have no `, in func` part.
 _FRAME_LINE = re.compile(
@@ -87,13 +82,13 @@ _backend = None
 # The app's own interpreter (PY-17 / D172)
 # --------------------------------------------------------------------------
 #
-# A script with NO PEP 723 header runs with `interpreter=<this app's python>`
-# and gets no venv at all: the app already ships `[bundled]` + its core
-# `dependencies`, so numpy/pandas/duckdb/rasterio/… are there for free, with no
-# download and no first-run wait. A script WITH a header keeps the venv path,
-# and that venv contains exactly what the header declares — a header means what
-# PEP 723 says it means (the script's complete dependency list), not a delta
-# against an invisible baseline.
+# A script whose project root declares no dependencies runs with
+# `interpreter=<this app's python>` and gets no venv at all: the app already
+# ships `[bundled]` + its core `dependencies`, so numpy/pandas/duckdb/rasterio/…
+# are there for free, with no download and no first-run wait. A script whose
+# FOLDER declares some (PY-16) runs on that folder's venv, which contains exactly
+# what the manifest declares — the complete list, not a delta against an
+# invisible baseline (D172's rule, kept).
 #
 # The dangerous half is picking the interpreter. `LocalPythonComputeBackend`
 # spawns `interpreter` verbatim as argv[0], and on that branch it silently
