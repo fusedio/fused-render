@@ -131,6 +131,16 @@ def main(path: str) -> bool:
         except Exception:  # noqa: BLE001 — cannot tell -> fall through to git
             pass
 
+        # Registered linked apps are `versions` territory too (their gate asks
+        # git the same way this one does) — same one-story-one-mode rule as the
+        # workspace-app exclusion above.
+        try:
+            from appenv import linked_app_dir_for
+            if linked_app_dir_for(path):
+                return False  # versions handles linked-app history
+        except Exception:  # noqa: BLE001 — cannot tell -> fall through to git
+            pass
+
         # (2) The directory to ask git from: the path itself, or a file's parent.
         # Two stats at most, never a listing.
         if os.path.isdir(path):

@@ -105,15 +105,36 @@ def _git(app_dir: str, *args, binary: bool = False):
     )
 
 
+def _repo_root(app: str) -> str:
+    """The work-tree root of the repo containing `app`, or "". Git's own
+    ascent (`rev-parse --show-toplevel`) — a linked app is often a subfolder
+    of the user's repository, so its `.git` lives at an ancestor, and git
+    handles the `.git`-file shapes (worktree, submodule) a stat can't."""
+    try:
+        r = _git(app, "rev-parse", "--show-toplevel")
+    except (OSError, subprocess.TimeoutExpired, subprocess.SubprocessError):
+        return ""
+    return r.stdout.strip() if r.returncode == 0 else ""
+
+
 def _require_app(file: str):
     """(app_dir, None) for a target inside a git-backed app, else (None, error
     payload). The refusal is the security boundary described in the module
     docstring — everything else in this file assumes it already ran.
+
+    A workspace app must carry its OWN `.git` (app_git.init_repo puts it
+    there; the workspace sitting inside some larger repo must not leak that
+    repo's history into every app). A linked app is the opposite case: its
+    `.git` is routinely at an ancestor, so git's ascent is the authority —
+    matching its gate (condition.py).
     """
     app = _app_dir_for(file)
     if not app:
         return None, {"error": "not inside a fused app folder"}
-    if not os.path.isdir(os.path.join(app, ".git")):
+    if _is_linked(app):
+        if not _repo_root(app):
+            return None, {"error": "this app has no git history"}
+    elif not os.path.isdir(os.path.join(app, ".git")):
         return None, {"error": "this app has no git history"}
     return app, None
 
@@ -130,7 +151,11 @@ def _resolve_sha(app: str, sha: str):
 
 
 def _log(app: str):
-    r = _git(app, "log", f"--format=%H{_US}%ct{_US}%s")
+    # `-- .` scopes the log to the app's own subtree (pathspecs are relative
+    # to `-C app`). For a workspace app the repo root IS the app dir, so this
+    # changes nothing there; for a linked app inside a larger repository it is
+    # what makes the list "this app's history" rather than the whole repo's.
+    r = _git(app, "log", f"--format=%H{_US}%ct{_US}%s", "--", ".")
     if r.returncode != 0:
         return {"error": "git log failed: " + (r.stderr or "").strip()[:200]}
     commits = []
@@ -161,6 +186,13 @@ def _snapshot(app: str, sha: str):
     marker = os.path.join(snap, ".fused-snapshot-complete")
 
     if not os.path.isfile(marker):
+        # `-C app` scopes this for free: git archive run from a subdirectory
+        # of the work tree archives only that subtree, with entry names
+        # relative to it — so a linked app nested in a larger repository gets
+        # its own index.html at the top of the snapshot, and a workspace app
+        # (where the app IS the repo root) is the degenerate same case.
+        # Verified against git 2.x; a commit that predates the folder just
+        # produces an empty tar, which lands in the no-entry notice below.
         r = _git(app, "archive", "--format=tar", full, binary=True)
         if r.returncode != 0:
             err = r.stderr.decode("utf-8", "replace") if r.stderr else ""
