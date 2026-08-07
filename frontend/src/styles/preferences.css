@@ -79,14 +79,13 @@
 }
 
 /* Doubled selector: home.css loads after this file, so plain .files-hero
-   would lose to .home-hero's own card styles at equal specificity. */
+   would lose to .home-hero's own card styles at equal specificity. The
+   explorer hero sits flat on the page — no fill, border, or accent wash —
+   but keeps .home-hero's padding/size so the layout doesn't shift. */
 .home-hero.files-hero {
   text-align: center;
-  /* No card chassis here (unlike /apps): the explorer hero sits flat on the
-     page — no fill, border, or accent wash. */
   background: none;
-  border: none;
-  padding: 12px 0 6px;
+  border-color: transparent;
 }
 
 .home-hero.files-hero::before {
