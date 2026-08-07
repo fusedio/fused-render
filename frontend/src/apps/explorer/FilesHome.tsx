@@ -8,7 +8,7 @@ import { navigate, replaceSearch, urlForFsPath } from "@platform/lib/router";
 import { basename, formatMtime, formatSize } from "@platform/lib/format";
 import { iconForEntry } from "@platform/ui/FileIcons";
 import type { Config, ClaudeSessionFolder } from "@platform/lib/api";
-import { getClaudeSessionFolders } from "@platform/lib/api";
+import { getClaudeSessionFolders, statPath } from "@platform/lib/api";
 import { allBookmarks, loadBookmarks } from "@platform/lib/bookmarks";
 import { useBookmarksVersion, useUrlVersion } from "@platform/lib/hooks";
 import { loadRecents, recentFsPath, useRecentsVersion } from "@apps/explorer/lib/recents";
@@ -71,6 +71,23 @@ function AiSearchComposer({
     setError(null);
     setPhase("searching");
     try {
+      // A pasted absolute path (/, ~/, or C:/) that actually exists opens
+      // directly — no reason to run an AI search over an exact address. A
+      // non-existent one falls through to the normal search.
+      if (/^(\/|~\/|~$|[A-Za-z]:[\\/])/.test(q)) {
+        const fsPath = (q === "~" || q.startsWith("~/") ? home + q.slice(1) : q)
+          .replace(/\\/g, "/")
+          .replace(/\/+$/, "") || "/";
+        try {
+          const st = await statPath(fsPath);
+          if (ctl.signal.aborted) return;
+          navigate(st.path, { isDir: st.is_dir });
+          return;
+        } catch {
+          if (ctl.signal.aborted) return;
+          // not a real path — treat it as a search query
+        }
+      }
       const res = await runAiSearch(home, q, ctl.signal);
       if (ctl.signal.aborted) return;
       setPhase("idle");
