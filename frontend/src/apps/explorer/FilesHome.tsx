@@ -332,30 +332,18 @@ export default function FilesHome({ config }: { config: Config }) {
   }, []);
   const shownSessions =
     sessionFolders && (expandedSessions ? sessionFolders : sessionFolders.slice(0, MAX_CARDS));
-  // With no ?tab= in the URL, land on the first tab that has anything to
-  // show: bookmarks, else recents, else Claude sessions. Latched ONCE after
-  // the bookmark/recent caches hydrate (they start empty at boot, so deriving
-  // per render would flash "sessions" on a cold load, and cross-tab polls
-  // could yank an unpinned tab later). Not written to the URL, so an explicit
-  // ?tab= always wins.
-  const [defaultTab, setDefaultTab] = useState<LaunchTab | null>(null);
+  // With no ?tab= in the URL, land on Claude sessions — the leading tab.
+  // Bookmark/recent caches still hydrate on mount (effect below) so the other
+  // tabs are ready when clicked. An explicit ?tab= always wins.
   useEffect(() => {
-    let alive = true;
     // Both are idempotent (enqueued; bookmarks no-ops when already hydrated).
-    Promise.all([hydrateBookmarks(), hydrateRecents()]).finally(() => {
-      if (!alive) return;
-      setDefaultTab(
-        loadBookmarks().length ? "bookmarks" : loadRecents().entries.length ? "recents" : "sessions",
-      );
-    });
-    return () => {
-      alive = false;
-    };
+    void hydrateBookmarks();
+    void hydrateRecents();
   }, []);
   const tab: LaunchTab =
     tabParam === "recents" || tabParam === "sessions" || tabParam === "bookmarks"
       ? tabParam
-      : defaultTab ?? "bookmarks";
+      : "sessions";
   // A committed AI search result takes over the page body (bookmarks/recents
   // hide behind it) until cleared — the homepage becomes the result page.
   const [search, setSearch] = useState<{ query: string; result: AiSearchResult } | null>(null);
