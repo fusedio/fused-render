@@ -105,7 +105,7 @@ function AiSearchComposer({
             placeholder="Search your files — “big csv from last week”, “notebook about weather”…"
             aria-label="Search your files"
             value={query}
-            rows={3}
+            rows={2}
             disabled={busy}
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={(e) => {
