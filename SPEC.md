@@ -3859,19 +3859,32 @@ behaviour copied from Obsidian rather than invented. Design + rationale:
     already a full line-height of space; these rules add what markdown cannot
     express — the space *above* a heading, and the gap around a block.
 
-## 33. Git View — Repository History Scoped to the Open Path (D193)
+## 33. Git View — Source Control Scoped to the Open Path (D193, D229)
 
 A `git` view template answers one question for whatever the user currently has
-open: **what happened here?** Not "what happened in this repository" — a repo-wide
-log is what a terminal is for — but what happened to *this folder* or *this file*:
-its uncommitted changes, its commits, and the diff of any of them restricted to
-that path. Offered for **both** directories and text-ish files, always as a
-`condition.py`-gated companion mode, never as a default.
+open: **what is going on here?** Not "what is going on in this repository" — a
+repo-wide view is what a terminal is for — but what is going on with *this
+folder* or *this file*: its uncommitted changes, its commits, the diff of any of
+them restricted to that path, **and the operations that change them**. Offered
+for **both** directories and text-ish files, always as a `condition.py`-gated
+companion mode, never as a default.
+
+The view was read-only through D193 (the original GT-11) and is not any more:
+D229 replaced that item with a **VSCode Source-Control-style GUI** — branch
+management, staging, stashing, committing and pull/push — rebuilt **in place**,
+as one mode in the switcher rather than a second template. History did not go
+away; it became a section of the reorganized view. GT-12..GT-17 below are that
+surface, and everything GT-1..GT-10 says about bounds, refusals, pathspec
+hygiene and the theme still holds for it unchanged.
 
 - **GT-1** An ordinary view template (`fused_render/templates/git/`) —
-  `template.html`, `log.py` (the reader), `condition.py` (the gate) and
-  `icon.svg`. No shell or server code: everything is the ordinary template
-  contract (`_file`, `fused.runPython`, params-as-state).
+  `template.html`, `log.py` (the reader), `ops.py` (the mutations),
+  `condition.py` (the gate) and `icon.svg`. No shell or server code: everything
+  is the ordinary template contract (`_file`, `fused.runPython`,
+  params-as-state). The read and write halves are **two modules, not one**: a
+  reader that also mutates has no honest place to draw its validation line, and
+  "what can this template DO to my repository" must be one file to audit rather
+  than a grep for verbs across an 800-line reader.
 - **GT-2** **Registry bindings.** The universal `/` directory key becomes
   `["_listing", "git", "graph", "zarr_aoi"]` — `_listing` stays the default (it is
   the only unconditional entry, PT-8), and `git` is listed **first among the gated
@@ -3923,10 +3936,22 @@ that path. Offered for **both** directories and text-ish files, always as a
 - **GT-5** **The reader (`log.py`) shells out to git and parses machine formats;
   it reimplements nothing.** Not what a repository is, not what "dirty" means, not
   rename detection, not "3 months ago" (that is `%ar`, a human string passed
-  through verbatim rather than re-derived). Four ops: `overview` (header +
-  scoped uncommitted changes + the first page of the scoped log, one round trip),
-  `log` (a later page), `commit` (metadata + a diff restricted to the scope) and
-  `worktree` (working tree vs HEAD for one uncommitted entry).
+  through verbatim rather than re-derived). Six ops: `overview` (header + scoped
+  uncommitted changes + the first page of the scoped log, one round trip), `log`
+  (a later page), `commit` (metadata + a diff restricted to the scope),
+  `worktree` (working tree vs HEAD for one uncommitted entry), `branches` (the
+  local branches, D229) and `stashes` (the stash list, D229). The branch list is
+  read from **`for-each-ref` with a machine format**, never from `git branch`,
+  whose output is a *human* format — column-aligned, colourable through a key
+  `color.ui=false` does not cover, and marking the current branch with a leading
+  `* ` that a branch name could itself contain. `for-each-ref`'s format language
+  is also NOT `git log`'s: it spells a literal byte `%00`, and leaves a `%x00`
+  borrowed from the log format as the four characters "%x00" — which parses as a
+  field count that is never right, i.e. a silently empty branch list. The stash
+  list is `git stash list` (a reflog walk, so it takes `--format` and
+  `--max-count`), and an entry's **index is positional rather than parsed out of
+  `%gd`**: `stash@{n}` is *defined* as the nth entry of that list, so enumerating
+  it is not an approximation of the truth, it is the truth.
 - **GT-6** **Every invocation is pinned, hardened and bounded.** `-C <repo root>`
   and `--no-pager` on all of them — the root is resolved **once** by `rev-parse
   --show-toplevel`, the single call deliberately pinned to the target rather than
@@ -4033,7 +4058,14 @@ that path. Offered for **both** directories and text-ish files, always as a
   rather than captured because `subprocess.run` would buffer the whole
   hundred-megabyte diff into memory before it could be trimmed, and a manual read
   loop has no `timeout=`. Truncation is **reported in the UI**, never silent. The
-  change list is capped too (a build tree can hold 100k untracked files).
+  change list is capped too (a build tree can hold 100k untracked files), and so
+  is everything D229 added: the branch list (`MAX_BRANCHES`, asked for as
+  `--count=N+1` so "there were more" is *observed* rather than guessed, and
+  sorted newest-committed-first with the ref name as tie-break, because the limit
+  has to cut somewhere and the branches you touched recently are the ones you are
+  looking for), the stash list (`MAX_STASHES`, likewise `--max-count=N+1`), the
+  out-of-scope staged **paths** (`MAX_STAGED_OUTSIDE`, with the count kept a true
+  total — GT-14), and the path list one mutation may carry (`MAX_PATHS` — GT-12).
 - **GT-9** **Every awkward state is a first-class state, and refusal is a
   PAYLOAD** (`{ok: false, reason, message}`) rather than an exception: not a
   repository, missing path, mount-backed, no git binary, timeout, empty repository
@@ -4057,7 +4089,11 @@ that path. Offered for **both** directories and text-ish files, always as a
   reader crash is caught into that state rather than the red traceback overlay,
   which is a debugging affordance for a view's own bug.
 - **GT-10** **The view.** `data-fused-theme="shell"` with both palettes defining
-  the same token set and no colour literal in any rule (AP-9, tier 1).
+  the same token set and no colour literal in any rule (AP-9, tier 1). *(The
+  LAYOUT this item describes is D229's predecessor — the two-section
+  history-only page. GT-17 has the current one. Everything else here — the
+  no-header ruling, the params-as-state discipline, the diff pane's behaviour,
+  the truncation wording — carried over unchanged and is stated once, here.)*
 
   **A template has NO header of its own** — owner ruling 2026-07-31: *"a template
   is not the same as app, it does not require any headers."* A template renders
@@ -4100,16 +4136,171 @@ that path. Offered for **both** directories and text-ish files, always as a
   scrolls horizontally. Stacked (narrow) the diff pane sits **above** the lists,
   because appending it below thirty commit rows puts the response to a click below
   the fold, which reads as nothing having happened.
-- **GT-11** **Read-only, always.** The view never stages, commits, checks out,
-  fetches or writes anything. `GIT_OPTIONAL_LOCKS=0` says so to git as well: it
-  will not even take a lock to answer a question. Anything that mutates a
-  repository belongs to a terminal.
+- **GT-11** ~~Read-only, always.~~ **Superseded by D229 / GT-12.** The original
+  item said the view never stages, commits, checks out, fetches or writes
+  anything, and cited `GIT_OPTIONAL_LOCKS=0` as saying so to git as well. The
+  owner replaced it: the read-only line kept the view honest but left it a
+  dead-end — every question it answered ("this file is modified", "this is
+  staged", "you are 3 behind") ended in "now go somewhere else". The **reads
+  remain exactly as specified above** and still never write, never fetch and
+  never take an optional lock; what changed is that `ops.py` sits beside them.
+  The number is kept rather than reused so the overturn stays legible.
+- **GT-12** **The write surface (`ops.py`) is a second module, and it is the
+  only thing in this template that can change a repository.** Same shape as the
+  reader: a `main(...)` returning a JSON-native dict, refusal as a payload
+  (`{ok: false, reason, message}`), the same `@fused.udf` shim, the same
+  `-C <root>` / `--no-pager` / argv-list / `--`-before-every-pathspec /
+  `:(literal)` discipline, and the same mount refusal — **GT-4 applies to the
+  write path too**, because a hand-written `?_mode=git` URL must never reach a
+  *mutating* git call across an rclone/NFS mount. The ops are `stage`,
+  `unstage`, `stage_all`, `unstage_all`, `discard`, `discard_all`, `commit`,
+  `branch_create`, `branch_checkout`, `branch_delete`, `stash_push`,
+  `stash_apply`, `stash_pop`, `stash_drop`, `fetch`, `pull`, `push`. Three
+  bounds differ from the reader's and each has a reason: **`TIMEOUT_S` is 25s
+  rather than 12s**, because a mutating command runs the user's own hooks and a
+  network command talks to a remote, neither comparable to a local plumbing read
+  (still inside the 30s `fused.runPython` ceiling); the **path list is capped**,
+  because an unbounded path list is an unbounded argv whose failure mode is
+  `E2BIG` rather than a sentence; and **`GIT_OPTIONAL_LOCKS=0` is dropped**. That
+  last is deliberate and the opposite of a nicety carried over by habit: the
+  variable only ever suppresses locks git takes *optionally* — the opportunistic
+  index refresh a read does while answering — and a mutating command takes the
+  index lock it needs regardless, so carrying it would state a promise the module
+  cannot keep, and would suppress precisely the refresh that makes the `git
+  status` right after a mutation accurate. `GIT_TERMINAL_PROMPT=0` and the
+  askpass knobs **stay**: with a credential helper or an ssh-agent configured
+  pull/push work, and without one they **fail fast with a readable message**
+  rather than hanging on a prompt nobody inside an iframe can answer. `GIT_EDITOR`
+  is additionally pinned to a program that exits non-zero, so anything that would
+  have opened an editor (a conflicted `stash pop`, a `commit` git decides needs a
+  message) is an ordinary error instead of a wait with no end.
+- **GT-13** **Mutations are scoped to the open path, and the scope rule is
+  STRICTER than the reader's.** `stage` / `unstage` / `discard` / `stash push`
+  and their `_all` forms are restricted by the `:(literal)<rel>` pathspec derived
+  from the opened file or folder, exactly like the reads. Every user-supplied
+  path is validated in **three passes that catch three different things**, before
+  it can become an argv entry: the **string** must not be absolute, hold a `..`
+  segment, or start with `-`; its **realpath** must resolve under the repository
+  root (which is what catches a symlink, including an ordinary file reached
+  through a symlinked *parent* — the case an `islink` test on the final component
+  misses entirely); and it must sit under the **open scope**. The reader lists
+  one out-of-scope entry on purpose — a rename with only one side in the scope,
+  because "this file left the folder you are looking at" is a change the view
+  exists to show (GT-7) — and the write rule does **not** inherit that exception:
+  listing a change and changing it are different acts, so the row is shown
+  without its action buttons. The reader's *ancestor* case is likewise absent: a
+  collapsed `dir/` row that is an ancestor of the scope covers files outside it,
+  and discarding it would reach them. **`branch_checkout` is exempt by nature**
+  and does not go through the path rule at all — a branch *is* a repository
+  concept, and there is no such thing as checking one out "just for `pkg/`".
+  That is expected, not a hole.
+- **GT-14** **Commit is index-based, and the UI is honest about it.** `git
+  commit -m <msg>` with **no pathspec, ever**. The alternative — `git commit --
+  <paths>` — is not a scoped commit but a different operation: it bypasses the
+  index and records the *working tree* for those paths, so a file deliberately
+  staged in one state would be committed in another. That is a silent data
+  surprise, and refusing it is the point. The cost is that a commit made from a
+  view scoped to `pkg/` also carries whatever is staged elsewhere, so the reader
+  **reports it**: `overview` gains `staged_outside: {count, paths}`, collected
+  inside the existing unscoped `_status` walk (GT-7) rather than by a second `git
+  status`, with the path list bounded and the **count a true total** — the number
+  is the part that decides whether you look. The view turns that into
+  *"⚠ N staged change(s) outside this scope will also be committed"*, with the
+  paths listed. An **empty or whitespace-only message** and a **nothing-staged**
+  commit are the module's own refusals with readable text, not git's ("Aborting
+  commit due to empty commit message" reads like a malfunction; the whole status
+  printed as advice is a wall of text answering a question nobody asked). A
+  message is **one argv element** to `-m` and may hold anything — newlines,
+  quotes, backticks, a `$(...)` — because there is no shell anywhere in the
+  module for it to mean something to. A successful commit returns the new short
+  sha and subject.
+- **GT-15** **No history rewriting, and no path to it.** No `--amend`, no
+  `reset --hard`, no rebase, no force push, no `branch -D`. `branch_delete` is
+  **`-d` only** — git refuses a branch whose commits are reachable from nowhere
+  else, and that refusal is surfaced **verbatim**, because it *is* the safety
+  property: the one thing a GUI must not make easy is throwing away commits.
+  `pull` is **`--ff-only`**, and a non-fast-forward is a **refusal pointing at a
+  terminal**, never an automatic merge or rebase — a divergence is a decision,
+  and both automatic answers take it on the user's behalf (a merge writes a
+  commit they did not ask for, a rebase rewrites commits they already have).
+  `push` never forces. `discard`'s untracked half is `git clean -fd` and
+  **`-x` is forbidden**: an ignored path is where a `.env`, a virtualenv and a
+  build tree live, a scale of loss completely unlike "throw away the edit I just
+  made", and one no confirmation could meaningfully warn about because those
+  files are by construction invisible in this view. A test greps the module for
+  the forbidden spellings, so a future change that needs one is a conversation
+  rather than a diff.
+  **Two deliberate decisions inside these bounds.** `branch_checkout` uses `git
+  switch` and falls back to `git checkout` only on a git older than 2.23,
+  detected by the attempt's own exit code and message rather than by parsing
+  `git --version` (a version string is one more format to get wrong, and the
+  question that matters is "did this git understand the verb"); `switch` is
+  preferred because it cannot be talked into restoring files, which is
+  `checkout`'s other, path-shaped meaning and the reason `checkout` is easy to
+  misuse. And a **`push` from a branch with no upstream sets one**
+  (`--set-upstream <remote> <branch>`) rather than surfacing git's advice, which
+  is a sentence no GUI button can act on; the view labels that button **"Publish
+  branch"** rather than "Push", because it is a bigger act. It is a narrow
+  exception and not a force: it can only create a ref that does not exist, and if
+  the remote branch *does* exist with commits we lack, git refuses exactly as it
+  would for any other non-fast-forward and that refusal is shown. The remote is
+  the branch's own, else the sole configured one, else `origin`; with several
+  remotes, no `origin` and no upstream there is no defensible guess, so the
+  answer is "no remote" and no button rather than a choice made for the user.
+- **GT-16** **Anything that can lose uncommitted work is confirmed in-view, and
+  is individually addressable in the module.** Exactly three ops are destructive
+  — `discard`, `discard_all`, `stash_drop` — and the module names them in one
+  constant the view mirrors, so an op added later without being classified ships
+  *without* a confirmation loudly rather than quietly. **Confirmation is the
+  view's job**; the module's job is that each destructive op is its own call and
+  **never a side effect of a safe one**. The confirmation is an **inline
+  affordance, never `window.confirm`**: this document renders inside an iframe,
+  where a native dialog is at best chrome the view cannot place and at worst
+  suppressed — and inline puts the question next to the row it is about, which is
+  why it is being asked. Its pending state lives in a param (`ask`), so a refresh
+  reproduces the question rather than silently dropping it. Discarding a **staged**
+  change is two explicit calls — `unstage`, then `discard` — composed by the view
+  behind ONE confirmation, because `restore --worktree` restores from the *index*
+  and a single-call discard would put back the very content being thrown away.
+  `branch_delete` is deliberately **not** in the confirmed set: `-d` cannot lose
+  work, so git's own refusal is already the safety step and a second one would be
+  the kind of ceremony that trains people to click through.
+- **GT-17** **The view is the Source-Control shape, and the params are still the
+  state.** Toolbar (branch ▾ · ⟳ fetch · ↓ pull *n behind* · ↑ push *n ahead* ·
+  stash ▾) → commit message box with the ✓ Commit button and the GT-14 warning →
+  **Staged changes** / **Changes** / **Untracked** / **Stashes** / **History**,
+  with the existing diff pane on the right unchanged. History is a *section* of
+  this page now, not a page of its own. Every piece of UI state stays in the URL
+  as before (`pages`, `sel`, `wt`) plus `panel` (which dropdown is open), `msg`
+  (the commit message draft) and `ask` (the pending confirmation) — the last two
+  being the ones easy to argue against and right anyway: a commit message is the
+  most expensive thing in this view to retype, and a confirmation that survives a
+  refresh cannot be bypassed by one. `msg` is deliberately **excluded from the
+  structural signature the repaint compares**, or every keystroke would repaint
+  the textarea out from under the caret. A mutation is: disable the control that
+  was clicked (only that one, so a slow `push` does not read as a freeze) → call
+  `ops.py` → **refetch the overview and repaint**, never patch the DOM from the
+  op's own reply, because git is the authority on what the repository now looks
+  like and a locally-guessed state is how a UI drifts out of sync with the repo
+  it claims to show → announce through the existing `aria-live` region. The
+  serial guard is bumped **by the mutation as well**, so an overview still in
+  flight from before it cannot repaint stale data over the fresh one. A failed
+  mutation renders its message **in-view** — never the red traceback overlay
+  (that is a debugging affordance for a view's own bug, and a git refusal is an
+  ordinary answer) and never a silent no-op. Everything GT-10 requires still
+  holds: both palettes define the identical token set, `data-fused-theme="shell"`,
+  no colour literal outside them, **no page header of its own** (the toolbar is
+  not a header — every item on it is a control, and the branch name is there
+  because it is what you click to change branches), the body never scrolls
+  horizontally, rows are real `<button>`s, Escape closes the innermost open thing
+  (confirmation → dropdown → diff pane), and `prefers-reduced-motion` is honoured.
 
 **See also §34** (`file_history`), the other history view. It is complementary
-rather than an alternative: this one reads the repository's commit graph and never
-writes; that one reads Claude Code's per-edit checkpoints — which exist for files
-in no repository at all, and for edits made since the last commit — and can put
-content back. FH-1 states the split from the other side.
+rather than an alternative: this one drives the repository's own commit graph and
+index, i.e. everything git already knows about; that one reads Claude Code's
+per-edit checkpoints — which exist for files in no repository at all, and for
+edits made since the last commit — and can put content back. FH-1 states the
+split from the other side.
 
 ## 34. File History — Revert from Claude Code's Checkpoints (D194, D195)
 
