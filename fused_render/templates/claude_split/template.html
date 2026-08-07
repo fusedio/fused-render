@@ -100,31 +100,25 @@
     transition: background .15s;
   }
 
-  /* ── annotation layer over the left iframe ─────── */
-  /* Two labelled sliding switches, stacked outside the pane in the chat pane's
-     left header margin: annotate mode (#annbtn) and pin visibility (#annvis).
-     Outside the pane they cover zero pixels of the app, and the margin space is
-     otherwise empty — so a label and a switch track cost nothing and say plainly
-     what each control governs, where the previous 26px unlabelled circles had to
-     encode their state in a fill alone. Size and position are IDENTICAL in both
-     states of each switch: the active state may only repaint (plus the knob
-     sliding INSIDE its fixed track), so toggling can never reflow the iframe's
-     box — pins and `annStageRect` are in frame viewport coordinates and stay
-     put. */
-  /* A labelled sliding switch, not a bare icon: the control anchors by its LEFT
-     edge just past the divider (`left: calc(100% + 14px)`) and grows rightward
-     into the chat pane's empty header margin — so a label and a track cost the
-     app zero pixels, and the state ("Annotating" / "Annotate") is spelled out
-     instead of encoded in a fill an unlabelled 26px glyph had to carry alone.
-     Nothing clips it — neither `#left` nor `#leftview` sets `overflow`, and
-     `#chat`'s own `overflow: hidden` cannot clip a box that is not its
-     descendant. Idle tints (accent on panel), armed FILLS the whole pill —
-     annotate mode swallows the app's clicks, so its on-state is the loudest. */
+  /* ── annotation controls: a layout row at the top of the chat pane ─────── */
+  /* Two labelled left-right sliding switches — annotate mode (#annbtn) and pin
+     visibility (#annvis) — in a real flex ROW above the chat content, shown in
+     both views. A row, not an overlay: the floating versions (corner icon, then
+     margin pills) kept landing on top of whatever the chat pane drew underneath.
+     In a row the labels cost nothing, cover nothing, and say plainly what each
+     control governs. Idle tints (accent on panel); the annotate switch FILLS
+     when armed — annotate mode swallows the app's clicks, so its on-state is
+     the loudest of the two. */
+  #anntools {
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 8px 16px;
+    border-bottom: 1px solid var(--border);
+  }
   #annbtn {
-    position: absolute;
-    top: 10px;
-    left: calc(100% + 14px);
-    z-index: 4;
     height: 26px;
     padding: 0 8px 0 10px;
     display: flex;
@@ -140,7 +134,6 @@
     background: var(--panel);
     color: var(--accent);
     cursor: pointer;
-    box-shadow: 0 2px 8px var(--shadow);
     transition: color .12s, border-color .12s, background .12s, filter .12s;
   }
   /* The same hover-vs-active rule as `.pill` in the composer, stated the same way:
@@ -179,15 +172,9 @@
   }
   #annbtn.on .track { background: var(--on-accent); }
   #annbtn.on .knob { left: 14px; background: var(--accent); }
-  /* The pins-visibility switch: a labelled left-right sliding toggle under the
-     annotate icon. Anchored by its LEFT edge just past the divider (`left:
-     calc(100% + 14px)`) so growing wider extends into the chat pane's empty
-     header margin, never leftward over the app. On = knob right, accent track. */
+  /* The pins-visibility switch: same anatomy, quieter on-state — track fills,
+     pill stays panel. On = knob right, accent track. */
   #annvis {
-    position: absolute;
-    top: 44px;
-    left: calc(100% + 14px);
-    z-index: 4;
     height: 26px;
     padding: 0 10px 0 6px;
     display: flex;
@@ -826,33 +813,6 @@
          positioned in FRAME viewport coordinates (pins, highlight, composer). -->
     <div id="leftview">
       <iframe id="leftframe" title="File preview"></iframe>
-      <!-- One small floating icon in the bottom-right corner. A real <button>, so
-           Enter/Space work and `aria-pressed` announces the state to a screen
-           reader that cannot see the accent fill; `aria-label` names it because
-           there is no text to read. Inside #leftview so it floats over the app —
-           and therefore outside the iframe, so it can never land in a capture. -->
-      <!-- A comment bubble, not a pencil: a pencil means "edit this", which is what
-           CLAUDE does to the app — this button lets the user leave a note ON the app,
-           and the marks it produces are numbered comment pins. Inline SVG stroked in
-           `currentColor` like the composer's pane-shot icon, so it follows the accent
-           tint while idle and is knocked out to `--on-accent` when armed; a text
-           glyph could do neither and rendered at a different weight per platform. -->
-      <button id="annbtn" type="button" aria-pressed="false" aria-label="Annotate the app"
-              title="Annotate the app, then send the notes to Claude"><svg width="13" height="13"
-        viewBox="0 0 16 16" fill="none" aria-hidden="true"><rect x="2.3" y="2.8" width="11.4"
-        height="8.4" rx="2.2" stroke="currentColor" stroke-width="1.4"/><path d="M5.6 11.2v2.6l3-2.6"
-        stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg><span
-        class="lbl">Annotate</span><span class="track" aria-hidden="true"><span class="knob"></span></span></button>
-      <!-- Visibility switch for the annotation pins, stacked under the annotate
-           button. A real sliding switch WITH a label — the margin under the 26px
-           icon column runs into the chat pane's empty header space, so the label
-           costs nothing and says exactly what the control governs. -->
-      <button id="annvis" type="button" role="switch" aria-checked="true"
-              aria-label="Show annotation comments on the app"
-              title="Show or hide the annotation comment pins over the app">
-        <span class="track" aria-hidden="true"><span class="knob"></span></span>
-        <span class="lbl">Comments shown</span>
-      </button>
       <div id="annhl"></div>
       <div id="annpins"></div>
       <div id="annpop">
@@ -866,6 +826,28 @@
   <div id="divider" role="separator" aria-orientation="vertical" aria-label="Resize panels"></div>
 
   <div id="chat" class="home">
+    <!-- Annotation controls: a real layout ROW above everything else in this
+         pane, in both views — never an overlay, so it can't land on top of the
+         topbar or the transcript. Both are real <button>s (Enter/Space work,
+         aria announces state) living in the parent document, a structural
+         guarantee they can never appear in a pane capture (shotPane rasterises
+         the framed document only). The bubble icon is a comment bubble, not a
+         pencil: a pencil means "edit this", which is what CLAUDE does — these
+         controls let the user leave notes ON the app. -->
+    <div id="anntools">
+      <button id="annbtn" type="button" aria-pressed="false" aria-label="Annotate the app"
+              title="Annotate the app, then send the notes to Claude"><svg width="13" height="13"
+        viewBox="0 0 16 16" fill="none" aria-hidden="true"><rect x="2.3" y="2.8" width="11.4"
+        height="8.4" rx="2.2" stroke="currentColor" stroke-width="1.4"/><path d="M5.6 11.2v2.6l3-2.6"
+        stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg><span
+        class="lbl">Annotate</span><span class="track" aria-hidden="true"><span class="knob"></span></span></button>
+      <button id="annvis" type="button" role="switch" aria-checked="true"
+              aria-label="Show annotation comments on the app"
+              title="Show or hide the annotation comment pins over the app">
+        <span class="track" aria-hidden="true"><span class="knob"></span></span>
+        <span class="lbl">Comments shown</span>
+      </button>
+    </div>
     <!-- chat view -->
     <div id="topbar">
       <span class="spark">✻</span>

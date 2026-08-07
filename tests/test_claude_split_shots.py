@@ -2103,7 +2103,7 @@ def test_the_annotate_control_is_a_labelled_switch(html):
     assert "background: var(--accent)" in on, on
     assert "color: var(--on-accent)" in on, on
     # named, announced, and labelled in the markup
-    view = _between(html, '<div id="leftview"', "<!-- /leftview -->")
+    view = _between(html, '<div id="anntools">', "</div>")
     assert 'id="annbtn"' in view and 'aria-label="' in view, view
     assert 'class="lbl"' in view, view
     for root in ("annBtn", "annVisBtn"):
@@ -2125,35 +2125,38 @@ def test_annotate_mode_and_pin_visibility_default_on(html):
     assert 'fused.params.get("annautosend") !== "0"' in html
 
 
-def test_the_annotate_switch_covers_none_of_the_app(html):
-    """A control over the app blocks annotating whatever sits under it. Both
-    switches anchor by their LEFT edge past the divider (`left: calc(100% + …)`)
-    and grow RIGHTWARD into the chat pane's margin — wider labels extend away from
-    the app, never over it.
-
-    Safe because nothing clips them (neither `#left` nor `#leftview` sets
-    `overflow`, and `#chat`'s `overflow: hidden` cannot clip a non-descendant) and
-    because the space exists: `#chat` has `min-width: 340px` and this layout never
-    stacks vertically."""
+def test_the_annotation_switches_are_a_layout_row_not_an_overlay(html):
+    """Every floating version of these controls — corner icon, then margin pills —
+    eventually landed on top of something (the app's corner, the chat topbar, an
+    open transcript). A real flex ROW at the top of the chat pane cannot: layout
+    reserves its height, so it covers nothing in either pane and in either view.
+    Horizontal, with real space between the two switches."""
+    row = _between(html, "#anntools {", "}")
+    assert "display: flex" in row, row
+    assert "justify-content: space-between" in row, row
+    assert "flex-shrink: 0" in row, row
+    # the switches themselves are plain flow children — no absolute anchoring left
     for sel in ("#annbtn {", "#annvis {"):
         btn = _between(html, sel, "}")
-        assert "position: absolute" in btn, btn
-        # left-anchored past the pane's own width, so growth is rightward
-        assert "left: calc(100% + " in btn, btn
-        assert "right:" not in btn, btn
-    for clipper in ("#left {", "#leftview {"):
-        assert "overflow" not in _between(html, clipper, "}"), clipper
-    assert "min-width: 340px" in _between(html, "#chat {", "}")
+        assert "position" not in btn, btn
+        assert "top:" not in btn and "left:" not in btn and "right:" not in btn, btn
+    # the row is a child of the chat pane, above the topbar, and hidden in
+    # NEITHER view — the home-view hide list must not grow to include it
+    chat = _between(html, '<div id="chat"', '<div id="topbar">')
+    assert 'id="anntools"' in chat, "the row sits above the topbar in the chat pane"
+    assert "#anntools" not in _between(html, "#chat.home #topbar", ";"), \
+        "visible on the home view too"
 
 
-def test_the_annotate_icon_sits_outside_the_frame_so_it_cannot_be_captured(html):
-    """The button must not appear in a crop or the pane shot. Structural, not
+def test_the_annotation_controls_sit_outside_the_frame_so_they_cannot_be_captured(html):
+    """The switches must not appear in a crop or the pane shot. Structural, not
     hopeful: `shotPane` rasterises `appWindow().document.body` — the FRAMED
     document — so anything in the parent document is unreachable by construction.
-    This pins the arrangement that makes that argument true: the button is a
-    SIBLING of the iframe in the parent document, never inside it."""
+    They live in the chat pane's #anntools row, nowhere near the iframe."""
     view = _between(html, '<div id="leftview"', "<!-- /leftview -->")
-    assert 'id="leftframe"' in view and 'id="annbtn"' in view
+    assert 'id="leftframe"' in view
+    assert 'id="annbtn"' not in view, "the controls left the app pane entirely"
+    assert 'id="annbtn"' in _between(html, '<div id="anntools">', "</div>")
     # and the capture still reads the frame, not the pane
     assert "appWindow()" in _between(html, "async function shotPane(", "\n}\n")
 
