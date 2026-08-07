@@ -22,6 +22,8 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter
 
+from fused_render._view_url_codec import canonical_fs_path
+
 router = APIRouter()
 
 # CLAUDE_CONFIG_DIR wins where set (same rule as user_skills.py, the claude/
@@ -68,8 +70,14 @@ def api_claude_sessions():
                 continue
             if mtime > latest.get(cwd, 0.0):
                 latest[cwd] = mtime
+    # Canonicalized on the way out: the frontend's path helpers (basename,
+    # FolderStack's joinPath) are forward-slash-only, matching every other
+    # fs path the runtime hands them — a raw Windows cwd would break both.
     folders = [
-        {"path": path, "lastActive": datetime.fromtimestamp(mtime, timezone.utc).isoformat()}
+        {
+            "path": canonical_fs_path(path),
+            "lastActive": datetime.fromtimestamp(mtime, timezone.utc).isoformat(),
+        }
         for path, mtime in latest.items()
     ]
     folders.sort(key=lambda e: e["lastActive"], reverse=True)

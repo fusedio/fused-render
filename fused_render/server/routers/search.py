@@ -27,6 +27,7 @@ from datetime import date, datetime, timedelta
 from fastapi import APIRouter, Body
 from fastapi.concurrency import run_in_threadpool
 
+from fused_render._view_url_codec import canonical_fs_path
 from fused_render.server.common import _error
 from fused_render.server.gitignore import _IgnoreOracle
 from fused_render.server.walk import _WALK_TRUNCATED, _walk_bfs, WALK_IGNORE_DIRS
@@ -374,7 +375,12 @@ def _search_walk_home(spec):
             continue
         entries.append(
             {
-                "path": abs_path,
+                # Canonicalized (forward slashes) for the response: the
+                # client strips `home` with a "/" join and its path helpers
+                # are forward-slash-only, matching every other fs path the
+                # runtime hands them. `abs_path` above stays native for the
+                # stat call.
+                "path": canonical_fs_path(abs_path),
                 "is_dir": entry["is_dir"],
                 "size": entry["size"],
                 "mtime": entry["mtime"],

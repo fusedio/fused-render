@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import {
   fallbackSpec,
+  hasEngineNarrowing,
   hasNonNameFilters,
   parseAiSearchSpec,
   rankHits,
@@ -77,6 +78,18 @@ describe("hasNonNameFilters", () => {
     expect(hasNonNameFilters({ ...fallbackSpec(""), extensions: ["mov"] })).toBe(true);
     expect(hasNonNameFilters({ ...fallbackSpec(""), modified_after: "2026-08-04" })).toBe(true);
     expect(hasNonNameFilters({ ...fallbackSpec(""), created_before: "2026-08-04" })).toBe(true);
+  });
+});
+
+describe("hasEngineNarrowing", () => {
+  it("is false for a location/kind-only spec — path_hints never reach the engine", () => {
+    expect(hasEngineNarrowing({ ...fallbackSpec(""), path_hints: ["downloads"] })).toBe(false);
+    expect(hasEngineNarrowing({ ...fallbackSpec(""), kind: "dir" })).toBe(false);
+  });
+
+  it("is true once name terms or any real filter is set", () => {
+    expect(hasEngineNarrowing(fallbackSpec("weather"))).toBe(true);
+    expect(hasEngineNarrowing({ ...fallbackSpec(""), extensions: ["mov"] })).toBe(true);
   });
 });
 

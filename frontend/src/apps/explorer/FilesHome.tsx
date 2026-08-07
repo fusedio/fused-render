@@ -260,6 +260,10 @@ function ShowMoreButton({ expanded, onClick }: { expanded: boolean; onClick: () 
 }
 
 export default function FilesHome({ config }: { config: Config }) {
+  // Same normalization every other config.home consumer applies (App.tsx,
+  // Panel.tsx): backslashed on Windows, while search hits and path helpers
+  // (basename, the "home + /" strip below) are forward-slash-only.
+  const home = config.home.replace(/\\/g, "/");
   useBookmarksVersion();
   useRecentsVersion();
   // The active tab lives entirely in the URL (?tab=recents) — read fresh on
@@ -334,7 +338,7 @@ export default function FilesHome({ config }: { config: Config }) {
             Find and preview <span className="home-hero-accent">your files</span>
           </h1>
           <AiSearchComposer
-            home={config.home}
+            home={home}
             initialQuery={initialQuery}
             active={search !== null}
             onResult={(query, result) => {
@@ -349,7 +353,7 @@ export default function FilesHome({ config }: { config: Config }) {
         </header>
 
         {search ? (
-          <SearchResults home={config.home} query={search.query} result={search.result} />
+          <SearchResults home={home} query={search.query} result={search.result} />
         ) : (
           <>
           {/* Browse lives with the content, not the hero (the hero is the

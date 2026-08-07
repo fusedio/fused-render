@@ -201,6 +201,16 @@ export function hasNonNameFilters(spec: AiSearchSpec): boolean {
   );
 }
 
+// Whether the spec gives the ENGINE (server) anything to narrow on.
+// path_hints is client-side-only (soft ranking, see rankHits) and never
+// reaches /api/search/files, so a spec with only path_hints/kind — e.g. "in
+// downloads" — has zero engine narrowing even though the model parsed fine.
+// Sending it anyway hits "spec has no narrowing constraints" on macOS, or a
+// match-everything home walk elsewhere.
+export function hasEngineNarrowing(spec: AiSearchSpec): boolean {
+  return spec.name_terms.length > 0 || hasNonNameFilters(spec);
+}
+
 // Rank the engine's hits: fuzzy name-term score + path-hint boost, recency
 // tie-break (and the whole order when the spec has no name terms). The
 // engine already applied the HARD filters (ext/kind/date/size); name terms
@@ -263,8 +273,15 @@ export async function runAiSearch(
   } catch {
     // relay down / claude missing — fall through to the fallback spec
   }
-  const usedFallback = spec === null;
-  if (spec === null) spec = fallbackSpec(query);
+  // A spec that parsed fine but narrows nothing the engine understands
+  // (location-only: "in downloads") degrades the same as a parse failure —
+  // otherwise it reaches the engine as an unnarrowed query and errors or
+  // returns whatever the walk hit first.
+  let usedFallback = false;
+  if (spec === null || !hasEngineNarrowing(spec)) {
+    usedFallback = true;
+    spec = fallbackSpec(query);
+  }
   if (signal?.aborted) throw new DOMException("aborted", "AbortError");
   const res = await queryEngine(spec, signal);
   return {
