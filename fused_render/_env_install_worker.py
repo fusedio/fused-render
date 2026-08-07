@@ -13,8 +13,9 @@ of a cache key, which is how a loader ends up filling a directory no run reads.
 `<python_executable>` is the base interpreter the environment is built on, and it
 must be the value `envinstall._python_executable()` returned — the backend runs
 the code, so its interpreter and the environment's have to be one choice. argv
-cannot carry None, so the EMPTY STRING stands for "the pinned default"
-(`_DEFAULT_PYTHON`, D214); `main` is the one place that mapping happens.
+cannot carry None, so the EMPTY STRING stands for it; `install` is the one place
+that mapping happens, and it maps to this worker's OWN `sys.executable` (see
+`_PINNED_PYTHON_VERSION` for why not a version string).
 
 `<acquire_python>` (same empty-string idiom) switches this worker to its OTHER job:
 DOWNLOAD that Python version, report it, and stop without building anything (D214).
@@ -91,10 +92,28 @@ _HEARTBEAT_JOIN_S = 5
 _READY_MARKER = ".openfused-ready"
 _SIDECAR_NAME = ".fused-source.json"
 
-# Matches envinstall.SCRIPT_PYTHON_VERSION (D214). Only reached when the server
-# passed an empty interpreter slot, i.e. when the backend's `python_executable`
-# is None — "use the pinned default", which is what that None has always meant.
-_DEFAULT_PYTHON = "3.12"
+# NOT a fallback interpreter — deliberately not used as one, and kept only to
+# document why.
+#
+# An empty interpreter slot means the backend's `python_executable` was None, and
+# None has always meant "the backend's own interpreter", never a version. It is
+# also the COMMON case: `envinstall._resolve_script_python` answers `(None, True)`
+# whenever the server is already on the pinned version, which is every packaged
+# build (the DMG's `python@3.12`, the AppImage's and the Windows installer's
+# `uv python install 3.12`) and every `scripts/dev.sh` checkout since D214.
+#
+# Translating that None into the literal "3.12" was a real bug: `uv sync --python
+# 3.12` then resolves against PATH and uv's managed registry rather than the
+# bundled app interpreter, and with uv's default download behaviour it fetches a
+# managed CPython the app never uses as its base — so the venv is built on one
+# interpreter and the code runs on another. `install` maps the empty slot to
+# `sys.executable`, which IS the server's interpreter because `envinstall._spawn`
+# launches this worker with it.
+#
+# The pin itself still exists and still matters; it lives at
+# `envinstall.SCRIPT_PYTHON_VERSION` (D214), where it is what
+# `_resolve_script_python` probes FOR and what the bootstrap round downloads.
+_PINNED_PYTHON_VERSION = "3.12"
 
 
 def _write(progress_dir, stage, pct, detail="", done=False, error=None):
@@ -287,7 +306,11 @@ def install(key, progress_dir, project_dir, venv_dir, uv_cache_dir,
             python_executable=None, acquire_python=None):
     os.makedirs(progress_dir, exist_ok=True)
     summary = os.path.basename(os.path.abspath(project_dir)) or project_dir
-    python_executable = python_executable or _DEFAULT_PYTHON
+    # None means "the backend's own interpreter", and this worker was spawned
+    # with it (`envinstall._spawn` uses `sys.executable`), so our own is the
+    # faithful translation. See `_PINNED_PYTHON_VERSION` for why a version
+    # string here would build the environment on the wrong python.
+    python_executable = python_executable or sys.executable
 
     # Every record goes through this, and a terminal one LATCHES the file shut.
     #

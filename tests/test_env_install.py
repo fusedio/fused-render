@@ -1977,6 +1977,62 @@ def test_an_unmarked_venv_directory_is_removed_before_syncing(tmp_path, monkeypa
 
 
 @requires_fused
+def test_an_empty_interpreter_slot_means_the_workers_OWN_python(tmp_path, monkeypatch):
+    """None has always meant "the backend's own interpreter", never a version.
+
+    `_resolve_script_python` answers `(None, True)` whenever the server is
+    already on the pinned version — the common path for the DMG, the AppImage,
+    the Windows installer and scripts/dev.sh — and `_spawn` carries that None
+    across argv as "". Mapping it to the literal "3.12" makes `uv sync --python
+    3.12` resolve against PATH and uv's managed registry instead of the bundled
+    app interpreter, and with uv's default download behaviour it fetches a
+    managed CPython the app never uses as its base. The venv would then be built
+    on a different interpreter than the one running the code, which is exactly
+    what both docstrings promise cannot happen.
+    """
+    worker = _worker_module("_env_install_worker_default_py")
+    seen = []
+    monkeypatch.setattr(
+        worker, "_build",
+        lambda project_dir, venv_dir, uv_cache_dir, python_executable: (
+            seen.append(python_executable) or "/x/bin/python"
+        ),
+    )
+    d = str(tmp_path / "prog")
+    worker.main(["k", d, str(tmp_path / "proj"), str(tmp_path / "venv"),
+                 str(tmp_path / "cache"), "", ""])
+
+    assert seen == [sys.executable], (
+        "an empty interpreter slot must mean this worker's own python — the one "
+        f"the server spawned it with — not {seen}"
+    )
+
+
+@requires_fused
+def test_the_worker_spawns_with_the_interpreter_that_will_run_the_code(
+    tmp_path, monkeypatch
+):
+    """End to end: the server's own `sys.executable` reaches `uv sync --python`.
+
+    `_spawn` launches the worker with `sys.executable`, so the worker's own
+    interpreter IS the server's — which is what makes the empty-slot translation
+    faithful rather than merely convenient.
+    """
+    proj = _project(tmp_path, deps=["pip"])
+    monkeypatch.setattr(envinstall, "_python_executable", lambda: None)
+    monkeypatch.setattr(envinstall, "script_python_ready", lambda: True)
+
+    argv = []
+    monkeypatch.setattr(envinstall.subprocess, "Popen",
+                        lambda cmd, **kw: argv.append(cmd) or _FakePopen())
+    envinstall.start(proj)
+
+    assert argv, "no worker was spawned"
+    assert argv[0][0] == sys.executable, "the worker must run on the server's python"
+    assert argv[0][-2] == "", "None must travel as the empty string"
+
+
+@requires_fused
 def test_the_worker_imports_neither_fused_render_nor_fused(tmp_path):
     """A fresh process must reach `_build` with neither package imported.
 
@@ -2426,10 +2482,10 @@ def test_the_worker_reads_an_empty_interpreter_argument_as_none(tmp_path, monkey
     d = str(tmp_path / "prog")
     worker.main(["k", d, str(tmp_path / "proj"), str(tmp_path / "venv"),
                 str(tmp_path / "cache"), "", ""])
-    assert seen == [worker._DEFAULT_PYTHON]
+    assert seen == [sys.executable]
     worker.main(["k", d, str(tmp_path / "proj"), str(tmp_path / "venv"),
                 str(tmp_path / "cache"), "/usr/bin/python3", ""])
-    assert seen == [worker._DEFAULT_PYTHON, "/usr/bin/python3"]
+    assert seen == [sys.executable, "/usr/bin/python3"]
 
 
 @requires_fused
