@@ -42,12 +42,12 @@ export default function ShellSidebar({ config }: { config: Config }) {
   const sessionsMountReady = useSessionsMountReady(config.sessions_mount_ready);
 
   return (
-    <SidebarFrame title="Fused Render" version={config.version}>
+    <SidebarFrame title="Render" version={config.version}>
       <div className="sidebar-section">
-        <NavItem href="/apps" id="apps-link" label="Apps" icon={APPS_ICON} />
-        <NavItem href="/explorer" id="explorer-link" label="File Explorer" icon={<FolderIcon />} />
-        {sessionsMountReady && <NavItem href="/sessions" id="sessions-link" label="Sessions" icon={SESSIONS_ICON} />}
-        {learnMountReady && <NavItem href="/learn" id="learn-link" label="Learn" icon={<LearnIcon />} />}
+        <NavItem href="/apps" id="apps-link" label="Fused App" icon={APPS_ICON} />
+        <NavItem href="/explorer" id="explorer-link" label="Fused Explorer" icon={<FolderIcon />} />
+        {sessionsMountReady && <NavItem href="/sessions" id="sessions-link" label="Claude Sessions" icon={SESSIONS_ICON} />}
+        {learnMountReady && <NavItem href="/learn" id="learn-link" label="Learn More" icon={<LearnIcon />} />}
       </div>
       {/* Settings — pinned to the bottom edge (margin-top: auto), the same
           list treatment as the sub-app list above. */}
