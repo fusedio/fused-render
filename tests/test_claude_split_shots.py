@@ -2077,66 +2077,70 @@ def test_both_composers_draw_the_toggle_identically(html):
     assert chat.replace('id="viewshot"', "ID") == home.replace('id="hviewshot"', "ID")
 
 
-def test_the_annotate_control_is_a_small_unlabelled_icon(html):
-    """Annotating is occasional, so its control must not charge every project that
-    never uses it. A permanent strip cost ~28px of app height plus a line of chrome
-    the app never asked for, and the labelled pill before it grew into a whole
-    sentence when armed — covering MORE of the app at the moment the user was
-    aiming at it. A fixed 26px icon has neither cost: no layout row, and nothing
-    that can change size."""
+def test_the_annotate_control_is_a_labelled_switch(html):
+    """The annotate control is a labelled left-right sliding switch, not a bare
+    icon: it sits OUTSIDE the pane in the chat pane's empty header margin, where a
+    label costs the app zero pixels — so the state is spelled out ("Annotating" /
+    "Annotate") instead of encoded in a fill an unlabelled 26px glyph had to carry
+    alone. Both switches (#annbtn, #annvis) follow the shape: track + knob + text,
+    fixed height, absolute overlay."""
+    for sel in ("#annbtn {", "#annvis {"):
+        btn = _between(html, sel, "}")
+        assert "height: 26px" in btn, btn
+        assert "border-radius: 999px" in btn, btn
+        assert "white-space: nowrap" in btn, btn
+        # the switch anatomy exists in CSS for both controls
+        root = sel.split(" ")[0]
+        assert root + " .track {" in html, root
+        assert root + " .knob {" in html, root
+        # the knob SLIDES on toggle: the on-state moves it inside its fixed track
+        assert "left: 14px" in _between(html, root + ".on .knob {", "}"), root
+    # idle tints, armed fills the whole pill — annotate mode swallows the app's
+    # clicks, so its on-state must be the loudest of the two switches
     btn = _between(html, "#annbtn {", "}")
-    assert "width: 26px" in btn and "height: 26px" in btn, btn
-    assert "border-radius: 999px" in btn, btn
-    # no label text in either state, so nothing to ellipsize and nothing to grow
-    assert "#annbtn .lbl {" not in html
-    assert "#annbtn .stop {" not in html
-    assert "annLbl" not in html and "annStop" not in html
-    assert "textContent" not in _between(html, "function annSetMode(", "\n}")
-    # Accent while idle, because a 26px unlabelled glyph outside the pane is easy
-    # to miss — but then idle and armed both use the accent, so the ONE thing that
-    # still separates them must hold: idle tints (accent glyph, panel background),
-    # armed fills (accent background, glyph knocked out). Without this the control
-    # has no visible state at all, and there is no label to fall back on.
     assert "color: var(--accent)" in btn and "background: var(--panel)" in btn, btn
     on = _between(html, "#annbtn.on {", "}")
     assert "background: var(--accent)" in on, on
     assert "color: var(--on-accent)" in on, on
-    # an icon-only control still has to have a name and announce its state
+    # named, announced, and labelled in the markup
     view = _between(html, '<div id="leftview"', "<!-- /leftview -->")
     assert 'id="annbtn"' in view and 'aria-label="' in view, view
-    assert 'aria-pressed="false"' in view, view
-    # An inline SVG stroked in currentColor, like the composer's pane-shot icon —
-    # that is what lets one glyph follow the accent tint AND be knocked out to
-    # --on-accent when armed. A text/emoji glyph can do neither, and renders at a
-    # different weight on every platform.
+    assert 'class="lbl"' in view, view
+    for root in ("annBtn", "annVisBtn"):
+        assert root + '.querySelector(".lbl").textContent' in html, root
+    # the comment-bubble icon survives, stroked in currentColor so it follows the
+    # accent tint and is knocked out to --on-accent when armed
     icon = _between(view, 'id="annbtn"', "</button>")
     assert "<svg" in icon and 'stroke="currentColor"' in icon, icon
     assert 'fill="none"' in icon and 'aria-hidden="true"' in icon, icon
     assert "✎" not in html, "the pencil glyph is gone from the template"
 
 
-def test_the_annotate_icon_covers_none_of_the_app(html):
-    """The original floating button sat on the app's own top-right corner, and you
-    cannot click through a control — whatever was under it could not be annotated.
-    Fixed by moving it OUT of the pane rather than by shrinking it: a negative
-    offset puts it past the divider, in the chat pane's left margin, so the overlap
-    with the app is zero rather than merely small.
+def test_annotate_mode_and_pin_visibility_default_on(html):
+    """Both switches start ON: an unset param means enabled, and only an explicit
+    "0" — the user sliding it off — disables. Encoded as `!== "0"` rather than
+    `=== "1"` so a first visit (no params at all) gets the default."""
+    assert 'annSetMode(fused.params.get("annmode") !== "0")' in html
+    assert 'fused.params.get("annshow") !== "0"' in html
+    assert 'fused.params.get("annautosend") !== "0"' in html
 
-    Safe because nothing clips it (neither `#left` nor `#leftview` sets `overflow`,
-    and `#chat`'s `overflow: hidden` cannot clip a non-descendant) and because the
-    space always exists: `#chat` has `min-width: 340px` and this layout never
+
+def test_the_annotate_switch_covers_none_of_the_app(html):
+    """A control over the app blocks annotating whatever sits under it. Both
+    switches anchor by their LEFT edge past the divider (`left: calc(100% + …)`)
+    and grow RIGHTWARD into the chat pane's margin — wider labels extend away from
+    the app, never over it.
+
+    Safe because nothing clips them (neither `#left` nor `#leftview` sets
+    `overflow`, and `#chat`'s `overflow: hidden` cannot clip a non-descendant) and
+    because the space exists: `#chat` has `min-width: 340px` and this layout never
     stacks vertically."""
-    btn = _between(html, "#annbtn {", "}")
-    assert "position: absolute" in btn, btn
-    # negative, i.e. outside the pane — clear of the 4px divider's drag strip AND
-    # not jammed against it: 26px button + 4px divider + a real gap. Flush against
-    # the seam read as having slid there rather than being placed.
-    off = btn[btn.index("right:"):].split(";")[0]
-    px = int(off.split(":")[1].strip().rstrip("px"))
-    assert px <= -34, "26px button + 4px divider + a gap: " + off
-    # inset from the corner on both axes by the same amount, so it reads as placed
-    top = btn[btn.index("top:"):].split(";")[0]
-    assert top.split(":")[1].strip() == "%dpx" % (-px - 30), (top, off)
+    for sel in ("#annbtn {", "#annvis {"):
+        btn = _between(html, sel, "}")
+        assert "position: absolute" in btn, btn
+        # left-anchored past the pane's own width, so growth is rightward
+        assert "left: calc(100% + " in btn, btn
+        assert "right:" not in btn, btn
     for clipper in ("#left {", "#leftview {"):
         assert "overflow" not in _between(html, clipper, "}"), clipper
     assert "min-width: 340px" in _between(html, "#chat {", "}")

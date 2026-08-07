@@ -101,59 +101,40 @@
   }
 
   /* ── annotation layer over the left iframe ─────── */
-  /* A small floating icon, NOT a strip or a banner. Annotating is an occasional
-     act, and a permanent row (or a full-width status bar) charged every project
-     that never annotates ~28px of app height plus a line of chrome the app did
-     not ask for. So the control floats over the app again — but it is a 26px
-     circle in ONE corner instead of the ~100px labelled pill whose active state
-     grew into a sentence, which is what made the old floating version cover the
-     app's top-right corner and get in the way of clicking.
-     And it is pushed OUTSIDE the pane (see `right`), so it covers none of the app
-     at all — the corner it used to sit on is annotatable again. Bottom edge,
-     deliberately: an app's headings, tabs and toolbars — the things people annotate
-     most — live along the TOP.
-     Size and position are IDENTICAL in both states: the active state may only
-     repaint. A control that grew when armed would cover more of the app at
-     exactly the moment the user is aiming at it, and being an overlay (not a
-     layout row) it cannot move the iframe's box at all, so pins and
-     `annStageRect` — which are in frame viewport coordinates — are untouched by
-     toggling.
-     No label in either state. Armed is signalled by the accent fill and by the
-     highlight box that tracks the pointer over the app; the full instruction and
-     both ways out live in the tooltip, where they cost no space. */
+  /* Two labelled sliding switches, stacked outside the pane in the chat pane's
+     left header margin: annotate mode (#annbtn) and pin visibility (#annvis).
+     Outside the pane they cover zero pixels of the app, and the margin space is
+     otherwise empty — so a label and a switch track cost nothing and say plainly
+     what each control governs, where the previous 26px unlabelled circles had to
+     encode their state in a fill alone. Size and position are IDENTICAL in both
+     states of each switch: the active state may only repaint (plus the knob
+     sliding INSIDE its fixed track), so toggling can never reflow the iframe's
+     box — pins and `annStageRect` are in frame viewport coordinates and stay
+     put. */
+  /* A labelled sliding switch, not a bare icon: the control anchors by its LEFT
+     edge just past the divider (`left: calc(100% + 14px)`) and grows rightward
+     into the chat pane's empty header margin — so a label and a track cost the
+     app zero pixels, and the state ("Annotating" / "Annotate") is spelled out
+     instead of encoded in a fill an unlabelled 26px glyph had to carry alone.
+     Nothing clips it — neither `#left` nor `#leftview` sets `overflow`, and
+     `#chat`'s own `overflow: hidden` cannot clip a box that is not its
+     descendant. Idle tints (accent on panel), armed FILLS the whole pill —
+     annotate mode swallows the app's clicks, so its on-state is the loudest. */
   #annbtn {
     position: absolute;
-    /* Top of the pane, with real space around it on both axes. The two offsets are
-       the same 10px, so the icon reads as inset from a corner rather than pinned to
-       one edge — a control jammed against the divider with no gap looked like it
-       had slid there, and the vertically-centred version was aligned to nothing
-       the eye could see. */
     top: 10px;
-    /* Pushed clear of the pane entirely, PLUS a gap: -40px = the button's own 26px,
-       the 4px divider, and 10px of air between the divider and the button. So it
-       covers zero of the app, none of the divider's drag strip, and does not touch
-       the seam. Nothing clips it — neither `#left` nor `#leftview` sets `overflow`,
-       and `#chat`'s own `overflow: hidden` cannot clip a box that is not its
-       descendant. It lands in the chat pane's left margin, which is empty
-       background: `#chat` has `min-width: 340px` and this layout never stacks
-       vertically, so those 40px always exist. */
-    right: -40px;
+    left: calc(100% + 14px);
     z-index: 4;
-    width: 26px;
     height: 26px;
-    padding: 0;
+    padding: 0 8px 0 10px;
     display: flex;
     align-items: center;
-    justify-content: center;
+    gap: 7px;
     font: inherit;
     font-size: 12px;
+    font-weight: 600;
     line-height: 1;
-    /* Accent while IDLE, on purpose: the control is now a 26px unlabelled glyph
-       parked outside the pane, which is easy to miss entirely — so the one thing it
-       still has to do is be noticed. Idle TINTS (accent glyph and ring on the panel
-       background), armed FILLS (solid accent disc, glyph knocked out). Both use the
-       accent, and the difference is which one is painted, so the two states stay
-       distinguishable without a label to tell them apart. */
+    white-space: nowrap;
     border: 1px solid var(--accent);
     border-radius: 999px;
     background: var(--panel);
@@ -166,7 +147,7 @@
      the neutral hover excludes the active state, and the active state hovers within
      its accent. See the comment on `.pill:hover`. */
   /* `display: block` kills the inline baseline gap that would push the glyph off
-     centre inside a fixed 26px circle. Same rule as `.viewshot svg`. */
+     centre. Same rule as `.viewshot svg`. */
   #annbtn svg { display: block; }
   #annbtn:hover:not(.on) { background: var(--surface-2); }
   #annbtn.on {
@@ -174,6 +155,79 @@
     color: var(--on-accent);
   }
   #annbtn.on:hover { filter: brightness(1.1); }
+  /* The slider: knob left = off, knob right = on. Drawn in currentColor so it
+     follows the pill's own idle/armed palette; the on-state inverts it so the
+     knob stays visible on the accent-filled pill. */
+  #annbtn .track {
+    position: relative;
+    width: 28px;
+    height: 16px;
+    border-radius: 999px;
+    border: 1px solid currentColor;
+    flex-shrink: 0;
+    transition: background .15s;
+  }
+  #annbtn .knob {
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: currentColor;
+    transition: left .15s, background .15s;
+  }
+  #annbtn.on .track { background: var(--on-accent); }
+  #annbtn.on .knob { left: 14px; background: var(--accent); }
+  /* The pins-visibility switch: a labelled left-right sliding toggle under the
+     annotate icon. Anchored by its LEFT edge just past the divider (`left:
+     calc(100% + 14px)`) so growing wider extends into the chat pane's empty
+     header margin, never leftward over the app. On = knob right, accent track. */
+  #annvis {
+    position: absolute;
+    top: 44px;
+    left: calc(100% + 14px);
+    z-index: 4;
+    height: 26px;
+    padding: 0 10px 0 6px;
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    font: inherit;
+    font-size: 12px;
+    line-height: 1;
+    white-space: nowrap;
+    border: 1px solid var(--accent);
+    border-radius: 999px;
+    background: var(--panel);
+    color: var(--accent);
+    cursor: pointer;
+    box-shadow: 0 2px 8px var(--shadow);
+    transition: color .12s, border-color .12s, background .12s, filter .12s;
+  }
+  #annvis:hover { background: var(--surface-2); }
+  #annvis .track {
+    position: relative;
+    width: 28px;
+    height: 16px;
+    border-radius: 999px;
+    border: 1px solid var(--accent);
+    background: transparent;
+    transition: background .15s;
+    flex-shrink: 0;
+  }
+  #annvis .knob {
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: var(--accent);
+    transition: left .15s, background .15s;
+  }
+  #annvis.on .track { background: var(--accent); }
+  #annvis.on .knob { left: 14px; background: var(--on-accent); }
   #annpins { position: absolute; inset: 0; z-index: 2; pointer-events: none; overflow: hidden; }
   .annpin {
     position: absolute;
@@ -229,8 +283,18 @@
     outline: none;
   }
   #annpop .hint { color: var(--faint); font-size: 11px; margin-top: 5px; display: flex; align-items: center; }
-  #anndel {
+  #annauto {
+    display: flex;
+    align-items: center;
+    gap: 3px;
     margin-left: auto;
+    cursor: pointer;
+    user-select: none;
+    white-space: nowrap;
+  }
+  #annauto input { margin: 0; accent-color: var(--accent); cursor: pointer; }
+  #anndel {
+    margin-left: 8px;
     border: 0;
     background: transparent;
     color: var(--error);
@@ -608,6 +672,11 @@
   }
   .send:hover { filter: brightness(1.1); transform: translateY(-1px); }
   .send:active { transform: none; }
+  /* While a run is live the send buttons become stop buttons: the arrow hides and
+     a stop square shows. Clicking then kills the run (same as Escape). */
+  .send .ic-stop { display: none; }
+  body.running .send .ic-send { display: none; }
+  body.running .send .ic-stop { display: block; }
 
   #composer-chat {
     flex-shrink: 0;
@@ -772,12 +841,25 @@
               title="Annotate the app, then send the notes to Claude"><svg width="13" height="13"
         viewBox="0 0 16 16" fill="none" aria-hidden="true"><rect x="2.3" y="2.8" width="11.4"
         height="8.4" rx="2.2" stroke="currentColor" stroke-width="1.4"/><path d="M5.6 11.2v2.6l3-2.6"
-        stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+        stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg><span
+        class="lbl">Annotate</span><span class="track" aria-hidden="true"><span class="knob"></span></span></button>
+      <!-- Visibility switch for the annotation pins, stacked under the annotate
+           button. A real sliding switch WITH a label — the margin under the 26px
+           icon column runs into the chat pane's empty header space, so the label
+           costs nothing and says exactly what the control governs. -->
+      <button id="annvis" type="button" role="switch" aria-checked="true"
+              aria-label="Show annotation comments on the app"
+              title="Show or hide the annotation comment pins over the app">
+        <span class="track" aria-hidden="true"><span class="knob"></span></span>
+        <span class="lbl">Comments shown</span>
+      </button>
       <div id="annhl"></div>
       <div id="annpins"></div>
       <div id="annpop">
         <textarea rows="2" placeholder="What about this element?" spellcheck="false"></textarea>
-        <div class="hint">Enter to save · Esc to cancel <button id="anndel" type="button" hidden>Delete</button></div>
+        <div class="hint">Enter to save · Esc to cancel
+          <label id="annauto" title="Send the note to Claude immediately when saved"><input type="checkbox" checked> Auto-send</label>
+          <button id="anndel" type="button" hidden>Delete</button></div>
       </div>
     </div><!-- /leftview -->
   </div>
@@ -808,8 +890,11 @@
                     title="Attach a screenshot of the whole app pane to this message (for layout problems that are not about one element)"><svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true"><rect x="2.2" y="3.2" width="11.6" height="9.6" rx="2.2" stroke="currentColor" stroke-width="1.4"/><path d="M2.9 11.4 6 8.3a1.2 1.2 0 0 1 1.7 0l3 3" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/><circle cx="10.6" cy="6.3" r="1.1" fill="currentColor"/></svg></button>
             <span class="spacer"></span>
             <button class="send" type="submit" aria-label="Send">
-              <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+              <svg class="ic-send" width="14" height="14" viewBox="0 0 16 16" fill="none">
                 <path d="M8 13V3M8 3L3.5 7.5M8 3l4.5 4.5" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+              <svg class="ic-stop" width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                <rect x="4" y="4" width="8" height="8" rx="1.5" fill="currentColor"/>
               </svg>
             </button>
           </div>
@@ -836,8 +921,11 @@
                     title="Attach a screenshot of the whole app pane to this message (for layout problems that are not about one element)"><svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true"><rect x="2.2" y="3.2" width="11.6" height="9.6" rx="2.2" stroke="currentColor" stroke-width="1.4"/><path d="M2.9 11.4 6 8.3a1.2 1.2 0 0 1 1.7 0l3 3" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/><circle cx="10.6" cy="6.3" r="1.1" fill="currentColor"/></svg></button>
             <span class="spacer"></span>
             <button class="send" type="submit" aria-label="Send">
-              <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+              <svg class="ic-send" width="14" height="14" viewBox="0 0 16 16" fill="none">
                 <path d="M8 13V3M8 3L3.5 7.5M8 3l4.5 4.5" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+              <svg class="ic-stop" width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                <rect x="4" y="4" width="8" height="8" rx="1.5" fill="currentColor"/>
               </svg>
             </button>
           </div>
@@ -1398,6 +1486,10 @@ const annFrame = document.getElementById("leftframe");
 let annOn = false;
 let annDraft = null;    // anchor of a NEW note being composed
 let annEditing = null;  // id of an existing pending note being edited
+// Pins visible over the app. Default ON: an unset param means shown, and only an
+// explicit "0" (the user toggled it off) hides them. Chips above the composer are
+// the send payload and stay visible either way.
+let annShow = fused.params.get("annshow") !== "0";
 
 function annLoad() {
   try {
@@ -1484,7 +1576,8 @@ function annLabelFor(i) {
 function renderAnn() {
   // pins over the frame
   annPins.innerHTML = "";
-  const doc = annFrame.contentDocument;
+  annPins.style.display = annShow ? "" : "none";
+  const doc = annShow ? annFrame.contentDocument : null;
   // #leftview, not #left: pins are placed in FRAME viewport coordinates, so their
   // host must be the box the iframe fills — #left also holds the control strip,
   // and measuring that would put every pin the strip's height too high.
@@ -1591,13 +1684,14 @@ function annCloseComposer() {
 }
 // A fresh note usually precedes a "go apply it" message: seed the visible
 // composer so sending is one keypress. Only when it's empty — never clobber
-// typed text — and never auto-send.
+// typed text. Auto-send (the popover's checkbox, default on) then submits it.
 function annPrefillComposer() {
   const home = chatEl.classList.contains("home");
   const el = home ? homebox : box;
-  if (el.value.trim()) return;
+  if (el.value.trim()) return false;  // a typed draft is the user's — hands off
   el.value = "apply the comments";
   (home ? growHome : growBox)();
+  return true;
 }
 // Click anywhere outside the popover dismisses it. mousedown, not click, so
 // it fires before the target's own handlers; pins and chips are exempt — their
@@ -1623,15 +1717,23 @@ annTa.addEventListener("keydown", (e) => {
   if (e.key === "Enter" && !e.shiftKey) {
     e.preventDefault();
     const content = annTa.value.trim();
-    if (content && annDraft) {
+    const isNew = !!(content && annDraft);
+    let filled = false;
+    if (isNew) {
       annotations.push({ id: crypto.randomUUID(), content, createdAt: Date.now(), ...annDraft });
       annSave();
-      annPrefillComposer();
+      filled = annPrefillComposer();
     } else if (content && annEditing) {
       const c = annotations.find((a) => a.id === annEditing);
       if (c && !c.sent) { c.content = content; annSave(); }
     }
     annCloseComposer();
+    // Auto-send fires for NEW notes only — editing an existing pending note must
+    // not send. Skipped while a turn is in flight (the note stays pending and
+    // rides the next message) and when the composer holds a typed draft — the
+    // prefill refused to touch it, and sending a half-typed message is worse
+    // than leaving the note as a chip.
+    if (isNew && filled && annAutoEl.checked && !sending) annAutoSubmit();
   }
 });
 
@@ -1640,8 +1742,10 @@ annTa.addEventListener("keydown", (e) => {
 // text to disagree with `annOn`.
 function annSetMode(on) {
   annOn = on;
+  fused.params.set("annmode", annOn ? "1" : "0");
   annBtn.classList.toggle("on", annOn);
   annBtn.setAttribute("aria-pressed", String(annOn));
+  annBtn.querySelector(".lbl").textContent = annOn ? "Annotating" : "Annotate";
   // No label in either state — the icon never changes size or position, so nothing
   // here can cover more of the app than the idle button already does. The tooltip
   // is where the instruction and BOTH ways out live, because it has no width limit
@@ -1654,6 +1758,36 @@ function annSetMode(on) {
 }
 
 annBtn.addEventListener("click", () => annSetMode(!annOn));
+// Annotate mode is ON by default: an unset param means armed, and only an
+// explicit "0" (the user slid it off, or pressed Escape) starts it disarmed.
+annSetMode(fused.params.get("annmode") !== "0");
+
+// Pins-visibility toggle: pressed (filled) = pins shown, which is the default.
+const annVisBtn = document.getElementById("annvis");
+function annSetShow(on) {
+  annShow = on;
+  fused.params.set("annshow", on ? "1" : "0");
+  annVisBtn.classList.toggle("on", on);
+  annVisBtn.setAttribute("aria-checked", String(on));
+  annVisBtn.querySelector(".lbl").textContent = on ? "Comments shown" : "Comments hidden";
+  annVisBtn.title = on ? "Annotation comment pins are shown over the app — click to hide them"
+                       : "Annotation comment pins are hidden — click to show them";
+  renderAnn();
+}
+annSetShow(annShow);
+annVisBtn.addEventListener("click", () => annSetShow(!annShow));
+
+// Auto-send: a saved NEW note goes to Claude immediately (default on). The
+// checkbox lives in the note popover and persists like the pins toggle.
+const annAutoEl = document.querySelector("#annauto input");
+annAutoEl.checked = fused.params.get("annautosend") !== "0";
+annAutoEl.addEventListener("change", () => {
+  fused.params.set("annautosend", annAutoEl.checked ? "1" : "0");
+});
+function annAutoSubmit() {
+  if (chatEl.classList.contains("home")) document.getElementById("card").requestSubmit();
+  else submitChat();
+}
 
 // Wire the framed app on every load (the app live-reloads on Claude's edits;
 // pins re-resolve against the fresh DOM). Handlers stay attached and gate on
@@ -3368,6 +3502,7 @@ async function pollLoop(run_id) {
   // place a run is ever in flight, which covers a re-attached run for free.
   activeRun = run_id;
   activeWorking = w;
+  setRunningUi(true);
   let reply = null;
   let typer = null;
   try {
@@ -3429,7 +3564,19 @@ async function pollLoop(run_id) {
     // the NEXT turn's ending as a stop.
     activeRun = null;
     activeWorking = null;
+    setRunningUi(false);
   }
+}
+
+// The composer's send buttons double as stop buttons while a run is live: the
+// arrow swaps for a stop square (CSS on body.running) and a click aims at the
+// run, same as Escape. Labels follow so a screen reader hears the real action.
+function setRunningUi(on) {
+  document.body.classList.toggle("running", on);
+  document.querySelectorAll(".send").forEach((b) => {
+    b.setAttribute("aria-label", on ? "Stop" : "Send");
+    b.title = on ? "Stop this turn (Esc)" : "";
+  });
 }
 
 async function sendMessage(message) {
@@ -3682,14 +3829,24 @@ function submitChat() {
   growBox();
   sendMessage(message);
 }
-document.getElementById("inputbox").onsubmit = (e) => { e.preventDefault(); submitChat(); };
+// The submit event is the send BUTTON's path (Enter in the box is handled below
+// and never reaches here): while a run is live the button is a stop button.
+document.getElementById("inputbox").onsubmit = (e) => {
+  e.preventDefault();
+  if (activeRun) { stopRun(); return; }
+  submitChat();
+};
 box.addEventListener("keydown", (e) => {
+  // Enter never stops a run — a user drafting the next message mid-run must not
+  // kill the turn with a keystroke meant to queue text. Only the button (now a
+  // stop square) and Escape do.
   if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); submitChat(); }
 });
 
 // ── home: big input + this file's sidecar sessions ──
 document.getElementById("card").onsubmit = (e) => {
   e.preventDefault();
+  if (activeRun) { stopRun(); return; }
   if (sending) return;
   const message = homebox.value.trim();
   // notes alone are sendable, and so is a bare request for a picture of the pane
