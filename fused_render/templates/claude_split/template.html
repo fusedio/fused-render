@@ -3409,6 +3409,7 @@ function queueMessage(text) {
   x.onclick = () => {
     const i = queuedMsgs.indexOf(entry);
     if (i >= 0) queuedMsgs.splice(i, 1);
+    entry.dead = 1;  // may be detached in stopRun's `held` right now — see below
     d.remove();
     // Back into the composer, not the void — appended so a draft in progress
     // is never clobbered.
@@ -3436,10 +3437,11 @@ function drainQueue() {
 }
 
 // Stop means halt: give queued text back to the composer instead of firing it
-// at the session a second after the user said stop.
-function unqueueAll() {
-  while (queuedMsgs.length) {
-    const q = queuedMsgs.shift();  // head first: composer keeps typed order
+// at the session a second after the user said stop. Takes the entries rather
+// than reading queuedMsgs, because stopRun detaches them first (see below).
+function unqueueAll(entries) {
+  for (const q of entries) {  // head first: composer keeps typed order
+    if (q.dead) continue;  // × was clicked while this entry was detached
     q.el.remove();
     box.value = box.value ? box.value.replace(/\s*$/, "\n\n") + q.text : q.text;
   }
@@ -3450,15 +3452,21 @@ async function stopRun() {
   const run_id = activeRun;
   if (!run_id || stoppedRun === run_id) return;  // nothing live, or already going
   stoppedRun = run_id;
-  unqueueAll();
+  // Detach the queue BEFORE the await — a drain racing the cancel must find it
+  // empty — but move nothing to the composer until the stop actually lands:
+  // a failed cancel leaves the run live, and the queue (bubbles untouched, the
+  // array put back) has to keep auto-draining when that run really ends.
+  const held = queuedMsgs.splice(0);
   if (activeWorking) activeWorking.setStopping(true);
   try {
     await fused.runPython(AGENT, { action: "cancel", run_id }, { key: null });
+    unqueueAll(held);
   } catch (err) {
     // The kill never reached the backend, so the run is still going and the poll
     // loop is still streaming it. Take the claim back: leaving it set would
     // relabel this run's real ending as a stop the user never got.
     stoppedRun = "";
+    queuedMsgs.push(...held.filter((q) => !q.dead));
     if (activeWorking) activeWorking.setStopping(false);
     addError("Could not stop the run: " + err.message);
   }
