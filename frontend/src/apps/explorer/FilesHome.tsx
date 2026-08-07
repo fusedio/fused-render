@@ -272,12 +272,11 @@ export default function FilesHome({ config }: { config: Config }) {
   // rather than state that's merely seeded from the url once at mount.
   useUrlVersion();
   const tabParam = new URLSearchParams(location.search).get("tab");
-  const tab: LaunchTab =
-    tabParam === "recents" ? "recents" : tabParam === "sessions" ? "sessions" : "bookmarks";
   const setTab = (next: LaunchTab) => {
     const params = new URLSearchParams(location.search);
-    if (next === "bookmarks") params.delete("tab"); // "bookmarks" is the default — keep the url clean
-    else params.set("tab", next);
+    // Always written explicitly (even "bookmarks"): the no-param default is
+    // content-dependent below, so a clicked tab must pin itself in the URL.
+    params.set("tab", next);
     const qs = params.toString();
     replaceSearch(location.pathname + (qs ? "?" + qs : ""));
   };
@@ -311,6 +310,18 @@ export default function FilesHome({ config }: { config: Config }) {
   }, []);
   const shownSessions =
     sessionFolders && (expandedSessions ? sessionFolders : sessionFolders.slice(0, MAX_CARDS));
+  // With no ?tab= in the URL, land on the first tab that has anything to
+  // show: bookmarks, else recents, else Claude sessions. Derived (not written
+  // back to the URL) so the address stays clean and an explicit ?tab= always
+  // wins.
+  const tab: LaunchTab =
+    tabParam === "recents" || tabParam === "sessions" || tabParam === "bookmarks"
+      ? tabParam
+      : bookmarks.length
+        ? "bookmarks"
+        : recents.length
+          ? "recents"
+          : "sessions";
   // A committed AI search result takes over the page body (bookmarks/recents
   // hide behind it) until cleared — the homepage becomes the result page.
   const [search, setSearch] = useState<{ query: string; result: AiSearchResult } | null>(null);
