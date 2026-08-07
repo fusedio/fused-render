@@ -385,7 +385,25 @@ def test_a_file_target_still_gets_the_file_scoping_prompt(agent, tmp_path,
     cmd, _run_dir = _spawn(agent, monkeypatch, target)
     prompt = cmd[cmd.index("--append-system-prompt") + 1]
     assert "Keep your work scoped to this file" in prompt
-    assert agent.APP_STATE_TOOL not in prompt
+
+
+def test_a_file_target_is_also_told_about_the_app_state_tool(agent, tmp_path,
+                                                             monkeypatch):
+    """D230: a file target has a left pane too — the file in its own default
+    view — so the same "an un-announced tool never gets called" argument that
+    put the disclosure in the directory prompt applies here. It did not before,
+    when the gate offered this template for project folders only and the file
+    branch was the plain viewer's prompt verbatim."""
+    agent.RUNS = str(tmp_path / "runs")
+    target = tmp_path / "notes.md"
+    target.write_text("# hi")
+    cmd, _run_dir = _spawn(agent, monkeypatch, target)
+    prompt = cmd[cmd.index("--append-system-prompt") + 1]
+    assert agent.APP_STATE_TOOL in prompt
+    # and it describes OUR viewer around THEIR file — never "your app", which
+    # would invite edits to the template doing the rendering
+    assert "fused-render's own preview" in prompt
+    assert "never edit the viewer" in prompt
 
 
 def test_a_file_target_is_not_told_it_is_a_fused_render_project(

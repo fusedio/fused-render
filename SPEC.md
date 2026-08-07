@@ -395,25 +395,29 @@ const page = await fused.runPython("./reader.py",
 
 | Extension(s) | Modes (first = default) | Notes |
 |---|---|---|
-| `.parquet` | `table` | paged table via pyarrow; binary — no `code` mode |
-| `.csv .tsv` | `duckdb`, `code` | paged table + SQL over the file |
-| `.xlsx` | `xlsx` | sheet select + paged table |
-| `.json .geojson` | `tree`, `code` | collapsible tree |
-| `.md` | `markdown`, `code`, `claude`, `git` | notes editor (§32) + raw source + chat about the note + this note's git history (§33) |
-| `.svg` | `image`, `code` | `<img>` via raw endpoint; svg source is text |
-| `.png .jpg .jpeg .gif .webp` | `image` | `<img>` via raw endpoint |
-| `.pdf` | `pdf` | browser-native embed |
+| `.parquet` | `duckdb`, `structure`, `h3`, `claude_split`, `versions`, `history`, `geometry_editor` | paged grid + SQL over the file; binary — no `code` mode. The `claude_split`/`versions` pair is the file-kind pair of PT-14 |
+| `.csv .tsv` | `duckdb`, `excel` (`.csv` only), `code`, `claude_split`, `versions`, `reader` | paged table + SQL over the file |
+| `.xlsx` | `xlsx`, `excel`, `reader` | sheet select + paged table. No file-kind pair (PT-14): a spreadsheet is not authored text |
+| `.json` | `tree`, `code`, `duckdb`, `claude_split`, `versions`, `reader` | collapsible tree; the dominant hand-authored config format, so it carries the file-kind pair (PT-14) |
+| `.geojson` | `vector`, `map`, `tree`, `code`, `claude_split`, `versions`, `geometry_editor` | map + tree over the same bytes |
+| `.md` | `markdown`, `code`, `claude_split`, `versions`, `reader` | notes editor (§32) + raw source + the file-kind pair (PT-14): chat about the note with the note itself in the left pane, and this note's own history |
+| `.svg` | `image`, `code`, `claude_split`, `versions` | `<img>` via raw endpoint; svg source is text, so it is authored and carries the pair (PT-14) |
+| `.png .jpg .jpeg` | `image`, `photos`, `pano`, `claude_split`, `versions` | `<img>` via raw endpoint; an image asset is committed and discussed like any other authored file (PT-14) |
+| `.gif .webp` | `image`, `photos` (`.webp` also `pano`) | `<img>` via raw endpoint |
+| `.pdf` | `pdf`, `pdf_studio`, `reader` | browser-native embed. No file-kind pair (PT-14): a PDF is a published artefact, not authored source |
 | `.mp4 .mov .m4v .webm .mp3 .wav .m4a .ogg .flac` | `media` | raw endpoint w/ Range |
-| `.py` | `code`, `api` | editable CodeMirror; `api` = swagger-style run form over the `main()` entry point (D63) |
-| `.js .ts .sh .yaml .yml .toml .css` | `code` | editable CodeMirror |
-| `.txt .log` | `text`, `code` | `<pre>` |
+| `.py` | `code`, `api`, `claude_split`, `versions`, `reader` | editable CodeMirror; `api` = swagger-style run form over the `main()` entry point (D63) |
+| `.js .ts .tsx .jsx .cjs .mjs .cts .mts .sh .zsh .fish .ps1 .csh .zsh-theme .vim .yaml .yml .toml .ini .cfg .conf .tf .hcl .css .plist` | `code`, `claude_split`, `versions`, `reader` | editable CodeMirror. `.toml` leads with `canvas` (§28) and `.plist` with `plist`, then the same tail |
+| `.txt .log` | `text`, `code`, `claude_split`, `versions`, `reader` | `<pre>`; `.log` leads with `log_studio` |
+| `.jsonl .ndjson` | `code`, `duckdb`, `claude_split`, `versions`, `reader` | append-only record streams — no `git` mode ever (a scoped commit log over a stream says nothing a diff can render, GT-2), but they do carry the file-kind pair: PT-14's question is "is this authored", not "does this diff well" |
 | `.tif .tiff` | `geotiff` | GeoTIFF/COG via vendored geotiff (in-browser decode, no reader.py); full metadata + dump, photometric routing (RGB/palette/YCbCr), band select + RGB stretch + colormaps, histogram, hover. Small files full-fetched; >32 MiB range-request `fromUrl` |
 | `.nc .nc4 .cdf` | `netcdf` | NetCDF-3 via vendored netcdfjs (HDF5/NetCDF-4 → graceful card); leading-dim sliders, colormaps + stretch, histogram, hover |
 | `.zarr/` (directory) | `zarr_aoi`, `_listing` | Zarr v2/v3 store — a *directory*, bound by the trailing-`/` directory key (PT-13). `zarr_aoi` is the server-side AOI tile-streaming map viewer (opened via zarr-python, tiles streamed as PNG); it ships a `condition.py` store-detection gate (CT-12), so it is a conditional peer rather than the immediate default — the built-in `_listing` (PT-12) shows first and the map joins the switcher when the background gate confirms the store. `_listing` also stays reachable as the raw member listing, replacing the old "Browse contents" escape hatch (D81) |
-| `/` (any directory) | `_listing`, `git`, `graph`, `zarr_aoi` | The **universal directory key** (CT-3) — the built-in default for *every* folder. `_listing` is a sentinel (PT-12), not a template folder: the shell's built-in directory listing (sortable columns, in-folder search, file ops, and the optional split preview pane — FS-1, FS-9..FS-15). Zero segments, so any dot-anchored directory key (`.zarr/`) beats it (D81). `git` (§33), `graph` (MD-2) and `zarr_aoi` are all `condition.py`-gated peers (CT-12) — the AOI map here is the same viewer the `.zarr/` row describes, offered to *any* folder its store-detection gate confirms — so `_listing` stays the immediate default and each joins the switcher only where its background gate allows. `git` is listed FIRST among the gated peers because the switcher reads left to right and its gate is the one that says yes most often (GT-2). The `preview` folder-preview template that also sat here is **deleted** — its split pane is now `_listing`'s (D185) |
-| `.html .htm` | `_render`, `code` | defaults shipped in the built-in registry like any other key — user-rebindable since D73 (CT-4 revised); `_render` is a shell sentinel (PT-12) rendering the file itself live (§4) |
+| `/` (any directory) | `_listing`, `app`, `claude_split`, `claude`, `versions`, `git`, `graph`, `zarr_aoi` | The **universal directory key** (CT-3) — the built-in default for *every* folder. `_listing` is a sentinel (PT-12), not a template folder: the shell's built-in directory listing (sortable columns, in-folder search, file ops, and the optional split preview pane — FS-1, FS-9..FS-15). Zero segments, so any dot-anchored directory key (`.zarr/`) beats it (D81). Every entry but `_listing` and `claude` is a `condition.py`-gated peer (CT-12) — the AOI map here is the same viewer the `.zarr/` row describes, offered to *any* folder its store-detection gate confirms — so `_listing` stays the immediate default and each gated peer joins the switcher only where its background gate allows. `claude` ships **no** gate: a folder-scoped chat needs neither a workspace nor a repository to be worth having, so it is offered for every directory, and it is not the default only because `_listing` precedes it (PT-8). The order is deliberate and reads left to right: `app`, `claude_split` and `versions` are the **app-builder** trio, gated (`app/condition.py`, `claude_split/condition.py`, `versions/condition.py`) to a workspace app folder or a registered linked app, so that what the explorer offers for an app folder is exactly what the app view offers for it (App.tsx `APP_MODES`) — `app` first because opening an app is landing on the app; then `claude`; then `versions` ahead of `git`, because for an app folder the version timeline is the answer and the raw commit log is one click further (#361). `git` (§33) is the repo-wide Source Control view of a folder and is directory-only as of D230 (GT-2); `graph` is MD-2's link graph. The `preview` folder-preview template that also sat here is **deleted** — its split pane is now `_listing`'s (D185) |
+| `.html .htm` | `_render`, `code`, `claude_split`, `versions`, `reader`, `history` (`.html`; `.htm` stops at `reader`) | defaults shipped in the built-in registry like any other key — user-rebindable since D73 (CT-4 revised); `_render` is a shell sentinel (PT-12) rendering the file itself live (§4). A page is authored, so it carries the file-kind pair (PT-14): `claude_split`'s left pane renders the page itself and the chat edits it |
 | unknown | shell fallback | metadata + raw/download link (built into shell, not a template) |
 
+- **PT-14** **The four companion modes split by target KIND, not by extension (D230).** Chat and history exist for both kinds of target, but a *folder* and a *file* are different questions, so each kind gets its own pair and neither pair leaks onto the other: **a directory offers `claude` (chat about the folder) + `git` (the repo-wide Source Control view, §33)**; **a file offers `claude_split` (chat with the file itself in the left pane, plus the annotation tools) + `versions` (that one file's history)**. Two rules, not 47 table rows: the per-extension lists above simply say *which* extensions count as authored files. The pair is bound to the **authored-file set** — source, config, prose, notebooks, record streams, tabular data, geo data and image assets, 47 keys — and deliberately withheld from spreadsheets, PDFs, media, archives, 3D and generated tool files: chat and a version timeline are for bytes a human authors or analyses, and those lists are left alone rather than churned. On the `/` key the file-side pair is *also* present but gated to an app folder (`claude_split/condition.py`, `versions/condition.py`), which is what keeps the app-builder view (App.tsx `APP_MODES`) identical to what the explorer shows for that same folder. Two consequences of the file bindings, both in the templates rather than the shell: (i) `claude_split`'s **left pane renders the file in the file's OWN default template** — it reads `GET /api/fs/stat` for the target and picks the first non-`conditional` entry, the same rule the shell's `Preview.tsx` `defaultTemplate` applies (PT-8), skipping only the chat modes themselves (`claude`, `claude_split` — a pane that framed the chat again would be a mirror, not a preview), then frames `/render?path=<that template>&_file=<file>` (or the file itself when that entry is the `_render` sentinel) — so the chat sits beside exactly the view the explorer would have opened, and no per-extension knowledge is duplicated inside the chat; (ii) a **file** target of `versions` is allowed in *any* git work tree (`versions/condition.py` asks `git rev-parse --is-inside-work-tree` from the file's parent, not "is this inside a fused app"), its log is scoped to that one file (`-- :(literal)<basename>`) and its snapshot materialises just that file, and outside an app it is **read-only**: `versions.py` refuses `revert` there, because a revert commit carries the `Fused <apps@fused.io>` identity and resets the working tree, which is never done to the user's own repository — the same rule linked apps already had (`fused_render/linked_apps.py`). What was **rejected**: (a) binding ONE chat template to both kinds — `claude_split`'s left pane renders a target, and an ordinary folder has no app entry for it to render (`claude_split/condition.py`), so a single template would have had to branch on kind in its own body and carry a dead pane for half its bindings; that is why the plain `claude` mode kept the directory key and lost its file keys instead; (b) keeping `git` on file keys next to `versions`, which offered two commit-log modes for one story (the same peer-exclusion argument `git/condition.py` already makes for app folders); (c) keeping `annotate` as a standalone mode — its tools now live in the `claude_split` pane, so the mode was deregistered from every core key rather than left as a second, staler way in (§17).
 - **PT-8** `GET /api/fs/stat` carries the resolved mode list as **`templates`**: an array of `{"mode": <name>, "path": <abs template.html>, "icon": <abs icon.svg|null>}`, in order, first = default. An entry whose folder ships a `condition.py` gate (CT-12) additionally carries **`"conditional": true`** — stat only *marks* it (the gate is **not** evaluated at stat time; it may do real I/O), and the verdict arrives via `GET /api/fs/conditions` (CT-12). A conditional entry is **never the default while an unconditional entry exists**: the default is the first entry *without* `conditional`, falling back to the first (verdict-allowed) entry only when the whole list is conditional. `templates: []` when nothing applies — an unmapped file extension or a `null` binding. A **directory** always resolves at least the universal `/` key's `["_listing"]` (PT-13, D81), so it is empty only when a `null` binding disables it, whereupon the shell falls back to the built-in listing anyway (a folder must always render something). The old singular `template` field is **removed**.
 - **PT-9** **`_mode` param (shell URL):** non-default modes are selected via reserved param `_mode=<template name>` on the **shell URL** (bookmarkable, same URL-is-state pattern D40 established for the old HTML `_mode=render|source` toggle — that toggle itself is now the ordinary `["_render", "code"]` mode list, PT-12; old `_mode=source` bookmarks fall to the default, accepted break). Absent `_mode` = default = the first non-`conditional` entry (PT-8; `templates[0]` when none is conditional); selecting the default **deletes** the param (clean URLs); an unknown/stale value falls back to the default with no error. Switching swaps the iframe src to the selected template's `/render?path=<template>&_file=<file>` with a fresh document per switch. A sentinel mode may render a **shell view instead of an iframe**: `_listing` (PT-12) mounts the shell's built-in listing component (no iframe, no `_file`) in place of the preview body, selected by `_mode=_listing` like any other mode (D81). Known accepted quirk: template params (e.g. `offset`) persist on the shell URL across mode switches; a param name used differently by two modes collides — documented, not prevented.
 - **PT-10** **Mode switcher (shell, preview header):** rendered only when `templates.length > 1`, right side of the preview header bar. **Icon-only buttons**, mode name via native `title` tooltip, active mode in accent color. When an entry's `icon` is `null`, the shell renders a placeholder: the first letter of the mode name in a small rounded box. The `.html` Rendered|Source pair is **not a special case**: it is the ordinary mode list `["_render", "code"]` (PT-12) riding this same switcher — `_render` gets a shell-baked eye icon (sentinels have no folder to ship `icon.svg`); `code` gets its real folder icon. The `_listing` sentinel likewise gets a shell-baked list icon (D81).
@@ -423,7 +427,7 @@ const page = await fused.runPython("./reader.py",
   - **`_listing`** — "the shell's built-in directory listing" (sortable columns + in-folder search, FS-1/§13.4, plus the optional split preview pane, FS-9..FS-15) — the default of the universal `/` directory key (PT-13, D81), and a peer mode of `.zarr/`'s `["zarr_aoi", "_listing"]`. It backs no folder and takes no `_file`: when it is the active mode the shell **mounts its Listing component in place of the preview iframe** (no iframe at all). Shell-baked list icon.
 
   Users **can** rebind any registry key — including `.html`/`.htm` (CT-4 revised, D73) and the directory keys (D81) — dropping a sentinel, then listing it explicitly brings it back. Unknown sentinel entries (path `null`, mode not in the set) are filtered out defensively. Non-sentinel entries in the same list (e.g. `code`, `zarr_aoi`) work exactly like any template mode. Future modes are added to the server-side registry and flow through the framework normally.
-- **PT-13** **Directory views (D65, revised by D73 and D81):** a preview target may be a **directory**. Directories resolve through the **same registry** as files (PT-7, CT-3): a key with a **trailing `/`** binds a directory's basename, and the **universal `/` key** (zero segments, CT-3) matches *every* directory at lowest specificity. The built-in registry ships `"/": ["_listing", "git", "graph", "zarr_aoi"]` (D185 removed `preview`; `graph` per MD-2; `git` per §33/D193) and `".zarr/": ["zarr_aoi", "_listing"]` — so **every** directory carries a non-empty `templates` list (≥ `["_listing"]`), and dispatch is uniform: a directory previews its default mode exactly like a file. The built-in **listing is itself a mode** — the `_listing` sentinel (PT-12) — so it rides the ordinary mode switcher (PT-10) and `_mode` selection (PT-9): a plain folder's single-mode `["_listing"]` shows the listing with no switcher; a `.zarr` store shows the listing by default with the `zarr_aoi` map joining as a `condition.py`-gated peer (CT-12) once its background verdict confirms the store (`_mode=zarr_aoi` selects it). This replaces D65's one-way `?listing=1` "Browse contents" escape hatch, which is **removed** (D81) — the only way to the listing is now the `_listing` mode. In **embed** (the preview header, hence the switcher, is hidden), a corner chip toggles the `_listing` mode (writing/deleting `_mode`) so an embedded directory preview can still reach its members. Annotate (§17) is not offered for `_listing` (no iframe to overlay). A directory resolves to an **empty** list only when a `null` binding disables it (CT-2); the shell then falls back to the built-in listing regardless (a folder must always render something). Users bind directory views like any other key — `"/": ["_listing", "gallery"]` lists the built-in listing plus a gallery mode for every folder (built-in names are listed explicitly — there is no splice, D94); dropping `_listing` from a list forgoes the file listing for those directories (owner call, same "user can shoot themselves" posture as D73's `.html` rebind). Accepted break: old `?listing=1` bookmarks ignore the dropped param — a plain folder still lists (its default), and a `.zarr` bookmark also lists by default now (the `zarr_aoi` map is a gated peer reached via `_mode=zarr_aoi`, not the default). Accepted break (D185): the `preview` folder-preview template is **deleted** and gone from this key, and the two ways a leftover reference surfaces are **different mechanisms** — a **`?_mode=preview` URL or bookmark** is an unknown `_mode` value, so it falls back to the default (`_listing`) **silently, with no error** per PT-9 (and lands on the listing that now carries the split pane, FS-9..FS-15, which is what such a URL was asking for); a **user registry** still listing `"preview"` is instead a dangling name per CT-6/D95 — dropped from the mode list with `template_error` naming it on the stat payload and a broken (`exists:false`) row in the Templates view (§23).
+- **PT-13** **Directory views (D65, revised by D73 and D81):** a preview target may be a **directory**. Directories resolve through the **same registry** as files (PT-7, CT-3): a key with a **trailing `/`** binds a directory's basename, and the **universal `/` key** (zero segments, CT-3) matches *every* directory at lowest specificity. The built-in registry ships `"/": ["_listing", "app", "claude_split", "claude", "versions", "git", "graph", "zarr_aoi"]` (D185 removed `preview`; `graph` per MD-2; `git` per §33/D193, directory-only per D230/GT-2; `app`/`claude_split`/`versions` gated to app folders and `claude` ungated, §7.2's `/` row and PT-14) and `".zarr/": ["zarr_aoi", "_listing"]` — so **every** directory carries a non-empty `templates` list (≥ `["_listing"]`), and dispatch is uniform: a directory previews its default mode exactly like a file. The built-in **listing is itself a mode** — the `_listing` sentinel (PT-12) — so it rides the ordinary mode switcher (PT-10) and `_mode` selection (PT-9): a plain folder's single-mode `["_listing"]` shows the listing with no switcher; a `.zarr` store shows the listing by default with the `zarr_aoi` map joining as a `condition.py`-gated peer (CT-12) once its background verdict confirms the store (`_mode=zarr_aoi` selects it). This replaces D65's one-way `?listing=1` "Browse contents" escape hatch, which is **removed** (D81) — the only way to the listing is now the `_listing` mode. In **embed** (the preview header, hence the switcher, is hidden), a corner chip toggles the `_listing` mode (writing/deleting `_mode`) so an embedded directory preview can still reach its members. Annotate (§17) is not offered for `_listing` (no iframe to overlay) — moot in the core registry since D230, where `annotate` is bound to nothing at all, but still the rule for a user who re-binds it (§16). A directory resolves to an **empty** list only when a `null` binding disables it (CT-2); the shell then falls back to the built-in listing regardless (a folder must always render something). Users bind directory views like any other key — `"/": ["_listing", "gallery"]` lists the built-in listing plus a gallery mode for every folder (built-in names are listed explicitly — there is no splice, D94); dropping `_listing` from a list forgoes the file listing for those directories (owner call, same "user can shoot themselves" posture as D73's `.html` rebind). Accepted break: old `?listing=1` bookmarks ignore the dropped param — a plain folder still lists (its default), and a `.zarr` bookmark also lists by default now (the `zarr_aoi` map is a gated peer reached via `_mode=zarr_aoi`, not the default). Accepted break (D185): the `preview` folder-preview template is **deleted** and gone from this key, and the two ways a leftover reference surfaces are **different mechanisms** — a **`?_mode=preview` URL or bookmark** is an unknown `_mode` value, so it falls back to the default (`_listing`) **silently, with no error** per PT-9 (and lands on the listing that now carries the split pane, FS-9..FS-15, which is what such a URL was asking for); a **user registry** still listing `"preview"` is instead a dangling name per CT-6/D95 — dropped from the mode list with `template_error` naming it on the stat payload and a broken (`exists:false`) row in the Templates view (§23).
 - **PT-5** **User overrides:** DECIDED and specced as §16 (M7, extended by M8) — user template folders under `~/.fused-render/templates/` bound to extensions by `~/.fused-render/templates/registry.json`, replacing or extending the built-in mode list, using the exact same mechanism.
 
 ---
@@ -531,7 +535,7 @@ The reload logic lives **entirely in the injected runtime** — the shell needs 
 - **LR-2** `POST /api/run` response gains a `resolved_py` field — the absolute resolved path of the executed file — so the runtime learns dependency paths authoritatively instead of re-implementing the server's relative-path resolution. Recorded for failed runs too (a broken py that gets fixed must still trigger reload).
 - **LR-3** On any change event: debounce **300 ms** (coalesce bursts), then `location.reload()` on the iframe itself. Full reload is the honest re-execution — the runtime cannot replay what the page did with a python result. State survives because view state lives in URL params (D8/D20/D25).
 - **LR-4** When the watch set grows (a new py runs), the runtime closes and reopens its watch `WebSocket` with the full set. Resubscribe is debounced so a page firing several `runPython` calls on load reconnects once. Unlike `EventSource`, a WebSocket does not auto-reconnect — the runtime retries a dropped socket after 1 s.
-- **LR-5** Opt-out: `fused.autoReload(false)` disables watching/reloading for that page. The `code` template calls it — the editor must not reload out from under the cursor (its own autosave changes the mtime; external changes are the conflict lock's job). The `claude` template calls it too — Claude's own edit to the watched `_file` would otherwise reload the chat mid-stream, killing the poll loop and orphaning the run (a sibling `_render` pane still live-refreshes; only the chat frame opts out). To make the opt-out race-free, the runtime starts watching on `DOMContentLoaded`, after inline page scripts have run.
+- **LR-5** Opt-out: `fused.autoReload(false)` disables watching/reloading for that page. The `code` template calls it — the editor must not reload out from under the cursor (its own autosave changes the mtime; external changes are the conflict lock's job). The `claude` template calls it too — Claude's own edit to the watched `_file` would otherwise reload the chat mid-stream, killing the poll loop and orphaning the run (a sibling `_render` pane still live-refreshes; only the chat frame opts out). `claude_split`, the file-side chat D230 bound to the authored-file keys (PT-14), opts out for the same reason and by the same call: it watches `_file` as well, and its own left pane is a nested frame that keeps live-refreshing. To make the opt-out race-free, the runtime starts watching on `DOMContentLoaded`, after inline page scripts have run.
 - **LR-6** Deletion (`mtime: null`) reloads too — the resulting 404/error view is the truthful state.
 - **LR-7** Reload works identically for standalone `/render?path=…` pages (runtime is the same code).
 
@@ -664,9 +668,15 @@ Goal: users replace or add preview templates using the **exact same mechanism** 
 Annotation shipped first as an app feature — an orthogonal `_annotate=1` overlay
 injected into every view (M9) — and was then **rebuilt as an
 ordinary view template**, the same pattern as `templates/claude/`:
-`templates/annotate/` is a self-contained template.html, bound in registry.json
-as a trailing mode on annotatable extensions, swappable/shadowable like any
-template (PT-6). It renders the file's normal view in a same-origin iframe (a
+`templates/annotate/` is a self-contained template.html, swappable/shadowable
+like any template (PT-6). It **was** bound in registry.json as a trailing mode on
+annotatable extensions (66 keys); as of **D230 it is bound to nothing** — the
+annotation tools live in the `claude_split` pane, where the review and the chat
+that acts on it are one surface instead of two modes the user switches between,
+and a second staler way in was not worth keeping. The folder still ships, so a
+user can re-bind it themselves (`~/.fused-render/templates/registry.json`, §16 /
+CT-2), and everything below still describes it accurately — which is why this
+section is retained rather than deleted. It renders the file's normal view in a same-origin iframe (a
 `view` param picks WHICH mode is being annotated) and implements the whole
 experience itself — hover highlight, click-to-comment pins, sidebar,
 resolve/delete. Comments live in an ordinary `comments` template param (synced
@@ -2050,7 +2060,10 @@ opening `sine.html` and switching to the `history` mode, or opening `sine.html.j
   "code"]` matches any compound `<ext>.json` sidecar (more specific than bare
   `.json`, which keeps its own tree-first list unchanged) — **no `annotate`**:
   annotating the sidecar log itself doesn't make sense, comments belong on the
-  target file (HV-8). `"history"` is also appended to the target-side keys
+  target file (HV-8). (Since D230 `annotate` is bound to *nothing* anywhere, §17;
+  the rule stands for a user who re-binds it, and it is why this wildcard key was
+  never given the file-kind pair either — a sidecar is a generated log, not an
+  authored file, PT-14.) `"history"` is also appended to the target-side keys
   `".html"` and `".parquet"` (defaults stay `_render`/`table`). Only these two
   target extensions for now — others later by adding keys.
 - **HV-3** Role resolution from `_file`: basename ends `.json` **and** its stem
@@ -2090,7 +2103,13 @@ opening `sine.html` and switching to the `history` mode, or opening `sine.html.j
   its live store or a one-shot sidecar lookup (§17). A tombstoned entry (an
   explicit `deleted_at`, stamped via `record`'s `deleted_ids`) renders dimmed and
   struck-through with a " · deleted" tooltip note and is **inert** — no deep
-  link; a deleted comment never comes back (owner call 2026-07-10). Supersedes
+  link; a deleted comment never comes back (owner call 2026-07-10). **Known dead
+  link since D230:** with `annotate` bound to nothing (§17), `_mode=annotate` on a
+  target file is an unknown mode value, so the deep link lands on the target's
+  default mode silently (PT-9) rather than on the comment. The link is left as
+  specced — it works again the moment a user re-binds `annotate` (§16), and
+  re-pointing it at the `claude_split` pane's annotation tools is a separate
+  decision, not a rename. Supersedes
   the 2026-07-09 owner call that kept comments non-navigable (owner reversed
   2026-07-10).
 - **HV-9** The view never writes the sidecar.
@@ -2449,8 +2468,10 @@ offer it — a plain `.toml` never shows the mode at all.
 
 - **CV-1** Files (`fused_render/templates/canvas/`): `template.html` (the
   viewer), `reader.py` (the toml→JSON parser), `condition.py` (the gate),
-  `icon.svg`. Registry binding: `".toml": ["canvas", "code", "annotate"]` —
-  canvas listed first. Under deferred CT-12 the immediate default is the first
+  `icon.svg`. Registry binding: `".toml": ["canvas", "code", "claude_split",
+  "versions", "reader"]` — canvas listed first, then the ordinary tail every
+  authored config key carries (`annotate`, the trailing mode this item originally
+  named, was deregistered from every core key by D230 — PT-14, §17). Under deferred CT-12 the immediate default is the first
   *unconditional* entry (`code`); `canvas` resolves in the background and joins
   the switcher when its verdict allows (or disappears when it doesn't).
 - **CV-2** **Condition gate (CT-12, deferred).** Stat only *marks* the canvas
@@ -3149,21 +3170,27 @@ behaviour copied from Obsidian rather than invented. Design + rationale:
   buttons — the read-only/editing mode (MD-1a) and the sidebar toggle (MD-19).
   The sidebar's glyph is a **panel**, not a graph: the panel holds backlinks and
   the graph together, and its accessible name says so.
-- **MD-2** **Registry.** `.md`/`.markdown` are `["markdown", "code", "claude",
-  "reader", "annotate"]` — `markdown` now supersedes `code` for notes, and `code`
-  stays **unchanged** as the raw-source escape hatch. `claude` sits where it sits
-  on `.html` (after the editors, before the trailing meta-modes): the chat
-  template is file-type agnostic — it works off `_file` and its own `<file>.json`
-  sidecar — and binding it here is what gives a note the chat mode AND turns on
-  annotate's **Send to Claude** handoff, which hides itself wherever the target's
-  mode list has no `claude` to hand the review to (§17, owner call 2026-07-31). Two editors for one extension
+- **MD-2** **Registry.** `.md`/`.markdown` are `["markdown", "code",
+  "claude_split", "versions", "reader"]` — `markdown` now supersedes `code` for
+  notes, and `code` stays **unchanged** as the raw-source escape hatch. The chat
+  mode sits where it sits on `.html` (after the editors, before the trailing
+  meta-modes) and for the same reason: the chat template is file-type agnostic — it
+  works off `_file` and its own `<file>.json` sidecar — so binding it here is what
+  gives a note a chat about itself. Since **D230** the bound name is
+  `claude_split`, not `claude`: a note is a FILE, and the file-kind pair is
+  `claude_split` + `versions` (PT-14), which also means the review tools that used
+  to need annotate's **Send to Claude** handoff (§17, owner call 2026-07-31) are in
+  that pane already — nothing to hand off to a separate mode, and nothing to hide
+  when a target's mode list lacks one. Two editors for one extension
   with two save models is accepted rather than reconciled: `code` is the
   generic text editor and keeps AS-1 (250 ms autosave, Save button), `markdown`
   is the notes editor and keeps MD-16 (2 s idle, no button). A user who picks
   `code` for a `.md` asked for code behaviour. The universal `/` directory key
   gains `graph`:
-  `["_listing", "git", "graph", "zarr_aoi"]` (as of D185, which removed
-  `preview`, and D193, which added `git` — §33).
+  `["_listing", "app", "claude_split", "claude", "versions", "git", "graph",
+  "zarr_aoi"]` (as of D185, which removed `preview`, D193, which added `git` —
+  §33 — and D230, which made `git` directory-only and put the folder chat
+  `claude` beside it; the full order and its reasons are in §7.2's `/` row).
   `graph` ships a `condition.py`
   (CT-12), so `_listing` remains the immediate default and the graph joins the
   switcher only where the background gate allows it (PT-8).
@@ -3864,10 +3891,15 @@ behaviour copied from Obsidian rather than invented. Design + rationale:
 A `git` view template answers one question for whatever the user currently has
 open: **what is going on here?** Not "what is going on in this repository" — a
 repo-wide view is what a terminal is for — but what is going on with *this
-folder* or *this file*: its uncommitted changes, its commits, the diff of any of
-them restricted to that path, **and the operations that change them**. Offered
-for **both** directories and text-ish files, always as a `condition.py`-gated
-companion mode, never as a default.
+folder*: its uncommitted changes, its commits, the diff of any of them restricted
+to that path, **and the operations that change them**. Offered for
+**directories**, always as a `condition.py`-gated companion mode, never as a
+default. Since D230 that is the *whole* binding (GT-2): the file-side "what
+changed in this one file" story belongs to `versions`
+(`fused_render/templates/versions/`), which scopes the log to that one file's
+pathspec (`-- :(literal)<basename>`) and is **read-only** there — so a file is
+never offered two commit-log modes for one story. The path-scoping machinery below is unchanged and still the point: a
+folder deep inside a monorepo asks about itself, not about the repository.
 
 The view was read-only through D193 (the original GT-11) and is not any more:
 D229 replaced that item with a **VSCode Source-Control-style GUI** — branch
@@ -3885,30 +3917,46 @@ hygiene and the theme still holds for it unchanged.
   reader that also mutates has no honest place to draw its validation line, and
   "what can this template DO to my repository" must be one file to audit rather
   than a grep for verbs across an 800-line reader.
-- **GT-2** **Registry bindings.** The universal `/` directory key becomes
-  `["_listing", "git", "graph", "zarr_aoi"]` — `_listing` stays the default (it is
-  the only unconditional entry, PT-8), and `git` is listed **first among the gated
-  peers** because the switcher reads left to right and its gate is the one that
-  says yes most often on a working machine. On the file side `git` is appended,
-  **before the trailing meta-modes** (`reader`, `annotate`, `history`, so RD's
-  `reader`-immediately-before-`annotate` invariant is untouched), to the
-  hand-authored source / config / prose / log keys: code (`.py .js .ts .tsx .jsx
-  .cjs .mjs .cts .mts .sh .zsh .fish .ps1 .csh .zsh-theme .vim .css .html .htm`),
-  config (`.yaml .yml .toml .ini .cfg .conf .tf .hcl .json .plist`), prose (`.md
-  .markdown .tex .ltx .latex`) and text/logs (`.txt .log`). It is deliberately
-  **absent** from record streams (`.jsonl`/`.ndjson`), tabular data, geo data,
-  images, media, 3D, archives, PDFs and generated tool files: a scoped commit log
-  over a data blob says nothing a diff can render, and those lists are left alone
-  rather than churned. `.json` in / `.jsonl` out is the same line drawn twice —
-  `.json` is the dominant hand-authored config format, `.jsonl` is an append-only
-  stream.
+- **GT-2** **Registry bindings — the universal `/` directory key, and nothing
+  else (D230).** `git` sits in `"/": ["_listing", "app", "claude_split",
+  "claude", "versions", "git", "graph", "zarr_aoi"]`, where `_listing` stays the
+  default (PT-8) and `git` is the last of the *history* peers: it follows
+  `versions` because for an app folder the version timeline is the answer and the
+  raw commit log is one click further (#361), and it precedes `graph`/`zarr_aoi`
+  because the switcher reads left to right and its gate is the one that says yes
+  most often on a working machine. The ~40 **file** keys it used to be appended to
+  are gone from it — the whole hand-authored source / config / prose / log set —
+  because that is the file-kind pair's territory now (PT-14): a file offers
+  `claude_split` + `versions`, a directory offers `claude` + `git`, and `git`
+  keeping a file binding would have meant two commit-log modes for one story, the
+  same peer exclusion `git/condition.py` already applies to app folders. The
+  reasoning that used to justify the file list is not lost, it MOVED to the pair:
+  the authored-file set (47 keys — code, config, prose, notebooks, tabular, geo,
+  images) is still what "a human wrote or analyses these bytes" means, and it is
+  still deliberately **withheld** from spreadsheets, media, 3D, archives, PDFs and
+  generated tool files, whose lists are left alone rather than churned. One part
+  of the old rule was **overturned** rather than moved: record streams
+  (`.jsonl`/`.ndjson`) were excluded from `git` because a scoped commit log over an
+  append-only stream says nothing a diff can render — an argument about *diffs*,
+  which is not an argument about chat or about a version timeline, so those keys DO
+  carry `claude_split` + `versions`. What survives of `.json` in / `.jsonl` out is
+  therefore only the observation that made it: `.json` is the dominant
+  hand-authored config format, `.jsonl` is a stream. Ordering on a file key is
+  unchanged in spirit — the pair slots in **before the trailing meta-modes**
+  (`reader`, `history`), so RD's `reader`-is-last invariant holds (the
+  `reader`-immediately-before-`annotate` form of it lapsed with `annotate`'s
+  deregistration, §17).
 - **GT-3** **The gate (`condition.py`, CT-12) is `git rev-parse
   --is-inside-work-tree`, one bounded subprocess — never a search of the tree.**
-  A directory asks about itself; a file asks from its parent (handing git a file
-  as `-C` is an ENOTDIR, not an answer). It **never enumerates** (`os.listdir`,
-  `os.scandir`, `glob`, recursion) and never walks, the CT-12 rule
+  A directory asks about itself. A **file** would ask from its parent (handing git
+  a file as `-C` is an ENOTDIR, not an answer), and that branch is still in the
+  gate even though D230 left it with no binding to serve: it costs one
+  `os.path.isdir`, and a gate that answered only one of the two shapes would be a
+  trap for whoever re-binds the mode (a user may, §16) — the file branch is
+  **defensive code, not a documented offer**. It **never enumerates**
+  (`os.listdir`, `os.scandir`, `glob`, recursion) and never walks, the CT-12 rule
   `zarr_aoi/condition.py` documents and doubly binding here because this gate runs
-  on every directory AND every text-ish file the user opens; the tests make
+  on every directory the user opens; the tests make
   enumeration **fatal**, so a listing added later fails rather than ships. A
   `.git` stat fast path was considered and **dropped**: `.git` exists only at the
   repository ROOT, so a probe would have to ascend to answer a nested path
@@ -3922,6 +3970,13 @@ hygiene and the theme still holds for it unchanged.
   work tree, hence no `git status` and no path to scope history to — not offered
   beats offered-then-broken. Fails closed on a missing binary, a timeout, a
   non-zero exit, stdout that is not literally `true`, or any exception.
+  **False, too, for a fused app folder** (a git-initialized directory exactly two
+  levels under the workspace, or a git-backed registered linked app): that history
+  is `versions`' — same history, plus the app's auto-commit semantics
+  (`fused_render/app_git.py`) — and offering both would be two modes for one story.
+  This is the exact complement of `versions/condition.py`'s app-dir rule; the two
+  gates and `app_git.app_dir_for` must be kept in step, and each states the same
+  constant-time shape (one relpath, one `.git` stat, never a listing).
 - **GT-4** **Mount-backed → refused, before any subprocess.** The same refusal
   `graph/condition.py` makes and for the same shape of reason, worse here: the
   reader runs `git status` / `git log` on the path, and git over an rclone-NFS
@@ -4376,11 +4431,19 @@ Goal: give a template view an **undo for the agent's edits**, with no version
 control involved. Claude Code already writes a full copy of every file it is
 about to change; this reads that store, presents the file's version timeline,
 and restores from it. Wired into `annotate` first (§17); the reader is shared so
-`claude` and `history` can adopt it.
+`claude` and `history` can adopt it. **Reachability note (D230):** `annotate` is
+its only consumer and `annotate` is now bound to nothing (§17), so on a default
+registry this surface is reached only by re-binding that mode (§16) — the reader
+(`templates/shared/file_history.py`) is deliberately host-agnostic for exactly
+this reason, and adopting it in another template is a wiring change, not a
+redesign.
 
 **Two history views, and which one answers your question.** §33's `git` view and
-this one sit next to each other in the mode list and are **complementary, not
-alternatives** — the distinction is *whose* history you are asking about. `git`
+this one are **complementary, not alternatives** — the distinction is *whose*
+history you are asking about. (They no longer sit next to each other in a file's
+mode list: since D230 `git` is bound to directories only, and a file's commit-log
+mode is `versions` — GT-2, PT-14. The comparison below is unaffected; it is about
+what a repository's history can and cannot answer.) `git`
 answers "what happened to this path in this repository": commits, uncommitted
 changes, diffs, everything a human or a tool ever committed, over the whole
 recorded life of the file — and it is read-only, by design (GT-11). This one

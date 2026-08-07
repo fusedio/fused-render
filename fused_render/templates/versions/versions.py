@@ -1,16 +1,31 @@
-"""Git backend for the `versions` template: history of a *fused app*.
+"""Git backend for the `versions` template: history of a *fused app*, or of a
+single *file* (D230).
 
-The template targets any file or directory inside an app folder
-(`<workspace>/<tag>/<name>`, see `condition.py`) but always operates on the
-WHOLE app — the repo is the app, not the file. Three actions:
+There are exactly two kinds of target, resolved once per call by
+`_resolve_target`, and the difference between them is the whole shape of this
+module:
 
-* `log`      — the commit list, newest first.
+* **An app** — any file or directory inside an app folder
+  (`<workspace>/<tag>/<name>`, see `condition.py`), where the module operates on
+  the WHOLE app: the repo is the app, not the file. Writable (`revert`).
+* **A file** — a single tracked file in whatever repository it happens to live
+  in, scoped to that one path. This is the file-side history view now that the
+  `git` mode is directory-only (D230), and it is **read-only**: `revert` is
+  refused, because the repository is the user's own and a revert commit carries
+  the Fused identity (the rule linked apps already live by).
+
+Three actions:
+
+* `log`      — the commit list, newest first, scoped to the target.
 * `snapshot` — materialise one commit as a plain folder so the explorer can
-               render the app *as it was*. `git archive <sha>` is extracted
-               into a per-app, per-commit dir under the shell home
-               (`~/.fused-render/app-versions/<app-key>/<sha>/`); a commit is
+               render the app (or the file) *as it was*. `git archive <sha>` is
+               extracted into a per-target, per-commit dir under the shell home
+               (`~/.fused-render/app-versions/<key>/<sha>/`); a commit is
                immutable, so an existing complete snapshot is reused as-is.
-               The caller iframes `/render?path=<snapshot entry page>`.
+               An app reports its `entry` page for `/render?path=`; a file
+               reports the materialised `file` (plus `entry` when the file is
+               itself a page), and the view frames non-page files through their
+               own default template.
 * `revert`   — restore the working tree AND index to the selected commit and
                record that as a NEW commit on top ("Reverted to <sha> — …").
                History is never rewritten: revert of a revert works, and
@@ -21,11 +36,13 @@ WHOLE app — the repo is the app, not the file. Three actions:
                only runs once that commit exists, so a failure never leaves
                the working tree changed with nothing recorded to show for it.
 
-Scoped hard to app dirs: every action re-derives the app dir from the target
-path with the same rule as `app_git.app_dir_for` (mirrored here — templates
-must not import fused_render, SPEC PY-15/D166) and refuses anything else, so
-a hand-crafted URL can never make this module commit to, or archive from, a
-user's real repository.
+Every action re-derives its target from the path it is given — the app-dir rule
+is the same one as `app_git.app_dir_for` (mirrored here, because templates must
+not import fused_render, SPEC PY-15/D166) — so a hand-crafted URL cannot pick a
+different scope than the gate offered. What it *can* now reach is a file in the
+user's own repository, which is exactly why the write path is fenced by kind
+rather than by the gate: this module never commits to, or resets, anything but a
+workspace app.
 
 Subprocess discipline matches `app_git`/`claude/agent.py`: `git -C <dir>`
 (never `cwd=`), `close_fds=False`, bounded timeout, and a fixed per-invocation
@@ -139,6 +156,57 @@ def _require_app(file: str):
     return app, None
 
 
+def _resolve_target(file: str):
+    """(target, None) or (None, error payload) — which of the two things this
+    module can be asked about `file` is (D230).
+
+    A target is `(kind, cwd, pathspec, name)`, and every git invocation below is
+    built from it: `-C cwd` and `-- <pathspec>`. `name` is the file's basename for
+    a file target and "" for an app one — the pathspec is for git, `name` is for
+    finding the file again inside an extracted snapshot.
+
+      ("app",  <app dir>,        ".",                     "")
+          A fused app or a git-backed linked app, scoped to the app's own
+          subtree. Writable: `revert` is offered for a workspace app.
+      ("file", <the file's dir>, ":(literal)<basename>", <basename>)
+          A single tracked file in whatever repository it happens to live in —
+          the file-side history view, since `git` is directory-only now (D230).
+          READ-ONLY, always: `main` refuses `revert` for this kind, because the
+          repository is the user's own and a revert commit carries the Fused
+          identity. Same rule, same reason, as a linked app.
+
+    App-ness is asked FIRST, so a file inside an app keeps the app's history
+    (the timeline the auto-commits actually produced) rather than being demoted
+    to its own single-file log. The pathspec is `:(literal)`-wrapped so a
+    filename holding `*`, `?`, `[` or a leading `:` is matched as itself rather
+    than as a glob or as pathspec magic — the discipline `git/log.py` documents.
+    """
+    app, _err = _require_app(file)
+    if app:
+        return ("app", app, ".", ""), None
+
+    # Not an app target. A file still has a history of its own; a directory does
+    # not get one here (that is the `git` mode's story — see condition.py).
+    path = os.path.abspath(file)
+    if not file or os.path.isdir(path):
+        return None, {"error": "not inside a fused app folder"}
+    # An EXISTING regular file, the same `isfile` the gate insists on rather than
+    # `not isdir`. Without it a missing name inside a repository resolves to a
+    # perfectly valid file target, and `log` answers with an empty-but-successful
+    # history — a view that says "no versions yet" about a file that does not
+    # exist, which is a worse answer than the refusal this error vocabulary
+    # already has a word for.
+    if not os.path.isfile(path):
+        return None, {"error": "no such file"}
+    cwd = os.path.dirname(path)
+    if not os.path.isdir(cwd):
+        return None, {"error": "no such file"}
+    if not _repo_root(cwd):
+        return None, {"error": "this file is not in a git repository"}
+    base = os.path.basename(path)
+    return ("file", cwd, ":(literal)" + base, base), None
+
+
 def _resolve_sha(app: str, sha: str):
     """Validated, full commit id — or None. The regex check comes first so a
     client-supplied value can never reach git as an option or a path."""
@@ -150,12 +218,15 @@ def _resolve_sha(app: str, sha: str):
     return out if r.returncode == 0 and _SHA_RE.match(out) else None
 
 
-def _log(app: str):
-    # `-- .` scopes the log to the app's own subtree (pathspecs are relative
-    # to `-C app`). For a workspace app the repo root IS the app dir, so this
-    # changes nothing there; for a linked app inside a larger repository it is
-    # what makes the list "this app's history" rather than the whole repo's.
-    r = _git(app, "log", f"--format=%H{_US}%ct{_US}%s", "--", ".")
+def _log(target):
+    kind, app, pathspec, _name = target
+    # The pathspec is what scopes the log (pathspecs are relative to `-C app`):
+    # `.` is the app's own subtree — for a workspace app the repo root IS the app
+    # dir so it changes nothing, for a linked app inside a larger repository it
+    # is what makes the list "this app's history" rather than the whole repo's —
+    # and for a file target it is that one file, so the list is that file's
+    # commits and nothing else (D230).
+    r = _git(app, "log", f"--format=%H{_US}%ct{_US}%s", "--", pathspec)
     if r.returncode != 0:
         return {"error": "git log failed: " + (r.stderr or "").strip()[:200]}
     commits = []
@@ -169,19 +240,26 @@ def _log(app: str):
         except ValueError:
             ts = 0
         commits.append({"sha": sha, "ts": ts, "subject": subject})
-    # `can_revert` drives the UI: revert is refused server-side for linked
-    # apps (see main), so the button must not be offered either.
-    return {"app": app, "commits": commits, "can_revert": not _is_linked(app)}
+    # `can_revert` drives the UI: revert is refused server-side for linked apps
+    # and for file targets (see main), so the button must not be offered either.
+    return {"app": app, "commits": commits,
+            "can_revert": kind == "app" and not _is_linked(app)}
 
 
-def _snapshot(app: str, sha: str):
+def _snapshot(target, sha: str):
+    kind, app, pathspec, name = target
     full = _resolve_sha(app, sha)
     if full is None:
         return {"error": "unknown revision"}
 
-    # Per-app key: path hash, not name — two apps may share a basename, and
-    # the hash also keeps the snapshot root flat and filename-safe.
-    key = hashlib.sha1(app.encode("utf-8", "surrogateescape")).hexdigest()[:12]
+    # Per-target key: path hash, not name — two apps may share a basename, and
+    # the hash also keeps the snapshot root flat and filename-safe. A FILE target
+    # folds its pathspec in, so its one-file snapshot can never collide with a
+    # sibling file's or with its directory's app snapshot; an app target hashes
+    # the dir alone, exactly as before, so snapshots already on disk stay reused
+    # instead of being orphaned by this change.
+    key_src = app if kind == "app" else app + "\0" + pathspec
+    key = hashlib.sha1(key_src.encode("utf-8", "surrogateescape")).hexdigest()[:12]
     snap = os.path.join(home_dir(), "app-versions", key, full)
     marker = os.path.join(snap, ".fused-snapshot-complete")
 
@@ -193,7 +271,12 @@ def _snapshot(app: str, sha: str):
         # (where the app IS the repo root) is the degenerate same case.
         # Verified against git 2.x; a commit that predates the folder just
         # produces an empty tar, which lands in the no-entry notice below.
-        r = _git(app, "archive", "--format=tar", full, binary=True)
+        # A FILE target additionally narrows the archive to its own pathspec, so
+        # the snapshot holds exactly that one file at that revision rather than
+        # the whole surrounding directory (which, outside an app, is the user's
+        # repository and could be enormous).
+        narrow = [] if kind == "app" else ["--", pathspec]
+        r = _git(app, "archive", "--format=tar", full, *narrow, binary=True)
         if r.returncode != 0:
             err = r.stderr.decode("utf-8", "replace") if r.stderr else ""
             return {"error": "git archive failed: " + err.strip()[:200]}
@@ -212,6 +295,20 @@ def _snapshot(app: str, sha: str):
                 tf.extractall(snap)
         with open(marker, "w", encoding="utf-8") as f:
             f.write(full + "\n")
+
+    # A FILE target's snapshot is that one file, so there is nothing to discover:
+    # `file` is the materialised path, and `entry` is it only when the file is
+    # itself a page. For anything else the view frames it through its own default
+    # template (the same resolution the claude_split pane does), which is why
+    # `file` is reported separately rather than squeezed into `entry` — `entry`
+    # means "a document /render can serve directly".
+    if kind != "app":
+        out = os.path.join(snap, name)
+        if not os.path.isfile(out):
+            return {"error": "this revision does not contain that file"}
+        is_page = out.lower().endswith((".html", ".htm"))
+        return {"app": app, "sha": full, "dir": snap, "file": out,
+                "entry": out if is_page else None}
 
     # The snapshot's entry page, by the app-entry rule (index.html first, else
     # the single top-level .html — shared/app_entry.py), NOT a hardcoded
@@ -278,19 +375,26 @@ def _head(app: str) -> str:
 
 
 def main(action: str = "log", file: str = "", sha: str = ""):
-    app, err = _require_app(file)
-    if err is not None:
+    target, err = _resolve_target(file)
+    if target is None:
         return err
+    kind, app, _pathspec, _name = target
     try:
         if action == "log":
-            return _log(app)
+            return _log(target)
         if action == "snapshot":
-            return _snapshot(app, sha)
+            return _snapshot(target, sha)
         if action == "revert":
+            # The security boundary, not just UI politeness: a revert records a
+            # commit with the Fused identity and resets the working tree. Only a
+            # WORKSPACE app is ours to do that to. A linked app's repo and a
+            # standalone file's repo are both the user's own — history is
+            # view-only there, and this refusal is what makes the read-only
+            # promise in condition.py true even for a hand-crafted call.
+            if kind != "app":
+                return {"error": "revert is disabled outside fused apps — "
+                                 "this file's git history is managed by you"}
             if _is_linked(app):
-                # The security boundary, not just UI politeness: a revert
-                # records a commit with the Fused identity, and a linked app's
-                # repo belongs to the user. History is view-only here.
                 return {"error": "revert is disabled for linked apps — "
                                  "this folder's git history is managed by you"}
             return _revert(app, sha)

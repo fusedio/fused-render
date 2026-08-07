@@ -16,7 +16,9 @@ import { HeroBrand } from "@platform/ui/HeroBrand";
 // page started itself). Folder-scoped on purpose: the server starts the
 // scaffolding session via the claude_split agent on the app FOLDER, so the
 // re-attach must land in the same template — same runs dir, same
-// .claude-split.json sidecar — never the file-scoped claude template.
+// .claude-split.json sidecar — never the folder-scoped `claude` template (D230
+// made `claude_split` the file-scoped chat too, so "which chat" is now a
+// question about the target's kind, not about which template is file-scoped).
 // Lands in the BUILDER namespace (/apps/<tag>/<name>) — the app folder's last
 // two path segments ARE its tag/name by the server's workspace contract.
 export function claudeChatUrl(appDir: string, runId: string): string {

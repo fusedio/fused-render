@@ -108,7 +108,7 @@ def _write_canvas(dir_path, name="canvas.toml", body=CANVAS_TOML):
 def test_canvas_toml_gets_canvas_mode_first(tmp_path):
     p = _write_canvas(tmp_path / "cv")
     m, error = modes(str(p))
-    assert m == ["canvas", "code", "git", "reader", "annotate"]
+    assert m == ["canvas", "code", "claude_split", "versions", "reader"]
     assert error is None
     entries, _ = _server_templates._templates_for(str(p), False)
     assert entries[0]["path"].endswith("canvas/template.html")
@@ -120,7 +120,9 @@ def test_canvas_toml_gets_canvas_mode_first(tmp_path):
     # so it too is marked conditional; the unconditional modes are not.
     assert by_mode["reader"].get("conditional") is True
     assert "conditional" not in by_mode["code"]
-    assert "conditional" not in by_mode["annotate"]
+    # The gated file-side pair (D230) is marked too — both ship a condition.py.
+    assert by_mode["claude_split"].get("conditional") is True
+    assert by_mode["versions"].get("conditional") is True
     # … and the background verdict allows a genuine canvas.
     allowed, err = canvas_verdict(str(p))
     assert allowed is True
@@ -132,7 +134,7 @@ def test_plain_toml_denied_canvas_mode(tmp_path):
     p.write_text("[tool.black]\nline-length = 88\n")
     m, error = modes(str(p))
     # stat still lists canvas (marked conditional, gate not run at stat time)
-    assert m == ["canvas", "code", "git", "reader", "annotate"]
+    assert m == ["canvas", "code", "claude_split", "versions", "reader"]
     assert error is None
     allowed, err = canvas_verdict(str(p))
     assert allowed is False  # basename pre-check denies it

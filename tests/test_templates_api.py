@@ -22,6 +22,16 @@ from fused_render import templates_api
 from fused_render.server import create_app
 
 
+def _core_list(key: str) -> list:
+    """The core registry's ordered names for `key`. Derived, not spelled out: the
+    tests below assert that a commit COPIES this list and appends to it, which is
+    a claim about the copy — spelling the list out again just meant a rebinding
+    (D230) broke three tests that were not about bindings at all."""
+    with open(os.path.join(_server_templates.TEMPLATES_DIR, "registry.json"),
+              encoding="utf-8") as f:
+        return list(json.load(f)[key])
+
+
 FUSED = {"X-Fused": "1"}
 
 
@@ -1027,7 +1037,7 @@ def test_commit_applies_bindings_appending_to_core_list(ctx):
         {"key": ".myext", "template": "fresh"},
     ]
     reg = ctx.read_registry()
-    assert reg[".csv"] == ["duckdb", "excel", "code", "reader", "annotate", "versions", "fresh"]
+    assert reg[".csv"] == _core_list(".csv") + ["fresh"]
     assert reg[".myext"] == ["fresh"]
 
 
@@ -1098,7 +1108,7 @@ def test_commit_binding_reenables_disabled_key_with_core_list(ctx):
         headers=FUSED,
     ).json()
     assert body["bindingsApplied"] == [{"key": ".csv", "template": "fresh"}]
-    assert ctx.read_registry()[".csv"] == ["duckdb", "excel", "code", "reader", "annotate", "versions", "fresh"]
+    assert ctx.read_registry()[".csv"] == _core_list(".csv") + ["fresh"]
 
 
 def test_commit_binding_already_bound_is_noop(ctx):
@@ -1182,7 +1192,7 @@ def test_new_template_appends_to_existing_core_default(ctx):
     )
     assert resp.status_code == 200
     reg = ctx.read_registry()
-    assert reg[".csv"] == ["duckdb", "excel", "code", "reader", "annotate", "versions", "mycsv"]
+    assert reg[".csv"] == _core_list(".csv") + ["mycsv"]
 
 
 def test_new_template_appends_to_existing_user_override(ctx):

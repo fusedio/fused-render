@@ -211,6 +211,12 @@ function LoadingScaffold({ fsPath, isDir, headerless }: { fsPath: string; isDir:
 // app is built. A mode absent from this list is filtered out of the switcher
 // entirely (Preview's allowModes), so this is what makes the plain view
 // reachable. The URL's `_mode` semantics are unchanged.
+//
+// The pin is load-bearing rather than cosmetic: an app folder is still a
+// directory, so without it the builder would also offer the directory modes
+// (`claude`, `git`, `graph`) that D230 put there. It is a curation of this view,
+// not a divergence from the explorer — every mode listed here behaves in the
+// builder exactly as it does in the explorer for the same folder.
 const APP_MODES = ["app", "claude_split", "versions"];
 
 // Stat-backed views (listing/preview): breadcrumb + content under one hook

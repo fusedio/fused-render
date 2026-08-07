@@ -297,7 +297,21 @@ def _workdir(file: str) -> str:
 
 
 def _system_prompt(file: str) -> str:
+    """The FILE target's prompt: what to work on, plus the same app-state
+    disclosure the directory prompt makes (D230).
+
+    The file branch needs that second half for the same reason the directory
+    branch does — a tool the model is never told about is a tool it never calls —
+    but it needs a DIFFERENT description of what the pane is. A folder target
+    frames the user's own app; a file target frames fused-render's preview OF
+    their file (`code` for a `.py`, `duckdb` for a `.parquet`, the page itself
+    for an `.html`). Saying "your app" there would invite edits to our template,
+    so this says whose page it is and what it is good for: the annotations and
+    crops the user takes on it point at THEIR file's content, and the console
+    errors belong to the viewer unless the file being viewed is itself the page.
+    """
     name = os.path.basename(file)
+    tool = "mcp__%s__%s" % (PERMISSION_SERVER, APP_STATE_TOOL)
     return (
         f"You are embedded in a local file viewer, opened on {file}. "
         f"The user is looking at {name} right now; treat that file as the "
@@ -305,7 +319,17 @@ def _system_prompt(file: str) -> str:
         "requested edits to it. Keep your work scoped to this file (and "
         "assets it directly references) unless the user explicitly asks for "
         "something broader. This is guidance, not a hard rule: follow "
-        "explicit user instructions even when they go beyond the file."
+        "explicit user instructions even when they go beyond the file. "
+        f"Beside this chat the user sees {name} rendered in fused-render's "
+        "own preview for that file type — their content, our viewer, so never "
+        "edit the viewer. "
+        f"`{tool}` reads that pane back: its DOM outline, URL params and "
+        "console errors. Call it when the user points at something they can "
+        "see, or after a change whose effect should show up there (the pane "
+        "reloads itself when the file changes). Anything the user annotates or "
+        f"screenshots in that pane is a part of {name}, not of the viewer. A "
+        f"<{APP_STATE_TAG}> block on their message is the same reading taken "
+        "at send time, and goes stale as soon as you edit anything."
     )
 
 
@@ -1149,14 +1173,18 @@ def _start(file: str, message: str, session_id: str, model: str,
            f"mcp__{PERMISSION_SERVER}__{APP_STATE_TOOL}," + _read_rule(SHOTS)]
     cmd += _plugin_argv()
     # BOTH targets get an --append-system-prompt here, and they get different
-    # ones. A FILE target gets the scoping prompt. A DIRECTORY target (the
-    # claude_split app template) still does NOT get that one — the session
-    # should be plain Claude Code in that project, with the user's own system
-    # prompt, CLAUDE.md, skills and tools, and cwd (_workdir) as the only
-    # scoping — but it does get a narrow prompt of its own, whose entire job is
-    # to name the app_state tool. That is the exception to the rule this comment
-    # used to state absolutely: an un-announced tool does not get called, and
-    # the split view is the one target where seeing the running app is the point.
+    # ones. A FILE target gets the scoping prompt. A DIRECTORY target (an app
+    # folder) still does NOT get that one — the session should be plain Claude
+    # Code in that project, with the user's own system prompt, CLAUDE.md, skills
+    # and tools, and cwd (_workdir) as the only scoping — but it does get a
+    # narrow prompt of its own.
+    #
+    # What the two share is the app_state disclosure, because an un-announced
+    # tool does not get called and both targets now have a pane worth reading
+    # back (D230). What they must NOT share is the DESCRIPTION of that pane: a
+    # folder frames the user's own app, a file frames fused-render's preview of
+    # their file. Each prompt says which, so the model never mistakes our viewer
+    # for the user's code.
     cmd += ["--append-system-prompt",
             _split_system_prompt() if os.path.isdir(file)
             else _system_prompt(file)]

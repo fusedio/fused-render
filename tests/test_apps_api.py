@@ -537,9 +537,14 @@ def test_home_navigates_into_the_claude_chat_for_the_started_run():
     assert "if (res.run_id) navigateUrl(claudeChatUrl(" in home
 
 
-def test_claude_is_a_selectable_mode_for_html():
+def test_claude_split_is_the_selectable_chat_mode_for_html():
+    """D230 moved the file-side chat from `claude` to `claude_split`: a file gets
+    the split view (its own preview beside the chat, with the annotation tools),
+    and `claude` is the folder-scoped chat. A page must offer exactly one of
+    them, or the switcher shows two chats that differ only in features."""
     registry = json.loads(_repo_text("fused_render", "templates", "registry.json"))
-    assert "claude" in registry[".html"]
+    assert "claude_split" in registry[".html"]
+    assert "claude" not in registry[".html"]
 
 
 def test_claude_template_boots_into_chat_from_a_bare_run_param():

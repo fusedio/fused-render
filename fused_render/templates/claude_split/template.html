@@ -1002,8 +1002,9 @@ const PANE_SHOT_TAG = "pane-shot";
 // it: the snapshot itself, and the pull channel's fallback answer (appStatePull)
 // — a divergence there would tell the model two different stories about the same
 // condition (D146: the duplicated rule gets a test, not a comment).
-const APP_STATE_UNREADABLE = "the app's document could not be read (the project "
-  + "may have no app entry, or the pane has not finished loading), so nothing is "
+const APP_STATE_UNREADABLE = "the left pane's document could not be read (a "
+  + "project may have no app entry, a file may have no preview view, or the pane "
+  + "has not finished loading), so nothing is "
   + "known about its title, url or DOM right now";
 // {level, text, source?, line?, ts}. PARENT-side, deliberately: the buffer has
 // to outlive the framed app's own reloads, which is exactly what makes "that
@@ -1340,20 +1341,66 @@ async function appStateFile(state) {
   }
 }
 
-// ── left pane: the file's ordinary preview ─────────────────────
-(async () => {
-  try {
-    // The left pane renders the APP, not the folder: the project's entry
-    // html (index.html, or its single top-level html — same rule as the
-    // shell's "Open as app" button). Framed via /render — the RAW rendered
-    // document, same as the annotate template — NOT /embed: /embed serves
-    // the React shell, which nests the app one iframe deeper, putting its
-    // document out of the annotation layer's reach (the anchor listeners
-    // would wire the shell document and never see a click).
+// The chat modes, which the pane must never frame: `claude_split` is THIS view
+// (framing it would nest the split view inside its own left pane, recursively)
+// and `claude` is its directory-scoped sibling. Neither is a preview of the
+// target, which is the only thing the pane is for.
+const PANE_SKIP_MODES = new Set(["claude", "claude_split"]);
+
+// What the left pane should frame. Two kinds of target (D230):
+//
+//   * a project FOLDER — the app's entry html (index.html, or its single
+//     top-level html — the same rule as the shell's "Open as app" button),
+//     resolved by ./app.py;
+//   * a FILE — the file in its OWN default view, i.e. exactly what the
+//     explorer's preview pane would show it in: `.py` in `code`, `.parquet`
+//     in `duckdb`, an `.html` page rendered as itself. That is what makes the
+//     annotation tools usable while editing a standalone file, which is the
+//     whole point of binding this mode to the file keys (D230).
+//
+// Framed via /render either way — the RAW rendered document, same as the
+// annotate template — NOT /embed: /embed serves the React shell, which nests
+// the target one iframe deeper, putting its document out of the annotation
+// layer's reach (the anchor listeners would wire the shell document and never
+// see a click).
+async function paneURL() {
+  const st = await fetch("/api/fs/stat?path=" + encodeURIComponent(FILE))
+    .then((r) => r.json());
+  if (st.error) throw new Error(st.error);
+
+  if (st.is_dir) {
     const { entry } = await fused.runPython("./app.py", { dir: FILE });
     if (!entry) throw new Error("no app entry (index.html or a single top-level .html) in " + FILE);
     appEntry = entry;
-    document.getElementById("leftframe").src = "/render?path=" + encodeURIComponent(entry);
+    return "/render?path=" + encodeURIComponent(entry);
+  }
+
+  // The file's DEFAULT mode, by the same rule the shell applies (Preview.tsx
+  // `defaultTemplate`): the first entry that is not `conditional`. Reusing the
+  // rule rather than naming a template per extension is what keeps the pane
+  // honest when a binding changes — including a user's own override (§16),
+  // which stat has already resolved by the time we see it.
+  const t = (st.templates || []).find((e) => !e.conditional && !PANE_SKIP_MODES.has(e.mode));
+  if (!t) throw new Error("no preview view for this file");
+  // The target IS the document being annotated, so app_state reports the file
+  // itself where a folder target reports the app's entry page.
+  appEntry = FILE;
+  // `_render` is a shell sentinel (PT-12), not a template folder: it means "the
+  // file renders itself", which is a bare /render on the file.
+  if (t.mode === "_render") return "/render?path=" + encodeURIComponent(FILE);
+  if (!t.path) throw new Error("the default view for this file has no template (" + t.mode + ")");
+  // `_remote=1` forwards stat's remote flag exactly as the shell's own iframe
+  // does, so a template that prefers ranged HTTP reads over local file I/O
+  // still gets the hint here.
+  return "/render?path=" + encodeURIComponent(t.path)
+    + "&_file=" + encodeURIComponent(FILE)
+    + (st.remote ? "&_remote=1" : "");
+}
+
+// ── left pane: the target's ordinary preview ─────────────────────
+(async () => {
+  try {
+    document.getElementById("leftframe").src = await paneURL();
   } catch (err) {
     // Swap only the iframe for the message — #leftview also hosts the annotation
     // layer (button, pins, highlight, popover), and wiping it would leave JS
@@ -1367,7 +1414,7 @@ async function appStateFile(state) {
     // Tell Claude too: "the pane is showing an error instead of your app" is the
     // most important thing the state channel can carry, and from here the iframe
     // is gone (appWindow returns null forever) so nothing else will report it.
-    pushAppLog("error", "the left pane could not open the app: " + err.message);
+    pushAppLog("error", "the left pane could not open the preview: " + err.message);
   }
 })();
 

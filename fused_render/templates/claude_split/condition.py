@@ -1,12 +1,29 @@
-"""Gate for the `claude_split` app template (bound on the universal "/"
-directory key).
+"""Gate for the `claude_split` template — the split view: the target's own
+preview beside a Claude chat, with the annotation / app_state machinery
+(D230).
 
-`main(path)` offers the split app view — project preview beside a Claude
-chat — ONLY for a project folder, i.e. a directory exactly two levels below
-the workspace root: <workspace>/<tag>/<project> — or a registered *linked
-app* folder (`FUSED_RENDER_LINKED_APPS`), which may live anywhere on disk.
-Anywhere else (the root itself, a tag folder, a nested subfolder, an
-unrelated directory) the mode stays hidden.
+`main(path)` answers for the two kinds of target the mode is bound to:
+
+* **A FILE** (every key in the registry's authored-file set — source, config,
+  prose, data, image assets) → allowed. This is the file-scoped chat: the left
+  pane renders the file in its OWN default template and the annotation tools
+  work over that, which is the whole reason `claude_split` replaced the plain
+  `claude` mode on file keys (D230). Nothing more is asked of a file: the
+  registry already decided which extensions offer the mode, and a file needs
+  neither a workspace nor a repository to be worth talking about.
+* **A DIRECTORY** (the universal "/" key) → allowed ONLY for a project folder,
+  i.e. a directory exactly two levels below the workspace root
+  (<workspace>/<tag>/<project>), or a registered *linked app* folder
+  (`FUSED_RENDER_LINKED_APPS`), which may live anywhere on disk. Anywhere else
+  (the root itself, a tag folder, a nested subfolder, an unrelated directory)
+  the mode stays hidden — an ordinary folder's chat is the `claude` mode, whose
+  left pane would have no app entry to render. This is what keeps the mode in
+  the app-builder view (App.tsx APP_MODES) without leaking it onto every
+  directory in the explorer.
+
+The file/directory split is `os.path.isdir`, ONE stat — deliberately the same
+question `app/condition.py` never has to ask, because that gate is bound to "/"
+alone and this one is not.
 
 CRITICAL: this never lists or walks the directory (`os.listdir`,
 `os.scandir`, `glob`, recursion) and never resolves symlinks — the gate runs
@@ -32,6 +49,14 @@ def main(path: str) -> bool:
             return False
         if is_mount_backed(path):
             return False
+
+        # A file target is the file-scoped chat: allowed anywhere on disk. The
+        # test is `isfile`, an EXISTING regular file — deliberately not
+        # `not isdir`, which would also swallow every path that does not exist
+        # and hand a `True` to any nonexistent child of a linked app folder. One
+        # stat, and "cannot tell" keeps reading as "refuse" (CT-12).
+        if os.path.isfile(path):
+            return True
 
         # A registered linked app (FUSED_RENDER_LINKED_APPS, the registry at
         # ~/.fused-render/linked_apps.json) is an app wherever it lives — same

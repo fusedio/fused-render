@@ -1,12 +1,23 @@
-"""Gate for the `versions` template (app git history).
+"""Gate for the `versions` template — per-FILE history, plus app history on an
+app FOLDER (D230).
 
-`main(path)` says whether the target — a file OR a directory — lives inside a
-*fused app*: a folder exactly two levels under the workspace
-(`<workspace>/<tag>/<name>`, `shell/seed.fused_dir()`) that is itself a git
-repository. Only such folders get the auto-commit treatment
-(`fused_render/app_git.py`), so only they have a history worth showing; the
-template registry offers `versions` on many file types and on every directory,
-and this gate is what narrows that to apps.
+`main(path)` answers for the two kinds of target the mode is bound to:
+
+* **A FILE** → allowed when it is inside any git work tree, decided by git
+  itself (`rev-parse --is-inside-work-tree` from the file's parent — the probe
+  `git/condition.py` documents at length). `versions` is the file-side history
+  view now that `git` is directory-only (D230), so a tracked file gets its
+  timeline wherever it lives, not only inside a fused app. Outside an app the
+  view is READ-ONLY — `versions.py` refuses `revert` there, because that writes
+  a commit with the Fused identity into what is the user's own repository (the
+  rule `fused_render/linked_apps.py` already sets for linked folders).
+* **A DIRECTORY** → allowed only for a *fused app*: a folder exactly two levels
+  under the workspace (`<workspace>/<tag>/<name>`, `shell/seed.fused_dir()`)
+  that is itself a git repository, or a git-backed registered linked app. Only
+  such folders get the auto-commit treatment (`fused_render/app_git.py`), so
+  only they have a folder-level history worth showing — and this is what keeps
+  the mode in the app-builder view (App.tsx APP_MODES) while an ordinary folder
+  in the explorer offers the repo-wide `git` view instead.
 
 The app-dir rule here mirrors `app_git.app_dir_for` (and the claude template's
 `_app_dir_for`); keep the three in step. It is duplicated rather than imported
@@ -50,20 +61,20 @@ def main(path: str) -> bool:
             return False
         if is_mount_backed(path):
             return False
+        if not path:
+            return False
 
-        # Inside a registered linked app: ask git itself, the way
-        # git/condition.py does. A linked folder is often a SUBFOLDER of the
-        # user's repository (`.git` lives at an ancestor), and a hand-rolled
-        # ascent gets the two `.git` shapes wrong (dir in a clone, file in a
-        # worktree/submodule) — `rev-parse --is-inside-work-tree` answers all
-        # of them from any depth in one bounded fork. Linked dirs are a small
-        # registered set, so the fork happens rarely, never on ordinary stats.
-        linked = linked_app_dir_for(path)
-        if linked:
+        def _in_work_tree(cwd: str) -> bool:
+            """`git rev-parse --is-inside-work-tree` asked from `cwd` — one
+            bounded fork, never a search of the tree. The reasoning for asking
+            git rather than stat'ing `.git` (a nested path has no `.git` of its
+            own; a clone's `.git` is a dir and a worktree's is a file) lives in
+            git/condition.py; this is the same probe, not a second copy of the
+            rule."""
             import subprocess
 
             proc = subprocess.run(
-                ["git", "--no-pager", "-C", linked, "rev-parse",
+                ["git", "--no-pager", "-C", cwd, "rev-parse",
                  "--is-inside-work-tree"],
                 env={**os.environ,
                      "GIT_TERMINAL_PROMPT": "0", "GIT_OPTIONAL_LOCKS": "0",
@@ -75,14 +86,44 @@ def main(path: str) -> bool:
             )
             return proc.returncode == 0 and proc.stdout.strip() == b"true"
 
+        # Inside a registered linked app: ask git itself. A linked folder is
+        # often a SUBFOLDER of the user's repository (`.git` lives at an
+        # ancestor). Linked dirs are a small registered set, so the fork happens
+        # rarely, never on ordinary stats.
+        linked = linked_app_dir_for(path)
+        if linked:
+            return _in_work_tree(linked)
+
+        # A fused app, or anything inside one: one relpath + one `.git` stat.
         root = workspace_dir()
         rel = os.path.relpath(os.path.abspath(path), root)
-        if rel == os.curdir or rel.split(os.sep, 1)[0] == os.pardir:
+        if rel != os.curdir and rel.split(os.sep, 1)[0] != os.pardir:
+            parts = rel.split(os.sep)
+            if (len(parts) >= 2
+                    and not parts[0].startswith(".")
+                    and not parts[1].startswith(".")):
+                app_dir = os.path.join(root, parts[0], parts[1])
+                if os.path.isdir(os.path.join(app_dir, ".git")):
+                    return True
+
+        # Not an app target (D230). A FILE still earns its own timeline from
+        # whichever repository it happens to live in — that is the file-side
+        # history view `git` no longer provides — and the view is read-only
+        # there, enforced by versions.py rather than by hiding the mode. A
+        # plain DIRECTORY does not: folder-wide history outside an app is the
+        # `git` mode's story, and two modes for one story is what the peer
+        # exclusion in git/condition.py exists to prevent.
+        #
+        # `isfile`, deliberately not `not isdir`: the loose form is also true for
+        # every path that does NOT EXIST, so a missing name inside any repository
+        # would gate true. Same one-word trap the peer gate documents
+        # (claude_split/condition.py), and "cannot tell" must read as "refuse"
+        # (CT-12).
+        if not os.path.isfile(path):
             return False
-        parts = rel.split(os.sep)
-        if len(parts) < 2 or parts[0].startswith(".") or parts[1].startswith("."):
+        parent = os.path.dirname(os.path.abspath(path))
+        if not os.path.isdir(parent):
             return False
-        app_dir = os.path.join(root, parts[0], parts[1])
-        return os.path.isdir(os.path.join(app_dir, ".git"))
+        return _in_work_tree(parent)
     except Exception:  # noqa: BLE001 — any probe error: fail closed, quietly
         return False

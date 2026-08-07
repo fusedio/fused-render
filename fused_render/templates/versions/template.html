@@ -127,7 +127,7 @@
     color: var(--on-accent);
   }
 
-  /* Left: the app rendered at the selected revision — nothing else. */
+  /* Left: the target rendered at the selected revision — nothing else. */
   #main { flex: 1; order: 1; display: flex; flex-direction: column; min-width: 0; }
   #stage { flex: 1; position: relative; background: var(--bg); }
   #frame {
@@ -163,15 +163,18 @@
   <div id="divider"></div>
   <div id="main">
     <div id="stage">
-      <iframe id="frame" title="App at selected revision"></iframe>
+      <iframe id="frame" title="Target at selected revision"></iframe>
       <div id="notice"></div>
     </div>
   </div>
 
 <script>
-// The target arrives as the read-only _file param (template contract). It may
-// be any file inside the app OR the app folder itself — the backend always
-// resolves and operates on the whole app, so the view is identical everywhere.
+// The target arrives as the read-only _file param (template contract), and the
+// backend decides which of two histories it names (D230): any path inside a
+// fused app resolves to the WHOLE app (so the view is identical everywhere
+// inside it, and `revert` is offered), while a file in the user's own repository
+// resolves to that one file's history, read-only — `can_revert: false` is how
+// the payload says which, and the only difference this view has to render.
 const FILE = fused.params.get("_file") || "";
 
 const commitsEl = document.getElementById("commits");
@@ -215,6 +218,33 @@ function renderList() {
     "</div>").join("");
 }
 
+// The iframe src that shows `path` the way the explorer would: its own default
+// view. Used for a FILE target's snapshot, where the materialised revision is a
+// `.py`/`.parquet`/`.md`, not a page (D230).
+//
+// The default is the first non-`conditional` entry — the same rule the shell's
+// own preview applies (Preview.tsx `defaultTemplate`) — asked of stat rather
+// than hardcoded per extension, so a rebinding (including a user override, §16)
+// is picked up here for free. `versions` itself is conditional, so this can
+// never recurse into the view it is called from.
+async function frameSrcForFile(path) {
+  let st;
+  try {
+    st = await fetch("/api/fs/stat?path=" + encodeURIComponent(path)).then(r => r.json());
+  } catch (err) {
+    return "";
+  }
+  if (!st || st.error) return "";
+  const t = (st.templates || []).find(e => !e.conditional);
+  if (!t) return "";
+  // `_render` is a shell sentinel (PT-12), not a template folder: the file
+  // renders itself. Any other sentinel has no template to frame.
+  if (t.mode === "_render") return "/render?path=" + encodeURIComponent(path);
+  if (!t.path) return "";
+  return "/render?path=" + encodeURIComponent(t.path)
+    + "&_file=" + encodeURIComponent(path);
+}
+
 async function select(sha) {
   selected = sha;
   // URL-synced so a reload (or a shared link) lands on the same revision.
@@ -231,11 +261,23 @@ async function select(sha) {
       { action: "snapshot", file: FILE, sha: sha }, { key: "snapshot" });
     if (snap.error) return notice(snap.error, true);
     if (sha !== selected) return; // stale — a newer selection already landed
-    if (!snap.entry) {
+    // Two shapes of snapshot (D230). An APP snapshot reports `entry`, the page
+    // /render can serve directly. A FILE snapshot reports `file` — the one file
+    // materialised at that revision — and `entry` only when that file is itself
+    // a page; anything else has to be framed through its own default template,
+    // exactly the way the explorer previews it live.
+    let src = "";
+    if (snap.entry) {
+      src = "/render?path=" + encodeURIComponent(snap.entry);
+    } else if (snap.file) {
+      src = await frameSrcForFile(snap.file);
+      if (sha !== selected) return; // the stat above is another await point
+      if (!src) return notice("No view for this file type — nothing to render.");
+    } else {
       return notice("This revision has no entry page (index.html or a single .html) — nothing to render.");
     }
     clearNotice();
-    frameEl.src = "/render?path=" + encodeURIComponent(snap.entry);
+    frameEl.src = src;
   } catch (err) {
     if (sha === selected) notice("Snapshot failed: " + err.message, true);
   }
