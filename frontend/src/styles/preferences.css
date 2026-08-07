@@ -80,6 +80,15 @@
 
 .files-hero {
   text-align: center;
+  /* No card chassis here (unlike /apps): the explorer hero sits flat on the
+     page — no fill, border, or accent wash. */
+  background: none;
+  border: none;
+  padding: 12px 0 6px;
+}
+
+.files-hero::before {
+  content: none;
 }
 
 /* The browse-workspace block below the hero (it moved out of the hero when
