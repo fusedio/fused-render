@@ -270,12 +270,20 @@ def _build(project_dir, venv_dir, uv_cache_dir, python_executable):
     if os.path.isdir(venv_dir) and not os.path.exists(os.path.join(venv_dir, _READY_MARKER)):
         shutil.rmtree(venv_dir, ignore_errors=True)
 
-    cmd = [uv, "sync", "--python", python_executable]
+    # `--no-default-groups` because PY-16 makes `[project].dependencies` the whole
+    # declaration, and without it uv also installs the default dependency-groups
+    # (`[dependency-groups] dev`, which `uv init` and `uv add --dev` write). That
+    # would put packages in the venv that `applicable_dependencies_of` never
+    # reported — so the loader's "not installed yet: …" list and the environment
+    # it builds would describe different things, and the marker/`app_satisfies`
+    # fast path would be deciding against an incomplete list. One declaration, one
+    # place. A folder whose dependencies live only in a group installs nothing,
+    # which is the same answer PY-16 already gives it.
+    cmd = [uv, "sync", "--no-default-groups", "--python", python_executable]
 
     env = dict(os.environ)
     env["UV_PROJECT_ENVIRONMENT"] = venv_dir
     env["UV_CACHE_DIR"] = uv_cache_dir
-    env.pop("UV_LINK_MODE", None)
     env.pop("VIRTUAL_ENV", None)  # else uv warns and may target the server's own venv
 
     os.makedirs(os.path.dirname(venv_dir), exist_ok=True)

@@ -1845,13 +1845,88 @@ def test_the_worker_syncs_the_project_into_the_named_venv(tmp_path, monkeypatch)
 
     worker._build(proj, venv_dir, cache, "3.12")
 
-    assert seen["cmd"][:4] == ["/usr/bin/uv", "sync", "--python", "3.12"]
+    assert seen["cmd"] == [
+        "/usr/bin/uv", "sync", "--no-default-groups", "--python", "3.12",
+    ]
     assert "--frozen" not in seen["cmd"], "no lock yet, so uv must resolve and write one"
     assert seen["cwd"] == proj
     assert seen["env"]["UV_PROJECT_ENVIRONMENT"] == venv_dir
     assert seen["env"]["UV_CACHE_DIR"] == cache
-    assert "UV_LINK_MODE" not in seen["env"], "uv already prefers hardlinks on its own"
     assert not os.path.exists(os.path.join(proj, ".venv"))
+
+
+@requires_fused
+def test_the_sync_leaves_the_users_link_mode_alone(tmp_path, monkeypatch):
+    """`UV_LINK_MODE` is inherited, never set and never stripped.
+
+    uv prefers hardlinks and degrades on its own, so there is nothing to pin —
+    but stripping an inherited value is the same override in the other
+    direction. Someone who exported `UV_LINK_MODE=copy` had a reason (a cache
+    and a venv on different mounts they cannot co-locate, an overlayfs where
+    hardlinks fail), and silently dropping it breaks every project sync in a way
+    that surfaces as an unexplained uv error.
+    """
+    proj = _project(tmp_path, deps=["pip"])
+    venv_dir = str(tmp_path / "home" / "venvs" / "abc")
+    worker = _worker_module("_env_install_worker_linkmode")
+    seen = {}
+
+    def _fake_run(cmd, **kw):
+        seen["env"] = kw.get("env")
+        os.makedirs(os.path.join(venv_dir, "bin"), exist_ok=True)
+        open(os.path.join(venv_dir, "bin", "python"), "w").close()
+
+        class _P:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+
+        return _P()
+
+    monkeypatch.setattr(worker.subprocess, "run", _fake_run)
+    monkeypatch.setattr(worker.shutil, "which", lambda name: "/usr/bin/uv")
+    monkeypatch.setenv("UV_LINK_MODE", "copy")
+
+    worker._build(proj, venv_dir, str(tmp_path / "home" / "uv-cache"), "3.12")
+
+    assert seen["env"]["UV_LINK_MODE"] == "copy"
+
+
+@requires_fused
+def test_the_sync_skips_default_dependency_groups(tmp_path, monkeypatch):
+    """PY-16 makes `[project].dependencies` the WHOLE declaration.
+
+    Without `--no-default-groups`, `uv sync` also installs `[dependency-groups]
+    dev` — which `uv init` and `uv add --dev` write — so the venv would contain
+    packages `applicable_dependencies_of` never reported. The loader's "not
+    installed yet" list, the `app_satisfies` fast path and the environment
+    actually built would then be describing three different sets.
+    """
+    proj = _project(tmp_path, deps=["pip"])
+    with open(os.path.join(proj, "pyproject.toml"), "a", encoding="utf-8") as f:
+        f.write('\n[dependency-groups]\ndev = ["pytest"]\n')
+    venv_dir = str(tmp_path / "home" / "venvs" / "abc")
+    worker = _worker_module("_env_install_worker_groups")
+    seen = {}
+
+    def _fake_run(cmd, **kw):
+        seen["cmd"] = cmd
+        os.makedirs(os.path.join(venv_dir, "bin"), exist_ok=True)
+        open(os.path.join(venv_dir, "bin", "python"), "w").close()
+
+        class _P:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+
+        return _P()
+
+    monkeypatch.setattr(worker.subprocess, "run", _fake_run)
+    monkeypatch.setattr(worker.shutil, "which", lambda name: "/usr/bin/uv")
+
+    worker._build(proj, venv_dir, str(tmp_path / "home" / "uv-cache"), "3.12")
+
+    assert "--no-default-groups" in seen["cmd"]
 
 
 @requires_fused

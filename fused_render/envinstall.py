@@ -1366,7 +1366,10 @@ def _spawn(key: str, project_dir: str, acquire_python: str | None = None) -> int
     `_python_executable()` rather than the worker's own `sys.executable`: the
     backend runs the code, so its interpreter and the environment's have to be
     one choice. argv cannot carry None, so the empty string stands for it and the
-    worker falls back to the pinned `SCRIPT_PYTHON_VERSION` (D214).
+    worker falls back to its OWN `sys.executable` — deliberately not to the pinned
+    `SCRIPT_PYTHON_VERSION`. Passing the version string where uv expects an
+    interpreter was a real bug once; see the worker's `_PINNED_PYTHON_VERSION`
+    (D214).
 
     `acquire_python` (slot 6, same empty-string-means-nothing idiom) asks the worker
     to DOWNLOAD that Python version and stop, rather than build a venv (D214). It
