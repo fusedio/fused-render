@@ -10,7 +10,7 @@ export default function BuilderSidebar({ config }: { config: Config }) {
   // Re-render on any nav/url change (active-item highlight).
   useUrlVersion();
   return (
-    <SidebarFrame title="App" version={config.version} homeHref="/apps">
+    <SidebarFrame title="App" homeHref="/apps">
       <div className="sidebar-section">
         <NavItem href="/apps" id="builder-home-link" label="Home" icon={HOME_ICON} />
       </div>

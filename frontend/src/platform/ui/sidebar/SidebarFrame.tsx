@@ -16,7 +16,8 @@ import {
 export interface SidebarFrameProps {
   /** Brand text next to the cube mark — names the owning context. */
   title: string;
-  version: string;
+  /** Version chip after the title — shown only by the shell ("Render"). */
+  version?: string;
   /** Where the brand click lands; the front door of the owning app. */
   homeHref?: string;
   children: React.ReactNode;
@@ -186,7 +187,7 @@ export function SidebarFrame({ title, version, homeHref = "/apps", children }: S
           </span>{" "}
           <span className="brand-title">{title}</span>
         </a>
-        <span className="brand-version">v{version}</span>
+        {version && <span className="brand-version">v{version}</span>}
         <button
           type="button"
           className="icon-btn sidebar-collapse-btn"
