@@ -8,10 +8,11 @@
 // viewstate-only — a pixel width isn't something a shared link should impose.
 // A folder with no saved width opens the pane at HALF the split container
 // (width null until the measuring effect resolves it; PANE_FALLBACK_W covers
-// the pre-paint frame and the unmeasurable edge). Default off — a folder never
-// toggled shows the plain listing exactly as before. `pane` and `panew` are
-// independent: turning the pane off keeps a dragged width, so re-opening the
-// folder restores it.
+// the pre-paint frame and the unmeasurable edge). Default ON — no `preview`
+// param and no saved viewstate shows the pane; closing it writes an explicit
+// `pane=0` (viewstate) / `preview=false` (URL) so the closed choice sticks.
+// `pane` and `panew` are independent: turning the pane off keeps a dragged
+// width, so re-opening the folder restores it.
 import { useLayoutEffect, useRef, useState } from "react";
 import { replaceSearch } from "@platform/lib/router";
 import { getViewState, setViewState } from "@platform/lib/viewstate";
@@ -36,14 +37,22 @@ function clampPaneWidth(containerW: number, width: number): number {
   return Math.max(PANE_MIN_W, Math.min(containerW - LIST_MIN_W, width));
 }
 
+// Shared by resolvePane and any other view (Preview.tsx's topbar-hiding
+// check) that needs to know whether the pane is showing for a path without
+// wanting its width too. `preview=true`/`preview=false` — the owner's literal
+// format (any other value reads as absent, falling back to the saved state).
+// No saved state means ON by default; only an explicit `pane=0` (a prior
+// close) turns it off.
+export function paneIsOpen(fsPath: string): boolean {
+  const urlPreview = new URLSearchParams(location.search).get("preview");
+  if (urlPreview !== null) return urlPreview === "true";
+  return new URLSearchParams(getViewState(fsPath)).get("pane") !== "0";
+}
+
 function resolvePane(fsPath: string): { on: boolean; width: number | null } {
   const s = new URLSearchParams(getViewState(fsPath));
-  const url = new URLSearchParams(location.search);
-  // `preview=true` exactly — the owner's literal format (any other value
-  // reads as absent, falling back to the saved state).
-  const on = url.get("preview") !== null ? url.get("preview") === "true" : s.get("pane") === "1";
   const w = parseInt(s.get("panew") || "", 10);
-  return { on, width: Number.isFinite(w) && w >= PANE_MIN_W ? w : null };
+  return { on: paneIsOpen(fsPath), width: Number.isFinite(w) && w >= PANE_MIN_W ? w : null };
 }
 
 // Merge the pane keys into this folder's saved state without touching a saved
@@ -52,10 +61,15 @@ function resolvePane(fsPath: string): { on: boolean; width: number | null } {
 // choice worth remembering. The two keys are INDEPENDENT: `panew` outlives a
 // toggle-off, so closing the pane and coming back to the folder re-opens at
 // the width that was dragged rather than re-measuring the default.
+//
+// `pane` only ever stores the OFF choice (`"0"`) — on is the default, so
+// nothing needs persisting for it; a stale `pane=1` from before the default
+// flipped is just as good as no key at all (resolvePane treats anything but
+// `"0"` as on).
 function savePaneState(fsPath: string, on: boolean, width: number | null): void {
   const s = new URLSearchParams(getViewState(fsPath));
-  if (on) s.set("pane", "1");
-  else s.delete("pane");
+  if (on) s.delete("pane");
+  else s.set("pane", "0");
   if (width !== null) s.set("panew", String(Math.round(width)));
   else s.delete("panew");
   const qs = s.toString();
@@ -101,7 +115,9 @@ export function usePreviewPane(fsPath: string, enabled = true) {
       const params = new URLSearchParams(location.search);
       if (next.on) params.set("preview", "true");
       else {
-        params.delete("preview");
+        // Explicit `false`, not a deleted param — on is the default now, so
+        // an absent param would reopen the pane on the next load/nav.
+        params.set("preview", "false");
         // The pane's mode param has no pane to describe once it's closed.
         params.delete("_panelMode");
       }
@@ -142,7 +158,8 @@ export function usePreviewPane(fsPath: string, enabled = true) {
       // keeping the pre-drag width so re-opening restores it.
       if (moved && raw < PANE_CLOSE_W) {
         const params = new URLSearchParams(location.search);
-        params.delete("preview");
+        // Explicit `false` — see togglePane: on is the default now.
+        params.set("preview", "false");
         params.delete("_panelMode");
         const qs = params.toString();
         replaceSearch(location.pathname + (qs ? "?" + qs : ""));
@@ -163,16 +180,17 @@ export function usePreviewPane(fsPath: string, enabled = true) {
   return { pane, splitRef, togglePane, onDividerPointerDown };
 }
 
-// Same URL reflection Listing does for a saved sort: a pane restored from
-// saved viewstate (URL carried no `preview`) puts `preview=true` on the
+// Same URL reflection Listing does for a saved sort: a pane restored CLOSED
+// from saved viewstate (URL carried no `preview`) puts `preview=false` on the
 // address bar so refresh, bookmarks and onward navigation (which carries the
 // param) all see the shown state. Only ever ADDS the param — a URL without it
-// and a folder without saved pane state keep the clean URL, and an explicit
-// `?preview=false` stays authoritative (resolvePane already read it as off).
+// and a folder with no saved close (on is the default) keep the clean URL,
+// and an explicit `?preview=` value stays authoritative (resolvePane already
+// read it).
 export function reflectPaneInUrl(fsPath: string): void {
   if (new URLSearchParams(location.search).get("preview") !== null) return; // URL is authoritative
-  if (!new URLSearchParams(getViewState(fsPath)).get("pane")) return;
+  if (new URLSearchParams(getViewState(fsPath)).get("pane") !== "0") return; // on is the default
   const params = new URLSearchParams(location.search);
-  params.set("preview", "true");
+  params.set("preview", "false");
   replaceSearch(location.pathname + "?" + params.toString());
 }
