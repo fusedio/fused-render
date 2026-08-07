@@ -1059,6 +1059,13 @@ def _needs_install_dict(project_dir: str, abs_path: str) -> dict:
             # every script in the folder is visibly ONE install rather than N.
             "project": project_dir,
             "name": name,
+            # The declaration itself, so `runtime.js` can put it in the live-reload
+            # watch set. Sent as a resolved path rather than left for the client to
+            # join onto `project`: the root is the server's answer and the
+            # separator is the server's platform. Without this, a user who fixes
+            # their dependencies sees the same error overlay with nothing telling
+            # them anything changed.
+            "pyproject": projectenv.pyproject_path(project_dir),
             # So the loader can name what it is fetching instead of listing packages
             # it is not downloading yet. Absent (not false) on the ordinary path, so
             # a client that ignores it is unaffected.

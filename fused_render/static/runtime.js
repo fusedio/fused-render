@@ -694,22 +694,36 @@
     return Boolean(need && need.key) && !installed.has(need.key);
   }
 
-  // Keys this PAGE has already installed once, module-scoped rather than created
-  // per `runPython` call.
+  // The set is per `runPython` CALL, and that lifetime is the whole correctness
+  // argument — a page-scoped one was tried and broke the case this flow exists
+  // for.
   //
-  // The rule above is unchanged; what changes is who it applies to. The key is
-  // the project folder now, so five scripts from one folder share it — and with a
-  // per-call set, a genuinely stuck install (one that reports success and still
-  // comes back as `needs_install`) was re-attempted once PER SCRIPT: five
-  // downloads, five failures, five error overlays, for one broken environment.
-  // Hoisted, the page fails once and says so once.
+  // The question the guard answers is "did THIS call chain already install that
+  // key and get told to install it again", which is a loop. Widened to the page
+  // it answers a different question badly, because the key is now the project
+  // folder (PY-16) and every script in the folder shares it:
   //
-  // Per page rather than per call is the right lifetime for the same reason the
-  // rule is progress-not-count: the fact being remembered is "this page already
-  // asked for that key and got nowhere", and that stays true for as long as the
-  // page is loaded. A reload is a fresh attempt, which is what a user pressing
-  // reload after fixing their pyproject.toml expects.
-  const installedKeys = new Set();
+  //   * FIVE CONCURRENT SCRIPTS. All five /api/run's are answered from the same
+  //     pre-install snapshot. The first response installs and records the key;
+  //     the other four then read it as already-attempted, fall through to the
+  //     `!data.ok` branch, and reject with the raw "declares dependencies that
+  //     are not installed yet" text. The multi-script case failed precisely
+  //     because it was multi-script.
+  //   * A LATE RESPONSE. A call answered before the install began but delivered
+  //     after it finished is not a loop — it has not run at all yet — and must
+  //     re-attempt rather than report a stale snapshot as a failure.
+  //   * A MANIFEST EDIT. The key used to be derived from the requirement set, so
+  //     editing dependencies minted a NEW key and a legitimate second install.
+  //     It is stable per project now, so a page-scoped set refused the install
+  //     for a user who had just fixed their `pyproject.toml`.
+  //
+  // Deduplication — the actual "one install per page, not one per script" —
+  // lives in `installEnv`'s `installInFlight` registry instead, which is the
+  // right mechanism for it: concurrent callers JOIN one promise, so there is one
+  // POST, one poller, one row and one download however many scripts wait. What a
+  // page-scoped set bought on top of that was only collapsing N error messages
+  // into one for a genuinely stuck install, and that is not worth failing the
+  // healthy path for.
 
   // The backdrop, and the container every install's row is appended to. It owns no
   // title/detail/bar of its own any more — those belong to a row, because there is
@@ -1086,8 +1100,8 @@
     // installed it means nothing changed — which is the real loop, and still one
     // clear failure rather than installing forever.
     //
-    // The set is `installedKeys`, shared by the whole page — see its definition
-    // for why a per-call one made a stuck install fail once per script.
+    // The set is created per call, not per page — see `shouldInstall` for the
+    // three ways a page-scoped one failed the healthy multi-script path.
     const handle = (data, installed) => {
       if (data.stdout) {
         console.log("[python]", data.stdout);
@@ -1096,6 +1110,15 @@
       // broken py that gets fixed must still trigger a reload. Read before
       // the ok check so it's recorded either way.
       if (data.resolved_py) watchPath(data.resolved_py);
+      // Watch the project's MANIFEST too, so fixing a dependency reloads the page
+      // the same way fixing the .py does. Without it the only feedback for "I
+      // added the package it asked for" is the same error overlay, still up, with
+      // nothing saying a reload is needed. Server-supplied (engine.py puts it in
+      // `needs_install`) rather than joined client-side, because the project root
+      // is the server's answer and the path separator is the server's platform.
+      if (data.needs_install && data.needs_install.pyproject) {
+        watchPath(data.needs_install.pyproject);
+      }
       if (shouldInstall(data.needs_install, installed)) {
         installed.add(data.needs_install.key);
         return installEnv(data.needs_install, pyPath, ownPath).then(() =>
@@ -1113,7 +1136,7 @@
     };
 
     return attempt()
-      .then((data) => handle(data, installedKeys))
+      .then((data) => handle(data, new Set()))
       .then(
         (result) => {
           cleanup();

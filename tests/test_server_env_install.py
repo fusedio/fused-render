@@ -375,6 +375,235 @@ def _loader_js():
     return src[start:src.index("  function runPython(", start)]
 
 
+def _loader_and_runpython_js():
+    """The loader block PLUS `runPython`, so `handle`'s install gate is reachable.
+
+    `handle` lives inside `runPython` and decides whether a `needs_install`
+    becomes an install or an error — the single most important branch in this
+    flow, and the one the narrower slice above cannot see at all. Everything
+    `runPython` closes over that is defined further up the file is stubbed in
+    `_RUNPYTHON_PRELUDE`.
+    """
+    import fused_render
+
+    path = os.path.join(os.path.dirname(fused_render.__file__), "static", "runtime.js")
+    src = open(path, encoding="utf-8").read()
+    start = src.index("  const INSTALL_POLL_MS")
+    return src[start:src.index("  function rawUrl(", start)]
+
+
+# What `runPython` reads from the rest of runtime.js. Declared with `var` so the
+# slice's own `const`/`function` declarations can never collide with them.
+_RUNPYTHON_PRELUDE = """
+var inflightByKey = new Map();
+var callIds = 0;
+function newCallId() { return "c" + (++callIds); }
+function callHeaders(extra) { return Object.assign({}, extra || {}); }
+function reportSuperseded() {}
+var watched = [];
+function watchPath(p) { watched.push(p); }
+globalThis.window = { location: { search: "?path=/page.html" } };
+"""
+
+
+def _run_runpython(scenario):
+    """Run `runPython` (and the loader it drives) under node against stubs."""
+    import json
+    import shutil
+    import subprocess
+    import tempfile
+
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node is needed to run runPython's own JS")
+    with tempfile.NamedTemporaryFile("w", suffix=".mjs", delete=False,
+                                     encoding="utf-8") as f:
+        f.write(_JS_PRELUDE + _RUNPYTHON_PRELUDE + _loader_and_runpython_js() + scenario)
+        harness = f.name
+    try:
+        out = subprocess.run([node, harness], capture_output=True, text=True, timeout=60)
+    finally:
+        os.unlink(harness)
+    assert out.returncode == 0, out.stderr
+    return json.loads(out.stdout.strip().splitlines()[-1])
+
+
+# The scenario every concurrency test below shares: /api/run answers
+# `needs_install` for one project until the install lands, then succeeds.
+_CONCURRENT_RUNS = """
+let installs = 0, runs = 0, installed = false;
+globalThis.fetch = (url, opts) => {
+  if (url === "/api/run") {
+    runs += 1;
+    // Every concurrent call is answered from the SAME pre-install snapshot,
+    // which is what really happens: all five preflights run before any of them
+    // can have finished installing.
+    const snapshot = installed;
+    return Promise.resolve({ json: () => Promise.resolve(
+      snapshot
+        ? { ok: true, result: 42 }
+        : { ok: false,
+            needs_install: { key: "%(a)s", name: "my-app", requirements: ["cowsay"] },
+            error: { type: "EnvNotInstalled",
+                     message: "my-app declares dependencies that are not installed yet" },
+            stdout: "" })});
+  }
+  if (url === "/api/env/install") {
+    installs += 1;
+    return Promise.resolve({ ok: true, json: () => Promise.resolve(
+      { ok: true, key: "%(a)s", progress: { stage: "spawn", pct: 0, done: false } })});
+  }
+  if (url.startsWith("/api/env/progress")) {
+    installed = true;
+    return Promise.resolve({ json: () => Promise.resolve({ ok: true,
+      progress: { stage: "done", pct: 100, done: true, error: null } })});
+  }
+  return Promise.resolve({ ok: true, json: () => Promise.resolve({ ok: true }) });
+};
+"""
+
+
+def test_five_concurrent_scripts_in_one_project_all_succeed():
+    """The case this whole change exists for, end to end through `handle`.
+
+    PY-16 collapses every .py in a folder onto ONE key, so a page firing five
+    runPython calls issues five concurrent /api/run's that all answer
+    `needs_install` with the same key. With a page-scoped "already attempted"
+    set, the first response installed and the other four read the key as
+    already-attempted, fell through to the `!data.ok` branch, and rejected with
+    the raw "declares dependencies that are not installed yet" text — the
+    multi-script case failing precisely because it was multi-script.
+    """
+    result = _run_runpython((_CONCURRENT_RUNS + """
+Promise.allSettled([
+  runPython("a.py", {}, { key: "a" }),
+  runPython("b.py", {}, { key: "b" }),
+  runPython("c.py", {}, { key: "c" }),
+  runPython("d.py", {}, { key: "d" }),
+  runPython("e.py", {}, { key: "e" }),
+]).then((settled) => {
+  console.log(JSON.stringify({
+    states: settled.map((r) => r.status),
+    values: settled.map((r) => r.value),
+    reasons: settled.map((r) => r.reason && r.reason.message),
+    installs, runs,
+  }));
+});
+""") % {"a": _KEY_A})
+    assert result["states"] == ["fulfilled"] * 5, result["reasons"]
+    assert result["values"] == [42] * 5
+    assert result["installs"] == 1, (
+        f"one project must mean one install POST, saw {result['installs']}"
+    )
+
+
+def test_a_late_response_from_before_the_install_still_retries():
+    """The race the page-scoped set could not survive.
+
+    A second call's /api/run was answered before the install began but arrives
+    after it finished. The key is now "already installed", but this caller has
+    not run yet — it must re-attempt, not report the stale needs_install as a
+    failure.
+    """
+    result = _run_runpython((_CONCURRENT_RUNS + """
+runPython("a.py", {}, { key: "a" }).then(() => {
+  // Now that the install has settled, a caller whose /api/run was answered from
+  // the pre-install snapshot arrives.
+  const stale = { ok: false,
+    needs_install: { key: "%(a)s", name: "my-app", requirements: ["cowsay"] },
+    error: { type: "EnvNotInstalled", message: "not installed yet" }, stdout: "" };
+  const realFetch = globalThis.fetch;
+  let first = true;
+  globalThis.fetch = (url, opts) => {
+    if (url === "/api/run" && first) { first = false;
+      return Promise.resolve({ json: () => Promise.resolve(stale) }); }
+    return realFetch(url, opts);
+  };
+  return runPython("z.py", {}, { key: "z" });
+}).then(
+  (result) => console.log(JSON.stringify({ ok: true, result, installs })),
+  (err) => console.log(JSON.stringify({ ok: false, message: err.message, installs }))
+);
+""") % {"a": _KEY_A})
+    assert result["ok"] is True, result
+    assert result["result"] == 42
+
+
+def test_a_genuinely_stuck_install_still_fails_rather_than_looping():
+    """The guard this must not lose: the SAME key coming back after a successful
+    install means the loader and the run disagree, and installing forever hides
+    that. One clear failure instead."""
+    result = _run_runpython("""
+let installs = 0;
+globalThis.fetch = (url, opts) => {
+  if (url === "/api/run")
+    return Promise.resolve({ json: () => Promise.resolve(
+      { ok: false,
+        needs_install: { key: "%(a)s", name: "my-app", requirements: ["cowsay"] },
+        error: { type: "EnvNotInstalled", message: "not installed yet" },
+        stdout: "" })});
+  if (url === "/api/env/install") {
+    installs += 1;
+    return Promise.resolve({ ok: true, json: () => Promise.resolve(
+      { ok: true, key: "%(a)s", progress: { stage: "spawn", pct: 0, done: false } })});
+  }
+  if (url.startsWith("/api/env/progress"))
+    return Promise.resolve({ json: () => Promise.resolve({ ok: true,
+      progress: { stage: "done", pct: 100, done: true, error: null } })});
+  return Promise.resolve({ ok: true, json: () => Promise.resolve({ ok: true }) });
+};
+runPython("a.py", {}, { key: "a" }).then(
+  (result) => console.log(JSON.stringify({ ok: true, result, installs })),
+  (err) => console.log(JSON.stringify({ ok: false, message: err.message,
+                                        type: err.type, installs }))
+);
+""" % {"a": _KEY_A})
+    assert result["ok"] is False
+    assert result["installs"] == 1, "it must stop after one futile install, not loop"
+
+
+def test_a_manifest_edit_and_rerun_in_the_same_page_installs_again():
+    """A user who fixes pyproject.toml and re-runs must get an install.
+
+    The key is stable per project now (it used to be derived from the requirement
+    set, so editing deps minted a new key), so a page-scoped "already attempted"
+    set made the second run report the raw needs_install error with no install
+    offered and nothing telling the user to reload. The guard's scope is ONE call
+    chain, which is the question it actually answers.
+    """
+    result = _run_runpython((_CONCURRENT_RUNS + """
+runPython("a.py", {}, { key: "a" }).then(() => {
+  installed = false;   // the user edits pyproject.toml; the venv is stale again
+  return runPython("a.py", {}, { key: "a2" });
+}).then(
+  (result) => console.log(JSON.stringify({ ok: true, result, installs })),
+  (err) => console.log(JSON.stringify({ ok: false, message: err.message, installs }))
+);
+""") % {"a": _KEY_A})
+    assert result["ok"] is True, result
+    assert result["installs"] == 2, (
+        "the second run was refused instead of installing the edited manifest"
+    )
+
+
+def test_the_projects_manifest_is_watched_so_a_fix_triggers_a_reload():
+    """A manifest edit has to reach the page without a manual reload.
+
+    `needs_install` carries the project's pyproject.toml path precisely so the
+    live-reload watcher can be pointed at it — otherwise the only feedback for
+    "I fixed my dependencies" is a stale error overlay.
+    """
+    result = _run_runpython((_CONCURRENT_RUNS.replace(
+        'requirements: ["cowsay"] }',
+        'requirements: ["cowsay"], pyproject: "/proj/pyproject.toml" }',
+    ) + """
+runPython("a.py", {}, { key: "a" }).then(() => {
+  console.log(JSON.stringify({ watched }));
+});
+""") % {"a": _KEY_A})
+    assert "/proj/pyproject.toml" in result["watched"], result["watched"]
+
+
 def _run_loader(scenario):
     import json
     import shutil
@@ -1122,10 +1351,11 @@ def test_the_dedup_registry_is_wired_into_the_loader():
 
     path = os.path.join(os.path.dirname(fused_render.__file__), "static", "runtime.js")
     src = open(path, encoding="utf-8").read()
-    assert "installInFlight" in src
-    assert "const installedKeys = new Set()" in src, (
-        "the loop guard must be page-scoped, or a stuck install fails once per script"
+    assert "installInFlight" in src, (
+        "the registry is what makes N scripts in one project ONE install"
     )
-    assert "handle(data, installedKeys)" in src, (
-        "the per-call Set is back; a stuck install would fail once per script again"
+    assert "handle(data, new Set())" in src, (
+        "the loop guard must be scoped to ONE call chain. A page-scoped set makes "
+        "concurrent scripts in one project reject with the raw needs_install "
+        "error, and refuses the install after a user fixes their pyproject.toml"
     )
