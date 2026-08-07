@@ -14,8 +14,10 @@ export function HeroBrand({ name, tagline }: { name: string; tagline?: ReactNode
     <h1 className="home-hero-brand">
       <img className="home-hero-logo home-hero-logo-dark" src={logoMarkDark} alt="" aria-hidden="true" />
       <img className="home-hero-logo home-hero-logo-light" src={logoMarkLight} alt="" aria-hidden="true" />
-      <span className="home-hero-brand-name">{name}</span>
-      {tagline && <span className="home-hero-tagline">{tagline}</span>}
+      <span className="home-hero-brand-text">
+        <span className="home-hero-brand-name">{name}</span>
+        {tagline && <span className="home-hero-tagline">{tagline}</span>}
+      </span>
     </h1>
   );
 }

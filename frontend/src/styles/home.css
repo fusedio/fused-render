@@ -62,6 +62,17 @@
   margin: 0 0 18px;
 }
 
+/* Name + tagline as their own wrapping row, nested inside the brand row —
+   this is what re-centers cleanly if the tagline wraps onto its own line,
+   instead of a fixed margin-left dragging it off-center (bugbot 36e6acdd). */
+.home-hero-brand-text {
+  display: flex;
+  align-items: baseline;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 4px 18px;
+}
+
 .home-hero-logo {
   display: block;
   height: 48px;
@@ -87,7 +98,6 @@
 /* Tagline shares the brand line but reads secondary: smaller, lighter weight,
    dimmer color, set off from the name by a little extra space. */
 .home-hero-tagline {
-  margin-left: 18px;
   font-size: 16px;
   font-weight: 500;
   letter-spacing: -0.01em;
