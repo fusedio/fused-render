@@ -87,7 +87,11 @@
   flex: 0 0 auto;
 }
 
-.preview-actions button,
+/* `:not(.bar-ctl)` — anything built from the shared bar recipe (explorer.css)
+   opts OUT of this generic chrome: it carries its own, and this rule's extra
+   specificity would otherwise re-border every ghost control that portals into
+   the slot. */
+.preview-actions button:not(.bar-ctl),
 .preview-actions a {
   font: inherit;
   padding: 5px 10px;
@@ -99,60 +103,26 @@
   cursor: pointer;
 }
 
-.preview-actions button.active {
+.preview-actions button:not(.bar-ctl).active {
   background: var(--accent);
   color: var(--on-accent);
   border-color: var(--accent);
 }
 
-.preview-actions button:hover,
+.preview-actions button:not(.bar-ctl):hover,
 .preview-actions a:hover {
   background: var(--bg-alt);
 }
 
-/* Icon-only mode switcher (PT-10) — same border/bg/hover/active language as
-   .preview-actions buttons above, sized as compact squares. Selectors carry
-   the .preview-actions ancestor so they win over the generic button rules
-   above at equal-or-lower specificity conflicts (e.g. padding). */
-.preview-actions .mode-switcher {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.preview-actions .mode-switcher-btn {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 28px;
-  height: 28px;
-  padding: 0;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: var(--bg);
-  color: var(--fg);
-  cursor: pointer;
-}
-
-.preview-actions .mode-switcher-btn:hover {
-  background: var(--bg-alt);
-}
-
-.preview-actions .mode-switcher-btn.active {
-  background: var(--accent);
-  color: var(--on-accent);
-  border-color: var(--accent);
-}
-
 /* Loading placeholder in the header actions slot (App.tsx LoadingScaffold):
-   a borderless box the size of one .mode-switcher-btn so the header holds the
-   switcher's height while stat is in flight — no growth/shift when the real
-   switcher lands. */
+   a borderless box the size of the mode control so the header holds its
+   height while stat is in flight — no growth/shift when the real control
+   lands. */
 .preview-actions .mode-switcher-placeholder {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 28px;
+  min-width: 92px;
   height: 28px;
 }
 
@@ -204,7 +174,6 @@
   }
 }
 
-.preview-actions .mode-switcher-btn.pending,
 .pane-mode-item.pending {
   opacity: 0.55;
   cursor: default;
@@ -517,6 +486,51 @@ body.embed .open-as-app-chip:hover {
 }
 
 .panel-btn.close:hover {
+  color: var(--error);
+}
+
+/* The shared bar recipe (explorer.css) at pane scale: 24px controls, 14px
+   icons. Same grammar as the title bar, one size down — panel mode used to
+   feel like a different app, and the size was most of the reason. */
+.panel-bar .bar-ctl {
+  height: 24px;
+  padding: 0 6px;
+  font-size: 11px;
+}
+
+.panel-bar .bar-ctl-icon {
+  width: 24px;
+  padding: 0;
+}
+
+.panel-bar .bar-ctl > svg {
+  width: 14px;
+  height: 14px;
+}
+
+.panel-bar .mode-menu-chip {
+  width: 16px;
+  height: 16px;
+}
+
+.panel-bar .mode-menu-chip svg,
+.panel-bar .mode-menu-chip .mode-icon-mask,
+.panel-bar .mode-menu-chip .mode-icon-placeholder {
+  width: 10px;
+  height: 10px;
+}
+
+.panel-bar .bar-caret {
+  width: 11px;
+  height: 11px;
+}
+
+.panel-bar .bar-rule {
+  margin: 0 6px;
+}
+
+/* Close keeps the right-most slot and its error-red hover. */
+.panel-bar .bar-ctl.close:hover:not(:disabled) {
   color: var(--error);
 }
 

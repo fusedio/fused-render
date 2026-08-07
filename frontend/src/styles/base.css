@@ -39,7 +39,8 @@ table.listing-table th.sortable,
 .toast-close,
 .toast-action,
 .panel-btn,
-.listing-pane-toggle,
+.bar-ctl,
+.bar-menu-item,
 .listing-up-button,
 .listing-load-more {
   transition:
@@ -58,7 +59,7 @@ table.listing-table th.sortable,
 .panel-btn:active,
 .tab-add:active,
 .toast-action:active:not(:disabled),
-.listing-pane-toggle:active,
+.bar-ctl:active:not(:disabled),
 .listing-up-button:active:not(:disabled),
 .listing-load-more:active:not(:disabled) {
   transform: translateY(1px);

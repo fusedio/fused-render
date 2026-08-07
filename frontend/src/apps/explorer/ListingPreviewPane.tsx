@@ -17,7 +17,8 @@ import type { TemplateEntry } from "@platform/lib/api";
 import { navigate, replaceSearch } from "@platform/lib/router";
 import { formatSize } from "@platform/lib/format";
 import { iconForEntry, isAppEntry } from "@platform/ui/FileIcons";
-import ModeSwitcher, { KNOWN_SENTINEL_MODES, templateModeIcon } from "@apps/explorer/ModeSwitcher";
+import { KNOWN_SENTINEL_MODES, templateModeIcon } from "@apps/explorer/ModeSwitcher";
+import { ModeMenu } from "@apps/explorer/BarMenu";
 import Listing from "@apps/explorer/Listing";
 
 // The selected row, as the pane needs it. Structurally a subset of Listing's
@@ -282,15 +283,17 @@ export default function ListingPreviewPane({
       <span className="pane-header-name" title={row.name}>
         {row.name}
       </span>
-      {/* Horizontal icon strip, same look as the shell preview header (PT-10):
-          every available mode side by side, active one highlighted. */}
-      <ModeSwitcher entries={modes} active={activeMode ?? ""} onSelect={selectMode} />
-      {/* One label for every mode. Self target: "Open" would navigate to the
-          folder already open, so it hides. */}
+      {/* The same mode control the title bar and the pane bars carry — icon
+          chip + name + caret. It used to be four naked squares that looked
+          exactly like the one-shot glyphs beside them. */}
+      <ModeMenu entries={modes} active={activeMode ?? ""} onSelect={selectMode} />
+      {/* One label for every mode, and the row's ONE bordered primary. Self
+          target: "Open" would navigate to the folder already open, so it
+          hides. */}
       {!row.self && (
         <button
           type="button"
-          className="pane-header-btn"
+          className="bar-ctl bar-ctl-primary pane-header-btn"
           onClick={() => navigate(row.path, { isDir: row.isDir })}
         >
           Open
