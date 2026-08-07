@@ -27,22 +27,23 @@ Endpoints (GET, CORS *):
   /probe?file=&var=&index=&lon=&lat=   -> native-res pixel value + I/O cost
   /stats?file=[&reset=1]       -> live counters + recent op log
 """
-# No `# /// script` header, deliberately — this is the fix for a DOUBLE
-# download. `main("ensure")` is the only thing run_python ever executes here
-# and it is stdlib-only (json/os/subprocess/sys/time/urllib): it starts or
-# reuses the daemon and returns its port. Every heavy import lives in the
-# `--serve` half, which runs under `_daemon_python()` — the self-managed uv
-# venv below, whose DAEMON_DEPS are the real declaration.
+# The daemon keeps its OWN venv (DAEMON_VENV below), and that is unchanged by the
+# move to folder-scoped environments (SPEC PY-16). `main("ensure")` is the only
+# thing run_python ever executes here and it is stdlib-only
+# (json/os/subprocess/sys/time/urllib): it starts or reuses the daemon and returns
+# its port. Every heavy import lives in the `--serve` half, which runs under
+# `_daemon_python()` — the self-managed uv venv below, whose DAEMON_DEPS are the
+# real declaration.
 #
-# With a header, a first run downloaded those same packages TWICE: once into
-# a fused script venv that only ever ran the stdlib ensure() call, and again
-# into DAEMON_VENV where they are actually imported. Without one, ensure()
-# runs on the app's own interpreter (PY-17) and the daemon venv is the single
-# place these deps are installed.
+# This folder therefore declares NO pyproject.toml at all: nothing in it needs
+# anything the app's interpreter lacks (PY-17), and listing the daemon's deps
+# would download the same packages TWICE — once into a project venv that only
+# runs the stdlib ensure() call, and again into DAEMON_VENV where they are
+# actually imported.
 #
-# DAEMON_VENV is also the mechanism that works under BOTH engines: the
-# built-in executor ignores PEP 723 entirely, so a header could never have
-# served the default engine anyway (D174).
+# DAEMON_VENV is also the mechanism that works under BOTH engines: the built-in
+# executor ignores the project declaration entirely, so a pyproject could never
+# have served the default engine anyway (D174).
 
 import hashlib
 import json

@@ -438,39 +438,47 @@ def test_excluded_distributions_are_not_forced_into_the_bundle():
 # ------------------------------------------------- templates vs the real bundle
 
 
-def _template_files():
-    out = []
-    for dirpath, _dirs, files in os.walk(_TEMPLATES):
-        if "__pycache__" in dirpath or os.sep + "vendor" in dirpath:
-            continue
-        out += [os.path.relpath(os.path.join(dirpath, f), _TEMPLATES)
-                for f in files if f.endswith(".py")]
-    return sorted(out)
+def _template_folders():
+    """Template folders that declare an environment (SPEC PY-16)."""
+    return sorted(
+        name for name in os.listdir(_TEMPLATES)
+        if os.path.isfile(os.path.join(_TEMPLATES, name, "pyproject.toml"))
+    )
 
 
-def _raw_header(relpath):
-    """The header verbatim, markers included — all platforms, not just this one."""
-    with open(os.path.join(_TEMPLATES, relpath), encoding="utf-8") as f:
-        return engine.script_requirements(f.read(), apply_markers=False)
+def _raw_declaration(folder):
+    """The folder's dependencies verbatim, markers included — all platforms.
+
+    Markers are deliberately not evaluated: necessity is a property of the SOURCE
+    and has to hold on every platform, not on the machine running pytest.
+    """
+    import tomllib
+
+    with open(os.path.join(_TEMPLATES, folder, "pyproject.toml"), "rb") as f:
+        meta = tomllib.load(f)
+    return list(meta.get("project", {}).get("dependencies", []))
 
 
-@pytest.mark.parametrize("relpath", _template_files())
-def test_a_header_is_needed_for_what_the_MACOS_BUNDLE_lacks(relpath):
+@pytest.mark.parametrize("folder", _template_folders())
+def test_a_declaration_is_needed_for_what_the_MACOS_BUNDLE_lacks(folder):
     """Necessity is judged against the bundle, not against `[bundled]` (D176).
 
     macOS ships the narrowest set, so it is the binding constraint: a dependency
-    absent there needs a header, whatever the other platforms have. Judging this
-    against `[bundled]` is what deleted slides' `python-pptx` header and shipped
-    a DMG that told the user to `pip install` on a read-only app.
+    absent there needs a declaration, whatever the other platforms have. Judging
+    this against `[bundled]` is what deleted slides' `python-pptx` header and
+    shipped a DMG that told the user to `pip install` on a read-only app.
+
+    Scope moved from the file to the FOLDER with the environment itself: it is
+    the folder that now costs a venv build and a download.
     """
-    header = {_norm(d) for d in _raw_header(relpath)}
-    if not header:
+    declared = {_norm(d) for d in _raw_declaration(folder)}
+    if not declared:
         return
-    justified = sorted(header - _macos_dists())
+    justified = sorted(declared - _macos_dists())
     assert justified, (
-        f"{relpath}'s header declares {sorted(header)}, all of which the macOS "
-        "bundle already ships — so it only costs a venv build and a download. "
-        "Delete the block."
+        f"fused_render/templates/{folder}/pyproject.toml declares "
+        f"{sorted(declared)}, all of which the macOS bundle already ships — so it "
+        "only costs a venv build and a download. Delete the file (and its lock)."
     )
 
 
@@ -487,8 +495,8 @@ def test_a_header_is_needed_for_what_the_MACOS_BUNDLE_lacks(relpath):
 _MUST_USE_HEAVIER_SIBLING = {"pypandoc": "pypandoc-binary"}
 
 
-@pytest.mark.parametrize("relpath", _template_files())
-def test_a_header_declares_the_sibling_that_actually_works(relpath):
+@pytest.mark.parametrize("folder", _template_folders())
+def test_a_declaration_names_the_sibling_that_actually_works(folder):
     """Catch "importable but non-functional" for the pairs where it can happen.
 
     `latex/engine.py` declared `pypandoc` while calling
@@ -497,11 +505,11 @@ def test_a_header_declares_the_sibling_that_actually_works(relpath):
     by side for a while, because every other invariant here is satisfied by a
     module that imports.
     """
-    for raw in _raw_header(relpath):
+    for raw in _raw_declaration(folder):
         dist = _norm(raw)
         better = _MUST_USE_HEAVIER_SIBLING.get(dist)
         assert better is None, (
-            f"{relpath} declares {dist!r}, which installs the import name but not "
-            f"the payload behind it — use {better!r} instead. The venv would build "
-            "cleanly and fail at runtime."
+            f"fused_render/templates/{folder}/pyproject.toml declares {dist!r}, "
+            "which installs the import name but not the payload behind it — use "
+            f"{better!r} instead. The venv would build cleanly and fail at runtime."
         )
