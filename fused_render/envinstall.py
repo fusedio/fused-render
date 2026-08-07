@@ -57,6 +57,7 @@ import subprocess
 import sys
 import threading
 import time
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -1374,7 +1375,12 @@ def _spawn(key: str, project_dir: str, acquire_python: str | None = None) -> int
     worker = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_env_install_worker.py")
     d = progress_dir(key)
     os.makedirs(d, exist_ok=True)
-    detach = (
+    # Annotated, because the two branches have different value types (`int` on
+    # Windows, `bool` elsewhere) and a type checker unpacking `**detach` into
+    # `Popen` otherwise matches the inferred `bool` against whichever keyword
+    # parameters happen to come next — `errors`, `extra_groups`, `preexec_fn` —
+    # and reports errors about arguments this call never passes.
+    detach: dict[str, Any] = (
         {"creationflags": subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP}
         if os.name == "nt" else {"start_new_session": True}
     )

@@ -15,6 +15,7 @@ matches the default's behaviour, `=fused` requires it (fail loudly at startup if
 missing).
 """
 
+import asyncio
 import os
 
 from fastapi import FastAPI
@@ -33,6 +34,7 @@ from fused_render.server.ai import prewarm_ai, router as ai_router, shutdown_ai_
 from fused_render.server.common import (
     STATIC_DIR,
     close_pooled_client,
+    logger,
     no_cache_and_log,
     open_pooled_client,
     unhandled_exception,
@@ -208,6 +210,27 @@ def create_app(start_dir: str) -> FastAPI:
     @app.on_event("shutdown")
     async def _startup_shutdown_ai():
         await shutdown_ai_session()
+
+    # Reclaim project venvs whose source folder is gone (SPEC PY-16). Keying a
+    # venv on the folder's path means moving or renaming a project orphans its
+    # environment BY DESIGN — a moved project starts clean — so without this the
+    # store grows by one full environment per rename and nothing ever reclaims
+    # them. Startup, once, and off the event loop: it is a directory walk plus
+    # rmtree over trees that can hold tens of thousands of files.
+    #
+    # Best-effort like every other startup chore here: a home dir that cannot be
+    # listed is a disk problem, not a reason to refuse to serve.
+    @app.on_event("startup")
+    async def _startup_gc_project_venvs():
+        from fused_render import projectenv
+
+        try:
+            removed = await asyncio.to_thread(projectenv.gc)
+        except Exception:  # noqa: BLE001 - never block startup on housekeeping
+            logger.exception("could not garbage-collect orphaned project venvs")
+            return
+        if removed:
+            logger.info("reclaimed %d orphaned project venv(s)", removed)
 
     # Debounced app-repo committer (app_commit_queue): the /api/fs mutation
     # hooks mark apps dirty, this one worker turns each editing burst into a

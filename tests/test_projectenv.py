@@ -353,6 +353,100 @@ def test_sidecar_lands_inside_the_venv_not_the_project(home):
 
 
 # ---------------------------------------------------------------------------
+# Orphan headers, and the migration that removes them
+# ---------------------------------------------------------------------------
+
+HEADER = '# /// script\n# dependencies = ["altair", "cowsay"]\n# ///\n'
+
+
+def test_a_script_header_is_detected_not_honoured(home):
+    assert projectenv.has_script_header(HEADER + "x = 1\n") is True
+    assert projectenv.has_script_header("x = 1\n") is False
+    # A non-`script` PEP 723 block is somebody else's metadata, not ours.
+    assert projectenv.has_script_header("# /// other\n# a = 1\n# ///\n") is False
+
+
+def test_a_header_never_supplies_an_environment(home):
+    """There is no migration path and no fallback: a header buys nothing.
+
+    Deliberate (see DECISIONS.md) — the file is refused, and this pins that the
+    refusal is not quietly softened into "read it anyway just this once".
+    """
+    d = home / "app"
+    d.mkdir()
+    (d / "a.py").write_text(HEADER + "x = 1\n", encoding="utf-8")
+
+    assert projectenv.project_env_for(str(d / "a.py")) is None
+    assert projectenv.has_project_env(str(d)) is False
+
+
+def test_header_dependencies_are_quoted_for_the_error_message(home):
+    """Read for DISPLAY only — so the refusal can say what to put in pyproject."""
+    assert projectenv.header_dependencies(HEADER) == ["'altair'", "'cowsay'"]
+    assert projectenv.header_dependencies("x = 1\n") == []
+    # A malformed block yields nothing rather than raising: the error falls back
+    # to generic wording, which is no less useful than a parse complaint.
+    assert projectenv.header_dependencies(
+        "# /// script\n# dependencies = [oops\n# ///\n"
+    ) == []
+
+
+# ---------------------------------------------------------------------------
+# GC: a moved folder orphans its venv by design, so something has to reclaim it
+# ---------------------------------------------------------------------------
+
+
+def _fake_venv(project_dir):
+    venv = projectenv.venv_dir_for(project_dir)
+    os.makedirs(venv, exist_ok=True)
+    projectenv.write_sidecar(venv, project_dir, projectenv.state_digest(project_dir))
+    return venv
+
+
+def test_gc_reclaims_a_venv_whose_source_is_gone(home):
+    proj = _write_project(home / "gone")
+    venv = _fake_venv(str(proj))
+    live = _write_project(home / "still-here")
+    live_venv = _fake_venv(str(live))
+
+    import shutil
+
+    shutil.rmtree(proj)
+
+    assert projectenv.gc() == 1
+    assert not os.path.exists(venv)
+    assert os.path.exists(live_venv), "gc took a venv whose project still exists"
+
+
+def test_gc_leaves_a_venv_with_no_sidecar_alone(home):
+    """It may be an install in flight; deleting one under a running worker is
+    worse than leaking it."""
+    proj = _write_project(home / "proj")
+    venv = projectenv.venv_dir_for(str(proj))
+    os.makedirs(venv)
+
+    assert projectenv.gc() == 0
+    assert os.path.exists(venv)
+
+
+def test_gc_on_an_empty_store_is_a_no_op(home):
+    assert projectenv.gc() == 0
+
+
+def test_a_renamed_folder_orphans_its_venv_and_gc_reclaims_it(home):
+    """The move-means-reset feature and its cost, in one test."""
+    proj = _write_project(home / "before")
+    old_venv = _fake_venv(str(proj))
+
+    proj.rename(home / "after")
+    new_venv = projectenv.venv_dir_for(str(home / "after"))
+
+    assert new_venv != old_venv, "a moved folder must get a fresh environment"
+    assert projectenv.gc() == 1
+    assert not os.path.exists(old_venv)
+
+
+# ---------------------------------------------------------------------------
 # The module stays cheap on the request path
 # ---------------------------------------------------------------------------
 

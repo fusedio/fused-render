@@ -68,6 +68,68 @@ def _declare(folder, deps='"pyarrow", "requests"'):
     return str(folder)
 
 
+@requires_tomllib
+def test_an_orphan_script_header_is_refused_not_ignored(monkeypatch, tmp_path):
+    """A dead header must not be silently skipped.
+
+    Headers are no longer read (PY-16). Running the file anyway would put it on
+    an interpreter missing exactly what the header asked for, and the user would
+    see an ImportError about a package they DID declare — with nothing connecting
+    it to the rule that changed. This is a breaking change with no migration
+    path, so the refusal IS the migration guidance.
+    """
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("FUSED_RENDER_DIR", str(tmp_path / "workspace"))
+    target = tmp_path / "orphan.py"
+    target.write_text(
+        '# /// script\n# dependencies = ["cowsay"]\n# ///\ndef main():\n    return 1\n',
+        encoding="utf-8",
+    )
+
+    out = asyncio.run(engine.run_python(str(target), {}))
+
+    assert out["ok"] is False
+    assert out["error"]["type"] == "ScriptHeaderNoLongerRead"
+    message = out["error"]["message"]
+    # It names the fix directly — the file to create and what to put in it.
+    assert os.path.join(str(tmp_path), "pyproject.toml") in message
+    assert "cowsay" in message, "the packages the dead header listed are quoted"
+    # And NOT a tool: there deliberately is no migration command to point at.
+    assert "migrate" not in message.lower(), (
+        "the error names a migration command; none exists (see DECISIONS.md)"
+    )
+
+
+@requires_tomllib
+def test_a_header_inside_a_declared_project_is_simply_inert(monkeypatch, tmp_path):
+    """The refusal is for ORPHANS only.
+
+    A folder that has migrated has a working environment; a leftover block in one
+    of its files declares nothing and must not break a project that is already
+    correct. `tests/test_engine_requirements.py` is what keeps the core templates
+    clean of them.
+    """
+    _declare(tmp_path, '"pyarrow"')
+    target = tmp_path / "leftover.py"
+    target.write_text(
+        '# /// script\n# dependencies = ["cowsay"]\n# ///\ndef main():\n    return 1\n',
+        encoding="utf-8",
+    )
+    # The escape hatch, so the run takes the venv path deterministically rather
+    # than depending on whether this machine's app interpreter happens to have
+    # pyarrow — the assertion is about WHICH declaration was read.
+    monkeypatch.setenv(engine._FORCE_VENV_ENV, "1")
+    backend = _FakeBackend(_FakeResult(return_value="1"))
+    monkeypatch.setattr(engine, "get_backend", lambda: backend)
+    seen = _preflight_spy(monkeypatch)
+
+    out = asyncio.run(engine.run_python(str(target), {}))
+
+    assert out["ok"] is True, out
+    assert seen == [["pyarrow"]], "the header was read instead of the pyproject"
+    assert backend.calls[0]["interpreter"] == envinstall.venv_python_for(str(tmp_path))
+
+
 # --- build_code: the compat bridge, exec()'d directly ------------------------
 
 

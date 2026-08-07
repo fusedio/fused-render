@@ -64,9 +64,8 @@ SIDECAR_NAME = ".fused-source.json"
 _KEY_LEN = 16
 
 # PEP 723 reference regex (verbatim from the spec). Headers are no longer READ
-# for dependencies — they are detected, so an orphan can be reported with the
-# command that migrates it (SPEC PY-16) instead of being silently ignored and
-# failing later on an import.
+# anywhere — they are only DETECTED, so an orphan can be reported (SPEC PY-16)
+# instead of being silently ignored and failing later on an import.
 _PEP723_BLOCK = re.compile(
     r"(?m)^# /// (?P<type>[a-zA-Z0-9-]+)$\s(?P<content>(^#(| .*)$\s)+)^# ///$"
 )
@@ -355,11 +354,47 @@ def sidecar_matches(venv_dir: str, project_dir: str) -> bool:
 def has_script_header(text: str) -> bool:
     """Does this source still carry a `# /// script` block?
 
-    Detection only. The block's dependencies are deliberately NOT read: a file
-    that still declares them is reported with the migration command rather than
-    being run in an environment that ignores half of what it asked for.
+    A file that still declares dependencies is REPORTED rather than run in an
+    environment that ignores half of what it asked for. There is deliberately no
+    migration tool — see DECISIONS.md — so the reported error names the fix
+    directly, and `header_dependencies` supplies the packages to put in it.
     """
     return any(m.group("type") == "script" for m in _PEP723_BLOCK.finditer(text))
+
+
+def header_dependencies(text: str) -> list[str]:
+    """What a dead `# /// script` block declared, for the error message only.
+
+    NOT a resolution path: nothing acts on this list, and the engine never runs a
+    file that has one. It exists so the error that refuses the file can quote the
+    packages the user has to move into `pyproject.toml`, instead of telling them
+    to go and read the block they are about to delete.
+
+    Best-effort by design — a malformed block yields [] and the error falls back
+    to generic wording, because "I could not parse your header" is not a more
+    useful thing to say than "here is where dependencies go now".
+    """
+    try:
+        import tomllib
+    except ImportError:
+        try:
+            import tomli as tomllib
+        except ImportError:
+            return []
+    for match in _PEP723_BLOCK.finditer(text):
+        if match.group("type") != "script":
+            continue
+        content = "".join(
+            line[2:] if line.startswith("# ") else line[1:]
+            for line in match.group("content").splitlines(keepends=True)
+        )
+        try:
+            meta = tomllib.loads(content)
+        except tomllib.TOMLDecodeError:
+            return []
+        deps = meta.get("dependencies", [])
+        return [repr(d) for d in deps if isinstance(d, str)]
+    return []
 
 
 # --------------------------------------------------------------------------

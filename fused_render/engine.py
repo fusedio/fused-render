@@ -1139,18 +1139,26 @@ async def run_python(path: str, params: dict) -> dict:
             # connecting it to the rule that changed. Same shape as
             # `InterpreterUnavailable` below: a configuration error that names
             # its own fix.
+            #
+            # The fix is named directly rather than as a command, because there
+            # deliberately is no migration tool (see DECISIONS.md). The packages
+            # the dead header listed are quoted verbatim so the user does not
+            # have to go and read the block they are about to delete.
+            folder = os.path.dirname(os.path.abspath(path))
+            declared = ", ".join(projectenv.header_dependencies(user_code))
             return _error_dict(
                 "ScriptHeaderNoLongerRead",
-                f"{os.path.basename(path)} still has a '# /// script' block, but "
-                "dependencies are now declared once per folder in a "
-                "pyproject.toml and per-file headers are no longer read. Nothing "
-                "was run, because running it would fail on an import of something "
-                "this file does declare. Migrate the folder with "
-                "`fused-render migrate-env "
-                f"{os.path.dirname(os.path.abspath(path))}` "
-                "(it unions every header under the folder into a pyproject.toml "
-                "and strips the blocks), or delete the block if the app's own "
-                "interpreter already has what it names.",
+                f"{os.path.basename(path)} still has a '# /// script' block. "
+                "Per-file PEP 723 headers are no longer read — dependencies are "
+                "declared once per folder, in that folder's pyproject.toml. "
+                "Nothing was run, because running it would fail on an import of "
+                "something this file does declare.\n\n"
+                f"Fix: create {os.path.join(folder, 'pyproject.toml')} with a "
+                "[project] table whose `dependencies` are "
+                + (f"[{declared}]" if declared else "what this file needs")
+                + ", then delete the '# /// script' block from this file. If the "
+                "app's own interpreter already has those packages, deleting the "
+                "block on its own is enough.",
             )
         # Off the event loop: `app_interpreter` is sync (it is called from sync
         # contexts and tests) and its first call in a process runs up to two
