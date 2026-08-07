@@ -448,7 +448,8 @@ function TemplatePreview({
   // carries pane viewstate (the pane belongs to directories) and `preview`
   // never rides onto file URLs (router.ts navigate), so paneIsOpen would
   // otherwise read the now-default-on value and hide every file's switcher.
-  const paneOpen = !!actionsInTopbar && isListing && paneIsOpen(fsPath);
+  const listingPaneOpen = isListing && paneIsOpen(fsPath);
+  const paneOpen = !!actionsInTopbar && listingPaneOpen;
   // Path of the directory's lone top-level HTML file, reported by Listing
   // (null when there isn't exactly one) — drives the "Open as app" button
   // between the directory name and the mode switcher.
@@ -819,7 +820,15 @@ function TemplatePreview({
             ))}
           </div>
         )}
-        {toggleListing && (
+        {/* Not while the listing's preview pane is open: the chip pins to this
+            element's top-right corner, and with the pane on, that corner is
+            INSIDE the pane — the chip lands in the pane's header row, where it
+            reads as pane chrome. It is not (it switches the FOLDER's mode, not
+            the previewed file's), so a bare mode name like "Claude" sitting
+            there is a mystery button. Closing the pane brings it back, and the
+            `!isListing` case — "Browse contents" over a directory template's
+            iframe, the chip's original job (PT-13/D65) — is untouched. */}
+        {toggleListing && !listingPaneOpen && (
           <button type="button" className="preview-browse-chip" onClick={toggleListing}>
             {!isListing
               ? "Browse contents"
