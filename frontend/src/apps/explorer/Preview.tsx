@@ -673,7 +673,7 @@ function TemplatePreview({
 
   // How the listed folder relates to the app system, for the button below:
   // "workspace"/"linked" folders open as an app, an "unlinked" one offers
-  // "Convert to app" (registers it in the linked-apps registry — it then shows
+  // "Add as app" (registers it in the linked-apps registry — it then shows
   // up on the Home grid under the "linked" tag). Fetched per folder, only when
   // the single-HTML button would show at all; a fetch failure (older backend)
   // falls back to "workspace" so the button degrades to plain "Open as app".
@@ -713,7 +713,7 @@ function TemplatePreview({
       navigate(singleAppPath as string, { isDir: false });
     }
   };
-  const appBtnLabel = linkStatus?.status === "unlinked" ? "Convert to app" : "Open as app";
+  const appBtnLabel = linkStatus?.status === "unlinked" ? "Add as app" : "Open as app";
   const appBtnAction = linkStatus?.status === "unlinked" ? convertToApp : openAsApp;
 
   const openAsAppBtn =
