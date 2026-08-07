@@ -11,7 +11,7 @@ import threading
 import time
 
 from .access import serves_path
-from .automount import ensure_learn_mount
+from .automount import ensure_builtin_mounts
 from .lifecycle import attach_mount, sync_serves
 from .rcd import _copytruncate_rcd_log, _rcd_lock
 from .store import _ismount, mountpoint
@@ -210,11 +210,11 @@ def run_automount() -> None:
     mount/listmounts is the status source of truth, so mounts that survived a
     server restart just show up. Best-effort — a failure logs and moves on,
     never blocks startup."""
-    # Upsert the builtin learn mount BEFORE the snapshot below: a fresh
-    # install has zero user mounts, and skipping the attach loop below would
-    # otherwise skip the builtin's very first mount too.
+    # Upsert the builtin mounts (learn, sessions) BEFORE the snapshot below: a
+    # fresh install has zero user mounts, and skipping the attach loop below
+    # would otherwise skip the builtins' very first mount too.
     from fused_render.shell.mounts import list_mounts, mounted_paths
-    ensure_learn_mount()
+    ensure_builtin_mounts()
     mounts = list_mounts()
     if mounts:
         live = mounted_paths()
@@ -241,7 +241,7 @@ def run_automount() -> None:
         # mount-less install (nothing to sync, and serves_path() was never
         # written — skipping here keeps a fresh install from gaining a
         # home_dir()/serves.json write it never needed). But it can ALSO
-        # mean ensure_learn_mount above just removed the builtin record
+        # mean ensure_builtin_mounts above just removed a builtin record
         # (zip gone) and stopped its rc serve directly via
         # _force_detach_learn_mount — and serves.json on disk is ONLY ever
         # rewritten by sync_serves, so skipping unconditionally (the old

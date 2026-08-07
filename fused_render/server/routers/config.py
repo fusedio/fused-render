@@ -55,6 +55,9 @@ def api_config(
         # background automount thread upserts the record on a packaged
         # run, would otherwise show a link to a path that doesn't exist).
         "learn_mount_ready": shell_mounts.learn_mount_ready(),
+        # Same deal for the builtin sessions mount (the Claude Sessions
+        # sub-app): the sidebar's Sessions entry only renders when true.
+        "sessions_mount_ready": shell_mounts.sessions_mount_ready(),
         # The call-log store (calls.py). Same job as `mounts_root` above and
         # for a sharper reason: a call-log file is APPENDED TO by the act of
         # viewing it, so a page watching one reloads, re-reads, appends, and

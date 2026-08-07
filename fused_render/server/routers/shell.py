@@ -25,6 +25,7 @@ def shell_explorer(path: str = "", shell_path: str = Depends(get_shell_path)):
     return FileResponse(shell_path)
 
 @router.get("/learn")
+@router.get("/sessions")
 @router.get("/preferences")
 @router.get("/templates")
 @router.get("/mounts")

@@ -1,4 +1,4 @@
-"""The built-in "learn" mount, staged from the bundled examples zip and
+"""Built-in mounts ("learn", "sessions"), each staged from a bundled zip and
 attached automatically at startup."""
 
 import json
@@ -16,39 +16,63 @@ logger = logging.getLogger(__name__)
 
 
 LEARN_MOUNT_NAME = "learn"
+SESSIONS_MOUNT_NAME = "sessions"
+
+# Every builtin mount: bundled zip basename + the env var that overrides its
+# location for dev/testing. Adding a builtin = one row here plus the packaging
+# steps (build_dmg.sh, build_windows_installer.ps1, supervisor/paths.py).
+BUILTIN_MOUNTS = {
+    LEARN_MOUNT_NAME: ("learn.zip", "FUSED_RENDER_LEARN_ZIP"),
+    SESSIONS_MOUNT_NAME: ("sessions.zip", "FUSED_RENDER_SESSIONS_ZIP"),
+}
 
 
-def learn_zip_path() -> str | None:
-    """Path to the bundled learn.zip, or None outside the packaged app.
+def builtin_zip_path(name: str) -> str | None:
+    """Path to a builtin's bundled zip, or None outside the packaged app.
 
-    FUSED_RENDER_LEARN_ZIP overrides for dev/testing (a dev checkout has the
-    loose learn/ dir, not a zip — build_dmg.sh only creates the zip at DMG
+    The env var overrides for dev/testing (a dev checkout has the loose
+    content dir, not a zip — build_dmg.sh only creates the zip at DMG
     build time). Packaged (same sys.frozen check as rclone_bin) it lives at
-    Contents/Resources/learn.zip (build_dmg.sh step 4e) on macOS; on the
+    Contents/Resources/<name>.zip (build_dmg.sh step 4e) on macOS; on the
     Windows/Linux payload layouts it sits next to the bundled runtime
-    (payload/python/pythonw.exe -> payload/assets/learn.zip), resolved from
+    (payload/python/pythonw.exe -> payload/assets/<name>.zip), resolved from
     sys.executable so the server finds it without depending on the
     supervisor-injected env var. Existence-checked either way so a stale env
     var or a hand-pruned bundle yields None, not a mount record pointing at
     nothing."""
-    override = os.environ.get("FUSED_RENDER_LEARN_ZIP")
+    zip_name, env_var = BUILTIN_MOUNTS[name]
+    override = os.environ.get(env_var)
     if override:
         return override if os.path.isfile(override) else None
     if getattr(sys, "frozen", None) == "macosx_app":
         contents = os.path.dirname(os.path.dirname(os.path.abspath(sys.executable)))
-        bundled = os.path.join(contents, "Resources", "learn.zip")
+        bundled = os.path.join(contents, "Resources", zip_name)
         if os.path.isfile(bundled):
             return bundled
     runtime_root = os.path.dirname(os.path.dirname(os.path.abspath(sys.executable)))
-    adjacent = os.path.join(runtime_root, "assets", "learn.zip")
+    adjacent = os.path.join(runtime_root, "assets", zip_name)
     if os.path.isfile(adjacent):
         return adjacent
     return None
 
 
+def learn_zip_path() -> str | None:
+    return builtin_zip_path(LEARN_MOUNT_NAME)
+
+
+def ensure_builtin_mounts() -> None:
+    """Upsert every builtin mount record (BUILTIN_MOUNTS)."""
+    for name in BUILTIN_MOUNTS:
+        _ensure_builtin_mount(name)
+
+
 def ensure_learn_mount() -> None:
-    """Upsert the builtin "learn" mount record: rclone's archive backend
-    (v1.74) mounts the bundled learn.zip read-only through the same mounts
+    _ensure_builtin_mount(LEARN_MOUNT_NAME)
+
+
+def _ensure_builtin_mount(name: str) -> None:
+    """Upsert a builtin mount record: rclone's archive backend
+    (v1.74) mounts the bundled zip read-only through the same mounts
     surface as any remote (D123).
 
     Builtin records carry `"builtin": "learn"` so they're distinguishable
@@ -94,12 +118,12 @@ def ensure_learn_mount() -> None:
     `detach_target`) and executed after the `with` block exits."""
     from fused_render.shell.mounts import list_mounts
     try:
-        path = learn_zip_path()
+        path = builtin_zip_path(name)
         detach_target: tuple[dict, str] | None = None
         with _store_lock:
             mounts = list_mounts()
             builtin = next(
-                (m for m in mounts if m.get("builtin") == LEARN_MOUNT_NAME), None
+                (m for m in mounts if m.get("builtin") == name), None
             )
             if path is None:
                 # Removal is gated on the RECORD's zip being gone from disk,
@@ -125,29 +149,37 @@ def ensure_learn_mount() -> None:
                     # Force a fresh mount every startup, changed or not (see
                     # the upgrade-same-path staleness case above).
                     detach_target = (builtin, old_remote)
-                elif any(m["name"] == LEARN_MOUNT_NAME for m in mounts):
+                elif any(m["name"] == name for m in mounts):
                     logger.warning(
-                        "not adding the builtin learn mount: a user mount "
-                        "named %r already exists", LEARN_MOUNT_NAME,
+                        "not adding the builtin %r mount: a user mount "
+                        "named %r already exists", name, name,
                     )
                 else:
                     mounts.append({
                         "id": uuid.uuid4().hex[:12],
-                        "name": LEARN_MOUNT_NAME,
+                        "name": name,
                         "remote": remote,
                         "read_only": True,
                         "read_only_user": True,
-                        "builtin": LEARN_MOUNT_NAME,
+                        "builtin": name,
                     })
                     _write(mounts)
         if detach_target is not None:
-            _force_detach_learn_mount(*detach_target)
+            _force_detach_builtin_mount(*detach_target)
     except Exception:
-        logger.exception("ensure_learn_mount failed")
+        logger.exception("ensure_builtin_mount(%r) failed", name)
 
 
 def learn_mount_ready() -> bool:
-    """True when the builtin learn mount is actually attached — both rcd and
+    return builtin_mount_ready(LEARN_MOUNT_NAME)
+
+
+def sessions_mount_ready() -> bool:
+    return builtin_mount_ready(SESSIONS_MOUNT_NAME)
+
+
+def builtin_mount_ready(name: str) -> bool:
+    """True when a builtin mount is actually attached — both rcd and
     the kernel agree the mountpoint is live — not merely when its record
     exists in mounts.json.
 
@@ -168,7 +200,7 @@ def learn_mount_ready() -> bool:
     check), so this reads true only once that loop has actually succeeded."""
     from fused_render.shell.mounts import list_mounts, mounted_paths
     builtin = next(
-        (m for m in list_mounts() if m.get("builtin") == LEARN_MOUNT_NAME), None
+        (m for m in list_mounts() if m.get("builtin") == name), None
     )
     if builtin is None:
         return False
@@ -176,8 +208,8 @@ def learn_mount_ready() -> bool:
     return mp in mounted_paths() and _ismount(mp)
 
 
-def _force_detach_learn_mount(builtin: dict, old_remote: str) -> None:
-    """Best-effort unmount of the builtin learn mountpoint if rcd (or the
+def _force_detach_builtin_mount(builtin: dict, old_remote: str) -> None:
+    """Best-effort unmount of a builtin mountpoint if rcd (or the
     kernel) still has one live from a prior server run, so the caller's
     upserted record gets a genuinely fresh mount/mount instead of being
     silently adopted with stale fs/content — see ensure_learn_mount's BUGBOT
@@ -252,4 +284,5 @@ def _force_detach_learn_mount(builtin: dict, old_remote: str) -> None:
         if port is not None:
             _stop_serve_for(port, old_remote)
     except Exception:
-        logger.warning("force-detach of builtin learn mount failed", exc_info=True)
+        logger.warning("force-detach of builtin mount %r failed",
+                       builtin.get("name"), exc_info=True)

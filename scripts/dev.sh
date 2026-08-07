@@ -41,6 +41,38 @@ FRONTEND="$REPO_ROOT/frontend"
 # or a manual wipe. Respect an already-set value so the caller can override.
 export FUSED_RENDER_CORE_TEMPLATES="${FUSED_RENDER_CORE_TEMPLATES:-$REPO_ROOT/fused_render/templates}"
 
+# Stage the builtin-mount zips (learn.zip, sessions.zip) so a dev server gets
+# the Learn and Sessions sub-apps just like the packaged app. The packaged
+# builds create these at DMG/installer time (build_dmg.sh step 4e and its
+# Windows mirror); a dev checkout only has the loose content dirs, so without
+# this the builtin mounts never resolve a zip and the sidebar entries hide.
+# Rebuilt fresh on every run (content is tiny, zip takes <1s) into the
+# gitignored .dev-zips/ — same exclusions as the packaged zips. Respect an
+# already-set env var so a caller can point a mount at their own zip.
+#
+# NOTE: the mount serves the zip SNAPSHOT, not the live content dir — edits to
+# core_apps/learn/ or core_apps/sessions/ need a dev.sh restart (Ctrl-C,
+# re-run) to show up.
+DEV_ZIPS="$REPO_ROOT/.dev-zips"
+mkdir -p "$DEV_ZIPS"
+stage_builtin_zip() { # $1 = content dir name (learn|sessions), $2 = env var name
+  local src="$REPO_ROOT/core_apps/$1" dest="$DEV_ZIPS/$1.zip"
+  if [[ -z "${!2:-}" && -d "$src" ]] && command -v zip >/dev/null 2>&1; then
+    rm -f "$dest"
+    # zip's * doesn't cross '/', hence the doubled patterns (same as
+    # build_dmg.sh). The *.json sidecar exclusions mirror .gitignore: the dev
+    # server writes `<file>.json` next to any opened file, and a sidecar baked
+    # into the zip would pin the shipped view to this machine's session.
+    (cd "$src" && zip -qr -X "$dest" . \
+      -x '.DS_Store' -x '*/.DS_Store' -x '__pycache__/*' -x '*/__pycache__/*' \
+      -x '*.html.json' -x '*/*.html.json' -x '*.md.json' -x '*/*.md.json' \
+      -x '*.py.json' -x '*/*.py.json' -x '*.txt.json' -x '*/*.txt.json')
+    export "$2=$dest"
+  fi
+}
+stage_builtin_zip learn FUSED_RENDER_LEARN_ZIP
+stage_builtin_zip sessions FUSED_RENDER_SESSIONS_ZIP
+
 # Keep the rclone rcd daemon (and its mounts + warm VFS cache) alive across the
 # watchfiles server restarts that fire on every .py edit — without this the
 # daemon dies with the server (production teardown) and each restart pays the
