@@ -123,6 +123,34 @@ def test_link_rejects_non_folders_and_workspace_paths(client, tmp_path, workspac
     assert "workspace" in r.json()["error"]
 
 
+def test_link_rejects_ancestors_of_the_workspace(client, tmp_path, workspace):
+    """Linking the workspace's parent would make linked_app_dir_for claim
+    every workspace path, shadowing real apps in the template gates."""
+    r = client.post("/api/apps/link", json={"path": str(tmp_path)}, headers=HDRS)
+    assert r.status_code == 400
+    assert "contains the Fused workspace" in r.json()["error"]
+    r = client.post("/api/apps/link", json={"path": str(workspace)}, headers=HDRS)
+    assert r.status_code == 400
+
+
+def test_registry_entries_containing_the_workspace_are_filtered_on_read(
+    client, tmp_path, workspace, monkeypatch
+):
+    """A pre-fix or hand-edited registry entry that is the workspace or an
+    ancestor of it never reaches consumers (listing, gates, env export)."""
+    home = tmp_path / "home"
+    home.mkdir(exist_ok=True)
+    ok = _folder(tmp_path, "fine")
+    (home / "linked_apps.json").write_text(json.dumps({"entries": [
+        {"name": "shadow", "path": str(tmp_path)},
+        {"name": "ws", "path": str(workspace)},
+        {"name": "fine", "path": str(ok)},
+    ]}))
+    assert [e["name"] for e in linked_apps.read_entries()] == ["fine"]
+    linked_apps.export_linked_apps_env()
+    assert os.environ["FUSED_RENDER_LINKED_APPS"] == str(ok)
+
+
 @pytest.mark.parametrize("bad", ["", "  ", "a/b", "a\\b", ".hidden"])
 def test_link_rejects_bad_explicit_names(client, tmp_path, bad):
     d = _folder(tmp_path, "notes")
@@ -321,6 +349,23 @@ def test_versions_gate_finds_the_git_at_an_ancestor(client, tmp_path):
     assert _condition("versions").main(str(d)) is True
     # ...and the git template steps aside there (one story, one mode).
     assert _condition("git").main(str(d)) is False
+
+
+def test_git_gate_keeps_serving_ungitted_linked_folders(client, tmp_path, workspace):
+    """The git exclusion only fires when versions will actually take the
+    story — a linked folder outside any repo (or a nested repo deeper than
+    the linked folder) keeps the plain git mode."""
+    d = _folder(tmp_path, "notes")
+    client.post("/api/apps/link", json={"path": str(d)}, headers=HDRS)
+    # linked but not git-backed: versions has nothing, git stays out only
+    # because there is genuinely no repo — not because of the exclusion
+    assert _condition("git").main(str(d)) is False
+    # a repo nested DEEPER than the linked folder: git serves it
+    nested = d / "vendor"
+    nested.mkdir()
+    (nested / "f.txt").write_text("x")
+    _git_repo(nested)
+    assert _condition("git").main(str(nested / "f.txt")) is True
 
 
 def test_versions_backend_scopes_to_the_linked_subtree(client, tmp_path):

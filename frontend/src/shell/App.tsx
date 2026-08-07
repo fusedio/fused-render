@@ -494,15 +494,27 @@ export default function App({ config }: { config: Config }) {
   const fusedDir = config.fused_dir.replace(/\\/g, "/");
   const appSegs = isApps ? null : appRouteSegments(pathname);
   const linkedName = appSegs && appSegs.tag === LINKED_TAG ? appSegs.name : null;
-  const [linkedPath, setLinkedPath] = useState<string | null>(null);
+  // The resolved path is keyed to the name it was fetched for: on a
+  // linked-to-linked navigation the effect (and its reset) only runs AFTER
+  // the first render of the new route, so an unkeyed value would hand the
+  // previous app's folder to StatView for a frame.
+  const [linkedResolved, setLinkedResolved] =
+    useState<{ name: string; path: string } | null>(null);
+  const linkedPath =
+    linkedResolved && linkedResolved.name === linkedName ? linkedResolved.path : null;
   useEffect(() => {
-    setLinkedPath(null);
     if (!linkedName) return;
     let stale = false;
     const fallback = fusedDir.replace(/\/+$/, "") + "/" + LINKED_TAG + "/" + linkedName;
     getLinkedAppPath(linkedName).then(
-      (r) => { if (!stale) setLinkedPath((r.path ?? fallback).replace(/\\/g, "/")); },
-      () => { if (!stale) setLinkedPath(fallback); }
+      (r) => {
+        if (!stale)
+          setLinkedResolved({
+            name: linkedName,
+            path: (r.path ?? fallback).replace(/\\/g, "/"),
+          });
+      },
+      () => { if (!stale) setLinkedResolved({ name: linkedName, path: fallback }); }
     );
     return () => { stale = true; };
   }, [linkedName, fusedDir]);

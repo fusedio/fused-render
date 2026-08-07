@@ -35,6 +35,18 @@ def _registry_path() -> str:
     return os.path.join(storage.home_dir(), "linked_apps.json")
 
 
+def _contains_workspace(folder: str) -> bool:
+    """Whether `folder` is the Fused workspace or an ancestor of it. Such an
+    entry would make `linked_app_dir_for` claim every workspace path, shadowing
+    real apps in the template gates — filtered on read so even a hand-edited or
+    pre-fix registry can't poison path resolution."""
+    from fused_render.shell.seed import fused_dir
+
+    root = os.path.abspath(fused_dir())
+    folder = os.path.abspath(folder)
+    return root == folder or root.startswith(folder + os.sep)
+
+
 def read_entries() -> list[dict]:
     """The registry's valid entries, in stored order. Corrupt/missing file or
     malformed entries read as absent — a registry degrades, never raises."""
@@ -50,6 +62,7 @@ def read_entries() -> list[dict]:
         and e["name"]
         and isinstance(e.get("path"), str)
         and os.path.isabs(e["path"])
+        and not _contains_workspace(e["path"])
     ]
 
 
@@ -121,6 +134,8 @@ def link_app(path, name=None) -> tuple[dict | None, str | None, int]:
     root = os.path.abspath(fused_dir())
     if folder == root or folder.startswith(root + os.sep):
         return None, "folder is inside the Fused workspace — already an app location", 400
+    if root.startswith(folder + os.sep):
+        return None, "folder contains the Fused workspace — link a folder outside it", 400
 
     if name is None or (isinstance(name, str) and not name.strip()):
         name = os.path.basename(folder)

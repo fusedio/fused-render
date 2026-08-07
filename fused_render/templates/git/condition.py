@@ -131,13 +131,29 @@ def main(path: str) -> bool:
         except Exception:  # noqa: BLE001 — cannot tell -> fall through to git
             pass
 
-        # Registered linked apps are `versions` territory too (their gate asks
-        # git the same way this one does) — same one-story-one-mode rule as the
-        # workspace-app exclusion above.
+        # Registered linked apps are `versions` territory too — but only when
+        # the LINKED FOLDER itself is git-backed, mirroring the `.git` check
+        # the workspace-app exclusion makes above (versions' gate asks the
+        # same question, so this is exactly "versions will take this story").
+        # A linked folder outside any repo — or a path in a nested repo deeper
+        # than the linked folder — falls through and keeps plain `git`.
         try:
             from appenv import linked_app_dir_for
-            if linked_app_dir_for(path):
-                return False  # versions handles linked-app history
+            linked = linked_app_dir_for(path)
+            if linked:
+                probe = subprocess.run(
+                    ["git", "--no-pager", "-C", linked, "rev-parse",
+                     "--is-inside-work-tree"],
+                    env={**os.environ, **_ENV},
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.DEVNULL,
+                    timeout=_TIMEOUT_S,
+                    creationflags=(subprocess.CREATE_NO_WINDOW
+                                   if sys.platform == "win32" else 0),
+                )
+                if probe.returncode == 0 and probe.stdout.strip() == b"true":
+                    return False  # versions handles linked-app history
         except Exception:  # noqa: BLE001 — cannot tell -> fall through to git
             pass
 
