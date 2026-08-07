@@ -327,6 +327,9 @@
     margin: 0 auto;
     padding: 24px 20px 12px;
   }
+  /* queued messages live in their own container AFTER #log, so they always
+     render below every turn — including turns appended while they wait. */
+  #queue { max-width: 720px; margin: 0 auto; padding: 0 20px 12px; }
   .turn { margin: 0 0 20px; animation: rise .18s ease-out; }
   @keyframes rise { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
   @media (prefers-reduced-motion: reduce) { .turn { animation: none; } }
@@ -803,7 +806,7 @@
       <span id="session" class="mono"></span>
       <button id="back" type="button" aria-label="Back to chats">← Chats</button>
     </div>
-    <div id="logwrap"><div id="log"></div></div>
+    <div id="logwrap"><div id="log"></div><div id="queue"></div></div>
     <form id="inputbox" class="composer" style="display:contents">
       <div id="composer-chat">
         <div class="annchips" id="annchips-chat"></div>
@@ -3380,8 +3383,11 @@ function runEnding(data, stopped) {
 // in at SEND time, so whatever is pending when a queued message actually goes
 // out rides that send — which is also the desirable reading for the app-state
 // snapshot (fresh state after the previous turn's edits, not a stale one from
-// queue time). Each entry renders as a dashed placeholder bubble in the log;
-// the × unqueues it back into the composer.
+// queue time). Each entry renders as a dashed placeholder bubble in #queue —
+// a SIBLING after #log, not inside it, so queued messages always sit below
+// every turn, including turns appended to the log while they wait; the ×
+// unqueues it back into the composer.
+const queueEl = document.getElementById("queue");
 const queuedMsgs = [];  // [{ text, el }]
 
 function queueMessage(text) {
@@ -3412,7 +3418,7 @@ function queueMessage(text) {
   };
   meta.append(lbl, x);
   d.append(b, meta);
-  log.appendChild(d);
+  queueEl.appendChild(d);
   scrollBottom();
   queuedMsgs.push(entry);
 }
