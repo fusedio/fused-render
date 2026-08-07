@@ -1580,6 +1580,111 @@ def _poll(run_id: str) -> dict:
 
 # ------------------------------------------------------- sessions & history
 
+_MODEL_SHORT = ("fable", "opus", "sonnet", "haiku")
+_EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
+
+
+def _short_model(raw: str) -> str:
+    """Collapse any spelling of a model — full id ('claude-fable-5'), alias
+    ('opusplan'), or already-short name — to the selector's short names."""
+    raw = (raw or "").lower()
+    for name in _MODEL_SHORT:
+        if name in raw:
+            return name
+    return ""
+
+
+def _scan_transcript(path: str) -> tuple:
+    """(model, effort) of the newest main-loop rows in one session transcript.
+
+    Reads only the file's tail: the last rows are the last-used config, and a
+    long session's early history can't change the answer. Sidechain rows are
+    skipped — subagents pick their own model, and the user never chose it."""
+    try:
+        size = os.path.getsize(path)
+        with open(path, "rb") as f:
+            if size > 262144:
+                f.seek(size - 262144)
+            blob = f.read().decode("utf-8", "replace")
+    except OSError:
+        return "", ""
+    model = effort = ""
+    for line in reversed(blob.splitlines()):
+        if not line.startswith("{"):
+            continue
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(row, dict) or row.get("isSidechain"):
+            continue
+        if not model:
+            msg = row.get("message")
+            if isinstance(msg, dict):
+                model = _short_model(str(msg.get("model", "")))
+        if not effort:
+            e = str(row.get("effort", "")).lower()
+            if e in _EFFORT_LEVELS:
+                effort = e
+        if model and effort:
+            break
+    return model, effort
+
+
+def _defaults(file: str) -> dict:
+    """The model/effort the user ACTUALLY last used with Claude Code for this
+    project — through this template or the CLI directly — so the selectors can
+    preselect a real config instead of a hardcoded guess.
+
+    Priority: newest session transcripts in this project's store (true
+    last-used, shared by CLI and template runs since both key sessions on the
+    same cwd munge), then settings files (project .claude/settings.local.json,
+    project .claude/settings.json, ~/.claude/settings.json — the `model` and
+    `effortLevel` keys). Empty fields mean nothing was detected; the page keeps
+    its own fallback."""
+    workdir = _workdir(os.path.abspath(file))
+    model = effort = source = ""
+    proj = os.path.join(PROJECTS, _munge(workdir))
+    try:
+        names = [n for n in os.listdir(proj) if n.endswith(".jsonl")]
+        paths = sorted((os.path.join(proj, n) for n in names),
+                       key=os.path.getmtime, reverse=True)
+    except OSError:
+        paths = []
+    # Newest few only: the newest transcript IS the answer when it has both
+    # fields, and one more file covers a fresh session that hasn't spoken yet.
+    for path in paths[:5]:
+        m, e = _scan_transcript(path)
+        model = model or m
+        effort = effort or e
+        if model or effort:
+            source = "session"
+        if model and effort:
+            break
+    if not (model and effort):
+        for p in (os.path.join(workdir, ".claude", "settings.local.json"),
+                  os.path.join(workdir, ".claude", "settings.json"),
+                  os.path.join(CLAUDE_DIR, "settings.json")):
+            try:
+                with open(p, encoding="utf-8") as f:
+                    data = json.load(f)
+            except (OSError, ValueError):
+                continue
+            if not isinstance(data, dict):
+                continue
+            if not model:
+                m = _short_model(str(data.get("model", "")))
+                if m:
+                    model, source = m, source or "settings"
+            if not effort:
+                e = str(data.get("effortLevel", "")).lower()
+                if e in _EFFORT_LEVELS:
+                    effort, source = e, source or "settings"
+            if model and effort:
+                break
+    return {"model": model, "effort": effort, "source": source}
+
+
 def _sessions(file: str) -> dict:
     """Sessions recorded in THIS file's sidecar, newest activity first."""
     file = os.path.abspath(file)
@@ -1704,6 +1809,10 @@ def main(action: str = "start", file: str = "", message: str = "",
         if not file:
             return {"error": "missing target file (no _file param?)"}
         return _sessions(file)
+    if action == "defaults":
+        if not file:
+            return {"error": "missing target file (no _file param?)"}
+        return _defaults(file)
     if action == "history":
         if not file:
             return {"error": "missing target file (no _file param?)"}

@@ -155,12 +155,27 @@ export function useDocumentTitle(label: string | null | undefined): void {
 // bounded poll from scratch — the Learn card would vanish for up to 2s and
 // reflow the grid on every trip back to Home, even though readiness was
 // already confirmed earlier in the session.
-let cachedReady = false;
+// Per-builtin: learn and sessions confirm independently — one flag shared
+// between them would mark the other ready the moment either mount attaches.
+const cachedReady: Record<BuiltinMountKey, boolean> = {
+  learn_mount_ready: false,
+  sessions_mount_ready: false,
+};
+
+type BuiltinMountKey = "learn_mount_ready" | "sessions_mount_ready";
 
 export function useLearnMountReady(initial: boolean): boolean {
-  const [ready, setReady] = useState(cachedReady || initial);
+  return useBuiltinMountReady(initial, "learn_mount_ready");
+}
+
+export function useSessionsMountReady(initial: boolean): boolean {
+  return useBuiltinMountReady(initial, "sessions_mount_ready");
+}
+
+function useBuiltinMountReady(initial: boolean, key: BuiltinMountKey): boolean {
+  const [ready, setReady] = useState(cachedReady[key] || initial);
   useEffect(() => {
-    if (cachedReady) return; // already confirmed — nothing left to poll for
+    if (cachedReady[key]) return; // already confirmed — nothing left to poll for
     let cancelled = false;
     let attempts = 0;
     // setInterval fires a new getConfig() every tick without waiting for the
@@ -178,9 +193,9 @@ export function useLearnMountReady(initial: boolean): boolean {
       getConfig().then(
         (fresh) => {
           if (cancelled || requestId !== latestRequestId) return;
-          setReady(fresh.learn_mount_ready);
-          if (fresh.learn_mount_ready) {
-            cachedReady = true;
+          setReady(fresh[key]);
+          if (fresh[key]) {
+            cachedReady[key] = true;
             window.clearInterval(timer);
           } else if (attempts >= MAX_ATTEMPTS) {
             window.clearInterval(timer);

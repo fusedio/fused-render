@@ -14,6 +14,8 @@ export interface Config {
   // (unpackaged dev run with no zip, or the brief window before startup's
   // background automount thread has upserted the record).
   learn_mount_ready: boolean;
+  // Same gate for the builtin sessions mount (the Claude Sessions sub-app).
+  sessions_mount_ready: boolean;
 }
 
 export interface FsEntry {

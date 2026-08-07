@@ -2077,79 +2077,86 @@ def test_both_composers_draw_the_toggle_identically(html):
     assert chat.replace('id="viewshot"', "ID") == home.replace('id="hviewshot"', "ID")
 
 
-def test_the_annotate_control_is_a_small_unlabelled_icon(html):
-    """Annotating is occasional, so its control must not charge every project that
-    never uses it. A permanent strip cost ~28px of app height plus a line of chrome
-    the app never asked for, and the labelled pill before it grew into a whole
-    sentence when armed — covering MORE of the app at the moment the user was
-    aiming at it. A fixed 26px icon has neither cost: no layout row, and nothing
-    that can change size."""
+def test_the_annotate_control_is_a_labelled_switch(html):
+    """The annotate control is a labelled left-right sliding switch, not a bare
+    icon: it sits OUTSIDE the pane in the chat pane's empty header margin, where a
+    label costs the app zero pixels — so the state is spelled out ("Annotating" /
+    "Annotate") instead of encoded in a fill an unlabelled 26px glyph had to carry
+    alone. Both switches (#annbtn, #annvis) follow the shape: track + knob + text,
+    fixed height, absolute overlay."""
+    for sel in ("#annbtn {", "#annvis {"):
+        btn = _between(html, sel, "}")
+        assert "height: 26px" in btn, btn
+        assert "border-radius: 999px" in btn, btn
+        assert "white-space: nowrap" in btn, btn
+        # the switch anatomy exists in CSS for both controls
+        root = sel.split(" ")[0]
+        assert root + " .track {" in html, root
+        assert root + " .knob {" in html, root
+        # the knob SLIDES on toggle: the on-state moves it inside its fixed track
+        assert "left: 14px" in _between(html, root + ".on .knob {", "}"), root
+    # idle tints, armed fills the whole pill — annotate mode swallows the app's
+    # clicks, so its on-state must be the loudest of the two switches
     btn = _between(html, "#annbtn {", "}")
-    assert "width: 26px" in btn and "height: 26px" in btn, btn
-    assert "border-radius: 999px" in btn, btn
-    # no label text in either state, so nothing to ellipsize and nothing to grow
-    assert "#annbtn .lbl {" not in html
-    assert "#annbtn .stop {" not in html
-    assert "annLbl" not in html and "annStop" not in html
-    assert "textContent" not in _between(html, "function annSetMode(", "\n}")
-    # Accent while idle, because a 26px unlabelled glyph outside the pane is easy
-    # to miss — but then idle and armed both use the accent, so the ONE thing that
-    # still separates them must hold: idle tints (accent glyph, panel background),
-    # armed fills (accent background, glyph knocked out). Without this the control
-    # has no visible state at all, and there is no label to fall back on.
     assert "color: var(--accent)" in btn and "background: var(--panel)" in btn, btn
     on = _between(html, "#annbtn.on {", "}")
     assert "background: var(--accent)" in on, on
     assert "color: var(--on-accent)" in on, on
-    # an icon-only control still has to have a name and announce its state
-    view = _between(html, '<div id="leftview"', "<!-- /leftview -->")
+    # named, announced, and labelled in the markup
+    view = _between(html, '<div id="anntools">', "</div>")
     assert 'id="annbtn"' in view and 'aria-label="' in view, view
-    assert 'aria-pressed="false"' in view, view
-    # An inline SVG stroked in currentColor, like the composer's pane-shot icon —
-    # that is what lets one glyph follow the accent tint AND be knocked out to
-    # --on-accent when armed. A text/emoji glyph can do neither, and renders at a
-    # different weight on every platform.
+    assert 'class="lbl"' in view, view
+    for root in ("annBtn", "annVisBtn"):
+        assert root + '.querySelector(".lbl").textContent' in html, root
+    # the comment-bubble icon survives, stroked in currentColor so it follows the
+    # accent tint and is knocked out to --on-accent when armed
     icon = _between(view, 'id="annbtn"', "</button>")
     assert "<svg" in icon and 'stroke="currentColor"' in icon, icon
     assert 'fill="none"' in icon and 'aria-hidden="true"' in icon, icon
     assert "✎" not in html, "the pencil glyph is gone from the template"
 
 
-def test_the_annotate_icon_covers_none_of_the_app(html):
-    """The original floating button sat on the app's own top-right corner, and you
-    cannot click through a control — whatever was under it could not be annotated.
-    Fixed by moving it OUT of the pane rather than by shrinking it: a negative
-    offset puts it past the divider, in the chat pane's left margin, so the overlap
-    with the app is zero rather than merely small.
-
-    Safe because nothing clips it (neither `#left` nor `#leftview` sets `overflow`,
-    and `#chat`'s `overflow: hidden` cannot clip a non-descendant) and because the
-    space always exists: `#chat` has `min-width: 340px` and this layout never
-    stacks vertically."""
-    btn = _between(html, "#annbtn {", "}")
-    assert "position: absolute" in btn, btn
-    # negative, i.e. outside the pane — clear of the 4px divider's drag strip AND
-    # not jammed against it: 26px button + 4px divider + a real gap. Flush against
-    # the seam read as having slid there rather than being placed.
-    off = btn[btn.index("right:"):].split(";")[0]
-    px = int(off.split(":")[1].strip().rstrip("px"))
-    assert px <= -34, "26px button + 4px divider + a gap: " + off
-    # inset from the corner on both axes by the same amount, so it reads as placed
-    top = btn[btn.index("top:"):].split(";")[0]
-    assert top.split(":")[1].strip() == "%dpx" % (-px - 30), (top, off)
-    for clipper in ("#left {", "#leftview {"):
-        assert "overflow" not in _between(html, clipper, "}"), clipper
-    assert "min-width: 340px" in _between(html, "#chat {", "}")
+def test_annotate_mode_and_pin_visibility_default_on(html):
+    """Both switches start ON: an unset param means enabled, and only an explicit
+    "0" — the user sliding it off — disables. Encoded as `!== "0"` rather than
+    `=== "1"` so a first visit (no params at all) gets the default."""
+    assert 'annSetMode(fused.params.get("annmode") !== "0")' in html
+    assert 'fused.params.get("annshow") !== "0"' in html
+    assert 'fused.params.get("annautosend") !== "0"' in html
 
 
-def test_the_annotate_icon_sits_outside_the_frame_so_it_cannot_be_captured(html):
-    """The button must not appear in a crop or the pane shot. Structural, not
+def test_the_annotation_switches_are_a_layout_row_not_an_overlay(html):
+    """Every floating version of these controls — corner icon, then margin pills —
+    eventually landed on top of something (the app's corner, the chat topbar, an
+    open transcript). A real flex ROW at the top of the chat pane cannot: layout
+    reserves its height, so it covers nothing in either pane and in either view.
+    Horizontal, with real space between the two switches."""
+    row = _between(html, "#anntools {", "}")
+    assert "display: flex" in row, row
+    assert "justify-content: space-between" in row, row
+    assert "flex-shrink: 0" in row, row
+    # the switches themselves are plain flow children — no absolute anchoring left
+    for sel in ("#annbtn {", "#annvis {"):
+        btn = _between(html, sel, "}")
+        assert "position" not in btn, btn
+        assert "top:" not in btn and "left:" not in btn and "right:" not in btn, btn
+    # the row is a child of the chat pane, above the topbar, and hidden in
+    # NEITHER view — the home-view hide list must not grow to include it
+    chat = _between(html, '<div id="chat"', '<div id="topbar">')
+    assert 'id="anntools"' in chat, "the row sits above the topbar in the chat pane"
+    assert "#anntools" not in _between(html, "#chat.home #topbar", ";"), \
+        "visible on the home view too"
+
+
+def test_the_annotation_controls_sit_outside_the_frame_so_they_cannot_be_captured(html):
+    """The switches must not appear in a crop or the pane shot. Structural, not
     hopeful: `shotPane` rasterises `appWindow().document.body` — the FRAMED
     document — so anything in the parent document is unreachable by construction.
-    This pins the arrangement that makes that argument true: the button is a
-    SIBLING of the iframe in the parent document, never inside it."""
+    They live in the chat pane's #anntools row, nowhere near the iframe."""
     view = _between(html, '<div id="leftview"', "<!-- /leftview -->")
-    assert 'id="leftframe"' in view and 'id="annbtn"' in view
+    assert 'id="leftframe"' in view
+    assert 'id="annbtn"' not in view, "the controls left the app pane entirely"
+    assert 'id="annbtn"' in _between(html, '<div id="anntools">', "</div>")
     # and the capture still reads the frame, not the pane
     assert "appWindow()" in _between(html, "async function shotPane(", "\n}\n")
 
