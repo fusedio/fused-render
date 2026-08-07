@@ -1,11 +1,11 @@
-"""The script-venv install loader (PY-18 / D173).
+"""The project-venv install loader (PY-16 / PY-18).
 
-/api/run's pre-flight answers `needs_install` for a script whose PEP 723 header
-names packages that are not installed yet, instead of blocking on a download
+/api/run's pre-flight answers `needs_install` for a script whose PROJECT FOLDER
+declares packages that are not installed yet, instead of blocking on a download
 that cannot fit runPython's ~30s budget. These three endpoints are what the
 page shell's loader then drives: start it, watch it, stop it.
 
-Requirements are always re-derived from the .py on disk here, never taken from
+The project is always re-derived from the .py on disk here, never taken from
 the request: the key the loader fills has to be the key the run then looks for,
 and one source for both is the only way that stays true.
 """
@@ -20,8 +20,13 @@ from fused_render.server.common import _error, _require_fused
 router = APIRouter()
 
 
-def _requirements_for(body: dict):
-    """(requirements, error_response) for a {py, html} body, or (None, resp)."""
+def _project_for(body: dict):
+    """(project_dir, error_response) for a {py, html} body, or (None, resp).
+
+    Resolved through `projectenv`, the same call `run_python` makes, so the key
+    this endpoint installs under is by construction the key the run looks for.
+    None means the file is in no project that declares an environment.
+    """
     py, html = body.get("py"), body.get("html")
     if not py:
         return None, _error("request body must include 'py': a path to a Python file")
@@ -36,14 +41,9 @@ def _requirements_for(body: dict):
         )
     if not os.path.isfile(resolved):
         return None, _error(f"no such Python file: {resolved}")
-    from fused_render import engine as _engine
+    from fused_render import projectenv
 
-    try:
-        with open(resolved, "r", encoding="utf-8") as f:
-            reqs = _engine.script_requirements(f.read())
-    except (OSError, ValueError) as e:
-        return None, _error(str(e))
-    return sorted(set(reqs)), None
+    return projectenv.project_env_for(resolved), None
 
 
 @router.post("/api/env/install")
@@ -51,26 +51,28 @@ def api_env_install(body: dict = Body(...), x_fused: str | None = Header(default
     guard = _require_fused(x_fused)
     if guard is not None:
         return guard
-    reqs, err = _requirements_for(body)
+    project, err = _project_for(body)
     if err is not None:
         return err
-    if not reqs:
+    if not project:
         return _error(
-            f"{os.path.basename(body.get('py', ''))} declares no `# /// script` "
-            "dependencies, so there is nothing to install — it runs on this "
-            "app's own interpreter"
+            f"{os.path.basename(body.get('py', ''))} is not in a folder with a "
+            "pyproject.toml declaring dependencies, so there is nothing to "
+            "install — it runs on this app's own interpreter"
         )
-    from fused_render import envinstall
+    from fused_render import envinstall, projectenv
 
-    # envinstall speaks to the fused backend: `venv_key_for` imports
-    # `fused.agent_core...` unguarded, and `_backend_attr` raises RuntimeError
-    # BY DESIGN when an upstream attribute is missing (guessing would fill a
-    # venv no run reads). Both are reachable here without the fused engine — a
+    reqs = projectenv.dependencies_of(project)
+
+    # envinstall speaks to the fused backend: `_backend_attr` raises RuntimeError
+    # BY DESIGN when an upstream attribute is missing (guessing would build the
+    # environment on the wrong interpreter), and reaching it imports
+    # `fused.agent_core...`. Both are reachable here without the fused engine — a
     # page loaded before the engine preference was switched, or any direct API
     # call — and uncaught they become a 500 the loader shows as a bare
     # "HTTP 500", discarding the diagnostic that was the whole point.
     try:
-        record = envinstall.start(reqs)
+        record = envinstall.start(project)
         # The key comes back FROM `start`, never recomputed here: when this machine
         # has no pinned Python yet the install reports under
         # `envinstall.PYTHON_BOOTSTRAP_KEY` rather than the venv key (D214), and a
@@ -78,7 +80,7 @@ def api_env_install(body: dict = Body(...), x_fused: str | None = Header(default
         key = record["key"]
     except (ImportError, RuntimeError) as e:
         return _error(str(e))
-    return JSONResponse({"ok": True, "key": key,
+    return JSONResponse({"ok": True, "key": key, "project": project,
                          "requirements": reqs, "progress": record})
 
 

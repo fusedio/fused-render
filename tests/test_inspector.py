@@ -63,10 +63,32 @@ def test_no_entrypoint_at_all(tmp_path):
     assert info["static_result"] is False
 
 
+def _declare(tmp_path, deps='"pyarrow", "requests"'):
+    (tmp_path / "pyproject.toml").write_text(
+        "[project]\nname = 't'\nversion = '0.1.0'\n"
+        f"dependencies = [{deps}]\n",
+        encoding="utf-8",
+    )
+
+
 @pytest.mark.skipif(
-    sys.version_info < (3, 11), reason="PEP 723 dependency parsing needs tomllib (Python 3.11+)"
+    sys.version_info < (3, 11), reason="reading pyproject.toml needs tomllib (Python 3.11+)"
 )
-def test_fused_engine_reports_pep723_dependencies(tmp_path):
+def test_fused_engine_reports_the_projects_dependencies(tmp_path):
+    """The FOLDER declares them (SPEC PY-16), so that is what the form shows."""
+    _declare(tmp_path)
+    path = _write(tmp_path, "def main():\n    return 1\n")
+    info = inspector.main(path, engine="fused")
+    assert info["dependencies"] == ["pyarrow", "requests"]
+    assert info["project"] == str(tmp_path)
+
+
+@pytest.mark.skipif(
+    sys.version_info < (3, 11), reason="reading pyproject.toml needs tomllib (Python 3.11+)"
+)
+def test_a_script_header_is_no_longer_reported_as_dependencies(tmp_path):
+    """Headers are not read any more — reporting them would describe an
+    environment that will never be built."""
     src = (
         "# /// script\n"
         '# dependencies = ["pyarrow", "requests"]\n'
@@ -75,28 +97,49 @@ def test_fused_engine_reports_pep723_dependencies(tmp_path):
     )
     path = _write(tmp_path, src)
     info = inspector.main(path, engine="fused")
-    assert info["dependencies"] == ["pyarrow", "requests"]
+    assert info["dependencies"] == []
+    assert info["project"] is None
 
 
 def test_builtin_engine_never_reports_dependencies(tmp_path):
-    # The builtin executor never resolves PEP 723 deps — showing them would
-    # imply an install that never happens.
-    src = (
-        "# /// script\n"
-        '# dependencies = ["pyarrow"]\n'
-        "# ///\n"
-        "def main():\n    return 1\n"
-    )
-    path = _write(tmp_path, src)
+    # The builtin executor never builds a venv from the declaration — showing it
+    # would imply an install that never happens.
+    _declare(tmp_path, '"pyarrow"')
+    path = _write(tmp_path, "def main():\n    return 1\n")
     info = inspector.main(path, engine="builtin")
     assert info["dependencies"] == []
 
 
-def test_malformed_pep723_block_yields_no_dependencies(tmp_path):
-    # Informational display only — a malformed block must not crash the
-    # inspector, unlike engine.py's script_requirements() which raises.
-    src = "# /// script\n# dependencies = [oops\n# ///\ndef main():\n    return 1\n"
-    path = _write(tmp_path, src)
+def test_a_malformed_manifest_yields_no_dependencies(tmp_path):
+    # Informational display only — a broken pyproject.toml must not crash the
+    # inspector view.
+    (tmp_path / "pyproject.toml").write_text("this is not [ toml", encoding="utf-8")
+    path = _write(tmp_path, "def main():\n    return 1\n")
     info = inspector.main(path, engine="fused")
     assert info["dependencies"] == []
     assert info["function"]["name"] == "main"
+
+
+@pytest.mark.skipif(
+    sys.version_info < (3, 11), reason="reading pyproject.toml needs tomllib (Python 3.11+)"
+)
+def test_a_nested_manifest_is_reported_as_ignored(tmp_path):
+    """An inert file that looks correct is the exact failure D177 warns about.
+
+    The environment is the project root's, so a `pyproject.toml` in a subfolder
+    declares nothing. Surfaced here so a user who edits one and sees no change
+    has something connecting the two.
+    """
+    _declare(tmp_path)
+    sub = tmp_path / "readers"
+    sub.mkdir()
+    (sub / "pyproject.toml").write_text(
+        "[project]\nname = 'inner'\nversion = '0.1.0'\ndependencies = [\"altair\"]\n",
+        encoding="utf-8",
+    )
+    path = _write(sub, "def main():\n    return 1\n")
+
+    info = inspector.main(path, engine="fused")
+    assert info["project"] == str(tmp_path)
+    assert info["dependencies"] == ["pyarrow", "requests"]
+    assert info["ignored_manifests"] == [str(sub / "pyproject.toml")]

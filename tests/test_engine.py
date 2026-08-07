@@ -47,39 +47,25 @@ def _fresh_interpreter_probe():
     engine.reset_app_interpreter_cache()
 
 
-# --- script_requirements (PEP 723) ------------------------------------------
+# --- the folder rule (SPEC PY-16) --------------------------------------------
 
-# The PEP 723 parser needs `tomllib` (3.11+ stdlib) or the `tomli` dependency
-# that covers 3.10. Gated on AVAILABILITY rather than on the version: with tomli
-# installed these tests run on 3.10 too, and they should — that is the whole point
-# of shipping the fallback. A version check would have kept them silently skipped
-# on the one interpreter where the bug lived.
+# Reading a `pyproject.toml` needs `tomllib` (3.11+ stdlib) or the `tomli`
+# dependency that covers 3.10. Gated on AVAILABILITY rather than on the version:
+# with tomli installed these tests run on 3.10 too, and they should — that is the
+# whole point of shipping the fallback. A version check would have kept them
+# silently skipped on the one interpreter where the bug lived.
 requires_tomllib = pytest.mark.skipif(
     not _toml_available(), reason="needs tomllib (3.11+) or the tomli package"
 )
 
 
-@requires_tomllib
-def test_requirements_absent_is_empty():
-    assert engine.script_requirements("def main():\n    return 1\n") == []
-
-
-@requires_tomllib
-def test_requirements_parsed():
-    src = (
-        "# /// script\n"
-        '# dependencies = ["pyarrow", "requests"]\n'
-        "# ///\n"
-        "def main():\n    return 1\n"
-    )
-    assert engine.script_requirements(src) == ["pyarrow", "requests"]
-
-
-@requires_tomllib
-def test_requirements_malformed_toml_raises():
-    src = "# /// script\n# dependencies = [oops\n# ///\n"
-    with pytest.raises(ValueError, match="PEP 723"):
-        engine.script_requirements(src)
+def _declare(folder, deps='"pyarrow", "requests"'):
+    """Give `folder` the pyproject.toml that declares its environment."""
+    os.makedirs(str(folder), exist_ok=True)
+    with open(os.path.join(str(folder), "pyproject.toml"), "w", encoding="utf-8") as fh:
+        fh.write("[project]\nname = 't'\nversion = '0.1.0'\n"
+                 f"dependencies = [{deps}]\n")
+    return str(folder)
 
 
 # --- build_code: the compat bridge, exec()'d directly ------------------------
@@ -683,64 +669,64 @@ def test_a_headerless_script_sees_the_app_s_own_packages(monkeypatch, tmp_path):
 
 
 @requires_fused
-def test_a_declared_header_still_gets_its_own_venv(
+def test_a_declared_project_runs_in_its_own_venv(
     monkeypatch, tmp_path, warm_fused_backend_venv
 ):
     """The venv path, end to end: a real venv is built and the script runs IN it.
 
-    `_FORCE_VENV_ENV` is set because this test's header would otherwise no longer
-    reach the venv path at all, and for an honest reason rather than a convenient
-    one: `conftest.WARM_HEADER` declares `pip`, chosen because it is the cheapest
-    possible warm venv, and `pip` is present on the app interpreter (the dev-env
-    setup seeds it into `.venv` on purpose, so `test_deploy.py` can exercise a real
-    `_pip_available()`). A header every member of which is already installed is
-    precisely what `app_satisfies` now claims, so leaving the fast path enabled here
-    would silently convert this into a second header-less test.
+    `_FORCE_VENV_ENV` is set because this project would otherwise no longer reach
+    the venv path at all, and for an honest reason rather than a convenient one:
+    the warm project declares `pip`, chosen because it is the cheapest possible
+    warm venv, and `pip` is present on the app interpreter (the dev-env setup
+    seeds it into `.venv` on purpose, so `test_deploy.py` can exercise a real
+    `_pip_available()`). A declaration every member of which is already installed
+    is precisely what `app_satisfies` claims, so leaving the fast path enabled
+    here would silently convert this into a second no-project test.
 
     The hatch keeps the assertion this test is FOR — build a venv, run the script
     inside it, land under `venvs` — rather than trading it for a weaker one. Which
-    header routes where is covered separately, on the fake backend, by
-    `test_one_missing_package_sends_the_whole_header_to_the_venv_path` and
-    `test_a_header_the_app_already_satisfies_builds_no_venv`.
+    declaration routes where is covered separately, on the fake backend, by
+    `test_one_missing_package_sends_the_whole_project_to_the_venv_path` and
+    `test_a_declaration_the_app_already_satisfies_builds_no_venv`.
     """
     monkeypatch.setenv(engine._FORCE_VENV_ENV, "1")
     monkeypatch.setattr(engine, "_backend", None)
-    target = tmp_path / "declared.py"
-    target.write_text(
-        conftest.WARM_HEADER
-        + "import sys\n"
-        "def main():\n"
-        "    return {'prefix': sys.prefix}\n"
-    )
-    out = asyncio.run(engine.run_python(str(target), {}))
+    target = os.path.join(warm_fused_backend_venv, "declared.py")
+    with open(target, "w", encoding="utf-8") as fh:
+        fh.write("import sys\n"
+                 "def main():\n"
+                 "    return {'prefix': sys.prefix}\n")
+    out = asyncio.run(engine.run_python(target, {}))
     assert out["ok"] is True, out
     assert out["result"]["prefix"] != sys.prefix
     assert "venvs" in out["result"]["prefix"]
 
 
 @requires_tomllib
-def test_a_header_is_the_complete_requirement_list(monkeypatch, tmp_path):
-    """A header goes to the venv path, and its venv gets EXACTLY the header.
+def test_the_declaration_is_the_complete_requirement_list(monkeypatch, tmp_path):
+    """The folder's declaration is the whole environment; no baseline is added.
 
-    No baseline is unioned in (D172), so a header means what PEP 723 says it
-    means. This is the assertion that stops a baseline being reintroduced.
+    No baseline is unioned in (D172, which survives the move from headers to
+    pyproject), so what the folder declares is what its venv contains. This is
+    the assertion that stops a baseline being reintroduced.
     """
+    _declare(tmp_path, '"imagecodecs", "pyproj"')
     target = tmp_path / "declared.py"
-    target.write_text(
-        "# /// script\n"
-        '# dependencies = ["imagecodecs", "pyproj"]\n'
-        "# ///\n"
-        "def main():\n    return 1\n"
-    )
+    target.write_text("def main():\n    return 1\n")
     backend = _FakeBackend(_FakeResult(return_value="1"))
     monkeypatch.setattr(engine, "get_backend", lambda: backend)
     # Past the install-loader pre-flight (PY-18), which would otherwise answer
-    # `needs_install` for these two: this test is about what reaches the backend.
-    monkeypatch.setattr("fused_render.envinstall.is_installed", lambda reqs: True)
+    # `needs_install`: this test is about what reaches the backend.
+    monkeypatch.setattr("fused_render.envinstall.is_installed", lambda project: True)
     asyncio.run(engine.run_python(str(target), {}))
     call = backend.calls[0]
-    assert call["via"] == "execute"
-    assert call["requirements"] == ["imagecodecs", "pyproj"]
+    # The environment lives in our home dir, so the backend is TOLD which
+    # interpreter to run on rather than resolving a requirement set of its own.
+    assert call["via"] == "_execute_sync"
+    assert call["interpreter"] == envinstall.venv_python_for(str(tmp_path))
+    assert "requirements" not in call, (
+        "upstream ignores requirements once interpreter is set; passing both misleads"
+    )
 
 
 @requires_tomllib
@@ -757,16 +743,14 @@ def test_the_install_preflight_does_not_run_on_the_event_loop(monkeypatch, tmp_p
 
     Asserted by thread identity rather than by timing: no sleeps, no flakiness.
     """
+    _declare(tmp_path, '"imagecodecs"')
     target = tmp_path / "declared.py"
-    target.write_text(
-        '# /// script\n# dependencies = ["imagecodecs"]\n# ///\n'
-        "def main():\n    return 1\n"
-    )
+    target.write_text("def main():\n    return 1\n")
     backend = _FakeBackend(_FakeResult(return_value="1"))
     monkeypatch.setattr(engine, "get_backend", lambda: backend)
     seen = {}
 
-    def _where_am_i(reqs):
+    def _where_am_i(project):
         seen["ident"] = threading.get_ident()
         return True
 
@@ -877,24 +861,32 @@ def test_a_missing_execute_sync_is_loud_too(monkeypatch, tmp_path):
 # an unchanged venv path the moment anything cannot be PROVEN met.
 
 
-def _satisfied_header(deps):
-    return "# /// script\n# dependencies = %r\n# ///\n" % (list(deps),)
-
-
 def _preflight_spy(monkeypatch):
-    """Records whether the venv pre-flight was consulted at all."""
+    """Records whether the venv pre-flight was consulted, and for what.
+
+    The pre-flight is keyed on the PROJECT now, so the spy reads the folder's
+    declaration back out — the assertions below are about which dependencies
+    routed the run, and that is still the interesting fact.
+    """
+    from fused_render import projectenv
+
     seen = []
-    monkeypatch.setattr("fused_render.envinstall.is_installed",
-                        lambda reqs: seen.append(list(reqs)) or True)
+
+    def _spy(project):
+        seen.append(projectenv.dependencies_of(project))
+        return True
+
+    monkeypatch.setattr("fused_render.envinstall.is_installed", _spy)
     return seen
 
 
 @requires_tomllib
 @requires_fused
-def test_a_header_the_app_already_satisfies_builds_no_venv(monkeypatch, tmp_path):
+def test_a_declaration_the_app_already_satisfies_builds_no_venv(monkeypatch, tmp_path):
     """pandas is on the app interpreter, so a header naming it needs no venv."""
+    _declare(tmp_path, '"pandas>=2.0.0"')
     target = tmp_path / "declared.py"
-    target.write_text(_satisfied_header(["pandas>=2.0.0"]) + "def main():\n    return 1\n")
+    target.write_text("def main():\n    return 1\n")
     backend = _FakeBackend(_FakeResult(return_value="1"))
     monkeypatch.setattr(engine, "get_backend", lambda: backend)
     seen = _preflight_spy(monkeypatch)
@@ -913,7 +905,7 @@ def test_a_header_the_app_already_satisfies_builds_no_venv(monkeypatch, tmp_path
 
 @requires_tomllib
 @requires_fused
-def test_one_missing_package_sends_the_whole_header_to_the_venv_path(
+def test_one_missing_package_sends_the_whole_project_to_the_venv_path(
     monkeypatch, tmp_path
 ):
     """All-or-nothing: the venv is what makes the MISSING one importable.
@@ -922,20 +914,18 @@ def test_one_missing_package_sends_the_whole_header_to_the_venv_path(
     not expressible: one script runs on one interpreter. So one miss means the
     header goes to the venv exactly as before, pandas rebuilt and all.
     """
+    _declare(tmp_path, '"pandas>=2.0.0", "imagecodecs"')
     target = tmp_path / "declared.py"
-    target.write_text(
-        _satisfied_header(["pandas>=2.0.0", "imagecodecs"])
-        + "def main():\n    return 1\n"
-    )
+    target.write_text("def main():\n    return 1\n")
     backend = _FakeBackend(_FakeResult(return_value="1"))
     monkeypatch.setattr(engine, "get_backend", lambda: backend)
     seen = _preflight_spy(monkeypatch)
 
     out = asyncio.run(engine.run_python(str(target), {}))
     assert out["ok"] is True, out
-    assert seen == [["imagecodecs", "pandas>=2.0.0"]]
-    assert backend.calls[0]["via"] == "execute"
-    assert backend.calls[0]["requirements"] == ["imagecodecs", "pandas>=2.0.0"]
+    assert seen == [["pandas>=2.0.0", "imagecodecs"]]
+    assert backend.calls[0]["via"] == "_execute_sync"
+    assert backend.calls[0]["interpreter"] == envinstall.venv_python_for(str(tmp_path))
 
 
 @requires_tomllib
@@ -949,15 +939,16 @@ def test_a_version_the_app_cannot_meet_is_not_treated_as_satisfied(
     an interpreter with 2.x, and produced whatever error a version-sensitive script
     produces — an error about the code, for a dependency problem.
     """
+    _declare(tmp_path, '"pandas>=99"')
     target = tmp_path / "declared.py"
-    target.write_text(_satisfied_header(["pandas>=99"]) + "def main():\n    return 1\n")
+    target.write_text("def main():\n    return 1\n")
     backend = _FakeBackend(_FakeResult(return_value="1"))
     monkeypatch.setattr(engine, "get_backend", lambda: backend)
     seen = _preflight_spy(monkeypatch)
 
     asyncio.run(engine.run_python(str(target), {}))
     assert seen == [["pandas>=99"]], "an unmeetable pin must still get its own venv"
-    assert backend.calls[0]["via"] == "execute"
+    assert backend.calls[0]["interpreter"] == envinstall.venv_python_for(str(tmp_path))
 
 
 @requires_tomllib
@@ -969,17 +960,16 @@ def test_extras_are_never_treated_as_satisfied(monkeypatch, tmp_path):
     dependencies are installed, so "cannot tell" has to mean "not satisfied" —
     otherwise the script runs and fails on the first import of the extra's package.
     """
+    _declare(tmp_path, '"pandas[performance]>=2.0.0"')
     target = tmp_path / "declared.py"
-    target.write_text(
-        _satisfied_header(["pandas[performance]>=2.0.0"]) + "def main():\n    return 1\n"
-    )
+    target.write_text("def main():\n    return 1\n")
     backend = _FakeBackend(_FakeResult(return_value="1"))
     monkeypatch.setattr(engine, "get_backend", lambda: backend)
     seen = _preflight_spy(monkeypatch)
 
     asyncio.run(engine.run_python(str(target), {}))
     assert seen == [["pandas[performance]>=2.0.0"]]
-    assert backend.calls[0]["via"] == "execute"
+    assert backend.calls[0]["interpreter"] == envinstall.venv_python_for(str(tmp_path))
 
 
 @requires_tomllib
@@ -987,15 +977,16 @@ def test_extras_are_never_treated_as_satisfied(monkeypatch, tmp_path):
 def test_the_escape_hatch_forces_the_venv_path(monkeypatch, tmp_path):
     """One env var puts a satisfied header back on the old, isolated venv path."""
     monkeypatch.setenv(engine._FORCE_VENV_ENV, "1")
+    _declare(tmp_path, '"pandas>=2.0.0"')
     target = tmp_path / "declared.py"
-    target.write_text(_satisfied_header(["pandas>=2.0.0"]) + "def main():\n    return 1\n")
+    target.write_text("def main():\n    return 1\n")
     backend = _FakeBackend(_FakeResult(return_value="1"))
     monkeypatch.setattr(engine, "get_backend", lambda: backend)
     seen = _preflight_spy(monkeypatch)
 
     asyncio.run(engine.run_python(str(target), {}))
     assert seen == [["pandas>=2.0.0"]]
-    assert backend.calls[0]["via"] == "execute"
+    assert backend.calls[0]["interpreter"] == envinstall.venv_python_for(str(tmp_path))
 
 
 @requires_fused
@@ -1033,35 +1024,39 @@ class _NoSyncBackend:
 
 @requires_tomllib
 @requires_fused
-def test_a_satisfied_header_falls_back_to_the_venv_without_execute_sync(
+def test_no_execute_sync_is_a_named_configuration_error_not_an_inline_build(
     monkeypatch, tmp_path
 ):
-    """No `_execute_sync` must cost speed, never the run.
+    """Without `_execute_sync` a project venv cannot be used, and that is SAID.
 
-    `_execute_sync` is the only way to run on an interpreter WE pick, so without it
-    the fast path is impossible. The header-less path treats that as fatal (D175:
-    an empty venv has no data stack, so there is nothing to fall back to) — and
-    applying the same rule here regressed a header that worked perfectly well before
-    the fast path existed, turning a `pandas` script into an EngineError whose
-    message claimed it had "no dependencies of its own".
+    `_execute_sync` is the only way to run on an interpreter WE pick, and since
+    the environment now lives under our own home dir rather than in the backend's
+    store, being told the interpreter is the ONLY way the backend can reach it —
+    there is no requirement set it could resolve to the same place.
 
-    The fallback must also be the FULL venv path, pre-flight included: dropping
-    straight into `execute(requirements=…)` would build the venv inline, a blocking
-    download inside /api/run, which is the exact thing PY-18 moved out of it.
+    So the old fallback (`execute(requirements=…)`) is not available and must not
+    be resurrected: it would build a SECOND, different venv inline, a blocking
+    download inside /api/run, which is the exact thing PY-18 moved out of it. The
+    honest answer is the configuration error `_execute` already raises, surfaced
+    through the house wire shape.
+
+    The pre-flight still runs first, so a genuinely missing venv is still reported
+    as `needs_install` rather than as this error.
     """
+    _declare(tmp_path, '"pandas>=2.0.0"')
     target = tmp_path / "declared.py"
-    target.write_text(_satisfied_header(["pandas>=2.0.0"]) + "def main():\n    return 1\n")
+    target.write_text("def main():\n    return 1\n")
     backend = _NoSyncBackend(_FakeResult(return_value="1"))
     monkeypatch.setattr(engine, "get_backend", lambda: backend)
     seen = _preflight_spy(monkeypatch)
 
     out = asyncio.run(engine.run_python(str(target), {}))
-    assert out["ok"] is True, out
+    assert out["ok"] is False
     assert seen == [["pandas>=2.0.0"]], (
         "the pre-flight was skipped, so a missing venv would be built inline"
     )
-    assert backend.calls[0]["via"] == "execute"
-    assert backend.calls[0]["requirements"] == ["pandas>=2.0.0"]
+    assert backend.calls == [], "a second venv was built inline"
+    assert "_execute_sync" in out["error"]["traceback"]
 
 
 @requires_fused

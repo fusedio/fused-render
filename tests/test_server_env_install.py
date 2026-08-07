@@ -18,6 +18,17 @@ from fastapi.testclient import TestClient
 from fused_render import engine
 from fused_render.server import create_app
 
+
+def _declare(folder, deps='"pyproj"'):
+    """Give `folder` a pyproject.toml declaring `deps` — the project's environment."""
+    import os
+
+    os.makedirs(folder, exist_ok=True)
+    with open(os.path.join(str(folder), "pyproject.toml"), "w", encoding="utf-8") as fh:
+        fh.write("[project]\nname = 't'\nversion = '0.1.0'\n"
+                 f"dependencies = [{deps}]\n")
+
+
 HEADERS = {"X-Fused": "1"}
 
 # Two tests below reach `envinstall.venv_key_for`, which composes `fused`'s own
@@ -84,30 +95,33 @@ def test_install_refuses_a_script_with_nothing_to_install(tmp_path):
     assert "nothing to install" in resp.json()["error"]
 
 
-def test_install_surfaces_a_malformed_header_instead_of_500ing(tmp_path):
+def test_install_surfaces_a_malformed_manifest_instead_of_500ing(tmp_path):
+    """A broken pyproject.toml reads as "no environment", and that is what is said.
+
+    Not a crash and not a spawn: an unparseable manifest cannot be synced, and
+    the honest answer names the path the script is actually on.
+    """
     client = _client(tmp_path)
-    target = _py(tmp_path, "bad.py", "# /// script\n# dependencies = [oops\n# ///\n")
+    (tmp_path / "pyproject.toml").write_text("this is not [ toml", encoding="utf-8")
+    target = _py(tmp_path, "bad.py", "def main():\n    return 1\n")
     resp = client.post("/api/env/install", json={"py": str(target)}, headers=HEADERS)
     assert resp.status_code == 400
-    assert "PEP 723" in resp.json()["error"]
+    assert "nothing to install" in resp.json()["error"]
 
 
 @requires_fused
-def test_install_derives_requirements_from_the_file_not_the_body(tmp_path, monkeypatch):
+def test_install_derives_the_project_from_the_file_not_the_body(tmp_path, monkeypatch):
     """The rule that keeps the loader's venv and the run's venv the same one."""
     client = _client(tmp_path)
-    target = _py(
-        tmp_path, "declared.py",
-        '# /// script\n# dependencies = ["pyproj", "imagecodecs"]\n# ///\n'
-        "def main():\n    return 1\n",
-    )
+    _declare(tmp_path, '"pyproj", "imagecodecs"')
+    target = _py(tmp_path, "declared.py", "def main():\n    return 1\n")
     started = []
     monkeypatch.setattr(
         "fused_render.envinstall.start",
         # `key` included because `start` reports the key it used and the endpoint
         # hands that straight to the client (D214) — a double that omits it is not
         # standing in for the real function.
-        lambda reqs: started.append(list(reqs)) or {"stage": "spawn", "done": False,
+        lambda project: started.append(project) or {"stage": "spawn", "done": False,
                                                     "key": "0" * 16},
     )
     resp = client.post(
@@ -118,8 +132,9 @@ def test_install_derives_requirements_from_the_file_not_the_body(tmp_path, monke
     )
     assert resp.status_code == 200
     body = resp.json()
-    assert body["requirements"] == ["imagecodecs", "pyproj"]
-    assert started == [["imagecodecs", "pyproj"]]
+    assert body["requirements"] == ["pyproj", "imagecodecs"]
+    assert body["project"] == str(tmp_path)
+    assert started == [str(tmp_path)]
 
 
 @requires_fused
@@ -128,10 +143,10 @@ def test_install_resolves_a_relative_py_against_the_page(tmp_path, monkeypatch):
     identical file the failed run did."""
     client = _client(tmp_path)
     (tmp_path / "sub").mkdir()
-    _py(tmp_path / "sub", "rel.py",
-        '# /// script\n# dependencies = ["pyproj"]\n# ///\ndef main():\n    return 1\n')
+    _declare(tmp_path / "sub", '"pyproj"')
+    _py(tmp_path / "sub", "rel.py", "def main():\n    return 1\n")
     monkeypatch.setattr("fused_render.envinstall.start",
-                        lambda reqs: {"done": False, "key": "0" * 16})
+                        lambda project: {"done": False, "key": "0" * 16})
     resp = client.post(
         "/api/env/install",
         json={"py": "rel.py", "html": str(tmp_path / "sub" / "page.html")},
@@ -271,12 +286,12 @@ def test_cancel_of_an_unknown_key_is_a_clean_no_op(tmp_path):
 
 
 @pytest.mark.parametrize("boom", [
-    # `venv_key_for` imports `fused.agent_core...` unguarded — no fused, no import.
+    # `start` reaches `fused.agent_core...` unguarded — no fused, no import.
     ImportError("No module named 'fused'"),
     ModuleNotFoundError("No module named 'fused.agent_core'"),
     # `_backend_attr` raises this BY DESIGN, with the diagnostic that matters.
-    RuntimeError("this fused build's Backend has no '_venvs_path', so the "
-                 "install loader cannot tell where its script venvs live"),
+    RuntimeError("this fused build's Backend has no '_python_executable', so the "
+                 "install loader cannot tell which interpreter project venvs use"),
 ])
 def test_an_engine_that_cannot_answer_is_reported_not_500ed(tmp_path, monkeypatch, boom):
     """Reachable without the fused engine: a page loaded before the engine
@@ -291,9 +306,8 @@ def test_an_engine_that_cannot_answer_is_reported_not_500ed(tmp_path, monkeypatc
         raise boom
 
     client = _client(tmp_path)
-    target = _py(tmp_path, "declared.py",
-                 '# /// script\n# dependencies = ["pyproj"]\n# ///\n'
-                 "def main():\n    return 1\n")
+    _declare(tmp_path, '"pyproj"')
+    target = _py(tmp_path, "declared.py", "def main():\n    return 1\n")
     monkeypatch.setattr(envinstall, "start", _raise)
     monkeypatch.setattr(envinstall, "venv_key_for", _raise)
     monkeypatch.setattr(envinstall, "progress", _raise)

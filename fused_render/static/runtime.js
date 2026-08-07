@@ -555,14 +555,14 @@
     }
   }
 
-  // ---- the script-venv install loader (SPEC PY-18, D173) --------------------
+  // ---- the project-venv install loader (SPEC PY-16, PY-18) ------------------
   //
   // Most .py files run on the app's own interpreter and install nothing. A file
-  // that declares a `# /// script` header naming something the app doesn't ship
-  // (geotiff's imagecodecs, zarr_aoi's s3fs, pano's py360convert…) needs a
-  // one-time download, and /api/run answers `needs_install` rather than blocking
-  // past runPython's ~30s budget. Handled HERE, in the shell, so every template
-  // gets it without a line of its own code.
+  // whose FOLDER declares dependencies the app doesn't ship (geotiff's
+  // imagecodecs, pano's py360convert…) needs a one-time download, and /api/run
+  // answers `needs_install` rather than blocking past runPython's ~30s budget.
+  // Handled HERE, in the shell, so every template gets it without a line of its
+  // own code.
   //
   // Shape follows the docs template's typst install (a detached worker writing
   // progress.json, polled) — one pattern in this app, not two.
@@ -582,7 +582,7 @@
   // long the install would take — so an install that finishes in tens of
   // milliseconds still threw a full-screen modal over the page and tore it down
   // again, which reads as a flicker/flash rather than as progress. Now that a
-  // header the app interpreter already satisfies installs NOTHING (see engine.py's
+  // declaration the app interpreter already satisfies installs NOTHING (see engine.py's
   // `app_satisfies`), the installs that remain are either genuinely long (a real
   // download, where 600ms of delay is imperceptible) or genuinely short (a warm uv
   // cache, where the modal was pure noise). Delay separates the two without having
@@ -592,23 +592,23 @@
   let installUi = null;
   // Live installs, as key -> { row, count }.
   //
-  // A page can call several .py files, each with its OWN header, so N installs
-  // with N DISTINCT keys run at once. Each therefore gets its own ROW — its own
-  // title, detail, bar and Cancel — because one shared set of nodes made N
-  // installs illegible: the title named whichever install started last, N pollers
-  // rewrote one detail line at 2Hz, and one Cancel button carried N listeners, so
-  // a single click cancelled every install while each chain's message overwrote
-  // the others'.
+  // The key is the PROJECT FOLDER (SPEC PY-16), so the common case is now the
+  // ref-counted one: a page calling five .py files from one folder produces five
+  // waiters on ONE key, one row and one install. The count lives inside the entry
+  // so both facts — which row, how many waiters — are one piece of state that
+  // cannot disagree with itself, and the row may only go when the LAST waiter
+  // settles.
   //
-  // Still ref-COUNTED per key, which is a different case and remains real: two .py
-  // files with IDENTICAL requirement sets share one venv key, so they share one
-  // row, and the row may only go when the LAST of them settles. The count lives
-  // inside the entry so both facts — which row, how many waiters — are one piece of
-  // state that cannot disagree with itself.
+  // Distinct keys still happen — a page can call scripts from two different
+  // projects, and the D214 interpreter round reports under its own key — so each
+  // key keeps its own ROW: its own title, detail, bar and Cancel. One shared set
+  // of nodes made concurrent installs illegible: the title named whichever
+  // started last, N pollers rewrote one detail line at 2Hz, and one Cancel button
+  // carried N listeners, so a single click cancelled every install.
   const installing = new Map();
 
   // The indeterminate bar (D213). The worker parks at pct 25 for the WHOLE download
-  // — `ensure_requirements_venv` runs uv behind captured output, so there is no
+  // — `uv sync` runs behind captured output, so there is no
   // per-package progress to report — and a bar sitting at 25% for four minutes reads
   // as frozen, which is what users reported. An indeterminate bar says the true
   // thing: this is alive, and its remaining time is unknown.
@@ -843,10 +843,10 @@
     const row = showInstall(need);
     let cancelled = false;
     // The key to poll and to cancel is the INSTALLER's, not the pre-flight's.
-    // /api/env/install re-derives the requirements from the .py on disk and
-    // returns its own key, and editing a .py and letting live-reload re-run it is
-    // this app's core workflow — so the file really can change between /api/run's
-    // needs_install and this POST. Polling the stale key then reads a null
+    // /api/env/install re-derives the project from the .py on disk and returns its
+    // own key, and editing a folder's pyproject.toml and letting live-reload
+    // re-run it is this app's core workflow — so the answer really can change
+    // between /api/run's needs_install and this POST. Polling the stale key then reads a null
     // progress record and fails an install that is running fine; cancelling the
     // stale key leaves the real download running. Mutable because the cancel
     // handler is registered BEFORE the POST resolves and must see the update.
