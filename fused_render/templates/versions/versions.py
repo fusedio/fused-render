@@ -10,7 +10,7 @@ WHOLE app — the repo is the app, not the file. Three actions:
                into a per-app, per-commit dir under the shell home
                (`~/.fused-render/app-versions/<app-key>/<sha>/`); a commit is
                immutable, so an existing complete snapshot is reused as-is.
-               The caller iframes `/render?path=<snapshot>/index.html`.
+               The caller iframes `/render?path=<snapshot entry page>`.
 * `revert`   — restore the working tree AND index to the selected commit and
                record that as a NEW commit on top ("Reverted to <sha> — …").
                History is never rewritten: revert of a revert works, and
@@ -213,8 +213,14 @@ def _snapshot(app: str, sha: str):
         with open(marker, "w", encoding="utf-8") as f:
             f.write(full + "\n")
 
-    entry = os.path.join(snap, "index.html")
-    if not os.path.isfile(entry):
+    # The snapshot's entry page, by the app-entry rule (index.html first, else
+    # the single top-level .html — shared/app_entry.py), NOT a hardcoded
+    # index.html: an app whose page is `main.html` must preview its history
+    # exactly like it renders live.
+    from app_entry import entry_html
+
+    entry = entry_html(snap)
+    if entry is None:
         return {"app": app, "sha": full, "dir": snap, "entry": None}
     return {"app": app, "sha": full, "dir": snap, "entry": entry}
 

@@ -232,7 +232,7 @@ async function select(sha) {
     if (snap.error) return notice(snap.error, true);
     if (sha !== selected) return; // stale — a newer selection already landed
     if (!snap.entry) {
-      return notice("This revision has no index.html — nothing to render.");
+      return notice("This revision has no entry page (index.html or a single .html) — nothing to render.");
     }
     clearNotice();
     frameEl.src = "/render?path=" + encodeURIComponent(snap.entry);

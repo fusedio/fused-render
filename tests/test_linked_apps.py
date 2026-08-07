@@ -338,9 +338,11 @@ def test_versions_backend_scopes_to_the_linked_subtree(client, tmp_path):
             ["git", "-C", str(repo), "-c", "user.name=t", "-c", "user.email=t@t",
              "commit", "-q", "-m", msg], check=True)
 
+    # `main.html`, not index.html: the snapshot's entry must resolve by the
+    # app-entry rule (single top-level .html), not a hardcoded index.html.
     (repo / "other.txt").write_text("x")
     commit("repo-only commit")
-    (d / "index.html").write_text("<html>v1</html>")
+    (d / "main.html").write_text("<html>v1</html>")
     commit("app commit")
 
     client.post("/api/apps/link", json={"path": str(d)}, headers=HDRS)
@@ -357,7 +359,7 @@ def test_versions_backend_scopes_to_the_linked_subtree(client, tmp_path):
     assert [c["subject"] for c in log["commits"]] == ["app commit"]
 
     snap = versions.main("snapshot", str(d), log["commits"][0]["sha"])
-    assert snap["entry"] and os.path.basename(snap["entry"]) == "index.html"
+    assert snap["entry"] and os.path.basename(snap["entry"]) == "main.html"
     with open(snap["entry"]) as f:
         assert f.read() == "<html>v1</html>"
     # subtree only — the repo-level file is not in the snapshot
