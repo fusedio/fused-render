@@ -756,15 +756,16 @@ export default function Listing({
             <div className="listing-search">
               <button
                 type="button"
-                className="listing-up-button"
+                className="bar-ctl bar-ctl-icon listing-up-button"
                 title={atRoot ? "Already at the root" : "Up to parent folder"}
+                aria-label="Up to parent folder"
                 disabled={atRoot}
                 onClick={goUp}
               >
                 <svg
                   viewBox="0 0 24 24"
-                  width="14"
-                  height="14"
+                  width="16"
+                  height="16"
                   fill="none"
                   stroke="currentColor"
                   strokeWidth="2"
@@ -842,26 +843,41 @@ export default function Listing({
               {!embedded && (
                 <button
                   type="button"
-                  className="listing-pane-toggle"
+                  className={"bar-ctl listing-pane-toggle" + (pane.on ? " pressed" : "")}
                   title={pane.on ? "Hide preview pane" : "Show preview pane"}
                   aria-pressed={pane.on}
                   onClick={togglePane}
                 >
-                  {/* Subtle chevron, no accent highlight: points left when the
-                      pane is closed (it slides in from the right), right when
-                      open (collapse back to the edge). */}
+                  {/* A labelled toggle, not a bare chevron. The chevron had to
+                      encode its own state by flipping direction — which reads
+                      as "go that way", not "the pane is open" — and never said
+                      what it toggled. The pane glyph fills its right column
+                      when the pane is on; `.pressed` carries the rest. */}
                   <svg
                     viewBox="0 0 24 24"
-                    width="14"
-                    height="14"
+                    width="16"
+                    height="16"
                     fill="none"
                     stroke="currentColor"
-                    strokeWidth="2"
-                    strokeLinecap="round"
+                    strokeWidth="1.8"
                     strokeLinejoin="round"
+                    aria-hidden="true"
                   >
-                    <polyline points={pane.on ? "9 6 15 12 9 18" : "15 6 9 12 15 18"} />
+                    <rect x="3" y="4" width="18" height="16" rx="2" />
+                    <line x1="14" y1="4" x2="14" y2="20" />
+                    {pane.on && (
+                      <rect
+                        x="14"
+                        y="4"
+                        width="7"
+                        height="16"
+                        fill="currentColor"
+                        stroke="none"
+                        opacity="0.35"
+                      />
+                    )}
                   </svg>
+                  Preview
                 </button>
               )}
             </div>

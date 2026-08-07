@@ -754,55 +754,12 @@ table.pane-mini-list td.status-message {
   padding: 14px 10px;
 }
 
-/* Pane toggle in the search row: small icon button. Stays subtle when the
-   pane is open — the chevron's direction is the state indicator. */
+/* Row 2's two ends. Both are plain .bar-ctl now (explorer.css's shared
+   recipe); all that is left here is the pane toggle's negative right margin,
+   which pulls the labelled control out to the row's padding edge. */
 .listing-pane-toggle {
-  flex: 0 0 auto;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 30px;
-  height: 30px;
-  padding: 0;
   margin-left: 8px;
-  margin-right: -8px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: transparent;
-  color: var(--fg-muted);
-  cursor: pointer;
-}
-
-.listing-pane-toggle:hover {
-  color: var(--fg);
-  border-color: var(--fg-muted);
-}
-
-/* "Up to parent" button at the left edge of the listing's search row — same
-   quiet chrome as the pane toggle on the row's other end. */
-.listing-up-button {
-  flex: 0 0 auto;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 30px;
-  height: 30px;
-  padding: 0;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: transparent;
-  color: var(--fg-muted);
-  cursor: pointer;
-}
-
-.listing-up-button:hover:not(:disabled) {
-  color: var(--fg);
-  border-color: var(--fg-muted);
-}
-
-.listing-up-button:disabled {
-  opacity: 0.4;
-  cursor: default;
+  margin-right: -6px;
 }
 
 /* Skeleton loading state: shimmering bars shaped like the real listing rows

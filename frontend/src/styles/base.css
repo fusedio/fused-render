@@ -41,7 +41,6 @@ table.listing-table th.sortable,
 .panel-btn,
 .bar-ctl,
 .bar-menu-item,
-.listing-up-button,
 .listing-load-more {
   transition:
     background-color var(--dur-fast) var(--ease-out),
@@ -60,7 +59,6 @@ table.listing-table th.sortable,
 .tab-add:active,
 .toast-action:active:not(:disabled),
 .bar-ctl:active:not(:disabled),
-.listing-up-button:active:not(:disabled),
 .listing-load-more:active:not(:disabled) {
   transform: translateY(1px);
 }
