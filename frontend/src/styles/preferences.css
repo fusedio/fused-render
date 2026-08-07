@@ -86,6 +86,11 @@
   text-align: center;
   background: none;
   border-color: transparent;
+  /* With the card invisible, its bottom padding + margin read as dead air
+     before the browse button — tightened so search bar → button sits closer
+     than button → tab bar (30px, the .fh-section gap). */
+  padding-bottom: 10px;
+  margin-bottom: 0;
 }
 
 .home-hero.files-hero::before {
@@ -102,7 +107,7 @@
 /* Sits right under the hero's search bar — tighter than the default
    .fh-section gap. */
 .fh-section.files-browse {
-  margin-top: 4px;
+  margin-top: 0;
 }
 
 .files-hero-cta {
