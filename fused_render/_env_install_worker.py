@@ -251,9 +251,21 @@ def _build(project_dir, venv_dir, uv_cache_dir, python_executable):
     """
     uv = shutil.which("uv")
     if uv is None:
+        # Plainly, because this is a supported configuration losing a capability
+        # rather than a transient failure (D230): uv IS the builder, so without it
+        # a folder that declares dependencies cannot get an environment at all.
+        # Everything else still works — a folder with no pyproject.toml runs on
+        # the app's own interpreter (PY-17) and needs nothing installed — so the
+        # message says which half is affected and how to get it back.
         raise RuntimeError(
-            "cannot build the environment for %s: no uv on PATH. Install uv "
-            "(https://docs.astral.sh/uv/)." % project_dir
+            "cannot build an environment for %s: uv is not installed, and uv is "
+            "what builds project environments (`uv sync`).\n\n"
+            "Install uv (https://docs.astral.sh/uv/getting-started/installation/) "
+            "and try again. Until then, scripts in folders WITHOUT a "
+            "pyproject.toml still run normally on this app's own interpreter — "
+            "only folders that declare their own dependencies are affected.\n\n"
+            "(The packaged macOS, Windows and Linux builds ship uv, so this only "
+            "happens in a source checkout.)" % project_dir
         )
     if os.path.isdir(venv_dir) and not os.path.exists(os.path.join(venv_dir, _READY_MARKER)):
         shutil.rmtree(venv_dir, ignore_errors=True)

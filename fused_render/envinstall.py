@@ -347,11 +347,15 @@ def _resolve_script_python() -> tuple[str | None, bool]:
        could repair. Managed only: no Homebrew, no system python, no PATH search,
        because the point is a known interpreter rather than whichever 3.12 a machine
        happens to have.
-    4. **No uv at all -> ours, unpinned.** A source checkout without uv cannot find
-       or fetch a managed anything, and upstream's builder already falls back to
-       `<python> -m venv` there. Degrading to the pre-D214 behaviour leaves that
-       machine exactly as capable as it was; refusing to serve it would be a
-       regression bought with a pin it cannot honour.
+    4. **No uv at all -> ours, unpinned, and no project venv is possible.** A
+       source checkout without uv cannot find or fetch a managed anything, so
+       there is nothing to pin to. This still answers READY, and deliberately so:
+       readiness is about the interpreter, and every script whose folder declares
+       no `pyproject.toml` runs fine on ours (PY-17) — which is most of them.
+       What such a machine cannot do any more is BUILD a project venv, because
+       `uv sync` is the builder (D230). That is reported by the worker, in those
+       words, at the point it is actually true; refusing here would take the
+       PY-17 path down with it for a capability most runs never need.
     """
     override = os.environ.get(_SCRIPT_PYTHON_ENV)
     if override:

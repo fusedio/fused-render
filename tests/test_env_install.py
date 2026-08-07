@@ -2033,6 +2033,63 @@ def test_the_worker_spawns_with_the_interpreter_that_will_run_the_code(
 
 
 @requires_fused
+def test_no_uv_is_reported_as_a_lost_capability_not_a_crash(tmp_path, monkeypatch):
+    """uv IS the builder now, so without it a project venv is impossible (D230).
+
+    The old builder fell back to `<python> -m venv` + pip. That is deliberately
+    not restored: it cannot honour a `uv.lock`, so it would quietly produce a
+    DIFFERENT environment than the one the user committed — breaking the
+    reproducibility PY-16 promises, silently, on exactly the machines least able
+    to notice. A clear refusal beats a wrong environment.
+
+    So the error has to say which half is lost and how to get it back, rather
+    than reading as a crash.
+    """
+    proj = _project(tmp_path, deps=["pip"])
+    worker = _worker_module("_env_install_worker_no_uv")
+    monkeypatch.setattr(worker.shutil, "which", lambda name: None)
+
+    with pytest.raises(RuntimeError) as exc:
+        worker._build(proj, str(tmp_path / "venv"), str(tmp_path / "cache"),
+                      sys.executable)
+
+    message = str(exc.value)
+    assert "uv" in message
+    assert "install" in message.lower(), "it must say how to fix it"
+    assert "pyproject.toml" in message, (
+        "it must say that folders WITHOUT one are unaffected — otherwise this "
+        "reads as the whole app being broken"
+    )
+
+
+@requires_fused
+def test_a_machine_with_no_uv_still_serves_the_app_interpreter_path(
+    tmp_path, monkeypatch, _fresh_script_python
+):
+    """The other half of D230: no uv must not take PY-17 down with it.
+
+    `_resolve_script_python` still answers READY without uv, on purpose —
+    readiness is about the interpreter, and a folder that declares no
+    dependencies needs nothing built. Refusing there would break every ordinary
+    script to report a capability most runs never use.
+    """
+    _uv_stub(tmp_path, monkeypatch, finds=None)
+    monkeypatch.setattr(envinstall, "uv_bin", lambda: None)
+    monkeypatch.setattr(envinstall, "_running_version", lambda: (3, 11))
+
+    assert envinstall.script_python_ready() is True
+    assert envinstall.script_python() is None
+
+    # And a script in a folder with no manifest is simply not this flow's problem.
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    (plain / "a.py").write_text("def main():\n    return 1\n", encoding="utf-8")
+    from fused_render import projectenv
+
+    assert projectenv.project_env_for(str(plain / "a.py")) is None
+
+
+@requires_fused
 def test_the_worker_imports_neither_fused_render_nor_fused(tmp_path):
     """A fresh process must reach `_build` with neither package imported.
 
