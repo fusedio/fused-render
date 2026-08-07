@@ -327,6 +327,9 @@
     margin: 0 auto;
     padding: 24px 20px 12px;
   }
+  /* queued messages live in their own container AFTER #log, so they always
+     render below every turn — including turns appended while they wait. */
+  #queue { max-width: 720px; margin: 0 auto; padding: 0 20px 12px; }
   .turn { margin: 0 0 20px; animation: rise .18s ease-out; }
   @keyframes rise { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
   @media (prefers-reduced-motion: reduce) { .turn { animation: none; } }
@@ -409,6 +412,30 @@
     white-space: pre-wrap;
     word-break: break-word;
   }
+  /* a message typed while a run is live, parked until the turn ends. Its own
+     class tree (`qbubble`, not `.user .bubble`): the re-attach probe and the
+     receipt code both select `.turn.user` / `.user .bubble` and must never
+     match a message that has not been sent yet. */
+  .queued { display: flex; flex-direction: column; align-items: flex-end; }
+  .queued .qbubble {
+    background: transparent;
+    border: 1px dashed var(--border-strong);
+    color: var(--dim);
+    border-radius: 18px 18px 4px 18px;
+    padding: 9px 14px;
+    max-width: 82%;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  .queued .qmeta {
+    display: flex; gap: 6px; align-items: center;
+    font-size: 11px; color: var(--faint); margin-top: 3px;
+  }
+  .queued .qx {
+    background: none; border: none; padding: 0; font: inherit;
+    color: var(--faint); cursor: pointer;
+  }
+  .queued .qx:hover { color: var(--fg); text-decoration: underline; }
   .assistant { display: flex; gap: 10px; }
   .assistant .dot {
     flex-shrink: 0;
@@ -779,7 +806,7 @@
       <span id="session" class="mono"></span>
       <button id="back" type="button" aria-label="Back to chats">← Chats</button>
     </div>
-    <div id="logwrap"><div id="log"></div></div>
+    <div id="logwrap"><div id="log"></div><div id="queue"></div></div>
     <form id="inputbox" class="composer" style="display:contents">
       <div id="composer-chat">
         <div class="annchips" id="annchips-chat"></div>
@@ -3354,14 +3381,24 @@ async function stopRun() {
   const run_id = activeRun;
   if (!run_id || stoppedRun === run_id) return;  // nothing live, or already going
   stoppedRun = run_id;
+  // Detach the queue BEFORE the await — a drain racing the cancel must find it
+  // empty — but move nothing to the composer until the stop actually lands:
+  // a failed cancel leaves the run live, and the queue (bubbles untouched, the
+  // array put back) has to keep auto-draining when that run really ends.
+  const held = queuedMsgs.splice(0);
   if (activeWorking) activeWorking.setStopping(true);
   try {
     await fused.runPython(AGENT, { action: "cancel", run_id }, { key: null });
+    unqueueAll(held);
   } catch (err) {
     // The kill never reached the backend, so the run is still going and the poll
     // loop is still streaming it. Take the claim back: leaving it set would
     // relabel this run's real ending as a stop the user never got.
     stoppedRun = "";
+    // unshift, not push: anything queued DURING the await went to the array's
+    // tail, and its bubble sits below the held ones — the held entries go back
+    // to the front so drain order keeps matching both typed and screen order.
+    queuedMsgs.unshift(...held.filter((q) => !q.dead));
     if (activeWorking) activeWorking.setStopping(false);
     addError("Could not stop the run: " + err.message);
   }
@@ -3401,6 +3438,82 @@ function onEscape(e) {
 // mousedown/mousemove/click handlers all hang off `doc`. The frame-side binding
 // is (re)attached on every frame load; see the load handler.
 document.addEventListener("keydown", onEscape);
+
+// ── message queue: text typed while a run is live ──
+// In-memory only (a reload drops it — the composer is where durable drafts
+// live), text-only by design: annotations and the pane-shot toggle are folded
+// in at SEND time, so whatever is pending when a queued message actually goes
+// out rides that send — which is also the desirable reading for the app-state
+// snapshot (fresh state after the previous turn's edits, not a stale one from
+// queue time). Each entry renders as a dashed placeholder bubble in #queue —
+// a SIBLING after #log, not inside it, so queued messages always sit below
+// every turn, including turns appended to the log while they wait; the ×
+// unqueues it back into the composer.
+//
+// Sited BELOW stopRun (which calls into it — fine, the calls happen at click
+// time) because test_claude_stop_run.py extracts `runEnding` as "everything up
+// to `async function stopRun`" and runs it under node: anything between the
+// two that touches `document` breaks that extraction.
+const queueEl = document.getElementById("queue");
+const queuedMsgs = [];  // [{ text, el }]
+
+function queueMessage(text) {
+  const d = document.createElement("div");
+  d.className = "turn queued";
+  const b = document.createElement("div");
+  b.className = "qbubble";
+  b.textContent = text;
+  const meta = document.createElement("div");
+  meta.className = "qmeta";
+  const lbl = document.createElement("span");
+  lbl.textContent = "queued";
+  const x = document.createElement("button");
+  x.type = "button";
+  x.className = "qx";
+  x.textContent = "remove";
+  x.title = "Unqueue: put this message back in the input box";
+  const entry = { text, el: d };
+  x.onclick = () => {
+    const i = queuedMsgs.indexOf(entry);
+    if (i >= 0) queuedMsgs.splice(i, 1);
+    entry.dead = 1;  // may be detached in stopRun's `held` right now — see below
+    d.remove();
+    // Back into the composer, not the void — appended so a draft in progress
+    // is never clobbered.
+    box.value = box.value ? box.value.replace(/\s*$/, "\n\n") + text : text;
+    growBox();
+    box.focus();
+  };
+  meta.append(lbl, x);
+  d.append(b, meta);
+  queueEl.appendChild(d);
+  scrollBottom();
+  queuedMsgs.push(entry);
+}
+
+// Fire the next queued message once nothing is live. Called from the tails of
+// sendMessage AND resumeRun — a message queued against a re-attached run has
+// to drain too. Draining after an errored turn is deliberate (the user queued
+// it knowing less than we do now, but un-sending their words is worse); a
+// STOPPED turn is the exception, handled in stopRun above.
+function drainQueue() {
+  if (sending || activeRun || !queuedMsgs.length) return;
+  const next = queuedMsgs.shift();
+  next.el.remove();  // sendMessage adds the real user bubble
+  sendMessage(next.text);
+}
+
+// Stop means halt: give queued text back to the composer instead of firing it
+// at the session a second after the user said stop. Takes the entries rather
+// than reading queuedMsgs, because stopRun detaches them first.
+function unqueueAll(entries) {
+  for (const q of entries) {  // head first: composer keeps typed order
+    if (q.dead) continue;  // × was clicked while this entry was detached
+    q.el.remove();
+    box.value = box.value ? box.value.replace(/\s*$/, "\n\n") + q.text : q.text;
+  }
+  growBox();
+}
 
 // ── send one message: start detached claude, poll + stream ──
 // One turn at a time: concurrent turns would share the session_id param and
@@ -3675,6 +3788,7 @@ async function sendMessage(message) {
   }
   scrollBottom();
   box.focus();
+  drainQueue();
 }
 
 // Re-attach to a run that was streaming when this page last unloaded (mode
@@ -3737,9 +3851,22 @@ async function resumeRun(run_id) {
     sending = false;
     box.focus();
   }
+  drainQueue();
 }
 
 function submitChat() {
+  // A live run queues instead of refusing: the text is parked and fired when
+  // the turn ends. Gated on activeRun, NOT `sending` — `sending` is also held
+  // by loadHistory and resumeRun's probe, and a message typed while browsing
+  // an old session must not be parked with no run to drain it after.
+  if (activeRun) {
+    const message = box.value.trim();
+    if (!message) return;  // text-only queue; annotation-only sends can't park
+    box.value = "";
+    growBox();
+    queueMessage(message);
+    return;
+  }
   if (sending) return;
   const message = box.value.trim();
   // notes alone are sendable, and so is a bare request for a picture of the pane
