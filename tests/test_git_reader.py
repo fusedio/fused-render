@@ -29,7 +29,7 @@ import subprocess
 
 import pytest
 
-from _git_repo import build_repo, empty_repo, git, git_available, write
+from _git_repo import build_repo, empty_repo, git, git_available, with_remote, write
 
 READER = os.path.join(
     os.path.dirname(__file__), "..", "fused_render", "templates", "git", "log.py")
@@ -1131,3 +1131,274 @@ def test_a_tracked_symlink_pointing_outside_the_repo_is_refused(reader, tmp_path
     got = reader.main(root, op="worktree", entry="link")
     assert got["ok"] is False and got["reason"] == "outside-repo"
     assert "OUTSIDE" not in str(got)
+
+
+# ============================================================ the SCM read ops
+#
+# GT-12 turned this view into a Source-Control GUI, and a GUI needs three facts
+# the history-only reader never had to answer: which branches exist (and how far
+# each is from its upstream), what is stashed, and — because commit is
+# index-based (GT-14) — what is staged OUTSIDE the open scope. All three are
+# reads: none of them may contact a remote, and none of them may parse a human
+# format.
+
+
+@pytest.fixture()
+def remote_repo(tmp_path):
+    """A repo with a real bare `origin`, one local commit ahead of it."""
+    root = str(tmp_path / "wired")
+    os.makedirs(root)
+    git(root, "init", "-q")
+    write(root, "a.txt", "a\n")
+    git(root, "add", "-A")
+    git(root, "commit", "-q", "-m", "first", when="2026-09-01T10:00:00+00:00")
+    with_remote(root, str(tmp_path / "origin.git"))
+    write(root, "a.txt", "aa\n")
+    git(root, "add", "-A")
+    git(root, "commit", "-q", "-m", "second", when="2026-09-02T10:00:00+00:00")
+    return root
+
+
+# ------------------------------------------------------------------- branches
+
+
+def test_branches_lists_local_branches_and_marks_the_current_one(reader, repo):
+    git(repo, "branch", "feature/one")
+    try:
+        got = reader.main(repo, op="branches")
+        assert got["ok"] is True
+        assert got["detached"] is False
+        assert got["current"] == "main"
+        by_name = {b["name"]: b for b in got["branches"]}
+        assert {"main", "feature/one"} <= set(by_name)
+        assert by_name["main"]["current"] is True
+        assert by_name["feature/one"]["current"] is False
+        assert by_name["feature/one"]["upstream"] is None
+        assert by_name["feature/one"]["ahead"] == 0
+        assert by_name["feature/one"]["behind"] == 0
+        assert got["truncated"] is False
+    finally:
+        git(repo, "branch", "-D", "feature/one", check=False)
+
+
+def test_branches_are_read_from_for_each_ref_never_from_git_branch(
+        reader, repo, monkeypatch):
+    # `git branch`'s output is a HUMAN format: coloured, column-aligned, and the
+    # current branch marked with a leading "* ". Parsing it is the classic way
+    # to ship a branch list that breaks under `color.branch=always`.
+    # `for-each-ref` has a machine format; that is the whole reason it exists.
+    seen = []
+    real_run = subprocess.run
+
+    def spy_run(argv, **kwargs):
+        seen.append(list(argv))
+        return real_run(argv, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", spy_run)
+    assert reader.main(repo, op="branches")["ok"] is True
+    assert any("for-each-ref" in argv for argv in seen)
+    assert not any("branch" in argv for argv in seen), "never `git branch`"
+
+
+def test_branches_report_upstream_and_ahead_behind(reader, remote_repo):
+    got = reader.main(remote_repo, op="branches")
+    main_branch = next(b for b in got["branches"] if b["name"] == "main")
+    assert main_branch["upstream"] == "origin/main"
+    assert main_branch["ahead"] == 1
+    assert main_branch["behind"] == 0
+    assert got["remotes"] == ["origin"]
+
+
+def test_branches_never_fetch_as_a_side_effect(reader, remote_repo, monkeypatch):
+    # Ahead/behind is measured against the RECORDED upstream. A read that
+    # fetched would touch the network (and the object store) to answer a
+    # question about the header — the surprise this pins shut.
+    seen = []
+    real_run = subprocess.run
+
+    def spy_run(argv, **kwargs):
+        seen.append(list(argv))
+        return real_run(argv, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", spy_run)
+    assert reader.main(remote_repo, op="branches")["ok"] is True
+    assert reader.main(remote_repo)["ok"] is True
+    for argv in seen:
+        assert not {"fetch", "pull", "remote-update"} & set(argv), argv
+
+
+def test_branches_are_bounded(reader, tmp_path, monkeypatch):
+    root = str(tmp_path / "branchy")
+    os.makedirs(root)
+    git(root, "init", "-q")
+    write(root, "a.txt", "a\n")
+    git(root, "add", "-A")
+    git(root, "commit", "-q", "-m", "seed", when="2026-09-08T10:00:00+00:00")
+    for i in range(4):
+        git(root, "branch", f"b{i}")
+    monkeypatch.setattr(reader, "MAX_BRANCHES", 2)
+    got = reader.main(root, op="branches")
+    assert len(got["branches"]) == 2
+    assert got["truncated"] is True
+
+
+def test_branches_on_a_detached_head_report_no_current_branch(reader, repo):
+    older = reader.main(repo)["commits"][2]["sha"]
+    worktree = os.path.join(os.path.dirname(repo), "detached-branches-wt")
+    git(repo, "worktree", "add", "-q", "--detach", worktree, older)
+    try:
+        got = reader.main(worktree, op="branches")
+        assert got["ok"] is True
+        assert got["detached"] is True
+        assert got["current"] is None
+        assert all(b["current"] is False for b in got["branches"])
+    finally:
+        git(repo, "worktree", "remove", "--force", worktree, check=False)
+
+
+# -------------------------------------------------------------------- stashes
+
+
+def test_stashes_are_an_empty_list_not_an_error_when_nothing_is_stashed(reader, repo):
+    got = reader.main(repo, op="stashes")
+    assert got["ok"] is True and got["stashes"] == [] and got["truncated"] is False
+
+
+def test_stashes_carry_index_ref_message_and_branch(reader, tmp_path):
+    root = str(tmp_path / "stashy")
+    os.makedirs(root)
+    git(root, "init", "-q")
+    write(root, "a.txt", "a\n")
+    git(root, "add", "-A")
+    git(root, "commit", "-q", "-m", "seed", when="2026-09-03T10:00:00+00:00")
+    write(root, "a.txt", "one\n")
+    git(root, "stash", "push", "-q", "-m", "first idea")
+    write(root, "a.txt", "two\n")
+    git(root, "stash", "push", "-q", "-m", "second idea")
+
+    got = reader.main(root, op="stashes")
+    assert got["ok"] is True
+    assert [s["index"] for s in got["stashes"]] == [0, 1]
+    assert [s["ref"] for s in got["stashes"]] == ["stash@{0}", "stash@{1}"]
+    # Newest first, which is what `stash@{0}` means.
+    assert got["stashes"][0]["message"] == "second idea"
+    assert got["stashes"][1]["message"] == "first idea"
+    assert got["stashes"][0]["branch"] == "main"
+    assert got["stashes"][0]["relative"]
+
+
+def test_stashes_are_bounded(reader, tmp_path, monkeypatch):
+    root = str(tmp_path / "many-stashes")
+    os.makedirs(root)
+    git(root, "init", "-q")
+    write(root, "a.txt", "a\n")
+    git(root, "add", "-A")
+    git(root, "commit", "-q", "-m", "seed", when="2026-09-04T10:00:00+00:00")
+    for i in range(4):
+        write(root, "a.txt", f"v{i}\n")
+        git(root, "stash", "push", "-q", "-m", f"s{i}")
+    monkeypatch.setattr(reader, "MAX_STASHES", 2)
+    got = reader.main(root, op="stashes")
+    assert len(got["stashes"]) == 2 and got["truncated"] is True
+
+
+# ------------------------------------------------- the overview's remote facts
+
+
+def test_the_overview_reports_no_upstream_when_there_is_none(reader, repo):
+    repo_facts = reader.main(repo)["repo"]
+    assert repo_facts["upstream"] is None
+    assert repo_facts["ahead"] == 0
+    assert repo_facts["behind"] == 0
+    assert repo_facts["remote"] is None
+
+
+def test_the_overview_reports_the_recorded_upstream_and_divergence(reader, remote_repo):
+    repo_facts = reader.main(remote_repo)["repo"]
+    assert repo_facts["upstream"] == "origin/main"
+    assert repo_facts["ahead"] == 1
+    assert repo_facts["behind"] == 0
+    assert repo_facts["remote"] == "origin"
+
+
+def test_the_overview_falls_back_to_the_sole_remote_without_an_upstream(reader, tmp_path):
+    root = str(tmp_path / "unpublished")
+    os.makedirs(root)
+    git(root, "init", "-q")
+    write(root, "a.txt", "a\n")
+    git(root, "add", "-A")
+    git(root, "commit", "-q", "-m", "seed", when="2026-09-05T10:00:00+00:00")
+    with_remote(root, str(tmp_path / "solo.git"), push=False)
+    repo_facts = reader.main(root)["repo"]
+    assert repo_facts["upstream"] is None
+    # No upstream, but there IS somewhere to push to — the view needs that to
+    # offer "publish this branch" rather than a dead button.
+    assert repo_facts["remote"] == "origin"
+
+
+# --------------------------------------------------- staged, outside the scope
+#
+# Commit is index-based (GT-14) — that is what git means by the word — so a
+# commit made from a scoped view can carry entries the view never listed. The
+# reader therefore has to REPORT them, which is what makes the warning possible.
+
+
+def test_the_overview_reports_staged_entries_outside_the_scope(reader, tmp_path):
+    root = str(tmp_path / "outside-staged")
+    os.makedirs(root)
+    git(root, "init", "-q")
+    write(root, "pkg/in.txt", "in\n")
+    write(root, "top.txt", "top\n")
+    git(root, "add", "-A")
+    git(root, "commit", "-q", "-m", "seed", when="2026-09-06T10:00:00+00:00")
+    write(root, "pkg/in.txt", "in changed\n")
+    write(root, "top.txt", "top changed\n")
+    git(root, "add", "-A")
+
+    scoped = reader.main(os.path.join(root, "pkg"))
+    assert scoped["staged_outside"]["count"] == 1
+    assert scoped["staged_outside"]["paths"] == ["top.txt"]
+
+
+def test_staged_outside_is_empty_at_the_repository_root(reader, tmp_path):
+    # Nothing is outside the root, by definition — so the warning must never
+    # fire there.
+    root = str(tmp_path / "root-scope")
+    os.makedirs(root)
+    git(root, "init", "-q")
+    write(root, "a.txt", "a\n")
+    git(root, "add", "-A")
+    got = reader.main(root)
+    assert got["staged_outside"] == {"count": 0, "paths": []}
+
+
+def test_staged_outside_ignores_unstaged_and_untracked_work(reader, tmp_path):
+    # Only what a `git commit` would actually pick up counts. An unstaged or
+    # untracked file outside the scope is not going anywhere, and warning about
+    # it would train the user to ignore the warning.
+    root = str(tmp_path / "noise")
+    os.makedirs(root)
+    git(root, "init", "-q")
+    write(root, "pkg/in.txt", "in\n")
+    write(root, "top.txt", "top\n")
+    git(root, "add", "-A")
+    git(root, "commit", "-q", "-m", "seed", when="2026-09-07T10:00:00+00:00")
+    write(root, "top.txt", "modified but not staged\n")
+    write(root, "loose.txt", "untracked\n")
+    got = reader.main(os.path.join(root, "pkg"))
+    assert got["staged_outside"]["count"] == 0
+
+
+def test_staged_outside_paths_are_bounded_but_the_count_is_the_true_total(
+        reader, tmp_path, monkeypatch):
+    root = str(tmp_path / "lots-outside")
+    os.makedirs(root)
+    git(root, "init", "-q")
+    write(root, "pkg/in.txt", "in\n")
+    for i in range(6):
+        write(root, f"top{i}.txt", "x\n")
+    git(root, "add", "-A")
+    monkeypatch.setattr(reader, "MAX_STAGED_OUTSIDE", 2)
+    got = reader.main(os.path.join(root, "pkg"))
+    assert len(got["staged_outside"]["paths"]) == 2
+    assert got["staged_outside"]["count"] == 6, "the count is a total, not a page"

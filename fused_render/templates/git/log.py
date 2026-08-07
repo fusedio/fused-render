@@ -107,6 +107,20 @@ MAX_CHANGES = 500
 DEFAULT_LOG_LIMIT = 30
 MAX_LOG_LIMIT = 500
 
+# The SCM surface's own bounds (GT-12). A branch list, a stash list and the
+# out-of-scope staged list are all "however many the user has", i.e. unbounded in
+# principle — a long-lived monorepo checkout can carry thousands of local
+# branches, and `git stash` has no ceiling of its own. Each is asked for with a
+# count limit + 1, so "there were more" is observed rather than guessed.
+MAX_BRANCHES = 300
+MAX_STASHES = 100
+
+# How many out-of-scope staged PATHS the overview names. The count is separate
+# and stays a true total: the view's warning has to be able to say "17 staged
+# changes outside this scope" honestly while listing only the first few, because
+# the number is the part that decides whether you look.
+MAX_STAGED_OUTSIDE = 20
+
 # A hex object name, full or abbreviated. Anything else never becomes an argv
 # entry — this is what keeps an option-shaped `sha` out of the command line.
 _SHA_RE = re.compile(r"^[0-9a-fA-F]{4,64}$")
@@ -148,6 +162,43 @@ _NO_EXT_DIFF = "--no-ext-diff"
 # unambiguous record separator and no second delimiter is needed.
 _LOG_FORMAT = "%H%x00%h%x00%an%x00%aI%x00%ar%x00%s"
 _LOG_FIELDS = ("sha", "short", "author", "date", "relative", "subject")
+
+# `for-each-ref`'s machine format for the branch list. Every field is single-line
+# by construction, so — exactly as with the log format — the newline is an
+# unambiguous record separator and `%x00` separates the fields.
+#
+# This is asked of `for-each-ref` and NEVER of `git branch`, whose output is a
+# human format: column-aligned, colourable (`color.branch=always` survives even
+# `color.ui=false` because it is a different key), and marking the current branch
+# with a leading `* ` that a branch name could itself contain. `for-each-ref`
+# exists precisely so scripts do not have to guess at any of that.
+#
+# The separator is written `%00` and not `%x00`: `for-each-ref`'s format language
+# is NOT `git log`'s. It spells a literal byte as `%<hex>`, and leaves `%x00`
+# alone as the four characters "%x00" — which parses as a field count that is
+# never right, i.e. an empty branch list rather than an error.
+_REF_FORMAT = "%(refname:short)%00%(upstream:short)%00%(upstream:track)%00%(HEAD)"
+
+# `%(upstream:track)` is git's own human-ish "[ahead 2, behind 1]" / "[gone]" /
+# "" summary. It is the ONE field here that is not a bare value, so the two
+# numbers are pulled out with a regex rather than by splitting on punctuation —
+# and a missing group means zero, which is what git omitting the word means.
+_TRACK_AHEAD = re.compile(r"ahead (\d+)")
+_TRACK_BEHIND = re.compile(r"behind (\d+)")
+
+# `git stash list` is a reflog walk, so its subject (`%gs`) is git's own
+# "WIP on <branch>: <sha> <subject>" or "On <branch>: <message>". The branch is
+# worth surfacing (a stash applied onto the wrong branch is a bad afternoon), and
+# it is the only part of that string with a stable shape, so it is the only part
+# parsed — the remainder is passed through as the message rather than re-derived.
+#
+# `%H` first, and it is not decoration: a stash's positional index is the ONLY
+# thing `stash@{n}` means, and the position shifts under a `stash push` from
+# anywhere — this view, another tab, a terminal. So the entry carries its commit
+# id, and a destructive op quotes it back (ops.py `_stash_at`) to prove it is
+# dropping the entry the user actually looked at.
+_STASH_FORMAT = "%H%x00%gs%x00%cr"
+_STASH_SUBJECT = re.compile(r"^(?:WIP on|On) ([^:]+): (.*)$", re.DOTALL)
 
 # A rename with only ONE side inside the open scope is a MOVE relative to that
 # scope, and the direction is the whole point of showing it.
@@ -415,7 +466,16 @@ def _status(root, rel, is_dir):
     shifted the `<from>` pairing by one for everything after it. So: cut back to
     the last NUL (only whole NUL-terminated fields survive), and drop a trailing
     rename whose `<from>` did not make it. Returns
-    `(entries, truncated, dirty)`, where `truncated` now covers BOTH caps.
+    `(entries, truncated, dirty, staged_outside)`, where `truncated` covers BOTH
+    caps.
+
+    `staged_outside` is collected HERE rather than by a second `git status`,
+    because this walk already sees every entry in the repository and throws the
+    out-of-scope ones away — the information is in hand, and asking git for the
+    same walk twice would double the one call GT-7 measured. It is what makes
+    GT-14's honesty possible: `git commit` is index-based, so a commit triggered
+    from a scoped view carries staged work the view never listed, and the only
+    alternative to reporting it is to surprise the user with it.
     """
     raw, byte_capped = _git_stream(
         root, ("status", "--porcelain=v1", "-z",
@@ -427,6 +487,7 @@ def _status(root, rel, is_dir):
         raw = raw[: raw.rfind(b"\0") + 1]
     fields = raw.split(b"\0")
     entries, dirty, dangling = [], False, False
+    outside_count, outside_paths = 0, []
     i = 0
     while i < len(fields):
         record = fields[i]
@@ -455,6 +516,16 @@ def _status(root, rel, is_dir):
         in_new = _in_scope(path, rel, is_dir)
         in_old = orig is not None and _in_scope(orig, rel, is_dir)
         if not (in_new or in_old):
+            # Out of scope — but if it is STAGED it is still going into the next
+            # commit (GT-14), so it is counted before it is dropped. The test is
+            # git's own index column `X`: " " means nothing staged, "?" is the
+            # untracked marker, and an untracked file is not in the index at all,
+            # so neither can be committed by accident. Only the total is
+            # unbounded, so only the path LIST is capped.
+            if code != "??" and code[0] not in (" ", "?"):
+                outside_count += 1
+                if len(outside_paths) < MAX_STAGED_OUTSIDE:
+                    outside_paths.append(path)
             continue
         moved = None
         if orig is not None and not (in_new and in_old):
@@ -477,7 +548,8 @@ def _status(root, rel, is_dir):
     truncated = byte_capped or dangling or len(entries) > MAX_CHANGES
     # A byte cap means the repo-wide dirty verdict is `True` regardless of what
     # survived parsing — git had more to say than we were willing to read.
-    return entries[:MAX_CHANGES], truncated, dirty or byte_capped
+    return (entries[:MAX_CHANGES], truncated, dirty or byte_capped,
+            {"count": outside_count, "paths": outside_paths})
 
 
 def _in_scope(path, rel, is_dir):
@@ -496,6 +568,160 @@ def _in_scope(path, rel, is_dir):
     if is_dir and path.startswith(rel + "/"):
         return True
     return path.endswith("/") and (rel + "/").startswith(path)
+
+
+def _remotes(root):
+    """The configured remote NAMES, bounded.
+
+    `git remote` with no arguments prints one bare name per line — it is the
+    plumbing-ish form (no URLs, no `-v` columns), so there is nothing here to
+    mis-parse. Bounded anyway: a name list is user data, and nothing in this
+    module returns an unbounded list.
+    """
+    raw = _git(root, "remote").decode("utf-8", "replace")
+    return [line.strip() for line in raw.split("\n") if line.strip()][:MAX_BRANCHES]
+
+
+def _track(track):
+    """`(ahead, behind)` out of git's `%(upstream:track)` string.
+
+    "" (in sync, or no upstream), "[ahead 3]", "[behind 2]", "[ahead 3, behind 2]"
+    and "[gone]" — the last meaning the upstream ref was deleted, which yields
+    (0, 0) here and is visible to the caller as an upstream that no longer
+    resolves. A missing word means zero, which is exactly what git omitting it
+    says.
+    """
+    ahead = _TRACK_AHEAD.search(track or "")
+    behind = _TRACK_BEHIND.search(track or "")
+    return (int(ahead.group(1)) if ahead else 0,
+            int(behind.group(1)) if behind else 0)
+
+
+def _branches(root):
+    """The LOCAL branches, each with its recorded upstream and divergence.
+
+    Local only (`refs/heads/`): a remote-tracking ref is not something this view
+    can check out without inventing a local branch for it, and listing hundreds
+    of `origin/*` entries beside a handful of real branches is how the list stops
+    being scannable.
+
+    **Nothing here fetches.** `%(upstream:track)` is computed from the objects
+    already in the repository, i.e. from what the last fetch recorded — so the
+    numbers can be stale, and that is the correct trade: a read that silently
+    contacted a network to keep a header honest would be a far bigger surprise
+    than a stale count next to an explicit ⟳ button.
+
+    Sorted newest-committed-first with the ref name as tie-break, because the
+    count limit has to cut SOMEWHERE and the branches you touched recently are
+    the ones you are looking for. (`for-each-ref` takes the keys in reverse
+    precedence: the LAST `--sort` is the primary one.)
+    """
+    raw = _git(root, "for-each-ref", f"--format={_REF_FORMAT}",
+               f"--count={MAX_BRANCHES + 1}",
+               "--sort=refname", "--sort=-committerdate", "refs/heads/")
+    records = [line for line in raw.decode("utf-8", "replace").split("\n") if line]
+    truncated = len(records) > MAX_BRANCHES
+    branches = []
+    for line in records[:MAX_BRANCHES]:
+        parts = line.split("\0")
+        if len(parts) != 4:
+            continue  # a record we cannot trust is dropped, never half-read
+        name, upstream, track, head = parts
+        ahead, behind = _track(track)
+        branches.append({
+            "name": name,
+            # `%(HEAD)` is "*" for the checked-out branch and " " otherwise. In a
+            # detached worktree no branch is marked, which is the honest answer.
+            "current": head == "*",
+            "upstream": upstream or None,
+            "ahead": ahead,
+            "behind": behind,
+        })
+    return branches, truncated
+
+
+def _stashes(root):
+    """The stash entries, newest first, bounded.
+
+    `git stash list` is `git log` over the stash reflog, so it takes log options
+    — `--max-count` bounds it, and `--format` gives it the same `%x00`-delimited
+    machine shape as everything else here.
+
+    The INDEX is positional rather than parsed out of `%gd`: `stash@{n}` is
+    defined as the nth entry of this very list, so enumerating it is not an
+    approximation of the truth, it IS the truth — and it cannot be thrown off by
+    a reflog selector git formats differently than we expect.
+    """
+    raw = _git(root, "stash", "list", "--no-color", f"--format={_STASH_FORMAT}",
+               f"--max-count={MAX_STASHES + 1}")
+    records = [line for line in raw.decode("utf-8", "replace").split("\n") if line]
+    truncated = len(records) > MAX_STASHES
+    stashes = []
+    for index, line in enumerate(records[:MAX_STASHES]):
+        parts = line.split("\0")
+        if len(parts) != 3:
+            continue
+        sha, subject, relative = parts
+        matched = _STASH_SUBJECT.match(subject)
+        stashes.append({
+            "index": index,
+            "ref": f"stash@{{{index}}}",
+            # The stable identity of this entry, independent of its position.
+            "sha": sha,
+            "message": matched.group(2) if matched else subject,
+            "relative": relative,
+            "branch": matched.group(1) if matched else None,
+        })
+    return stashes, truncated
+
+
+def _upstream_state(root, has_commits):
+    """`(upstream, ahead, behind, remote)` for the CURRENT branch.
+
+    `@{upstream}` is a literal constant in the argv, never a user string, so the
+    branch name never has to be quoted or validated to ask this question — which
+    is also why it is asked this way rather than by interpolating the branch into
+    `<branch>@{upstream}`.
+
+    Exit 128 is the ordinary "no upstream configured" answer (and, on an unborn
+    HEAD, "no HEAD"), not a failure — hence `allow`. As in `_branches`, the
+    numbers come from the recorded upstream: no fetch, ever.
+
+    `remote` degrades in three steps, because the view needs SOMETHING to push
+    to: the upstream's own remote if there is one; otherwise the sole configured
+    remote; otherwise `origin` if it exists among several. With more than one
+    remote and no `origin` and no upstream there is no defensible guess, so the
+    answer is None and the view offers no push rather than picking for the user.
+    """
+    remotes = _remotes(root)
+    upstream = None
+    ahead = behind = 0
+    if has_commits:
+        raw = _git(root, "rev-parse", "--abbrev-ref", "--symbolic-full-name",
+                   "@{upstream}", allow=(0, 128))
+        upstream = raw.decode("utf-8", "replace").strip() or None
+    if upstream:
+        # `--left-right --count` prints "<ahead>\t<behind>" for `HEAD...upstream`:
+        # commits reachable from one side only, in each direction. Three dots,
+        # not two — two would give one total and lose the direction.
+        counts = _git(root, "rev-list", "--left-right", "--count",
+                      "HEAD...@{upstream}", allow=(0, 128))
+        parts = counts.decode("utf-8", "replace").split()
+        if len(parts) == 2 and all(p.isdigit() for p in parts):
+            ahead, behind = int(parts[0]), int(parts[1])
+
+    remote = None
+    if upstream:
+        # Longest match rather than `split("/", 1)`: a remote name may itself
+        # contain a slash, so the first slash is not reliably the boundary.
+        for candidate in sorted(remotes, key=len, reverse=True):
+            if upstream.startswith(candidate + "/"):
+                remote = candidate
+                break
+    if remote is None:
+        remote = (remotes[0] if len(remotes) == 1
+                  else ("origin" if "origin" in remotes else None))
+    return upstream, ahead, behind, remote
 
 
 def _log(root, rel, limit, page):
@@ -573,7 +799,7 @@ def _check_op(op, sha, entry):
     afterwards would mean an option-shaped `sha` had already caused a subprocess
     (with the target's cwd) to run. Cheap string checks come first, always.
     """
-    if op not in ("overview", "log", "commit", "worktree"):
+    if op not in ("overview", "log", "commit", "worktree", "branches", "stashes"):
         raise _Refused("bad-op", f"Unknown operation: {op}")
     if op == "commit" and not _SHA_RE.match(sha or ""):
         raise _Refused("bad-sha", "That is not a commit id.")
@@ -745,6 +971,18 @@ def main(
             return _worktree(root, entry, has_commits)
         if op == "commit":
             return _commit(root, rel, sha)
+        if op == "branches":
+            # Branch checkout is repo-wide by nature — a branch IS a repository
+            # concept — so this op is deliberately NOT scoped to `rel`, unlike
+            # every other read here (GT-13).
+            branch, detached, _, _ = _head(root)
+            branches, truncated = _branches(root)
+            return {"ok": True, "current": branch, "detached": detached,
+                    "branches": branches, "remotes": _remotes(root),
+                    "truncated": truncated}
+        if op == "stashes":
+            stashes, truncated = _stashes(root)
+            return {"ok": True, "stashes": stashes, "truncated": truncated}
         if op == "log":
             commits, has_more, capped, limit, page = _log(root, rel, limit, page)
             return {"ok": True, "commits": commits, "has_more": has_more,
@@ -752,7 +990,8 @@ def main(
                     "limit": limit, "page": page}
 
         branch, detached, head, has_commits = _head(root)
-        changes, changes_truncated, dirty = _status(root, rel, is_dir)
+        changes, changes_truncated, dirty, staged_outside = _status(root, rel, is_dir)
+        upstream, ahead, behind, remote = _upstream_state(root, has_commits)
         commits, has_more, capped, limit, page = (
             _log(root, rel, limit, page) if has_commits
             else ([], False, False,
@@ -769,9 +1008,19 @@ def main(
                 "dirty": dirty,
                 "rel": rel,
                 "is_dir": is_dir,
+                # The remote picture, from what is RECORDED (see
+                # `_upstream_state`): this read never fetches, so ⟳ stays an
+                # explicit act rather than a side effect of opening the view.
+                "upstream": upstream,
+                "ahead": ahead,
+                "behind": behind,
+                "remote": remote,
             },
             "changes": changes,
             "changes_truncated": changes_truncated,
+            # GT-14: what a commit from here would ALSO carry. The view turns
+            # this into a warning; the reader's job is only to make it visible.
+            "staged_outside": staged_outside,
             "commits": commits,
             "has_more": has_more,
             "capped": capped,

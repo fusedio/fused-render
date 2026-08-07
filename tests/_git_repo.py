@@ -87,6 +87,34 @@ def write(root, rel, text):
     return full
 
 
+def bare_repo(path):
+    """A bare repository, i.e. something a clone can legitimately push to.
+
+    The write ops (fetch/pull/push, SPEC GT-12) are only meaningfully testable
+    against a REAL remote — a mocked one would test our fiction of git's
+    transport rather than the transport. A bare repo in a tmpdir is the cheapest
+    real remote there is: a local path, no network, no credentials, so
+    `GIT_TERMINAL_PROMPT=0` never has anything to prompt about.
+    """
+    os.makedirs(path, exist_ok=True)
+    git(path, "init", "-q", "--bare")
+    return path
+
+
+def with_remote(root, remote_path, *, push=True):
+    """Point `root` at a fresh bare `origin` and (by default) publish HEAD.
+
+    `-u` on the push is what records the UPSTREAM, which is the fact the reader
+    reports ahead/behind against — and it must be recorded rather than fetched,
+    because a read may never contact a remote as a side effect (GT-12).
+    """
+    bare_repo(remote_path)
+    git(root, "remote", "add", "origin", remote_path)
+    if push:
+        git(root, "push", "-q", "-u", "origin", "HEAD")
+    return remote_path
+
+
 def build_repo(root):
     """A repository with history worth paging, renames, a binary blob, and a
     dirty working tree (staged + unstaged + untracked).
