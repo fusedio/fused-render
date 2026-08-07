@@ -1613,6 +1613,21 @@ export function createApp(name: string, prompt: string): Promise<NewAppResult> {
   return postJson<NewAppResult>("/api/apps/new", { name, prompt });
 }
 
+// -- Claude sessions (GET /api/claude-sessions) -------------------------------
+// Project folders that hold Claude Code session transcripts, for the
+// Explorer homepage's "Claude sessions" tab — one entry per folder, newest
+// session first. `path` is the real project directory (read server-side from
+// each transcript's own `cwd`, not decoded from ~/.claude/projects'
+// filename), so it's ready to pass straight to navigate(path, {isDir:true}).
+export interface ClaudeSessionFolder {
+  path: string;
+  lastActive: string;
+}
+
+export function getClaudeSessionFolders(): Promise<{ folders: ClaudeSessionFolder[] }> {
+  return getJson<{ folders: ClaudeSessionFolder[] }>("/api/claude-sessions");
+}
+
 // -- AI completion (POST /api/ai) ---------------------------------------------
 // The fused.ai relay: one non-streaming completion through the server's warm
 // Claude Code CLI instance (server/ai.py). Model defaults to haiku server-side;

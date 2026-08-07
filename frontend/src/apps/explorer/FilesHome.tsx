@@ -7,11 +7,12 @@ import { useEffect, useRef, useState } from "react";
 import { navigate, replaceSearch, urlForFsPath } from "@platform/lib/router";
 import { basename, formatMtime, formatSize } from "@platform/lib/format";
 import { iconForEntry } from "@platform/ui/FileIcons";
-import type { Config } from "@platform/lib/api";
+import type { Config, ClaudeSessionFolder } from "@platform/lib/api";
+import { getClaudeSessionFolders } from "@platform/lib/api";
 import { allBookmarks, loadBookmarks } from "@platform/lib/bookmarks";
 import { useBookmarksVersion, useUrlVersion } from "@platform/lib/hooks";
 import { loadRecents, recentFsPath, useRecentsVersion } from "@apps/explorer/lib/recents";
-import { BookmarkPreviewCard, RecentPreviewCard } from "@apps/explorer/BookmarkCards";
+import { BookmarkPreviewCard, RecentPreviewCard, ClaudeSessionFolderCard } from "@apps/explorer/BookmarkCards";
 import { describeSpec, runAiSearch, type AiSearchResult } from "@apps/explorer/lib/ai-search";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { TextArea } from "@platform/ui/field/fields";
@@ -22,7 +23,7 @@ import { HeroBrand } from "@platform/ui/HeroBrand";
 // of how many columns the grid happens to lay out at the current width.
 const MAX_CARDS = 6;
 
-type LaunchTab = "bookmarks" | "recents";
+type LaunchTab = "bookmarks" | "recents" | "sessions";
 
 // -- AI search (the files-home composer) --------------------------------------
 
@@ -266,12 +267,13 @@ export default function FilesHome({ config }: { config: Config }) {
   // or this file's own tab clicks below), so it's a true two-way binding
   // rather than state that's merely seeded from the url once at mount.
   useUrlVersion();
+  const tabParam = new URLSearchParams(location.search).get("tab");
   const tab: LaunchTab =
-    new URLSearchParams(location.search).get("tab") === "recents" ? "recents" : "bookmarks";
+    tabParam === "recents" ? "recents" : tabParam === "sessions" ? "sessions" : "bookmarks";
   const setTab = (next: LaunchTab) => {
     const params = new URLSearchParams(location.search);
-    if (next === "recents") params.set("tab", "recents");
-    else params.delete("tab"); // "bookmarks" is the default — keep the url clean
+    if (next === "bookmarks") params.delete("tab"); // "bookmarks" is the default — keep the url clean
+    else params.set("tab", next);
     const qs = params.toString();
     replaceSearch(location.pathname + (qs ? "?" + qs : ""));
   };
@@ -279,6 +281,7 @@ export default function FilesHome({ config }: { config: Config }) {
   // so switching tabs doesn't reset (or leak) the other tab's expansion.
   const [expandedBookmarks, setExpandedBookmarks] = useState(false);
   const [expandedRecents, setExpandedRecents] = useState(false);
+  const [expandedSessions, setExpandedSessions] = useState(false);
   // Folders flattened: the homepage is a launcher, and a bookmark buried two
   // folders deep is still one the user cared enough to save. Saved-list order.
   const bookmarks = loadBookmarks().length ? allBookmarks() : [];
@@ -288,6 +291,22 @@ export default function FilesHome({ config }: { config: Config }) {
   // sidebar section does.
   const recents = loadRecents().entries;
   const shownRecents = expandedRecents ? recents : recents.slice(0, MAX_CARDS);
+  // Claude session folders have no client-side cache like bookmarks/recents —
+  // one cheap GET on mount, independent of which tab is showing, so switching
+  // to the tab never shows a fetch-in-flight blip.
+  const [sessionFolders, setSessionFolders] = useState<ClaudeSessionFolder[] | null>(null);
+  useEffect(() => {
+    let alive = true;
+    getClaudeSessionFolders().then(
+      (r) => alive && setSessionFolders(r.folders),
+      () => alive && setSessionFolders([]),
+    );
+    return () => {
+      alive = false;
+    };
+  }, []);
+  const shownSessions =
+    sessionFolders && (expandedSessions ? sessionFolders : sessionFolders.slice(0, MAX_CARDS));
   // A committed AI search result takes over the page body (bookmarks/recents
   // hide behind it) until cleared — the homepage becomes the result page.
   const [search, setSearch] = useState<{ query: string; result: AiSearchResult } | null>(null);
@@ -374,6 +393,15 @@ export default function FilesHome({ config }: { config: Config }) {
               >
                 Recents
               </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={tab === "sessions"}
+                className={"fh-tab" + (tab === "sessions" ? " active" : "")}
+                onClick={() => setTab("sessions")}
+              >
+                Claude sessions
+              </button>
             </div>
 
             {tab === "bookmarks" ? (
@@ -397,30 +425,52 @@ export default function FilesHome({ config }: { config: Config }) {
                   spot — it'll show up here.
                 </p>
               )
-            ) : recents.length ? (
+            ) : tab === "recents" ? (
+              recents.length ? (
+                <>
+                  <div className="fhb-grid">
+                    {shownRecents.map((r) => {
+                      const fsPath = recentFsPath(r.url);
+                      return (
+                        <RecentPreviewCard
+                          key={fsPath}
+                          url={r.url}
+                          path={fsPath}
+                          name={r.title || basename(fsPath)}
+                        />
+                      );
+                    })}
+                  </div>
+                  {recents.length > MAX_CARDS && (
+                    <ShowMoreButton
+                      expanded={expandedRecents}
+                      onClick={() => setExpandedRecents((v) => !v)}
+                    />
+                  )}
+                </>
+              ) : (
+                <p className="fh-empty">Nothing opened yet. Files you view will show up here.</p>
+              )
+            ) : shownSessions === null ? (
+              <p className="fh-empty">Looking for Claude sessions…</p>
+            ) : sessionFolders && sessionFolders.length ? (
               <>
                 <div className="fhb-grid">
-                  {shownRecents.map((r) => {
-                    const fsPath = recentFsPath(r.url);
-                    return (
-                      <RecentPreviewCard
-                        key={fsPath}
-                        url={r.url}
-                        path={fsPath}
-                        name={r.title || basename(fsPath)}
-                      />
-                    );
-                  })}
+                  {shownSessions.map((f) => (
+                    <ClaudeSessionFolderCard key={f.path} path={f.path} />
+                  ))}
                 </div>
-                {recents.length > MAX_CARDS && (
+                {sessionFolders.length > MAX_CARDS && (
                   <ShowMoreButton
-                    expanded={expandedRecents}
-                    onClick={() => setExpandedRecents((v) => !v)}
+                    expanded={expandedSessions}
+                    onClick={() => setExpandedSessions((v) => !v)}
                   />
                 )}
               </>
             ) : (
-              <p className="fh-empty">Nothing opened yet. Files you view will show up here.</p>
+              <p className="fh-empty">
+                No Claude Code sessions found on this machine.
+              </p>
             )}
           </section>
           </>

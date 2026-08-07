@@ -9,7 +9,7 @@
 // bookmark exactly like the sidebar row would.
 import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
-import { navigateUrl, EMBED_PREFIX, VIEW_PREFIX } from "@platform/lib/router";
+import { navigate, navigateUrl, urlForFsPath, EMBED_PREFIX, VIEW_PREFIX } from "@platform/lib/router";
 import { listDir, statPath } from "@platform/lib/api";
 import type { FsEntry } from "@platform/lib/api";
 import { basename } from "@platform/lib/format";
@@ -344,6 +344,37 @@ export function RecentPreviewCard({
       <span className="fhb-thumb">
         <LivePreview src={embedUrlForBookmark(url)} />
       </span>
+    </a>
+  );
+}
+
+// A folder holding Claude Code sessions, in the same card shell as a
+// bookmark — header (icon + name over path) over the same folder "stack"
+// preview a directory bookmark gets (FolderStack, above). Clicking opens the
+// folder itself in the Explorer, not the Sessions app.
+export function ClaudeSessionFolderCard({ path }: { path: string }) {
+  return (
+    <a
+      className="fhb-card"
+      href={urlForFsPath(path)}
+      title={path}
+      onClick={(e) => {
+        if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey)
+          return;
+        e.preventDefault();
+        navigate(path, { isDir: true });
+      }}
+    >
+      <span className="fhb-card-head">
+        <span className="fh-card-icon" aria-hidden="true">
+          {iconForEntry(basename(path), true)}
+        </span>
+        <span className="fh-card-text">
+          <span className="fh-card-name">{basename(path)}</span>
+          <span className="fh-card-path">{path}</span>
+        </span>
+      </span>
+      <FolderStack path={path} />
     </a>
   );
 }
