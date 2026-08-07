@@ -771,7 +771,8 @@ export default function Listing({
                   strokeLinecap="round"
                   strokeLinejoin="round"
                 >
-                  <polyline points="6 15 12 9 18 15" />
+                  <line x1="12" y1="19" x2="12" y2="5" />
+                  <polyline points="5 12 12 5 19 12" />
                 </svg>
               </button>
               {/* The box wraps input + pinned chips so the pane toggle can sit to
