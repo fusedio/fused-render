@@ -917,9 +917,26 @@ function stashPanel(data) {
 
 /* ------------------------------------------------------------- commit box */
 
+/* Null when there is nothing to commit.
+ *
+ * The box is an affordance for an action that cannot be taken with an empty
+ * index, and a permanently disabled button that says "nothing staged" is a
+ * control teaching you it does not work — it occupied the top of the view in
+ * the state the view spends most of its time in (a clean tree), pushing the
+ * lists that DO have something to say further down.
+ *
+ * The test is what a commit would actually RECORD, which is the index and not
+ * this scope: `staged` counts what is staged under the open path and
+ * `outside.count` what is staged elsewhere (GT-14). Gating on `staged` alone
+ * would hide the box while `git commit` still had work to do, which is the
+ * same dishonesty in the other direction — so a scope with nothing staged of
+ * its own still shows the box when the index is non-empty, carrying the
+ * warning below that says whose changes those are. */
 function commitBox(data) {
   const staged = data.changes.filter((c) => c.staged).length;
   const outside = data.staged_outside || { count: 0, paths: [] };
+  const total = staged + outside.count;
+  if (!total) return null;
   const message = param("msg");
 
   const box = el("textarea", {
@@ -941,17 +958,17 @@ function commitBox(data) {
   });
 
   const actions = el("div", { className: "commit-actions" },
+    /* No staged-count gate on `disabled`: the box does not exist unless the
+       index has something in it, so the only thing that can disable this
+       button is a call already in flight (`action` applies `busy` itself). */
     action("commit", "✓ Commit", {
       className: "primary",
-      disabled: !staged && !outside.count,
-      count: staged + outside.count || null,
+      count: total,
       title: "Commit everything that is staged",
       onClick: () => commit(box.value),
     }),
     el("span", { className: "hint",
-                 textContent: (staged + outside.count)
-                   ? plural(staged + outside.count, "staged change") + " will be committed"
-                   : "nothing staged" }));
+                 textContent: plural(total, "staged change") + " will be committed" }));
 
   const wrap = el("div", { className: "commit" }, box, actions);
 
@@ -1468,7 +1485,10 @@ function render(data, stashes, diff) {
                             textContent: flash.message }));
   }
   page.append(toolbar(data, stashes));
-  page.append(commitBox(data));
+  /* Guarded, not appended blind: `commitBox` returns null when nothing is
+     staged, and `Node.append(null)` inserts the literal text "null". */
+  const box = commitBox(data);
+  if (box) page.append(box);
   page.append(cols);
   show(page);
 }

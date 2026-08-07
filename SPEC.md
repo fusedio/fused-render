@@ -4326,6 +4326,17 @@ hygiene and the theme still holds for it unchanged.
   state.** Toolbar (branch ▾ · ⟳ fetch · ↓ pull *n behind* · ↑ push *n ahead* ·
   stash ▾) → commit message box with the ✓ Commit button and the GT-14 warning →
   **Staged changes** / **Changes** / **Untracked** / **Stashes** / **History**,
+  The commit box is **present only when the index has something in it** — a
+  permanently disabled button reading "nothing staged" is a control teaching you
+  it does not work, and it sat at the top of the view in the state the view is in
+  most of the time (a clean tree), pushing the sections that *do* have something
+  to say further down. The test is what a commit would RECORD, which is the index
+  and not this scope: a scope with nothing staged of its own still shows the box
+  when something is staged elsewhere, carrying the GT-14 warning that says whose
+  changes those are — gating on the scoped count alone would hide the box while
+  `git commit` still had work to do, the same dishonesty in the other direction.
+  A typed message survives the box disappearing (it lives in `msg`, GT-16), so
+  unstaging everything and staging again does not cost the user their message.
   with the existing diff pane on the right unchanged. History is a *section* of
   this page now, not a page of its own. Every piece of UI state stays in the URL
   as before (`pages`, `sel`, `wt`) plus `panel` (which dropdown is open), `msg`
