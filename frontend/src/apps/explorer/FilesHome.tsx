@@ -9,9 +9,9 @@ import { basename, formatMtime, formatSize } from "@platform/lib/format";
 import { iconForEntry } from "@platform/ui/FileIcons";
 import type { Config, ClaudeSessionFolder } from "@platform/lib/api";
 import { getClaudeSessionFolders, statPath } from "@platform/lib/api";
-import { allBookmarks, loadBookmarks } from "@platform/lib/bookmarks";
+import { allBookmarks, hydrateBookmarks, loadBookmarks } from "@platform/lib/bookmarks";
 import { useBookmarksVersion, useUrlVersion } from "@platform/lib/hooks";
-import { loadRecents, recentFsPath, useRecentsVersion } from "@apps/explorer/lib/recents";
+import { hydrateRecents, loadRecents, recentFsPath, useRecentsVersion } from "@apps/explorer/lib/recents";
 import { BookmarkPreviewCard, RecentPreviewCard, ClaudeSessionFolderCard } from "@apps/explorer/BookmarkCards";
 import { describeSpec, runAiSearch, type AiSearchResult } from "@apps/explorer/lib/ai-search";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
@@ -75,9 +75,14 @@ function AiSearchComposer({
       // directly — no reason to run an AI search over an exact address. A
       // non-existent one falls through to the normal search.
       if (/^(\/|~\/|~$|[A-Za-z]:[\\/])/.test(q)) {
-        const fsPath = (q === "~" || q.startsWith("~/") ? home + q.slice(1) : q)
-          .replace(/\\/g, "/")
-          .replace(/\/+$/, "") || "/";
+        let fsPath = q === "~" || q.startsWith("~/") ? home + q.slice(1) : q;
+        // Backslashes are only separators in drive-letter paths (same rule
+        // as the shell's path codec) — on POSIX "\" is a legal filename char.
+        if (/^[A-Za-z]:[\\/]/.test(fsPath)) fsPath = fsPath.replace(/\\/g, "/");
+        // Strip a trailing slash but keep roots whole: "/" stays "/", and a
+        // drive root keeps its slash (bare "C:" reads as cwd-relative).
+        fsPath = fsPath.replace(/\/+$/, "") || "/";
+        if (/^[A-Za-z]:$/.test(fsPath)) fsPath += "/";
         try {
           const st = await statPath(fsPath);
           if (ctl.signal.aborted) return;
@@ -328,17 +333,29 @@ export default function FilesHome({ config }: { config: Config }) {
   const shownSessions =
     sessionFolders && (expandedSessions ? sessionFolders : sessionFolders.slice(0, MAX_CARDS));
   // With no ?tab= in the URL, land on the first tab that has anything to
-  // show: bookmarks, else recents, else Claude sessions. Derived (not written
-  // back to the URL) so the address stays clean and an explicit ?tab= always
-  // wins.
+  // show: bookmarks, else recents, else Claude sessions. Latched ONCE after
+  // the bookmark/recent caches hydrate (they start empty at boot, so deriving
+  // per render would flash "sessions" on a cold load, and cross-tab polls
+  // could yank an unpinned tab later). Not written to the URL, so an explicit
+  // ?tab= always wins.
+  const [defaultTab, setDefaultTab] = useState<LaunchTab | null>(null);
+  useEffect(() => {
+    let alive = true;
+    // Both are idempotent (enqueued; bookmarks no-ops when already hydrated).
+    Promise.all([hydrateBookmarks(), hydrateRecents()]).finally(() => {
+      if (!alive) return;
+      setDefaultTab(
+        loadBookmarks().length ? "bookmarks" : loadRecents().entries.length ? "recents" : "sessions",
+      );
+    });
+    return () => {
+      alive = false;
+    };
+  }, []);
   const tab: LaunchTab =
     tabParam === "recents" || tabParam === "sessions" || tabParam === "bookmarks"
       ? tabParam
-      : bookmarks.length
-        ? "bookmarks"
-        : recents.length
-          ? "recents"
-          : "sessions";
+      : defaultTab ?? "bookmarks";
   // A committed AI search result takes over the page body (bookmarks/recents
   // hide behind it) until cleared — the homepage becomes the result page.
   const [search, setSearch] = useState<{ query: string; result: AiSearchResult } | null>(null);
