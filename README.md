@@ -11,7 +11,7 @@ Runs entirely on `127.0.0.1`. No accounts, no cloud, no sandboxing — your own
 machine, your own trusted code. See `SPEC.md` / `ARCHITECTURE.md` / `DECISIONS.md`
 for the full design.
 
-![fused-render: right-click a file in Explorer, pick "Open with" → fused-render, and it opens in the browser](learn/assets/open_with_right_click.gif)
+![fused-render: right-click a file in Explorer, pick "Open with" → fused-render, and it opens in the browser](core_apps/learn/assets/open_with_right_click.gif)
 
 Right-click a file in Explorer → **Open with** → fused-render, and it opens in
 your browser. See [Windows: Explorer "Open with"](#windows-explorer-open-with)
