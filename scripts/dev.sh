@@ -51,11 +51,12 @@ export FUSED_RENDER_CORE_TEMPLATES="${FUSED_RENDER_CORE_TEMPLATES:-$REPO_ROOT/fu
 # already-set env var so a caller can point a mount at their own zip.
 #
 # NOTE: the mount serves the zip SNAPSHOT, not the live content dir — edits to
-# learn/ or sessions/ need a dev.sh restart (Ctrl-C, re-run) to show up.
+# core_apps/learn/ or core_apps/sessions/ need a dev.sh restart (Ctrl-C,
+# re-run) to show up.
 DEV_ZIPS="$REPO_ROOT/.dev-zips"
 mkdir -p "$DEV_ZIPS"
 stage_builtin_zip() { # $1 = content dir name (learn|sessions), $2 = env var name
-  local src="$REPO_ROOT/$1" dest="$DEV_ZIPS/$1.zip"
+  local src="$REPO_ROOT/core_apps/$1" dest="$DEV_ZIPS/$1.zip"
   if [[ -z "${!2:-}" && -d "$src" ]] && command -v zip >/dev/null 2>&1; then
     rm -f "$dest"
     # zip's * doesn't cross '/', hence the doubled patterns (same as

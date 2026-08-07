@@ -782,7 +782,7 @@ fi
 echo "    $(echo "$RCLONE_SMOKE_OUT" | head -1)"
 
 # ---------------------------------------------------------------------------
-# 4e. Bundle learn.zip (D123): the repo's learn/ content ships as a single
+# 4e. Bundle learn.zip (D123): the repo's core_apps/learn/ content ships as a single
 #     zip at Contents/Resources/learn.zip, and shell/mounts.py's
 #     ensure_learn_mount() mounts it read-only at startup via rclone's
 #     archive backend (:archive:<path>, new in v1.74) — the bundled default
@@ -793,7 +793,7 @@ echo "    $(echo "$RCLONE_SMOKE_OUT" | head -1)"
 # ---------------------------------------------------------------------------
 
 echo "==> bundling learn.zip"
-LEARN_SRC="$REPO_ROOT/learn"
+LEARN_SRC="$REPO_ROOT/core_apps/learn"
 if [[ ! -d "$LEARN_SRC" ]]; then
   echo "FATAL: $LEARN_SRC does not exist — the learn/ content is part of the app." >&2
   exit 1
@@ -815,10 +815,10 @@ if ! LEARN_SMOKE_OUT="$("$RCLONE_DEST" lsf ":archive:${LEARN_DEST}" 2>&1)"; then
 fi
 echo "    learn.zip OK ($(echo "$LEARN_SMOKE_OUT" | wc -l | tr -d ' ') top-level entries)"
 
-# Same treatment for the Sessions sub-app content (repo sessions/ →
+# Same treatment for the Sessions sub-app content (repo core_apps/sessions/ →
 # Contents/Resources/sessions.zip, mounted by ensure_builtin_mounts).
 echo "==> bundling sessions.zip"
-SESSIONS_SRC="$REPO_ROOT/sessions"
+SESSIONS_SRC="$REPO_ROOT/core_apps/sessions"
 if [[ ! -d "$SESSIONS_SRC" ]]; then
   echo "FATAL: $SESSIONS_SRC does not exist — the sessions/ content is part of the app." >&2
   exit 1

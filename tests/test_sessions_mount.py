@@ -14,7 +14,7 @@ import pytest
 import fused_render.shell.mounts as mounts_mod
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-SESSIONS_DIR = os.path.join(REPO_ROOT, "sessions")
+SESSIONS_DIR = os.path.join(REPO_ROOT, "core_apps", "sessions")
 
 
 @pytest.fixture()

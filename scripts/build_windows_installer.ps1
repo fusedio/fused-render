@@ -233,9 +233,9 @@ Copy-Item -Path (Join-Path $RepoRoot "fused_render\assets\file_icons\*.ico") -De
 # Bundle learn.zip into assets\ (mirrors build_dmg.sh step 4e). ZipFile uses
 # forward-slash entry names, which rclone's archive backend reads cleanly;
 # child_environment points FUSED_RENDER_LEARN_ZIP here for ensure_learn_mount.
-$LearnSrc = Join-Path $RepoRoot "learn"
+$LearnSrc = Join-Path $RepoRoot "core_apps\learn"
 if (-not (Test-Path -LiteralPath $LearnSrc -PathType Container)) {
-    throw "learn/ content is missing - it is part of the app"
+    throw "core_apps/learn content is missing - it is part of the app"
 }
 Add-Type -AssemblyName System.IO.Compression
 Add-Type -AssemblyName System.IO.Compression.FileSystem
@@ -272,9 +272,9 @@ if (-not ($LearnListing -match 'assets/')) {
 
 # Bundle sessions.zip the same way (the Sessions sub-app content; mirrors
 # build_dmg.sh). child_environment points FUSED_RENDER_SESSIONS_ZIP here.
-$SessionsSrc = Join-Path $RepoRoot "sessions"
+$SessionsSrc = Join-Path $RepoRoot "core_apps\sessions"
 if (-not (Test-Path -LiteralPath $SessionsSrc -PathType Container)) {
-    throw "sessions/ content is missing - it is part of the app"
+    throw "core_apps/sessions content is missing - it is part of the app"
 }
 $SessionsZip = Join-Path $StageDir "assets\sessions.zip"
 $SessionsSrcFull = (Resolve-Path -LiteralPath $SessionsSrc).Path
