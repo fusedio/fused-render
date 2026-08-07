@@ -91,12 +91,25 @@ def test_a_leftover_script_header_is_an_ordinary_comment(monkeypatch, tmp_path):
         '# /// script\n# dependencies = ["cowsay"]\n# ///\ndef main():\n    return 7\n',
         encoding="utf-8",
     )
+    # Stubbed rather than run for real: the assertion is about what run_python
+    # DECIDES, and a real backend would make this test require the `[fused]`
+    # extra — which the 3.10-3.13 matrix does not install, so it would fail
+    # there rather than skip. `_FakeBackend` carries both halves of the
+    # contract, so `via` below proves which path was taken.
+    backend = _FakeBackend(_FakeResult(return_value="7"))
+    monkeypatch.setattr(engine, "get_backend", lambda: backend)
 
     out = asyncio.run(engine.run_python(str(target), {}))
 
     assert out["ok"] is True, out.get("error")
-    assert out["result"] == 7
     assert not out.get("needs_install"), "a header must not ask for an install"
+    assert backend.calls, "the run never reached the backend — it was refused"
+    assert backend.calls[0]["via"] == "_execute_sync", (
+        "a header must not route the file down the venv path"
+    )
+    assert backend.calls[0].get("interpreter"), (
+        "a folder with no manifest runs on the app interpreter (PY-17)"
+    )
 
 
 @requires_tomllib
