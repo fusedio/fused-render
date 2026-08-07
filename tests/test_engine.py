@@ -547,8 +547,8 @@ def test_ci_claiming_to_cover_this_engine_actually_runs_it():
         pytest.skip("only meaningful where the [fused] extra is expected")
     assert engine.available(), (
         "FUSED_RENDER_REQUIRE_FUSED_ENGINE=1 but the fused local backend is not "
-        "importable — the `[fused]` extra did not take effect (a direct-URL "
-        "wheel marked python_version >= '3.11': check the interpreter), so every "
+        "importable — the `[fused]` extra did not take effect (a pre-release pin "
+        "marked python_version >= '3.11': check the interpreter), so every "
         "engine test would have skipped while the job reported success"
     )
 
@@ -1201,8 +1201,8 @@ def test_a_direct_url_requirement_is_never_treated_as_satisfied(monkeypatch):
     to have a `pandas`, so the header cleared and the wheel the author deliberately
     pinned was never fetched — the script ran against different code than it asked
     for, silently. Local paths and VCS URLs are the same case (`req.url` covers all
-    three). This repo pins its own `fused` as a direct-URL wheel, so it is an idiom
-    a template author has every reason to copy.
+    three). This repo pinned its own `fused` as a direct-URL wheel for months, so it
+    is an idiom a template author has every reason to copy.
     """
     monkeypatch.setattr(engine, "app_packages", lambda: {"pandas": "2.3.3"})
     assert engine.app_satisfies(["pandas"]) is True, "control: the plain name is met"

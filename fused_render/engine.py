@@ -578,9 +578,9 @@ def app_satisfies(requirements: list[str]) -> bool:
             # to have a `pandas`, so the header cleared and the wheel the author
             # deliberately pinned was never fetched — a script silently running
             # against different code than it asked for. Not hypothetical here,
-            # either: this repo pins its own `fused` as a direct-URL wheel
-            # (pyproject.toml's `[fused]` extra), so the idiom is one a template
-            # author has every reason to copy.
+            # either: this repo pinned its own `fused` as a direct-URL wheel for
+            # months (pyproject.toml's `[fused]` extra, now a PyPI pre-release),
+            # so the idiom is one a template author has every reason to copy.
             if req.url:
                 return False
             version = installed.get(canonicalize_name(req.name))

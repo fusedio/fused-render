@@ -231,9 +231,9 @@ jobs:
   #
   # A separate job rather than adding the extra to the matrix above, for two
   # reasons: the matrix must keep exercising the *built-in* engine (still the
-  # default per PY-12), and the extra can't be added blanket anyway — its wheel
-  # is a direct URL marked `python_version >= "3.11"`, so on the matrix's 3.10
-  # entry it installs nothing at all and the job would silently prove nothing.
+  # default per PY-12), and the extra can't be added blanket anyway — it is
+  # marked `python_version >= "3.11"`, so on the matrix's 3.10 entry it installs
+  # nothing at all and the job would silently prove nothing.
   fused-engine:
     needs: [detect-changes, frontend]
     if: needs.detect-changes.outputs.app == 'true' && needs.frontend.result == 'success'

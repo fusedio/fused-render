@@ -140,17 +140,18 @@ def _now_iso() -> str:
 # extra (metadata only refreshes on reinstall) — all of which disabled the
 # install button exactly when it mattered. The constant ships in the same
 # file as the code that uses it, so it is always as current as the server.
-# Pinned to a direct wheel URL, not a PyPI version: the clone flags this module sends
-# (`--allow-clone` / `--no-allow-clone`, see `_create_args`/`_repoint_args`) land in
-# `fusedio/fused` #351, which has no PyPI release yet. `fused==2.9.3b2` exposes NEITHER
-# flag, so a deploy with cloning on failed and — worse — EVERY repoint failed, since the
-# repoint states the posture explicitly in both directions. Same artifact the managed
-# control plane pins (`openfused_server`), so the two planes agree on the CLI surface.
-# Move this to a released version once one carries the flags; the string is duplicated in
-# pyproject's `[fused]` extra and its bundled-deps list, and tests hold all three equal.
-PINNED_FUSED_REQUIREMENT = (
-    "fused @ https://fused-magic.s3.us-west-2.amazonaws.com/fused-2.9.3.post13-py3-none-any.whl"
-)
+# A PyPI pre-release, not the direct wheel URL this used to carry. The URL was a
+# stopgap for an unreleased upstream landing: the clone flags this module sends
+# (`--allow-clone` / `--no-allow-clone`, see `_create_args`/`_repoint_args`) came from
+# `fusedio/fused` #351, and `fused==2.9.3b2` exposed NEITHER — a deploy with cloning on
+# failed and, worse, EVERY repoint failed, since the repoint states the posture
+# explicitly in both directions. 2.9.3b3 carries them, so the pin is a real release
+# again: resolvable from any index (not just S3), cacheable by version, and legible in
+# `pip freeze`. It stays a `bNN` pre-release until the 2.9.3 final ships, and the exact
+# `==` is what makes pip install a pre-release at all. Move it to `2.9.3` when that
+# lands; the string is duplicated in pyproject's `[fused]` extra and its bundled-deps
+# list, and tests hold all three equal.
+PINNED_FUSED_REQUIREMENT = "fused==2.9.3b3"
 # The release's own environment marker (python_version >= "3.11"), enforced here
 # because pip is handed the marker-free requirement above.
 FUSED_MIN_PYTHON = (3, 11)
