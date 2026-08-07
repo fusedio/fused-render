@@ -283,9 +283,9 @@ export default function ListingPreviewPane({
       <span className="pane-header-name" title={row.name}>
         {row.name}
       </span>
-      {/* The same mode control the title bar and the pane bars carry — icon
-          chip + name + caret. It used to be four naked squares that looked
-          exactly like the one-shot glyphs beside them. */}
+      {/* The same mode control the title bar and the pane bars carry. It used
+          to be four naked squares here, indistinguishable from the one-shot
+          glyphs beside them. */}
       <ModeMenu entries={modes} active={activeMode ?? ""} onSelect={selectMode} />
       {/* One label for every mode, and the row's ONE bordered primary. Self
           target: "Open" would navigate to the folder already open, so it

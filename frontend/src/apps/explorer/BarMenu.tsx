@@ -2,11 +2,17 @@
 // share.
 //
 // ModeMenu is the ONE mode control: a bordered trigger showing the active
-// mode's icon in a lime chip, the mode's name, and a caret; the dropdown lists
-// every mode with radio semantics. It replaces three different surfaces that
-// each said "which view is this?" in a different dialect — the topbar's icon
-// strip, the preview pane's compact icon strip, and the pane bar's icon-only
-// menu — so the same control now appears in all of them.
+// mode's icon, the mode's name, and a caret; the dropdown lists every mode
+// with radio semantics. It replaces three different surfaces that each said
+// "which view is this?" in a different dialect — the topbar's icon strip, the
+// preview pane's compact icon strip, and the pane bar's icon-only menu — so
+// the same control now appears in all of them, identically.
+//
+// The icon is drawn in currentColor at the same 16px as every other .bar-ctl
+// glyph. An earlier pass put it in a filled accent chip to mark "this is the
+// active mode"; on screen that read as a coloured badge shouting for
+// attention in a row of quiet chrome. The accent survives where it costs
+// nothing — the checkmark on the dropdown's active row.
 //
 // OverflowMenu is the `···` companion: low-frequency one-shot actions (reveal
 // in the file manager, copy path, open in a new tab) that used to be welded
@@ -161,7 +167,8 @@ export function ModeMenu({ entries, active, busy, onSelect }: ModeMenuProps) {
         title={switching ? label + " — switching…" : "Change view mode"}
         onClick={toggle}
       >
-        <span className="mode-menu-chip">
+        {/* The spinner takes the icon's place for the length of the switch. */}
+        <span className="mode-menu-icon">
           {switching ? <span className="mode-icon-spinner" /> : activeEntry.icon}
         </span>
         <span className="mode-menu-label">{label}</span>

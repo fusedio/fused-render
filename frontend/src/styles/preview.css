@@ -87,11 +87,14 @@
   flex: 0 0 auto;
 }
 
-/* `:not(.bar-ctl)` — anything built from the shared bar recipe (explorer.css)
-   opts OUT of this generic chrome: it carries its own, and this rule's extra
-   specificity would otherwise re-border every ghost control that portals into
-   the slot. */
-.preview-actions button:not(.bar-ctl),
+/* Anything built from the shared bar recipe (explorer.css) opts OUT of this
+   generic chrome: it carries its own, and this rule's extra specificity would
+   otherwise re-style every control that portals into the slot. `.bar-ctl`
+   covers the buttons in the bar itself; `.bar-menu-item` covers the rows of a
+   dropdown OPENED from the bar, which are descendants of the slot too — and
+   which the `.active` rule below painted solid lime, since a menu's active row
+   and a toggle button's active state share the class name. */
+.preview-actions button:not(.bar-ctl):not(.bar-menu-item),
 .preview-actions a {
   font: inherit;
   padding: 5px 10px;
@@ -103,13 +106,13 @@
   cursor: pointer;
 }
 
-.preview-actions button:not(.bar-ctl).active {
+.preview-actions button:not(.bar-ctl):not(.bar-menu-item).active {
   background: var(--accent);
   color: var(--on-accent);
   border-color: var(--accent);
 }
 
-.preview-actions button:not(.bar-ctl):hover,
+.preview-actions button:not(.bar-ctl):not(.bar-menu-item):hover,
 .preview-actions a:hover {
   background: var(--bg-alt);
 }
@@ -484,16 +487,12 @@ body.embed .open-as-app-chip:hover {
   height: 14px;
 }
 
-.panel-bar .mode-menu-chip {
-  width: 16px;
-  height: 16px;
-}
-
-.panel-bar .mode-menu-chip svg,
-.panel-bar .mode-menu-chip .mode-icon-mask,
-.panel-bar .mode-menu-chip .mode-icon-placeholder {
-  width: 10px;
-  height: 10px;
+.panel-bar .mode-menu-icon,
+.panel-bar .mode-menu-icon svg,
+.panel-bar .mode-menu-icon .mode-icon-mask,
+.panel-bar .mode-menu-icon .mode-icon-placeholder {
+  width: 14px;
+  height: 14px;
 }
 
 .panel-bar .bar-caret {
