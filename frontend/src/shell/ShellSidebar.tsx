@@ -44,8 +44,8 @@ export default function ShellSidebar({ config }: { config: Config }) {
   return (
     <SidebarFrame title="Render" version={config.version}>
       <div className="sidebar-section">
-        <NavItem href="/apps" id="apps-link" label="Fused App" icon={APPS_ICON} />
         <NavItem href="/explorer" id="explorer-link" label="Fused Explorer" icon={<FolderIcon />} />
+        <NavItem href="/apps" id="apps-link" label="Fused App" icon={APPS_ICON} />
         {sessionsMountReady && <NavItem href="/sessions" id="sessions-link" label="Claude Sessions" icon={SESSIONS_ICON} />}
         {learnMountReady && <NavItem href="/learn" id="learn-link" label="Learn More" icon={<LearnIcon />} />}
       </div>

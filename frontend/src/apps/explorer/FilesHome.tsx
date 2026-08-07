@@ -424,6 +424,15 @@ export default function FilesHome({ config }: { config: Config }) {
               <button
                 type="button"
                 role="tab"
+                aria-selected={tab === "sessions"}
+                className={"fh-tab" + (tab === "sessions" ? " active" : "")}
+                onClick={() => setTab("sessions")}
+              >
+                Claude sessions
+              </button>
+              <button
+                type="button"
+                role="tab"
                 aria-selected={tab === "bookmarks"}
                 className={"fh-tab" + (tab === "bookmarks" ? " active" : "")}
                 onClick={() => setTab("bookmarks")}
@@ -438,15 +447,6 @@ export default function FilesHome({ config }: { config: Config }) {
                 onClick={() => setTab("recents")}
               >
                 Recents
-              </button>
-              <button
-                type="button"
-                role="tab"
-                aria-selected={tab === "sessions"}
-                className={"fh-tab" + (tab === "sessions" ? " active" : "")}
-                onClick={() => setTab("sessions")}
-              >
-                Claude sessions
               </button>
             </div>
 
