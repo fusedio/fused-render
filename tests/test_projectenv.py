@@ -164,6 +164,66 @@ def test_walk_stops_below_the_home_dirs_parent(home, tmp_path):
     assert projectenv.project_root_for(str(d / "a.py")) is None
 
 
+def _use_branch(monkeypatch, ref):
+    """Activate a branch ref. `_branch` caches the ref on first read per process,
+    so the env var alone does nothing once anything has resolved it."""
+    from fused_render import _branch
+
+    monkeypatch.setenv("FUSED_RENDER_BRANCH", ref)
+    monkeypatch.setattr(_branch, "_CACHED_REF", None)
+    yield_back = _branch.branch_ref()
+    assert yield_back, "the branch ref did not take effect"
+
+
+def test_the_ceiling_does_not_move_when_a_branch_ref_is_set(tmp_path, monkeypatch):
+    """The ceiling is the shell home's parent, and a branch must not raise it.
+
+    `home_dir()` nests to `<base>/branches/<ref>` under FUSED_RENDER_BRANCH, so
+    deriving the ceiling from it made the ceiling `<base>/branches` — a directory
+    that is not an ancestor of anything the user works on. The walk for a file
+    under `~` then never terminated at the ceiling at all, and a stray
+    `~/pyproject.toml` swallowed the entire home directory into one project,
+    which is the exact failure the ceiling exists to prevent.
+    """
+    base = tmp_path / "home"
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(base))
+    monkeypatch.setenv("FUSED_RENDER_DIR", str(tmp_path / "workspace"))
+    _use_branch(monkeypatch, "some-feature")
+
+    # Sanity: the branch really does nest the home dir two levels down.
+    from fused_render.shell.storage import home_dir
+
+    assert home_dir() != str(base), "this test is vacuous without branch nesting"
+
+    # The ceiling stands where the UN-nested base's parent is: tmp_path.
+    (tmp_path / "pyproject.toml").write_text(
+        "[project]\nname='x'\nversion='1'\ndependencies=['cowsay']\n", encoding="utf-8"
+    )
+    d = tmp_path / "work" / "loose"
+    d.mkdir(parents=True)
+    (d / "a.py").write_text("x = 1\n", encoding="utf-8")
+
+    assert projectenv.project_root_for(str(d / "a.py")) is None, (
+        "a manifest at the ceiling swallowed everything beneath it"
+    )
+
+
+def test_a_project_below_the_ceiling_still_resolves_under_a_branch(tmp_path, monkeypatch):
+    """The guard must not over-reach either: real projects still resolve."""
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("FUSED_RENDER_DIR", str(tmp_path / "workspace"))
+    _use_branch(monkeypatch, "some-feature")
+
+    proj = tmp_path / "work" / "app"
+    proj.mkdir(parents=True)
+    (proj / "pyproject.toml").write_text(
+        "[project]\nname='x'\nversion='1'\ndependencies=['cowsay']\n", encoding="utf-8"
+    )
+    (proj / "a.py").write_text("x = 1\n", encoding="utf-8")
+
+    assert projectenv.project_root_for(str(proj / "a.py")) == str(proj)
+
+
 def test_a_directory_argument_resolves_to_itself(home):
     proj = _write_project(home / "proj")
     assert projectenv.project_root_for(str(proj)) == str(proj)
@@ -503,6 +563,41 @@ def test_gc_reclaims_a_venv_whose_source_is_gone(home):
     assert projectenv.gc() == 1
     assert not os.path.exists(venv)
     assert os.path.exists(live_venv), "gc took a venv whose project still exists"
+
+
+def test_gc_leaves_a_venv_alone_when_the_whole_VOLUME_is_missing(home, tmp_path):
+    """An unmounted external drive is not a deleted project.
+
+    `gc()` runs unconditionally at server startup, so booting once with the drive
+    detached would otherwise delete every project venv for that workspace — the
+    user reconnects the disk and gets a full re-download of each. The signal is
+    the difference between "this folder is gone" and "nothing along this path is
+    reachable": a deleted project leaves its PARENT behind, an unmounted volume
+    does not.
+    """
+    volume = tmp_path / "Volumes" / "BigDisk"
+    proj = _write_project(volume / "work" / "app")
+    venv = _fake_venv(str(proj))
+
+    import shutil
+
+    shutil.rmtree(tmp_path / "Volumes")  # the drive goes away entirely
+
+    assert projectenv.gc() == 0, "an unmounted volume was treated as a deletion"
+    assert os.path.exists(venv)
+
+
+def test_gc_still_reclaims_when_only_the_project_folder_is_gone(home):
+    """The guard must not swallow the case gc exists for: the parent survives."""
+    proj = _write_project(home / "work" / "app")
+    venv = _fake_venv(str(proj))
+
+    import shutil
+
+    shutil.rmtree(proj)  # the project is deleted; `work/` is still there
+
+    assert projectenv.gc() == 1
+    assert not os.path.exists(venv)
 
 
 def test_gc_leaves_a_venv_with_no_sidecar_alone(home):

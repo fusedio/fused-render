@@ -154,11 +154,21 @@ def _immediate_child(root: str, path: str) -> str | None:
 def _ceiling() -> str:
     """The directory the ancestor walk must not reach.
 
-    `home_dir()`'s parent — in production the user's home dir, where a stray
-    `pyproject.toml` would otherwise make every file under `~` one enormous
-    project. The ceiling itself is excluded; everything below it is fair game.
+    The parent of the UN-nested shell home — in production the user's home dir,
+    where a stray `pyproject.toml` would otherwise make every file under `~` one
+    enormous project. The ceiling itself is excluded; everything below it is fair
+    game.
+
+    Deliberately NOT `os.path.dirname(home_dir())`. `home_dir()` nests to
+    `<base>/branches/<ref>` when `FUSED_RENDER_BRANCH` is set (see
+    `_branch.branch_dir`), so that spelling made the ceiling `<base>/branches` —
+    a directory that is not an ancestor of anything a user works on. The walk for
+    a file under `~` then never met the ceiling at all and ran to the filesystem
+    root, which is precisely the failure this function exists to prevent, silently
+    switched on by a branch ref.
     """
-    return os.path.abspath(os.path.dirname(home_dir()))
+    base = os.environ.get("FUSED_RENDER_HOME") or os.path.expanduser("~/.fused-render")
+    return os.path.abspath(os.path.dirname(os.path.abspath(base)))
 
 
 def project_root_for(path: str) -> str | None:
@@ -560,14 +570,42 @@ def header_dependencies(text: str) -> list[str]:
 # --------------------------------------------------------------------------
 
 
+def _source_is_deleted(source: str) -> bool:
+    """Is `source` genuinely gone, as opposed to merely unreachable right now?
+
+    The distinction `gc()` cannot do without. `os.path.isdir(source) == False`
+    covers both "the user deleted this project" and "the external drive it lives
+    on is unplugged", and those want opposite answers: reclaiming on the second
+    means one boot with a disk detached wipes every venv for that workspace, and
+    the user pays a full re-download for each when they plug it back in.
+
+    A deletion leaves the CONTAINER behind — you cannot delete `~/work/app`
+    without `~/work` still being there. An absent volume takes the whole chain
+    with it. So: gone means the folder is missing while its parent still exists.
+    A parent that is itself missing is not evidence of anything, and the
+    conservative answer is to keep the venv — it costs disk, which `gc` can
+    reclaim on any later boot, whereas the other mistake is unrecoverable.
+    """
+    if os.path.isdir(source):
+        return False
+    parent = os.path.dirname(os.path.abspath(source))
+    return parent != source and os.path.isdir(parent)
+
+
 def gc() -> int:
     """Delete venvs whose sidecar names a folder that no longer exists.
 
     Load-bearing, not housekeeping: keying on the path means moving or renaming
     a project orphans its venv by design, so without this the store grows by one
-    full environment every rename. A venv with no readable sidecar is LEFT
-    ALONE — it may be an install in flight, and deleting one out from under a
-    running worker is worse than leaking it. Returns the number removed.
+    full environment every rename. Returns the number removed.
+
+    Two things are deliberately LEFT ALONE, both because this runs unattended at
+    every server startup and a wrong deletion costs the user a full re-download:
+
+      * a venv with no readable sidecar — it may be an install in flight, and
+        deleting one out from under a running worker is worse than leaking it;
+      * a venv whose source is merely UNREACHABLE rather than deleted, e.g. on an
+        unplugged external drive. See `_source_is_deleted`.
 
     Blocking I/O; call it off the event loop.
     """
@@ -585,7 +623,7 @@ def gc() -> int:
         if not info:
             continue
         source = info.get("path")
-        if not isinstance(source, str) or os.path.isdir(source):
+        if not isinstance(source, str) or not _source_is_deleted(source):
             continue
         try:
             shutil.rmtree(venv)
