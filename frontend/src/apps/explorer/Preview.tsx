@@ -43,6 +43,7 @@ import { MenuIcons } from "@platform/ui/MenuIcons";
 import { PromptDialog, ConfirmDialog, nameError } from "@apps/explorer/FsDialogs";
 import DeployModal from "@platform/cloud/DeployModal";
 import Listing from "@apps/explorer/Listing";
+import { paneIsOpen } from "@apps/explorer/listing/pane";
 
 interface HeaderProps {
   fsPath: string;
@@ -432,18 +433,21 @@ function TemplatePreview({
   // replaceSearch, which fires fused:urlchange) so the switcher-hide below
   // tracks the pane live.
   useUrlVersion();
-  // When the listing's right preview pane is open (`?preview=true`), the pane
-  // header carries its own mode switcher — showing the top-bar one too is
-  // duplicate chrome, so it hides. Top-bar variant only; the in-body header
-  // (non-explorer hosts) never coexists with the pane.
-  const paneOpen =
-    !!actionsInTopbar && new URLSearchParams(location.search).get("preview") === "true";
   // `_listing` sentinel (D81): the shell's built-in directory listing, mounted
   // in place of the preview iframe — no iframe, no `_file`. Every directory
   // renders through this same header + body chrome (even a plain folder's
   // single `_listing` mode), so the preview header is uniform across files and
   // dirs.
   const isListing = entry.mode === "_listing";
+  // When the listing's right preview pane is open (default ON — see
+  // listing/pane.ts paneIsOpen), the pane header carries its own mode
+  // switcher — showing the top-bar one too is duplicate chrome, so it hides.
+  // Top-bar variant only; the in-body header (non-explorer hosts) never
+  // coexists with the pane. Gated on `isListing`: a FILE view's fsPath never
+  // carries pane viewstate (the pane belongs to directories) and `preview`
+  // never rides onto file URLs (router.ts navigate), so paneIsOpen would
+  // otherwise read the now-default-on value and hide every file's switcher.
+  const paneOpen = !!actionsInTopbar && isListing && paneIsOpen(fsPath);
   // Path of the directory's lone top-level HTML file, reported by Listing
   // (null when there isn't exactly one) — drives the "Open as app" button
   // between the directory name and the mode switcher.
