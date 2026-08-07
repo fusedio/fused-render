@@ -11,7 +11,7 @@ export default function ExplorerSidebar({ config }: { config: Config }) {
   // Re-render on any nav/url change (active-item highlight).
   useUrlVersion();
   return (
-    <SidebarFrame title="Explorer" version={config.version} homeHref="/explorer">
+    <SidebarFrame title="Explorer" homeHref="/explorer">
       <div className="sidebar-section">
         <NavItem href="/explorer" id="explorer-home-link" label="Home" icon={HOME_ICON} />
       </div>

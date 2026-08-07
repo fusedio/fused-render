@@ -51,17 +51,17 @@
   font: inherit;
   font-size: 12px;
   padding: 5px 10px;
-  border: 1px solid rgba(var(--accent-rgb), 0.35);
+  border: 1px solid rgba(var(--fg-muted-rgb), 0.35);
   border-radius: 6px;
-  background: rgba(var(--accent-rgb), 0.08);
-  color: var(--accent-soft);
+  background: rgba(var(--fg-muted-rgb), 0.08);
+  color: var(--fg-muted);
   cursor: pointer;
 }
 
 .open-as-app-btn:hover {
-  background: rgba(var(--accent-rgb), 0.16);
-  border-color: var(--accent);
-  color: var(--accent);
+  background: rgba(var(--fg-muted-rgb), 0.16);
+  border-color: var(--fg-muted);
+  color: var(--fg);
 }
 
 /* In the explorer the button portals into the breadcrumb's actions slot
@@ -69,15 +69,15 @@
    `.preview-actions button` rules, which otherwise outrank the class above. */
 .preview-actions .open-as-app-btn {
   font-size: 12px;
-  border: 1px solid rgba(var(--accent-rgb), 0.35);
-  background: rgba(var(--accent-rgb), 0.08);
-  color: var(--accent-soft);
+  border: 1px solid rgba(var(--fg-muted-rgb), 0.35);
+  background: rgba(var(--fg-muted-rgb), 0.08);
+  color: var(--fg-muted);
 }
 
 .preview-actions .open-as-app-btn:hover {
-  background: rgba(var(--accent-rgb), 0.16);
-  border-color: var(--accent);
-  color: var(--accent);
+  background: rgba(var(--fg-muted-rgb), 0.16);
+  border-color: var(--fg-muted);
+  color: var(--fg);
 }
 
 .preview-actions {

@@ -1,5 +1,5 @@
 // Route dispatch (super-app step 2 — shell + three sub-apps):
-//   "/"                      -> redirect (replaceState) to /apps
+//   "/"                      -> redirect (replaceState) to /explorer
 //   "/apps"                  -> apps homepage (the app home)
 //   "/apps/<tag>/<name>"     -> app builder (StatView variant "app")
 //   "/explorer"              -> file-explorer homepage (FilesHome)
@@ -461,12 +461,12 @@ export default function App({ config }: { config: Config }) {
     return () => document.removeEventListener("keydown", onKey, true);
   }, []);
 
-  // The app home lives at /apps — "/" is just its front door. Render-time
+  // The explorer home is the front door — "/" lands there. Render-time
   // write is safe — it changes pathname, so the re-render (via fused:urlchange)
   // derives the real route. (Legacy /view/_home, /view/_account, and the whole
   // /view//embed namespaces are rewritten at boot by router.ts.)
   if (location.pathname === "/") {
-    history.replaceState(null, "", "/apps");
+    history.replaceState(null, "", "/explorer");
   }
 
   const pathname = location.pathname;
