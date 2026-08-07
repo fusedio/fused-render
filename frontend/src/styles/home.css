@@ -58,19 +58,16 @@
   align-items: center;
   justify-content: center;
   flex-wrap: wrap;
-  gap: 0;
+  /* Row gap keeps a wrapped tagline off the logo row; the 18px column gap is
+     the name-to-tagline spacing (logo and name are one tight .home-hero-brand-mark
+     group, so it stays centered when the tagline wraps). */
+  gap: 4px 18px;
   margin: 0 0 18px;
 }
 
-/* Name + tagline as their own wrapping row, nested inside the brand row —
-   this is what re-centers cleanly if the tagline wraps onto its own line,
-   instead of a fixed margin-left dragging it off-center (bugbot 36e6acdd). */
-.home-hero-brand-text {
-  display: flex;
-  align-items: baseline;
-  justify-content: center;
-  flex-wrap: wrap;
-  gap: 4px 18px;
+.home-hero-brand-mark {
+  display: inline-flex;
+  align-items: center;
 }
 
 .home-hero-logo {
