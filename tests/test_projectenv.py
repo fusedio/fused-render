@@ -268,27 +268,74 @@ def test_uv_cache_dir_sits_beside_the_venvs(home, tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def test_digest_tracks_the_lock_when_one_exists(home):
+def test_the_lock_is_not_part_of_the_digest(home):
+    """`uv.lock` is an OUTPUT of `uv sync`, not an input to it.
+
+    Folding it in would make the environment's own side effect a reason to
+    rebuild the environment. The intended consequence, pinned here: a hand-edit
+    to the lock alone does not trigger a resync — the lock is generated, the
+    manifest is the declaration.
+    """
     proj = _write_project(home / "proj")
-    (proj / "uv.lock").write_text("version = 1\n", encoding="utf-8")
     first = projectenv.state_digest(str(proj))
 
-    (proj / "uv.lock").write_text("version = 2\n", encoding="utf-8")
-    assert projectenv.state_digest(str(proj)) != first
-
-
-def test_digest_ignores_the_manifest_when_a_lock_exists(home):
-    """The lock is the resolved truth; a comment edit to pyproject must not resync."""
-    proj = _write_project(home / "proj")
     (proj / "uv.lock").write_text("version = 1\n", encoding="utf-8")
-    first = projectenv.state_digest(str(proj))
+    assert projectenv.state_digest(str(proj)) == first
 
-    with open(proj / "pyproject.toml", "a", encoding="utf-8") as f:
-        f.write("\n# a comment\n")
+    (proj / "uv.lock").write_text("version = 22\n", encoding="utf-8")
     assert projectenv.state_digest(str(proj)) == first
 
 
-def test_digest_falls_back_to_the_manifest_without_a_lock(home):
+def test_digest_tracks_the_manifest_even_under_a_lock(home):
+    """The requirement the digest exists for.
+
+    Hashing the lock instead (on the reasoning that it is the resolved truth)
+    means a dependency ADDED to pyproject.toml changes nothing, the venv reads as
+    fresh, no install is offered, and the run fails later on an ImportError. A
+    user must never have to run `uv sync` by hand to fix that — doing so would
+    create an in-folder .venv and diverge from the home-dir store. The cost is a
+    resync for a comment edit, which is a fast no-op through uv's cache.
+    """
+    proj = _write_project(home / "proj", ["cowsay"])
+    (proj / "uv.lock").write_text("version = 1\n", encoding="utf-8")
+    first = projectenv.state_digest(str(proj))
+
+    _write_project(home / "proj", ["cowsay", "altair"])
+    assert projectenv.state_digest(str(proj)) != first
+
+
+def test_the_digest_is_memoised_on_a_stat_fingerprint(home):
+    """`is_installed` runs this on every /api/run and a uv.lock can be megabytes,
+    so the steady state must be two stats — but a real edit must still be seen.
+
+    The stat tuple is only the cache-invalidation hint; the digest stays the
+    authoritative signal, so the copy2/mtime problem the digest exists to avoid
+    is untouched.
+    """
+    proj = _write_project(home / "proj", ["cowsay"])
+    projectenv.reset_state_digest_cache()
+
+    reads = []
+    real_compute = projectenv._compute_state_digest
+    try:
+        projectenv._compute_state_digest = (
+            lambda root: (reads.append(root), real_compute(root))[1]
+        )
+        first = projectenv.state_digest(str(proj))
+        assert projectenv.state_digest(str(proj)) == first
+        assert projectenv.state_digest(str(proj)) == first
+        assert len(reads) == 1, f"re-hashed an unchanged project {len(reads)} times"
+
+        _write_project(home / "proj", ["cowsay", "altair"])  # size and mtime move
+        second = projectenv.state_digest(str(proj))
+    finally:
+        projectenv._compute_state_digest = real_compute
+
+    assert second != first, "an edit was hidden by the memo"
+    assert len(reads) == 2
+
+
+def test_digest_tracks_the_manifest_without_a_lock(home):
     proj = _write_project(home / "proj", ["cowsay"])
     first = projectenv.state_digest(str(proj))
     _write_project(home / "proj", ["cowsay", "altair"])

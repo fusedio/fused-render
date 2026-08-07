@@ -171,20 +171,24 @@ def _venv_python(venv_dir):
 
 
 def _state_digest(project_dir):
-    """sha256 of what this environment was built from — the lock, else the manifest.
+    """sha256 of `pyproject.toml` — the declaration this environment was built from.
 
-    Read AFTER `uv sync`, never before: an unlocked project gets its `uv.lock`
-    written by the sync itself, and a digest taken beforehand would describe a
-    file that no longer exists and mark the fresh venv stale on its first use.
-    Kept in step with `projectenv.state_digest`.
+    The manifest only, never `uv.lock`: the lock is an OUTPUT of the sync, so
+    folding it in would make the environment's own side effect a reason to
+    rebuild it. That also means this no longer has to be read at any particular
+    moment relative to `uv sync` — the sync does not touch the manifest.
+
+    Byte-identical to `projectenv._compute_state_digest`, which READS what this
+    writes. A divergence is not a subtle bug: every request would read its own
+    just-built venv as stale and ask to rebuild it, forever. Duplicated rather
+    than imported because this file must stay free of any `fused_render` import
+    (D152).
     """
-    for name in ("uv.lock", "pyproject.toml"):
-        try:
-            with open(os.path.join(project_dir, name), "rb") as f:
-                return hashlib.sha256(f.read()).hexdigest()
-        except OSError:
-            continue
-    return ""
+    try:
+        with open(os.path.join(project_dir, "pyproject.toml"), "rb") as f:
+            return hashlib.sha256(f.read()).hexdigest()
+    except OSError:
+        return ""
 
 
 def _build(project_dir, venv_dir, uv_cache_dir, python_executable):
@@ -214,9 +218,16 @@ def _build(project_dir, venv_dir, uv_cache_dir, python_executable):
     degrades on its own, and pinning it here would override a user who had a
     reason to choose otherwise.
 
-    `--frozen` iff a `uv.lock` is present — a lock is a request for exact
-    resolution, and re-resolving it would silently produce a different
-    environment than the one the user committed. Without a lock uv resolves and
+    A bare `uv sync`, with no `--frozen`. That is not a relaxation of
+    reproducibility — uv uses an existing `uv.lock` as-is whenever it still
+    matches the manifest, and re-resolves only the parts a manifest edit actually
+    moved. Which is exactly the required behaviour: nothing changed means the
+    committed versions, and a dependency added to `pyproject.toml` is picked up
+    automatically. `--frozen` was here at first and had to go: it turns a
+    manifest edit into a hard "the lockfile is out of date" error instead of
+    reconciling it, and the whole point of the folder rule is that a user never
+    has to run `uv sync` by hand (doing so would create an in-folder `.venv` and
+    diverge from the home-dir store). Without a lock at all uv resolves and
     WRITES one, which is how a folder gains reproducibility by being run once.
     """
     uv = shutil.which("uv")
@@ -229,8 +240,6 @@ def _build(project_dir, venv_dir, uv_cache_dir, python_executable):
         shutil.rmtree(venv_dir, ignore_errors=True)
 
     cmd = [uv, "sync", "--python", python_executable]
-    if os.path.exists(os.path.join(project_dir, "uv.lock")):
-        cmd.append("--frozen")
 
     env = dict(os.environ)
     env["UV_PROJECT_ENVIRONMENT"] = venv_dir

@@ -830,17 +830,34 @@ def test_a_stale_declaration_does_not_spend_the_rebuild_budget(tmp_path, monkeyp
 
 
 @requires_fused
-def test_a_comment_edit_under_a_lock_does_not_resync(tmp_path, monkeypatch):
-    """The lock is the resolved truth; the manifest's bytes are not the digest."""
+def test_a_locked_project_that_gains_a_dependency_goes_stale(tmp_path, monkeypatch):
+    """The requirement the digest exists for: an edit is picked up automatically.
+
+    Under a lock-ONLY digest this was the silent failure — the manifest changed,
+    the lock did not, `sidecar_matches` said fresh, no install was offered, and
+    the run failed later on an ImportError with no loader and no explanation. The
+    user must never have to run `uv sync` themselves to fix that.
+    """
     proj = _project(tmp_path, deps=["cowsay"])
     with open(os.path.join(proj, "uv.lock"), "w", encoding="utf-8") as fh:
         fh.write("version = 1\n")
     _marked_venv(proj, runnable=True)
     assert envinstall.is_installed(proj) is True
 
-    with open(os.path.join(proj, "pyproject.toml"), "a", encoding="utf-8") as fh:
-        fh.write("\n# a comment\n")
-    assert envinstall.is_installed(proj) is True
+    _project(tmp_path, deps=["cowsay", "altair"])  # the lock is NOT re-run
+    assert envinstall.is_installed(proj) is False
+
+
+@requires_fused
+def test_a_locked_project_with_an_untouched_manifest_stays_fresh(tmp_path, monkeypatch):
+    """The other half: nothing moved, so nothing is rebuilt on every request."""
+    proj = _project(tmp_path, deps=["cowsay"])
+    with open(os.path.join(proj, "uv.lock"), "w", encoding="utf-8") as fh:
+        fh.write("version = 1\n")
+    _marked_venv(proj, runnable=True)
+
+    for _ in range(3):
+        assert envinstall.is_installed(proj) is True
 
 
 # --- a marker is a claim, and the claim is verified once (D212) ----------------
@@ -1834,8 +1851,14 @@ def test_the_worker_syncs_the_project_into_the_named_venv(tmp_path, monkeypatch)
 
 
 @requires_fused
-def test_a_locked_project_is_synced_frozen(tmp_path, monkeypatch):
-    """A lock is a request for exact resolution and must not be re-resolved."""
+def test_a_locked_project_is_never_synced_frozen(tmp_path, monkeypatch):
+    """`--frozen` turns a manifest edit into an error instead of reconciling it.
+
+    Bare `uv sync` already honours a current lock and re-resolves only what a
+    manifest edit moved — which IS the required behaviour, because a user must
+    never have to run `uv sync` by hand (that would create an in-folder `.venv`
+    and diverge from the home-dir store).
+    """
     proj = _project(tmp_path, deps=["pip"])
     open(os.path.join(proj, "uv.lock"), "w").write("version = 1\n")
     venv_dir = str(tmp_path / "home" / "venvs" / "abc")
@@ -1859,7 +1882,10 @@ def test_a_locked_project_is_synced_frozen(tmp_path, monkeypatch):
     monkeypatch.setattr(worker.shutil, "which", lambda name: "/usr/bin/uv")
 
     worker._build(proj, venv_dir, str(tmp_path / "cache"), "3.12")
-    assert "--frozen" in seen["cmd"]
+    assert "--frozen" not in seen["cmd"], (
+        "a locked project synced --frozen fails on a manifest edit instead of "
+        "picking it up"
+    )
 
 
 @requires_fused
@@ -2465,6 +2491,68 @@ def test_concurrent_starts_spawn_exactly_one_worker(tmp_path, monkeypatch):
 
     assert errors == [], errors
     assert len(spawned) == 1, f"{len(spawned)} workers spawned for one venv"
+
+
+@requires_fused
+def test_two_scripts_in_one_project_still_spawn_exactly_one_worker(
+    tmp_path, monkeypatch
+):
+    """The claim holds under the NEW key: the project, not a requirement set.
+
+    This is the server-side half of "one install per project". The client dedups
+    too (`installEnv`'s registry, tests/test_server_env_install.py), but that is
+    about not issuing N POSTs — this is what makes N POSTs harmless if they
+    arrive anyway, which they will from two pages, a reload mid-install, or any
+    direct API caller.
+
+    Two DIFFERENT .py files, deliberately: under the old per-file key they would
+    have been two keys and two workers by construction, so this is exactly the
+    case the folder rule changed.
+    """
+    proj = _project(tmp_path, deps=["pip"])
+    for name in ("one.py", "two.py"):
+        with open(os.path.join(proj, name), "w", encoding="utf-8") as fh:
+            fh.write("def main():\n    return 1\n")
+
+    from fused_render import projectenv
+
+    resolved = {projectenv.project_env_for(os.path.join(proj, n))
+                for n in ("one.py", "two.py")}
+    assert resolved == {proj}, "the two files must resolve to one project"
+
+    barrier = threading.Barrier(2)
+    spawned = []
+    lock = threading.Lock()
+
+    def fake_spawn(key, p, **kw):
+        with lock:
+            spawned.append(key)
+        return os.getpid()  # provably alive, so `_in_flight` stays true
+
+    monkeypatch.setattr(envinstall, "_spawn", fake_spawn)
+    errors = []
+
+    def go(py):
+        try:
+            barrier.wait(timeout=30)
+            envinstall.start(projectenv.project_env_for(py))
+        except Exception as e:  # noqa: BLE001
+            errors.append(e)
+
+    threads = [
+        threading.Thread(target=go, args=(os.path.join(proj, n),))
+        for n in ("one.py", "two.py")
+    ]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=60)
+
+    assert errors == [], errors
+    assert len(spawned) == 1, (
+        f"{len(spawned)} workers spawned for one project — the loser must JOIN"
+    )
+    assert spawned == [envinstall.venv_key_for(proj)]
 
 
 @requires_fused

@@ -48,6 +48,7 @@ import logging
 import os
 import re
 import shutil
+import threading
 
 from fused_render.shell.storage import home_dir
 
@@ -298,20 +299,98 @@ def dependencies_of(project_dir: str) -> list[str]:
 # --------------------------------------------------------------------------
 
 
-def state_digest(project_dir: str) -> str:
-    """sha256 of what the venv should have been built from, or "" when nothing
-    is declared.
+# project dir -> (stat fingerprint, digest). A process-local memo, described in
+# `state_digest`; `_digest_lock` guards it because `is_installed` reaches this
+# through `asyncio.to_thread` and several runs can be in flight at once.
+_digest_cache: dict[str, tuple[tuple | None, str]] = {}
+_digest_lock = threading.Lock()
 
-    The lock when there is one — it is the resolved truth, and a comment edit to
-    `pyproject.toml` must not force a resync — else the manifest.
+
+def _digest_fingerprint(root: str) -> tuple | None:
+    """`(st_ino, st_size, st_mtime_ns)` of the manifest, or None when absent.
+
+    ONLY a cache-invalidation hint — never the staleness signal itself. The
+    digest below is what any decision is made on, so the `copy2` problem in the
+    module docstring (a re-staged template's manifest is newer than its venv but
+    byte-identical) is untouched: a moved mtime costs one re-hash and then agrees
+    with the digest already recorded.
     """
-    for path in (lock_path(project_dir), pyproject_path(project_dir)):
-        try:
-            with open(path, "rb") as f:
-                return hashlib.sha256(f.read()).hexdigest()
-        except OSError:
-            continue
-    return ""
+    try:
+        st = os.stat(os.path.join(root, "pyproject.toml"))
+    except OSError:
+        return None
+    return (st.st_ino, st.st_size, st.st_mtime_ns)
+
+
+def _compute_state_digest(root: str) -> str:
+    """The uncached digest. Kept byte-identical to
+    `_env_install_worker._state_digest`, which WRITES what this reads — a
+    divergence there means every request reads its own fresh venv as stale."""
+    try:
+        with open(os.path.join(root, "pyproject.toml"), "rb") as f:
+            return hashlib.sha256(f.read()).hexdigest()
+    except OSError:
+        return ""
+
+
+def state_digest(project_dir: str) -> str:
+    """sha256 of `pyproject.toml`, or "" when there is none.
+
+    The MANIFEST only. `uv.lock` is deliberately not part of this: it is an
+    OUTPUT of `uv sync`, not an input to it, so folding it in would make the
+    environment's own side effect a reason to rebuild the environment. The
+    declaration is the manifest, and the manifest is what decides staleness.
+
+    That the manifest is hashed at all — rather than the lock, on the reasoning
+    that the lock is the resolved truth — is the requirement this exists for: a
+    user adding a dependency must have it picked up without ever running
+    `uv sync` by hand, because doing that would create an in-folder `.venv` and
+    diverge from the home-dir store. Hashing the lock instead meant such an edit
+    changed nothing, `sidecar_matches` said fresh, no install was offered, and
+    the run failed later on an ImportError with no loader and no explanation. The
+    cost in the other direction is a resync for a comment edit, which is a fast
+    no-op through uv's cache — a silently ignored dependency edit is a broken app.
+
+    The intended consequence: a hand-edit to `uv.lock` ALONE does not trigger a
+    resync. The lock is generated; the manifest is the declaration. (The sync it
+    would have triggered runs bare rather than `--frozen`, so uv reconciles the
+    lock itself whenever the manifest moves — see `_env_install_worker._build`.)
+
+    Still a digest and never an mtime chain, for the reason in the module
+    docstring: core templates are re-staged with `copy2` on every release, so an
+    mtime rule would resync byte-identical dependencies at every upgrade.
+
+    Memoised per process on a `(st_ino, st_size, st_mtime_ns)` fingerprint,
+    because `is_installed` calls this on every `/api/run`: the steady state is
+    one `stat`. The memo is process-local and dies with the app process, which is
+    what keeps it safe across upgrades — there is no persisted verdict to go
+    stale. Its one blind spot is an edit that preserves BOTH size and nanosecond
+    mtime, which needs two writes inside a single filesystem timestamp tick; the
+    fingerprint is deliberately not strengthened past that, since the alternative
+    is re-reading the file on every request to close a window nothing can
+    realistically hit.
+    """
+    root = os.path.abspath(project_dir)
+    fingerprint = _digest_fingerprint(root)
+    with _digest_lock:
+        cached = _digest_cache.get(root)
+        if cached is not None and cached[0] == fingerprint:
+            return cached[1]
+    # Computed outside the lock: reading the file must not serialise every
+    # concurrent pre-flight in the process. A duplicate computation in a race is
+    # harmless — the inputs are the same, so both threads produce the same digest
+    # and the later store simply overwrites an identical value.
+    digest = _compute_state_digest(root)
+    with _digest_lock:
+        _digest_cache[root] = (fingerprint, digest)
+    return digest
+
+
+def reset_state_digest_cache() -> None:
+    """Forget every memoised digest. A test seam, mirroring
+    `envinstall.reset_venv_validation_cache`."""
+    with _digest_lock:
+        _digest_cache.clear()
 
 
 def read_sidecar(venv_dir: str) -> dict | None:
