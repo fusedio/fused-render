@@ -34,6 +34,7 @@ import pytest
 
 import fused_render.app as app_mod
 import fused_render.shell.mounts as mounts_mod
+import fused_render.shell.mounts.rcd as rcd_mod
 
 
 # --------------------------------------------------------------- duckdb stash
@@ -619,36 +620,48 @@ def test_the_kill_poll_does_not_probe_the_rc_port_while_the_pid_is_alive(
     iteration for the whole wait (dead-cached, but re-probing every 5s and able to
     overrun the phase). The pid check is a free syscall and is the authoritative
     "our daemon is gone", so it goes first: no probe at all while the process
-    lives, and at most one after it dies."""
+    lives, and at most one after it dies.
+
+    Counted, not timed. The daemon's exit used to be a `threading.Timer(1.2)`
+    against the phase's real `_KILL_TIMEOUT_S` of 5s, so a runner that starved
+    this process for five seconds — routine under `-n auto` — expired the SIGTERM
+    phase, escalated to SIGKILL, and spent a second probe in the second phase:
+    `assert 2 <= 1`, reporting the machine rather than a regression. The daemon
+    now exits after a fixed number of POLLS and the phase deadline is put out of
+    reach, so nothing but the ordering under test can move the probe count."""
     monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
+    monkeypatch.setattr(rcd_mod, "_KILL_TIMEOUT_S", 300.0)
     probes = []
-    alive = {"pid": True}
+    polls = []
 
     def _live_rcd_port(*a, **k):
         probes.append(time.monotonic())
         time.sleep(0.4)  # stands in for the rc probe's timeout
         return None
 
+    def _pid_alive(pid):
+        # A daemon that takes a beat to shut down: the loop has to POLL, which is
+        # what makes the ordering observable (probe-first burned one probe per
+        # iteration for the whole wait). Counted in polls, not seconds, so the
+        # answer does not depend on how loaded the runner is.
+        polls.append(pid)
+        return len(polls) < 5
+
     monkeypatch.setattr(mounts_mod.storage, "read_json",
                         lambda path: {"port": 5572, "pid": _RCD_PID,
                                       "spawner_pid": os.getpid()})
     monkeypatch.setattr(mounts_mod, "_confirmed_our_rcd", lambda entry: True)
-    monkeypatch.setattr(mounts_mod, "_pid_alive", lambda pid: alive["pid"])
+    monkeypatch.setattr(mounts_mod, "_pid_alive", _pid_alive)
     monkeypatch.setattr(mounts_mod, "_live_rcd_port", _live_rcd_port)
+    monkeypatch.setattr(mounts_mod.os, "kill", lambda pid, sig: None)
 
-    def _kill(pid, sig):
-        # A daemon that takes a beat to shut down: the loop has to POLL, which is
-        # what makes the ordering observable (probe-first burned one probe per
-        # iteration for the whole wait).
-        threading.Timer(1.2, lambda: alive.__setitem__("pid", False)).start()
-
-    monkeypatch.setattr(mounts_mod.os, "kill", _kill)
-
-    t0 = time.monotonic()
     mounts_mod._kill_current_rcd()
 
     assert len(probes) <= 1, "one probe after the pid died, never during the wait"
-    assert time.monotonic() - t0 < 3.0
+    # The pid outlived several polls, so a probe-first loop would have burned a
+    # probe on each of them — which is the only reason the count above means
+    # anything. `_pid_alive` is called once by the entry gate before the loop.
+    assert len(polls) >= 5
 
 
 # ------------------------------------------------- the stash cannot come back
