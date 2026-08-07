@@ -25,11 +25,11 @@ const PREVIEW_SCALE = 0.25;
 // How many stack chips a folder card fans out (the rest stays behind the count).
 const MAX_CHIPS = 3;
 
-// A bookmark's url re-prefixed onto the chrome-free embed route so it can
-// render inside a card thumbnail. The bare legacy "/view/" prefix still
-// converts (bookmarks saved before the /explorer rename, same rule as
-// bookmarkFsPath); layout sentinels (_tab/_panel) embed fine as-is.
-function embedUrlForBookmark(url: string): string {
+// A view url (bookmark or recent) re-prefixed onto the chrome-free embed
+// route so it can render inside a card thumbnail. The bare legacy "/view/"
+// prefix still converts (urls recorded before the /explorer rename, same
+// rule as bookmarkFsPath); layout sentinels (_tab/_panel) embed fine as-is.
+export function embedUrlForBookmark(url: string): string {
   const { pathname, search } = splitBookmarkUrl(url);
   const prefix = [VIEW_PREFIX, "/view/"].find((p) => pathname.startsWith(p));
   return prefix ? EMBED_PREFIX + pathname.slice(prefix.length) + search : pathname + search;
@@ -55,7 +55,7 @@ function joinPath(dir: string, name: string): string {
 }
 
 // Display-only live preview: scaled iframe + a shield keeping clicks on the card.
-function LivePreview({ src }: { src: string }) {
+export function LivePreview({ src }: { src: string }) {
   return (
     <span className="fhb-preview" aria-hidden="true">
       <iframe
@@ -302,5 +302,48 @@ export function BookmarkPreviewCard({ b }: { b: Bookmark }) {
         </span>
       )}
     </CardShell>
+  );
+}
+
+// A recent file, in the same card shell as a bookmark — header row (icon +
+// name over path) over a live preview thumbnail. Simpler than
+// BookmarkPreviewCard: recents are never recorded for a directory
+// (useRecentsTracking opts folders out) and the server's GET already drops
+// entries whose file is gone, so there's no isDir stat and no missing state
+// to branch on.
+export function RecentPreviewCard({
+  url,
+  path,
+  name,
+}: {
+  url: string;
+  path: string;
+  name: string;
+}) {
+  return (
+    <a
+      className="fhb-card"
+      href={url}
+      title={path}
+      onClick={(e) => {
+        if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey)
+          return;
+        e.preventDefault();
+        navigateUrl(url);
+      }}
+    >
+      <span className="fhb-card-head">
+        <span className="fh-card-icon" aria-hidden="true">
+          {iconForEntry(basename(path), false)}
+        </span>
+        <span className="fh-card-text">
+          <span className="fh-card-name">{name}</span>
+          <span className="fh-card-path">{path}</span>
+        </span>
+      </span>
+      <span className="fhb-thumb">
+        <LivePreview src={embedUrlForBookmark(url)} />
+      </span>
+    </a>
   );
 }
