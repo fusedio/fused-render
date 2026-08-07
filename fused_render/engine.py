@@ -19,9 +19,9 @@ anything written in the file (SPEC PY-16; supersedes D172's per-file header):
     matches the declaration), /api/run answers `needs_install` instead of
     blocking on the download — see `envinstall.py` (PY-18).
 
-A file that still carries a `# /// script` header in a folder with no
-`pyproject.toml` is REPORTED, not silently run: the header is no longer read, so
-running it would fail on an import of something the file does declare.
+A `# /// script` header is not read, and not detected either — it is an ordinary
+comment (D233). Nothing here inspects the source for one, so a file carrying a
+leftover block runs exactly as it would without it.
 `projectenv.project_env_for` owns the folder rule.
 
 Code contract under this engine (the fused contract, plus a compat bridge):
@@ -756,7 +756,7 @@ def get_backend():
 async def _execute(code: str, requirements: list[str], interpreter: str | None, input_files: dict):
     """Run `code` on the backend, on `interpreter` when one was resolved.
 
-    The venv path (a script with a PEP 723 header) goes through the public
+    The venv path (a script whose folder declares dependencies) goes through the public
     `execute()`, unchanged. The interpreter path cannot: `execute()` derives an
     `interpreter` ONLY by resolving a uv workflow venv from a `project` /
     `project_dir`, and a standalone .py has neither. So it calls the documented
@@ -1096,49 +1096,6 @@ async def run_python(path: str, params: dict) -> dict:
     # ignores requirements silently), so they are never both set here.
     interpreter = None
     if project is None:
-        if projectenv.has_script_header(user_code):
-            # Reported, never ignored. The header is no longer read, so running
-            # anyway would put the script on an interpreter that is missing
-            # exactly what the header asked for — and the user would see an
-            # ImportError about a package they DID declare, with nothing
-            # connecting it to the rule that changed. Same shape as
-            # `InterpreterUnavailable` below: a configuration error that names
-            # its own fix.
-            #
-            # The fix is named directly rather than as a command, because there
-            # deliberately is no migration tool (see DECISIONS.md). That makes
-            # this message the ONLY migration path, so the directory it names has
-            # to be the one that will actually be read.
-            #
-            # `project_root_for`, not the file's own folder. Inside an app folder
-            # or a template folder the root is the CONTAINER and a manifest below
-            # it is inert by design — so telling the user to create one next to
-            # their `.py` would have them write a file the resolver ignores, leave
-            # the script on the app interpreter still missing its packages, and
-            # give them nothing to connect the two. Outside those containers there
-            # is no container, and the file's own folder is exactly the root that
-            # will apply once it declares one.
-            #
-            # The packages the dead header listed are quoted verbatim so the user
-            # does not have to go and read the block they are about to delete.
-            folder = projectenv.project_root_for(path) or os.path.dirname(
-                os.path.abspath(path)
-            )
-            declared = ", ".join(projectenv.header_dependencies(user_code))
-            return _error_dict(
-                "ScriptHeaderNoLongerRead",
-                f"{os.path.basename(path)} still has a '# /// script' block. "
-                "Per-file PEP 723 headers are no longer read — dependencies are "
-                "declared once per folder, in that folder's pyproject.toml. "
-                "Nothing was run, because running it would fail on an import of "
-                "something this file does declare.\n\n"
-                f"Fix: create {os.path.join(folder, 'pyproject.toml')} with a "
-                "[project] table whose `dependencies` are "
-                + (f"[{declared}]" if declared else "what this file needs")
-                + ", then delete the '# /// script' block from this file. If the "
-                "app's own interpreter already has those packages, deleting the "
-                "block on its own is enough.",
-            )
         # Off the event loop: `app_interpreter` is sync (it is called from sync
         # contexts and tests) and its first call in a process runs up to two
         # `subprocess.run(..., timeout=5)` probes plus a wrapper write. /api/run

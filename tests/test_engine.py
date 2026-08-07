@@ -69,94 +69,56 @@ def _declare(folder, deps='"pyarrow", "requests"'):
 
 
 @requires_tomllib
-def test_an_orphan_script_header_is_refused_not_ignored(monkeypatch, tmp_path):
-    """A dead header must not be silently skipped.
+def test_a_leftover_script_header_is_an_ordinary_comment(monkeypatch, tmp_path):
+    """A `# /// script` block neither supplies an environment nor blocks a run.
 
-    Headers are no longer read (PY-16). Running the file anyway would put it on
-    an interpreter missing exactly what the header asked for, and the user would
-    see an ImportError about a package they DID declare — with nothing connecting
-    it to the rule that changed. This is a breaking change with no migration
-    path, so the refusal IS the migration guidance.
+    Headers were briefly REFUSED here, so that a file whose declaration had
+    stopped being read could not fail later on a confusing ImportError. That
+    guard is gone: this is a pre-release product with no installed base to
+    migrate, and the refusal cost more than it bought — it broke files whose
+    header declared nothing applicable on this platform, and it only fired when
+    the folder had no manifest, so the case it was written for (a half-migrated
+    folder that HAS one) slipped through it anyway.
+
+    So the block is what it looks like: comment lines. The folder decides the
+    environment (PY-16), and a file with no folder declaration runs on the app's
+    own interpreter (PY-17) exactly as it would without the block.
     """
     monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
     monkeypatch.setenv("FUSED_RENDER_DIR", str(tmp_path / "workspace"))
     target = tmp_path / "orphan.py"
     target.write_text(
-        '# /// script\n# dependencies = ["cowsay"]\n# ///\ndef main():\n    return 1\n',
+        '# /// script\n# dependencies = ["cowsay"]\n# ///\ndef main():\n    return 7\n',
         encoding="utf-8",
     )
 
     out = asyncio.run(engine.run_python(str(target), {}))
 
-    assert out["ok"] is False
-    assert out["error"]["type"] == "ScriptHeaderNoLongerRead"
-    message = out["error"]["message"]
-    # It names the fix directly — the file to create and what to put in it.
-    assert os.path.join(str(tmp_path), "pyproject.toml") in message
-    assert "cowsay" in message, "the packages the dead header listed are quoted"
-    # And NOT a tool: there deliberately is no migration command to point at.
-    assert "migrate" not in message.lower(), (
-        "the error names a migration command; none exists (see DECISIONS.md)"
-    )
+    assert out["ok"] is True, out.get("error")
+    assert out["result"] == 7
+    assert not out.get("needs_install"), "a header must not ask for an install"
 
 
 @requires_tomllib
-def test_the_orphan_header_error_names_the_PROJECT_ROOT_not_the_files_folder(
-    monkeypatch, tmp_path
-):
-    """The message is the only migration path, so it has to name a real one.
+def test_a_header_does_not_override_the_folders_declaration(monkeypatch, tmp_path):
+    """The folder wins outright — the header is not merged, read, or reported.
 
-    Inside an app folder — and inside a template folder — `project_root_for`
-    always resolves to the CONTAINER, and a manifest below that root is inert by
-    design. Telling a user to create `pyproject.toml` next to their `.py` would
-    have them write a file the resolver ignores: the script stays on the app
-    interpreter, still without the packages, and nothing says why. There is no
-    migration tool (D230), so getting this path wrong strands them.
+    The half-migrated case: the manifest is written but a stale block survives
+    in one file. What the block names must have no bearing on the environment.
     """
     monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
     monkeypatch.setenv("FUSED_RENDER_DIR", str(tmp_path / "workspace"))
+    proj = _declare(tmp_path / "proj", deps='"pyarrow"')
+    target = os.path.join(proj, "s.py")
+    with open(target, "w", encoding="utf-8") as fh:
+        fh.write('# /// script\n# dependencies = ["cowsay"]\n# ///\n'
+                 'def main():\n    return 7\n')
 
-    app = tmp_path / "workspace" / "tag" / "my-app"
-    nested = app / "readers" / "deep"
-    nested.mkdir(parents=True)
-    target = nested / "orphan.py"
-    target.write_text(
-        '# /// script\n# dependencies = ["cowsay"]\n# ///\ndef main():\n    return 1\n',
-        encoding="utf-8",
+    from fused_render import projectenv
+
+    assert projectenv.applicable_dependencies_of(proj) == ["pyarrow"], (
+        "the header leaked into the folder's declaration"
     )
-
-    out = asyncio.run(engine.run_python(str(target), {}))
-
-    assert out["error"]["type"] == "ScriptHeaderNoLongerRead"
-    message = out["error"]["message"]
-    assert os.path.join(str(app), "pyproject.toml") in message, (
-        f"named a manifest path the resolver would ignore: {message}"
-    )
-    assert str(nested) not in message, (
-        "the file's own folder is inert inside an app; naming it strands the user"
-    )
-
-
-@requires_tomllib
-def test_the_orphan_header_error_names_the_files_folder_outside_a_container(
-    monkeypatch, tmp_path
-):
-    """Outside an app/template there is no container, so the file's own folder IS
-    the root that would apply once it declares one."""
-    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
-    monkeypatch.setenv("FUSED_RENDER_DIR", str(tmp_path / "workspace"))
-
-    loose = tmp_path / "elsewhere"
-    loose.mkdir()
-    target = loose / "orphan.py"
-    target.write_text(
-        '# /// script\n# dependencies = ["cowsay"]\n# ///\ndef main():\n    return 1\n',
-        encoding="utf-8",
-    )
-
-    out = asyncio.run(engine.run_python(str(target), {}))
-
-    assert os.path.join(str(loose), "pyproject.toml") in out["error"]["message"]
 
 
 @requires_tomllib
@@ -901,11 +863,12 @@ def test_a_preflight_that_raises_is_still_contained_off_thread(
     "the exception surfaces somewhere else now" is exactly the kind of regression
     a thread hop hides.
     """
-    target = tmp_path / "declared.py"
-    target.write_text(
-        '# /// script\n# dependencies = ["imagecodecs"]\n# ///\n'
-        "def main():\n    return 1\n"
-    )
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("FUSED_RENDER_DIR", str(tmp_path / "workspace"))
+    proj = _declare(tmp_path / "proj", deps='"imagecodecs"')
+    target = os.path.join(proj, "declared.py")
+    with open(target, "w", encoding="utf-8") as fh:
+        fh.write("def main():\n    return 1\n")
     backend = _FakeBackend(_FakeResult(return_value="1"))
     monkeypatch.setattr(engine, "get_backend", lambda: backend)
 

@@ -55,12 +55,11 @@ otherwise the outermost folder above it holding a `pyproject.toml`. A
 when that happens.
 
 > **Breaking change (unreleased).** Per-file PEP 723 `# /// script` headers are
-> no longer read. A file that still has one is refused with an error naming the
-> `pyproject.toml` to create and the packages to put in it; move the block's
-> `dependencies` into the project root's manifest and delete the block. There is
-> no automatic migration — the union of several files' headers is a guess at a
-> dependency set nobody wrote, so the change is one you make with the error in
-> front of you. Folders whose scripts had no header are unaffected.
+> no longer read — a leftover block is an ordinary comment, ignored like any
+> other. Move its `dependencies` into the project root's `pyproject.toml`.
+> Nothing warns you: a file whose packages only ever came from a header will
+> fail on the import, so this is worth grepping for rather than waiting to hit.
+> Folders whose scripts had no header are unaffected.
 
 ## Remote storage (mounts)
 

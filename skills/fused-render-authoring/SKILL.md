@@ -92,7 +92,7 @@ Four things to know before you write one:
 
 Adding a dependency later is just an edit: save `pyproject.toml`, re-render, and the environment is reconciled. Never run `uv sync` by hand in the folder — it would create an in-folder `.venv` that diverges from the one the app actually uses (venvs live centrally under `~/.fused-render/`).
 
-**Per-file `# /// script` headers are not read.** A file that still carries one is refused with an error naming the `pyproject.toml` to create; move the block's `dependencies` into the project root's manifest and delete the block.
+**Per-file `# /// script` headers are not read.** A leftover block is an ordinary comment — silently ignored, not merged and not warned about. Never write one; if you see one, move its `dependencies` into the project root's `pyproject.toml` and delete it, because the packages it names are not being installed.
 
 Versions are not pinned — each install resolves its own. When a version matters (an API that changed between majors, a feature gated on a release), **probe the live environment** instead of guessing: `/api/run` executes in the exact interpreter that runs page code. Write a throwaway probe and POST it:
 

@@ -500,24 +500,19 @@ def test_sidecar_lands_inside_the_venv_not_the_project(home):
 
 
 # ---------------------------------------------------------------------------
-# Orphan headers, and the migration that removes them
+# Leftover PEP 723 headers are inert
 # ---------------------------------------------------------------------------
 
 HEADER = '# /// script\n# dependencies = ["altair", "cowsay"]\n# ///\n'
 
 
-def test_a_script_header_is_detected_not_honoured(home):
-    assert projectenv.has_script_header(HEADER + "x = 1\n") is True
-    assert projectenv.has_script_header("x = 1\n") is False
-    # A non-`script` PEP 723 block is somebody else's metadata, not ours.
-    assert projectenv.has_script_header("# /// other\n# a = 1\n# ///\n") is False
-
-
 def test_a_header_never_supplies_an_environment(home):
-    """There is no migration path and no fallback: a header buys nothing.
+    """A leftover header buys nothing — and costs nothing.
 
-    Deliberate (see DECISIONS.md) — the file is refused, and this pins that the
-    refusal is not quietly softened into "read it anyway just this once".
+    Nothing reads it and nothing reacts to it: the block is a comment, and the
+    folder alone decides the environment. This pins the "buys nothing" half; the
+    "costs nothing" half — that carrying one does not make the file fail — is
+    pinned in tests/test_engine.py.
     """
     d = home / "app"
     d.mkdir()
@@ -525,17 +520,6 @@ def test_a_header_never_supplies_an_environment(home):
 
     assert projectenv.project_env_for(str(d / "a.py")) is None
     assert projectenv.has_project_env(str(d)) is False
-
-
-def test_header_dependencies_are_quoted_for_the_error_message(home):
-    """Read for DISPLAY only — so the refusal can say what to put in pyproject."""
-    assert projectenv.header_dependencies(HEADER) == ["'altair'", "'cowsay'"]
-    assert projectenv.header_dependencies("x = 1\n") == []
-    # A malformed block yields nothing rather than raising: the error falls back
-    # to generic wording, which is no less useful than a parse complaint.
-    assert projectenv.header_dependencies(
-        "# /// script\n# dependencies = [oops\n# ///\n"
-    ) == []
 
 
 # ---------------------------------------------------------------------------
