@@ -371,11 +371,6 @@ export default function FilesHome({ config }: { config: Config }) {
               search prompt now) — and like the grids it yields to results. */}
           {config.fused_dir && (
             <section className="fh-section files-browse">
-              <p className="files-browse-sub">
-                Open anything in your workspace — data, maps, images, notebooks. Preview
-                it instantly, split views side by side, and bookmark the places you keep
-                coming back to.
-              </p>
               <button
                 type="button"
                 className="files-hero-cta"

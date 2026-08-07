@@ -99,12 +99,10 @@
   text-align: center;
 }
 
-.files-browse-sub {
-  margin: 0 auto 20px;
-  max-width: 560px;
-  font-size: 14px;
-  line-height: 1.55;
-  color: var(--fg-muted);
+/* Sits right under the hero's search bar — tighter than the default
+   .fh-section gap. */
+.fh-section.files-browse {
+  margin-top: 4px;
 }
 
 .files-hero-cta {
