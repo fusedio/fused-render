@@ -101,6 +101,20 @@ test("an app with no entry at all opens its folder", () => {
   });
 });
 
+test("a linked app never takes the builder route — its folder is outside the workspace", () => {
+  // /apps/<tag>/<name> is a pure codec against fused_dir (fsPathFromAppRoute),
+  // so /apps/linked/<name> would resolve to a workspace path that doesn't
+  // exist. A linked app opens through the explorer URL of its REAL folder,
+  // still in the full-bleed app view.
+  const linked = app({ tag: "linked", path: "/elsewhere/notes",
+    entry: "/elsewhere/notes/index.html", entry_html: "/elsewhere/notes/index.html" });
+  expect(hrefFor(linked)).toBe("/explorer/view/elsewhere/notes?_mode=app");
+  expect(openTargetFor(linked)).toEqual({
+    path: "/elsewhere/notes",
+    opts: { isDir: true, mode: "app" },
+  });
+});
+
 // -------------------------------------------------------------- the new tab
 
 test("href points at the same target a left click opens", () => {
