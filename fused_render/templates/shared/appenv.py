@@ -144,6 +144,19 @@ def is_linked_app_dir(path: str) -> bool:
     return any(ap == os.path.abspath(d) for d in linked_app_dirs())
 
 
+def linked_app_dir_for(path: str) -> str:
+    """The registered linked-app folder containing `path` (the folder itself
+    or anything below it), or "" when there is none. The linked-app analogue
+    of the workspace `<tag>/<name>` containment rule — what `versions` uses to
+    find the repo a file belongs to. Pure path arithmetic, no I/O."""
+    ap = os.path.abspath(path)
+    for d in linked_app_dirs():
+        ad = os.path.abspath(d)
+        if ap == ad or ap.startswith(ad + os.sep):
+            return ad
+    return ""
+
+
 def mount_read_only(path: str) -> bool:
     """True when `path` sits under a read-only mount. Mirrors
     `shell/mounts.py:mount_read_only`; keep the two in step.

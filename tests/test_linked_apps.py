@@ -289,11 +289,54 @@ def test_app_gates_accept_a_linked_folder(client, tmp_path, workspace, template)
     assert cond.main(str(app_dir)) is True
 
 
-def test_versions_gate_stays_workspace_only(client, tmp_path):
+def test_versions_gate_accepts_git_backed_linked_folders(client, tmp_path):
     d = _folder(tmp_path, "notes")
-    (d / ".git").mkdir()
+    cond = _condition("versions")
     client.post("/api/apps/link", json={"path": str(d)}, headers=HDRS)
-    assert _condition("versions").main(str(d)) is False
+    assert cond.main(str(d)) is False  # linked but no .git: no history to show
+    (d / ".git").mkdir()
+    assert cond.main(str(d)) is True
+    assert cond.main(str(d / "index.html")) is True  # files inside too
+
+
+def test_versions_backend_shows_history_but_refuses_revert_for_linked(
+    client, tmp_path
+):
+    """View-only history for a linked app: log/snapshot work, revert refuses —
+    the repo is the user's own, no Fused-identity commits (linked_apps.py)."""
+    import importlib.util
+    import subprocess
+
+    d = _folder(tmp_path, "notes")
+    subprocess.run(["git", "-C", str(d), "init", "-q"], check=True)
+    subprocess.run(
+        ["git", "-C", str(d), "-c", "user.name=t", "-c", "user.email=t@t",
+         "commit", "-q", "--allow-empty", "-m", "user commit"],
+        check=True,
+    )
+    client.post("/api/apps/link", json={"path": str(d)}, headers=HDRS)
+
+    path = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        "fused_render", "templates", "versions", "versions.py",
+    )
+    spec = importlib.util.spec_from_file_location("test_linked_versions", path)
+    versions = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(versions)
+
+    log = versions.main("log", str(d / "index.html"))
+    assert [c["subject"] for c in log["commits"]] == ["user commit"]
+    assert log["can_revert"] is False
+
+    sha = log["commits"][0]["sha"]
+    res = versions.main("revert", str(d / "index.html"), sha)
+    assert "revert is disabled for linked apps" in res["error"]
+    # nothing was written: still exactly the user's one commit
+    out = subprocess.run(
+        ["git", "-C", str(d), "log", "--format=%s"],
+        capture_output=True, text=True, check=True,
+    )
+    assert out.stdout.strip() == "user commit"
 
 
 def test_git_scoping_ignores_linked_folders(client, tmp_path, workspace):

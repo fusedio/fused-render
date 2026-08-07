@@ -51,7 +51,7 @@ if "__file__" not in globals():
 _SHARED = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "shared")
 if _SHARED not in sys.path:
     sys.path.insert(0, _SHARED)
-from appenv import home_dir, workspace_dir  # noqa: E402
+from appenv import home_dir, linked_app_dir_for, workspace_dir  # noqa: E402
 
 # Mirrors fused_render/app_git.py `_IDENTITY`; keep in step.
 _IDENTITY = ["-c", "user.name=Fused", "-c", "user.email=apps@fused.io"]
@@ -65,7 +65,12 @@ _US = "\x1f"
 def _app_dir_for(path: str) -> str:
     """The app dir containing `path`, or "" when the path is not inside an
     app. Mirrors `app_git.app_dir_for` (and `claude/agent.py`); keep in step.
+    Linked apps (registry folders outside the workspace) resolve too — but
+    read-only; see `_is_linked` / `main`'s revert refusal.
     """
+    linked = linked_app_dir_for(path)
+    if linked:
+        return linked
     try:
         root = workspace_dir()
         rel = os.path.relpath(os.path.abspath(path), root)
@@ -77,6 +82,16 @@ def _app_dir_for(path: str) -> str:
     if len(parts) < 2 or parts[0].startswith(".") or parts[1].startswith("."):
         return ""
     return os.path.join(root, parts[0], parts[1])
+
+
+def _is_linked(app_dir: str) -> bool:
+    """A linked app's repo is the USER'S OWN repository: fused-render shows
+    its history but never writes into it — no revert commit, no Fused
+    identity in their log (fused_render/linked_apps.py). Read actions (log,
+    snapshot) are fine: snapshot archives into the shell home, not the repo."""
+    from appenv import is_linked_app_dir
+
+    return is_linked_app_dir(app_dir)
 
 
 def _git(app_dir: str, *args, binary: bool = False):
@@ -129,7 +144,9 @@ def _log(app: str):
         except ValueError:
             ts = 0
         commits.append({"sha": sha, "ts": ts, "subject": subject})
-    return {"app": app, "commits": commits}
+    # `can_revert` drives the UI: revert is refused server-side for linked
+    # apps (see main), so the button must not be offered either.
+    return {"app": app, "commits": commits, "can_revert": not _is_linked(app)}
 
 
 def _snapshot(app: str, sha: str):
@@ -232,6 +249,12 @@ def main(action: str = "log", file: str = "", sha: str = ""):
         if action == "snapshot":
             return _snapshot(app, sha)
         if action == "revert":
+            if _is_linked(app):
+                # The security boundary, not just UI politeness: a revert
+                # records a commit with the Fused identity, and a linked app's
+                # repo belongs to the user. History is view-only here.
+                return {"error": "revert is disabled for linked apps — "
+                                 "this folder's git history is managed by you"}
             return _revert(app, sha)
     except subprocess.TimeoutExpired:
         return {"error": "git timed out"}

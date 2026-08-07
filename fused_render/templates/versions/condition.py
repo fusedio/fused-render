@@ -19,12 +19,13 @@ on every file and directory the user opens). Mount-backed paths are refused
 outright: an app is by definition a local folder, and probing `.git` over a
 kernel NFS mount is exactly the stat this gate must never issue.
 
-Registered *linked apps* (FUSED_RENDER_LINKED_APPS) are DELIBERATELY not
-accepted here, unlike app/claude_split's gates: this template's backend runs
-git against the repo with the Fused identity (commit, restore), and a linked
-folder is the user's OWN repository — the exact place fused-render must never
-write history into (see fused_render/linked_apps.py). Same reasoning keeps
-them out of app_git.app_dir_for and the claude agents' _commit_turn sweep.
+Registered *linked apps* (FUSED_RENDER_LINKED_APPS) pass too, when git-backed:
+their history is worth SHOWING like any app's. But only the read side — the
+backend (versions.py) refuses `revert` for a linked folder, because that
+writes a commit with the Fused identity into what is the user's OWN
+repository (see fused_render/linked_apps.py). The same reasoning keeps linked
+folders out of app_git.app_dir_for and the claude agents' _commit_turn sweep
+entirely — no auto-commits.
 
 Fails closed: any exception returns False.
 """
@@ -41,11 +42,16 @@ def main(path: str) -> bool:
         if shared not in sys.path:
             sys.path.insert(0, shared)
         try:
-            from appenv import is_mount_backed, workspace_dir
+            from appenv import is_mount_backed, linked_app_dir_for, workspace_dir
         except Exception:  # noqa: BLE001 — cannot tell -> refuse (CT-12)
             return False
         if is_mount_backed(path):
             return False
+
+        # Inside a registered linked app: same single .git probe as below.
+        linked = linked_app_dir_for(path)
+        if linked:
+            return os.path.isdir(os.path.join(linked, ".git"))
 
         root = workspace_dir()
         rel = os.path.relpath(os.path.abspath(path), root)

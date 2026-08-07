@@ -245,6 +245,11 @@ async function loadLog(preferSha) {
   const res = await fused.runPython("./versions.py",
     { action: "log", file: FILE }, { key: "log" });
   if (res.error) return notice(res.error, true);
+  // Linked apps are view-only history: versions.py refuses `revert` for them
+  // (the repo is the user's own), so the button disappears rather than
+  // offering an action the backend will reject. Older payloads (no
+  // `can_revert` key) keep the button — workspace apps always could.
+  if (res.can_revert === false) revertBtn.style.display = "none";
   commits = res.commits || [];
   if (!commits.length) return notice("No commits yet.");
   let pick = commits[0].sha;
