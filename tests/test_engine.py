@@ -101,6 +101,65 @@ def test_an_orphan_script_header_is_refused_not_ignored(monkeypatch, tmp_path):
 
 
 @requires_tomllib
+def test_the_orphan_header_error_names_the_PROJECT_ROOT_not_the_files_folder(
+    monkeypatch, tmp_path
+):
+    """The message is the only migration path, so it has to name a real one.
+
+    Inside an app folder — and inside a template folder — `project_root_for`
+    always resolves to the CONTAINER, and a manifest below that root is inert by
+    design. Telling a user to create `pyproject.toml` next to their `.py` would
+    have them write a file the resolver ignores: the script stays on the app
+    interpreter, still without the packages, and nothing says why. There is no
+    migration tool (D229), so getting this path wrong strands them.
+    """
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("FUSED_RENDER_DIR", str(tmp_path / "workspace"))
+
+    app = tmp_path / "workspace" / "tag" / "my-app"
+    nested = app / "readers" / "deep"
+    nested.mkdir(parents=True)
+    target = nested / "orphan.py"
+    target.write_text(
+        '# /// script\n# dependencies = ["cowsay"]\n# ///\ndef main():\n    return 1\n',
+        encoding="utf-8",
+    )
+
+    out = asyncio.run(engine.run_python(str(target), {}))
+
+    assert out["error"]["type"] == "ScriptHeaderNoLongerRead"
+    message = out["error"]["message"]
+    assert os.path.join(str(app), "pyproject.toml") in message, (
+        f"named a manifest path the resolver would ignore: {message}"
+    )
+    assert str(nested) not in message, (
+        "the file's own folder is inert inside an app; naming it strands the user"
+    )
+
+
+@requires_tomllib
+def test_the_orphan_header_error_names_the_files_folder_outside_a_container(
+    monkeypatch, tmp_path
+):
+    """Outside an app/template there is no container, so the file's own folder IS
+    the root that would apply once it declares one."""
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("FUSED_RENDER_DIR", str(tmp_path / "workspace"))
+
+    loose = tmp_path / "elsewhere"
+    loose.mkdir()
+    target = loose / "orphan.py"
+    target.write_text(
+        '# /// script\n# dependencies = ["cowsay"]\n# ///\ndef main():\n    return 1\n',
+        encoding="utf-8",
+    )
+
+    out = asyncio.run(engine.run_python(str(target), {}))
+
+    assert os.path.join(str(loose), "pyproject.toml") in out["error"]["message"]
+
+
+@requires_tomllib
 def test_a_header_inside_a_declared_project_is_simply_inert(monkeypatch, tmp_path):
     """The refusal is for ORPHANS only.
 

@@ -1111,10 +1111,24 @@ async def run_python(path: str, params: dict) -> dict:
             # its own fix.
             #
             # The fix is named directly rather than as a command, because there
-            # deliberately is no migration tool (see DECISIONS.md). The packages
-            # the dead header listed are quoted verbatim so the user does not
-            # have to go and read the block they are about to delete.
-            folder = os.path.dirname(os.path.abspath(path))
+            # deliberately is no migration tool (see DECISIONS.md). That makes
+            # this message the ONLY migration path, so the directory it names has
+            # to be the one that will actually be read.
+            #
+            # `project_root_for`, not the file's own folder. Inside an app folder
+            # or a template folder the root is the CONTAINER and a manifest below
+            # it is inert by design — so telling the user to create one next to
+            # their `.py` would have them write a file the resolver ignores, leave
+            # the script on the app interpreter still missing its packages, and
+            # give them nothing to connect the two. Outside those containers there
+            # is no container, and the file's own folder is exactly the root that
+            # will apply once it declares one.
+            #
+            # The packages the dead header listed are quoted verbatim so the user
+            # does not have to go and read the block they are about to delete.
+            folder = projectenv.project_root_for(path) or os.path.dirname(
+                os.path.abspath(path)
+            )
             declared = ", ".join(projectenv.header_dependencies(user_code))
             return _error_dict(
                 "ScriptHeaderNoLongerRead",
