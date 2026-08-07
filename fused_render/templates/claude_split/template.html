@@ -1667,11 +1667,17 @@ function annCloseComposer() {
 // A fresh note usually precedes a "go apply it" message: seed the visible
 // composer so sending is one keypress. Only when it's empty — never clobber
 // typed text. Auto-send (the popover's checkbox, default on) then submits it.
+const ANN_PREFILL = "apply the comments";
 function annPrefillComposer() {
   const home = chatEl.classList.contains("home");
   const el = home ? homebox : box;
-  if (el.value.trim()) return false;  // a typed draft is the user's — hands off
-  el.value = "apply the comments";
+  // A typed draft is the user's — hands off. But the composer holding exactly
+  // the canonical prefill is OUR text (a previous note left it, e.g. one saved
+  // with auto-send off), not a draft: it still counts as fillable, so the next
+  // note's auto-send can fire and carry every pending note with it.
+  const v = el.value.trim();
+  if (v && v !== ANN_PREFILL) return false;
+  el.value = ANN_PREFILL;
   (home ? growHome : growBox)();
   return true;
 }
