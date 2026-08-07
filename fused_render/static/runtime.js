@@ -690,40 +690,38 @@
   // about the venv key". Named and at module scope for the same reason `paintInstall`
   // is: one definition of a subtle rule, directly testable, rather than a condition
   // buried in a promise chain.
-  function shouldInstall(need, installed) {
-    return Boolean(need && need.key) && !installed.has(need.key);
-  }
-
-  // The set is per `runPython` CALL, and that lifetime is the whole correctness
-  // argument — a page-scoped one was tried and broke the case this flow exists
-  // for.
   //
-  // The question the guard answers is "did THIS call chain already install that
-  // key and get told to install it again", which is a loop. Widened to the page
-  // it answers a different question badly, because the key is now the project
-  // folder (PY-16) and every script in the folder shares it:
+  // `installed` belongs to ONE `runPython` call, and that lifetime is the whole
+  // correctness argument — a page-scoped set was tried and broke the case this
+  // flow exists for. The question here is "did THIS chain already install that key
+  // and get told to install it again", which is a loop. Widened to the page it
+  // answers a different question badly, because the key is now the project folder
+  // (PY-16) and every script in the folder shares it:
   //
   //   * FIVE CONCURRENT SCRIPTS. All five /api/run's are answered from the same
-  //     pre-install snapshot. The first response installs and records the key;
-  //     the other four then read it as already-attempted, fall through to the
-  //     `!data.ok` branch, and reject with the raw "declares dependencies that
-  //     are not installed yet" text. The multi-script case failed precisely
-  //     because it was multi-script.
+  //     pre-install snapshot. The first response installs and records the key; the
+  //     other four then read it as already-attempted, fall through to the
+  //     `!data.ok` branch, and reject with the raw "declares dependencies that are
+  //     not installed yet" text. The multi-script case failed precisely because it
+  //     was multi-script.
   //   * A LATE RESPONSE. A call answered before the install began but delivered
   //     after it finished is not a loop — it has not run at all yet — and must
   //     re-attempt rather than report a stale snapshot as a failure.
   //   * A MANIFEST EDIT. The key used to be derived from the requirement set, so
-  //     editing dependencies minted a NEW key and a legitimate second install.
-  //     It is stable per project now, so a page-scoped set refused the install
-  //     for a user who had just fixed their `pyproject.toml`.
+  //     editing dependencies minted a NEW key and a legitimate second install. It
+  //     is stable per project now, so a page-scoped set refused the install for a
+  //     user who had just fixed their `pyproject.toml`.
   //
-  // Deduplication — the actual "one install per page, not one per script" —
-  // lives in `installEnv`'s `installInFlight` registry instead, which is the
-  // right mechanism for it: concurrent callers JOIN one promise, so there is one
-  // POST, one poller, one row and one download however many scripts wait. What a
+  // Deduplication — the actual "one install per page, not one per script" — lives
+  // in `installEnv`'s `installInFlight` registry instead, which is the right
+  // mechanism for it: concurrent callers JOIN one promise, so there is one POST,
+  // one poller, one row and one download however many scripts wait. What a
   // page-scoped set bought on top of that was only collapsing N error messages
   // into one for a genuinely stuck install, and that is not worth failing the
   // healthy path for.
+  function shouldInstall(need, installed) {
+    return Boolean(need && need.key) && !installed.has(need.key);
+  }
 
   // The backdrop, and the container every install's row is appended to. It owns no
   // title/detail/bar of its own any more — those belong to a row, because there is
