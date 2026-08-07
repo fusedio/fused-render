@@ -41,7 +41,11 @@ import pytest
 
 from fused_render import engine, envinstall, projectenv
 
-pytest.importorskip("tomllib", reason="PEP 723 parsing needs Python 3.11+")
+# The engine these tests describe is 3.11+ (the `[fused]` extra's wheel is
+# marked `python_version >= "3.11"`), so on 3.10 the backend is never
+# installed and no project venv is ever built — there is nothing here for
+# 3.10 to constrain. Same reasoning as tests/test_engine_requirements.py.
+pytest.importorskip("tomllib", reason="the fused engine needs Python 3.11+")
 
 requires_fused = pytest.mark.skipif(
     not engine.available(), reason="fused package not installed (engine falls back)"

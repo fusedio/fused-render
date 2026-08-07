@@ -451,9 +451,11 @@ def _raw_declaration(folder):
 
     Markers are deliberately not evaluated: necessity is a property of the SOURCE
     and has to hold on every platform, not on the machine running pytest.
-    """
-    import tomllib
 
+    Uses the module-level `tomllib` from `_import_toml()` — a bare local
+    `import tomllib` here shadowed it and raised ModuleNotFoundError on 3.10,
+    where the parser comes from the `tomli` dependency instead.
+    """
     with open(os.path.join(_TEMPLATES, folder, "pyproject.toml"), "rb") as f:
         meta = tomllib.load(f)
     return list(meta.get("project", {}).get("dependencies", []))

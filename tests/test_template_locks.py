@@ -20,9 +20,32 @@ Both are checked against the FOLDER, which is where the environment is declared
 (SPEC PY-16).
 """
 import os
-import tomllib
 
 import pytest
+
+
+def _import_toml():
+    """tomllib (3.11+) or the tomli dependency that covers 3.10.
+
+    Same shape as `tests/test_bundle_contents.py`'s. A bare `import tomllib` here
+    raised ModuleNotFoundError at COLLECTION on 3.10, which errors the whole
+    module out rather than skipping it. `tomli` is a declared dependency of this
+    project (`fused_render/projectenv.py` reads manifests through the identical
+    fallback), so on 3.10 these tests RUN — the skip is only for an install that
+    genuinely has neither.
+    """
+    try:
+        import tomllib
+    except ImportError:
+        try:
+            import tomli as tomllib
+        except ImportError:
+            pytest.skip("needs tomllib (3.11+) or the tomli package",
+                        allow_module_level=True)
+    return tomllib
+
+
+tomllib = _import_toml()
 
 _REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _TEMPLATES = os.path.join(_REPO, "fused_render", "templates")

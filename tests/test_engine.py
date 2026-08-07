@@ -24,7 +24,7 @@ from fused_render import engine, envinstall
 
 
 def _toml_available() -> bool:
-    """Can a PEP 723 block be parsed in this environment?"""
+    """Can a `pyproject.toml` be parsed in this environment?"""
     try:
         import tomllib  # noqa: F401
     except ImportError:
