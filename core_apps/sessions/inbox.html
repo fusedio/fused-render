@@ -233,28 +233,11 @@
       <span style="flex:1"></span>
       <button class="peek-btn" id="peek-analyze" title="Review this session with a fresh Claude run">Analyze session</button>
       <button class="peek-btn" id="peek-continue" title="Copy a terminal command that resumes this session">Continue with Claude ⧉</button>
-      <button class="peek-btn" id="peek-external">Open in sessions viewer ↗</button>
     </div>
     <div class="peek-body" id="peek-body"></div>
   </div>
 
 <script>
-// The full sessions viewer (./sessions/sessions.html) as a shell explorer
-// route, derived from this page's own fs path so it works wherever the app
-// content lives (the builtin mount, a dev checkout, a copied folder). The
-// page renders either through /render?path=<abs> (the shell's iframe) or
-// directly at /explorer/view/<path>.
-function ownHtmlPath() {
-  if (location.pathname === "/render")
-    return new URLSearchParams(location.search).get("path") || "";
-  const m = location.pathname.match(/^\/explorer\/(?:view|embed)\/(.*)$/);
-  return m ? "/" + decodeURIComponent(m[1]).replace(/^\/+/, "") : "";
-}
-const SESSIONS_VIEW = (() => {
-  const own = ownHtmlPath();
-  const dir = own.slice(0, own.lastIndexOf("/"));
-  return dir ? `/explorer/view${dir}/sessions/sessions.html` : "";
-})();
 const STATUSES = ["in_progress", "done", "archived"];
 const STATUS_LABELS = {
   in_progress: "In Progress", done: "Done", archived: "Archive",
@@ -288,7 +271,7 @@ function ago(iso) {
   return Math.round(s / 86400) + "d ago";
 }
 
-// same rule as sessions.html: fresh activity mtime within 45s = running now
+// same rule as inbox.py's _is_running: fresh activity mtime within 45s = running now
 function isRunning(mtimeIso) {
   return !!mtimeIso && Date.now() - new Date(mtimeIso).getTime() < 45000;
 }
@@ -329,7 +312,7 @@ function autoFlow() {
 }
 
 // cheap poll (mtime only, no parsing): keeps "running" dots and times live and
-// pulls in sessions started after page load — mirrors sessions.html
+// pulls in sessions started after page load
 async function pollStatus() {
   if (document.hidden || !DATA) return;
   try {
@@ -821,10 +804,6 @@ function renderPeek() {
   if (!open) return;
   const s = DATA.sessions.find((x) => x.sessionId === id);
   if (!s) { $("peek-body").innerHTML = `<div id="empty">Session not found</div>`; return; }
-
-  $("peek-external").style.display = SESSIONS_VIEW ? "" : "none";
-  $("peek-external").onclick = () =>
-    window.open(`${SESSIONS_VIEW}?session=${encodeURIComponent(id)}`, "_blank");
 
   // copy a paste-ready terminal command to the clipboard, with button feedback
   const q = (x) => `'${String(x).replace(/'/g, `'\\''`)}'`;
