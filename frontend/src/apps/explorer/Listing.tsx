@@ -21,7 +21,7 @@
 //   useListingShortcuts.ts file-op keyboard chords
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { navigate, replaceSearch } from "@platform/lib/router";
-import { dirname } from "@apps/explorer/lib/fs-actions";
+import { dirname, normDir } from "@apps/explorer/lib/fs-actions";
 import { acquireOverlay, releaseOverlay } from "@platform/lib/ui-overlay";
 import { isMod } from "@platform/lib/platform";
 import { formatSize, formatMtime } from "@platform/lib/format";
@@ -197,6 +197,26 @@ export default function Listing({
   );
 
   const base = fsPath.replace(/\/$/, "");
+
+  // "Up" navigation for the button beside the search box: hop to the parent
+  // folder with THIS folder selected there (`?sel=<name>`), so the row you
+  // came from is highlighted — the same seed path a shared ?sel URL takes
+  // (useListingSelection). navigate() first (it carries the sticky pane
+  // params and the isDir scaffold hint), then the sel param is appended onto
+  // that same history entry via replaceSearch. Disabled at the filesystem /
+  // drive root, where dirname collapses to the folder itself.
+  const here = normDir(base);
+  const parentDir = dirname(here);
+  const atRoot = parentDir === here;
+  const goUp = () => {
+    if (atRoot) return;
+    const name = here.replace(/\/+$/, "").split("/").pop();
+    navigate(parentDir, { isDir: true });
+    if (!name) return;
+    const params = new URLSearchParams(location.search);
+    params.set("sel", name);
+    replaceSearch(location.pathname + "?" + params.toString());
+  };
 
   // Tell the caller whether this folder's top level holds exactly one HTML
   // ("app") file. Keyed off the plain listing, not the search results — the
@@ -734,6 +754,27 @@ export default function Listing({
               and the host listing's search/toggle already own that chrome. */}
           {!embedded && (
             <div className="listing-search">
+              <button
+                type="button"
+                className="listing-up-button"
+                title={atRoot ? "Already at the root" : "Up to parent folder"}
+                disabled={atRoot}
+                onClick={goUp}
+              >
+                <svg
+                  viewBox="0 0 24 24"
+                  width="14"
+                  height="14"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                >
+                  <line x1="12" y1="19" x2="12" y2="5" />
+                  <polyline points="5 12 12 5 19 12" />
+                </svg>
+              </button>
               {/* The box wraps input + pinned chips so the pane toggle can sit to
             their right without disturbing the chips' inside-the-input pin. */}
               <div className="listing-search-box">

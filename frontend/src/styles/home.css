@@ -57,8 +57,17 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 4px;
-  margin: 0 0 10px;
+  flex-wrap: wrap;
+  /* Row gap keeps a wrapped tagline off the logo row; the 18px column gap is
+     the name-to-tagline spacing (logo and name are one tight .home-hero-brand-mark
+     group, so it stays centered when the tagline wraps). */
+  gap: 4px 18px;
+  margin: 0 0 18px;
+}
+
+.home-hero-brand-mark {
+  display: inline-flex;
+  align-items: center;
 }
 
 .home-hero-logo {
@@ -83,13 +92,13 @@
   letter-spacing: -0.02em;
 }
 
-.home-hero-title {
-  margin: 0 0 18px;
-  text-align: center;
-  font-size: 24px;
-  font-weight: 700;
-  letter-spacing: -0.025em;
-  line-height: 1.08;
+/* Tagline shares the brand line but reads secondary: smaller, lighter weight,
+   dimmer color, set off from the name by a little extra space. */
+.home-hero-tagline {
+  font-size: 16px;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+  color: var(--fg-muted);
 }
 
 .home-hero-accent {

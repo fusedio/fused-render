@@ -121,6 +121,42 @@ def read_only_mountpoints() -> list:
     return [p for p in raw.split(os.pathsep) if p]
 
 
+def linked_app_dirs() -> list:
+    """The absolute folders registered as *linked apps* — apps living anywhere
+    on disk, outside the workspace's <tag>/<name> shape (the registry at
+    `home_dir()/linked_apps.json`, fused_render/linked_apps.py).
+
+    Read from `FUSED_RENDER_LINKED_APPS`, an `os.pathsep`-joined list the
+    server re-exports on every registry write (same contract as
+    `FUSED_RENDER_RO_MOUNTS`); absent or empty means "none". Env-only on
+    purpose: the gates that consult this run on every stat and must never
+    read a file. Empty segments are dropped so a stray separator can't
+    produce a "" entry.
+    """
+    raw = os.environ.get("FUSED_RENDER_LINKED_APPS") or ""
+    return [p for p in raw.split(os.pathsep) if p]
+
+
+def is_linked_app_dir(path: str) -> bool:
+    """True when `path` IS a registered linked-app folder (exact match, the
+    folder itself — not contents; gates on the folder are what need this)."""
+    ap = os.path.abspath(path)
+    return any(ap == os.path.abspath(d) for d in linked_app_dirs())
+
+
+def linked_app_dir_for(path: str) -> str:
+    """The registered linked-app folder containing `path` (the folder itself
+    or anything below it), or "" when there is none. The linked-app analogue
+    of the workspace `<tag>/<name>` containment rule — what `versions` uses to
+    find the repo a file belongs to. Pure path arithmetic, no I/O."""
+    ap = os.path.abspath(path)
+    for d in linked_app_dirs():
+        ad = os.path.abspath(d)
+        if ap == ad or ap.startswith(ad + os.sep):
+            return ad
+    return ""
+
+
 def mount_read_only(path: str) -> bool:
     """True when `path` sits under a read-only mount. Mirrors
     `shell/mounts.py:mount_read_only`; keep the two in step.

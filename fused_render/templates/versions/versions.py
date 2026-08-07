@@ -10,7 +10,7 @@ WHOLE app — the repo is the app, not the file. Three actions:
                into a per-app, per-commit dir under the shell home
                (`~/.fused-render/app-versions/<app-key>/<sha>/`); a commit is
                immutable, so an existing complete snapshot is reused as-is.
-               The caller iframes `/render?path=<snapshot>/index.html`.
+               The caller iframes `/render?path=<snapshot entry page>`.
 * `revert`   — restore the working tree AND index to the selected commit and
                record that as a NEW commit on top ("Reverted to <sha> — …").
                History is never rewritten: revert of a revert works, and
@@ -51,7 +51,7 @@ if "__file__" not in globals():
 _SHARED = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "shared")
 if _SHARED not in sys.path:
     sys.path.insert(0, _SHARED)
-from appenv import home_dir, workspace_dir  # noqa: E402
+from appenv import home_dir, linked_app_dir_for, workspace_dir  # noqa: E402
 
 # Mirrors fused_render/app_git.py `_IDENTITY`; keep in step.
 _IDENTITY = ["-c", "user.name=Fused", "-c", "user.email=apps@fused.io"]
@@ -65,7 +65,12 @@ _US = "\x1f"
 def _app_dir_for(path: str) -> str:
     """The app dir containing `path`, or "" when the path is not inside an
     app. Mirrors `app_git.app_dir_for` (and `claude/agent.py`); keep in step.
+    Linked apps (registry folders outside the workspace) resolve too — but
+    read-only; see `_is_linked` / `main`'s revert refusal.
     """
+    linked = linked_app_dir_for(path)
+    if linked:
+        return linked
     try:
         root = workspace_dir()
         rel = os.path.relpath(os.path.abspath(path), root)
@@ -79,6 +84,16 @@ def _app_dir_for(path: str) -> str:
     return os.path.join(root, parts[0], parts[1])
 
 
+def _is_linked(app_dir: str) -> bool:
+    """A linked app's repo is the USER'S OWN repository: fused-render shows
+    its history but never writes into it — no revert commit, no Fused
+    identity in their log (fused_render/linked_apps.py). Read actions (log,
+    snapshot) are fine: snapshot archives into the shell home, not the repo."""
+    from appenv import is_linked_app_dir
+
+    return is_linked_app_dir(app_dir)
+
+
 def _git(app_dir: str, *args, binary: bool = False):
     """One git invocation against the app repo. `-C` instead of `cwd=` and
     `close_fds=False` — the posix_spawn discipline every subprocess in this
@@ -90,15 +105,36 @@ def _git(app_dir: str, *args, binary: bool = False):
     )
 
 
+def _repo_root(app: str) -> str:
+    """The work-tree root of the repo containing `app`, or "". Git's own
+    ascent (`rev-parse --show-toplevel`) — a linked app is often a subfolder
+    of the user's repository, so its `.git` lives at an ancestor, and git
+    handles the `.git`-file shapes (worktree, submodule) a stat can't."""
+    try:
+        r = _git(app, "rev-parse", "--show-toplevel")
+    except (OSError, subprocess.TimeoutExpired, subprocess.SubprocessError):
+        return ""
+    return r.stdout.strip() if r.returncode == 0 else ""
+
+
 def _require_app(file: str):
     """(app_dir, None) for a target inside a git-backed app, else (None, error
     payload). The refusal is the security boundary described in the module
     docstring — everything else in this file assumes it already ran.
+
+    A workspace app must carry its OWN `.git` (app_git.init_repo puts it
+    there; the workspace sitting inside some larger repo must not leak that
+    repo's history into every app). A linked app is the opposite case: its
+    `.git` is routinely at an ancestor, so git's ascent is the authority —
+    matching its gate (condition.py).
     """
     app = _app_dir_for(file)
     if not app:
         return None, {"error": "not inside a fused app folder"}
-    if not os.path.isdir(os.path.join(app, ".git")):
+    if _is_linked(app):
+        if not _repo_root(app):
+            return None, {"error": "this app has no git history"}
+    elif not os.path.isdir(os.path.join(app, ".git")):
         return None, {"error": "this app has no git history"}
     return app, None
 
@@ -115,7 +151,11 @@ def _resolve_sha(app: str, sha: str):
 
 
 def _log(app: str):
-    r = _git(app, "log", f"--format=%H{_US}%ct{_US}%s")
+    # `-- .` scopes the log to the app's own subtree (pathspecs are relative
+    # to `-C app`). For a workspace app the repo root IS the app dir, so this
+    # changes nothing there; for a linked app inside a larger repository it is
+    # what makes the list "this app's history" rather than the whole repo's.
+    r = _git(app, "log", f"--format=%H{_US}%ct{_US}%s", "--", ".")
     if r.returncode != 0:
         return {"error": "git log failed: " + (r.stderr or "").strip()[:200]}
     commits = []
@@ -129,7 +169,9 @@ def _log(app: str):
         except ValueError:
             ts = 0
         commits.append({"sha": sha, "ts": ts, "subject": subject})
-    return {"app": app, "commits": commits}
+    # `can_revert` drives the UI: revert is refused server-side for linked
+    # apps (see main), so the button must not be offered either.
+    return {"app": app, "commits": commits, "can_revert": not _is_linked(app)}
 
 
 def _snapshot(app: str, sha: str):
@@ -144,6 +186,13 @@ def _snapshot(app: str, sha: str):
     marker = os.path.join(snap, ".fused-snapshot-complete")
 
     if not os.path.isfile(marker):
+        # `-C app` scopes this for free: git archive run from a subdirectory
+        # of the work tree archives only that subtree, with entry names
+        # relative to it — so a linked app nested in a larger repository gets
+        # its own index.html at the top of the snapshot, and a workspace app
+        # (where the app IS the repo root) is the degenerate same case.
+        # Verified against git 2.x; a commit that predates the folder just
+        # produces an empty tar, which lands in the no-entry notice below.
         r = _git(app, "archive", "--format=tar", full, binary=True)
         if r.returncode != 0:
             err = r.stderr.decode("utf-8", "replace") if r.stderr else ""
@@ -164,8 +213,14 @@ def _snapshot(app: str, sha: str):
         with open(marker, "w", encoding="utf-8") as f:
             f.write(full + "\n")
 
-    entry = os.path.join(snap, "index.html")
-    if not os.path.isfile(entry):
+    # The snapshot's entry page, by the app-entry rule (index.html first, else
+    # the single top-level .html — shared/app_entry.py), NOT a hardcoded
+    # index.html: an app whose page is `main.html` must preview its history
+    # exactly like it renders live.
+    from app_entry import entry_html
+
+    entry = entry_html(snap)
+    if entry is None:
         return {"app": app, "sha": full, "dir": snap, "entry": None}
     return {"app": app, "sha": full, "dir": snap, "entry": entry}
 
@@ -232,6 +287,12 @@ def main(action: str = "log", file: str = "", sha: str = ""):
         if action == "snapshot":
             return _snapshot(app, sha)
         if action == "revert":
+            if _is_linked(app):
+                # The security boundary, not just UI politeness: a revert
+                # records a commit with the Fused identity, and a linked app's
+                # repo belongs to the user. History is view-only here.
+                return {"error": "revert is disabled for linked apps — "
+                                 "this folder's git history is managed by you"}
             return _revert(app, sha)
     except subprocess.TimeoutExpired:
         return {"error": "git timed out"}

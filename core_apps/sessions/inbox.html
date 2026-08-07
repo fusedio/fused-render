@@ -6,20 +6,20 @@
 <style>
   :root {
     color-scheme: dark;
-    --bg: #101318; --panel: #161a21; --text: #dce2ea; --muted: #8a93a3;
-    --line: #2a303a; --accent: #eafe68; --hover: #1d232d;
-    --badge-inbox: #eafe68; --badge-in_progress: #4f8ef7;
-    --badge-done: #4caf7d; --badge-archived: #6a7381;
+    --bg: #131417; --panel: #1b1d21; --text: #e8eaed; --muted: #9aa0a6;
+    --line: #2a2d33; --accent: #E5FF44; --hover: #26282c; --on-accent: #10131a;
+    --badge-inbox: #E5FF44; --badge-in_progress: #4f8ef7;
+    --badge-done: #3fb950; --badge-archived: #6a7381;
     --gray-bg: #454545;  --gray-tx: #d4d4d4;  --blue-bg: #1f3a52;   --blue-tx: #7fb6e6;
     --green-bg: #243d30; --green-tx: #84c4a0; --orange-bg: #4a3526; --orange-tx: #d9a679;
     --red-bg: #4a2a28;   --red-tx: #e58a80;   --yellow-bg: #463d25; --yellow-tx: #d9bd6e;
   }
   :root[data-theme="light"] {
     color-scheme: light;
-    --bg: #f7f8fa; --panel: #ffffff; --text: #1a1f27; --muted: #6a7381;
-    --line: #d8dce3; --accent: #7d8f00; --hover: #eef1f5;
-    --badge-inbox: #eafe68; --badge-in_progress: #2b6fdb;
-    --badge-done: #2e8a5c; --badge-archived: #8a93a3;
+    --bg: #ffffff; --panel: #f4f5f7; --text: #1f2023; --muted: #61656c;
+    --line: #d8dade; --accent: #5f7300; --hover: #e5e6e8; --on-accent: #ffffff;
+    --badge-inbox: #5f7300; --badge-in_progress: #2b6fdb;
+    --badge-done: #1a7f37; --badge-archived: #8a93a3;
     --gray-bg: #e3e2e0;  --gray-tx: #32302c;  --blue-bg: #d3e5ef;   --blue-tx: #183347;
     --green-bg: #dbeddb; --green-tx: #1c3829; --orange-bg: #faebdd; --orange-tx: #49290e;
     --red-bg: #ffe2dd;   --red-tx: #5d1715;   --yellow-bg: #fdecc8; --yellow-tx: #402c1b;
@@ -94,7 +94,7 @@
               overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .badge { font-size: 10px; font-weight: 600; padding: 1px 7px; border-radius: 10px;
            color: #fff; flex: none; }
-  .badge-inbox { color: #1a1f27; }
+  .badge-inbox { color: var(--on-accent); }
   select, input.note { background: var(--bg); border: 1px solid var(--line);
            color: var(--text); border-radius: 6px; padding: 3px 6px; font-size: 12px; }
   input.note { flex: 1; min-width: 120px; }

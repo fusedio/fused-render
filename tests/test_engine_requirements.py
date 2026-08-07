@@ -99,6 +99,7 @@ _IMPORT_TO_DIST = {
     "fpdf": "fpdf2",
     "msgpack": "msgpack",
     "rasterio": "rasterio",
+    "rio_tiler": "rio-tiler",
     "zarr": "zarr",
     "fitz": "pymupdf",
     "pymupdf": "pymupdf",

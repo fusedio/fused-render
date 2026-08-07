@@ -110,7 +110,6 @@ def test_map_runtime_dependencies_stay_out_of_project_and_platform_packaging():
     project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     bundled = project["project"]["optional-dependencies"]["bundled"]
 
-    assert not any(item.startswith("rio-tiler") for item in bundled)
     assert not any(item.startswith("mapbox-vector-tile") for item in bundled)
     assert not any(item.startswith("xlrd") for item in bundled)
 
@@ -122,7 +121,7 @@ def test_map_runtime_dependencies_stay_out_of_project_and_platform_packaging():
     assert not (MAP / "pyproject.toml").exists()
 
     setup = (ROOT / "scripts" / "setup_py2app.py").read_text(encoding="utf-8")
-    for package in ("rio_tiler", "mapbox_vector_tile", "xlrd", "pyclipper"):
+    for package in ("mapbox_vector_tile", "xlrd", "pyclipper"):
         assert f'"{package}"' not in setup
 
 

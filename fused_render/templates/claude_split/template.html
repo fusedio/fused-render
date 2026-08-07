@@ -101,56 +101,43 @@
   }
 
   /* ── annotation controls: a layout row at the top of the chat pane ─────── */
-  /* Two labelled left-right sliding switches — annotate mode (#annbtn) and pin
-     visibility (#annvis) — in a real flex ROW above the chat content, shown in
-     both views. A row, not an overlay: the floating versions (corner icon, then
-     margin pills) kept landing on top of whatever the chat pane drew underneath.
-     In a row the labels cost nothing, cover nothing, and say plainly what each
-     control governs. Idle tints (accent on panel); the annotate switch FILLS
-     when armed — annotate mode swallows the app's clicks, so its on-state is
-     the loudest of the two. */
+  /* One labelled left-right sliding switch — annotate mode (#annbtn) — in a
+     real flex ROW above the chat content, shown in both views. A row, not an
+     overlay: the floating versions (corner icon, then margin pills) kept
+     landing on top of whatever the chat pane drew underneath. Pin visibility
+     follows the mode (annotating shows the comment pins; leaving the mode
+     hides them), so a second switch has nothing left to govern. Deliberately
+     quiet: plain label text and a small track that tints accent when armed —
+     no filled pill, no border. */
   #anntools {
     flex-shrink: 0;
     display: flex;
     align-items: center;
-    justify-content: space-between;
     gap: 12px;
     padding: 8px 16px;
     border-bottom: 1px solid var(--border);
   }
   #annbtn {
     height: 26px;
-    padding: 0 8px 0 10px;
+    padding: 0;
     display: flex;
     align-items: center;
     gap: 7px;
     font: inherit;
     font-size: 12px;
-    font-weight: 600;
     line-height: 1;
     white-space: nowrap;
-    border: 1px solid var(--accent);
-    border-radius: 999px;
-    background: var(--panel);
-    color: var(--accent);
+    border: 0;
+    background: transparent;
+    color: var(--muted, var(--fg));
     cursor: pointer;
-    transition: color .12s, border-color .12s, background .12s, filter .12s;
+    transition: color .12s;
   }
-  /* The same hover-vs-active rule as `.pill` in the composer, stated the same way:
-     the neutral hover excludes the active state, and the active state hovers within
-     its accent. See the comment on `.pill:hover`. */
-  /* `display: block` kills the inline baseline gap that would push the glyph off
-     centre. Same rule as `.viewshot svg`. */
-  #annbtn svg { display: block; }
-  #annbtn:hover:not(.on) { background: var(--surface-2); }
-  #annbtn.on {
-    background: var(--accent);
-    color: var(--on-accent);
-  }
-  #annbtn.on:hover { filter: brightness(1.1); }
-  /* The slider: knob left = off, knob right = on. Drawn in currentColor so it
-     follows the pill's own idle/armed palette; the on-state inverts it so the
-     knob stays visible on the accent-filled pill. */
+  #annbtn:hover { color: var(--fg); }
+  #annbtn.on { color: var(--fg); }
+  /* The slider: knob left = off, knob right = on. Off is drawn in the quiet
+     currentColor; the on-state fills the track with the accent — the only
+     colour the control ever shows, and only while armed. */
   #annbtn .track {
     position: relative;
     width: 28px;
@@ -158,7 +145,7 @@
     border-radius: 999px;
     border: 1px solid currentColor;
     flex-shrink: 0;
-    transition: background .15s;
+    transition: background .15s, border-color .15s;
   }
   #annbtn .knob {
     position: absolute;
@@ -170,51 +157,8 @@
     background: currentColor;
     transition: left .15s, background .15s;
   }
-  #annbtn.on .track { background: var(--on-accent); }
-  #annbtn.on .knob { left: 14px; background: var(--accent); }
-  /* The pins-visibility switch: same anatomy, quieter on-state — track fills,
-     pill stays panel. On = knob right, accent track. */
-  #annvis {
-    height: 26px;
-    padding: 0 10px 0 6px;
-    display: flex;
-    align-items: center;
-    gap: 7px;
-    font: inherit;
-    font-size: 12px;
-    line-height: 1;
-    white-space: nowrap;
-    border: 1px solid var(--accent);
-    border-radius: 999px;
-    background: var(--panel);
-    color: var(--accent);
-    cursor: pointer;
-    box-shadow: 0 2px 8px var(--shadow);
-    transition: color .12s, border-color .12s, background .12s, filter .12s;
-  }
-  #annvis:hover { background: var(--surface-2); }
-  #annvis .track {
-    position: relative;
-    width: 28px;
-    height: 16px;
-    border-radius: 999px;
-    border: 1px solid var(--accent);
-    background: transparent;
-    transition: background .15s;
-    flex-shrink: 0;
-  }
-  #annvis .knob {
-    position: absolute;
-    top: 2px;
-    left: 2px;
-    width: 10px;
-    height: 10px;
-    border-radius: 50%;
-    background: var(--accent);
-    transition: left .15s, background .15s;
-  }
-  #annvis.on .track { background: var(--accent); }
-  #annvis.on .knob { left: 14px; background: var(--on-accent); }
+  #annbtn.on .track { background: var(--accent); border-color: var(--accent); }
+  #annbtn.on .knob { left: 14px; background: var(--on-accent); }
   #annpins { position: absolute; inset: 0; z-index: 2; pointer-events: none; overflow: hidden; }
   .annpin {
     position: absolute;
@@ -270,16 +214,6 @@
     outline: none;
   }
   #annpop .hint { color: var(--faint); font-size: 11px; margin-top: 5px; display: flex; align-items: center; }
-  #annauto {
-    display: flex;
-    align-items: center;
-    gap: 3px;
-    margin-left: auto;
-    cursor: pointer;
-    user-select: none;
-    white-space: nowrap;
-  }
-  #annauto input { margin: 0; accent-color: var(--accent); cursor: pointer; }
   #anndel {
     margin-left: 8px;
     border: 0;
@@ -393,6 +327,9 @@
     margin: 0 auto;
     padding: 24px 20px 12px;
   }
+  /* queued messages live in their own container AFTER #log, so they always
+     render below every turn — including turns appended while they wait. */
+  #queue { max-width: 720px; margin: 0 auto; padding: 0 20px 12px; }
   .turn { margin: 0 0 20px; animation: rise .18s ease-out; }
   @keyframes rise { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
   @media (prefers-reduced-motion: reduce) { .turn { animation: none; } }
@@ -475,6 +412,30 @@
     white-space: pre-wrap;
     word-break: break-word;
   }
+  /* a message typed while a run is live, parked until the turn ends. Its own
+     class tree (`qbubble`, not `.user .bubble`): the re-attach probe and the
+     receipt code both select `.turn.user` / `.user .bubble` and must never
+     match a message that has not been sent yet. */
+  .queued { display: flex; flex-direction: column; align-items: flex-end; }
+  .queued .qbubble {
+    background: transparent;
+    border: 1px dashed var(--border-strong);
+    color: var(--dim);
+    border-radius: 18px 18px 4px 18px;
+    padding: 9px 14px;
+    max-width: 82%;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  .queued .qmeta {
+    display: flex; gap: 6px; align-items: center;
+    font-size: 11px; color: var(--faint); margin-top: 3px;
+  }
+  .queued .qx {
+    background: none; border: none; padding: 0; font: inherit;
+    color: var(--faint); cursor: pointer;
+  }
+  .queued .qx:hover { color: var(--fg); text-decoration: underline; }
   .assistant { display: flex; gap: 10px; }
   .assistant .dot {
     flex-shrink: 0;
@@ -818,7 +779,6 @@
       <div id="annpop">
         <textarea rows="2" placeholder="What about this element?" spellcheck="false"></textarea>
         <div class="hint">Enter to save · Esc to cancel
-          <label id="annauto" title="Send the note to Claude immediately when saved"><input type="checkbox" checked> Auto-send</label>
           <button id="anndel" type="button" hidden>Delete</button></div>
       </div>
     </div><!-- /leftview -->
@@ -826,27 +786,17 @@
   <div id="divider" role="separator" aria-orientation="vertical" aria-label="Resize panels"></div>
 
   <div id="chat" class="home">
-    <!-- Annotation controls: a real layout ROW above everything else in this
+    <!-- Annotation control: a real layout ROW above everything else in this
          pane, in both views — never an overlay, so it can't land on top of the
-         topbar or the transcript. Both are real <button>s (Enter/Space work,
-         aria announces state) living in the parent document, a structural
-         guarantee they can never appear in a pane capture (shotPane rasterises
-         the framed document only). The bubble icon is a comment bubble, not a
-         pencil: a pencil means "edit this", which is what CLAUDE does — these
-         controls let the user leave notes ON the app. -->
+         topbar or the transcript. A real <button> (Enter/Space work, aria
+         announces state) living in the parent document, a structural guarantee
+         it can never appear in a pane capture (shotPane rasterises the framed
+         document only). One switch is enough: the comment pins over the app
+         show while annotating and hide when the mode is off. -->
     <div id="anntools">
       <button id="annbtn" type="button" aria-pressed="false" aria-label="Annotate the app"
-              title="Annotate the app, then send the notes to Claude"><svg width="13" height="13"
-        viewBox="0 0 16 16" fill="none" aria-hidden="true"><rect x="2.3" y="2.8" width="11.4"
-        height="8.4" rx="2.2" stroke="currentColor" stroke-width="1.4"/><path d="M5.6 11.2v2.6l3-2.6"
-        stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg><span
+              title="Annotate the app, then send the notes to Claude"><span
         class="lbl">Annotate</span><span class="track" aria-hidden="true"><span class="knob"></span></span></button>
-      <button id="annvis" type="button" role="switch" aria-checked="true"
-              aria-label="Show annotation comments on the app"
-              title="Show or hide the annotation comment pins over the app">
-        <span class="track" aria-hidden="true"><span class="knob"></span></span>
-        <span class="lbl">Comments shown</span>
-      </button>
     </div>
     <!-- chat view -->
     <div id="topbar">
@@ -856,7 +806,7 @@
       <span id="session" class="mono"></span>
       <button id="back" type="button" aria-label="Back to chats">← Chats</button>
     </div>
-    <div id="logwrap"><div id="log"></div></div>
+    <div id="logwrap"><div id="log"></div><div id="queue"></div></div>
     <form id="inputbox" class="composer" style="display:contents">
       <div id="composer-chat">
         <div class="annchips" id="annchips-chat"></div>
@@ -1189,7 +1139,7 @@ function searchParamsOf(search) {
 // user's notes, already sent in their own block.
 const CHAT_PARAMS = new Set(["_file", "_mode", "session_id", "run", "split",
                              "model", "effort", "permission", "annotations",
-                             "annmode", "annshow", "annautosend",
+                             "annmode",
                              "path"]);
 
 function appParamsOf(all) {
@@ -1469,10 +1419,9 @@ const annFrame = document.getElementById("leftframe");
 let annOn = false;
 let annDraft = null;    // anchor of a NEW note being composed
 let annEditing = null;  // id of an existing pending note being edited
-// Pins visible over the app. Default ON: an unset param means shown, and only an
-// explicit "0" (the user toggled it off) hides them. Chips above the composer are
-// the send payload and stay visible either way.
-let annShow = fused.params.get("annshow") !== "0";
+// Pins follow the mode: annotating shows the comment pins over the app, leaving
+// the mode hides them. Chips above the composer are the send payload and stay
+// visible either way.
 
 function annLoad() {
   try {
@@ -1559,8 +1508,8 @@ function annLabelFor(i) {
 function renderAnn() {
   // pins over the frame
   annPins.innerHTML = "";
-  annPins.style.display = annShow ? "" : "none";
-  const doc = annShow ? annFrame.contentDocument : null;
+  annPins.style.display = annOn ? "" : "none";
+  const doc = annOn ? annFrame.contentDocument : null;
   // #leftview, not #left: pins are placed in FRAME viewport coordinates, so their
   // host must be the box the iframe fills — #left also holds the control strip,
   // and measuring that would put every pin the strip's height too high.
@@ -1667,15 +1616,15 @@ function annCloseComposer() {
 }
 // A fresh note usually precedes a "go apply it" message: seed the visible
 // composer so sending is one keypress. Only when it's empty — never clobber
-// typed text. Auto-send (the popover's checkbox, default on) then submits it.
+// typed text. Auto-send (always on) then submits it.
 const ANN_PREFILL = "apply the comments";
 function annPrefillComposer() {
   const home = chatEl.classList.contains("home");
   const el = home ? homebox : box;
   // A typed draft is the user's — hands off. But the composer holding exactly
   // the canonical prefill is OUR text (a previous note left it, e.g. one saved
-  // with auto-send off), not a draft: it still counts as fillable, so the next
-  // note's auto-send can fire and carry every pending note with it.
+  // while a turn was in flight), not a draft: it still counts as fillable, so
+  // the next note's auto-send can fire and carry every pending note with it.
   const v = el.value.trim();
   if (v && v !== ANN_PREFILL) return false;
   el.value = ANN_PREFILL;
@@ -1722,7 +1671,7 @@ annTa.addEventListener("keydown", (e) => {
     // rides the next message) and when the composer holds a typed draft — the
     // prefill refused to touch it, and sending a half-typed message is worse
     // than leaving the note as a chip.
-    if (isNew && filled && annAutoEl.checked && !sending) annAutoSubmit();
+    if (isNew && filled && !sending) annAutoSubmit();
   }
 });
 
@@ -1735,6 +1684,9 @@ function annSetMode(on) {
   annBtn.classList.toggle("on", annOn);
   annBtn.setAttribute("aria-pressed", String(annOn));
   annBtn.querySelector(".lbl").textContent = annOn ? "Annotating" : "Annotate";
+  // Pins follow the mode, so a toggle must repaint them (show on arm, hide on
+  // disarm) — renderAnn gates on `annOn` now.
+  renderAnn();
   // No label in either state — the icon never changes size or position, so nothing
   // here can cover more of the app than the idle button already does. The tooltip
   // is where the instruction and BOTH ways out live, because it has no width limit
@@ -1751,28 +1703,8 @@ annBtn.addEventListener("click", () => annSetMode(!annOn));
 // explicit "0" (the user slid it off, or pressed Escape) starts it disarmed.
 annSetMode(fused.params.get("annmode") !== "0");
 
-// Pins-visibility toggle: pressed (filled) = pins shown, which is the default.
-const annVisBtn = document.getElementById("annvis");
-function annSetShow(on) {
-  annShow = on;
-  fused.params.set("annshow", on ? "1" : "0");
-  annVisBtn.classList.toggle("on", on);
-  annVisBtn.setAttribute("aria-checked", String(on));
-  annVisBtn.querySelector(".lbl").textContent = on ? "Comments shown" : "Comments hidden";
-  annVisBtn.title = on ? "Annotation comment pins are shown over the app — click to hide them"
-                       : "Annotation comment pins are hidden — click to show them";
-  renderAnn();
-}
-annSetShow(annShow);
-annVisBtn.addEventListener("click", () => annSetShow(!annShow));
-
-// Auto-send: a saved NEW note goes to Claude immediately (default on). The
-// checkbox lives in the note popover and persists like the pins toggle.
-const annAutoEl = document.querySelector("#annauto input");
-annAutoEl.checked = fused.params.get("annautosend") !== "0";
-annAutoEl.addEventListener("change", () => {
-  fused.params.set("annautosend", annAutoEl.checked ? "1" : "0");
-});
+// Auto-send: a saved NEW note goes to Claude immediately, always — there is no
+// off switch. The `filled`/`sending` guards below are the only gates.
 function annAutoSubmit() {
   if (chatEl.classList.contains("home")) document.getElementById("card").requestSubmit();
   else submitChat();
@@ -3449,14 +3381,24 @@ async function stopRun() {
   const run_id = activeRun;
   if (!run_id || stoppedRun === run_id) return;  // nothing live, or already going
   stoppedRun = run_id;
+  // Detach the queue BEFORE the await — a drain racing the cancel must find it
+  // empty — but move nothing to the composer until the stop actually lands:
+  // a failed cancel leaves the run live, and the queue (bubbles untouched, the
+  // array put back) has to keep auto-draining when that run really ends.
+  const held = queuedMsgs.splice(0);
   if (activeWorking) activeWorking.setStopping(true);
   try {
     await fused.runPython(AGENT, { action: "cancel", run_id }, { key: null });
+    unqueueAll(held);
   } catch (err) {
     // The kill never reached the backend, so the run is still going and the poll
     // loop is still streaming it. Take the claim back: leaving it set would
     // relabel this run's real ending as a stop the user never got.
     stoppedRun = "";
+    // unshift, not push: anything queued DURING the await went to the array's
+    // tail, and its bubble sits below the held ones — the held entries go back
+    // to the front so drain order keeps matching both typed and screen order.
+    queuedMsgs.unshift(...held.filter((q) => !q.dead));
     if (activeWorking) activeWorking.setStopping(false);
     addError("Could not stop the run: " + err.message);
   }
@@ -3496,6 +3438,82 @@ function onEscape(e) {
 // mousedown/mousemove/click handlers all hang off `doc`. The frame-side binding
 // is (re)attached on every frame load; see the load handler.
 document.addEventListener("keydown", onEscape);
+
+// ── message queue: text typed while a run is live ──
+// In-memory only (a reload drops it — the composer is where durable drafts
+// live), text-only by design: annotations and the pane-shot toggle are folded
+// in at SEND time, so whatever is pending when a queued message actually goes
+// out rides that send — which is also the desirable reading for the app-state
+// snapshot (fresh state after the previous turn's edits, not a stale one from
+// queue time). Each entry renders as a dashed placeholder bubble in #queue —
+// a SIBLING after #log, not inside it, so queued messages always sit below
+// every turn, including turns appended to the log while they wait; the ×
+// unqueues it back into the composer.
+//
+// Sited BELOW stopRun (which calls into it — fine, the calls happen at click
+// time) because test_claude_stop_run.py extracts `runEnding` as "everything up
+// to `async function stopRun`" and runs it under node: anything between the
+// two that touches `document` breaks that extraction.
+const queueEl = document.getElementById("queue");
+const queuedMsgs = [];  // [{ text, el }]
+
+function queueMessage(text) {
+  const d = document.createElement("div");
+  d.className = "turn queued";
+  const b = document.createElement("div");
+  b.className = "qbubble";
+  b.textContent = text;
+  const meta = document.createElement("div");
+  meta.className = "qmeta";
+  const lbl = document.createElement("span");
+  lbl.textContent = "queued";
+  const x = document.createElement("button");
+  x.type = "button";
+  x.className = "qx";
+  x.textContent = "remove";
+  x.title = "Unqueue: put this message back in the input box";
+  const entry = { text, el: d };
+  x.onclick = () => {
+    const i = queuedMsgs.indexOf(entry);
+    if (i >= 0) queuedMsgs.splice(i, 1);
+    entry.dead = 1;  // may be detached in stopRun's `held` right now — see below
+    d.remove();
+    // Back into the composer, not the void — appended so a draft in progress
+    // is never clobbered.
+    box.value = box.value ? box.value.replace(/\s*$/, "\n\n") + text : text;
+    growBox();
+    box.focus();
+  };
+  meta.append(lbl, x);
+  d.append(b, meta);
+  queueEl.appendChild(d);
+  scrollBottom();
+  queuedMsgs.push(entry);
+}
+
+// Fire the next queued message once nothing is live. Called from the tails of
+// sendMessage AND resumeRun — a message queued against a re-attached run has
+// to drain too. Draining after an errored turn is deliberate (the user queued
+// it knowing less than we do now, but un-sending their words is worse); a
+// STOPPED turn is the exception, handled in stopRun above.
+function drainQueue() {
+  if (sending || activeRun || !queuedMsgs.length) return;
+  const next = queuedMsgs.shift();
+  next.el.remove();  // sendMessage adds the real user bubble
+  sendMessage(next.text);
+}
+
+// Stop means halt: give queued text back to the composer instead of firing it
+// at the session a second after the user said stop. Takes the entries rather
+// than reading queuedMsgs, because stopRun detaches them first.
+function unqueueAll(entries) {
+  for (const q of entries) {  // head first: composer keeps typed order
+    if (q.dead) continue;  // × was clicked while this entry was detached
+    q.el.remove();
+    box.value = box.value ? box.value.replace(/\s*$/, "\n\n") + q.text : q.text;
+  }
+  growBox();
+}
 
 // ── send one message: start detached claude, poll + stream ──
 // One turn at a time: concurrent turns would share the session_id param and
@@ -3770,6 +3788,7 @@ async function sendMessage(message) {
   }
   scrollBottom();
   box.focus();
+  drainQueue();
 }
 
 // Re-attach to a run that was streaming when this page last unloaded (mode
@@ -3832,9 +3851,22 @@ async function resumeRun(run_id) {
     sending = false;
     box.focus();
   }
+  drainQueue();
 }
 
 function submitChat() {
+  // A live run queues instead of refusing: the text is parked and fired when
+  // the turn ends. Gated on activeRun, NOT `sending` — `sending` is also held
+  // by loadHistory and resumeRun's probe, and a message typed while browsing
+  // an old session must not be parked with no run to drain it after.
+  if (activeRun) {
+    const message = box.value.trim();
+    if (!message) return;  // text-only queue; annotation-only sends can't park
+    box.value = "";
+    growBox();
+    queueMessage(message);
+    return;
+  }
   if (sending) return;
   const message = box.value.trim();
   // notes alone are sendable, and so is a bare request for a picture of the pane

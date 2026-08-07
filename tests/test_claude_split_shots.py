@@ -1974,8 +1974,7 @@ def test_hover_never_eats_an_active_state_in_either_control(html):
     within its accent. Asserted for both, because a comment saying they agree is not
     a test that they do."""
     pairs = [('.pill:hover:not([aria-pressed="true"])',
-              '.pill[aria-pressed="true"]:hover'),
-             ("#annbtn:hover:not(.on)", "#annbtn.on:hover")]
+              '.pill[aria-pressed="true"]:hover')]
     for neutral, active in pairs:
         assert neutral + " {" in html, neutral
         assert active + " {" in html, active
@@ -1983,6 +1982,10 @@ def test_hover_never_eats_an_active_state_in_either_control(html):
         assert "filter: brightness" in _between(html, active + " {", "}")
         # ...and it is not bodged in with !important
         assert "!important" not in _between(html, neutral + " {", "}")
+    # #annbtn no longer carries an accent fill at all (the subtle restyle), so it
+    # has no hover-vs-active collision left to guard: both states paint the same
+    # quiet foreground colour.
+    assert "#annbtn.on:hover" not in html
     assert "!important" not in html, "specificity, not force"
 
 
@@ -2078,68 +2081,66 @@ def test_both_composers_draw_the_toggle_identically(html):
 
 
 def test_the_annotate_control_is_a_labelled_switch(html):
-    """The annotate control is a labelled left-right sliding switch, not a bare
-    icon: it sits OUTSIDE the pane in the chat pane's empty header margin, where a
-    label costs the app zero pixels — so the state is spelled out ("Annotating" /
-    "Annotate") instead of encoded in a fill an unlabelled 26px glyph had to carry
-    alone. Both switches (#annbtn, #annvis) follow the shape: track + knob + text,
-    fixed height, absolute overlay."""
-    for sel in ("#annbtn {", "#annvis {"):
-        btn = _between(html, sel, "}")
-        assert "height: 26px" in btn, btn
-        assert "border-radius: 999px" in btn, btn
-        assert "white-space: nowrap" in btn, btn
-        # the switch anatomy exists in CSS for both controls
-        root = sel.split(" ")[0]
-        assert root + " .track {" in html, root
-        assert root + " .knob {" in html, root
-        # the knob SLIDES on toggle: the on-state moves it inside its fixed track
-        assert "left: 14px" in _between(html, root + ".on .knob {", "}"), root
-    # idle tints, armed fills the whole pill — annotate mode swallows the app's
-    # clicks, so its on-state must be the loudest of the two switches
+    """The annotate control is ONE labelled left-right sliding switch — plain
+    label text plus track + knob, no icon, no filled pill, no accent border. The
+    state is spelled out ("Annotating" / "Annotate") and the only colour it ever
+    shows is the accent-filled track while armed. The old second switch (#annvis,
+    pin visibility) is gone: pins follow the mode."""
     btn = _between(html, "#annbtn {", "}")
-    assert "color: var(--accent)" in btn and "background: var(--panel)" in btn, btn
+    assert "height: 26px" in btn, btn
+    assert "white-space: nowrap" in btn, btn
+    # quiet by construction: no border, no fill, no accent on the idle control
+    assert "border: 0" in btn, btn
+    assert "background: transparent" in btn, btn
+    assert "var(--accent)" not in btn, "idle control carries no accent: " + btn
+    # the switch anatomy: track + knob, and the knob SLIDES on toggle
+    assert "#annbtn .track {" in html
+    assert "#annbtn .knob {" in html
+    assert "left: 14px" in _between(html, "#annbtn.on .knob {", "}")
+    # armed state repaints only the small track with the accent — never the pill
     on = _between(html, "#annbtn.on {", "}")
-    assert "background: var(--accent)" in on, on
-    assert "color: var(--on-accent)" in on, on
-    # named, announced, and labelled in the markup
+    assert "background" not in on, "no filled pill when armed: " + on
+    assert "background: var(--accent)" in _between(html, "#annbtn.on .track {", "}")
+    # named, announced, and labelled in the markup — text only, no icon
     view = _between(html, '<div id="anntools">', "</div>")
     assert 'id="annbtn"' in view and 'aria-label="' in view, view
     assert 'class="lbl"' in view, view
-    for root in ("annBtn", "annVisBtn"):
-        assert root + '.querySelector(".lbl").textContent' in html, root
-    # the comment-bubble icon survives, stroked in currentColor so it follows the
-    # accent tint and is knocked out to --on-accent when armed
-    icon = _between(view, 'id="annbtn"', "</button>")
-    assert "<svg" in icon and 'stroke="currentColor"' in icon, icon
-    assert 'fill="none"' in icon and 'aria-hidden="true"' in icon, icon
+    assert "<svg" not in view, "simple text + switch, no glyph: " + view
+    assert 'annBtn.querySelector(".lbl").textContent' in html
+    # the second switch is gone entirely
+    assert "annvis" not in html and "annVisBtn" not in html
     assert "✎" not in html, "the pencil glyph is gone from the template"
 
 
-def test_annotate_mode_and_pin_visibility_default_on(html):
-    """Both switches start ON: an unset param means enabled, and only an explicit
-    "0" — the user sliding it off — disables. Encoded as `!== "0"` rather than
-    `=== "1"` so a first visit (no params at all) gets the default."""
+def test_annotate_mode_defaults_on_and_owns_pin_visibility(html):
+    """The one switch starts ON: an unset param means enabled, and only an
+    explicit "0" — the user sliding it off — disables. Encoded as `!== "0"`
+    rather than `=== "1"` so a first visit (no params at all) gets the default.
+    Pin visibility and auto-send have no params of their own any more: pins
+    follow the mode, and a saved new note always auto-sends."""
     assert 'annSetMode(fused.params.get("annmode") !== "0")' in html
-    assert 'fused.params.get("annshow") !== "0"' in html
-    assert 'fused.params.get("annautosend") !== "0"' in html
+    assert "annshow" not in html
+    assert "annautosend" not in html
+    # pins gate on the mode itself, and toggling the mode repaints them
+    assert 'annPins.style.display = annOn ? "" : "none"' in html
+    assert "renderAnn()" in _between(html, "function annSetMode(", "\n}")
+    # auto-send is unconditional (bar the in-flight / typed-draft guards)
+    assert "if (isNew && filled && !sending) annAutoSubmit();" in html
+    assert "annAutoEl" not in html and 'id="annauto"' not in html
 
 
-def test_the_annotation_switches_are_a_layout_row_not_an_overlay(html):
-    """Every floating version of these controls — corner icon, then margin pills —
+def test_the_annotation_switch_is_a_layout_row_not_an_overlay(html):
+    """Every floating version of this control — corner icon, then margin pills —
     eventually landed on top of something (the app's corner, the chat topbar, an
     open transcript). A real flex ROW at the top of the chat pane cannot: layout
-    reserves its height, so it covers nothing in either pane and in either view.
-    Horizontal, with real space between the two switches."""
+    reserves its height, so it covers nothing in either pane and in either view."""
     row = _between(html, "#anntools {", "}")
     assert "display: flex" in row, row
-    assert "justify-content: space-between" in row, row
     assert "flex-shrink: 0" in row, row
-    # the switches themselves are plain flow children — no absolute anchoring left
-    for sel in ("#annbtn {", "#annvis {"):
-        btn = _between(html, sel, "}")
-        assert "position" not in btn, btn
-        assert "top:" not in btn and "left:" not in btn and "right:" not in btn, btn
+    # the switch itself is a plain flow child — no absolute anchoring left
+    btn = _between(html, "#annbtn {", "}")
+    assert "position" not in btn, btn
+    assert "top:" not in btn and "right:" not in btn, btn
     # the row is a child of the chat pane, above the topbar, and hidden in
     # NEITHER view — the home-view hide list must not grow to include it
     chat = _between(html, '<div id="chat"', '<div id="topbar">')

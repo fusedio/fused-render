@@ -252,7 +252,7 @@ def _build(project_dir, venv_dir, uv_cache_dir, python_executable):
     uv = shutil.which("uv")
     if uv is None:
         # Plainly, because this is a supported configuration losing a capability
-        # rather than a transient failure (D230): uv IS the builder, so without it
+        # rather than a transient failure (D231): uv IS the builder, so without it
         # a folder that declares dependencies cannot get an environment at all.
         # Everything else still works — a folder with no pyproject.toml runs on
         # the app's own interpreter (PY-17) and needs nothing installed — so the

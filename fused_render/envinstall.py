@@ -353,7 +353,7 @@ def _resolve_script_python() -> tuple[str | None, bool]:
        readiness is about the interpreter, and every script whose folder declares
        no `pyproject.toml` runs fine on ours (PY-17) — which is most of them.
        What such a machine cannot do any more is BUILD a project venv, because
-       `uv sync` is the builder (D230). That is reported by the worker, in those
+       `uv sync` is the builder (D231). That is reported by the worker, in those
        words, at the point it is actually true; refusing here would take the
        PY-17 path down with it for a capability most runs never need.
     """

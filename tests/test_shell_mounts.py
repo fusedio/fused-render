@@ -191,8 +191,16 @@ def rcd(home, monkeypatch):
     exactly when the stub reports mount/mount success. A test that needs a
     different ismount view (stale/disconnected, adopt-an-existing-mount) still
     monkeypatches os.path.ismount itself in its body — that runs after this and
-    wins."""
+    wins.
+
+    rclone_bin is pinned to None so the ensure_rcd spawn path is IMPOSSIBLE
+    here: a transient core/pid probe failure (a loaded CI runner slipping the
+    3s deadline under xdist) otherwise falls through to spawning the REAL
+    rclone that CI installs — a cryptic port-mismatch assert plus a leaked
+    daemon. With the pin, that path fails loudly as "rclone is not installed"
+    instead."""
     stub = StubRcd()
+    monkeypatch.setattr(mounts_mod, "rclone_bin", lambda: None)
     mounts_mod.write_rcd_state(stub.port, 4242)
     monkeypatch.setattr(mounts_mod.os.path, "ismount", lambda p: p in stub.mounted)
     # "Is this daemon alive?" is a real loopback HTTP call with a 3s socket

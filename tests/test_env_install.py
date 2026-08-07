@@ -2038,7 +2038,7 @@ def test_the_worker_spawns_with_the_interpreter_that_will_run_the_code(
 
 @requires_fused
 def test_no_uv_is_reported_as_a_lost_capability_not_a_crash(tmp_path, monkeypatch):
-    """uv IS the builder now, so without it a project venv is impossible (D230).
+    """uv IS the builder now, so without it a project venv is impossible (D231).
 
     The old builder fell back to `<python> -m venv` + pip. That is deliberately
     not restored: it cannot honour a `uv.lock`, so it would quietly produce a
@@ -2070,7 +2070,7 @@ def test_no_uv_is_reported_as_a_lost_capability_not_a_crash(tmp_path, monkeypatc
 def test_a_machine_with_no_uv_still_serves_the_app_interpreter_path(
     tmp_path, monkeypatch, _fresh_script_python
 ):
-    """The other half of D230: no uv must not take PY-17 down with it.
+    """The other half of D231: no uv must not take PY-17 down with it.
 
     `_resolve_script_python` still answers READY without uv, on purpose —
     readiness is about the interpreter, and a folder that declares no

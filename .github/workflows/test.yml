@@ -566,6 +566,13 @@ jobs:
     steps:
       - name: Check test status
         run: |
+          # A cancelled detect-changes means THIS RUN was superseded by
+          # concurrency-cancel (a newer push); failing here paints a red X on
+          # the history of a run nobody cares about. Neutral pass instead.
+          if [[ "${{ needs.detect-changes.result }}" == "cancelled" ]]; then
+            echo "Run superseded (detect-changes cancelled); nothing to verify."
+            exit 0
+          fi
           if [[ "${{ needs.detect-changes.result }}" != "success" ]]; then
             echo "detect-changes did not succeed (${{ needs.detect-changes.result }})"
             exit 1

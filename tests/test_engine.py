@@ -111,7 +111,7 @@ def test_the_orphan_header_error_names_the_PROJECT_ROOT_not_the_files_folder(
     design. Telling a user to create `pyproject.toml` next to their `.py` would
     have them write a file the resolver ignores: the script stays on the app
     interpreter, still without the packages, and nothing says why. There is no
-    migration tool (D229), so getting this path wrong strands them.
+    migration tool (D230), so getting this path wrong strands them.
     """
     monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
     monkeypatch.setenv("FUSED_RENDER_DIR", str(tmp_path / "workspace"))
