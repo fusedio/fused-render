@@ -284,6 +284,35 @@ def _pin_the_script_interpreter_resolution():
         envinstall.reset_script_python_cache()
 
 
+@pytest.fixture(autouse=True)
+def _no_background_mount_threads(monkeypatch):
+    """`create_app` starts two daemon threads that reach for a real rclone;
+    neither may run in a test.
+
+    `shell_mounts.startup()` runs run_automount -> attach_mount -> ensure_rcd,
+    and `start_health_monitor()` re-attaches a mount it finds disconnected the
+    same way. Both are started from the create_app BODY, so every
+    `TestClient(create_app(...))` in the suite starts them — on CI, which
+    installs rclone, ensure_rcd then genuinely execs a daemon. Two consequences,
+    both observed:
+
+      - the thread outlives the test that made the app (daemon, never joined),
+        so `write_rcd_state` lands in whatever tmp home is current when it gets
+        there. A LATER test then reads an rcd.json pointing at a real live
+        daemon it never started: test_ensure_rcd_reuses_live_daemon got that
+        daemon's port back instead of its stub's (`assert 59165 == 42993`,
+        CI 2026-08-07) — with no spawn inside its own window to explain it.
+      - each spawn leaks a real daemon until session teardown reaps it
+        (_reap_test_rcd_daemons below, which exists because of this).
+
+    No test asserts either function spawns anything; the tests that are ABOUT
+    automount call `run_automount()` directly against the stub rcd."""
+    from fused_render.shell import mounts
+
+    monkeypatch.setattr(mounts, "startup", lambda: None)
+    monkeypatch.setattr(mounts, "start_health_monitor", lambda: None)
+
+
 @pytest.fixture(scope="session", autouse=True)
 def _reap_test_rcd_daemons():
     """Kill any REAL rclone rcd daemon a test spawned, on session teardown.

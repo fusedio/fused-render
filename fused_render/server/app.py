@@ -107,9 +107,11 @@ def export_app_env() -> None:
     os.environ["FUSED_RENDER_WORKSPACE_DIR"] = shell_seed.fused_dir()
     shell_mounts.export_ro_mounts_env()
     # The skill plugin the chats we spawn are handed (D216). Here rather than in
-    # a startup event because this is the export path: it assembles the root,
-    # probes the local `claude` once for `--plugin-dir` support, and publishes
-    # the answer as one more FUSED_RENDER_* var for every child to inherit.
+    # a startup event because this is the export path: it assembles the root and
+    # publishes it as one more FUSED_RENDER_* var for every child to inherit.
+    # Keep it that way only while it stays filesystem-only — this line once also
+    # ran `claude --help`, and blocking here blocks the socket bind, which the
+    # desktop supervisor reads as a server that failed to start.
     skill_plugin.export_skill_plugin_env()
     _export_bundled_uv_path()
 

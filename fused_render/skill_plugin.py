@@ -45,7 +45,6 @@ import json
 import logging
 import os
 import shutil
-import subprocess
 import tempfile
 
 from fused_render.shell.storage import home_dir
@@ -76,13 +75,6 @@ SKILLS_SUBDIR = "skills"
 # the server serves (`export_skill_plugin_env`, from `server.export_app_env`),
 # read only by `templates/shared/appenv.py:skill_plugin_dir`.
 PLUGIN_DIR_ENV = "FUSED_RENDER_SKILL_PLUGIN_DIR"
-
-# Whether a given claude binary understands `--plugin-dir`, cached per binary
-# for the life of the process. The probe lives HERE, on the server side, and not
-# in the templates that pass the flag: it is one `claude --help` (~0.1s) at
-# startup instead of a subprocess on every turn, and a template's `_start` stays
-# free of shelling out.
-_PLUGIN_DIR_SUPPORT = {}
 
 # Fingerprint of the sources the current output was built from, kept BESIDE the
 # plugin root rather than inside it: the root is handed to a plugin loader, and
@@ -288,68 +280,25 @@ def sync_skill_plugin() -> str | None:
 
 # ------------------------------------------- handing the root to the sessions
 
-def _claude_bin() -> str | None:
-    """The claude executable to probe, or None when we cannot find one.
-
-    Deliberately only the two cheap answers — the explicit override and PATH.
-    The templates additionally search the platform's known install locations
-    (a Windows GUI-launched app has a stale PATH), and duplicating that list
-    here would be a second copy to keep in step for the sake of a probe whose
-    "unknown" answer is already safe (see `export_skill_plugin_env`).
-    """
-    override = os.environ.get("FUSED_RENDER_CLAUDE_BIN")
-    if override and os.path.isfile(override):
-        return override
-    return shutil.which("claude")
-
-
-def _supports_plugin_dir(binary: str) -> bool:
-    """Whether `binary` accepts `--plugin-dir`, by reading its own `--help`.
-
-    Cached per binary. Both streams are searched: a shim that prints usage on
-    stderr is not an unsupported CLI. Any failure to run it at all answers
-    False, which `export_skill_plugin_env` then reads as "cannot tell".
-    """
-    cached = _PLUGIN_DIR_SUPPORT.get(binary)
-    if cached is None:
-        try:
-            out = subprocess.run([binary, "--help"], capture_output=True,
-                                 text=True, timeout=30)
-            cached = "--plugin-dir" in ((out.stdout or "") + (out.stderr or ""))
-        except (OSError, ValueError, subprocess.SubprocessError) as exc:
-            logger.debug("could not probe %s for --plugin-dir: %s", binary, exc)
-            cached = False
-        _PLUGIN_DIR_SUPPORT[binary] = cached
-    return cached
-
-
 def export_skill_plugin_env() -> str | None:
     """Sync the plugin root and publish it for the sessions we spawn; returns the
-    exported path, or None when the var was cleared.
+    exported path, or None when there was nothing to publish.
 
     Called from `server.export_app_env`, i.e. once before the server serves, so
-    every child inherits it — and so the `--help` probe happens there instead of
-    on every turn. `templates/shared/appenv.py:skill_plugin_dir` is the only
-    reader; a template that finds it unset simply passes no flag.
+    every child inherits it. `templates/shared/appenv.py:skill_plugin_dir` is the
+    only reader; a template that finds it unset simply passes no flag.
 
-    The flag is withheld only when we have positive evidence the CLI cannot take
-    it: a `claude` we FOUND whose help does not list `--plugin-dir`. A binary we
-    could not find at all still gets the flag, because "not on the server's PATH"
-    is the normal state on Windows (the templates look in the install locations
-    the server does not) — treating that as unsupported would silently withhold
-    the skills from exactly the users least likely to notice.
+    Filesystem work only — no CLI capability probe. `--plugin-dir` has shipped
+    since the plugin system itself (CLI 2.0.12, Oct 2025) on a binary that
+    auto-updates, so an install old enough to reject the flag is not a case worth
+    paying for. It was paid for: this function used to run `claude --help` here,
+    on the pre-bind path, and a cold 279MB binary facing a Windows Defender
+    first-touch scan took longer to answer than the desktop supervisor's whole
+    20s readiness budget — killing a server that was seconds from healthy, three
+    times, then showing the user a startup-failure dialog.
     """
     root = sync_skill_plugin()
     if root is None:
-        os.environ.pop(PLUGIN_DIR_ENV, None)
-        return None
-    binary = _claude_bin()
-    if binary is not None and not _supports_plugin_dir(binary):
-        # An unknown option makes the CLI exit before the turn starts, so this
-        # fails CLOSED: an older install loses the skills, not every chat.
-        logger.info("%s does not support --plugin-dir; the fused-render skills "
-                    "will only be available via the user-level skills dir",
-                    binary)
         os.environ.pop(PLUGIN_DIR_ENV, None)
         return None
     os.environ[PLUGIN_DIR_ENV] = root
