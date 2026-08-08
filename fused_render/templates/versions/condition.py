@@ -38,7 +38,7 @@ repository, with `.git` at an ancestor. But only the read side — the
 backend (versions.py) refuses `revert` for a linked folder, because that
 writes a commit with the Fused identity into what is the user's OWN
 repository (see fused_render/linked_apps.py). The same reasoning keeps linked
-folders out of app_git.app_dir_for and the claude agents' _commit_turn sweep
+folders out of app_git.app_dir_for and the claude agent's _commit_turn sweep
 entirely — no auto-commits.
 
 Fails closed: any exception returns False.
@@ -117,7 +117,7 @@ def main(path: str) -> bool:
         # `isfile`, deliberately not `not isdir`: the loose form is also true for
         # every path that does NOT EXIST, so a missing name inside any repository
         # would gate true. Same one-word trap the peer gate documents
-        # (claude_split/condition.py), and "cannot tell" must read as "refuse"
+        # (claude/condition.py), and "cannot tell" must read as "refuse"
         # (CT-12).
         if not os.path.isfile(path):
             return False

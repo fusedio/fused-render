@@ -85,7 +85,7 @@ async function load() {
     }
     // `/render`, NOT `/embed`: /embed serves the React shell, which would nest
     // this app inside a second copy of the chrome one iframe deeper (the same
-    // reason claude_split renders its left pane through /render).
+    // reason claude renders its left pane through /render).
     frameEl.src = "/render?path=" + encodeURIComponent(res.entry);
   } catch (err) {
     notice("Could not open the app: " + err.message, true);

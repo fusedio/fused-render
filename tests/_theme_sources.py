@@ -32,7 +32,6 @@ TIER_ONE_TEMPLATES = (
     "app",
     "bundle",
     "claude",
-    "claude_split",
     "code",
     "duckdb",
     "git",

@@ -656,10 +656,25 @@ function TemplatePreview({
   // mode, UNLESS the default IS the listing (`["_listing", "gallery"]`) — then
   // the first non-listing mode, so an embed whose default is the listing still
   // has a path to the secondary view. Shown only when a non-listing mode exists.
+  //
+  // An embed that is itself a PANE of another template can refuse the chip with
+  // `?modechip=false` (the `preview=false` param's shape — read straight off
+  // location.search, the owner's literal `false`, absent meaning ON). The chat
+  // template's left pane is the case that needs it: for a folder with no app
+  // entry it frames this embed, whose counterpart mode for any directory is the
+  // chat itself (D232), so the chip read "Chat" and sat in the top-right corner
+  // of the chat's own preview column — offering, one click away, a SECOND chat
+  // with its own agent and its own composer nested inside the first one's pane.
+  // That is the same nesting `?preview=false` already exists to prevent, one
+  // affordance over; and a control that chooses between two views is wrong in a
+  // host that is already showing the other one. Hidden, not disabled: a disabled
+  // chip still asserts the mode is reachable from here.
+  const modeChipOff =
+    new URLSearchParams(location.search).get("modechip") === "false";
   const otherEntry = templates.find((t) => t.mode !== "_listing");
   const counterpart = defaultEntry.mode !== "_listing" ? defaultEntry.mode : otherEntry?.mode;
   const toggleListing =
-    otherEntry && templates.some((t) => t.mode === "_listing")
+    !modeChipOff && otherEntry && templates.some((t) => t.mode === "_listing")
       ? () => setMode(isListing ? (counterpart as string) : "_listing")
       : null;
 

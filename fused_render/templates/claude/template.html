@@ -159,6 +159,58 @@
   }
   #annbtn.on .track { background: var(--accent); border-color: var(--accent); }
   #annbtn.on .knob { left: 14px; background: var(--on-accent); }
+
+  /* WHICH view the left pane frames (`leftmode`). A native <select>, quiet to
+     the same degree as #annbtn beside it: borderless, transparent, 12px, the
+     muted colour until hovered. Loud chrome here would read as the pane's
+     TITLE rather than a switch, and the pane's title is the file name in the
+     topbar. Native rather than a custom menu (the shell has one, ModeSwitcher)
+     because a <select> brings the platform popup, keyboard handling and
+     accessible name for free and the list is at most a handful of modes —
+     reimplementing that inside a template buys nothing. Hidden until there is
+     more than one view to choose between; see buildLeftPicker(). */
+  #leftmode {
+    height: 26px;
+    max-width: 140px;
+    padding: 0 2px;
+    font: inherit;
+    font-size: 12px;
+    line-height: 1;
+    border: 0;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--muted, var(--fg));
+    cursor: pointer;
+    transition: color .12s, background .12s;
+  }
+  #leftmode:hover { color: var(--fg); background: var(--surface); }
+  /* The popup list is drawn by the platform, which does not inherit the
+     transparent background — name both colours or a dark theme gets black text
+     on black. */
+  #leftmode option { color: var(--fg); background: var(--panel); }
+
+  /* Chat ⇄ Preview toggle. Exists for the NARROW layout only (see the 880px
+     block at the end of this stylesheet): while both columns are on screen
+     there is nothing to toggle, so it is display:none here and the media query
+     is the only thing that reveals it. Drawn like #back (bordered, quiet)
+     rather than like #annbtn: it navigates between views, it is not a mode. */
+  #viewbtn {
+    display: none;
+    margin-left: auto;
+    height: 26px;
+    padding: 0 10px;
+    font: inherit;
+    font-size: 12px;
+    line-height: 1;
+    white-space: nowrap;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: transparent;
+    color: var(--dim);
+    cursor: pointer;
+    transition: color .12s, border-color .12s, background .12s;
+  }
+  #viewbtn:hover { color: var(--fg); border-color: var(--border-strong); background: var(--surface); }
   #annpins { position: absolute; inset: 0; z-index: 2; pointer-events: none; overflow: hidden; }
   .annpin {
     position: absolute;
@@ -766,6 +818,147 @@
   }
   .skel-row .skel-bar.title { flex: 1; }
   .skel-row .skel-bar.sub { width: 42px; flex-shrink: 0; }
+
+  /* ── narrow host: one view at a time ──────────────────────────────────────
+     Two floors, and the breakpoint follows the HIGHER one. The layout's hard
+     floor — where the halves squeeze past their minimums and then overflow — is
+     #left's 200px + the 4px divider + #chat's 340px ≈ 544px, and the original
+     breakpoint (560px, D231) sat just above it. That turned out to be the wrong
+     floor to pick: a split that merely does not overflow is not yet a split
+     worth having. The explorer's listing preview pane defaults to HALF its
+     split container (about 700px on a 1700px window), so at 560px the split
+     engaged in a host far too narrow for it — two cramped columns where one
+     readable view was wanted. So the breakpoint is derived from the columns'
+     minimum USEFUL widths instead:
+
+         #left   a framed preview that is still a page       420px
+                 (the phone-viewport family, rounded up)
+       + #divider                                              4px
+       + #chat   ~60 characters of transcript prose at the    440px
+                 composer's own size (340 above is the
+                 squeeze floor, not a target)
+       = 864px → 880px, rounded up for a scrollbar and so the framed template's
+                 own breakpoints fire before it is being crushed.
+
+     Below 880px the split becomes ONE view at a time with a toggle, the same
+     idiom log_studio (780px), map (650), duckdb/sqlite (560) and bundle (640)
+     already use — and `versions`, the other split-layout template, lands on the
+     same 880px from its own arithmetic (#side 200 + divider 4 + a 640px preview
+     frame = 844), so the two collapse together.
+
+     WHY this lives in the template and not in the shell: the alternative was to
+     have the shell filter split-layout modes out of a narrow pane. A pane's
+     width is DYNAMIC, and that makes the filter wrong in both directions — the
+     listing preview pane defaults to HALF its container, so on a wide window
+     the pane fits the split perfectly and the mode should be offered; and once
+     it is offered, dragging the divider a little would make the mode appear and
+     disappear from the switcher mid-drag, and could yank the ACTIVE mode out
+     from under the user. It also needs per-template width knowledge in the
+     shell, which no registry field carries and which every user template would
+     be missing. A template that adapts itself needs none of that, and a user
+     template gets the same treatment for free by writing its own media query.
+
+     No min-width declaration was added to the registry or to stat for exactly
+     that reason. */
+  @media (max-width: 880px) {
+    /* One column, holding one of the two views (plus the shared #anntools
+       strip — see below). `position: relative` because the hidden view is
+       PARKED out of flow against the body box, not display:none'd — see
+       body.view-chat #left. */
+    body { flex-direction: column; position: relative; }
+    /* Nothing to drag when only one view is on screen. */
+    #divider { display: none; }
+    /* NOTE what is NOT here: a width for #left. applySplit() writes
+       `width: <split>%` INLINE on it, and an inline declaration outranks any
+       stylesheet rule, so a plain `width: auto` here would simply lose. The two
+       ways to neutralise it are the CSS force flag (`important`) and JS that
+       refrains from writing the inline width while narrow — and the JS one is
+       what this template does, in applySplit (see there): this file carries a
+       hard no-force-flag rule (D146: cascade problems are stated in the
+       SELECTORS, so that the next reader can reason about them by reading them,
+       and a test asserts the flag appears nowhere in this file), so forcing here
+       would be the one exception that makes the rule unenforceable. The
+       behaviour is the same either way, because the `split` PARAM is never
+       touched by the collapse:
+       applySplit rewrites the inline percentage from it the moment the host grows
+       back past 880px, so the wide layout returns with the user's own ratio and
+       with no reload. `min-width` is a stylesheet declaration and does need
+       clearing here — the 200px floor is a promise about the wide layout. */
+    #left { min-width: 0; }
+    /* The 340px floor is the wide layout's promise that the chat stays usable
+       BESIDE the preview. Here the chat is the whole width, so the floor would
+       only force a horizontal overflow of a 220px pane. */
+    #chat { min-width: 0; order: -1; }
+
+    /* Chat view — the default. The preview column is taken OUT OF FLOW and
+       parked, full size, behind the chat rather than `display: none`d, and that
+       is not a stylistic choice: an iframe with no layout box gives its content
+       document a 0×0 viewport, which would (a) make shotPane rasterise a 1×1
+       image of the app the moment a user attaches a pane screenshot from the
+       chat, and (b) collapse every element rect the pins are anchored to, so
+       arming annotate mode from here would find nothing to point at. Parked and
+       `visibility: hidden` it keeps a real viewport and a real layout, costs one
+       out-of-flow box, and shows nothing. `pointer-events: none` so the
+       invisible pane cannot swallow a click meant for the chat. */
+    body.view-chat #left {
+      position: absolute;
+      inset: 0;
+      visibility: hidden;
+      pointer-events: none;
+    }
+    body.view-chat #chat { flex: 1; min-height: 0; }
+    /* A control that acts on the OTHER half is ABSENT here, not disabled: with
+       no preview on screen there is nothing to annotate and no frame to place a
+       pin in, and nothing to choose a view FOR. A disabled control still claims
+       the space and still says "this view has an annotate feature", which is a
+       worse lie than not offering it — and an ARMED annotate mode with no
+       visible frame is worse than a dead one: it swallows clicks in a document
+       the user cannot see. applyNarrowView disarms the mode when the view flips
+       away from Preview for exactly that reason.
+       `.viewshot` — the composer's "attach a screenshot of the app pane" pill —
+       is in the list too, and that one is a genuine judgement call: it still
+       WORKS here (the parked column keeps a real viewport, so shotPane
+       rasterises the app correctly rather than a 1×1 image), so the narrow
+       "it cannot work" test does not catch it. The rule that does is the
+       stronger one: a view that shows no preview offers no features OF the
+       preview. Attaching a picture of something the user cannot see is a worse
+       affordance than a working one is a good affordance, and Preview view — one
+       click away, where the pill is hidden anyway because the whole composer
+       collapses — is where a person deciding to attach the app can actually see
+       what they are attaching.
+       Two things are deliberately NOT in this list:
+         * the Chat ⇄ Preview toggle — it is the navigation between the two
+           views, not a feature of either, so it is the one control that has to
+           be reachable from both;
+         * the annotation CHIPS above the composer — they are chat content (the
+           notes about to be sent, in the user's own words), not a control that
+           acts on the preview. Hiding them would hide part of the message. */
+    body.view-chat #annbtn,
+    body.view-chat .viewshot,
+    body.view-chat #leftmode { display: none; }
+    /* The pin overlay (#annpins, #annhl, #annpop) needs no rule of its own: all
+       three are children of #left, so parking the column takes them with it —
+       `visibility: hidden` inherits (none of them sets `visibility: visible`)
+       and `pointer-events: none` means the parked box cannot intercept a click
+       meant for the chat, even though it is positioned and #annpop carries a
+       z-index. Worth stating because it is the one part of the annotation UI
+       that lives OVER the frame rather than in the strip, and a stray
+       `visibility: visible` anywhere under #left would float it over the chat. */
+
+    /* Preview view: the chat column collapses to its #anntools strip, so the
+       Annotate switch and this toggle stay reachable while the preview owns the
+       screen. #anntools is a child of #chat (it is the chat pane's top row in
+       the wide layout, and moving it out of there in the DOM would rework a
+       layout that is correct), so the strip is kept by hiding #chat's OTHER
+       children rather than by hiding #chat: display:none on the column would
+       take the toggle with it and strand the user in the preview with no way
+       back to the chat. */
+    body.view-preview #left { flex: 1; min-height: 0; }
+    body.view-preview #chat { flex: 0 0 auto; }
+    body.view-preview #chat > *:not(#anntools) { display: none; }
+
+    #viewbtn { display: flex; align-items: center; }
+  }
 </style>
 </head>
 <body>
@@ -797,6 +990,17 @@
       <button id="annbtn" type="button" aria-pressed="false" aria-label="Annotate the app"
               title="Annotate the app, then send the notes to Claude"><span
         class="lbl">Annotate</span><span class="track" aria-hidden="true"><span class="knob"></span></span></button>
+      <!-- Which view the LEFT pane frames. Empty and `hidden` in the markup:
+           the options are the target's own preview modes, which only the stat
+           call in paneURL() knows, and there is no picker to show at all unless
+           that call found more than one of them (buildLeftPicker). -->
+      <select id="leftmode" hidden aria-label="Preview pane view"
+              title="Which view the preview pane shows"></select>
+      <!-- Chat ⇄ Preview, for the narrow single-view layout only (hidden by CSS
+           until the 880px media query reveals it). It sits in THIS strip
+           because the strip is the one row that both views keep on screen. -->
+      <button id="viewbtn" type="button" aria-label="Show the preview pane"
+              title="Switch between the chat and the preview">Preview</button>
     </div>
     <!-- chat view -->
     <div id="topbar">
@@ -842,7 +1046,12 @@
         <div class="home-sub" id="home-path"></div>
         <div class="annchips" id="annchips-home"></div>
         <form id="card" class="composer">
-          <textarea id="homebox" rows="2" placeholder="Ask Claude about this project…" autofocus spellcheck="false"
+          <!-- The placeholder names WHAT the chat is about, and that depends on
+               the target's KIND, which only paneURL() knows (see setTargetNoun).
+               The markup ships the kind-free wording so the box is never empty
+               and never wrong: "this project" was hardcoded here and lied about
+               every file and every ordinary folder this mode is bound to. -->
+          <textarea id="homebox" rows="2" placeholder="Ask Claude…" autofocus spellcheck="false"
                     data-gramm="false" data-gramm_editor="false" data-enable-grammarly="false"></textarea>
           <div class="composer-row">
             <select id="hmodel" class="pill model-sel" title="Model"></select>
@@ -871,13 +1080,14 @@
   </div>
 
 <script>
-// The claude template's chat, 1:1, as the right pane of a split view — same
-// backend (../claude/agent.py: start/poll/decide/history/sessions), same
-// permission cards, same run/session params, same resume semantics. The only
-// claude-template feature deliberately absent is the annotate comment handoff
-// (claudeComments/claudeReturn): annotate hands off to `_mode=claude`, not to
-// this view, and the return-trip exists to show the edited file — which the
-// left pane already does.
+// THE chat, as the right pane of a split view: ./agent.py behind it
+// (start/poll/decide/history/sessions), permission cards, run/session params,
+// resume semantics. It began as a 1:1 fork of the `claude` template's chat and
+// is now the only one — `claude` is deleted, this mode is offered on files and
+// on every directory, and the one feature that never came across is the annotate
+// comment handoff (claudeComments/claudeReturn): annotate hands off to
+// `_mode=claude`, which no longer resolves, and the return-trip existed to show
+// the edited file — which the left pane already does.
 //
 // A chat must never reload out from under a live conversation: the runtime
 // watches _file (LR-1), so Claude's own edit to the target would reload THIS
@@ -885,8 +1095,8 @@
 // preview iframe is its own document and keeps live-reloading on its own.
 fused.autoReload(false);
 
-// The agent is this template's own copy (forked from the claude template —
-// templates are self-contained, no cross-template imports).
+// The agent is this template's own copy (templates are self-contained, no
+// cross-template imports).
 const AGENT = "./agent.py";
 
 const log = document.getElementById("log");
@@ -902,7 +1112,7 @@ const BASENAME = FILE.split("/").pop();
 
 if (!FILE) {
   document.body.innerHTML = '<div id="msg">No file selected (missing _file param).</div>';
-  throw new Error("claude_split template: missing _file");
+  throw new Error("claude template: missing _file");
 }
 
 document.getElementById("banner-sub").textContent = BASENAME;
@@ -1046,6 +1256,16 @@ function fmtLogArg(v) {
 // frame's contentDocument IS the app's document now, so the frame-walking layer
 // that used to live here is gone rather than merely unused.
 //
+// The no-app-entry folder pane is /embed again (paneURL), so THERE this returns
+// the shell's own window and app_state reports the file browser's DOM and
+// console. That is deliberate and disclosed: the directory system prompt for an
+// ordinary folder says the pane is fused-render's file browser, never the user's
+// app, so a reading of it cannot be mistaken for a reading of their code. The
+// alternative — walking back into the nested frame to report whatever file the
+// user happens to have open — was rejected: the reading would change identity
+// under the agent with every click in the browser, and app_state's contract is
+// "the page beside this chat", one page.
+//
 // Returns null — never this chat's own window — in the three cases that are
 // genuinely "no app":
 //   * the project has no app entry, so the loader below REMOVED the iframe;
@@ -1138,9 +1358,13 @@ function searchParamsOf(search) {
 // pane is /render?path=<entry>), so it is on every rendered page and is never
 // something the app itself defined. `annotations` likewise — those are the
 // user's notes, already sent in their own block.
+// `leftmode` and `paneview` are in here for the `split` reason: they are this
+// chat's own layout bookkeeping (which view the left pane frames, which of the
+// two views a narrow host shows), and reporting them to the model as params the
+// APP is running with would be describing our chrome as its state.
 const CHAT_PARAMS = new Set(["_file", "_mode", "session_id", "run", "split",
                              "model", "effort", "permission", "annotations",
-                             "annmode",
+                             "annmode", "leftmode", "paneview",
                              "path"]);
 
 function appParamsOf(all) {
@@ -1341,50 +1565,82 @@ async function appStateFile(state) {
   }
 }
 
-// The chat modes, which the pane must never frame: `claude_split` is THIS view
-// (framing it would nest the split view inside its own left pane, recursively)
-// and `claude` is its directory-scoped sibling. Neither is a preview of the
-// target, which is the only thing the pane is for.
-const PANE_SKIP_MODES = new Set(["claude", "claude_split"]);
+// The chat mode, which the pane must never frame: `claude` is THIS view,
+// and framing it would nest the split view inside its own left pane,
+// recursively. It is not a preview of the target, which is the only thing the
+// pane is for. A single-element set rather than a bare `e.mode !== "claude"`
+// because it is the shape the exclusion has always had and the next chat-ish
+// mode joins it by adding a name. A sibling file-scoped chat mode used to be
+// listed here too; it is deleted (there is one chat template now, and it is
+// this one), and a dead name in a filter that reads stat's entries is worse
+// than no name — it implies a mode that can still come back from stat, and it
+// can't.
+const PANE_SKIP_MODES = new Set(["claude"]);
 
 // What the left pane should frame. Two kinds of target (D230):
 //
-//   * a project FOLDER — the app's entry html (index.html, or its single
-//     top-level html — the same rule as the shell's "Open as app" button),
-//     resolved by ./app.py;
+//   * a FOLDER — the app's entry html (index.html, or its single top-level
+//     html — the same rule as the shell's "Open as app" button), resolved by
+//     ./app.py; and when the folder has NO app entry, fused-render's own file
+//     browser for that folder (see the /embed fallback in paneURL);
 //   * a FILE — the file in its OWN default view, i.e. exactly what the
 //     explorer's preview pane would show it in: `.py` in `code`, `.parquet`
 //     in `duckdb`, an `.html` page rendered as itself. That is what makes the
 //     annotation tools usable while editing a standalone file, which is the
 //     whole point of binding this mode to the file keys (D230).
 //
-// Framed via /render either way — the RAW rendered document, same as the
-// annotate template — NOT /embed: /embed serves the React shell, which nests
-// the target one iframe deeper, putting its document out of the annotation
-// layer's reach (the anchor listeners would wire the shell document and never
-// see a click).
-async function paneURL() {
-  const st = await fetch("/api/fs/stat?path=" + encodeURIComponent(FILE))
-    .then((r) => r.json());
-  if (st.error) throw new Error(st.error);
+// Framed via /render for anything the annotation layer points at — the RAW
+// rendered document, same as the annotate template — NOT /embed: /embed serves
+// the React shell, which nests the target one iframe deeper, putting its
+// document out of the annotation layer's reach (the anchor listeners would wire
+// the shell document and never see a click). The no-app-entry folder is the one
+// exception, and it is not a counter-example: see paneURL.
+//
+// The view is also SWITCHABLE for a file target (`leftmode`): a `.md` file's
+// default is the markdown view, and "show me the source instead" is an ordinary
+// thing to want mid-conversation. The candidates come from the one stat call
+// below and nowhere else — see paneOfferable / buildLeftPicker.
 
-  if (st.is_dir) {
-    const { entry } = await fused.runPython("./app.py", { dir: FILE });
-    if (!entry) throw new Error("no app entry (index.html or a single top-level .html) in " + FILE);
-    appEntry = entry;
-    return "/render?path=" + encodeURIComponent(entry);
-  }
+// stat's entries that this pane may offer, in stat's own order. Two exclusions:
+//   * the chat modes (PANE_SKIP_MODES above);
+//   * `conditional` entries, whose gate verdict lives behind /api/fs/conditions
+//     and is deliberately NOT fetched here (CT-12: an unresolved gate reads as
+//     "not offered"). Offering one would mean offering a view that may not
+//     apply to this file at all, and resolving one would mean a second network
+//     round trip before the pane can show anything.
+// The first element is therefore the DEFAULT — the shell's `defaultTemplate`
+// rule, unchanged by the picker.
+const paneOfferable = (entries) =>
+  (entries || []).filter((e) => !e.conditional && !PANE_SKIP_MODES.has(e.mode));
 
-  // The file's DEFAULT mode, by the same rule the shell applies (Preview.tsx
-  // `defaultTemplate`): the first entry that is not `conditional`. Reusing the
-  // rule rather than naming a template per extension is what keeps the pane
-  // honest when a binding changes — including a user's own override (§16),
-  // which stat has already resolved by the time we see it.
-  const t = (st.templates || []).find((e) => !e.conditional && !PANE_SKIP_MODES.has(e.mode));
-  if (!t) throw new Error("no preview view for this file");
-  // The target IS the document being annotated, so app_state reports the file
-  // itself where a folder target reports the app's entry page.
-  appEntry = FILE;
+// Resolved once by paneURL() and reused by the picker and by every later swap.
+// A second /api/fs/stat just to fill the <select> would pay the call twice on
+// open and could disagree with what the pane is actually framing if a binding
+// changed in between — and a hardcoded extension → modes table would drift from
+// the registry on the next rebinding and ignore a user override entirely (§16),
+// which is the same mistake the default-mode rule above exists to avoid.
+let paneEntries = [];
+let paneRemote = false;
+let framedMode = null;   // the mode #leftframe is showing right now
+// True only for the no-app-entry folder pane, which frames /embed (the React
+// shell) instead of a rendered document. Tracked because the annotation layer
+// cannot work through that extra nesting — see paneURL's /embed branch and the
+// suppression in the boot block.
+let paneEmbedded = false;
+
+// The chosen entry: `leftmode` if it names one that is present and offerable,
+// else the default. Unknown / no-longer-offered falls back SILENTLY, the same
+// forgiving rule the shell applies to an unknown `_mode` (SPEC PT-9) — a param
+// left over from a renamed template, or carried across to a file of another
+// type, must not turn the pane into an error page.
+function curLeftEntry() {
+  const want = fused.params.get("leftmode") || "";
+  return paneEntries.find((e) => e.mode === want) || paneEntries[0] || null;
+}
+
+// One stat entry → the iframe src. Split out of paneURL so a picker switch can
+// re-derive the URL from the entry list it already has, with no re-stat.
+function paneSrcFor(t) {
   // `_render` is a shell sentinel (PT-12), not a template folder: it means "the
   // file renders itself", which is a bare /render on the file.
   if (t.mode === "_render") return "/render?path=" + encodeURIComponent(FILE);
@@ -1394,13 +1650,192 @@ async function paneURL() {
   // still gets the hint here.
   return "/render?path=" + encodeURIComponent(t.path)
     + "&_file=" + encodeURIComponent(FILE)
-    + (st.remote ? "&_remote=1" : "");
+    + (paneRemote ? "&_remote=1" : "");
+}
+
+// The composer's placeholder names the target, and the noun has to match the
+// target's KIND — the same three shapes, decided by the same predicate, as the
+// system prompt (agent.py `_split_system_prompt`, keyed on whether
+// shared/app_entry resolves an entry html): an app folder is a "project", a
+// folder with no entry is a "folder", a file is a "file". Saying "project" over
+// ~/Downloads is the same lie in the placeholder as it is in the prompt.
+//
+// Called from paneURL's three branches rather than computed up front because the
+// kind is not known until stat has answered (and, for a directory, until ./app.py
+// has said whether an entry resolves) — which is exactly the work paneURL is
+// already doing, so this costs no extra round trip. Until then the markup's
+// kind-free "Ask Claude…" stands.
+const setTargetNoun = (noun) => {
+  homebox.placeholder = "Ask Claude about this " + noun + "…";
+};
+
+async function paneURL() {
+  const st = await fetch("/api/fs/stat?path=" + encodeURIComponent(FILE))
+    .then((r) => r.json());
+  if (st.error) throw new Error(st.error);
+
+  if (st.is_dir) {
+    const { entry } = await fused.runPython("./app.py", { dir: FILE });
+    if (entry) {
+      setTargetNoun("project");   // an app folder — the prompt says so too
+      appEntry = entry;
+      return "/render?path=" + encodeURIComponent(entry);
+    }
+    // No app entry: frame the FOLDER ITSELF in fused-render's chrome-free
+    // navigable shell (/embed, SPEC LM-4/D39) — a real file browser beside the
+    // chat, so "what's in here?" is answerable by looking and the user can walk
+    // into a file while talking about the folder. This mode is offered on every
+    // directory now, not just app folders, and the alternative was what this
+    // branch used to do: throw, leaving a permanent error panel beside a working
+    // chat for the ordinary case of a folder that is not an app.
+    //
+    // WHY /embed IS ACCEPTABLE HERE WHEN D230 REJECTED IT FOR A FILE TARGET:
+    // the objection is that /embed nests the target one iframe deeper, out of
+    // the annotation layer's reach. That objection is about a target the
+    // annotation layer POINTS AT. A folder listing is not one — there is no
+    // element of a file browser a note could be anchored to that would mean
+    // anything to the agent — so nesting costs nothing here. The corollary is
+    // enforced, not assumed: paneEmbedded suppresses the annotate affordance
+    // entirely (see the boot block below), because an Annotate button over a
+    // pane whose clicks can never resolve is a button that silently does
+    // nothing.
+    // An ordinary folder, not a project: the pane is our file browser over it.
+    setTargetNoun("folder");
+    paneEmbedded = true;
+    // Same construction as the shell's own embedSrc (layout-codec.ts): strip
+    // leading slashes, encode PER SEGMENT so the separators survive, and hang it
+    // off the /explorer/embed prefix. Hand-rolled rather than imported because a
+    // template is a standalone document and cannot import the shell's TS.
+    // `?preview=false` closes the embedded listing's OWN split preview pane
+    // (FS-9's param, the owner's literal spelling — `pane.ts` `paneIsOpen`). Not
+    // cosmetic: that pane defaults ON, and for a folder with nothing selected it
+    // previews the folder ITSELF — which since D232 offers this very chat mode
+    // for any directory, so it opened a SECOND chat, with its own agent and its
+    // own composer, nested inside this chat's left pane. Three columns for one
+    // conversation, and a stray Send in the wrong one starting a run nobody was
+    // looking at. The pane is also the wrong thing to spend a narrow left half
+    // on: the point of framing /embed is the file BROWSER.
+    // Rejected: pinning the embed to `_mode=_listing`, which says nothing about
+    // the pane (the nested preview lives inside the listing view, so the mode
+    // would still carry it) and would additionally forbid the user navigating
+    // the pane into a file — the reason /embed was chosen over a bare listing.
+    //
+    // `?modechip=false` closes the SECOND door into that same nesting, and it
+    // was open until someone looked at the rendered page: an embed showing the
+    // listing pins a corner chip (Preview.tsx `.preview-browse-chip`) that
+    // switches it to its counterpart mode, and a directory's counterpart is this
+    // very chat (D232) — so a button reading "Chat" sat in the top-right corner
+    // of the chat's own preview column, one click from a second agent and a
+    // second composer inside the first one's pane. It is also simply a control
+    // that chooses between two views, offered in a host that is already showing
+    // one of them. Same param shape as `preview=false` (the owner's literal
+    // `false`; absent means the chip stays on for every other embed).
+    return "/explorer/embed/" + FILE.replace(/^\/+/, "").split("/")
+      .filter((s) => s.length > 0).map(encodeURIComponent).join("/")
+      + "?preview=false&modechip=false";
+  }
+
+  // The file's views, by the same rule the shell applies (Preview.tsx
+  // `defaultTemplate`): stat's entries, minus the ones this pane cannot offer,
+  // first one is the default. Reusing the rule rather than naming a template per
+  // extension is what keeps the pane honest when a binding changes — including a
+  // user's own override (§16), which stat has already resolved by the time we
+  // see it.
+  setTargetNoun("file");
+  paneEntries = paneOfferable(st.templates);
+  paneRemote = !!st.remote;
+  const t = curLeftEntry();
+  if (!t) throw new Error("no preview view for this file");
+  // The target IS the document being annotated, so app_state reports the file
+  // itself where a folder target reports the app's entry page.
+  appEntry = FILE;
+  framedMode = t.mode;
+  return paneSrcFor(t);
+}
+
+// ── the left-view picker ────────────────────────────────────────────────
+const leftSel = document.getElementById("leftmode");
+
+// The shell's `modeTitle` (ModeSwitcher.tsx), reimplemented in four lines: a
+// template is a standalone document and cannot import the shell's TS. Worth the
+// duplication because the picker's labels must read the same as the explorer's
+// mode switcher does for the same file — "Rendered" for the `_render` sentinel,
+// and a capitalized folder name otherwise, since a folder name is chosen for the
+// filesystem, not for a label. (`_listing`/`_app` never appear in a FILE's
+// entries and the two chat modes are already filtered out, so they are not here.)
+function paneModeLabel(mode) {
+  if (mode === "_render") return "Rendered";
+  return ({ versions: "History", git: "Source Control" })[mode]
+    || mode.charAt(0).toUpperCase() + mode.slice(1);
+}
+
+function buildLeftPicker() {
+  // Nothing to pick, no control. A DIRECTORY target has exactly one thing to
+  // frame — the app entry resolved by app.py, or the folder's /embed browser
+  // when there is none; neither is a stat entry, so paneEntries stays empty —
+  // and a file with a single offerable view has no choice either. A one-item
+  // <select> is chrome that cannot do anything.
+  if (paneEntries.length < 2) return;
+  for (const e of paneEntries) {
+    const o = document.createElement("option");
+    o.value = e.mode;
+    o.textContent = paneModeLabel(e.mode);
+    leftSel.appendChild(o);
+  }
+  leftSel.value = framedMode;
+  leftSel.hidden = false;
+  // The picker writes the PARAM and nothing else; applyLeftMode (driven from
+  // params.onChange, exactly like applySplit) is the only thing that touches the
+  // iframe. One code path for a user click, a reload with `leftmode` already
+  // set, and any later param change.
+  leftSel.addEventListener("change", () => fused.params.set("leftmode", leftSel.value));
+}
+
+// Frame whatever `leftmode` now names. Re-derived from the entry list stat
+// already gave us — never a second stat.
+function applyLeftMode() {
+  const t = curLeftEntry();
+  if (!t || t.mode === framedMode) return;   // idempotent: onChange fires for
+                                             // every param, `split` included
+  const frame = document.getElementById("leftframe");
+  if (!frame) return;   // the boot error path removed it; nothing to swap
+  framedMode = t.mode;
+  if (leftSel.options.length) leftSel.value = t.mode;
+  // ANNOTATIONS SURVIVE THE SWAP, deliberately. Every pin is anchored to an
+  // element of the LEFT document (anchorId, or a tag:nth-of-type path), so a new
+  // left view invalidates the anchors — the same note points at nothing in
+  // `code` that it pointed at in `markdown`. Dropping the list on a switch was
+  // the other option and is worse: the notes live in the `annotations` param
+  // because they are the user's words, they are still perfectly sendable as
+  // text, and losing them to a click on a view picker would be data loss with no
+  // warning. So the list stays and only the POSITIONS are recomputed: an
+  // unresolvable anchor already means "no pin this frame, the chip still shows
+  // it" (see renderAnn), and #leftframe's `load` handler re-wires the fresh
+  // document and calls renderAnn() itself — which is why there is no renderAnn
+  // here, unlike the divider drag, where no load event is coming.
+  frame.src = paneSrcFor(t);
 }
 
 // ── left pane: the target's ordinary preview ─────────────────────
 (async () => {
   try {
     document.getElementById("leftframe").src = await paneURL();
+    buildLeftPicker();
+    // An /embed pane is fused-render's file browser, one iframe deeper than the
+    // annotation layer can reach: every click would land on the shell document,
+    // no anchor would ever resolve, and the pins would sit over a page they are
+    // not measuring. So the toggle goes away rather than being offered and
+    // failing silently — the same reasoning as the error path below, where there
+    // is no pane to annotate at all. Hidden, not disabled: a disabled control
+    // still advertises a feature that does not apply to this target.
+    //
+    // The disarm goes through annSetMode (the one way in and out of the mode) so
+    // pins already painted by the boot default are cleared too — paneURL resolves
+    // asynchronously, so the mode was armed before we knew what the pane is.
+    if (paneEmbedded) {
+      annSetMode(false);
+      document.getElementById("annbtn").style.display = "none";
+    }
   } catch (err) {
     // Swap only the iframe for the message — #leftview also hosts the annotation
     // layer (button, pins, highlight, popover), and wiping it would leave JS
@@ -1421,7 +1856,21 @@ async function paneURL() {
 // ── resizable divider; the split ratio is view state, so it lives in a param ──
 const leftEl = document.getElementById("left");
 const clampPct = (pct) => Math.min(80, Math.max(20, pct));
+// The narrow single-view layout's breakpoint, duplicated from the media query at
+// the end of the stylesheet because applySplit has to know about it — see below.
+// A `matchMedia` object rather than a width comparison so the two stay one
+// definition and one evaluation: `innerWidth < 880` and the media query disagree
+// about a scrollbar's width, and that disagreement is a half-collapsed layout.
+const NARROW_MQ = window.matchMedia("(max-width: 880px)");
 function applySplit() {
+  // Below the breakpoint the stylesheet owns #left's width (one view at a time,
+  // no divider, nothing to be a ratio OF), and an inline width would beat it —
+  // inline outranks every rule short of the CSS force flag, which this file does
+  // not use (D146). So the inline declaration is CLEARED while narrow and rewritten
+  // from the param on the way back out; the param itself is never touched, so
+  // the wide layout always returns with the user's own ratio, with no reload.
+  // The divider is hidden while narrow, so nothing can write a width behind this.
+  if (NARROW_MQ.matches) { leftEl.style.width = ""; return; }
   leftEl.style.width = clampPct(parseFloat(fused.params.get("split") || "70")) + "%";
 }
 applySplit();
@@ -1442,6 +1891,7 @@ document.getElementById("divider").addEventListener("mousedown", (e) => {
   window.addEventListener("mousemove", move);
   window.addEventListener("mouseup", up);
 });
+
 
 // ── annotations: element-anchored notes on the left app, sent with the ──
 // next chat message. The anchor model is the annotate template's (anchorId
@@ -1726,7 +2176,13 @@ annTa.addEventListener("keydown", (e) => {
 // mode too, and a second copy of this would be a second chance for the banner's
 // text to disagree with `annOn`.
 function annSetMode(on) {
-  annOn = on;
+  // An /embed pane can never be armed, whoever asks. Enforced HERE rather than
+  // only at the button because arming has four entry points (the click, the
+  // boot default below, the `annmode` param, the app menu's exit action) and a
+  // check at each of them is a check that a fifth one will forget. `annmode=1`
+  // left in a URL from a folder that used to have an app entry is the concrete
+  // case: it would arm a layer whose anchors resolve against the wrong document.
+  annOn = on && !paneEmbedded;
   fused.params.set("annmode", annOn ? "1" : "0");
   annBtn.classList.toggle("on", annOn);
   annBtn.setAttribute("aria-pressed", String(annOn));
@@ -1835,6 +2291,98 @@ annFrame.addEventListener("load", () => {
 window.addEventListener("resize", renderAnn);
 renderAnn();  // chips from a persisted review show before the frame loads
 watchApp();   // a document already in the frame at boot never fires `load`
+
+// ── narrow host: which of the two views is on screen ────────────────────
+// Below 880px the stylesheet collapses the split to one view at a time (see the
+// media block, which also records why this is the template's job and not the
+// shell's). All this code does is say WHICH one, as a body class — and the class
+// is set unconditionally, wide or narrow, because the rules that read it live
+// inside the media query and are inert above the breakpoint. That is what makes
+// crossing the breakpoint in either direction correct with no reload: nothing has
+// to be undone on the way out.
+//
+// Placed AFTER the annotation section on purpose: the first call re-measures the
+// pins, and renderAnn reads consts (annPins, annFrame, annotations) declared down
+// there — running this any earlier is a temporal-dead-zone ReferenceError.
+const viewBtn = document.getElementById("viewbtn");
+// The view the last call applied, so a FLIP can be told from a re-application
+// (params.onChange fires for every param, `split` and `model` included). null
+// until the first call: boot is not a flip.
+let narrowShown = null;
+function applyNarrowView() {
+  // Default CHAT: an unset param reads as the chat, so a narrow pane opens on
+  // the conversation — the reason the mode exists — and the preview is one click
+  // away. Pane-local like `split`, so a reload keeps the view the user was on.
+  const preview = fused.params.get("paneview") === "preview";
+  document.body.classList.toggle("view-preview", preview);
+  document.body.classList.toggle("view-chat", !preview);
+  // The button names its DESTINATION, not the current view.
+  viewBtn.textContent = preview ? "Chat" : "Preview";
+  viewBtn.setAttribute("aria-label", preview ? "Show the chat" : "Show the preview pane");
+  // Leaving Preview while narrow DISARMS annotate mode. The media block hides
+  // the annotate toggle in the chat-only view because there is no frame to point
+  // at; leaving the mode armed behind that hidden toggle would keep the frame's
+  // capture-phase click swallower live over a document the user cannot see, and
+  // would leave the control in a state its own view cannot show or undo. So the
+  // flip resets it, through annSetMode — the one way in and out, which keeps the
+  // label, aria-pressed, the param and the pins in agreement.
+  //
+  // Only on an actual flip (narrowShown was Preview), and only while narrow:
+  //   * disarming on every call would fight a user arming it in Preview;
+  //   * disarming at BOOT would write annmode=0 the first time this view opened
+  //     in a narrow pane, and annotate mode is ON by default — that default
+  //     belongs to the wide layout too, and the param outlives the narrow host;
+  //   * above the breakpoint both halves are on screen and armed is correct.
+  //
+  // The pane-shot pill is disarmed on the same flip and for the same reason: the
+  // media block hides `.viewshot` in the chat-only view, and an armed toggle
+  // behind a hidden control would put a picture of the app on the next message
+  // with nothing on screen saying so. Unlike annotate mode there is no param to
+  // leak — viewShotWanted is per-message state — so this is purely about the
+  // send not carrying something invisible.
+  //
+  // Both resets are inside the `narrowShown === true` guard, which also makes
+  // them safe to write here: `viewShotWanted` is a `let` declared further down
+  // the script, so a read at boot (when this function is first called) would be
+  // a temporal-dead-zone error — and boot is never a flip. Same hazard the
+  // placement note above this function describes for renderAnn.
+  if (NARROW_MQ.matches && narrowShown === true && !preview) {
+    if (annOn) annSetMode(false);
+    setViewShot(false);
+  }
+  narrowShown = preview;
+  // Pins are positioned in #leftview coordinates, and the two narrow views give
+  // #leftview two different boxes (parked at the full body box in Chat, the body
+  // minus the #anntools strip in Preview), so the view that just became visible
+  // has to be re-measured — otherwise switching to Preview with notes already
+  // pending draws them against the box the other view had. This is the same
+  // reason the divider drag calls renderAnn. (It is also why the hidden view is
+  // PARKED rather than display:none'd — a container with no layout box measures
+  // zero, every pin then fails renderAnn's `y > host.clientHeight` test, and
+  // there would be nothing left to recompute. See the media block.)
+  //
+  // Twice, for two different reasons: now, because reading a rect flushes THIS
+  // document's layout; and on the next frame, because the framed document only
+  // reflows to the iframe's new box after that, and the pins come from rects
+  // measured inside it.
+  renderAnn();
+  requestAnimationFrame(renderAnn);
+}
+viewBtn.addEventListener("click", () => {
+  // Writes the param only — applyNarrowView runs from params.onChange, the same
+  // one-way flow `split` and `leftmode` use.
+  fused.params.set("paneview", fused.params.get("paneview") === "preview" ? "chat" : "preview");
+});
+applyNarrowView();
+// Crossing the breakpoint, in EITHER direction, without a reload. Two things
+// have to happen and neither is CSS: applySplit clears or rewrites the inline
+// width that the collapse cannot override (see applySplit), and the pins get
+// re-measured because #leftview's box changed (one column instead of two, or
+// back) even though the view class did not. `resize` on window already covers
+// renderAnn for a host drag; this is what covers a media flip that arrives
+// without a resize event of our own — a devtools width change, a zoom, a
+// CSS-driven relayout of the host pane.
+NARROW_MQ.addEventListener("change", () => { applySplit(); applyNarrowView(); });
 
 // ── annotation screenshots: a PNG crop of what the user pointed at ──
 // The anchors above stay primary — they are what Claude edits FROM, and they map
@@ -2847,8 +3395,14 @@ fused.runPython(AGENT, { action: "defaults", file: FILE }, { key: null }).then((
 }).catch(() => {});
 
 // The split param changes on drag too — applySplit on every change is cheap
-// and idempotent.
-fused.params.onChange(() => { applySplit(); renderAnn(); });
+// and idempotent. The other two view-state params ride the same handler:
+// `leftmode` (which view the left pane frames) and `paneview` (which of the two
+// views the narrow layout shows) are each written by their control and applied
+// only here, so a click, a reload with the param already set, and any later
+// change all take one path. Both appliers no-op when nothing moved — applyLeftMode
+// compares against the mode actually framed, so it cannot reload the iframe just
+// because `split` changed.
+fused.params.onChange(() => { applySplit(); applyLeftMode(); applyNarrowView(); renderAnn(); });
 
 function showSession() {
   const id = fused.params.get("session_id");

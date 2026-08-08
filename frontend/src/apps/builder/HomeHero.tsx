@@ -9,16 +9,16 @@ import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { TextArea } from "@platform/ui/field/fields";
 import { HeroBrand } from "@platform/ui/HeroBrand";
 
-// URL of an app folder's claude_split chat, attached to a specific live run.
+// URL of an app folder's claude chat, attached to a specific live run.
 // `_mode` is the shell's template selector; `run` is a plain view param the
-// claude_split template reads through fused.params (its boot resumes that
+// claude template reads through fused.params (its boot resumes that
 // run, so a session started server-side is picked up exactly like one the
 // page started itself). Folder-scoped on purpose: the server starts the
-// scaffolding session via the claude_split agent on the app FOLDER, so the
+// scaffolding session via the claude agent on the app FOLDER, so the
 // re-attach must land in the same template — same runs dir, same
-// .claude-split.json sidecar — never the folder-scoped `claude` template (D230
-// made `claude_split` the file-scoped chat too, so "which chat" is now a
-// question about the target's kind, not about which template is file-scoped).
+// .claude-split.json sidecar. (There is only one chat template now, so "which
+// chat" is no longer a question at all; the `_mode` still has to be spelled out
+// because the folder's default mode is the app itself, not the chat.)
 // Lands in the BUILDER namespace (/apps/<tag>/<name>) — the app folder's last
 // two path segments ARE its tag/name by the server's workspace contract.
 export function claudeChatUrl(appDir: string, runId: string): string {
@@ -30,7 +30,7 @@ export function claudeChatUrl(appDir: string, runId: string): string {
   const norm = /^[A-Za-z]:[\\/]/.test(appDir) ? appDir.replace(/\\/g, "/") : appDir;
   const segs = norm.replace(/\/+$/, "").split("/");
   const [tag, name] = segs.slice(-2);
-  const params = new URLSearchParams({ _mode: "claude_split", run: runId });
+  const params = new URLSearchParams({ _mode: "claude", run: runId });
   return (
     APP_ROUTE_PREFIX +
     encodeURIComponent(tag) +

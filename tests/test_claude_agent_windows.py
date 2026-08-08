@@ -1,7 +1,13 @@
-"""Windows coverage for the claude chat template's backend
+"""Windows coverage for the chat template's backend
 (fused_render/templates/claude/agent.py): finding the CLI when it isn't on
 PATH, plus the win32 route for detach / liveness / cancel and the id guards
 that only a Windows path separator can slip past.
+
+Retargeted, not deleted, when the plain chat template it was written against was
+removed (D230): the split view is now the only chat backend — and carries the
+`claude` name — it has the same
+`_claude_bin` / `_DETACH` / `_alive` / `_cancel` / id-guard code, and this is the
+only place any of it is exercised on the win32 branch.
 
 Each test simulates win32 from any host (`os.name` and the module's own
 candidate tuple are patched), so the Linux matrix exercises the Windows

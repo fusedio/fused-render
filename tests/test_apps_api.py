@@ -273,7 +273,7 @@ def test_new_app_with_prompt_starts_a_session(client, workspace, monkeypatch):
     assert r.json()["session_started"] is True
     assert r.json()["session_error"] is None
     assert r.json()["run_id"] == "run-42"   # the UI can attach to the live run
-    # The scaffolding session starts on the app FOLDER (claude_split agent),
+    # The scaffolding session starts on the app FOLDER (claude agent),
     # so its sidecar lands where the split view lists sessions from.
     assert seen["target"] == str(workspace / "local" / "demo")
     assert seen["prompt"] == "build a todo app"
@@ -513,11 +513,11 @@ def test_agent_start_default_still_passes_message_in_argv(tmp_path, monkeypatch)
 # --------------------------- landing the creator in the running claude session
 
 # Creating an app with a prompt starts a session the user never sees unless the
-# post-create navigation opens the entry file's CLAUDE-template chat attached to
-# that run. Three sources have to agree for that to work, and none of them can
-# see the other two: HomeHero.tsx builds the URL, registry.json makes "claude" a
-# selectable mode for .html, and the claude template's boot re-attaches from the
-# `run` param. These tests pin the three ends of that contract.
+# post-create navigation opens the app FOLDER's chat attached to that run. Three
+# sources have to agree for that to work, and none of them can see the other two:
+# HomeHero.tsx builds the URL, registry.json makes "claude" a selectable
+# mode for the `/` key, and the chat template's boot re-attaches from the `run`
+# param. These tests pin the three ends of that contract.
 
 def _repo_text(*parts):
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -527,30 +527,34 @@ def _repo_text(*parts):
 
 def test_home_navigates_into_the_claude_chat_for_the_started_run():
     home = _repo_text("frontend", "src", "apps", "builder", "HomeHero.tsx")
-    # Folder-first: the scaffolding session runs via the claude_split agent on
-    # the app FOLDER, so the re-attach must land in the split view (same runs
-    # dir, same .claude-split.json sidecar) — not the file-scoped claude mode.
-    assert '_mode: "claude_split"' in home, "post-create nav must select the claude_split mode"
+    # Folder-first: the scaffolding session runs via the claude agent on
+    # the app FOLDER, so the re-attach must land there (same runs dir, same
+    # .claude-split.json sidecar) rather than on the entry html.
+    assert '_mode: "claude"' in home, "post-create nav must select the claude mode"
     assert "claudeChatUrl(res.path" in home, "…on the app folder, not entry_html"
     assert "run: runId" in home, "…and attach to the run the POST just started"
     # the run_id is what gates it: no session (no prompt) -> the default view
     assert "if (res.run_id) navigateUrl(claudeChatUrl(" in home
 
 
-def test_claude_split_is_the_selectable_chat_mode_for_html():
-    """D230 moved the file-side chat from `claude` to `claude_split`: a file gets
-    the split view (its own preview beside the chat, with the annotation tools),
-    and `claude` is the folder-scoped chat. A page must offer exactly one of
-    them, or the switcher shows two chats that differ only in features."""
+def test_claude_is_the_selectable_chat_mode_for_html():
+    """D230 moved the file-side chat to the split view and deleted the plain chat
+    template outright, so `claude` is the only chat a page — or anything else —
+    can offer. A target must offer exactly one, or the switcher shows two chats
+    that differ only in features."""
     registry = json.loads(_repo_text("fused_render", "templates", "registry.json"))
-    assert "claude_split" in registry[".html"]
-    assert "claude" not in registry[".html"]
+    assert registry[".html"].count("claude") == 1
+    assert registry["/"].count("claude") == 1
 
 
 def test_claude_template_boots_into_chat_from_a_bare_run_param():
     """The page must resume a run it did not start itself: its boot reads the
     `run` param, enters chat, and polls — no session_id needed (the sidecar
-    entry lands seconds later, once claude reports its id)."""
+    entry lands seconds later, once claude reports its id).
+
+    Retargeted from the deleted plain chat template to the split view (which now
+    carries the `claude` name): the POST always spawned through the chat agent on
+    the FOLDER, so this was already pinning the wrong page's boot."""
     page = _repo_text("fused_render", "templates", "claude", "template.html")
     assert 'fused.params.get("run")' in page
     assert "await resumeRun(run_id)" in page

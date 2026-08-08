@@ -1,7 +1,7 @@
 def main(dir: str = ""):
     """Resolve the app folder's entry page — the html the view renders full-bleed.
 
-    The rule is shared with `claude_split/app.py` (../shared/app_entry.py) so the
+    The rule is shared with `claude/app.py` (../shared/app_entry.py) so the
     plain view and the split view can never open different pages for the same
     folder. Returns {"entry": <abs path> | None}."""
     import os

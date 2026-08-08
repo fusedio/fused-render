@@ -1,7 +1,13 @@
-"""The claude template's approval bridge: headless `claude -p` has no terminal
+"""The chat template's approval bridge: headless `claude -p` has no terminal
 to prompt on, so `--permission-prompt-tool` routes each request to
 `templates/claude/permission_server.py`, which parks it as a file until the
 chat window answers through `agent.py`'s `decide` action.
+
+Retargeted, not deleted, when the plain chat template it was written against was
+removed (D230): the split view is the only chat template now — and carries the
+`claude` name — and ships its own copy of the same `permission_server.py`
+(templates are self-contained by design, SPEC PY-15), so the two contracts below
+are still exactly the contracts that hold.
 
 Two contracts are worth pinning, and neither shows up in a test of anything
 else:
@@ -66,7 +72,7 @@ def agent():
 # --------------------------------------------------------------- the MCP wire
 # The stdio harness (one reader thread, responses demultiplexed by JSON-RPC id,
 # and why both are load-bearing) lives in _mcp_stdio.py, shared with
-# test_claude_split_app_state.py so there is only ever one of it.
+# test_claude_app_state.py so there is only ever one of it.
 
 
 def _Server(perm_dir, env=None):
@@ -104,9 +110,13 @@ def _result_payload(response):
     return json.loads(content[0]["text"])
 
 
-def test_initialize_advertises_only_the_approval_tool(server):
-    tools = server.call("tools/list")["result"]["tools"]
-    assert [t["name"] for t in tools] == ["approve"]
+# `test_initialize_advertises_only_the_approval_tool` lived here. It pinned the
+# deleted plain chat template's server, which offered exactly one tool; the
+# surviving `claude` copy offers `approve` AND `app_state`, and the full
+# advertised list is already pinned by
+# test_claude_app_state.py::test_the_server_advertises_both_tools. Deleted
+# rather than corrected in place, because "only the approval tool" was the whole
+# claim and it is no longer true of any shipping server.
 
 
 def test_allow_round_trip_returns_the_tool_input_unchanged(tmp_path, agent, server):
@@ -330,7 +340,10 @@ def test_a_synchronous_call_is_not_stolen_by_a_pending_request(tmp_path, server)
 
     listed = server.call("tools/list")
 
-    assert [t["name"] for t in listed["result"]["tools"]] == ["approve"]
+    # The point is WHOSE response came back, not the roster — that is
+    # test_claude_app_state.py's. `approve` first is enough to prove this is
+    # the tools/list reply and not the parked approval's.
+    assert [t["name"] for t in listed["result"]["tools"]][0] == "approve"
     assert not parked.done.is_set()
     (perm_dir / (card["id"] + ".res.json")).write_text(
         json.dumps({"decision": "allow"}))

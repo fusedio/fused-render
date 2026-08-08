@@ -1,25 +1,43 @@
-"""Gate for the `claude_split` template — the split view: the target's own
+"""Gate for the `claude` template — the split view: the target's own
 preview beside a Claude chat, with the annotation / app_state machinery
 (D230).
 
-`main(path)` answers for the two kinds of target the mode is bound to:
+There is now ONE chat template for both kinds of target (D230 deleted the
+second, plain chat template this one used to sit beside), so this gate no longer
+sorts folders into "app folder → split chat" and "ordinary folder → the other
+chat". It asks a single question of both kinds:
 
 * **A FILE** (every key in the registry's authored-file set — source, config,
   prose, data, image assets) → allowed. This is the file-scoped chat: the left
   pane renders the file in its OWN default template and the annotation tools
-  work over that, which is the whole reason `claude_split` replaced the plain
-  `claude` mode on file keys (D230). Nothing more is asked of a file: the
+  work over that, which is the whole reason this split view replaced the plain
+  chat mode on file keys (D230). Nothing more is asked of a file: the
   registry already decided which extensions offer the mode, and a file needs
   neither a workspace nor a repository to be worth talking about.
-* **A DIRECTORY** (the universal "/" key) → allowed ONLY for a project folder,
-  i.e. a directory exactly two levels below the workspace root
-  (<workspace>/<tag>/<project>), or a registered *linked app* folder
-  (`FUSED_RENDER_LINKED_APPS`), which may live anywhere on disk. Anywhere else
-  (the root itself, a tag folder, a nested subfolder, an unrelated directory)
-  the mode stays hidden — an ordinary folder's chat is the `claude` mode, whose
-  left pane would have no app entry to render. This is what keeps the mode in
-  the app-builder view (App.tsx APP_MODES) without leaking it onto every
-  directory in the explorer.
+* **A DIRECTORY** (the universal "/" key) → allowed for ANY directory. The old
+  rule here was `<workspace>/<tag>/<project>` or a registered linked app, on the
+  reasoning that an ordinary folder's left pane "would have no app entry to
+  render" and its chat was the separate plain chat mode. Both halves of that are
+  now false: that mode is deleted, and the pane falls back to `/embed/<dir>` —
+  fused-render's own file browser for the folder — when no app entry resolves
+  (see paneURL in template.html). A folder with nothing to frame is no longer a
+  reason to hide a chat about the folder. The rejected alternative was keeping
+  the app-folder narrowing and letting ordinary folders have no chat at all,
+  which is exactly the capability the removal of the plain chat mode would have
+  taken away.
+
+WHY THIS GATE STILL EXISTS. Everything above reduces to "the path exists",
+which the shell already knows before it calls a gate — so the gate would be
+pure overhead were it not for ONE remaining refusal: a **mount-backed** path.
+The bytes under the mounts dir come from a remote over FUSE, and an agent
+turned loose there walks and rewrites the tree through the mount, which is the
+same reason every peer gate refuses those paths. (The deleted plain chat
+template shipped no gate at all and therefore *did* offer a chat over a remote
+mount;
+narrowing that is deliberate, not an oversight carried forward.) Deleting
+`condition.py` outright was the other option and was rejected for that one
+question alone — an always-true gate would be worth removing, a gate that still
+says no to remote mounts is not.
 
 The file/directory split is `os.path.isdir`, ONE stat — deliberately the same
 question `app/condition.py` never has to ask, because that gate is bound to "/"
@@ -28,8 +46,7 @@ alone and this one is not.
 CRITICAL: this never lists or walks the directory (`os.listdir`,
 `os.scandir`, `glob`, recursion) and never resolves symlinks — the gate runs
 for every directory the explorer stats, some on remote mounts, and pure path
-arithmetic on the already-known path is the only I/O-free answer. Mount-backed
-paths are refused outright, same as the peer gates.
+arithmetic on the already-known path is the only I/O-free answer.
 """
 
 
@@ -44,7 +61,7 @@ def main(path: str) -> bool:
         if shared not in sys.path:
             sys.path.insert(0, shared)
         try:
-            from appenv import is_linked_app_dir, is_mount_backed, workspace_dir
+            from appenv import is_mount_backed
         except Exception:  # noqa: BLE001 — cannot tell -> refuse (CT-12)
             return False
         if is_mount_backed(path):
@@ -52,32 +69,13 @@ def main(path: str) -> bool:
 
         # A file target is the file-scoped chat: allowed anywhere on disk. The
         # test is `isfile`, an EXISTING regular file — deliberately not
-        # `not isdir`, which would also swallow every path that does not exist
-        # and hand a `True` to any nonexistent child of a linked app folder. One
-        # stat, and "cannot tell" keeps reading as "refuse" (CT-12).
+        # `not isdir`, which would also swallow every path that does not exist.
+        # One stat, and "cannot tell" keeps reading as "refuse" (CT-12).
         if os.path.isfile(path):
             return True
 
-        # A registered linked app (FUSED_RENDER_LINKED_APPS, the registry at
-        # ~/.fused-render/linked_apps.json) is an app wherever it lives — same
-        # rule as app/condition.py, so a folder never offers one of the two
-        # app modes without the other. Env-membership check only (no I/O).
-        if is_linked_app_dir(path):
-            return True
-
-        root = workspace_dir()
-        try:
-            rel = os.path.relpath(os.path.abspath(path), root)
-        except ValueError:
-            # Windows: different drive letters -> not under the root.
-            return False
-        if rel == os.curdir or rel.split(os.sep, 1)[0] == os.pardir:
-            return False
-        # Exactly <tag>/<project>: two segments, no more, no fewer — and
-        # neither hidden. The apps API skips dot-prefixed tags and projects
-        # when listing Home cards; `tag/.venv` or `.hidden/project` must not
-        # sneak the mode in through the gate.
-        parts = [p for p in rel.split(os.sep) if p not in ("", ".")]
-        return len(parts) == 2 and not any(p.startswith(".") for p in parts)
+        # Any directory. `isdir` rather than `not isfile` for the same reason:
+        # a path that does not exist must read as "refuse", not as a folder.
+        return os.path.isdir(path)
     except Exception:  # noqa: BLE001 — a broken gate must hide, never raise
         return False

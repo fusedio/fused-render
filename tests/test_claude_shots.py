@@ -1,4 +1,4 @@
-"""claude_split's annotation screenshots: a PNG crop of the element the user
+"""claude's annotation screenshots: a PNG crop of the element the user
 pointed at, attached to the annotation BY PATH.
 
 The shape of the feature, and why each half is the way it is:
@@ -36,13 +36,13 @@ import time
 
 import pytest
 
-TEMPLATE_DIR = os.path.join("fused_render", "templates", "claude_split")
+TEMPLATE_DIR = os.path.join("fused_render", "templates", "claude")
 TEMPLATE = os.path.join(TEMPLATE_DIR, "template.html")
 
 
 def _load(name):
     path = os.path.join(TEMPLATE_DIR, name + ".py")
-    spec = importlib.util.spec_from_file_location("claude_split_shots_" + name, path)
+    spec = importlib.util.spec_from_file_location("claude_shots_" + name, path)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
@@ -292,7 +292,7 @@ def test_the_page_asks_for_the_directory_by_the_action_the_agent_serves(
 def _node(fn_names, call, html, prelude=""):
     """Run named top-level functions/consts out of template.html under node.
 
-    Same extraction as tests/test_claude_split_app_state.py's `_node`: what
+    Same extraction as tests/test_claude_app_state.py's `_node`: what
     matters is the object the agent ends up reading, not the source that built
     it. Kept as its own copy rather than imported across test modules — the two
     suites are independent and a shared harness would couple them."""

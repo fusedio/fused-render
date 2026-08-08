@@ -28,6 +28,15 @@ TEMPLATE_DIR = os.path.join(
     "fused_render", "templates", "versions")
 
 
+def _html():
+    """The template's own source. The narrow-layout behaviour is CSS plus a few
+    lines of matchMedia glue with no Python side at all, so source assertions
+    are the only pin available short of a browser — the same trade the other
+    template tests in this suite make."""
+    with open(os.path.join(TEMPLATE_DIR, "template.html"), encoding="utf-8") as f:
+        return f.read()
+
+
 def _load(name):
     path = os.path.join(TEMPLATE_DIR, name + ".py")
     spec = importlib.util.spec_from_file_location("test_versions_" + name, path)
@@ -388,3 +397,101 @@ def test_same_tree_revert_preserves_uncommitted_edits(workspace):
     assert res.get("noop") is True
     assert (d / "index.html").read_text() == "<html>UNCOMMITTED</html>"
     assert _shas(d)[0] == reverted_sha  # no new commit, HEAD unmoved
+
+
+# ------------------------------------------------------- narrow-host layout
+
+# The narrow-layout breakpoint, in one place because four tests name it.
+# Raised from D231's original 560px: see
+# test_the_breakpoint_is_the_useful_width_not_the_overflow_floor.
+NARROW_PX = 880
+
+def test_template_collapses_the_split_below_a_breakpoint():
+    """D230 bound this mode to 47 file extensions, so it now renders in the
+    explorer's listing preview pane (floor 220px, default width half its split
+    container), in dragged Panel panes and in /embed. Without a media query the
+    200px commit spine plus a divider plus the preview frame fight over ~220px
+    and both halves become unusable slivers. Pinned as a source assertion because
+    the fix is the shell-free one on purpose: the template adapts itself, so no
+    per-template min-width lands in registry.json or the stat API and user
+    templates (§16) get the behaviour for free."""
+    html = _html()
+    assert "@media (max-width: %dpx)" % NARROW_PX in html
+    # The breakpoint must stay derivable from the layout's own arithmetic, not be
+    # a magic number: #side's 200 + the 4px divider + a preview frame wide enough
+    # that the FRAMED template still renders its own wide layout in it (640, the
+    # `bundle` family number) = 844.
+    assert "min-width: 200px" in html          # #side, the 200 in that sum
+    assert "width: 4px" in html                # #divider, the 4
+    assert "844px floor" in html               # the arithmetic, in a comment
+
+
+def test_the_breakpoint_is_the_useful_width_not_the_overflow_floor():
+    """The regression this pins is the RAISE, from D231's original 560px.
+
+    560 came from the hard floor (200 + 4 + a 320px frame = 524, rounded up) —
+    the width below which the halves overflow. But the explorer's listing preview
+    pane defaults to HALF its split container, about 700px on a 1700px window, so
+    at 560 the split engaged in a pane that could hold it without overflowing and
+    could not hold it usefully: a 320px frame is a viewport the framed template
+    has already collapsed ITSELF for, i.e. a preview of some other template's
+    narrow layout. 640 is the narrowest frame that still shows a wide layout, so
+    200 + 4 + 640 = 844 → 880 — the same figure `claude`, the other split-layout
+    template, reaches from its own sum, so the two collapse together.
+
+    The CSS query and the JS matchMedia string are one breakpoint with two
+    readers; a disagreement between them is a half-collapsed layout that only
+    appears in a window a few pixels wide."""
+    html = _html()
+    assert "@media (max-width: %dpx)" % NARROW_PX in html
+    assert 'matchMedia("(max-width: %dpx)")' % NARROW_PX in html
+    assert "560px)" not in html                # no live 560 breakpoint survives
+    doc = html[:html.index("@media (max-width: %dpx)" % NARROW_PX)]
+    for term in ("200px", "4px", "640px", "844px", "880px"):
+        assert term in doc, term
+
+
+def test_narrow_layout_shows_one_view_and_drops_the_divider():
+    """Below the breakpoint the two halves must not merely shrink: the divider
+    has nothing left to resize (and a 4px drag target in a 220px pane is a
+    misfeature), #main is hidden so the commit list owns the pane, and only the
+    `narrow-preview` body class swaps in the snapshot. Every one of those rules
+    lives INSIDE the media block — that is what makes crossing the breakpoint
+    outward restore the split with no reload and no JS."""
+    html = _html()
+    block = html.split("@media (max-width: %dpx)" % NARROW_PX, 1)[1].split("\n  }", 1)[0]
+    assert "#divider { display: none; }" in block
+    assert "#main { order: 2; display: none; }" in block       # list is default
+    assert "body.narrow-preview #commits { display: none; }" in block
+    assert "body.narrow-preview #main { display: flex; }" in block
+    # The toggle is the only way back, so it must live in the persistent
+    # #side-head strip (which also carries Revert), not inside either view.
+    head = html.split('id="side-head"', 1)[1].split("</div>", 1)[0]
+    assert 'id="view-toggle"' in head
+    assert 'id="revert"' in head
+    # Hidden in the wide layout, revealed only by the media block.
+    assert "#view-toggle { display: inline-block; }" in block
+
+
+def test_narrow_layout_neutralises_the_inline_split_width():
+    """applySplit() (and the divider drag) write an inline `width` onto #side
+    from the shared `split` param. An inline style outranks any media query, so
+    without `!important` the collapsed layout would still be pinned to 30% of a
+    220px pane. `!important` is chosen over clearing/skipping the inline write so
+    that applySplit() stays unconditional and the wide layout's width is still
+    intact when the query stops matching — i.e. both directions work with no
+    reload; the matchMedia listener only resets which view is showing."""
+    html = _html()
+    assert "sideEl.style.width" in html                        # the inline write
+    assert "width: 100% !important" in html                    # beats it
+    assert 'matchMedia("(max-width: %dpx)")' % NARROW_PX in html   # same query as CSS
+    # Selecting a revision reveals the preview, but only from a real click:
+    # loadLog() auto-selects the newest commit, so doing this inside select()
+    # would open the narrow view on the preview and hide the timeline.
+    click = html.split('commitsEl.addEventListener("click"', 1)[1].split("});", 1)[0]
+    assert 'if (NARROW.matches) showNarrow("preview");' in click
+    select_body = html.split("async function select(sha)", 1)[1].split(
+        "async function loadLog", 1)[0]
+    assert "showNarrow" not in select_body
+    # And the load path opens on the list, never on an unvisited preview.
+    assert 'showNarrow("list");' in html

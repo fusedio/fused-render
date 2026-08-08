@@ -57,8 +57,11 @@ _LOCK_RETRY_DELAY_S = 0.3
 _IDENTITY = ["-c", "user.name=Fused", "-c", "user.email=apps@fused.io"]
 
 # Session sidecars are chat bookkeeping, not app content — keep them out of
-# history: <file>.json next to the entry html (claude template agent.py) and
-# the folder-level .claude-split.json (claude_split agent.py).
+# history: the folder-level .claude-split.json (claude/agent.py — a historical
+# filename that predates the template's rename and stays as it is, because it
+# exists on users' disks), plus the legacy per-file <file>.json the pre-D230
+# file-scoped chat template used to write beside the entry html — still
+# ignored, because an existing repo may already have one.
 _GITIGNORE = "*.html.json\n.claude-split.json\n"
 
 

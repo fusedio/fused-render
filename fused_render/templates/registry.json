@@ -3,7 +3,7 @@
     "duckdb",
     "structure",
     "h3",
-    "claude_split",
+    "claude",
     "versions",
     "history",
     "geometry_editor"
@@ -12,14 +12,14 @@
     "duckdb",
     "excel",
     "code",
-    "claude_split",
+    "claude",
     "versions",
     "reader"
   ],
   ".tsv": [
     "duckdb",
     "code",
-    "claude_split",
+    "claude",
     "versions",
     "reader"
   ],
@@ -45,20 +45,20 @@
     "tree",
     "code",
     "duckdb",
-    "claude_split",
+    "claude",
     "versions",
     "reader"
   ],
   ".jsonl": [
     "code",
     "duckdb",
-    "claude_split",
+    "claude",
     "versions",
     "reader"
   ],
   ".ipynb": [
     "notebook",
-    "claude_split",
+    "claude",
     "versions"
   ],
   ".calls.jsonl": [
@@ -76,7 +76,7 @@
   ".ndjson": [
     "code",
     "duckdb",
-    "claude_split",
+    "claude",
     "versions",
     "reader"
   ],
@@ -125,70 +125,70 @@
     "map",
     "tree",
     "code",
-    "claude_split",
+    "claude",
     "versions",
     "geometry_editor"
   ],
   ".md": [
     "markdown",
     "code",
-    "claude_split",
+    "claude",
     "versions",
     "reader"
   ],
   ".markdown": [
     "markdown",
     "code",
-    "claude_split",
+    "claude",
     "versions",
     "reader"
   ],
   ".tex": [
     "latex",
     "code",
-    "claude_split",
+    "claude",
     "versions",
     "reader"
   ],
   ".ltx": [
     "latex",
     "code",
-    "claude_split",
+    "claude",
     "versions",
     "reader"
   ],
   ".latex": [
     "latex",
     "code",
-    "claude_split",
+    "claude",
     "versions",
     "reader"
   ],
   ".svg": [
     "image",
     "code",
-    "claude_split",
+    "claude",
     "versions"
   ],
   ".png": [
     "image",
     "photos",
     "pano",
-    "claude_split",
+    "claude",
     "versions"
   ],
   ".jpg": [
     "image",
     "photos",
     "pano",
-    "claude_split",
+    "claude",
     "versions"
   ],
   ".jpeg": [
     "image",
     "photos",
     "pano",
-    "claude_split",
+    "claude",
     "versions"
   ],
   ".gif": [
@@ -250,159 +250,159 @@
   ".py": [
     "code",
     "api",
-    "claude_split",
+    "claude",
     "versions",
     "reader"
   ],
   ".js": [
     "code",
-    "claude_split",
+    "claude",
     "versions",
     "reader"
   ],
   ".ts": [
     "code",
-    "claude_split",
+    "claude",
     "versions",
     "reader"
   ],
   ".tsx": [
     "code",
-    "claude_split",
+    "claude",
     "versions",
     "reader"
   ],
   ".jsx": [
     "code",
-    "claude_split",
+    "claude",
     "versions",
     "reader"
   ],
   ".cjs": [
     "code",
-    "claude_split",
+    "claude",
     "versions",
     "reader"
   ],
   ".mjs": [
     "code",
-    "claude_split",
+    "claude",
     "versions",
     "reader"
   ],
   ".cts": [
     "code",
-    "claude_split",
+    "claude",
     "versions",
     "reader"
   ],
   ".mts": [
     "code",
-    "claude_split",
+    "claude",
     "versions",
     "reader"
   ],
   ".sh": [
     "code",
-    "claude_split",
+    "claude",
     "versions",
     "reader"
   ],
   ".zsh": [
     "code",
-    "claude_split",
+    "claude",
     "versions",
     "reader"
   ],
   ".fish": [
     "code",
-    "claude_split",
+    "claude",
     "versions",
     "reader"
   ],
   ".ps1": [
     "code",
-    "claude_split",
+    "claude",
     "versions",
     "reader"
   ],
   ".csh": [
     "code",
-    "claude_split",
+    "claude",
     "versions",
     "reader"
   ],
   ".zsh-theme": [
     "code",
-    "claude_split",
+    "claude",
     "versions",
     "reader"
   ],
   ".vim": [
     "code",
-    "claude_split",
+    "claude",
     "versions",
     "reader"
   ],
   ".yaml": [
     "code",
-    "claude_split",
+    "claude",
     "versions",
     "reader"
   ],
   ".yml": [
     "code",
-    "claude_split",
+    "claude",
     "versions",
     "reader"
   ],
   ".toml": [
     "canvas",
     "code",
-    "claude_split",
+    "claude",
     "versions",
     "reader"
   ],
   ".ini": [
     "code",
-    "claude_split",
+    "claude",
     "versions",
     "reader"
   ],
   ".cfg": [
     "code",
-    "claude_split",
+    "claude",
     "versions",
     "reader"
   ],
   ".conf": [
     "code",
-    "claude_split",
+    "claude",
     "versions",
     "reader"
   ],
   ".tf": [
     "code",
-    "claude_split",
+    "claude",
     "versions",
     "reader"
   ],
   ".hcl": [
     "code",
-    "claude_split",
+    "claude",
     "versions",
     "reader"
   ],
   ".css": [
     "code",
-    "claude_split",
+    "claude",
     "versions",
     "reader"
   ],
   ".txt": [
     "text",
     "code",
-    "claude_split",
+    "claude",
     "versions",
     "reader"
   ],
@@ -410,14 +410,14 @@
     "log_studio",
     "text",
     "code",
-    "claude_split",
+    "claude",
     "versions",
     "reader"
   ],
   ".html": [
     "_render",
     "code",
-    "claude_split",
+    "claude",
     "versions",
     "reader",
     "history"
@@ -425,7 +425,7 @@
   ".htm": [
     "_render",
     "code",
-    "claude_split",
+    "claude",
     "versions",
     "reader"
   ],
@@ -451,7 +451,6 @@
   "/": [
     "_listing",
     "app",
-    "claude_split",
     "claude",
     "versions",
     "git",
@@ -609,7 +608,7 @@
   ".plist": [
     "plist",
     "code",
-    "claude_split",
+    "claude",
     "versions",
     "reader"
   ]

@@ -305,7 +305,7 @@ def test_recents_resolve_linked_tag_through_the_registry(client, tmp_path):
 
 # ------------------------------------------------------------ template gates
 #
-# The app/claude_split gates accept a linked folder through the
+# The app/claude gates accept a linked folder through the
 # FUSED_RENDER_LINKED_APPS env var (exported on every registry write) — pure
 # env membership, no file reads. versions stays workspace-only on purpose:
 # its backend writes git history with the Fused identity, and a linked folder
@@ -333,7 +333,14 @@ def test_link_and_unlink_export_the_env_var(client, tmp_path):
     assert os.environ["FUSED_RENDER_LINKED_APPS"] == ""
 
 
-@pytest.mark.parametrize("template", ["app", "claude_split"])
+# The chat gate was parametrised here alongside `app`: the two app modes had to
+# agree about which folders are apps, or a folder would offer one without the
+# other. It is out now — that mode is the ONE chat template and is offered on
+# every directory, linked or not, so it has no app-folder rule left to agree
+# about. The exclusion is asserted directly in
+# test_a_linked_folder_needs_no_gate_for_the_chat below, rather than left implicit
+# in a shortened parametrize list.
+@pytest.mark.parametrize("template", ["app"])
 def test_app_gates_accept_a_linked_folder(client, tmp_path, workspace, template):
     d = _folder(tmp_path, "notes")
     cond = _condition(template)
@@ -347,6 +354,22 @@ def test_app_gates_accept_a_linked_folder(client, tmp_path, workspace, template)
     app_dir = workspace / "local" / "real"
     app_dir.mkdir(parents=True)
     assert cond.main(str(app_dir)) is True
+
+
+def test_a_linked_folder_needs_no_gate_for_the_chat(client, tmp_path):
+    """The chat gate stopped caring about linked apps when it stopped caring about
+    app folders at all: a linked folder, its parent and its children are all just
+    directories, and all of them are offered the chat. Pinned because the OLD
+    behaviour — refuse until linked — is what a reader of the `app` test above
+    would still expect of its former parameter."""
+    cond = _condition("claude")
+    d = _folder(tmp_path, "notes")
+    (d / "sub").mkdir()
+    assert cond.main(str(d)) is True          # never linked
+    assert cond.main(str(d.parent)) is True
+    assert cond.main(str(d / "sub")) is True
+    client.post("/api/apps/link", json={"path": str(d)}, headers=HDRS)
+    assert cond.main(str(d)) is True          # and linking changes nothing
 
 
 def _git_repo(d):

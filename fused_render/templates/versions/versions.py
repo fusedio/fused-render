@@ -299,7 +299,7 @@ def _snapshot(target, sha: str):
     # A FILE target's snapshot is that one file, so there is nothing to discover:
     # `file` is the materialised path, and `entry` is it only when the file is
     # itself a page. For anything else the view frames it through its own default
-    # template (the same resolution the claude_split pane does), which is why
+    # template (the same resolution the claude pane does), which is why
     # `file` is reported separately rather than squeezed into `entry` — `entry`
     # means "a document /render can serve directly".
     if kind != "app":

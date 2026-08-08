@@ -1,7 +1,9 @@
-"""runPython target for claude_split/template.html: chat with the Claude Code
-CLI about the target — a project FOLDER (the app template) or a file. Forked
-from claude/agent.py; templates are self-contained, so this copy is claude_split's
-own (duplication over cross-template dependencies, by design).
+"""runPython target for claude/template.html: chat with the Claude Code
+CLI about the target — a FOLDER (an app folder, or any other) or a file. This is
+the only chat backend: it began as a fork of the plain chat template's agent
+(the split view was the fork), kept every improvement that fork gained, and
+absorbed the folder chat when D230 deleted the plain template and this one took
+over its name.
 
 The browser never owns the work: `start` detaches a claude subprocess whose
 stream-json stdout goes to a log file in tmp; `poll` re-reads that file and
@@ -288,7 +290,7 @@ def _bad_id(value: str) -> bool:
 
 def _workdir(file: str) -> str:
     """Claude's cwd (and the session-store key) for a target. A directory
-    target — the claude_split app template opens whole project folders — IS
+    target — this template's app-folder role opens whole project folders — IS
     the working directory; a file target keeps the historical rule: its
     parent. Everything keyed on the cwd (the ~/.claude/projects munge, the
     sidecar `cwd` field) goes through this one rule so files and folders
@@ -333,38 +335,90 @@ def _system_prompt(file: str) -> str:
     )
 
 
-def _split_system_prompt() -> str:
-    """The DIRECTORY target's prompt. It says two things: what kind of project
-    this is, and that the app-state tool exists.
+def _is_app_dir(file: str) -> bool:
+    """Does this folder resolve to an app entry page? Same rule, same code, as
+    the left pane's `app.py` and the `app` template (../shared/app_entry.py) —
+    so the prompt's claim about what the pane is showing can never disagree with
+    what it is actually showing. One listdir, on a directory the user just
+    opened, in the agent process; the no-I/O discipline belongs to `condition.py`
+    (which runs per stat), not here.
+    """
+    try:
+        from app_entry import entry_html
+        return entry_html(file) is not None
+    except Exception:  # noqa: BLE001 — cannot tell -> the honest, weaker claim
+        return False
 
-    A tool the model is never told about is a tool it never calls, and the
-    tool's own description is not enough on its own — nothing in an ordinary
-    session suggests that the page being edited can be read back.
 
-    Naming fused-render is the other half, and it belongs HERE rather than being
-    left to the starter `CLAUDE.md`: that file is the user's, in their folder,
-    and a session opened on a project whose CLAUDE.md was edited away — or that
-    predates it — otherwise has nothing telling it the HTML in front of it is an
-    app with a Python bridge behind it. Same reliability argument as the skill
-    plugin (D216): the thing the model must know cannot depend on a file we do
-    not own. Still deliberately short of the file-scoping prompt above, which the
-    directory branch of `_start` exists to avoid (see the comment there) — this
-    says what the project IS, not what to work on.
+def _split_system_prompt(file: str) -> str:
+    """The DIRECTORY target's prompt. Two shapes, because there are now two kinds
+    of folder: this template is the ONLY chat template, offered on every
+    directory, not just app folders (the plain chat mode it absorbed was the
+    directory chat).
+
+    Both shapes carry the app-state disclosure, and for the same reason: a tool
+    the model is never told about is a tool it never calls, and the tool's own
+    description is not enough on its own — nothing in an ordinary session
+    suggests that the page beside the chat can be read back. What they must NOT
+    share is the DESCRIPTION of the pane, exactly as the file branch above does
+    not share the folder branch's.
+
+    * An APP FOLDER (`app_entry` resolves an entry page) keeps today's wording.
+      Naming fused-render belongs HERE rather than being left to the starter
+      `CLAUDE.md`: that file is the user's, in their folder, and a session opened
+      on a project whose CLAUDE.md was edited away — or that predates it —
+      otherwise has nothing telling it the HTML in front of it is an app with a
+      Python bridge behind it. Same reliability argument as the skill plugin
+      (D216): the thing the model must know cannot depend on a file we do not
+      own. Still deliberately short of the file-scoping prompt above, which the
+      directory branch of `_start` exists to avoid (see the comment there) — this
+      says what the project IS, not what to work on.
+    * An ORDINARY FOLDER gets the folder-scoping instruction, ported verbatim
+      from the deleted plain chat template's own directory prompt rather than
+      reinvented, so the folder chat reads the same as it always did. Saying
+      "this is a fused-render project: its HTML is an app fused-render serves"
+      here would be a plain lie about `~/Downloads`, and a lie that costs
+      something: it invites the agent to look for a bridge that is not there and
+      to treat a folder of PDFs as a codebase. The pane is described for what it
+      is — fused-render's file browser, our UI, never a thing to edit — for the
+      same reason the file branch says "our viewer": an app_state reading of it
+      must not be mistaken for a reading of the user's own work.
     """
     tool = "mcp__%s__%s" % (PERMISSION_SERVER, APP_STATE_TOOL)
+    if _is_app_dir(file):
+        return (
+            "This is a fused-render project: its HTML is an app fused-render serves, "
+            "calling local Python through fused-render's bridge rather than a server "
+            "you write. The `fused-render-authoring` skill documents that bridge — "
+            "use it rather than inferring the API. "
+            "The user sees the app rendered live beside this chat. "
+            f"`{tool}` reports what that page is doing now: console errors, URL "
+            "params, a DOM outline. Call it after any change that affects the page "
+            "(it reloads itself — this is how you see whether the change worked), "
+            "and whenever the user reports something visibly wrong. A "
+            f"<{APP_STATE_TAG}> block on their message is the same reading taken at "
+            "send time; it carries the outline either inline or as a `dom_path` to "
+            "read, and goes stale as soon as you edit anything."
+        )
+    name = os.path.basename(file.rstrip("/")) or file
     return (
-        "This is a fused-render project: its HTML is an app fused-render serves, "
-        "calling local Python through fused-render's bridge rather than a server "
-        "you write. The `fused-render-authoring` skill documents that bridge — "
-        "use it rather than inferring the API. "
-        "The user sees the app rendered live beside this chat. "
-        f"`{tool}` reports what that page is doing now: console errors, URL "
-        "params, a DOM outline. Call it after any change that affects the page "
-        "(it reloads itself — this is how you see whether the change worked), "
-        "and whenever the user reports something visibly wrong. A "
+        f"You are embedded in a local file explorer, opened on the "
+        f"folder {file}. The user is looking at {name} right now; treat "
+        "that folder as the subject of this conversation — answer "
+        "questions about its contents and make requested changes inside "
+        "it. Keep your work scoped to this folder unless the user "
+        "explicitly asks for something broader. This is guidance, not a "
+        "hard rule: follow explicit user instructions even when they go "
+        "beyond the folder. "
+        f"Beside this chat the user sees fused-render's own file browser for "
+        f"{name} — our UI listing their folder, so never try to edit it; it is "
+        "not a page in their project and it has no source they own. They can "
+        "walk into a file there while talking to you. "
+        f"`{tool}` reads that pane back: its DOM outline, URL params and "
+        "console errors. It reports the BROWSER, not the folder — use the "
+        "ordinary file tools to find out what is in here. A "
         f"<{APP_STATE_TAG}> block on their message is the same reading taken at "
-        "send time; it carries the outline either inline or as a `dom_path` to "
-        "read, and goes stale as soon as you edit anything."
+        "send time."
     )
 
 
@@ -1105,7 +1159,7 @@ def _start(file: str, message: str, session_id: str, model: str,
            effort: str, permission_mode: str = "",
            message_via_stdin: bool = False) -> dict:
     file = os.path.abspath(file)
-    # A directory is a valid target too: the claude_split app template opens
+    # A directory is a valid target too: this template's app-folder role opens
     # whole project folders (cwd/prompt handled by _workdir/_system_prompt).
     if not os.path.exists(file):
         return {"error": f"target not found: {file}"}
@@ -1173,20 +1227,21 @@ def _start(file: str, message: str, session_id: str, model: str,
            f"mcp__{PERMISSION_SERVER}__{APP_STATE_TOOL}," + _read_rule(SHOTS)]
     cmd += _plugin_argv()
     # BOTH targets get an --append-system-prompt here, and they get different
-    # ones. A FILE target gets the scoping prompt. A DIRECTORY target (an app
-    # folder) still does NOT get that one — the session should be plain Claude
-    # Code in that project, with the user's own system prompt, CLAUDE.md, skills
-    # and tools, and cwd (_workdir) as the only scoping — but it does get a
-    # narrow prompt of its own.
+    # ones. A FILE target gets the scoping prompt. A DIRECTORY target that is an
+    # APP FOLDER still does NOT get a scoping prompt — the session should be plain
+    # Claude Code in that project, with the user's own system prompt, CLAUDE.md,
+    # skills and tools, and cwd (_workdir) as the only scoping — but it does get a
+    # narrow prompt of its own. An ordinary folder DOES get folder-scoping, which
+    # is what the deleted plain chat mode gave it; _split_system_prompt picks.
     #
-    # What the two share is the app_state disclosure, because an un-announced
-    # tool does not get called and both targets now have a pane worth reading
-    # back (D230). What they must NOT share is the DESCRIPTION of that pane: a
-    # folder frames the user's own app, a file frames fused-render's preview of
-    # their file. Each prompt says which, so the model never mistakes our viewer
-    # for the user's code.
+    # What all shapes share is the app_state disclosure, because an un-announced
+    # tool does not get called and every target now has a pane worth reading
+    # back (D230). What they must NOT share is the DESCRIPTION of that pane: an
+    # app folder frames the user's own app, an ordinary folder frames our file
+    # browser, a file frames fused-render's preview of their file. Each prompt
+    # says which, so the model never mistakes our UI for the user's code.
     cmd += ["--append-system-prompt",
-            _split_system_prompt() if os.path.isdir(file)
+            _split_system_prompt(file) if os.path.isdir(file)
             else _system_prompt(file)]
     if cli_mode:
         cmd += ["--permission-mode", cli_mode]

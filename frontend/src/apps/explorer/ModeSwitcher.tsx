@@ -25,20 +25,15 @@ export interface ModeSwitcherEntry<M extends string> {
 
 // Modes whose FOLDER NAME is not a label a person should read. A template's
 // folder name is its identity (SPEC §0) and is chosen for the filesystem, not
-// for a tooltip — capitalizing `claude_split` yields "Claude_split", which was a
-// blemish while that mode showed on app folders alone and is now the switcher's
-// most-seen label, on every file key it gained (D230). So the few names that
+// for a tooltip — capitalizing `claude` yields "Claude", which names the CLI
+// this template drives rather than the thing the user gets, and is the
+// switcher's most-seen label now that the mode is on every file key (D230).
+// So the few names that
 // read badly, or that name an implementation where the user sees a feature, get
 // a display name here; everything else stays capitalized, because a per-template
 // naming registry is a thing to maintain and most folder names are already right.
-// `claude` is deliberately NOT also "Chat": an app folder passes both chat gates
-// (the `/` key carries `claude_split` and `claude`, and the builder's APP_MODES
-// pin is what hides the second one THERE, not in the explorer), so two entries
-// labelled "Chat" would sit side by side on exactly the folder where the
-// difference matters. "Folder chat" is what `claude` actually is now.
 const MODE_TITLES: Record<string, string> = {
-  claude_split: "Chat",
-  claude: "Folder chat",
+  claude: "Chat",
   versions: "History",
   git: "Source Control",
 };
@@ -51,6 +46,7 @@ export function modeTitle(mode: string): string {
   if (mode === "_render") return "Rendered";
   if (mode === "_listing") return "Listing";
   if (mode === "_app") return "App"; // pane-only sentinel (ListingPreviewPane)
+  if (mode === "_none") return "No preview"; // pane-only sentinel (ListingPreviewPane)
   const titled = MODE_TITLES[mode];
   if (titled) return titled;
   return mode.charAt(0).toUpperCase() + mode.slice(1);

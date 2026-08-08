@@ -9,15 +9,13 @@ notes view, a CodeMirror editor whose lineNumbers gutter is present but
 **hidden**, so these pin the detection rule and the container rule that keep it
 working.
 
-It also covers the **Send to Claude round trip** (§17): which comments ride a
-handoff (`sent`), how the URL budget evicts them, and the `claudeReturn` ticket
-that brings the shell back to annotate when the run finishes. The return leg's
-code lives in `templates/claude/template.html`, but the contract is annotate's —
-annotate is the only thing that sets the ticket, and a silent regression there
-means a reviewer is stranded in a chat that never reloads. Those pieces run the
-template's REAL functions under node (the `_js_block` approach of
-test_map_template_escaping.py / test_calls.py — a copy would keep passing after
-the shipping code regressed).
+It also covers the **Send to Claude** leg (§17): which comments ride a handoff
+(`sent`) and how the URL budget evicts them. The RETURN leg is gone with the
+`claude` template that implemented it — see the note further down where its six
+tests used to be — and the handoff as a whole is now unreachable twice over
+(`annotate` is bound to no registry key, and it navigates to a `_mode` that no
+longer resolves). What is left pins annotate's own source, which still holds the
+review model worth keeping.
 
 The sidecar writer next door has its own behavioural tests
 (tests/test_annotate_comments.py).
@@ -33,20 +31,9 @@ import pytest
 TEMPLATE = os.path.join(
     os.path.dirname(__file__), "..", "fused_render", "templates", "annotate",
     "template.html")
-CLAUDE_TEMPLATE = os.path.join(
-    os.path.dirname(__file__), "..", "fused_render", "templates", "claude",
-    "template.html")
-
-
 @pytest.fixture(scope="module")
 def source():
     with open(TEMPLATE, encoding="utf-8") as handle:
-        return handle.read()
-
-
-@pytest.fixture(scope="module")
-def claude_source():
-    with open(CLAUDE_TEMPLATE, encoding="utf-8") as handle:
         return handle.read()
 
 
@@ -320,156 +307,19 @@ def test_the_budget_loop_uses_that_order_and_still_stops(source):
 
 # --- the return trip (annotate → claude → annotate) -------------------------
 #
-# The chat calls fused.autoReload(false) and owns the viewport, so nothing else
-# would ever bring the reviewer back to the edited file. The code below lives in
-# templates/claude/template.html; the contract is annotate's.
-
-# A shell URL with everything that must survive a round trip: the review itself,
-# the annotate `view` param, and the balanced `_layout=(…)` span whose `&` is
-# LITERAL — hand that to URLSearchParams unexcised and the layout is shredded.
-_LAYOUT = "_layout=(h:(t:code&t:claude),v:preview)"
-_SHELL_STUB = """
-class Event { constructor(t) { this.type = t; } }
-const seen = [];
-let search = SEARCH;
-const window = { top: {
-  location: { get search() { return search; }, pathname: "/view/tmp/note.md",
-              href: "http://127.0.0.1:8765/view/tmp/note.md" },
-  history: { state: { k: 1 },
-             replaceState: (s, t, u) => { seen.push(["replaceState", u]); },
-             pushState: (s, t, u) => { seen.push(["pushState", u]); } },
-  dispatchEvent: (e) => { seen.push(["event", e.type]); },
-} };
-// The pane's own window: `pagehide` is the runtime's documented flush hook.
-window.dispatchEvent = (e) => { seen.push(["self", e.type]); };
-"""
-
-
-def _shell_harness(fns, search, call):
-    return (_SHELL_STUB.replace("SEARCH", json.dumps("?" + search))
-            + "\n".join(fns) + "\n" + call
-            + "\nconsole.log(JSON.stringify(seen));\n")
-
-
-def test_the_return_ticket_is_stripped_from_the_shell_url_like_the_comments(
-        claude_source, tmp_path):
-    # claudeReturn is a one-shot boot input, already in memory as `returnMode`.
-    # Left on the URL, a Back entry (or a refresh) re-attaches a review that was
-    # already sent and re-arms the return — so it rides the SAME replaceState.
-    fns = [_block(claude_source, "const HANDOFF_PARAMS = [", "];"),
-           _block(claude_source, "function clearTopClaudeComments() {", "\n}")]
-    seen = _node(_shell_harness(
-        fns,
-        "_mode=claude&comments=%5B%7B%22id%22%3A%22c1%22%7D%5D&view=markdown"
-        "&claudeComments=%5B%7B%22id%22%3A%22c1%22%7D%5D&claudeReturn=annotate"
-        "&" + _LAYOUT,
-        "clearTopClaudeComments();"), tmp_path)
-    assert [k for k, _ in seen] == ["replaceState", "event"]
-    url = seen[0][1]
-    assert "claudeComments" not in url
-    assert "claudeReturn" not in url
-    # The review, the framed view and the layout span come through untouched.
-    assert "comments=%5B%7B%22id%22%3A%22c1%22%7D%5D" in url
-    assert "view=markdown" in url
-    assert url.endswith("&" + _LAYOUT)
-    assert seen[1][1] == "fused:urlchange"
-
-
-def test_a_chat_opened_normally_never_rewrites_the_shell_url(
-        claude_source, tmp_path):
-    fns = [_block(claude_source, "const HANDOFF_PARAMS = [", "];"),
-           _block(claude_source, "function clearTopClaudeComments() {", "\n}")]
-    seen = _node(_shell_harness(fns, "_mode=claude&session_id=abc",
-                                "clearTopClaudeComments();"), tmp_path)
-    assert seen == []
-
-
-def test_the_return_navigation_flips_the_mode_and_keeps_the_review(
-        claude_source, tmp_path):
-    fn = _block(claude_source, "function returnToMode(mode) {", "\n}")
-    seen = _node(_shell_harness(
-        [fn],
-        "_mode=claude&comments=%5B%7B%22id%22%3A%22c1%22%2C%22sent%22%3A1%7D%5D"
-        "&view=markdown&session_id=abc&run=r-42&" + _LAYOUT,
-        'returnToMode("annotate");'), tmp_path)
-    # The runtime's coalesced history write is flushed first, then navigateShell's
-    # idiom (history/template.html): pushState + fused:navigate, so the React
-    # shell re-routes in place instead of reloading the world.
-    assert [k for k, _ in seen] == ["self", "pushState", "event"]
-    assert seen[0][1] == "pagehide"
-    assert seen[2][1] == "fused:navigate"
-    url = seen[1][1]
-    assert url.startswith("/view/tmp/note.md?")
-    assert "_mode=annotate" in url and "_mode=claude" not in url
-    # The review survives verbatim — same comments, same sent stamps — and so do
-    # the framed view and the resumable session.
-    assert "comments=%5B%7B%22id%22%3A%22c1%22%2C%22sent%22%3A1%7D%5D" in url
-    assert "view=markdown" in url
-    assert "session_id=abc" in url
-    # The finished run's id does not ride back: the next hop into chat would
-    # re-attach (resumeRun) to a dead run.
-    assert "run=" not in url
-    assert url.endswith("&" + _LAYOUT)
-
-
-def test_only_the_comment_carrying_run_returns_and_only_when_it_succeeded(
-        claude_source):
-    # The ticket is threaded, not latched. A plain follow-up turn must stay in
-    # the chat, a failed/aborted run must stay put (nothing to go back and look
-    # at, and leaving would hide the error), and a run re-attached on a fresh
-    # boot has no ticket at all.
-    compose = _block(claude_source, "function composeAndSend(typed) {", "\n}")
-    assert "handoff = { mode: returnMode, comments: attached };" in compose
-    # Built inside the `attached.length` branch — a bare turn passes null.
-    assert compose.index("if (attached.length)") < compose.index("handoff = {")
-    assert "sendMessage(message, handoff);" in compose
-
-    poll = _block(claude_source, "async function pollLoop(run_id, handoff) {", "\n}")
-    assert 'const returnTo = (handoff && handoff.mode) || "";' in poll
-    assert "if (returnTo && !data.error) returnToMode(returnTo);" in poll
-
-    boot = _block(claude_source, "const returnMode =", ";")
-    assert 'fused.params.get("claudeReturn")' in boot
-
-
-def test_a_run_that_never_started_leaves_no_ticket_and_hands_the_chips_back(
-        claude_source):
-    # The regression this replaces: the ticket was a module-scoped latch armed
-    # BEFORE sendMessage, and `if (error) throw` on a failed `agent.py start`
-    # never reaches pollLoop — the only place that cleared it. The user's next,
-    # unrelated question then navigated the shell away mid-thread, for a run that
-    # carried no comments, while annotate had already stamped them `sent`.
-    assert "pendingReturn" not in claude_source, (
-        "the return ticket must stay an argument — a module-scoped latch "
-        "outlives the send that armed it")
-    send = _block(claude_source, "async function sendMessage(message, handoff) {",
-                  "\n}")
-    # Bound to a run id: armed only once `start` handed one back.
-    assert "let started = false;" in send
-    assert send.index("started = true;") > send.index('if (error) throw')
-    assert send.index("started = true;") < send.index("await pollLoop(run_id, handoff)")
-    # And the comments are not silently consumed by a run that never ran.
-    assert "if (!started && handoff) {" in send
-    assert "attached = handoff.comments;" in send
-    assert "renderAttachments();" in send
-    assert "were not sent" in send  # the user is told, rather than left guessing
-
-    # A resumed run gets no second argument, so it can never return.
-    resume = _block(claude_source, "async function resumeRun(run_id) {", "\n}")
-    assert "pollLoop(run_id)" in resume
-    assert "handoff" not in resume
-
-
-def test_the_return_flushes_the_runtimes_pending_history_write_first(
-        claude_source):
-    # returnToMode reads location.search RAW and then pushState()s. A history
-    # write the runtime is still coalescing (D99) would both be missing from the
-    # string it copies forward (a pending session_id) and, worse, land AFTER our
-    # push — replaceState-ing the pre-return search over the entry we just made.
-    fn = _block(claude_source, "function returnToMode(mode) {", "\n}")
-    flush = fn.index('dispatchEvent(new Event("pagehide"))')
-    assert flush < fn.index("top.location.search")
-    assert flush < fn.index("top.history.pushState")
+# GONE. Six tests lived here. They extracted HANDOFF_PARAMS,
+# clearTopClaudeComments, returnToMode, composeAndSend, pollLoop, sendMessage and
+# resumeRun from the deleted plain chat template's `template.html` and ran them
+# under node — the
+# RECEIVING half of the handoff, whose contract was annotate's. That template is
+# deleted, so there is no shipping code left for them to execute. Deleted rather
+# than retargeted at the surviving `claude` template: it never grew the receiving
+# half either, and retargeting a test whose subject does not exist in the new
+# module means writing an assertion against nothing.
+#
+# What remains below is the SENDING half, which is annotate's own source. Note
+# that it too has no receiver — see the ⚠️ block at the top of
+# templates/annotate/template.html — so this pins the leg, not the round trip.
 
 
 def test_annotate_is_what_sets_the_ticket(source):

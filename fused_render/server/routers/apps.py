@@ -279,16 +279,16 @@ def _app_name_error(name) -> str | None:
 
 
 def _agent_path() -> str:
-    """The claude_split template backend (agent.py) — the staged core copy
+    """The claude template backend (agent.py) — the staged core copy
     (server.templates.TEMPLATES_DIR), the same file the split app view
     executes, so the runs dir, sidecar shape (.claude-split.json inside the
     app folder), and permission_server path stay in step with what the page
-    will poll. A newly CREATED app lands folder-first in claude_split (opening
+    will poll. A newly CREATED app lands folder-first in claude (opening
     an existing one lands in the plain `app` view instead), so the scaffolding
     session must be recorded at the folder level too."""
     from fused_render.server import templates as _server_templates
 
-    return os.path.join(_server_templates.TEMPLATES_DIR, "claude_split", "agent.py")
+    return os.path.join(_server_templates.TEMPLATES_DIR, "claude", "agent.py")
 
 
 def _claude_agent():
@@ -388,7 +388,7 @@ def _spawn_session_helper(target: str, prompt: str) -> dict:
 def _start_app_session(app_dir: str, prompt: str) -> tuple[str | None, str | None]:
     """Start a detached Claude Code session on the new app's FOLDER.
 
-    The seam the tests stub. Reuses the claude_split agent's _start (via the
+    The seam the tests stub. Reuses the claude agent's _start (via the
     fork-safe helper above) — cwd = the app folder, stream-json log, sidecar
     at <app_dir>/.claude-split.json, the same place the split view the app
     opens in lists and resumes from — with the prompt over stdin

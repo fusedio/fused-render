@@ -1,9 +1,11 @@
 """A live stdio MCP server subprocess, spoken to the way the Claude Code CLI does.
 
-Shared by the two suites that drive one of the templates' `permission_server.py`
-over its own JSON-RPC (test_claude_permission_bridge.py for the `claude`
-template's approvals, test_claude_split_app_state.py for `claude_split`'s
-approvals + `app_state`). Kept in a non-test module so neither suite reaches
+Shared by the two suites that drive the chat template's `permission_server.py`
+over its own JSON-RPC (test_claude_permission_bridge.py for the approval wire
+shape and the decision latch, test_claude_app_state.py for approvals +
+`app_state`). Both point at `claude` now — they were split across the two
+chat templates until the plain one was deleted (D230). Kept in a non-test module
+so neither suite reaches
 into the other's namespace — same reason as _claude_history.py — and so the
 demultiplexer below exists exactly once: it encodes two real harness defects
 whose symptoms were indistinguishable from a server bug (see _Server below).

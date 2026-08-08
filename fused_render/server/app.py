@@ -109,7 +109,7 @@ def export_app_env() -> None:
     os.environ["FUSED_RENDER_WORKSPACE_DIR"] = shell_seed.fused_dir()
     shell_mounts.export_ro_mounts_env()
     # Registered linked-app folders (fused_render/linked_apps.py) — the app
-    # and claude_split gates accept these alongside <workspace>/<tag>/<name>.
+    # and claude gates accept these alongside <workspace>/<tag>/<name>.
     # Re-exported on every registry write; this is the startup baseline.
     from fused_render import linked_apps
 

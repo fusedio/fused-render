@@ -75,7 +75,7 @@ def export_linked_apps_env() -> None:
     """Publish the registered folders to the environment for template children
     (SPEC PY-15 / D166) — same contract as `export_ro_mounts_env`.
 
-    Template gates (app/condition.py, claude_split/condition.py) must decide
+    Template gates (app/condition.py, claude/condition.py) must decide
     "is this folder an app?" with pure path arithmetic — no file reads — and
     they can't import fused_render. So the DERIVED PATH LIST travels as
     `FUSED_RENDER_LINKED_APPS` (os.pathsep-joined, the platform's own

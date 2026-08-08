@@ -8,7 +8,7 @@
 // for USING it — and one without a resolvable entry falls back to the plain
 // folder listing so a card is never dead.
 //
-// OPENING an app is not BUILDING one: the `claude_split` view (the app beside a
+// OPENING an app is not BUILDING one: the `claude` view (the app beside a
 // Claude chat) is where a new app is created and iterated on, and the create
 // path still lands there (HomeHero). Everything in this module is the open path.
 //
