@@ -234,7 +234,13 @@ export default function ListingPreviewPane({
   const embeddable = info.templates.filter((e) => e.mode !== "_listing" && allowed(e));
 
   const modes: PaneMode[] = [];
-  if (row.isDir && app) modes.push({ mode: APP_MODE, icon: APP_MODE_ICON });
+  // The `_app` sentinel exists so a folder with NO registry app binding still
+  // gets an app preview. When the registry does offer a visible `app` entry it
+  // is redundant — and both render as "View", so listing them together showed
+  // the menu two identical entries. The registry entry wins; the sentinel only
+  // steps in when `app` is absent or condition-denied.
+  const hasRegistryApp = info.templates.some((e) => e.mode === "app" && allowed(e));
+  if (row.isDir && app && !hasRegistryApp) modes.push({ mode: APP_MODE, icon: APP_MODE_ICON });
   for (const e of info.templates) {
     if (e.mode === "_listing") {
       if (row.isDir && !row.self) modes.push({ mode: "_listing", icon: templateModeIcon(e) });
