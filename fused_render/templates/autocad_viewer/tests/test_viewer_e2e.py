@@ -112,6 +112,21 @@ def _open(browser, port, filename):
     return page, frame
 
 
+def _open_ready(browser, port, filename="floorplan.dxf"):
+    """Open a fixture and wait until the drawing has finished loading."""
+    page, frame = _open(browser, port, filename)
+    _wait(lambda: frame.evaluate(
+        "() => { const c=document.querySelector('#cadHost canvas');"
+        "const e=(document.getElementById('echo')||{}).textContent||'';"
+        "return c && /Ready ·/.test(e); }"), timeout=40)
+    return page, frame
+
+
+def _zpct(frame):
+    z = frame.evaluate("() => document.getElementById('zpct').textContent") or ""
+    return int(z[:-1]) if z.endswith("%") and z[:-1].lstrip("-").isdigit() else None
+
+
 def test_dxf_renders_and_panels_populate(server, browser):
     page, frame = _open(browser, server["port"], "floorplan.dxf")
     # wait until the viewer reports Ready with a canvas
@@ -297,4 +312,134 @@ def test_dwg_shows_unsupported_state(server, browser):
             return /DWG|supported/i.test(t) ? t : null;
         }""") or None, timeout=40)
     assert "DWG" in txt and "not yet supported" in txt.lower()
+    page.close()
+
+
+def test_layer_counts_and_empty_flag(server, browser):
+    page, frame = _open_ready(browser, server["port"])
+    rows = _wait(lambda: frame.evaluate(
+        """() => {
+            const rs = [...document.querySelectorAll('.layer-row')];
+            if (rs.length !== 9) return null;
+            const m = {};
+            for (const r of rs) m[r.querySelector('.lname').getAttribute('title')] =
+                { count: r.querySelector('.lcount').textContent, empty: r.classList.contains('empty') };
+            return m;
+        }""") or None)
+    assert rows["WALLS"] == {"count": "4", "empty": False}
+    assert rows["TEXT"]["count"] == "3"
+    assert rows["ELECTRICAL"]["count"] == "3"
+    # layers with no geometry are flagged so you can see which layers hold data
+    assert rows["0"] == {"count": "0", "empty": True}
+    assert rows["Defpoints"]["empty"] is True
+    assert sum(int(v["count"]) for v in rows.values()) == 20
+    page.close()
+
+
+def test_layer_eye_is_borderless(server, browser):
+    # the eye <button> must reset the UA button box or the rows look misaligned
+    page, frame = _open_ready(browser, server["port"])
+    style = _wait(lambda: frame.evaluate(
+        """() => {
+            const eye = document.querySelector('.layer-row .eye');
+            if (!eye) return null;
+            const cs = getComputedStyle(eye);
+            return { bg: cs.backgroundColor, border: cs.borderStyle };
+        }""") or None)
+    assert style["border"] == "none"
+    assert style["bg"] in ("rgba(0, 0, 0, 0)", "transparent")
+    page.close()
+
+
+def test_grid_toggle_draws_and_clears(server, browser):
+    page, frame = _open_ready(browser, server["port"])
+    res = frame.evaluate(
+        """() => {
+            const tg = document.getElementById('tgGrid');
+            tg.click();
+            const on = document.querySelectorAll('#overlay .ov-grid').length;
+            const cls = tg.classList.contains('on');
+            tg.click();
+            const off = document.querySelectorAll('#overlay .ov-grid').length;
+            return { on, off, cls };
+        }""")
+    assert res["cls"] is True
+    assert res["on"] > 4, f"grid should draw reference lines (got {res['on']})"
+    assert res["off"] == 0
+    page.close()
+
+
+def test_measure_label_has_backing_chip(server, browser):
+    # the measurement value must sit on a chip so it stays legible over the drawing
+    page, frame = _open_ready(browser, server["port"])
+    res = frame.evaluate(
+        """() => {
+            const canvas = document.querySelector('#cadHost canvas');
+            const r = canvas.getBoundingClientRect();
+            document.querySelector('.tbtn[data-tool="distance"]').click();
+            const pd = (x, y) => { for (const t of ['pointermove','pointerdown','pointerup'])
+              canvas.dispatchEvent(new PointerEvent(t, {bubbles:true,cancelable:true,
+                clientX:r.left+x, clientY:r.top+y, button:0, pointerId:1, isPrimary:true})); };
+            pd(r.width*0.3, r.height*0.5); pd(r.width*0.7, r.height*0.5);
+            return { bg: document.querySelectorAll('#overlay .ov-lbl-bg').length,
+                     txt: document.querySelectorAll('#overlay .ov-txt').length };
+        }""")
+    assert res["bg"] >= 1, "measurement label needs a background chip"
+    assert res["txt"] >= 1
+    page.close()
+
+
+def test_fullscreen_button_requests_fullscreen(server, browser):
+    page, frame = _open_ready(browser, server["port"])
+    called = frame.evaluate(
+        """() => {
+            let called = false;
+            document.documentElement.requestFullscreen = () => { called = true; return Promise.resolve(); };
+            document.getElementById('fsBtn').click();
+            return called;
+        }""")
+    assert called, "full-screen button should request fullscreen"
+    page.close()
+
+
+def test_view_buttons_change_zoom(server, browser):
+    page, frame = _open_ready(browser, server["port"])
+    _wait(lambda: _zpct(frame) == 100)          # zoom-extents on load == 100%
+    frame.locator("#zin").click()
+    assert _wait(lambda: (_zpct(frame) or 0) > 105), "zoom-in should raise the zoom %"
+    frame.locator("#zout").click()
+    frame.locator("#fitBtn").click()
+    assert _wait(lambda: _zpct(frame) is not None and abs(_zpct(frame) - 100) <= 2), \
+        "zoom-extents should return to ~100%"
+    page.close()
+
+
+def test_panel_and_theme_toggles(server, browser):
+    page, frame = _open_ready(browser, server["port"])
+    cls = lambda: frame.locator("#app").get_attribute("class") or ""
+    frame.locator("#leftToggle").click()
+    assert _wait(lambda: "no-left" in cls())
+    frame.locator("#leftToggle").click()
+    assert _wait(lambda: "no-left" not in cls())
+    frame.locator("#rightToggle").click()
+    assert _wait(lambda: "no-right" in cls())
+    theme = lambda: frame.evaluate("() => document.documentElement.getAttribute('data-theme')")
+    before = theme()
+    frame.locator("#themeBtn").click()
+    assert _wait(lambda: theme() != before), "theme button should flip the chrome theme"
+    page.close()
+
+
+def test_status_toggles_flip(server, browser):
+    page, frame = _open_ready(browser, server["port"])
+    res = frame.evaluate(
+        """() => {
+            const osnap = document.getElementById('tgOsnap');
+            const ortho = document.getElementById('tgOrtho');
+            const before = { osnap: osnap.classList.contains('on'), ortho: ortho.classList.contains('on') };
+            osnap.click(); ortho.click();
+            return { before, osnap: osnap.classList.contains('on'), ortho: ortho.classList.contains('on') };
+        }""")
+    assert res["before"]["osnap"] is True and res["osnap"] is False   # OSNAP starts on, toggles off
+    assert res["before"]["ortho"] is False and res["ortho"] is True   # ORTHO starts off, toggles on
     page.close()

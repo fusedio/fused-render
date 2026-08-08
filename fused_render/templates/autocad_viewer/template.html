@@ -79,22 +79,22 @@
   .search svg { width: 13px; height: 13px; flex: none; }
 
   .layers { overflow: auto; padding: 4px 6px 8px; flex: 1; min-height: 0; }
-  .layer-row { display: grid; grid-template-columns: 20px 12px 1fr auto; align-items: center; gap: 8px;
+  .layer-row { display: grid; grid-template-columns: 20px 12px 1fr auto 22px; align-items: center; gap: 8px;
     padding: 5px 7px; border-radius: var(--radius); }
   .layer-row:hover { background: var(--chrome-2); }
   .layer-row.off .lname { opacity: .4; }
-  .eye { width: 20px; height: 20px; display: grid; place-items: center; border-radius: 4px; cursor: pointer; color: var(--text-dim); }
-  .eye:hover { background: var(--chrome-3); color: var(--text); }
+  .layer-row.empty .lname, .layer-row.empty .lcount { opacity: .38; }
+  .eye, .solo { width: 20px; height: 20px; display: grid; place-items: center; padding: 0; border: none;
+    background: transparent; border-radius: 4px; cursor: pointer; color: var(--text-dim); }
+  .eye:hover, .solo:hover { background: var(--chrome-3); color: var(--text); }
   .eye svg { width: 15px; height: 15px; }
-  .swatch { width: 12px; height: 12px; border-radius: 3px; border: 1px solid rgba(128,128,128,.35); }
-  .lname { font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .solo { width: 20px; height: 20px; display: grid; place-items: center; border-radius: 4px; cursor: pointer;
-    color: var(--text-faint); border: none; background: transparent; opacity: 0; }
+  .solo { color: var(--text-faint); opacity: 0; }
   .layer-row:hover .solo { opacity: 1; }
-  .solo:hover { background: var(--chrome-3); color: var(--text); }
   .solo.on { opacity: 1; color: var(--accent); }
   .solo svg { width: 14px; height: 14px; }
-  .lcount { font-size: 11px; color: var(--text-faint); font-variant-numeric: tabular-nums; }
+  .swatch { width: 12px; height: 12px; border-radius: 3px; border: 1px solid rgba(128,128,128,.35); }
+  .lname { font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .lcount { font-size: 11px; color: var(--text-faint); font-variant-numeric: tabular-nums; text-align: right; min-width: 20px; }
   .space-tabs { display: flex; gap: 2px; padding: 6px; border-top: 1px solid var(--line-soft); flex: none; }
   .space-tabs .tab { font-size: 11.5px; padding: 4px 10px; border-radius: 4px; cursor: pointer; color: var(--text-dim); border: 1px solid transparent; }
   .space-tabs .tab.active { background: var(--chrome-3); color: var(--text); border-color: var(--line); }
@@ -170,13 +170,15 @@
   .zoom { padding: 0 12px; display: flex; align-items: center; color: var(--text-dim); font-family: var(--mono); font-variant-numeric: tabular-nums; }
 
   /* overlay marks */
+  .ov-grid { stroke: color-mix(in srgb, var(--text-faint) 40%, transparent); stroke-width: .5; }
+  .ov-grid.major { stroke: color-mix(in srgb, var(--text-faint) 75%, transparent); stroke-width: .7; }
   .ov-line { stroke: var(--warn); stroke-width: 1.4; fill: none; }
   .ov-line.dash { stroke-dasharray: 6 4; }
   .ov-poly { stroke: var(--warn); stroke-width: 1.4; fill: color-mix(in srgb, var(--warn) 16%, transparent); }
   .ov-node { fill: var(--warn); stroke: #000; stroke-width: .6; }
   .ov-snap { fill: none; stroke: var(--good); stroke-width: 1.4; }
-  .ov-txt { fill: var(--warn); font: 12px var(--mono); paint-order: stroke; stroke: rgba(0,0,0,.55); stroke-width: 3px; }
-  :root[data-theme="light"] .ov-txt { stroke: rgba(255,255,255,.7); }
+  .ov-lbl-bg { fill: color-mix(in srgb, var(--chrome-0) 90%, transparent); stroke: var(--line); stroke-width: 1; }
+  .ov-txt { fill: var(--warn); font: 600 12px var(--mono); }
 </style>
 </head>
 <body>
@@ -185,7 +187,8 @@
     <div class="brand"><div class="mark">▤</div><span class="name">CAD&nbsp;Viewer</span></div>
     <div class="filechip"><span class="dot" id="fdot"></span><span class="fn" id="fname">—</span><span class="ver" id="fver"></span></div>
     <div class="sep"></div>
-    <button class="tbtn" id="fitBtn" title="Zoom Extents (F)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg></button>
+    <button class="tbtn" id="fitBtn" title="Zoom Extents (F)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="8" y="8" width="8" height="8" rx="1"/><path d="M3 8V4a1 1 0 0 1 1-1h4M21 8V4a1 1 0 0 0-1-1h-4M3 16v4a1 1 0 0 0 1 1h4M21 16v4a1 1 0 0 1-1 1h-4"/></svg></button>
+    <button class="tbtn" id="fsBtn" title="Full screen"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M8 3H5a2 2 0 0 0-2 2v3M16 3h3a2 2 0 0 1 2 2v3M8 21H5a2 2 0 0 1-2-2v-3M16 21h3a2 2 0 0 0 2-2v-3"/></svg></button>
     <div class="sep"></div>
     <button class="tbtn" data-tool="distance" title="Measure Distance (M)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M3 17L17 3l4 4L7 21z"/><path d="M7 13l2 2M11 9l2 2M15 5l2 2"/></svg></button>
     <button class="tbtn" data-tool="area" title="Measure Area"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M4 20V6l6-2 10 4v10l-8 2z"/></svg></button>
@@ -246,7 +249,7 @@
     <div class="coords"><span><span class="lab">X</span> <span id="cx">0.000</span></span><span><span class="lab">Y</span> <span id="cy">0.000</span></span></div>
     <div class="toggles">
       <div class="tg on" data-tg="OSNAP" id="tgOsnap" title="Object snap (endpoints, centers)">OSNAP</div>
-      <div class="tg" data-tg="GRID">GRID</div>
+      <div class="tg" data-tg="GRID" id="tgGrid" title="Reference grid">GRID</div>
       <div class="tg" data-tg="ORTHO" id="tgOrtho" title="Constrain to horizontal/vertical">ORTHO</div>
     </div>
     <div class="zoom"><span id="zpct">—</span></div>
@@ -263,7 +266,7 @@ const HTML_PATH = new URLSearchParams(location.search).get("path") || "";
 const BASE_DIR = HTML_PATH.slice(0, Math.max(HTML_PATH.lastIndexOf("/"), HTML_PATH.lastIndexOf("\\")) + 1);
 const assetUrl = (rel) => fused.rawUrl(BASE_DIR + rel);
 
-let viewer = null, meta = null, baseScale = null, snapPoints = [];
+let viewer = null, meta = null, baseScale = null, snapPoints = [], layerCounts = {}, gridEnabled = false;
 let tool = null;                         // null | "distance" | "area" | "angle"
 let pts = [];                            // measure points in progress, model coords
 let doneMeasure = null;                  // { tool, pts } of the last completed measurement (persists)
@@ -328,7 +331,7 @@ async function boot() {
 
   viewer = new DxfViewer(host, {
     clearColor: new Color(cssColor("--canvas")), autoResize: true,
-    colorCorrection: true, antialias: true,
+    colorCorrection: true, antialias: true, retainParsedDxf: true,
   });
   viewer.Subscribe("viewChanged", onViewChanged);
   viewer.Subscribe("message", (e) => { if (e.detail) console.log("[dxf]", e.detail.message); });
@@ -351,7 +354,7 @@ function cssColor(varName) {
 }
 
 function onLoaded() {
-  // layers
+  buildSnapPoints();   // indexes object-snap points and per-layer entity counts
   renderLayers(viewer.GetLayers());
   // real extents from the geometry (header extents are often unset)
   const b = viewer.GetBounds();
@@ -360,7 +363,6 @@ function onLoaded() {
     $("pExtSize").textContent = `${fmt(b.maxX - b.minX)} × ${fmt(b.maxY - b.minY)} ${unitAbbr()}`;
   }
   baseScale = pxPerUnit();
-  buildSnapPoints();
   wireCanvas();
   onViewChanged();
   echo("Ready · " + (meta.entity_total ?? 0) + " entities");
@@ -404,11 +406,13 @@ function renderLayers(layers) {
     if (filter && !l.name.toLowerCase().includes(filter)) continue;
     const vis = layerState.get(l.name) !== false;
     const hex = "#" + ((l.color >>> 0) & 0xffffff).toString(16).padStart(6, "0");
+    const n = layerCounts[l.name] || 0;
     const row = document.createElement("div");
-    row.className = "layer-row" + (vis ? "" : " off");
+    row.className = "layer-row" + (vis ? "" : " off") + (n ? "" : " empty");
     row.innerHTML = `<button class="eye">${vis ? EYE_ON : EYE_OFF}</button>` +
       `<span class="swatch" style="background:${hex}"></span>` +
       `<span class="lname" title="${l.name}">${l.displayName || l.name}</span>` +
+      `<span class="lcount" title="${n} object${n === 1 ? "" : "s"} on this layer">${n}</span>` +
       `<button class="solo${isolatedLayer === l.name ? " on" : ""}" title="Isolate this layer">${SOLO_ICON}</button>`;
     row.querySelector(".eye").addEventListener("click", () => {
       const now = layerState.get(l.name) !== false;
@@ -464,10 +468,13 @@ function pxPerUnit() { const a = modelToCanvas(0, 0), b = modelToCanvas(1, 0); r
 // ---------- object snap ----------
 function buildSnapPoints() {
   snapPoints = [];
+  layerCounts = {};
   try {
     const dxf = viewer.GetDxf();
     if (!dxf || !dxf.entities) return;
     for (const e of dxf.entities) {
+      const ly = e.layer || "0";
+      layerCounts[ly] = (layerCounts[ly] || 0) + 1;
       if (Array.isArray(e.vertices)) {
         for (const v of e.vertices) if (v && isFinite(v.x) && isFinite(v.y)) snapPoints.push([v.x, v.y]);
       }
@@ -565,14 +572,42 @@ function finishMeasure() {
 }
 
 // ---------- overlay drawing ----------
+function niceStep(raw) {
+  const p = Math.pow(10, Math.floor(Math.log10(raw))), m = raw / p;
+  return (m < 1.5 ? 1 : m < 3.5 ? 2 : m < 7.5 ? 5 : 10) * p;
+}
+function gridSvg(r) {
+  const ppu = pxPerUnit();
+  if (!isFinite(ppu) || ppu <= 0) return "";
+  const step = niceStep(64 / ppu);
+  const a = canvasToModel(0, r.height), b = canvasToModel(r.width, 0);
+  const minX = Math.min(a.x, b.x), maxX = Math.max(a.x, b.x);
+  const minY = Math.min(a.y, b.y), maxY = Math.max(a.y, b.y);
+  const line = (x1, y1, x2, y2, major) =>
+    `<line class="ov-grid${major ? " major" : ""}" x1="${x1.toFixed(1)}" y1="${y1.toFixed(1)}" x2="${x2.toFixed(1)}" y2="${y2.toFixed(1)}"/>`;
+  let s = "", i = 0;
+  for (let x = Math.ceil(minX / step) * step; x <= maxX && i < 400; x += step, i++) {
+    const p1 = modelToCanvas(x, minY), p2 = modelToCanvas(x, maxY);
+    s += line(p1.x, p1.y, p2.x, p2.y, Math.abs(x % (step * 5)) < step / 2);
+  }
+  for (let y = Math.ceil(minY / step) * step; y <= maxY && i < 800; y += step, i++) {
+    const p1 = modelToCanvas(minX, y), p2 = modelToCanvas(maxX, y);
+    s += line(p1.x, p1.y, p2.x, p2.y, Math.abs(y % (step * 5)) < step / 2);
+  }
+  return s;
+}
 function drawOverlay() {
   if (!viewer) return;
   const r = canvasRect();
   overlay.setAttribute("viewBox", `0 0 ${r.width} ${r.height}`);
-  let svg = "";
+  let svg = gridEnabled ? gridSvg(r) : "";
   const C = (p) => modelToCanvas(p.x, p.y);
   const toC = (p) => { const c = C(p); return `${c.x.toFixed(1)},${c.y.toFixed(1)}`; };
-  const lbl = (p, t) => `<text class="ov-txt" x="${(p.x + 6).toFixed(1)}" y="${(p.y - 6).toFixed(1)}">${t}</text>`;
+  const lbl = (p, t) => {
+    const x = p.x + 8, y = p.y - 8, w = t.length * 7 + 10;
+    return `<rect class="ov-lbl-bg" x="${(x - 5).toFixed(1)}" y="${(y - 12).toFixed(1)}" width="${w.toFixed(1)}" height="16" rx="4"/>` +
+      `<text class="ov-txt" x="${x.toFixed(1)}" y="${y.toFixed(1)}">${t}</text>`;
+  };
   const drawSet = (P, closed) => {
     if (!P || !P.length) return;
     if (closed && P.length > 2) svg += `<polygon class="ov-poly" points="${P.map(toC).join(" ")}"/>`;
@@ -654,7 +689,7 @@ $("zout").addEventListener("click", () => zoomBy(1.3));
 // status toggles
 $("tgOsnap").addEventListener("click", () => { snapEnabled = $("tgOsnap").classList.toggle("on"); drawOverlay(); });
 $("tgOrtho").addEventListener("click", () => { orthoEnabled = $("tgOrtho").classList.toggle("on"); });
-document.querySelectorAll('.tg[data-tg="GRID"]').forEach((t) => t.addEventListener("click", () => t.classList.toggle("on")));
+$("tgGrid").addEventListener("click", () => { gridEnabled = $("tgGrid").classList.toggle("on"); drawOverlay(); });
 
 // panels + theme (chrome only; model space stays dark like AutoCAD)
 $("leftToggle").addEventListener("click", () => $("app").classList.toggle("no-left"));
@@ -662,6 +697,20 @@ $("rightToggle").addEventListener("click", () => $("app").classList.toggle("no-r
 $("themeBtn").addEventListener("click", () => {
   const root = document.documentElement, cur = root.getAttribute("data-theme");
   root.setAttribute("data-theme", cur === "light" ? "dark" : "light");
+});
+
+// full screen
+const FS_ENTER = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M8 3H5a2 2 0 0 0-2 2v3M16 3h3a2 2 0 0 1 2 2v3M8 21H5a2 2 0 0 1-2-2v-3M16 21h3a2 2 0 0 0 2-2v-3"/></svg>';
+const FS_EXIT = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M8 3v3a2 2 0 0 1-2 2H3M16 3v3a2 2 0 0 0 2 2h3M8 21v-3a2 2 0 0 0-2-2H3M16 21v-3a2 2 0 0 1 2-2h3"/></svg>';
+$("fsBtn").addEventListener("click", () => {
+  if (document.fullscreenElement) document.exitFullscreen();
+  else document.documentElement.requestFullscreen().catch((err) => console.log("[fullscreen]", err && err.message));
+});
+document.addEventListener("fullscreenchange", () => {
+  const on = !!document.fullscreenElement, b = $("fsBtn");
+  b.classList.toggle("active", on);
+  b.innerHTML = on ? FS_EXIT : FS_ENTER;
+  b.title = on ? "Exit full screen" : "Full screen";
 });
 
 // keyboard
