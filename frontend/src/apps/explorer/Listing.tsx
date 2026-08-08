@@ -390,9 +390,9 @@ export default function Listing({
   }, [searching, visibleHits, sortedEntries, base]);
   rowCtxByPathRef.current = rowCtxByPath;
 
-  // Opening a folder lands on its FIRST FILE (rendered order — see
-  // autoSelectPath / firstFilePath), so the pane shows something instead of
-  // the folder's own "Select a file to preview." hint. A pane that opens empty
+  // Opening a folder lands on its FIRST ENTRY — file or directory (rendered
+  // order — see autoSelectPath / firstEntryPath), so the pane shows something
+  // instead of the folder's own "Select a file to preview." hint. A pane that opens empty
   // asks the user to do the obvious thing before it will do anything at all; a
   // folder is overwhelmingly opened to look at what is in it.
   //
@@ -406,10 +406,10 @@ export default function Listing({
   // Three conditions hold the shot rather than spending it, because each can
   // still turn into a folder the user is looking at:
   //   • the pane is OFF — nothing to preview into yet, and toggling it on later
-  //     should still land on the first file (`pane.on` is a dependency for
+  //     should still land on the first entry (`pane.on` is a dependency for
   //     exactly that);
   //   • search mode — the rendered rows are a query's answer, not the folder's,
-  //     so clearing the query still lands on the folder's first file;
+  //     so clearing the query still lands on the folder's first entry;
   //   • the listing is not OK — `status !== "ok"` and not merely "still
   //     loading". A failed first fetch settles with zero rows, and the
   //     dir-watch refetch that succeeds afterwards does NOT pass back through

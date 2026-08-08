@@ -288,7 +288,7 @@ export default function ListingPreviewPane({
   // already open on the left. It has no preview: just the folder's name and
   // the hint that says what to do about it. No actions either — the folder's
   // own primary ("Open as app") used to be handed down into this header, but a
-  // folder that HAS an app has a file in it, so FS-16's auto-select means this
+  // folder that HAS an app is not empty, so FS-16's auto-select means this
   // row is barely ever on screen; the button belongs in the title bar, which
   // is where it now stays whether the pane is open or not (Preview.tsx).
   //
@@ -297,10 +297,10 @@ export default function ListingPreviewPane({
   // chat on the folder from a header that otherwise said "select something" —
   // a "Choose view" chip pointing at a view nobody came for. The folder's own
   // modes are still one click from the LEFT half (Preview's chip), and every
-  // file in it previews on selection; and since opening a folder now
-  // auto-selects its first file (FS-16) and a background click no longer
-  // deselects (FS-15), this state is reached essentially only by a folder with
-  // no files in it or by a deliberate Escape. With no picker there is no mode,
+  // entry in it previews on selection; and since opening a folder now
+  // auto-selects its first entry (FS-16) and a background click no longer
+  // deselects (FS-15), this state is reached essentially only by an empty
+  // folder or by a deliberate Escape. With no picker there is no mode,
   // which is why this branch renders before any of the mode machinery — and
   // why the stat/app-probe fetches above skip the self target entirely.
   if (row.self) {
