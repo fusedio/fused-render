@@ -40,6 +40,26 @@ export function rememberSelection(fsPath: string, sel: Selection): void {
   lastSelection = { fsPath, sel };
 }
 
+// The row a freshly opened folder previews when nothing else claims the
+// selection (Listing's auto-select, FS-16): the FIRST NON-DIRECTORY row in the
+// RENDERED order, so the choice follows the active sort and is the row the eye
+// is already on. Directories are skipped rather than previewed — a folder's
+// pane preview is a peek, and landing on one would make opening a folder feel
+// like it had navigated somewhere. null when there is no file to show at all
+// (an empty folder, or one holding only directories), which leaves the pane on
+// its self target exactly as before.
+export function firstFilePath(
+  rows: string[],
+  byPath: ReadonlyMap<string, { isDir: boolean }>,
+): string | null {
+  for (const path of rows) {
+    const row = byPath.get(path);
+    // A path with no rendered row can't be selected — it isn't on screen.
+    if (row && !row.isDir) return path;
+  }
+  return null;
+}
+
 // A contiguous range of rendered rows, inclusive, in row order. `rows` is the
 // live navRows order (the SORTED/rendered order, never the raw fs order).
 export function rangeBetween(rows: string[], from: string, to: string): string[] {
