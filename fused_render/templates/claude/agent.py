@@ -351,25 +351,50 @@ def _is_app_dir(file: str) -> bool:
 
 
 def _has_pane(file: str) -> bool:
-    """Does this target get a LEFT PANE at all?
+    """Does this target get a LEFT PANE at all? THE FALLBACK ANSWER ONLY.
 
-    Everything the pane implies hangs off this one answer: the `app_state` tool's
+    Everything the pane implies hangs off one answer: the `app_state` tool's
     presence in the run's MCP roster, its pre-allowance on the spawn line, and
     whether the system prompt describes a page beside the chat. Only one target
     kind says no — an ordinary folder (D239), which gets a full-width chat.
 
-    Same predicate as everything else that branches on kind (`_is_app_dir` →
-    `app_entry.entry_html`), so the roster, the prompt and the page cannot
-    disagree about whether there is a pane.
+    THE PAGE IS AUTHORITATIVE, NOT THIS FUNCTION, and `_start` prefers the page's
+    answer whenever it is given one (`has_pane`). The question is "is there a page
+    beside this chat", and only the page can answer it: `paneURL()` runs ONCE, in
+    the boot IIFE, and `enterNoPane()` removes `#left` permanently — there is no
+    re-resolution on the page side and there cannot be, because a pane cannot
+    appear mid-session. Asking disk per turn therefore drifted, in both
+    directions: scaffold an app into an ordinary folder and turn 2 offered a tool
+    the page has no pane to answer with (the model calls it, `answerAppState`
+    burns its null polls and replies APP_STATE_UNREADABLE — the one thing the page
+    asserts can never be the answer to it); delete the entry page and the tool
+    dropped while a live pane was still on screen.
+
+    So this is what answers for a caller with NO page: the apps API, which spawns
+    from inside the server process on a folder it has already resolved an entry
+    for (routers/apps.py). Same predicate as everything else that branches on kind
+    (`_is_app_dir` → `app_entry.entry_html`), so that fallback agrees with the
+    pane a page would have built.
     """
     return not os.path.isdir(file) or _is_app_dir(file)
 
 
-def _split_system_prompt(file: str) -> str:
+def _split_system_prompt(file: str, pane: bool) -> str:
     """The DIRECTORY target's prompt. Two shapes, because there are now two kinds
     of folder: this template is the ONLY chat template, offered on every
     directory, not just app folders (the plain chat mode it absorbed was the
     directory chat).
+
+    `pane` IS THE ANSWER, PASSED IN — never re-derived here. For a directory the
+    two are the same question ("does app_entry resolve an entry page?"), and
+    asking it a second time reopened the window the single resolution in `_start`
+    exists to close: an index.html appearing between the two calls (a concurrent
+    scaffolding session, the user's editor, an in-flight `git checkout`), or a
+    transient EMFILE/EIO hitting `_is_app_dir`'s blanket `except Exception: return
+    False`, spawned a run WITHOUT the app-state directory — so `permission_server`
+    omitted the tool — while this prompt announced it. Worse than either shape
+    alone: an announced tool that is not in the roster is a promise the run cannot
+    keep.
 
     The APP-FOLDER shape carries the app-state disclosure, for the reason D235
     gave: a tool the model is never told about is a tool it never calls, and the
@@ -407,7 +432,7 @@ def _split_system_prompt(file: str) -> str:
       one, since an un-announced tool is merely unused.
     """
     tool = "mcp__%s__%s" % (PERMISSION_SERVER, APP_STATE_TOOL)
-    if _is_app_dir(file):
+    if pane:
         return (
             "This is a fused-render project: its HTML is an app fused-render serves, "
             "calling local Python through fused-render's bridge rather than a server "
@@ -1182,7 +1207,8 @@ _DETACH = (
 
 def _start(file: str, message: str, session_id: str, model: str,
            effort: str, permission_mode: str = "",
-           message_via_stdin: bool = False) -> dict:
+           message_via_stdin: bool = False,
+           has_pane: bool | None = None) -> dict:
     file = os.path.abspath(file)
     # A directory is a valid target too: this template's app-folder role opens
     # whole project folders (cwd/prompt handled by _workdir/_system_prompt).
@@ -1195,12 +1221,18 @@ def _start(file: str, message: str, session_id: str, model: str,
     run_dir = os.path.join(RUNS, run_id)
     _private_dir(run_dir)
     _private_dir(_perm_dir(run_dir))
-    # Whether this target has a page beside the chat at all, resolved ONCE here
-    # and read by all three things that depend on it: the app-state channel's
-    # directory, the tool's pre-allowance, and the prompt. Not cached across runs
-    # — a folder being scaffolded into becomes an app folder the moment it has an
-    # entry page, and the next turn should see that.
-    pane = _has_pane(file)
+    # Whether this target has a page beside the chat at all: ONE value, read by
+    # all three things that depend on it — the app-state channel's directory, the
+    # tool's pre-allowance, and the prompt (`_split_system_prompt` takes it rather
+    # than asking again; a second resolution is a second answer).
+    #
+    # THE PAGE'S ANSWER WINS. It decides at boot and cannot change (`paneURL` runs
+    # once, `enterNoPane` is permanent), so it is the only thing that knows what is
+    # actually on screen — and a roster that disagrees with the screen hands the
+    # model a tool nothing can answer. Re-resolving from disk per turn is what made
+    # a mid-session kind flip do that; see `_has_pane`. `None` means the caller has
+    # no page (the apps API), and only then does disk decide.
+    pane = _has_pane(file) if has_pane is None else has_pane
     # No pane, no channel, and no empty directory pretending there could be one:
     # the directory's absence is what removes the tool from the roster
     # (_write_mcp_config).
@@ -1280,7 +1312,7 @@ def _start(file: str, message: str, session_id: str, model: str,
     # the user's own app, a file frames fused-render's preview of their file. Each
     # prompt says which, so the model never mistakes our UI for the user's code.
     cmd += ["--append-system-prompt",
-            _split_system_prompt(file) if os.path.isdir(file)
+            _split_system_prompt(file, pane) if os.path.isdir(file)
             else _system_prompt(file)]
     if cli_mode:
         cmd += ["--permission-mode", cli_mode]
@@ -1911,13 +1943,18 @@ def main(action: str = "start", file: str = "", message: str = "",
          session_id: str = "", model: str = "", effort: str = "",
          run_id: str = "", request_id: str = "", decision: str = "",
          scope: str = "once", permission_mode: str = "", mode: str = "",
-         state: str = "") -> dict:
+         state: str = "", has_pane: str = "") -> dict:
     if action == "start":
         if not file:
             return {"error": "missing target file (no _file param?)"}
         if not message:
             return {"error": "(empty message)"}
-        return _start(file, message, session_id, model, effort, permission_mode)
+        # `has_pane` arrives as a STRING like every other param (the URL/param
+        # binder is str-shaped). Empty means "the caller did not say" — the apps
+        # API, which has no page — and only then does `_start` ask disk. "0" is a
+        # real no, so it must not be read as absence.
+        return _start(file, message, session_id, model, effort, permission_mode,
+                      has_pane=None if has_pane == "" else has_pane != "0")
     if action == "poll":
         return _poll(run_id)
     if action == "decide":

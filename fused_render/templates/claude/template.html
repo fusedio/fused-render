@@ -1295,6 +1295,14 @@ const PANE_SHOT_TAG = "pane-shot";
 // means no `app_state` tool in the run's roster — the model cannot ask, so this
 // sentence can never be the answer to it. Naming that case here would have the
 // snapshot explain a structural absence as a failed read.
+//
+// That invariant holds only because THIS PAGE is what tells the run whether there
+// is a pane: `has_pane` rides every start call (see the start payload in
+// submitChat) and agent.py takes it as given. While the server re-resolved the
+// kind from disk per turn it was false in precisely the case that matters — a
+// session that scaffolds an app INTO an ordinary folder has an app folder on disk
+// by turn 2 and still no pane on screen, so the tool was offered, called, and
+// answered with this very sentence.
 const APP_STATE_UNREADABLE = "the left pane's document could not be read (a "
   + "file may have no preview view, or the pane has not finished loading), so "
   + "nothing is known about its title, url or DOM right now";
@@ -4657,6 +4665,15 @@ async function sendMessage(message) {
       model: curModel(),
       effort: curEffort(),
       permission_mode: fused.params.get("permission") || DEFAULT_PERMISSION,
+      // WHETHER THERE IS A PANE IS THIS PAGE'S ANSWER TO GIVE, and it is sent on
+      // every turn. `noPane` is the layout flag enterNoPane sets, so this is a
+      // report of what is on screen — the only thing that can be — rather than a
+      // second guess at what is on disk. agent.py used to re-resolve it per turn,
+      // which drifted the moment a session scaffolded an app into an ordinary
+      // folder: turn 2 offered `app_state` against a chat with no pane, and the
+      // model got APP_STATE_UNREADABLE back, which the invariant beside that
+      // constant says can never be the answer to it. See agent.py `_has_pane`.
+      has_pane: noPane ? "0" : "1",
       // key:null — all agent calls opt out of default per-file cancellation
       // (D114): start/poll/history/sessions share one file, and superseding an
       // awaited poll would leave it pending and hang the streaming loop.

@@ -1500,3 +1500,138 @@ def test_a_path_carrying_block_is_still_stripped_from_the_transcript(agent):
             '{"title": "x", "dom_path": "/tmp/shots/appstate-1-1.json"}\n'
             '</live-app-state>\n\nwhy is it blank?')
     assert agent._strip_app_state(text) == "why is it blank?"
+
+
+# ----------------------------------------- who decides whether there IS a pane
+
+# Three things have to agree about the pane, per turn: the MCP roster (the
+# app-state directory's existence), the pre-allowance on the spawn line, and the
+# appended system prompt. `_start` resolved that answer from DISK on every turn,
+# while the PAGE resolves it exactly once — `paneURL()` runs in the boot IIFE and
+# `enterNoPane()` removes `#left` permanently. So a mid-session kind flip put the
+# two out of step in both directions:
+#
+#   * scaffold an app into an ordinary folder (turn 1 writes index.html) and turn
+#     2 offers `app_state`, pre-allows it and asserts "The user sees the app
+#     rendered live beside this chat" — with no pane on screen. The model calls
+#     it, `answerAppState` burns its null polls and replies
+#     APP_STATE_UNREADABLE, contradicting the invariant the page states at
+#     template.html's APP_STATE_UNREADABLE ("no pane means no `app_state` tool in
+#     the run's roster… this sentence can never be the answer to it").
+#   * delete the entry page and the reverse happens: the tool drops and the
+#     prompt flips to ordinary-folder wording while a live pane is on screen.
+#
+# THE PAGE IS AUTHORITATIVE, because the question is "is there a page beside this
+# chat" and only the page knows what is on screen. Disk is the fallback for the
+# one caller that has no page (the apps API, which always spawns on an app
+# folder).
+
+def _spawn_with(agent, monkeypatch, target, **kw):
+    """`_spawn`, through `main` and with STRING params — the shape the page's
+    runPython call actually delivers (the param binder is str-shaped), so the
+    "0" that means a real no cannot be mistaken for the "" that means absence."""
+    seen = {}
+
+    class _Proc:
+        pid = 4242
+
+    monkeypatch.setattr(agent, "_claude_bin", lambda: "/bin/claude")
+    monkeypatch.setattr(agent.subprocess, "Popen",
+                        lambda cmd, **kwargs: (seen.__setitem__("cmd", cmd), _Proc())[1])
+    out = agent.main(action="start", file=str(target), message="hi", **kw)
+    assert "error" not in out, out
+    return seen["cmd"], os.path.join(agent.RUNS, out["run_id"])
+
+
+def _pane_facts(agent, cmd, run_dir):
+    """The three things that must agree."""
+    tool = "mcp__%s__%s" % (agent.PERMISSION_SERVER, agent.APP_STATE_TOOL)
+    prompt = cmd[cmd.index("--append-system-prompt") + 1]
+    return {
+        "state_dir": os.path.isdir(os.path.join(run_dir, "appstate")),
+        "pre_allowed": tool in cmd[cmd.index("--allowed-tools") + 1],
+        "in_prompt": agent.APP_STATE_TOOL in prompt,
+        "says_beside_this_chat": "beside this chat" in prompt,
+    }
+
+
+def test_the_page_can_say_there_is_no_pane_and_the_whole_run_agrees(
+        agent, tmp_path, monkeypatch):
+    """The scaffolding repro. The folder IS an app folder on disk by turn 2, and
+    the page still has no pane — so nothing in the run offers the tool."""
+    agent.RUNS = str(tmp_path / "runs")
+    scaffolded = _app_dir(tmp_path, "scaffolded")
+    cmd, run_dir = _spawn_with(agent, monkeypatch, scaffolded, has_pane="0")
+    facts = _pane_facts(agent, cmd, run_dir)
+    assert facts == {"state_dir": False, "pre_allowed": False,
+                     "in_prompt": False, "says_beside_this_chat": False}
+    # ...and it is the ordinary-FOLDER prompt, not the app-folder one with its
+    # pane paragraph removed.
+    prompt = cmd[cmd.index("--append-system-prompt") + 1]
+    assert "fused-render project" not in prompt
+    assert "embedded in a local file explorer" in prompt
+
+
+def test_the_page_can_say_there_is_a_pane_and_the_whole_run_agrees(
+        agent, tmp_path, monkeypatch):
+    """The reverse flip: the entry page is gone from disk, the pane is still on
+    screen, and the tool stays in the roster so `app_state` remains answerable."""
+    agent.RUNS = str(tmp_path / "runs")
+    plain = tmp_path / "was-an-app"
+    plain.mkdir()
+    cmd, run_dir = _spawn_with(agent, monkeypatch, plain, has_pane="1")
+    facts = _pane_facts(agent, cmd, run_dir)
+    assert facts == {"state_dir": True, "pre_allowed": True,
+                     "in_prompt": True, "says_beside_this_chat": True}
+
+
+def test_disk_still_answers_when_no_page_says_otherwise(agent, tmp_path,
+                                                        monkeypatch):
+    """The apps API calls `_start` directly with no page to ask. Unchanged
+    behaviour: resolve from disk."""
+    agent.RUNS = str(tmp_path / "runs")
+    for target, wanted in ((_app_dir(tmp_path, "app"), True),
+                           (tmp_path / "plain", False)):
+        os.makedirs(target, exist_ok=True)
+        cmd, run_dir = _spawn_with(agent, monkeypatch, target)
+        facts = _pane_facts(agent, cmd, run_dir)
+        assert facts["state_dir"] is wanted, target
+        assert facts["pre_allowed"] is wanted, target
+        assert facts["in_prompt"] is wanted, target
+
+
+def test_the_page_sends_its_own_answer_on_every_start(html):
+    """The page's half. `noPane` is the layout flag `enterNoPane` sets, and the
+    only thing that knows whether `#left` is in the document."""
+    start = html.index('action: "start"')
+    call = html[start:html.index("}, { key: null });", start)]
+    assert "has_pane" in call and "noPane" in call
+
+
+def test_the_prompt_reads_the_pane_value_the_spawn_already_computed(
+        agent, tmp_path, monkeypatch):
+    """A SECOND `_is_app_dir` call for the prompt reopens the window `pane`
+    exists to close: an index.html appearing between the two (a concurrent
+    scaffolding session, the user's editor, an in-flight `git checkout`) — or a
+    transient EMFILE hitting `_is_app_dir`'s blanket `except Exception: return
+    False` — spawns a run WITHOUT the app-state directory while the appended
+    prompt announces the tool.
+
+    Simulated with an `_is_app_dir` that flips after its first call, which is
+    exactly what a race looks like from in here.
+    """
+    agent.RUNS = str(tmp_path / "runs")
+    app = _app_dir(tmp_path, "racing")
+    calls = []
+    real = agent._is_app_dir
+
+    def flaky(path):
+        calls.append(path)
+        return real(path) if len(calls) == 1 else not real(path)
+
+    monkeypatch.setattr(agent, "_is_app_dir", flaky)
+    cmd, run_dir = _spawn_with(agent, monkeypatch, app)
+    facts = _pane_facts(agent, cmd, run_dir)
+    assert facts["state_dir"] == facts["in_prompt"] == facts["pre_allowed"], facts
+    assert len(calls) == 1, \
+        "the kind is resolved once per run; the prompt reads that value"

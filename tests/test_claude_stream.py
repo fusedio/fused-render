@@ -386,13 +386,14 @@ def test_the_prompt_does_not_promise_a_path_the_fallback_may_not_send(agent, tmp
     hunting for a `dom_path` that was never sent.
 
     This is the APP FOLDER shape — the only one that mentions `dom_path` at all,
-    and the only one that ever did. `_split_system_prompt` takes the target now
-    because an ordinary folder gets a different prompt, so the folder handed in
-    here has to actually resolve an app entry (../shared/app_entry.py)."""
+    and the only one that ever did. `_split_system_prompt` takes the target and
+    the PANE FLAG now: an ordinary folder gets a different prompt, and the flag is
+    resolved once in `_start` rather than re-derived here (a second read is a
+    second answer)."""
     app = tmp_path / "proj"
     app.mkdir()
     (app / "index.html").write_text("<p>hi</p>", encoding="utf-8")
-    prompt = agent._split_system_prompt(str(app))
+    prompt = agent._split_system_prompt(str(app), True)
     assert "inline" in prompt and "dom_path" in prompt
 
 

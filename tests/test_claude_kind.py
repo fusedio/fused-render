@@ -824,29 +824,35 @@ def test_no_armed_preview_control_survives_leaving_the_preview_view():
     An armed annotate mode with no visible frame is worse than a dead control:
     the frame's capture-phase click handler goes on swallowing clicks in a
     document the user cannot see, and the mode sits ON behind a toggle its own
-    view does not show, so nothing can tell them or let them undo it. Flipping
-    away from Preview therefore disarms — through annSetMode, the one way in and
+    view does not show, so nothing can tell them or let them undo it. Arriving at
+    the narrow chat view therefore disarms — through annSetMode, the one way in and
     out, which is what keeps the label, aria-pressed, the `annmode` param and the
     pins from disagreeing.
 
-    The pane-shot pill is reset on the same flip: armed behind a hidden control it
-    would put a picture of the app on the next message with nothing on screen
-    saying so. It has no param to leak (viewShotWanted is per-message), so this
-    one is purely about the send not carrying something invisible.
+    The pane-shot pill is reset under the same condition: armed behind a hidden
+    control it would put a picture of the app on the next message with nothing on
+    screen saying so. It has no param to leak (viewShotWanted is per-message), so
+    this one is purely about the send not carrying something invisible.
 
-    The `narrowShown === true` guard is also what makes the reset safe to WRITE
-    where it is: `viewShotWanted` is a `let` declared further down the script, so
-    reading it during the boot call would be a temporal-dead-zone error — and boot
-    is never a flip.
+    "ARRIVING", NOT "FLIPPING". This assertion used to read `narrowShown === true`,
+    which describes a Preview→Chat flip and nothing else — and a MEDIA CROSSING is
+    not a flip: a wide boot leaves `narrowShown === false`, so arming either
+    control with both columns on screen and then dragging the pane under 880px hid
+    the control and kept the state. `narrowShown !== null` is the honest test: it
+    means "not boot", which is the one call that must not run the reset —
+    `viewShotWanted` is a `let` declared further down the script, so reading it
+    during the boot call would be a temporal-dead-zone error, and boot is also
+    where writing annmode=0 would clobber the ON-by-default the wide layout shares.
+    The behaviour, including the crossing, is exercised under node in
+    tests/test_claude_narrow.py; this is the source pin that keeps the shape.
 
-    Narrowly scoped on purpose, and each guard has its own failure: only on a real
-    flip (or it would fight a user arming the mode in Preview), never at boot (or
-    the first narrow open would persist annmode=0, and armed is the DEFAULT and a
-    default the wide layout shares), and only below the breakpoint (where both
-    halves are on screen, armed is simply correct).
+    The other two clauses each have their own failure: `!preview` (or it would
+    fight a user arming the mode in Preview, the one view where arming it is
+    right), and `NARROW_MQ.matches` (above the breakpoint both halves are on
+    screen and armed is simply correct).
     """
     page = _pane_source()
-    assert "if (NARROW_MQ.matches && narrowShown === true && !preview) {" in page
+    assert "if (NARROW_MQ.matches && narrowShown !== null && !preview) {" in page
     assert "if (annOn) annSetMode(false);" in page
     assert "setViewShot(false);" in page
     assert "let narrowShown = null;" in page
