@@ -755,6 +755,14 @@ export default function Listing({
       searchCountTitle = `Search covers the first ${validWalk.total.toLocaleString()} entries of this folder tree`;
   }
 
+  // Is anything pinned inside the search input right now? Mirrors the three
+  // chip conditions in the render below; drives the input's right padding, so
+  // an idle box gives its whole width to the placeholder.
+  const hasPin =
+    (searching && (validWalk.status === "idle" || validWalk.status === "streaming")) ||
+    searchCount !== null ||
+    sel.paths.length > 1;
+
   return (
     <div className="listing">
       <div className="listing-split" ref={splitRef}>
@@ -786,8 +794,12 @@ export default function Listing({
                 </svg>
               </button>
               {/* The box wraps input + pinned chips so the pane toggle can sit to
-            their right without disturbing the chips' inside-the-input pin. */}
-              <div className="listing-search-box">
+            their right without disturbing the chips' inside-the-input pin.
+            `has-pin` says a chip is actually pinned right now, so the input
+            reserves room for one only then — the reservation is wide, and
+            idle it was dead space that clipped the placeholder in a narrow
+            window. */}
+              <div className={"listing-search-box" + (hasPin ? " has-pin" : "")}>
                 <input
                   ref={searchInputRef}
                   type="search"
