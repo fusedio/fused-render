@@ -803,7 +803,16 @@ function TemplatePreview({
           subject of the route, not a listing beside a preview.
           A folder is not stranded in one of its non-listing modes: with no
           pane on screen to carry a menu, .preview-browse-chip below is the way
-          back ("Browse contents"). */}
+          back ("Browse contents").
+          ACCEPTED TRADEOFF, not an oversight: with the pane OPEN there is then
+          no control at all that switches the FOLDER's own mode — the chip
+          hides (its corner is inside the pane) and the pane's menu writes
+          `_panelMode`, which changes what the PANE previews, not what the
+          route renders. So a folder's git/versions/graph views are reached by
+          `?_mode=` (a URL, a bookmark, the file menu's Open With) or by
+          closing the pane first. The user chose that over two switchers in one
+          view: for a folder, the pane IS the explorer, and its peers are
+          opt-in tools rather than ways of looking at the listing. */}
       {!(stat.is_dir && !appChrome) && (
         <ModeMenu
           entries={templates.map((t) => ({
