@@ -1847,6 +1847,52 @@ def _sessions(file: str) -> dict:
     return {"sessions": sessions}
 
 
+def _snapshots(file: str, enrich: bool) -> dict:
+    """Claude Code's file-history checkpoints for `file` (SPEC §34).
+
+    A pass-through to `shared/file_history.timeline`, which is the ONE reader
+    for this store and already returns its own empty states as data ("no store
+    on this machine", "no versions for this file") — that is the whole reason it
+    can be adopted here unchanged, and the reason a file Claude has never
+    touched renders a sentence rather than the red traceback overlay. This
+    module adds nothing but the offer; the store stays strictly READ-ONLY, as it
+    must, because it is Claude Code's data and the very edit history the feature
+    exists to protect.
+
+    Deliberately NOT the `history` action: that one on this module replays a
+    chat SESSION TRANSCRIPT. Two meanings on one action name is the sort of
+    collision that is only ever found in production.
+
+    **Files only.** A directory has no checkpoint chain — the store keys on one
+    absolute file path (`sha256(abspath)[:16]@vN`) — so a folder target is a
+    refusal here as well as being hidden in the page. The gate is the UX, the
+    module is the guarantee (MD-11): a hand-written call cannot reach a state
+    the panel does not offer.
+
+    `enrich` is honoured here and nowhere else, exactly as the annotate panel
+    had it: enrichment reads session transcripts (5 MB+), so the boot call skips
+    them and only a deliberate expansion pays.
+
+    ImportError alone is caught, and it means one thing: this folder was copied
+    without its `shared/` sibling. A blanket `except Exception` would report a
+    SyntaxError inside `file_history.py` as "helper is not available", which
+    sends the reader to entirely the wrong place.
+    """
+    if not file:
+        return {"error": "missing target file (no _file param?)"}
+    if os.path.isdir(file):
+        return {"error": "file history is per-file; a folder has no checkpoints"}
+    try:
+        import file_history
+    except ImportError:
+        return {"error": "file history helper (../shared/file_history.py) "
+                         "is not available"}
+    try:
+        return file_history.timeline(file, enrich=enrich)
+    except Exception as exc:  # noqa: BLE001 — a state to render, never an overlay
+        return {"error": f"{type(exc).__name__}: {exc}"}
+
+
 def _history(file: str, session_id: str) -> dict:
     """Rebuild the conversation from the Claude Code session transcript.
 
@@ -1943,7 +1989,7 @@ def main(action: str = "start", file: str = "", message: str = "",
          session_id: str = "", model: str = "", effort: str = "",
          run_id: str = "", request_id: str = "", decision: str = "",
          scope: str = "once", permission_mode: str = "", mode: str = "",
-         state: str = "", has_pane: str = "") -> dict:
+         state: str = "", has_pane: str = "", enrich: str = "") -> dict:
     if action == "start":
         if not file:
             return {"error": "missing target file (no _file param?)"}
@@ -1976,6 +2022,11 @@ def main(action: str = "start", file: str = "", message: str = "",
         if not file:
             return {"error": "missing target file (no _file param?)"}
         return _history(file, session_id)
+    if action == "snapshots":
+        # `enrich` arrives as a STRING like every other param (the binder is
+        # str-shaped), so "" and "0" both mean don't — the boot call sends
+        # nothing and pays for no transcript reads.
+        return _snapshots(file, enrich not in ("", "0", "false"))
     if action == "shots_dir":
         # Asked for by the page BEFORE it composes a message, because that is
         # when it has crops to upload — see SHOTS for why this is not a run dir.

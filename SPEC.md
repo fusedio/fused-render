@@ -4510,19 +4510,23 @@ Goal: give a template view an **undo for the agent's edits**, with no version
 control involved. Claude Code already writes a full copy of every file it is
 about to change; this reads that store, presents the file's version timeline,
 and restores from it. Wired into `annotate` first (§17); the reader is shared so
-`claude` and `history` can adopt it. **Reachability note (D235):** `annotate` is
-its only consumer and `annotate` is now bound to nothing (§17), so on a default
-registry this surface is reached only by re-binding that mode (§16) — the reader
-(`templates/shared/file_history.py`) is deliberately host-agnostic for exactly
-this reason, and adopting it in another template is a wiring change, not a
-redesign.
+`claude` and `history` can adopt it — and **`claude` now has** (FH-18 below).
+
+**Reachability (supersedes the D235 note).** The capability used to be reachable
+only through `annotate`, which is bound to nothing (§17), so on a default
+registry it was unreachable. It now ships on `claude`, which is bound to every
+authored-file key and to the universal directory key, so the SHOWING half is on
+by default for any file with checkpoints. The reader
+(`templates/shared/file_history.py`) is unchanged — being host-agnostic is
+exactly what let the adoption be a wiring change rather than a redesign — and
+`annotate` keeps its own (unreachable) copy, which is not deleted here.
 
 **Two history views, and which one answers your question.** §33's `git` view and
 this one are **complementary, not alternatives** — the distinction is *whose*
-history you are asking about. (They no longer sit next to each other in a file's
-mode list: since D235 `git` is bound to directories only, and a file's commit-log
-mode is `versions` — GT-2, PT-14. The comparison below is unaffected; it is about
-what a repository's history can and cannot answer.) `git`
+history you are asking about. (All three now sit in a file's mode
+list: `git` is the working tree, `versions` is the repository's history of the
+file, and this panel is the agent's checkpoints — GT-2. The comparison below is
+about what a repository's history can and cannot answer.) `git`
 answers "what happened to this path in this repository": commits, uncommitted
 changes, diffs, everything a human or a tool ever committed, over the whole
 recorded life of the file — and it is read-only, by design (GT-11). This one
@@ -4980,3 +4984,34 @@ wanting "what has this file been through" wants §33.
   computation fails, because the write already landed and is already reported; the
   page falls back to its own `history` call, whose error channel is what tells the
   user the panel on screen is stale.
+
+- **FH-18** **`claude` shows the snapshots; it does not revert from them.** The
+  panel is a section of the chat template's LANDING page (`#snaps`, beside
+  "Recent chats"), fed by `agent.py`'s `action="snapshots"` — a pass-through to
+  `file_history.timeline`, adding nothing but the offer. The store stays
+  strictly read-only.
+  - **The action is not called `history`.** That name is already taken on this
+    module by the chat SESSION TRANSCRIPT replay. Two meanings on one action
+    name is a collision only ever found in production.
+  - **FILES only, twice.** The store keys on one absolute file path
+    (`sha256(abspath)[:16]@vN`), so a folder has no chain. The page gates on
+    `targetNoun === "file"` — the template's ONE answer to what the target is,
+    set by `paneURL` from the stat, awaited via `paneReady` because both boot
+    IIFEs start together and an unordered read gets `""`. (Deliberately not
+    `paneNoun`, which names the left pane's DOCUMENT — "preview"/"app" — and is
+    never `"file"`.) `_snapshots` refuses a directory independently, so a
+    hand-written call cannot reach a state the panel does not offer: the gate is
+    the UX, the module is the guarantee (MD-11).
+  - **The boot call does not enrich.** Enrichment reads session transcripts
+    (5 MB+) and this runs on every file open, so the panel takes the unenriched
+    timeline — which is why it never claims a chain is complete (FH-3).
+  - **No store at all → no panel** (Claude Code has never run here: not an empty
+    state, a feature that does not apply). **A store with nothing for this
+    file → a line of text**, because there the absence is a fact about the file.
+    Same distinction `annotate` drew, and the reason the reader returns its own
+    empty states as data rather than raising.
+  - **The rows are inert, by construction rather than by a disabled state.**
+    Annotate's revert half — the confirm sheet, the diff disclosure, the
+    pre-revert stash, `revert_plan`/`apply_revert` — is deliberately NOT carried
+    over: it is a destructive write with a multi-step contract, and half a port
+    of that is worse than none. There is nothing here to press that could refuse.

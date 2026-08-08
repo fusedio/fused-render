@@ -843,6 +843,43 @@
     margin-bottom: 8px;
     padding: 0 4px;
   }
+  /* Claude snapshots (SPEC §34). Same visual family as .chat-row — this is
+     another "list of past things about this target" on the same landing page —
+     but the rows are INERT: this panel shows the checkpoint chain, it does not
+     revert from it. */
+  #snaps { margin-top: 28px; padding-bottom: 32px; }
+  #snaps .head {
+    color: var(--faint);
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: .8px;
+    text-transform: uppercase;
+    margin-bottom: 8px;
+    padding: 0 4px;
+  }
+  .snap-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 14px;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    margin-bottom: 6px;
+    font-size: 12.5px;
+  }
+  /* The dot answers exactly ONE question — where is disk right now — rather
+     than competing with a second marker for the same column. */
+  .snap-row .snap-dot { color: var(--faint); flex-shrink: 0; font-size: 10px; }
+  .snap-row.here { border-color: var(--border-strong); }
+  .snap-row.here .snap-dot { color: var(--accent); }
+  .snap-row .snap-v { color: var(--fg); flex-shrink: 0; font-variant-numeric: tabular-nums; }
+  .snap-row .snap-when { color: var(--faint); flex: 1; overflow: hidden;
+                         text-overflow: ellipsis; white-space: nowrap; }
+  .snap-row .snap-d { color: var(--faint); flex-shrink: 0; }
+  .snap-row .snap-plus { color: var(--accent); }
+  .snap-row .snap-minus { color: var(--faint); }
+  #snapsnote { color: var(--faint); font-size: 11.5px; padding: 4px; }
+
   .chat-row {
     display: flex;
     align-items: center;
@@ -1209,6 +1246,17 @@
         <div id="recent">
           <div class="head">Recent chats</div>
           <div id="recentlist"></div>
+        </div>
+        <!-- Claude Code's own file-history checkpoints for this file (SPEC
+             §34). Ported from the superseded `annotate` template, whose reader
+             (shared/file_history.py) was written annotate-agnostic for exactly
+             this adoption. FILE targets only — the store keys on one absolute
+             file path, so a folder has no chain — and hidden until the reader
+             says there is a store worth showing. -->
+        <div id="snaps" hidden>
+          <div class="head">Claude snapshots</div>
+          <div id="snapslist"></div>
+          <div id="snapsnote"></div>
         </div>
       </div>
     </div>
@@ -2142,7 +2190,12 @@ function enterNoPane() {
 }
 
 // ── left pane: the target's ordinary preview ─────────────────────
-(async () => {
+// Held as a promise (not just fired) because `targetNoun` — the page's ONE
+// answer to "what kind of thing is this chat about" — is set inside paneURL,
+// and the landing page's own boot needs that answer before it can decide
+// whether to show the snapshots panel. Never rejects: the catch below is inside
+// it, so awaiting this is only ever a wait, not a second failure path.
+const paneReady = (async () => {
   try {
     const src = await paneURL();
     if (src === null) { enterNoPane(); return; }
@@ -5073,6 +5126,123 @@ async function loadRecent() {
   }
 }
 
+// ── Claude snapshots: the file-history checkpoint chain (SPEC §34) ──
+//
+// Ported from the superseded `annotate` template. What moved is the OFFER —
+// `shared/file_history.py` is unchanged and is still the one reader for this
+// store, which stays strictly read-only (it is Claude Code's data, and the very
+// edit history the feature exists to protect).
+//
+// This panel SHOWS the chain; it does not revert from it. Annotate's revert
+// half — the confirm sheet, the diff disclosure, the pre-revert stash — is
+// deliberately not carried over here: it is a destructive write with its own
+// multi-step contract, and half a port of that is worse than none. The rows are
+// inert by construction rather than by a disabled state, so there is nothing to
+// press that could refuse.
+
+// What restoring a version would do to the file AS IT IS NOW. `exact:false`
+// means the helper refused to diff (too big, or not text) and only net counts
+// are honest, so it says so with a tilde rather than implying a real diff.
+function snapDelta(v) {
+  const frag = document.createDocumentFragment();
+  const span = (cls, text) => {
+    const el = document.createElement("span");
+    el.className = cls;
+    el.textContent = text;
+    return el;
+  };
+  if (!v.existed) return span("snap-minus", "did not exist");
+  if (v.added == null || v.removed == null) return document.createTextNode("binary");
+  if (!v.differs) return document.createTextNode("on disk now");
+  frag.append(span("snap-plus", (v.exact ? "" : "~") + "+" + v.added),
+              document.createTextNode(" "),
+              span("snap-minus", "−" + v.removed));
+  return frag;
+}
+
+function snapAgo(sec) {
+  if (!sec) return "time unknown";
+  const d = Math.max(0, Date.now() / 1000 - sec);
+  if (d < 90) return "just now";
+  if (d < 3600) return Math.round(d / 60) + "m ago";
+  if (d < 86400) return Math.round(d / 3600) + "h ago";
+  if (d < 172800) return "yesterday";
+  if (d < 86400 * 30) return Math.round(d / 86400) + "d ago";
+  return new Date(sec * 1000).toLocaleDateString();
+}
+
+function renderSnapshots(timeline) {
+  const box = document.getElementById("snaps");
+  const list = document.getElementById("snapslist");
+  const note = document.getElementById("snapsnote");
+  if (!box) return;
+  // No store at all means Claude Code has never run on this machine — that is
+  // not an empty state worth a panel, it is "this feature does not apply", so
+  // the block stays off the page entirely. A store that exists but holds
+  // nothing for THIS file DOES get a line, because there the absence is a fact
+  // about the file and worth saying. (Annotate drew the same distinction.)
+  box.hidden = !timeline.available;
+  if (box.hidden) return;
+  list.textContent = "";
+  for (const v of timeline.versions) {
+    const row = document.createElement("div");
+    const here = v.id === timeline.position;
+    row.className = "snap-row" + (here ? " here" : "");
+    if (here) row.title = "what is on disk now";
+    const dot = document.createElement("span");
+    dot.className = "snap-dot";
+    dot.textContent = here ? "●" : "○";
+    const num = document.createElement("span");
+    num.className = "snap-v";
+    // A did-not-exist checkpoint IS a numbered version of the chain (v1, the
+    // creation boundary), so it wears its number. The dash is only for a record
+    // that carried no usable number — "v0" would invent one the store never
+    // wrote.
+    num.textContent = v.version >= 1 ? "v" + v.version : "—";
+    const when = document.createElement("span");
+    when.className = "snap-when";
+    when.textContent = snapAgo(v.mtime);
+    // Version numbers restart per session, so two rows can both say v2; the
+    // session's short id is the only thing that tells them apart.
+    when.title = (v.mtime ? new Date(v.mtime * 1000).toLocaleString() + " · " : "")
+      + "session " + v.session;
+    const d = document.createElement("span");
+    d.className = "snap-d";
+    d.append(snapDelta(v));
+    row.append(dot, num, when, d);
+    list.appendChild(row);
+  }
+  note.textContent = timeline.note || "";
+}
+
+async function loadSnapshots() {
+  // FILES only, and `targetNoun` is the page's ONE answer to what the target is
+  // (set by paneURL from the stat). Reusing it rather than re-probing is what
+  // keeps this panel from ever disagreeing with the rest of the page — and
+  // awaiting `paneReady` first is what makes the answer available: both boot
+  // IIFEs start together, so reading the noun without the wait raced the stat
+  // and read "" on every open. Note it is `targetNoun`, not `paneNoun` — the
+  // latter names the left pane's DOCUMENT ("preview"/"app") and is never
+  // "file", so gating on it would have hidden the panel permanently.
+  //
+  // The backend refuses a folder too (agent.py `_snapshots`): the gate is the
+  // UX, the module is the guarantee (MD-11).
+  await paneReady;
+  if (targetNoun !== "file") return;
+  try {
+    // No `enrich`: enrichment reads session transcripts (5 MB+), and this runs
+    // on every file open. The unenriched timeline cannot see the creation
+    // boundary, which is why this panel never claims a chain is complete.
+    const timeline = await fused.runPython(AGENT, { action: "snapshots", file: FILE }, { key: null });
+    if (timeline.error) throw new Error(timeline.error);
+    renderSnapshots(timeline);
+  } catch (err) {
+    // An ordinary absence, never the red overlay: a file Claude has never
+    // touched is the common case, not a bug in this view.
+    console.warn("snapshots failed:", err.message);
+  }
+}
+
 // ── boot: resume from URL, or show the landing page ──
 (async () => {
   const session_id = fused.params.get("session_id");
@@ -5086,6 +5256,7 @@ async function loadRecent() {
   } else {
     homebox.focus();
     await loadRecent();
+    await loadSnapshots();
   }
 })();
 </script>
