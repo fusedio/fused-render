@@ -778,16 +778,27 @@ function TemplatePreview({
   const appBtnLabel = linkStatus?.status === "unlinked" ? "Add as app" : "Open as app";
   const appBtnAction = linkStatus?.status === "unlinked" ? convertToApp : openAsApp;
 
-  // --- Claude panel toggle ---------------------------------------------------
-  // `claude_split` is offered as a toggle rather than a dropdown entry (see the
-  // button below). Gate visibility on the shared policy: a denied verdict never
-  // reaches `templates` at all, and an unresolved one is simply not offered yet
-  // — a spinner-button for a control that may never appear is worse than its
-  // arriving a beat late.
-  const claudeEntry = templates.find((t) => t.mode === CLAUDE_SPLIT_MODE && !isPending(t)) ?? null;
+  // --- Claude panel toggle (APP ROUTES ONLY) ---------------------------------
+  // Promoting `claude_split` out of the dropdown is app chrome: building an app
+  // beside its preview is what that route is for. The explorer is a file
+  // browser — there `claude_split` stays an ordinary dropdown entry, reachable
+  // but not advertised, exactly as before the toggle existed. `appChrome` is
+  // the same flag that pins the app route's mode list.
+  //
+  // Visibility also rides the shared policy: a denied verdict never reaches
+  // `templates` at all, and an unresolved one is simply not offered yet — a
+  // spinner-button for a control that may never appear is worse than one that
+  // arrives a beat late.
+  const claudeEntry = appChrome
+    ? (templates.find((t) => t.mode === CLAUDE_SPLIT_MODE && !isPending(t)) ?? null)
+    : null;
   const claudeOn = activeMode === CLAUDE_SPLIT_MODE;
-  // Everything except Claude — the dropdown's own entries.
-  const menuEntries = templates.filter((t) => t.mode !== CLAUDE_SPLIT_MODE);
+  // The dropdown loses Claude only where the toggle replaces it. `templates`
+  // (not menuEntries) stays the list every mode RESOLUTION runs against, so a
+  // URL carrying `_mode=claude_split` still lands on it in either chrome.
+  const menuEntries = claudeEntry
+    ? templates.filter((t) => t.mode !== CLAUDE_SPLIT_MODE)
+    : templates;
   // Where turning Claude OFF goes back to: the mode the user was on when they
   // opened it, so the toggle is genuinely reversible. Falls back to the first
   // non-Claude entry (or the default) when there is no such history — a URL
@@ -806,6 +817,12 @@ function TemplatePreview({
     if (back) void setMode(back);
   };
 
+  // The folder's primary action, built once and rendered in exactly one place.
+  // With the listing's preview pane OPEN it goes down into that pane's header,
+  // whose primary slot is otherwise empty for the folder's own row — the title
+  // bar was where it competed with the mode control and the layout zone for
+  // the user's eye. With the pane CLOSED there is no pane header to hold it,
+  // so the title bar keeps it. Never both, never neither.
   const openAsAppBtn =
     isListing && singleAppPath && linkStatus ? (
       <button type="button" className="open-as-app-btn" onClick={appBtnAction}>
@@ -878,7 +895,7 @@ function TemplatePreview({
     <>
       {actionsInTopbar ? (
         <TopbarActions>
-          {openAsAppBtn}
+          {!listingPaneOpen && openAsAppBtn}
           {headerActions}
         </TopbarActions>
       ) : (
@@ -903,7 +920,11 @@ function TemplatePreview({
             Checking if this view applies…
           </div>
         ) : isListing ? (
-          <Listing fsPath={fsPath} onSingleApp={setSingleAppPath} />
+          <Listing
+            fsPath={fsPath}
+            onSingleApp={setSingleAppPath}
+            selfPrimary={listingPaneOpen ? openAsAppBtn : null}
+          />
         ) : (
           /* One frame per mounted mode (see the held-frame swap above). Each
              key is its own mode, so a frame is created once and never

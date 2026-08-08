@@ -88,11 +88,15 @@ interface PaneMode {
 export default function ListingPreviewPane({
   row,
   selCount,
+  selfPrimary,
 }: {
   // The lead row when exactly one row is selected, else null.
   row: PaneTarget | null;
   // Total selected rows, for the multi-selection placeholder.
   selCount: number;
+  // The host folder's own primary action, for the SELF row's primary slot
+  // (see the header below). Built by the host so its state lives in one place.
+  selfPrimary?: React.ReactNode;
 }) {
   const [info, setInfo] = useState<InfoState>({ status: "loading" });
   // Lone-app probe result for a folder: undefined = still loading, null =
@@ -293,9 +297,12 @@ export default function ListingPreviewPane({
           glyphs beside them. */}
       <ModeMenu entries={modes} active={activeMode ?? ""} onSelect={selectMode} />
       {/* One label for every mode, and the row's ONE bordered primary. Self
-          target: "Open" would navigate to the folder already open, so it
-          hides. */}
-      {!row.self && (
+          target: "Open" would navigate to the folder already open, so the slot
+          goes to the folder's own primary instead — today the host's "Open as
+          app" (`selfPrimary`), which used to sit in the title bar competing
+          with the mode control and the layout zone. A folder with no single
+          app passes nothing and the slot stays empty. */}
+      {row.self ? selfPrimary : (
         <button
           type="button"
           className="bar-ctl bar-ctl-primary pane-header-btn"
