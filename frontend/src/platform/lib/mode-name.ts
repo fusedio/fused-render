@@ -13,12 +13,6 @@ const SENTINEL_NAMES: Record<string, string> = {
   // below and for the same reason — the two are the same thing seen from the
   // pane and from the app route, and they must not disagree on screen.
   _app: "View",
-  // Pane-only sentinel too, owned by `apps/explorer/listing/pane-modes.ts`:
-  // the neutral default a SELF target lands on (the folder already open on the
-  // left, nothing selected — FS-12/D238). Named here because the humanizer
-  // would otherwise render the key as "None", which reads as a value rather
-  // than as "nothing is being previewed".
-  _none: "No preview",
 };
 
 // Registry keys whose conventional casing a generic capitalize would destroy.

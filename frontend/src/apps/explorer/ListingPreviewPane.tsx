@@ -21,13 +21,7 @@ import { iconForEntry, isAppEntry } from "@platform/ui/FileIcons";
 import { KNOWN_SENTINEL_MODES, templateModeIcon } from "@apps/explorer/ModeSwitcher";
 import { ModeMenu } from "@apps/explorer/BarMenu";
 import Listing from "@apps/explorer/Listing";
-import {
-  PANE_APP_MODE,
-  PANE_NONE_MODE,
-  activePaneMode,
-  paneHasRealMode,
-  paneModeList,
-} from "@apps/explorer/listing/pane-modes";
+import { PANE_APP_MODE, activePaneMode, paneModeList } from "@apps/explorer/listing/pane-modes";
 
 // The selected row, as the pane needs it. Structurally a subset of Listing's
 // RowCtx, so the lead row can be passed straight through.
@@ -37,16 +31,16 @@ export interface PaneTarget {
   isDir: boolean;
   // True when the target is the listing's OWN folder (nothing selected): the
   // same mode logic runs, except `_listing` is never offered (that listing is
-  // already on the left side of the split) and the pane defaults to the
-  // neutral `_none` placeholder instead of the folder's first opt-in mode —
-  // see listing/pane-modes.ts.
+  // already on the left side of the split) and the pane lands on NO mode at
+  // all — a neutral hint, with every offered mode one click away in the
+  // switcher — instead of the folder's first opt-in mode. See
+  // listing/pane-modes.ts.
   self?: boolean;
 }
 
-// The pane-only sentinels, re-exported locally for readability (defined with
+// The pane-only sentinel, re-exported locally for readability (defined with
 // the ordering rules in listing/pane-modes.ts).
 const APP_MODE = PANE_APP_MODE;
-const NONE_MODE = PANE_NONE_MODE;
 
 // Monochrome switcher icon for the `_app` mode — currentColor like the other
 // mode icons, so it takes the switcher's muted/active tinting instead of the
@@ -64,24 +58,6 @@ const APP_MODE_ICON = (
   >
     <rect x="3" y="3" width="18" height="18" rx="3" />
     <path d="M10 8.5l6 3.5-6 3.5z" />
-  </svg>
-);
-
-// Icon for the neutral `_none` mode — a struck-through eye, the "not
-// previewing anything" counterpart to the `_render` sentinel's open eye.
-const NONE_MODE_ICON = (
-  <svg
-    viewBox="0 0 24 24"
-    width="16"
-    height="16"
-    fill="none"
-    stroke="currentColor"
-    strokeWidth="2"
-    strokeLinecap="round"
-    strokeLinejoin="round"
-  >
-    <path d="M17.9 17.9A10.6 10.6 0 0112 20c-7 0-11-8-11-8a19 19 0 015.1-6M9.9 4.2A10.6 10.6 0 0112 4c7 0 11 8 11 8a19 19 0 01-2.2 3.2M9.9 9.9a3 3 0 004.2 4.2" />
-    <line x1="2" y1="2" x2="22" y2="22" />
   </svg>
 );
 
@@ -248,8 +224,8 @@ export default function ListingPreviewPane({
   // --- the pane's mode list ---------------------------------------------------
 
   // Mode order = pane priority, decided in listing/pane-modes.ts — which also
-  // documents why a SELF target leads with the neutral `_none` mode, why a lone
-  // app leads over `_listing`, and why `app` and `_app` are never both offered.
+  // documents why a SELF target lands on no mode at all, why a lone app leads
+  // over `_listing`, and why `app` and `_app` are never both offered.
   // This component only turns those mode names into menu entries with icons.
   //
   // Gate policy is the shared one (lib/mode-visibility), on every mode surface
@@ -269,12 +245,7 @@ export default function ListingPreviewPane({
   const byMode = new Map(info.templates.map((e) => [e.mode, e]));
   const modes: PaneMode[] = modeNames.map((m) => ({
     mode: m,
-    icon:
-      m === APP_MODE
-        ? APP_MODE_ICON
-        : m === NONE_MODE
-          ? NONE_MODE_ICON
-          : templateModeIcon(byMode.get(m) as TemplateEntry),
+    icon: m === APP_MODE ? APP_MODE_ICON : templateModeIcon(byMode.get(m) as TemplateEntry),
   }));
 
   // While the mode list is still undecided, hold the skeleton — the pane must
@@ -299,11 +270,11 @@ export default function ListingPreviewPane({
       </div>
     );
   }
-  // A self target with nothing but the neutral placeholder (no app, no
-  // offerable template) gets the bare hint — no header, because there is no
-  // other mode to switch to. With modes to offer it falls through instead, so
-  // the header (and its switcher) stays on screen beside the hint.
-  if (row.self && !paneHasRealMode(modeNames)) {
+  // A self target with nothing offerable at all (no app, every template
+  // gate-denied) gets the bare hint — no header, because there is no mode to
+  // switch to. With modes to offer it falls through instead, so the header (and
+  // its switcher) stays on screen beside the hint.
+  if (row.self && modeNames.length === 0) {
     return (
       <div className="listing-pane">
         <div className="pane-center">
@@ -312,9 +283,13 @@ export default function ListingPreviewPane({
       </div>
     );
   }
-  // Default = the first mode in pane priority order (`_none` for a self
-  // target); the menu override wins while it's still offered.
-  const activeMode = activePaneMode(modeNames, modeOverride);
+  // Default = the first mode in pane priority order, or NO mode for a self
+  // target without an app of its own; the menu override wins while it's still
+  // offered.
+  const activeMode = activePaneMode(modeNames, modeOverride, {
+    self: !!row.self,
+    hasApp: !!app,
+  });
   const activeEntry = embeddable.find((e) => e.mode === activeMode) ?? null;
 
   // Header: name + mode menu + Open. Shown for every mode except the file
@@ -382,10 +357,11 @@ export default function ListingPreviewPane({
         />
       </>
     );
-  } else if (activeMode === NONE_MODE) {
-    // The neutral default for a self target: the header (so every offered mode
-    // stays one click away in the switcher) above the same hint the
-    // nothing-to-show path shows.
+  } else if (activeMode === null) {
+    // "Nothing previewed" — the self target's default state, not a mode: the
+    // header (so every offered mode stays one click away in the switcher, none
+    // of them marked active) above the same hint the nothing-to-show path
+    // shows.
     body = (
       <>
         {header}

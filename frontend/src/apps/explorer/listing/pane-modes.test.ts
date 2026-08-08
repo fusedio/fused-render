@@ -1,13 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { TemplateEntry } from "@platform/lib/api";
 import { KNOWN_SENTINEL_MODES } from "@apps/explorer/ModeSwitcher";
-import {
-  PANE_APP_MODE,
-  PANE_NONE_MODE,
-  activePaneMode,
-  paneHasRealMode,
-  paneModeList,
-} from "./pane-modes";
+import { PANE_APP_MODE, activePaneMode, paneModeList } from "./pane-modes";
 
 // The universal `/` directory key as the built-in registry ships it (SPEC
 // PT-13): `_listing` first and unconditional, every peer condition.py-gated.
@@ -33,7 +27,7 @@ const verdicts = (allowed: string[], denied: string[] = []): Record<string, bool
 const DIR_PEERS = ["app", "claude", "versions", "git", "graph"];
 
 describe("paneModeList — self target (nothing selected)", () => {
-  test("defaults to the neutral placeholder, never the chat", () => {
+  test("offers only real modes and lands on NONE of them", () => {
     const modes = paneModeList({
       templates: dirTemplates(),
       conditions: verdicts(["claude", "git"], ["app", "versions", "graph"]),
@@ -41,20 +35,22 @@ describe("paneModeList — self target (nothing selected)", () => {
       self: true,
       hasApp: false,
     });
-    expect(modes[0]).toBe(PANE_NONE_MODE);
-    expect(activePaneMode(modes, null)).toBe(PANE_NONE_MODE);
+    // "Nothing previewed" is a STATE, not an entry: the list carries real
+    // modes only, and the self target simply has no default among them.
+    expect(activePaneMode(modes, null, { self: true, hasApp: false })).toBeNull();
+    // The bug this pins: with `_listing` dropped, `modes[0]` is a heavyweight
+    // opt-in (the chat), and it must NOT become the self target's default —
+    // merely opening the pane must not open a chat on the user's folder.
+    expect(modes[0]).toBe("claude");
+    expect(activePaneMode(modes, null, { self: true, hasApp: false })).not.toBe("claude");
     // The opt-in modes are still offered — one click away in the switcher.
     expect(modes).toContain("claude");
     expect(modes).toContain("git");
     // Its own listing is never re-shown; that listing is the left half.
     expect(modes).not.toContain("_listing");
-    // More than one entry, so the mode menu renders (PT-10) and the chat is
-    // reachable from the header.
-    expect(modes.length).toBeGreaterThan(1);
-    expect(paneHasRealMode(modes)).toBe(true);
   });
 
-  test("a lone-app folder still leads with its own app, `_none` behind it", () => {
+  test("a lone-app folder still leads with its own app, and defaults to it", () => {
     const modes = paneModeList({
       templates: dirTemplates(["_listing", "claude"]),
       conditions: verdicts(["claude"]),
@@ -63,12 +59,12 @@ describe("paneModeList — self target (nothing selected)", () => {
       hasApp: true,
     });
     // The folder's app is a preview of the folder, not an opt-in tool — it
-    // keeps the default; `_none` stays offered as the way to clear the pane.
-    expect(modes).toEqual([PANE_APP_MODE, PANE_NONE_MODE, "claude"]);
-    expect(activePaneMode(modes, null)).toBe(PANE_APP_MODE);
+    // keeps the default even for a self target.
+    expect(modes).toEqual([PANE_APP_MODE, "claude"]);
+    expect(activePaneMode(modes, null, { self: true, hasApp: true })).toBe(PANE_APP_MODE);
   });
 
-  test("every gate denied leaves only the placeholder (bare hint, no header)", () => {
+  test("every gate denied leaves an empty list (bare hint, no header)", () => {
     const modes = paneModeList({
       templates: dirTemplates(),
       conditions: verdicts([], DIR_PEERS),
@@ -76,11 +72,11 @@ describe("paneModeList — self target (nothing selected)", () => {
       self: true,
       hasApp: false,
     });
-    expect(modes).toEqual([PANE_NONE_MODE]);
-    expect(paneHasRealMode(modes)).toBe(false);
+    expect(modes).toEqual([]);
+    expect(activePaneMode(modes, null, { self: true, hasApp: false })).toBeNull();
   });
 
-  test("an explicit choice still wins over the neutral default", () => {
+  test("an explicit choice still wins over having no default", () => {
     const modes = paneModeList({
       templates: dirTemplates(),
       conditions: verdicts(["claude"], ["app", "versions", "git", "graph"]),
@@ -89,9 +85,10 @@ describe("paneModeList — self target (nothing selected)", () => {
       hasApp: false,
     });
     // From the switcher, or seeded from the `_panelMode` URL param.
-    expect(activePaneMode(modes, "claude")).toBe("claude");
-    // A mode this target does not offer falls back to the default (PT-9).
-    expect(activePaneMode(modes, "versions")).toBe(PANE_NONE_MODE);
+    expect(activePaneMode(modes, "claude", { self: true, hasApp: false })).toBe("claude");
+    // A mode this target does not offer falls back to the default (PT-9),
+    // which for a self target is "nothing previewed".
+    expect(activePaneMode(modes, "versions", { self: true, hasApp: false })).toBeNull();
   });
 });
 
@@ -106,7 +103,6 @@ describe("paneModeList — selected (non-self) target", () => {
     });
     expect(modes[0]).toBe("_listing");
     expect(activePaneMode(modes, null)).toBe("_listing");
-    expect(modes).not.toContain(PANE_NONE_MODE);
   });
 
   test("a lone-app folder leads with `_app`, listing next", () => {
@@ -146,6 +142,34 @@ describe("paneModeList — a lone app gets exactly one entry", () => {
     });
     expect(modes).toEqual(["app", "_listing", "claude"]);
     expect(modes).not.toContain(PANE_APP_MODE);
+  });
+
+  test("a self target's hoisted registry `app` is still its default", () => {
+    const modes = paneModeList({
+      templates: dirTemplates(["_listing", "app", "claude"]),
+      conditions: verdicts(["app", "claude"]),
+      isDir: true,
+      self: true,
+      hasApp: true,
+    });
+    // Same reasoning as the `_app` sentinel: the folder's own app is what the
+    // folder IS, so it defaults even though nothing is selected.
+    expect(modes).toEqual(["app", "claude"]);
+    expect(activePaneMode(modes, null, { self: true, hasApp: true })).toBe("app");
+  });
+
+  test("an `app` binding with no lone page is not a self default", () => {
+    const modes = paneModeList({
+      templates: dirTemplates(["_listing", "app", "claude"]),
+      conditions: verdicts(["app", "claude"]),
+      isDir: true,
+      self: true,
+      hasApp: false,
+    });
+    // `app` only leads here because `_listing` was dropped, not because this
+    // folder has an app to show — so the self target still has no default.
+    expect(modes).toEqual(["app", "claude"]);
+    expect(activePaneMode(modes, null, { self: true, hasApp: false })).toBeNull();
   });
 
   test("a denied registry `app` hands the lead back to the sentinel", () => {
@@ -205,9 +229,8 @@ describe("paneModeList — gate visibility is the shared policy", () => {
   });
 });
 
-test("the pane's own sentinels are never sent to the server", () => {
+test("the pane's own sentinel is never sent to the server", () => {
   // KNOWN_SENTINEL_MODES is the set the shell will build a render URL for
-  // (PT-12). `_app` and `_none` are pane-local: the pane renders them itself.
+  // (PT-12). `_app` is pane-local: the pane renders it itself.
   expect(KNOWN_SENTINEL_MODES.has(PANE_APP_MODE)).toBe(false);
-  expect(KNOWN_SENTINEL_MODES.has(PANE_NONE_MODE)).toBe(false);
 });

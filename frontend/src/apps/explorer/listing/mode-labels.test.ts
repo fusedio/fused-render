@@ -38,7 +38,7 @@ const PERMUTATIONS = [false, true];
 
 // Every set of modes a user can see in ONE list: the registry key's own list
 // (the Open With menu and the preview route render it as-is), plus the preview
-// pane's assembled list — same entries, two pane-only sentinels added and some
+// pane's assembled list — same entries, one pane-only sentinel added and some
 // dropped — across the isDir/self/hasApp permutations the pane can be in.
 function offeredSets(): Array<{ where: string; modes: string[] }> {
   const sets: Array<{ where: string; modes: string[] }> = [];
