@@ -886,19 +886,28 @@ export default function Listing({
                     : "relevance"}
                 </button>
               )}
-              {!embedded && (
+              {/* Only while the pane is CLOSED — and then with its label. The
+                  collapse half of this toggle moved onto the pane itself
+                  (ListingPreviewPane's header), where the action is spatial
+                  and needs no words: the control sits on the thing it
+                  collapses, at the seam. Reopening cannot live there, because
+                  a closed pane has nowhere to host a control — so it comes
+                  back here, and it comes back LABELLED: an icon-only square in
+                  this corner would read as one more of the layout glyphs the
+                  title bar carries a few pixels above it, and "the pane is
+                  off" is exactly the state a user needs told rather than
+                  inferred. */}
+              {!embedded && !pane.on && (
                 <button
                   type="button"
-                  className={"bar-ctl listing-pane-toggle" + (pane.on ? " pressed" : "")}
-                  title={pane.on ? "Hide preview pane" : "Show preview pane"}
-                  aria-pressed={pane.on}
+                  className="bar-ctl listing-pane-toggle"
+                  title="Show preview"
+                  aria-pressed={false}
                   onClick={togglePane}
                 >
-                  {/* A labelled toggle, not a bare chevron. The chevron had to
-                      encode its own state by flipping direction — which reads
-                      as "go that way", not "the pane is open" — and never said
-                      what it toggled. The pane glyph fills its right column
-                      when the pane is on; `.pressed` carries the rest. */}
+                  {/* The pane glyph with its right column empty — the pane it
+                      would open, drawn as it currently is. It used to fill that
+                      column for the on state; the button no longer has one. */}
                   <svg
                     viewBox="0 0 24 24"
                     width="16"
@@ -911,17 +920,6 @@ export default function Listing({
                   >
                     <rect x="3" y="4" width="18" height="16" rx="2" />
                     <line x1="14" y1="4" x2="14" y2="20" />
-                    {pane.on && (
-                      <rect
-                        x="14"
-                        y="4"
-                        width="7"
-                        height="16"
-                        fill="currentColor"
-                        stroke="none"
-                        opacity="0.35"
-                      />
-                    )}
                   </svg>
                   Preview
                 </button>
@@ -1057,6 +1055,7 @@ export default function Listing({
                       : null
                 }
                 selCount={sel.paths.length}
+                onCollapse={togglePane}
               />
             </div>
           </>

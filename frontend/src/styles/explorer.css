@@ -291,14 +291,6 @@
   padding: 0;
 }
 
-/* Toggle in its on state (the listing's Preview button): a slightly stronger
-   wash than hover, which is what makes "pressed" legible while the cursor is
-   sitting on it. */
-.bar-ctl.pressed {
-  background: rgba(var(--tint), 0.1);
-  color: var(--fg);
-}
-
 /* The one thing in these bars that gets chrome: the mode control. There used
    to be a second recipe beside it, .bar-ctl-primary, for "the row's single
    primary action" — a bordered, semibold label. Its last consumer was the
@@ -707,8 +699,11 @@
   background: var(--bg-alt);
 }
 
-/* Folder preview: the bar above the embedded app / mini list, carrying the
-   name, the mode control and Open.
+/* The pane's chrome strip, above whatever the pane is showing: the row's name,
+   and at its right end the collapse control that closes the pane. Present in
+   EVERY pane state, including the ones that have nothing else to put in it (a
+   loading skeleton, an error, the metadata card) — while the pane is open this
+   strip is the only thing carrying a way to close it.
 
    It sits directly beside .listing-search — they are one visual row split by
    the pane divider — so the two MUST agree on height, or the pane's bottom
@@ -796,7 +791,13 @@ table.pane-mini-list td.status-message {
 
 /* Row 2's two ends. Both are plain .bar-ctl now (explorer.css's shared
    recipe); all that is left here is the pane toggle's negative right margin,
-   which pulls the labelled control out to the row's padding edge. */
+   which pulls the labelled control out to the row's padding edge.
+
+   The toggle is now the OPEN half only — it renders while the pane is closed
+   and unmounts when it opens (the collapse control lives in the pane's own
+   header). So it has no pressed state to style, and the row's width simply
+   returns to the search box when the pane takes the space beside it; the box
+   is `flex: 1 1 auto`, so nothing else moves. */
 .listing-pane-toggle {
   margin-right: -8px;
 }

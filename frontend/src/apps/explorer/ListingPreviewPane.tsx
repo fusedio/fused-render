@@ -91,11 +91,17 @@ interface PaneMode {
 export default function ListingPreviewPane({
   row,
   selCount,
+  onCollapse,
 }: {
   // The lead row when exactly one row is selected, else null.
   row: PaneTarget | null;
   // Total selected rows, for the multi-selection placeholder.
   selCount: number;
+  // Close the pane — the host's own toggle, rendered HERE while the pane is
+  // open (see the collapse control below). Required, not optional: every one
+  // of this component's states has to be able to draw it, because while the
+  // pane is up this is the only way to put it down.
+  onCollapse: () => void;
 }) {
   const [info, setInfo] = useState<InfoState>({ status: "loading" });
   // Lone-app probe result for a folder: undefined = still loading, null =
@@ -189,10 +195,65 @@ export default function ListingPreviewPane({
     };
   }, [path, isDir, self]);
 
-  // Placeholders need no fetch: nothing selected, or a multi-selection.
+  // Collapse the pane. It lives HERE, not in the listing's search row, because
+  // collapsing is spatial: the control sits at the top of the thing it folds
+  // away, beside the seam it moves. (Re-opening cannot live here — a closed
+  // pane hosts nothing — so that half stayed in the search row, and stayed
+  // labelled. See Listing's toggle.) Rightmost in the strip, and deliberately
+  // a different glyph from the expand button beside it: that one opens the
+  // FILE, this one closes the PANE.
+  const collapseBtn = (
+    <button
+      type="button"
+      className="bar-ctl bar-ctl-icon"
+      title="Hide preview"
+      aria-label="Hide preview"
+      onClick={onCollapse}
+    >
+      <svg
+        viewBox="0 0 24 24"
+        width="16"
+        height="16"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinejoin="round"
+        strokeLinecap="round"
+        aria-hidden="true"
+      >
+        <rect x="3" y="4" width="18" height="16" rx="2" />
+        <line x1="14" y1="4" x2="14" y2="20" />
+        {/* Pushing the right panel out through its own edge. */}
+        <polyline points="17 9 20 12 17 15" />
+      </svg>
+    </button>
+  );
+
+  // The pane's chrome strip, and EVERY state gets one — a loading skeleton, an
+  // error, the metadata card and the multi-selection placeholder all used to
+  // render bare, which was fine while the listing's search row carried the
+  // toggle and is not now: a pane with no strip would be a pane with no way to
+  // close it. It also keeps the strip's height agreeing with the search row
+  // beside it in every state rather than most of them (see .pane-header).
+  // `extra` is what the settled preview adds between the name and the collapse
+  // control: the mode menu and the open-full-screen button.
+  const strip = (extra?: React.ReactNode) => (
+    <div className="pane-header">
+      {row && <span className="pane-header-icon">{iconForEntry(row.name, row.isDir)}</span>}
+      <span className="pane-header-name" title={row?.name}>
+        {row?.name ?? ""}
+      </span>
+      {extra}
+      {collapseBtn}
+    </div>
+  );
+
+  // Placeholders need no fetch: nothing selected, or a multi-selection. No
+  // subject, so the strip carries nothing but the collapse control.
   if (!row) {
     return (
       <div className="listing-pane">
+        {strip()}
         <div className="pane-center">
           <div className="pane-hint">
             {selCount > 1 ? `${selCount} items selected` : "Select a file to preview."}
@@ -224,12 +285,7 @@ export default function ListingPreviewPane({
   if (row.self) {
     return (
       <div className="listing-pane">
-        <div className="pane-header">
-          <span className="pane-header-icon">{iconForEntry(row.name, true)}</span>
-          <span className="pane-header-name" title={row.name}>
-            {row.name}
-          </span>
-        </div>
+        {strip()}
         <div className="pane-center">
           <div className="pane-hint">Select a file to preview.</div>
         </div>
@@ -240,6 +296,7 @@ export default function ListingPreviewPane({
   if (info.status === "loading") {
     return (
       <div className="listing-pane">
+        {strip()}
         <div className="pane-skel" />
       </div>
     );
@@ -247,6 +304,7 @@ export default function ListingPreviewPane({
   if (info.status === "error") {
     return (
       <div className="listing-pane">
+        {strip()}
         <div className="pane-center">
           <div className="status-message error">{info.message}</div>
         </div>
@@ -296,6 +354,7 @@ export default function ListingPreviewPane({
   if (gatesPending || (row.isDir && app === undefined)) {
     return (
       <div className="listing-pane">
+        {strip()}
         <div className="pane-skel" />
       </div>
     );
@@ -306,15 +365,13 @@ export default function ListingPreviewPane({
   const activeMode = activePaneMode(modeNames, modeOverride);
   const activeEntry = embeddable.find((e) => e.mode === activeMode) ?? null;
 
-  // Header: name + mode menu + open-full-screen. Shown for every mode except
-  // the file metadata card, which carries its own big-icon layout instead.
-  // (The self target has its own, picker-less header — it returns above.)
-  const header = (
-    <div className="pane-header">
-      <span className="pane-header-icon">{iconForEntry(row.name, row.isDir)}</span>
-      <span className="pane-header-name" title={row.name}>
-        {row.name}
-      </span>
+  // The settled header: the shared strip, with the mode control and the
+  // open-full-screen button between the name and the collapse control. Every
+  // OTHER state renders the bare strip instead — same chrome, nothing to
+  // switch or expand yet. (The self target has its own, picker-less one and
+  // returns above.)
+  const header = strip(
+    <>
       {/* The same mode control the title bar and the pane bars carry. It used
           to be four naked squares here, indistinguishable from the one-shot
           glyphs beside them. */}
@@ -353,7 +410,7 @@ export default function ListingPreviewPane({
           <path d="M3 21l7-7" />
         </svg>
       </button>
-    </div>
+    </>
   );
 
   // The /render embed URL for a chosen template entry. "_render" renders the
@@ -402,22 +459,27 @@ export default function ListingPreviewPane({
       </>
     );
   } else {
-    // No embeddable template for a file: metadata card (icon, name, size, Open).
+    // No embeddable template for a file: the bare strip (no mode to switch —
+    // this row offers none — but the pane still needs its collapse control)
+    // over a metadata card (icon, name, size, Open).
     body = (
-      <div className="pane-center">
-        <div className="pane-big-icon">{iconForEntry(row.name, false)}</div>
-        <div className="pane-title">{row.name}</div>
-        <div className="pane-hint">
-          No preview for this file type{info.size !== null ? ` — ${formatSize(info.size)}` : ""}.
+      <>
+        {strip()}
+        <div className="pane-center">
+          <div className="pane-big-icon">{iconForEntry(row.name, false)}</div>
+          <div className="pane-title">{row.name}</div>
+          <div className="pane-hint">
+            No preview for this file type{info.size !== null ? ` — ${formatSize(info.size)}` : ""}.
+          </div>
+          <button
+            type="button"
+            className="pane-open-btn"
+            onClick={() => navigate(row.path, { isDir: false })}
+          >
+            Open
+          </button>
         </div>
-        <button
-          type="button"
-          className="pane-open-btn"
-          onClick={() => navigate(row.path, { isDir: false })}
-        >
-          Open
-        </button>
-      </div>
+      </>
     );
   }
 
