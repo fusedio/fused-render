@@ -512,7 +512,7 @@
     // pins simply don't resolve there — cards mark them "other view").
     //
     // ⚠️ CURRENTLY UNREACHABLE, and the Send-to-Claude leg is doubly so. This
-    // mode is bound to ZERO registry keys (D230 took its bindings away), so the
+    // mode is bound to ZERO registry keys (D235 took its bindings away), so the
     // shell never offers it; and its handoff navigates the shell to
     // `_mode=claude`, which resolves to the one surviving chat template — a
     // template that never grew the receiving half (claudeComments /
@@ -2439,13 +2439,13 @@
       // view and the review would appear to vanish. The chat view itself is
       // not an annotation surface, so it's excluded from the picker too.
       //
-      // This test no longer measures what the button needs (D232). `claude` is
+      // This test no longer measures what the button needs (D237). `claude` is
       // bound to every authored-file key again — it is the SURVIVING chat, the
       // former `claude_split`, renamed — so stat does report it and the button
       // is SHOWN, while the handoff's receiving half (`claudeComments` /
       // `claudeReturn`) was never built into that template: the click navigates
       // somewhere real and the review is dropped on arrival. The whole mode is
-      // unreachable anyway — `annotate` holds zero registry keys since D230 —
+      // unreachable anyway — `annotate` holds zero registry keys since D235 —
       // which is why this is recorded here rather than repaired. Repairing it
       // means one of two things, and both are decisions: teach the chat to
       // receive a handoff, or test for a mode that *can* receive one instead of

@@ -2,7 +2,7 @@
 
 `main(path)` decides whether a path is inside a git work tree.
 
-Since D230 the mode is bound to the universal "/" DIRECTORY key alone, so in
+Since D235 the mode is bound to the universal "/" DIRECTORY key alone, so in
 practice the path is always a directory: `git` is the repo-wide Source Control
 view of a folder, and the file-side "what changed in this one file" story is the
 `versions` mode's (its gate takes any file in any work tree). The file branch

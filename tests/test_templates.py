@@ -50,7 +50,7 @@ def _core_list(key: str) -> list:
     """The core registry's ordered names for `key`. Derived on purpose: the tests
     that use it assert a FALLBACK reaches the built-in list, which is a claim
     about the fallback — spelling the list out again just meant a rebinding
-    (D230) broke tests that were not about bindings."""
+    (D235) broke tests that were not about bindings."""
     with open(os.path.join(server.TEMPLATES_DIR, "registry.json"),
               encoding="utf-8") as f:
         return list(json.load(f)[key])
@@ -96,7 +96,7 @@ def test_builtin_parquet_default_is_duckdb():
 #
 # `reader` (listen/TTS mode, templates/reader/) is the LAST mode on text-bearing
 # keys — it used to sit immediately before `annotate`, which is deregistered as of
-# D230 (the annotation tools live in the claude pane now, not in a mode of
+# D235 (the annotation tools live in the claude pane now, not in a mode of
 # their own). It is deliberately absent from binary/visual keys (images, 3D, geo,
 # media, archives, parquet data).
 
@@ -130,7 +130,7 @@ def test_reader_absent_on_binary_visual_keys():
 # --------------------------------------------------------------- git mode (GT)
 #
 # `git` (SPEC §33) is the condition-gated repo-wide Source Control view of a
-# FOLDER. As of D230 it is bound to the universal "/" directory key and nothing
+# FOLDER. As of D235 it is bound to the universal "/" directory key and nothing
 # else: the file-side "what changed in this one file" story belongs to `versions`,
 # so a file never offers both. It is never a default.
 
@@ -166,7 +166,7 @@ def test_the_file_side_history_and_chat_are_versions_and_claude():
 
 
 def test_there_is_exactly_one_chat_mode_on_every_key():
-    # D230 folded the two chat templates into one: `claude` is THE chat, for a
+    # D235 folded the two chat templates into one: `claude` is THE chat, for a
     # file and for a directory alike. What this pins is the property the old
     # directories-only binding existed to protect — a target is never offered two
     # Claude modes — now held by there being only one to offer. Counted rather
@@ -180,7 +180,7 @@ def test_there_is_exactly_one_chat_mode_on_every_key():
 
 
 def test_annotate_is_deregistered_everywhere():
-    # D230: the annotation tools live in the claude pane, so the standalone
+    # D235: the annotation tools live in the claude pane, so the standalone
     # `annotate` mode is bound to nothing. The folder still ships (a user may
     # re-bind it themselves, §16) — this is about the CORE registry.
     with open(os.path.join(server.TEMPLATES_DIR, "registry.json"),

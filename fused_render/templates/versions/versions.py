@@ -1,5 +1,5 @@
 """Git backend for the `versions` template: history of a *fused app*, or of a
-single *file* (D230).
+single *file* (D235).
 
 There are exactly two kinds of target, resolved once per call by
 `_resolve_target`, and the difference between them is the whole shape of this
@@ -10,7 +10,7 @@ module:
   the WHOLE app: the repo is the app, not the file. Writable (`revert`).
 * **A file** — a single tracked file in whatever repository it happens to live
   in, scoped to that one path. This is the file-side history view now that the
-  `git` mode is directory-only (D230), and it is **read-only**: `revert` is
+  `git` mode is directory-only (D235), and it is **read-only**: `revert` is
   refused, because the repository is the user's own and a revert commit carries
   the Fused identity (the rule linked apps already live by).
 
@@ -158,7 +158,7 @@ def _require_app(file: str):
 
 def _resolve_target(file: str):
     """(target, None) or (None, error payload) — which of the two things this
-    module can be asked about `file` is (D230).
+    module can be asked about `file` is (D235).
 
     A target is `(kind, cwd, pathspec, name)`, and every git invocation below is
     built from it: `-C cwd` and `-- <pathspec>`. `name` is the file's basename for
@@ -170,7 +170,7 @@ def _resolve_target(file: str):
           subtree. Writable: `revert` is offered for a workspace app.
       ("file", <the file's dir>, ":(literal)<basename>", <basename>)
           A single tracked file in whatever repository it happens to live in —
-          the file-side history view, since `git` is directory-only now (D230).
+          the file-side history view, since `git` is directory-only now (D235).
           READ-ONLY, always: `main` refuses `revert` for this kind, because the
           repository is the user's own and a revert commit carries the Fused
           identity. Same rule, same reason, as a linked app.
@@ -225,7 +225,7 @@ def _log(target):
     # dir so it changes nothing, for a linked app inside a larger repository it
     # is what makes the list "this app's history" rather than the whole repo's —
     # and for a file target it is that one file, so the list is that file's
-    # commits and nothing else (D230).
+    # commits and nothing else (D235).
     r = _git(app, "log", f"--format=%H{_US}%ct{_US}%s", "--", pathspec)
     if r.returncode != 0:
         return {"error": "git log failed: " + (r.stderr or "").strip()[:200]}

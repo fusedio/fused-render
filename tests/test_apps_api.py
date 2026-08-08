@@ -538,7 +538,7 @@ def test_home_navigates_into_the_claude_chat_for_the_started_run():
 
 
 def test_claude_is_the_selectable_chat_mode_for_html():
-    """D230 moved the file-side chat to the split view and deleted the plain chat
+    """D235 moved the file-side chat to the split view and deleted the plain chat
     template outright, so `claude` is the only chat a page — or anything else —
     can offer. A target must offer exactly one, or the switcher shows two chats
     that differ only in features."""

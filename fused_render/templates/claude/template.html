@@ -840,7 +840,7 @@
      Two floors, and the breakpoint follows the HIGHER one. The layout's hard
      floor — where the halves squeeze past their minimums and then overflow — is
      #left's 200px + the 4px divider + #chat's 340px ≈ 544px, and the original
-     breakpoint (560px, D231) sat just above it. That turned out to be the wrong
+     breakpoint (560px, D236) sat just above it. That turned out to be the wrong
      floor to pick: a split that merely does not overflow is not yet a split
      worth having. The explorer's listing preview pane defaults to HALF its
      split container (about 700px on a 1700px window), so at 560px the split
@@ -1241,7 +1241,7 @@ const PANE_SHOT_TAG = "pane-shot";
 // condition (D146: the duplicated rule gets a test, not a comment).
 // It enumerates CAUSES, so it may only name conditions that can actually
 // produce it. "A project may have no app entry" used to be one and is not any
-// more: a folder with no app entry has no pane at all now (D234), and no pane
+// more: a folder with no app entry has no pane at all now (D239), and no pane
 // means no `app_state` tool in the run's roster — the model cannot ask, so this
 // sentence can never be the answer to it. Naming that case here would have the
 // snapshot explain a structural absence as a failed read.
@@ -1289,7 +1289,7 @@ function fmtLogArg(v) {
 // that used to live here is gone rather than merely unused.
 //
 // There is no third pane shape to describe here any more. An ordinary folder had
-// one — /embed, the file browser, whose DOM this used to report — and D234 took
+// one — /embed, the file browser, whose DOM this used to report — and D239 took
 // the pane away entirely, which also took away the whole question of whether a
 // reading of OUR UI could be mistaken for a reading of the user's code: for that
 // target the `app_state` tool is not in the run's roster at all (agent.py), so
@@ -1607,7 +1607,7 @@ async function appStateFile(state) {
 // can't.
 const PANE_SKIP_MODES = new Set(["claude"]);
 
-// What the left pane should frame. TWO shapes and a NO-PANE case (D230, D234):
+// What the left pane should frame. TWO shapes and a NO-PANE case (D235, D239):
 //
 //   * an APP FOLDER — the app's entry html (index.html, or its single top-level
 //     html — the same rule as the shell's "Open as app" button), resolved by
@@ -1616,11 +1616,11 @@ const PANE_SKIP_MODES = new Set(["claude"]);
 //     explorer's preview pane would show it in: `.py` in `code`, `.parquet`
 //     in `duckdb`, an `.html` page rendered as itself. That is what makes the
 //     annotation tools usable while editing a standalone file, which is the
-//     whole point of binding this mode to the file keys (D230).
+//     whole point of binding this mode to the file keys (D235).
 //   * an ORDINARY FOLDER — NO PANE. The chat is full width; paneURL answers
 //     `null` and the loader below removes the column, the divider and the whole
 //     control strip. See enterNoPane for why that is a designed state rather
-//     than a missing element, and D234 for why the pane it replaces was not
+//     than a missing element, and D239 for why the pane it replaces was not
 //     worth its width: framing /embed there put fused-render's own file browser
 //     beside the chat, and nothing flowed BACK from it — no postMessage, no
 //     listener, so a click in it attached nothing, fed nothing to the composer
@@ -1737,13 +1737,13 @@ async function paneURL() {
       appEntry = entry;
       return "/render?path=" + encodeURIComponent(entry);
     }
-    // An ordinary folder, not a project: NO PANE (D234). `null` is the answer,
+    // An ordinary folder, not a project: NO PANE (D239). `null` is the answer,
     // and it is a distinct answer rather than a thrown error — a folder that is
     // not an app is the ordinary case, not a failure, which is what the original
     // `throw` here got wrong (it left a permanent error panel beside a working
     // chat).
     //
-    // What this replaces, and why: D232 framed `/explorer/embed/<dir>` here —
+    // What this replaces, and why: D237 framed `/explorer/embed/<dir>` here —
     // fused-render's own file browser, so "what's in here?" was answerable by
     // looking. Nothing flowed back from it. This template has no postMessage and
     // no message listener, so selecting a file in that pane attached nothing, fed
@@ -1842,7 +1842,7 @@ function applyLeftMode() {
   frame.src = paneSrcFor(t);
 }
 
-// ── no pane at all: the ordinary folder's full-width chat (D234) ──────────
+// ── no pane at all: the ordinary folder's full-width chat (D239) ──────────
 //
 // THE HAZARD THIS SHAPE EXISTS TO AVOID. The obvious implementation — ship the
 // markup without `#leftframe` for this target — cannot work, and it fails in a
@@ -3286,7 +3286,7 @@ function formatAnnotations(arr) {
   const wire = arr.map(({ id, sent, createdAt, ...rest }) => rest);
   return (
     // Same hardcoded-noun bug as the footnote, one audience over: this said "this
-    // project's entry HTML" for every target, and since D230 half of them are
+    // project's entry HTML" for every target, and since D235 half of them are
     // files, where the left pane is fused-render's preview OF the file and not an
     // app at all. Telling the model to look for an entry HTML that does not exist
     // is how a note about `notes.md` turns into a hunt for an app. Only the two

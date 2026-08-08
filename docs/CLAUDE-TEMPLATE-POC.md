@@ -10,10 +10,10 @@ subprocess + stream-json log + poll loop).
 > first chat template, not as a description of what ships. Two changes happened
 > after it was written:
 >
-> - **D230** moved the chat on file keys to the *split* template
+> - **D235** moved the chat on file keys to the *split* template
 >   (`claude_split` — the app/file beside the chat, with the annotation and
 >   `app_state` machinery), leaving this one bound to directories only.
-> - **D232** deleted this template outright — it had become the stale side of a
+> - **D237** deleted this template outright — it had become the stale side of a
 >   fork, missing six improvements the split one received — and renamed
 >   `claude_split` to **`claude`**. So `fused_render/templates/claude/` still
 >   exists and is still the chat, but it is a **different template** from the one
@@ -31,7 +31,7 @@ subprocess + stream-json log + poll loop).
 > list (see SPEC §7.2 for the real bindings — 47 authored-file keys plus the
 > universal `/` directory key), the "no gate" assumption, and the file layout
 > (there is a `condition.py` too). The current rules live in **SPEC §7.2
-> PT-14/PT-16** and **DECISIONS D230/D232**; nothing below should be treated as
+> PT-14/PT-16** and **DECISIONS D235/D237**; nothing below should be treated as
 > current, and it is not rewritten because a POC note that gets edited to match
 > the present stops being a record of what was decided when.
 

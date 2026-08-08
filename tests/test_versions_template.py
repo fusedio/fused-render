@@ -3,7 +3,7 @@ only inside git-backed app folders, and its Python backend can list the log,
 materialise any commit as a rendered snapshot, and revert — always by adding
 a commit on top, never by rewriting history.
 
-Since D230 the mode is also the FILE-side history view: any existing file
+Since D235 the mode is also the FILE-side history view: any existing file
 inside any git work tree gets its own timeline, scoped to that one path, and
 that timeline is READ-ONLY — the repository is the user's own, so `revert` is
 refused there exactly as it is for a linked app. App-ness is still decided
@@ -72,7 +72,7 @@ def _make_app(workspace, tag="local", name="demo"):
 
 def _plain_repo(workspace, tmp_path, name="userrepo"):
     """A git repository that is NOT a fused app and lives nowhere near the
-    workspace — the D230 case: a file whose only history is the user's own
+    workspace — the D235 case: a file whose only history is the user's own
     repo. Deliberately a sibling of the workspace, not inside it, so nothing
     here can accidentally satisfy the `<workspace>/<tag>/<name>` app rule."""
     d = tmp_path / name
@@ -116,7 +116,7 @@ def test_condition_true_only_inside_git_backed_apps(workspace, tmp_path):
 
 
 def test_condition_true_for_a_file_in_any_git_repo(workspace, tmp_path):
-    # D230: the file-side history view no longer needs a fused app anywhere.
+    # D235: the file-side history view no longer needs a fused app anywhere.
     # Without this, a tracked file outside the workspace has no history view at
     # all — `git` is directory-only now, so nothing else would answer for it.
     cond = _load("condition")
@@ -255,7 +255,7 @@ def test_a_pathspec_magic_filename_is_matched_literally(workspace, tmp_path):
 
 
 def test_actions_refuse_paths_outside_apps(workspace, tmp_path):
-    # Still all errors after D230, but for three different reasons now that a
+    # Still all errors after D235, but for three different reasons now that a
     # file target is legal: `log` because the repo has no commits at all,
     # `snapshot` because the sha resolves to nothing, `revert` because it is
     # refused outright outside an app. Worth keeping as the composite: no action
@@ -402,12 +402,12 @@ def test_same_tree_revert_preserves_uncommitted_edits(workspace):
 # ------------------------------------------------------- narrow-host layout
 
 # The narrow-layout breakpoint, in one place because four tests name it.
-# Raised from D231's original 560px: see
+# Raised from D236's original 560px: see
 # test_the_breakpoint_is_the_useful_width_not_the_overflow_floor.
 NARROW_PX = 880
 
 def test_template_collapses_the_split_below_a_breakpoint():
-    """D230 bound this mode to 47 file extensions, so it now renders in the
+    """D235 bound this mode to 47 file extensions, so it now renders in the
     explorer's listing preview pane (floor 220px, default width half its split
     container), in dragged Panel panes and in /embed. Without a media query the
     200px commit spine plus a divider plus the preview frame fight over ~220px
@@ -427,7 +427,7 @@ def test_template_collapses_the_split_below_a_breakpoint():
 
 
 def test_the_breakpoint_is_the_useful_width_not_the_overflow_floor():
-    """The regression this pins is the RAISE, from D231's original 560px.
+    """The regression this pins is the RAISE, from D236's original 560px.
 
     560 came from the hard floor (200 + 4 + a 320px frame = 524, rounded up) —
     the width below which the halves overflow. But the explorer's listing preview

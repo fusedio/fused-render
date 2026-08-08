@@ -24,7 +24,7 @@ Separate directories on purpose — the page renders every file in the perm dir
 as an approval card, and a snapshot request is not something to click.
 
 argv[2] is OPTIONAL, and its absence is the whole switch for the second tool: a
-target with no left pane (an ordinary folder, D234) has no page to read back, so
+target with no left pane (an ordinary folder, D239) has no page to read back, so
 `agent.py` spawns us with the perm dir alone and `app_state` then appears in
 neither `tools/list` nor the dispatch. A tool the model can call but that can
 never answer is worse than no tool — it gets called after every edit and times
@@ -358,7 +358,7 @@ def _dispatch(method: str, params: dict) -> dict:
         # tool is not offered at all. One signal for both halves — a roster that
         # could vary independently of the channel would advertise a tool this
         # server cannot serve, and the model would spend a 20-second timeout per
-        # turn discovering that. D234: an ordinary folder has no left pane, so
+        # turn discovering that. D239: an ordinary folder has no left pane, so
         # `agent.py` spawns us with the perm dir alone.
         tools = [TOOL_SCHEMA]
         if STATE_DIR:

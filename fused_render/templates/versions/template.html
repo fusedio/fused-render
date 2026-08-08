@@ -151,7 +151,7 @@
   #notice.error { color: var(--danger); }
   #notice.show { display: flex; }
 
-  /* ── Narrow hosts (D230 fallout) ──────────────────────────────────────────
+  /* ── Narrow hosts (D235 fallout) ──────────────────────────────────────────
      Since this mode is bound to 47 file extensions as well as `/`, it renders
      in the explorer's listing preview pane (floor 220px, default width HALF
      its split container), in freely dragged Panel panes and in /embed — not
@@ -170,7 +170,7 @@
      duckdb/sqlite (560), bundle (640).
 
      Breakpoint arithmetic — the columns' minimum USEFUL widths, not the point
-     at which they merely stop overflowing. The original figure (560px, D231)
+     at which they merely stop overflowing. The original figure (560px, D236)
      was derived from the hard floor: #side 200 + divider 4 + a 320px preview
      = 524, rounded up. That floor was the wrong one to pick. The explorer's
      listing preview pane defaults to HALF its split container (about 700px on a
@@ -250,7 +250,7 @@
 
 <script>
 // The target arrives as the read-only _file param (template contract), and the
-// backend decides which of two histories it names (D230): any path inside a
+// backend decides which of two histories it names (D235): any path inside a
 // fused app resolves to the WHOLE app (so the view is identical everywhere
 // inside it, and `revert` is offered), while a file in the user's own repository
 // resolves to that one file's history, read-only — `can_revert: false` is how
@@ -323,7 +323,7 @@ function renderList() {
 
 // The iframe src that shows `path` the way the explorer would: its own default
 // view. Used for a FILE target's snapshot, where the materialised revision is a
-// `.py`/`.parquet`/`.md`, not a page (D230).
+// `.py`/`.parquet`/`.md`, not a page (D235).
 //
 // The default is the first non-`conditional` entry — the same rule the shell's
 // own preview applies (Preview.tsx `defaultTemplate`) — asked of stat rather
@@ -364,7 +364,7 @@ async function select(sha) {
       { action: "snapshot", file: FILE, sha: sha }, { key: "snapshot" });
     if (snap.error) return notice(snap.error, true);
     if (sha !== selected) return; // stale — a newer selection already landed
-    // Two shapes of snapshot (D230). An APP snapshot reports `entry`, the page
+    // Two shapes of snapshot (D235). An APP snapshot reports `entry`, the page
     // /render can serve directly. A FILE snapshot reports `file` — the one file
     // materialised at that revision — and `entry` only when that file is itself
     // a page; anything else has to be framed through its own default template,

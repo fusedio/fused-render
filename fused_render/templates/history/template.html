@@ -846,7 +846,7 @@
         absTime(s.last_used, "s");
       const { row, body } = baseRow(ev, true, tip);
       body.innerHTML = '<div class="title">' + esc(s.preview || s.id) + "</div>";
-      // Resume into `claude`, the one chat template (D230). targetPath is
+      // Resume into `claude`, the one chat template (D235). targetPath is
       // always a FILE (see the role resolution above), and `claude` is bound to
       // every file key this view can reach, so the mode always resolves —
       // a mode a target does not offer would hit PT-9's forgiving unknown-mode
@@ -871,7 +871,7 @@
       return row;
     }
     // comment — READ-ONLY, never a link. The old deep link was
-    // `_mode=annotate&comment=<id>` (HV-8), but D230 deregistered `annotate`
+    // `_mode=annotate&comment=<id>` (HV-8), but D235 deregistered `annotate`
     // from all 66 registry keys, so no target offers the mode: the URL falls
     // through PT-9's forgiving unknown-mode fallback to the file's default
     // view, and the comment id is dropped — a click that promises to focus one

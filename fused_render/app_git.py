@@ -59,7 +59,7 @@ _IDENTITY = ["-c", "user.name=Fused", "-c", "user.email=apps@fused.io"]
 # Session sidecars are chat bookkeeping, not app content — keep them out of
 # history: the folder-level .claude-split.json (claude/agent.py — a historical
 # filename that predates the template's rename and stays as it is, because it
-# exists on users' disks), plus the legacy per-file <file>.json the pre-D230
+# exists on users' disks), plus the legacy per-file <file>.json the pre-D235
 # file-scoped chat template used to write beside the entry html — still
 # ignored, because an existing repo may already have one.
 #

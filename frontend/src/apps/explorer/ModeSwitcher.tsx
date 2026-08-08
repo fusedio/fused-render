@@ -27,7 +27,7 @@ export interface ModeSwitcherEntry<M extends string> {
 // folder name is its identity (SPEC §0) and is chosen for the filesystem, not
 // for a tooltip — capitalizing `claude` yields "Claude", which names the CLI
 // this template drives rather than the thing the user gets, and is the
-// switcher's most-seen label now that the mode is on every file key (D230).
+// switcher's most-seen label now that the mode is on every file key (D235).
 // So the few names that
 // read badly, or that name an implementation where the user sees a feature, get
 // a display name here; everything else stays capitalized, because a per-template

@@ -1,8 +1,8 @@
-"""The `claude` gate and left pane across the two target KINDS (D230).
+"""The `claude` gate and left pane across the two target KINDS (D235).
 
 The split view used to be the app builder's alone: its gate offered it for a
 project folder only, and its left pane always resolved that folder's app entry.
-D230 bound it to 47 file keys as well, because the annotation / app_state
+D235 bound it to 47 file keys as well, because the annotation / app_state
 machinery lives here and nowhere else — chatting about a standalone file with
 those tools is the whole point — so the gate now answers for a file too and the
 pane renders that file in its OWN default view.
@@ -12,7 +12,7 @@ directory branch widened from "an app folder" to "any directory", and the pane
 grew a fallback for the folder that has no app entry to frame. Both are pinned
 below, because both replace a rule this file used to assert the opposite of.
 
-Then D234 removed that fallback again — not back to the `throw`, but to NO PANE:
+Then D239 removed that fallback again — not back to the `throw`, but to NO PANE:
 an ordinary folder gets a full-width chat. The embedded file browser reported to
 nobody (no `postMessage`, no listener), annotate was hard-disabled over it and
 the view picker was inert for it, so it was half the width spent on decoration.
@@ -64,7 +64,7 @@ def workspace(tmp_path, monkeypatch):
 # ----------------------------------------------------------------- file branch
 
 def test_any_existing_file_is_offered_the_split_chat(tmp_path, workspace):
-    """The point of D230: a file nowhere near the workspace still gets the chat
+    """The point of D235: a file nowhere near the workspace still gets the chat
     with the annotation tools. No repository, no app, no project — a file being
     looked at is enough, because the registry already decided which extensions
     offer the mode and the gate has nothing left to add."""
@@ -214,10 +214,10 @@ def test_a_folder_target_still_resolves_its_app_entry():
 
 
 def test_an_ordinary_folder_gets_no_left_pane_at_all():
-    """D234: the ordinary folder's pane is GONE, and the chat is full-width.
+    """D239: the ordinary folder's pane is GONE, and the chat is full-width.
 
     The history in one line. The branch used to `throw` (`no app entry…`), which
-    put a permanent error panel beside a working chat; D232 replaced the throw
+    put a permanent error panel beside a working chat; D237 replaced the throw
     with `/explorer/embed/<dir>`, fused-render's own file browser. That framing
     earned nothing: there is no `postMessage` and no message listener in this
     template, so selecting a file in that pane attached nothing, fed nothing to
@@ -463,7 +463,7 @@ def test_no_piece_of_chrome_hardcodes_the_targets_kind():
 # -------------------------------------------- the left pane's view PICKER
 
 # The narrow-layout breakpoint, in one place because three tests and the block
-# extractor all have to name it. Raised from D231's original 560px: see
+# extractor all have to name it. Raised from D236's original 560px: see
 # test_the_split_collapses_only_when_two_columns_are_useful.
 NARROW_PX = 880
 
@@ -598,7 +598,7 @@ def test_switching_the_left_view_keeps_the_annotation_list():
 
 def test_the_split_collapses_to_one_view_below_the_layouts_width_floor():
     """#left's 200px + the 4px divider + #chat's 340px is a hard ~544px floor,
-    and since D230 this view renders in hosts that go below it routinely — the
+    and since D235 this view renders in hosts that go below it routinely — the
     explorer's listing preview pane floors at 220px and a Panel pane drags
     freely. Below the query the two halves squeezed past their minimums and then
     overflowed. (The breakpoint itself is above that floor and derived from the
@@ -624,7 +624,7 @@ def test_the_split_collapses_to_one_view_below_the_layouts_width_floor():
 
 
 def test_the_split_collapses_only_when_two_columns_are_useful():
-    """The breakpoint is 880px, not D231's original 560px, and the raise is the
+    """The breakpoint is 880px, not D236's original 560px, and the raise is the
     regression this pins.
 
     560 came from the layout's HARD floor (200 + 4 + 340 ≈ 544, rounded up): the
@@ -913,7 +913,7 @@ def test_the_hidden_view_is_parked_not_display_noned():
 # ------------------------------------------------------- the binding it needs
 
 def test_the_registry_binds_the_split_view_to_files_and_keeps_the_directory_key():
-    """Both halves of D230's binding, in one place. The file keys are what makes
+    """Both halves of D235's binding, in one place. The file keys are what makes
     the annotation tools reachable while editing a standalone file; the `/` key
     is what keeps the mode in the app-builder view (App.tsx APP_MODES), where
     dropping it would have silently removed the chat from every app and broken

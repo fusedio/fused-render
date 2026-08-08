@@ -342,7 +342,7 @@ def test_annotate_is_what_sets_the_ticket(source):
 # ---------------------------------------------------- the binding that is not
 
 def test_annotate_is_bound_to_no_registry_key():
-    """D230 deregistered `annotate` from every core key, including the universal
+    """D235 deregistered `annotate` from every core key, including the universal
     `/` directory key — its tools live in the chat's own left pane now, and a
     second, staler way in was not worth keeping (PT-14's rejected list).
 

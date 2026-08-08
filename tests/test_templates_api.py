@@ -26,7 +26,7 @@ def _core_list(key: str) -> list:
     """The core registry's ordered names for `key`. Derived, not spelled out: the
     tests below assert that a commit COPIES this list and appends to it, which is
     a claim about the copy — spelling the list out again just meant a rebinding
-    (D230) broke three tests that were not about bindings at all."""
+    (D235) broke three tests that were not about bindings at all."""
     with open(os.path.join(_server_templates.TEMPLATES_DIR, "registry.json"),
               encoding="utf-8") as f:
         return list(json.load(f)[key])

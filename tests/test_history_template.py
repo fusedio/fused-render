@@ -82,13 +82,13 @@ def test_every_hardcoded_nav_mode_still_exists_for_its_file_target():
     from file keys, so the click hit SPEC PT-9's forgiving unknown-`_mode`
     fallback: the shell silently opened the file's DEFAULT view and dropped the
     deep-link param, losing exactly what the user asked for. The session row
-    asked for `_mode=claude` (D230 left `claude` on `/` only) and the comment
-    row asked for `_mode=annotate` (D230 deregistered it from all 66 keys).
+    asked for `_mode=claude` (D235 left `claude` on `/` only) and the comment
+    row asked for `_mode=annotate` (D235 deregistered it from all 66 keys).
 
     This pins the modes against the registry through the real resolution path
     rather than against a hardcoded expected string, because the whole bug class
     is "a binding moved and this link didn't" — a test naming the modes it
-    expects would have kept passing through D230 exactly as the template did.
+    expects would have kept passing through D235 exactly as the template did.
     """
     found = hardcoded_nav_modes()
     assert found, "no hardcoded `_mode=` links found — did the regex drift?"
@@ -105,7 +105,7 @@ def test_every_hardcoded_nav_mode_still_exists_for_its_file_target():
 def test_comment_rows_are_inert_not_deep_links():
     """Regression: the comment row pretended to be a link to a nonexistent mode.
 
-    `annotate` is registered for zero keys after D230, and `claude` — the
+    `annotate` is registered for zero keys after D235, and `claude` — the
     substitute the session row could use — has no `comment` param to focus one
     annotation with. There is nowhere honest to send the click, so the row keeps
     showing the comment text but is no longer clickable. Asserting on the

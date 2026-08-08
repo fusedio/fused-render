@@ -1,12 +1,12 @@
 """Gate for the `versions` template — per-FILE history, plus app history on an
-app FOLDER (D230).
+app FOLDER (D235).
 
 `main(path)` answers for the two kinds of target the mode is bound to:
 
 * **A FILE** → allowed when it is inside any git work tree, decided by git
   itself (`rev-parse --is-inside-work-tree` from the file's parent — the probe
   `git/condition.py` documents at length). `versions` is the file-side history
-  view now that `git` is directory-only (D230), so a tracked file gets its
+  view now that `git` is directory-only (D235), so a tracked file gets its
   timeline wherever it lives, not only inside a fused app. Outside an app the
   view is READ-ONLY — `versions.py` refuses `revert` there, because that writes
   a commit with the Fused identity into what is the user's own repository (the
@@ -106,7 +106,7 @@ def main(path: str) -> bool:
                 if os.path.isdir(os.path.join(app_dir, ".git")):
                     return True
 
-        # Not an app target (D230). A FILE still earns its own timeline from
+        # Not an app target (D235). A FILE still earns its own timeline from
         # whichever repository it happens to live in — that is the file-side
         # history view `git` no longer provides — and the view is read-only
         # there, enforced by versions.py rather than by hiding the mode. A

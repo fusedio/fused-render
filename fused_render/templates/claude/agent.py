@@ -2,7 +2,7 @@
 CLI about the target — a FOLDER (an app folder, or any other) or a file. This is
 the only chat backend: it began as a fork of the plain chat template's agent
 (the split view was the fork), kept every improvement that fork gained, and
-absorbed the folder chat when D230 deleted the plain template and this one took
+absorbed the folder chat when D235 deleted the plain template and this one took
 over its name.
 
 The browser never owns the work: `start` detaches a claude subprocess whose
@@ -300,7 +300,7 @@ def _workdir(file: str) -> str:
 
 def _system_prompt(file: str) -> str:
     """The FILE target's prompt: what to work on, plus the same app-state
-    disclosure the directory prompt makes (D230).
+    disclosure the directory prompt makes (D235).
 
     The file branch needs that second half for the same reason the directory
     branch does — a tool the model is never told about is a tool it never calls —
@@ -356,7 +356,7 @@ def _has_pane(file: str) -> bool:
     Everything the pane implies hangs off this one answer: the `app_state` tool's
     presence in the run's MCP roster, its pre-allowance on the spawn line, and
     whether the system prompt describes a page beside the chat. Only one target
-    kind says no — an ordinary folder (D234), which gets a full-width chat.
+    kind says no — an ordinary folder (D239), which gets a full-width chat.
 
     Same predicate as everything else that branches on kind (`_is_app_dir` →
     `app_entry.entry_html`), so the roster, the prompt and the page cannot
@@ -371,11 +371,11 @@ def _split_system_prompt(file: str) -> str:
     directory, not just app folders (the plain chat mode it absorbed was the
     directory chat).
 
-    The APP-FOLDER shape carries the app-state disclosure, for the reason D230
+    The APP-FOLDER shape carries the app-state disclosure, for the reason D235
     gave: a tool the model is never told about is a tool it never calls, and the
     tool's own description is not enough on its own — nothing in an ordinary
     session suggests that the page beside the chat can be read back. The ordinary
-    folder does NOT, because since D234 it has no pane and therefore no tool
+    folder does NOT, because since D239 it has no pane and therefore no tool
     (`_has_pane`). What the two shapes must never share is the description of the
     pane, exactly as the file branch above does not share the folder branch's.
 
@@ -396,7 +396,7 @@ def _split_system_prompt(file: str) -> str:
       here would be a plain lie about `~/Downloads`, and a lie that costs
       something: it invites the agent to look for a bridge that is not there and
       to treat a folder of PDFs as a codebase. It says NOTHING about a pane and
-      does not mention `app_state`, because as of D234 there is no pane: this
+      does not mention `app_state`, because as of D239 there is no pane: this
       target's chat is full width and the tool is not in the run's roster at all
       (`_has_pane`). The paragraph that used to be here described fused-render's
       own file browser beside the chat and warned that `app_state` "reports the
@@ -840,7 +840,7 @@ def _write_mcp_config(run_dir: str, pane: bool = True) -> str:
     takes the tool out of the server's roster (permission_server keys both its
     `tools/list` and its dispatch on having that directory). One switch for the
     channel and the tool, so they cannot disagree: a target with no pane (an
-    ordinary folder, D234) has no page to answer a snapshot request, and a tool
+    ordinary folder, D239) has no page to answer a snapshot request, and a tool
     that can only time out is worse than a tool that is not there.
 
     The server path comes off HERE, not a fresh `__file__` read: under the
@@ -1249,7 +1249,7 @@ def _start(file: str, message: str, session_id: str, model: str,
            #   the app_state tool — an MCP tool otherwise raises a card, so every
            #     app-state read would put a prompt on screen with no decision in
            #     it, for a read of the user's own screen by the agent they are
-           #     already talking to. Omitted for a target with no pane (D234):
+           #     already talking to. Omitted for a target with no pane (D239):
            #     the tool is not in that run's roster at all, and pre-allowing a
            #     name nothing can call is a rule about nothing.
            #   Read of the SHOTS dir — an annotation carries the path of a PNG
@@ -1274,8 +1274,8 @@ def _start(file: str, message: str, session_id: str, model: str,
     # is what the deleted plain chat mode gave it; _split_system_prompt picks.
     #
     # The app_state disclosure rides the two shapes that HAVE a pane, because an
-    # un-announced tool does not get called (D230) — and only those two, because
-    # since D234 an ordinary folder has no pane and is not offered the tool. What
+    # un-announced tool does not get called (D235) — and only those two, because
+    # since D239 an ordinary folder has no pane and is not offered the tool. What
     # the two must NOT share is the DESCRIPTION of that pane: an app folder frames
     # the user's own app, a file frames fused-render's preview of their file. Each
     # prompt says which, so the model never mistakes our UI for the user's code.

@@ -659,10 +659,10 @@ function TemplatePreview({
   //
   // There is no opt-out param. `?modechip=false` used to be one, for a single
   // caller: the chat template's left pane framed this embed for a folder with no
-  // app entry, and a directory's counterpart mode is that chat (D232), so the
+  // app entry, and a directory's counterpart mode is that chat (D237), so the
   // chip read "Chat" and sat in the top-right corner of the chat's own preview
   // column — one click from a second agent nested inside the first one's pane.
-  // D234 removed that pane, so the param lost its only producer, and a branch no
+  // D239 removed that pane, so the param lost its only producer, and a branch no
   // caller can take is a branch nothing can test. If another template ever frames
   // an embed of its counterpart's own target, the opt-out comes back with that
   // caller.

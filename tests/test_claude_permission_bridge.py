@@ -4,7 +4,7 @@ to prompt on, so `--permission-prompt-tool` routes each request to
 chat window answers through `agent.py`'s `decide` action.
 
 Retargeted, not deleted, when the plain chat template it was written against was
-removed (D230): the split view is the only chat template now — and carries the
+removed (D235): the split view is the only chat template now — and carries the
 `claude` name — and ships its own copy of the same `permission_server.py`
 (templates are self-contained by design, SPEC PY-15), so the two contracts below
 are still exactly the contracts that hold.

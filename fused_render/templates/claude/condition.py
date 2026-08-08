@@ -1,8 +1,8 @@
 """Gate for the `claude` template — the split view: the target's own
 preview beside a Claude chat, with the annotation / app_state machinery
-(D230).
+(D235).
 
-There is now ONE chat template for both kinds of target (D230 deleted the
+There is now ONE chat template for both kinds of target (D235 deleted the
 second, plain chat template this one used to sit beside), so this gate no longer
 sorts folders into "app folder → split chat" and "ordinary folder → the other
 chat". It asks a single question of both kinds:
@@ -11,7 +11,7 @@ chat". It asks a single question of both kinds:
   prose, data, image assets) → allowed. This is the file-scoped chat: the left
   pane renders the file in its OWN default template and the annotation tools
   work over that, which is the whole reason this split view replaced the plain
-  chat mode on file keys (D230). Nothing more is asked of a file: the
+  chat mode on file keys (D235). Nothing more is asked of a file: the
   registry already decided which extensions offer the mode, and a file needs
   neither a workspace nor a repository to be worth talking about.
 * **A DIRECTORY** (the universal "/" key) → allowed for ANY directory. The old

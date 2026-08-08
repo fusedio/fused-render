@@ -120,7 +120,7 @@ def test_canvas_toml_gets_canvas_mode_first(tmp_path):
     # so it too is marked conditional; the unconditional modes are not.
     assert by_mode["reader"].get("conditional") is True
     assert "conditional" not in by_mode["code"]
-    # The gated file-side pair (D230) is marked too — both ship a condition.py.
+    # The gated file-side pair (D235) is marked too — both ship a condition.py.
     assert by_mode["claude"].get("conditional") is True
     assert by_mode["versions"].get("conditional") is True
     # … and the background verdict allows a genuine canvas.

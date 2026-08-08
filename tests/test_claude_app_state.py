@@ -210,7 +210,7 @@ def test_an_unknown_tool_is_still_refused(server):
 
 
 def test_a_session_with_no_pane_is_not_offered_the_tool_at_all(tmp_path):
-    """D234: an ordinary folder has no left pane, so there is no page to read
+    """D239: an ordinary folder has no left pane, so there is no page to read
     back — and a tool the model can call but that can never answer is worse than
     no tool. It would call it after every edit, wait out the 20s timeout and get
     a sentence about a window, once per turn.
@@ -354,7 +354,7 @@ def test_the_mcp_server_gets_its_own_app_state_directory(agent, tmp_path,
 
 def test_a_no_pane_target_gets_no_app_state_channel_and_no_pre_allowance(
         agent, tmp_path, monkeypatch):
-    """The spawn side of D234, and both halves have to agree.
+    """The spawn side of D239, and both halves have to agree.
 
     An ordinary folder (no `index.html`, no single top-level `.html` — the same
     `app_entry.entry_html` predicate the pane and the prompt read) has no left
@@ -392,7 +392,7 @@ def test_reading_the_users_own_screen_does_not_raise_a_card(agent, tmp_path,
     decision in it, once per edit. It is pre-allowed, and nothing else is.
 
     An APP folder, deliberately: only a target with a pane is offered the tool at
-    all (D234), so an empty directory would be asserting the opposite rule."""
+    all (D239), so an empty directory would be asserting the opposite rule."""
     agent.RUNS = str(tmp_path / "runs")
     project = tmp_path / "proj"
     project.mkdir()
@@ -432,7 +432,7 @@ def test_a_directory_target_is_told_about_the_tool(agent, tmp_path, monkeypatch)
             os.makedirs(target)
         cmd, _run_dir = _spawn(agent, monkeypatch, target)
         prompt = cmd[cmd.index("--append-system-prompt") + 1]
-        # D234 narrowed this to the targets that HAVE a pane: an app folder is
+        # D239 narrowed this to the targets that HAVE a pane: an app folder is
         # told about the tool, an ordinary folder is not offered the tool at all,
         # so announcing it there would describe a tool the roster does not carry.
         if agent._is_app_dir(str(target)):
@@ -478,7 +478,7 @@ def test_an_ordinary_folder_is_not_told_it_is_a_fused_render_project(
     # template gave an ordinary folder, ported rather than reinvented.
     assert "Keep your work scoped to this folder" in prompt
     assert str(plain) in prompt
-    # And NOTHING about a pane (D234). The paragraph describing fused-render's own
+    # And NOTHING about a pane (D239). The paragraph describing fused-render's own
     # file browser beside the chat went with the pane it described — a prompt that
     # tells the model what the user can see beside the conversation, when there is
     # nothing beside the conversation, is a false claim about the screen. The
@@ -519,7 +519,7 @@ def test_a_file_target_still_gets_the_file_scoping_prompt(agent, tmp_path,
 
 def test_a_file_target_is_also_told_about_the_app_state_tool(agent, tmp_path,
                                                              monkeypatch):
-    """D230: a file target has a left pane too — the file in its own default
+    """D235: a file target has a left pane too — the file in its own default
     view — so the same "an un-announced tool never gets called" argument that
     put the disclosure in the directory prompt applies here. It did not before,
     when the gate offered this template for project folders only and the file

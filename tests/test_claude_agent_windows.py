@@ -4,7 +4,7 @@ PATH, plus the win32 route for detach / liveness / cancel and the id guards
 that only a Windows path separator can slip past.
 
 Retargeted, not deleted, when the plain chat template it was written against was
-removed (D230): the split view is now the only chat backend — and carries the
+removed (D235): the split view is now the only chat backend — and carries the
 `claude` name — it has the same
 `_claude_bin` / `_DETACH` / `_alive` / `_cancel` / id-guard code, and this is the
 only place any of it is exercised on the win32 branch.
