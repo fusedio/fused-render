@@ -210,6 +210,18 @@
   display: none;
 }
 
+/* Same pair for the panel pane bar, whose mode menu (PaneModeMenu) renders
+   nothing on a single-mode path and while the pane is still statting — the
+   hairline used to stay behind either way, dividing the crumbs from nothing.
+   `display: contents` so the wrapper is invisible to the bar's flex layout. */
+.panel-mode-slot {
+  display: contents;
+}
+
+.panel-mode-slot:empty + .bar-rule {
+  display: none;
+}
+
 /* #breadcrumb already spaces its children with `gap`, so the rule brings no
    margin of its own here (it does in .panel-bar, whose gap is 2px). */
 #breadcrumb .bar-rule {
@@ -863,9 +875,15 @@ table.listing-table tr.skel-row:hover {
 
 .listing-search .listing-search-input {
   width: 100%;
-  /* Reserves room for the count chip / spinner pinned inside the right edge —
-     sized for the longest count text ("showing 250 of 7734 matches"). Esc
-     clears the query. */
+  padding-right: 10px;
+}
+
+/* Room for whichever chip is pinned inside the right edge, sized for the
+   longest count text ("showing 250 of 7734 matches"). Only while one is
+   actually pinned (Listing.tsx `hasPin`): reserving it unconditionally cost
+   116px of an idle box, which clipped the placeholder outright once the
+   window was narrow and the preview pane open. Esc clears the query. */
+.listing-search .listing-search-box.has-pin .listing-search-input {
   padding-right: 116px;
 }
 

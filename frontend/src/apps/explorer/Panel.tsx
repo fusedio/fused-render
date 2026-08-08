@@ -237,16 +237,24 @@ function Pane({ node, ctx, first }: { node: LayoutLeaf; ctx: PaneCtx; first: boo
         {/* Template-mode menu for the pane's live location. Mode switch is an
             imperative src write (same as crumb clicks); onLoad then re-syncs
             the leaf + `_layout` from the reloaded pane. */}
-        <PaneModeMenu
-          variant="bar"
-          path={loc.path}
-          query={loc.query}
-          onNavigate={(q) => {
-            if (!iframeRef.current) return;
-            armFade();
-            iframeRef.current.src = embedSrc(loc.path, q);
-          }}
-        />
+        {/* Wrapped so the hairline after it can hide when the menu renders
+            nothing — a single-mode path, or any pane still statting. Without
+            the wrapper the rule had no previous sibling to key off and stood
+            there dividing the crumbs from nothing. `display: contents` keeps
+            the bar's flex layout exactly as it was; this is the same
+            `:empty + .bar-rule` trick the title bar uses for its mode slot. */}
+        <span className="panel-mode-slot">
+          <PaneModeMenu
+            variant="bar"
+            path={loc.path}
+            query={loc.query}
+            onNavigate={(q) => {
+              if (!iframeRef.current) return;
+              armFade();
+              iframeRef.current.src = embedSrc(loc.path, q);
+            }}
+          />
+        </span>
         <span className="bar-rule" aria-hidden="true" />
         <div className="bar-zone">
           <button
