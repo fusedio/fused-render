@@ -1,0 +1,58 @@
+{
+  "format": "dxf",
+  "supported": true,
+  "acadver": "AC1032",
+  "version_name": "AutoCAD 2018",
+  "insunits": 4,
+  "units_name": "Millimeters",
+  "extmin": null,
+  "extmax": null,
+  "layers": [
+    {
+      "name": "0",
+      "color": 7
+    },
+    {
+      "name": "Defpoints",
+      "color": 7
+    },
+    {
+      "name": "DIMENSIONS",
+      "color": 2
+    },
+    {
+      "name": "DOORS",
+      "color": 3
+    },
+    {
+      "name": "ELECTRICAL",
+      "color": 1
+    },
+    {
+      "name": "FURNITURE",
+      "color": 6
+    },
+    {
+      "name": "TEXT",
+      "color": 7
+    },
+    {
+      "name": "WALLS",
+      "color": 4
+    },
+    {
+      "name": "WINDOWS",
+      "color": 5
+    }
+  ],
+  "layer_count": 9,
+  "entity_counts": {
+    "LWPOLYLINE": 3,
+    "LINE": 7,
+    "ARC": 2,
+    "CIRCLE": 4,
+    "TEXT": 3,
+    "DIMENSION": 1
+  },
+  "entity_total": 20
+}

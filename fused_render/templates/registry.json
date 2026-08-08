@@ -568,6 +568,14 @@
     "usd",
     "code"
   ],
+  ".dxf": [
+    "autocad_viewer",
+    "code",
+    "annotate"
+  ],
+  ".dwg": [
+    "autocad_viewer"
+  ],
   ".zip": [
     "zip"
   ],
