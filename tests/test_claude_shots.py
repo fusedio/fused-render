@@ -2141,8 +2141,13 @@ def test_the_annotation_switch_is_a_layout_row_not_an_overlay(html):
     """Every floating version of this control — corner icon, then margin pills —
     eventually landed on top of something (the app's corner, the chat topbar, an
     open transcript). A real flex ROW at the top of the chat pane cannot: layout
-    reserves its height, so it covers nothing in either pane and in either view."""
-    row = _between(html, "#anntools {", "}")
+    reserves its height, so it covers nothing in either pane and in either view.
+
+    The rule is SHARED with `#leftbar`, the left pane's own strip: they are the
+    same row on the two sides of the divider and have to agree on height, so one
+    selector declares both rather than two blocks that can drift. Anchoring on
+    the second selector asserts the sharing as well as the row-ness."""
+    row = _between(html, "#leftbar {", "}")
     assert "display: flex" in row, row
     assert "flex-shrink: 0" in row, row
     # the switch itself is a plain flow child — no absolute anchoring left

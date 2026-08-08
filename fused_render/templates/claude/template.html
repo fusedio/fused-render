@@ -114,7 +114,16 @@
      refuses to shrink below its content — without it the row overflows a narrow
      pane instead of letting its one elastic label give. Which label gives is
      decided below: the view toggle never does, the annotate switch does. */
-  #anntools {
+  /* ONE rule for BOTH strips, and that is the point: #leftbar (the left pane's
+     own bar, further down) is the same row on the other side of the divider,
+     and the two must agree on height or the pane's bottom border runs a few
+     pixels off the listing's and the row reads as broken. They were two
+     byte-identical blocks with a comment asking the reader to keep them in
+     step; a shared selector cannot drift. Anything that is NOT shared —
+     #leftbar's `[hidden]` and its removal in the narrow layout — is declared
+     separately and later, so it still wins. */
+  #anntools,
+  #leftbar {
     flex-shrink: 0;
     min-width: 0;
     display: flex;
@@ -186,30 +195,21 @@
      rather than across the divider in the chat pane's strip. It used to live in
      #anntools, where it was a control for one column rendered on the other one.
 
-     A real layout ROW, for the same reason #anntools is one (see there): an
-     overlay would land on top of whatever the framed app draws under it, and
-     the app owns every pixel of its own viewport. Its metrics are #anntools'
-     metrics deliberately — same padding, same border, same 26px control — so
-     the two strips read as one row split by the divider instead of two bars at
-     different heights.
+     A real layout ROW, for the same reason #anntools is one: an overlay would
+     land on top of whatever the framed app draws under it, and the app owns
+     every pixel of its own viewport. Its box IS #anntools' box — they share the
+     one rule up there, so the two strips cannot drift out of alignment across
+     the divider.
 
-     `[hidden]` needs a rule of its own because `display: flex` below outranks
-     the UA's `[hidden] { display: none }`. TWO independent things can hide this
-     bar, and they are separate on purpose: JS sets `hidden` when there is
-     nothing to pick (buildLeftPicker / placeLeftPicker — a content fact), and
-     the 880px media block drops it outright (a layout fact — the narrow layout
-     has one column and one shared strip, so the picker goes back to #anntools).
-     Neither can disagree with the other, because they answer different
-     questions. */
-  #leftbar {
-    flex-shrink: 0;
-    min-width: 0;
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    padding: 8px 16px;
-    border-bottom: 1px solid var(--border);
-  }
+     `[hidden]` needs a rule of its own because the shared `display: flex`
+     outranks the UA's `[hidden] { display: none }`. TWO independent things can
+     hide this bar, and they are separate on purpose: JS sets `hidden` when
+     there is nothing to pick (buildLeftPicker / placeLeftPicker — a content
+     fact), and the 880px media block drops it outright (a layout fact — the
+     narrow layout has one column and one shared strip, so the picker goes back
+     to #anntools). Neither can disagree with the other, because they answer
+     different questions. Both are declared AFTER the shared rule, so both
+     win. */
   #leftbar[hidden] { display: none; }
 
   /* WHICH view the left pane frames (`leftmode`). A native <select>, quiet to
