@@ -22,6 +22,49 @@ _STATE_DIR = os.path.join(
 
 NAMES_FILE = os.path.join(_STATE_DIR, "session_names.json")
 
+# Parsed-transcript cache. A full scan reads and json-parses EVERY line of
+# every *.jsonl under PROJECTS_DIR — tens of megabytes for a heavy user — and
+# each runPython call is a fresh subprocess, so an in-process cache would never
+# survive to the next call. The cache therefore lives on disk beside the other
+# state, keyed by (path -> file mtime+size): an unchanged transcript is never
+# re-parsed, which makes every scan after the first a stat-only pass.
+#
+# Correctness notes:
+#  * The stamp is the file's own (mtime, size), so any append invalidates it.
+#  * The volatile "mtime" field (the _activity_mtime badge value, which depends
+#    on the wall clock) is NEVER cached — main() recomputes it every call.
+#  * The cache is REPLACED, not merged, on each scan: entries for transcripts
+#    that no longer exist drop out, so it stays the size of the projects dir.
+CACHE_FILE = os.path.join(_STATE_DIR, "summary_cache.json")
+CACHE_VERSION = 1
+
+
+def _load_cache() -> dict:
+    try:
+        with open(CACHE_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(data, dict) or data.get("version") != CACHE_VERSION:
+        return {}  # a format change invalidates everything, silently
+    entries = data.get("entries")
+    return entries if isinstance(entries, dict) else {}
+
+
+def _save_cache(entries: dict) -> None:
+    # Atomic replace via a pid-suffixed temp file: concurrent runPython
+    # subprocesses (the page's poll and a reload can overlap) must never leave
+    # a half-written cache behind. A failure here is not worth surfacing — the
+    # next scan just re-parses.
+    try:
+        os.makedirs(_STATE_DIR, exist_ok=True)
+        tmp = "%s.%d.tmp" % (CACHE_FILE, os.getpid())
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump({"version": CACHE_VERSION, "entries": entries}, f)
+        os.replace(tmp, CACHE_FILE)
+    except OSError:
+        pass
+
 
 def _load_names() -> dict:
     try:
@@ -103,6 +146,9 @@ def _activity_mtime(path: str) -> float:
 
 
 def _summarize_session(path: str, project_dirname: str) -> dict:
+    """Parse one transcript into a summary. Everything here is derived from the
+    file's CONTENT, so the result is cacheable against the file's mtime — the
+    clock-dependent "mtime" activity field is added by main(), never here."""
     session_id = os.path.splitext(os.path.basename(path))[0]
     first_ts = None
     last_ts = None
@@ -176,12 +222,6 @@ def _summarize_session(path: str, project_dirname: str) -> dict:
         "gitBranch": git_branch,
         "startedAt": first_ts,
         "endedAt": last_ts,
-        # activity mtime catches in-flight writes (thinking/tool output) that
-        # haven't produced a message timestamp yet, but ignores post-turn
-        # housekeeping appends — used for "running"
-        "mtime": datetime.datetime.fromtimestamp(
-            _activity_mtime(path), datetime.timezone.utc
-        ).isoformat(),
         "userMessages": user_count,
         "assistantMessages": assistant_count,
         "toolCalls": tool_calls,
@@ -245,7 +285,6 @@ def _tool_results(content):
 
 
 def session_detail(session_id: str) -> dict:
-    print(f"loading session detail id={session_id}")
     path, project_dirname = _find_session_path(session_id)
     if not path:
         return {"sessionId": session_id, "found": False, "turns": []}
@@ -352,18 +391,55 @@ def main(search: str = "", project: str = "", limit: int = 500, mode: str = "") 
                     })
         return {"statuses": statuses}
 
-    print(f"scanning sessions dir={PROJECTS_DIR} search={search!r} project={project!r}")
-
     sessions = []
+    # Every session id seen on disk, INCLUDING transcripts that produce no
+    # summary (a just-created file with no timestamped line yet, or one holding
+    # only housekeeping entries) and the ones the `limit` truncates away. The
+    # page's cheap status poll compares its ids against this set to decide "a
+    # new session appeared → full reload"; without the dropped ids in it, one
+    # unsummarizable file makes every poll trigger a full rescan forever.
+    all_ids = []
+    cache = _load_cache()
+    fresh = {}
     if os.path.isdir(PROJECTS_DIR):
         for project_dirname in sorted(os.listdir(PROJECTS_DIR)):
             project_dir = os.path.join(PROJECTS_DIR, project_dirname)
             if not os.path.isdir(project_dir):
                 continue
             for jsonl_path in glob.glob(os.path.join(project_dir, "*.jsonl")):
-                summary = _summarize_session(jsonl_path, project_dirname)
-                if summary:
+                all_ids.append(os.path.splitext(os.path.basename(jsonl_path))[0])
+                try:
+                    st = os.stat(jsonl_path)
+                except OSError:
+                    continue
+                # list, not tuple: the stamp round-trips through JSON
+                stamp = [st.st_mtime, st.st_size]
+                hit = cache.get(jsonl_path)
+                if isinstance(hit, dict) and hit.get("stamp") == stamp:
+                    cached = hit.get("summary")
+                    if not isinstance(cached, dict):
+                        cached = None  # a miss OR a remembered "no summary"
+                else:
+                    cached = _summarize_session(jsonl_path, project_dirname)
+                # Cached as parsed — content only, no clock-dependent field, so
+                # the entry is comparable and can never go stale in place.
+                fresh[jsonl_path] = {"stamp": stamp, "summary": cached}
+                if cached:
+                    summary = dict(cached)
+                    # activity mtime catches in-flight writes (thinking/tool
+                    # output) that haven't produced a message timestamp yet, but
+                    # ignores post-turn housekeeping appends — used for
+                    # "running". Clock-dependent, so never served from cache.
+                    try:
+                        activity = _activity_mtime(jsonl_path)
+                    except OSError:
+                        activity = st.st_mtime
+                    summary["mtime"] = datetime.datetime.fromtimestamp(
+                        activity, datetime.timezone.utc
+                    ).isoformat()
                     sessions.append(summary)
+    if fresh != cache:
+        _save_cache(fresh)
 
     names = _load_names()
     for s in sessions:
@@ -392,6 +468,7 @@ def main(search: str = "", project: str = "", limit: int = 500, mode: str = "") 
 
     return {
         "sessions": sessions,
+        "allSessionIds": sorted(all_ids),
         "total": total,
         "totalUserMessages": total_user_msgs,
         "totalToolCalls": total_tool_calls,

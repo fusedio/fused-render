@@ -96,6 +96,11 @@ def main(limit: int = 500) -> dict:
 
     return {
         "sessions": sessions,
+        # Passed straight through: the page's status poll needs every id the
+        # scan SAW, not just the ones it could summarize, or an unsummarizable
+        # transcript makes each poll trigger another full rescan (see
+        # sessions.py's all_ids).
+        "allSessionIds": base.get("allSessionIds", []),
         "statuses": STATUSES,
         "statusCounts": status_counts,
         "unreadCount": unread_count,
