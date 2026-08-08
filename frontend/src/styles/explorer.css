@@ -538,7 +538,7 @@
 /* Squeezed list: shed the modified column first, then size, leaving just the
    name at the narrowest. Header cells carry col-<key> classes to pair with
    their td counterparts. */
-@container (max-width: 380px) {
+@container (max-width: 460px) {
   table.listing-table td.mtime,
   table.listing-table th.col-mtime {
     display: none;
@@ -942,9 +942,30 @@ table.listing-table tr.skel-row:hover {
   padding: 0 8px 6px;
 }
 
+/* Fixed layout is what makes the list unscrollable sideways: with `auto`, the
+   cells' white-space:nowrap sets a min-content width the table refuses to go
+   below, so a wide preview pane pushed the columns past the scroller and
+   .listing-scroll grew a horizontal scrollbar (the cells' own ellipsis never
+   got a chance — a column can't shrink under its content in auto layout).
+   Fixed layout hands SIZE and MODIFIED the widths declared below and gives
+   NAME the remainder, whatever that is, so NAME ellipsizes instead. The
+   container queries above still shed MODIFIED and then SIZE before NAME's
+   remainder gets uselessly small. */
 table.listing-table {
   width: 100%;
+  table-layout: fixed;
   border-collapse: collapse;
+}
+
+/* Enough for "1023.9 KB" and "12/31/25, 11:59 PM" plus the 16px cell padding
+   each side. Both columns disappear entirely before the list is narrow enough
+   for these to matter (see the container queries). */
+table.listing-table th.col-size {
+  width: 96px;
+}
+
+table.listing-table th.col-mtime {
+  width: 172px;
 }
 
 table.listing-table th {
