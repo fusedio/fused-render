@@ -29,9 +29,10 @@ import {
   type EmbedLoc,
 } from "@platform/lib/layout-codec";
 import type { Config } from "@platform/lib/api";
-import { ShareIcon } from "@platform/ui/ShareIcon";
 import { SplitRightIcon, SplitDownIcon } from "@platform/ui/SplitIcons";
 import PaneModeMenu from "@apps/explorer/PaneModeMenu";
+import { OverflowMenu } from "@apps/explorer/BarMenu";
+import { BookmarkStar, UpdateBookmarkButton } from "@apps/explorer/Breadcrumb";
 
 // Panel mode lives under the page's own prefix (`/view/_panel` or
 // `/embed/_panel`), so entering/refreshing/exiting stays in the active mode.
@@ -128,7 +129,7 @@ interface PaneCtx {
 // /embed iframe. Crumbs track the pane's LIVE location (loc state); the leaf
 // node is mutated in place so `_layout` re-encoding sees it without a
 // re-render.
-function Pane({ node, ctx }: { node: LayoutLeaf; ctx: PaneCtx }) {
+function Pane({ node, ctx, first }: { node: LayoutLeaf; ctx: PaneCtx; first: boolean }) {
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
   const hookRef = useRef<UrlChangeHook | null>(null);
   // Frozen at mount — a structural remount re-freezes from the (synced) node.
@@ -218,64 +219,113 @@ function Pane({ node, ctx }: { node: LayoutLeaf; ctx: PaneCtx }) {
 
   return (
     <div className={"panel-pane" + (maximized ? " maximized" : "")}>
+      {/* Same three zones as the explorer's title bar, one size down: path
+          (★ + crumbs) · mode · layout. The 48px shell row that said only
+          "Panel" is gone, so the layout bookmark's ★ lives here now. */}
       <div className="panel-bar">
+        {/* Bookmark chrome is shell-only. It used to live in #breadcrumb, which
+            `body.embed #breadcrumb` hid outright; the pane bar has no such rule,
+            so without this an EMBEDDED panel (a panel inside a pane or a tab)
+            would offer to bookmark its own chromeless /embed/_panel URL —
+            opening that bookmark later lands on a page with no navigation at
+            all. IS_EMBED is the same gate useUpdateButton already applies. */}
+        {!IS_EMBED && <BookmarkStar name="Panel" />}
+        {!IS_EMBED && first && <UpdateBookmarkButton />}
         <div className="panel-crumbs" ref={crumbsRef}>
           {crumbs}
-          {/* Inside the crumbs container so it hugs the last crumb instead of
-              being pushed to the bar's right edge by the flex:1 crumbs. */}
-          <button
-            className="panel-btn open-plain"
-            title="Open in a new tab"
-            onClick={() => window.open(urlForFsPath(loc.path, loc.query), "_blank")}
-          >
-            <ShareIcon size={14} />
-          </button>
         </div>
         {/* Template-mode menu for the pane's live location. Mode switch is an
             imperative src write (same as crumb clicks); onLoad then re-syncs
             the leaf + `_layout` from the reloaded pane. */}
-        <PaneModeMenu
-          path={loc.path}
-          query={loc.query}
-          onNavigate={(q) => {
-            if (!iframeRef.current) return;
-            armFade();
-            iframeRef.current.src = embedSrc(loc.path, q);
-          }}
-        />
-        <button className="panel-btn split-right" title="Split right" onClick={() => ctx.split(node.id, "row")}>
-          {ICONS.splitRight}
-        </button>
-        <button className="panel-btn split-down" title="Split down" onClick={() => ctx.split(node.id, "col")}>
-          {ICONS.splitDown}
-        </button>
-        <button
-          className="panel-btn maximize"
-          title={maximized ? "Restore" : "Maximize"}
-          onClick={() => setMaximized((m) => !m)}
-        >
-          {maximized ? ICONS.restore : ICONS.max}
-        </button>
-        <button className="panel-btn close" title="Close pane" onClick={() => ctx.close(node.id)}>
-          {ICONS.close}
-        </button>
+        {/* Wrapped so the hairline after it can hide when the menu renders
+            nothing — a single-mode path, or any pane still statting. Without
+            the wrapper the rule had no previous sibling to key off and stood
+            there dividing the crumbs from nothing. `display: contents` keeps
+            the bar's flex layout exactly as it was; this is the same
+            `:empty + .bar-rule` trick the title bar uses for its mode slot. */}
+        <span className="panel-mode-slot">
+          <PaneModeMenu
+            variant="bar"
+            path={loc.path}
+            query={loc.query}
+            onNavigate={(q) => {
+              if (!iframeRef.current) return;
+              armFade();
+              iframeRef.current.src = embedSrc(loc.path, q);
+            }}
+          />
+        </span>
+        <span className="bar-rule" aria-hidden="true" />
+        <div className="bar-zone">
+          <button
+            type="button"
+            className="bar-ctl bar-ctl-icon"
+            title="Split right"
+            aria-label="Split right"
+            onClick={() => ctx.split(node.id, "row")}
+          >
+            {ICONS.splitRight}
+          </button>
+          <button
+            type="button"
+            className="bar-ctl bar-ctl-icon"
+            title="Split down"
+            aria-label="Split down"
+            onClick={() => ctx.split(node.id, "col")}
+          >
+            {ICONS.splitDown}
+          </button>
+          <button
+            type="button"
+            className="bar-ctl bar-ctl-icon"
+            title={maximized ? "Restore" : "Maximize"}
+            aria-label={maximized ? "Restore" : "Maximize"}
+            onClick={() => setMaximized((m) => !m)}
+          >
+            {maximized ? ICONS.restore : ICONS.max}
+          </button>
+          {/* "Open in a new tab" used to be a glyph inside the crumb strip,
+              hugging the last segment. Same action, now where the other
+              one-shots live. */}
+          <OverflowMenu
+            items={[
+              {
+                label: "Open in a new tab",
+                onClick: () => window.open(urlForFsPath(loc.path, loc.query), "_blank"),
+              },
+            ]}
+          />
+          {/* Close keeps the right-most slot and its --error hover. */}
+          <button
+            type="button"
+            className="bar-ctl bar-ctl-icon close"
+            title="Close pane"
+            aria-label="Close pane"
+            onClick={() => ctx.close(node.id)}
+          >
+            {ICONS.close}
+          </button>
+        </div>
       </div>
       <iframe ref={iframeRef} src={srcRef.current} onLoad={onLoad} />
     </div>
   );
 }
 
-function Build({ node, ctx }: { node: LayoutNode; ctx: PaneCtx }) {
+// `first` marks the tree's leftmost/topmost leaf — the only pane that renders
+// the (wide) "Update bookmark" button, so a drifted layout bookmark offers one
+// place to save rather than one per pane.
+function Build({ node, ctx, first }: { node: LayoutNode; ctx: PaneCtx; first: boolean }) {
   if (node.type === "split") {
     return (
       <div className={"panel-split " + node.dir}>
-        {node.children.map((c) => (
-          <Build key={nodeKey(c)} node={c} ctx={ctx} />
+        {node.children.map((c, i) => (
+          <Build key={nodeKey(c)} node={c} ctx={ctx} first={first && i === 0} />
         ))}
       </div>
     );
   }
-  return <Pane node={node} ctx={ctx} />;
+  return <Pane node={node} ctx={ctx} first={first} />;
 }
 
 export default function Panel({ config }: { config: Config }) {
@@ -400,7 +450,7 @@ export default function Panel({ config }: { config: Config }) {
   const ctx: PaneCtx = { syncUrl, split, close, home: config.home.replace(/\\/g, "/") };
   return (
     <div className="panel-root">
-      <Build node={treeRef.current} ctx={ctx} />
+      <Build node={treeRef.current} ctx={ctx} first />
     </div>
   );
 }

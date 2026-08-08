@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { TemplateEntry } from "@platform/lib/api";
+import { KNOWN_SENTINEL_MODES } from "@apps/explorer/ModeSwitcher";
 import {
   PANE_APP_MODE,
   PANE_NONE_MODE,
@@ -19,13 +20,23 @@ function dirTemplates(modes: string[] = ["_listing", "app", "claude", "versions"
   })) as TemplateEntry[];
 }
 
-const allow = (...modes: string[]) => Object.fromEntries(modes.map((m) => [m, true]));
+// A COMPLETE verdict map — the shape `/api/fs/conditions` actually returns: one
+// key per gated mode. Tests spell out every mode they care about, because a
+// MISSING key no longer means "denied" (lib/mode-visibility: an absent verdict
+// is a failed transport, and the entry stays visible). `{}` is therefore not
+// "nothing allowed" but "the call failed", and has its own test below.
+const verdicts = (allowed: string[], denied: string[] = []): Record<string, boolean> => ({
+  ...Object.fromEntries(allowed.map((m) => [m, true])),
+  ...Object.fromEntries(denied.map((m) => [m, false])),
+});
+
+const DIR_PEERS = ["app", "claude", "versions", "git", "graph"];
 
 describe("paneModeList — self target (nothing selected)", () => {
   test("defaults to the neutral placeholder, never the chat", () => {
     const modes = paneModeList({
       templates: dirTemplates(),
-      conditions: allow("claude", "git"),
+      conditions: verdicts(["claude", "git"], ["app", "versions", "graph"]),
       isDir: true,
       self: true,
       hasApp: false,
@@ -37,7 +48,7 @@ describe("paneModeList — self target (nothing selected)", () => {
     expect(modes).toContain("git");
     // Its own listing is never re-shown; that listing is the left half.
     expect(modes).not.toContain("_listing");
-    // More than one entry, so ModeSwitcher renders (PT-10) and the chat is
+    // More than one entry, so the mode menu renders (PT-10) and the chat is
     // reachable from the header.
     expect(modes.length).toBeGreaterThan(1);
     expect(paneHasRealMode(modes)).toBe(true);
@@ -45,8 +56,8 @@ describe("paneModeList — self target (nothing selected)", () => {
 
   test("a lone-app folder still leads with its own app, `_none` behind it", () => {
     const modes = paneModeList({
-      templates: dirTemplates(),
-      conditions: allow("claude"),
+      templates: dirTemplates(["_listing", "claude"]),
+      conditions: verdicts(["claude"]),
       isDir: true,
       self: true,
       hasApp: true,
@@ -57,10 +68,10 @@ describe("paneModeList — self target (nothing selected)", () => {
     expect(activePaneMode(modes, null)).toBe(PANE_APP_MODE);
   });
 
-  test("nothing offerable leaves only the placeholder (bare hint, no header)", () => {
+  test("every gate denied leaves only the placeholder (bare hint, no header)", () => {
     const modes = paneModeList({
       templates: dirTemplates(),
-      conditions: {},
+      conditions: verdicts([], DIR_PEERS),
       isDir: true,
       self: true,
       hasApp: false,
@@ -72,7 +83,7 @@ describe("paneModeList — self target (nothing selected)", () => {
   test("an explicit choice still wins over the neutral default", () => {
     const modes = paneModeList({
       templates: dirTemplates(),
-      conditions: allow("claude"),
+      conditions: verdicts(["claude"], ["app", "versions", "git", "graph"]),
       isDir: true,
       self: true,
       hasApp: false,
@@ -88,7 +99,7 @@ describe("paneModeList — selected (non-self) target", () => {
   test("a selected subfolder still defaults to the embedded listing", () => {
     const modes = paneModeList({
       templates: dirTemplates(),
-      conditions: allow("claude", "git"),
+      conditions: verdicts(["claude", "git"], ["app", "versions", "graph"]),
       isDir: true,
       self: false,
       hasApp: false,
@@ -100,8 +111,8 @@ describe("paneModeList — selected (non-self) target", () => {
 
   test("a lone-app folder leads with `_app`, listing next", () => {
     const modes = paneModeList({
-      templates: dirTemplates(),
-      conditions: allow("claude"),
+      templates: dirTemplates(["_listing", "claude"]),
+      conditions: verdicts(["claude"]),
       isDir: true,
       self: false,
       hasApp: true,
@@ -118,18 +129,85 @@ describe("paneModeList — selected (non-self) target", () => {
     const modes = paneModeList({ templates, conditions: {}, isDir: false, self: false, hasApp: false });
     expect(modes).toEqual(["_render", "code"]);
   });
+});
 
-  test("a gated mode is not offered until its verdict allows (CT-12)", () => {
-    const templates = dirTemplates(["_listing", "zarr_aoi"]);
-    const pending = paneModeList({ templates, conditions: null, isDir: true, self: false, hasApp: false });
-    expect(pending).toEqual(["_listing"]);
-    const allowed = paneModeList({
-      templates,
-      conditions: allow("zarr_aoi"),
+// A lone app has two possible carriers — the registry's `app` template and the
+// pane's own `_app` sentinel — and mode-name.ts names them ALIKE on purpose
+// (same view, two surfaces). The list is where the duplicate is prevented, so
+// this is the rule, not a naming exemption.
+describe("paneModeList — a lone app gets exactly one entry", () => {
+  test("a visible registry `app` suppresses the sentinel and takes the lead", () => {
+    const modes = paneModeList({
+      templates: dirTemplates(["_listing", "app", "claude"]),
+      conditions: verdicts(["app", "claude"]),
+      isDir: true,
+      self: false,
+      hasApp: true,
+    });
+    expect(modes).toEqual(["app", "_listing", "claude"]);
+    expect(modes).not.toContain(PANE_APP_MODE);
+  });
+
+  test("a denied registry `app` hands the lead back to the sentinel", () => {
+    const modes = paneModeList({
+      templates: dirTemplates(["_listing", "app", "claude"]),
+      conditions: verdicts(["claude"], ["app"]),
+      isDir: true,
+      self: false,
+      hasApp: true,
+    });
+    expect(modes).toEqual([PANE_APP_MODE, "_listing", "claude"]);
+  });
+
+  test("no lone HTML page: `app` is offered but keeps the registry's rank", () => {
+    const modes = paneModeList({
+      templates: dirTemplates(["_listing", "app", "claude"]),
+      conditions: verdicts(["app", "claude"]),
       isDir: true,
       self: false,
       hasApp: false,
     });
-    expect(allowed).toEqual(["_listing", "zarr_aoi"]);
+    expect(modes).toEqual(["_listing", "app", "claude"]);
+    expect(modes).not.toContain(PANE_APP_MODE);
   });
+});
+
+// The pane inherits lib/mode-visibility wholesale: an entry hides ONLY on an
+// explicit `false`. This replaces the pane's former fail-closed filter, whose
+// posture emptied the menu whenever the verdict call failed — and a menu of one
+// hides itself, so a failing gate probe made the whole mode control vanish
+// while other surfaces still showed the gated mode. CT-12's own fail-closed
+// rule is untouched: a gate that cannot decide answers `false` on the SERVER,
+// and an explicit `false` still hides here.
+describe("paneModeList — gate visibility is the shared policy", () => {
+  test("verdicts in flight are pending, not denied", () => {
+    const templates = dirTemplates(["_listing", "zarr_aoi"]);
+    const modes = paneModeList({ templates, conditions: null, isDir: true, self: false, hasApp: false });
+    expect(modes).toEqual(["_listing", "zarr_aoi"]);
+  });
+
+  test("a failed verdict call (no key for the mode) still offers the mode", () => {
+    const templates = dirTemplates(["_listing", "zarr_aoi"]);
+    const modes = paneModeList({ templates, conditions: {}, isDir: true, self: false, hasApp: false });
+    expect(modes).toEqual(["_listing", "zarr_aoi"]);
+  });
+
+  test("an explicit denial hides the mode", () => {
+    const templates = dirTemplates(["_listing", "zarr_aoi"]);
+    const modes = paneModeList({
+      templates,
+      conditions: verdicts([], ["zarr_aoi"]),
+      isDir: true,
+      self: false,
+      hasApp: false,
+    });
+    expect(modes).toEqual(["_listing"]);
+  });
+});
+
+test("the pane's own sentinels are never sent to the server", () => {
+  // KNOWN_SENTINEL_MODES is the set the shell will build a render URL for
+  // (PT-12). `_app` and `_none` are pane-local: the pane renders them itself.
+  expect(KNOWN_SENTINEL_MODES.has(PANE_APP_MODE)).toBe(false);
+  expect(KNOWN_SENTINEL_MODES.has(PANE_NONE_MODE)).toBe(false);
 });

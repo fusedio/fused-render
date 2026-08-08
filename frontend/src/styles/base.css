@@ -38,9 +38,8 @@ table.listing-table th.sortable,
 .context-menu-item,
 .toast-close,
 .toast-action,
-.panel-btn,
-.listing-pane-toggle,
-.listing-up-button,
+.bar-ctl,
+.bar-menu-item,
 .listing-load-more {
   transition:
     background-color var(--dur-fast) var(--ease-out),
@@ -55,11 +54,9 @@ table.listing-table th.sortable,
 .icon-btn:active:not(:disabled),
 .star-btn:active,
 .preview-actions button:active:not(:disabled),
-.panel-btn:active,
 .tab-add:active,
 .toast-action:active:not(:disabled),
-.listing-pane-toggle:active,
-.listing-up-button:active:not(:disabled),
+.bar-ctl:active:not(:disabled),
 .listing-load-more:active:not(:disabled) {
   transform: translateY(1px);
 }

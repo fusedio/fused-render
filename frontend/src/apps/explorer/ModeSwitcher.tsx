@@ -1,9 +1,10 @@
-// Icon-only mode switcher for the preview header (SPEC PT-10), used by
-// TemplatePreview for every template-mode list, including the hardcoded
-// html `["_render", "code"]` pair (PT-12) — real modes get icons fetched via
-// /api/fs/raw, the "_render" sentinel gets a shell-baked inline SVG (no
-// folder to ship icon.svg from). Rendered only when there is more than one
-// entry — a single mode needs no switcher.
+// Template-mode ICONS and naming, shared by every mode surface (SPEC PT-10/
+// PT-11). Real modes get icons fetched via /api/fs/raw; the sentinels get a
+// shell-baked inline SVG (no folder to ship icon.svg from).
+//
+// The icon-strip switcher this module used to export is gone: the topbar, the
+// listing preview-pane header and the pane bars all render the one shared
+// dropdown (BarMenu's ModeMenu) instead, so the strip had no call-sites left.
 import React from "react";
 import { rawUrl } from "@platform/lib/api";
 import type { TemplateEntry } from "@platform/lib/api";
@@ -15,104 +16,11 @@ import type { TemplateEntry } from "@platform/lib/api";
 // (Preview, PaneModeMenu), so they share this one set to stay in lockstep.
 export const KNOWN_SENTINEL_MODES = new Set(["_render", "_listing"]);
 
-export interface ModeSwitcherEntry<M extends string> {
-  mode: M;
-  icon: React.ReactNode;
-  // Condition.py gate not yet resolved (CT-12): rendered as a disabled
-  // spinner until the background /api/fs/conditions verdict lands.
-  pending?: boolean;
-}
-
-// Modes whose FOLDER NAME is not a label a person should read. A template's
-// folder name is its identity (SPEC §0) and is chosen for the filesystem, not
-// for a tooltip — capitalizing `claude` yields "Claude", which names the CLI
-// this template drives rather than the thing the user gets, and is the
-// switcher's most-seen label now that the mode is on every file key (D235).
-// So the few names that
-// read badly, or that name an implementation where the user sees a feature, get
-// a display name here; everything else stays capitalized, because a per-template
-// naming registry is a thing to maintain and most folder names are already right.
-// Two modes offered on the SAME key may never read the same, which is a rule
-// about this table and not just about its entries: `versions` used to be
-// "History" while `history` reached "History" through the capitalize fallback,
-// and `.parquet` and `.html` each carry BOTH — so the Open With menu
-// (fs-actions.ts, `label: modeTitle(t.mode)`) drew two identical rows pointing at
-// different templates. Dispatch keys on `t.mode`, so nothing broke; the user
-// simply could not tell which was which. Both names now say what the thing shows:
-// `versions` is a git commit timeline for one path, `history` is the
-// `<file>.json` sidecar's activity (chat sessions, bookmarks, review comments,
-// §24). ModeSwitcher.test.ts fails on any two co-offered modes that read alike.
-const MODE_TITLES: Record<string, string> = {
-  claude: "Chat",
-  versions: "Revisions",
-  history: "Activity",
-  git: "Source Control",
-};
-
-// Human-readable tooltip for a mode name: the "_render" sentinel reads as
-// "Rendered", a name in MODE_TITLES reads as its display name, and any other
-// mode name is capitalized ("code" → "Code").
-// Exported for PaneModeMenu (pane/tab chrome shares the naming).
-export function modeTitle(mode: string): string {
-  if (mode === "_render") return "Rendered";
-  if (mode === "_listing") return "Listing";
-  // pane-only sentinel (listing/pane-modes.ts): the folder's LONE top-level HTML,
-  // rendered in place. Not "App" — the `app` template of the app-builder trio is
-  // that, and a workspace app folder offers both at once (its gate passes and its
-  // index.html is the folder's only page), so the pane mode menu drew the same
-  // word twice for two different renders.
-  if (mode === "_app") return "Folder app";
-  if (mode === "_none") return "No preview"; // pane-only sentinel (ListingPreviewPane)
-  const titled = MODE_TITLES[mode];
-  if (titled) return titled;
-  return mode.charAt(0).toUpperCase() + mode.slice(1);
-}
-
-interface ModeSwitcherProps<M extends string> {
-  entries: ModeSwitcherEntry<M>[];
-  active: M;
-  // The mode a click is currently switching TO, if any. The switch is async
-  // (the preview asks the open editor to flush its buffer first, bounded at
-  // 10s) and clicks landing mid-switch are dropped, so the entry that was
-  // clicked shows a spinner until the iframe swap starts — otherwise a slow
-  // switch reads as a dead button.
-  busy?: M | null;
-  onSelect: (mode: M) => void;
-}
-
-export default function ModeSwitcher<M extends string>({ entries, active, busy, onSelect }: ModeSwitcherProps<M>) {
-  if (entries.length <= 1) return null;
-  return (
-    <div className="mode-switcher">
-      {entries.map((e) => {
-        const waiting = busy === e.mode;
-        return (
-          <button
-            key={e.mode}
-            type="button"
-            className={
-              "mode-switcher-btn" +
-              (e.mode === active ? " active" : "") +
-              (e.pending ? " pending" : "") +
-              (waiting ? " switching" : "")
-            }
-            title={
-              waiting
-                ? `${modeTitle(e.mode)} — switching…`
-                : e.pending
-                  ? `${modeTitle(e.mode)} — checking if this view applies…`
-                  : modeTitle(e.mode)
-            }
-            disabled={e.pending || waiting}
-            onClick={() => onSelect(e.mode)}
-          >
-            {e.pending || waiting ? <span className="mode-icon-spinner" /> : e.icon}
-          </button>
-        );
-      })}
-    </div>
-  );
-}
+// Display name for a mode key. The implementation moved to
+// platform/lib/mode-name.ts (pure, unit-tested) once the shared ModeMenu
+// started SHOWING the name rather than only tooltipping it; re-exported here
+// because every mode surface already imports from this module.
+export { modeTitle } from "@platform/lib/mode-name";
 
 // Shell-baked icon for the "_render" sentinel (PT-12) — sentinels have no
 // template folder, so there's no icon.svg to fetch. Component-local, matches

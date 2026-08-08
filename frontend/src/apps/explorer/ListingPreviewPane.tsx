@@ -16,15 +16,16 @@ import { listDir, resolveConditions, statPath } from "@platform/lib/api";
 import type { TemplateEntry } from "@platform/lib/api";
 import { navigate, replaceSearch } from "@platform/lib/router";
 import { formatSize } from "@platform/lib/format";
+import { isModeVisible } from "@platform/lib/mode-visibility";
 import { iconForEntry, isAppEntry } from "@platform/ui/FileIcons";
-import ModeSwitcher, { KNOWN_SENTINEL_MODES, templateModeIcon } from "@apps/explorer/ModeSwitcher";
+import { KNOWN_SENTINEL_MODES, templateModeIcon } from "@apps/explorer/ModeSwitcher";
+import { ModeMenu } from "@apps/explorer/BarMenu";
 import Listing from "@apps/explorer/Listing";
 import {
   PANE_APP_MODE,
   PANE_NONE_MODE,
   activePaneMode,
   paneHasRealMode,
-  paneModeAllowed,
   paneModeList,
 } from "@apps/explorer/listing/pane-modes";
 
@@ -105,8 +106,8 @@ interface AppTarget {
   path: string;
 }
 
-// One entry of the pane's mode switcher (template modes + pane sentinels) —
-// the shape ModeSwitcher takes.
+// One entry of the pane's mode menu (template modes + pane sentinels) — the
+// shape BarMenu's shared ModeMenu takes.
 interface PaneMode {
   mode: string;
   icon: React.ReactNode;
@@ -115,11 +116,15 @@ interface PaneMode {
 export default function ListingPreviewPane({
   row,
   selCount,
+  selfPrimary,
 }: {
   // The lead row when exactly one row is selected, else null.
   row: PaneTarget | null;
   // Total selected rows, for the multi-selection placeholder.
   selCount: number;
+  // The host folder's own primary action, for the SELF row's primary slot
+  // (see the header below). Built by the host so its state lives in one place.
+  selfPrimary?: React.ReactNode;
 }) {
   const [info, setInfo] = useState<InfoState>({ status: "loading" });
   // Lone-app probe result for a folder: undefined = still loading, null =
@@ -171,7 +176,8 @@ export default function ListingPreviewPane({
         if (base.conditions !== null) return;
         resolveConditions(path).then(
           (r) => alive && setInfo({ ...base, conditions: r.conditions }),
-          // Fail closed, like a broken gate: every gated entry reads denied.
+          // No verdicts; lib/mode-visibility keeps verdict-less gated entries
+          // visible so a failed probe can't empty this pane's mode menu.
           () => alive && setInfo({ ...base, conditions: {} })
         );
       },
@@ -241,10 +247,16 @@ export default function ListingPreviewPane({
 
   // --- the pane's mode list ---------------------------------------------------
 
-  // Mode order = pane priority, decided in listing/pane-modes.ts (which also
-  // documents why a SELF target leads with the neutral `_none` mode). This
-  // component only turns those mode names into switcher entries with icons.
-  const allowed = (e: TemplateEntry) => paneModeAllowed(e, info.conditions);
+  // Mode order = pane priority, decided in listing/pane-modes.ts — which also
+  // documents why a SELF target leads with the neutral `_none` mode, why a lone
+  // app leads over `_listing`, and why `app` and `_app` are never both offered.
+  // This component only turns those mode names into menu entries with icons.
+  //
+  // Gate policy is the shared one (lib/mode-visibility), on every mode surface
+  // alike: an entry hides only on an EXPLICIT denial. A denied override is not
+  // pinned into the list — the active mode falls back to the pane's default
+  // (`activePaneMode` guards it), matching Preview.
+  const allowed = (e: TemplateEntry) => isModeVisible(e, info.conditions);
   const embeddable = info.templates.filter((e) => e.mode !== "_listing" && allowed(e));
 
   const modeNames = paneModeList({
@@ -313,15 +325,20 @@ export default function ListingPreviewPane({
       <span className="pane-header-name" title={row.name}>
         {row.name}
       </span>
-      {/* Horizontal icon strip, same look as the shell preview header (PT-10):
-          every available mode side by side, active one highlighted. */}
-      <ModeSwitcher entries={modes} active={activeMode ?? ""} onSelect={selectMode} />
-      {/* One label for every mode. Self target: "Open" would navigate to the
-          folder already open, so it hides. */}
-      {!row.self && (
+      {/* The same mode control the title bar and the pane bars carry. It used
+          to be four naked squares here, indistinguishable from the one-shot
+          glyphs beside them. */}
+      <ModeMenu entries={modes} active={activeMode ?? ""} onSelect={selectMode} />
+      {/* One label for every mode, and the row's ONE bordered primary. Self
+          target: "Open" would navigate to the folder already open, so the slot
+          goes to the folder's own primary instead — today the host's "Open as
+          app" (`selfPrimary`), which used to sit in the title bar competing
+          with the mode control and the layout zone. A folder with no single
+          app passes nothing and the slot stays empty. */}
+      {row.self ? selfPrimary : (
         <button
           type="button"
-          className="pane-header-btn"
+          className="bar-ctl bar-ctl-primary pane-header-btn"
           onClick={() => navigate(row.path, { isDir: row.isDir })}
         >
           Open

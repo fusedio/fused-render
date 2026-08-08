@@ -1,16 +1,27 @@
-// Mode menu for pane/tab chrome (Panel's pane bar, Tabs' active tab): the
-// trigger shows the pane's ACTIVE template-mode icon; clicking opens a
-// dropdown of every available mode (icon + name) for the pane's live
-// location. Selecting one rewrites the pane-local `_mode` (same
-// default-deletes rule as Preview's setMode, PT-9) and hands the new query to
-// the caller, which reloads its iframe imperatively (crumb-click discipline —
-// no React re-render may touch a live iframe).
+// Mode menu for pane/tab chrome (Panel's pane bar, Tabs' active tab). This
+// module owns the DATA half — statting the pane's live location, resolving
+// condition.py gates, and rewriting the pane-local `_mode` (same
+// default-deletes rule as Preview's setMode, PT-9) before handing the new
+// query to the caller, which reloads its iframe imperatively (crumb-click
+// discipline — no React re-render may touch a live iframe).
 //
-// Rendered entirely with spans, not buttons: in tab mode the trigger lives
-// INSIDE the tab's <button>, and nested buttons are invalid HTML.
+// The PRESENTATION half depends on where it lands, hence `variant`:
+//
+//   "bar" (Panel's pane bar) renders the shared ModeMenu — the same icon-chip
+//         + name + caret control the title bar and the preview pane carry.
+//   "tab" (Tabs' active tab) keeps the icon-only span trigger: that trigger
+//         lives INSIDE the tab's <button>, where a nested <button> would be
+//         invalid HTML and a labelled control would not fit anyway.
 import { useEffect, useRef, useState, type MouseEvent } from "react";
 import { resolveConditions, statPath, type TemplateEntry } from "@platform/lib/api";
+import {
+  isModePending,
+  visibleModes,
+  defaultMode,
+  effectiveActive,
+} from "@platform/lib/mode-visibility";
 import { templateModeIcon, modeTitle, KNOWN_SENTINEL_MODES } from "@apps/explorer/ModeSwitcher";
+import { ModeMenu } from "@apps/explorer/BarMenu";
 
 // Split a pane query at its raw `_layout=(...)` span (kept byte-identical —
 // it may contain literal `&`), so the head is plain params URLSearchParams
@@ -28,9 +39,12 @@ interface PaneModeMenuProps {
   // Receives the pane's new query (leading "?" or empty); the caller writes
   // iframe.src = embedSrc(path, query) itself — it owns the iframe ref.
   onNavigate: (query: string) => void;
+  // Which trigger to render (see the module comment). Defaults to "tab", the
+  // constrained surface.
+  variant?: "bar" | "tab";
 }
 
-export default function PaneModeMenu({ path, query, onNavigate }: PaneModeMenuProps) {
+export default function PaneModeMenu({ path, query, onNavigate, variant = "tab" }: PaneModeMenuProps) {
   const [templates, setTemplates] = useState<TemplateEntry[]>([]);
   // Deferred condition.py verdicts (CT-12): null while any gated entry is
   // unresolved. The resolveConditions call is shared with Preview's (one
@@ -64,7 +78,9 @@ export default function PaneModeMenu({ path, query, onNavigate }: PaneModeMenuPr
             if (!stale) setConditions(r.conditions);
           })
           .catch(() => {
-            // Fail closed, like a broken gate: every gated entry reads denied.
+            // No verdicts. lib/mode-visibility keeps verdict-less gated
+            // entries VISIBLE — a failed probe must not silently empty this
+            // menu (a menu of one hides itself entirely).
             if (!stale) setConditions({});
           });
       })
@@ -90,17 +106,21 @@ export default function PaneModeMenu({ path, query, onNavigate }: PaneModeMenuPr
     };
   }, [pos]);
 
-  // Pending = gated, verdict still in flight (shown as a disabled spinner);
-  // once verdicts land, denied entries drop from the menu entirely. The
-  // default (and the trigger's fallback) is the first UNCONDITIONAL entry —
-  // a gated template is never the default while a normal one exists (CT-12).
-  const isPending = (t: TemplateEntry) => !!t.conditional && conditions === null;
-  const visible = templates.filter((t) => !t.conditional || conditions === null || conditions[t.mode] === true);
+  // Visibility/pending policy lives in lib/mode-visibility, shared with
+  // Preview, ListingPreviewPane and Open With so every surface offers the
+  // same mode set for the same path. The default (and the trigger's
+  // fallback) is the first UNCONDITIONAL entry — a gated template is never
+  // the default while a normal one exists (CT-12).
+  const activeMode = new URLSearchParams(splitAtLayout(query)[0]).get("_mode");
+  const isPending = (t: TemplateEntry) => isModePending(t, conditions);
+  const visible = visibleModes(templates, conditions);
   if (visible.length < 2) return null;
 
-  const defaultEntry = visible.find((t) => !t.conditional) || visible[0];
-  const activeMode = new URLSearchParams(splitAtLayout(query)[0]).get("_mode");
-  const active = visible.find((t) => t.mode === activeMode && !isPending(t)) || defaultEntry;
+  const defaultEntry = defaultMode(visible) as TemplateEntry;
+  // A pending entry can't be the trigger's label (it has no icon yet), so it
+  // falls back to the default too — otherwise this is the shared resolution.
+  const requested = effectiveActive(visible, activeMode);
+  const active = requested && !isPending(requested) ? requested : defaultEntry;
 
   const toggle = (e: MouseEvent) => {
     e.stopPropagation();
@@ -114,9 +134,7 @@ export default function PaneModeMenu({ path, query, onNavigate }: PaneModeMenuPr
     setPos({ top: r.bottom + 4, left: Math.max(0, Math.min(r.left, window.innerWidth - 150)) });
   };
 
-  const select = (e: MouseEvent, mode: string) => {
-    e.stopPropagation();
-    setPos(null);
+  const applyMode = (mode: string) => {
     if (mode === active.mode) return;
     const [head, tail] = splitAtLayout(query);
     const params = new URLSearchParams(head);
@@ -127,6 +145,28 @@ export default function PaneModeMenu({ path, query, onNavigate }: PaneModeMenuPr
     const q = qs + (tail ? (qs ? "&" : "") + tail : "");
     onNavigate(q ? "?" + q : "");
   };
+
+  const select = (e: MouseEvent, mode: string) => {
+    e.stopPropagation(); // the tab trigger sits inside the tab's own click
+    setPos(null);
+    applyMode(mode);
+  };
+
+  // Pane bar: the shared control. Its own anchoring/close handling lives in
+  // BarMenu, so the local `pos` state stays unused on this branch.
+  if (variant === "bar") {
+    return (
+      <ModeMenu
+        entries={visible.map((t) => ({
+          mode: t.mode,
+          icon: templateModeIcon(t),
+          pending: isPending(t),
+        }))}
+        active={active.mode}
+        onSelect={applyMode}
+      />
+    );
+  }
 
   return (
     <span className="pane-mode-menu" ref={rootRef}>

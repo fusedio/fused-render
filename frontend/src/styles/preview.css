@@ -14,7 +14,7 @@
   padding: 10px 16px;
   border-bottom: 1px solid var(--border);
   gap: 12px;
-  /* Pin the height to the tallest state (28px mode-switcher button + 10px×2
+  /* Pin the height to the tallest state (28px mode control + 10px×2
      padding + 1px border) so the header can't grow when the loading spinner is
      replaced by the real switcher on stat resolve — otherwise the name and the
      whole body below shift down on every navigation. */
@@ -87,7 +87,14 @@
   flex: 0 0 auto;
 }
 
-.preview-actions button,
+/* Anything built from the shared bar recipe (explorer.css) opts OUT of this
+   generic chrome: it carries its own, and this rule's extra specificity would
+   otherwise re-style every control that portals into the slot. `.bar-ctl`
+   covers the buttons in the bar itself; `.bar-menu-item` covers the rows of a
+   dropdown OPENED from the bar, which are descendants of the slot too — and
+   which the `.active` rule below painted solid lime, since a menu's active row
+   and a toggle button's active state share the class name. */
+.preview-actions button:not(.bar-ctl):not(.bar-menu-item),
 .preview-actions a {
   font: inherit;
   padding: 5px 10px;
@@ -99,60 +106,26 @@
   cursor: pointer;
 }
 
-.preview-actions button.active {
+.preview-actions button:not(.bar-ctl):not(.bar-menu-item).active {
   background: var(--accent);
   color: var(--on-accent);
   border-color: var(--accent);
 }
 
-.preview-actions button:hover,
+.preview-actions button:not(.bar-ctl):not(.bar-menu-item):hover,
 .preview-actions a:hover {
   background: var(--bg-alt);
 }
 
-/* Icon-only mode switcher (PT-10) — same border/bg/hover/active language as
-   .preview-actions buttons above, sized as compact squares. Selectors carry
-   the .preview-actions ancestor so they win over the generic button rules
-   above at equal-or-lower specificity conflicts (e.g. padding). */
-.preview-actions .mode-switcher {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.preview-actions .mode-switcher-btn {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 28px;
-  height: 28px;
-  padding: 0;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: var(--bg);
-  color: var(--fg);
-  cursor: pointer;
-}
-
-.preview-actions .mode-switcher-btn:hover {
-  background: var(--bg-alt);
-}
-
-.preview-actions .mode-switcher-btn.active {
-  background: var(--accent);
-  color: var(--on-accent);
-  border-color: var(--accent);
-}
-
 /* Loading placeholder in the header actions slot (App.tsx LoadingScaffold):
-   a borderless box the size of one .mode-switcher-btn so the header holds the
-   switcher's height while stat is in flight — no growth/shift when the real
-   switcher lands. */
+   a borderless box the size of the mode control so the header holds its
+   height while stat is in flight — no growth/shift when the real control
+   lands. */
 .preview-actions .mode-switcher-placeholder {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 28px;
+  min-width: 92px;
   height: 28px;
 }
 
@@ -204,7 +177,6 @@
   }
 }
 
-.preview-actions .mode-switcher-btn.pending,
 .pane-mode-item.pending {
   opacity: 0.55;
   cursor: default;
@@ -471,8 +443,10 @@ body.embed .open-as-app-chip:hover {
   display: flex;
   align-items: center;
   gap: 2px;
-  min-height: 28px;
-  padding: 3px 6px;
+  /* Pins to the tallest state (24px control + 4px x 2 padding) so the bar
+     can't grow when the mode control lands after the pane's stat resolves. */
+  min-height: 32px;
+  padding: 4px 6px;
   background: var(--bg);
   border-bottom: 1px solid var(--border);
   user-select: none;
@@ -480,10 +454,10 @@ body.embed .open-as-app-chip:hover {
 
 /* Base layout/color rules for .panel-crumbs/.panel-crumb/.panel-crumb-sep/
    .panel-crumb.last are shared with the main breadcrumb above (search
-   "Shared with the panel path bar"). Only what's genuinely panel-specific
-   lives here: pane-local flex sizing, a tighter font-size, hidden scrollbar,
-   and the accent-yellow hover (left as-is — the main breadcrumb gets its own
-   non-yellow hover instead of reusing this one). */
+   "Shared with the panel path bar"), hover included — the pane bar used to
+   hover accent-yellow and now speaks the same dialect as every other bar.
+   Only what's genuinely panel-specific lives here: pane-local flex sizing, a
+   tighter font-size, hidden scrollbar. */
 .panel-crumbs {
   flex: 1 1 auto;
   scrollbar-width: none;
@@ -494,34 +468,64 @@ body.embed .open-as-app-chip:hover {
   display: none;
 }
 
-.panel-crumb:hover {
-  color: var(--accent);
-  text-decoration: underline;
+/* The shared bar recipe (explorer.css) at pane scale: 24px controls, 14px
+   icons. Same grammar as the title bar, one size down — panel mode used to
+   feel like a different app, and the size was most of the reason. */
+.panel-bar .bar-ctl {
+  height: 24px;
+  padding: 0 6px;
+  font-size: 11px;
 }
 
-.panel-btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  flex: 0 0 auto;
-  background: none;
-  border: none;
-  color: var(--fg-muted);
-  cursor: pointer;
-  padding: 4px 5px;
-  border-radius: 4px;
+.panel-bar .bar-ctl-icon {
+  width: 24px;
+  padding: 0;
 }
 
-.panel-btn svg {
-  display: block;
+/* :not(.bar-caret) because the caret has its own smaller size below, and a
+   bare `.panel-bar .bar-ctl > svg` outweighed `.panel-bar .bar-caret` on
+   specificity — the mode menu's caret silently kept the 14px icon size it was
+   explicitly excluded from. */
+.panel-bar .bar-ctl > svg:not(.bar-caret) {
+  width: 14px;
+  height: 14px;
 }
 
-.panel-btn:hover {
-  background: rgba(var(--tint), 0.08);
-  color: var(--fg);
+.panel-bar .mode-menu-icon,
+.panel-bar .mode-menu-icon svg,
+.panel-bar .mode-menu-icon .mode-icon-mask,
+.panel-bar .mode-menu-icon .mode-icon-placeholder {
+  width: 14px;
+  height: 14px;
 }
 
-.panel-btn.close:hover {
+.panel-bar .bar-caret {
+  width: 11px;
+  height: 11px;
+}
+
+.panel-bar .bar-rule {
+  margin: 0 6px;
+}
+
+/* The layout bookmark's ★, at the pane bar's left edge — pane scale, and it
+   must not be squeezed by the flex:1 crumbs beside it. */
+.panel-bar .bookmark-star-btn {
+  padding: 3px;
+}
+
+.panel-bar .bookmark-star-btn svg {
+  width: 13px;
+  height: 13px;
+}
+
+.panel-bar .star-btn {
+  font-size: 11px;
+  padding: 2px 8px;
+}
+
+/* Close keeps the right-most slot and its error-red hover. */
+.panel-bar .bar-ctl.close:hover:not(:disabled) {
   color: var(--error);
 }
 
@@ -598,10 +602,6 @@ body.embed .open-as-app-chip:hover {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.panel-btn.open-plain {
-  margin-left: 3px;
 }
 
 .tab-open-plain {
