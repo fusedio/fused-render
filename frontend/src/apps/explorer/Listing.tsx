@@ -903,7 +903,6 @@ export default function Listing({
                   type="button"
                   className="bar-ctl listing-pane-toggle"
                   title="Show preview"
-                  aria-pressed={false}
                   onClick={togglePane}
                 >
                   {/* The pane glyph with its right column empty — the pane it
