@@ -25,9 +25,18 @@
 //                           worst the user picks a mode whose template then
 //                           declines to render, which is visible and
 //                           recoverable; a vanished control is neither.
-//   the ACTIVE mode      -> always visible, whatever the verdict says. A user
-//                           can never be stranded in a mode the menu does not
-//                           list (there would be no way back out of it).
+//
+// "Never strand the user in a mode the menu doesn't list" is the other half of
+// the policy, but it is NOT done by pinning a denied entry into the list — an
+// explicit denial hides the entry even when it is the mode currently
+// requested. Pinning it looked like the kind thing to do and was worse: on a
+// two-mode path it left `visible` at exactly one entry, and a menu of one
+// hides itself (ModeMenu), so the view sat on a denied mode with no switcher
+// and no fallback. Instead the ACTIVE mode moves: `effectiveActive` resolves a
+// denied/unknown request to the default entry, the same silent fallback an
+// unknown `_mode` already gets (PT-9). The denied entry then drops from the
+// menu like any other, and a path whose every gated mode is denied falls
+// through to the caller's own empty-list handling (Preview's FallbackPreview).
 import type { TemplateEntry } from "@platform/lib/api";
 
 export type ConditionVerdicts = Record<string, boolean> | null;
@@ -37,22 +46,33 @@ export function isModePending(entry: TemplateEntry, verdicts: ConditionVerdicts)
   return !!entry.conditional && verdicts === null;
 }
 
-export function isModeVisible(
-  entry: TemplateEntry,
-  verdicts: ConditionVerdicts,
-  activeMode?: string | null
-): boolean {
+export function isModeVisible(entry: TemplateEntry, verdicts: ConditionVerdicts): boolean {
   if (!entry.conditional) return true;
-  if (activeMode && entry.mode === activeMode) return true;
-  if (verdicts === null) return true;
-  return verdicts[entry.mode] !== false;
+  if (verdicts === null) return true; // in flight — pending, not denied
+  return verdicts[entry.mode] !== false; // absent verdict (failed call) shows
 }
 
 // Order-preserving filter — the registry's own ranking is the menu order.
 export function visibleModes(
   entries: TemplateEntry[],
-  verdicts: ConditionVerdicts,
-  activeMode?: string | null
+  verdicts: ConditionVerdicts
 ): TemplateEntry[] {
-  return entries.filter((e) => isModeVisible(e, verdicts, activeMode));
+  return entries.filter((e) => isModeVisible(e, verdicts));
+}
+
+// The default entry among an ALREADY-VISIBLE list: the first UNCONDITIONAL one
+// (CT-12 — a gated template is never the default while a normal one exists);
+// only an all-conditional list falls back to its first entry.
+export function defaultMode(visible: TemplateEntry[]): TemplateEntry | null {
+  return visible.find((e) => !e.conditional) ?? visible[0] ?? null;
+}
+
+// The entry a surface should actually show for a requested `_mode`: the
+// request when it is still on offer, otherwise the default. Unknown, stale and
+// gate-denied requests all land here and all resolve the same silent way.
+export function effectiveActive(
+  visible: TemplateEntry[],
+  requestedMode?: string | null
+): TemplateEntry | null {
+  return visible.find((e) => e.mode === requestedMode) ?? defaultMode(visible);
 }

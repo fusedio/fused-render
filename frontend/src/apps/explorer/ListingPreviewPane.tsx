@@ -223,9 +223,10 @@ export default function ListingPreviewPane({
   // pane has no slot for a full listing of a file. Same for a SELF target's
   // `_listing` — that listing is already on the left.
   // Same gate policy as every other mode surface (lib/mode-visibility): a
-  // gated entry hides only on an explicit denial, and the mode the pane is
-  // currently showing always stays listed.
-  const allowed = (e: TemplateEntry) => isModeVisible(e, info.conditions, modeOverride);
+  // gated entry hides only on an explicit denial. A denied override is not
+  // pinned into the list — the active mode falls back to the pane's default
+  // below (`modes.some(...)` guards it), matching Preview.
+  const allowed = (e: TemplateEntry) => isModeVisible(e, info.conditions);
   const embeddable = info.templates.filter((e) => e.mode !== "_listing" && allowed(e));
 
   const modes: PaneMode[] = [];

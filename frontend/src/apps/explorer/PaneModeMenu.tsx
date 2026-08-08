@@ -14,7 +14,12 @@
 //         invalid HTML and a labelled control would not fit anyway.
 import { useEffect, useRef, useState, type MouseEvent } from "react";
 import { resolveConditions, statPath, type TemplateEntry } from "@platform/lib/api";
-import { isModePending, visibleModes } from "@platform/lib/mode-visibility";
+import {
+  isModePending,
+  visibleModes,
+  defaultMode,
+  effectiveActive,
+} from "@platform/lib/mode-visibility";
 import { templateModeIcon, modeTitle, KNOWN_SENTINEL_MODES } from "@apps/explorer/ModeSwitcher";
 import { ModeMenu } from "@apps/explorer/BarMenu";
 
@@ -108,11 +113,14 @@ export default function PaneModeMenu({ path, query, onNavigate, variant = "tab" 
   // the default while a normal one exists (CT-12).
   const activeMode = new URLSearchParams(splitAtLayout(query)[0]).get("_mode");
   const isPending = (t: TemplateEntry) => isModePending(t, conditions);
-  const visible = visibleModes(templates, conditions, activeMode);
+  const visible = visibleModes(templates, conditions);
   if (visible.length < 2) return null;
 
-  const defaultEntry = visible.find((t) => !t.conditional) || visible[0];
-  const active = visible.find((t) => t.mode === activeMode && !isPending(t)) || defaultEntry;
+  const defaultEntry = defaultMode(visible) as TemplateEntry;
+  // A pending entry can't be the trigger's label (it has no icon yet), so it
+  // falls back to the default too — otherwise this is the shared resolution.
+  const requested = effectiveActive(visible, activeMode);
+  const active = requested && !isPending(requested) ? requested : defaultEntry;
 
   const toggle = (e: MouseEvent) => {
     e.stopPropagation();

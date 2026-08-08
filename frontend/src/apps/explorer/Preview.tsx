@@ -38,7 +38,12 @@ import { acquireOverlay, releaseOverlay } from "@platform/lib/ui-overlay";
 import { setClipboard } from "@apps/explorer/lib/fs-clipboard";
 import { pushToast } from "@platform/lib/toast";
 import { templateModeIcon, modeTitle, KNOWN_SENTINEL_MODES } from "@apps/explorer/ModeSwitcher";
-import { isModePending, visibleModes } from "@platform/lib/mode-visibility";
+import {
+  isModePending,
+  visibleModes,
+  defaultMode,
+  effectiveActive,
+} from "@platform/lib/mode-visibility";
 import { ModeMenu } from "@apps/explorer/BarMenu";
 import ContextMenu, { type MenuEntry, type MenuItem } from "@platform/ui/ContextMenu";
 import { MenuIcons } from "@platform/ui/MenuIcons";
@@ -285,13 +290,16 @@ function usePreviewFileMenu(
 // the first UNCONDITIONAL entry (CT-12: a gated template is never the default
 // while a normal one exists) — only an all-conditional list falls back to its
 // first (by then verdict-allowed) entry.
+// Both rules live in lib/mode-visibility so every mode surface resolves the
+// same way; `templates` here is already the visible list, so a gate-denied
+// `_mode` lands on the default exactly like an unknown one.
 function defaultTemplate(templates: TemplateEntry[]): TemplateEntry {
-  return templates.find((t) => !t.conditional) || templates[0];
+  return defaultMode(templates) as TemplateEntry;
 }
 
 function activeTemplate(templates: TemplateEntry[]): TemplateEntry {
   const requested = new URLSearchParams(location.search).get("_mode");
-  return templates.find((t) => t.mode === requested) || defaultTemplate(templates);
+  return effectiveActive(templates, requested) as TemplateEntry;
 }
 
 // Deferred condition.py verdicts (CT-12). Stat only MARKS gated templates
@@ -924,10 +932,12 @@ export default function Preview({ fsPath, stat, onRenderedTitle, allowModes, hid
   // ALL-conditional list has nothing safe to show and waits here.
   const conditions = useConditions(fsPath, templates);
   const resolving = conditions === null;
-  // Shared visibility policy (lib/mode-visibility): pending while resolving,
-  // dropped only on an explicit denial, and the URL's `_mode` always kept so
-  // the menu can never omit the mode actually on screen.
-  const visible = visibleModes(templates, conditions, new URLSearchParams(location.search).get("_mode"));
+  // Shared visibility policy (lib/mode-visibility): gated entries are pending
+  // while resolving, stay when no verdict ever arrived, and drop on an
+  // explicit denial — including when the URL asked for one, which then falls
+  // back to the default (activeTemplate) or, if nothing survives, to
+  // FallbackPreview below.
+  const visible = visibleModes(templates, conditions);
   if (resolving && templates.length > 0 && templates.every((t) => t.conditional)) {
     return (
       <>
