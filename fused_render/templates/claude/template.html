@@ -695,6 +695,25 @@
   body.running .send .ic-send { display: none; }
   body.running .send .ic-stop { display: block; }
 
+  /* The chat composer's <form> is a WRAPPER, not a box: #composer-chat is what
+     has to be #chat's flex child (so it sits under #logwrap and shrinks to its
+     content), and a form box in between would break that. `display: contents`
+     removes the form from layout while keeping it in the DOM, which is what makes
+     one <form> able to wrap the whole composer and still let the flex column see
+     through it.
+     IT LIVES HERE, IN THE STYLESHEET, AND MAY NEVER GO BACK ON THE ELEMENT. As a
+     `style="display:contents"` attribute it outranked every stylesheet rule short
+     of the CSS force flag (`important`) — which is forbidden in this file (D146) — so the
+     narrow layout's `body.view-preview #chat > *:not(#anntools) { display: none }`
+     could not collapse it. In Preview view #composer-chat was promoted into
+     #chat's flex layout under the #anntools strip and the whole composer
+     (textarea, three selects, the pane-shot pill, the send button) rendered there,
+     eating ~105px of the height the preview was supposed to get. As a rule it is
+     plain specificity (0,1,0,0) against the media block's (0,2,1,1), so the collapse
+     wins. tests/test_claude_narrow.py forbids an inline `display` anywhere in the
+     column for exactly this reason. */
+  #inputbox { display: contents; }
+
   #composer-chat {
     flex-shrink: 0;
     max-width: 720px;
@@ -942,7 +961,14 @@
        affordance than a working one is a good affordance, and Preview view — one
        click away, where the pill is hidden anyway because the whole composer
        collapses — is where a person deciding to attach the app can actually see
-       what they are attaching.
+       what they are attaching — where the pill is out of sight for a DIFFERENT
+       reason, not a second rule: it is inside the composer, and Preview view
+       collapses the whole composer with the rest of the chat column. That was a
+       claim this comment made before it was true (the composer's inline
+       `display:contents` outranked the collapse, so the pill was live and visible
+       in Preview view); it holds now because the declaration moved into the
+       stylesheet. It is still ONE mechanism deep, so
+       tests/test_claude_narrow.py pins the collapse rather than the pill.
        Two things are deliberately NOT in this list:
          * the Chat ⇄ Preview toggle — it is the navigation between the two
            views, not a feature of either, so it is the one control that has to
@@ -969,7 +995,17 @@
        layout that is correct), so the strip is kept by hiding #chat's OTHER
        children rather than by hiding #chat: display:none on the column would
        take the toggle with it and strand the user in the preview with no way
-       back to the chat. */
+       back to the chat.
+       THE SELECTOR IS ALSO THE WHOLE MECHANISM, and it is one an INLINE style
+       silently defeats: a `style="display:…"` on any of those children outranks
+       this rule, and the CSS force flag (`important`) — the only stylesheet
+       answer to that — is forbidden in this file (D146). The composer's form used to carry exactly
+       such an attribute, so this comment described a collapse that did not
+       happen: #composer-chat was promoted into #chat's flex layout, the whole
+       composer drew below the strip, and the preview got ~105px less than the
+       screen it was told it owned. Every child of #chat now takes its `display`
+       from the stylesheet (see the #inputbox rule), and
+       tests/test_claude_narrow.py fails on any inline `display` in the column. */
     body.view-preview #left { flex: 1; min-height: 0; }
     body.view-preview #chat { flex: 0 0 auto; }
     body.view-preview #chat > *:not(#anntools) { display: none; }
@@ -1038,7 +1074,11 @@
       <button id="back" type="button" aria-label="Back to chats">← Chats</button>
     </div>
     <div id="logwrap"><div id="log"></div><div id="queue"></div></div>
-    <form id="inputbox" class="composer" style="display:contents">
+    <!-- `display: contents` is in the stylesheet, deliberately not here: an inline
+         declaration cannot be overridden by the narrow layout's collapse, and
+         the CSS force flag (`important`) is forbidden in this file (D146).
+         See the #inputbox rule. -->
+    <form id="inputbox" class="composer">
       <div id="composer-chat">
         <div class="annchips" id="annchips-chat"></div>
         <div class="composer">
@@ -2376,6 +2416,14 @@ annSetMode(fused.params.get("annmode") !== "0");
 
 // Auto-send: a saved NEW note goes to Claude immediately, always — there is no
 // off switch. The `filled`/`sending` guards below are the only gates.
+//
+// This is the one path that starts a run while the transcript may be OFF SCREEN:
+// notes are saved in the narrow layout's Preview view, where #log is collapsed
+// with the rest of the chat column. That is fine for progress output (something
+// to read afterwards) and not fine for a permission card (something the run is
+// blocked on), so the card is what pulls the view back — see showPermissionCard.
+// Deliberately not a gate here: refusing to send from Preview would take away the
+// feature instead of fixing where its output lands.
 function annAutoSubmit() {
   if (chatEl.classList.contains("home")) document.getElementById("card").requestSubmit();
   else submitChat();
@@ -2502,34 +2550,55 @@ function applyNarrowView() {
   const viewLabel = preview ? "Back to chat" : "Annotate preview";
   viewBtn.textContent = viewLabel;
   viewBtn.setAttribute("aria-label", viewLabel);
-  // Leaving Preview while narrow DISARMS annotate mode. The media block hides
-  // the annotate toggle in the chat-only view because there is no frame to point
-  // at; leaving the mode armed behind that hidden toggle would keep the frame's
-  // capture-phase click swallower live over a document the user cannot see, and
-  // would leave the control in a state its own view cannot show or undo. So the
-  // flip resets it, through annSetMode — the one way in and out, which keeps the
-  // label, aria-pressed, the param and the pins in agreement.
+  // ARRIVING AT THE NARROW CHAT VIEW DISARMS annotate mode — by flipping there
+  // from Preview, or by the pane crossing 880px while the chat is what shows. The
+  // media block hides the annotate toggle in the chat-only view because there is
+  // no frame to point at; leaving the mode armed behind that hidden toggle would
+  // keep the frame's capture-phase click swallower live over a document the user
+  // cannot see, and would leave the control in a state its own view cannot show
+  // or undo. So the reset runs through annSetMode — the one way in and out, which
+  // keeps the label, aria-pressed, the param and the pins in agreement.
   //
-  // Only on an actual flip (narrowShown was Preview), and only while narrow:
-  //   * disarming on every call would fight a user arming it in Preview;
-  //   * disarming at BOOT would write annmode=0 the first time this view opened
-  //     in a narrow pane, and annotate mode is ON by default — that default
-  //     belongs to the wide layout too, and the param outlives the narrow host;
-  //   * above the breakpoint both halves are on screen and armed is correct.
+  // The condition is "narrow, showing the CHAT, and this is not boot" — three
+  // clauses, one per thing that must not trigger it:
+  //   * `!preview` — disarming while Preview is on screen would fight a user
+  //     arming either control there, which is the one view where arming them is
+  //     the right thing to do (the frame is visible and the pill is what says
+  //     "this send carries a picture of it");
+  //   * `NARROW_MQ.matches` — above the breakpoint both halves are on screen,
+  //     nothing is hidden behind anything, and armed is correct;
+  //   * `narrowShown !== null` — BOOT, and only boot. Disarming there would
+  //     write annmode=0 the first time this view opened in a narrow pane, and
+  //     annotate mode is ON by default — that default belongs to the wide layout
+  //     too, and the param outlives the narrow host. It is ALSO the temporal-
+  //     dead-zone guard: `viewShotWanted` is a `let` declared further down the
+  //     script, so setViewShot() during the boot call would throw.
   //
-  // The pane-shot pill is disarmed on the same flip and for the same reason: the
-  // media block hides `.viewshot` in the chat-only view, and an armed toggle
-  // behind a hidden control would put a picture of the app on the next message
-  // with nothing on screen saying so. Unlike annotate mode there is no param to
-  // leak — viewShotWanted is per-message state — so this is purely about the
-  // send not carrying something invisible.
+  // `narrowShown !== null` is deliberately NOT `narrowShown === true` — that
+  // narrower test describes a Preview→Chat FLIP and nothing else, and a media
+  // CROSSING is not a flip. A wide boot leaves `narrowShown === false`, so
+  // arming the pane-shot pill (or annotate mode) with both columns on screen and
+  // then dragging the divider under 880px used to hide the control and keep the
+  // state: NARROW_MQ's change handler called through to here, the guard failed,
+  // and the next message silently carried a full-pane screenshot with nothing on
+  // screen saying so — exactly what this reset exists to prevent. The armed
+  // annotate mode had a second cost: `escapeAction` returns "exit-annotate" ahead
+  // of "stop-run", so the user's first Escape during a live turn disarmed an
+  // invisible switch instead of stopping the run.
   //
-  // Both resets are inside the `narrowShown === true` guard, which also makes
-  // them safe to write here: `viewShotWanted` is a `let` declared further down
-  // the script, so a read at boot (when this function is first called) would be
-  // a temporal-dead-zone error — and boot is never a flip. Same hazard the
-  // placement note above this function describes for renderAnn.
-  if (NARROW_MQ.matches && narrowShown === true && !preview) {
+  // The widened test costs nothing on the calls it newly reaches (a narrow,
+  // chat-view params.onChange for `split`): both resets are idempotent, and
+  // annSetMode(false) on an already-disarmed mode writes no param.
+  //
+  // The pane-shot pill is disarmed under the same condition and for the same
+  // reason: the media block hides `.viewshot` in the chat-only view, and an armed
+  // toggle behind a hidden control would put a picture of the app on the next
+  // message with nothing on screen saying so. Unlike annotate mode there is no
+  // param to leak — viewShotWanted is per-message state — so this is purely about
+  // the send not carrying something invisible. The TDZ hazard the placement note
+  // above this function describes for renderAnn is the same one the boot clause
+  // above guards.
+  if (NARROW_MQ.matches && narrowShown !== null && !preview) {
     if (annOn) annSetMode(false);
     setViewShot(false);
   }
@@ -3883,6 +3952,45 @@ function buildPermCard(p, run_id, liveMode) {
   return { el, resolve };
 }
 
+// Put a permission card into the transcript AND make sure the transcript is what
+// the user is looking at.
+//
+// A card is not progress output: it IS the prompt, and the subprocess stays
+// blocked until it is answered. In the narrow layout's Preview view the whole
+// chat column collapses to its #anntools strip, #log included — so a card
+// appended there is a turn stalled forever behind an element nobody can see or
+// click, with the strip saying nothing about a decision waiting. And Preview view
+// is exactly where this happens: `annAutoSubmit` sends a real turn the moment a
+// note is saved, which is the ONE way a run starts while the transcript is
+// hidden.
+//
+// Of the three candidate fixes this is the one that keeps every promise:
+//   * "don't auto-submit from Preview view" removes the feature — a saved note
+//     going to Claude immediately is the point of annotating, and the user is in
+//     Preview precisely because that is where notes are made;
+//   * "surface it in the #anntools strip" means a second, smaller renderer for
+//     the permission UI (tool name, arguments, four scope choices, the deny
+//     path), i.e. a fork of the thing whose whole job is to be read carefully
+//     before it is answered;
+//   * leaving Preview is honest and reversible: the run cannot continue without
+//     the user's attention, "Back to chat"/"Annotate preview" is one click either
+//     way, and the notes and pins survive the trip (applyNarrowView re-measures
+//     them). We only take the screen for a HARD BLOCK, never for ordinary
+//     progress — the working line and errors still go to the hidden #log, and
+//     that is correct: they are things to read afterwards, not things to answer.
+//
+// Writes the param rather than calling applyNarrowView, the same one-way flow
+// #viewbtn uses. No-op in the wide layout (nothing is hidden) and for the no-pane
+// target (`paneview` describes a collapse it never does).
+function showPermissionCard(card, working) {
+  if (working && working.el && working.el.isConnected) log.insertBefore(card.el, working.el);
+  else log.appendChild(card.el);
+  if (!noPane && NARROW_MQ.matches && fused.params.get("paneview") === "preview") {
+    fused.params.set("paneview", "chat");
+  }
+  scrollBottom();
+}
+
 // Reconcile the poll's request list with what is on screen. Idempotent — poll
 // replays the whole list every 400 ms.
 function syncPermissions(list, run_id, working, liveMode) {
@@ -3894,9 +4002,7 @@ function syncPermissions(list, run_id, working, liveMode) {
       permCards.set(p.id, card);
     }
     if (!card.el.isConnected) {
-      if (working && working.el && working.el.isConnected) log.insertBefore(card.el, working.el);
-      else log.appendChild(card.el);
-      scrollBottom();
+      showPermissionCard(card, working);
     }
     if (p.decision) card.resolve(p.decision, p.scope, p.mode);
   }
