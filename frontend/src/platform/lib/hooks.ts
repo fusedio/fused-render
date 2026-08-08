@@ -12,12 +12,21 @@
 // (the injected runtime writes params through the parent's history object,
 // which fires no native event) — that wrapping is load-bearing for the
 // layout modes and the update-bookmark flow, not just for these hooks.
-import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import {
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import { NAV_EVENT } from "@platform/lib/router";
 import { createCloseDeferrer } from "@platform/lib/exit-animation";
 import { getConfig } from "@platform/lib/api";
 import {
   getSidebarState,
+  registerSidebarToggleHost,
+  sidebarToggleHosted,
   subscribeSidebarState,
   type SidebarState,
 } from "@platform/lib/sidebarstate";
@@ -230,4 +239,20 @@ function useBuiltinMountReady(initial: boolean, key: BuiltinMountKey): boolean {
 // "Open sidebar" control while the sidebar is collapsed.
 export function useSidebarState(): SidebarState {
   return useSyncExternalStore(subscribeSidebarState, getSidebarState, getSidebarState);
+}
+
+// Declares "this route carries the reopen control in its own top bar", so
+// SidebarFrame's collapsed strip doesn't render a second one. Registered for
+// the host's whole lifetime, in a LAYOUT effect: it must land before paint, or
+// the strip's tab would flash on every explorer load.
+export function useOwnsSidebarToggle(enabled: boolean): void {
+  useLayoutEffect(() => {
+    if (!enabled) return;
+    return registerSidebarToggleHost();
+  }, [enabled]);
+}
+
+// True while some top bar hosts the reopen control (see above).
+export function useSidebarToggleHosted(): boolean {
+  return useSyncExternalStore(subscribeSidebarState, sidebarToggleHosted, sidebarToggleHosted);
 }

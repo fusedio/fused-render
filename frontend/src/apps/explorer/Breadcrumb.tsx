@@ -29,7 +29,13 @@ import {
   sameSearch,
   splitBookmarkUrl,
 } from "@platform/lib/bookmarks";
-import { useUrlVersion, useBookmarksVersion, notifyBookmarksChanged, useSidebarState } from "@platform/lib/hooks";
+import {
+  useUrlVersion,
+  useBookmarksVersion,
+  notifyBookmarksChanged,
+  useSidebarState,
+  useOwnsSidebarToggle,
+} from "@platform/lib/hooks";
 import { toggleSidebarCollapsed } from "@platform/lib/sidebarstate";
 import { urlScheme, isCloudScheme, fileUrlToPath } from "@platform/lib/path-url";
 import { resolveCloudUrl } from "@platform/lib/api";
@@ -123,6 +129,11 @@ function SidebarPanelIcon() {
 // its own chrome and has no sidebar to open).
 function OpenSidebarButton() {
   const { collapsed } = useSidebarState();
+  // Claim the reopen control for this route for as long as this bar is
+  // mounted — not just while collapsed — so SidebarFrame's collapsed strip
+  // never renders a competing one here. Embeds have no sidebar at all, so
+  // they claim nothing.
+  useOwnsSidebarToggle(!IS_EMBED);
   if (IS_EMBED || !collapsed) return null;
   return (
     <button

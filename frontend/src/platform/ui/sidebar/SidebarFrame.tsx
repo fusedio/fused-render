@@ -14,7 +14,7 @@ import {
   SIDEBAR_MIN_WIDTH,
   SIDEBAR_MAX_WIDTH,
 } from "@platform/lib/sidebarstate";
-import { useSidebarState } from "@platform/lib/hooks";
+import { useSidebarState, useSidebarToggleHosted } from "@platform/lib/hooks";
 
 export interface SidebarFrameProps {
   /** Brand text next to the cube mark — names the owning context. */
@@ -67,6 +67,8 @@ export function SidebarFrame({ title, version, homeHref = "/apps", children }: S
   // explorer topbar also reads the collapsed flag — it carries the "Open
   // sidebar" control while the sidebar is away.
   const { width: sidebarWidth, collapsed: sidebarCollapsed } = useSidebarState();
+  // Whether some top bar already renders a reopen control for this route.
+  const toggleHosted = useSidebarToggleHosted();
   // True only while the handle is captured — used to suppress the collapse
   // transition and text selection mid-drag.
   const [resizing, setResizing] = useState(false);
@@ -119,15 +121,15 @@ export function SidebarFrame({ title, version, homeHref = "/apps", children }: S
   };
 
   if (sidebarCollapsed) {
-    // Collapsed: the whole sidebar shrinks to a slim strip. The strip is still
-    // a click target that brings it back, but it no longer carries the
-    // floating expand BUBBLE — anchored to the right edge of a 10px strip, half
-    // of the 32px circle hung off the viewport and it sat at the same height
-    // as the topbar's bookmark star, reading as a second star. The affordance
-    // now lives docked in the explorer topbar ("Open sidebar", leftmost in the
-    // path zone), where it is fully on-screen and in the same row as the other
-    // chrome controls. Still the same #sidebar node, so the <=700px media hide
-    // applies.
+    // Only ONE reopen control at a time (see sidebarstate's toggle-host
+    // registry): the explorer's breadcrumb routes dock theirs in the top bar,
+    // and everywhere else — panel mode, Apps, Preferences, the files home —
+    // this strip carries its own, because those routes have no top bar to
+    // dock into and a bare 10px strip is not an affordance.
+    // Neither control is the old floating bubble: anchored at `left: 100%` on
+    // this 10px strip it hung half off the viewport and sat level with the
+    // explorer topbar's bookmark star, reading as a second star.
+    // Still the same #sidebar node, so the <=700px media hide applies.
     return (
       <nav id="sidebar" className={"sidebar-collapsed" + (resizing ? " sidebar-no-transition" : "")}>
         <button
@@ -136,7 +138,19 @@ export function SidebarFrame({ title, version, homeHref = "/apps", children }: S
           aria-label="Expand sidebar"
           title="Expand sidebar"
           onClick={toggleSidebarCollapsed}
-        />
+        >
+          {!toggleHosted && (
+            // Pinned to the TOP of the strip, on the top bars' centre line and
+            // fully inside the viewport — unlike the mid-screen bubble it
+            // replaces, which hung half off the left edge. Presentational: the
+            // strip is the button.
+            <span className="sidebar-expand-tab" aria-hidden="true">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="m9 18 6-6-6-6" />
+              </svg>
+            </span>
+          )}
+        </button>
       </nav>
     );
   }

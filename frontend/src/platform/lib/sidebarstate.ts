@@ -73,3 +73,31 @@ export function subscribeSidebarState(fn: () => void): () => void {
   listeners.add(fn);
   return () => listeners.delete(fn);
 }
+
+// --- Who owns the reopen control -------------------------------------------
+// A collapsed sidebar must always leave a VISIBLE way back. On explorer
+// breadcrumb routes that control is the topbar's docked "Open sidebar" button;
+// on the routes with no breadcrumb (panel mode, Apps, Preferences, the files
+// home) there is no topbar to dock into, so SidebarFrame renders its own tab
+// on the collapsed strip. Exactly one of the two should ever be on screen.
+//
+// The handshake is deliberately dumb — a count of mounted topbar buttons.
+// Anything cleverer (context, portals, a DOM probe) would have to cross the
+// sidebar/app boundary that this codebase keeps closed: SidebarFrame is
+// platform, the breadcrumb is an app, and they only ever meet in this store.
+let toggleHosts = 0;
+
+// Called by whatever renders a topbar reopen control, for its whole lifetime
+// (not just while collapsed) — returns the unregister.
+export function registerSidebarToggleHost(): () => void {
+  toggleHosts++;
+  listeners.forEach((fn) => fn());
+  return () => {
+    toggleHosts--;
+    listeners.forEach((fn) => fn());
+  };
+}
+
+export function sidebarToggleHosted(): boolean {
+  return toggleHosts > 0;
+}
