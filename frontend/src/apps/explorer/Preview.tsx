@@ -464,14 +464,12 @@ function TemplatePreview({
   // `preview` never rides onto file URLs (router.ts navigate), so paneIsOpen
   // would otherwise read the now-default-on value here.
   //
-  // The top-bar mode control used to hide while this was true, on the theory
-  // that the pane header's own switcher was the same control. It is not: the
-  // pane header's menu belongs to the PREVIEWED ROW (and drops `_listing`,
-  // which a pane cannot render for the folder already on the left), while the
-  // top bar's belongs to the FOLDER — the same distinction that keeps
-  // .preview-browse-chip out of the pane's header row below. On a folder whose
-  // pane menu collapses to a single entry, hiding the top-bar one left the
-  // folder with NO way to change its view mode at all.
+  // Used for the two things that MOVE INTO the pane when it is showing: the
+  // folder's "Open as app" primary (which rides down into the pane header's
+  // primary slot) and .preview-browse-chip (whose corner is inside the pane
+  // when there is one). The top-bar mode control is not one of them — for an
+  // explorer folder it is gone whether the pane is open or not; see
+  // headerActions.
   const listingPaneOpen = isListing && paneIsOpen(fsPath);
   // Path of the directory's lone top-level HTML file, reported by Listing
   // (null when there isn't exactly one) — drives the "Open as app" button
@@ -788,19 +786,34 @@ function TemplatePreview({
         deployEnabled &&
         templates.some((t) => t.mode === "_render") &&
         /\.html?$/i.test(fsPath) && <DeployButton fsPath={fsPath} />}
-      <ModeMenu
-        entries={templates.map((t) => ({
-          mode: t.mode,
-          icon: templateModeIcon(t),
-          pending: isPending(t),
-        }))}
-        active={entry.mode}
-        /* Spinner from the click until the incoming frame has actually taken
-           over — the flush wait AND the new document's load are both time the
-           user is waiting on that button. */
-        busy={switchingTo ?? (shown !== activeMode ? activeMode : null)}
-        onSelect={setMode}
-      />
+      {/* One mode control per view, and for an explorer FOLDER it is the
+          preview pane's, not this one. The pane header carries a ModeMenu of
+          its own beside the previewed row (ListingPreviewPane), so a folder
+          browsed in the explorer had two switchers in view at once — one
+          top-right, one a few hundred pixels below it — and telling which
+          governed which half is not something a user should have to work out.
+          The pane's is the one that stays: it sits with the thing it changes.
+          Files keep this control (they have no pane), and the app view/page
+          (`appChrome`) keeps everything it has — its folder is the whole
+          subject of the route, not a listing beside a preview.
+          A folder is not stranded in one of its non-listing modes: with no
+          pane on screen to carry a menu, .preview-browse-chip below is the way
+          back ("Browse contents"). */}
+      {!(stat.is_dir && !appChrome) && (
+        <ModeMenu
+          entries={templates.map((t) => ({
+            mode: t.mode,
+            icon: templateModeIcon(t),
+            pending: isPending(t),
+          }))}
+          active={entry.mode}
+          /* Spinner from the click until the incoming frame has actually taken
+             over — the flush wait AND the new document's load are both time the
+             user is waiting on that button. */
+          busy={switchingTo ?? (shown !== activeMode ? activeMode : null)}
+          onSelect={setMode}
+        />
+      )}
       {/* Rightmost, per the bars' grammar: the low-frequency one-shots live in
           the overflow, beside "Open in Finder" and "Copy path" in the title
           bar's own `···`. "Open in explorer" — the counterpart of the
