@@ -32,9 +32,20 @@ export interface ModeSwitcherEntry<M extends string> {
 // read badly, or that name an implementation where the user sees a feature, get
 // a display name here; everything else stays capitalized, because a per-template
 // naming registry is a thing to maintain and most folder names are already right.
+// Two modes offered on the SAME key may never read the same, which is a rule
+// about this table and not just about its entries: `versions` used to be
+// "History" while `history` reached "History" through the capitalize fallback,
+// and `.parquet` and `.html` each carry BOTH — so the Open With menu
+// (fs-actions.ts, `label: modeTitle(t.mode)`) drew two identical rows pointing at
+// different templates. Dispatch keys on `t.mode`, so nothing broke; the user
+// simply could not tell which was which. Both names now say what the thing shows:
+// `versions` is a git commit timeline for one path, `history` is the
+// `<file>.json` sidecar's activity (chat sessions, bookmarks, review comments,
+// §24). ModeSwitcher.test.ts fails on any two co-offered modes that read alike.
 const MODE_TITLES: Record<string, string> = {
   claude: "Chat",
-  versions: "History",
+  versions: "Revisions",
+  history: "Activity",
   git: "Source Control",
 };
 
@@ -45,7 +56,12 @@ const MODE_TITLES: Record<string, string> = {
 export function modeTitle(mode: string): string {
   if (mode === "_render") return "Rendered";
   if (mode === "_listing") return "Listing";
-  if (mode === "_app") return "App"; // pane-only sentinel (ListingPreviewPane)
+  // pane-only sentinel (listing/pane-modes.ts): the folder's LONE top-level HTML,
+  // rendered in place. Not "App" — the `app` template of the app-builder trio is
+  // that, and a workspace app folder offers both at once (its gate passes and its
+  // index.html is the folder's only page), so the pane mode menu drew the same
+  // word twice for two different renders.
+  if (mode === "_app") return "Folder app";
   if (mode === "_none") return "No preview"; // pane-only sentinel (ListingPreviewPane)
   const titled = MODE_TITLES[mode];
   if (titled) return titled;
