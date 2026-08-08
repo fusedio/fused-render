@@ -110,6 +110,27 @@ describe("effectiveActive", () => {
     expect(effectiveActive(visible, "app")).toBe(null);
   });
 
+  it("always resolves INTO the visible list, whatever was requested", () => {
+    // The invariant Preview's render path leans on: the entry it renders this
+    // paint is always one the visible list still offers, so the held-frame
+    // swap can key off it directly instead of waiting for a state effect to
+    // catch up (which spent a paint on a frame for a dropped mode).
+    const entries = [listing, claude, app, split];
+    const verdictSets: Array<Record<string, boolean> | null> = [
+      null,
+      {},
+      { app: false, claude_split: false },
+      { app: true, claude_split: false },
+    ];
+    for (const verdicts of verdictSets) {
+      const visible = visibleModes(entries, verdicts);
+      for (const requested of ["app", "claude_split", "nope", null]) {
+        const active = effectiveActive(visible, requested);
+        expect(active === null || visible.includes(active)).toBe(true);
+      }
+    }
+  });
+
   it("single visible entry after a denial means the menu is correctly absent", () => {
     // ModeMenu hides at <=1 entry: with the denied mode gone, the ONE
     // remaining mode is also the effective active one, so there is genuinely

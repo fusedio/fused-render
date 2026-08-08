@@ -430,14 +430,23 @@ function TemplatePreview({
   // switcher as a disabled spinner, not selectable, never the default.
   const isPending = (t: TemplateEntry) => isModePending(t, conditions);
   const defaultEntry = defaultTemplate(templates);
+  // `mode` is what the user (or the URL) ASKED for; `entry` is what this paint
+  // can actually render. They differ for exactly one render whenever a verdict
+  // lands and DROPS the requested mode (a URL-requested conditional that
+  // resolved false) — the reconciling effect below cannot run until after that
+  // paint. So everything downstream keys off `entry.mode`, never off `mode`:
+  // reading the stale request meant the held-frame swap spent that paint with
+  // no frame at all (a blank pane), then mounted a frame for the dropped mode
+  // whose `srcFor` is null, and only unwound it once the state caught up.
   const [mode, setModeState] = useState<string>(() => activeTemplate(templates).mode);
   const entry = templates.find((t) => t.mode === mode) || defaultEntry;
-  // A verdict landing can DROP the current mode (URL-requested conditional
-  // that resolved false): fall back to the default, same silent posture as an
-  // unknown `_mode`.
+  const activeMode = entry.mode;
+  // Reconcile the request with what actually rendered. Purely bookkeeping now
+  // (the switcher's selection, and the guard in setMode) — no rendering waits
+  // on it.
   useEffect(() => {
-    if (!templates.some((t) => t.mode === mode)) setModeState(defaultEntry.mode);
-  }, [templates, mode, defaultEntry.mode]);
+    if (mode !== activeMode) setModeState(activeMode);
+  }, [mode, activeMode]);
   const deployEnabled = useDeployEnabled();
   // Re-render on URL changes (the pane toggle writes `preview` via
   // replaceSearch, which fires fused:urlchange) so the switcher-hide below
@@ -535,7 +544,7 @@ function TemplatePreview({
   // begins (A4).
   const [switchingTo, setSwitchingTo] = useState<string | null>(null);
   const setMode = async (next: string) => {
-    if (next === mode || switching.current) return;
+    if (next === activeMode || switching.current) return;
     // Unresolved gate: not selectable (the switcher disables it too).
     const target = templates.find((t) => t.mode === next);
     if (target && isPending(target)) return;
@@ -614,11 +623,11 @@ function TemplatePreview({
   // (the same discipline Tabs.tsx keeps for its keep-alive frames). A→B→A
   // therefore keeps [A, B] rather than swapping to [B, A]. Stacking is done
   // with z-index (shell.css), not DOM order.
-  const [frames, setFrames] = useState<string[]>(() => (isListing ? [] : [mode]));
+  const [frames, setFrames] = useState<string[]>(() => (isListing ? [] : [activeMode]));
   // Which frame is visible. Lags `mode` for the length of a swap; the initial
   // frame is shown immediately (it fades from --bg, not from white, so there is
   // nothing to hold back for).
-  const [shown, setShown] = useState<string>(mode);
+  const [shown, setShown] = useState<string>(activeMode);
   // Modes whose frame has fired `load` at least once and is STILL mounted. A
   // frame the append-only list kept alive will never fire `load` again, so
   // switching back to it (A→B→A inside the swap window) has no event to complete
@@ -633,36 +642,45 @@ function TemplatePreview({
     // that starts its fade, or the transition has no `from` value to run from.
     if (framePending) {
       setFrames([]);
-      setShown(mode);
+      setShown(activeMode);
       loadedFrames.current.clear(); // every frame unmounts with them
       return;
     }
-    setFrames((f) => (f.includes(mode) ? f : [...f, mode]));
+    setFrames((f) => (f.includes(activeMode) ? f : [...f, activeMode]));
     // Already mounted AND already loaded: complete the swap now rather than
     // waiting for a load event that cannot come. The `.is-shown` flip still
     // cross-fades through the CSS transition, so this is the same swap, just
     // without the wait. Frames that are mounted but not yet loaded keep the
     // load/timeout path below.
-    if (loadedFrames.current.has(mode)) setShown(mode);
-  }, [mode, framePending]);
+    //
+    // Nothing mounted at all (the gate-pending branch above just cleared the
+    // list, or a verdict dropped the requested mode) is the same situation as
+    // the initial mount: there is no outgoing content to hold, so the incoming
+    // frame is shown straight away and fades up from --bg instead of waiting
+    // out its load behind an empty pane.
+    if (loadedFrames.current.has(activeMode) || frames.length === 0) setShown(activeMode);
+    // `frames` is read only to spot the empty case; adding it to the deps would
+    // re-run this on every append and re-show a frame mid-swap.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeMode, framePending]);
   // A frame whose document never fires `load` must not strand the user on the
   // previous mode's content: past FRAME_SWAP_TIMEOUT_MS the swap completes
   // regardless of what the incoming frame did.
   useEffect(() => {
-    if (shown === mode || framePending) return;
-    const id = window.setTimeout(() => setShown(mode), FRAME_SWAP_TIMEOUT_MS);
+    if (shown === activeMode || framePending) return;
+    const id = window.setTimeout(() => setShown(activeMode), FRAME_SWAP_TIMEOUT_MS);
     return () => window.clearTimeout(id);
-  }, [shown, mode, framePending]);
+  }, [shown, activeMode, framePending]);
   // Retire the frames the swap left behind, once the incoming one has faded in.
   useEffect(() => {
-    if (frames.length <= 1 || shown !== mode) return;
+    if (frames.length <= 1 || shown !== activeMode) return;
     const id = window.setTimeout(() => {
-      setFrames([mode]);
+      setFrames([activeMode]);
       // Their documents are gone with them, so they are no longer "loaded".
-      for (const m of [...loadedFrames.current]) if (m !== mode) loadedFrames.current.delete(m);
+      for (const m of [...loadedFrames.current]) if (m !== activeMode) loadedFrames.current.delete(m);
     }, FRAME_FADE_MS);
     return () => window.clearTimeout(id);
-  }, [frames, shown, mode]);
+  }, [frames, shown, activeMode]);
 
   // Embed hides the whole preview-header, hence the switcher (shell.css). A
   // directory whose mode list carries `_listing` alongside another mode (a
@@ -773,7 +791,7 @@ function TemplatePreview({
         /* Spinner from the click until the incoming frame has actually taken
            over — the flush wait AND the new document's load are both time the
            user is waiting on that button. */
-        busy={switchingTo ?? (shown !== mode ? mode : null)}
+        busy={switchingTo ?? (shown !== activeMode ? activeMode : null)}
         onSelect={setMode}
       />
     </>
@@ -825,7 +843,7 @@ function TemplatePreview({
                   // switch BACK to this still-mounted frame can complete
                   // without a second load event (see loadedFrames).
                   loadedFrames.current.add(m);
-                  if (m === mode) setShown(m);
+                  if (m === activeMode) setShown(m);
                   onRenderFrameLoad(e, m);
                 }}
               />
