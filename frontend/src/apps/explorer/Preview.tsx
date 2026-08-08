@@ -38,6 +38,7 @@ import { acquireOverlay, releaseOverlay } from "@platform/lib/ui-overlay";
 import { setClipboard } from "@apps/explorer/lib/fs-clipboard";
 import { pushToast } from "@platform/lib/toast";
 import { templateModeIcon, modeTitle, KNOWN_SENTINEL_MODES } from "@apps/explorer/ModeSwitcher";
+import { isModePending, visibleModes } from "@platform/lib/mode-visibility";
 import { ModeMenu } from "@apps/explorer/BarMenu";
 import ContextMenu, { type MenuEntry, type MenuItem } from "@platform/ui/ContextMenu";
 import { MenuIcons } from "@platform/ui/MenuIcons";
@@ -297,8 +298,8 @@ function activeTemplate(templates: TemplateEntry[]): TemplateEntry {
 // (`conditional: true`) so it stays fast on remote mounts; the actual gates
 // run here, in the background, while the first unconditional template is
 // already rendering. Returns null while resolving, then {mode: allowed}.
-// A failed request resolves to {} — every gated entry then reads as denied,
-// the same fail-closed posture as a broken gate server-side.
+// A failed request resolves to {} — no verdicts at all; lib/mode-visibility
+// keeps verdict-less gated entries visible rather than emptying the menu.
 function useConditions(fsPath: string, templates: TemplateEntry[]): Record<string, boolean> | null {
   const anyConditional = templates.some((t) => t.conditional);
   const [verdicts, setVerdicts] = useState<Record<string, boolean> | null>(anyConditional ? null : {});
@@ -419,7 +420,7 @@ function TemplatePreview({
   // Preview's dispatch, SPEC PT-12) is non-empty. Entries whose condition.py
   // verdict is still in flight (CT-12) are present but PENDING — shown in the
   // switcher as a disabled spinner, not selectable, never the default.
-  const isPending = (t: TemplateEntry) => !!t.conditional && conditions === null;
+  const isPending = (t: TemplateEntry) => isModePending(t, conditions);
   const defaultEntry = defaultTemplate(templates);
   const [mode, setModeState] = useState<string>(() => activeTemplate(templates).mode);
   const entry = templates.find((t) => t.mode === mode) || defaultEntry;
@@ -440,16 +441,21 @@ function TemplatePreview({
   // single `_listing` mode), so the preview header is uniform across files and
   // dirs.
   const isListing = entry.mode === "_listing";
-  // When the listing's right preview pane is open (default ON — see
-  // listing/pane.ts paneIsOpen), the pane header carries its own mode
-  // switcher — showing the top-bar one too is duplicate chrome, so it hides.
-  // Top-bar variant only; the in-body header (non-explorer hosts) never
-  // coexists with the pane. Gated on `isListing`: a FILE view's fsPath never
-  // carries pane viewstate (the pane belongs to directories) and `preview`
-  // never rides onto file URLs (router.ts navigate), so paneIsOpen would
-  // otherwise read the now-default-on value and hide every file's switcher.
+  // Whether the listing's right preview pane is showing (default ON — see
+  // listing/pane.ts paneIsOpen). Gated on `isListing`: a FILE view's fsPath
+  // never carries pane viewstate (the pane belongs to directories) and
+  // `preview` never rides onto file URLs (router.ts navigate), so paneIsOpen
+  // would otherwise read the now-default-on value here.
+  //
+  // The top-bar mode control used to hide while this was true, on the theory
+  // that the pane header's own switcher was the same control. It is not: the
+  // pane header's menu belongs to the PREVIEWED ROW (and drops `_listing`,
+  // which a pane cannot render for the folder already on the left), while the
+  // top bar's belongs to the FOLDER — the same distinction that keeps
+  // .preview-browse-chip out of the pane's header row below. On a folder whose
+  // pane menu collapses to a single entry, hiding the top-bar one left the
+  // folder with NO way to change its view mode at all.
   const listingPaneOpen = isListing && paneIsOpen(fsPath);
-  const paneOpen = !!actionsInTopbar && listingPaneOpen;
   // Path of the directory's lone top-level HTML file, reported by Listing
   // (null when there isn't exactly one) — drives the "Open as app" button
   // between the directory name and the mode switcher.
@@ -753,17 +759,15 @@ function TemplatePreview({
         deployEnabled &&
         templates.some((t) => t.mode === "_render") &&
         /\.html?$/i.test(fsPath) && <DeployButton fsPath={fsPath} />}
-      {!paneOpen && (
-        <ModeMenu
-          entries={templates.map((t) => ({ mode: t.mode, icon: templateModeIcon(t), pending: isPending(t) }))}
-          active={entry.mode}
-          /* Spinner from the click until the incoming frame has actually taken
-             over — the flush wait AND the new document's load are both time the
-             user is waiting on that button. */
-          busy={switchingTo ?? (shown !== mode ? mode : null)}
-          onSelect={setMode}
-        />
-      )}
+      <ModeMenu
+        entries={templates.map((t) => ({ mode: t.mode, icon: templateModeIcon(t), pending: isPending(t) }))}
+        active={entry.mode}
+        /* Spinner from the click until the incoming frame has actually taken
+           over — the flush wait AND the new document's load are both time the
+           user is waiting on that button. */
+        busy={switchingTo ?? (shown !== mode ? mode : null)}
+        onSelect={setMode}
+      />
     </>
   );
 
@@ -920,9 +924,10 @@ export default function Preview({ fsPath, stat, onRenderedTitle, allowModes, hid
   // ALL-conditional list has nothing safe to show and waits here.
   const conditions = useConditions(fsPath, templates);
   const resolving = conditions === null;
-  // While resolving, gated entries stay visible (as pending); once verdicts
-  // land, denied ones drop.
-  const visible = templates.filter((t) => !t.conditional || resolving || conditions[t.mode] === true);
+  // Shared visibility policy (lib/mode-visibility): pending while resolving,
+  // dropped only on an explicit denial, and the URL's `_mode` always kept so
+  // the menu can never omit the mode actually on screen.
+  const visible = visibleModes(templates, conditions, new URLSearchParams(location.search).get("_mode"));
   if (resolving && templates.length > 0 && templates.every((t) => t.conditional)) {
     return (
       <>

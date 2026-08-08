@@ -14,6 +14,7 @@
 //         invalid HTML and a labelled control would not fit anyway.
 import { useEffect, useRef, useState, type MouseEvent } from "react";
 import { resolveConditions, statPath, type TemplateEntry } from "@platform/lib/api";
+import { isModePending, visibleModes } from "@platform/lib/mode-visibility";
 import { templateModeIcon, modeTitle, KNOWN_SENTINEL_MODES } from "@apps/explorer/ModeSwitcher";
 import { ModeMenu } from "@apps/explorer/BarMenu";
 
@@ -72,7 +73,9 @@ export default function PaneModeMenu({ path, query, onNavigate, variant = "tab" 
             if (!stale) setConditions(r.conditions);
           })
           .catch(() => {
-            // Fail closed, like a broken gate: every gated entry reads denied.
+            // No verdicts. lib/mode-visibility keeps verdict-less gated
+            // entries VISIBLE — a failed probe must not silently empty this
+            // menu (a menu of one hides itself entirely).
             if (!stale) setConditions({});
           });
       })
@@ -98,16 +101,17 @@ export default function PaneModeMenu({ path, query, onNavigate, variant = "tab" 
     };
   }, [pos]);
 
-  // Pending = gated, verdict still in flight (shown as a disabled spinner);
-  // once verdicts land, denied entries drop from the menu entirely. The
-  // default (and the trigger's fallback) is the first UNCONDITIONAL entry —
-  // a gated template is never the default while a normal one exists (CT-12).
-  const isPending = (t: TemplateEntry) => !!t.conditional && conditions === null;
-  const visible = templates.filter((t) => !t.conditional || conditions === null || conditions[t.mode] === true);
+  // Visibility/pending policy lives in lib/mode-visibility, shared with
+  // Preview, ListingPreviewPane and Open With so every surface offers the
+  // same mode set for the same path. The default (and the trigger's
+  // fallback) is the first UNCONDITIONAL entry — a gated template is never
+  // the default while a normal one exists (CT-12).
+  const activeMode = new URLSearchParams(splitAtLayout(query)[0]).get("_mode");
+  const isPending = (t: TemplateEntry) => isModePending(t, conditions);
+  const visible = visibleModes(templates, conditions, activeMode);
   if (visible.length < 2) return null;
 
   const defaultEntry = visible.find((t) => !t.conditional) || visible[0];
-  const activeMode = new URLSearchParams(splitAtLayout(query)[0]).get("_mode");
   const active = visible.find((t) => t.mode === activeMode && !isPending(t)) || defaultEntry;
 
   const toggle = (e: MouseEvent) => {

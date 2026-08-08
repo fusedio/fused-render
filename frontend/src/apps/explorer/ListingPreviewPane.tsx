@@ -16,6 +16,7 @@ import { listDir, resolveConditions, statPath } from "@platform/lib/api";
 import type { TemplateEntry } from "@platform/lib/api";
 import { navigate, replaceSearch } from "@platform/lib/router";
 import { formatSize } from "@platform/lib/format";
+import { isModeVisible } from "@platform/lib/mode-visibility";
 import { iconForEntry, isAppEntry } from "@platform/ui/FileIcons";
 import { KNOWN_SENTINEL_MODES, templateModeIcon } from "@apps/explorer/ModeSwitcher";
 import { ModeMenu } from "@apps/explorer/BarMenu";
@@ -143,7 +144,8 @@ export default function ListingPreviewPane({
         if (base.conditions !== null) return;
         resolveConditions(path).then(
           (r) => alive && setInfo({ ...base, conditions: r.conditions }),
-          // Fail closed, like a broken gate: every gated entry reads denied.
+          // No verdicts; lib/mode-visibility keeps verdict-less gated entries
+          // visible so a failed probe can't empty this pane's mode menu.
           () => alive && setInfo({ ...base, conditions: {} })
         );
       },
@@ -220,8 +222,10 @@ export default function ListingPreviewPane({
   // FILE a `_listing` bind (rare registry rebind) is dropped entirely: the
   // pane has no slot for a full listing of a file. Same for a SELF target's
   // `_listing` — that listing is already on the left.
-  const allowed = (e: TemplateEntry) =>
-    !e.conditional || (info.conditions !== null && info.conditions[e.mode] === true);
+  // Same gate policy as every other mode surface (lib/mode-visibility): a
+  // gated entry hides only on an explicit denial, and the mode the pane is
+  // currently showing always stays listed.
+  const allowed = (e: TemplateEntry) => isModeVisible(e, info.conditions, modeOverride);
   const embeddable = info.templates.filter((e) => e.mode !== "_listing" && allowed(e));
 
   const modes: PaneMode[] = [];
