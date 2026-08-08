@@ -263,7 +263,7 @@ const HTML_PATH = new URLSearchParams(location.search).get("path") || "";
 const BASE_DIR = HTML_PATH.slice(0, Math.max(HTML_PATH.lastIndexOf("/"), HTML_PATH.lastIndexOf("\\")) + 1);
 const assetUrl = (rel) => fused.rawUrl(BASE_DIR + rel);
 
-let viewer = null, meta = null, baseWidth = null, snapPoints = [];
+let viewer = null, meta = null, baseScale = null, snapPoints = [];
 let tool = null;                         // null | "distance" | "area" | "angle"
 let pts = [];                            // measure points in progress, model coords
 let doneMeasure = null;                  // { tool, pts } of the last completed measurement (persists)
@@ -359,8 +359,7 @@ function onLoaded() {
     $("pExtents").textContent = `${fmt(b.minX)}, ${fmt(b.minY)} → ${fmt(b.maxX)}, ${fmt(b.maxY)}`;
     $("pExtSize").textContent = `${fmt(b.maxX - b.minX)} × ${fmt(b.maxY - b.minY)} ${unitAbbr()}`;
   }
-  const cam = viewer.GetCamera();
-  baseWidth = cam.right - cam.left;
+  baseScale = pxPerUnit();
   buildSnapPoints();
   wireCanvas();
   onViewChanged();
@@ -446,19 +445,21 @@ $("allOn").addEventListener("click", () => {
 $("layerFilter").addEventListener("input", () => viewer && renderLayers(viewer.GetLayers()));
 
 // ---------- coordinate transforms ----------
+// Model<->canvas go through the camera's own (un)projection so pan and zoom are
+// always honored (dxf-viewer drives wheel zoom via camera.zoom, not the frustum),
+// and stay in CSS pixels throughout so devicePixelRatio never enters.
 function canvasRect() { return host.getBoundingClientRect(); }
 function canvasToModel(px, py) {
-  const s = viewer._CanvasToSceneCoord(px, py), o = viewer.GetOrigin();
-  return { x: s.x + o.x, y: s.y + o.y };
+  const cam = viewer.GetCamera(), o = viewer.GetOrigin(), r = canvasRect();
+  const v = cam.position.clone().set(px / r.width * 2 - 1, 1 - py / r.height * 2, 0).unproject(cam);
+  return { x: v.x + o.x, y: v.y + o.y };
 }
 function modelToCanvas(mx, my) {
-  const cam = viewer.GetCamera(), o = viewer.GetOrigin();
-  const w = cam.right - cam.left, h = cam.top - cam.bottom;
-  const sx = mx - o.x - cam.position.x, sy = my - o.y - cam.position.y;
-  const r = canvasRect();
-  return { x: (sx / (w / 2) * 0.5 + 0.5) * r.width, y: (0.5 - sy / (h / 2) * 0.5) * r.height };
+  const cam = viewer.GetCamera(), o = viewer.GetOrigin(), r = canvasRect();
+  const v = cam.position.clone().set(mx - o.x, my - o.y, 0).project(cam);
+  return { x: (v.x * 0.5 + 0.5) * r.width, y: (0.5 - v.y * 0.5) * r.height };
 }
-function pxPerUnit() { const cam = viewer.GetCamera(); return canvasRect().width / (cam.right - cam.left); }
+function pxPerUnit() { const a = modelToCanvas(0, 0), b = modelToCanvas(1, 0); return Math.hypot(b.x - a.x, b.y - a.y); }
 
 // ---------- object snap ----------
 function buildSnapPoints() {
@@ -614,7 +615,7 @@ host.addEventListener("pointermove", (e) => { const r = canvasRect(); _lastPx = 
 
 function onViewChanged() {
   if (!viewer) return;
-  if (baseWidth) { const cam = viewer.GetCamera(); $("zpct").textContent = Math.round(baseWidth / (cam.right - cam.left) * 100) + "%"; }
+  if (baseScale) $("zpct").textContent = Math.round(pxPerUnit() / baseScale * 100) + "%";
   drawOverlay();
 }
 
@@ -642,7 +643,7 @@ function fit() {
 function zoomBy(f) {
   if (!viewer) return;
   const cam = viewer.GetCamera();
-  viewer.SetView({ x: cam.position.x, y: cam.position.y }, (cam.right - cam.left) * f);
+  viewer.SetView({ x: cam.position.x, y: cam.position.y }, (cam.right - cam.left) / cam.zoom * f);
   onViewChanged();
 }
 $("fitBtn").addEventListener("click", fit);

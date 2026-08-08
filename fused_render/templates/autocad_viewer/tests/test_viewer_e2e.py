@@ -195,6 +195,39 @@ def test_measure_distance(server, browser):
     page.close()
 
 
+def test_measure_point_lands_under_cursor_after_zoom(server, browser):
+    # regression: dxf-viewer drives wheel zoom via camera.zoom, so the model<->canvas
+    # transforms must honor it or the placed point drifts away from the cursor.
+    page, frame = _open(browser, server["port"], "floorplan.dxf")
+    _wait(lambda: frame.evaluate(
+        "() => { const c=document.querySelector('#cadHost canvas');"
+        "const e=(document.getElementById('echo')||{}).textContent||'';"
+        "return c && /Ready ·/.test(e); }"), timeout=40)
+    res = frame.evaluate(
+        """() => {
+            const canvas = document.querySelector('#cadHost canvas');
+            const r = canvas.getBoundingClientRect();
+            const os = document.getElementById('tgOsnap');
+            if (os.classList.contains('on')) os.click();   // no snapping: test the raw transform
+            const cx = r.left + r.width/2, cy = r.top + r.height/2;
+            for (let i=0;i<4;i++) canvas.dispatchEvent(new WheelEvent('wheel',
+              {deltaY:-120, clientX:cx, clientY:cy, bubbles:true, cancelable:true}));
+            const zoom = document.getElementById('zpct').textContent;
+            document.querySelector('.tbtn[data-tool="distance"]').click();
+            const px = r.width*0.62, py = r.height*0.38;
+            for (const t of ['pointermove','pointerdown'])
+              canvas.dispatchEvent(new PointerEvent(t, {bubbles:true,cancelable:true,
+                clientX:r.left+px, clientY:r.top+py, button:0, pointerId:1, isPrimary:true}));
+            const node = document.querySelector('#overlay circle.ov-node');
+            return {zoom, px, py, cx: node && +node.getAttribute('cx'), cy: node && +node.getAttribute('cy')};
+        }""")
+    assert res["zoom"] != "100%", f"wheel zoom did not take effect (zoom={res['zoom']!r})"
+    assert res["cx"] is not None, "no measurement node was drawn"
+    assert abs(res["cx"] - res["px"]) <= 2 and abs(res["cy"] - res["py"]) <= 2, \
+        f"measurement point not under cursor after zoom: {res}"
+    page.close()
+
+
 def _isolate_layer(frame, name):
     """Click the isolate (solo) button on the layer row whose raw name is `name`."""
     return frame.evaluate(
