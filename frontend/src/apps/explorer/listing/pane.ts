@@ -133,17 +133,27 @@ export function usePreviewPane(fsPath: string, enabled = true) {
     const startSized = pane.sized;
     let frac = pane.frac;
     let raw = Infinity;
+    // TWO flags, because the drag can mean two different things and a single
+    // one conflated them. `moved` = the pointer moved at all, which is what the
+    // close-at-the-edge gesture reads — that gesture still works in a container
+    // too narrow to split, and is arguably the only useful thing to do there.
+    // `resized` = the drag also produced a real fraction, which is what
+    // PERSISTENCE reads: in a container narrower than both floors dragPaneFrac
+    // returns null (see there), and recording the pre-drag fraction as though
+    // the user had chosen it would write a number nobody picked.
     let moved = false;
+    let resized = false;
     const onMove = (ev: PointerEvent) => {
       const rect = splitRef.current?.getBoundingClientRect();
       if (!rect) return;
-      moved = true;
       // The pane is the right side: its width is the distance from the cursor
       // to the container's right edge, run through the shared FS-12 clamps and
       // divided back into a fraction of the container (dragPaneFrac).
       raw = rect.right - ev.clientX;
+      moved = true;
       const next = dragPaneFrac(rect.width, raw);
       if (next === null) return;
+      resized = true;
       frac = next;
       setPane((prev) => (prev.frac === frac ? prev : { ...prev, frac }));
     };
@@ -165,10 +175,11 @@ export function usePreviewPane(fsPath: string, enabled = true) {
         savePaneState(fsPath, false, startSized ? startFrac : null);
         return;
       }
-      // Only a drag that actually moved the divider is a chosen fraction; a
-      // bare click on it leaves the default unpersisted.
-      const sized = startSized || moved;
-      if (moved) setPane((prev) => (prev.sized ? prev : { ...prev, sized: true }));
+      // Only a drag that actually RESIZED is a chosen fraction: a bare click on
+      // the divider, or a drag in a container too narrow to express a split,
+      // both leave the fraction unpersisted.
+      const sized = startSized || resized;
+      if (resized) setPane((prev) => (prev.sized ? prev : { ...prev, sized: true }));
       savePaneState(fsPath, true, sized ? frac : null);
     };
     divider.addEventListener("pointermove", onMove);

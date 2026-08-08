@@ -40,13 +40,31 @@ describe("dragPaneFrac", () => {
     expect(dragPaneFrac(1000, 990)).toBe(0.94);
   });
 
-  test("a container narrower than the pane's own floor asks for all of it", () => {
-    // 180px cannot hold PANE_MIN_W, so the clamp's floor (220) is wider than
-    // the container. The fraction must still be a fraction: 1, not 1.22 —
-    // which would render as `flexBasis: 122%` and then be thrown away as a
-    // legacy pixel value the next time the folder opened.
-    expect(dragPaneFrac(180, 170)).toBe(1);
-    expect(dragPaneFrac(220, 300)).toBe(1);
+  test("a container too narrow for both floors expresses no split at all", () => {
+    // Under 280px (220 + 60) the clamp returns PANE_MIN_W whatever the cursor
+    // does, so any fraction it yielded would describe the CONTAINER, not a
+    // choice — at 220px exactly 1.0, "the pane takes everything", which no
+    // wider window can honour. One drag in a narrow pane used to persist that
+    // and leave the list a 60px sliver forever after.
+    expect(dragPaneFrac(220, 170)).toBeNull();
+    expect(dragPaneFrac(220, 300)).toBeNull();
+    expect(dragPaneFrac(279, 100)).toBeNull();
+  });
+
+  test("280px is the narrowest container that still means something", () => {
+    // Both floors fit exactly, so the split is decided even though it has only
+    // one possible value.
+    expect(dragPaneFrac(280, 500)).toBeCloseTo(220 / 280, 10);
+    expect(dragPaneFrac(280, 0)).toBeCloseTo(220 / 280, 10);
+  });
+
+  test("the fraction a real drag produces can never reach 1", () => {
+    // The ceiling is (W - LIST_MIN_W) / W, which is below 1 for every width.
+    for (const w of [300, 640, 1024, 1920, 3840]) {
+      const widest = dragPaneFrac(w, w * 2) as number;
+      expect(widest).toBeLessThan(1);
+      expect(widest).toBeCloseTo((w - 60) / w, 10);
+    }
   });
 
   test("an unmeasurable container yields no fraction at all", () => {
@@ -59,7 +77,13 @@ describe("dragPaneFrac", () => {
 describe("parsePaneFrac", () => {
   test("reads a saved fraction", () => {
     expect(parsePaneFrac("0.42")).toBe(0.42);
-    expect(parsePaneFrac("1")).toBe(1);
+    expect(parsePaneFrac("0.999")).toBe(0.999);
+  });
+
+  test("a whole-container fraction is not honoured", () => {
+    // The drag can no longer produce it, but an older build could — and it
+    // leaves the list nothing but its CSS floor on every window.
+    expect(parsePaneFrac("1")).toBeNull();
   });
 
   test("no saved value", () => {
