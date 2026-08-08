@@ -1,0 +1,745 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8" />
+<title>CAD Viewer</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --chrome-0: #17191c; --chrome-1: #1e2124; --chrome-2: #26292e; --chrome-3: #2f3339;
+    --line: #383d44; --line-soft: #2c3036;
+    --text: #d5d9df; --text-dim: #8b929b; --text-faint: #5f666e;
+    --accent: #3b9dff; --accent-soft: #16344f; --warn: #e0a33c; --good: #3fb950;
+    --canvas: #131417;
+    --l-mag: #d564c4;
+    --radius: 5px;
+    --mono: ui-monospace, "Cascadia Mono", "Consolas", "SFMono-Regular", monospace;
+    --ui: "Segoe UI", system-ui, -apple-system, "Helvetica Neue", Arial, sans-serif;
+  }
+  :root[data-theme="light"] {
+    color-scheme: light;
+    --chrome-0: #e7e9ec; --chrome-1: #f1f3f5; --chrome-2: #e7e9ec; --chrome-3: #dbdfe4;
+    --line: #c7ccd2; --line-soft: #d5dade;
+    --text: #1d2126; --text-dim: #5c636c; --text-faint: #949aa2;
+    --accent: #1b74d4; --accent-soft: #d3e6fb;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    font-family: var(--ui); background: var(--chrome-0); color: var(--text);
+    font-size: 13px; -webkit-font-smoothing: antialiased; overflow: hidden;
+  }
+  .app {
+    display: grid; height: 100vh;
+    grid-template-rows: 40px 1fr 26px;
+    grid-template-columns: var(--left, 234px) 1fr var(--right, 250px);
+    grid-template-areas: "top top top" "left stage right" "status status status";
+  }
+  .app.no-left  { --left: 0px; }
+  .app.no-right { --right: 0px; }
+
+  /* toolbar */
+  .top { grid-area: top; display: flex; align-items: center; gap: 4px; padding: 0 8px;
+         background: var(--chrome-2); border-bottom: 1px solid var(--line); user-select: none; }
+  .brand { display: flex; align-items: center; gap: 8px; padding-right: 6px; }
+  .brand .mark { width: 20px; height: 20px; border-radius: 4px;
+    background: linear-gradient(135deg, var(--accent), #7bc0ff); display: grid; place-items: center;
+    color: #fff; font-weight: 700; font-size: 12px; }
+  .brand .name { font-weight: 600; letter-spacing: .2px; }
+  .filechip { display: flex; align-items: center; gap: 7px; background: var(--chrome-1);
+    border: 1px solid var(--line); padding: 3px 9px; border-radius: 999px; margin-left: 2px; max-width: 260px; }
+  .filechip .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--good); flex: none; }
+  .filechip .fn { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .filechip .ver { color: var(--text-dim); font-size: 11px; border-left: 1px solid var(--line); padding-left: 7px; white-space: nowrap; }
+  .sep { width: 1px; height: 22px; background: var(--line); margin: 0 4px; }
+  .spacer { flex: 1; }
+  .tbtn { height: 28px; min-width: 28px; padding: 0 7px; display: inline-flex; align-items: center; gap: 6px;
+    justify-content: center; background: transparent; border: 1px solid transparent; border-radius: var(--radius);
+    color: var(--text); cursor: pointer; font-size: 12px; font-family: inherit; }
+  .tbtn:hover { background: var(--chrome-3); }
+  .tbtn.active { background: var(--accent-soft); border-color: color-mix(in srgb, var(--accent) 45%, transparent); }
+  .tbtn:disabled { opacity: .4; cursor: default; }
+  .tbtn svg { width: 16px; height: 16px; display: block; }
+
+  /* docks */
+  .dock { background: var(--chrome-1); display: flex; flex-direction: column; min-height: 0; }
+  .dock.left { grid-area: left; border-right: 1px solid var(--line); }
+  .dock.right { grid-area: right; border-left: 1px solid var(--line); }
+  .app.no-left .dock.left, .app.no-right .dock.right { display: none; }
+  .dock-head { display: flex; align-items: center; justify-content: space-between; height: 30px; padding: 0 10px;
+    flex: none; font-size: 11px; font-weight: 600; letter-spacing: .6px; text-transform: uppercase;
+    color: var(--text-dim); border-bottom: 1px solid var(--line-soft); }
+  .icobtn { width: 22px; height: 22px; display: grid; place-items: center; border-radius: 4px; cursor: pointer;
+    color: var(--text-dim); border: none; background: transparent; }
+  .icobtn:hover { background: var(--chrome-3); color: var(--text); }
+  .icobtn svg { width: 14px; height: 14px; }
+  .search { margin: 8px 10px 4px; display: flex; align-items: center; gap: 6px; background: var(--chrome-0);
+    border: 1px solid var(--line); border-radius: var(--radius); padding: 4px 8px; color: var(--text-dim); }
+  .search input { background: none; border: none; outline: none; color: var(--text); width: 100%; font: inherit; font-size: 12px; }
+  .search svg { width: 13px; height: 13px; flex: none; }
+
+  .layers { overflow: auto; padding: 4px 6px 8px; flex: 1; min-height: 0; }
+  .layer-row { display: grid; grid-template-columns: 20px 12px 1fr auto 22px; align-items: center; gap: 8px;
+    padding: 5px 7px; border-radius: var(--radius); }
+  .layer-row:hover { background: var(--chrome-2); }
+  .layer-row.off .lname { opacity: .4; }
+  .layer-row.empty .lname, .layer-row.empty .lcount { opacity: .38; }
+  .eye, .solo { width: 20px; height: 20px; display: grid; place-items: center; padding: 0; border: none;
+    background: transparent; border-radius: 4px; cursor: pointer; color: var(--text-dim); }
+  .eye:hover, .solo:hover { background: var(--chrome-3); color: var(--text); }
+  .eye svg { width: 15px; height: 15px; }
+  .solo { color: var(--text-faint); opacity: 0; }
+  .layer-row:hover .solo { opacity: 1; }
+  .solo.on { opacity: 1; color: var(--accent); }
+  .solo svg { width: 14px; height: 14px; }
+  .swatch { width: 12px; height: 12px; border-radius: 3px; border: 1px solid rgba(128,128,128,.35); }
+  .lname { font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .lcount { font-size: 11px; color: var(--text-faint); font-variant-numeric: tabular-nums; text-align: right; min-width: 20px; }
+  .space-tabs { display: flex; gap: 2px; padding: 6px; border-top: 1px solid var(--line-soft); flex: none; }
+  .space-tabs .tab { font-size: 11.5px; padding: 4px 10px; border-radius: 4px; cursor: pointer; color: var(--text-dim); border: 1px solid transparent; }
+  .space-tabs .tab.active { background: var(--chrome-3); color: var(--text); border-color: var(--line); }
+
+  .props { overflow: auto; padding: 4px 0; flex: 1; min-height: 0; }
+  .psec { padding: 4px 0 10px; }
+  .psec + .psec { border-top: 1px solid var(--line-soft); }
+  .psec h4 { margin: 0; padding: 9px 12px 6px; font-size: 10.5px; letter-spacing: .7px; text-transform: uppercase; color: var(--text-dim); font-weight: 600; }
+  .prow { display: grid; grid-template-columns: 92px 1fr; gap: 8px; padding: 3px 12px; align-items: baseline; }
+  .prow .k { color: var(--text-dim); font-size: 11.5px; }
+  .prow .v { font-size: 12px; font-family: var(--mono); font-variant-numeric: tabular-nums; word-break: break-word; }
+  .prow .v.ui { font-family: var(--ui); }
+  .hist { padding: 2px 12px 4px; display: flex; flex-direction: column; gap: 5px; }
+  .hbar { display: grid; grid-template-columns: 92px 1fr 34px; align-items: center; gap: 8px; font-size: 11.5px; }
+  .hbar .ht { color: var(--text-dim); font-family: var(--mono); }
+  .hbar .hb { height: 7px; border-radius: 3px; background: var(--accent); opacity: .8; }
+  .hbar .hn { text-align: right; font-family: var(--mono); font-variant-numeric: tabular-nums; color: var(--text-dim); }
+  .measure-out { padding: 4px 12px; font-size: 12px; color: var(--text-dim); line-height: 1.5; }
+  .measure-out b { color: var(--warn); font-family: var(--mono); }
+
+  /* stage */
+  .stage { grid-area: stage; position: relative; background: var(--canvas); overflow: hidden; }
+  #cadHost { position: absolute; inset: 0; width: 100%; height: 100%; }
+  #cadHost canvas { display: block; }
+  #overlay { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+  .stage.tool-measure #cadHost, .stage.tool-measure #overlay { cursor: none; }
+  .cross { position: absolute; inset: 0; pointer-events: none; display: none; }
+  .stage.hascursor.tool-measure .cross { display: block; }
+  .cross .h, .cross .v { position: absolute; background: color-mix(in srgb, var(--accent) 60%, transparent); }
+  .cross .h { left: 0; right: 0; height: 1px; } .cross .v { top: 0; bottom: 0; width: 1px; }
+  .cross .pick { position: absolute; width: 11px; height: 11px; border: 1px solid var(--accent); transform: translate(-50%,-50%); }
+
+  .hud-view { position: absolute; top: 10px; left: 12px; font-size: 11px; color: var(--text-dim);
+    background: color-mix(in srgb, var(--chrome-0) 72%, transparent); border: 1px solid var(--line-soft);
+    border-radius: 4px; padding: 3px 9px; pointer-events: none; letter-spacing: .3px; }
+  .hud-hint { position: absolute; top: 10px; left: 50%; transform: translateX(-50%); font-size: 11px;
+    color: var(--text-dim); background: color-mix(in srgb, var(--chrome-0) 82%, transparent);
+    border: 1px solid var(--line-soft); border-radius: 999px; padding: 4px 12px; pointer-events: none;
+    opacity: 0; transition: opacity .2s; }
+  .hud-hint.show { opacity: 1; }
+  .navcube { position: absolute; right: 14px; bottom: 14px; display: flex; flex-direction: column; gap: 6px; }
+  .navcube button { width: 30px; height: 30px; border-radius: 6px; border: 1px solid var(--line);
+    background: color-mix(in srgb, var(--chrome-1) 86%, transparent); color: var(--text-dim); cursor: pointer;
+    display: grid; place-items: center; backdrop-filter: blur(4px); }
+  .navcube button:hover { background: var(--chrome-3); color: var(--text); }
+  .navcube svg { width: 15px; height: 15px; }
+
+  .center-state { position: absolute; inset: 0; display: none; place-items: center; text-align: center; padding: 32px; }
+  .center-state.show { display: grid; }
+  .center-state .card { max-width: 380px; }
+  .center-state .big { font-size: 15px; font-weight: 600; margin-bottom: 8px; }
+  .center-state .sub { color: var(--text-dim); line-height: 1.6; font-size: 12.5px; }
+  .center-state.error .big { color: #ff6b6b; }
+  .spin { width: 26px; height: 26px; border: 2.5px solid var(--line); border-top-color: var(--accent);
+    border-radius: 50%; margin: 0 auto 14px; animation: spin .8s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  @media (prefers-reduced-motion: reduce) { .spin { animation: none; } }
+
+  /* status bar */
+  .status { grid-area: status; display: flex; align-items: stretch; background: var(--chrome-0);
+    border-top: 1px solid var(--line); font-size: 11.5px; user-select: none; }
+  .cmd { display: flex; align-items: center; gap: 8px; padding: 0 10px; flex: 1; min-width: 0; border-right: 1px solid var(--line); }
+  .cmd .prompt { color: var(--accent); font-family: var(--mono); }
+  .cmd .echo { color: var(--text-dim); font-family: var(--mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .coords { display: flex; align-items: center; gap: 14px; padding: 0 14px; font-family: var(--mono);
+    font-variant-numeric: tabular-nums; border-right: 1px solid var(--line); color: var(--text); }
+  .coords .lab { color: var(--text-faint); }
+  .toggles { display: flex; align-items: center; }
+  .tg { padding: 0 10px; height: 100%; display: flex; align-items: center; color: var(--text-faint); cursor: pointer;
+    border-right: 1px solid var(--line-soft); letter-spacing: .3px; }
+  .tg:hover { background: var(--chrome-2); color: var(--text-dim); }
+  .tg.on { color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent); }
+  .zoom { padding: 0 12px; display: flex; align-items: center; color: var(--text-dim); font-family: var(--mono); font-variant-numeric: tabular-nums; }
+
+  /* overlay marks */
+  .ov-grid { stroke: color-mix(in srgb, var(--text-faint) 40%, transparent); stroke-width: .5; }
+  .ov-grid.major { stroke: color-mix(in srgb, var(--text-faint) 75%, transparent); stroke-width: .7; }
+  .ov-line { stroke: var(--warn); stroke-width: 1.4; fill: none; }
+  .ov-line.dash { stroke-dasharray: 6 4; }
+  .ov-poly { stroke: var(--warn); stroke-width: 1.4; fill: color-mix(in srgb, var(--warn) 16%, transparent); }
+  .ov-node { fill: var(--warn); stroke: #000; stroke-width: .6; }
+  .ov-snap { fill: none; stroke: var(--good); stroke-width: 1.4; }
+  .ov-lbl-bg { fill: color-mix(in srgb, var(--chrome-0) 90%, transparent); stroke: var(--line); stroke-width: 1; }
+  .ov-txt { fill: var(--warn); font: 600 12px var(--mono); }
+</style>
+</head>
+<body>
+<div class="app" id="app">
+  <div class="top">
+    <div class="brand"><div class="mark">▤</div><span class="name">CAD&nbsp;Viewer</span></div>
+    <div class="filechip"><span class="dot" id="fdot"></span><span class="fn" id="fname">—</span><span class="ver" id="fver"></span></div>
+    <div class="sep"></div>
+    <button class="tbtn" id="fitBtn" title="Zoom Extents (F)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="8" y="8" width="8" height="8" rx="1"/><path d="M3 8V4a1 1 0 0 1 1-1h4M21 8V4a1 1 0 0 0-1-1h-4M3 16v4a1 1 0 0 0 1 1h4M21 16v4a1 1 0 0 1-1 1h-4"/></svg></button>
+    <button class="tbtn" id="fsBtn" title="Full screen"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M8 3H5a2 2 0 0 0-2 2v3M16 3h3a2 2 0 0 1 2 2v3M8 21H5a2 2 0 0 1-2-2v-3M16 21h3a2 2 0 0 0 2-2v-3"/></svg></button>
+    <div class="sep"></div>
+    <button class="tbtn" data-tool="distance" title="Measure Distance (M)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M3 17L17 3l4 4L7 21z"/><path d="M7 13l2 2M11 9l2 2M15 5l2 2"/></svg></button>
+    <button class="tbtn" data-tool="area" title="Measure Area"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M4 20V6l6-2 10 4v10l-8 2z"/></svg></button>
+    <button class="tbtn" data-tool="angle" title="Measure Angle"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M4 20h16M4 20L18 6M4 20a9 9 0 0 1 7-8"/></svg></button>
+    <div class="spacer"></div>
+    <button class="tbtn" id="leftToggle" title="Toggle Layers"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M12 3l9 5-9 5-9-5z"/><path d="M3 13l9 5 9-5M3 8v8M21 8v8"/></svg></button>
+    <button class="tbtn" id="rightToggle" title="Toggle Properties"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M14 4v16"/></svg></button>
+    <button class="tbtn" id="themeBtn" title="Toggle chrome theme"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2M5 5l1.5 1.5M17.5 17.5L19 19M19 5l-1.5 1.5M6.5 17.5L5 19"/></svg></button>
+  </div>
+
+  <aside class="dock left">
+    <div class="dock-head"><span>Layers</span><div><button class="icobtn" id="allOn" title="Show all layers"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="2.5"/></svg></button></div></div>
+    <div class="search"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4-4"/></svg><input placeholder="Filter layers…" id="layerFilter"></div>
+    <div class="layers" id="layerList"></div>
+    <div class="space-tabs"><div class="tab active">Model</div></div>
+  </aside>
+
+  <main class="stage" id="stage">
+    <div id="cadHost"></div>
+    <svg id="overlay"></svg>
+    <div class="cross" id="cross"><div class="h"></div><div class="v"></div><div class="pick"></div></div>
+    <div class="hud-view" id="hudView">Model</div>
+    <div class="hud-hint" id="hint"></div>
+    <div class="navcube">
+      <button id="zin" title="Zoom in"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg></button>
+      <button id="zout" title="Zoom out"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14"/></svg></button>
+      <button id="home" title="Zoom Extents"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 11l9-7 9 7"/><path d="M5 10v9h14v-9"/></svg></button>
+    </div>
+    <div class="center-state" id="state"><div class="card"><div id="stateIcon"></div><div class="big" id="stateBig"></div><div class="sub" id="stateSub"></div></div></div>
+  </main>
+
+  <aside class="dock right">
+    <div class="dock-head"><span>Properties</span></div>
+    <div class="props">
+      <div class="psec">
+        <h4>Drawing</h4>
+        <div class="prow"><span class="k">File</span><span class="v" id="pFile">—</span></div>
+        <div class="prow"><span class="k">Format</span><span class="v ui" id="pFormat">—</span></div>
+        <div class="prow"><span class="k">Units</span><span class="v ui" id="pUnits">—</span></div>
+        <div class="prow"><span class="k">Extents</span><span class="v" id="pExtents">—</span></div>
+        <div class="prow"><span class="k">Size</span><span class="v" id="pExtSize">—</span></div>
+        <div class="prow"><span class="k">Layers</span><span class="v" id="pLayers">—</span></div>
+        <div class="prow"><span class="k">Entities</span><span class="v" id="pEntities">—</span></div>
+      </div>
+      <div class="psec">
+        <h4>Entity breakdown</h4>
+        <div class="hist" id="hist"><div class="measure-out">—</div></div>
+      </div>
+      <div class="psec">
+        <h4>Measurement</h4>
+        <div class="measure-out" id="measureOut">No measurement. Pick a measure tool, then click points on the drawing.</div>
+      </div>
+    </div>
+  </aside>
+
+  <div class="status">
+    <div class="cmd"><span class="prompt">Command:</span><span class="echo" id="echo">Initializing…</span></div>
+    <div class="coords"><span><span class="lab">X</span> <span id="cx">0.000</span></span><span><span class="lab">Y</span> <span id="cy">0.000</span></span></div>
+    <div class="toggles">
+      <div class="tg on" data-tg="OSNAP" id="tgOsnap" title="Object snap (endpoints, centers)">OSNAP</div>
+      <div class="tg" data-tg="GRID" id="tgGrid" title="Reference grid">GRID</div>
+      <div class="tg" data-tg="ORTHO" id="tgOrtho" title="Constrain to horizontal/vertical">ORTHO</div>
+    </div>
+    <div class="zoom"><span id="zpct">—</span></div>
+  </div>
+</div>
+
+<script type="module">
+"use strict";
+const $ = (id) => document.getElementById(id);
+const stage = $("stage"), host = $("cadHost"), overlay = $("overlay");
+
+// ---- template-private asset loader (rawUrl of a sibling, proven pattern) ----
+const HTML_PATH = new URLSearchParams(location.search).get("path") || "";
+const BASE_DIR = HTML_PATH.slice(0, Math.max(HTML_PATH.lastIndexOf("/"), HTML_PATH.lastIndexOf("\\")) + 1);
+const assetUrl = (rel) => fused.rawUrl(BASE_DIR + rel);
+
+let viewer = null, meta = null, baseScale = null, snapPoints = [], layerCounts = {}, gridEnabled = false;
+let tool = null;                         // null | "distance" | "area" | "angle"
+let pts = [];                            // measure points in progress, model coords
+let doneMeasure = null;                  // { tool, pts } of the last completed measurement (persists)
+let hoverModel = null;                   // last snapped model coord under cursor
+let snapEnabled = true, orthoEnabled = false;
+
+const UNIT_ABBR = { Millimeters:"mm", Centimeters:"cm", Meters:"m", Kilometers:"km",
+  Inches:"in", Feet:"ft", Miles:"mi", Yards:"yd", Unitless:"", Unknown:"" };
+function unitAbbr() { return meta ? (UNIT_ABBR[meta.units_name] ?? "") : ""; }
+
+function echo(s) { $("echo").textContent = s; }
+function hint(s) { const h = $("hint"); if (!s) { h.classList.remove("show"); return; }
+  h.textContent = s; h.classList.add("show"); }
+
+function showState(kind, big, sub, spinner) {
+  const el = $("state");
+  el.classList.toggle("error", kind === "error");
+  $("stateIcon").innerHTML = spinner ? '<div class="spin"></div>' : "";
+  $("stateBig").textContent = big; $("stateSub").innerHTML = sub || "";
+  el.classList.add("show");
+}
+function hideState() { $("state").classList.remove("show"); }
+
+// ---------- boot ----------
+async function boot() {
+  const file = fused.params.get("_file");
+  if (!file) { showState("error", "No file selected", "This template opens a .dxf drawing from the explorer."); return; }
+  const short = file.split(/[\\/]/).pop();
+  $("fname").textContent = short; $("fname").title = file;
+  $("pFile").textContent = short;
+
+  showState("info", "Reading drawing…", short, true);
+  try {
+    meta = await fused.runPython("./reader.py", { file });
+  } catch (err) {
+    showState("error", "Could not read file", (err && err.message) || String(err)); return;
+  }
+  renderDrawingPanel(meta);
+
+  if (!meta.supported) {
+    $("fdot").style.background = "var(--warn)";
+    if (meta.format === "dwg") {
+      showState("info", "DWG not yet supported",
+        `This is a <b>DWG</b> drawing${meta.version_name ? " (" + meta.version_name + ")" : ""}. ` +
+        "The viewer currently renders <b>DXF</b>. Export or convert the drawing to DXF to open it here — " +
+        "a native DWG mode is planned.");
+    } else if (meta.format === "binary-dxf") {
+      showState("info", "Binary DXF not yet supported", "Save this drawing as <b>ASCII DXF</b> to open it here.");
+    } else {
+      showState("error", "Unsupported file", meta.error || "This file could not be recognized as a DXF drawing.");
+    }
+    return;
+  }
+
+  showState("info", "Rendering…", short, true);
+  let DxfViewer, Color;
+  try {
+    ({ DxfViewer, Color } = await import(assetUrl("vendor/dxf-viewer.bundle.mjs")));
+  } catch (err) {
+    showState("error", "Viewer failed to load", (err && err.message) || String(err)); return;
+  }
+
+  viewer = new DxfViewer(host, {
+    clearColor: new Color(cssColor("--canvas")), autoResize: true,
+    colorCorrection: true, antialias: true, retainParsedDxf: true,
+  });
+  viewer.Subscribe("viewChanged", onViewChanged);
+  viewer.Subscribe("message", (e) => { if (e.detail) console.log("[dxf]", e.detail.message); });
+
+  try {
+    await viewer.Load({
+      url: fused.rawUrl(file), fonts: [assetUrl("vendor/DejaVuSans.ttf")],
+      progressCbk: (phase) => showState("info", "Rendering…", "phase: " + phase, true),
+    });
+  } catch (err) {
+    showState("error", "Could not render drawing", (err && err.message) || String(err)); return;
+  }
+
+  hideState();
+  onLoaded();
+}
+
+function cssColor(varName) {
+  return getComputedStyle(document.documentElement).getPropertyValue(varName).trim() || "#131417";
+}
+
+function onLoaded() {
+  buildSnapPoints();   // indexes object-snap points and per-layer entity counts
+  renderLayers(viewer.GetLayers());
+  // real extents from the geometry (header extents are often unset)
+  const b = viewer.GetBounds();
+  if (b) {
+    $("pExtents").textContent = `${fmt(b.minX)}, ${fmt(b.minY)} → ${fmt(b.maxX)}, ${fmt(b.maxY)}`;
+    $("pExtSize").textContent = `${fmt(b.maxX - b.minX)} × ${fmt(b.maxY - b.minY)} ${unitAbbr()}`;
+  }
+  baseScale = pxPerUnit();
+  wireCanvas();
+  onViewChanged();
+  echo("Ready · " + (meta.entity_total ?? 0) + " entities");
+}
+
+function fmt(n) { return (Math.abs(n) >= 1000 ? n.toFixed(0) : n.toFixed(2)); }
+
+// ---------- panels ----------
+function renderDrawingPanel(m) {
+  const fmtName = { dxf:"DXF", dwg:"DWG", "binary-dxf":"Binary DXF", unknown:"Unknown" }[m.format] || m.format;
+  $("pFormat").textContent = fmtName + (m.version_name ? " · " + m.version_name : "");
+  $("pUnits").textContent = m.units_name || "—";
+  $("fver").textContent = [fmtName, m.version_name].filter(Boolean).join(" · ");
+  if (m.size != null) $("pExtSize").textContent = "—";
+  $("pLayers").textContent = m.layer_count ?? "—";
+  $("pEntities").textContent = m.entity_total != null ? m.entity_total.toLocaleString() : "—";
+  // extents from header (may be null -> filled from GetBounds after load)
+  $("pExtents").textContent = m.extmin && m.extmax
+    ? `${fmt(m.extmin[0])}, ${fmt(m.extmin[1])} → ${fmt(m.extmax[0])}, ${fmt(m.extmax[1])}` : "computed on load";
+  // entity histogram
+  const counts = m.entity_counts || {};
+  const rows = Object.entries(counts).sort((a, b) => b[1] - a[1]);
+  const max = rows.reduce((mx, r) => Math.max(mx, r[1]), 1);
+  $("hist").innerHTML = rows.length
+    ? rows.map(([t, n]) => `<div class="hbar"><span class="ht">${t}</span>` +
+        `<span class="hb" style="width:${Math.max(6, (n / max) * 100)}%"></span>` +
+        `<span class="hn">${n}</span></div>`).join("")
+    : '<div class="measure-out">No entities.</div>';
+}
+
+const EYE_ON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="2.6"/></svg>';
+const EYE_OFF = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M3 3l18 18M10.6 6.2A9.7 9.7 0 0 1 12 5c6.5 0 10 7 10 7a17 17 0 0 1-3.2 4M6.5 8.3A16 16 0 0 0 2 12s3.5 7 10 7a9.7 9.7 0 0 0 3.4-.6"/></svg>';
+const SOLO_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/></svg>';
+let layerState = new Map();   // name -> visible
+let isolatedLayer = null;     // name of the currently isolated layer, or null
+function renderLayers(layers) {
+  const list = $("layerList"), filter = ($("layerFilter").value || "").toLowerCase();
+  if (!layerState.size) layers.forEach((l) => layerState.set(l.name, true));
+  list.innerHTML = "";
+  for (const l of layers) {
+    if (filter && !l.name.toLowerCase().includes(filter)) continue;
+    const vis = layerState.get(l.name) !== false;
+    const hex = "#" + ((l.color >>> 0) & 0xffffff).toString(16).padStart(6, "0");
+    const n = layerCounts[l.name] || 0;
+    const row = document.createElement("div");
+    row.className = "layer-row" + (vis ? "" : " off") + (n ? "" : " empty");
+    row.innerHTML = `<button class="eye">${vis ? EYE_ON : EYE_OFF}</button>` +
+      `<span class="swatch" style="background:${hex}"></span>` +
+      `<span class="lname" title="${l.name}">${l.displayName || l.name}</span>` +
+      `<span class="lcount" title="${n} object${n === 1 ? "" : "s"} on this layer">${n}</span>` +
+      `<button class="solo${isolatedLayer === l.name ? " on" : ""}" title="Isolate this layer">${SOLO_ICON}</button>`;
+    row.querySelector(".eye").addEventListener("click", () => {
+      const now = layerState.get(l.name) !== false;
+      layerState.set(l.name, !now);
+      viewer.ShowLayer(l.name, !now);
+      isolatedLayer = null;
+      renderLayers(viewer.GetLayers());
+      echo(`Layer ${l.name} ${now ? "off" : "on"}`);
+    });
+    row.querySelector(".solo").addEventListener("click", () => isolate(l.name));
+    list.appendChild(row);
+  }
+}
+function isolate(name) {
+  if (!viewer) return;
+  const layers = viewer.GetLayers();
+  if (isolatedLayer === name) {
+    isolatedLayer = null;
+    for (const l of layers) { layerState.set(l.name, true); viewer.ShowLayer(l.name, true); }
+    echo("Isolate off · all layers on");
+  } else {
+    isolatedLayer = name;
+    for (const l of layers) { const on = l.name === name; layerState.set(l.name, on); viewer.ShowLayer(l.name, on); }
+    echo(`Isolated layer ${name}`);
+  }
+  renderLayers(viewer.GetLayers());
+}
+$("allOn").addEventListener("click", () => {
+  if (!viewer) return;
+  isolatedLayer = null;
+  for (const l of viewer.GetLayers()) { layerState.set(l.name, true); viewer.ShowLayer(l.name, true); }
+  renderLayers(viewer.GetLayers()); echo("All layers on");
+});
+$("layerFilter").addEventListener("input", () => viewer && renderLayers(viewer.GetLayers()));
+
+// ---------- coordinate transforms ----------
+// Via the camera's own (un)projection so pan and zoom are honored (dxf-viewer
+// drives wheel zoom via camera.zoom), in CSS pixels so DPR never enters.
+function canvasRect() { return host.getBoundingClientRect(); }
+function canvasToModel(px, py) {
+  const cam = viewer.GetCamera(), o = viewer.GetOrigin(), r = canvasRect();
+  const v = cam.position.clone().set(px / r.width * 2 - 1, 1 - py / r.height * 2, 0).unproject(cam);
+  return { x: v.x + o.x, y: v.y + o.y };
+}
+function modelToCanvas(mx, my) {
+  const cam = viewer.GetCamera(), o = viewer.GetOrigin(), r = canvasRect();
+  const v = cam.position.clone().set(mx - o.x, my - o.y, 0).project(cam);
+  return { x: (v.x * 0.5 + 0.5) * r.width, y: (0.5 - v.y * 0.5) * r.height };
+}
+function pxPerUnit() { const a = modelToCanvas(0, 0), b = modelToCanvas(1, 0); return Math.hypot(b.x - a.x, b.y - a.y); }
+
+// ---------- object snap ----------
+function buildSnapPoints() {
+  snapPoints = [];
+  layerCounts = {};
+  try {
+    const dxf = viewer.GetDxf();
+    if (!dxf || !dxf.entities) return;
+    for (const e of dxf.entities) {
+      const ly = e.layer || "0";
+      layerCounts[ly] = (layerCounts[ly] || 0) + 1;
+      if (Array.isArray(e.vertices)) {
+        for (const v of e.vertices) if (v && isFinite(v.x) && isFinite(v.y)) snapPoints.push([v.x, v.y]);
+      }
+      if (e.center && isFinite(e.center.x)) snapPoints.push([e.center.x, e.center.y]);
+      if (e.position && isFinite(e.position.x)) snapPoints.push([e.position.x, e.position.y]);
+      if (e.startPoint && isFinite(e.startPoint.x)) snapPoints.push([e.startPoint.x, e.startPoint.y]);
+      if (e.endPoint && isFinite(e.endPoint.x)) snapPoints.push([e.endPoint.x, e.endPoint.y]);
+    }
+  } catch (err) { console.log("[snap] build failed", err); }
+}
+function snap(model) {
+  if (!snapEnabled || !snapPoints.length) return null;
+  const tolModel = 11 / pxPerUnit();
+  let best = null, bd = tolModel;
+  for (const [x, y] of snapPoints) {
+    const d = Math.hypot(x - model.x, y - model.y);
+    if (d < bd) { bd = d; best = { x, y }; }
+  }
+  return best;
+}
+function applyOrtho(a, b) {
+  if (!orthoEnabled) return b;
+  return Math.abs(b.x - a.x) >= Math.abs(b.y - a.y) ? { x: b.x, y: a.y } : { x: a.x, y: b.y };
+}
+
+// ---------- canvas interaction ----------
+function wireCanvas() {
+  stage.addEventListener("pointerenter", () => stage.classList.add("hascursor"));
+  stage.addEventListener("pointerleave", () => { stage.classList.remove("hascursor"); hoverModel = null; drawOverlay(); });
+  host.addEventListener("pointermove", onMove);
+  host.addEventListener("pointerdown", onDown, true);
+}
+function onMove(e) {
+  if (!viewer) return;
+  const r = canvasRect();
+  const px = e.clientX - r.left, py = e.clientY - r.top;
+  let m = canvasToModel(px, py);
+  const sp = snap(m);
+  hoverModel = sp || m;
+  $("cx").textContent = hoverModel.x.toFixed(3);
+  $("cy").textContent = hoverModel.y.toFixed(3);
+  // crosshair (screen px relative to stage)
+  const sr = stage.getBoundingClientRect();
+  const cross = $("cross");
+  cross.querySelector(".h").style.top = (e.clientY - sr.top) + "px";
+  cross.querySelector(".v").style.left = (e.clientX - sr.left) + "px";
+  const pick = cross.querySelector(".pick");
+  pick.style.left = (e.clientX - sr.left) + "px"; pick.style.top = (e.clientY - sr.top) + "px";
+  if (tool) drawOverlay();
+}
+function onDown(e) {
+  if (!tool || !viewer || e.button !== 0) return;
+  e.preventDefault(); e.stopPropagation();      // don't let the viewer pan while measuring
+  if (!pts.length) doneMeasure = null;          // starting a fresh measurement
+  let p = hoverModel || canvasToModel(e.clientX - canvasRect().left, e.clientY - canvasRect().top);
+  // ortho anchors at pts[0]: distance's first point, and the vertex for both angle rays
+  if (pts.length && (tool === "distance" || tool === "angle")) p = applyOrtho(pts[0], p);
+  pts.push(p);
+  const need = tool === "distance" ? 2 : tool === "angle" ? 3 : 999;
+  if (pts.length >= need && tool !== "area") finishMeasure();
+  else { updateMeasureReadout(); drawOverlay(); }
+}
+
+// ---------- measurement math ----------
+function dist(a, b) { return Math.hypot(b.x - a.x, b.y - a.y); }
+function polyArea(p) { let a = 0; for (let i = 0; i < p.length; i++) { const j = (i + 1) % p.length; a += p[i].x * p[j].y - p[j].x * p[i].y; } return Math.abs(a) / 2; }
+function angleAt(v, a, b) {
+  const a1 = Math.atan2(a.y - v.y, a.x - v.x), a2 = Math.atan2(b.y - v.y, b.x - v.x);
+  let d = Math.abs(a1 - a2) * 180 / Math.PI; if (d > 180) d = 360 - d; return d;
+}
+function updateMeasureReadout() {
+  const u = unitAbbr();
+  if (tool === "distance" && pts.length === 1) echo("Specify second point:");
+  else if (tool === "angle") echo(pts.length === 1 ? "Specify first ray endpoint:" : "Specify second ray endpoint:");
+  else if (tool === "area") {
+    if (pts.length >= 3) { $("measureOut").innerHTML = `Area <b>${polyArea(pts).toLocaleString(undefined,{maximumFractionDigits:2})} ${u}²</b> · <b>${pts.length}</b> pts · double-click / Enter to finish`; }
+    echo(`Area: ${pts.length} point(s) — click to add, Enter to close`);
+  }
+}
+function finishMeasure() {
+  const u = unitAbbr();
+  if (tool === "distance") {
+    const d = dist(pts[0], pts[1]), dx = pts[1].x - pts[0].x, dy = pts[1].y - pts[0].y;
+    $("measureOut").innerHTML = `Distance <b>${d.toLocaleString(undefined,{maximumFractionDigits:3})} ${u}</b><br>Δx ${dx.toFixed(2)} · Δy ${dy.toFixed(2)} · angle ${(Math.atan2(dy,dx)*180/Math.PI).toFixed(2)}°`;
+    echo(`Distance = ${d.toFixed(3)} ${u}`);
+  } else if (tool === "angle") {
+    const ang = angleAt(pts[0], pts[1], pts[2]);
+    $("measureOut").innerHTML = `Angle <b>${ang.toFixed(2)}°</b> at ${fmt(pts[0].x)}, ${fmt(pts[0].y)}`;
+    echo(`Angle = ${ang.toFixed(2)}°`);
+  } else if (tool === "area") {
+    const a = polyArea(pts), per = pts.reduce((s, p, i) => s + (i ? dist(pts[i-1], p) : 0), 0) + dist(pts[pts.length-1], pts[0]);
+    $("measureOut").innerHTML = `Area <b>${a.toLocaleString(undefined,{maximumFractionDigits:2})} ${u}²</b><br>Perimeter ${per.toFixed(2)} ${u} · ${pts.length} vertices`;
+    echo(`Area = ${a.toFixed(2)} ${u}²`);
+  }
+  doneMeasure = { tool, pts: pts.slice() }; pts = []; drawOverlay();
+}
+
+// ---------- overlay drawing ----------
+function niceStep(raw) {
+  const p = Math.pow(10, Math.floor(Math.log10(raw))), m = raw / p;
+  return (m < 1.5 ? 1 : m < 3.5 ? 2 : m < 7.5 ? 5 : 10) * p;
+}
+function gridSvg(r) {
+  const ppu = pxPerUnit();
+  if (!isFinite(ppu) || ppu <= 0) return "";
+  const step = niceStep(64 / ppu);
+  const a = canvasToModel(0, r.height), b = canvasToModel(r.width, 0);
+  const minX = Math.min(a.x, b.x), maxX = Math.max(a.x, b.x);
+  const minY = Math.min(a.y, b.y), maxY = Math.max(a.y, b.y);
+  const line = (x1, y1, x2, y2, major) =>
+    `<line class="ov-grid${major ? " major" : ""}" x1="${x1.toFixed(1)}" y1="${y1.toFixed(1)}" x2="${x2.toFixed(1)}" y2="${y2.toFixed(1)}"/>`;
+  // integer index k so "major every 5th" is exact (a float remainder would drift)
+  let s = "", n = 0;
+  for (let k = Math.ceil(minX / step); k * step <= maxX && n < 400; k++, n++) {
+    const p1 = modelToCanvas(k * step, minY), p2 = modelToCanvas(k * step, maxY);
+    s += line(p1.x, p1.y, p2.x, p2.y, k % 5 === 0);
+  }
+  for (let k = Math.ceil(minY / step); k * step <= maxY && n < 800; k++, n++) {
+    const p1 = modelToCanvas(minX, k * step), p2 = modelToCanvas(maxX, k * step);
+    s += line(p1.x, p1.y, p2.x, p2.y, k % 5 === 0);
+  }
+  return s;
+}
+function drawOverlay() {
+  if (!viewer) return;
+  const r = canvasRect();
+  overlay.setAttribute("viewBox", `0 0 ${r.width} ${r.height}`);
+  let svg = gridEnabled ? gridSvg(r) : "";
+  const C = (p) => modelToCanvas(p.x, p.y);
+  const toC = (p) => { const c = C(p); return `${c.x.toFixed(1)},${c.y.toFixed(1)}`; };
+  const lbl = (p, t) => {
+    const x = p.x + 8, y = p.y - 8, w = t.length * 7 + 10;
+    return `<rect class="ov-lbl-bg" x="${(x - 5).toFixed(1)}" y="${(y - 12).toFixed(1)}" width="${w.toFixed(1)}" height="16" rx="4"/>` +
+      `<text class="ov-txt" x="${x.toFixed(1)}" y="${y.toFixed(1)}">${t}</text>`;
+  };
+  const node = (p) => { const c = C(p); svg += `<circle class="ov-node" cx="${c.x.toFixed(1)}" cy="${c.y.toFixed(1)}" r="3.2"/>`; };
+  const seg = (p, q, cls) => { const a = C(p), b = C(q); svg += `<line class="${cls}" x1="${a.x.toFixed(1)}" y1="${a.y.toFixed(1)}" x2="${b.x.toFixed(1)}" y2="${b.y.toFixed(1)}"/>`; };
+  const drawSet = (P, closed) => {
+    if (!P || !P.length) return;
+    if (closed && P.length > 2) svg += `<polygon class="ov-poly" points="${P.map(toC).join(" ")}"/>`;
+    else if (P.length > 1) svg += `<polyline class="ov-line" points="${P.map(toC).join(" ")}"/>`;
+    for (const p of P) node(p);
+  };
+  const u = unitAbbr();
+  // completed measurement (persists until a new one starts). Angle is a vertex
+  // plus two rays, not a chained polyline, so it draws on its own.
+  if (doneMeasure) {
+    const P = doneMeasure.pts, T = doneMeasure.tool;
+    if (T === "angle") {
+      seg(P[0], P[1], "ov-line"); seg(P[0], P[2], "ov-line"); P.forEach(node);
+      svg += lbl(C(P[0]), `${angleAt(P[0], P[1], P[2]).toFixed(1)}°`);
+    } else {
+      drawSet(P, T === "area");
+      if (T === "distance") svg += lbl(C({ x: (P[0].x + P[1].x) / 2, y: (P[0].y + P[1].y) / 2 }), `${dist(P[0], P[1]).toFixed(2)} ${u}`);
+      else { const cx = P.reduce((s, p) => s + p.x, 0) / P.length, cy = P.reduce((s, p) => s + p.y, 0) / P.length; svg += lbl(C({ x: cx, y: cy }), `${polyArea(P).toFixed(1)} ${u}²`); }
+    }
+  }
+  // in-progress measurement + rubber band to the cursor
+  if (tool && pts.length) {
+    if (tool === "angle") {
+      const V = pts[0];
+      node(V);
+      if (pts.length >= 2) { seg(V, pts[1], "ov-line"); node(pts[1]); }
+      if (hoverModel) seg(V, applyOrtho(V, hoverModel), "ov-line dash");   // both rays start at the vertex
+    } else {
+      drawSet(pts, false);
+      if (hoverModel) {
+        const last = pts[pts.length - 1];
+        const rb = tool === "distance" ? applyOrtho(last, hoverModel) : hoverModel;
+        seg(last, rb, "ov-line dash");
+        if (tool === "distance") svg += lbl(C({ x: (last.x + rb.x) / 2, y: (last.y + rb.y) / 2 }), `${dist(last, rb).toFixed(2)} ${u}`);
+      }
+    }
+  }
+  // snap marker
+  if (tool && snapEnabled && snapPoints.length && hoverModel) {
+    const raw = canvasToModel(...lastPx());
+    if (Math.hypot(raw.x - hoverModel.x, raw.y - hoverModel.y) > 1e-9) {
+      const c = C(hoverModel);
+      svg += `<rect class="ov-snap" x="${(c.x - 5).toFixed(1)}" y="${(c.y - 5).toFixed(1)}" width="10" height="10"/>`;
+    }
+  }
+  overlay.innerHTML = svg;
+}
+let _lastPx = [0, 0];
+function lastPx() { return _lastPx; }
+host.addEventListener("pointermove", (e) => { const r = canvasRect(); _lastPx = [e.clientX - r.left, e.clientY - r.top]; });
+
+function onViewChanged() {
+  if (!viewer) return;
+  if (baseScale) $("zpct").textContent = Math.round(pxPerUnit() / baseScale * 100) + "%";
+  drawOverlay();
+}
+
+// ---------- tools ----------
+function setTool(name) {
+  tool = (tool === name) ? null : name;
+  pts = []; doneMeasure = null;
+  document.querySelectorAll(".tbtn[data-tool]").forEach((b) => b.classList.toggle("active", b.dataset.tool === tool));
+  stage.classList.toggle("tool-measure", !!tool);
+  if (tool === "distance") { echo("Specify first point:"); hint("Click two points · OSNAP + ORTHO in the status bar · Esc to cancel"); }
+  else if (tool === "area") { echo("Specify first point:"); hint("Click to add points · Enter / double-click to close · Esc to cancel"); }
+  else if (tool === "angle") { echo("Specify vertex:"); hint("Click vertex, then two ray endpoints · Esc to cancel"); }
+  else { hint(""); echo("Ready"); }
+  drawOverlay();
+}
+document.querySelectorAll(".tbtn[data-tool]").forEach((b) => b.addEventListener("click", () => setTool(b.dataset.tool)));
+
+function fit() {
+  if (!viewer) return;
+  const b = viewer.GetBounds(); if (!b) return;
+  const o = viewer.GetOrigin();
+  viewer.FitView(b.minX - o.x, b.maxX - o.x, b.minY - o.y, b.maxY - o.y);
+  onViewChanged();
+}
+function zoomBy(f) {
+  if (!viewer) return;
+  const cam = viewer.GetCamera();
+  viewer.SetView({ x: cam.position.x, y: cam.position.y }, (cam.right - cam.left) / cam.zoom * f);
+  onViewChanged();
+}
+$("fitBtn").addEventListener("click", fit);
+$("home").addEventListener("click", fit);
+$("zin").addEventListener("click", () => zoomBy(1 / 1.3));
+$("zout").addEventListener("click", () => zoomBy(1.3));
+
+// status toggles
+$("tgOsnap").addEventListener("click", () => { snapEnabled = $("tgOsnap").classList.toggle("on"); drawOverlay(); });
+$("tgOrtho").addEventListener("click", () => { orthoEnabled = $("tgOrtho").classList.toggle("on"); });
+$("tgGrid").addEventListener("click", () => { gridEnabled = $("tgGrid").classList.toggle("on"); drawOverlay(); });
+
+// panels + theme (chrome only; model space stays dark like AutoCAD)
+$("leftToggle").addEventListener("click", () => $("app").classList.toggle("no-left"));
+$("rightToggle").addEventListener("click", () => $("app").classList.toggle("no-right"));
+$("themeBtn").addEventListener("click", () => {
+  const root = document.documentElement, cur = root.getAttribute("data-theme");
+  root.setAttribute("data-theme", cur === "light" ? "dark" : "light");
+});
+
+// full screen
+const FS_ENTER = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M8 3H5a2 2 0 0 0-2 2v3M16 3h3a2 2 0 0 1 2 2v3M8 21H5a2 2 0 0 1-2-2v-3M16 21h3a2 2 0 0 0 2-2v-3"/></svg>';
+const FS_EXIT = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M8 3v3a2 2 0 0 1-2 2H3M16 3v3a2 2 0 0 0 2 2h3M8 21v-3a2 2 0 0 0-2-2H3M16 21v-3a2 2 0 0 1 2-2h3"/></svg>';
+$("fsBtn").addEventListener("click", () => {
+  if (document.fullscreenElement) document.exitFullscreen();
+  else document.documentElement.requestFullscreen().catch((err) => console.log("[fullscreen]", err && err.message));
+});
+document.addEventListener("fullscreenchange", () => {
+  const on = !!document.fullscreenElement, b = $("fsBtn");
+  b.classList.toggle("active", on);
+  b.innerHTML = on ? FS_EXIT : FS_ENTER;
+  b.title = on ? "Exit full screen" : "Full screen";
+});
+
+// keyboard
+window.addEventListener("keydown", (e) => {
+  const el = e.target;
+  if (el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable)) return;
+  if (e.key === "Escape") { if (tool) { pts = []; setTool(tool); } }
+  else if (e.key === "Enter" && tool === "area" && pts.length >= 3) finishMeasure();
+  else if (e.key.toLowerCase() === "f") fit();
+  else if (e.key.toLowerCase() === "m") setTool("distance");
+});
+host.addEventListener("dblclick", (e) => { if (tool === "area" && pts.length >= 3) { e.preventDefault(); finishMeasure(); } });
+window.addEventListener("resize", () => onViewChanged());
+
+boot();
+</script>
+</body>
+</html>

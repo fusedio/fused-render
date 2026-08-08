@@ -535,6 +535,13 @@
     "usd",
     "code"
   ],
+  ".dxf": [
+    "autocad_viewer",
+    "code"
+  ],
+  ".dwg": [
+    "autocad_viewer"
+  ],
   ".zip": [
     "zip"
   ],
