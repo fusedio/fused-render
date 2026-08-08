@@ -229,6 +229,31 @@ describe("paneModeList — gate visibility is the shared policy", () => {
   });
 });
 
+// `null` from activePaneMode is OVERLOADED, and conflating its two causes cost
+// a regression: the pane branched on `activeMode === null` alone and so served
+// the self target's "nothing previewed" hint to a SELECTED row whose mode list
+// was empty, stealing that row's metadata card. The predecessor sentinel could
+// not be produced by an empty list, which is why the old branch needed no such
+// test. Any caller acting on null must first ask WHICH null it has.
+describe("null has two unrelated causes", () => {
+  test("a self target with modes to offer: nothing chosen yet", () => {
+    const modes = paneModeList({
+      templates: dirTemplates(),
+      conditions: verdicts(["claude", "versions", "git", "graph"], []),
+      isDir: true,
+      self: true,
+      hasApp: false,
+    });
+    expect(modes.length).toBeGreaterThan(0);
+    expect(activePaneMode(modes, null, { self: true, hasApp: false })).toBeNull();
+  });
+
+  test("a selected row with an empty list: nothing to offer at all", () => {
+    // A file that maps to nothing, or whose every template is gate-denied.
+    expect(activePaneMode([], null, { self: false, hasApp: false })).toBeNull();
+  });
+});
+
 test("the pane's own sentinel is never sent to the server", () => {
   // KNOWN_SENTINEL_MODES is the set the shell will build a render URL for
   // (PT-12). `_app` is pane-local: the pane renders it itself.

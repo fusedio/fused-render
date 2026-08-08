@@ -357,11 +357,19 @@ export default function ListingPreviewPane({
         />
       </>
     );
-  } else if (activeMode === null) {
+  } else if (activeMode === null && row.self) {
     // "Nothing previewed" — the self target's default state, not a mode: the
     // header (so every offered mode stays one click away in the switcher, none
     // of them marked active) above the same hint the nothing-to-show path
     // shows.
+    //
+    // `row.self` is load-bearing, not defensive. `activePaneMode` returns null
+    // for TWO unrelated reasons: this state, and `modes[0] ?? null` on an empty
+    // list — which a SELECTED row reaches when its file maps to nothing or every
+    // template is gate-denied. That row has a subject and must keep falling
+    // through to the metadata card below; only the self target means "no subject
+    // chosen yet". The predecessor sentinel (`NONE_MODE`) could not be produced
+    // by an empty list, so it never had to say so.
     body = (
       <>
         {header}
