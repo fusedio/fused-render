@@ -43,13 +43,16 @@
 }
 
 /* Rendered right after the directory name (D81's `_listing` header) — shown
-   only when the folder holds exactly one HTML file. Chrome comes from the
-   quiet-control tokens (tokens.css), which is what keeps it quiet in BOTH
-   themes: these used to be `rgba(var(--fg-muted-rgb), …)` spelled here, and
-   one alpha cannot serve both palettes — over the light bar it reads as a
-   hairline, over the dark one as a lit pill, because --fg-muted is the light
-   ink there. The light values are unchanged; the tokens are where dark gets
-   its own. */
+   only when the folder holds exactly one HTML file. ONE rule for both hosts:
+   the explorer portals this button into the breadcrumb's actions slot
+   (.preview-actions) and the preview header renders it inline, and the slot's
+   generic button rule now excludes it BY NAME (see there) so this is what
+   paints it either way. Chrome comes from the quiet-control tokens
+   (tokens.css), which is what keeps it quiet in BOTH themes: these used to be
+   `rgba(var(--fg-muted-rgb), …)` spelled here, and one alpha cannot serve both
+   palettes — over the light bar it reads as a hairline, over the dark one as a
+   lit pill, because --fg-muted is the light ink there. The light values are
+   unchanged; the tokens are where dark gets its own. */
 .open-as-app-btn {
   flex: 0 0 auto;
   font: inherit;
@@ -68,22 +71,6 @@
   color: var(--fg);
 }
 
-/* In the explorer the button portals into the breadcrumb's actions slot
-   (.preview-actions): re-assert its chrome over the slot's generic
-   `.preview-actions button` rules, which otherwise outrank the class above. */
-.preview-actions .open-as-app-btn {
-  font-size: 12px;
-  border: 1px solid var(--ctl-quiet-border);
-  background: var(--ctl-quiet-bg);
-  color: var(--fg-muted);
-}
-
-.preview-actions .open-as-app-btn:hover {
-  background: var(--ctl-quiet-bg-hover);
-  border-color: var(--ctl-quiet-border-hover);
-  color: var(--fg);
-}
-
 .preview-actions {
   display: flex;
   align-items: center;
@@ -91,14 +78,26 @@
   flex: 0 0 auto;
 }
 
-/* Anything built from the shared bar recipe (explorer.css) opts OUT of this
-   generic chrome: it carries its own, and this rule's extra specificity would
-   otherwise re-style every control that portals into the slot. `.bar-ctl`
-   covers the buttons in the bar itself; `.bar-menu-item` covers the rows of a
-   dropdown OPENED from the bar, which are descendants of the slot too — and
-   which the `.active` rule below painted solid lime, since a menu's active row
-   and a toggle button's active state share the class name. */
-.preview-actions button:not(.bar-ctl):not(.bar-menu-item),
+/* Generic chrome for a button that portals into the slot WITHOUT bringing its
+   own. Everything that does bring its own opts out by name, and the opt-out
+   list is the whole mechanism — a control that carries a class but is not
+   named here silently loses to this rule:
+     * `.bar-ctl` — the shared bar recipe (explorer.css), the buttons in the bar;
+     * `.bar-menu-item` — the rows of a dropdown OPENED from the bar, which are
+       descendants of the slot too, and which the `.active` rule below painted
+       solid lime (a menu's active row and a toggle's active state share the
+       class name);
+     * `.open-as-app-btn` — SPECIFICITY TRAP, and this is the second round of
+       it. That button has its own chrome above and used to re-assert it with
+       `.preview-actions .open-as-app-btn` (0,2,0) — which loses to this
+       selector's (0,3,1), so the re-assert never applied and the button drew
+       as generic chrome in the explorer bar while drawing correctly in the
+       (unportaled) preview header. The `:not()` is the fix that actually
+       works, because it stops this rule MATCHING rather than trying to outrank
+       it; the re-assert is deleted with it. Round one wrote the re-assert and
+       a comment saying it was needed; round two is a reminder that the way to
+       settle a specificity fight is to not have one. */
+.preview-actions button:not(.bar-ctl):not(.bar-menu-item):not(.open-as-app-btn),
 .preview-actions a {
   font: inherit;
   padding: 5px 10px;
@@ -110,13 +109,13 @@
   cursor: pointer;
 }
 
-.preview-actions button:not(.bar-ctl):not(.bar-menu-item).active {
+.preview-actions button:not(.bar-ctl):not(.bar-menu-item):not(.open-as-app-btn).active {
   background: var(--accent);
   color: var(--on-accent);
   border-color: var(--accent);
 }
 
-.preview-actions button:not(.bar-ctl):not(.bar-menu-item):hover,
+.preview-actions button:not(.bar-ctl):not(.bar-menu-item):not(.open-as-app-btn):hover,
 .preview-actions a:hover {
   background: var(--bg-alt);
 }
