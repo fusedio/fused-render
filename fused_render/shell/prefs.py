@@ -17,7 +17,7 @@ offered — opt-in, default off; see ``reader_enabled``), and the **execution
 engine** for /api/run:
 
   * ``"fused"`` (default, D204) — the fused local compute backend (engine.py):
-    PEP 723 inline requirements resolved into cached venvs,
+    a folder's ``pyproject.toml`` dependencies resolved into cached venvs,
     ``@fused.udf``/``result`` entrypoints. Effective only while the ``fused``
     package is importable (``fused_engine_available``); otherwise execution
     falls back to builtin and the page says so, which is what keeps a default

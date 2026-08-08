@@ -8,13 +8,21 @@ fresh subprocess per call in a temp exec dir, params delivered via
 (`executor.py`/`_child.py`) runs unchanged. `available()` is the probe;
 `server/common.py`'s `_forced_engine` picks per process.
 
-Which interpreter a script gets is decided by its PEP 723 header (D172):
+Which interpreter a script gets is decided by the FOLDER it belongs to, not by
+anything written in the file (SPEC PY-16; supersedes D172's per-file header):
 
-  * **no header** -> the app's own python, no venv (`app_interpreter()`), so
-    `[bundled]` + the core `dependencies` are there with nothing to install;
-  * **a header** -> a cached venv containing exactly what it declares. If that
-    venv doesn't exist yet, /api/run answers `needs_install` instead of blocking
-    on the download — see `envinstall.py` (PY-18).
+  * **no `pyproject.toml` at the project root** -> the app's own python, no venv
+    (`app_interpreter()`), so `[bundled]` + the core `dependencies` are there
+    with nothing to install;
+  * **a `pyproject.toml`** -> the project's own venv, built by `uv sync` and
+    shared by every `.py` under that root. If it doesn't exist yet (or no longer
+    matches the declaration), /api/run answers `needs_install` instead of
+    blocking on the download — see `envinstall.py` (PY-18).
+
+A `# /// script` header is not read, and not detected either — it is an ordinary
+comment (D233). Nothing here inspects the source for one, so a file carrying a
+leftover block runs exactly as it would without it.
+`projectenv.project_env_for` owns the folder rule.
 
 Code contract under this engine (the fused contract, plus a compat bridge):
 
@@ -62,11 +70,6 @@ import traceback
 
 logger = logging.getLogger(__name__)
 
-# PEP 723 reference regex (verbatim from the spec) for inline script metadata.
-_PEP723_BLOCK = re.compile(
-    r"(?m)^# /// (?P<type>[a-zA-Z0-9-]+)$\s(?P<content>(^#(| .*)$\s)+)^# ///$"
-)
-
 # A traceback frame header: `  File "<path>", line N[, in func]`. SyntaxError
 # frames have no `, in func` part.
 _FRAME_LINE = re.compile(
@@ -79,13 +82,13 @@ _backend = None
 # The app's own interpreter (PY-17 / D172)
 # --------------------------------------------------------------------------
 #
-# A script with NO PEP 723 header runs with `interpreter=<this app's python>`
-# and gets no venv at all: the app already ships `[bundled]` + its core
-# `dependencies`, so numpy/pandas/duckdb/rasterio/… are there for free, with no
-# download and no first-run wait. A script WITH a header keeps the venv path,
-# and that venv contains exactly what the header declares — a header means what
-# PEP 723 says it means (the script's complete dependency list), not a delta
-# against an invisible baseline.
+# A script whose project root declares no dependencies runs with
+# `interpreter=<this app's python>` and gets no venv at all: the app already
+# ships `[bundled]` + its core `dependencies`, so numpy/pandas/duckdb/rasterio/…
+# are there for free, with no download and no first-run wait. A script whose
+# FOLDER declares some (PY-16) runs on that folder's venv, which contains exactly
+# what the manifest declares — the complete list, not a delta against an
+# invisible baseline (D172's rule, kept).
 #
 # The dangerous half is picking the interpreter. `LocalPythonComputeBackend`
 # spawns `interpreter` verbatim as argv[0], and on that branch it silently
@@ -525,10 +528,11 @@ def app_satisfies(requirements: list[str]) -> bool:
     * **unparseable requirement, or any exception at all** — "I could not read it"
       must never arrive as "it is already there".
 
-    Environment markers are ignored on purpose: `script_requirements` has already
-    dropped the requirements whose markers do not hold and returns the survivors
-    verbatim, markers included, so re-evaluating one here would be a second
-    implementation of a decision that is already made.
+    Environment markers are ignored on purpose: `run_python` has already dropped
+    the requirements whose markers do not hold (via
+    `projectenv.applicable_dependencies_of`) and passes
+    the survivors verbatim, markers included, so re-evaluating one here would be a
+    second implementation of a decision that is already made.
     """
     if not requirements:
         return False
@@ -574,9 +578,9 @@ def app_satisfies(requirements: list[str]) -> bool:
             # to have a `pandas`, so the header cleared and the wheel the author
             # deliberately pinned was never fetched — a script silently running
             # against different code than it asked for. Not hypothetical here,
-            # either: this repo pins its own `fused` as a direct-URL wheel
-            # (pyproject.toml's `[fused]` extra), so the idiom is one a template
-            # author has every reason to copy.
+            # either: this repo pinned its own `fused` as a direct-URL wheel for
+            # months (pyproject.toml's `[fused]` extra, now a PyPI pre-release),
+            # so the idiom is one a template author has every reason to copy.
             if req.url:
                 return False
             version = installed.get(canonicalize_name(req.name))
@@ -752,7 +756,7 @@ def get_backend():
 async def _execute(code: str, requirements: list[str], interpreter: str | None, input_files: dict):
     """Run `code` on the backend, on `interpreter` when one was resolved.
 
-    The venv path (a script with a PEP 723 header) goes through the public
+    The venv path (a script whose folder declares dependencies) goes through the public
     `execute()`, unchanged. The interpreter path cannot: `execute()` derives an
     `interpreter` ONLY by resolving a uv workflow venv from a `project` /
     `project_dir`, and a standalone .py has neither. So it calls the documented
@@ -790,111 +794,6 @@ async def _execute(code: str, requirements: list[str], interpreter: str | None, 
     return await backend.execute(
         code=code, requirements=requirements, input_files=input_files
     )
-
-
-def _marker_applies(requirement: str) -> bool:
-    """Does this PEP 508 requirement's environment marker hold here?
-
-    A requirement with no marker always applies. Markers exist so a template can
-    declare a dependency **only where the app doesn't already ship it**:
-
-        dependencies = ["python-pptx; sys_platform == 'darwin'"]
-
-    No template needs that today — all three platform builds now ship the whole
-    `[bundled]` extra (D176, as amended), so a `[bundled]` distribution is
-    present everywhere and a template that only needed one would carry no header
-    at all. Support stays because the situation is one packaging decision away:
-    the moment a build holds something back (`BUNDLED_EXCLUDED`), a header that
-    ignored the marker would make the other platforms build a venv and
-    re-download a package already on their interpreter.
-
-    An unparseable or unevaluatable marker is treated as APPLYING: the dependency
-    then gets installed where it might not have been needed, which is wasteful.
-    Guessing the other way would drop a dependency the script really needs and
-    fail at import — the worse of the two.
-    """
-    if ";" not in requirement:
-        return True
-    marker = requirement.split(";", 1)[1].strip()
-    if not marker:
-        return True
-    try:
-        from packaging.markers import InvalidMarker, Marker
-    except ImportError:
-        return True
-    try:
-        return bool(Marker(marker).evaluate())
-    except (InvalidMarker, KeyError, ValueError):
-        logger.warning(
-            "could not evaluate the environment marker %r in a `# /// script` "
-            "dependency; treating it as applying", marker,
-        )
-        return True
-
-
-def script_requirements(text: str, *, apply_markers: bool = True) -> list[str]:
-    """Extract PEP 723 `dependencies` from a script's inline metadata block.
-
-    Requirements whose PEP 508 environment marker does not hold on this platform
-    are dropped (see `_marker_applies`), so a script that declares something only
-    macOS is missing reads as header-LESS on Linux and Windows and runs straight
-    on their interpreters.
-
-    `apply_markers=False` returns the block verbatim, markers included — for
-    tooling that must reason about ALL platforms rather than this one (the
-    packaging invariant in tests/test_bundle_contents.py).
-
-    Returns [] when there is no `# /// script` block. Malformed TOML raises
-    ValueError with the parse error so the caller can surface it to the page
-    instead of 500ing.
-    """
-    for match in _PEP723_BLOCK.finditer(text):
-        if match.group("type") != "script":
-            continue
-        # Imported here, not at function top: the parser is only needed when a
-        # block actually exists, and `run_python` calls this on every script.
-        #
-        # tomllib is 3.11+ stdlib and `requires-python` is >=3.10, so on 3.10 the
-        # dependency `tomli` supplies it. The deferred import used to be justified
-        # as making 3.10 safe, which it only was for scripts with NO header — one
-        # WITH a header raised ModuleNotFoundError, and headers are now how a
-        # template declares what the app doesn't ship. Both names, then a clear
-        # ValueError (which every caller already handles) rather than an
-        # ImportError escaping into a 500.
-        try:
-            import tomllib
-        except ImportError:
-            try:
-                import tomli as tomllib
-            except ImportError:
-                raise ValueError(
-                    "this script has a '# /// script' block (PEP 723 inline "
-                    "metadata), which needs `tomllib` (Python 3.11+) or the `tomli` "
-                    f"package; this is Python {sys.version_info[0]}."
-                    f"{sys.version_info[1]} and neither is available. Reinstall "
-                    "fused-render so its dependencies are present, or remove the block."
-                ) from None
-
-        content = "".join(
-            line[2:] if line.startswith("# ") else line[1:]
-            for line in match.group("content").splitlines(keepends=True)
-        )
-        try:
-            meta = tomllib.loads(content)
-        except tomllib.TOMLDecodeError as e:
-            raise ValueError(
-                f"invalid TOML in '# /// script' block: {e}. "
-                "Fix the inline metadata header (PEP 723) or remove the block."
-            ) from None
-        deps = meta.get("dependencies", [])
-        if not isinstance(deps, list) or not all(isinstance(d, str) for d in deps):
-            raise ValueError(
-                "'dependencies' in the '# /// script' block must be a list of strings"
-            )
-        if not apply_markers:
-            return deps
-        return [d for d in deps if _marker_applies(d)]
-    return []
 
 
 def _binding_source() -> str:
@@ -1069,15 +968,26 @@ def _clean_error(error_text: str, script_path: str) -> str:
         return error_text
 
 
-def _needs_install_dict(requirements: list[str], abs_path: str) -> dict:
-    """The pre-flight answer for a header whose venv isn't built yet (PY-18).
+def _needs_install_dict(project_dir: str, abs_path: str) -> dict:
+    """The pre-flight answer for a project whose venv isn't built yet (PY-18).
 
     Carries `needs_install` for the loader AND a populated `error` object, so a
     client that knows nothing about the loader (an older page, a direct API
-    caller, the Calls log) still shows a real message naming the packages rather
+    caller, the Calls log) still shows a real message naming the project rather
     than an undefined field.
+
+    The project root and its display name travel in the object so the loader can
+    title its progress row — "Preparing my-app" — without a second request.
+    Additive, so a client that ignores them is unaffected.
     """
-    from fused_render import envinstall
+    from fused_render import envinstall, projectenv
+
+    # The APPLICABLE ones — the same list the routing decision used and the same
+    # list `uv sync` will install. Naming the raw declaration here meant the
+    # loader row and the error message could promise a package (a
+    # `sys_platform == 'darwin'` entry on Linux) that the install would skip.
+    requirements = projectenv.applicable_dependencies_of(project_dir)
+    name = projectenv.display_name(project_dir)
 
     # Two rounds are possible (D214): with no pinned Python on this machine the
     # FIRST install is the interpreter, reported under its own key, and the packages
@@ -1088,16 +998,15 @@ def _needs_install_dict(requirements: list[str], abs_path: str) -> dict:
     if needs_python:
         key = envinstall.PYTHON_BOOTSTRAP_KEY
         message = (
-            f"{os.path.basename(abs_path)} declares dependencies that need Python "
+            f"{name} declares dependencies that need Python "
             f"{envinstall.SCRIPT_PYTHON_VERSION}, which this machine does not have "
             "yet. It needs a one-time download, and then the packages themselves."
         )
     else:
-        key = envinstall.venv_key_for(requirements)
+        key = envinstall.venv_key_for(project_dir)
         message = (
-            f"{os.path.basename(abs_path)} declares dependencies that are not "
-            f"installed yet: {', '.join(requirements)}. They need a one-time "
-            "download."
+            f"{name} declares dependencies that are not installed yet: "
+            f"{', '.join(requirements)}. They need a one-time download."
         )
     return {
         "ok": False,
@@ -1105,6 +1014,18 @@ def _needs_install_dict(requirements: list[str], abs_path: str) -> dict:
             "key": key,
             "requirements": requirements,
             "py": abs_path,
+            # The project the environment belongs to, so the loader can title one
+            # row "Preparing <name>" rather than joining a package list — and so
+            # every script in the folder is visibly ONE install rather than N.
+            "project": project_dir,
+            "name": name,
+            # The declaration itself, so `runtime.js` can put it in the live-reload
+            # watch set. Sent as a resolved path rather than left for the client to
+            # join onto `project`: the root is the server's answer and the
+            # separator is the server's platform. Without this, a user who fixes
+            # their dependencies sees the same error overlay with nothing telling
+            # them anything changed.
+            "pyproject": projectenv.pyproject_path(project_dir),
             # So the loader can name what it is fetching instead of listing packages
             # it is not downloading yet. Absent (not false) on the ordinary path, so
             # a client that ignores it is unaffected.
@@ -1154,22 +1075,27 @@ async def run_python(path: str, params: dict) -> dict:
     except OSError as e:
         return _error_dict("OSError", f"cannot read {path}: {e}")
 
-    try:
-        reqs = script_requirements(user_code)
-    except ValueError as e:
-        return _error_dict("ValueError", str(e))
+    from fused_render import projectenv
 
-    # Sorted+deduped so the venv cache key is stable regardless of how a script
-    # orders its PEP 723 block. A header is the script's COMPLETE dependency
-    # list: no baseline is unioned in (D172), so what it declares is what its
-    # venv contains.
-    requirements = sorted(set(reqs))
+    # The environment is the FOLDER's (SPEC PY-16). `project` is the project root
+    # when that folder declares one, and None when it does not — every `.py`
+    # under a root resolves to the same answer however deep it sits, which is
+    # what makes one page calling five scripts one install.
+    project = projectenv.project_env_for(path)
+    # The APPLICABLE dependencies, from the one helper every caller shares
+    # (`_needs_install_dict` and `has_project_env` use it too). A dependency whose
+    # PEP 508 marker does not hold here is not one this platform needs: leaving it
+    # in would make `app_satisfies` refuse a fast path over a package that will
+    # never be installed, and would let the loader name it. uv applies the same
+    # markers when it syncs, so every side agrees about what the environment
+    # actually contains.
+    requirements = projectenv.applicable_dependencies_of(project) if project else []
 
-    # No header -> the app's own interpreter, no venv (PY-17). `interpreter` and
+    # No project -> the app's own interpreter, no venv (PY-17). `interpreter` and
     # `requirements` are mutually exclusive upstream (the interpreter branch
     # ignores requirements silently), so they are never both set here.
     interpreter = None
-    if not requirements:
+    if project is None:
         # Off the event loop: `app_interpreter` is sync (it is called from sync
         # contexts and tests) and its first call in a process runs up to two
         # `subprocess.run(..., timeout=5)` probes plus a wrapper write. /api/run
@@ -1222,9 +1148,16 @@ async def run_python(path: str, params: dict) -> dict:
         # full budget. `to_thread` re-raises in this frame, so the guard above still
         # contains the ImportError/RuntimeError pair (pinned by a test, because "the
         # exception now surfaces somewhere else" is exactly what a thread hop hides).
-        # The app-interpreter fast path: a header this interpreter already meets
-        # needs no venv, no download and no loader. See the `app_satisfies` block
-        # above for why it fails closed and what it trades.
+        # The app-interpreter fast path: a declaration this interpreter already
+        # meets needs no venv, no download and no loader. See the `app_satisfies`
+        # block above for why it fails closed and what it trades.
+        #
+        # Skipped entirely for a LOCKED project. A `uv.lock` is a request for
+        # exact resolution — the user committed specific versions so the folder
+        # resolves the same way on another machine — and satisfying it "near
+        # enough" from whatever the app happens to ship is the one thing a lock
+        # exists to rule out. Unlocked, the trade is the same one it always was:
+        # skip a multi-hundred-MB download the app has already paid for.
         #
         # Inside the try and BEFORE the pre-flight, both deliberately.
         # `_interpreter_path_available` calls `get_backend()`, which imports the
@@ -1236,21 +1169,27 @@ async def run_python(path: str, params: dict) -> dict:
         # Off the event loop for the same reason `app_interpreter` and
         # `is_installed` are: both probes behind it spawn a subprocess on their
         # first call.
-        if requirements and _interpreter_path_available():
+        locked = bool(project) and projectenv.has_lock(project)
+        if project and requirements and not locked and _interpreter_path_available():
             interpreter = await asyncio.to_thread(
                 _app_interpreter_if_satisfies, requirements
             )
 
-        # `interpreter is None` and not merely `requirements`: a header the app
+        # `interpreter is None` and not merely `project`: a declaration the app
         # interpreter already satisfies resolved one just above, and it has nothing
         # to install — asking `is_installed` about it would name a venv directory
         # that is never going to be built and answer `needs_install`, putting the
         # loader in front of a run that was ready to go.
-        if requirements and interpreter is None:
+        if project and interpreter is None:
             from fused_render import envinstall
 
-            if not await asyncio.to_thread(envinstall.is_installed, requirements):
-                return _needs_install_dict(requirements, abs_path=abs_path)
+            if not await asyncio.to_thread(envinstall.is_installed, project):
+                return _needs_install_dict(project, abs_path=abs_path)
+            # The environment lives under OUR home dir, not in the backend's
+            # store, so the backend cannot find it by key — it is TOLD, through
+            # the same `interpreter=` channel the app-interpreter path uses.
+            # That is the whole reason `projectenv` may own the storage layout.
+            interpreter = envinstall.venv_python_for(project)
 
         # build_code reads _binding.py's source off the package
         # (importlib.resources), so a broken/partial install fails here — and

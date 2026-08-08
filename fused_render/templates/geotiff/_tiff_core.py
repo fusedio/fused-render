@@ -13,12 +13,10 @@ Python that has rasterio, which handles everything.
 Presentation (grid/stats/histogram/RGB) is shared via _raster_common so both
 engines return an identical JSON schema.
 """
-# No `# /// script` header, deliberately: run_python is never handed this
-# file. It is imported by tiff_reader.py (whose header covers it) and by
-# tile_server.py's daemon (whose own uv venv covers it), and a header on a
-# file that is never an entrypoint is never read — it just looks correct.
-# That mistake shipped once already (D170, on map/vector_tile_server.py);
-# tests/test_engine_requirements.py now derives entrypoint-ness and fails it.
+# Declares nothing itself: dependencies are the FOLDER's, in
+# geotiff/pyproject.toml (PY-16), which covers this file, tiff_reader.py and
+# _raster_common.py alike. tile_server.py's daemon is the exception — it manages
+# its own uv venv (D174) and declares rasterio there, not in the folder manifest.
 
 import struct
 import sys

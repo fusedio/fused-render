@@ -1,40 +1,48 @@
-"""Which core templates may carry a PEP 723 header, and what it must contain
+"""Which core templates may declare an environment, and what it must contain
 (SPEC PY-16/PY-17, D172).
 
-Under the fused engine a script with **no** header runs on the app's own
-interpreter, which has `[bundled]` + the core `dependencies` — so a header on
-such a script buys nothing and costs a download. A script **with** a header gets
-a venv containing exactly what the header declares and nothing else, so a
-dependency it forgot to declare is simply absent.
+Under the fused engine a script in a folder with **no** `pyproject.toml` runs on
+the app's own interpreter, which has `[bundled]` + the core `dependencies` — so
+declaring one there buys nothing and costs a download. A folder that DOES
+declare one gives every `.py` beneath it a venv containing exactly what the
+declaration names and nothing else, so a dependency any of them forgot is simply
+absent.
 
-That makes the header decision a three-part invariant, and every part is
-derived from the source here rather than written down, because a written-down
-version is what failed before: the predecessor of this file pinned
-`DEFAULT_REQUIREMENTS` against `[bundled]` with a hand-kept list of deltas, and
-before that a *comment* claimed the two were in sync while being wrong in ten
-places.
+That makes the declaration a three-part invariant, and every part is derived
+from the source here rather than written down, because a written-down version is
+what failed before: the predecessor of this file pinned `DEFAULT_REQUIREMENTS`
+against `[bundled]` with a hand-kept list of deltas, and before that a *comment*
+claimed the two were in sync while being wrong in ten places.
 
-  1. **A header must be read** — the file has to be something `run_python` is
-     actually handed. A header on a helper module or a spawned daemon is inert
-     *and looks correct*, which is why it survives review: D170 shipped one on
-     `map/vector_tile_server.py`, and `geotiff/_tiff_core.py` was carrying a
-     complete, accurate, never-read list of its own (D174).
-  2. **A header must be necessary** — it has to declare something the app's
+  1. **No file may carry a `# /// script` header.** Headers are no longer read
+     at all (PY-16), so one left behind is inert *and looks correct*, which is
+     why it survives review — the same class of defect as the never-read headers
+     this file was originally written to catch (D170's on
+     `map/vector_tile_server.py`, and `geotiff/_tiff_core.py`'s own, D174). The
+     engine reports an orphan header at run time; this catches it at build time.
+  2. **A declaration must be necessary** — it has to name something the app's
      interpreter does not already have. Enforced in
      tests/test_bundle_contents.py, because on macOS that means the BUNDLE's
      contents rather than `[bundled]`'s promises (D176).
-  3. **A header must be complete** — every `[bundled]`/core distribution the
-     file imports, at any nesting depth, is declared in the header of *each*
-     entry point that can execute it. This is the half with teeth: it is what
-     caught `pano/pano.py` importing numpy and pillow while declaring only
-     `py360convert`, which worked solely because a baseline set used to be
-     installed alongside every header. With that baseline gone, an incomplete
-     header is a broken template — and a silent one (a guarded import degrades,
-     an unguarded one 500s a tile request), never a startup error anyone sees.
+  3. **A declaration must be complete** — every `[bundled]`/core distribution
+     imported by any `.py` under the declaring folder, at any nesting depth, is
+     named in it. This is the half with teeth: it is what caught `pano/pano.py`
+     importing numpy and pillow while declaring only `py360convert`, which
+     worked solely because a baseline set used to be installed alongside every
+     header. With that baseline gone, an incomplete declaration is a broken
+     template — and a silent one (a guarded import degrades, an unguarded one
+     500s a tile request), never a startup error anyone sees.
 
-Under PY-18 a header also *triggers a download*, so each of these now costs a
-user-visible wait rather than only disk: an inert or unnecessary header means a
-progress bar for an environment nothing will ever import from.
+The scope of part 3 is what the folder rule changed: it used to be "each entry
+point that can execute this file", walked from the source through `_venv_roots`,
+because a header decided ONE file's venv. The venv is now the folder's, so the
+set is structural — every file under it, no walk required. `_runpython_targets`
+and `_module_refs` survive because they answer a question that is still derived
+rather than tabulated: which files something can actually hand to `run_python`.
+
+Under PY-18 a declaration also *triggers a download*, so each of these costs a
+user-visible wait rather than only disk: an unnecessary one means a progress bar
+for an environment nothing will ever import from.
 """
 import ast
 import functools
@@ -43,7 +51,6 @@ import re
 
 import pytest
 
-from fused_render import engine
 
 # tomllib is 3.11+, and so is the engine these tests describe: the `[fused]`
 # extra's wheel is marked `python_version >= "3.11"`, so on 3.10 the package is
@@ -55,6 +62,10 @@ from fused_render import engine
 # 3.11, so the module still runs where it means something.
 tomllib = pytest.importorskip(
     "tomllib", reason="tomllib (PEP 723 parsing) needs Python 3.11+"
+)
+
+_PEP723 = re.compile(
+    r"(?m)^# /// (?P<type>[a-zA-Z0-9-]+)$\s(?P<content>(^#(| .*)$\s)+)^# ///$"
 )
 
 _REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -172,22 +183,55 @@ def _norm(requirement: str) -> str:
     return re.split(r"[<>=!~;\[ ]", requirement.strip())[0].lower().replace("_", "-")
 
 
-def _header_deps(text: str) -> set[str]:
-    """Distributions declared in a file's PEP 723 block ({} when it has none).
+def _has_script_header(text: str) -> bool:
+    """Does this file still carry a `# /// script` block? Never read any more."""
+    return bool(_PEP723.search(text))
 
-    `apply_markers=False`, because these invariants are properties of the SOURCE
-    and must hold on every platform, not of the machine running pytest. This
-    already bit once: `log_studio/reader.py` carried a `sys_platform ==
-    'darwin'` header, which with marker filtering on read as EMPTY everywhere
-    but macOS — so on the Linux `fused-engine` job that file looked header-LESS
-    and both the entrypoint and completeness invariants skipped it silently. No
-    header in the tree carries a marker today (that one is gone with the
-    `drain3` exclusion it existed for, D176 as amended), so this is now a
-    FORWARD guard: the next marker-scoped header must not be able to be inert or
-    incomplete behind a green suite, which is the same class of hole as the
-    never-read headers this file exists to catch.
+
+def _project_deps(folder: str) -> set[str]:
+    """Distributions declared by `<_TEMPLATES>/<folder>/pyproject.toml`, or {}.
+
+    Markers are deliberately NOT evaluated: these invariants are properties of
+    the SOURCE and must hold on every platform, not of the machine running
+    pytest. This already bit once under the old per-file rule — a
+    `sys_platform == 'darwin'` header read as EMPTY everywhere but macOS, so on
+    the Linux `fused-engine` job the file looked declaration-less and both
+    invariants skipped it silently. Same forward guard here: the next
+    marker-scoped dependency must not be able to be incomplete behind a green
+    suite.
     """
-    return {_norm(d) for d in engine.script_requirements(text, apply_markers=False)}
+    path = os.path.join(_TEMPLATES, folder, "pyproject.toml") if folder else None
+    if not path or not os.path.isfile(path):
+        return set()
+    with open(path, "rb") as f:
+        meta = tomllib.load(f)
+    return {_norm(d) for d in meta.get("project", {}).get("dependencies", [])}
+
+
+def _declaring_folder(relpath: str) -> str:
+    """The template folder whose declaration governs `relpath`.
+
+    The top-level template directory — `projectenv` treats an immediate child of
+    a template root as the project root, so nesting below it changes nothing.
+    """
+    return relpath.split(os.sep)[0] if os.sep in relpath else ""
+
+
+def _self_managed(text: str) -> bool:
+    """Does this file build and run under a venv of its OWN (D174)?
+
+    Derived from the source — a module-level `DAEMON_VENV` assignment — rather
+    than listed, for the same reason nothing else here is listed. The geotiff and
+    zarr_aoi tile daemons re-exec their heavy half under that venv, so their
+    imports are not the project environment's problem and requiring the folder
+    to declare them would download the same packages twice.
+    """
+    for node in ast.parse(text).body:
+        if isinstance(node, ast.Assign) and any(
+            isinstance(t, ast.Name) and t.id == "DAEMON_VENV" for t in node.targets
+        ):
+            return True
+    return False
 
 
 def _imported_dists(text: str) -> set[str]:
@@ -294,33 +338,11 @@ def _template_graph() -> dict:
 
     return {
         "files": files,
-        "header": {r: _header_deps(t) for r, t in texts.items()},
+        "header": {r: _has_script_header(t) for r, t in texts.items()},
+        "self_managed": {r: _self_managed(t) for r, t in texts.items()},
         "imports": {r: _imported_dists(t) for r, t in texts.items()},
         "invoked_by": invoked_by,
     }
-
-
-def _venv_roots(relpath: str, graph: dict, _seen: frozenset = frozenset()) -> set[str]:
-    """The files whose PEP 723 header can decide the venv `relpath` runs in.
-
-    `engine.run_python` reads the header of the file it is *given* and of no
-    other, so a helper module or a spawned daemon runs under whatever its
-    caller declared. Walking `invoked_by` up to the callers that nothing else
-    invokes gives the set of entry points that can end up executing this file;
-    each of them has to cover it, since any of them may be the one that runs.
-
-    A file with a header of its own also counts as a root: a header is how a
-    file claims to be an entry point, so it is held to covering its own
-    imports too (that is the direct-invocation path).
-    """
-    if relpath in _seen:  # cyclic sibling imports: stop, don't recurse forever
-        return set()
-    seen = _seen | {relpath}
-    invokers = graph["invoked_by"][relpath]
-    roots = {relpath} if graph["header"][relpath] or not invokers else set()
-    for invoker in invokers:
-        roots |= _venv_roots(invoker, graph, seen)
-    return roots or {relpath}
 
 
 @functools.lru_cache(maxsize=1)
@@ -388,60 +410,96 @@ def test_the_import_map_covers_everything_the_app_ships():
 
 
 @pytest.mark.parametrize("relpath", _template_files())
-def test_a_header_only_sits_on_a_runpython_entrypoint(relpath):
-    """Part 3: a header must be READ (PY-16).
+def test_no_template_file_carries_a_script_header(relpath):
+    """Part 1: headers are never read (PY-16), so one left behind is inert.
 
-    `run_python` reads the header of the file it is *handed* and of no other, so
-    a header on a helper module or a daemon is inert — and inert while looking
-    entirely correct, which is why it survives review. D170 shipped exactly this
-    on `map/vector_tile_server.py`, and `geotiff/_tiff_core.py` was carrying the
-    same thing: a full, accurate, never-read dependency list.
+    Inert while looking entirely correct, which is why this class of defect
+    survives review — D170 shipped one on `map/vector_tile_server.py` and
+    `geotiff/_tiff_core.py` carried a full, accurate, never-read list of its own
+    (D174). Every one of those is now the DEFAULT state, so the rule is simply
+    that no header may exist: dependencies belong in the folder's
+    `pyproject.toml`.
 
-    The cost is not only cosmetic now. Under PY-18 a header is what triggers the
-    install loader, so an inert one can also mean a download for an environment
-    nothing ever runs in.
+    The engine reports an orphan header at run time rather than ignoring it; this
+    catches it before it ships.
     """
     graph = _template_graph()
-    if not graph["header"][relpath]:
-        return
-    assert relpath in _runpython_targets(), (
-        f"{relpath} carries a `# /// script` header but nothing in its template "
-        "folder names it as a runPython target, so the header is never read. "
-        "Either the file is an entry point and its call site should reference it, "
-        "or the header belongs on the file that IS handed to run_python (its "
-        "importer / spawner) — or, if a self-managed venv already covers it, "
-        "delete the header."
+    assert not graph["header"][relpath], (
+        f"{relpath} carries a `# /// script` header, which is never read: "
+        "dependencies are declared once per folder in `pyproject.toml` "
+        "(SPEC PY-16). Move what it names into "
+        f"`fused_render/templates/{_declaring_folder(relpath)}/pyproject.toml` "
+        "(and re-lock), or delete the block if the app's own interpreter already "
+        "has it."
     )
 
 
 @pytest.mark.parametrize("relpath", _template_files())
-def test_a_retained_header_is_complete(relpath):
-    """Part 2: a header must be COMPLETE (PY-16).
+def test_a_declared_environment_is_complete(relpath):
+    """Part 3: a declaration must be COMPLETE (PY-16).
 
-    Checked against *every* entry point that can execute this file (see
-    `_venv_roots`), not against the file's own header: the engine reads the
-    header of the file it is handed and nothing else, so declaring a dependency
-    on a helper module or a spawned daemon has no effect at all — the classic
-    way this gap hides.
+    Every `.py` under the declaring folder shares its venv, so the declaration
+    has to cover all of them — not just the entry point. That scope is
+    STRUCTURAL now: the environment belongs to the folder, so there is no
+    per-entrypoint walk to get wrong (which is what the old `_venv_roots` did,
+    and what let a dependency declared on a helper module read as covered).
 
-    Only roots that HAVE a header are checked. A root without one runs on the
-    app's interpreter, where every distribution here is present by definition;
-    there is nothing a venv could be missing.
+    A folder with no declaration runs on the app's interpreter, where every
+    distribution here is present by definition; there is nothing a venv could be
+    missing. A file that manages its OWN venv (D174) is exempt for the opposite
+    reason — its imports never reach the project environment.
     """
     graph = _template_graph()
-    needed = graph["imports"][relpath]
+    folder = _declaring_folder(relpath)
+    declared = _project_deps(folder)
+    if not declared:
+        return  # runs on the app's interpreter — it has all of these
+    if graph["self_managed"][relpath]:
+        return  # re-execs under DAEMON_VENV; see `_self_managed`
 
-    for root in sorted(_venv_roots(relpath, graph)):
-        header = graph["header"][root]
-        if not header:
-            continue  # runs on the app's interpreter — it has all of these
-        missing = sorted(needed - header)
-        assert not missing, (
-            f"{relpath} imports {missing}, which its script venv would not "
-            f"contain when it runs via {root}: a header is the COMPLETE "
-            f"dependency list now, with no baseline unioned in (D172). Declare "
-            f"them in {root}'s `# /// script` header — a header on a "
-            "non-entrypoint file is never read — or, if that template needs "
-            "nothing outside `[bundled]`, delete the header entirely so it runs "
-            "on the app's own interpreter."
-        )
+    missing = sorted(graph["imports"][relpath] - declared)
+    assert not missing, (
+        f"{relpath} imports {missing}, which the venv built from "
+        f"`fused_render/templates/{folder}/pyproject.toml` would not contain: a "
+        "declaration is the COMPLETE dependency list, with no baseline unioned "
+        "in (D172). Add them there and re-lock — or, if that template needs "
+        "nothing outside `[bundled]`, delete the pyproject.toml entirely so the "
+        "folder runs on the app's own interpreter."
+    )
+
+
+def _declaring_folders() -> list[str]:
+    """Template folders that ship a `pyproject.toml`."""
+    return sorted(
+        name for name in os.listdir(_TEMPLATES)
+        if os.path.isfile(os.path.join(_TEMPLATES, name, "pyproject.toml"))
+    )
+
+
+@pytest.mark.parametrize("folder", _declaring_folders())
+def test_a_declared_environment_has_something_to_run(folder):
+    """A declaration nothing can reach is inert, and inert-but-correct is the
+    failure this file has always been about.
+
+    Entry points stay DERIVED from the source rather than tabulated — a `.py` is
+    one when a non-.py file in its folder names it, which is what a
+    `fused.runPython('./x.py')` call site is (`_runpython_targets`). That is the
+    durable half of the old invariant (D177): it is what stops a "this file
+    inherits that file's venv" table from being written down and going stale.
+
+    A file that manages its own venv (D174) does not count — its heavy half never
+    runs in the project environment, so it cannot be the reason the folder
+    declares one.
+    """
+    graph = _template_graph()
+    reachable = [
+        r for r in _runpython_targets()
+        if _declaring_folder(r) == folder and not graph["self_managed"][r]
+    ]
+    assert reachable, (
+        f"fused_render/templates/{folder}/pyproject.toml declares an environment, "
+        "but nothing in that folder is handed to run_python (no non-.py file "
+        "names a .py there), so the venv would be built and never used. Either "
+        "the entry point's call site should reference it, or the declaration "
+        "should be deleted."
+    )

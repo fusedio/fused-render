@@ -18,6 +18,17 @@ from fastapi.testclient import TestClient
 from fused_render import engine
 from fused_render.server import create_app
 
+
+def _declare(folder, deps='"pyproj"'):
+    """Give `folder` a pyproject.toml declaring `deps` — the project's environment."""
+    import os
+
+    os.makedirs(folder, exist_ok=True)
+    with open(os.path.join(str(folder), "pyproject.toml"), "w", encoding="utf-8") as fh:
+        fh.write("[project]\nname = 't'\nversion = '0.1.0'\n"
+                 f"dependencies = [{deps}]\n")
+
+
 HEADERS = {"X-Fused": "1"}
 
 # Two tests below reach `envinstall.venv_key_for`, which composes `fused`'s own
@@ -84,30 +95,33 @@ def test_install_refuses_a_script_with_nothing_to_install(tmp_path):
     assert "nothing to install" in resp.json()["error"]
 
 
-def test_install_surfaces_a_malformed_header_instead_of_500ing(tmp_path):
+def test_install_surfaces_a_malformed_manifest_instead_of_500ing(tmp_path):
+    """A broken pyproject.toml reads as "no environment", and that is what is said.
+
+    Not a crash and not a spawn: an unparseable manifest cannot be synced, and
+    the honest answer names the path the script is actually on.
+    """
     client = _client(tmp_path)
-    target = _py(tmp_path, "bad.py", "# /// script\n# dependencies = [oops\n# ///\n")
+    (tmp_path / "pyproject.toml").write_text("this is not [ toml", encoding="utf-8")
+    target = _py(tmp_path, "bad.py", "def main():\n    return 1\n")
     resp = client.post("/api/env/install", json={"py": str(target)}, headers=HEADERS)
     assert resp.status_code == 400
-    assert "PEP 723" in resp.json()["error"]
+    assert "nothing to install" in resp.json()["error"]
 
 
 @requires_fused
-def test_install_derives_requirements_from_the_file_not_the_body(tmp_path, monkeypatch):
+def test_install_derives_the_project_from_the_file_not_the_body(tmp_path, monkeypatch):
     """The rule that keeps the loader's venv and the run's venv the same one."""
     client = _client(tmp_path)
-    target = _py(
-        tmp_path, "declared.py",
-        '# /// script\n# dependencies = ["pyproj", "imagecodecs"]\n# ///\n'
-        "def main():\n    return 1\n",
-    )
+    _declare(tmp_path, '"pyproj", "imagecodecs"')
+    target = _py(tmp_path, "declared.py", "def main():\n    return 1\n")
     started = []
     monkeypatch.setattr(
         "fused_render.envinstall.start",
         # `key` included because `start` reports the key it used and the endpoint
         # hands that straight to the client (D214) — a double that omits it is not
         # standing in for the real function.
-        lambda reqs: started.append(list(reqs)) or {"stage": "spawn", "done": False,
+        lambda project: started.append(project) or {"stage": "spawn", "done": False,
                                                     "key": "0" * 16},
     )
     resp = client.post(
@@ -118,8 +132,9 @@ def test_install_derives_requirements_from_the_file_not_the_body(tmp_path, monke
     )
     assert resp.status_code == 200
     body = resp.json()
-    assert body["requirements"] == ["imagecodecs", "pyproj"]
-    assert started == [["imagecodecs", "pyproj"]]
+    assert body["requirements"] == ["pyproj", "imagecodecs"]
+    assert body["project"] == str(tmp_path)
+    assert started == [str(tmp_path)]
 
 
 @requires_fused
@@ -128,10 +143,10 @@ def test_install_resolves_a_relative_py_against_the_page(tmp_path, monkeypatch):
     identical file the failed run did."""
     client = _client(tmp_path)
     (tmp_path / "sub").mkdir()
-    _py(tmp_path / "sub", "rel.py",
-        '# /// script\n# dependencies = ["pyproj"]\n# ///\ndef main():\n    return 1\n')
+    _declare(tmp_path / "sub", '"pyproj"')
+    _py(tmp_path / "sub", "rel.py", "def main():\n    return 1\n")
     monkeypatch.setattr("fused_render.envinstall.start",
-                        lambda reqs: {"done": False, "key": "0" * 16})
+                        lambda project: {"done": False, "key": "0" * 16})
     resp = client.post(
         "/api/env/install",
         json={"py": "rel.py", "html": str(tmp_path / "sub" / "page.html")},
@@ -271,12 +286,12 @@ def test_cancel_of_an_unknown_key_is_a_clean_no_op(tmp_path):
 
 
 @pytest.mark.parametrize("boom", [
-    # `venv_key_for` imports `fused.agent_core...` unguarded — no fused, no import.
+    # `start` reaches `fused.agent_core...` unguarded — no fused, no import.
     ImportError("No module named 'fused'"),
     ModuleNotFoundError("No module named 'fused.agent_core'"),
     # `_backend_attr` raises this BY DESIGN, with the diagnostic that matters.
-    RuntimeError("this fused build's Backend has no '_venvs_path', so the "
-                 "install loader cannot tell where its script venvs live"),
+    RuntimeError("this fused build's Backend has no '_python_executable', so the "
+                 "install loader cannot tell which interpreter project venvs use"),
 ])
 def test_an_engine_that_cannot_answer_is_reported_not_500ed(tmp_path, monkeypatch, boom):
     """Reachable without the fused engine: a page loaded before the engine
@@ -291,9 +306,8 @@ def test_an_engine_that_cannot_answer_is_reported_not_500ed(tmp_path, monkeypatc
         raise boom
 
     client = _client(tmp_path)
-    target = _py(tmp_path, "declared.py",
-                 '# /// script\n# dependencies = ["pyproj"]\n# ///\n'
-                 "def main():\n    return 1\n")
+    _declare(tmp_path, '"pyproj"')
+    target = _py(tmp_path, "declared.py", "def main():\n    return 1\n")
     monkeypatch.setattr(envinstall, "start", _raise)
     monkeypatch.setattr(envinstall, "venv_key_for", _raise)
     monkeypatch.setattr(envinstall, "progress", _raise)
@@ -359,6 +373,235 @@ def _loader_js():
     src = open(path, encoding="utf-8").read()
     start = src.index("  const INSTALL_POLL_MS")
     return src[start:src.index("  function runPython(", start)]
+
+
+def _loader_and_runpython_js():
+    """The loader block PLUS `runPython`, so `handle`'s install gate is reachable.
+
+    `handle` lives inside `runPython` and decides whether a `needs_install`
+    becomes an install or an error — the single most important branch in this
+    flow, and the one the narrower slice above cannot see at all. Everything
+    `runPython` closes over that is defined further up the file is stubbed in
+    `_RUNPYTHON_PRELUDE`.
+    """
+    import fused_render
+
+    path = os.path.join(os.path.dirname(fused_render.__file__), "static", "runtime.js")
+    src = open(path, encoding="utf-8").read()
+    start = src.index("  const INSTALL_POLL_MS")
+    return src[start:src.index("  function rawUrl(", start)]
+
+
+# What `runPython` reads from the rest of runtime.js. Declared with `var` so the
+# slice's own `const`/`function` declarations can never collide with them.
+_RUNPYTHON_PRELUDE = """
+var inflightByKey = new Map();
+var callIds = 0;
+function newCallId() { return "c" + (++callIds); }
+function callHeaders(extra) { return Object.assign({}, extra || {}); }
+function reportSuperseded() {}
+var watched = [];
+function watchPath(p) { watched.push(p); }
+globalThis.window = { location: { search: "?path=/page.html" } };
+"""
+
+
+def _run_runpython(scenario):
+    """Run `runPython` (and the loader it drives) under node against stubs."""
+    import json
+    import shutil
+    import subprocess
+    import tempfile
+
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node is needed to run runPython's own JS")
+    with tempfile.NamedTemporaryFile("w", suffix=".mjs", delete=False,
+                                     encoding="utf-8") as f:
+        f.write(_JS_PRELUDE + _RUNPYTHON_PRELUDE + _loader_and_runpython_js() + scenario)
+        harness = f.name
+    try:
+        out = subprocess.run([node, harness], capture_output=True, text=True, timeout=60)
+    finally:
+        os.unlink(harness)
+    assert out.returncode == 0, out.stderr
+    return json.loads(out.stdout.strip().splitlines()[-1])
+
+
+# The scenario every concurrency test below shares: /api/run answers
+# `needs_install` for one project until the install lands, then succeeds.
+_CONCURRENT_RUNS = """
+let installs = 0, runs = 0, installed = false;
+globalThis.fetch = (url, opts) => {
+  if (url === "/api/run") {
+    runs += 1;
+    // Every concurrent call is answered from the SAME pre-install snapshot,
+    // which is what really happens: all five preflights run before any of them
+    // can have finished installing.
+    const snapshot = installed;
+    return Promise.resolve({ json: () => Promise.resolve(
+      snapshot
+        ? { ok: true, result: 42 }
+        : { ok: false,
+            needs_install: { key: "%(a)s", name: "my-app", requirements: ["cowsay"] },
+            error: { type: "EnvNotInstalled",
+                     message: "my-app declares dependencies that are not installed yet" },
+            stdout: "" })});
+  }
+  if (url === "/api/env/install") {
+    installs += 1;
+    return Promise.resolve({ ok: true, json: () => Promise.resolve(
+      { ok: true, key: "%(a)s", progress: { stage: "spawn", pct: 0, done: false } })});
+  }
+  if (url.startsWith("/api/env/progress")) {
+    installed = true;
+    return Promise.resolve({ json: () => Promise.resolve({ ok: true,
+      progress: { stage: "done", pct: 100, done: true, error: null } })});
+  }
+  return Promise.resolve({ ok: true, json: () => Promise.resolve({ ok: true }) });
+};
+"""
+
+
+def test_five_concurrent_scripts_in_one_project_all_succeed():
+    """The case this whole change exists for, end to end through `handle`.
+
+    PY-16 collapses every .py in a folder onto ONE key, so a page firing five
+    runPython calls issues five concurrent /api/run's that all answer
+    `needs_install` with the same key. With a page-scoped "already attempted"
+    set, the first response installed and the other four read the key as
+    already-attempted, fell through to the `!data.ok` branch, and rejected with
+    the raw "declares dependencies that are not installed yet" text — the
+    multi-script case failing precisely because it was multi-script.
+    """
+    result = _run_runpython((_CONCURRENT_RUNS + """
+Promise.allSettled([
+  runPython("a.py", {}, { key: "a" }),
+  runPython("b.py", {}, { key: "b" }),
+  runPython("c.py", {}, { key: "c" }),
+  runPython("d.py", {}, { key: "d" }),
+  runPython("e.py", {}, { key: "e" }),
+]).then((settled) => {
+  console.log(JSON.stringify({
+    states: settled.map((r) => r.status),
+    values: settled.map((r) => r.value),
+    reasons: settled.map((r) => r.reason && r.reason.message),
+    installs, runs,
+  }));
+});
+""") % {"a": _KEY_A})
+    assert result["states"] == ["fulfilled"] * 5, result["reasons"]
+    assert result["values"] == [42] * 5
+    assert result["installs"] == 1, (
+        f"one project must mean one install POST, saw {result['installs']}"
+    )
+
+
+def test_a_late_response_from_before_the_install_still_retries():
+    """The race the page-scoped set could not survive.
+
+    A second call's /api/run was answered before the install began but arrives
+    after it finished. The key is now "already installed", but this caller has
+    not run yet — it must re-attempt, not report the stale needs_install as a
+    failure.
+    """
+    result = _run_runpython((_CONCURRENT_RUNS + """
+runPython("a.py", {}, { key: "a" }).then(() => {
+  // Now that the install has settled, a caller whose /api/run was answered from
+  // the pre-install snapshot arrives.
+  const stale = { ok: false,
+    needs_install: { key: "%(a)s", name: "my-app", requirements: ["cowsay"] },
+    error: { type: "EnvNotInstalled", message: "not installed yet" }, stdout: "" };
+  const realFetch = globalThis.fetch;
+  let first = true;
+  globalThis.fetch = (url, opts) => {
+    if (url === "/api/run" && first) { first = false;
+      return Promise.resolve({ json: () => Promise.resolve(stale) }); }
+    return realFetch(url, opts);
+  };
+  return runPython("z.py", {}, { key: "z" });
+}).then(
+  (result) => console.log(JSON.stringify({ ok: true, result, installs })),
+  (err) => console.log(JSON.stringify({ ok: false, message: err.message, installs }))
+);
+""") % {"a": _KEY_A})
+    assert result["ok"] is True, result
+    assert result["result"] == 42
+
+
+def test_a_genuinely_stuck_install_still_fails_rather_than_looping():
+    """The guard this must not lose: the SAME key coming back after a successful
+    install means the loader and the run disagree, and installing forever hides
+    that. One clear failure instead."""
+    result = _run_runpython("""
+let installs = 0;
+globalThis.fetch = (url, opts) => {
+  if (url === "/api/run")
+    return Promise.resolve({ json: () => Promise.resolve(
+      { ok: false,
+        needs_install: { key: "%(a)s", name: "my-app", requirements: ["cowsay"] },
+        error: { type: "EnvNotInstalled", message: "not installed yet" },
+        stdout: "" })});
+  if (url === "/api/env/install") {
+    installs += 1;
+    return Promise.resolve({ ok: true, json: () => Promise.resolve(
+      { ok: true, key: "%(a)s", progress: { stage: "spawn", pct: 0, done: false } })});
+  }
+  if (url.startsWith("/api/env/progress"))
+    return Promise.resolve({ json: () => Promise.resolve({ ok: true,
+      progress: { stage: "done", pct: 100, done: true, error: null } })});
+  return Promise.resolve({ ok: true, json: () => Promise.resolve({ ok: true }) });
+};
+runPython("a.py", {}, { key: "a" }).then(
+  (result) => console.log(JSON.stringify({ ok: true, result, installs })),
+  (err) => console.log(JSON.stringify({ ok: false, message: err.message,
+                                        type: err.type, installs }))
+);
+""" % {"a": _KEY_A})
+    assert result["ok"] is False
+    assert result["installs"] == 1, "it must stop after one futile install, not loop"
+
+
+def test_a_manifest_edit_and_rerun_in_the_same_page_installs_again():
+    """A user who fixes pyproject.toml and re-runs must get an install.
+
+    The key is stable per project now (it used to be derived from the requirement
+    set, so editing deps minted a new key), so a page-scoped "already attempted"
+    set made the second run report the raw needs_install error with no install
+    offered and nothing telling the user to reload. The guard's scope is ONE call
+    chain, which is the question it actually answers.
+    """
+    result = _run_runpython((_CONCURRENT_RUNS + """
+runPython("a.py", {}, { key: "a" }).then(() => {
+  installed = false;   // the user edits pyproject.toml; the venv is stale again
+  return runPython("a.py", {}, { key: "a2" });
+}).then(
+  (result) => console.log(JSON.stringify({ ok: true, result, installs })),
+  (err) => console.log(JSON.stringify({ ok: false, message: err.message, installs }))
+);
+""") % {"a": _KEY_A})
+    assert result["ok"] is True, result
+    assert result["installs"] == 2, (
+        "the second run was refused instead of installing the edited manifest"
+    )
+
+
+def test_the_projects_manifest_is_watched_so_a_fix_triggers_a_reload():
+    """A manifest edit has to reach the page without a manual reload.
+
+    `needs_install` carries the project's pyproject.toml path precisely so the
+    live-reload watcher can be pointed at it — otherwise the only feedback for
+    "I fixed my dependencies" is a stale error overlay.
+    """
+    result = _run_runpython((_CONCURRENT_RUNS.replace(
+        'requirements: ["cowsay"] }',
+        'requirements: ["cowsay"], pyproject: "/proj/pyproject.toml" }',
+    ) + """
+runPython("a.py", {}, { key: "a" }).then(() => {
+  console.log(JSON.stringify({ watched }));
+});
+""") % {"a": _KEY_A})
+    assert "/proj/pyproject.toml" in result["watched"], result["watched"]
 
 
 def _run_loader(scenario):
@@ -616,20 +859,40 @@ console.log(JSON.stringify({ seen, detail: ui.detail.textContent }));
     assert result["detail"] == "downloaded Python 3.12"
 
 
-def test_the_interpreter_round_is_titled_PYTHON_not_the_packages():
-    """Naming the packages during the interpreter download is a small lie with a
-    real cost: the user watches "Installing tensorflow" for minutes while nothing
-    about tensorflow is happening, which is how a working install comes to look
-    stuck. `need.python` is present only on that round."""
+def test_the_interpreter_round_is_titled_PYTHON_not_the_project():
+    """Naming the project during the interpreter download is a small lie with a
+    real cost: the user watches "Preparing my-app" for minutes while nothing about
+    my-app is happening, which is how a working install comes to look stuck.
+    `need.python` is present only on that round."""
     result = _run_loader("""
-const ui = showInstall({ key: "%(a)s", requirements: ["tensorflow"], python: "3.12" });
+const ui = showInstall({ key: "%(a)s", name: "my-app", requirements: ["tensorflow"],
+                         python: "3.12" });
 const first = ui.title.textContent;
+const firstDetail = ui.detail.textContent;
 hideInstall("%(a)s");
-const second = showInstall({ key: "%(b)s", requirements: ["tensorflow"] }).title.textContent;
-console.log(JSON.stringify({ first, second }));
+const second = showInstall({ key: "%(b)s", name: "my-app",
+                             requirements: ["tensorflow"] });
+console.log(JSON.stringify({ first, firstDetail, second: second.title.textContent,
+                             secondDetail: second.detail.textContent }));
 """ % {"a": _KEY_A, "b": _KEY_B})
     assert result["first"] == "Installing Python 3.12"
-    assert result["second"] == "Installing tensorflow"
+    assert "tensorflow" not in result["firstDetail"], (
+        "the interpreter round must not name packages it is not downloading"
+    )
+    # The package round is titled by the PROJECT — one row for the whole folder,
+    # however many scripts wait on it — with the packages demoted to the detail.
+    assert result["second"] == "Preparing my-app"
+    assert "tensorflow" in result["secondDetail"]
+
+
+def test_a_project_with_no_name_still_gets_a_readable_title():
+    """`name` is additive (engine.py), so a client/server version skew must not
+    render the literal `undefined` at the user."""
+    result = _run_loader("""
+const ui = showInstall({ key: "%(a)s", requirements: ["x"] });
+console.log(JSON.stringify({ title: ui.title.textContent }));
+""" % {"a": _KEY_A})
+    assert result["title"] == "Preparing the environment"
 
 
 def test_two_rounds_are_allowed_when_they_install_DIFFERENT_things():
@@ -754,11 +1017,13 @@ installEnv({ key: "%(a)s", requirements: ["a", "b"] }, "a.py", "a.html").then(
 # --- several installs at once, each with its own row --------------------------
 #
 # The gap that let the shared-overlay bug ship: the only multi-install test above
-# passes the SAME key twice, because two .py files with identical requirement sets
-# share one venv key. That is a real case and it is covered. The case nobody
-# covered is the one users actually hit — an HTML view calling several .py files
-# with DIFFERENT headers, so N installs with N distinct keys run concurrently
-# against what used to be one title, one detail line and one Cancel button.
+# passes the SAME key twice. Under the folder rule that case is now handled a
+# level up — `installEnv` dedups by key, so several .py files in one project join
+# ONE install (see the dedup tests further down). The case that still produces
+# concurrent rows is an HTML view calling .py files from DIFFERENT projects (or
+# the D214 interpreter round alongside a package round), so N installs with N
+# distinct keys run against what used to be one title, one detail line and one
+# Cancel button.
 
 
 def test_two_distinct_installs_get_their_own_rows():
@@ -770,8 +1035,8 @@ def test_two_distinct_installs_get_their_own_rows():
     """
     result = _run_loader("""
 const ui = installOverlay();
-const a = showInstall({ key: "%(a)s", requirements: ["imagecodecs"] });
-const b = showInstall({ key: "%(b)s", requirements: ["s3fs"] });
+const a = showInstall({ key: "%(a)s", name: "geo", requirements: ["imagecodecs"] });
+const b = showInstall({ key: "%(b)s", name: "zarr", requirements: ["s3fs"] });
 console.log(JSON.stringify({
   live: installing.size,
   rows: ui.rows.children.length,
@@ -789,8 +1054,8 @@ console.log(JSON.stringify({
     assert result["sameCancel"] is False, (
         "one shared Cancel button means a single click cancels every install"
     )
-    assert result["titleA"] == "Installing imagecodecs"
-    assert result["titleB"] == "Installing s3fs", (
+    assert result["titleA"] == "Preparing geo"
+    assert result["titleB"] == "Preparing zarr", (
         "the second install overwrote the first install's title"
     )
 
@@ -803,8 +1068,8 @@ def test_painting_one_install_does_not_touch_another():
     through the DOM shape alone.
     """
     result = _run_loader("""
-const a = showInstall({ key: "%(a)s", requirements: ["imagecodecs"] });
-const b = showInstall({ key: "%(b)s", requirements: ["s3fs"] });
+const a = showInstall({ key: "%(a)s", name: "geo", requirements: ["imagecodecs"] });
+const b = showInstall({ key: "%(b)s", name: "zarr", requirements: ["s3fs"] });
 paintInstall(a, { stage: "install", pct: 25, detail: "fetching imagecodecs",
                   done: false });
 paintInstall(b, { stage: "create", pct: 10, detail: "preparing s3fs", done: false });
@@ -947,3 +1212,150 @@ def test_the_runtime_drives_the_loader():
     )
     # Verbatim errors survive to the page.
     assert "new Error(prog.error)" in src
+
+
+# --- one install per project, not one per script (SPEC PY-16) ------------------
+#
+# The key is the project FOLDER now, so a page calling five .py files from one
+# folder resolves to one key. The server was never at risk of doing the work
+# twice — `start()` claims the key atomically and joins — so what these pin is
+# the CLIENT side: one POST, one poller, one cancel listener, and every waiter
+# settling together.
+
+_DEDUP_PRELUDE = """
+let posts = 0, polls = 0, cancels = 0, doneAfter = 2;
+globalThis.fetch = (url, opts) => {
+  if (url === "/api/env/install") {
+    posts += 1;
+    return Promise.resolve({ ok: true, json: () => Promise.resolve(
+      { ok: true, key: "%(a)s", progress: { stage: "spawn", pct: 0, done: false } })});
+  }
+  if (url.startsWith("/api/env/progress")) {
+    polls += 1;
+    const done = polls >= doneAfter;
+    return Promise.resolve({ json: () => Promise.resolve({ ok: true,
+      progress: { stage: done ? "done" : "install", pct: done ? 100 : 25,
+                  done, error: OUTCOME } })});
+  }
+  if (url === "/api/env/cancel") {
+    cancels += 1;
+    return Promise.resolve({ ok: true, json: () => Promise.resolve(
+      { ok: true, cancelled: true })});
+  }
+  return Promise.resolve({ ok: true, json: () => Promise.resolve({ ok: true }) });
+};
+const need = { key: "%(a)s", name: "my-app", requirements: ["cowsay"] };
+"""
+
+
+def test_three_scripts_in_one_project_issue_one_install(monkeypatch):
+    """Three concurrent runPython calls, one project: one POST and one poller.
+
+    Before the dedup each caller built its own activeKey, poller and cancel
+    listener against a SHARED row — three POSTs, three pollers at 2Hz, and three
+    listeners on one Cancel button.
+    """
+    result = _run_loader(("const OUTCOME = null;" + _DEDUP_PRELUDE + """
+Promise.all([
+  installEnv(need, "a.py", "p.html"),
+  installEnv(need, "b.py", "p.html"),
+  installEnv(need, "c.py", "p.html"),
+]).then((settled) => {
+  console.log(JSON.stringify({
+    posts, polls, rows: installing.size, resolved: settled.length,
+    // Every caller must get the SAME promise, not three chains that happen to
+    // agree — that is what makes one poller enough.
+    shared: settled[0] === settled[1] && settled[1] === settled[2],
+  }));
+});
+""") % {"a": _KEY_A})
+    assert result["posts"] == 1, f"one project, {result['posts']} install POSTs"
+    assert result["polls"] == 2, f"one poller expected, saw {result['polls']} polls"
+    assert result["resolved"] == 3, "every caller must be resolved"
+    assert result["shared"] is True
+    assert result["rows"] == 0, "the row must be torn down once, by the last waiter"
+
+
+def test_every_waiter_rejects_when_the_shared_install_fails():
+    """A failure reaches all three, verbatim — not just whoever started it."""
+    result = _run_loader((
+        'const OUTCOME = "No solution found: imagecodecs has no wheels";'
+        + _DEDUP_PRELUDE + """
+Promise.allSettled([
+  installEnv(need, "a.py", "p.html"),
+  installEnv(need, "b.py", "p.html"),
+  installEnv(need, "c.py", "p.html"),
+]).then((settled) => {
+  console.log(JSON.stringify({
+    states: settled.map((r) => r.status),
+    messages: settled.map((r) => r.reason && r.reason.message),
+    types: settled.map((r) => r.reason && r.reason.type),
+    posts, rows: installing.size,
+  }));
+});
+""") % {"a": _KEY_A})
+    assert result["states"] == ["rejected"] * 3
+    assert all("imagecodecs" in m for m in result["messages"]), result["messages"]
+    assert result["types"] == ["EnvInstallError"] * 3
+    assert result["posts"] == 1
+    assert result["rows"] == 0
+
+
+def test_one_cancel_click_fires_one_cancel_request():
+    """One row, one listener. Three chains meant a click sent three cancels and
+    each chain's message overwrote the others'."""
+    result = _run_loader(("const OUTCOME = null;" + _DEDUP_PRELUDE + """
+doneAfter = 1000;   // never finishes on its own
+const waiters = [
+  installEnv(need, "a.py", "p.html"),
+  installEnv(need, "b.py", "p.html"),
+  installEnv(need, "c.py", "p.html"),
+];
+const row = installing.get("%(a)s").row;
+const listeners = (row.cancel._h.click || []).length;
+row.cancel._h.click.forEach((f) => f());
+setTimeout(() => {
+  Promise.allSettled(waiters).then(() => {});
+  console.log(JSON.stringify({ cancels, listeners, posts }));
+  process.exit(0);
+}, 50);
+""") % {"a": _KEY_A})
+    assert result["listeners"] == 1, (
+        f"{result['listeners']} cancel listeners on one row — a click fires that many"
+    )
+    assert result["cancels"] == 1
+    assert result["posts"] == 1
+
+
+def test_a_later_run_starts_a_fresh_install_rather_than_replaying_the_old_one():
+    """The registry entry is dropped when the promise SETTLES.
+
+    Otherwise a retry after a fixed pyproject.toml (or a `watchPath` reload) would
+    resolve instantly against a stale result and run against an environment that
+    was never rebuilt.
+    """
+    result = _run_loader(("const OUTCOME = null;" + _DEDUP_PRELUDE + """
+installEnv(need, "a.py", "p.html")
+  .then(() => { polls = 0; return installEnv(need, "a.py", "p.html"); })
+  .then(() => { console.log(JSON.stringify({ posts, polls })); });
+""") % {"a": _KEY_A})
+    assert result["posts"] == 2, "the second run must not replay the first's promise"
+    assert result["polls"] == 2
+
+
+def test_the_dedup_registry_is_wired_into_the_loader():
+    """Structural backstop, in the same shape as the wiring test above: the
+    behaviour tests run the loader in isolation, so this pins that the registry
+    is what `runPython`'s install path actually goes through."""
+    import fused_render
+
+    path = os.path.join(os.path.dirname(fused_render.__file__), "static", "runtime.js")
+    src = open(path, encoding="utf-8").read()
+    assert "installInFlight" in src, (
+        "the registry is what makes N scripts in one project ONE install"
+    )
+    assert "handle(data, new Set())" in src, (
+        "the loop guard must be scoped to ONE call chain. A page-scoped set makes "
+        "concurrent scripts in one project reject with the raw needs_install "
+        "error, and refuses the install after a user fixes their pyproject.toml"
+    )

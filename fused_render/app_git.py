@@ -62,7 +62,14 @@ _IDENTITY = ["-c", "user.name=Fused", "-c", "user.email=apps@fused.io"]
 # exists on users' disks), plus the legacy per-file <file>.json the pre-D230
 # file-scoped chat template used to write beside the entry html — still
 # ignored, because an existing repo may already have one.
-_GITIGNORE = "*.html.json\n.claude-split.json\n"
+#
+# `.venv/` is here for a different reason: the app NEVER creates one (project
+# venvs live under ~/.fused-render/venvs — SPEC PY-16, MD-7), but a user who runs
+# `uv run` or `uv sync` in their own terminal will, and `commit()`'s `git add -A`
+# would sweep tens of thousands of files into the app's history. `pyproject.toml`
+# and `uv.lock` are deliberately NOT ignored: those are source and belong in the
+# repo — they are what makes the folder reproduce on another machine.
+_GITIGNORE = "*.html.json\n.claude-split.json\n.venv/\n"
 
 
 def _git(app_dir: str, *args: str) -> subprocess.CompletedProcess:

@@ -1,8 +1,8 @@
 """Inspector backing api/template.html. Statically parses a target .py via
 `ast` — never imports or executes it — and returns the shape the form UI
-needs: module docstring, PEP 723 dependencies (fused engine only — see
-`dependencies` below), and the entrypoint function's signature (params,
-annotations, defaults, docstring). Stdlib only.
+needs: module docstring, the dependencies its PROJECT FOLDER declares (fused
+engine only — see `dependencies` below), and the entrypoint function's signature
+(params, annotations, defaults, docstring). Stdlib only.
 
 Entrypoint resolution mirrors the **active** execution engine (D69) — the
 template passes ``engine`` from ``/api/config`` so the form always describes
@@ -18,38 +18,83 @@ via ``static_result`` so the template can offer Execute instead of reporting
 "no main()".
 """
 import ast
-import re
+import os
 
 
-def _pep723_dependencies(source: str) -> list:
-    """Best-effort ``dependencies`` from a ``# /// script`` PEP 723 block
-    (mirrors engine.py's ``script_requirements``, standalone — this module
-    must stay import-independent of ``fused_render`` since it may run inside
-    the fused engine's own isolated per-script venv, not the server's).
+def _project_root(file: str):
+    """The project folder whose environment *file* runs in, or None.
 
-    Never raises: this is a read-only display, not something that should
-    break the whole inspector view over a malformed block or a pre-3.11
-    interpreter (``tomllib``) — either quietly yields ``[]``.
+    The topmost ancestor holding a ``pyproject.toml`` — `projectenv`'s rule for
+    everything outside an app folder or a template folder, which are the two
+    containers this module cannot know about: templates must reach the app only
+    through ``templates/shared/appenv.py`` (SPEC PY-15, D166), so importing
+    ``fused_render.projectenv`` — the authoritative derivation — is not allowed
+    here, and is pinned shut by `test_no_template_imports_fused_render`.
+
+    That makes this the one place the boundary rule is restated, and the reason
+    that is tolerable is that it is DISPLAY-ONLY: the engine never consults it,
+    so the worst a divergence costs is a label naming an ancestor of the real
+    root. Inside a container the two agree whenever the container is the topmost
+    declaring folder, which is the layout every app and template has.
     """
+    found = None
+    d = os.path.dirname(os.path.abspath(file))
+    while True:
+        if os.path.isfile(os.path.join(d, "pyproject.toml")):
+            found = d
+        parent = os.path.dirname(d)
+        if parent == d:
+            return found
+        d = parent
+
+
+def _project_dependencies(root) -> list:
+    """``[project].dependencies`` of *root*'s ``pyproject.toml``.
+
+    Never raises: this is a read-only display, not something that should break
+    the whole inspector view over a malformed manifest or a pre-3.11 interpreter
+    (``tomllib``) — either quietly yields ``[]``.
+    """
+    if not root:
+        return []
     try:
         import tomllib
     except ImportError:
         return []
-    match = re.search(r"(?m)^# /// script$\s(?P<content>(^#(| .*)$\s)+)^# ///$", source)
-    if match is None:
-        return []
-    content = "".join(
-        line[2:] if line.startswith("# ") else line[1:]
-        for line in match.group("content").splitlines(keepends=True)
-    )
     try:
-        meta = tomllib.loads(content)
-    except tomllib.TOMLDecodeError:
+        with open(os.path.join(root, "pyproject.toml"), "rb") as f:
+            meta = tomllib.load(f)
+    except (OSError, tomllib.TOMLDecodeError):
         return []
-    deps = meta.get("dependencies", [])
-    if not isinstance(deps, list) or not all(isinstance(d, str) for d in deps):
+    project = meta.get("project")
+    if not isinstance(project, dict):
         return []
-    return deps
+    deps = project.get("dependencies", [])
+    if not isinstance(deps, list):
+        return []
+    return [d for d in deps if isinstance(d, str)]
+
+
+def _ignored_nested_manifests(root, file: str) -> list:
+    """``pyproject.toml`` files BELOW *root* on the path down to *file*.
+
+    Each one is inert: the environment is the project root's, so a manifest in a
+    subfolder declares nothing and installs nothing. Surfaced rather than left
+    silent because a file that looks correct and does nothing is exactly the
+    failure D177 was written about — the user edits it, nothing changes, and
+    there is no signal anywhere connecting the two.
+    """
+    if not root:
+        return []
+    root = os.path.abspath(root)
+    out = []
+    d = os.path.dirname(os.path.abspath(file))
+    while d.startswith(root + os.sep):
+        candidate = os.path.join(d, "pyproject.toml")
+        if os.path.isfile(candidate):
+            out.append(candidate)
+        d = os.path.dirname(d)
+    return out
 
 
 def _is_fused_udf_decorator(node) -> bool:
@@ -131,14 +176,22 @@ def main(file: str, engine: str = "builtin") -> dict:
     except SyntaxError as e:
         return {"parse_error": f"line {e.lineno}: {e.msg}"}
 
+    root = _project_root(file)
     fn = _find_entrypoint(tree, engine)
     result = {
         "parse_error": None,
         "module_docstring": ast.get_docstring(tree),
-        # Only the fused engine actually resolves PEP 723 deps into a venv
-        # (PY-12) — the builtin executor ignores them, so showing them there
-        # would imply an install that never happens.
-        "dependencies": _pep723_dependencies(source) if engine == "fused" else [],
+        # Only the fused engine actually builds a venv from the project's
+        # declaration (PY-16) — the builtin executor ignores it, so showing the
+        # dependencies there would imply an install that never happens.
+        "dependencies": _project_dependencies(root) if engine == "fused" else [],
+        # Which folder that declaration came from, so the form can say WHERE the
+        # environment is declared rather than implying the file declares it.
+        "project": root if engine == "fused" else None,
+        # Inert manifests below the root. See `_ignored_nested_manifests`.
+        "ignored_manifests": (
+            _ignored_nested_manifests(root, file) if engine == "fused" else []
+        ),
         "function": None,
         "static_result": False,
     }

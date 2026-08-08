@@ -40,7 +40,7 @@ Verify: `ls fused_render/static/shell-dist/index.html` and `.venv/bin/python -m 
 
 | Item | Why |
 |------|-----|
-| Python 3.12 | **pinned, not a default** (D214): the server hands its own interpreter to `fused`'s venv builder as the base for every PEP 723 script venv, so this version decides which wheels those venvs can resolve. A 3.14 venv made script venvs cp314, and a script declaring `tensorflow` (no cp314 wheels) was an unresolvable dead end. 3.12 is what all three installers already ship, so a dev checkout matches the shipped app. `scripts/dev.sh` enforces it and rebuilds a `.venv` that is on anything else |
+| Python 3.12 | **pinned, not a default** (D214): the server passes its own interpreter to `uv sync` as the base for every project venv, so this version decides which wheels those venvs can resolve. A 3.14 venv made project venvs cp314, and a folder declaring `tensorflow` (no cp314 wheels) was an unresolvable dead end. 3.12 is what all three installers already ship, so a dev checkout matches the shipped app. `scripts/dev.sh` enforces it and rebuilds a `.venv` that is on anything else |
 | `dev` extra | pytest + httpx (backs TestClient) |
 | `bundled` extra | duckdb, rasterio, zarr, pandas, geopandas… (templates + daemons) |
 | `fused` extra | compute-engine wheel for `/api/run` |
