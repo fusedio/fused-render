@@ -299,13 +299,21 @@
    rows are chrome, and the subject is what the view is showing. */
 .bar-ctl-bordered {
   border: 1px solid var(--border);
-  background: var(--bg);
+  /* The app's hairline for the ring, and a THEME-CHOSEN fill (tokens.css):
+     `--bg` under a `--bg-alt` bar is a white plate in light mode, which is the
+     look, and a darker well in dark mode — which, ringed by a lighter border,
+     turned the quietest control in the app into a chip. Dark resolves this to
+     transparent, so the hairline alone says "this one is a menu". */
+  background: var(--ctl-plate-bg);
   color: var(--fg);
 }
 
 .bar-ctl-bordered:hover:not(:disabled) {
-  background: var(--bg);
-  border-color: var(--fg-muted);
+  background: var(--ctl-plate-bg);
+  /* Not `--fg-muted` directly: that is the light INK in dark mode, so hovering
+     lit the ring to near-white. The token is --fg-muted in light and a step up
+     from the resting border in dark. */
+  border-color: var(--ctl-quiet-border-hover);
   color: var(--fg);
 }
 

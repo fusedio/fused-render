@@ -50,6 +50,30 @@
   --row-bg-hover: #26282c; /* --bg-alt under the neutral 0.06 wash */
   --row-bg-active: #353a25; /* --bg-alt under the accent 0.13 wash */
 
+  /* Quiet control chrome — the bars' two bordered controls (the labelled mode
+     trigger, .bar-ctl-bordered, and the "Open as app" pill). These are TOKENS
+     rather than an alpha spelled into the rules because the SAME alpha reads
+     differently by theme: `rgba(var(--fg-muted-rgb), 0.35)` over the light
+     bar is a hairline a touch darker than --border, and over the dark bar it
+     is 30 luminance steps LIGHTER than --border — the two controls glowed as
+     lit pills on a dark toolbar while looking correct on a light one. The
+     light values below are exactly what those rules resolved to before this
+     group existed; only dark moves.
+     The dark border sits a step above --border (the app's hairline) — present
+     as chrome, never brighter than the ink around it — and the fills are a
+     whisper of --tint rather than a plate. */
+  --ctl-quiet-bg: rgba(var(--tint), 0.04);
+  --ctl-quiet-bg-hover: rgba(var(--tint), 0.08);
+  --ctl-quiet-border: #343840;
+  /* Hover lands roughly where the RESTING border used to be, so the state
+     change is still legible without the idle control shouting. */
+  --ctl-quiet-border-hover: #4b505a;
+  /* The bordered mode trigger's fill. Transparent in dark: --bg under a
+     --bg-alt bar cut a darker plate out of the toolbar, and between that well
+     and its lighter ring the quietest control in the app read as a chip. The
+     hairline alone is enough to say "this one is a menu". */
+  --ctl-plate-bg: transparent;
+
   --on-accent: #10131a; /* text/glyph on an --accent fill */
   --on-fg: #ffffff; /* .btn-primary hover: one step further from --bg than --fg */
   --accent-soft: #c9d95e; /* the accent as readable body text */
@@ -118,6 +142,15 @@
   --bg-popover: #ffffff;
   --row-bg-hover: #e5e6e8; /* --bg-alt under the neutral 0.06 wash */
   --row-bg-active: #e1e4d7; /* --bg-alt under the accent 0.13 wash */
+
+  /* Quiet control chrome (see the dark block). These four are the values the
+     component rules carried inline before the group existed, so light mode is
+     unchanged to the byte — this whole group exists for dark. */
+  --ctl-quiet-bg: rgba(var(--fg-muted-rgb), 0.08);
+  --ctl-quiet-bg-hover: rgba(var(--fg-muted-rgb), 0.16);
+  --ctl-quiet-border: rgba(var(--fg-muted-rgb), 0.35);
+  --ctl-quiet-border-hover: var(--fg-muted);
+  --ctl-plate-bg: var(--bg);
 
   --on-accent: #ffffff;
   --on-fg: #000000;

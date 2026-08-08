@@ -43,40 +43,44 @@
 }
 
 /* Rendered right after the directory name (D81's `_listing` header) — shown
-   only when the folder holds exactly one HTML file. Same accent tint the old
-   per-row "App" chip used, so the launchable-app language carries over to
-   its replacement. */
+   only when the folder holds exactly one HTML file. Chrome comes from the
+   quiet-control tokens (tokens.css), which is what keeps it quiet in BOTH
+   themes: these used to be `rgba(var(--fg-muted-rgb), …)` spelled here, and
+   one alpha cannot serve both palettes — over the light bar it reads as a
+   hairline, over the dark one as a lit pill, because --fg-muted is the light
+   ink there. The light values are unchanged; the tokens are where dark gets
+   its own. */
 .open-as-app-btn {
   flex: 0 0 auto;
   font: inherit;
   font-size: 12px;
   padding: 5px 10px;
-  border: 1px solid rgba(var(--fg-muted-rgb), 0.35);
+  border: 1px solid var(--ctl-quiet-border);
   border-radius: 6px;
-  background: rgba(var(--fg-muted-rgb), 0.08);
+  background: var(--ctl-quiet-bg);
   color: var(--fg-muted);
   cursor: pointer;
 }
 
 .open-as-app-btn:hover {
-  background: rgba(var(--fg-muted-rgb), 0.16);
-  border-color: var(--fg-muted);
+  background: var(--ctl-quiet-bg-hover);
+  border-color: var(--ctl-quiet-border-hover);
   color: var(--fg);
 }
 
 /* In the explorer the button portals into the breadcrumb's actions slot
-   (.preview-actions): re-assert the accent chrome over the slot's generic
+   (.preview-actions): re-assert its chrome over the slot's generic
    `.preview-actions button` rules, which otherwise outrank the class above. */
 .preview-actions .open-as-app-btn {
   font-size: 12px;
-  border: 1px solid rgba(var(--fg-muted-rgb), 0.35);
-  background: rgba(var(--fg-muted-rgb), 0.08);
+  border: 1px solid var(--ctl-quiet-border);
+  background: var(--ctl-quiet-bg);
   color: var(--fg-muted);
 }
 
 .preview-actions .open-as-app-btn:hover {
-  background: rgba(var(--fg-muted-rgb), 0.16);
-  border-color: var(--fg-muted);
+  background: var(--ctl-quiet-bg-hover);
+  border-color: var(--ctl-quiet-border-hover);
   color: var(--fg);
 }
 
