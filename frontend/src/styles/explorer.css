@@ -971,8 +971,13 @@ table.listing-table th.sortable:hover {
   color: var(--fg);
 }
 
+/* The accent means "the view mode you are in" and nothing else (only the
+   checkmark in the mode dropdown carries it). A sorted header is not a mode:
+   it needs to read as the selected one among three muted headers, which full
+   --fg at 600 already does — and the arrow says which way. */
 table.listing-table th.sorted {
-  color: var(--accent);
+  color: var(--fg);
+  font-weight: 600;
 }
 
 /* One glyph (▲) for both directions: desc rotates it, so flipping the order
