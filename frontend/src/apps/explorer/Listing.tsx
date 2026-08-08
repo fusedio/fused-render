@@ -59,7 +59,6 @@ export default function Listing({
   provisional = false,
   embedded = false,
   onSingleApp,
-  selfPrimary,
 }: {
   fsPath: string;
   // `provisional`: this Listing is rendering inside the pre-stat loading
@@ -84,13 +83,6 @@ export default function Listing({
   // header) uses this to surface an "Open as app" button. Fires whenever the
   // plain (non-search) listing settles, so it tracks dir-watch refreshes too.
   onSingleApp?: (path: string | null) => void;
-  // The folder's own primary action, rendered in the preview pane header when
-  // the pane is showing the folder ITSELF (the self row, which has no "Open" —
-  // it is already open on the left). Today that is Preview's ready-made "Open
-  // as app" / "Add as app" button: it is passed down as a NODE rather than
-  // rebuilt here so the link-status logic that decides its label and action
-  // lives in exactly one place. Absent for a folder with no single app.
-  selfPrimary?: React.ReactNode;
 }) {
   const { state, refresh, refetch, loadMore, loadingMore, newNames } =
     useDirListing(fsPath);
@@ -1070,7 +1062,6 @@ export default function Listing({
                       : null
                 }
                 selCount={sel.paths.length}
-                selfPrimary={selfPrimary}
               />
             </div>
           </>

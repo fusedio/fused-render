@@ -464,12 +464,12 @@ function TemplatePreview({
   // `preview` never rides onto file URLs (router.ts navigate), so paneIsOpen
   // would otherwise read the now-default-on value here.
   //
-  // Used for the two things that MOVE INTO the pane when it is showing: the
-  // folder's "Open as app" primary (which rides down into the pane header's
-  // primary slot) and .preview-browse-chip (whose corner is inside the pane
-  // when there is one). The top-bar mode control is not one of them — for an
-  // explorer folder it is gone whether the pane is open or not; see
-  // headerActions.
+  // Used for the one thing the pane displaces: .preview-browse-chip, whose
+  // corner is INSIDE the pane when there is one (see its comment below). The
+  // top-bar mode control is not displaced but removed — for an explorer folder
+  // it is gone whether the pane is open or not; see headerActions. And the
+  // folder's "Open as app" is not conditioned on the pane at all any more (see
+  // openAsAppBtn).
   const listingPaneOpen = isListing && paneIsOpen(fsPath);
   // Path of the directory's lone top-level HTML file, reported by Listing
   // (null when there isn't exactly one) — drives the "Open as app" button
@@ -758,12 +758,17 @@ function TemplatePreview({
   const appBtnLabel = linkStatus?.status === "unlinked" ? "Add as app" : "Open as app";
   const appBtnAction = linkStatus?.status === "unlinked" ? convertToApp : openAsApp;
 
-  // The folder's primary action, built once and rendered in exactly one place.
-  // With the listing's preview pane OPEN it goes down into that pane's header,
-  // whose primary slot is otherwise empty for the folder's own row — the title
-  // bar was where it competed with the mode control and the layout zone for
-  // the user's eye. With the pane CLOSED there is no pane header to hold it,
-  // so the title bar keeps it. Never both, never neither.
+  // The folder's primary action, built once and rendered in exactly one place:
+  // the title bar, whenever the folder qualifies.
+  //
+  // It spent a while riding down into the preview pane's header instead
+  // whenever the pane was open, on the theory that the pane's own row already
+  // had an empty primary slot for it. That slot belongs to the pane's SELF
+  // target (nothing selected) — and a qualifying folder is by definition one
+  // holding a top-level HTML file, which FS-16's auto-select now picks the
+  // moment the folder opens. So the self row almost never shows, and the
+  // button had effectively disappeared from the default view of exactly the
+  // folders it exists for.
   const openAsAppBtn =
     isListing && singleAppPath && linkStatus ? (
       <button type="button" className="open-as-app-btn" onClick={appBtnAction}>
@@ -834,7 +839,7 @@ function TemplatePreview({
     <>
       {actionsInTopbar ? (
         <TopbarActions>
-          {!listingPaneOpen && openAsAppBtn}
+          {openAsAppBtn}
           {headerActions}
         </TopbarActions>
       ) : (
@@ -862,7 +867,6 @@ function TemplatePreview({
           <Listing
             fsPath={fsPath}
             onSingleApp={setSingleAppPath}
-            selfPrimary={listingPaneOpen ? openAsAppBtn : null}
           />
         ) : (
           /* One frame per mounted mode (see the held-frame swap above). Each

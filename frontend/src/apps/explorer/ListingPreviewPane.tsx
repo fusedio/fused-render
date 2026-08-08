@@ -91,15 +91,11 @@ interface PaneMode {
 export default function ListingPreviewPane({
   row,
   selCount,
-  selfPrimary,
 }: {
   // The lead row when exactly one row is selected, else null.
   row: PaneTarget | null;
   // Total selected rows, for the multi-selection placeholder.
   selCount: number;
-  // The host folder's own primary action, for the SELF row's primary slot
-  // (see the header below). Built by the host so its state lives in one place.
-  selfPrimary?: React.ReactNode;
 }) {
   const [info, setInfo] = useState<InfoState>({ status: "loading" });
   // Lone-app probe result for a folder: undefined = still loading, null =
@@ -207,10 +203,12 @@ export default function ListingPreviewPane({
   }
 
   // The SELF target — nothing selected, so the pane's subject is the folder
-  // already open on the left. It has no preview: just the folder's name, its
-  // own primary action (`selfPrimary`, the host's "Open as app" — a folder
-  // with no single app passes nothing and the slot stays empty), and the hint
-  // that says what to do about it.
+  // already open on the left. It has no preview: just the folder's name and
+  // the hint that says what to do about it. No actions either — the folder's
+  // own primary ("Open as app") used to be handed down into this header, but a
+  // folder that HAS an app has a file in it, so FS-16's auto-select means this
+  // row is barely ever on screen; the button belongs in the title bar, which
+  // is where it now stays whether the pane is open or not (Preview.tsx).
   //
   // NO MODE MENU. The folder's peers under the `/` key are heavyweight opt-ins
   // (the chat, git, versions), so the picker's only job here was to offer a
@@ -230,7 +228,6 @@ export default function ListingPreviewPane({
           <span className="pane-header-name" title={row.name}>
             {row.name}
           </span>
-          {selfPrimary}
         </div>
         <div className="pane-center">
           <div className="pane-hint">Select a file to preview.</div>
