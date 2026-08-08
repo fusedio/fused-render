@@ -20,7 +20,7 @@ import {
 import type { Deployment, StatResult, TemplateEntry } from "@platform/lib/api";
 import { navigate, navigateUrl, urlForFsPath, replaceSearch } from "@platform/lib/router";
 import { appRouteUrl, APP_OPEN_MODE } from "@platform/lib/appEntry";
-import { formatSize, formatMtime, basename } from "@platform/lib/format";
+import { formatSize, formatMtimeFull, basename } from "@platform/lib/format";
 import { useRefreshOnReturn, useUrlVersion } from "@platform/lib/hooks";
 import { useDeployEnabled } from "@platform/lib/prefs";
 import {
@@ -876,7 +876,7 @@ function FallbackPreview({ fsPath, stat, actionsInTopbar }: { fsPath: string; st
             <dt>Size</dt>
             <dd>{formatSize(stat.size)}</dd>
             <dt>Modified</dt>
-            <dd>{formatMtime(stat.mtime)}</dd>
+            <dd>{formatMtimeFull(stat.mtime)}</dd>
           </dl>
           <a href={rawUrl(fsPath)} download={stat.name}>
             Download

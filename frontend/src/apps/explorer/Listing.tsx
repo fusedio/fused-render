@@ -24,7 +24,7 @@ import { navigate, replaceSearch } from "@platform/lib/router";
 import { dirname, normDir } from "@apps/explorer/lib/fs-actions";
 import { acquireOverlay, releaseOverlay } from "@platform/lib/ui-overlay";
 import { isMod } from "@platform/lib/platform";
-import { formatSize, formatMtime } from "@platform/lib/format";
+import { formatSize, formatMtime, formatMtimeFull } from "@platform/lib/format";
 import { iconForEntry, isAppEntry } from "@platform/ui/FileIcons";
 import { getViewState, setViewState } from "@platform/lib/viewstate";
 import { useFlip, FLIP_KEY_ATTR } from "@platform/lib/flip";
@@ -579,7 +579,9 @@ export default function Listing({
                 <td className="size">
                   {entry.is_dir ? "" : formatSize(entry.size)}
                 </td>
-                <td className="mtime">{formatMtime(entry.mtime)}</td>
+                <td className="mtime" title={formatMtimeFull(entry.mtime)}>
+                  {formatMtime(entry.mtime)}
+                </td>
               </tr>
             );
           })}
@@ -688,7 +690,9 @@ export default function Listing({
             />
           </td>
           <td className="size">{entry.is_dir ? "" : formatSize(entry.size)}</td>
-          <td className="mtime">{formatMtime(entry.mtime)}</td>
+          <td className="mtime" title={formatMtimeFull(entry.mtime)}>
+            {formatMtime(entry.mtime)}
+          </td>
         </tr>
       );
     });

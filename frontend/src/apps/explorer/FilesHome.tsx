@@ -5,7 +5,7 @@
 // /explorer/view/... (the explorer proper).
 import { useEffect, useRef, useState } from "react";
 import { navigate, replaceSearch, urlForFsPath } from "@platform/lib/router";
-import { basename, formatMtime, formatSize } from "@platform/lib/format";
+import { basename, formatMtime, formatMtimeFull, formatSize } from "@platform/lib/format";
 import { iconForEntry } from "@platform/ui/FileIcons";
 import type { Config, ClaudeSessionFolder } from "@platform/lib/api";
 import { getClaudeSessionFolders, statPath } from "@platform/lib/api";
@@ -243,7 +243,9 @@ function SearchResults({
                   <span className="fh-result-meta">
                     {h.is_dir ? "" : formatSize(h.size)}
                     {h.mtime !== null && (
-                      <span className="fh-result-date">{formatMtime(h.mtime)}</span>
+                      <span className="fh-result-date" title={formatMtimeFull(h.mtime)}>
+                        {formatMtime(h.mtime)}
+                      </span>
                     )}
                   </span>
                 </a>
