@@ -801,18 +801,24 @@ function TemplatePreview({
           Files keep this control (they have no pane), and the app view/page
           (`appChrome`) keeps everything it has — its folder is the whole
           subject of the route, not a listing beside a preview.
-          A folder is not stranded in one of its non-listing modes: with no
-          pane on screen to carry a menu, .preview-browse-chip below is the way
-          back ("Browse contents").
-          ACCEPTED TRADEOFF, not an oversight: with the pane OPEN there is then
-          no control at all that switches the FOLDER's own mode — the chip
-          hides (its corner is inside the pane) and the pane's menu writes
-          `_panelMode`, which changes what the PANE previews, not what the
-          route renders. So a folder's git/versions/graph views are reached by
-          `?_mode=` (a URL, a bookmark, the file menu's Open With) or by
-          closing the pane first. The user chose that over two switchers in one
-          view: for a folder, the pane IS the explorer, and its peers are
-          opt-in tools rather than ways of looking at the listing. */}
+          A folder is not stranded in one of its non-listing modes:
+          .preview-browse-chip below is the way back ("Browse contents"), and
+          it is REVEALED for exactly that state — `is-exit`. It was not, when
+          this comment first claimed it was: the chip was `display: none`
+          outside the embed, so a folder opened straight into `git` or `graph`
+          had no control anywhere that could return it to the listing. A
+          tradeoff argued from an escape hatch that does not exist is just a
+          dead end, so the hatch was made real rather than the argument
+          softened.
+          ACCEPTED TRADEOFF, and this part IS the product decision: nothing
+          switches a folder INTO one of those modes from the explorer any more.
+          The pane's menu writes `_panelMode` — what the PANE previews — not
+          `_mode`, and the chip only ever offers the listing⇄counterpart pair.
+          So a folder's git/versions/graph views are entered by `?_mode=` (a
+          URL, a bookmark, the file menu's Open With) and left by the chip. The
+          user chose that over two switchers in one view: for a folder, the
+          pane IS the explorer, and its peers are opt-in tools rather than ways
+          of looking at the listing. */}
       {!(stat.is_dir && !appChrome) && (
         <ModeMenu
           entries={templates.map((t) => ({
@@ -905,11 +911,26 @@ function TemplatePreview({
             INSIDE the pane — the chip lands in the pane's header row, where it
             reads as pane chrome. It is not (it switches the FOLDER's mode, not
             the previewed file's), so a bare mode name like "Claude" sitting
-            there is a mystery button. Closing the pane brings it back, and the
-            `!isListing` case — "Browse contents" over a directory template's
-            iframe, the chip's original job (PT-13/D65) — is untouched. */}
+            there is a mystery button. That guard only ever bites in `_listing`
+            mode, since the pane exists only there — so the `!isListing` case,
+            "Browse contents" over a directory template's iframe, is always
+            rendered, and `is-exit` is what makes the explorer actually SHOW it
+            (PT-13/D65, PT-13b). In `_listing` mode with the pane closed the
+            chip still renders and still stays hidden outside the embed: that
+            direction (listing → counterpart) is the half the product decision
+            removed from the explorer. */}
         {toggleListing && !listingPaneOpen && (
-          <button type="button" className="preview-browse-chip" onClick={toggleListing}>
+          <button
+            type="button"
+            /* `is-exit` = a directory showing a NON-listing mode, which is the
+               state that has no other way back to the listing (PT-13b) and so
+               is the one the explorer reveals the chip for; see the rule. Set
+               unconditionally rather than only outside the embed, because the
+               embed's own selectors outrank it and keep their look — one
+               condition instead of two that could disagree. */
+            className={"preview-browse-chip" + (isListing ? "" : " is-exit")}
+            onClick={toggleListing}
+          >
             {!isListing
               ? "Browse contents"
               : counterpart === defaultEntry.mode
