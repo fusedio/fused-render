@@ -46,11 +46,7 @@ import {
   renderHighlight,
   measureScrollAnchor,
 } from "@apps/explorer/listing/bits";
-import {
-  usePreviewPane,
-  reflectPaneInUrl,
-  PANE_DEFAULT_FRAC,
-} from "@apps/explorer/listing/pane";
+import { usePreviewPane, reflectPaneInUrl } from "@apps/explorer/listing/pane";
 import { useDirListing } from "@apps/explorer/listing/useDirListing";
 import { useWalkSearch } from "@apps/explorer/listing/useWalkSearch";
 import { useListingSelection } from "@apps/explorer/listing/useListingSelection";
@@ -999,10 +995,12 @@ export default function Listing({
             />
             <div
               className="listing-pane-slot"
-              // Null width = first open with nothing saved: half the container
-              // as a flex percentage until the measuring layout effect pins a
-              // pixel value (same visual, so no flash either way).
-              style={{ flexBasis: pane.width ?? `${PANE_DEFAULT_FRAC * 100}%` }}
+              // A PERCENTAGE, not a pixel width: the split is stored as a
+              // fraction of this container (listing/pane.ts), so a window
+              // resize keeps the proportion the user dragged instead of
+              // leaving the pane at one window's arithmetic. The pixel floors
+              // are the slot's / the list's CSS min-widths.
+              style={{ flexBasis: `${pane.frac * 100}%` }}
             >
               {/* Keyed on the previewed path: switching rows remounts the pane,
                   so a stale iframe never lingers a frame while the new row's

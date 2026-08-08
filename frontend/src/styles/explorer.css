@@ -627,10 +627,13 @@
   pointer-events: none;
 }
 
-/* Fixed-width slot the pane renders into; width set inline (flex-basis) from
-   the drag, clamped by clampPaneWidth() to at least 220px and at most
-   container - 60px so the LIST keeps its own sliver floor. The min-width
-   here is the pane's floor, not the list's — see .listing-main. */
+/* Slot the pane renders into. Its flex-basis is set inline as a PERCENTAGE of
+   the split container (listing/pane.ts stores the split as a fraction), so a
+   window resize rescales it; the drag clamps that fraction with
+   clampPaneWidth() to at least 220px and at most container - 60px so the LIST
+   keeps its own sliver floor. These two min-widths are what hold the pixel
+   floors when the window — not the divider — is what changed. The min-width
+   here is the pane's floor, not the list's; see .listing-main. */
 .listing-pane-slot {
   flex: 0 0 auto;
   min-width: 220px;
