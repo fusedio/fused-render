@@ -209,6 +209,31 @@ def test_an_unknown_tool_is_still_refused(server):
     assert "unknown tool" in err["message"]
 
 
+def test_a_session_with_no_pane_is_not_offered_the_tool_at_all(tmp_path):
+    """D234: an ordinary folder has no left pane, so there is no page to read
+    back — and a tool the model can call but that can never answer is worse than
+    no tool. It would call it after every edit, wait out the 20s timeout and get
+    a sentence about a window, once per turn.
+
+    The channel's EXISTENCE is what decides: `agent.py` spawns the server with no
+    app-state directory for a no-pane target, and no directory means no tool in
+    `tools/list` and no dispatch for it. One signal, not two — a roster that
+    varied independently of the channel could advertise a tool the server cannot
+    serve.
+    """
+    s = MCPServer([sys.executable, os.path.abspath(SERVER),
+                   str(tmp_path / "perm")])
+    try:
+        s.initialize()
+        tools = s.call("tools/list")["result"]["tools"]
+        assert [t["name"] for t in tools] == ["approve"]
+        err = s.call("tools/call",
+                     {"name": "app_state", "arguments": {}})["error"]
+        assert "unknown tool" in err["message"]
+    finally:
+        s.close()
+
+
 # --------------------------------------------------------------- the page side
 
 def test_poll_surfaces_pending_app_state_requests(agent, run_dir):
@@ -318,6 +343,7 @@ def test_the_mcp_server_gets_its_own_app_state_directory(agent, tmp_path,
     agent.RUNS = str(tmp_path / "runs")
     project = tmp_path / "proj"
     project.mkdir()
+    (project / "index.html").write_text("<p>hi</p>", encoding="utf-8")
     _cmd, run_dir = _spawn(agent, monkeypatch, project)
     cfg = json.load(open(os.path.join(run_dir, "mcp.json"), encoding="utf-8"))
     args = cfg["mcpServers"][agent.PERMISSION_SERVER]["args"]
@@ -326,14 +352,51 @@ def test_the_mcp_server_gets_its_own_app_state_directory(agent, tmp_path,
     assert os.path.isdir(os.path.join(run_dir, "appstate"))
 
 
+def test_a_no_pane_target_gets_no_app_state_channel_and_no_pre_allowance(
+        agent, tmp_path, monkeypatch):
+    """The spawn side of D234, and both halves have to agree.
+
+    An ordinary folder (no `index.html`, no single top-level `.html` — the same
+    `app_entry.entry_html` predicate the pane and the prompt read) has no left
+    pane. So: no app-state directory in the server's argv, which is what makes
+    the tool absent from the roster, and no pre-allowance naming a tool that does
+    not exist. The permission bridge itself is untouched — approvals are not
+    about the pane.
+    """
+    agent.RUNS = str(tmp_path / "runs")
+    plain = tmp_path / "downloads"
+    plain.mkdir()
+    (plain / "a.pdf").write_bytes(b"%PDF-1.4\n")
+    cmd, run_dir = _spawn(agent, monkeypatch, plain)
+    cfg = json.load(open(os.path.join(run_dir, "mcp.json"), encoding="utf-8"))
+    args = cfg["mcpServers"][agent.PERMISSION_SERVER]["args"]
+    assert args[1:] == [os.path.join(run_dir, "perm")]
+    assert not os.path.exists(os.path.join(run_dir, "appstate"))
+    tool = "mcp__%s__%s" % (agent.PERMISSION_SERVER, agent.APP_STATE_TOOL)
+    assert tool not in cmd[cmd.index("--allowed-tools") + 1]
+    assert "--permission-prompt-tool" in cmd
+    # A folder that IS an app keeps the channel — the predicate is the only
+    # thing that decides, so both answers are pinned in one place.
+    app = tmp_path / "proj"
+    app.mkdir()
+    (app / "index.html").write_text("<p>hi</p>", encoding="utf-8")
+    cmd2, run2 = _spawn(agent, monkeypatch, app)
+    assert tool in cmd2[cmd2.index("--allowed-tools") + 1]
+    assert os.path.isdir(os.path.join(run2, "appstate"))
+
+
 def test_reading_the_users_own_screen_does_not_raise_a_card(agent, tmp_path,
                                                             monkeypatch):
     """app_state reads the page the user is already looking at, for the agent
     they are already talking to — carding that would be a prompt with no
-    decision in it, once per edit. It is pre-allowed, and nothing else is."""
+    decision in it, once per edit. It is pre-allowed, and nothing else is.
+
+    An APP folder, deliberately: only a target with a pane is offered the tool at
+    all (D234), so an empty directory would be asserting the opposite rule."""
     agent.RUNS = str(tmp_path / "runs")
     project = tmp_path / "proj"
     project.mkdir()
+    (project / "index.html").write_text("<p>hi</p>", encoding="utf-8")
     cmd, _run_dir = _spawn(agent, monkeypatch, project)
     tool = "mcp__%s__%s" % (agent.PERMISSION_SERVER, agent.APP_STATE_TOOL)
     allowed = cmd[cmd.index("--allowed-tools") + 1].split(",")
@@ -369,7 +432,13 @@ def test_a_directory_target_is_told_about_the_tool(agent, tmp_path, monkeypatch)
             os.makedirs(target)
         cmd, _run_dir = _spawn(agent, monkeypatch, target)
         prompt = cmd[cmd.index("--append-system-prompt") + 1]
-        assert agent.APP_STATE_TOOL in prompt, target
+        # D234 narrowed this to the targets that HAVE a pane: an app folder is
+        # told about the tool, an ordinary folder is not offered the tool at all,
+        # so announcing it there would describe a tool the roster does not carry.
+        if agent._is_app_dir(str(target)):
+            assert agent.APP_STATE_TOOL in prompt, target
+        else:
+            assert agent.APP_STATE_TOOL not in prompt, target
         # Never the FILE-scoping prompt: a folder target is a folder, and scoping
         # it to one file is exactly what the directory branch exists to avoid.
         assert "Keep your work scoped to this file" not in prompt, target
@@ -409,14 +478,16 @@ def test_an_ordinary_folder_is_not_told_it_is_a_fused_render_project(
     # template gave an ordinary folder, ported rather than reinvented.
     assert "Keep your work scoped to this folder" in prompt
     assert str(plain) in prompt
-    # ...and an honest description of the left pane, which for a folder with no
-    # app entry is fused-render's own file browser. Naming it "your app" here is
-    # how the agent ends up trying to edit our UI.
-    assert "file browser" in prompt
-    assert "never try to edit it" in prompt
-    # The app-state disclosure survives in both shapes — an un-announced tool
-    # never gets called — but it must say WHOSE page it reports.
-    assert agent.APP_STATE_TOOL in prompt
+    # And NOTHING about a pane (D234). The paragraph describing fused-render's own
+    # file browser beside the chat went with the pane it described — a prompt that
+    # tells the model what the user can see beside the conversation, when there is
+    # nothing beside the conversation, is a false claim about the screen. The
+    # app-state disclosure goes too: this target is not offered the tool.
+    assert "file browser" not in prompt
+    assert "never try to edit it" not in prompt
+    assert "Beside this chat" not in prompt
+    assert agent.APP_STATE_TOOL not in prompt
+    assert agent.APP_STATE_TAG not in prompt
 
 
 def test_a_folder_whose_html_appears_later_gets_the_project_prompt(

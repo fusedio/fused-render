@@ -350,18 +350,34 @@ def _is_app_dir(file: str) -> bool:
         return False
 
 
+def _has_pane(file: str) -> bool:
+    """Does this target get a LEFT PANE at all?
+
+    Everything the pane implies hangs off this one answer: the `app_state` tool's
+    presence in the run's MCP roster, its pre-allowance on the spawn line, and
+    whether the system prompt describes a page beside the chat. Only one target
+    kind says no — an ordinary folder (D234), which gets a full-width chat.
+
+    Same predicate as everything else that branches on kind (`_is_app_dir` →
+    `app_entry.entry_html`), so the roster, the prompt and the page cannot
+    disagree about whether there is a pane.
+    """
+    return not os.path.isdir(file) or _is_app_dir(file)
+
+
 def _split_system_prompt(file: str) -> str:
     """The DIRECTORY target's prompt. Two shapes, because there are now two kinds
     of folder: this template is the ONLY chat template, offered on every
     directory, not just app folders (the plain chat mode it absorbed was the
     directory chat).
 
-    Both shapes carry the app-state disclosure, and for the same reason: a tool
-    the model is never told about is a tool it never calls, and the tool's own
-    description is not enough on its own — nothing in an ordinary session
-    suggests that the page beside the chat can be read back. What they must NOT
-    share is the DESCRIPTION of the pane, exactly as the file branch above does
-    not share the folder branch's.
+    The APP-FOLDER shape carries the app-state disclosure, for the reason D230
+    gave: a tool the model is never told about is a tool it never calls, and the
+    tool's own description is not enough on its own — nothing in an ordinary
+    session suggests that the page beside the chat can be read back. The ordinary
+    folder does NOT, because since D234 it has no pane and therefore no tool
+    (`_has_pane`). What the two shapes must never share is the description of the
+    pane, exactly as the file branch above does not share the folder branch's.
 
     * An APP FOLDER (`app_entry` resolves an entry page) keeps today's wording.
       Naming fused-render belongs HERE rather than being left to the starter
@@ -379,10 +395,16 @@ def _split_system_prompt(file: str) -> str:
       "this is a fused-render project: its HTML is an app fused-render serves"
       here would be a plain lie about `~/Downloads`, and a lie that costs
       something: it invites the agent to look for a bridge that is not there and
-      to treat a folder of PDFs as a codebase. The pane is described for what it
-      is — fused-render's file browser, our UI, never a thing to edit — for the
-      same reason the file branch says "our viewer": an app_state reading of it
-      must not be mistaken for a reading of the user's own work.
+      to treat a folder of PDFs as a codebase. It says NOTHING about a pane and
+      does not mention `app_state`, because as of D234 there is no pane: this
+      target's chat is full width and the tool is not in the run's roster at all
+      (`_has_pane`). The paragraph that used to be here described fused-render's
+      own file browser beside the chat and warned that `app_state` "reports the
+      BROWSER, not the folder"; it went with the pane it described. A prompt that
+      tells the model what the user can see beside the conversation, when there
+      is nothing beside the conversation, is a false claim about the screen — and
+      announcing a tool the roster does not carry is worse than not announcing
+      one, since an un-announced tool is merely unused.
     """
     tool = "mcp__%s__%s" % (PERMISSION_SERVER, APP_STATE_TOOL)
     if _is_app_dir(file):
@@ -410,15 +432,7 @@ def _split_system_prompt(file: str) -> str:
         "explicitly asks for something broader. This is guidance, not a "
         "hard rule: follow explicit user instructions even when they go "
         "beyond the folder. "
-        f"Beside this chat the user sees fused-render's own file browser for "
-        f"{name} — our UI listing their folder, so never try to edit it; it is "
-        "not a page in their project and it has no source they own. They can "
-        "walk into a file there while talking to you. "
-        f"`{tool}` reads that pane back: its DOM outline, URL params and "
-        "console errors. It reports the BROWSER, not the folder — use the "
-        "ordinary file tools to find out what is in here. A "
-        f"<{APP_STATE_TAG}> block on their message is the same reading taken at "
-        "send time."
+        "Use the ordinary file tools to find out what is in here."
     )
 
 
@@ -815,11 +829,19 @@ def _shots_dir() -> dict:
     return {"dir": _wire_path(SHOTS)}
 
 
-def _write_mcp_config(run_dir: str) -> str:
+def _write_mcp_config(run_dir: str, pane: bool = True) -> str:
     """The one-server MCP config that makes the chat window the permission
-    prompt AND the app's own eyes (`app_state`), written into the run dir.
-    Returns its path (for --mcp-config). Each channel gets its own directory in
-    argv — see _state_dir for why they are not one.
+    prompt AND — when the target has a left pane — the app's own eyes
+    (`app_state`), written into the run dir. Returns its path (for --mcp-config).
+    Each channel gets its own directory in argv — see _state_dir for why they are
+    not one.
+
+    `pane=False` omits the app-state directory from argv entirely, which is what
+    takes the tool out of the server's roster (permission_server keys both its
+    `tools/list` and its dispatch on having that directory). One switch for the
+    channel and the tool, so they cannot disagree: a target with no pane (an
+    ordinary folder, D234) has no page to answer a snapshot request, and a tool
+    that can only time out is worse than a tool that is not there.
 
     The server path comes off HERE, not a fresh `__file__` read: under the
     optional fused engine (D69) this module is `exec`'d into a namespace that
@@ -828,12 +850,15 @@ def _write_mcp_config(run_dir: str) -> str:
     behind the shim at the top of this file that covers both engines."""
     path = os.path.join(run_dir, "mcp.json")
     server = os.path.join(HERE, "permission_server.py")
+    args = [server, _perm_dir(run_dir)]
+    if pane:
+        args.append(_state_dir(run_dir))
     with _private_open(path) as fh:
         json.dump({"mcpServers": {PERMISSION_SERVER: {
             # sys.executable, matching how the app spawns every other helper
             # (executor.py): in the packaged .app that is the bundled python.
             "command": sys.executable,
-            "args": [server, _perm_dir(run_dir), _state_dir(run_dir)],
+            "args": args,
             "env": {"FUSED_RENDER_PERMISSION_TIMEOUT": str(PERMISSION_WAIT)},
             # Hard per-call ceiling for this server, and a permission card is a
             # tool call that lasts as long as the user takes to look at it. Set
@@ -1170,7 +1195,17 @@ def _start(file: str, message: str, session_id: str, model: str,
     run_dir = os.path.join(RUNS, run_id)
     _private_dir(run_dir)
     _private_dir(_perm_dir(run_dir))
-    _private_dir(_state_dir(run_dir))
+    # Whether this target has a page beside the chat at all, resolved ONCE here
+    # and read by all three things that depend on it: the app-state channel's
+    # directory, the tool's pre-allowance, and the prompt. Not cached across runs
+    # — a folder being scaffolded into becomes an app folder the moment it has an
+    # entry page, and the next turn should see that.
+    pane = _has_pane(file)
+    # No pane, no channel, and no empty directory pretending there could be one:
+    # the directory's absence is what removes the tool from the roster
+    # (_write_mcp_config).
+    if pane:
+        _private_dir(_state_dir(run_dir))
 
     # An unknown mode falls back to the strictest of the three rather than
     # erroring: a mangled param must not quietly buy more auto-approval than
@@ -1199,7 +1234,7 @@ def _start(file: str, message: str, session_id: str, model: str,
     cmd = [_claude_bin(), *message_argv,
            "--output-format", "stream-json",
            "--verbose", "--include-partial-messages",
-           "--mcp-config", _write_mcp_config(run_dir),
+           "--mcp-config", _write_mcp_config(run_dir, pane),
            "--permission-prompt-tool",
            f"mcp__{PERMISSION_SERVER}__{PERMISSION_TOOL}",
            # Naming a permission-prompt tool also un-gates AskUserQuestion and
@@ -1207,24 +1242,28 @@ def _start(file: str, message: str, session_id: str, model: str,
            # This chat renders neither a question picker nor a plan dialog, so
            # keep them off: the change is about tool approvals and nothing else.
            "--disallowed-tools", "AskUserQuestion,ExitPlanMode",
-           # Two pre-allowances, and they are the only ones — everything else
-           # still raises a card. Both are the same thing in different clothes:
-           # looking at the app the user is looking at.
+           # Up to two pre-allowances, and they are the only ones — everything
+           # else still raises a card. Both are the same thing in different
+           # clothes: looking at the app the user is looking at.
            #
            #   the app_state tool — an MCP tool otherwise raises a card, so every
            #     app-state read would put a prompt on screen with no decision in
            #     it, for a read of the user's own screen by the agent they are
-           #     already talking to.
+           #     already talking to. Omitted for a target with no pane (D234):
+           #     the tool is not in that run's roster at all, and pre-allowing a
+           #     name nothing can call is a rule about nothing.
            #   Read of the SHOTS dir — an annotation carries the path of a PNG
            #     crop of the element the user pointed at. The user attached it
            #     deliberately; carding it would make them approve their own
            #     screenshot. Scoped to that one directory, which holds nothing
-           #     else and is not the user's project.
+           #     else and is not the user's project. Kept unconditionally: it is
+           #     a directory rule, not a claim that this target can annotate.
            #
            # Narrow by construction: one fully-qualified tool name and one
            # directory, and the prompt bridge stays wired for everything else.
            "--allowed-tools",
-           f"mcp__{PERMISSION_SERVER}__{APP_STATE_TOOL}," + _read_rule(SHOTS)]
+           ",".join(([f"mcp__{PERMISSION_SERVER}__{APP_STATE_TOOL}"] if pane
+                     else []) + [_read_rule(SHOTS)])]
     cmd += _plugin_argv()
     # BOTH targets get an --append-system-prompt here, and they get different
     # ones. A FILE target gets the scoping prompt. A DIRECTORY target that is an
@@ -1234,12 +1273,12 @@ def _start(file: str, message: str, session_id: str, model: str,
     # narrow prompt of its own. An ordinary folder DOES get folder-scoping, which
     # is what the deleted plain chat mode gave it; _split_system_prompt picks.
     #
-    # What all shapes share is the app_state disclosure, because an un-announced
-    # tool does not get called and every target now has a pane worth reading
-    # back (D230). What they must NOT share is the DESCRIPTION of that pane: an
-    # app folder frames the user's own app, an ordinary folder frames our file
-    # browser, a file frames fused-render's preview of their file. Each prompt
-    # says which, so the model never mistakes our UI for the user's code.
+    # The app_state disclosure rides the two shapes that HAVE a pane, because an
+    # un-announced tool does not get called (D230) — and only those two, because
+    # since D234 an ordinary folder has no pane and is not offered the tool. What
+    # the two must NOT share is the DESCRIPTION of that pane: an app folder frames
+    # the user's own app, a file frames fused-render's preview of their file. Each
+    # prompt says which, so the model never mistakes our UI for the user's code.
     cmd += ["--append-system-prompt",
             _split_system_prompt(file) if os.path.isdir(file)
             else _system_prompt(file)]

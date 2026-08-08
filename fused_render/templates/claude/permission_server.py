@@ -18,10 +18,17 @@ a read of the user's own screen for the agent they are already talking to, so
 it raises no card; `agent.py` pre-allows it.
 
 Spawned by `claude`, never by the app: stdlib only, no `fused_render` import,
-no assumption about cwd. Two directories arrive as argv (tmp paths, not
+no assumption about cwd. Up to two directories arrive as argv (tmp paths, not
 secrets): argv[1] holds the permission round trip, argv[2] the app-state one.
 Separate directories on purpose — the page renders every file in the perm dir
 as an approval card, and a snapshot request is not something to click.
+
+argv[2] is OPTIONAL, and its absence is the whole switch for the second tool: a
+target with no left pane (an ordinary folder, D234) has no page to read back, so
+`agent.py` spawns us with the perm dir alone and `app_state` then appears in
+neither `tools/list` nor the dispatch. A tool the model can call but that can
+never answer is worse than no tool — it gets called after every edit and times
+out, once per turn.
 
 Wire contract (Claude Code CLI, verified against 2.1.220):
 
@@ -346,10 +353,21 @@ def _dispatch(method: str, params: dict) -> dict:
             "serverInfo": {"name": SERVER_NAME, "version": "1"},
         }
     if method == "tools/list":
-        return {"tools": [TOOL_SCHEMA, APP_STATE_SCHEMA]}
+        # The roster follows the CHANNEL, not the target kind: no app-state
+        # directory in argv means this session has no page to read back, so the
+        # tool is not offered at all. One signal for both halves — a roster that
+        # could vary independently of the channel would advertise a tool this
+        # server cannot serve, and the model would spend a 20-second timeout per
+        # turn discovering that. D234: an ordinary folder has no left pane, so
+        # `agent.py` spawns us with the perm dir alone.
+        tools = [TOOL_SCHEMA]
+        if STATE_DIR:
+            tools.append(APP_STATE_SCHEMA)
+        return {"tools": tools}
     if method == "tools/call":
         name = params.get("name")
-        if name not in (TOOL_NAME, APP_STATE_TOOL):
+        known = (TOOL_NAME, APP_STATE_TOOL) if STATE_DIR else (TOOL_NAME,)
+        if name not in known:
             raise LookupError("unknown tool: %s" % name)
         args = params.get("arguments")
         args = args if isinstance(args, dict) else {}
