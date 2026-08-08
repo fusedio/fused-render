@@ -1009,8 +1009,13 @@
          document only). One switch is enough: the comment pins over the app
          show while annotating and hide when the mode is off. -->
     <div id="anntools">
-      <button id="annbtn" type="button" aria-pressed="false" aria-label="Annotate the app"
-              title="Annotate the app, then send the notes to Claude"><span
+      <!-- Kind-free wording, and rewritten by applyPaneNoun once stat says what
+           the pane is: "the app" for an app folder, "the preview" for a file. It
+           said "the app" unconditionally, so a screen-reader user on `notes.md`
+           heard "Annotate the app" over a markdown preview — the same bug the
+           footnote and the frame's own title had. -->
+      <button id="annbtn" type="button" aria-pressed="false" aria-label="Annotate the preview"
+              title="Annotate the preview, then send the notes to Claude"><span
         class="lbl">Annotate</span><span class="track" aria-hidden="true"><span class="knob"></span></span></button>
       <!-- Which view the LEFT pane frames. Empty and `hidden` in the markup:
            the options are the target's own preview modes, which only the stat
@@ -1044,8 +1049,8 @@
             <select id="effort" class="pill effort-sel" title="Effort"></select>
             <select id="perm" class="pill perm-sel" title="How much Claude may do without asking"></select>
             <button id="viewshot" class="pill viewshot" type="button" aria-pressed="false"
-                    aria-label="Attach a screenshot of the app pane to this message"
-                    title="Attach a screenshot of the whole app pane to this message (for layout problems that are not about one element)"><svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true"><rect x="2.2" y="3.2" width="11.6" height="9.6" rx="2.2" stroke="currentColor" stroke-width="1.4"/><path d="M2.9 11.4 6 8.3a1.2 1.2 0 0 1 1.7 0l3 3" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/><circle cx="10.6" cy="6.3" r="1.1" fill="currentColor"/></svg></button>
+                    aria-label="Attach a screenshot of the preview pane to this message"
+                    title="Attach a screenshot of the whole preview pane to this message (for layout problems that are not about one element)"><svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true"><rect x="2.2" y="3.2" width="11.6" height="9.6" rx="2.2" stroke="currentColor" stroke-width="1.4"/><path d="M2.9 11.4 6 8.3a1.2 1.2 0 0 1 1.7 0l3 3" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/><circle cx="10.6" cy="6.3" r="1.1" fill="currentColor"/></svg></button>
             <span class="spacer"></span>
             <button class="send" type="submit" aria-label="Send">
               <svg class="ic-send" width="14" height="14" viewBox="0 0 16 16" fill="none">
@@ -1085,8 +1090,8 @@
             <select id="heffort" class="pill effort-sel" title="Effort"></select>
             <select id="hperm" class="pill perm-sel" title="How much Claude may do without asking"></select>
             <button id="hviewshot" class="pill viewshot" type="button" aria-pressed="false"
-                    aria-label="Attach a screenshot of the app pane to this message"
-                    title="Attach a screenshot of the whole app pane to this message (for layout problems that are not about one element)"><svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true"><rect x="2.2" y="3.2" width="11.6" height="9.6" rx="2.2" stroke="currentColor" stroke-width="1.4"/><path d="M2.9 11.4 6 8.3a1.2 1.2 0 0 1 1.7 0l3 3" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/><circle cx="10.6" cy="6.3" r="1.1" fill="currentColor"/></svg></button>
+                    aria-label="Attach a screenshot of the preview pane to this message"
+                    title="Attach a screenshot of the whole preview pane to this message (for layout problems that are not about one element)"><svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true"><rect x="2.2" y="3.2" width="11.6" height="9.6" rx="2.2" stroke="currentColor" stroke-width="1.4"/><path d="M2.9 11.4 6 8.3a1.2 1.2 0 0 1 1.7 0l3 3" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/><circle cx="10.6" cy="6.3" r="1.1" fill="currentColor"/></svg></button>
             <span class="spacer"></span>
             <button class="send" type="submit" aria-label="Send">
               <svg class="ic-send" width="14" height="14" viewBox="0 0 16 16" fill="none">
@@ -1369,7 +1374,7 @@ function watchApp() {
   // Mark the reload IN the buffer rather than clearing it: "these three errors
   // were there before, this one appeared after your edit" is the single most
   // useful thing the buffer can tell the agent, and clearing it destroys that.
-  if (appLoads > 1) pushAppLog("reload", "the app reloaded (a file it uses changed)");
+  if (appLoads > 1) pushAppLog("reload", "the pane reloaded (a file it uses changed)");
 }
 
 // The app's params from its URL, for before its runtime has booted.
@@ -1497,7 +1502,7 @@ function appStateSnapshot() {
       if (Object.keys(params).length) state.params = params;
       known = true;
     } catch (err) {
-      state.unreadable = "could not read the app's document: " + err.message;
+      state.unreadable = "could not read the pane's document: " + err.message;
     }
   }
   if (appLogs.length) { state.console = appLogs.slice(); known = true; }
@@ -1546,7 +1551,8 @@ function appStateBlock(state) {
       + "the structure. "
     : "";
   return "<" + APP_STATE_TAG + ">\n"
-    + "A snapshot of the app the user is looking at in the left pane, taken as "
+    + "A snapshot of the " + paneNoun + " the user is looking at in the left "
+    + "pane, taken as "
     + "they sent this message. " + outline
     + "`path` on each node is the same anchorPath the "
     + "annotations use, so a pin and an outline node name the same element. It "
@@ -1712,6 +1718,38 @@ function paneSrcFor(t) {
 // kind of thing is this chat about", so nothing else re-derives it. "" until
 // paneURL answers.
 let targetNoun = "";
+// What to CALL the left pane's document, which is a different question from what
+// to call the target and is the half that was missed twice. For an app folder the
+// pane is the user's own running app and "the app" is the honest word; for a file
+// it is fused-render's preview OF their file, where "the app" is a plain lie —
+// there is no app, and `_system_prompt` has meanwhile told the model that pane is
+// OUR viewer and never to edit it. So the two halves of a single turn contradicted
+// each other, with an edit to `templates/code/template.html` as the invited
+// action. "preview" is the kind-free word and is true of both, so it is also the
+// value the markup ships and the value this holds until stat answers.
+let paneNoun = "preview";
+
+// Everything that names the pane, rewritten in ONE place. Called from
+// setTargetNoun (never on its own) so the noun and the chrome that speaks it
+// cannot get out of step, and it covers exactly the sinks a person or the model
+// reaches: two spoken attributes on the annotate switch, four on the two pane-shot
+// pills (there are two composers, home and chat, and both carry the pill), and —
+// live, because they are built per message — the summary thumbnail's `alt` and the
+// two block preambles further down.
+function applyPaneNoun() {
+  annBtn.setAttribute("aria-label", "Annotate the " + paneNoun);
+  // Not written directly: annSetMode rewrites this title on every disarm, so the
+  // idle wording has to have exactly one definition or the noun comes back wrong
+  // the first time the user toggles the switch off. That is how it broke here.
+  if (!annOn) annBtn.title = annIdleTitle();
+  for (const b of viewShotButtons()) {
+    b.setAttribute("aria-label", "Attach a screenshot of the " + paneNoun
+                   + " pane to this message");
+    b.title = "Attach a screenshot of the whole " + paneNoun + " pane to this "
+      + "message (for layout problems that are not about one element)";
+  }
+}
+
 const setTargetNoun = (noun) => {
   targetNoun = noun;
   homebox.placeholder = "Ask Claude about this " + noun + "…";
@@ -1723,6 +1761,12 @@ const setTargetNoun = (noun) => {
     (noun === "file" ? "Claude can read and edit this file and the assets it references."
                      : "Claude can read and edit files in this " + noun + ".")
     + " Approvals control what runs without asking.";
+  // A project's pane is the user's own app; a file's is our preview of their file.
+  // "folder" never reaches the pane chrome at all — that target has no pane, and
+  // applyPaneNoun's nodes are gone by then — but it resolves to the kind-free word
+  // rather than to nothing, so a future caller cannot get an empty noun.
+  paneNoun = noun === "project" ? "app" : "preview";
+  applyPaneNoun();
 };
 
 async function paneURL() {
@@ -2279,6 +2323,13 @@ annTa.addEventListener("keydown", (e) => {
   }
 });
 
+// The idle tooltip, as a function because it has TWO writers — applyPaneNoun sets
+// it when the target's kind resolves, and annSetMode restores it on every disarm.
+// It was a literal in both places, so the kind-correct noun applyPaneNoun had just
+// written was thrown away by the first toggle-off. One definition, two callers.
+const annIdleTitle = () =>
+  "Annotate the " + paneNoun + ", then send the notes to Claude";
+
 // The one way in and out of annotate mode. Extracted because Escape leaves the
 // mode too, and a second copy of this would be a second chance for the banner's
 // text to disagree with `annOn`.
@@ -2309,7 +2360,7 @@ function annSetMode(on) {
   // box that tracks the pointer over the app (the strongest of the two: it only
   // appears in annotate mode and it follows what the user is aiming at).
   annBtn.title = annOn ? "Annotating — click an element to add a note · Esc or click this button to stop"
-                       : "Annotate the app, then send the notes to Claude";
+                       : annIdleTitle();
   if (!annOn) { annHl.style.display = "none"; annCloseComposer(); }
 }
 
@@ -2726,10 +2777,10 @@ function shotPaneNote(pane) {
         + " elements, so some of what you see may render without its CSS rather "
         + "than as the user saw it. This is about capture speed, not page size";
     case "detached":
-      return "part of this capture is unstyled: the app removed elements while the "
+      return "part of this capture is unstyled: the page removed elements while the "
         + "capture was running, so some of what you see may render without its CSS";
     case "mutated":
-      return "the app re-rendered while the capture was running, so this picture "
+      return "the page re-rendered while the capture was running, so this picture "
         + "may not match what was on screen: some elements are missing their "
         + "styling and the layout may be a blend of before and after";
     default:
@@ -3314,7 +3365,8 @@ function formatAnnotations(arr) {
 function paneShotBlock(view) {
   if (!view) return "";
   return "<" + PANE_SHOT_TAG + ">\n"
-    + "The user attached a picture of the WHOLE visible app pane, deliberately, "
+    + "The user attached a picture of the WHOLE visible " + paneNoun + " pane, "
+    + "deliberately, "
     + "for this message only. `view` is its path: read it when the question is "
     + "about the layout as a whole — panels overlapping, everything shifted, the "
     + "page just looking wrong — which no single-element crop can show. `viewNote` "
@@ -4424,7 +4476,7 @@ async function sendMessage(message) {
         const img = document.createElement("img");
         img.className = "annsum-shot";
         img.src = shots.viewThumb;
-        img.alt = "screenshot of the whole app pane";
+        img.alt = "screenshot of the whole " + paneNoun + " pane";
         img.title = shots.view.view || "";
         row.appendChild(img);
       }

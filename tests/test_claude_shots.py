@@ -1451,7 +1451,7 @@ annotations = [a];
 def test_a_thrown_capture_degrades_to_sending_the_annotations_without_shots(html):
     """The non-negotiable one: a user losing their typed message because a
     screenshot did not work is not a trade this feature makes."""
-    out = _node(_CAPTURE_FNS + ["let targetNoun",
+    out = _node(_CAPTURE_FNS + ["let targetNoun", "let paneNoun",
                                 "function formatAnnotations("],
                 _CAPTURE_STUBS + """
 var console2 = console;
@@ -1510,7 +1510,7 @@ const a = {id: "a"};
 # `targetNoun` is what formatAnnotations' preamble names the target kind
 # from — one writer for every piece of chrome that says "project"/"file"
 # (test_claude_kind.py), and the annotation block is one of them.
-_WIRE_ALSO = ["let targetNoun", "function formatAnnotations(", "const PANE_SHOT_TAG",
+_WIRE_ALSO = ["let targetNoun", "let paneNoun", "function formatAnnotations(", "const PANE_SHOT_TAG",
               "function paneShotBlock(", "function stripPaneBlock(",
               "function stripAnnBlock(", "function stripAppStateBlock(",
               "const APP_STATE_TAG", "function appStateBlock(",
@@ -1682,7 +1682,7 @@ console.log(JSON.stringify({keys: Object.keys(a).sort()}));
 # `targetNoun` is what formatAnnotations' preamble names the target kind
 # from — one writer for every piece of chrome that says "project"/"file"
 # (test_claude_kind.py), and the annotation block is one of them.
-_WIRE_FNS = ["let targetNoun", "function formatAnnotations(",
+_WIRE_FNS = ["let targetNoun", "let paneNoun", "function formatAnnotations(",
              "function stripAnnBlock(",
              "function stripAppStateBlock(", "function stripBlocks(",
              "const APP_STATE_TAG", "function appStateBlock(",
@@ -2190,9 +2190,22 @@ def test_both_ways_out_of_annotate_mode_are_named_while_armed(html):
     """With no label there is nowhere on screen to write "Esc or click to stop", so
     the tooltip carries it — and it must name BOTH exits, because Escape is the one
     a user is least likely to guess and the click is the one they can find by
-    hovering. The tooltip has no width limit, so this costs no space."""
-    title = _between(html, "annBtn.title =", ";")
+    hovering. The tooltip has no width limit, so this costs no space.
+
+    Scoped to annSetMode's own write, because there are now TWO writers of this
+    tooltip: applyPaneNoun sets the IDLE wording when the target's kind resolves
+    (the idle half names the pane, "the app" or "the preview"), and annSetMode
+    restores it on every disarm. That is why the idle string is a function with one
+    definition — a literal in both places meant the first toggle-off threw away the
+    kind-correct noun applyPaneNoun had just written. Only the ARMED half is
+    asserted here; it names no kind and belongs to this function alone."""
+    mode = _between(html, "function annSetMode(on) {", "\nannBtn.addEventListener")
+    title = _between(mode, "annBtn.title =", ";")
     assert "Esc" in title and "click this button" in title, title
     # the armed tooltip is the one that names them
     armed = title.split(":")[0]
     assert "Esc" in armed, title
+    # ...and the idle half is the shared builder, not a second literal.
+    assert "annIdleTitle()" in title
+    assert html.count('+ ", then send the notes to Claude"') == 1, \
+        "the idle tooltip has one definition, annIdleTitle"

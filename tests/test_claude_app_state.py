@@ -738,13 +738,13 @@ _STATE_FNS = ["const APP_STATE_MAX_LOGS", "const APP_STATE_MAX_TEXT",
 def test_the_state_block_is_omitted_when_there_is_nothing_to_say(html):
     """An empty snapshot must not push a block: a turn that says nothing about
     the app should look exactly like a turn from before this feature."""
-    empty = _node(["const APP_STATE_TAG", "function appStateBlock("],
+    empty = _node(_BLOCK,
                   "console.log(JSON.stringify(appStateBlock(null)));", html)
     assert empty == ""
 
 
 def test_the_state_block_labels_itself_and_carries_the_json(html):
-    block = _node(["const APP_STATE_TAG", "function appStateBlock("],
+    block = _node(_BLOCK,
                   "console.log(JSON.stringify(appStateBlock("
                   '{"title": "Demo", "console": [{"level": "error", "text": "boom"}]}'
                   ")));", html)
@@ -1039,7 +1039,7 @@ _WIRE_FNS = ["const APP_STATE_TAG", "function appStateBlock(",
              # formatAnnotations' preamble names the target's KIND (a file's pane
              # is fused-render's preview OF the file, not an app with an entry
              # page), and this is the one writer of that noun.
-             "let targetNoun", "function formatAnnotations(",
+             "let targetNoun", "let paneNoun", "function formatAnnotations(",
              "function composeOutgoing(",
              "function stripAppStateBlock(", "function stripBlocks(",
              # The pane shot is a third block on the same wire (see
@@ -1389,7 +1389,9 @@ def test_the_composers_escape_does_not_also_reach_the_run_killer(html):
 # every later turn, all but the newest already stale. It goes to a file now and
 # only the path rides along.
 
-_BLOCK = ["const APP_STATE_TAG", "function appStateBlock("]
+# `paneNoun` is what the block preamble calls the pane — "app" for an app
+# folder, "preview" for a file, one writer (test_claude_kind.py).
+_BLOCK = ["let paneNoun", "const APP_STATE_TAG", "function appStateBlock("]
 _FILE = ["function shotJoin(", "let appStateSeq", "async function appStateFile("]
 
 

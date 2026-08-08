@@ -433,31 +433,107 @@ def test_no_piece_of_chrome_hardcodes_the_targets_kind():
     So: NO kind noun appears anywhere in the rendered markup. Asserted over the
     <body> (the stylesheet's comments talk about panes and projects at length, and
     that prose is not chrome), and only over what a user can read — element text
-    and the three attributes that get spoken or shown.
+    and the four attributes that get spoken or shown.
     """
     page = _pane_source()
     body = page[page.index("<body>"):page.index("<script>")]
     body = re.sub(r"<!--.*?-->", "", body, flags=re.S)
-    # What a user can actually READ or HEAR: element text plus the three
-    # attributes that get shown or spoken. Ids and class names are excluded on
-    # purpose — `tb-file` and `home-file` are selectors, not sentences.
-    spoken = re.findall(r'(?:title|aria-label|placeholder)="([^"]*)"', body)
+    # What a user can actually READ or HEAR: element text plus the attributes
+    # that get shown or spoken. Ids and class names are excluded on purpose —
+    # `tb-file` and `home-file` are selectors, not sentences.
+    spoken = re.findall(r'(?:title|aria-label|placeholder|alt)="([^"]*)"', body)
     visible = " ".join(spoken) + " " + re.sub(r"<[^>]*>", " ", body)
-    # SINGULAR and word-bounded: the plural is generic ("Claude can read and edit
-    # files here" is true of every target and names no kind), the singular is a
-    # claim about THIS target and belongs to setTargetNoun.
-    for noun in ("project", "folder", "file"):
-        assert not re.search(r"\b%s\b" % noun, visible, re.I), noun
-    # The kind-free wording the markup ships instead, for both pieces.
+    for phrase in _KIND_CLAIMS:
+        assert not re.search(phrase, visible, re.I), (phrase, visible[:200])
+    # The kind-free wording the markup ships instead, for all of them.
     assert 'placeholder="Ask Claude…"' in page
     assert ">Claude can read and edit files here." in page
-    # One writer, and it writes BOTH.
+    assert 'aria-label="Annotate the preview"' in page
+    # One writer, and it writes every piece.
     setter = page[page.index("const setTargetNoun = (noun) => {"):]
     setter = setter[:setter.index("\n};")]
     assert "homebox.placeholder" in setter
     assert 'getElementById("footnote").textContent' in setter
     # "files in this file" is not a sentence — the file case is its own shape.
     assert 'noun === "file"' in setter
+    # ...and it owns the pane's own noun, which is the half that was missed twice.
+    assert "paneNoun =" in setter
+    assert "applyPaneNoun()" in setter
+
+
+# A kind CLAIM, as opposed to a mention of the words. "the JSON file at
+# `dom_path`" names a real file on disk and is not a claim about the target;
+# "the app" over a `.md` preview is. So the patterns are the demonstrative and
+# possessive forms plus the noun-adjunct ones ("app pane", "File preview"), which
+# is what every recurrence of this bug has actually looked like.
+_KIND_CLAIMS = (
+    r"\b(?:the|this|your|whole|visible|running)\s+(?:app|project|folder|file)\b",
+    r"\b(?:app|project|folder|file)\s+(?:pane|preview|browser)\b",
+    r"\b(?:app|project|folder|file)'s\b",
+)
+
+# Every place a string reaches a HUMAN (an attribute that is spoken or shown, an
+# element's text, the tab title) or the MODEL (the three block preambles). The
+# invariant asserted over them is one line: a chrome sink either DERIVES its noun
+# or contains no kind noun. Nothing else is allowed, and a new sink that hardcodes
+# one fails here because it references none of the derivation tokens.
+_SINK_STARTS = (
+    r"\.(?:title|alt|placeholder|textContent)\s*=",
+    r"""setAttribute\("(?:aria-label|title|alt)",""",
+)
+_SINK_FNS = ("function appStateBlock(", "function paneShotBlock(",
+             "function formatAnnotations(")
+# Reading any of these means the noun came from the target's kind, so whatever
+# literals sit in that branch are selected BY kind and are correct there.
+_DERIVED = ("paneNoun", "targetNoun", "noun")
+
+
+def test_no_chrome_sink_hardcodes_a_kind_noun():
+    """The general rule, enforced structurally — and the reason this test exists
+    at all is that it is the THIRD recurrence of one bug.
+
+    First the composer placeholder said "this project" for all three kinds.
+    Fixing that missed the footnote. Fixing the footnote missed "app": the
+    annotate switch announced "Annotate the app" over a markdown preview, both
+    pane-shot pills offered "a screenshot of the app pane", the summary
+    thumbnail's `alt` said "the whole app pane", and — worse than any of the
+    visible ones — `paneShotBlock` and `appStateBlock` told the MODEL "app pane"
+    while `agent.py`'s file prompt was telling it that same pane is *our viewer,
+    never edit the viewer*. Two halves of one turn contradicting each other, with
+    an edit to `templates/code/template.html` as the invited action.
+
+    A test that bars a fixed word list is what let "app" through, so this one does
+    not bar words. It finds the SINKS — everything that lands on an attribute a
+    screen reader speaks, an element's text, the tab title, or one of the three
+    preambles the model reads — and asserts each either references the kind
+    (`paneNoun` / `targetNoun` / `noun`) or makes no claim about it. A fourth
+    recurrence is a new sink with a literal and no derivation, which fails here.
+
+    Out of scope, stated so the gap is deliberate rather than forgotten: `throw`
+    messages in `paneURL`'s file branch say "this file" and are correct, because
+    that branch is the only place they can be raised from.
+    """
+    page = _pane_source()
+    script = page[page.index("<script>"):page.index("</script>")]
+    script = re.sub(r"/\*.*?\*/", "", script, flags=re.S)
+    script = "\n".join(line for line in script.split("\n")
+                       if not line.lstrip().startswith("//"))
+
+    spans = []
+    for start in _SINK_STARTS:
+        for m in re.finditer(start, script):
+            end = script.find(";\n", m.end())
+            spans.append(script[m.start():end if end != -1 else m.end() + 200])
+    for fn in _SINK_FNS:
+        i = script.index(fn)
+        spans.append(script[i:script.index("\n}", i)])
+
+    assert len(spans) > 20, "the sink scan found almost nothing — it stopped working"
+    for span in spans:
+        if any(token in span for token in _DERIVED):
+            continue          # derived from the kind: the branch is the guard
+        for phrase in _KIND_CLAIMS:
+            assert not re.search(phrase, span, re.I), span.strip()[:220]
 
 
 # -------------------------------------------- the left pane's view PICKER
