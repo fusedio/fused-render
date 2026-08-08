@@ -61,32 +61,22 @@ describe("autoSelectPath", () => {
       ["b.txt", false],
     ]);
 
-  test("a bare URL: the folder picks its own first entry", () => {
+  test("the folder picks its own first entry, dirs included", () => {
     const { paths, byPath } = folder();
-    expect(autoSelectPath(null, paths, byPath)).toBe("/d/src");
+    expect(autoSelectPath(paths, byPath)).toBe("/d/src");
   });
 
-  test("a `?sel` seed owns the selection", () => {
+  test("nothing in the URL can claim the selection", () => {
+    // The `?sel` param is gone (useListingSelection documents why), so this
+    // decision has no input but the rows: every folder open lands on its first
+    // entry, whatever the address bar happens to carry.
+    // (autoSelectPath takes no URL argument at all any more — that IS the pin.)
     const { paths, byPath } = folder();
-    expect(autoSelectPath("b.txt", paths, byPath)).toBeNull();
-    // Even a `sel` naming no current row: the URL made a claim, and the seeding
-    // effect is the one entitled to decide what to do about it.
-    expect(autoSelectPath("gone.txt", paths, byPath)).toBeNull();
-  });
-
-  test("a bare URL wins over a selection that is about to be discarded", () => {
-    // The regression this pins: browse into a file and come back to its folder.
-    // The URL no longer carries `sel`, but the cross-remount stash still holds
-    // the old selection — which the seeding effect is clearing on this very
-    // commit. Reading that stale selection instead of the URL burned the one
-    // shot and left the pane empty for the whole mount. Nothing about a stale
-    // selection is an input here, which is how it stays fixed.
-    const { paths, byPath } = folder();
-    expect(autoSelectPath(null, paths, byPath)).toBe("/d/src");
+    expect(autoSelectPath(paths, byPath)).toBe("/d/src");
   });
 
   test("an empty folder leaves the selection empty", () => {
-    expect(autoSelectPath(null, [], new Map())).toBeNull();
+    expect(autoSelectPath([], new Map())).toBeNull();
   });
 });
 

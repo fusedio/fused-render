@@ -2,7 +2,7 @@
 // selection model, the document-level arrow/Home/End/PageUp/Enter handler,
 // the post-mutation reconcile (re-anchor by path), and scroll-into-view.
 import { useEffect, useMemo, useRef, useState } from "react";
-import { navigate, replaceSearch } from "@platform/lib/router";
+import { navigate } from "@platform/lib/router";
 import { isMod } from "@platform/lib/platform";
 import { isOverlayOpen } from "@platform/lib/ui-overlay";
 import type { RowCtx } from "@apps/explorer/listing/types";
@@ -24,7 +24,6 @@ export function useListingSelection({
   rowCtxByPathRef,
   overlayOpenRef,
   globalKeys = true,
-  urlSync = true,
 }: {
   fsPath: string;
   // Flat, ordered list of the paths the arrow keys step through (the rendered
@@ -45,9 +44,6 @@ export function useListingSelection({
   // document-level keyboard belongs to the host view's own Listing, so the
   // embedded one keeps mouse selection but registers no global handlers.
   globalKeys?: boolean;
-  // False for an embedded Listing: the address bar belongs to the host view,
-  // so the lead row is never mirrored to (or seeded from) `?sel`.
-  urlSync?: boolean;
 }) {
   // The selected rows (see Selection): one for a plain click / arrow move, many
   // for a Shift-range, Mod-click toggle or Select All. Seeded from the
@@ -74,53 +70,19 @@ export function useListingSelection({
     rememberSelection(fsPath, sel);
   }, [fsPath, sel]);
 
-  // URL sync for the lead row (like `preview`/`sort`): `?sel=<path relative
-  // to this folder>` so a refreshed or shared URL restores the selection —
-  // and with it the preview pane's content. navigate() drops the param on
-  // folder navigation (only `preview` is sticky), so it never leaks.
-  //   • Seed ONCE, after the listing has loaded. The URL is AUTHORITATIVE at
-  //     the seed: every navigation (a bookmark, back/forward, a typed URL)
-  //     remounts the Listing via the nav epoch, and what that URL says must be
-  //     what shows — a recalled (cross-remount) selection for the same folder
-  //     may be stale (e.g. switching between two bookmarks that differ only in
-  //     `sel`). The recall store's real job — carrying a selection across the
-  //     provisional→resolved swap — still works, because the provisional
-  //     Listing mirrored that selection into `sel` before the swap, so URL and
-  //     recall agree there (and an agreeing recall keeps its multi-selection,
-  //     which the single-path param can't carry). A `sel` naming no current
-  //     row is ignored (no forced selection); NO `sel` at all means none —
-  //     a recalled selection is dropped rather than resurrected onto a URL
-  //     that says otherwise. Selection can't change while the listing is
-  //     still loading (no rows to click/arrow onto), so nothing user-made can
-  //     be lost by the time this runs.
-  //   • Mirror only after the seed decision, so the initial no-selection
-  //     render can't wipe the param before it was read.
-  const urlSelSeededRef = useRef(false);
-  useEffect(() => {
-    if (!urlSync || urlSelSeededRef.current || !listingLoaded) return;
-    urlSelSeededRef.current = true;
-    const rel = new URLSearchParams(location.search).get("sel");
-    if (!rel) {
-      if (selRef.current.paths.length) setSel(EMPTY_SELECTION);
-      return;
-    }
-    const abs = fsPath.replace(/\/+$/, "") + "/" + rel;
-    if (navRows.includes(abs) && selRef.current.lead !== abs) setSel(oneSelected(abs));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [urlSync, listingLoaded, navRows, fsPath]);
-  useEffect(() => {
-    if (!urlSync || !urlSelSeededRef.current) return;
-    const base = fsPath.replace(/\/+$/, "");
-    const rel =
-      sel.lead && sel.lead.startsWith(base + "/") ? sel.lead.slice(base.length + 1) : null;
-    const params = new URLSearchParams(location.search);
-    if (params.get("sel") === rel) return; // already in step (incl. both absent)
-    if (rel !== null) params.set("sel", rel);
-    else params.delete("sel");
-    const qs = params.toString();
-    replaceSearch(location.pathname + (qs ? "?" + qs : ""));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [urlSync, sel.lead, fsPath]);
+  // The lead row is NOT mirrored into the URL. It used to be — `?sel=<path
+  // relative to this folder>`, seeded once after load and rewritten on every
+  // move — and the cost outweighed what it bought. Every arrow-key press was a
+  // history.replaceState (the listing's own types.ts documents the ~100
+  // writes / 30s browser cap that makes per-keystroke URL writes a real
+  // hazard), and the reward was a shareable link to a *highlighted row*, which
+  // is not what a folder URL is for. The selection now lives entirely in
+  // component state plus the cross-remount recall store above; a freshly
+  // opened folder lands on its first entry (autoSelectPath / D240) rather than
+  // on whatever a URL claimed.
+  //
+  // The other explorer params are untouched — `sort`/`order`, `q`,
+  // `preview`, `_panelMode`, `_mode` all still sync exactly as before.
 
   // A path the selection should jump to once it appears in the reloaded rows
   // (a rename/duplicate target — its row doesn't exist until the refetch lands).
