@@ -18,54 +18,20 @@
 // Nothing needs measuring for that: a percentage is correct before the first
 // paint, whatever the container turns out to be. The pixel floors survive as
 // CSS min-widths (.listing-pane-slot / .listing-main) and as the drag's clamp.
+// The arithmetic itself is pure and lives in listing/pane-math.ts.
 import { useRef, useState } from "react";
 import { replaceSearch } from "@platform/lib/router";
 import { getViewState, setViewState } from "@platform/lib/viewstate";
+import {
+  PANE_DEFAULT_FRAC,
+  dragPaneFrac,
+  parsePaneFrac,
+} from "@apps/explorer/listing/pane-math";
 
-const PANE_MIN_W = 220;
-const LIST_MIN_W = 60;
 // Dragging the divider within this many pixels of the container's right edge
-// closes the pane on release (the clamp holds the pane at PANE_MIN_W during
-// the drag, so the intent is read from the raw cursor position instead).
+// closes the pane on release (the clamp holds the pane at its floor during the
+// drag, so the intent is read from the raw cursor position instead).
 const PANE_CLOSE_W = 110;
-export const PANE_DEFAULT_FRAC = 0.5;
-
-// The one place the pixel clamps live, so the drag cannot disagree with the
-// CSS floors: the pane keeps at least PANE_MIN_W, and the list keeps at least
-// LIST_MIN_W (a sliver — the columns shed themselves via container queries as
-// it narrows). PANE_MIN_W is applied last: in the degenerate case (a container
-// too small for both minimums) the pane keeps its floor and the list scrolls.
-// CSS mirrors both floors (.listing-pane-slot / .listing-main min-width),
-// which is what holds them on a window resize — the stored fraction is
-// deliberately proportional and knows nothing about pixels.
-export function clampPaneWidth(containerW: number, width: number): number {
-  return Math.max(PANE_MIN_W, Math.min(containerW - LIST_MIN_W, width));
-}
-
-// The divider drag, in one pure step: the cursor's distance from the
-// container's right edge is the pane's wanted PIXEL width, clamped by the
-// shared floors and then divided back out into the fraction that is what
-// actually gets stored and rendered. A container with no width (unmeasurable,
-// zero-sized) has no meaningful fraction, so the caller keeps what it had.
-export function dragPaneFrac(containerW: number, rawPx: number): number | null {
-  if (!(containerW > 0)) return null;
-  return clampPaneWidth(containerW, rawPx) / containerW;
-}
-
-// Parse the `panew` viewstate value. It holds a FRACTION of the split
-// container ("0.42"); null = nothing saved, so the caller uses
-// PANE_DEFAULT_FRAC and treats the width as unchosen.
-//
-// Values greater than 1 are LEGACY PIXEL widths from the previous model and
-// are ignored as if absent — not translated, because the pixels were measured
-// against a container this window may not have (that mismatch is the whole
-// reason for the fraction), and the folder simply re-opens at the default
-// until the user drags it again.
-export function parsePaneFrac(raw: string | null): number | null {
-  const f = parseFloat(raw || "");
-  if (!Number.isFinite(f) || f <= 0 || f > 1) return null;
-  return f;
-}
 
 // Shared by resolvePane and any other view (Preview.tsx's topbar-hiding
 // check) that needs to know whether the pane is showing for a path without

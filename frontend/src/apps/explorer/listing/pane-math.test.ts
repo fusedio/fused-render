@@ -1,10 +1,11 @@
-// The preview pane's width arithmetic, which is the whole of what is testable
-// without a DOM: the clamps, the drag's px→fraction step, and the `panew`
-// parse (including its rejection of the legacy pixel values written by the
-// pre-fraction model). The hook around them is React + `location` and belongs
-// to a browser.
+// The preview pane's width arithmetic: the clamps, the drag's px→fraction
+// step, and the `panew` parse (including its rejection of the legacy pixel
+// values written by the pre-fraction model). The hook around them is React +
+// `location` and belongs to a browser — which is why these live in their own
+// router-free module (see pane-math.ts), so this file runs with no DOM and in
+// any order.
 import { describe, expect, test } from "bun:test";
-import { PANE_DEFAULT_FRAC, clampPaneWidth, dragPaneFrac, parsePaneFrac } from "./pane";
+import { PANE_DEFAULT_FRAC, clampPaneWidth, dragPaneFrac, parsePaneFrac } from "./pane-math";
 
 describe("clampPaneWidth", () => {
   test("passes a comfortable width through untouched", () => {
@@ -37,6 +38,15 @@ describe("dragPaneFrac", () => {
     expect(dragPaneFrac(1000, 20)).toBe(0.22);
     // Dragged over the list: clamped to container - 60.
     expect(dragPaneFrac(1000, 990)).toBe(0.94);
+  });
+
+  test("a container narrower than the pane's own floor asks for all of it", () => {
+    // 180px cannot hold PANE_MIN_W, so the clamp's floor (220) is wider than
+    // the container. The fraction must still be a fraction: 1, not 1.22 —
+    // which would render as `flexBasis: 122%` and then be thrown away as a
+    // legacy pixel value the next time the folder opened.
+    expect(dragPaneFrac(180, 170)).toBe(1);
+    expect(dragPaneFrac(220, 300)).toBe(1);
   });
 
   test("an unmeasurable container yields no fraction at all", () => {
