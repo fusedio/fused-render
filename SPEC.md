@@ -425,7 +425,7 @@ const page = await fused.runPython("./reader.py",
 | `.mp4 .mov .m4v .webm .mp3 .wav .m4a .ogg .flac` | `media` | raw endpoint w/ Range |
 | `.py` | `code`, `api`, `claude`, `versions`, `reader` | editable CodeMirror; `api` = swagger-style run form over the `main()` entry point (D63) |
 | `.js .ts .tsx .jsx .cjs .mjs .cts .mts .sh .zsh .fish .ps1 .csh .zsh-theme .vim .yaml .yml .toml .ini .cfg .conf .tf .hcl .css .plist` | `code`, `claude`, `versions`, `reader` | editable CodeMirror. `.toml` leads with `canvas` (§28) and `.plist` with `plist`, then the same tail |
-| `.txt .log` | `text`, `code`, `claude`, `versions`, `reader` | `<pre>`; `.log` leads with `log_studio` |
+| `.txt .log` | `code`, `text`, `claude`, `versions`, `reader` | editable CodeMirror, with the plain `<pre>` view a click behind it; `.log` leads with `log_studio`. `code` outranks `text` on every key that offers both: they render the same bytes, and `code` renders them better |
 | `.jsonl .ndjson` | `code`, `duckdb`, `claude`, `versions`, `reader` | append-only record streams — no `git` mode ever (a scoped commit log over a stream says nothing a diff can render, GT-2), but they do carry the authored-file pair: PT-14's question is "is this authored", not "does this diff well" |
 | `.tif .tiff` | `geotiff` | GeoTIFF/COG via vendored geotiff (in-browser decode, no reader.py); full metadata + dump, photometric routing (RGB/palette/YCbCr), band select + RGB stretch + colormaps, histogram, hover. Small files full-fetched; >32 MiB range-request `fromUrl` |
 | `.nc .nc4 .cdf` | `netcdf` | NetCDF-3 via vendored netcdfjs (HDF5/NetCDF-4 → graceful card); leading-dim sliders, colormaps + stretch, histogram, hover |

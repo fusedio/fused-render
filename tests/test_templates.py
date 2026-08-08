@@ -109,7 +109,7 @@ def test_reader_is_the_last_mode_on_text_keys():
         "/x/data.csv": ["duckdb", "excel", "code", "claude", "versions",
                         "reader"],
         "/x/paper.pdf": ["pdf", "pdf_studio", "reader"],
-        "/x/log.txt": ["text", "code", "claude", "versions", "reader"],
+        "/x/log.txt": ["code", "text", "claude", "versions", "reader"],
     }
     for path, expected in cases.items():
         got, error = modes(path)
@@ -117,6 +117,22 @@ def test_reader_is_the_last_mode_on_text_keys():
         assert got == expected, path
         assert got[0] != "reader", path       # never the default
         assert got[-1] == "reader", path      # always last
+
+
+def test_code_outranks_text_on_every_key_that_offers_both():
+    # `text` and `code` render the same bytes; `code` just renders them better
+    # (syntax, line numbers, an editor). Wherever a key offers both, `code`
+    # comes first — which on `.txt` also makes it the default. Derived from the
+    # registry rather than spelled out per key, so a key added later is covered.
+    with open(os.path.join(server.TEMPLATES_DIR, "registry.json"),
+              encoding="utf-8") as f:
+        registry = json.load(f)
+    offenders = [
+        key for key, value in registry.items()
+        if isinstance(value, list) and "text" in value and "code" in value
+        and value.index("code") > value.index("text")
+    ]
+    assert offenders == []
 
 
 def test_reader_absent_on_binary_visual_keys():

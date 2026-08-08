@@ -400,16 +400,16 @@
     "reader"
   ],
   ".txt": [
-    "text",
     "code",
+    "text",
     "claude",
     "versions",
     "reader"
   ],
   ".log": [
     "log_studio",
-    "text",
     "code",
+    "text",
     "claude",
     "versions",
     "reader"
