@@ -12,10 +12,15 @@
 // (the injected runtime writes params through the parent's history object,
 // which fires no native event) — that wrapping is load-bearing for the
 // layout modes and the update-bookmark flow, not just for these hooks.
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { NAV_EVENT } from "@platform/lib/router";
 import { createCloseDeferrer } from "@platform/lib/exit-animation";
 import { getConfig } from "@platform/lib/api";
+import {
+  getSidebarState,
+  subscribeSidebarState,
+  type SidebarState,
+} from "@platform/lib/sidebarstate";
 
 export function useEventCounter(events: readonly string[]): number {
   const [n, setN] = useState(0);
@@ -218,4 +223,10 @@ function useBuiltinMountReady(initial: boolean, key: BuiltinMountKey): boolean {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   return ready;
+}
+
+// Live sidebar chrome state (platform/lib/sidebarstate) — collapsed flag and
+// dragged width, shared so every owner of the frame agrees on the layout.
+export function useSidebarState(): SidebarState {
+  return useSyncExternalStore(subscribeSidebarState, getSidebarState, getSidebarState);
 }

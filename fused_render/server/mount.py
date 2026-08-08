@@ -50,6 +50,42 @@ def _invalidate_stat_cache(*paths: object) -> None:
             _STAT_CACHE.pop(os.path.dirname(p), None)
 
 
+def _is_under_snapshot_root(path: str) -> bool:
+    """True when `path` sits under home_dir()/app-versions/ — the `versions`
+    template's materialised git snapshots (`versions.py::_snapshot`).
+
+    A snapshot tree is `git archive` output: the bytes of one commit, extracted so
+    a preview can be framed against them. Nothing a user types there can mean
+    anything — the real file is elsewhere and the commit is immutable — and
+    `_snapshot` REUSES an extracted tree whenever `.fused-snapshot-complete`
+    exists, so a write that lands here is served back as that revision's content
+    from then on. Machine-generated history that silently absorbs edits is worse
+    than no history at all.
+
+    This became reachable when `versions` grew FILE targets: a file snapshot is
+    framed through the file's own default view, which for the extensions
+    `versions` is bound to is `code` or `markdown` — both of which call
+    `fused.writeFile`. An app snapshot always framed the app's entry PAGE, so it
+    never offered a save.
+
+    Lives here rather than in fs_mutate so `_writable` can read it without a cycle
+    (fs_mutate imports this module, not the other way round) — and _writable is
+    half the answer: the mutation handlers refuse, and the stat payload's
+    `writable: false` is what lets the framed editor render read-only mode UP
+    FRONT instead of only failing at Cmd+S.
+
+    Resolved per call, not at import: home_dir() depends on FUSED_RENDER_HOME and
+    the branch ref (fused_render._branch), and a frozen value would guard a
+    directory the server is not using. Segment-compared, so a sibling named
+    `app-versions-notes` is not caught by a string prefix.
+    """
+    from fused_render.shell import storage as shell_storage
+
+    root = os.path.abspath(os.path.join(shell_storage.home_dir(), "app-versions"))
+    ap = os.path.abspath(path)
+    return ap == root or ap.startswith(root + os.sep)
+
+
 def _writable(path: str) -> bool:
     """True iff /api/fs/write would accept this path. An existing target needs
     W_OK on itself — the atomic os.replace would otherwise bypass a read-only
@@ -64,6 +100,12 @@ def _writable(path: str) -> bool:
     # keeping shell ↛ server acyclic.
     from fused_render.shell.mounts import is_mount_backed, mount_read_only
 
+    # A `versions` snapshot is history, not a file: the mutation handlers refuse
+    # it outright, so saying otherwise here would put an editable editor in front
+    # of a save that cannot land. Checked before the mount branch because the
+    # snapshot root is always local.
+    if _is_under_snapshot_root(path):
+        return False
     if mount_read_only(path):
         return False
     if is_mount_backed(path):

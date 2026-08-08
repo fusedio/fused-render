@@ -16,9 +16,12 @@ import { listDir, resolveConditions, statPath } from "@platform/lib/api";
 import type { TemplateEntry } from "@platform/lib/api";
 import { navigate, replaceSearch } from "@platform/lib/router";
 import { formatSize } from "@platform/lib/format";
+import { isModeVisible } from "@platform/lib/mode-visibility";
 import { iconForEntry, isAppEntry } from "@platform/ui/FileIcons";
-import ModeSwitcher, { KNOWN_SENTINEL_MODES, templateModeIcon } from "@apps/explorer/ModeSwitcher";
+import { KNOWN_SENTINEL_MODES, templateModeIcon } from "@apps/explorer/ModeSwitcher";
+import { ModeMenu } from "@apps/explorer/BarMenu";
 import Listing from "@apps/explorer/Listing";
+import { PANE_APP_MODE, activePaneMode, paneModeList } from "@apps/explorer/listing/pane-modes";
 
 // The selected row, as the pane needs it. Structurally a subset of Listing's
 // RowCtx, so the lead row can be passed straight through.
@@ -27,14 +30,17 @@ export interface PaneTarget {
   name: string;
   isDir: boolean;
   // True when the target is the listing's OWN folder (nothing selected): the
-  // same mode logic runs, except `_listing` is never offered — that listing
-  // is already on the left side of the split.
+  // same mode logic runs, except `_listing` is never offered (that listing is
+  // already on the left side of the split) and the pane lands on NO mode at
+  // all — a neutral hint, with every offered mode one click away in the
+  // switcher — instead of the folder's first opt-in mode. See
+  // listing/pane-modes.ts.
   self?: boolean;
 }
 
-// The pane-only sentinel for a folder's lone HTML app rendered in place. Not
-// a registry mode — it exists only in this menu, so the constant is local.
-const APP_MODE = "_app";
+// The pane-only sentinel, re-exported locally for readability (defined with
+// the ordering rules in listing/pane-modes.ts).
+const APP_MODE = PANE_APP_MODE;
 
 // Monochrome switcher icon for the `_app` mode — currentColor like the other
 // mode icons, so it takes the switcher's muted/active tinting instead of the
@@ -76,8 +82,8 @@ interface AppTarget {
   path: string;
 }
 
-// One entry of the pane's mode switcher (template modes + pane sentinels) —
-// the shape ModeSwitcher takes.
+// One entry of the pane's mode menu (template modes + pane sentinels) — the
+// shape BarMenu's shared ModeMenu takes.
 interface PaneMode {
   mode: string;
   icon: React.ReactNode;
@@ -86,11 +92,15 @@ interface PaneMode {
 export default function ListingPreviewPane({
   row,
   selCount,
+  selfPrimary,
 }: {
   // The lead row when exactly one row is selected, else null.
   row: PaneTarget | null;
   // Total selected rows, for the multi-selection placeholder.
   selCount: number;
+  // The host folder's own primary action, for the SELF row's primary slot
+  // (see the header below). Built by the host so its state lives in one place.
+  selfPrimary?: React.ReactNode;
 }) {
   const [info, setInfo] = useState<InfoState>({ status: "loading" });
   // Lone-app probe result for a folder: undefined = still loading, null =
@@ -142,7 +152,8 @@ export default function ListingPreviewPane({
         if (base.conditions !== null) return;
         resolveConditions(path).then(
           (r) => alive && setInfo({ ...base, conditions: r.conditions }),
-          // Fail closed, like a broken gate: every gated entry reads denied.
+          // No verdicts; lib/mode-visibility keeps verdict-less gated entries
+          // visible so a failed probe can't empty this pane's mode menu.
           () => alive && setInfo({ ...base, conditions: {} })
         );
       },
@@ -212,26 +223,30 @@ export default function ListingPreviewPane({
 
   // --- the pane's mode list ---------------------------------------------------
 
-  // Mode order = pane priority. The special `_app` mode leads when a lone
-  // app exists; after it the template system's own order stands untouched —
-  // `_listing` stays exactly where the registry ranks it (typically ahead of
-  // claude/git), rendered as the embedded Listing rather than an iframe. On a
-  // FILE a `_listing` bind (rare registry rebind) is dropped entirely: the
-  // pane has no slot for a full listing of a file. Same for a SELF target's
-  // `_listing` — that listing is already on the left.
-  const allowed = (e: TemplateEntry) =>
-    !e.conditional || (info.conditions !== null && info.conditions[e.mode] === true);
+  // Mode order = pane priority, decided in listing/pane-modes.ts — which also
+  // documents why a SELF target lands on no mode at all, why a lone app leads
+  // over `_listing`, and why `app` and `_app` are never both offered.
+  // This component only turns those mode names into menu entries with icons.
+  //
+  // Gate policy is the shared one (lib/mode-visibility), on every mode surface
+  // alike: an entry hides only on an EXPLICIT denial. A denied override is not
+  // pinned into the list — the active mode falls back to the pane's default
+  // (`activePaneMode` guards it), matching Preview.
+  const allowed = (e: TemplateEntry) => isModeVisible(e, info.conditions);
   const embeddable = info.templates.filter((e) => e.mode !== "_listing" && allowed(e));
 
-  const modes: PaneMode[] = [];
-  if (row.isDir && app) modes.push({ mode: APP_MODE, icon: APP_MODE_ICON });
-  for (const e of info.templates) {
-    if (e.mode === "_listing") {
-      if (row.isDir && !row.self) modes.push({ mode: "_listing", icon: templateModeIcon(e) });
-      continue;
-    }
-    if (allowed(e)) modes.push({ mode: e.mode, icon: templateModeIcon(e) });
-  }
+  const modeNames = paneModeList({
+    templates: info.templates,
+    conditions: info.conditions,
+    isDir: !!row.isDir,
+    self: !!row.self,
+    hasApp: !!app,
+  });
+  const byMode = new Map(info.templates.map((e) => [e.mode, e]));
+  const modes: PaneMode[] = modeNames.map((m) => ({
+    mode: m,
+    icon: m === APP_MODE ? APP_MODE_ICON : templateModeIcon(byMode.get(m) as TemplateEntry),
+  }));
 
   // While the mode list is still undecided, hold the skeleton — the pane must
   // never settle on an interim mode and then jump. Undecided means: the
@@ -255,9 +270,11 @@ export default function ListingPreviewPane({
       </div>
     );
   }
-  // A self target with nothing to show (no app, no template) gets the
-  // neutral hint — never its own listing, which is already on the left.
-  if (row.self && modes.length === 0) {
+  // A self target with nothing offerable at all (no app, every template
+  // gate-denied) gets the bare hint — no header, because there is no mode to
+  // switch to. With modes to offer it falls through instead, so the header (and
+  // its switcher) stays on screen beside the hint.
+  if (row.self && modeNames.length === 0) {
     return (
       <div className="listing-pane">
         <div className="pane-center">
@@ -266,12 +283,13 @@ export default function ListingPreviewPane({
       </div>
     );
   }
-  // Default = the first mode in pane priority order; the menu override wins
-  // while it's still offered.
-  const activeMode =
-    modeOverride !== null && modes.some((m) => m.mode === modeOverride)
-      ? modeOverride
-      : (modes[0]?.mode ?? null);
+  // Default = the first mode in pane priority order, or NO mode for a self
+  // target without an app of its own; the menu override wins while it's still
+  // offered.
+  const activeMode = activePaneMode(modeNames, modeOverride, {
+    self: !!row.self,
+    hasApp: !!app,
+  });
   const activeEntry = embeddable.find((e) => e.mode === activeMode) ?? null;
 
   // Header: name + mode menu + Open. Shown for every mode except the file
@@ -282,15 +300,20 @@ export default function ListingPreviewPane({
       <span className="pane-header-name" title={row.name}>
         {row.name}
       </span>
-      {/* Horizontal icon strip, same look as the shell preview header (PT-10):
-          every available mode side by side, active one highlighted. */}
-      <ModeSwitcher entries={modes} active={activeMode ?? ""} onSelect={selectMode} />
-      {/* One label for every mode. Self target: "Open" would navigate to the
-          folder already open, so it hides. */}
-      {!row.self && (
+      {/* The same mode control the title bar and the pane bars carry. It used
+          to be four naked squares here, indistinguishable from the one-shot
+          glyphs beside them. */}
+      <ModeMenu entries={modes} active={activeMode ?? ""} onSelect={selectMode} />
+      {/* One label for every mode, and the row's ONE bordered primary. Self
+          target: "Open" would navigate to the folder already open, so the slot
+          goes to the folder's own primary instead — today the host's "Open as
+          app" (`selfPrimary`), which used to sit in the title bar competing
+          with the mode control and the layout zone. A folder with no single
+          app passes nothing and the slot stays empty. */}
+      {row.self ? selfPrimary : (
         <button
           type="button"
-          className="pane-header-btn"
+          className="bar-ctl bar-ctl-primary pane-header-btn"
           onClick={() => navigate(row.path, { isDir: row.isDir })}
         >
           Open
@@ -332,6 +355,27 @@ export default function ListingPreviewPane({
           src={`/render?path=${encodeURIComponent(app.path)}`}
           title={app.name}
         />
+      </>
+    );
+  } else if (activeMode === null && row.self) {
+    // "Nothing previewed" — the self target's default state, not a mode: the
+    // header (so every offered mode stays one click away in the switcher, none
+    // of them marked active) above the same hint the nothing-to-show path
+    // shows.
+    //
+    // `row.self` is load-bearing, not defensive. `activePaneMode` returns null
+    // for TWO unrelated reasons: this state, and `modes[0] ?? null` on an empty
+    // list — which a SELECTED row reaches when its file maps to nothing or every
+    // template is gate-denied. That row has a subject and must keep falling
+    // through to the metadata card below; only the self target means "no subject
+    // chosen yet". The predecessor sentinel (`NONE_MODE`) could not be produced
+    // by an empty list, so it never had to say so.
+    body = (
+      <>
+        {header}
+        <div className="pane-center">
+          <div className="pane-hint">Select a file to preview.</div>
+        </div>
       </>
     );
   } else if (activeMode === "_listing" && row.isDir) {

@@ -15,36 +15,64 @@
   padding: 10px 16px;
   border-bottom: 1px solid var(--border);
   background: var(--bg-alt);
-  /* Pin to the tallest state (28px mode-switcher button + 10px×2 padding) so
-     the bar can't grow when the portaled switcher lands after stat resolves. */
+  /* Pin to the tallest state (28px control + 10px×2 padding) so the bar can't
+     grow when the portaled mode control lands after stat resolves. */
   min-height: 48px;
   box-sizing: border-box;
 }
 
 /* ★ bookmark button, leftmost in the bar. Subtle: bare glyph, no box —
-   muted until hovered; accent-yellow (filled star) when the view is
-   bookmarked or an armed bookmark is live. */
+   muted until hovered; a FILLED FOREGROUND star when the view is bookmarked
+   or an armed bookmark is live. Deliberately not accent-yellow any more: the
+   accent means exactly one thing in this chrome, the active view mode.
+   Bookmarking is state, not "the thing you are looking at". */
 .bookmark-star-btn {
   flex: 0 0 auto;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  padding: 2px;
+  /* 5px around a 14px glyph = the same 24px box (and hover pill) the 16px
+     glyph used to make, so shrinking the star cost no hit area. */
+  padding: 5px;
   border: none;
-  border-radius: 4px;
+  border-radius: 6px;
   background: none;
   color: var(--fg-muted);
   cursor: pointer;
-  transition: color var(--dur-fast) var(--ease-out);
+  transition:
+    color var(--dur-fast) var(--ease-out),
+    background-color var(--dur-fast) var(--ease-out);
+}
+
+/* Optical, not geometric: the star box centres on the crumb row's centre
+   line, but a five-pointed star carries its visual mass below its own box
+   centre, so it read as sitting low beside the crumb text. Half a pixel up
+   lands its perceived centre on the text's. Applies at both scales the star
+   renders at (this bar and the 24px panel pane bars). */
+.bookmark-star-btn svg {
+  position: relative;
+  top: -0.5px;
+}
+
+/* The star belongs TO the path, so it should sit in the path's own rhythm, not
+   at the bar's zone spacing. Between the two the bar contributed its 10px flex
+   gap plus the star's 5px padding plus the first crumb's 4px — 19px of air,
+   more than twice the 8px the crumbs keep between themselves, which made the
+   star read as an island. A negative margin is the only way to retune ONE pair
+   inside a `gap` container; the bar-wide 10px between the other zones stands. */
+#breadcrumb .bookmark-star-btn {
+  margin-right: -11px;
 }
 
 .bookmark-star-btn:hover {
   color: var(--fg);
+  background: rgba(var(--tint), 0.08);
 }
 
 .bookmark-star-btn.active,
 .bookmark-star-btn.active:hover {
-  color: var(--accent);
+  color: var(--fg);
+  background: rgba(var(--tint), 0.08);
 }
 
 /* Shared with the panel path bar (.panel-crumbs/.panel-crumb*, Panel.tsx):
@@ -82,7 +110,8 @@
 /* Click-to-edit / Ctrl+L path field: swaps in for the crumb row. Same
    monospace as the crumbs, fills the strip, and takes the bar's own
    background so it reads as the bar turning editable rather than a popped-in
-   widget; a quiet border picks up the accent on focus. */
+   widget; the border brightens to --fg-muted on focus (not the accent — that
+   is reserved for the active view mode). */
 #breadcrumb .crumb-edit {
   flex: 1 1 auto;
   min-width: 0;
@@ -97,16 +126,24 @@
 
 #breadcrumb .crumb-edit:focus {
   outline: none;
-  border-color: var(--accent);
+  border-color: var(--fg-muted);
 }
 
+/* Ancestor crumbs sit one step BRIGHTER than plain muted: at --fg-muted the
+   path read as disabled text, which is the opposite of what a click target
+   should say. color-mix over the two tokens keeps it theme-following (no new
+   literal — tests/test_theme.py).
+
+   4px of horizontal padding, not 1px: it gives the hover pill something to
+   hug (at 1px it clamped the glyphs), and it is half of the crumb rhythm —
+   see the separator rule below. */
 .path-crumb,
 .panel-crumb {
-  color: var(--fg-muted);
+  color: color-mix(in srgb, var(--fg) 60%, var(--fg-muted));
   text-decoration: none;
   cursor: pointer;
-  padding: 2px 1px;
-  border-radius: 3px;
+  padding: 2px 4px;
+  border-radius: 6px;
 }
 
 /* GNOME-style compress-then-scroll truncation, main bar only (the panel pane
@@ -141,37 +178,29 @@
   font-weight: 600;
 }
 
+/* Separators at full muted strength with room to breathe. At --border they
+   were near-invisible, so the path read as one run-on string.
+
+   4px + the crumbs' own 4px padding = 8px of air on each side of every "/",
+   and that pairing is what makes the leading segment come out even for free.
+   An absolute path's ROOT crumb is itself a "/" with no separator element
+   after it (Breadcrumb.tsx: "root already carries the leading slash"), so the
+   gap it opens is root-padding + next-crumb-padding = the same 8px. Splitting
+   the rhythm between the two elements is deliberate; putting it all on the
+   separator's margin is what made "/home / iamsdas" read as jammed-then-airy. */
 .path-crumb-sep,
 .panel-crumb-sep {
-  color: var(--border);
-  margin: 0 1px;
+  color: var(--fg-muted);
+  margin: 0 4px;
 }
 
-/* Main breadcrumb hover only — subtle fg brighten + underline, no accent
-   yellow. */
-#breadcrumb .path-crumb:hover {
+/* Crumb hover, both bars — fg brighten + underline, no accent yellow. The
+   panel pane used to hover accent-yellow; unified here so a path behaves the
+   same wherever it appears. */
+#breadcrumb .path-crumb:hover,
+.panel-crumb:hover {
   color: var(--fg);
   text-decoration: underline;
-}
-
-/* Share/export glyph at the end of the crumb trail (reveal in file manager). */
-.reveal-btn {
-  flex: 0 0 auto;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  margin-left: 4px;
-  padding: 3px;
-  border: none;
-  border-radius: 4px;
-  background: none;
-  color: var(--fg-muted);
-  cursor: pointer;
-}
-
-.reveal-btn:hover {
-  background: var(--border);
-  color: var(--fg);
 }
 
 .crumb-actions {
@@ -187,6 +216,280 @@
   display: none;
 }
 
+/* …and takes the zone divider with it, so a static page (or a view still
+   resolving its stat) shows no stray hairline floating in the bar. */
+#topbar-mode-slot:empty + .bar-rule {
+  display: none;
+}
+
+/* Same pair for the panel pane bar, whose mode menu (PaneModeMenu) renders
+   nothing on a single-mode path and while the pane is still statting — the
+   hairline used to stay behind either way, dividing the crumbs from nothing.
+   `display: contents` so the wrapper is invisible to the bar's flex layout. */
+.panel-mode-slot {
+  display: contents;
+}
+
+.panel-mode-slot:empty + .bar-rule {
+  display: none;
+}
+
+/* #breadcrumb already spaces its children with `gap`, so the rule brings no
+   margin of its own here (it does in .panel-bar, whose gap is 2px). */
+#breadcrumb .bar-rule {
+  margin: 0;
+}
+
+/* ---- One control recipe for the explorer's bars --------------------------
+   The title bar, the listing search row, the preview-pane header and the
+   panel pane bars used to be four dialects of the same idea: three button
+   shapes, radii of 3/4/5/6/8/999px, and 14-18px icons mixed inside a single
+   row. Everything in those bars is now built from these classes instead —
+   28px tall, 6px radius, 16px icons, ghost by default, bordered only for the
+   mode control and the row's one primary action. `.panel-bar` re-scales the
+   whole set to 24px/14px in preview.css; nothing else overrides it.
+
+   Ghost is deliberately a background wash rather than a border-on-hover: a
+   border appearing under the cursor moves the glyph, and these rows are dense
+   enough that the shift is visible. */
+.bar-ctl {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 8px;
+  border: none;
+  border-radius: 6px;
+  background: none;
+  font: inherit;
+  font-size: 12px;
+  line-height: 1;
+  color: var(--fg-muted);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.bar-ctl svg {
+  display: block;
+}
+
+.bar-ctl:hover:not(:disabled) {
+  background: rgba(var(--tint), 0.08);
+  color: var(--fg);
+}
+
+.bar-ctl:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+/* Square, glyph-only variant — same height, no label. */
+.bar-ctl-icon {
+  width: 28px;
+  padding: 0;
+}
+
+/* Toggle in its on state (the listing's Preview button): a slightly stronger
+   wash than hover, which is what makes "pressed" legible while the cursor is
+   sitting on it. */
+.bar-ctl.pressed {
+  background: rgba(var(--tint), 0.1);
+  color: var(--fg);
+}
+
+/* The only two things in these bars that get chrome: the mode control and the
+   row's single primary action. */
+.bar-ctl-bordered,
+.bar-ctl-primary {
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--fg);
+}
+
+.bar-ctl-bordered:hover:not(:disabled),
+.bar-ctl-primary:hover:not(:disabled) {
+  background: var(--bg);
+  border-color: var(--fg-muted);
+  color: var(--fg);
+}
+
+.bar-ctl-primary {
+  padding: 0 14px;
+  font-weight: 600;
+}
+
+/* Hairline between the mode control and the layout group. A zone divider, not
+   decoration: it is what makes "mode" and "layout" read as two things. */
+.bar-rule {
+  flex: 0 0 auto;
+  width: 1px;
+  height: 18px;
+  margin: 0 10px;
+  background: var(--border);
+}
+
+.bar-zone {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+/* ---- The mode control ---------------------------------------------------
+   One self-describing button in every bar: the active mode's icon, its name,
+   a caret. The icon is plain currentColor at the bars' standard 16px — it
+   spent one iteration inside a filled accent chip, which turned the quietest
+   row in the app into a badge competing for attention. The accent's only
+   remaining job here is the checkmark on the dropdown's active row. */
+.mode-menu {
+  position: relative;
+  flex: 0 0 auto;
+  display: inline-flex;
+}
+
+/* No metrics of its own: the mode trigger sits on the plain .bar-ctl recipe
+   (28px tall, 0 8px padding, 6px gap, 6px radius) like every other control in
+   these bars. It used to override with `padding: 0 10px; gap: 7px`, which —
+   with the 1px border only this control carries — put 11px of inset either
+   side and read as the one over-padded thing in the bar. */
+
+.mode-menu-icon {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+}
+
+.mode-menu-icon svg,
+.mode-menu-icon .mode-icon-mask,
+.mode-menu-icon .mode-icon-placeholder {
+  width: 16px;
+  height: 16px;
+}
+
+.mode-menu-icon .mode-icon-spinner {
+  width: 12px;
+  height: 12px;
+  border-width: 1.5px;
+}
+
+.mode-menu-label {
+  font-weight: 500;
+}
+
+.bar-caret {
+  flex: 0 0 auto;
+  color: var(--fg-muted);
+}
+
+.bar-overflow {
+  position: relative;
+  flex: 0 0 auto;
+  display: inline-flex;
+}
+
+/* ---- Bar dropdowns ------------------------------------------------------
+   position:fixed off the trigger's rect (inline top/left): .panel-pane and
+   the tab bar clip their overflow, so an absolutely positioned popup would
+   work in the title bar and be invisible in the pane bars. */
+.bar-menu-popup {
+  position: fixed;
+  z-index: 200;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 180px;
+  padding: 4px;
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px var(--shadow-md);
+}
+
+/* The 180px floor is sized for MODE rows — icon + label + checkmark, which
+   need to hold a column. An overflow menu carries plain labels, so it sizes to
+   its content instead; on a one-item menu ("Open in explorer") the floor was
+   ~50px of dead width. */
+.bar-overflow .bar-menu-popup {
+  min-width: 120px;
+  width: max-content;
+}
+
+.bar-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 6px 8px;
+  border: none;
+  border-radius: 6px;
+  background: none;
+  font: inherit;
+  font-size: 12.5px;
+  color: var(--fg);
+  text-align: left;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.bar-menu-item:hover:not(:disabled) {
+  background: rgba(var(--tint), 0.08);
+}
+
+.bar-menu-item:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+/* Plain glyph, no box: the row's own hover wash and the checkmark carry the
+   state, and a bordered well around every icon made the list read as a grid
+   of buttons rather than a set of choices. */
+.bar-menu-item-icon {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  color: var(--fg-muted);
+}
+
+.bar-menu-item-icon svg,
+.bar-menu-item-icon .mode-icon-mask,
+.bar-menu-item-icon .mode-icon-placeholder {
+  width: 16px;
+  height: 16px;
+}
+
+.bar-menu-item-icon .mode-icon-spinner {
+  width: 12px;
+  height: 12px;
+}
+
+.bar-menu-item-label {
+  flex: 1 1 auto;
+}
+
+/* The active row is the mode you are looking at — semibold, brighter glyph,
+   and the accent tick. That tick is the last accent left in this chrome, and
+   it still means exactly one thing: the active view mode. */
+.bar-menu-item.active {
+  font-weight: 600;
+}
+
+.bar-menu-item.active .bar-menu-item-icon {
+  color: var(--fg);
+}
+
+.bar-menu-check {
+  flex: 0 0 auto;
+  color: var(--accent);
+}
+
 .star-btn {
   flex: 0 0 auto;
   font: inherit;
@@ -200,21 +503,17 @@
   cursor: pointer;
 }
 
-/* Icon-only split buttons at the crumbs' tail, after the Finder glyph — same
-   boxless .reveal-btn chrome, sitting slightly tighter as a pair. */
-.reveal-btn.split-dir {
-  margin-left: 2px;
-}
-
 .star-btn:hover {
-  color: var(--accent);
-  border-color: var(--accent);
+  color: var(--fg);
+  border-color: var(--fg-muted);
 }
 
+/* Neutral, like the ★ itself: bookmark state is not the active view mode, so
+   it carries no accent. */
 .star-btn.starred {
-  color: var(--accent);
-  border-color: var(--accent);
-  background: rgba(var(--accent-rgb), 0.13);
+  color: var(--fg);
+  border-color: var(--border);
+  background: rgba(var(--tint), 0.08);
 }
 
 #content {
@@ -283,7 +582,7 @@
 /* Squeezed list: shed the modified column first, then size, leaving just the
    name at the narrowest. Header cells carry col-<key> classes to pair with
    their td counterparts. */
-@container (max-width: 380px) {
+@container (max-width: 460px) {
   table.listing-table td.mtime,
   table.listing-table th.col-mtime {
     display: none;
@@ -408,14 +707,21 @@
   background: var(--bg-alt);
 }
 
-/* Folder preview: a slim bar above the embedded app / mini list carrying its
-   name and the Open action. */
+/* Folder preview: the bar above the embedded app / mini list, carrying the
+   name, the mode control and Open.
+
+   It sits directly beside .listing-search — they are one visual row split by
+   the pane divider — so the two MUST agree on height, or the pane's bottom
+   border runs 7px above the listing's and the row reads as broken. The search
+   row's height is content-derived (8px padding + a 30px input); this pins to
+   the same number and centres whatever it holds. Keep the two in step. */
 .listing-pane .pane-header {
   flex: 0 0 auto;
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 7px 10px;
+  padding: 8px 10px;
+  min-height: 46px;
   border-bottom: 1px solid var(--border);
   background: var(--bg-alt);
 }
@@ -423,42 +729,6 @@
 .listing-pane .pane-header-icon {
   flex: 0 0 auto;
   display: inline-flex;
-}
-
-/* The pane header's mode switcher: same icon strip as the preview header
-   (PT-10) but compact and quiet, sized to the slim pane bar — borderless
-   ghost buttons, accent only on the active mode. */
-.listing-pane .pane-header .mode-switcher {
-  flex: 0 0 auto;
-  display: flex;
-  align-items: center;
-  gap: 3px;
-}
-
-.listing-pane .pane-header .mode-switcher-btn {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 24px;
-  height: 24px;
-  padding: 0;
-  border: 1px solid transparent;
-  border-radius: 5px;
-  background: transparent;
-  color: var(--fg-muted);
-  cursor: pointer;
-}
-
-.listing-pane .pane-header .mode-switcher-btn:hover {
-  background: var(--bg);
-  border-color: var(--border);
-  color: var(--fg);
-}
-
-.listing-pane .pane-header .mode-switcher-btn.active {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: var(--on-accent);
 }
 
 .listing-pane .pane-header-name {
@@ -469,21 +739,11 @@
   color: var(--fg);
 }
 
+/* "Open" is the row's one bordered primary; everything else it sits beside is
+   ghost chrome, so it needs no accent to be the obvious action. Chrome comes
+   from .bar-ctl-primary — only the padding is tightened for the slim strip. */
 .listing-pane .pane-header-btn {
-  flex: 0 0 auto;
-  font: inherit;
-  font-size: 12px;
-  padding: 4px 10px;
-  border: 1px solid rgba(var(--accent-rgb), 0.35);
-  border-radius: 5px;
-  background: var(--bg);
-  color: var(--fg);
-  cursor: pointer;
-  white-space: nowrap;
-}
-
-.listing-pane .pane-header-btn:hover {
-  background: var(--sel);
+  padding: 0 12px;
 }
 
 /* Folder preview fallback: the folder's own entries, read-only. Narrower
@@ -541,55 +801,11 @@ table.pane-mini-list td.status-message {
   padding: 14px 10px;
 }
 
-/* Pane toggle in the search row: small icon button. Stays subtle when the
-   pane is open — the chevron's direction is the state indicator. */
+/* Row 2's two ends. Both are plain .bar-ctl now (explorer.css's shared
+   recipe); all that is left here is the pane toggle's negative right margin,
+   which pulls the labelled control out to the row's padding edge. */
 .listing-pane-toggle {
-  flex: 0 0 auto;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 30px;
-  height: 30px;
-  padding: 0;
-  margin-left: 8px;
   margin-right: -8px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: transparent;
-  color: var(--fg-muted);
-  cursor: pointer;
-}
-
-.listing-pane-toggle:hover {
-  color: var(--fg);
-  border-color: var(--fg-muted);
-}
-
-/* "Up to parent" button at the left edge of the listing's search row — same
-   quiet chrome as the pane toggle on the row's other end. */
-.listing-up-button {
-  flex: 0 0 auto;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 30px;
-  height: 30px;
-  padding: 0;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: transparent;
-  color: var(--fg-muted);
-  cursor: pointer;
-}
-
-.listing-up-button:hover:not(:disabled) {
-  color: var(--fg);
-  border-color: var(--fg-muted);
-}
-
-.listing-up-button:disabled {
-  opacity: 0.4;
-  cursor: default;
 }
 
 /* Skeleton loading state: shimmering bars shaped like the real listing rows
@@ -647,14 +863,28 @@ table.listing-table tr.skel-row:hover {
   animation: skel-shimmer 1.2s ease-in-out infinite;
 }
 
+/* Row 2, listing side. Its height is the reference the preview pane's header
+   pins itself to (.listing-pane .pane-header) — the two are one row. */
 .listing-search {
   flex: 0 0 auto;
   display: flex;
   align-items: center;
   gap: 8px;
+  min-height: 46px;
   padding: 8px 16px;
   border-bottom: 1px solid var(--border);
   background: var(--bg);
+}
+
+/* Optical gutter alignment for the leading Up button. The row pads 16px like
+   the listing gutter below it, but a ghost icon button is a 28px square with a
+   16px glyph centred, so its ARROW started ~6px right of the gutter while the
+   NAME header and the row icons underneath start exactly on it — the row read
+   as over-indented. Hang the button back into the padding so the glyph, not
+   the box, lines up. The 28px hit area is unchanged, and this is scoped to
+   this row: the topbar's controls sit against a right edge and are fine. */
+.listing-search > .bar-ctl-icon:first-child {
+  margin-left: -6px;
 }
 
 /* Wraps the input plus its pinned chips (count / spinner), so the preview-pane
@@ -667,9 +897,15 @@ table.listing-table tr.skel-row:hover {
 
 .listing-search .listing-search-input {
   width: 100%;
-  /* Reserves room for the count chip / spinner pinned inside the right edge —
-     sized for the longest count text ("showing 250 of 7734 matches"). Esc
-     clears the query. */
+  padding-right: 10px;
+}
+
+/* Room for whichever chip is pinned inside the right edge, sized for the
+   longest count text ("showing 250 of 7734 matches"). Only while one is
+   actually pinned (Listing.tsx `hasPin`): reserving it unconditionally cost
+   116px of an idle box, which clipped the placeholder outright once the
+   window was narrow and the preview pane open. Esc clears the query. */
+.listing-search .listing-search-box.has-pin .listing-search-input {
   padding-right: 116px;
 }
 
@@ -703,7 +939,7 @@ table.listing-table tr.skel-row:hover {
   height: 11px;
   margin-top: -5.5px;
   border: 1.5px solid var(--border);
-  border-top-color: var(--accent);
+  border-top-color: var(--fg-muted);
   border-radius: 50%;
   pointer-events: none;
   animation: listing-search-spin 0.6s linear infinite;
@@ -767,9 +1003,50 @@ table.listing-table tr.skel-row:hover {
   padding: 0 8px 6px;
 }
 
+/* Fixed layout is what makes the list unscrollable sideways: with `auto`, the
+   cells' white-space:nowrap sets a min-content width the table refuses to go
+   below, so a wide preview pane pushed the columns past the scroller and
+   .listing-scroll grew a horizontal scrollbar (the cells' own ellipsis never
+   got a chance — a column can't shrink under its content in auto layout).
+   Fixed layout hands SIZE and MODIFIED the widths declared below and gives
+   NAME the remainder, whatever that is, so NAME ellipsizes instead. The
+   container queries above still shed MODIFIED and then SIZE before NAME's
+   remainder gets uselessly small. */
 table.listing-table {
   width: 100%;
+  table-layout: fixed;
   border-collapse: collapse;
+}
+
+/* Empty folder: no column headers over zero rows (Listing.tsx `emptyDir`). */
+table.listing-table thead.listing-head-empty {
+  display: none;
+}
+
+/* SIZE is a quantity: right-aligned so the magnitudes line up by digit, header
+   included (a column heading that doesn't sit over its own values reads as a
+   different column). MODIFIED stays left-aligned with its header — dates are
+   read left to right, not compared by magnitude. Both get tabular figures so
+   digits don't jitter between rows. */
+table.listing-table th.col-size,
+table.listing-table td.size {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+table.listing-table td.mtime {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Enough for "1023.9 KB" and "12/31/25, 11:59 PM" plus the 16px cell padding
+   each side. Both columns disappear entirely before the list is narrow enough
+   for these to matter (see the container queries). */
+table.listing-table th.col-size {
+  width: 96px;
+}
+
+table.listing-table th.col-mtime {
+  width: 172px;
 }
 
 table.listing-table th {
@@ -796,8 +1073,13 @@ table.listing-table th.sortable:hover {
   color: var(--fg);
 }
 
+/* The accent means "the view mode you are in" and nothing else (only the
+   checkmark in the mode dropdown carries it). A sorted header is not a mode:
+   it needs to read as the selected one among three muted headers, which full
+   --fg at 600 already does — and the arrow says which way. */
 table.listing-table th.sorted {
-  color: var(--accent);
+  color: var(--fg);
+  font-weight: 600;
 }
 
 /* One glyph (▲) for both directions: desc rotates it, so flipping the order
@@ -858,7 +1140,7 @@ table.listing-table tr.row.flip-animating {
   line-height: 1;
   padding: 4px 8px;
   border: 1px solid var(--border);
-  border-radius: 999px;
+  border-radius: 6px;
   background: var(--bg-alt);
   color: var(--fg-muted);
   cursor: pointer;
@@ -872,9 +1154,11 @@ table.listing-table tr.row.flip-animating {
   cursor: default;
 }
 
+/* Sorted is a QUIET readout, not a highlight: it says how the results are
+   ordered, which is nothing like "this is the view you are looking at". */
 .listing-sort-chip.sorted {
-  color: var(--accent);
-  border-color: var(--accent);
+  color: var(--fg-muted);
+  border-color: var(--border);
 }
 
 .listing-sort-chip:hover:not(:disabled) {

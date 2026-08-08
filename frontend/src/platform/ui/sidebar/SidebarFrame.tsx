@@ -7,11 +7,14 @@
 import React, { useRef, useState } from "react";
 import { navigateUrl } from "@platform/lib/router";
 import {
-  loadSidebarState,
+  getSidebarState,
   saveSidebarState,
+  setSidebarState,
+  toggleSidebarCollapsed,
   SIDEBAR_MIN_WIDTH,
   SIDEBAR_MAX_WIDTH,
 } from "@platform/lib/sidebarstate";
+import { useSidebarState } from "@platform/lib/hooks";
 
 export interface SidebarFrameProps {
   /** Brand text next to the cube mark — names the owning context. */
@@ -59,11 +62,11 @@ export function NavItem({
 
 export function SidebarFrame({ title, version, homeHref = "/apps", children }: SidebarFrameProps) {
   // Sidebar chrome: draggable width + collapsed flag, persisted once per
-  // gesture (drag end / toggle), not per mousemove. Width lives in React
-  // state — per-pointermove setState is fine (React 18 batches) and there is
-  // no transition during a drag, so no jank.
-  const [{ width: sidebarWidth, collapsed: sidebarCollapsed }, setSidebarState] =
-    useState(loadSidebarState);
+  // gesture (drag end / toggle), not per mousemove. The state lives in the
+  // shared store (platform/lib/sidebarstate) rather than here so that a
+  // remount — every sub-app composes its own frame — inherits the live layout
+  // instead of re-reading the persisted one.
+  const { width: sidebarWidth, collapsed: sidebarCollapsed } = useSidebarState();
   // True only while the handle is captured — used to suppress the collapse
   // transition and text selection mid-drag.
   const [resizing, setResizing] = useState(false);
@@ -101,7 +104,8 @@ export function SidebarFrame({ title, version, homeHref = "/apps", children }: S
       SIDEBAR_MAX_WIDTH,
       Math.max(SIDEBAR_MIN_WIDTH, drag.startWidth + (e.clientX - drag.startX))
     );
-    setSidebarState((s) => (s.width === width ? s : { ...s, width }));
+    // Not persisted per move — the final width is written at drag end.
+    setSidebarState((s) => (s.width === width ? s : { ...s, width }), false);
   };
 
   const onHandlePointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
@@ -110,27 +114,24 @@ export function SidebarFrame({ title, version, homeHref = "/apps", children }: S
     dragRef.current = null;
     setResizing(false);
     // Persist the final width (functional read — the last pointermove's
-    // setState may not have committed yet).
-    setSidebarState((s) => {
-      saveSidebarState(s);
-      return s;
-    });
-  };
-
-  const toggleSidebarCollapsed = () => {
-    // Collapsing unmounts the section components (and their overlay surfaces —
-    // icon picker, rename input, tooltip — with them), so no state reset is
-    // needed here.
-    setSidebarState((s) => {
-      const next = { ...s, collapsed: !s.collapsed };
-      saveSidebarState(next);
-      return next;
-    });
+    // store write may not be reflected in a stale closure).
+    saveSidebarState(getSidebarState());
   };
 
   if (sidebarCollapsed) {
-    // Collapsed: the whole sidebar shrinks to a slim strip that expands it
-    // back. Still the same #sidebar node, so the <=700px media hide applies.
+    // Collapsed: a slim strip carrying the ONE reopen control, the same one on
+    // every route. It briefly lived in the explorer's top bar instead, with
+    // this tab as the fallback for routes that have no top bar (Apps,
+    // Preferences, panel mode) — two dialects for one action, so which control
+    // you reached for depended on where you happened to be. The strip is the
+    // whole button; the tab is the visible part of it, pinned to the top so it
+    // lands on the same line as the bars beside it.
+    //
+    // Not the floating bubble this replaced either: anchored at `left: 100%`
+    // on a 10px strip, half of it hung off the viewport and it sat level with
+    // the explorer's bookmark star, reading as a second star.
+    //
+    // Still the same #sidebar node, so the <=700px media hide applies.
     return (
       <nav id="sidebar" className={"sidebar-collapsed" + (resizing ? " sidebar-no-transition" : "")}>
         <button
@@ -140,10 +141,10 @@ export function SidebarFrame({ title, version, homeHref = "/apps", children }: S
           title="Expand sidebar"
           onClick={toggleSidebarCollapsed}
         >
-          {/* Bubble protruding into the content area — the visible half of
-              the affordance; the whole strip is still the click target. */}
-          <span className="sidebar-expand-bubble" aria-hidden="true">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          {/* Presentational — the strip is the button, so hover and focus key
+              off the strip's own state (sidebar.css). */}
+          <span className="sidebar-expand-tab" aria-hidden="true">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <path d="m9 18 6-6-6-6" />
             </svg>
           </span>

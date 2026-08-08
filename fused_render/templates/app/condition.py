@@ -8,7 +8,7 @@ else (the root itself, a tag folder, a nested subfolder, an unrelated
 directory) the mode stays hidden, and `_listing` remains what an ordinary
 directory opens on.
 
-Same rule, deliberately identical to `claude_split/condition.py`: the two modes
+Same rule, deliberately identical to `claude/condition.py`: the two modes
 are two ways of looking at the same thing, so a folder must never offer one
 without the other. Unlike `versions` there is no `.git` requirement — using an
 app has nothing to do with whether its history is tracked.

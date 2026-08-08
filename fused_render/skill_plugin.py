@@ -63,7 +63,7 @@ SKILLS = (
 
 # The assembled root's name under home_dir(), and the shape the CLI's plugin
 # loader requires inside it. Named constants because both the templates that
-# pass `--plugin-dir` (templates/claude*/agent.py, which cannot import this
+# pass `--plugin-dir` (templates/claude/agent.py, which cannot import this
 # module — SPEC PY-15) and the tests hard-code the same strings.
 PLUGIN_SUBDIR = "skill-plugin"
 MANIFEST_DIR = ".claude-plugin"

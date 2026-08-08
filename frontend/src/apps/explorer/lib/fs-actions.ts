@@ -7,6 +7,7 @@
 // view keeps its own menu/dialog/toast state and its own post-action behaviour
 // (Listing re-anchors its selection + refetches; Preview navigates).
 import { listDir, deleteEntry, statPath, resolveConditions } from "@platform/lib/api";
+import { visibleModes } from "@platform/lib/mode-visibility";
 import type { ArchiveFormat, TemplateEntry } from "@platform/lib/api";
 import { getClipboard, setClipboard } from "@apps/explorer/lib/fs-clipboard";
 import { dropRecentsFor } from "@apps/explorer/lib/recents";
@@ -308,21 +309,20 @@ export async function trashEntry(path: string, isDir: boolean): Promise<TrashOut
 }
 
 // Resolve the Open-With mode list for a path: stat's templates, sentinel- and
-// gate-filtered (mirrors Preview's dispatch). Conditional templates whose
-// condition.py verdict denies them are dropped; a failed gate fails closed
-// (drops all conditionals), matching the shell's posture everywhere else.
+// gate-filtered (mirrors Preview's dispatch). The gate policy is the shared
+// one (lib/mode-visibility): a conditional entry drops only on an explicit
+// denial, so a failed probe offers the mode instead of silently shrinking the
+// menu — the same set every other surface shows for this path.
 export async function resolveOpenWithModes(path: string): Promise<TemplateEntry[]> {
   const s = await statPath(path);
-  let filtered = s.templates.filter((t) => t.path !== null || KNOWN_SENTINEL_MODES.has(t.mode));
-  if (filtered.some((t) => t.conditional)) {
-    try {
-      const r = await resolveConditions(path);
-      filtered = filtered.filter((t) => !t.conditional || r.conditions[t.mode] === true);
-    } catch {
-      filtered = filtered.filter((t) => !t.conditional); // fail closed, like a broken gate
-    }
+  const filtered = s.templates.filter((t) => t.path !== null || KNOWN_SENTINEL_MODES.has(t.mode));
+  if (!filtered.some((t) => t.conditional)) return filtered;
+  try {
+    const r = await resolveConditions(path);
+    return visibleModes(filtered, r.conditions);
+  } catch {
+    return visibleModes(filtered, {});
   }
-  return filtered;
 }
 
 // -- Compress ---------------------------------------------------------------

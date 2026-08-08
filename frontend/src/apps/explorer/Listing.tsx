@@ -24,7 +24,7 @@ import { navigate, replaceSearch } from "@platform/lib/router";
 import { dirname, normDir } from "@apps/explorer/lib/fs-actions";
 import { acquireOverlay, releaseOverlay } from "@platform/lib/ui-overlay";
 import { isMod } from "@platform/lib/platform";
-import { formatSize, formatMtime } from "@platform/lib/format";
+import { formatSize, formatMtime, formatMtimeFull } from "@platform/lib/format";
 import { iconForEntry, isAppEntry } from "@platform/ui/FileIcons";
 import { getViewState, setViewState } from "@platform/lib/viewstate";
 import { useFlip, FLIP_KEY_ATTR } from "@platform/lib/flip";
@@ -62,6 +62,7 @@ export default function Listing({
   provisional = false,
   embedded = false,
   onSingleApp,
+  selfPrimary,
 }: {
   fsPath: string;
   // `provisional`: this Listing is rendering inside the pre-stat loading
@@ -86,6 +87,13 @@ export default function Listing({
   // header) uses this to surface an "Open as app" button. Fires whenever the
   // plain (non-search) listing settles, so it tracks dir-watch refreshes too.
   onSingleApp?: (path: string | null) => void;
+  // The folder's own primary action, rendered in the preview pane header when
+  // the pane is showing the folder ITSELF (the self row, which has no "Open" —
+  // it is already open on the left). Today that is Preview's ready-made "Open
+  // as app" / "Add as app" button: it is passed down as a NODE rather than
+  // rebuilt here so the link-status logic that decides its label and action
+  // lives in exactly one place. Absent for a folder with no single app.
+  selfPrimary?: React.ReactNode;
 }) {
   const { state, refresh, refetch, loadMore, loadingMore, newNames } =
     useDirListing(fsPath);
@@ -415,7 +423,6 @@ export default function Listing({
     leadRow,
     searchInputRef,
     overlayOpenRef,
-    refetch,
     doPaste,
     doDuplicate,
     doTrash,
@@ -506,6 +513,11 @@ export default function Listing({
   // --- table body -----------------------------------------------------------
 
   let body: React.ReactNode;
+  // Column headers describe columns of data; over an empty folder they label
+  // nothing and just push the "Empty directory" message down (most visible in
+  // the preview pane, where NAME/SIZE/MODIFIED sat above one line of text).
+  // Set by the empty branch below, read by the <thead> render.
+  let emptyDir = false;
   if (searching) {
     if (validWalk.status === "error") {
       body = (
@@ -579,7 +591,9 @@ export default function Listing({
                 <td className="size">
                   {entry.is_dir ? "" : formatSize(entry.size)}
                 </td>
-                <td className="mtime">{formatMtime(entry.mtime)}</td>
+                <td className="mtime" title={formatMtimeFull(entry.mtime)}>
+                  {formatMtime(entry.mtime)}
+                </td>
               </tr>
             );
           })}
@@ -688,7 +702,9 @@ export default function Listing({
             />
           </td>
           <td className="size">{entry.is_dir ? "" : formatSize(entry.size)}</td>
-          <td className="mtime">{formatMtime(entry.mtime)}</td>
+          <td className="mtime" title={formatMtimeFull(entry.mtime)}>
+            {formatMtime(entry.mtime)}
+          </td>
         </tr>
       );
     });
@@ -714,19 +730,19 @@ export default function Listing({
         </td>
       </tr>
     ) : null;
-    body =
-      rows.length || banner ? (
-        <>
-          {rows}
-          {banner}
-        </>
-      ) : (
-        <tr>
-          <td colSpan={3} className="status-message">
-            Empty directory
-          </td>
-        </tr>
-      );
+    emptyDir = !rows.length && !banner;
+    body = emptyDir ? (
+      <tr>
+        <td colSpan={3} className="status-message">
+          Empty directory
+        </td>
+      </tr>
+    ) : (
+      <>
+        {rows}
+        {banner}
+      </>
+    );
   }
 
   // --- search match count (inline in the search row) ------------------------
@@ -746,6 +762,14 @@ export default function Listing({
       searchCountTitle = `Search covers the first ${validWalk.total.toLocaleString()} entries of this folder tree`;
   }
 
+  // Is anything pinned inside the search input right now? Mirrors the three
+  // chip conditions in the render below; drives the input's right padding, so
+  // an idle box gives its whole width to the placeholder.
+  const hasPin =
+    (searching && (validWalk.status === "idle" || validWalk.status === "streaming")) ||
+    searchCount !== null ||
+    sel.paths.length > 1;
+
   return (
     <div className="listing">
       <div className="listing-split" ref={splitRef}>
@@ -756,15 +780,16 @@ export default function Listing({
             <div className="listing-search">
               <button
                 type="button"
-                className="listing-up-button"
+                className="bar-ctl bar-ctl-icon"
                 title={atRoot ? "Already at the root" : "Up to parent folder"}
+                aria-label="Up to parent folder"
                 disabled={atRoot}
                 onClick={goUp}
               >
                 <svg
                   viewBox="0 0 24 24"
-                  width="14"
-                  height="14"
+                  width="16"
+                  height="16"
                   fill="none"
                   stroke="currentColor"
                   strokeWidth="2"
@@ -776,8 +801,12 @@ export default function Listing({
                 </svg>
               </button>
               {/* The box wraps input + pinned chips so the pane toggle can sit to
-            their right without disturbing the chips' inside-the-input pin. */}
-              <div className="listing-search-box">
+            their right without disturbing the chips' inside-the-input pin.
+            `has-pin` says a chip is actually pinned right now, so the input
+            reserves room for one only then — the reservation is wide, and
+            idle it was dead space that clipped the placeholder in a narrow
+            window. */}
+              <div className={"listing-search-box" + (hasPin ? " has-pin" : "")}>
                 <input
                   ref={searchInputRef}
                   type="search"
@@ -842,26 +871,41 @@ export default function Listing({
               {!embedded && (
                 <button
                   type="button"
-                  className="listing-pane-toggle"
+                  className={"bar-ctl listing-pane-toggle" + (pane.on ? " pressed" : "")}
                   title={pane.on ? "Hide preview pane" : "Show preview pane"}
                   aria-pressed={pane.on}
                   onClick={togglePane}
                 >
-                  {/* Subtle chevron, no accent highlight: points left when the
-                      pane is closed (it slides in from the right), right when
-                      open (collapse back to the edge). */}
+                  {/* A labelled toggle, not a bare chevron. The chevron had to
+                      encode its own state by flipping direction — which reads
+                      as "go that way", not "the pane is open" — and never said
+                      what it toggled. The pane glyph fills its right column
+                      when the pane is on; `.pressed` carries the rest. */}
                   <svg
                     viewBox="0 0 24 24"
-                    width="14"
-                    height="14"
+                    width="16"
+                    height="16"
                     fill="none"
                     stroke="currentColor"
-                    strokeWidth="2"
-                    strokeLinecap="round"
+                    strokeWidth="1.8"
                     strokeLinejoin="round"
+                    aria-hidden="true"
                   >
-                    <polyline points={pane.on ? "9 6 15 12 9 18" : "15 6 9 12 15 18"} />
+                    <rect x="3" y="4" width="18" height="16" rx="2" />
+                    <line x1="14" y1="4" x2="14" y2="20" />
+                    {pane.on && (
+                      <rect
+                        x="14"
+                        y="4"
+                        width="7"
+                        height="16"
+                        fill="currentColor"
+                        stroke="none"
+                        opacity="0.35"
+                      />
+                    )}
                   </svg>
+                  Preview
                 </button>
               )}
             </div>
@@ -878,7 +922,10 @@ export default function Listing({
             onContextMenu={openBackgroundMenu}
           >
             <table className="listing-table">
-              <thead>
+              {/* Header row hidden (not unmounted — the sticky header's box is
+                  part of the table's own layout) over an empty folder: see
+                  `emptyDir`. */}
+              <thead className={emptyDir ? "listing-head-empty" : undefined}>
                 <tr>
                   {(Object.entries(SORT_KEYS) as [SortKey, string][]).map(
                     ([key, label]) =>
@@ -985,6 +1032,7 @@ export default function Listing({
                       : null
                 }
                 selCount={sel.paths.length}
+                selfPrimary={selfPrimary}
               />
             </div>
           </>

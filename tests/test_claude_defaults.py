@@ -12,8 +12,8 @@ import pytest
 
 
 def _load_agent():
-    path = os.path.join("fused_render", "templates", "claude_split", "agent.py")
-    spec = importlib.util.spec_from_file_location("claude_split_agent", path)
+    path = os.path.join("fused_render", "templates", "claude", "agent.py")
+    spec = importlib.util.spec_from_file_location("claude_agent", path)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
@@ -112,7 +112,7 @@ def test_short_model_collapses_every_spelling(tmp_path, monkeypatch):
 
 
 def test_the_page_asks_and_ranks_detection_below_an_explicit_choice():
-    html = open(os.path.join("fused_render", "templates", "claude_split",
+    html = open(os.path.join("fused_render", "templates", "claude",
                              "template.html"), encoding="utf-8").read()
     assert '{ action: "defaults", file: FILE }' in html
     # explicit pane param > detected config > hardcoded fallback

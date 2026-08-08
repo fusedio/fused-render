@@ -1,4 +1,4 @@
-"""claude_split's annotation screenshots: a PNG crop of the element the user
+"""claude's annotation screenshots: a PNG crop of the element the user
 pointed at, attached to the annotation BY PATH.
 
 The shape of the feature, and why each half is the way it is:
@@ -36,13 +36,13 @@ import time
 
 import pytest
 
-TEMPLATE_DIR = os.path.join("fused_render", "templates", "claude_split")
+TEMPLATE_DIR = os.path.join("fused_render", "templates", "claude")
 TEMPLATE = os.path.join(TEMPLATE_DIR, "template.html")
 
 
 def _load(name):
     path = os.path.join(TEMPLATE_DIR, name + ".py")
-    spec = importlib.util.spec_from_file_location("claude_split_shots_" + name, path)
+    spec = importlib.util.spec_from_file_location("claude_shots_" + name, path)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
@@ -292,7 +292,7 @@ def test_the_page_asks_for_the_directory_by_the_action_the_agent_serves(
 def _node(fn_names, call, html, prelude=""):
     """Run named top-level functions/consts out of template.html under node.
 
-    Same extraction as tests/test_claude_split_app_state.py's `_node`: what
+    Same extraction as tests/test_claude_app_state.py's `_node`: what
     matters is the object the agent ends up reading, not the source that built
     it. Kept as its own copy rather than imported across test modules — the two
     suites are independent and a shared harness would couple them."""
@@ -1451,7 +1451,8 @@ annotations = [a];
 def test_a_thrown_capture_degrades_to_sending_the_annotations_without_shots(html):
     """The non-negotiable one: a user losing their typed message because a
     screenshot did not work is not a trade this feature makes."""
-    out = _node(_CAPTURE_FNS + ["function formatAnnotations("],
+    out = _node(_CAPTURE_FNS + ["let targetNoun", "let paneNoun",
+                                "function formatAnnotations("],
                 _CAPTURE_STUBS + """
 var console2 = console;
 console = {warn: () => {}};
@@ -1506,7 +1507,10 @@ const a = {id: "a"};
     assert "const SHOT_TIMEOUT_MS" in html, "the real cap still has to exist"
 
 
-_WIRE_ALSO = ["function formatAnnotations(", "const PANE_SHOT_TAG",
+# `targetNoun` is what formatAnnotations' preamble names the target kind
+# from — one writer for every piece of chrome that says "project"/"file"
+# (test_claude_kind.py), and the annotation block is one of them.
+_WIRE_ALSO = ["let targetNoun", "let paneNoun", "function formatAnnotations(", "const PANE_SHOT_TAG",
               "function paneShotBlock(", "function stripPaneBlock(",
               "function stripAnnBlock(", "function stripAppStateBlock(",
               "const APP_STATE_TAG", "function appStateBlock(",
@@ -1675,7 +1679,11 @@ console.log(JSON.stringify({keys: Object.keys(a).sort()}));
 
 # ----------------------------------------------------------------- the wire shape
 
-_WIRE_FNS = ["function formatAnnotations(", "function stripAnnBlock(",
+# `targetNoun` is what formatAnnotations' preamble names the target kind
+# from — one writer for every piece of chrome that says "project"/"file"
+# (test_claude_kind.py), and the annotation block is one of them.
+_WIRE_FNS = ["let targetNoun", "let paneNoun", "function formatAnnotations(",
+             "function stripAnnBlock(",
              "function stripAppStateBlock(", "function stripBlocks(",
              "const APP_STATE_TAG", "function appStateBlock(",
              "const PANE_SHOT_TAG", "function paneShotBlock(",
@@ -2182,9 +2190,22 @@ def test_both_ways_out_of_annotate_mode_are_named_while_armed(html):
     """With no label there is nowhere on screen to write "Esc or click to stop", so
     the tooltip carries it — and it must name BOTH exits, because Escape is the one
     a user is least likely to guess and the click is the one they can find by
-    hovering. The tooltip has no width limit, so this costs no space."""
-    title = _between(html, "annBtn.title =", ";")
+    hovering. The tooltip has no width limit, so this costs no space.
+
+    Scoped to annSetMode's own write, because there are now TWO writers of this
+    tooltip: applyPaneNoun sets the IDLE wording when the target's kind resolves
+    (the idle half names the pane, "the app" or "the preview"), and annSetMode
+    restores it on every disarm. That is why the idle string is a function with one
+    definition — a literal in both places meant the first toggle-off threw away the
+    kind-correct noun applyPaneNoun had just written. Only the ARMED half is
+    asserted here; it names no kind and belongs to this function alone."""
+    mode = _between(html, "function annSetMode(on) {", "\nannBtn.addEventListener")
+    title = _between(mode, "annBtn.title =", ";")
     assert "Esc" in title and "click this button" in title, title
     # the armed tooltip is the one that names them
     armed = title.split(":")[0]
     assert "Esc" in armed, title
+    # ...and the idle half is the shared builder, not a second literal.
+    assert "annIdleTitle()" in title
+    assert html.count('+ ", then send the notes to Claude"') == 1, \
+        "the idle tooltip has one definition, annIdleTitle"

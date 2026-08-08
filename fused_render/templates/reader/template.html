@@ -591,6 +591,11 @@
   // params still sync to the shell — this only affects windows below us.
   window._fusedParamBoundary = true;
 
+  // Modes that are not a VIEW OF THE FILE and so have no text to extract: this
+  // template, the review/history/chat surfaces. `claude` is the one chat
+  // template (D235 folded the two into one) and it must be listed — it is bound
+  // to nearly every key reader is bound to, so leaving it out would offer "read
+  // the chat aloud" in reader's own view picker.
   const META = new Set(["reader", "annotate", "history", "claude"]);
   const CAP = 3000;          // rendered/playable block cap (SPEC)
   const HARD_EXTRACT = 20000; // absolute ceiling on extraction work

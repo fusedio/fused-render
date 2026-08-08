@@ -48,7 +48,7 @@
 
   /* Right: the commit spine — deliberately low-detail (subject + when).
      Width comes from the shared `split` URL param (main pane %, default 70)
-     via the drag divider — same view state as the claude_split template. */
+     via the drag divider — same view state as the claude template. */
   #side {
     min-width: 200px;
     flex: none;
@@ -127,7 +127,7 @@
     color: var(--on-accent);
   }
 
-  /* Left: the app rendered at the selected revision — nothing else. */
+  /* Left: the target rendered at the selected revision — nothing else. */
   #main { flex: 1; order: 1; display: flex; flex-direction: column; min-width: 0; }
   #stage { flex: 1; position: relative; background: var(--bg); }
   #frame {
@@ -150,12 +150,92 @@
   }
   #notice.error { color: var(--danger); }
   #notice.show { display: flex; }
+
+  /* ── Narrow hosts (D235 fallout) ──────────────────────────────────────────
+     Since this mode is bound to 47 file extensions as well as `/`, it renders
+     in the explorer's listing preview pane (floor 220px, default width HALF
+     its split container), in freely dragged Panel panes and in /embed — not
+     just full-window. Two halves side by side stop being a layout there and
+     start being two unusable slivers.
+
+     The TEMPLATE goes responsive rather than the shell hiding split-layout
+     modes from narrow panes, because a pane's width is dynamic: the listing
+     pane is half its container, so on a wide window it fits the split fine and
+     a width filter would be wrong there. A filter would also make modes appear
+     and disappear mid divider-drag and could yank the ACTIVE mode out from
+     under the user, and it would need a per-template min-width field in
+     registry.json / the stat API that this codebase does not have (and that
+     user templates, §16, would never get for free). Plain media queries in the
+     template are the house idiom for exactly this: log_studio (780), map (650),
+     duckdb/sqlite (560), bundle (640).
+
+     Breakpoint arithmetic — the columns' minimum USEFUL widths, not the point
+     at which they merely stop overflowing. The original figure (560px, D236)
+     was derived from the hard floor: #side 200 + divider 4 + a 320px preview
+     = 524, rounded up. That floor was the wrong one to pick. The explorer's
+     listing preview pane defaults to HALF its split container (about 700px on a
+     1700px window), so at 560px the split engaged in a host far too narrow for
+     it: a 320px frame is a viewport the framed template has already collapsed
+     itself for, i.e. a preview of a preview's narrow layout. The useful sum:
+         #side min-width           200px  (the commit spine: hash + date + tag)
+       + #divider                    4px
+       + a usable preview frame     640px  (the `bundle` family number — the
+                                            narrowest frame a framed template
+                                            still renders its WIDE layout in)
+       = 844px floor → 880px, rounding up for a scrollbar and matching what
+         `claude`, the other split-layout template, lands on from its own
+         arithmetic (#left 420 + divider 4 + #chat 440 = 864 → 880), so the two
+         collapse together.
+
+     Below it: ONE view at a time. #side-head stays put as the control strip
+     (it already carries Revert), so the toggle is reachable from both views,
+     and the list is the default — it is what makes this mode mean anything and
+     it is where a snapshot gets picked. */
+  #view-toggle {
+    flex: none;
+    display: none;  /* wide layout shows both halves — nothing to toggle */
+    padding: 4px 10px;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    background: var(--surface-2);
+    color: var(--ink-2);
+    font: inherit;
+    font-size: 11px;
+    text-transform: none;
+    letter-spacing: normal;
+    cursor: pointer;
+  }
+  #view-toggle:hover { border-color: var(--accent); color: var(--accent); }
+  @media (max-width: 880px) {
+    /* Stack, so #side can be the full-width control strip + list. */
+    body { flex-direction: column; }
+    #divider { display: none; }  /* nothing left to resize */
+    /* `width: 100% !important` is the deliberate neutralisation of the INLINE
+       width applySplit()/the drag write onto #side: a media query cannot beat
+       an inline style, and `!important` can. Chosen over "skip the inline write
+       while narrow" because this keeps applySplit() unconditional and stateless
+       — crossing the breakpoint in EITHER direction needs no JS at all, since
+       the wide layout's inline width is still sitting there intact the moment
+       the query stops matching. Clearing the inline value instead would leave
+       the split param and the element's style as two sources of truth, and
+       would need a re-apply on the way back out (and would strand a stale width
+       if a drag ended while narrow). */
+    #side { order: 1; flex: 1; width: 100% !important; min-width: 0; }
+    #main { order: 2; display: none; }
+    #view-toggle { display: inline-block; }
+    /* The other view. Note the body class only ever bites inside this block, so
+       returning to the wide layout restores the split with no reset needed. */
+    body.narrow-preview #side { flex: none; }
+    body.narrow-preview #commits { display: none; }
+    body.narrow-preview #main { display: flex; }
+  }
 </style>
 </head>
 <body>
   <div id="side">
     <div id="side-head">
       <span class="label">History</span>
+      <button id="view-toggle" title="Switch between the commit list and the snapshot">Preview</button>
       <button id="revert" disabled title="Revert all files to the selected version">Revert</button>
     </div>
     <div id="commits"></div>
@@ -163,21 +243,47 @@
   <div id="divider"></div>
   <div id="main">
     <div id="stage">
-      <iframe id="frame" title="App at selected revision"></iframe>
+      <iframe id="frame" title="Target at selected revision"></iframe>
       <div id="notice"></div>
     </div>
   </div>
 
 <script>
-// The target arrives as the read-only _file param (template contract). It may
-// be any file inside the app OR the app folder itself — the backend always
-// resolves and operates on the whole app, so the view is identical everywhere.
+// The target arrives as the read-only _file param (template contract), and the
+// backend decides which of two histories it names (D235): any path inside a
+// fused app resolves to the WHOLE app (so the view is identical everywhere
+// inside it, and `revert` is offered), while a file in the user's own repository
+// resolves to that one file's history, read-only — `can_revert: false` is how
+// the payload says which, and the only difference this view has to render.
 const FILE = fused.params.get("_file") || "";
 
 const commitsEl = document.getElementById("commits");
 const frameEl = document.getElementById("frame");
 const noticeEl = document.getElementById("notice");
 const revertBtn = document.getElementById("revert");
+const toggleBtn = document.getElementById("view-toggle");
+
+// ── narrow layout: one view at a time (see the @media block for the 880px
+// arithmetic and for why this lives in the template, not the shell) ──
+// The breakpoint is asked of matchMedia with the SAME query string as the CSS so
+// the two can't drift, and only to keep the button's label honest — the layout
+// itself is pure CSS, so a resize needs no JS to be correct.
+const NARROW = window.matchMedia("(max-width: 880px)");
+function showNarrow(view) {
+  // `narrow-preview` is inert above the breakpoint (every rule that reads it is
+  // inside the media block), so it is safe to leave set while the host is wide.
+  document.body.classList.toggle("narrow-preview", view === "preview");
+  toggleBtn.textContent = view === "preview" ? "History" : "Preview";
+}
+showNarrow("list");  // the list is the default: it is where a snapshot is picked
+toggleBtn.addEventListener("click", () => {
+  showNarrow(document.body.classList.contains("narrow-preview") ? "list" : "preview");
+});
+NARROW.addEventListener("change", () => {
+  // Coming back out of narrow, drop the one-view state so the next narrowing
+  // starts on the list again rather than on whatever was last looked at.
+  if (!NARROW.matches) showNarrow("list");
+});
 
 let commits = [];      // newest first, from versions.py `log`
 let selected = null;   // full sha
@@ -215,6 +321,33 @@ function renderList() {
     "</div>").join("");
 }
 
+// The iframe src that shows `path` the way the explorer would: its own default
+// view. Used for a FILE target's snapshot, where the materialised revision is a
+// `.py`/`.parquet`/`.md`, not a page (D235).
+//
+// The default is the first non-`conditional` entry — the same rule the shell's
+// own preview applies (Preview.tsx `defaultTemplate`) — asked of stat rather
+// than hardcoded per extension, so a rebinding (including a user override, §16)
+// is picked up here for free. `versions` itself is conditional, so this can
+// never recurse into the view it is called from.
+async function frameSrcForFile(path) {
+  let st;
+  try {
+    st = await fetch("/api/fs/stat?path=" + encodeURIComponent(path)).then(r => r.json());
+  } catch (err) {
+    return "";
+  }
+  if (!st || st.error) return "";
+  const t = (st.templates || []).find(e => !e.conditional);
+  if (!t) return "";
+  // `_render` is a shell sentinel (PT-12), not a template folder: the file
+  // renders itself. Any other sentinel has no template to frame.
+  if (t.mode === "_render") return "/render?path=" + encodeURIComponent(path);
+  if (!t.path) return "";
+  return "/render?path=" + encodeURIComponent(t.path)
+    + "&_file=" + encodeURIComponent(path);
+}
+
 async function select(sha) {
   selected = sha;
   // URL-synced so a reload (or a shared link) lands on the same revision.
@@ -231,11 +364,23 @@ async function select(sha) {
       { action: "snapshot", file: FILE, sha: sha }, { key: "snapshot" });
     if (snap.error) return notice(snap.error, true);
     if (sha !== selected) return; // stale — a newer selection already landed
-    if (!snap.entry) {
+    // Two shapes of snapshot (D235). An APP snapshot reports `entry`, the page
+    // /render can serve directly. A FILE snapshot reports `file` — the one file
+    // materialised at that revision — and `entry` only when that file is itself
+    // a page; anything else has to be framed through its own default template,
+    // exactly the way the explorer previews it live.
+    let src = "";
+    if (snap.entry) {
+      src = "/render?path=" + encodeURIComponent(snap.entry);
+    } else if (snap.file) {
+      src = await frameSrcForFile(snap.file);
+      if (sha !== selected) return; // the stat above is another await point
+      if (!src) return notice("No view for this file type — nothing to render.");
+    } else {
       return notice("This revision has no entry page (index.html or a single .html) — nothing to render.");
     }
     clearNotice();
-    frameEl.src = "/render?path=" + encodeURIComponent(snap.entry);
+    frameEl.src = src;
   } catch (err) {
     if (sha === selected) notice("Snapshot failed: " + err.message, true);
   }
@@ -262,7 +407,14 @@ async function loadLog(preferSha) {
 
 commitsEl.addEventListener("click", (e) => {
   const row = e.target.closest(".commit");
-  if (row && row.dataset.sha !== selected) select(row.dataset.sha);
+  if (!row) return;
+  // Picking a revision in the narrow layout is a request to SEE it, so reveal
+  // the preview. Deliberately here and not in select(): loadLog() auto-selects
+  // the newest commit on load, and doing this there would open on the preview
+  // and hide the timeline nobody has looked at yet. Re-clicking the already
+  // selected row still switches (no snapshot work needed — it is already framed).
+  if (NARROW.matches) showNarrow("preview");
+  if (row.dataset.sha !== selected) select(row.dataset.sha);
 });
 
 revertBtn.addEventListener("click", async () => {
@@ -287,7 +439,7 @@ revertBtn.addEventListener("click", async () => {
 });
 
 // ── resizable divider; the split ratio (main pane %) is view state, so it
-// lives in the shared `split` param — same default (70) as claude_split. ──
+// lives in the shared `split` param — same default (70) as claude. ──
 const sideEl = document.getElementById("side");
 const clampPct = (pct) => Math.min(80, Math.max(20, pct));
 function applySplit() {

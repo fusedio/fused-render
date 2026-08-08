@@ -1,7 +1,7 @@
 """Which html file IS an app folder — the one rule, in one place.
 
 An app is a folder with a single entry page. Two templates have to resolve that
-page from the folder alone: `claude_split` (the app beside a Claude chat) and
+page from the folder alone: `claude` (the app beside a Claude chat) and
 `app` (the app plainly, full-bleed). They must never disagree — switching modes
 would silently swap which page you are looking at — so the rule lives here and
 both `app.py` backends delegate to it.

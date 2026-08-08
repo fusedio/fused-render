@@ -1,9 +1,17 @@
-// Crumb bar: ★ bookmark button on the left, path crumbs, split right/down +
-// reveal-in-Finder icons at the crumbs' tail, and the `#topbar-mode-slot`
-// portal target on the right (Preview portals its mode switcher/deploy actions
-// there). Rendered by every view: path crumbs for listing/preview, a static
-// label for the layout modes (LM-11 / TM-9 — ★/update still operate on
-// currentUrl()).
+// Crumb bar, in three zones left to right:
+//
+//   path    ★ bookmark button, then the crumbs (or the editable path field)
+//   mode    the `#topbar-mode-slot` portal target — Preview renders the view's
+//           conditional primary action and the shared mode control into it
+//   layout  a hairline rule, then split-right / split-down / `···`
+//
+// The Finder and split glyphs used to live INSIDE the crumb strip, welded to
+// the last path segment: the path zone was not only the path, and "open in
+// Finder" (rare) sat at the same weight as the splits (frequent). Reveal and
+// "Copy path" moved into the `···` overflow; the splits form the layout group.
+//
+// Rendered by every view: path crumbs for listing/preview, a static label for
+// the layout modes (LM-11 / TM-9 — ★/update still operate on currentUrl()).
 import React, { useEffect, useRef, useState } from "react";
 import { requestCloneApp } from "@platform/cloud/cloneApp";
 import { navigate, navigateUrl, urlForFsPath, currentUrl, IS_EMBED } from "@platform/lib/router";
@@ -24,10 +32,11 @@ import { useUrlVersion, useBookmarksVersion, notifyBookmarksChanged } from "@pla
 import { urlScheme, isCloudScheme, fileUrlToPath } from "@platform/lib/path-url";
 import { resolveCloudUrl } from "@platform/lib/api";
 import { pushToast } from "@platform/lib/toast";
+import { copyToClipboard } from "@platform/lib/clipboard";
 import { encodePaneSegment, splitShellSearch } from "@platform/lib/layout-codec";
 import { panelUrl } from "@apps/explorer/Panel";
 import { SplitRightIcon, SplitDownIcon } from "@platform/ui/SplitIcons";
-import { FinderIcon } from "@platform/ui/FinderIcon";
+import { OverflowMenu } from "@apps/explorer/BarMenu";
 
 // "Update bookmark" visibility (D38). The check has side effects (a pathname
 // change or a deleted bookmark disarms permanently), so it runs in an effect,
@@ -64,11 +73,17 @@ function useUpdateButton(urlVersion: number, bookmarksVersion: number): boolean 
   return visible;
 }
 
+// 14px, not the bars' usual 16px: this glyph's neighbour is 12px monospace
+// crumb text, not another control, and at 16px it read as an oversized
+// ornament rather than a sibling of the path. The button keeps its 24px box
+// (padding absorbs the 2px), so the hit area and the hover pill are unchanged.
+// The remaining half-pixel of optical correction — a five-pointed star's mass
+// sits below its box centre — is a CSS nudge on .bookmark-star-btn svg.
 function StarIcon({ filled }: { filled: boolean }) {
   return (
     <svg
-      width="15"
-      height="15"
+      width="14"
+      height="14"
       viewBox="0 0 16 16"
       fill={filled ? "currentColor" : "none"}
       stroke="currentColor"
@@ -93,16 +108,54 @@ function revealInFileManager(path: string): void {
 
 const FILE_MANAGER = navigator.userAgent.includes("Windows") ? "File Explorer" : "Finder";
 
-function RevealButton({ fsPath }: { fsPath: string }) {
+// The bar's low-frequency one-shot actions. Both used to be (or wanted to be)
+// glyphs in the crumb strip; neither is worth a permanent slot beside the
+// splits, which is exactly what an overflow menu is for.
+function LayoutOverflow({ fsPath }: { fsPath: string }) {
+  const copyPath = async () => {
+    if (await copyToClipboard(fsPath)) pushToast({ msg: "Path copied", tone: "info" });
+    else pushToast({ msg: "Couldn't copy the path", tone: "error" });
+  };
   return (
-    <button
-      id="open-in-finder"
-      className="reveal-btn"
-      title={"Open in " + FILE_MANAGER}
-      onClick={() => revealInFileManager(fsPath)}
-    >
-      <FinderIcon />
-    </button>
+    <OverflowMenu
+      items={[
+        { label: "Open in " + FILE_MANAGER, onClick: () => revealInFileManager(fsPath) },
+        { label: "Copy path", onClick: () => void copyPath() },
+      ]}
+    />
+  );
+}
+
+// Split entry buttons + the overflow: the bar's layout zone, in the same
+// position in every state so the hand learns where layout lives.
+function LayoutZone({ fsPath }: { fsPath: string }) {
+  return (
+    <>
+      <span className="bar-rule" aria-hidden="true" />
+      <div className="bar-zone">
+        <button
+          type="button"
+          id="split-right-btn"
+          className="bar-ctl bar-ctl-icon"
+          title="Open this view in panel mode, split right"
+          aria-label="Split right"
+          onClick={() => enterPanel(fsPath, "row")}
+        >
+          <SplitRightIcon />
+        </button>
+        <button
+          type="button"
+          id="split-down-btn"
+          className="bar-ctl bar-ctl-icon"
+          title="Open this view in panel mode, split down"
+          aria-label="Split down"
+          onClick={() => enterPanel(fsPath, "col")}
+        >
+          <SplitDownIcon />
+        </button>
+        <LayoutOverflow fsPath={fsPath} />
+      </div>
+    </>
   );
 }
 
@@ -111,13 +164,23 @@ function RevealButton({ fsPath }: { fsPath: string }) {
 // chrome-level readout lingered in the corner with no way to dismiss it, and
 // the row marking is where the user is already looking.
 
-// ★ bookmark button, leftmost in the bar. Highlighted (accent-yellow, filled)
-// only when a bookmark matches the current view exactly (same pathname AND
+// ★ bookmark button, leftmost in the bar. Filled (foreground, not accent —
+// see explorer.css) only when a bookmark matches the current view exactly
+// (same pathname AND
 // same params, via sameSearch) — a param change empties the star, so the user
 // can save the changed view as a new bookmark. Clicking a filled star deletes
 // the matching bookmark (toggle), disarming it if it was armed. `name` is the
 // default bookmark name.
-function BookmarkStar({ name }: { name: string }) {
+//
+// Exported for Panel: panel mode dropped its 48px "Panel" title row, and the
+// star (which bookmarks the whole `_layout` URL) moved into the pane bars.
+// Every pane renders one and they all reflect the same layout bookmark —
+// deliberately, since they all describe the same URL.
+//
+// Which is exactly why `id` is a prop and not baked in: the bar renders ONE
+// star and passes the id, a split panel renders one per pane and passes none.
+// A hardcoded id would emit duplicate `#bookmark-btn` nodes in a split.
+export function BookmarkStar({ name, id }: { name: string; id?: string }) {
   useUrlVersion();
   useBookmarksVersion();
   const matchesCurrent = (b: { url: string }) => {
@@ -140,7 +203,7 @@ function BookmarkStar({ name }: { name: string }) {
 
   return (
     <button
-      id="bookmark-btn"
+      id={id}
       className={"bookmark-star-btn" + (starred ? " active" : "")}
       title={starred ? "Remove bookmark" : "Bookmark this view"}
       onClick={onBookmark}
@@ -150,10 +213,12 @@ function BookmarkStar({ name }: { name: string }) {
   );
 }
 
-// "Update bookmark" text button, after the crumbs strip (and its finder/split
-// icons), before the actions slot. Visible only when the armed bookmark's
-// params have drifted (D38).
-function UpdateBookmarkButton() {
+// "Update bookmark" text button, after the crumbs strip, before the actions
+// slot. Visible only when the armed bookmark's params have drifted (D38).
+// Exported for Panel, which lost the title row that used to carry it — it
+// renders in the FIRST pane's bar only (unlike the star, this one is wide
+// enough that one per pane would be noise).
+export function UpdateBookmarkButton() {
   const urlVersion = useUrlVersion();
   const bookmarksVersion = useBookmarksVersion();
   const showUpdate = useUpdateButton(urlVersion, bookmarksVersion);
@@ -406,7 +471,7 @@ export function Breadcrumb({
 
   return (
     <>
-      <BookmarkStar name={renderedTitle || basename(fsPath)} />
+      <BookmarkStar id="bookmark-btn" name={renderedTitle || basename(fsPath)} />
       {editing ? (
         <input
           className="crumb-edit"
@@ -442,27 +507,11 @@ export function Breadcrumb({
           }}
         >
           {pieces}
-          <RevealButton fsPath={fsPath} />
-          <button
-            id="split-right-btn"
-            className="reveal-btn split-dir"
-            title="Open this view in panel mode, split right"
-            onClick={() => enterPanel(fsPath, "row")}
-          >
-            <SplitRightIcon />
-          </button>
-          <button
-            id="split-down-btn"
-            className="reveal-btn split-dir"
-            title="Open this view in panel mode, split down"
-            onClick={() => enterPanel(fsPath, "col")}
-          >
-            <SplitDownIcon />
-          </button>
         </div>
       )}
       <UpdateBookmarkButton />
       <TopbarActionsSlot />
+      <LayoutZone fsPath={fsPath} />
     </>
   );
 }
@@ -470,7 +519,7 @@ export function Breadcrumb({
 export function StaticBreadcrumb({ label }: { label: string }) {
   return (
     <>
-      <BookmarkStar name={label} />
+      <BookmarkStar id="bookmark-btn" name={label} />
       <div className="crumbs">
         <span className="current">{label}</span>
       </div>

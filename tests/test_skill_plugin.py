@@ -312,11 +312,14 @@ def _agent(template):
     return mod
 
 
-@pytest.fixture(params=["claude", "claude_split"])
+@pytest.fixture(params=["claude"])
 def agent(request):
-    """Both claude templates, which are deliberate forks of each other — the
-    `--plugin-dir` wiring is one of the things that has to stay in lockstep
-    across them."""
+    """The chat template's agent. Parametrised over both chat templates while a
+    plain chat and a split chat existed as forks of each other, because the
+    `--plugin-dir` wiring had to stay in lockstep across them; the plain one is
+    deleted, so there is one. Left as a params list — that is the seam a second
+    agent would re-enter through, and collapsing it would rewrite every test
+    signature for no behavioural gain."""
     return _agent(request.param)
 
 
@@ -422,10 +425,10 @@ def test_the_real_cli_still_takes_the_flag():
     assert "--plugin-dir" in ((out.stdout or "") + (out.stderr or ""))
 
 
-@pytest.mark.parametrize("template", ["claude", "claude_split"])
+@pytest.mark.parametrize("template", ["claude"])
 def test_a_template_reads_the_root_through_appenv_only(template):
-    """Both claude templates pass `--plugin-dir`, and neither may import
-    `fused_render` (SPEC PY-15). They also must not REBUILD the path from
+    """The chat template passes `--plugin-dir`, and may not import
+    `fused_render` (SPEC PY-15). It also must not REBUILD the path from
     `home_dir()`: `home_dir()` nests under `branches/<ref>/` on a branch build
     and only the server knows the resolved answer, so re-deriving is how a build
     syncs one dir and loads another — i.e. loads nothing. The one legal route is

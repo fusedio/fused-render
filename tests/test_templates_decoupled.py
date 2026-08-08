@@ -147,10 +147,6 @@ MIGRATED = [
      "[mod._sidecar_path(MOUNTED).startswith(os.environ['FUSED_RENDER_HOME_DIR']),"
      " mod._sidecar_path(LOCAL).startswith(os.environ['FUSED_RENDER_HOME_DIR'])]",
      [True, True]),
-    (os.path.join("claude_split", "agent.py"),
-     "[mod._sidecar_path(MOUNTED).startswith(os.environ['FUSED_RENDER_HOME_DIR']),"
-     " mod._sidecar_path(LOCAL).startswith(os.environ['FUSED_RENDER_HOME_DIR'])]",
-     [True, True]),
     (os.path.join("zarr_aoi", "tile_server.py"),
      "[mod.appenv.is_mount_backed(MOUNTED), mod.appenv.is_mount_backed(LOCAL)]",
      [True, False]),

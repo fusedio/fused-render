@@ -207,11 +207,17 @@ function LoadingScaffold({ fsPath, isDir, headerless }: { fsPath: string; isDir:
 
 // The mode list the app builder pins its views to — the modes that make sense
 // over an app folder, in switcher order. `app` (the app itself, full-bleed) is
-// first because it is what opening an app lands on; `claude_split` is where an
+// first because it is what opening an app lands on; `claude` is where an
 // app is built. A mode absent from this list is filtered out of the switcher
 // entirely (Preview's allowModes), so this is what makes the plain view
 // reachable. The URL's `_mode` semantics are unchanged.
-const APP_MODES = ["app", "claude_split", "versions"];
+//
+// The pin is load-bearing rather than cosmetic: an app folder is still a
+// directory, so without it the builder would also offer the other directory
+// modes (`git`, `graph`, `zarr_aoi`). It is a curation of this view,
+// not a divergence from the explorer — every mode listed here behaves in the
+// builder exactly as it does in the explorer for the same folder.
+const APP_MODES = ["app", "claude", "versions"];
 
 // Stat-backed views (listing/preview): breadcrumb + content under one hook
 // component so useStat only runs when the pathname is a real fs path, not a
@@ -585,15 +591,15 @@ export default function App({ config }: { config: Config }) {
   // param changes never re-trigger the fade.
   let main;
   if (isPanel) {
+    // No title row: a whole 48px bar that said only "Panel" (plus a ★) is
+    // 48px of the grid the panes actually need. The ★ moved into each pane
+    // bar's left edge (Panel.tsx) — it bookmarks the same `_layout` URL it
+    // always did. Nothing portals into #topbar-mode-slot on this route: the
+    // panes are /embed iframes, and an embed hides its own breadcrumb.
     main = (
-      <>
-        <div id="breadcrumb">
-          <StaticBreadcrumb label="Panel" />
-        </div>
-        <div id="content" key={epoch}>
-          <Panel key={epoch} config={config} />
-        </div>
-      </>
+      <div id="content" key={epoch}>
+        <Panel key={epoch} config={config} />
+      </div>
     );
   } else if (isTabs) {
     main = (

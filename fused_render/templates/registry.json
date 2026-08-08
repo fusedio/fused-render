@@ -4,37 +4,34 @@
     "structure",
     "h3",
     "claude",
-    "annotate",
+    "versions",
     "history",
-    "geometry_editor",
-    "versions"
+    "geometry_editor"
   ],
   ".csv": [
     "duckdb",
     "excel",
     "code",
-    "reader",
-    "annotate",
-    "versions"
+    "claude",
+    "versions",
+    "reader"
   ],
   ".tsv": [
     "duckdb",
     "code",
-    "reader",
-    "annotate",
-    "versions"
+    "claude",
+    "versions",
+    "reader"
   ],
   ".xlsx": [
     "xlsx",
     "excel",
-    "reader",
-    "annotate"
+    "reader"
   ],
   ".xlsm": [
     "xlsx",
     "excel",
-    "reader",
-    "annotate"
+    "reader"
   ],
   ".pptx": [
     "slides"
@@ -48,20 +45,21 @@
     "tree",
     "code",
     "duckdb",
+    "claude",
     "versions",
-    "git",
-    "reader",
-    "annotate"
+    "reader"
   ],
   ".jsonl": [
     "code",
     "duckdb",
-    "reader",
-    "annotate"
+    "claude",
+    "versions",
+    "reader"
   ],
   ".ipynb": [
     "notebook",
-    "annotate"
+    "claude",
+    "versions"
   ],
   ".calls.jsonl": [
     "log_studio",
@@ -78,144 +76,129 @@
   ".ndjson": [
     "code",
     "duckdb",
-    "reader",
-    "annotate"
+    "claude",
+    "versions",
+    "reader"
   ],
   ".csv.gz": [
     "duckdb",
-    "tar",
-    "annotate"
+    "tar"
   ],
   ".csv.zst": [
     "duckdb",
-    "tar",
-    "annotate"
+    "tar"
   ],
   ".tsv.gz": [
     "duckdb",
-    "tar",
-    "annotate"
+    "tar"
   ],
   ".tsv.zst": [
     "duckdb",
-    "tar",
-    "annotate"
+    "tar"
   ],
   ".json.gz": [
     "duckdb",
-    "tar",
-    "annotate"
+    "tar"
   ],
   ".json.zst": [
     "duckdb",
-    "tar",
-    "annotate"
+    "tar"
   ],
   ".jsonl.gz": [
     "duckdb",
-    "tar",
-    "annotate"
+    "tar"
   ],
   ".jsonl.zst": [
     "duckdb",
-    "tar",
-    "annotate"
+    "tar"
   ],
   ".ndjson.gz": [
     "duckdb",
-    "tar",
-    "annotate"
+    "tar"
   ],
   ".ndjson.zst": [
     "duckdb",
-    "tar",
-    "annotate"
+    "tar"
   ],
   ".geojson": [
     "vector",
     "map",
     "tree",
     "code",
-    "annotate",
-    "geometry_editor",
-    "versions"
+    "claude",
+    "versions",
+    "geometry_editor"
   ],
   ".md": [
     "markdown",
     "code",
     "claude",
     "versions",
-    "git",
-    "reader",
-    "annotate"
+    "reader"
   ],
   ".markdown": [
     "markdown",
     "code",
     "claude",
     "versions",
-    "git",
-    "reader",
-    "annotate"
+    "reader"
   ],
   ".tex": [
     "latex",
     "code",
-    "git",
-    "reader",
-    "annotate"
+    "claude",
+    "versions",
+    "reader"
   ],
   ".ltx": [
     "latex",
     "code",
-    "git",
-    "reader",
-    "annotate"
+    "claude",
+    "versions",
+    "reader"
   ],
   ".latex": [
     "latex",
     "code",
-    "git",
-    "reader",
-    "annotate"
+    "claude",
+    "versions",
+    "reader"
   ],
   ".svg": [
     "image",
     "code",
-    "annotate",
+    "claude",
     "versions"
   ],
   ".png": [
     "image",
     "photos",
     "pano",
-    "annotate",
+    "claude",
     "versions"
   ],
   ".jpg": [
     "image",
     "photos",
     "pano",
-    "annotate",
+    "claude",
     "versions"
   ],
   ".jpeg": [
     "image",
     "photos",
     "pano",
-    "annotate",
+    "claude",
     "versions"
   ],
   ".gif": [
     "image",
-    "photos",
-    "annotate"
+    "photos"
   ],
   ".webp": [
     "image",
     "photos",
-    "pano",
-    "annotate"
+    "pano"
   ],
   ".bmp": [
     "photos"
@@ -235,24 +218,19 @@
   ".pdf": [
     "pdf",
     "pdf_studio",
-    "reader",
-    "annotate"
+    "reader"
   ],
   ".mp4": [
-    "media",
-    "annotate"
+    "media"
   ],
   ".mov": [
-    "media",
-    "annotate"
+    "media"
   ],
   ".m4v": [
-    "media",
-    "annotate"
+    "media"
   ],
   ".webm": [
-    "media",
-    "annotate"
+    "media"
   ],
   ".mp3": [
     "media"
@@ -272,184 +250,176 @@
   ".py": [
     "code",
     "api",
+    "claude",
     "versions",
-    "git",
-    "reader",
-    "annotate"
+    "reader"
   ],
   ".js": [
     "code",
+    "claude",
     "versions",
-    "git",
-    "reader",
-    "annotate"
+    "reader"
   ],
   ".ts": [
     "code",
-    "git",
-    "reader",
-    "annotate"
+    "claude",
+    "versions",
+    "reader"
   ],
   ".tsx": [
     "code",
-    "git",
-    "reader",
-    "annotate"
+    "claude",
+    "versions",
+    "reader"
   ],
   ".jsx": [
     "code",
-    "git",
-    "reader",
-    "annotate"
+    "claude",
+    "versions",
+    "reader"
   ],
   ".cjs": [
     "code",
-    "git",
-    "reader",
-    "annotate"
+    "claude",
+    "versions",
+    "reader"
   ],
   ".mjs": [
     "code",
-    "git",
-    "reader",
-    "annotate"
+    "claude",
+    "versions",
+    "reader"
   ],
   ".cts": [
     "code",
-    "git",
-    "reader",
-    "annotate"
+    "claude",
+    "versions",
+    "reader"
   ],
   ".mts": [
     "code",
-    "git",
-    "reader",
-    "annotate"
+    "claude",
+    "versions",
+    "reader"
   ],
   ".sh": [
     "code",
-    "git",
-    "reader",
-    "annotate"
+    "claude",
+    "versions",
+    "reader"
   ],
   ".zsh": [
     "code",
-    "git",
-    "reader",
-    "annotate"
+    "claude",
+    "versions",
+    "reader"
   ],
   ".fish": [
     "code",
-    "git",
-    "reader",
-    "annotate"
+    "claude",
+    "versions",
+    "reader"
   ],
   ".ps1": [
     "code",
-    "git",
-    "reader",
-    "annotate"
+    "claude",
+    "versions",
+    "reader"
   ],
   ".csh": [
     "code",
-    "git",
-    "reader",
-    "annotate"
+    "claude",
+    "versions",
+    "reader"
   ],
   ".zsh-theme": [
     "code",
-    "git",
-    "reader",
-    "annotate"
+    "claude",
+    "versions",
+    "reader"
   ],
   ".vim": [
     "code",
-    "git",
-    "reader",
-    "annotate"
+    "claude",
+    "versions",
+    "reader"
   ],
   ".yaml": [
     "code",
+    "claude",
     "versions",
-    "git",
-    "reader",
-    "annotate"
+    "reader"
   ],
   ".yml": [
     "code",
+    "claude",
     "versions",
-    "git",
-    "reader",
-    "annotate"
+    "reader"
   ],
   ".toml": [
     "canvas",
     "code",
-    "git",
-    "reader",
-    "annotate"
+    "claude",
+    "versions",
+    "reader"
   ],
   ".ini": [
     "code",
-    "git",
-    "reader",
-    "annotate"
+    "claude",
+    "versions",
+    "reader"
   ],
   ".cfg": [
     "code",
-    "git",
-    "reader",
-    "annotate"
+    "claude",
+    "versions",
+    "reader"
   ],
   ".conf": [
     "code",
-    "git",
-    "reader",
-    "annotate"
+    "claude",
+    "versions",
+    "reader"
   ],
   ".tf": [
     "code",
-    "git",
-    "reader",
-    "annotate"
+    "claude",
+    "versions",
+    "reader"
   ],
   ".hcl": [
     "code",
-    "git",
-    "reader",
-    "annotate"
+    "claude",
+    "versions",
+    "reader"
   ],
   ".css": [
     "code",
+    "claude",
     "versions",
-    "git",
-    "reader",
-    "annotate"
+    "reader"
   ],
   ".txt": [
     "text",
     "code",
+    "claude",
     "versions",
-    "git",
-    "reader",
-    "annotate"
+    "reader"
   ],
   ".log": [
     "log_studio",
     "text",
     "code",
-    "git",
-    "reader",
-    "annotate"
+    "claude",
+    "versions",
+    "reader"
   ],
   ".html": [
     "_render",
     "code",
     "claude",
     "versions",
-    "git",
     "reader",
-    "annotate",
     "history"
   ],
   ".htm": [
@@ -457,9 +427,7 @@
     "code",
     "claude",
     "versions",
-    "git",
-    "reader",
-    "annotate"
+    "reader"
   ],
   ".tif": [
     "geotiff",
@@ -483,7 +451,6 @@
   "/": [
     "_listing",
     "app",
-    "claude_split",
     "claude",
     "versions",
     "git",
@@ -649,8 +616,8 @@
   ".plist": [
     "plist",
     "code",
-    "git",
-    "reader",
-    "annotate"
+    "claude",
+    "versions",
+    "reader"
   ]
 }

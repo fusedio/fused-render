@@ -35,3 +35,40 @@ export function saveSidebarState(state: SidebarState): void {
     // storage unavailable — state is best-effort, so a failed write is fine
   }
 }
+
+// --- Shared live state ------------------------------------------------------
+// Width and collapsed flag live here rather than in SidebarFrame's useState:
+// the frame is remounted by every sub-app that composes it (explorer, builder,
+// preferences), and a per-mount useState would reload the persisted value on
+// each route change — losing an in-session drag and letting two mounts hold
+// different widths mid-transition. One store, one layout.
+let current: SidebarState | null = null;
+const listeners = new Set<() => void>();
+
+export function getSidebarState(): SidebarState {
+  if (current === null) current = loadSidebarState();
+  return current;
+}
+
+// `persist` is false for the per-pointermove width updates of a resize drag —
+// the final width is written once at drag end.
+export function setSidebarState(
+  next: SidebarState | ((s: SidebarState) => SidebarState),
+  persist = true
+): void {
+  const prev = getSidebarState();
+  const value = typeof next === "function" ? next(prev) : next;
+  if (value === prev) return;
+  current = value;
+  if (persist) saveSidebarState(value);
+  listeners.forEach((fn) => fn());
+}
+
+export function toggleSidebarCollapsed(): void {
+  setSidebarState((s) => ({ ...s, collapsed: !s.collapsed }));
+}
+
+export function subscribeSidebarState(fn: () => void): () => void {
+  listeners.add(fn);
+  return () => listeners.delete(fn);
+}
