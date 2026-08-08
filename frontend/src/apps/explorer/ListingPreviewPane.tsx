@@ -216,8 +216,9 @@ export default function ListingPreviewPane({
   // a "Choose view" chip pointing at a view nobody came for. The folder's own
   // modes are still one click from the LEFT half (Preview's chip), and every
   // file in it previews on selection; and since opening a folder now
-  // auto-selects its first file (FS-16), this state is mostly an empty folder
-  // or one holding only folders. With no picker there is no mode to activate,
+  // auto-selects its first file (FS-16) and a background click no longer
+  // deselects (FS-15), this state is reached essentially only by a folder with
+  // no files in it or by a deliberate Escape. With no picker there is no mode,
   // which is why this branch renders before any of the mode machinery — and
   // why the stat/app-probe fetches above skip the self target entirely.
   if (row.self) {
