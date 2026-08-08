@@ -846,6 +846,14 @@
         absTime(s.last_used, "s");
       const { row, body } = baseRow(ev, true, tip);
       body.innerHTML = '<div class="title">' + esc(s.preview || s.id) + "</div>";
+      // Resume into `claude`, the one chat template (D235). targetPath is
+      // always a FILE (see the role resolution above), and `claude` is bound to
+      // every file key this view can reach, so the mode always resolves —
+      // a mode a target does not offer would hit PT-9's forgiving unknown-mode
+      // fallback and land on the file's DEFAULT view with the session_id
+      // silently dropped, which is the one thing a "resume this session" row
+      // must never do. `claude` reads session_id from its own
+      // `fused.params.get("session_id")` resume path.
       wireClick(row, () =>
         navigateShell(targetPath, "_mode=claude&session_id=" + encodeURIComponent(s.id)));
       return row;
@@ -862,28 +870,31 @@
       wireClick(row, () => navigateShell(targetPath, b.search || ""));
       return row;
     }
-    // comment — click opens the target in annotate mode focused on this
-    // comment (HV-8); id-only deep link, mirroring the claude session_id
-    // resume contract. A log entry without a string id (live comments always
-    // have one; the log is hand-editable) stays non-clickable. Resolved reads
-    // as settled (dimmed); a tombstoned entry (`deleted_at`) reads as deleted
-    // (dimmed + struck) and is INERT — no deep link, a deleted comment never
-    // comes back (owner call 2026-07-10).
+    // comment — READ-ONLY, never a link. The old deep link was
+    // `_mode=annotate&comment=<id>` (HV-8), but D235 deregistered `annotate`
+    // from all 66 registry keys, so no target offers the mode: the URL falls
+    // through PT-9's forgiving unknown-mode fallback to the file's default
+    // view, and the comment id is dropped — a click that promises to focus one
+    // comment and instead silently opens something else is worse than no click.
+    // Rejected: retargeting at `claude` the way the session row above
+    // was. It cannot honour the request either — claude has no `comment`
+    // param at all (it reads _file/session_id/run/split/annotations/…), and its
+    // omission of the annotate comment handoff (claudeComments/claudeReturn) is
+    // deliberate and documented in its own header, not an oversight to route
+    // around from here. The comment TEXT is still worth showing, so the entry
+    // stays in the timeline as a plain, readable row.
+    // Resolved reads as settled (dimmed); a tombstoned entry (`deleted_at`)
+    // reads as deleted (dimmed + struck) — owner call 2026-07-10.
     const c = ev.data;
     const deleted = typeof c.deleted_at === "number";
-    const clickable = typeof c.id === "string" && !deleted;
-    const tip = "Comment" + (clickable ? " — click to open" : "") +
+    const tip = "Comment" +
       (c.resolved ? " · resolved" : "") +
       (deleted ? " · deleted" : "") +
       (c.view ? " · on " + c.view : "") + "\n" +
       (absTime(c.createdAt, "ms") || absTime(c.recorded_at, "s"));
     const cls = [c.resolved ? "resolved" : "", deleted ? "deleted" : ""].filter(Boolean).join(" ");
-    const { row, body } = baseRow(ev, clickable, tip, cls);
+    const { row, body } = baseRow(ev, false, tip, cls);
     body.innerHTML = '<div class="title wrap">' + esc(c.content || "(no text)") + "</div>";
-    if (clickable) {
-      wireClick(row, () =>
-        navigateShell(targetPath, "_mode=annotate&comment=" + encodeURIComponent(c.id)));
-    }
     return row;
   }
 

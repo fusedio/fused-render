@@ -1,14 +1,14 @@
-"""Sidecar location for claude_split's per-file/per-folder session index
-(fused_render/templates/claude_split/agent.py) — forked from
-templates/claude/agent.py (D166: templates must not import fused_render, so
-each template keeps its own copy) and, until now, still on that fork's
-pre-relocation sidecar scheme.
+"""Sidecar location for claude's per-file/per-folder session index
+(fused_render/templates/claude/agent.py) — forked from the since-deleted plain
+chat template's agent (D166: templates must not import fused_render, so each
+template keeps its own copy) and, until now, still on that fork's pre-relocation
+sidecar scheme.
 
 The sidecar now lives under home_dir()/sidecar/<mapped path>.json (D83-
 reversal, D205 — shell/storage.py's sidecar_path, mirrored for templates in
-shared/appenv.py), never next to the TARGET (file or folder) — matching
-templates/claude/agent.py's own sidecar (test_claude_agent_sidecar.py). A
-folder target used to get a reserved `.claude-split.json` INSIDE itself
+shared/appenv.py), never next to the TARGET (file or folder). The key-name and
+legacy-key rules live in test_claude_agent_sidecar.py, which pins the same
+module. A folder target used to get a reserved `.claude-split.json` INSIDE itself
 (avoiding a collision with a real sibling `<folder>.json`); that collision
 risk doesn't exist once the sidecar lives in its own tree under home_dir(), so
 a directory target now resolves through the exact same appenv.sidecar_path as
@@ -26,8 +26,8 @@ from fused_render.shell import storage
 
 
 def _load_agent():
-    path = os.path.join("fused_render", "templates", "claude_split", "agent.py")
-    spec = importlib.util.spec_from_file_location("claude_split_agent", path)
+    path = os.path.join("fused_render", "templates", "claude", "agent.py")
+    spec = importlib.util.spec_from_file_location("claude_agent", path)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod

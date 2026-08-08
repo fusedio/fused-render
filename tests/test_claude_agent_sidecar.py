@@ -2,6 +2,13 @@
 "claudeSessions" (fused_render/templates/claude/agent.py). Old sidecars
 written under the pre-rename key are silently ignored (no migration).
 
+Retargeted from the deleted plain chat template's agent to the split view's
+(which now carries the `claude` name), the only chat backend left and one that
+carries the same three rules verbatim. The
+file's fourth test — record_session under a read-only mount — was dropped rather
+than moved: test_claude_sidecar_location.py already pins it against this exact
+module, and two copies of one assertion is a maintenance cost with no coverage.
+
 The sidecar now lives under home_dir()/sidecar/<mapped path>.json (D83-
 reversal), never next to the TARGET file — see shell/storage.py's
 sidecar_path (mirrored for templates in shared/appenv.py). FUSED_RENDER_HOME
@@ -70,32 +77,3 @@ def test_bookmark_history_survives_load_save_roundtrip(tmp_path):
     agent._save_sidecar(str(f), loaded)
     data = json.loads(open(sidecar_path, encoding="utf-8").read())
     assert data["bookmarkHistory"] == history
-
-
-# --------------------------------------------------- read-only remote mounts
-# D83-reversal: the sidecar now lives under home_dir()/sidecar/, never on the
-# mounted file's own filesystem, so a read-only remote mount no longer has any
-# bearing on whether a claudeSessions sidecar can be written — the old
-# sidecar-write incident (CacheMode=full 403-looping a doomed PutObject)
-# structurally can't happen anymore, and the _mount_read_only gate that used
-# to answer this (via FUSED_RENDER_RO_MOUNTS/shared/appenv) has been removed
-# from agent.py entirely.
-
-def test_record_session_succeeds_under_read_only_mount(tmp_path, monkeypatch):
-    # Chatting about a file inside a read-only S3 mount still writes a
-    # claudeSessions sidecar — it lives under home_dir()/sidecar/, not next to
-    # the mounted file, so the mount's read-only-ness has no bearing on it.
-    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
-    import fused_render.shell.mounts as mounts
-
-    m = mounts.add_mount("pub", "pub-remote:bucket", read_only=True)
-    mp = mounts.mountpoint(m)
-    os.makedirs(mp)
-    f = os.path.join(mp, "sample.html")
-    with open(f, "w") as fh:
-        fh.write("<html></html>")
-
-    agent = _load_agent()
-    agent._record_session(f, "sid-1", "hello there", "")
-    assert os.path.exists(agent._sidecar_path(f))
-    assert agent._sessions(f)["sessions"][0]["id"] == "sid-1"

@@ -510,6 +510,17 @@
     // `view` param picks WHICH of the file's modes is being annotated, and
     // anchors are per-view (a code-view path means nothing in table view, so
     // pins simply don't resolve there — cards mark them "other view").
+    //
+    // ⚠️ CURRENTLY UNREACHABLE, and the Send-to-Claude leg is doubly so. This
+    // mode is bound to ZERO registry keys (D235 took its bindings away), so the
+    // shell never offers it; and its handoff navigates the shell to
+    // `_mode=claude`, which resolves to the one surviving chat template — a
+    // template that never grew the receiving half (claudeComments /
+    // claudeReturn), so the comments it hands over are simply dropped. The
+    // navigation lands somewhere real; the payload goes nowhere.
+    // The code is left standing rather than stripped because the
+    // anchor model and the review UI are the parts worth keeping if this comes
+    // back; what must not happen is a reader assuming the handoff works.
     // =========================================================================
     const file = fused.params.get("_file");
     const frame = document.getElementById("page");
@@ -1598,8 +1609,10 @@
     // whose `&` is literal — is excised before URLSearchParams touches the
     // query, then reattached last, byte-for-byte.
     //
-    // ⚠️ DELIBERATE STANDARD-BREAK (mirror of clearTopClaudeComments in
-    // templates/claude/template.html): this writes window.top's URL directly
+    // ⚠️ DELIBERATE STANDARD-BREAK (it used to be mirrored by
+    // clearTopClaudeComments in templates/claude/template.html, the receiving
+    // half of this handoff; that template is deleted, so this write now has no
+    // reader — see the note at the top of the file): it writes window.top's URL directly
     // instead of going through fused.params. `_mode` is a RESERVED param name —
     // fused.params.set THROWS on it (runtime.js isReserved) — and in a pane the
     // param boundary (D72) puts the shell URL out of fused.params' reach
@@ -2421,10 +2434,22 @@
         document.body.innerHTML = `<div id="status" class="error">Cannot stat file.</div>`;
         return;
       }
-      // Send to Claude only where the claude mode actually exists for this
+      // Send to Claude only where the `claude` mode actually exists for this
       // file type — elsewhere the click would just fall back to the default
       // view and the review would appear to vanish. The chat view itself is
       // not an annotation surface, so it's excluded from the picker too.
+      //
+      // This test no longer measures what the button needs (D237). `claude` is
+      // bound to every authored-file key again — it is the SURVIVING chat, the
+      // former `claude_split`, renamed — so stat does report it and the button
+      // is SHOWN, while the handoff's receiving half (`claudeComments` /
+      // `claudeReturn`) was never built into that template: the click navigates
+      // somewhere real and the review is dropped on arrival. The whole mode is
+      // unreachable anyway — `annotate` holds zero registry keys since D235 —
+      // which is why this is recorded here rather than repaired. Repairing it
+      // means one of two things, and both are decisions: teach the chat to
+      // receive a handoff, or test for a mode that *can* receive one instead of
+      // for a mode that merely exists.
       const all = stat.templates || [];
       if (!all.some((t) => t.mode === "claude")) {
         document.getElementById("sidefoot").style.display = "none";

@@ -1,4 +1,4 @@
-"""claude_split's live-app-state channels: the split view's agent can SEE the
+"""claude's live-app-state channels: the split view's agent can SEE the
 app in the left pane.
 
 Two directions, and neither exists in the `claude` template:
@@ -44,14 +44,14 @@ import pytest
 
 from _mcp_stdio import MCPServer
 
-TEMPLATE_DIR = os.path.join("fused_render", "templates", "claude_split")
+TEMPLATE_DIR = os.path.join("fused_render", "templates", "claude")
 SERVER = os.path.join(TEMPLATE_DIR, "permission_server.py")
 TEMPLATE = os.path.join(TEMPLATE_DIR, "template.html")
 
 
 def _load(name):
     path = os.path.join(TEMPLATE_DIR, name + ".py")
-    spec = importlib.util.spec_from_file_location("claude_split_" + name, path)
+    spec = importlib.util.spec_from_file_location("claude_" + name, path)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
@@ -209,6 +209,31 @@ def test_an_unknown_tool_is_still_refused(server):
     assert "unknown tool" in err["message"]
 
 
+def test_a_session_with_no_pane_is_not_offered_the_tool_at_all(tmp_path):
+    """D239: an ordinary folder has no left pane, so there is no page to read
+    back — and a tool the model can call but that can never answer is worse than
+    no tool. It would call it after every edit, wait out the 20s timeout and get
+    a sentence about a window, once per turn.
+
+    The channel's EXISTENCE is what decides: `agent.py` spawns the server with no
+    app-state directory for a no-pane target, and no directory means no tool in
+    `tools/list` and no dispatch for it. One signal, not two — a roster that
+    varied independently of the channel could advertise a tool the server cannot
+    serve.
+    """
+    s = MCPServer([sys.executable, os.path.abspath(SERVER),
+                   str(tmp_path / "perm")])
+    try:
+        s.initialize()
+        tools = s.call("tools/list")["result"]["tools"]
+        assert [t["name"] for t in tools] == ["approve"]
+        err = s.call("tools/call",
+                     {"name": "app_state", "arguments": {}})["error"]
+        assert "unknown tool" in err["message"]
+    finally:
+        s.close()
+
+
 # --------------------------------------------------------------- the page side
 
 def test_poll_surfaces_pending_app_state_requests(agent, run_dir):
@@ -318,6 +343,7 @@ def test_the_mcp_server_gets_its_own_app_state_directory(agent, tmp_path,
     agent.RUNS = str(tmp_path / "runs")
     project = tmp_path / "proj"
     project.mkdir()
+    (project / "index.html").write_text("<p>hi</p>", encoding="utf-8")
     _cmd, run_dir = _spawn(agent, monkeypatch, project)
     cfg = json.load(open(os.path.join(run_dir, "mcp.json"), encoding="utf-8"))
     args = cfg["mcpServers"][agent.PERMISSION_SERVER]["args"]
@@ -326,38 +352,96 @@ def test_the_mcp_server_gets_its_own_app_state_directory(agent, tmp_path,
     assert os.path.isdir(os.path.join(run_dir, "appstate"))
 
 
+def test_a_no_pane_target_gets_no_app_state_channel_and_no_pre_allowance(
+        agent, tmp_path, monkeypatch):
+    """The spawn side of D239, and both halves have to agree.
+
+    An ordinary folder (no `index.html`, no single top-level `.html` — the same
+    `app_entry.entry_html` predicate the pane and the prompt read) has no left
+    pane. So: no app-state directory in the server's argv, which is what makes
+    the tool absent from the roster, and no pre-allowance naming a tool that does
+    not exist. The permission bridge itself is untouched — approvals are not
+    about the pane.
+    """
+    agent.RUNS = str(tmp_path / "runs")
+    plain = tmp_path / "downloads"
+    plain.mkdir()
+    (plain / "a.pdf").write_bytes(b"%PDF-1.4\n")
+    cmd, run_dir = _spawn(agent, monkeypatch, plain)
+    cfg = json.load(open(os.path.join(run_dir, "mcp.json"), encoding="utf-8"))
+    args = cfg["mcpServers"][agent.PERMISSION_SERVER]["args"]
+    assert args[1:] == [os.path.join(run_dir, "perm")]
+    assert not os.path.exists(os.path.join(run_dir, "appstate"))
+    tool = "mcp__%s__%s" % (agent.PERMISSION_SERVER, agent.APP_STATE_TOOL)
+    assert tool not in cmd[cmd.index("--allowed-tools") + 1]
+    assert "--permission-prompt-tool" in cmd
+    # A folder that IS an app keeps the channel — the predicate is the only
+    # thing that decides, so both answers are pinned in one place.
+    app = tmp_path / "proj"
+    app.mkdir()
+    (app / "index.html").write_text("<p>hi</p>", encoding="utf-8")
+    cmd2, run2 = _spawn(agent, monkeypatch, app)
+    assert tool in cmd2[cmd2.index("--allowed-tools") + 1]
+    assert os.path.isdir(os.path.join(run2, "appstate"))
+
+
 def test_reading_the_users_own_screen_does_not_raise_a_card(agent, tmp_path,
                                                             monkeypatch):
     """app_state reads the page the user is already looking at, for the agent
     they are already talking to — carding that would be a prompt with no
-    decision in it, once per edit. It is pre-allowed, and nothing else is."""
+    decision in it, once per edit. It is pre-allowed, and nothing else is.
+
+    An APP folder, deliberately: only a target with a pane is offered the tool at
+    all (D239), so an empty directory would be asserting the opposite rule."""
     agent.RUNS = str(tmp_path / "runs")
     project = tmp_path / "proj"
     project.mkdir()
+    (project / "index.html").write_text("<p>hi</p>", encoding="utf-8")
     cmd, _run_dir = _spawn(agent, monkeypatch, project)
     tool = "mcp__%s__%s" % (agent.PERMISSION_SERVER, agent.APP_STATE_TOOL)
     allowed = cmd[cmd.index("--allowed-tools") + 1].split(",")
     assert tool in allowed
     # The only OTHER pre-allowance is reading an annotation's screenshot, and it
-    # is scoped to the one directory those live in (test_claude_split_shots.py).
+    # is scoped to the one directory those live in (test_claude_shots.py).
     assert allowed == [tool, agent._read_rule(agent.SHOTS)]
     # The bridge itself stays wired: everything else still has to be answerable.
     assert "--permission-prompt-tool" in cmd
 
 
+# There are TWO kinds of directory target now: this template is the only chat, so
+# it opens on ordinary folders as well as app folders, and `_split_system_prompt`
+# picks between two prompts on `app_entry.entry_html`. `_app_dir` is the fixture
+# for the app-folder half — an empty directory is NOT one, which is what these
+# tests silently relied on until the second shape existed.
+
+def _app_dir(tmp_path, name="proj"):
+    d = tmp_path / name
+    d.mkdir()
+    (d / "index.html").write_text("<p>hi</p>", encoding="utf-8")
+    return d
+
+
 def test_a_directory_target_is_told_about_the_tool(agent, tmp_path, monkeypatch):
-    """The one directory target that DOES get an --append-system-prompt: a tool
-    the model is never told about is a tool it never calls."""
+    """Every directory target gets an --append-system-prompt naming the tool: a
+    tool the model is never told about is a tool it never calls. Asserted for BOTH
+    folder shapes, since each has its own prompt and only one of them existed when
+    the disclosure was written."""
     agent.RUNS = str(tmp_path / "runs")
-    project = tmp_path / "proj"
-    project.mkdir()
-    cmd, _run_dir = _spawn(agent, monkeypatch, project)
-    prompt = cmd[cmd.index("--append-system-prompt") + 1]
-    assert agent.APP_STATE_TOOL in prompt
-    # Narrow: naming the tool only, NOT the file-scoping prompt a file target
-    # gets — the split view is a whole project and scoping it to one file is
-    # exactly what the directory branch exists to avoid.
-    assert "Keep your work scoped to this file" not in prompt
+    for target in (_app_dir(tmp_path, "app-proj"), tmp_path / "plain"):
+        if not os.path.isdir(target):
+            os.makedirs(target)
+        cmd, _run_dir = _spawn(agent, monkeypatch, target)
+        prompt = cmd[cmd.index("--append-system-prompt") + 1]
+        # D239 narrowed this to the targets that HAVE a pane: an app folder is
+        # told about the tool, an ordinary folder is not offered the tool at all,
+        # so announcing it there would describe a tool the roster does not carry.
+        if agent._is_app_dir(str(target)):
+            assert agent.APP_STATE_TOOL in prompt, target
+        else:
+            assert agent.APP_STATE_TOOL not in prompt, target
+        # Never the FILE-scoping prompt: a folder target is a folder, and scoping
+        # it to one file is exactly what the directory branch exists to avoid.
+        assert "Keep your work scoped to this file" not in prompt, target
 
 
 def test_a_directory_target_is_told_what_kind_of_project_it_is_in(
@@ -367,14 +451,60 @@ def test_a_directory_target_is_told_what_kind_of_project_it_is_in(
     predates it, would otherwise have nothing telling the session that the HTML
     in front of it is an app with a Python bridge behind it."""
     agent.RUNS = str(tmp_path / "runs")
-    project = tmp_path / "proj"
-    project.mkdir()
-    cmd, _run_dir = _spawn(agent, monkeypatch, project)
+    cmd, _run_dir = _spawn(agent, monkeypatch, _app_dir(tmp_path))
     prompt = cmd[cmd.index("--append-system-prompt") + 1]
     assert "fused-render project" in prompt
     # and the skill that documents the bridge is named, so the model reaches for
     # it instead of inferring the API from whatever is in the file
     assert "fused-render-authoring" in prompt
+
+
+def test_an_ordinary_folder_is_not_told_it_is_a_fused_render_project(
+        agent, tmp_path, monkeypatch):
+    """`~/Downloads` is not a fused-render project and must not be told it is. The
+    claim was unconditional while this template was gated to app folders; the mode
+    is offered on every directory now, so an unconditional claim is a plain lie —
+    one that costs something, because it invites the agent to hunt for a Python
+    bridge that is not there and to read a folder of PDFs as a codebase."""
+    agent.RUNS = str(tmp_path / "runs")
+    plain = tmp_path / "downloads"
+    plain.mkdir()
+    (plain / "receipt.pdf").write_bytes(b"%PDF-1.4\n")
+    cmd, _run_dir = _spawn(agent, monkeypatch, plain)
+    prompt = cmd[cmd.index("--append-system-prompt") + 1]
+    assert "fused-render project" not in prompt
+    assert "fused-render-authoring" not in prompt
+    # What it gets instead: the folder-scoping instruction the deleted plain chat
+    # template gave an ordinary folder, ported rather than reinvented.
+    assert "Keep your work scoped to this folder" in prompt
+    assert str(plain) in prompt
+    # And NOTHING about a pane (D239). The paragraph describing fused-render's own
+    # file browser beside the chat went with the pane it described — a prompt that
+    # tells the model what the user can see beside the conversation, when there is
+    # nothing beside the conversation, is a false claim about the screen. The
+    # app-state disclosure goes too: this target is not offered the tool.
+    assert "file browser" not in prompt
+    assert "never try to edit it" not in prompt
+    assert "Beside this chat" not in prompt
+    assert agent.APP_STATE_TOOL not in prompt
+    assert agent.APP_STATE_TAG not in prompt
+
+
+def test_a_folder_whose_html_appears_later_gets_the_project_prompt(
+        agent, tmp_path, monkeypatch):
+    """The shape is decided per RUN, off the same `app_entry` rule the left pane
+    uses (../shared/app_entry.py), not cached at open. So the folder the user is
+    scaffolding INTO — empty when the chat opened, an app by the second turn —
+    starts being told what it is as soon as it is one, and the prompt can never
+    disagree with what the pane is actually framing."""
+    agent.RUNS = str(tmp_path / "runs")
+    d = tmp_path / "becoming"
+    d.mkdir()
+    cmd, _run_dir = _spawn(agent, monkeypatch, d)
+    assert "fused-render project" not in cmd[cmd.index("--append-system-prompt") + 1]
+    (d / "index.html").write_text("<p>hi</p>", encoding="utf-8")
+    cmd, _run_dir = _spawn(agent, monkeypatch, d)
+    assert "fused-render project" in cmd[cmd.index("--append-system-prompt") + 1]
 
 
 def test_a_file_target_still_gets_the_file_scoping_prompt(agent, tmp_path,
@@ -385,7 +515,25 @@ def test_a_file_target_still_gets_the_file_scoping_prompt(agent, tmp_path,
     cmd, _run_dir = _spawn(agent, monkeypatch, target)
     prompt = cmd[cmd.index("--append-system-prompt") + 1]
     assert "Keep your work scoped to this file" in prompt
-    assert agent.APP_STATE_TOOL not in prompt
+
+
+def test_a_file_target_is_also_told_about_the_app_state_tool(agent, tmp_path,
+                                                             monkeypatch):
+    """D235: a file target has a left pane too — the file in its own default
+    view — so the same "an un-announced tool never gets called" argument that
+    put the disclosure in the directory prompt applies here. It did not before,
+    when the gate offered this template for project folders only and the file
+    branch was the plain viewer's prompt verbatim."""
+    agent.RUNS = str(tmp_path / "runs")
+    target = tmp_path / "notes.md"
+    target.write_text("# hi")
+    cmd, _run_dir = _spawn(agent, monkeypatch, target)
+    prompt = cmd[cmd.index("--append-system-prompt") + 1]
+    assert agent.APP_STATE_TOOL in prompt
+    # and it describes OUR viewer around THEIR file — never "your app", which
+    # would invite edits to the template doing the rendering
+    assert "fused-render's own preview" in prompt
+    assert "never edit the viewer" in prompt
 
 
 def test_a_file_target_is_not_told_it_is_a_fused_render_project(
@@ -590,13 +738,13 @@ _STATE_FNS = ["const APP_STATE_MAX_LOGS", "const APP_STATE_MAX_TEXT",
 def test_the_state_block_is_omitted_when_there_is_nothing_to_say(html):
     """An empty snapshot must not push a block: a turn that says nothing about
     the app should look exactly like a turn from before this feature."""
-    empty = _node(["const APP_STATE_TAG", "function appStateBlock("],
+    empty = _node(_BLOCK,
                   "console.log(JSON.stringify(appStateBlock(null)));", html)
     assert empty == ""
 
 
 def test_the_state_block_labels_itself_and_carries_the_json(html):
-    block = _node(["const APP_STATE_TAG", "function appStateBlock("],
+    block = _node(_BLOCK,
                   "console.log(JSON.stringify(appStateBlock("
                   '{"title": "Demo", "console": [{"level": "error", "text": "boom"}]}'
                   ")));", html)
@@ -814,7 +962,7 @@ def test_the_chats_own_params_are_not_reported_as_the_apps(html):
                  "const APP_STATE_MAX_TEXT"],
                 "console.log(JSON.stringify(appParamsOf({session_id: 's', run: 'r',"
                 " split: '70', model: 'sonnet', effort: 'high', permission: 'prompt',"
-                " _file: '/p', _mode: 'claude_split', path: '/p/index.html',"
+                " _file: '/p', _mode: 'claude', path: '/p/index.html',"
                 " annotations: '[]', city: 'Lisbon'})));", html)
     assert out == {"city": "Lisbon"}
 
@@ -888,14 +1036,18 @@ def test_the_wrapper_calls_through_so_the_apps_own_logging_still_happens(html):
 # ------------------------- one composition point, one strip (both blocks)
 
 _WIRE_FNS = ["const APP_STATE_TAG", "function appStateBlock(",
-             "function formatAnnotations(", "function composeOutgoing(",
+             # formatAnnotations' preamble names the target's KIND (a file's pane
+             # is fused-render's preview OF the file, not an app with an entry
+             # page), and this is the one writer of that noun.
+             "let targetNoun", "let paneNoun", "function formatAnnotations(",
+             "function composeOutgoing(",
              "function stripAppStateBlock(", "function stripBlocks(",
              # The pane shot is a third block on the same wire (see
-             # test_claude_split_shots.py); these two are what stripBlocks needs to
+             # test_claude_shots.py); these two are what stripBlocks needs to
              # be its exact inverse, whether or not a given message carries one.
              "const PANE_SHOT_TAG", "function paneShotBlock(",
              # stripBlocks names its no-words markers through these (see
-             # test_claude_split_shots.py) so resumeRun cannot drift from it.
+             # test_claude_shots.py) so resumeRun cannot drift from it.
              "const MARKER_ANN", "const MARKER_VIEW", "const MARKER_JOIN",
              "function isMarkerOnly(", "function stripPaneBlock(",
              "function stripAnnBlock("]
@@ -1237,7 +1389,9 @@ def test_the_composers_escape_does_not_also_reach_the_run_killer(html):
 # every later turn, all but the newest already stale. It goes to a file now and
 # only the path rides along.
 
-_BLOCK = ["const APP_STATE_TAG", "function appStateBlock("]
+# `paneNoun` is what the block preamble calls the pane — "app" for an app
+# folder, "preview" for a file, one writer (test_claude_kind.py).
+_BLOCK = ["let paneNoun", "const APP_STATE_TAG", "function appStateBlock("]
 _FILE = ["function shotJoin(", "let appStateSeq", "async function appStateFile("]
 
 
@@ -1346,3 +1500,138 @@ def test_a_path_carrying_block_is_still_stripped_from_the_transcript(agent):
             '{"title": "x", "dom_path": "/tmp/shots/appstate-1-1.json"}\n'
             '</live-app-state>\n\nwhy is it blank?')
     assert agent._strip_app_state(text) == "why is it blank?"
+
+
+# ----------------------------------------- who decides whether there IS a pane
+
+# Three things have to agree about the pane, per turn: the MCP roster (the
+# app-state directory's existence), the pre-allowance on the spawn line, and the
+# appended system prompt. `_start` resolved that answer from DISK on every turn,
+# while the PAGE resolves it exactly once — `paneURL()` runs in the boot IIFE and
+# `enterNoPane()` removes `#left` permanently. So a mid-session kind flip put the
+# two out of step in both directions:
+#
+#   * scaffold an app into an ordinary folder (turn 1 writes index.html) and turn
+#     2 offers `app_state`, pre-allows it and asserts "The user sees the app
+#     rendered live beside this chat" — with no pane on screen. The model calls
+#     it, `answerAppState` burns its null polls and replies
+#     APP_STATE_UNREADABLE, contradicting the invariant the page states at
+#     template.html's APP_STATE_UNREADABLE ("no pane means no `app_state` tool in
+#     the run's roster… this sentence can never be the answer to it").
+#   * delete the entry page and the reverse happens: the tool drops and the
+#     prompt flips to ordinary-folder wording while a live pane is on screen.
+#
+# THE PAGE IS AUTHORITATIVE, because the question is "is there a page beside this
+# chat" and only the page knows what is on screen. Disk is the fallback for the
+# one caller that has no page (the apps API, which always spawns on an app
+# folder).
+
+def _spawn_with(agent, monkeypatch, target, **kw):
+    """`_spawn`, through `main` and with STRING params — the shape the page's
+    runPython call actually delivers (the param binder is str-shaped), so the
+    "0" that means a real no cannot be mistaken for the "" that means absence."""
+    seen = {}
+
+    class _Proc:
+        pid = 4242
+
+    monkeypatch.setattr(agent, "_claude_bin", lambda: "/bin/claude")
+    monkeypatch.setattr(agent.subprocess, "Popen",
+                        lambda cmd, **kwargs: (seen.__setitem__("cmd", cmd), _Proc())[1])
+    out = agent.main(action="start", file=str(target), message="hi", **kw)
+    assert "error" not in out, out
+    return seen["cmd"], os.path.join(agent.RUNS, out["run_id"])
+
+
+def _pane_facts(agent, cmd, run_dir):
+    """The three things that must agree."""
+    tool = "mcp__%s__%s" % (agent.PERMISSION_SERVER, agent.APP_STATE_TOOL)
+    prompt = cmd[cmd.index("--append-system-prompt") + 1]
+    return {
+        "state_dir": os.path.isdir(os.path.join(run_dir, "appstate")),
+        "pre_allowed": tool in cmd[cmd.index("--allowed-tools") + 1],
+        "in_prompt": agent.APP_STATE_TOOL in prompt,
+        "says_beside_this_chat": "beside this chat" in prompt,
+    }
+
+
+def test_the_page_can_say_there_is_no_pane_and_the_whole_run_agrees(
+        agent, tmp_path, monkeypatch):
+    """The scaffolding repro. The folder IS an app folder on disk by turn 2, and
+    the page still has no pane — so nothing in the run offers the tool."""
+    agent.RUNS = str(tmp_path / "runs")
+    scaffolded = _app_dir(tmp_path, "scaffolded")
+    cmd, run_dir = _spawn_with(agent, monkeypatch, scaffolded, has_pane="0")
+    facts = _pane_facts(agent, cmd, run_dir)
+    assert facts == {"state_dir": False, "pre_allowed": False,
+                     "in_prompt": False, "says_beside_this_chat": False}
+    # ...and it is the ordinary-FOLDER prompt, not the app-folder one with its
+    # pane paragraph removed.
+    prompt = cmd[cmd.index("--append-system-prompt") + 1]
+    assert "fused-render project" not in prompt
+    assert "embedded in a local file explorer" in prompt
+
+
+def test_the_page_can_say_there_is_a_pane_and_the_whole_run_agrees(
+        agent, tmp_path, monkeypatch):
+    """The reverse flip: the entry page is gone from disk, the pane is still on
+    screen, and the tool stays in the roster so `app_state` remains answerable."""
+    agent.RUNS = str(tmp_path / "runs")
+    plain = tmp_path / "was-an-app"
+    plain.mkdir()
+    cmd, run_dir = _spawn_with(agent, monkeypatch, plain, has_pane="1")
+    facts = _pane_facts(agent, cmd, run_dir)
+    assert facts == {"state_dir": True, "pre_allowed": True,
+                     "in_prompt": True, "says_beside_this_chat": True}
+
+
+def test_disk_still_answers_when_no_page_says_otherwise(agent, tmp_path,
+                                                        monkeypatch):
+    """The apps API calls `_start` directly with no page to ask. Unchanged
+    behaviour: resolve from disk."""
+    agent.RUNS = str(tmp_path / "runs")
+    for target, wanted in ((_app_dir(tmp_path, "app"), True),
+                           (tmp_path / "plain", False)):
+        os.makedirs(target, exist_ok=True)
+        cmd, run_dir = _spawn_with(agent, monkeypatch, target)
+        facts = _pane_facts(agent, cmd, run_dir)
+        assert facts["state_dir"] is wanted, target
+        assert facts["pre_allowed"] is wanted, target
+        assert facts["in_prompt"] is wanted, target
+
+
+def test_the_page_sends_its_own_answer_on_every_start(html):
+    """The page's half. `noPane` is the layout flag `enterNoPane` sets, and the
+    only thing that knows whether `#left` is in the document."""
+    start = html.index('action: "start"')
+    call = html[start:html.index("}, { key: null });", start)]
+    assert "has_pane" in call and "noPane" in call
+
+
+def test_the_prompt_reads_the_pane_value_the_spawn_already_computed(
+        agent, tmp_path, monkeypatch):
+    """A SECOND `_is_app_dir` call for the prompt reopens the window `pane`
+    exists to close: an index.html appearing between the two (a concurrent
+    scaffolding session, the user's editor, an in-flight `git checkout`) — or a
+    transient EMFILE hitting `_is_app_dir`'s blanket `except Exception: return
+    False` — spawns a run WITHOUT the app-state directory while the appended
+    prompt announces the tool.
+
+    Simulated with an `_is_app_dir` that flips after its first call, which is
+    exactly what a race looks like from in here.
+    """
+    agent.RUNS = str(tmp_path / "runs")
+    app = _app_dir(tmp_path, "racing")
+    calls = []
+    real = agent._is_app_dir
+
+    def flaky(path):
+        calls.append(path)
+        return real(path) if len(calls) == 1 else not real(path)
+
+    monkeypatch.setattr(agent, "_is_app_dir", flaky)
+    cmd, run_dir = _spawn_with(agent, monkeypatch, app)
+    facts = _pane_facts(agent, cmd, run_dir)
+    assert facts["state_dir"] == facts["in_prompt"] == facts["pre_allowed"], facts
+    assert len(calls) == 1, \
+        "the kind is resolved once per run; the prompt reads that value"

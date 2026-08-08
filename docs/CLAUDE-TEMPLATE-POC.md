@@ -5,6 +5,36 @@ for implementation simplicity and is expected to be revisited.
 Origin: adapted from an internal chat sandbox POC (detached `claude -p`
 subprocess + stream-json log + poll loop).
 
+> **⚠️ HISTORICAL — the template described here was SUPERSEDED and then DELETED
+> (note added 2026-08-08).** This document is kept as the design record of the
+> first chat template, not as a description of what ships. Two changes happened
+> after it was written:
+>
+> - **D235** moved the chat on file keys to the *split* template
+>   (`claude_split` — the app/file beside the chat, with the annotation and
+>   `app_state` machinery), leaving this one bound to directories only.
+> - **D237** deleted this template outright — it had become the stale side of a
+>   fork, missing six improvements the split one received — and renamed
+>   `claude_split` to **`claude`**. So `fused_render/templates/claude/` still
+>   exists and is still the chat, but it is a **different template** from the one
+>   below: split layout, both kinds of target (file *and* directory), a
+>   `condition.py` gate, annotation tools, screenshots and message queueing.
+>
+> What below is still **true of the surviving template**, because it was inherited
+> rather than rewritten: the `_file` param contract, `cwd = dirname(target)` and
+> the `~/.claude/projects/<munged-cwd>` consequence, the detached `claude -p`
+> stream-json + poll design, the sidecar's `claudeSessions` shape (though the
+> sidecar itself moved out of the target's directory — **D205**), copy-on-resume,
+> the one-tool stdio MCP **permission bridge**, the `fused_render_claude-<uid>`
+> run-dir root and its per-uid reasoning, and the Windows notes. What is **stale**:
+> the `.html`/`.htm`-only binding and the `["_render", "code", "claude"]` mode
+> list (see SPEC §7.2 for the real bindings — 47 authored-file keys plus the
+> universal `/` directory key), the "no gate" assumption, and the file layout
+> (there is a `condition.py` too). The current rules live in **SPEC §7.2
+> PT-14/PT-16** and **DECISIONS D235/D237**; nothing below should be treated as
+> current, and it is not rewritten because a POC note that gets edited to match
+> the present stops being a record of what was decided when.
+
 ## What it is
 
 A new built-in template `fused_render/templates/claude/` bound to `.html` /

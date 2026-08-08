@@ -1008,6 +1008,8 @@ def test_the_resolver_never_imports_the_chat_template():
     src = inspect.getsource(server)
     # templates_api (the registry/listing router) is a normal server module and
     # is imported; a TEMPLATE's own backend must never be.
+    # "templates.claude" is the chat backend's own module path, and a prefix of
+    # any future sibling under it, so this one substring is enough.
     assert "templates.claude" not in src
     assert "from fused_render.templates." not in src
     assert "import agent" not in src

@@ -1,8 +1,16 @@
 """Gate for the `git` template (SPEC CT-12, §33 / GT-3).
 
-`main(path)` decides whether a path — a directory OR a source/config/prose file,
-the `git` mode is offered for both — is inside a git work tree. Three questions,
-in this order, because the first two are refusals rather than preferences:
+`main(path)` decides whether a path is inside a git work tree.
+
+Since D235 the mode is bound to the universal "/" DIRECTORY key alone, so in
+practice the path is always a directory: `git` is the repo-wide Source Control
+view of a folder, and the file-side "what changed in this one file" story is the
+`versions` mode's (its gate takes any file in any work tree). The file branch
+below is kept anyway — it costs one stat, and a gate that answers only one of
+the two shapes would be a trap for a future binding.
+
+Three questions, in this order, because the first two are refusals rather than
+preferences:
 
 1. **Is the path mount-backed?** Then False, always, and the refusal happens
    BEFORE any subprocess. `graph/condition.py` refuses one for the shape of I/O
@@ -28,8 +36,8 @@ in this order, because the first two are refusals rather than preferences:
 
 CRITICAL: this never enumerates (`os.listdir`, `os.scandir`, `glob`, recursion)
 and never walks the tree looking for a marker — the rule `zarr_aoi/condition.py`
-documents, and load-bearing here because the gate runs on every directory AND
-every text-ish file the user opens. It is also why the CLI is the authority
+documents, and load-bearing here because the gate runs on every directory the
+user opens. It is also why the CLI is the authority
 rather than a `.git` probe: a `.git` entry exists only at the repository ROOT,
 so a probe would have to ASCEND to answer a nested path (`repo/pkg/` has no
 `.git` of its own), and the two shapes it would then have to know about — a

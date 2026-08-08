@@ -41,8 +41,8 @@ test("legacy settings sentinels map to their plain routes", () => {
 
 test("current urls pass through untouched", () => {
   expect(rewriteLegacyUrl("/explorer/view/Users/me/x")).toBe("/explorer/view/Users/me/x");
-  expect(rewriteLegacyUrl("/apps/local/demo?_mode=claude_split")).toBe(
-    "/apps/local/demo?_mode=claude_split",
+  expect(rewriteLegacyUrl("/apps/local/demo?_mode=claude")).toBe(
+    "/apps/local/demo?_mode=claude",
   );
   // A file legitimately named view/ deeper in the path must not rewrite.
   expect(rewriteLegacyUrl("/explorer/view/w/view/f")).toBe("/explorer/view/w/view/f");

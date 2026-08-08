@@ -7,7 +7,7 @@ click-through covers:
     so it is offered for every directory the explorer stats and the gate is the
     only thing narrowing that to real app folders (<workspace>/<tag>/<name>);
   * the shared entry rule (`shared/app_entry.py`) the template's `app.py` and
-    `claude_split/app.py` now both delegate to — index.html wins, else the
+    `claude/app.py` now both delegate to — index.html wins, else the
     folder's single non-hidden top-level .html, else nothing;
   * the template document itself: chromeless (the shell's preview header already
     carries the app name and the mode switcher) and pointed at `/render`, not
@@ -171,12 +171,12 @@ def test_the_template_backend_reports_the_resolved_entry(tmp_path):
     assert "entry" in backend.main()
 
 
-def test_claude_split_resolves_entries_the_same_way(tmp_path):
+def test_claude_resolves_entries_the_same_way(tmp_path):
     # The two backends answer the same question and now share one rule; a drift
     # between them means the split view and the plain view open different pages.
     plain = _load(TEMPLATE_DIR, "app", "test_app_template_backend_b")
-    split = _load(os.path.join(TEMPLATES_DIR, "claude_split"), "app",
-                  "test_app_template_claude_split_backend")
+    split = _load(os.path.join(TEMPLATES_DIR, "claude"), "app",
+                  "test_app_template_claude_backend")
     (tmp_path / "index.html").write_text("<html></html>")
     (tmp_path / "other.html").write_text("<html></html>")
     assert plain.main(dir=str(tmp_path)) == split.main(dir=str(tmp_path))

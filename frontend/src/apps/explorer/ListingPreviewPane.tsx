@@ -21,6 +21,7 @@ import { iconForEntry, isAppEntry } from "@platform/ui/FileIcons";
 import { KNOWN_SENTINEL_MODES, templateModeIcon } from "@apps/explorer/ModeSwitcher";
 import { ModeMenu } from "@apps/explorer/BarMenu";
 import Listing from "@apps/explorer/Listing";
+import { PANE_APP_MODE, activePaneMode, paneModeList } from "@apps/explorer/listing/pane-modes";
 
 // The selected row, as the pane needs it. Structurally a subset of Listing's
 // RowCtx, so the lead row can be passed straight through.
@@ -29,14 +30,17 @@ export interface PaneTarget {
   name: string;
   isDir: boolean;
   // True when the target is the listing's OWN folder (nothing selected): the
-  // same mode logic runs, except `_listing` is never offered — that listing
-  // is already on the left side of the split.
+  // same mode logic runs, except `_listing` is never offered (that listing is
+  // already on the left side of the split) and the pane lands on NO mode at
+  // all — a neutral hint, with every offered mode one click away in the
+  // switcher — instead of the folder's first opt-in mode. See
+  // listing/pane-modes.ts.
   self?: boolean;
 }
 
-// The pane-only sentinel for a folder's lone HTML app rendered in place. Not
-// a registry mode — it exists only in this menu, so the constant is local.
-const APP_MODE = "_app";
+// The pane-only sentinel, re-exported locally for readability (defined with
+// the ordering rules in listing/pane-modes.ts).
+const APP_MODE = PANE_APP_MODE;
 
 // Monochrome switcher icon for the `_app` mode — currentColor like the other
 // mode icons, so it takes the switcher's muted/active tinting instead of the
@@ -78,8 +82,8 @@ interface AppTarget {
   path: string;
 }
 
-// One entry of the pane's mode switcher (template modes + pane sentinels) —
-// the shape ModeSwitcher takes.
+// One entry of the pane's mode menu (template modes + pane sentinels) — the
+// shape BarMenu's shared ModeMenu takes.
 interface PaneMode {
   mode: string;
   icon: React.ReactNode;
@@ -219,46 +223,30 @@ export default function ListingPreviewPane({
 
   // --- the pane's mode list ---------------------------------------------------
 
-  // Mode order = pane priority. The special `_app` mode leads when a lone
-  // app exists; after it the template system's own order stands untouched —
-  // `_listing` stays exactly where the registry ranks it (typically ahead of
-  // claude/git), rendered as the embedded Listing rather than an iframe. On a
-  // FILE a `_listing` bind (rare registry rebind) is dropped entirely: the
-  // pane has no slot for a full listing of a file. Same for a SELF target's
-  // `_listing` — that listing is already on the left.
-  // Same gate policy as every other mode surface (lib/mode-visibility): a
-  // gated entry hides only on an explicit denial. A denied override is not
+  // Mode order = pane priority, decided in listing/pane-modes.ts — which also
+  // documents why a SELF target lands on no mode at all, why a lone app leads
+  // over `_listing`, and why `app` and `_app` are never both offered.
+  // This component only turns those mode names into menu entries with icons.
+  //
+  // Gate policy is the shared one (lib/mode-visibility), on every mode surface
+  // alike: an entry hides only on an EXPLICIT denial. A denied override is not
   // pinned into the list — the active mode falls back to the pane's default
-  // below (`modes.some(...)` guards it), matching Preview.
+  // (`activePaneMode` guards it), matching Preview.
   const allowed = (e: TemplateEntry) => isModeVisible(e, info.conditions);
   const embeddable = info.templates.filter((e) => e.mode !== "_listing" && allowed(e));
 
-  const modes: PaneMode[] = [];
-  // The `_app` sentinel exists so a folder with NO registry app binding still
-  // gets an app preview. When the registry does offer a visible `app` entry it
-  // is redundant — and both render as "View", so listing them together showed
-  // the menu two identical entries. The registry entry wins; the sentinel only
-  // steps in when `app` is absent or condition-denied.
-  const hasRegistryApp = info.templates.some((e) => e.mode === "app" && allowed(e));
-  if (row.isDir && app && !hasRegistryApp) modes.push({ mode: APP_MODE, icon: APP_MODE_ICON });
-  for (const e of info.templates) {
-    if (e.mode === "_listing") {
-      if (row.isDir && !row.self) modes.push({ mode: "_listing", icon: templateModeIcon(e) });
-      continue;
-    }
-    if (allowed(e)) modes.push({ mode: e.mode, icon: templateModeIcon(e) });
-  }
-  // One rule, two carriers: a lone app LEADS pane priority. The sentinel gets
-  // that lead by construction (pushed before the template loop); the registry
-  // `app` entry has to be hoisted, since the registry ranks `_listing` ahead
-  // of it and a child-row app folder would otherwise default to the nested
-  // listing instead of the app — the position the sentinel used to hold.
-  // Only when the probe is positive: a folder with an `app` binding but no
-  // lone HTML kept `_listing` first before this, and still does.
-  if (row.isDir && app && hasRegistryApp) {
-    const i = modes.findIndex((m) => m.mode === "app");
-    if (i > 0) modes.unshift(modes.splice(i, 1)[0]);
-  }
+  const modeNames = paneModeList({
+    templates: info.templates,
+    conditions: info.conditions,
+    isDir: !!row.isDir,
+    self: !!row.self,
+    hasApp: !!app,
+  });
+  const byMode = new Map(info.templates.map((e) => [e.mode, e]));
+  const modes: PaneMode[] = modeNames.map((m) => ({
+    mode: m,
+    icon: m === APP_MODE ? APP_MODE_ICON : templateModeIcon(byMode.get(m) as TemplateEntry),
+  }));
 
   // While the mode list is still undecided, hold the skeleton — the pane must
   // never settle on an interim mode and then jump. Undecided means: the
@@ -282,9 +270,11 @@ export default function ListingPreviewPane({
       </div>
     );
   }
-  // A self target with nothing to show (no app, no template) gets the
-  // neutral hint — never its own listing, which is already on the left.
-  if (row.self && modes.length === 0) {
+  // A self target with nothing offerable at all (no app, every template
+  // gate-denied) gets the bare hint — no header, because there is no mode to
+  // switch to. With modes to offer it falls through instead, so the header (and
+  // its switcher) stays on screen beside the hint.
+  if (row.self && modeNames.length === 0) {
     return (
       <div className="listing-pane">
         <div className="pane-center">
@@ -293,12 +283,13 @@ export default function ListingPreviewPane({
       </div>
     );
   }
-  // Default = the first mode in pane priority order; the menu override wins
-  // while it's still offered.
-  const activeMode =
-    modeOverride !== null && modes.some((m) => m.mode === modeOverride)
-      ? modeOverride
-      : (modes[0]?.mode ?? null);
+  // Default = the first mode in pane priority order, or NO mode for a self
+  // target without an app of its own; the menu override wins while it's still
+  // offered.
+  const activeMode = activePaneMode(modeNames, modeOverride, {
+    self: !!row.self,
+    hasApp: !!app,
+  });
   const activeEntry = embeddable.find((e) => e.mode === activeMode) ?? null;
 
   // Header: name + mode menu + Open. Shown for every mode except the file
@@ -364,6 +355,27 @@ export default function ListingPreviewPane({
           src={`/render?path=${encodeURIComponent(app.path)}`}
           title={app.name}
         />
+      </>
+    );
+  } else if (activeMode === null && row.self) {
+    // "Nothing previewed" — the self target's default state, not a mode: the
+    // header (so every offered mode stays one click away in the switcher, none
+    // of them marked active) above the same hint the nothing-to-show path
+    // shows.
+    //
+    // `row.self` is load-bearing, not defensive. `activePaneMode` returns null
+    // for TWO unrelated reasons: this state, and `modes[0] ?? null` on an empty
+    // list — which a SELECTED row reaches when its file maps to nothing or every
+    // template is gate-denied. That row has a subject and must keep falling
+    // through to the metadata card below; only the self target means "no subject
+    // chosen yet". The predecessor sentinel (`NONE_MODE`) could not be produced
+    // by an empty list, so it never had to say so.
+    body = (
+      <>
+        {header}
+        <div className="pane-center">
+          <div className="pane-hint">Select a file to preview.</div>
+        </div>
       </>
     );
   } else if (activeMode === "_listing" && row.isDir) {

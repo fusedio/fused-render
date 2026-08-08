@@ -1,4 +1,4 @@
-"""Stopping a turn in the claude template.
+"""Stopping a turn in the chat template.
 
 `agent.py` has always been able to kill a run (`action="cancel"` → SIGTERM to
 the process group, plus a release of every parked approval), but nothing in the
@@ -20,6 +20,10 @@ approval bridge:
 The end-of-run decision is one pure function in the page (`runEnding`), extracted
 and executed under node rather than asserted about as source: what matters is the
 text the user ends up reading.
+
+This file was parametrised over the two chat templates while a plain chat and a
+split chat both existed. The plain one is deleted — one chat for both kinds of
+target — so it now runs against `claude` alone.
 """
 import importlib.util
 import json
@@ -29,12 +33,15 @@ import subprocess
 
 import pytest
 
-# Both chats offer the stop: claude_split is a fork of claude, so the feature is
-# duplicated and every contract below is asserted against BOTH copies (D146 — a
-# rule in two implementations needs a test, not a comment). `agent` is
-# parametrised in lockstep with the html, so a template is never checked against
-# the other one's backend.
-TEMPLATES = ["claude", "claude_split"]
+# One chat template now. This used to be parametrised over the plain chat and
+# the split chat because the stop was duplicated in a fork and D146 wants a rule
+# in two implementations pinned by a test rather than a comment; the plain one is
+# deleted, so there is one implementation and the parametrisation collapses to a
+# single value. Kept as a list, and `template`/`_html` kept parametrised on it,
+# because that is the seam a second chat surface would re-enter through — and
+# because collapsing it to a bare constant would mean rewriting every test
+# signature for no behavioural gain.
+TEMPLATES = ["claude"]
 
 
 def _dir(template):
@@ -119,7 +126,7 @@ def _run_ending(data, stopped, template="claude"):
     duplicated-rule decision (D146) rests on — and raised FileNotFoundError
     instead of skipping wherever node is absent. Sited on the subprocess call, no
     later test can drift out of the guard's reach. Same siting as
-    test_claude_split_shots.py's and test_claude_split_app_state.py's `_node`.
+    test_claude_shots.py's and test_claude_app_state.py's `_node`.
     """
     if not shutil.which("node"):
         pytest.skip("node is needed to run the page's own end-of-run decision")
@@ -170,16 +177,9 @@ def test_the_ending_of_a_run_that_beat_the_stop_says_so(template):
     assert end["keepText"] is True
 
 
-def test_the_two_chats_decide_endings_identically():
-    """claude_split is a fork, so `runEnding` exists twice. Compared by what the
-    two copies DO — the exact note a user reads included — rather than by their
-    source, so the wording cannot drift while the comments are free to differ."""
-    cases = [
-        ({"done": True, "error": "boom", "text": ""}, False),
-        ({"done": True, "error": "boom", "text": "partial"}, True),
-        ({"done": True, "error": "", "text": "done"}, False),
-        ({"done": True, "error": "", "text": "done"}, True),
-    ]
-    for data, stopped in cases:
-        assert _run_ending(data, stopped, "claude") == \
-               _run_ending(data, stopped, "claude_split"), (data, stopped)
+# `test_the_two_chats_decide_endings_identically` lived here: it ran `runEnding`
+# from both chat templates over the same four terminal payloads and demanded byte
+# equality, which is what made the duplicated implementation safe. There is no
+# second copy to compare against now, so the test is gone rather than reduced to
+# comparing a function with itself. Every case it covered is still covered above,
+# against the one surviving implementation.

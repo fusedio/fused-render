@@ -21,7 +21,7 @@ from fused_render import app_commit_queue, app_git
 from fused_render import calls as shell_calls
 from fused_render.server.common import _error, _require_fused
 from fused_render.server.gitignore import _is_repo_root
-from fused_render.server.mount import _invalidate_stat_cache, _mount_probe, _mount_stat_payload, _mutation_result_payload, _probe_path, _stat_payload, _writable
+from fused_render.server.mount import _invalidate_stat_cache, _is_under_snapshot_root, _mount_probe, _mount_stat_payload, _mutation_result_payload, _probe_path, _stat_payload, _writable
 from fused_render.server.walk import _mount_list_error_response
 from fused_render.shell import storage as shell_storage
 
@@ -37,6 +37,28 @@ def _is_under_sidecar_root(path: str) -> bool:
     root = os.path.abspath(os.path.join(shell_storage.home_dir(), "sidecar"))
     ap = os.path.abspath(path)
     return ap == root or ap.startswith(root + os.sep)
+
+
+def _snapshot_refusal(*paths: str | None):
+    """The 403 for any mutation whose WRITE side lands in a `versions` snapshot
+    tree (see mount._is_under_snapshot_root), or None.
+
+    Reuses the `readonly` wire string rather than inventing one: runtime.js
+    `writeFile` already turns it into a typed error the code editor renders as
+    "Save failed: file is read-only", and the explorer's friendlyFsError already
+    phrases it as `"<name>" is read-only — <verb> isn't allowed here.` A new
+    string would have reached the user as an unhandled generic — and the point of
+    the guard is that a refusal READS as a refusal, not as a save that did
+    nothing.
+
+    Callers pass every path they would MODIFY. A copy's source is deliberately not
+    among them: read-only means read-only, not sealed, and taking a copy of an old
+    revision somewhere the user owns is what a history view is for.
+    """
+    for p in paths:
+        if isinstance(p, str) and p and os.path.isabs(p) and _is_under_snapshot_root(p):
+            return JSONResponse({"error": "readonly"}, status_code=403)
+    return None
 
 
 def _commit_mutation(result, verb: str, *paths) -> None:
@@ -81,6 +103,12 @@ def _fs_write(body: dict, x_fused: str | None):
         return _error("'path' must be an absolute filesystem path")
     if not isinstance(content, str):
         return _error("'content' must be a string")
+    # A `versions` snapshot is history, not a file (see _is_under_snapshot_root).
+    # Refused here, ahead of every other check, because there is no shape of this
+    # request that is allowed.
+    snap = _snapshot_refusal(path)
+    if snap is not None:
+        return snap
     parent = os.path.dirname(path)
 
     # Mount-backed target: gate on read-only-ness and answer existence/shape via
@@ -222,6 +250,9 @@ def _fs_upload(path: str | None, data: bytes, x_fused: str | None):
 
     if not path or not os.path.isabs(path):
         return _error("'path' must be an absolute filesystem path")
+    snap = _snapshot_refusal(path)   # nothing is dropped into a snapshot tree
+    if snap is not None:
+        return snap
     parent = os.path.dirname(path)
 
     # Mount-backed target: read-only refusal first, then existence/shape via the
@@ -306,6 +337,9 @@ def _fs_mkdir(body: dict, x_fused: str | None):
     path = body.get("path")
     if not path or not os.path.isabs(path):
         return _error("'path' must be an absolute filesystem path")
+    snap = _snapshot_refusal(path)   # a snapshot tree grows no new directories
+    if snap is not None:
+        return snap
     parent = os.path.dirname(path)
 
     # Mount-backed target: read-only refusal first, then existence/shape via the
@@ -476,6 +510,10 @@ def _fs_compress(body: dict, x_fused: str | None):
     dest = body.get("dest") or src + _ARCHIVE_EXT[fmt]
     if not isinstance(dest, str) or not os.path.isabs(dest):
         return _error("'dest' must be an absolute filesystem path")
+    # `dest` only: zipping a snapshot tree somewhere the user owns is a read.
+    snap = _snapshot_refusal(dest)
+    if snap is not None:
+        return snap
     parent = os.path.dirname(dest)
 
     # Mount branch, BEFORE any kernel stat of either end. Compressing across a
@@ -629,6 +667,12 @@ def _fs_delete(body: dict, x_fused: str | None):
     trash = bool(body.get("trash", False))
     if not path or not os.path.isabs(path):
         return _error("'path' must be an absolute filesystem path")
+    # The snapshot tree IS the record, so this covers the root as well as the
+    # files in it. Reclaiming disk under app-versions/ is versions.py's business,
+    # not an /api/fs/delete caller's.
+    snap = _snapshot_refusal(path)
+    if snap is not None:
+        return snap
 
     # Mount-backed target: read-only refusal first; then answer shape via the
     # rclone rcd. A DIRECTORY delete (the non-recursive os.listdir emptiness
@@ -720,6 +764,12 @@ def _fs_rename(body: dict, x_fused: str | None):
     if not dst or not os.path.isabs(dst):
         return _error("'dst' must be an absolute filesystem path")
     dst_parent = os.path.dirname(dst)
+    # BOTH sides: a move deletes src as well as writing dst, so moving a revision
+    # OUT of a snapshot tree destroys the record just as surely as moving one in
+    # falsifies it. (Copy, below, guards dst only — see _snapshot_refusal.)
+    snap = _snapshot_refusal(src, dst)
+    if snap is not None:
+        return snap
 
     # A mount is involved on either side: gate mount-safely BEFORE any kernel
     # probe. A move deletes src and writes dst, so a read-only mount on EITHER
@@ -820,6 +870,11 @@ def _fs_copy(body: dict, x_fused: str | None):
     if not dst or not os.path.isabs(dst):
         return _error("'dst' must be an absolute filesystem path")
     dst_parent = os.path.dirname(dst)
+    # `dst` only: read-only means read-only, not sealed, and copying an old
+    # revision out to somewhere the user owns is what a history view is for.
+    snap = _snapshot_refusal(dst)
+    if snap is not None:
+        return snap
 
     # A mount is involved on either side: gate mount-safely BEFORE any kernel
     # probe. A copy writes dst (only the dst mount must be writable — readonly

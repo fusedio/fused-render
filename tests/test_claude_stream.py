@@ -25,13 +25,13 @@ import subprocess
 
 import pytest
 
-TEMPLATE_DIR = os.path.join("fused_render", "templates", "claude_split")
+TEMPLATE_DIR = os.path.join("fused_render", "templates", "claude")
 TEMPLATE = os.path.join(TEMPLATE_DIR, "template.html")
 
 
 def _load(name):
     path = os.path.join(TEMPLATE_DIR, name + ".py")
-    spec = importlib.util.spec_from_file_location("claude_split_" + name, path)
+    spec = importlib.util.spec_from_file_location("claude_" + name, path)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
@@ -380,11 +380,20 @@ def test_no_budget_means_no_invented_denominator(html):
 
 # ------------------------------------------------------------ the page's wiring
 
-def test_the_prompt_does_not_promise_a_path_the_fallback_may_not_send(agent):
+def test_the_prompt_does_not_promise_a_path_the_fallback_may_not_send(agent, tmp_path):
     """appStateFile falls back to an inline `dom` when the write fails, so a
     prompt that states the outline is always at a path would send the model
-    hunting for a `dom_path` that was never sent."""
-    prompt = agent._split_system_prompt()
+    hunting for a `dom_path` that was never sent.
+
+    This is the APP FOLDER shape — the only one that mentions `dom_path` at all,
+    and the only one that ever did. `_split_system_prompt` takes the target and
+    the PANE FLAG now: an ordinary folder gets a different prompt, and the flag is
+    resolved once in `_start` rather than re-derived here (a second read is a
+    second answer)."""
+    app = tmp_path / "proj"
+    app.mkdir()
+    (app / "index.html").write_text("<p>hi</p>", encoding="utf-8")
+    prompt = agent._split_system_prompt(str(app), True)
     assert "inline" in prompt and "dom_path" in prompt
 
 

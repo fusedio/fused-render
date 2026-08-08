@@ -26,8 +26,8 @@ from fused_render._view_url_codec import canonical_fs_path
 
 router = APIRouter()
 
-# CLAUDE_CONFIG_DIR wins where set (same rule as user_skills.py, the claude/
-# claude_split agents' CLAUDE_DIR, and templates/shared/file_history.py's
+# CLAUDE_CONFIG_DIR wins where set (same rule as user_skills.py, the claude
+# template agent's CLAUDE_DIR, and templates/shared/file_history.py's
 # config_dir()) — duplicated locally rather than imported cross-package, same
 # posture as those sites.
 CLAUDE_DIR = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")

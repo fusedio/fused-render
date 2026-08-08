@@ -162,12 +162,21 @@ interface ModeMenuProps {
 
 export function ModeMenu({ entries, active, busy, onSelect }: ModeMenuProps) {
   const { pos, rootRef, toggle, close } = useMenuAnchor();
-  // One mode is not a choice — the same rule the icon strips used.
-  if (entries.length <= 1) return null;
+  const activeEntry = entries.find((e) => e.mode === active) ?? null;
+  // One mode is not a choice — the same rule the icon strips used — unless
+  // nothing is active (a caller whose surface can show no mode at all, e.g. the
+  // listing pane's self target), where that one entry is the only way to pick
+  // anything and the trigger is what offers it.
+  if (!entries.length || (entries.length === 1 && activeEntry)) return null;
 
-  const activeEntry = entries.find((e) => e.mode === active) ?? entries[0];
   const switching = busy !== null && busy !== undefined;
-  const label = modeTitle(switching ? (busy as string) : activeEntry.mode);
+  // With no active entry the trigger names the ACTION rather than a mode: there
+  // is no "current view" to report, and naming one would mis-report it.
+  const label = switching
+    ? modeTitle(busy as string)
+    : activeEntry
+      ? modeTitle(activeEntry.mode)
+      : "Choose view";
 
   return (
     <div className="mode-menu" ref={rootRef}>
@@ -176,13 +185,13 @@ export function ModeMenu({ entries, active, busy, onSelect }: ModeMenuProps) {
         className="bar-ctl bar-ctl-bordered mode-menu-btn"
         aria-haspopup="menu"
         aria-expanded={pos !== null}
-        aria-label={"View mode: " + label}
+        aria-label={activeEntry || switching ? "View mode: " + label : label}
         title={switching ? label + " — switching…" : "Change view mode"}
         onClick={toggle}
       >
         {/* The spinner takes the icon's place for the length of the switch. */}
         <span className="mode-menu-icon">
-          {switching ? <span className="mode-icon-spinner" /> : activeEntry.icon}
+          {switching ? <span className="mode-icon-spinner" /> : activeEntry?.icon}
         </span>
         <span className="mode-menu-label">{label}</span>
         <CaretIcon open={pos !== null} />
@@ -199,10 +208,10 @@ export function ModeMenu({ entries, active, busy, onSelect }: ModeMenuProps) {
               key={e.mode}
               type="button"
               role="menuitemradio"
-              aria-checked={e.mode === activeEntry.mode}
+              aria-checked={e.mode === activeEntry?.mode}
               className={
                 "bar-menu-item" +
-                (e.mode === activeEntry.mode ? " active" : "") +
+                (e.mode === activeEntry?.mode ? " active" : "") +
                 (e.pending ? " pending" : "")
               }
               disabled={e.pending}
@@ -216,7 +225,7 @@ export function ModeMenu({ entries, active, busy, onSelect }: ModeMenuProps) {
                 {e.pending ? <span className="mode-icon-spinner" /> : e.icon}
               </span>
               <span className="bar-menu-item-label">{modeTitle(e.mode)}</span>
-              {e.mode === activeEntry.mode && <CheckIcon />}
+              {e.mode === activeEntry?.mode && <CheckIcon />}
             </button>
           ))}
         </div>

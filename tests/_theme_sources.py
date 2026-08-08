@@ -32,7 +32,6 @@ TIER_ONE_TEMPLATES = (
     "app",
     "bundle",
     "claude",
-    "claude_split",
     "code",
     "duckdb",
     "git",
@@ -231,3 +230,46 @@ def style_color_literals(source, palette_selectors=()):
                 "rgba(" + args + ")" for args in _FUNC.findall(body) if "var(" not in args
             )
     return found
+
+
+# `var(--name)` and `var(--name, fallback)` — the NAME only, so a nested fallback
+# (`var(--a, var(--b))`) contributes both names on separate matches.
+_VAR_REF = re.compile(r"var\(\s*(--[\w-]+)")
+
+
+def undefined_token_refs(source):
+    """Tokens a stylesheet READS through `var()` but never DEFINES.
+
+    An undefined token is silently inert, which is the whole problem: `color:
+    var(--muted, var(--fg))` resolves to `--fg`, so a control the author meant to
+    render muted renders at full foreground and its `:hover { color: var(--fg) }`
+    becomes a no-op — a documented two-state style with one state. Without a
+    fallback it is worse: `background: var(--surface-2)` with no `--surface-2` is
+    invalid-at-computed-value-time, so the property drops to its initial value.
+    Neither case is a CSS error, nothing logs, and the rule looks correct in the
+    source.
+
+    Definitions are collected from ANYWHERE in the sheet, not just the palettes: a
+    geometry constant on `body` (history's `--spine-x`) is a legitimate definition
+    and duplicating it into both palettes only to satisfy a test would be worse
+    than the test. Comments are stripped first, for the reason `_declarations`
+    gives — a token name in prose otherwise reads as a declaration.
+
+    Templates are self-contained here: the injected runtime writes `data-theme`
+    onto <html>, it does not inject tokens (§30/AP-9), so a token a template reads
+    has to be one the template defines.
+    """
+    body = _COMMENT.sub("", source)
+    # Definitions are gathered from the WHOLE document, not just the <style>: a
+    # per-row geometry token is legitimately written as an inline
+    # `style="--depth:${n}"` on markup the page builds (log_studio, markdown,
+    # plist), and that is a definition of it — just not one a stylesheet can hold.
+    defined = {name for name, _ in _DECL.findall(body)}
+    # References are read from the STYLESHEET only: a `var(--x)` inside a JS string
+    # that builds a rule is already covered by the sheet it lands in, and reading
+    # every `var(` in the script would count tokens belonging to a framed
+    # document's stylesheet as this one's.
+    refs = set()
+    for sheet in _STYLE_BLOCK.findall(body) or [body]:
+        refs |= set(_VAR_REF.findall(sheet))
+    return sorted(refs - defined)
