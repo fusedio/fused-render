@@ -324,10 +324,13 @@ export default function ListingPreviewPane({
           the loudest thing in the pane's header for the one action the user
           least needs pointed out. Two arrows to opposite corners is the
           expand/full-screen glyph, which is also the truer description — the
-          preview is already open, this makes it the whole view. */}
+          preview is already open, this makes it the whole view. Plain
+          .bar-ctl-icon metrics, like every other glyph-only control in these
+          bars — it had a rule of its own for one release that only restated
+          them. */}
       <button
         type="button"
-        className="bar-ctl pane-header-btn"
+        className="bar-ctl bar-ctl-icon"
         title="Open"
         aria-label="Open"
         onClick={() => navigate(row.path, { isDir: row.isDir })}

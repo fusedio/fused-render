@@ -246,7 +246,7 @@
    shapes, radii of 3/4/5/6/8/999px, and 14-18px icons mixed inside a single
    row. Everything in those bars is now built from these classes instead —
    28px tall, 6px radius, 16px icons, ghost by default, bordered only for the
-   mode control and the row's one primary action. `.panel-bar` re-scales the
+   mode control. `.panel-bar` re-scales the
    whole set to 24px/14px in preview.css; nothing else overrides it.
 
    Ghost is deliberately a background wash rather than a border-on-hover: a
@@ -299,25 +299,22 @@
   color: var(--fg);
 }
 
-/* The only two things in these bars that get chrome: the mode control and the
-   row's single primary action. */
-.bar-ctl-bordered,
-.bar-ctl-primary {
+/* The one thing in these bars that gets chrome: the mode control. There used
+   to be a second recipe beside it, .bar-ctl-primary, for "the row's single
+   primary action" — a bordered, semibold label. Its last consumer was the
+   preview pane's "Open", now a muted glyph like everything else it sits
+   beside, and a bar with no primary in it turns out to be the point: these
+   rows are chrome, and the subject is what the view is showing. */
+.bar-ctl-bordered {
   border: 1px solid var(--border);
   background: var(--bg);
   color: var(--fg);
 }
 
-.bar-ctl-bordered:hover:not(:disabled),
-.bar-ctl-primary:hover:not(:disabled) {
+.bar-ctl-bordered:hover:not(:disabled) {
   background: var(--bg);
   border-color: var(--fg-muted);
   color: var(--fg);
-}
-
-.bar-ctl-primary {
-  padding: 0 14px;
-  font-weight: 600;
 }
 
 /* Hairline between the mode control and the layout group. A zone divider, not
@@ -740,16 +737,6 @@
   text-overflow: ellipsis;
   white-space: nowrap;
   color: var(--fg);
-}
-
-/* Open-full-screen: one of the strip's muted glyphs, square like
-   .bar-ctl-icon, with no border and no accent of its own — everything else in
-   this header is ghost chrome, and the row's double-click already opens it.
-   It was a bordered "Open" primary, which made a redundant action the loudest
-   thing in the pane's header. */
-.listing-pane .pane-header-btn {
-  width: 28px;
-  padding: 0;
 }
 
 /* Folder preview fallback: the folder's own entries, read-only. Narrower
