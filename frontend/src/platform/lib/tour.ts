@@ -55,17 +55,17 @@ const STEPS: DriveStep[] = [
     },
   },
   {
-    element: ".split-dir",
+    element: "#split-right-btn",
     popover: {
       title: "Split view",
       description: "Open two panes side by side — like code next to its render.",
     },
   },
   {
-    element: ".reveal-btn",
+    element: ".bar-overflow",
     popover: {
-      title: "Open in Finder",
-      description: "Reveal the current folder or file in your file manager.",
+      title: "More actions",
+      description: "Reveal the current folder or file in your file manager, or copy its path.",
     },
   },
 ];

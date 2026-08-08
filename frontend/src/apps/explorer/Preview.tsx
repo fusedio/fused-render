@@ -20,7 +20,7 @@ import {
 import type { Deployment, StatResult, TemplateEntry } from "@platform/lib/api";
 import { navigate, navigateUrl, urlForFsPath, replaceSearch } from "@platform/lib/router";
 import { appRouteUrl, APP_OPEN_MODE } from "@platform/lib/appEntry";
-import { formatSize, formatMtime, basename } from "@platform/lib/format";
+import { formatSize, formatMtimeFull, basename } from "@platform/lib/format";
 import { useRefreshOnReturn, useUrlVersion } from "@platform/lib/hooks";
 import { useDeployEnabled } from "@platform/lib/prefs";
 import {
@@ -37,7 +37,14 @@ import {
 import { acquireOverlay, releaseOverlay } from "@platform/lib/ui-overlay";
 import { setClipboard } from "@apps/explorer/lib/fs-clipboard";
 import { pushToast } from "@platform/lib/toast";
-import ModeSwitcher, { templateModeIcon, modeTitle, KNOWN_SENTINEL_MODES } from "@apps/explorer/ModeSwitcher";
+import { templateModeIcon, modeTitle, KNOWN_SENTINEL_MODES } from "@apps/explorer/ModeSwitcher";
+import {
+  isModePending,
+  visibleModes,
+  defaultMode,
+  effectiveActive,
+} from "@platform/lib/mode-visibility";
+import { ModeMenu, OverflowMenu } from "@apps/explorer/BarMenu";
 import ContextMenu, { type MenuEntry, type MenuItem } from "@platform/ui/ContextMenu";
 import { MenuIcons } from "@platform/ui/MenuIcons";
 import { PromptDialog, ConfirmDialog, nameError } from "@apps/explorer/FsDialogs";
@@ -283,21 +290,24 @@ function usePreviewFileMenu(
 // the first UNCONDITIONAL entry (CT-12: a gated template is never the default
 // while a normal one exists) — only an all-conditional list falls back to its
 // first (by then verdict-allowed) entry.
+// Both rules live in lib/mode-visibility so every mode surface resolves the
+// same way; `templates` here is already the visible list, so a gate-denied
+// `_mode` lands on the default exactly like an unknown one.
 function defaultTemplate(templates: TemplateEntry[]): TemplateEntry {
-  return templates.find((t) => !t.conditional) || templates[0];
+  return defaultMode(templates) as TemplateEntry;
 }
 
 function activeTemplate(templates: TemplateEntry[]): TemplateEntry {
   const requested = new URLSearchParams(location.search).get("_mode");
-  return templates.find((t) => t.mode === requested) || defaultTemplate(templates);
+  return effectiveActive(templates, requested) as TemplateEntry;
 }
 
 // Deferred condition.py verdicts (CT-12). Stat only MARKS gated templates
 // (`conditional: true`) so it stays fast on remote mounts; the actual gates
 // run here, in the background, while the first unconditional template is
 // already rendering. Returns null while resolving, then {mode: allowed}.
-// A failed request resolves to {} — every gated entry then reads as denied,
-// the same fail-closed posture as a broken gate server-side.
+// A failed request resolves to {} — no verdicts at all; lib/mode-visibility
+// keeps verdict-less gated entries visible rather than emptying the menu.
 function useConditions(fsPath: string, templates: TemplateEntry[]): Record<string, boolean> | null {
   const anyConditional = templates.some((t) => t.conditional);
   const [verdicts, setVerdicts] = useState<Record<string, boolean> | null>(anyConditional ? null : {});
@@ -418,16 +428,25 @@ function TemplatePreview({
   // Preview's dispatch, SPEC PT-12) is non-empty. Entries whose condition.py
   // verdict is still in flight (CT-12) are present but PENDING — shown in the
   // switcher as a disabled spinner, not selectable, never the default.
-  const isPending = (t: TemplateEntry) => !!t.conditional && conditions === null;
+  const isPending = (t: TemplateEntry) => isModePending(t, conditions);
   const defaultEntry = defaultTemplate(templates);
+  // `mode` is what the user (or the URL) ASKED for; `entry` is what this paint
+  // can actually render. They differ for exactly one render whenever a verdict
+  // lands and DROPS the requested mode (a URL-requested conditional that
+  // resolved false) — the reconciling effect below cannot run until after that
+  // paint. So everything downstream keys off `entry.mode`, never off `mode`:
+  // reading the stale request meant the held-frame swap spent that paint with
+  // no frame at all (a blank pane), then mounted a frame for the dropped mode
+  // whose `srcFor` is null, and only unwound it once the state caught up.
   const [mode, setModeState] = useState<string>(() => activeTemplate(templates).mode);
   const entry = templates.find((t) => t.mode === mode) || defaultEntry;
-  // A verdict landing can DROP the current mode (URL-requested conditional
-  // that resolved false): fall back to the default, same silent posture as an
-  // unknown `_mode`.
+  const activeMode = entry.mode;
+  // Reconcile the request with what actually rendered. Purely bookkeeping now
+  // (the switcher's selection, and the guard in setMode) — no rendering waits
+  // on it.
   useEffect(() => {
-    if (!templates.some((t) => t.mode === mode)) setModeState(defaultEntry.mode);
-  }, [templates, mode, defaultEntry.mode]);
+    if (mode !== activeMode) setModeState(activeMode);
+  }, [mode, activeMode]);
   const deployEnabled = useDeployEnabled();
   // Re-render on URL changes (the pane toggle writes `preview` via
   // replaceSearch, which fires fused:urlchange) so the switcher-hide below
@@ -439,15 +458,21 @@ function TemplatePreview({
   // single `_listing` mode), so the preview header is uniform across files and
   // dirs.
   const isListing = entry.mode === "_listing";
-  // When the listing's right preview pane is open (default ON — see
-  // listing/pane.ts paneIsOpen), the pane header carries its own mode
-  // switcher — showing the top-bar one too is duplicate chrome, so it hides.
-  // Top-bar variant only; the in-body header (non-explorer hosts) never
-  // coexists with the pane. Gated on `isListing`: a FILE view's fsPath never
-  // carries pane viewstate (the pane belongs to directories) and `preview`
-  // never rides onto file URLs (router.ts navigate), so paneIsOpen would
-  // otherwise read the now-default-on value and hide every file's switcher.
-  const paneOpen = !!actionsInTopbar && isListing && paneIsOpen(fsPath);
+  // Whether the listing's right preview pane is showing (default ON — see
+  // listing/pane.ts paneIsOpen). Gated on `isListing`: a FILE view's fsPath
+  // never carries pane viewstate (the pane belongs to directories) and
+  // `preview` never rides onto file URLs (router.ts navigate), so paneIsOpen
+  // would otherwise read the now-default-on value here.
+  //
+  // The top-bar mode control used to hide while this was true, on the theory
+  // that the pane header's own switcher was the same control. It is not: the
+  // pane header's menu belongs to the PREVIEWED ROW (and drops `_listing`,
+  // which a pane cannot render for the folder already on the left), while the
+  // top bar's belongs to the FOLDER — the same distinction that keeps
+  // .preview-browse-chip out of the pane's header row below. On a folder whose
+  // pane menu collapses to a single entry, hiding the top-bar one left the
+  // folder with NO way to change its view mode at all.
+  const listingPaneOpen = isListing && paneIsOpen(fsPath);
   // Path of the directory's lone top-level HTML file, reported by Listing
   // (null when there isn't exactly one) — drives the "Open as app" button
   // between the directory name and the mode switcher.
@@ -519,7 +544,7 @@ function TemplatePreview({
   // begins (A4).
   const [switchingTo, setSwitchingTo] = useState<string | null>(null);
   const setMode = async (next: string) => {
-    if (next === mode || switching.current) return;
+    if (next === activeMode || switching.current) return;
     // Unresolved gate: not selectable (the switcher disables it too).
     const target = templates.find((t) => t.mode === next);
     if (target && isPending(target)) return;
@@ -598,11 +623,11 @@ function TemplatePreview({
   // (the same discipline Tabs.tsx keeps for its keep-alive frames). A→B→A
   // therefore keeps [A, B] rather than swapping to [B, A]. Stacking is done
   // with z-index (shell.css), not DOM order.
-  const [frames, setFrames] = useState<string[]>(() => (isListing ? [] : [mode]));
+  const [frames, setFrames] = useState<string[]>(() => (isListing ? [] : [activeMode]));
   // Which frame is visible. Lags `mode` for the length of a swap; the initial
   // frame is shown immediately (it fades from --bg, not from white, so there is
   // nothing to hold back for).
-  const [shown, setShown] = useState<string>(mode);
+  const [shown, setShown] = useState<string>(activeMode);
   // Modes whose frame has fired `load` at least once and is STILL mounted. A
   // frame the append-only list kept alive will never fire `load` again, so
   // switching back to it (A→B→A inside the swap window) has no event to complete
@@ -617,36 +642,45 @@ function TemplatePreview({
     // that starts its fade, or the transition has no `from` value to run from.
     if (framePending) {
       setFrames([]);
-      setShown(mode);
+      setShown(activeMode);
       loadedFrames.current.clear(); // every frame unmounts with them
       return;
     }
-    setFrames((f) => (f.includes(mode) ? f : [...f, mode]));
+    setFrames((f) => (f.includes(activeMode) ? f : [...f, activeMode]));
     // Already mounted AND already loaded: complete the swap now rather than
     // waiting for a load event that cannot come. The `.is-shown` flip still
     // cross-fades through the CSS transition, so this is the same swap, just
     // without the wait. Frames that are mounted but not yet loaded keep the
     // load/timeout path below.
-    if (loadedFrames.current.has(mode)) setShown(mode);
-  }, [mode, framePending]);
+    //
+    // Nothing mounted at all (the gate-pending branch above just cleared the
+    // list, or a verdict dropped the requested mode) is the same situation as
+    // the initial mount: there is no outgoing content to hold, so the incoming
+    // frame is shown straight away and fades up from --bg instead of waiting
+    // out its load behind an empty pane.
+    if (loadedFrames.current.has(activeMode) || frames.length === 0) setShown(activeMode);
+    // `frames` is read only to spot the empty case; adding it to the deps would
+    // re-run this on every append and re-show a frame mid-swap.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeMode, framePending]);
   // A frame whose document never fires `load` must not strand the user on the
   // previous mode's content: past FRAME_SWAP_TIMEOUT_MS the swap completes
   // regardless of what the incoming frame did.
   useEffect(() => {
-    if (shown === mode || framePending) return;
-    const id = window.setTimeout(() => setShown(mode), FRAME_SWAP_TIMEOUT_MS);
+    if (shown === activeMode || framePending) return;
+    const id = window.setTimeout(() => setShown(activeMode), FRAME_SWAP_TIMEOUT_MS);
     return () => window.clearTimeout(id);
-  }, [shown, mode, framePending]);
+  }, [shown, activeMode, framePending]);
   // Retire the frames the swap left behind, once the incoming one has faded in.
   useEffect(() => {
-    if (frames.length <= 1 || shown !== mode) return;
+    if (frames.length <= 1 || shown !== activeMode) return;
     const id = window.setTimeout(() => {
-      setFrames([mode]);
+      setFrames([activeMode]);
       // Their documents are gone with them, so they are no longer "loaded".
-      for (const m of [...loadedFrames.current]) if (m !== mode) loadedFrames.current.delete(m);
+      for (const m of [...loadedFrames.current]) if (m !== activeMode) loadedFrames.current.delete(m);
     }, FRAME_FADE_MS);
     return () => window.clearTimeout(id);
-  }, [frames, shown, mode]);
+  }, [frames, shown, activeMode]);
 
   // Embed hides the whole preview-header, hence the switcher (shell.css). A
   // directory whose mode list carries `_listing` alongside another mode (a
@@ -716,6 +750,12 @@ function TemplatePreview({
   const appBtnLabel = linkStatus?.status === "unlinked" ? "Add as app" : "Open as app";
   const appBtnAction = linkStatus?.status === "unlinked" ? convertToApp : openAsApp;
 
+  // The folder's primary action, built once and rendered in exactly one place.
+  // With the listing's preview pane OPEN it goes down into that pane's header,
+  // whose primary slot is otherwise empty for the folder's own row — the title
+  // bar was where it competed with the mode control and the layout zone for
+  // the user's eye. With the pane CLOSED there is no pane header to hold it,
+  // so the title bar keeps it. Never both, never neither.
   const openAsAppBtn =
     isListing && singleAppPath && linkStatus ? (
       <button type="button" className="open-as-app-btn" onClick={appBtnAction}>
@@ -725,19 +765,6 @@ function TemplatePreview({
 
   const headerActions = (
     <>
-      {/* App-builder chrome only (appChrome — the variant that pins the mode
-          list): the counterpart of the explorer's "Open as app" — jump from
-          the app experience back to the folder in the explorer
-          (/explorer/view/...), where the full template/mode surface lives. */}
-      {appChrome && stat.is_dir && (
-        <button
-          type="button"
-          className="open-as-app-btn"
-          onClick={() => navigate(fsPath, { isDir: true })}
-        >
-          Open in explorer
-        </button>
-      )}
       {/* Deployable = the mode list carries the "_render" sentinel AND the
           file is .html/.htm — the exporter's actual contract. The extension
           check matters because a registry rebind can put "_render" on any
@@ -751,15 +778,30 @@ function TemplatePreview({
         deployEnabled &&
         templates.some((t) => t.mode === "_render") &&
         /\.html?$/i.test(fsPath) && <DeployButton fsPath={fsPath} />}
-      {!paneOpen && (
-        <ModeSwitcher
-          entries={templates.map((t) => ({ mode: t.mode, icon: templateModeIcon(t), pending: isPending(t) }))}
-          active={entry.mode}
-          /* Spinner from the click until the incoming frame has actually taken
-             over — the flush wait AND the new document's load are both time the
-             user is waiting on that button. */
-          busy={switchingTo ?? (shown !== mode ? mode : null)}
-          onSelect={setMode}
+      <ModeMenu
+        entries={templates.map((t) => ({
+          mode: t.mode,
+          icon: templateModeIcon(t),
+          pending: isPending(t),
+        }))}
+        active={entry.mode}
+        /* Spinner from the click until the incoming frame has actually taken
+           over — the flush wait AND the new document's load are both time the
+           user is waiting on that button. */
+        busy={switchingTo ?? (shown !== activeMode ? activeMode : null)}
+        onSelect={setMode}
+      />
+      {/* Rightmost, per the bars' grammar: the low-frequency one-shots live in
+          the overflow, beside "Open in Finder" and "Copy path" in the title
+          bar's own `···`. "Open in explorer" — the counterpart of the
+          explorer's "Open as app", jumping from the app experience back to the
+          folder where the full template surface lives — held the bar's most
+          prominent slot for an action nobody uses twice a session. */}
+      {appChrome && stat.is_dir && (
+        <OverflowMenu
+          items={[
+            { label: "Open in explorer", onClick: () => navigate(fsPath, { isDir: true }) },
+          ]}
         />
       )}
     </>
@@ -769,7 +811,7 @@ function TemplatePreview({
     <>
       {actionsInTopbar ? (
         <TopbarActions>
-          {openAsAppBtn}
+          {!listingPaneOpen && openAsAppBtn}
           {headerActions}
         </TopbarActions>
       ) : (
@@ -794,7 +836,11 @@ function TemplatePreview({
             Checking if this view applies…
           </div>
         ) : isListing ? (
-          <Listing fsPath={fsPath} onSingleApp={setSingleAppPath} />
+          <Listing
+            fsPath={fsPath}
+            onSingleApp={setSingleAppPath}
+            selfPrimary={listingPaneOpen ? openAsAppBtn : null}
+          />
         ) : (
           /* One frame per mounted mode (see the held-frame swap above). Each
              key is its own mode, so a frame is created once and never
@@ -811,14 +857,22 @@ function TemplatePreview({
                   // switch BACK to this still-mounted frame can complete
                   // without a second load event (see loadedFrames).
                   loadedFrames.current.add(m);
-                  if (m === mode) setShown(m);
+                  if (m === activeMode) setShown(m);
                   onRenderFrameLoad(e, m);
                 }}
               />
             ))}
           </div>
         )}
-        {toggleListing && (
+        {/* Not while the listing's preview pane is open: the chip pins to this
+            element's top-right corner, and with the pane on, that corner is
+            INSIDE the pane — the chip lands in the pane's header row, where it
+            reads as pane chrome. It is not (it switches the FOLDER's mode, not
+            the previewed file's), so a bare mode name like "Claude" sitting
+            there is a mystery button. Closing the pane brings it back, and the
+            `!isListing` case — "Browse contents" over a directory template's
+            iframe, the chip's original job (PT-13/D65) — is untouched. */}
+        {toggleListing && !listingPaneOpen && (
           <button type="button" className="preview-browse-chip" onClick={toggleListing}>
             {!isListing
               ? "Browse contents"
@@ -862,7 +916,7 @@ function FallbackPreview({ fsPath, stat, actionsInTopbar }: { fsPath: string; st
             <dt>Size</dt>
             <dd>{formatSize(stat.size)}</dd>
             <dt>Modified</dt>
-            <dd>{formatMtime(stat.mtime)}</dd>
+            <dd>{formatMtimeFull(stat.mtime)}</dd>
           </dl>
           <a href={rawUrl(fsPath)} download={stat.name}>
             Download
@@ -910,9 +964,12 @@ export default function Preview({ fsPath, stat, onRenderedTitle, allowModes, hid
   // ALL-conditional list has nothing safe to show and waits here.
   const conditions = useConditions(fsPath, templates);
   const resolving = conditions === null;
-  // While resolving, gated entries stay visible (as pending); once verdicts
-  // land, denied ones drop.
-  const visible = templates.filter((t) => !t.conditional || resolving || conditions[t.mode] === true);
+  // Shared visibility policy (lib/mode-visibility): gated entries are pending
+  // while resolving, stay when no verdict ever arrived, and drop on an
+  // explicit denial — including when the URL asked for one, which then falls
+  // back to the default (activeTemplate) or, if nothing survives, to
+  // FallbackPreview below.
+  const visible = visibleModes(templates, conditions);
   if (resolving && templates.length > 0 && templates.every((t) => t.conditional)) {
     return (
       <>

@@ -13,7 +13,21 @@ export function formatSize(bytes: number | null | undefined): string {
   return `${v.toFixed(v < 10 ? 1 : 0)} ${units[u]}`;
 }
 
+// Listing-grade stamp: locale date + hours:minutes. Seconds are noise in a
+// column of file dates — and carrying them made MODIFIED the widest column in
+// the table, which is backwards for the least important one. The full
+// precision is still one hover away (the cells carry formatMtimeFull as their
+// title) and one panel away (Preview's stat card uses it outright).
 export function formatMtime(epochSeconds: number | null | undefined): string {
+  if (!epochSeconds) return "";
+  return new Date(epochSeconds * 1000).toLocaleString(undefined, {
+    dateStyle: "short",
+    timeStyle: "short",
+  });
+}
+
+// Full precision, seconds included — for tooltips and the stat panel.
+export function formatMtimeFull(epochSeconds: number | null | undefined): string {
   if (!epochSeconds) return "";
   return new Date(epochSeconds * 1000).toLocaleString();
 }
