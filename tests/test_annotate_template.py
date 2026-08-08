@@ -337,3 +337,33 @@ def test_annotate_is_what_sets_the_ticket(source):
                       'document.getElementById("toclaude").addEventListener')
     assert "DELIBERATE STANDARD-BREAK" in preamble
     assert "reserved" in preamble.lower()
+
+
+# ---------------------------------------------------- the binding that is not
+
+def test_annotate_is_bound_to_no_registry_key():
+    """D230 deregistered `annotate` from every core key, including the universal
+    `/` directory key — its tools live in the chat's own left pane now, and a
+    second, staler way in was not worth keeping (PT-14's rejected list).
+
+    Pinned as a test rather than left to the diff because re-linking it is a
+    ONE-WORD edit to a JSON list, and the consequence is not visibly broken: the
+    mode would open, render, and offer a "Send to Claude" button whose receiver
+    was deleted with the plain chat template — so the comments would ride a
+    `_mode=annotate&claudeReturn=…` URL that nothing resolves, and the user would
+    watch their review vanish. Silent, and only reachable by trying it.
+
+    The template folder itself is deliberately NOT deleted (that is a separate
+    call the owner has not made) and stays reachable by an explicit
+    `/render?path=…/annotate/template.html`. This test is only about what the
+    registry OFFERS.
+    """
+    with open(os.path.join("fused_render", "templates", "registry.json"),
+              encoding="utf-8") as fh:
+        registry = json.load(fh)
+    bound = {key: names for key, names in registry.items()
+             if isinstance(names, list) and "annotate" in names}
+    assert bound == {}, bound
+    # And no other value shape smuggles it in (a `null` binding disables a key,
+    # CT-2 — it can never introduce a mode).
+    assert all(isinstance(v, list) or v is None for v in registry.values())
