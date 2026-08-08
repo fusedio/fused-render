@@ -663,6 +663,50 @@ def test_a_single_view_target_shows_no_picker():
     assert "if (paneEntries.length < 2) return;" in page
 
 
+def test_the_view_picker_sits_on_the_pane_it_controls_in_the_split_layout():
+    """WHERE the picker lives is a layout question. In the SPLIT layout it sits
+    in `#leftbar`, a real row across the top of the left column — the control
+    that chooses what that pane frames, on that pane. It used to sit in
+    `#anntools`, across the divider, which put a control for one column on the
+    other one.
+
+    Below the breakpoint there is no persistent left column to hang a bar on, so
+    the picker goes back to `#anntools` — the one row both narrow views keep —
+    and the media block drops `#leftbar` outright. ONE element moves between the
+    two hosts; a second copy would be a second value and a second listener to
+    keep in step with `leftmode`.
+
+    A ROW and not an overlay, for the reason `#anntools` is one: an overlay
+    lands on top of whatever the framed app draws underneath it.
+    """
+    page = _pane_source()
+    # The bar ships empty and hidden; JS fills it only when there is a choice.
+    assert '<div id="leftbar" hidden></div>' in page
+    # ...and it is a row inside the left column, ABOVE the frame's own box.
+    assert page.index('<div id="leftbar"') < page.index('<div id="leftview">')
+    # `display: flex` outranks the UA's `[hidden]` rule, so the attribute needs
+    # a rule of its own or "hidden" would not hide it.
+    assert "#leftbar[hidden] { display: none; }" in page
+    # The narrow layout has no left bar at all.
+    assert "#leftbar { display: none; }" in _media_rules()
+    code = _pane_code()
+    i = code.index("function placeLeftPicker()")
+    body = code[i:code.index("\n}", i)]
+    # The two hosts, chosen by the same matchMedia object the rest of the layout
+    # uses — never a second width comparison that can disagree with the query.
+    assert "const wide = !NARROW_MQ.matches;" in body
+    assert 'const host = wide ? leftBar : document.getElementById("anntools");' in body
+    # Moved, not duplicated, and only when the host actually differs.
+    assert "if (leftSel.parentElement !== host) {" in body
+    # No bar when the picker has nothing to offer (buildLeftPicker leaves the
+    # select hidden), so an empty bordered strip never sits over the preview.
+    assert "const show = wide && !leftSel.hidden;" in body
+    # The bar is a row above #leftview, so its arrival/removal changes the box
+    # the pins are measured in — the same two-step re-measure applyNarrowView does.
+    assert "renderAnn();" in body
+    assert "requestAnimationFrame(renderAnn);" in body
+
+
 def test_switching_the_left_view_keeps_the_annotation_list():
     """The decision recorded in applyLeftMode, pinned so it is not quietly
     reversed: pins are anchored to elements of the LEFT document, so a new left
@@ -760,7 +804,9 @@ def test_the_narrow_layout_neutralises_the_inline_split_width_from_applysplit():
     What makes it correct in BOTH directions with no reload is that the `split`
     PARAM is never touched by the collapse — the inline style is the only thing
     cleared — plus a matchMedia listener that re-runs applySplit when the
-    breakpoint is crossed without a resize event of the pane's own.
+    breakpoint is crossed without a resize event of the pane's own. That
+    listener now drives all three layout appliers, since the view picker also
+    changes host at the breakpoint (see the picker-placement test below).
     """
     page = _pane_source()
     rules = _media_rules()
@@ -771,8 +817,10 @@ def test_the_narrow_layout_neutralises_the_inline_split_width_from_applysplit():
     assert ('const NARROW_MQ = window.matchMedia("(max-width: %dpx)");' % NARROW_PX
             ) in page
     assert 'if (NARROW_MQ.matches) { leftEl.style.width = ""; return; }' in page
-    assert ('NARROW_MQ.addEventListener("change", () => { applySplit(); '
-            'applyNarrowView(); });') in page
+    handler = page[page.index('NARROW_MQ.addEventListener("change"'):]
+    handler = handler[:handler.index("});")]
+    for call in ("placeLeftPicker();", "applySplit();", "applyNarrowView();"):
+        assert call in handler
 
 
 def test_the_narrow_layout_keeps_the_view_toggle_reachable_from_both_views():
