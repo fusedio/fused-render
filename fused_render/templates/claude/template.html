@@ -139,7 +139,14 @@
     white-space: nowrap;
     border: 0;
     background: transparent;
-    color: var(--muted, var(--fg));
+    /* `--dim` is THIS file's muted ink (see the palettes at the top). It read
+       `var(--muted, var(--fg))` for a long time, and `--muted` is defined nowhere
+       here and is not injected by the shell theme — the runtime writes
+       `data-theme`, not tokens — so the fallback always won and the switch drew at
+       full foreground in both states, making `:hover { color: var(--fg) }` below a
+       no-op. Silent, because an undefined token is inert rather than an error.
+       tests/test_theme.py now fails on any var() this file does not define. */
+    color: var(--dim);
     cursor: pointer;
     transition: color .12s;
   }
@@ -192,7 +199,10 @@
     border: 0;
     border-radius: 6px;
     background: transparent;
-    color: var(--muted, var(--fg));
+    /* Same muted ink as #annbtn beside it — and copied from it AFTER the
+       `var(--muted, …)` bug had been sitting in that rule unnoticed, which is how a
+       dead style spreads. */
+    color: var(--dim);
     cursor: pointer;
     transition: color .12s, background .12s;
   }
@@ -1922,6 +1932,16 @@ function applyLeftMode() {
                                              // every param, `split` included
   const frame = document.getElementById("leftframe");
   if (!frame) return;   // the boot error path removed it; nothing to swap
+  // RESOLVED BEFORE ANYTHING IS COMMITTED. paneSrcFor throws for an offerable
+  // entry with no `path`, and `framedMode` is the record of what the iframe IS
+  // showing — writing it first left it naming a mode the frame was never pointed
+  // at, which then made the idempotence guard above SKIP the retry, and the throw
+  // propagated out of the params.onChange listener so applyNarrowView() and
+  // renderAnn() were skipped for that tick with the runtime quietly logging it.
+  // Only reachable if a non-sentinel offerable entry lacks `path`, which stat does
+  // not produce today — so this is ordering discipline, not a live bug, and the
+  // ordering is pinned by a test rather than left to be remembered.
+  const src = paneSrcFor(t);
   framedMode = t.mode;
   if (leftSel.options.length) leftSel.value = t.mode;
   // ANNOTATIONS SURVIVE THE SWAP, deliberately. Every pin is anchored to an
@@ -1936,7 +1956,7 @@ function applyLeftMode() {
   // it" (see renderAnn), and #leftframe's `load` handler re-wires the fresh
   // document and calls renderAnn() itself — which is why there is no renderAnn
   // here, unlike the divider drag, where no load event is coming.
-  frame.src = paneSrcFor(t);
+  frame.src = src;
 }
 
 // ── no pane at all: the ordinary folder's full-width chat (D239) ──────────

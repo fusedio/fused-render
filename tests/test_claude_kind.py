@@ -39,6 +39,8 @@ import importlib.util
 import json
 import os
 import re
+import shutil
+import subprocess
 
 import pytest
 
@@ -643,8 +645,12 @@ def test_the_picker_is_sourced_from_the_stat_call_the_pane_already_makes():
     assert "!e.conditional && !PANE_SKIP_MODES.has(e.mode)" in page
     # Named in a comment (that is where the reasoning lives), never fetched.
     assert 'fetch("/api/fs/conditions' not in page
-    # Re-derived from the entries already held, never re-stat'ed.
-    assert "frame.src = paneSrcFor(t);" in page
+    # Re-derived from the entries already held, never re-stat'ed. Two statements
+    # rather than one because paneSrcFor can throw and `framedMode` must not be
+    # committed ahead of it (see
+    # test_the_framed_mode_is_committed_only_once_the_frame_has_been_pointed).
+    assert "const src = paneSrcFor(t);" in page
+    assert "frame.src = src;" in page
 
 
 def test_a_single_view_target_shows_no_picker():
@@ -1092,3 +1098,66 @@ def test_the_no_pane_flag_is_not_shadowed_by_a_local():
     # The intermediate keeps a name that says what it IS: text with the pane-shot
     # block taken out.
     assert "const noPaneShot = stripPaneBlock(noState);" in body
+
+
+# ------------------------------- committing framedMode only after the frame swaps
+
+def _node_apply_left_mode(prelude, call):
+    """Run applyLeftMode() out of the page under node against stubs. Own copy of
+    the extraction, like the other claude suites (see test_claude_shots.py)."""
+    if not shutil.which("node"):
+        pytest.skip("node is needed to run the page's own pane glue")
+    html = _pane_source()
+    chunks = []
+    for name in ("function paneSrcFor(", "function applyLeftMode("):
+        start = html.index(name)
+        chunks.append(html[start:html.index("\n}\n", start) + 3])
+    script = prelude + "\n" + "\n".join(chunks) + "\n" + call
+    out = subprocess.run(["node", "-e", script], capture_output=True, text=True)
+    assert out.returncode == 0, out.stderr
+    return json.loads(out.stdout)
+
+
+_LEFT_STUBS = """
+let framedMode = "markdown", entry = null;
+const frame = { src: "" };
+const leftSel = { options: { length: 0 }, value: "" };
+const FILE = "/w/notes.md";
+let paneRemote = false;
+function curLeftEntry() { return entry; }
+document = { getElementById: (id) => (id === "leftframe" ? frame : null) };
+"""
+
+
+def test_the_framed_mode_is_committed_only_once_the_frame_has_been_pointed():
+    """`framedMode` is the record of what the iframe IS showing, and it may not be
+    written before the write that can fail.
+
+    `paneSrcFor` throws for an offerable entry with no `path` (a non-sentinel entry
+    stat did not resolve a template for). Committing first left `framedMode` naming
+    a mode that was never framed — which makes applyLeftMode's own idempotence
+    guard skip the retry — and the throw propagated out of the `params.onChange`
+    listener, so applyNarrowView() and renderAnn() were skipped for that tick with
+    the runtime swallowing the error. Latent today (stat produces no such entry),
+    which is exactly why the ordering has to be pinned rather than remembered.
+    """
+    out = _node_apply_left_mode(_LEFT_STUBS, """
+entry = { mode: "code" };            // offerable, but no `path` — paneSrcFor throws
+let threw = "";
+try { applyLeftMode(); } catch (e) { threw = e.message; }
+console.log(JSON.stringify({ threw, framedMode, src: frame.src, sel: leftSel.value }));
+""")
+    assert out["threw"], "paneSrcFor must still surface the broken entry"
+    assert out["framedMode"] == "markdown", \
+        "framedMode named a mode the frame was never pointed at"
+    assert out["src"] == ""
+
+
+def test_a_good_switch_still_commits_and_frames():
+    out = _node_apply_left_mode(_LEFT_STUBS, """
+entry = { mode: "code", path: "/t/code/template.html" };
+applyLeftMode();
+console.log(JSON.stringify({ framedMode, src: frame.src }));
+""")
+    assert out["framedMode"] == "code"
+    assert "%2Ft%2Fcode%2Ftemplate.html" in out["src"]

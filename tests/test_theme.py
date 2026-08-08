@@ -58,6 +58,7 @@ from _theme_sources import (
     read_template,
     scoped_palette_blocks,
     style_color_literals,
+    undefined_token_refs,
 )
 
 
@@ -245,6 +246,34 @@ def test_tier_one_template_has_no_colour_literals_outside_its_palettes(name):
     assert not literals, (
         f"{name}: colours outside the palette blocks cannot follow the theme — "
         f"found {sorted(set(literals))}"
+    )
+
+
+@pytest.mark.parametrize("name", TIER_ONE_TEMPLATES)
+def test_tier_one_template_defines_every_token_it_reads(name):
+    """A `var()` naming a token nothing defines is SILENTLY INERT, which is why a
+    reviewer reading the rule cannot catch it and why this guard belongs beside the
+    literals one.
+
+    `claude` read `color: var(--muted, var(--fg))` on the annotate switch and — new
+    on the template-kind-split branch — on the left-view picker beside it. Nothing
+    in that file or the injected shell theme defines `--muted`, so both resolved to
+    `--fg`: the two controls rendered at full foreground and their documented
+    `:hover { color: var(--fg) }` was a no-op. A two-state style with one state,
+    duplicated onto a second control precisely because the first looked fine.
+    Without a fallback the failure is different and just as quiet — `background:
+    var(--surface-2)` with no such token is invalid-at-computed-value-time and the
+    property falls back to its initial value.
+
+    Scoped to the tier-one set (real palettes, per `test_template_lists_partition…`)
+    for the same reason the literals test is: those are the templates that have a
+    token vocabulary to be wrong about.
+    """
+    missing = undefined_token_refs(read_template(name))
+    assert not missing, (
+        f"{name}: reads {missing} through var() but defines none of them — an "
+        "undefined token is inert, not an error, so the rule that reads it does "
+        "nothing and nothing says so"
     )
 
 
