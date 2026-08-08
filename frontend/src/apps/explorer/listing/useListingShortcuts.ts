@@ -6,9 +6,14 @@
 // a key that handler ignores (F2, Delete, Backspace — its printable-key branch
 // only fires for single-character keys, and its arrow branch bails when
 // isMod(e)).
+//
+// WHICH chord is which lives in listing/shortcut-chord.ts (pure, tested); this
+// file is the wiring and the "is there anything to act on" half. The split is
+// what makes the exact-modifier rule testable — see that file for the
+// Ctrl+Shift+C hijack it exists to prevent.
 import { useEffect, useRef } from "react";
 import { navigate } from "@platform/lib/router";
-import { isMac, isMod } from "@platform/lib/platform";
+import { matchChord } from "@apps/explorer/listing/shortcut-chord";
 import { isOverlayOpen } from "@platform/lib/ui-overlay";
 import { dirname, normDir } from "@apps/explorer/lib/fs-actions";
 import { setClipboard, type Clipboard } from "@apps/explorer/lib/fs-clipboard";
@@ -61,79 +66,53 @@ export function useListingShortcuts({
     if (!navActive) return;
     const rows = selectedRows;
     const row = leadRow;
-    const mod = isMod(e);
-    const key = e.key.toLowerCase();
+    // WHICH chord this is — decided in listing/shortcut-chord.ts, on EXACT
+    // modifiers. Everything below is only "can I act on it": a chord that
+    // matches but has nothing to act on (no selection, an empty clipboard)
+    // falls through WITHOUT preventDefault, exactly as an unmatched one does,
+    // so the browser keeps whatever binding it had.
+    const action = matchChord(e, { inSearch });
+    if (action === null) return;
     // The parent folder, for Mod+Up / bare Backspace. Equal to the current
     // folder at the filesystem (or drive) root, where there's nowhere to go.
     const here = normDir(base);
     const parent = dirname(here);
-    const goParent = () => {
-      if (parent !== here) navigate(parent, { isDir: true });
-    };
-    // With focus in the search box, Cmd+C/X/V must keep their native text
-    // clipboard meaning — only the non-text shortcuts stay live there.
-    if (inSearch && mod && (key === "c" || key === "x" || key === "v")) return;
-    if (mod && key === "c") {
+    if (action === "copy" || action === "cut") {
       if (!rows.length) return;
       e.preventDefault();
-      setClipboard({ paths: rows.map((r) => r.path), op: "copy" });
-    } else if (mod && key === "x") {
-      if (!rows.length) return;
-      e.preventDefault();
-      setClipboard({ paths: rows.map((r) => r.path), op: "cut" });
-    } else if (mod && key === "v") {
+      setClipboard({ paths: rows.map((r) => r.path), op: action });
+    } else if (action === "paste") {
       if (!clipboard) return;
       e.preventDefault();
       // Paste is single-TARGET: into the lead row's folder (or itself, if it's a
       // directory), else the folder being listed.
       doPaste(row ? targetDirOf(row) : base);
-    } else if (mod && key === "d") {
+    } else if (action === "duplicate") {
       if (!rows.length) return;
       e.preventDefault();
       doDuplicate(rows);
-    } else if (mod && e.key === "ArrowDown") {
-      // Open the lead row — the same gesture as Enter (macOS Cmd+Down).
+    } else if (action === "open") {
       if (!row) return;
       e.preventDefault();
       navigate(row.path, { isDir: row.isDir });
-    } else if (mod && e.key === "ArrowUp") {
+    } else if (action === "parent") {
       e.preventDefault();
-      goParent();
-    } else if (mod && (e.key === "[" || e.key === "]")) {
-      // Back / forward. The router only ever pushes, so this drives the browser
-      // history directly — popstate is what the shell listens to anyway
-      // (useNavEpoch), so the view remounts exactly as it does for a Back click.
+      if (parent !== here) navigate(parent, { isDir: true });
+    } else if (action === "back" || action === "forward") {
+      // The router only ever pushes, so this drives the browser history
+      // directly — popstate is what the shell listens to anyway (useNavEpoch),
+      // so the view remounts exactly as it does for a Back click.
       e.preventDefault();
-      if (e.key === "[") history.back();
+      if (action === "back") history.back();
       else history.forward();
-    } else if (mod && e.shiftKey && key === "n") {
+    } else if (action === "new-folder") {
       e.preventDefault();
       startNewFolder(base);
-    } else if (mod && e.key === "Backspace") {
-      // macOS trash chord. Windows/Linux use the Delete key below instead.
-      // Never while typing in the search box: Cmd+Delete is the standard macOS
-      // "clear to start of line" chord, so trashing there would be a foot-gun.
-      if (!isMac || inSearch || !rows.length) return;
+    } else if (action === "trash") {
+      if (!rows.length) return;
       e.preventDefault();
       doTrash(rows);
-      // Bare key only: because isMod() is exclusive, `!mod` alone is still true
-      // when the OTHER modifier is held (Super+Backspace on Linux), so test the
-      // raw flags instead.
-    } else if (e.key === "Backspace" && !e.metaKey && !e.ctrlKey && !e.shiftKey && !e.altKey) {
-      // Windows/Linux: bare Backspace goes up a folder. On macOS it must stay
-      // inert — Cmd+Backspace is trash there and a bare Backspace navigating
-      // away would be a foot-gun. Never while typing in the search box.
-      if (isMac || inSearch) return;
-      e.preventDefault();
-      goParent();
-    } else if (e.key === "Delete" && !e.metaKey && !e.ctrlKey) {
-      // Windows/Linux trash key. On macOS the Delete (⌦) key is not the trash
-      // gesture — Cmd+Backspace above is. Raw-flag test rather than `!mod` so a
-      // held Super key can't slip a destructive key through (see Backspace).
-      if (isMac || inSearch || !rows.length) return;
-      e.preventDefault();
-      doTrash(rows);
-    } else if (e.key === "F2") {
+    } else if (action === "rename") {
       // Rename is single-entry: with several rows selected it renames the LEAD
       // row (what Windows Explorer does — F2 edits the focused item), not a
       // no-op and never a batch rename.

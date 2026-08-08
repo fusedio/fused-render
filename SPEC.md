@@ -135,6 +135,12 @@ Left sidebar in the shell, always visible:
 - **CB-6** **Documented Linux limitation.** X11/Wayland have no OS-owned clipboard: a live process must own the selection, GNOME (`x-special/gnome-copied-files`) and KDE (`text/uri-list`) disagree on the format, and `xclip`/`wl-copy` publish only one target per invocation. **Reading tries both**, so pasting *into* fused-render works on either desktop; **writing serves whichever family `XDG_CURRENT_DESKTOP` reports**. A resident GTK/Qt owner process offering both targets at once is the documented upgrade.
 - **CB-7** **Everything degrades identically.** Missing pyobjc, a hardened sandbox, no `xclip`/`wl-clipboard`, or a failed request all surface as `supported: false` — a normal 200, not an error — and the app keeps today's in-app-only clipboard.
 
+### Keyboard chords match EXACT modifiers
+
+The listing's file-op chords (⌘/Ctrl+C/X/V/D, the ⌘/Ctrl+arrow and bracket navigation, F2, Delete, Backspace) are matched on the modifiers they carry **and the ones they do not**. "At least the primary modifier" is not a match: the handler once tested a lowercased `e.key` against `mod && key === "c"`, which also matched **Ctrl+Shift+C** — devtools' inspect-element on Linux/Windows, and a terminal copy chord besides — and called `preventDefault` on it, so the browser's own binding never fired. The same over-match covered ⌘⇧[ / ⌘⇧] (macOS tab switching), Shift+Delete (Windows Explorer's *delete permanently*) and Alt+F2 (a desktop run dialog on Linux).
+
+**An unmatched chord is left completely alone** — no `preventDefault`, no state change — so whatever else owns it still works. A matched chord with nothing to act on (an empty selection, an empty clipboard) is likewise left alone rather than swallowed. The only chord that *wants* a secondary modifier is ⌘/Ctrl+Shift+N (new folder), and it takes Shift and nothing else. The table is pure and tested (`listing/shortcut-chord.ts`); the hook around it only wires it to the document and asks whether there is anything to act on.
+
 ### Server FS API (shape, not final contract)
 
 | Endpoint | Purpose |

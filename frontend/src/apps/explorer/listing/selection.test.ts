@@ -1,6 +1,6 @@
 // Pure bits of the selection model. The stateful half (the hook, the keyboard
 // handler, the reconcile) needs a DOM and a React renderer, neither of which
-// the frontend test setup has — see useListingShortcuts.test.ts.
+// the frontend test setup has — see shortcut-chord.test.ts.
 import { describe, expect, test } from "bun:test";
 import { autoSelectPath, firstFilePath, rangeBetween } from "./selection";
 

@@ -18,6 +18,7 @@
 //   useWalkSearch.ts       streamed walk + scoring + throttles + result paging
 //   useListingSelection.ts selection state + keyboard nav + reconcile
 //   useFileOps.ts          file operations + context menus + dialogs
+//   shortcut-chord.ts       which chord means which action (pure)
 //   useListingShortcuts.ts file-op keyboard chords
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { navigate, replaceSearch } from "@platform/lib/router";
