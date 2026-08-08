@@ -764,11 +764,11 @@ function TemplatePreview({
   // It spent a while riding down into the preview pane's header instead
   // whenever the pane was open, on the theory that the pane's own row already
   // had an empty primary slot for it. That slot belongs to the pane's SELF
-  // target (nothing selected) — and a qualifying folder is by definition one
-  // holding a top-level HTML file, which FS-16's auto-select now picks the
-  // moment the folder opens. So the self row almost never shows, and the
-  // button had effectively disappeared from the default view of exactly the
-  // folders it exists for.
+  // target (nothing selected) — and a qualifying folder is by definition
+  // non-empty (it holds a top-level HTML file), so FS-16's auto-select claims
+  // the selection the moment the folder opens. So the self row almost never
+  // shows, and the button had effectively disappeared from the default view of
+  // exactly the folders it exists for.
   const openAsAppBtn =
     isListing && singleAppPath && linkStatus ? (
       <button type="button" className="open-as-app-btn" onClick={appBtnAction}>

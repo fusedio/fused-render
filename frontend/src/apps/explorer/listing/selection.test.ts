@@ -2,7 +2,7 @@
 // handler, the reconcile) needs a DOM and a React renderer, neither of which
 // the frontend test setup has — see shortcut-chord.test.ts.
 import { describe, expect, test } from "bun:test";
-import { autoSelectPath, firstFilePath, rangeBetween } from "./selection";
+import { autoSelectPath, firstEntryPath, rangeBetween } from "./selection";
 
 // Rows as the listing hands them over: the rendered (sorted) path order plus
 // the path→row map the table builds anyway.
@@ -12,24 +12,25 @@ function rows(spec: Array<[string, boolean]>) {
   return { paths, byPath };
 }
 
-describe("firstFilePath", () => {
-  test("picks the first file in RENDERED order", () => {
+describe("firstEntryPath", () => {
+  test("picks the first entry in RENDERED order", () => {
     const { paths, byPath } = rows([
       ["a.txt", false],
       ["b.txt", false],
     ]);
-    expect(firstFilePath(paths, byPath)).toBe("/d/a.txt");
+    expect(firstEntryPath(paths, byPath)).toBe("/d/a.txt");
   });
 
-  test("skips the directories the sort put first", () => {
-    // The usual shape of a folder: dirs at the top, files under them.
+  test("a directory the sort put first is picked, not skipped", () => {
+    // The usual shape of a folder: dirs at the top, files under them. The top
+    // row is what the eye lands on, so it is what previews — as a peek.
     const { paths, byPath } = rows([
       ["src", true],
       ["docs", true],
       ["README.md", false],
       ["setup.py", false],
     ]);
-    expect(firstFilePath(paths, byPath)).toBe("/d/README.md");
+    expect(firstEntryPath(paths, byPath)).toBe("/d/src");
   });
 
   test("follows the order it is given, not the alphabet", () => {
@@ -39,21 +40,16 @@ describe("firstFilePath", () => {
       ["z.txt", false],
       ["a.txt", false],
     ]);
-    expect(firstFilePath(paths, byPath)).toBe("/d/z.txt");
+    expect(firstEntryPath(paths, byPath)).toBe("/d/z.txt");
   });
 
-  test("no file to preview: an empty folder, or one holding only folders", () => {
-    expect(firstFilePath([], new Map())).toBeNull();
-    const { paths, byPath } = rows([
-      ["src", true],
-      ["docs", true],
-    ]);
-    expect(firstFilePath(paths, byPath)).toBeNull();
+  test("an empty folder has nothing to preview", () => {
+    expect(firstEntryPath([], new Map())).toBeNull();
   });
 
   test("a path with no rendered row is not selectable", () => {
     const { byPath } = rows([["a.txt", false]]);
-    expect(firstFilePath(["/d/ghost.txt"], byPath)).toBeNull();
+    expect(firstEntryPath(["/d/ghost.txt"], byPath)).toBeNull();
   });
 });
 
@@ -65,9 +61,9 @@ describe("autoSelectPath", () => {
       ["b.txt", false],
     ]);
 
-  test("a bare URL: the folder picks its own first file", () => {
+  test("a bare URL: the folder picks its own first entry", () => {
     const { paths, byPath } = folder();
-    expect(autoSelectPath(null, paths, byPath)).toBe("/d/a.txt");
+    expect(autoSelectPath(null, paths, byPath)).toBe("/d/src");
   });
 
   test("a `?sel` seed owns the selection", () => {
@@ -86,12 +82,11 @@ describe("autoSelectPath", () => {
     // shot and left the pane empty for the whole mount. Nothing about a stale
     // selection is an input here, which is how it stays fixed.
     const { paths, byPath } = folder();
-    expect(autoSelectPath(null, paths, byPath)).toBe("/d/a.txt");
+    expect(autoSelectPath(null, paths, byPath)).toBe("/d/src");
   });
 
-  test("a folder with no files leaves the selection empty", () => {
-    const { paths, byPath } = rows([["src", true]]);
-    expect(autoSelectPath(null, paths, byPath)).toBeNull();
+  test("an empty folder leaves the selection empty", () => {
+    expect(autoSelectPath(null, [], new Map())).toBeNull();
   });
 });
 
