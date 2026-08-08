@@ -47,7 +47,7 @@ import {
   measureScrollAnchor,
 } from "@apps/explorer/listing/bits";
 import { usePreviewPane, reflectPaneInUrl } from "@apps/explorer/listing/pane";
-import { firstFilePath } from "@apps/explorer/listing/selection";
+import { autoSelectPath } from "@apps/explorer/listing/selection";
 import { useDirListing } from "@apps/explorer/listing/useDirListing";
 import { useWalkSearch } from "@apps/explorer/listing/useWalkSearch";
 import { useListingSelection } from "@apps/explorer/listing/useListingSelection";
@@ -399,43 +399,43 @@ export default function Listing({
   rowCtxByPathRef.current = rowCtxByPath;
 
   // Opening a folder lands on its FIRST FILE (rendered order — see
-  // firstFilePath), so the pane shows something instead of the folder's own
-  // "Select a file to preview." hint. A pane that opens empty asks the user to
-  // do the obvious thing before it will do anything at all; a folder is
-  // overwhelmingly opened to look at what is in it.
+  // autoSelectPath / firstFilePath), so the pane shows something instead of
+  // the folder's own "Select a file to preview." hint. A pane that opens empty
+  // asks the user to do the obvious thing before it will do anything at all; a
+  // folder is overwhelmingly opened to look at what is in it.
   //
-  // ONE SHOT PER MOUNT, taken at the first settled non-search listing. Listing
-  // remounts per fsPath, so this is exactly once per folder navigation — a
-  // dir-watch refresh within the same folder never re-fires it, and clearing
-  // the selection (Escape, a background click) stays cleared.
+  // ONE SHOT, and this effect owns only the TIMING of it — autoSelectPath owns
+  // the decision (and documents why the `?sel` URL param, not `sel`, is what it
+  // reads). The shot is taken at the first settled non-search listing WITH THE
+  // PANE ON. Listing remounts per fsPath, so that is once per folder
+  // navigation: a dir-watch refresh never re-fires it, and a selection the user
+  // cleared (Escape) stays cleared.
   //
-  // It defers to every other claim on the selection:
-  //   • `?sel` — read from the URL, not from `sel`. useListingSelection seeds
-  //     from the URL in an effect registered BEFORE this one, so on the commit
-  //     that fires here its setSel has not landed yet and `sel` is still the
-  //     pre-seed value. The URL is the thing that is already true.
-  //   • a selection restored across the provisional→resolved remount, or any
-  //     row the user has already clicked: `sel` non-empty means someone else
-  //     owns it.
-  //   • search mode — the effect stays armed rather than being consumed, so
-  //     clearing the query still lands on the folder's first file.
-  //   • an embedded Listing (the pane's own `_listing` mode): the pane has no
-  //     pane of its own, and driving a selection inside it would be a nested
-  //     effect nobody asked for.
+  // Three conditions hold the shot rather than spending it, because each can
+  // still turn into a folder the user is looking at:
+  //   • the pane is OFF — nothing to preview into yet, and toggling it on later
+  //     should still land on the first file (`pane.on` is a dependency for
+  //     exactly that);
+  //   • search mode — the rendered rows are a query's answer, not the folder's,
+  //     so clearing the query still lands on the folder's first file;
+  //   • the listing has not settled — there is nothing to choose from.
+  // An embedded Listing (the pane's own `_listing` mode) is the one case that
+  // never fires at all: it has no pane of its own to fill.
   const autoSelectedRef = useRef(false);
   useEffect(() => {
     if (embedded || autoSelectedRef.current) return;
-    if (searching || !listingLoaded) return;
+    if (searching || !listingLoaded || !pane.on) return;
     autoSelectedRef.current = true;
-    if (!pane.on) return; // nothing to preview into
-    if (new URLSearchParams(location.search).get("sel")) return;
-    if (sel.paths.length) return;
-    const first = firstFilePath(navRows, rowCtxByPath);
+    const first = autoSelectPath(
+      new URLSearchParams(location.search).get("sel"),
+      navRows,
+      rowCtxByPath,
+    );
     if (first) selectOnly(first);
-    // Fires on the commit that settles the listing; every other value read
-    // above is current as of that commit.
+    // Fires on the commit that first satisfies the guards above; the rows it
+    // reads are current as of that commit.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [embedded, searching, listingLoaded]);
+  }, [embedded, searching, listingLoaded, pane.on]);
 
   // The selection as full rows, in rendered order (so a batch op processes rows
   // top-to-bottom regardless of the order they were clicked). Paths without a

@@ -2,7 +2,7 @@
 // handler, the reconcile) needs a DOM and a React renderer, neither of which
 // the frontend test setup has — see useListingShortcuts.test.ts.
 import { describe, expect, test } from "bun:test";
-import { firstFilePath, rangeBetween } from "./selection";
+import { autoSelectPath, firstFilePath, rangeBetween } from "./selection";
 
 // Rows as the listing hands them over: the rendered (sorted) path order plus
 // the path→row map the table builds anyway.
@@ -54,6 +54,44 @@ describe("firstFilePath", () => {
   test("a path with no rendered row is not selectable", () => {
     const { byPath } = rows([["a.txt", false]]);
     expect(firstFilePath(["/d/ghost.txt"], byPath)).toBeNull();
+  });
+});
+
+describe("autoSelectPath", () => {
+  const folder = () =>
+    rows([
+      ["src", true],
+      ["a.txt", false],
+      ["b.txt", false],
+    ]);
+
+  test("a bare URL: the folder picks its own first file", () => {
+    const { paths, byPath } = folder();
+    expect(autoSelectPath(null, paths, byPath)).toBe("/d/a.txt");
+  });
+
+  test("a `?sel` seed owns the selection", () => {
+    const { paths, byPath } = folder();
+    expect(autoSelectPath("b.txt", paths, byPath)).toBeNull();
+    // Even a `sel` naming no current row: the URL made a claim, and the seeding
+    // effect is the one entitled to decide what to do about it.
+    expect(autoSelectPath("gone.txt", paths, byPath)).toBeNull();
+  });
+
+  test("a bare URL wins over a selection that is about to be discarded", () => {
+    // The regression this pins: browse into a file and come back to its folder.
+    // The URL no longer carries `sel`, but the cross-remount stash still holds
+    // the old selection — which the seeding effect is clearing on this very
+    // commit. Reading that stale selection instead of the URL burned the one
+    // shot and left the pane empty for the whole mount. Nothing about a stale
+    // selection is an input here, which is how it stays fixed.
+    const { paths, byPath } = folder();
+    expect(autoSelectPath(null, paths, byPath)).toBe("/d/a.txt");
+  });
+
+  test("a folder with no files leaves the selection empty", () => {
+    const { paths, byPath } = rows([["src", true]]);
+    expect(autoSelectPath(null, paths, byPath)).toBeNull();
   });
 });
 
