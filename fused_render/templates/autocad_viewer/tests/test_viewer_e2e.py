@@ -358,14 +358,62 @@ def test_grid_toggle_draws_and_clears(server, browser):
             const tg = document.getElementById('tgGrid');
             tg.click();
             const on = document.querySelectorAll('#overlay .ov-grid').length;
+            const major = document.querySelectorAll('#overlay .ov-grid.major').length;
             const cls = tg.classList.contains('on');
             tg.click();
             const off = document.querySelectorAll('#overlay .ov-grid').length;
-            return { on, off, cls };
+            return { on, major, off, cls };
         }""")
     assert res["cls"] is True
     assert res["on"] > 4, f"grid should draw reference lines (got {res['on']})"
+    assert res["major"] >= 1, "every 5th line should be styled as a major line"
     assert res["off"] == 0
+    page.close()
+
+
+def test_shortcuts_ignored_while_typing_in_layer_filter(server, browser):
+    # regression: f / m / Enter must not fire while the layer filter has focus
+    page, frame = _open_ready(browser, server["port"])
+    res = frame.evaluate(
+        """() => {
+            const inp = document.getElementById('layerFilter');
+            inp.focus();
+            for (const k of ['m', 'f'])
+              inp.dispatchEvent(new KeyboardEvent('keydown', {key:k, bubbles:true, cancelable:true}));
+            return { toolActive: !!document.querySelector('.tbtn[data-tool].active'),
+                     echo: document.getElementById('echo').textContent };
+        }""")
+    assert res["toolActive"] is False, "typing in the filter must not trigger tool shortcuts"
+    assert "Specify" not in res["echo"]
+    page.close()
+
+
+def test_angle_measure_draws_two_rays_from_the_vertex(server, browser):
+    # regression: angle is a vertex + two rays, not a V->A->B polyline
+    page, frame = _open_ready(browser, server["port"])
+    res = frame.evaluate(
+        """() => {
+            const canvas = document.querySelector('#cadHost canvas');
+            const r = canvas.getBoundingClientRect();
+            const os = document.getElementById('tgOsnap'); if (os.classList.contains('on')) os.click();
+            document.querySelector('.tbtn[data-tool="angle"]').click();
+            const click = (x, y) => { for (const t of ['pointermove','pointerdown','pointerup'])
+              canvas.dispatchEvent(new PointerEvent(t, {bubbles:true,cancelable:true,
+                clientX:r.left+x, clientY:r.top+y, button:0, pointerId:1, isPrimary:true})); };
+            click(r.width*0.40, r.height*0.60);   // vertex
+            click(r.width*0.70, r.height*0.60);   // first ray
+            click(r.width*0.40, r.height*0.30);   // second ray
+            const rays = [...document.querySelectorAll('#overlay line.ov-line')].map(l => ({
+              x1:+l.getAttribute('x1'), y1:+l.getAttribute('y1'),
+              x2:+l.getAttribute('x2'), y2:+l.getAttribute('y2')}));
+            return { out: document.getElementById('measureOut').textContent, rays };
+        }""")
+    assert "Angle" in res["out"]
+    rays = res["rays"]
+    assert len(rays) == 2, f"angle should draw two rays, got {len(rays)}"
+    # both rays start at the shared vertex (their first endpoint)
+    assert abs(rays[0]["x1"] - rays[1]["x1"]) < 1 and abs(rays[0]["y1"] - rays[1]["y1"]) < 1, \
+        f"rays do not share a vertex: {rays}"
     page.close()
 
 

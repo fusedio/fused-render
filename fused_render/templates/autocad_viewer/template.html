@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html data-fused-theme="shell">
+<html>
 <head>
 <meta charset="utf-8" />
 <title>CAD Viewer</title>
@@ -449,9 +449,8 @@ $("allOn").addEventListener("click", () => {
 $("layerFilter").addEventListener("input", () => viewer && renderLayers(viewer.GetLayers()));
 
 // ---------- coordinate transforms ----------
-// Model<->canvas go through the camera's own (un)projection so pan and zoom are
-// always honored (dxf-viewer drives wheel zoom via camera.zoom, not the frustum),
-// and stay in CSS pixels throughout so devicePixelRatio never enters.
+// Via the camera's own (un)projection so pan and zoom are honored (dxf-viewer
+// drives wheel zoom via camera.zoom), in CSS pixels so DPR never enters.
 function canvasRect() { return host.getBoundingClientRect(); }
 function canvasToModel(px, py) {
   const cam = viewer.GetCamera(), o = viewer.GetOrigin(), r = canvasRect();
@@ -530,7 +529,8 @@ function onDown(e) {
   e.preventDefault(); e.stopPropagation();      // don't let the viewer pan while measuring
   if (!pts.length) doneMeasure = null;          // starting a fresh measurement
   let p = hoverModel || canvasToModel(e.clientX - canvasRect().left, e.clientY - canvasRect().top);
-  if (pts.length && (tool === "distance" || tool === "angle")) p = applyOrtho(pts[pts.length - 1], p);
+  // ortho anchors at pts[0]: distance's first point, and the vertex for both angle rays
+  if (pts.length && (tool === "distance" || tool === "angle")) p = applyOrtho(pts[0], p);
   pts.push(p);
   const need = tool === "distance" ? 2 : tool === "angle" ? 3 : 999;
   if (pts.length >= need && tool !== "area") finishMeasure();
@@ -585,14 +585,15 @@ function gridSvg(r) {
   const minY = Math.min(a.y, b.y), maxY = Math.max(a.y, b.y);
   const line = (x1, y1, x2, y2, major) =>
     `<line class="ov-grid${major ? " major" : ""}" x1="${x1.toFixed(1)}" y1="${y1.toFixed(1)}" x2="${x2.toFixed(1)}" y2="${y2.toFixed(1)}"/>`;
-  let s = "", i = 0;
-  for (let x = Math.ceil(minX / step) * step; x <= maxX && i < 400; x += step, i++) {
-    const p1 = modelToCanvas(x, minY), p2 = modelToCanvas(x, maxY);
-    s += line(p1.x, p1.y, p2.x, p2.y, Math.abs(x % (step * 5)) < step / 2);
+  // integer index k so "major every 5th" is exact (a float remainder would drift)
+  let s = "", n = 0;
+  for (let k = Math.ceil(minX / step); k * step <= maxX && n < 400; k++, n++) {
+    const p1 = modelToCanvas(k * step, minY), p2 = modelToCanvas(k * step, maxY);
+    s += line(p1.x, p1.y, p2.x, p2.y, k % 5 === 0);
   }
-  for (let y = Math.ceil(minY / step) * step; y <= maxY && i < 800; y += step, i++) {
-    const p1 = modelToCanvas(minX, y), p2 = modelToCanvas(maxX, y);
-    s += line(p1.x, p1.y, p2.x, p2.y, Math.abs(y % (step * 5)) < step / 2);
+  for (let k = Math.ceil(minY / step); k * step <= maxY && n < 800; k++, n++) {
+    const p1 = modelToCanvas(minX, k * step), p2 = modelToCanvas(maxX, k * step);
+    s += line(p1.x, p1.y, p2.x, p2.y, k % 5 === 0);
   }
   return s;
 }
@@ -608,30 +609,43 @@ function drawOverlay() {
     return `<rect class="ov-lbl-bg" x="${(x - 5).toFixed(1)}" y="${(y - 12).toFixed(1)}" width="${w.toFixed(1)}" height="16" rx="4"/>` +
       `<text class="ov-txt" x="${x.toFixed(1)}" y="${y.toFixed(1)}">${t}</text>`;
   };
+  const node = (p) => { const c = C(p); svg += `<circle class="ov-node" cx="${c.x.toFixed(1)}" cy="${c.y.toFixed(1)}" r="3.2"/>`; };
+  const seg = (p, q, cls) => { const a = C(p), b = C(q); svg += `<line class="${cls}" x1="${a.x.toFixed(1)}" y1="${a.y.toFixed(1)}" x2="${b.x.toFixed(1)}" y2="${b.y.toFixed(1)}"/>`; };
   const drawSet = (P, closed) => {
     if (!P || !P.length) return;
     if (closed && P.length > 2) svg += `<polygon class="ov-poly" points="${P.map(toC).join(" ")}"/>`;
     else if (P.length > 1) svg += `<polyline class="ov-line" points="${P.map(toC).join(" ")}"/>`;
-    for (const p of P) { const c = C(p); svg += `<circle class="ov-node" cx="${c.x.toFixed(1)}" cy="${c.y.toFixed(1)}" r="3.2"/>`; }
+    for (const p of P) node(p);
   };
   const u = unitAbbr();
-  // completed measurement (persists until a new one starts)
+  // completed measurement (persists until a new one starts). Angle is a vertex
+  // plus two rays, not a chained polyline, so it draws on its own.
   if (doneMeasure) {
-    const P = doneMeasure.pts;
-    drawSet(P, doneMeasure.tool === "area");
-    if (doneMeasure.tool === "distance") svg += lbl(C({ x: (P[0].x + P[1].x) / 2, y: (P[0].y + P[1].y) / 2 }), `${dist(P[0], P[1]).toFixed(2)} ${u}`);
-    else if (doneMeasure.tool === "area") { const cx = P.reduce((s, p) => s + p.x, 0) / P.length, cy = P.reduce((s, p) => s + p.y, 0) / P.length; svg += lbl(C({ x: cx, y: cy }), `${polyArea(P).toFixed(1)} ${u}²`); }
-    else if (doneMeasure.tool === "angle") svg += lbl(C(P[0]), `${angleAt(P[0], P[1], P[2]).toFixed(1)}°`);
+    const P = doneMeasure.pts, T = doneMeasure.tool;
+    if (T === "angle") {
+      seg(P[0], P[1], "ov-line"); seg(P[0], P[2], "ov-line"); P.forEach(node);
+      svg += lbl(C(P[0]), `${angleAt(P[0], P[1], P[2]).toFixed(1)}°`);
+    } else {
+      drawSet(P, T === "area");
+      if (T === "distance") svg += lbl(C({ x: (P[0].x + P[1].x) / 2, y: (P[0].y + P[1].y) / 2 }), `${dist(P[0], P[1]).toFixed(2)} ${u}`);
+      else { const cx = P.reduce((s, p) => s + p.x, 0) / P.length, cy = P.reduce((s, p) => s + p.y, 0) / P.length; svg += lbl(C({ x: cx, y: cy }), `${polyArea(P).toFixed(1)} ${u}²`); }
+    }
   }
-  // in-progress measurement + rubber band to cursor
+  // in-progress measurement + rubber band to the cursor
   if (tool && pts.length) {
-    drawSet(pts, false);
-    if (hoverModel) {
-      const last = pts[pts.length - 1];
-      const rb = (tool === "distance" || tool === "angle") ? applyOrtho(last, hoverModel) : hoverModel;
-      const a = C(last), b = C(rb);
-      svg += `<line class="ov-line dash" x1="${a.x.toFixed(1)}" y1="${a.y.toFixed(1)}" x2="${b.x.toFixed(1)}" y2="${b.y.toFixed(1)}"/>`;
-      if (tool === "distance") svg += lbl(C({ x: (last.x + rb.x) / 2, y: (last.y + rb.y) / 2 }), `${dist(last, rb).toFixed(2)} ${u}`);
+    if (tool === "angle") {
+      const V = pts[0];
+      node(V);
+      if (pts.length >= 2) { seg(V, pts[1], "ov-line"); node(pts[1]); }
+      if (hoverModel) seg(V, applyOrtho(V, hoverModel), "ov-line dash");   // both rays start at the vertex
+    } else {
+      drawSet(pts, false);
+      if (hoverModel) {
+        const last = pts[pts.length - 1];
+        const rb = tool === "distance" ? applyOrtho(last, hoverModel) : hoverModel;
+        seg(last, rb, "ov-line dash");
+        if (tool === "distance") svg += lbl(C({ x: (last.x + rb.x) / 2, y: (last.y + rb.y) / 2 }), `${dist(last, rb).toFixed(2)} ${u}`);
+      }
     }
   }
   // snap marker
@@ -715,6 +729,8 @@ document.addEventListener("fullscreenchange", () => {
 
 // keyboard
 window.addEventListener("keydown", (e) => {
+  const el = e.target;
+  if (el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable)) return;
   if (e.key === "Escape") { if (tool) { pts = []; setTool(tool); } }
   else if (e.key === "Enter" && tool === "area" && pts.length >= 3) finishMeasure();
   else if (e.key.toLowerCase() === "f") fit();

@@ -537,8 +537,7 @@
   ],
   ".dxf": [
     "autocad_viewer",
-    "code",
-    "annotate"
+    "code"
   ],
   ".dwg": [
     "autocad_viewer"
