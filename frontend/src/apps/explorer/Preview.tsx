@@ -44,7 +44,7 @@ import {
   defaultMode,
   effectiveActive,
 } from "@platform/lib/mode-visibility";
-import { ModeMenu } from "@apps/explorer/BarMenu";
+import { ModeMenu, OverflowMenu } from "@apps/explorer/BarMenu";
 import ContextMenu, { type MenuEntry, type MenuItem } from "@platform/ui/ContextMenu";
 import { MenuIcons } from "@platform/ui/MenuIcons";
 import { PromptDialog, ConfirmDialog, nameError } from "@apps/explorer/FsDialogs";
@@ -339,6 +339,34 @@ function useConditions(fsPath: string, templates: TemplateEntry[]): Record<strin
 // the pointer is a cheap local read (no CLI shell-out) — the modal is what
 // reconciles against `share list`. A user who rebinds .html away from
 // "_render" loses the button too, consistently with losing the rendered view.
+
+// The Claude split panel's mode key. Named here because two things key off it
+// — the toggle that opens it and the dropdown filter that hides it — and they
+// must never disagree about which mode is "the Claude panel".
+const CLAUDE_SPLIT_MODE = "claude_split";
+
+// The toggle's asterisk, drawn rather than masked from the template's icon.
+// That icon is the full many-spoked mark: correct at its own scale, but at
+// 16px beside a 12px label the spokes fill in and it reads as a blob. Six
+// spokes at a hairline weight keep the mark recognisable and let the label
+// carry the meaning. (The dropdown no longer shows this mode at all, so there
+// is no second Claude glyph to disagree with.)
+const CLAUDE_ASTERISK = (
+  <svg
+    width="16"
+    height="16"
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="1.7"
+    strokeLinecap="round"
+    aria-hidden="true"
+  >
+    <path d="M12 4.5v15" />
+    <path d="M5.5 8.25l13 7.5" />
+    <path d="M18.5 8.25l-13 7.5" />
+  </svg>
+);
 
 // --- Held-frame mode swap (A1) ----------------------------------------------
 // How long the incoming preview frame takes to fade in over the outgoing one.
@@ -750,6 +778,34 @@ function TemplatePreview({
   const appBtnLabel = linkStatus?.status === "unlinked" ? "Add as app" : "Open as app";
   const appBtnAction = linkStatus?.status === "unlinked" ? convertToApp : openAsApp;
 
+  // --- Claude panel toggle ---------------------------------------------------
+  // `claude_split` is offered as a toggle rather than a dropdown entry (see the
+  // button below). Gate visibility on the shared policy: a denied verdict never
+  // reaches `templates` at all, and an unresolved one is simply not offered yet
+  // — a spinner-button for a control that may never appear is worse than its
+  // arriving a beat late.
+  const claudeEntry = templates.find((t) => t.mode === CLAUDE_SPLIT_MODE && !isPending(t)) ?? null;
+  const claudeOn = activeMode === CLAUDE_SPLIT_MODE;
+  // Everything except Claude — the dropdown's own entries.
+  const menuEntries = templates.filter((t) => t.mode !== CLAUDE_SPLIT_MODE);
+  // Where turning Claude OFF goes back to: the mode the user was on when they
+  // opened it, so the toggle is genuinely reversible. Falls back to the first
+  // non-Claude entry (or the default) when there is no such history — a URL
+  // that opened straight into `_mode=claude_split` has none.
+  const beforeClaude = useRef<string | null>(null);
+  useEffect(() => {
+    if (activeMode !== CLAUDE_SPLIT_MODE) beforeClaude.current = activeMode;
+  }, [activeMode]);
+  const toggleClaude = () => {
+    if (!claudeOn) return void setMode(CLAUDE_SPLIT_MODE);
+    const previous = beforeClaude.current;
+    const back =
+      (previous && menuEntries.some((t) => t.mode === previous) && previous) ||
+      (defaultEntry.mode !== CLAUDE_SPLIT_MODE && defaultEntry.mode) ||
+      menuEntries[0]?.mode;
+    if (back) void setMode(back);
+  };
+
   const openAsAppBtn =
     isListing && singleAppPath && linkStatus ? (
       <button type="button" className="open-as-app-btn" onClick={appBtnAction}>
@@ -759,19 +815,6 @@ function TemplatePreview({
 
   const headerActions = (
     <>
-      {/* App-builder chrome only (appChrome — the variant that pins the mode
-          list): the counterpart of the explorer's "Open as app" — jump from
-          the app experience back to the folder in the explorer
-          (/explorer/view/...), where the full template/mode surface lives. */}
-      {appChrome && stat.is_dir && (
-        <button
-          type="button"
-          className="open-as-app-btn"
-          onClick={() => navigate(fsPath, { isDir: true })}
-        >
-          Open in explorer
-        </button>
-      )}
       {/* Deployable = the mode list carries the "_render" sentinel AND the
           file is .html/.htm — the exporter's actual contract. The extension
           check matters because a registry rebind can put "_render" on any
@@ -785,8 +828,29 @@ function TemplatePreview({
         deployEnabled &&
         templates.some((t) => t.mode === "_render") &&
         /\.html?$/i.test(fsPath) && <DeployButton fsPath={fsPath} />}
+      {/* Claude is a PANEL you open beside the view, not a view mode you
+          switch into — burying it in the mode dropdown made a headline
+          feature a two-click discovery problem. It gets the labelled toggle
+          (same recipe as the listing's Preview toggle) and comes OUT of the
+          dropdown below, which is left describing real view modes. */}
+      {claudeEntry && (
+        <button
+          type="button"
+          className={"bar-ctl claude-toggle" + (claudeOn ? " pressed" : "")}
+          aria-pressed={claudeOn}
+          title={claudeOn ? "Close the Claude panel" : "Open this in Claude"}
+          onClick={toggleClaude}
+        >
+          {CLAUDE_ASTERISK}
+          <span>Claude</span>
+        </button>
+      )}
       <ModeMenu
-        entries={templates.map((t) => ({ mode: t.mode, icon: templateModeIcon(t), pending: isPending(t) }))}
+        entries={menuEntries.map((t) => ({
+          mode: t.mode,
+          icon: templateModeIcon(t),
+          pending: isPending(t),
+        }))}
         active={entry.mode}
         /* Spinner from the click until the incoming frame has actually taken
            over — the flush wait AND the new document's load are both time the
@@ -794,6 +858,19 @@ function TemplatePreview({
         busy={switchingTo ?? (shown !== activeMode ? activeMode : null)}
         onSelect={setMode}
       />
+      {/* Rightmost, per the bars' grammar: the low-frequency one-shots live in
+          the overflow, beside "Open in Finder" and "Copy path" in the title
+          bar's own `···`. "Open in explorer" — the counterpart of the
+          explorer's "Open as app", jumping from the app experience back to the
+          folder where the full template surface lives — held the bar's most
+          prominent slot for an action nobody uses twice a session. */}
+      {appChrome && stat.is_dir && (
+        <OverflowMenu
+          items={[
+            { label: "Open in explorer", onClick: () => navigate(fsPath, { isDir: true }) },
+          ]}
+        />
+      )}
     </>
   );
 

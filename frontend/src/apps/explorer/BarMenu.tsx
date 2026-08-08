@@ -29,16 +29,21 @@ import { modeTitle } from "@platform/lib/mode-name";
 // clamping the LEFT edge is what actually matters near the window's edge.
 const MENU_MIN_W = 180;
 
+// Exactly one of left/right is set: a left-anchored popup grows rightwards from
+// the trigger's left edge; a right-anchored one hangs from its right edge so
+// the two right edges line up — what a right-zone control wants. The mode
+// dropdown sits mid-bar and is fine growing rightwards.
 interface MenuPos {
   top: number;
-  left: number;
+  left?: number;
+  right?: number;
 }
 
 // Open/close plumbing shared by both menus. Closes on outside pointerdown, on
 // Escape, and on window blur — a click landing inside any iframe never reaches
 // this document, but it does blur the shell window (the pane bars live above a
 // grid of iframes, so this is the common case, not the exotic one).
-function useMenuAnchor() {
+function useMenuAnchor(align: "left" | "right" = "left") {
   const [pos, setPos] = useState<MenuPos | null>(null); // non-null = open
   const rootRef = useRef<HTMLDivElement | null>(null);
 
@@ -70,10 +75,18 @@ function useMenuAnchor() {
       return;
     }
     const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
-    setPos({
-      top: r.bottom + 4,
-      left: Math.max(4, Math.min(r.left, window.innerWidth - MENU_MIN_W - 4)),
-    });
+    // A right-anchored popup is content-width (see .bar-overflow in
+    // explorer.css), so there is no width to subtract from a left coordinate —
+    // pin the right edges together and let the box grow leftwards, clamped to
+    // the viewport.
+    setPos(
+      align === "right"
+        ? { top: r.bottom + 4, right: Math.max(4, window.innerWidth - r.right) }
+        : {
+            top: r.bottom + 4,
+            left: Math.max(4, Math.min(r.left, window.innerWidth - MENU_MIN_W - 4)),
+          }
+    );
   };
 
   return { pos, rootRef, toggle, close: () => setPos(null) };
@@ -179,7 +192,7 @@ export function ModeMenu({ entries, active, busy, onSelect }: ModeMenuProps) {
           className="bar-menu-popup"
           role="menu"
           aria-label="View mode"
-          style={{ top: pos.top, left: pos.left }}
+          style={{ top: pos.top, left: pos.left, right: pos.right }}
         >
           {entries.map((e) => (
             <button
@@ -220,7 +233,7 @@ export interface OverflowItem {
 // `···` menu for the bars' layout zone. Renders nothing when it has no items,
 // so a caller can pass a conditional list without guarding the control itself.
 export function OverflowMenu({ items, title = "More actions" }: { items: OverflowItem[]; title?: string }) {
-  const { pos, rootRef, toggle, close } = useMenuAnchor();
+  const { pos, rootRef, toggle, close } = useMenuAnchor("right");
   if (items.length === 0) return null;
   return (
     <div className="bar-overflow" ref={rootRef}>
@@ -240,7 +253,7 @@ export function OverflowMenu({ items, title = "More actions" }: { items: Overflo
           className="bar-menu-popup"
           role="menu"
           aria-label={title}
-          style={{ top: pos.top, left: pos.left }}
+          style={{ top: pos.top, left: pos.left, right: pos.right }}
         >
           {items.map((item) => (
             <button

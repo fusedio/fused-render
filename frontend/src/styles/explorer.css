@@ -397,6 +397,15 @@
   box-shadow: 0 8px 24px var(--shadow-md);
 }
 
+/* The 180px floor is sized for MODE rows — icon + label + checkmark, which
+   need to hold a column. An overflow menu carries plain labels, so it sizes to
+   its content instead; on a one-item menu ("Open in explorer") the floor was
+   ~50px of dead width. */
+.bar-overflow .bar-menu-popup {
+  min-width: 120px;
+  width: max-content;
+}
+
 .bar-menu-item {
   display: flex;
   align-items: center;
