@@ -31,7 +31,9 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  padding: 4px;
+  /* 5px around a 14px glyph = the same 24px box (and hover pill) the 16px
+     glyph used to make, so shrinking the star cost no hit area. */
+  padding: 5px;
   border: none;
   border-radius: 6px;
   background: none;
@@ -50,6 +52,16 @@
 .bookmark-star-btn svg {
   position: relative;
   top: -0.5px;
+}
+
+/* The star belongs TO the path, so it should sit in the path's own rhythm, not
+   at the bar's zone spacing. Between the two the bar contributed its 10px flex
+   gap plus the star's 5px padding plus the first crumb's 4px — 19px of air,
+   more than twice the 8px the crumbs keep between themselves, which made the
+   star read as an island. A negative margin is the only way to retune ONE pair
+   inside a `gap` container; the bar-wide 10px between the other zones stands. */
+#breadcrumb .bookmark-star-btn {
+  margin-right: -11px;
 }
 
 .bookmark-star-btn:hover {
@@ -337,10 +349,11 @@
   display: inline-flex;
 }
 
-.mode-menu-btn {
-  gap: 7px;
-  padding: 0 10px;
-}
+/* No metrics of its own: the mode trigger sits on the plain .bar-ctl recipe
+   (28px tall, 0 8px padding, 6px gap, 6px radius) like every other control in
+   these bars. It used to override with `padding: 0 10px; gap: 7px`, which —
+   with the 1px border only this control carries — put 11px of inset either
+   side and read as the one over-padded thing in the bar. */
 
 .mode-menu-icon {
   flex: 0 0 auto;

@@ -81,15 +81,17 @@ function useUpdateButton(urlVersion: number, bookmarksVersion: number): boolean 
   return visible;
 }
 
-// 16px like every other control glyph in the bars — it was the one 15px icon,
-// which read as fractionally low next to the crumbs. The remaining ~1px of
-// optical correction (a five-pointed star's mass sits below its box centre)
-// is a CSS nudge on .bookmark-star-btn svg.
+// 14px, not the bars' usual 16px: this glyph's neighbour is 12px monospace
+// crumb text, not another control, and at 16px it read as an oversized
+// ornament rather than a sibling of the path. The button keeps its 24px box
+// (padding absorbs the 2px), so the hit area and the hover pill are unchanged.
+// The remaining half-pixel of optical correction — a five-pointed star's mass
+// sits below its box centre — is a CSS nudge on .bookmark-star-btn svg.
 function StarIcon({ filled }: { filled: boolean }) {
   return (
     <svg
-      width="16"
-      height="16"
+      width="14"
+      height="14"
       viewBox="0 0 16 16"
       fill={filled ? "currentColor" : "none"}
       stroke="currentColor"
