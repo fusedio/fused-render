@@ -1,45 +1,39 @@
-"""Gate for the `versions` template — per-FILE history, plus app history on an
-app FOLDER (D235).
+"""Gate for the `versions` template — the HISTORY view, for anything inside a
+git work tree.
 
-`main(path)` answers for the two kinds of target the mode is bound to:
+`main(path)` asks git itself one question — `rev-parse --is-inside-work-tree`,
+from the directory when the target is one and from the parent when it is a file
+(the probe `git/condition.py` documents at length). A file, a nested folder, a
+repository root: all of them have a timeline, so all of them are offered it.
 
-* **A FILE** → allowed when it is inside any git work tree, decided by git
-  itself (`rev-parse --is-inside-work-tree` from the file's parent — the probe
-  `git/condition.py` documents at length). `versions` is the file-side history
-  view now that `git` is directory-only (D235), so a tracked file gets its
-  timeline wherever it lives, not only inside a fused app. Outside an app the
-  view is READ-ONLY — `versions.py` refuses `revert` there, because that writes
-  a commit with the Fused identity into what is the user's own repository (the
-  rule `fused_render/linked_apps.py` already sets for linked folders).
-* **A DIRECTORY** → allowed only for a *fused app*: a folder exactly two levels
-  under the workspace (`<workspace>/<tag>/<name>`, `shell/seed.fused_dir()`)
-  that is itself a git repository, or a git-backed registered linked app. Only
-  such folders get the auto-commit treatment (`fused_render/app_git.py`), so
-  only they have a folder-level history worth showing — and this is what keeps
-  the mode in the app-builder view (App.tsx APP_MODES) while an ordinary folder
-  in the explorer offers the repo-wide `git` view instead.
+This used to be two rules and a carve-out. A FILE passed anywhere in any work
+tree, but a DIRECTORY passed only for a *fused app* — a folder exactly two
+levels under the workspace that was itself a repository, or a git-backed
+registered linked app — on the grounds that folder-wide history outside an app
+was the `git` mode's story, and two modes for one story was to be avoided. That
+reasoning is spent: `git` is the WORKING TREE view now (staging, discarding,
+stashing, committing, branches) and draws no history at all, so there is no
+second story to collide with. Its gate dropped the mirror-image exclusion at the
+same time; the pair is now simply offered together, and the registry binds them
+together.
 
-The app-dir rule here mirrors `app_git.app_dir_for` (and the claude template's
-`_app_dir_for`); keep the three in step. It is duplicated rather than imported
-because a template must not import `fused_render` (SPEC PY-15 / D166) — the
-workspace root travels as an env var via `../shared/appenv.py`.
+Consequences of the widening, both already handled elsewhere:
 
-Constant-time: one relpath computation and one `os.path.isdir` on `.git` —
-never a listing (the rule `graph/condition.py` documents; this gate too runs
-on every file and directory the user opens). Mount-backed paths are refused
-outright: an app is by definition a local folder, and probing `.git` over a
-kernel NFS mount is exactly the stat this gate must never issue.
+* **Write authority is unchanged.** `versions.py` still refuses `revert` outside
+  a fused app — that would write a commit with the Fused identity into what is
+  the user's own repository (the rule `fused_render/linked_apps.py` sets for
+  linked folders) — so the view is READ-ONLY there. Enforced by the module
+  rather than by hiding the mode: the gate is the UX, the module is the
+  guarantee (MD-11).
+* **Auto-commits are unchanged.** Only real app folders get the `app_git.py`
+  treatment; being *offered* a timeline has never implied being given one.
 
-Registered *linked apps* (FUSED_RENDER_LINKED_APPS) pass too, when git-backed:
-their history is worth SHOWING like any app's. Git-backed is decided by git
-itself (`rev-parse --is-inside-work-tree`, the git/condition.py probe), not a
-`.git` stat on the folder — a linked folder is often a subfolder of the user's
-repository, with `.git` at an ancestor. But only the read side — the
-backend (versions.py) refuses `revert` for a linked folder, because that
-writes a commit with the Fused identity into what is the user's OWN
-repository (see fused_render/linked_apps.py). The same reasoning keeps linked
-folders out of app_git.app_dir_for and the claude agent's _commit_turn sweep
-entirely — no auto-commits.
+Constant-time, and never a listing (the rule `graph/condition.py` documents;
+this gate runs on every file and directory the user opens): two stats and one
+bounded fork, no relpath arithmetic and no `.git` probing left. Mount-backed
+paths are refused outright, before any subprocess — git over an rclone-NFS
+mount stats and lists its way through the work tree, the exact pattern that
+wedges a flat million-key S3 prefix.
 
 Fails closed: any exception returns False.
 """
@@ -56,7 +50,7 @@ def main(path: str) -> bool:
         if shared not in sys.path:
             sys.path.insert(0, shared)
         try:
-            from appenv import is_mount_backed, linked_app_dir_for, workspace_dir
+            from appenv import is_mount_backed
         except Exception:  # noqa: BLE001 — cannot tell -> refuse (CT-12)
             return False
         if is_mount_backed(path):
@@ -86,39 +80,26 @@ def main(path: str) -> bool:
             )
             return proc.returncode == 0 and proc.stdout.strip() == b"true"
 
-        # Inside a registered linked app: ask git itself. A linked folder is
-        # often a SUBFOLDER of the user's repository (`.git` lives at an
-        # ancestor). Linked dirs are a small registered set, so the fork happens
-        # rarely, never on ordinary stats.
-        linked = linked_app_dir_for(path)
-        if linked:
-            return _in_work_tree(linked)
-
-        # A fused app, or anything inside one: one relpath + one `.git` stat.
-        root = workspace_dir()
-        rel = os.path.relpath(os.path.abspath(path), root)
-        if rel != os.curdir and rel.split(os.sep, 1)[0] != os.pardir:
-            parts = rel.split(os.sep)
-            if (len(parts) >= 2
-                    and not parts[0].startswith(".")
-                    and not parts[1].startswith(".")):
-                app_dir = os.path.join(root, parts[0], parts[1])
-                if os.path.isdir(os.path.join(app_dir, ".git")):
-                    return True
-
-        # Not an app target (D235). A FILE still earns its own timeline from
-        # whichever repository it happens to live in — that is the file-side
-        # history view `git` no longer provides — and the view is read-only
-        # there, enforced by versions.py rather than by hiding the mode. A
-        # plain DIRECTORY does not: folder-wide history outside an app is the
-        # `git` mode's story, and two modes for one story is what the peer
-        # exclusion in git/condition.py exists to prevent.
+        # One rule, for both shapes: is this inside a work tree? A DIRECTORY
+        # asks about itself, a FILE asks from its parent (handing git a file as
+        # `-C` is an ENOTDIR, not an answer).
         #
-        # `isfile`, deliberately not `not isdir`: the loose form is also true for
-        # every path that does NOT EXIST, so a missing name inside any repository
-        # would gate true. Same one-word trap the peer gate documents
-        # (claude/condition.py), and "cannot tell" must read as "refuse"
-        # (CT-12).
+        # The elaborate app-dir and linked-app branches that used to stand here
+        # are gone, and so is the plain-directory refusal they existed to carve
+        # exceptions out of. That refusal said folder-wide history outside a
+        # fused app was the `git` mode's story and two modes for one story was
+        # to be avoided — but `git` is the WORKING TREE view now (staging,
+        # committing) and does not draw history at all, so there is no second
+        # story to collide with. A folder has a timeline like anything else,
+        # wherever it lives, and this stops asking whether it is special first.
+        #
+        # `isdir` first and `isfile` second, deliberately never `not isdir`:
+        # the loose form is also true for every path that does NOT EXIST, so a
+        # missing name inside any repository would gate true. Same one-word trap
+        # the peer gate documents (claude/condition.py), and "cannot tell" must
+        # read as "refuse" (CT-12).
+        if os.path.isdir(path):
+            return _in_work_tree(path)
         if not os.path.isfile(path):
             return False
         parent = os.path.dirname(os.path.abspath(path))

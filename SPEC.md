@@ -426,7 +426,7 @@ const page = await fused.runPython("./reader.py",
 | `.py` | `code`, `api`, `claude`, `versions`, `reader` | editable CodeMirror; `api` = swagger-style run form over the `main()` entry point (D63) |
 | `.js .ts .tsx .jsx .cjs .mjs .cts .mts .sh .zsh .fish .ps1 .csh .zsh-theme .vim .yaml .yml .toml .ini .cfg .conf .tf .hcl .css .plist` | `code`, `claude`, `versions`, `reader` | editable CodeMirror. `.toml` leads with `canvas` (§28) and `.plist` with `plist`, then the same tail |
 | `.txt .log` | `code`, `text`, `claude`, `versions`, `reader` | editable CodeMirror, with the plain `<pre>` view a click behind it; `.log` leads with `log_studio`. `code` outranks `text` on every key that offers both: they render the same bytes, and `code` renders them better |
-| `.jsonl .ndjson` | `code`, `duckdb`, `claude`, `versions`, `reader` | append-only record streams — no `git` mode ever (a scoped commit log over a stream says nothing a diff can render, GT-2), but they do carry the authored-file pair: PT-14's question is "is this authored", not "does this diff well" |
+| `.jsonl .ndjson` | `code`, `duckdb`, `claude`, `versions`, `git`, `reader` | append-only record streams. They carry the authored-file trio like any other text key: PT-14's question is "is this authored", not "does this diff well". The old `git` exclusion here argued that a scoped commit LOG over a stream says nothing a diff can render — an argument about history, and `git` no longer draws history (GT-2) |
 | `.tif .tiff` | `geotiff` | GeoTIFF/COG via vendored geotiff (in-browser decode, no reader.py); full metadata + dump, photometric routing (RGB/palette/YCbCr), band select + RGB stretch + colormaps, histogram, hover. Small files full-fetched; >32 MiB range-request `fromUrl` |
 | `.nc .nc4 .cdf` | `netcdf` | NetCDF-3 via vendored netcdfjs (HDF5/NetCDF-4 → graceful card); leading-dim sliders, colormaps + stretch, histogram, hover |
 | `.zarr/` (directory) | `zarr_aoi`, `_listing` | Zarr v2/v3 store — a *directory*, bound by the trailing-`/` directory key (PT-13). `zarr_aoi` is the server-side AOI tile-streaming map viewer (opened via zarr-python, tiles streamed as PNG); it ships a `condition.py` store-detection gate (CT-12), so it is a conditional peer rather than the immediate default — the built-in `_listing` (PT-12) shows first and the map joins the switcher when the background gate confirms the store. `_listing` also stays reachable as the raw member listing, replacing the old "Browse contents" escape hatch (D81) |
@@ -3959,20 +3959,27 @@ repo-wide view is what a terminal is for — but what is going on with *this
 folder*: its uncommitted changes, its commits, the diff of any of them restricted
 to that path, **and the operations that change them**. Offered for
 **directories**, always as a `condition.py`-gated companion mode, never as a
-default. Since D235 that is the *whole* binding (GT-2): the file-side "what
-changed in this one file" story belongs to `versions`
-(`fused_render/templates/versions/`), which scopes the log to that one file's
-pathspec (`-- :(literal)<basename>`) and is **read-only** there — so a file is
-never offered two commit-log modes for one story. The path-scoping machinery below is unchanged and still the point: a
-folder deep inside a monorepo asks about itself, not about the repository.
+default. **`git` is the WORKING TREE view and `versions` is the HISTORY view,
+and they are offered together on everything inside a work tree** — file or
+folder alike (GT-2). The path-scoping machinery below is unchanged and still the
+point: a folder deep inside a monorepo asks about itself, not about the
+repository.
 
 The view was read-only through D193 (the original GT-11) and is not any more:
 D229 replaced that item with a **VSCode Source-Control-style GUI** — branch
 management, staging, stashing, committing and pull/push — rebuilt **in place**,
-as one mode in the switcher rather than a second template. History did not go
-away; it became a section of the reorganized view. GT-12..GT-17 below are that
-surface, and everything GT-1..GT-10 says about bounds, refusals, pathspec
-hygiene and the theme still holds for it unchanged.
+as one mode in the switcher rather than a second template. GT-12..GT-17 below
+are that surface, and everything GT-1..GT-10 says about bounds, refusals,
+pathspec hygiene and the theme still holds for it unchanged.
+
+**History left the view.** For a while it stayed on as one section of the
+reorganized GUI, alongside a selected-commit diff pane and a "load more" window
+(`pages`/`sel` params). It is gone: the commit log is what `versions` renders,
+with a timeline this view never had, and since both modes now sit on every
+target the section was one story told twice. The view neither draws commits nor
+asks for them — its `overview` read passes `history=False`, so opening it runs
+no `git log` at all. `log.py`'s `op="log"` and `op="commit"` remain, for a
+caller that wants the log on purpose.
 
 - **GT-1** An ordinary view template (`fused_render/templates/git/`) —
   `template.html`, `log.py` (the reader), `ops.py` (the mutations),
@@ -3982,38 +3989,35 @@ hygiene and the theme still holds for it unchanged.
   reader that also mutates has no honest place to draw its validation line, and
   "what can this template DO to my repository" must be one file to audit rather
   than a grep for verbs across an 800-line reader.
-- **GT-2** **Registry bindings — the universal `/` directory key, and nothing
-  else (D235).** `git` sits in `"/": ["_listing", "app", "claude",
-  "versions", "git", "graph", "zarr_aoi"]` (one chat entry since D237, not two), where `_listing` stays the
-  default (PT-8) and `git` is the last of the *history* peers: it follows
-  `versions` because for an app folder the version timeline is the answer and the
-  raw commit log is one click further (#361), and it precedes `graph`/`zarr_aoi`
-  because the switcher reads left to right and its gate is the one that says yes
-  most often on a working machine. The ~40 **file** keys it used to be appended to
-  are gone from it — the whole hand-authored source / config / prose / log set —
-  because that is the authored-file pair's territory now (PT-14): a file offers
-  `claude` + `versions`, a directory offers `claude` + `git`, and `git`
-  keeping a file binding would have meant two commit-log modes for one story, the
-  same peer exclusion `git/condition.py` already applies to app folders. **D237
-  did not touch this**, and it is the half of D235 that stands: the chat is one
-  template on both kinds now, so the *chat* no longer splits by kind, but the
-  history answer still does — `versions` for a file, `git` for a directory. The
-  reasoning that used to justify the file list is not lost, it MOVED to the pair:
-  the authored-file set (47 keys — code, config, prose, notebooks, tabular, geo,
-  images) is still what "a human wrote or analyses these bytes" means, and it is
-  still deliberately **withheld** from spreadsheets, media, 3D, archives, PDFs and
-  generated tool files, whose lists are left alone rather than churned. One part
-  of the old rule was **overturned** rather than moved: record streams
-  (`.jsonl`/`.ndjson`) were excluded from `git` because a scoped commit log over an
-  append-only stream says nothing a diff can render — an argument about *diffs*,
-  which is not an argument about chat or about a version timeline, so those keys DO
-  carry `claude` + `versions`. What survives of `.json` in / `.jsonl` out is
-  therefore only the observation that made it: `.json` is the dominant
-  hand-authored config format, `.jsonl` is a stream. Ordering on a file key is
-  unchanged in spirit — the pair slots in **before the trailing meta-modes**
-  (`reader`, `history`), so RD's `reader`-is-last invariant holds (the
-  `reader`-immediately-before-`annotate` form of it lapsed with `annotate`'s
-  deregistration, §17).
+- **GT-2** **Registry bindings — wherever `versions` is, on files and on
+  directories alike.** `git` sits immediately after `versions` in the universal
+  `"/": ["_listing", "app", "claude", "versions", "git", "graph", "zarr_aoi"]`
+  and in every one of the ~47 **authored-file** keys that carry `versions` —
+  code, config, prose, notebooks, tabular, geo, images, record streams. The two
+  are the working tree and the history of one repository, so they are bound as a
+  pair and the tests enforce the pair in both directions (neither may appear
+  without the other). `_listing` stays the directory default (PT-8) and `git` is
+  never a default anywhere; on a file key the pair slots in **before the trailing
+  meta-modes** (`reader`, `history`), so RD's `reader`-is-last invariant holds.
+  The set is still deliberately **withheld** from spreadsheets, media, 3D,
+  archives, PDFs and generated tool files — "did a human write or analyse these
+  bytes" is unchanged as the question.
+
+  *What this overturns (D235).* `git` was bound to the `/` directory key and
+  **nothing else**, the ~40 file keys stripped from it, on the reasoning that a
+  file's commit story was `versions`' and a file offering both would be two
+  commit-log modes for one story. The premise held only while `git` drew a
+  commit log; it does not (see the §33 preamble), so the exclusion was
+  protecting against a collision that no longer exists. The **consequence** was
+  worse than the redundancy it prevented: since #424 the explorer gives a FOLDER
+  no mode switcher of its own — the only mode surface a browsing user has is the
+  preview pane's, and the pane acts on the **selected row**, which is a file far
+  more often than a directory. Bound to no file key and unreachable from a
+  folder's own chrome, `git` could be reached only by hand-writing `?_mode=git`
+  or through the file menu's Open With. It was, in practice, not visible
+  anywhere. Binding it beside `versions` is what makes it reachable at all.
+  Also overturned: the `.jsonl`/`.ndjson` carve-out, for the same reason (its
+  argument was about diffing a stream's commit log).
 - **GT-3** **The gate (`condition.py`, CT-12) is `git rev-parse
   --is-inside-work-tree`, one bounded subprocess — never a search of the tree.**
   A directory asks about itself. A **file** would ask from its parent (handing git
@@ -4038,13 +4042,20 @@ hygiene and the theme still holds for it unchanged.
   work tree, hence no `git status` and no path to scope history to — not offered
   beats offered-then-broken. Fails closed on a missing binary, a timeout, a
   non-zero exit, stdout that is not literally `true`, or any exception.
-  **False, too, for a fused app folder** (a git-initialized directory exactly two
-  levels under the workspace, or a git-backed registered linked app): that history
-  is `versions`' — same history, plus the app's auto-commit semantics
-  (`fused_render/app_git.py`) — and offering both would be two modes for one story.
-  This is the exact complement of `versions/condition.py`'s app-dir rule; the two
-  gates and `app_git.app_dir_for` must be kept in step, and each states the same
-  constant-time shape (one relpath, one `.git` stat, never a listing).
+  **There are no peer exclusions left.** The gate used to answer False for a
+  fused app folder (a git-initialized directory exactly two levels under the
+  workspace) and then, with a whole SECOND `rev-parse` fork on every stat, for a
+  git-backed registered linked app — because that history was `versions`'. Both
+  are gone with the History section that motivated them, and so is the mirror
+  rule in `versions/condition.py` (which refused every directory that was not a
+  fused app). The two gates now ask git the same single question and both say
+  yes, which is also why the instruction to keep them and `app_git.app_dir_for`
+  "in step" is no longer needed: there is one rule, not three. Nothing about
+  WRITE authority moved — `versions.py` still refuses `revert` outside a fused
+  app, and only real app folders get `app_git.py`'s auto-commits; being offered a
+  timeline never implied being given one (MD-11: the gate is the UX, the module
+  is the guarantee). The file branch is likewise no longer "defensive code, not
+  a documented offer" — files are bound now, so it is the offer.
 - **GT-4** **Mount-backed → refused, before any subprocess.** The same refusal
   `graph/condition.py` makes and for the same shape of reason, worse here: the
   reader runs `git status` / `git log` on the path, and git over an rclone-NFS

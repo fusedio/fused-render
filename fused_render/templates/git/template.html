@@ -600,15 +600,20 @@
 <script>
 "use strict";
 /* ------------------------------------------------------------------ state
+ * This view is COMMIT MANAGEMENT: what is staged, what changed, what is
+ * untracked, what is stashed, plus the toolbar's branch/remote actions and the
+ * commit box. It draws NO history — the commit log is the `versions` mode's
+ * view of the same repository, and the two are offered side by side on every
+ * target inside a work tree, so a History section here was one story told
+ * twice. The overview read opts out of the log entirely (`history: ""`), so
+ * opening this view does not run `git log` at all.
+ *
  * Params ARE the state (the house pattern): every piece of UI state lives in
  * the URL, so a refresh or a bookmark reproduces the exact view — including an
  * open diff pane, an open dropdown, a half-typed commit message and a pending
  * destructive confirmation.
  *
- *   pages=<n>     how many log pages are loaded (1-based; the "load more" count)
- *   sel=<sha>     the selected commit  }  mutually exclusive: at most one diff
- *   wt=<relpath>  the selected change  }  target at a time, so setting one
- *                                         clears the other
+ *   wt=<relpath>  the selected change, whose diff fills the right-hand pane
  *   panel=branch|stash   which toolbar dropdown is open
  *   msg=<text>    the commit message draft
  *   ask=<key>     the destructive action awaiting confirmation, e.g.
@@ -619,7 +624,6 @@
  * to retype, so losing it to a refresh is the worst small bug it could have; and
  * a confirmation that survives a refresh cannot be bypassed by one.
  */
-const PAGE_SIZE = 30;
 const READER = "./log.py";
 const OPS = "./ops.py";
 
@@ -1059,7 +1063,7 @@ function changeLine(repo, change, selected, kind) {
      `-- <path>` against HEAD and git resolves it from the repo ROOT, so the row
      still opens the right diff: the pathspec is repo-relative, not
      scope-relative. Its ACTIONS are a different matter — see `writable`. */
-  row.addEventListener("click", () => setParams({ wt: change.path, sel: null }));
+  row.addEventListener("click", () => setParams({ wt: change.path }));
   if (selected) line.setAttribute("aria-current", "true");
   line.append(row);
 
@@ -1095,23 +1099,6 @@ function changeLine(repo, change, selected, kind) {
     }
   }
   line.append(acts);
-  return line;
-}
-
-function commitLine(entry, selected) {
-  const line = el("div", { className: "line" });
-  const row = el("button", {
-    className: "row",
-    type: "button",
-    title: entry.subject + "\n" + entry.author + " — " + entry.date,
-  },
-    el("span", { className: "sha", textContent: entry.short }),
-    el("span", { className: "subject", textContent: entry.subject || "(no subject)" }),
-    el("span", { className: "who", textContent: entry.author }),
-    el("span", { className: "when", textContent: entry.relative }));
-  if (selected) line.setAttribute("aria-current", "true");
-  row.addEventListener("click", () => setParams({ sel: entry.sha, wt: null }));
-  line.append(row);
   return line;
 }
 
@@ -1196,7 +1183,7 @@ function diffBody(text) {
 
 function diffPane(title, sub, payload) {
   const close = action("close", "Close", {
-    onClick: () => setParams({ sel: null, wt: null }),
+    onClick: () => setParams({ wt: null }),
   });
 
   const pane = el("div", { className: "pane" },
@@ -1234,7 +1221,7 @@ function diffPane(title, sub, payload) {
       const row = el("button", { className: "row", type: "button", title: name },
         el("span", { className: "code is-?", textContent: "??" }),
         el("span", { className: "path", textContent: name }));
-      row.addEventListener("click", () => setParams({ wt: name, sel: null }));
+      row.addEventListener("click", () => setParams({ wt: name }));
       rows.append(el("div", { className: "line" }, row));
     }
     pane.append(rows);
@@ -1402,35 +1389,12 @@ function pendingConfirm(data) {
 }
 
 function render(data, stashes, diff) {
-  const pages = num("pages", 1);
-  const sel = param("sel");
   const wt = param("wt");
   const ask = pendingConfirm(data);
 
   const staged = data.changes.filter((c) => c.staged);
   const unstaged = data.changes.filter((c) => c.unstaged && !c.untracked);
   const untracked = data.changes.filter((c) => c.untracked);
-  const commits = data.commits;
-
-  /* Three terminal states, not two. The page grows its WINDOW (`limit =
-     PAGE_SIZE * pages`) rather than paging, so the server's ceiling on that
-     window has to be visible here: `has_more` stays honestly true once the clamp
-     bites, and offering "load more" on it refetched the same rows forever. So
-     `capped` — not `has_more` — decides whether another click can do anything. */
-  const loadMore = (data.has_more && !data.capped)
-    ? el("button", { className: "more", type: "button",
-                     textContent: "Load " + PAGE_SIZE + " more commits" })
-    : (data.has_more && data.capped)
-      ? el("button", { className: "more", type: "button", disabled: true,
-                       textContent: "Showing the most recent " + commits.length
-                         + " commits for this path — use git for deeper history" })
-      : (commits.length
-          ? el("button", { className: "more", type: "button", disabled: true,
-                           textContent: "End of history for this path" })
-          : null);
-  if (loadMore && !loadMore.disabled) {
-    loadMore.addEventListener("click", () => setParams({ pages: pages + 1 }));
-  }
 
   const truncNote = data.changes_truncated
     /* One flag, two causes (MAX_CHANGES or the status byte cap), so the wording
@@ -1483,14 +1447,14 @@ function render(data, stashes, diff) {
     "Nothing stashed.",
     ask && ask.where === "stashes" ? ask.node : null);
 
-  const historySection = listSection("History", String(commits.length), null,
-    commits.map((c) => commitLine(c, c.sha === sel)),
-    data.repo.has_commits ? "No commits have touched this path yet."
-                          : "This repository has no commits yet.",
-    loadMore);
-
+  /* No History section, and no "load more" paging behind it. The commit LOG is
+     the `versions` mode's view of this repository — it renders the same commits
+     with a timeline this one never had — and since both modes are now offered
+     on every target inside a work tree, drawing it here too was one story told
+     twice. What is left is the working tree: what is staged, what changed, what
+     is untracked, what is stashed. */
   const left = el("div", { className: "col" },
-    stagedSection, changesSection, untrackedSection, stashSection, historySection);
+    stagedSection, changesSection, untrackedSection, stashSection);
 
   const cols = el("div", { className: "cols" + (diff ? "" : " no-diff") }, left);
   if (diff) cols.append(el("div", { className: "col" }, diff));
@@ -1577,19 +1541,7 @@ async function run(key, args, then, context) {
 /* ------------------------------------------------------------------ loading */
 
 async function loadDiff(data) {
-  const sel = param("sel");
   const wt = param("wt");
-  if (sel) {
-    const known = data.commits.find((c) => c.sha === sel);
-    const payload = await fused.runPython(READER, { file, op: "commit", sha: sel },
-                                          chan("commit"))
-      .catch((err) => ({ ok: false, message: err.message }));
-    const meta = payload.ok ? payload.commit : known;
-    return diffPane(
-      (meta && meta.short ? meta.short + "  " : "") + (meta ? meta.subject : sel),
-      data.repo.rel ? "scoped to " + data.repo.rel : null,
-      payload);
-  }
   if (wt) {
     const payload = await fused.runPython(READER, { file, op: "worktree", entry: wt },
                                           chan("worktree"))
@@ -1618,8 +1570,7 @@ async function loadBranches(mine) {
 
 /* Everything the DOM's shape depends on. A `msg` keystroke is deliberately NOT
    in here: it changes the URL and must not repaint the view. */
-const structural = () => [param("pages"), param("sel"), param("wt"),
-                          param("panel"), param("ask")].join(" ");
+const structural = () => [param("wt"), param("panel"), param("ask")].join(" ");
 
 async function draw(force) {
   const key = structural();
@@ -1627,8 +1578,6 @@ async function draw(force) {
   drawn = key;
 
   const mine = ++seq;
-  const pages = num("pages", 1);
-  const sel = param("sel");
   const wt = param("wt");
 
   if (!file) {
@@ -1638,13 +1587,14 @@ async function draw(force) {
 
   /* Repaint from the snapshot first when only the SELECTION changed: the lists
      are unchanged, so refetching them would blank a list the user is looking at.
-     The diff then arrives into an already-laid-out pane. */
-  const reuse = snapshot && snapshot.pages === pages;
-  let data = reuse ? snapshot.data : null;
-  let stashes = reuse ? snapshot.stashes : [];
+     The diff then arrives into an already-laid-out pane. The snapshot used to
+     be keyed by the log window (`pages`); with no log to widen, holding it is
+     unconditional. */
+  let data = snapshot ? snapshot.data : null;
+  let stashes = snapshot ? snapshot.stashes : [];
 
   if (data) {
-    render(data, stashes, (sel || wt) ? diffPane(sel || wt, null, "loading") : null);
+    render(data, stashes, wt ? diffPane(wt, null, "loading") : null);
   }
 
   if (!data) {
@@ -1658,7 +1608,10 @@ async function draw(force) {
          first, the first then hangs forever by design, and `Promise.all` waits
          on it for the life of the page. */
       [payload, stashPayload] = await Promise.all([
-        fused.runPython(READER, { file, op: "overview", limit: PAGE_SIZE * pages, page: 0 },
+        /* `history: ""` — falsy through the string binder — so the reader
+           skips `git log` altogether. This view draws no commits, so it does
+           not pay to fetch them either. */
+        fused.runPython(READER, { file, op: "overview", history: "" },
                         chan("overview")),
         fused.runPython(READER, { file, op: "stashes" }, chan("stashes")),
       ]);
@@ -1677,18 +1630,17 @@ async function draw(force) {
     }
     data = payload;
     stashes = (stashPayload && stashPayload.ok) ? stashPayload.stashes : [];
-    snapshot = { pages, data, stashes };
-    render(data, stashes, (sel || wt) ? diffPane(sel || wt, null, "loading") : null);
-    announce(data.commits.length + " commits, " + data.changes.length
-             + " uncommitted changes");
+    snapshot = { data, stashes };
+    render(data, stashes, wt ? diffPane(wt, null, "loading") : null);
+    announce(data.changes.length + " uncommitted changes");
   }
 
   if (await loadBranches(mine)) {
     if (mine !== seq) return;
-    render(data, stashes, (sel || wt) ? diffPane(sel || wt, null, "loading") : null);
+    render(data, stashes, wt ? diffPane(wt, null, "loading") : null);
   }
 
-  if (!sel && !wt) return;
+  if (!wt) return;
   const diff = await loadDiff(data);
   if (mine !== seq) return;
   render(data, stashes, diff);
@@ -1701,9 +1653,9 @@ document.addEventListener("keydown", (event) => {
   if (event.key !== "Escape") return;
   if (param("ask")) { event.preventDefault(); setParams({ ask: null }); return; }
   if (param("panel")) { event.preventDefault(); setParams({ panel: null }); return; }
-  if (param("sel") || param("wt")) {
+  if (param("wt")) {
     event.preventDefault();
-    setParams({ sel: null, wt: null });
+    setParams({ wt: null });
   }
 });
 

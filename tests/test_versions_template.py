@@ -100,12 +100,21 @@ def _shas(d):
 
 # ------------------------------------------------------------------- gate
 
-def test_condition_true_only_inside_git_backed_apps(workspace, tmp_path):
+def test_condition_true_inside_a_git_backed_app(workspace, tmp_path):
+    # The app dir and everything real inside it. There is no longer an app-dir
+    # RULE — the gate asks git whether the path is in a work tree, and an app is
+    # a work tree — but the app case is still worth pinning, because it is the
+    # one the app-builder view depends on (App.tsx APP_MODES).
     cond = _load("condition")
     d = _make_app(workspace)
+    (d / "sub").mkdir()
+    (d / "sub" / "x.py").write_text("x = 1\n")
     assert cond.main(str(d)) is True                     # the app dir itself
     assert cond.main(str(d / "index.html")) is True      # a file inside
     assert cond.main(str(d / "sub" / "x.py")) is True    # nested path
+    assert cond.main(str(d / "sub")) is True             # nested directory
+    # The workspace and its tag level are not repositories, so git says no —
+    # which is now the only reason a path is refused.
     assert cond.main(str(workspace)) is False            # workspace root
     assert cond.main(str(workspace / "local")) is False  # tag level
     assert cond.main(str(tmp_path / "elsewhere")) is False
@@ -130,15 +139,18 @@ def test_condition_true_for_a_file_in_any_git_repo(workspace, tmp_path):
     assert cond.main(str(repo / "fresh.txt")) is True
 
 
-def test_condition_false_for_a_directory_inside_a_repo(workspace, tmp_path):
-    # Folder-wide history outside an app belongs to the `git` mode; offering
-    # `versions` too would put two modes on one story, which is exactly what
-    # the peer exclusion in git/condition.py exists to prevent.
+def test_condition_true_for_a_directory_inside_any_repo(workspace, tmp_path):
+    # This used to be a refusal: folder-wide history outside a fused app was
+    # said to belong to `git`, and two modes for one story was the thing to
+    # avoid. `git` is the WORKING TREE view now and draws no history at all, so
+    # there is no second story — a folder has a timeline like anything else,
+    # wherever it lives. The mode is read-only there, enforced by versions.py
+    # refusing `revert` rather than by hiding the view (MD-11).
     cond = _load("condition")
     repo = _plain_repo(workspace, tmp_path)
     _commit(repo, "sub/notes.md", "# one\n", "Add notes")
-    assert cond.main(str(repo)) is False
-    assert cond.main(str(repo / "sub")) is False
+    assert cond.main(str(repo)) is True
+    assert cond.main(str(repo / "sub")) is True
 
 
 def test_condition_false_for_a_path_that_does_not_exist(workspace, tmp_path):

@@ -71,7 +71,8 @@ def test_plain_json_unaffected():
     # A bare, non-compound .json (no sidecar target) keeps its tree-first
     # binding — the wildcard `.*.json` needs a stem with its own extension
     # (HV-3), so this doesn't match it.
-    assert modes("/x/data.json", False) == (["tree", "code", "duckdb", "claude", "versions", "reader"], None)
+    assert modes("/x/data.json", False) == (
+        ["tree", "code", "duckdb", "claude", "versions", "git", "reader"], None)
 
 
 def test_every_hardcoded_nav_mode_still_exists_for_its_file_target():
