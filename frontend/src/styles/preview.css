@@ -482,7 +482,11 @@ body.embed .open-as-app-chip:hover {
   padding: 0;
 }
 
-.panel-bar .bar-ctl > svg {
+/* :not(.bar-caret) because the caret has its own smaller size below, and a
+   bare `.panel-bar .bar-ctl > svg` outweighed `.panel-bar .bar-caret` on
+   specificity — the mode menu's caret silently kept the 14px icon size it was
+   explicitly excluded from. */
+.panel-bar .bar-ctl > svg:not(.bar-caret) {
   width: 14px;
   height: 14px;
 }
