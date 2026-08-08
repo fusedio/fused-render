@@ -37,12 +37,11 @@ export function saveSidebarState(state: SidebarState): void {
 }
 
 // --- Shared live state ------------------------------------------------------
-// The collapsed flag is no longer the sidebar's private business: with the
-// sidebar collapsed, the control that brings it back lives in the EXPLORER
-// TOPBAR (a floating bubble hanging off a 10px strip was half off-screen and
-// crowded the bookmark star). Two sibling subtrees therefore read and write
-// the same flag, so it lives in this module-level store rather than in
-// SidebarFrame's useState.
+// Width and collapsed flag live here rather than in SidebarFrame's useState:
+// the frame is remounted by every sub-app that composes it (explorer, builder,
+// preferences), and a per-mount useState would reload the persisted value on
+// each route change — losing an in-session drag and letting two mounts hold
+// different widths mid-transition. One store, one layout.
 let current: SidebarState | null = null;
 const listeners = new Set<() => void>();
 
@@ -72,32 +71,4 @@ export function toggleSidebarCollapsed(): void {
 export function subscribeSidebarState(fn: () => void): () => void {
   listeners.add(fn);
   return () => listeners.delete(fn);
-}
-
-// --- Who owns the reopen control -------------------------------------------
-// A collapsed sidebar must always leave a VISIBLE way back. On explorer
-// breadcrumb routes that control is the topbar's docked "Open sidebar" button;
-// on the routes with no breadcrumb (panel mode, Apps, Preferences, the files
-// home) there is no topbar to dock into, so SidebarFrame renders its own tab
-// on the collapsed strip. Exactly one of the two should ever be on screen.
-//
-// The handshake is deliberately dumb — a count of mounted topbar buttons.
-// Anything cleverer (context, portals, a DOM probe) would have to cross the
-// sidebar/app boundary that this codebase keeps closed: SidebarFrame is
-// platform, the breadcrumb is an app, and they only ever meet in this store.
-let toggleHosts = 0;
-
-// Called by whatever renders a topbar reopen control, for its whole lifetime
-// (not just while collapsed) — returns the unregister.
-export function registerSidebarToggleHost(): () => void {
-  toggleHosts++;
-  listeners.forEach((fn) => fn());
-  return () => {
-    toggleHosts--;
-    listeners.forEach((fn) => fn());
-  };
-}
-
-export function sidebarToggleHosted(): boolean {
-  return toggleHosts > 0;
 }

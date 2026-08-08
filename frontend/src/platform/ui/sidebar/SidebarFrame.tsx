@@ -14,7 +14,7 @@ import {
   SIDEBAR_MIN_WIDTH,
   SIDEBAR_MAX_WIDTH,
 } from "@platform/lib/sidebarstate";
-import { useSidebarState, useSidebarToggleHosted } from "@platform/lib/hooks";
+import { useSidebarState } from "@platform/lib/hooks";
 
 export interface SidebarFrameProps {
   /** Brand text next to the cube mark — names the owning context. */
@@ -63,12 +63,10 @@ export function NavItem({
 export function SidebarFrame({ title, version, homeHref = "/apps", children }: SidebarFrameProps) {
   // Sidebar chrome: draggable width + collapsed flag, persisted once per
   // gesture (drag end / toggle), not per mousemove. The state lives in the
-  // shared store (platform/lib/sidebarstate) rather than here, because the
-  // explorer topbar also reads the collapsed flag — it carries the "Open
-  // sidebar" control while the sidebar is away.
+  // shared store (platform/lib/sidebarstate) rather than here so that a
+  // remount — every sub-app composes its own frame — inherits the live layout
+  // instead of re-reading the persisted one.
   const { width: sidebarWidth, collapsed: sidebarCollapsed } = useSidebarState();
-  // Whether some top bar already renders a reopen control for this route.
-  const toggleHosted = useSidebarToggleHosted();
   // True only while the handle is captured — used to suppress the collapse
   // transition and text selection mid-drag.
   const [resizing, setResizing] = useState(false);
@@ -121,14 +119,18 @@ export function SidebarFrame({ title, version, homeHref = "/apps", children }: S
   };
 
   if (sidebarCollapsed) {
-    // Only ONE reopen control at a time (see sidebarstate's toggle-host
-    // registry): the explorer's breadcrumb routes dock theirs in the top bar,
-    // and everywhere else — panel mode, Apps, Preferences, the files home —
-    // this strip carries its own, because those routes have no top bar to
-    // dock into and a bare 10px strip is not an affordance.
-    // Neither control is the old floating bubble: anchored at `left: 100%` on
-    // this 10px strip it hung half off the viewport and sat level with the
-    // explorer topbar's bookmark star, reading as a second star.
+    // Collapsed: a slim strip carrying the ONE reopen control, the same one on
+    // every route. It briefly lived in the explorer's top bar instead, with
+    // this tab as the fallback for routes that have no top bar (Apps,
+    // Preferences, panel mode) — two dialects for one action, so which control
+    // you reached for depended on where you happened to be. The strip is the
+    // whole button; the tab is the visible part of it, pinned to the top so it
+    // lands on the same line as the bars beside it.
+    //
+    // Not the floating bubble this replaced either: anchored at `left: 100%`
+    // on a 10px strip, half of it hung off the viewport and it sat level with
+    // the explorer's bookmark star, reading as a second star.
+    //
     // Still the same #sidebar node, so the <=700px media hide applies.
     return (
       <nav id="sidebar" className={"sidebar-collapsed" + (resizing ? " sidebar-no-transition" : "")}>
@@ -139,17 +141,13 @@ export function SidebarFrame({ title, version, homeHref = "/apps", children }: S
           title="Expand sidebar"
           onClick={toggleSidebarCollapsed}
         >
-          {!toggleHosted && (
-            // Pinned to the TOP of the strip, on the top bars' centre line and
-            // fully inside the viewport — unlike the mid-screen bubble it
-            // replaces, which hung half off the left edge. Presentational: the
-            // strip is the button.
-            <span className="sidebar-expand-tab" aria-hidden="true">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <path d="m9 18 6-6-6-6" />
-              </svg>
-            </span>
-          )}
+          {/* Presentational — the strip is the button, so hover and focus key
+              off the strip's own state (sidebar.css). */}
+          <span className="sidebar-expand-tab" aria-hidden="true">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="m9 18 6-6-6-6" />
+            </svg>
+          </span>
         </button>
       </nav>
     );

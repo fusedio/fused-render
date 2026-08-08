@@ -1,7 +1,6 @@
 // Crumb bar, in three zones left to right:
 //
-//   path    the "Open sidebar" button (only while the sidebar is collapsed),
-//           the ★ bookmark button, then the crumbs (or the editable path field)
+//   path    ★ bookmark button, then the crumbs (or the editable path field)
 //   mode    the `#topbar-mode-slot` portal target — Preview renders the view's
 //           conditional primary action and the shared mode control into it
 //   layout  a hairline rule, then split-right / split-down / `···`
@@ -29,14 +28,7 @@ import {
   sameSearch,
   splitBookmarkUrl,
 } from "@platform/lib/bookmarks";
-import {
-  useUrlVersion,
-  useBookmarksVersion,
-  notifyBookmarksChanged,
-  useSidebarState,
-  useOwnsSidebarToggle,
-} from "@platform/lib/hooks";
-import { toggleSidebarCollapsed } from "@platform/lib/sidebarstate";
+import { useUrlVersion, useBookmarksVersion, notifyBookmarksChanged } from "@platform/lib/hooks";
 import { urlScheme, isCloudScheme, fileUrlToPath } from "@platform/lib/path-url";
 import { resolveCloudUrl } from "@platform/lib/api";
 import { pushToast } from "@platform/lib/toast";
@@ -100,53 +92,6 @@ function StarIcon({ filled }: { filled: boolean }) {
     >
       <path d="M8 1.8l1.9 3.9 4.3.6-3.1 3 .7 4.3L8 11.6l-3.8 2 .7-4.3-3.1-3 4.3-.6z" />
     </svg>
-  );
-}
-
-// Sidebar-panel glyph: the frame with its left rail, the standard "there is a
-// panel over there" mark. Drawn inline like every other topbar icon.
-function SidebarPanelIcon() {
-  return (
-    <svg
-      width="16"
-      height="16"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.8"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <rect x="3" y="4" width="18" height="16" rx="2" />
-      <path d="M9 4v16" />
-    </svg>
-  );
-}
-
-// Leftmost control in the path zone, and ONLY while the sidebar is collapsed:
-// the sidebar's own collapse button is gone with it, so this is what brings it
-// back. It replaces the floating bubble that used to hang off the collapsed
-// strip half-off-screen. Never in an embed (or a panel pane bar, which renders
-// its own chrome and has no sidebar to open).
-function OpenSidebarButton() {
-  const { collapsed } = useSidebarState();
-  // Claim the reopen control for this route for as long as this bar is
-  // mounted — not just while collapsed — so SidebarFrame's collapsed strip
-  // never renders a competing one here. Embeds have no sidebar at all, so
-  // they claim nothing.
-  useOwnsSidebarToggle(!IS_EMBED);
-  if (IS_EMBED || !collapsed) return null;
-  return (
-    <button
-      type="button"
-      className="bar-ctl bar-ctl-icon"
-      aria-label="Open sidebar"
-      title="Open sidebar"
-      onClick={toggleSidebarCollapsed}
-    >
-      <SidebarPanelIcon />
-    </button>
   );
 }
 
@@ -526,7 +471,6 @@ export function Breadcrumb({
 
   return (
     <>
-      <OpenSidebarButton />
       <BookmarkStar id="bookmark-btn" name={renderedTitle || basename(fsPath)} />
       {editing ? (
         <input
@@ -575,7 +519,6 @@ export function Breadcrumb({
 export function StaticBreadcrumb({ label }: { label: string }) {
   return (
     <>
-      <OpenSidebarButton />
       <BookmarkStar id="bookmark-btn" name={label} />
       <div className="crumbs">
         <span className="current">{label}</span>

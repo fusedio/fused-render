@@ -74,16 +74,20 @@ body:has(.sidebar-resize-handle.resizing) {
   flex-shrink: 0;
 }
 
-/* Collapsed sidebar = a slim full-height strip that expands it back. On
-   explorer breadcrumb routes the visible affordance is the topbar's "Open
-   sidebar" button (Breadcrumb.tsx) and the strip is a bare secondary target;
-   on routes with no top bar the strip grows its own tab (below). Either way
-   it is never the old floating bubble, which hung half off the viewport.
-   overflow stays visible so the tab can protrude over #content, and the strip
-   is lifted above it so a stacking context inside #content can't cover it. */
+/* Collapsed sidebar = a slim full-height strip that expands it back, carrying
+   the tab below — the SAME reopen control on every route (an explorer-only
+   topbar button briefly competed with it, so which control you reached for
+   depended on where you were). overflow stays visible so the tab can protrude
+   over #content, and the strip is lifted above it so a stacking context inside
+   #content can't paint over the tab. */
 #sidebar.sidebar-collapsed {
-  flex: 0 0 10px;
-  width: 10px;
+  /* 20px, not the 10px this strip used to be: the tab protrudes 28px over
+     #content, and at 10px it landed on top of whatever the route's bar starts
+     with — the app header's title began at x26 against a tab ending at x28.
+     20px puts the content gutter at 36px and leaves the tab 8px of air on
+     every route, without the strip reading as a column of its own. */
+  flex: 0 0 20px;
+  width: 20px;
   overflow: visible;
   position: relative;
   z-index: 10;
@@ -106,13 +110,13 @@ body:has(.sidebar-resize-handle.resizing) {
   background: rgba(var(--tint), 0.06);
 }
 
-/* The strip's own reopen tab, for routes with no top bar to dock a button
-   into (panel mode, Apps, Preferences, the files home — SidebarFrame decides).
-   Anchored at the strip's LEFT edge, so all 28px of it are on-screen, and at
-   the top rather than mid-height: `top: 10px` centres it on 24px, the same
-   line the sidebar header and #breadcrumb stand on, so the control keeps its
-   height across collapse and expand. Presentational — the strip is the
-   button, so hover/focus key off the strip's state. */
+/* The reopen tab. Anchored at the strip's LEFT edge, so all 28px of it are
+   on-screen, and at the top rather than mid-height: `top: 10px` centres it on
+   24px — the line the sidebar header, #breadcrumb and the app header all stand
+   on — so the control keeps its height across collapse and expand, on every
+   route. 28px square with a 16px glyph is the .bar-ctl-icon geometry the bars
+   use, and the hover below is their wash, so it reads as one of them.
+   Presentational: the STRIP is the button, so hover/focus key off its state. */
 .sidebar-expand-tab {
   position: absolute;
   top: 10px;
@@ -130,8 +134,11 @@ body:has(.sidebar-resize-handle.resizing) {
   z-index: 10;
 }
 
+/* Same hover as .bar-ctl (explorer.css): rgba(--tint, 0.08) over the tab's
+   own --bg-alt, and the glyph up to full --fg. */
 .sidebar-expand-strip:hover .sidebar-expand-tab {
-  background: rgba(var(--tint), 0.1);
+  background: color-mix(in srgb, rgba(var(--tint), 0.08), var(--bg-alt));
+  border-color: color-mix(in srgb, var(--border) 60%, var(--fg-muted));
   color: var(--fg);
 }
 
