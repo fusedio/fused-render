@@ -710,8 +710,11 @@
 /* The pane's chrome strip, above whatever the pane is showing. It LEADS with
    the collapse control — the pane's left edge is the seam it collapses toward,
    so the close affordance sits on the boundary rather than in the far corner —
-   then the row's name, then whatever the settled preview adds at the other end
-   (the mode control, open-full-screen). Present in EVERY pane state, including
+   then a .bar-rule zone divider, then the row's identity (icon + name) and
+   whatever the settled preview adds at the other end (the mode control,
+   open-full-screen). The rule is what separates the one control that acts on
+   the PANE from everything that is about the previewed ROW; without it the
+   collapse glyph sat flush against the file icon and neither read as chrome. Present in EVERY pane state, including
    the ones that have nothing else to put in it (a loading skeleton, an error,
    the metadata card): while the pane is open this strip is the only thing
    carrying a way to close it.
@@ -734,6 +737,15 @@
   min-height: 46px;
   border-bottom: 1px solid var(--border);
   background: var(--bg-alt);
+}
+
+/* The strip spaces its children with `gap: 8px`, so the rule brings no margin
+   of its own — same reason #breadcrumb zeroes it, and the opposite of
+   .panel-bar, whose 2px gap needs the rule's own 10px. 8px either side of the
+   hairline against the strip's 10px end padding: the divider sits inside the
+   row's own gutters and cannot collide with them. */
+.listing-pane .pane-header .bar-rule {
+  margin: 0;
 }
 
 .listing-pane .pane-header-icon {

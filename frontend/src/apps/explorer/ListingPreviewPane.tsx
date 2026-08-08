@@ -244,7 +244,24 @@ export default function ListingPreviewPane({
   const strip = (extra?: React.ReactNode) => (
     <div className="pane-header">
       {collapseBtn}
-      {row && <span className="pane-header-icon">{iconForEntry(row.name, row.isDir)}</span>}
+      {/* Zone divider, the same .bar-rule grammar the title bar and the panel
+          bar use (c27a32f5): everything LEFT of it acts on the pane, everything
+          right of it is the previewed row — its icon, its name, and the two
+          controls that act on IT (mode, open). Without it the collapse glyph
+          sat flush against the file icon and the two read as a pair of glyphs
+          with nothing saying which was chrome and which was the subject. A rule
+          rather than a border on the button, because the boundary is what
+          needed naming, not the button — and a permanently bordered control
+          would undo the two commits that just made these bars quieter.
+          Only with a subject to divide FROM: the no-selection strip is the
+          collapse control alone, and a hairline with nothing after it is a
+          divider dividing nothing. */}
+      {row && (
+        <>
+          <span className="bar-rule" aria-hidden="true" />
+          <span className="pane-header-icon">{iconForEntry(row.name, row.isDir)}</span>
+        </>
+      )}
       <span className="pane-header-name" title={row?.name}>
         {row?.name ?? ""}
       </span>
