@@ -22,7 +22,6 @@ export function useListingShortcuts({
   leadRow,
   searchInputRef,
   overlayOpenRef,
-  refetch,
   doPaste,
   doDuplicate,
   doTrash,
@@ -39,7 +38,6 @@ export function useListingShortcuts({
   leadRow: RowCtx | undefined;
   searchInputRef: React.RefObject<HTMLInputElement>;
   overlayOpenRef: React.MutableRefObject<boolean>;
-  refetch: () => void;
   doPaste: (dir: string) => void;
   doDuplicate: (rows: RowCtx[]) => void;
   doTrash: (rows: RowCtx[]) => void;
@@ -111,11 +109,6 @@ export function useListingShortcuts({
     } else if (mod && e.shiftKey && key === "n") {
       e.preventDefault();
       startNewFolder(base);
-    } else if (mod && key === "r") {
-      // The app's own listing refresh, not a page reload — preventDefault is
-      // what stops the browser from throwing the whole SPA away.
-      e.preventDefault();
-      refetch();
     } else if (mod && e.key === "Backspace") {
       // macOS trash chord. Windows/Linux use the Delete key below instead.
       // Never while typing in the search box: Cmd+Delete is the standard macOS

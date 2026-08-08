@@ -423,7 +423,6 @@ export default function Listing({
     leadRow,
     searchInputRef,
     overlayOpenRef,
-    refetch,
     doPaste,
     doDuplicate,
     doTrash,
