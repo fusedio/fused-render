@@ -114,7 +114,16 @@
      refuses to shrink below its content — without it the row overflows a narrow
      pane instead of letting its one elastic label give. Which label gives is
      decided below: the view toggle never does, the annotate switch does. */
-  #anntools {
+  /* ONE rule for BOTH strips, and that is the point: #leftbar (the left pane's
+     own bar, further down) is the same row on the other side of the divider,
+     and the two must agree on height or the pane's bottom border runs a few
+     pixels off the listing's and the row reads as broken. They were two
+     byte-identical blocks with a comment asking the reader to keep them in
+     step; a shared selector cannot drift. Anything that is NOT shared —
+     #leftbar's `[hidden]` and its removal in the narrow layout — is declared
+     separately and later, so it still wins. */
+  #anntools,
+  #leftbar {
     flex-shrink: 0;
     min-width: 0;
     display: flex;
@@ -180,15 +189,41 @@
   #annbtn.on .track { background: var(--accent); border-color: var(--accent); }
   #annbtn.on .knob { left: 14px; background: var(--on-accent); }
 
+  /* ── the left pane's own top bar ────────────────────────────────────────
+     Home of the view picker in the SPLIT layout: the control that chooses what
+     the left pane frames sits ON the left pane, over the thing it changes,
+     rather than across the divider in the chat pane's strip. It used to live in
+     #anntools, where it was a control for one column rendered on the other one.
+
+     A real layout ROW, for the same reason #anntools is one: an overlay would
+     land on top of whatever the framed app draws under it, and the app owns
+     every pixel of its own viewport. Its box IS #anntools' box — they share the
+     one rule up there, so the two strips cannot drift out of alignment across
+     the divider.
+
+     `[hidden]` needs a rule of its own because the shared `display: flex`
+     outranks the UA's `[hidden] { display: none }`. TWO independent things can
+     hide this bar, and they are separate on purpose: JS sets `hidden` when
+     there is nothing to pick (buildLeftPicker / placeLeftPicker — a content
+     fact), and the 880px media block drops it outright (a layout fact — the
+     narrow layout has one column and one shared strip, so the picker goes back
+     to #anntools). Neither can disagree with the other, because they answer
+     different questions. Both are declared AFTER the shared rule, so both
+     win. */
+  #leftbar[hidden] { display: none; }
+
   /* WHICH view the left pane frames (`leftmode`). A native <select>, quiet to
-     the same degree as #annbtn beside it: borderless, transparent, 12px, the
-     muted colour until hovered. Loud chrome here would read as the pane's
-     TITLE rather than a switch, and the pane's title is the file name in the
-     topbar. Native rather than a custom menu (the shell has one, ModeSwitcher)
-     because a <select> brings the platform popup, keyboard handling and
-     accessible name for free and the list is at most a handful of modes —
-     reimplementing that inside a template buys nothing. Hidden until there is
-     more than one view to choose between; see buildLeftPicker(). */
+     the same degree as #annbtn: borderless, transparent, 12px, the muted colour
+     until hovered. Loud chrome here would read as the pane's TITLE rather than
+     a switch, and the pane's title is the file name in the topbar. Native
+     rather than a custom menu (the shell has one, ModeSwitcher) because a
+     <select> brings the platform popup, keyboard handling and accessible name
+     for free and the list is at most a handful of modes — reimplementing that
+     inside a template buys nothing. Hidden until there is more than one view to
+     choose between; see buildLeftPicker(). It is ONE element that MOVES between
+     the two hosts above (placeLeftPicker), not one per layout: a second copy
+     would be a second value, a second listener and a second thing to keep in
+     step with `leftmode`. */
   #leftmode {
     height: 26px;
     max-width: 140px;
@@ -914,6 +949,11 @@
     body { flex-direction: column; position: relative; }
     /* Nothing to drag when only one view is on screen. */
     #divider { display: none; }
+    /* And no bar over the left pane: below the breakpoint there is no
+       persistent left column to put one on, so the view picker goes back to
+       #anntools — the row both views keep — and placeLeftPicker moves it. This
+       rule is the layout half of that fact; the JS half is the move itself. */
+    #leftbar { display: none; }
     /* NOTE what is NOT here: a width for #left. applySplit() writes
        `width: <split>%` INLINE on it, and an inline declaration outranks any
        stylesheet rule, so a plain `width: auto` here would simply lose. The two
@@ -1026,6 +1066,12 @@
 </head>
 <body>
   <div id="left">
+    <!-- The left pane's own top bar, holding the view picker in the split
+         layout. Empty and `hidden` in the markup: placeLeftPicker moves
+         #leftmode in here once the layout is known to be wide and the picker is
+         known to have something to offer. A row ABOVE #leftview, never over it
+         — see the stylesheet. -->
+    <div id="leftbar" hidden></div>
     <!-- The iframe's own box, and the offset parent for every overlay that is
          positioned in FRAME viewport coordinates (pins, highlight, composer). -->
     <div id="leftview">
@@ -1066,7 +1112,14 @@
       <!-- Which view the LEFT pane frames. Empty and `hidden` in the markup:
            the options are the target's own preview modes, which only the stat
            call in paneURL() knows, and there is no picker to show at all unless
-           that call found more than one of them (buildLeftPicker). -->
+           that call found more than one of them (buildLeftPicker).
+           It SHIPS here and lives here in the NARROW layout, where this strip is
+           the one row both views keep and there is no persistent left column to
+           put a bar on. In the split layout placeLeftPicker moves this same
+           element up into #leftbar, onto the pane it controls. Ships here rather
+           than there because this is the position that needs no JS to be right:
+           a picker in an unbuilt left bar would be a control in a bar that may
+           never be shown. -->
       <select id="leftmode" hidden aria-label="Preview pane view"
               title="Which view the preview pane shows"></select>
       <!-- Chat ⇄ Preview, for the narrow single-view layout only (hidden by CSS
@@ -1924,6 +1977,62 @@ function buildLeftPicker() {
   leftSel.addEventListener("change", () => fused.params.set("leftmode", leftSel.value));
 }
 
+// ── WHERE the picker lives, which is a layout question, not a state one ──
+//
+// SPLIT layout: #leftbar, a row across the top of the left column — the control
+// that chooses what that pane frames, sitting on that pane. It spent a while in
+// #anntools, across the divider, which put a control for one column on the other
+// one and left the pane it governs with no chrome of its own.
+// NARROW layout (<880px): back into #anntools. There is no persistent left
+// column below the breakpoint — one view shows at a time — so there is nothing
+// to hang a bar on, and #anntools is the one row BOTH views keep on screen
+// (which is why the Chat ⇄ Preview toggle lives there too).
+//
+// ONE element, MOVED, never two copies: a <select> keeps its options, its value
+// and its `change` listener across a DOM move, so relocating it cannot desync
+// from `leftmode` the way a second control would. The move is skipped when the
+// element is already in the right host, so a params.onChange storm cannot yank
+// an open popup shut.
+//
+// TDZ, worth stating: this reads NARROW_MQ and calls renderAnn, both declared
+// further down the file. Every caller is reached only AFTER the script has
+// finished executing — the loader awaits a fetch before its call, and the media
+// listener fires later still — which is the same guarantee enterNoPane relies on.
+const leftBar = document.getElementById("leftbar");
+// Whether the bar was showing at the end of the last call, so the pin
+// re-measure below fires on a CHANGE rather than on every call.
+let leftBarShown = false;
+function placeLeftPicker() {
+  // No pane, no hosts: enterNoPane removed #left (with #leftbar inside it) and
+  // #anntools, so every lookup here would be null.
+  if (noPane) return;
+  const wide = !NARROW_MQ.matches;
+  // Nothing to pick means no bar at all — an empty bordered strip above the
+  // preview would be chrome for a choice that does not exist. buildLeftPicker
+  // leaves the select `hidden` in exactly that case, so it is already the
+  // answer; the bar just follows it.
+  const show = wide && !leftSel.hidden;
+  // Looked up rather than closed over: `viewbtn` has a const of its own further
+  // down (viewBtn), and a second `const` of the same name here would be a
+  // redeclaration. In the shared strip the picker belongs BETWEEN the annotate
+  // switch and the view toggle — appending would put it after #viewbtn, whose
+  // `margin-left: auto` pins it to the row's right end.
+  const host = wide ? leftBar : document.getElementById("anntools");
+  if (leftSel.parentElement !== host) {
+    host.insertBefore(leftSel, wide ? null : document.getElementById("viewbtn"));
+  }
+  leftBar.hidden = !show;
+  if (show === leftBarShown) return;
+  leftBarShown = show;
+  // The bar is a row ABOVE #leftview, so showing or hiding it changes that
+  // box — and the pins are positioned in #leftview coordinates. Re-measure
+  // twice, for the two reasons applyNarrowView spells out at its own renderAnn
+  // pair: reading a rect flushes THIS document's layout now, and the framed
+  // document only reflows to the iframe's new height on the next frame.
+  renderAnn();
+  requestAnimationFrame(renderAnn);
+}
+
 // Frame whatever `leftmode` now names. Re-derived from the entry list stat
 // already gave us — never a second stat.
 function applyLeftMode() {
@@ -1984,10 +2093,11 @@ function applyLeftMode() {
 // predicate is read). Three subtrees go:
 //   * #left — the frame, the pins, the highlight and the note popover;
 //   * #divider — no two columns, no ratio to drag;
-//   * #anntools — the annotate switch, the `leftmode` picker and the view
-//     toggle. It is a child of #chat, so it survives removing #left, and would
-//     otherwise sit there as an empty bordered row of controls for a pane that
-//     is not there.
+//   * #anntools — the annotate switch, the view toggle, and the `leftmode`
+//     picker when the narrow layout is what put it there (in the split layout
+//     the picker sits in #leftbar and goes with #left above). It is a child of
+//     #chat, so it survives removing #left, and would otherwise sit there as an
+//     empty bordered row of controls for a pane that is not there.
 // Plus both copies of the pane-shot pill (#viewshot in the chat composer,
 // #hviewshot on the home card): "attach a picture of the WHOLE visible app pane"
 // has nothing to photograph, and its block's caption says "app pane"
@@ -2038,6 +2148,9 @@ function enterNoPane() {
     if (src === null) { enterNoPane(); return; }
     document.getElementById("leftframe").src = src;
     buildLeftPicker();
+    // Build first, then place: placeLeftPicker asks the built picker whether it
+    // has anything to offer (`leftSel.hidden`) before deciding the bar exists.
+    placeLeftPicker();
   } catch (err) {
     // Swap only the iframe for the message — #leftview also hosts the annotation
     // layer (button, pins, highlight, popover), and wiping it would leave JS
@@ -2662,7 +2775,16 @@ applyNarrowView();
 // renderAnn for a host drag; this is what covers a media flip that arrives
 // without a resize event of our own — a devtools width change, a zoom, a
 // CSS-driven relayout of the host pane.
-NARROW_MQ.addEventListener("change", () => { applySplit(); applyNarrowView(); });
+// placeLeftPicker runs FIRST of the three: it is the one that can change
+// #leftview's box (the left bar appears above the frame going wide, and goes
+// with the column going narrow), and applyNarrowView ends by re-measuring the
+// pins — so doing it first means that measurement is taken against the layout
+// that is actually going to be on screen.
+NARROW_MQ.addEventListener("change", () => {
+  placeLeftPicker();
+  applySplit();
+  applyNarrowView();
+});
 
 // ── annotation screenshots: a PNG crop of what the user pointed at ──
 // The anchors above stay primary — they are what Claude edits FROM, and they map

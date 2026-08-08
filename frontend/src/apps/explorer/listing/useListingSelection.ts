@@ -137,6 +137,10 @@ export function useListingSelection({
 
   const selectOnly = (path: string) => setSel(oneSelected(path));
 
+  // Escape's gesture, and the only one: clicking the listing background used
+  // to clear too, which with the preview pane on meant a stray click in the
+  // whitespace of a short listing blanked the pane. Not returned — no caller
+  // outside this hook has a reason to drop the selection.
   const clearSelection = () => setSel(EMPTY_SELECTION);
 
   // Mod-click: add/remove one row, and make it the anchor a later Shift-range
@@ -406,7 +410,6 @@ export function useListingSelection({
     selectOnly,
     toggleSelected,
     extendTo,
-    clearSelection,
     pendingSelectRef,
   };
 }

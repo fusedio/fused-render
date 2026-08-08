@@ -464,14 +464,12 @@ function TemplatePreview({
   // `preview` never rides onto file URLs (router.ts navigate), so paneIsOpen
   // would otherwise read the now-default-on value here.
   //
-  // The top-bar mode control used to hide while this was true, on the theory
-  // that the pane header's own switcher was the same control. It is not: the
-  // pane header's menu belongs to the PREVIEWED ROW (and drops `_listing`,
-  // which a pane cannot render for the folder already on the left), while the
-  // top bar's belongs to the FOLDER — the same distinction that keeps
-  // .preview-browse-chip out of the pane's header row below. On a folder whose
-  // pane menu collapses to a single entry, hiding the top-bar one left the
-  // folder with NO way to change its view mode at all.
+  // Used for the one thing the pane displaces: .preview-browse-chip, whose
+  // corner is INSIDE the pane when there is one (see its comment below). The
+  // top-bar mode control is not displaced but removed — for an explorer folder
+  // it is gone whether the pane is open or not; see headerActions. And the
+  // folder's "Open as app" is not conditioned on the pane at all any more (see
+  // openAsAppBtn).
   const listingPaneOpen = isListing && paneIsOpen(fsPath);
   // Path of the directory's lone top-level HTML file, reported by Listing
   // (null when there isn't exactly one) — drives the "Open as app" button
@@ -760,12 +758,17 @@ function TemplatePreview({
   const appBtnLabel = linkStatus?.status === "unlinked" ? "Add as app" : "Open as app";
   const appBtnAction = linkStatus?.status === "unlinked" ? convertToApp : openAsApp;
 
-  // The folder's primary action, built once and rendered in exactly one place.
-  // With the listing's preview pane OPEN it goes down into that pane's header,
-  // whose primary slot is otherwise empty for the folder's own row — the title
-  // bar was where it competed with the mode control and the layout zone for
-  // the user's eye. With the pane CLOSED there is no pane header to hold it,
-  // so the title bar keeps it. Never both, never neither.
+  // The folder's primary action, built once and rendered in exactly one place:
+  // the title bar, whenever the folder qualifies.
+  //
+  // It spent a while riding down into the preview pane's header instead
+  // whenever the pane was open, on the theory that the pane's own row already
+  // had an empty primary slot for it. That slot belongs to the pane's SELF
+  // target (nothing selected) — and a qualifying folder is by definition one
+  // holding a top-level HTML file, which FS-16's auto-select now picks the
+  // moment the folder opens. So the self row almost never shows, and the
+  // button had effectively disappeared from the default view of exactly the
+  // folders it exists for.
   const openAsAppBtn =
     isListing && singleAppPath && linkStatus ? (
       <button type="button" className="open-as-app-btn" onClick={appBtnAction}>
@@ -788,19 +791,49 @@ function TemplatePreview({
         deployEnabled &&
         templates.some((t) => t.mode === "_render") &&
         /\.html?$/i.test(fsPath) && <DeployButton fsPath={fsPath} />}
-      <ModeMenu
-        entries={templates.map((t) => ({
-          mode: t.mode,
-          icon: templateModeIcon(t),
-          pending: isPending(t),
-        }))}
-        active={entry.mode}
-        /* Spinner from the click until the incoming frame has actually taken
-           over — the flush wait AND the new document's load are both time the
-           user is waiting on that button. */
-        busy={switchingTo ?? (shown !== activeMode ? activeMode : null)}
-        onSelect={setMode}
-      />
+      {/* One mode control per view, and for an explorer FOLDER it is the
+          preview pane's, not this one. The pane header carries a ModeMenu of
+          its own beside the previewed row (ListingPreviewPane), so a folder
+          browsed in the explorer had two switchers in view at once — one
+          top-right, one a few hundred pixels below it — and telling which
+          governed which half is not something a user should have to work out.
+          The pane's is the one that stays: it sits with the thing it changes.
+          Files keep this control (they have no pane), and the app view/page
+          (`appChrome`) keeps everything it has — its folder is the whole
+          subject of the route, not a listing beside a preview.
+          A folder is not stranded in one of its non-listing modes:
+          .preview-browse-chip below is the way back ("Browse contents"), and
+          it is REVEALED for exactly that state — `is-exit`. It was not, when
+          this comment first claimed it was: the chip was `display: none`
+          outside the embed, so a folder opened straight into `git` or `graph`
+          had no control anywhere that could return it to the listing. A
+          tradeoff argued from an escape hatch that does not exist is just a
+          dead end, so the hatch was made real rather than the argument
+          softened.
+          ACCEPTED TRADEOFF, and this part IS the product decision: nothing
+          switches a folder INTO one of those modes from the explorer any more.
+          The pane's menu writes `_panelMode` — what the PANE previews — not
+          `_mode`, and the chip only ever offers the listing⇄counterpart pair.
+          So a folder's git/versions/graph views are entered by `?_mode=` (a
+          URL, a bookmark, the file menu's Open With) and left by the chip. The
+          user chose that over two switchers in one view: for a folder, the
+          pane IS the explorer, and its peers are opt-in tools rather than ways
+          of looking at the listing. */}
+      {!(stat.is_dir && !appChrome) && (
+        <ModeMenu
+          entries={templates.map((t) => ({
+            mode: t.mode,
+            icon: templateModeIcon(t),
+            pending: isPending(t),
+          }))}
+          active={entry.mode}
+          /* Spinner from the click until the incoming frame has actually taken
+             over — the flush wait AND the new document's load are both time the
+             user is waiting on that button. */
+          busy={switchingTo ?? (shown !== activeMode ? activeMode : null)}
+          onSelect={setMode}
+        />
+      )}
       {/* Rightmost, per the bars' grammar: the low-frequency one-shots live in
           the overflow, beside "Open in Finder" and "Copy path" in the title
           bar's own `···`. "Open in explorer" — the counterpart of the
@@ -821,7 +854,7 @@ function TemplatePreview({
     <>
       {actionsInTopbar ? (
         <TopbarActions>
-          {!listingPaneOpen && openAsAppBtn}
+          {openAsAppBtn}
           {headerActions}
         </TopbarActions>
       ) : (
@@ -849,7 +882,6 @@ function TemplatePreview({
           <Listing
             fsPath={fsPath}
             onSingleApp={setSingleAppPath}
-            selfPrimary={listingPaneOpen ? openAsAppBtn : null}
           />
         ) : (
           /* One frame per mounted mode (see the held-frame swap above). Each
@@ -879,11 +911,26 @@ function TemplatePreview({
             INSIDE the pane — the chip lands in the pane's header row, where it
             reads as pane chrome. It is not (it switches the FOLDER's mode, not
             the previewed file's), so a bare mode name like "Claude" sitting
-            there is a mystery button. Closing the pane brings it back, and the
-            `!isListing` case — "Browse contents" over a directory template's
-            iframe, the chip's original job (PT-13/D65) — is untouched. */}
+            there is a mystery button. That guard only ever bites in `_listing`
+            mode, since the pane exists only there — so the `!isListing` case,
+            "Browse contents" over a directory template's iframe, is always
+            rendered, and `is-exit` is what makes the explorer actually SHOW it
+            (PT-13/D65, PT-13b). In `_listing` mode with the pane closed the
+            chip still renders and still stays hidden outside the embed: that
+            direction (listing → counterpart) is the half the product decision
+            removed from the explorer. */}
         {toggleListing && !listingPaneOpen && (
-          <button type="button" className="preview-browse-chip" onClick={toggleListing}>
+          <button
+            type="button"
+            /* `is-exit` = a directory showing a NON-listing mode, which is the
+               state that has no other way back to the listing (PT-13b) and so
+               is the one the explorer reveals the chip for; see the rule. Set
+               unconditionally rather than only outside the embed, because the
+               embed's own selectors outrank it and keep their look — one
+               condition instead of two that could disagree. */
+            className={"preview-browse-chip" + (isListing ? "" : " is-exit")}
+            onClick={toggleListing}
+          >
             {!isListing
               ? "Browse contents"
               : counterpart === defaultEntry.mode

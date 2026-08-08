@@ -48,14 +48,12 @@ function offeredSets(): Array<{ where: string; modes: string[] }> {
     const templates: TemplateEntry[] = modes.map(
       (m) => ({ mode: m, path: m.startsWith("_") ? null : `/t/${m}`, icon: null, conditional: false }) as TemplateEntry
     );
-    for (const self of PERMUTATIONS) {
-      for (const hasApp of PERMUTATIONS) {
-        for (const isDir of PERMUTATIONS) {
-          sets.push({
-            where: `preview pane, key ${key} (isDir=${isDir} self=${self} hasApp=${hasApp})`,
-            modes: paneModeList({ templates, conditions: {}, isDir, self, hasApp }),
-          });
-        }
+    for (const hasApp of PERMUTATIONS) {
+      for (const isDir of PERMUTATIONS) {
+        sets.push({
+          where: `preview pane, key ${key} (isDir=${isDir} hasApp=${hasApp})`,
+          modes: paneModeList({ templates, conditions: {}, isDir, hasApp }),
+        });
       }
     }
   }

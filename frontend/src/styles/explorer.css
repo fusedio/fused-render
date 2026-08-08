@@ -246,7 +246,7 @@
    shapes, radii of 3/4/5/6/8/999px, and 14-18px icons mixed inside a single
    row. Everything in those bars is now built from these classes instead —
    28px tall, 6px radius, 16px icons, ghost by default, bordered only for the
-   mode control and the row's one primary action. `.panel-bar` re-scales the
+   mode control. `.panel-bar` re-scales the
    whole set to 24px/14px in preview.css; nothing else overrides it.
 
    Ghost is deliberately a background wash rather than a border-on-hover: a
@@ -291,33 +291,30 @@
   padding: 0;
 }
 
-/* Toggle in its on state (the listing's Preview button): a slightly stronger
-   wash than hover, which is what makes "pressed" legible while the cursor is
-   sitting on it. */
-.bar-ctl.pressed {
-  background: rgba(var(--tint), 0.1);
-  color: var(--fg);
-}
-
-/* The only two things in these bars that get chrome: the mode control and the
-   row's single primary action. */
-.bar-ctl-bordered,
-.bar-ctl-primary {
+/* The one thing in these bars that gets chrome: the mode control. There used
+   to be a second recipe beside it, .bar-ctl-primary, for "the row's single
+   primary action" — a bordered, semibold label. Its last consumer was the
+   preview pane's "Open", now a muted glyph like everything else it sits
+   beside, and a bar with no primary in it turns out to be the point: these
+   rows are chrome, and the subject is what the view is showing. */
+.bar-ctl-bordered {
   border: 1px solid var(--border);
-  background: var(--bg);
+  /* The app's hairline for the ring, and a THEME-CHOSEN fill (tokens.css):
+     `--bg` under a `--bg-alt` bar is a white plate in light mode, which is the
+     look, and a darker well in dark mode — which, ringed by a lighter border,
+     turned the quietest control in the app into a chip. Dark resolves this to
+     transparent, so the hairline alone says "this one is a menu". */
+  background: var(--ctl-plate-bg);
   color: var(--fg);
 }
 
-.bar-ctl-bordered:hover:not(:disabled),
-.bar-ctl-primary:hover:not(:disabled) {
-  background: var(--bg);
-  border-color: var(--fg-muted);
+.bar-ctl-bordered:hover:not(:disabled) {
+  background: var(--ctl-plate-bg);
+  /* Not `--fg-muted` directly: that is the light INK in dark mode, so hovering
+     lit the ring to near-white. The token is --fg-muted in light and a step up
+     from the resting border in dark. */
+  border-color: var(--ctl-quiet-border-hover);
   color: var(--fg);
-}
-
-.bar-ctl-primary {
-  padding: 0 14px;
-  font-weight: 600;
 }
 
 /* Hairline between the mode control and the layout group. A zone divider, not
@@ -627,10 +624,13 @@
   pointer-events: none;
 }
 
-/* Fixed-width slot the pane renders into; width set inline (flex-basis) from
-   the drag, clamped by clampPaneWidth() to at least 220px and at most
-   container - 60px so the LIST keeps its own sliver floor. The min-width
-   here is the pane's floor, not the list's — see .listing-main. */
+/* Slot the pane renders into. Its flex-basis is set inline as a PERCENTAGE of
+   the split container (listing/pane.ts stores the split as a fraction), so a
+   window resize rescales it; the drag clamps that fraction with
+   clampPaneWidth() to at least 220px and at most container - 60px so the LIST
+   keeps its own sliver floor. These two min-widths are what hold the pixel
+   floors when the window — not the divider — is what changed. The min-width
+   here is the pane's floor, not the list's; see .listing-main. */
 .listing-pane-slot {
   flex: 0 0 auto;
   min-width: 220px;
@@ -707,8 +707,21 @@
   background: var(--bg-alt);
 }
 
-/* Folder preview: the bar above the embedded app / mini list, carrying the
-   name, the mode control and Open.
+/* The pane's chrome strip, above whatever the pane is showing. It LEADS with
+   the collapse control — the pane's left edge is the seam it collapses toward,
+   so the close affordance sits on the boundary rather than in the far corner —
+   then a .bar-rule zone divider, then the row's identity (icon + name) and
+   whatever the settled preview adds at the other end (the mode control,
+   open-full-screen). The rule is what separates the one control that acts on
+   the PANE from everything that is about the previewed ROW; without it the
+   collapse glyph sat flush against the file icon and neither read as chrome. Present in EVERY pane state, including
+   the ones that have nothing else to put in it (a loading skeleton, an error,
+   the metadata card): while the pane is open this strip is the only thing
+   carrying a way to close it.
+
+   No gutter hang for the leading button (unlike .listing-search's Up control):
+   this strip pads 10px and the thing beside the button is the file icon, not a
+   column the glyph has to line up with.
 
    It sits directly beside .listing-search — they are one visual row split by
    the pane divider — so the two MUST agree on height, or the pane's bottom
@@ -726,6 +739,15 @@
   background: var(--bg-alt);
 }
 
+/* The strip spaces its children with `gap: 8px`, so the rule brings no margin
+   of its own — same reason #breadcrumb zeroes it, and the opposite of
+   .panel-bar, whose 2px gap needs the rule's own 10px. 8px either side of the
+   hairline against the strip's 10px end padding: the divider sits inside the
+   row's own gutters and cannot collide with them. */
+.listing-pane .pane-header .bar-rule {
+  margin: 0;
+}
+
 .listing-pane .pane-header-icon {
   flex: 0 0 auto;
   display: inline-flex;
@@ -737,13 +759,6 @@
   text-overflow: ellipsis;
   white-space: nowrap;
   color: var(--fg);
-}
-
-/* "Open" is the row's one bordered primary; everything else it sits beside is
-   ghost chrome, so it needs no accent to be the obvious action. Chrome comes
-   from .bar-ctl-primary — only the padding is tightened for the slim strip. */
-.listing-pane .pane-header-btn {
-  padding: 0 12px;
 }
 
 /* Folder preview fallback: the folder's own entries, read-only. Narrower
@@ -803,7 +818,13 @@ table.pane-mini-list td.status-message {
 
 /* Row 2's two ends. Both are plain .bar-ctl now (explorer.css's shared
    recipe); all that is left here is the pane toggle's negative right margin,
-   which pulls the labelled control out to the row's padding edge. */
+   which pulls the labelled control out to the row's padding edge.
+
+   The toggle is now the OPEN half only — it renders while the pane is closed
+   and unmounts when it opens (the collapse control lives in the pane's own
+   header). So it has no pressed state to style, and the row's width simply
+   returns to the search box when the pane takes the space beside it; the box
+   is `flex: 1 1 auto`, so nothing else moves. */
 .listing-pane-toggle {
   margin-right: -8px;
 }

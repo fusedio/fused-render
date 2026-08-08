@@ -18,6 +18,7 @@
 //   useWalkSearch.ts       streamed walk + scoring + throttles + result paging
 //   useListingSelection.ts selection state + keyboard nav + reconcile
 //   useFileOps.ts          file operations + context menus + dialogs
+//   shortcut-chord.ts       which chord means which action (pure)
 //   useListingShortcuts.ts file-op keyboard chords
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { navigate, replaceSearch } from "@platform/lib/router";
@@ -46,11 +47,8 @@ import {
   renderHighlight,
   measureScrollAnchor,
 } from "@apps/explorer/listing/bits";
-import {
-  usePreviewPane,
-  reflectPaneInUrl,
-  PANE_DEFAULT_FRAC,
-} from "@apps/explorer/listing/pane";
+import { usePreviewPane, reflectPaneInUrl } from "@apps/explorer/listing/pane";
+import { autoSelectPath } from "@apps/explorer/listing/selection";
 import { useDirListing } from "@apps/explorer/listing/useDirListing";
 import { useWalkSearch } from "@apps/explorer/listing/useWalkSearch";
 import { useListingSelection } from "@apps/explorer/listing/useListingSelection";
@@ -62,7 +60,6 @@ export default function Listing({
   provisional = false,
   embedded = false,
   onSingleApp,
-  selfPrimary,
 }: {
   fsPath: string;
   // `provisional`: this Listing is rendering inside the pre-stat loading
@@ -87,13 +84,6 @@ export default function Listing({
   // header) uses this to surface an "Open as app" button. Fires whenever the
   // plain (non-search) listing settles, so it tracks dir-watch refreshes too.
   onSingleApp?: (path: string | null) => void;
-  // The folder's own primary action, rendered in the preview pane header when
-  // the pane is showing the folder ITSELF (the self row, which has no "Open" —
-  // it is already open on the left). Today that is Preview's ready-made "Open
-  // as app" / "Add as app" button: it is passed down as a NODE rather than
-  // rebuilt here so the link-status logic that decides its label and action
-  // lives in exactly one place. Absent for a folder with no single app.
-  selfPrimary?: React.ReactNode;
 }) {
   const { state, refresh, refetch, loadMore, loadingMore, newNames } =
     useDirListing(fsPath);
@@ -278,7 +268,6 @@ export default function Listing({
     selectOnly,
     toggleSelected,
     extendTo,
-    clearSelection,
     pendingSelectRef,
   } = useListingSelection({
     fsPath,
@@ -401,6 +390,63 @@ export default function Listing({
   }, [searching, visibleHits, sortedEntries, base]);
   rowCtxByPathRef.current = rowCtxByPath;
 
+  // Opening a folder lands on its FIRST FILE (rendered order — see
+  // autoSelectPath / firstFilePath), so the pane shows something instead of
+  // the folder's own "Select a file to preview." hint. A pane that opens empty
+  // asks the user to do the obvious thing before it will do anything at all; a
+  // folder is overwhelmingly opened to look at what is in it.
+  //
+  // ONE SHOT, and this effect owns only the TIMING of it — autoSelectPath owns
+  // the decision (and documents why the `?sel` URL param, not `sel`, is what it
+  // reads). The shot is taken at the first settled non-search listing WITH THE
+  // PANE ON. Listing remounts per fsPath, so that is once per folder
+  // navigation: a dir-watch refresh never re-fires it, and a selection the user
+  // cleared (Escape) stays cleared.
+  //
+  // Three conditions hold the shot rather than spending it, because each can
+  // still turn into a folder the user is looking at:
+  //   • the pane is OFF — nothing to preview into yet, and toggling it on later
+  //     should still land on the first file (`pane.on` is a dependency for
+  //     exactly that);
+  //   • search mode — the rendered rows are a query's answer, not the folder's,
+  //     so clearing the query still lands on the folder's first file;
+  //   • the listing is not OK — `status !== "ok"` and not merely "still
+  //     loading". A failed first fetch settles with zero rows, and the
+  //     dir-watch refetch that succeeds afterwards does NOT pass back through
+  //     "loading" — so spending the shot on the error state meant a folder
+  //     whose first request blipped never auto-selected at all, for the whole
+  //     mount. `listingLoaded` (which is true for a terminal error, by design —
+  //     the selection reconcile WANTS to clear a stale selection there) is the
+  //     wrong question for this effect.
+  // TWO Listings never fire at all:
+  //   • an EMBEDDED one (the pane's own `_listing` mode) — it has no pane of
+  //     its own to fill;
+  //   • a PROVISIONAL one (App's pre-stat loading scaffold, mounted off a nav
+  //     hint). Auto-selecting there mounts a real /render iframe that the swap
+  //     to the resolved Listing tears down and re-issues a beat later — a
+  //     doubled stat and a doubled frame load on every folder navigation, for a
+  //     preview nobody saw. The scaffold's job is to hold the SHAPE (the split,
+  //     the divider, the pane's chrome) so nothing jumps when the real listing
+  //     lands; it is not the place to start work that is about to be thrown
+  //     away. The pane itself stays — only the automatic selection waits. A
+  //     user's own click in the scaffold still previews, and still carries
+  //     across the swap (recallSelection), because that one was asked for.
+  const autoSelectedRef = useRef(false);
+  useEffect(() => {
+    if (embedded || provisional || autoSelectedRef.current) return;
+    if (searching || state.status !== "ok" || !pane.on) return;
+    autoSelectedRef.current = true;
+    const first = autoSelectPath(
+      new URLSearchParams(location.search).get("sel"),
+      navRows,
+      rowCtxByPath,
+    );
+    if (first) selectOnly(first);
+    // Fires on the commit that first satisfies the guards above; the rows it
+    // reads are current as of that commit.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [embedded, provisional, searching, state.status, pane.on]);
+
   // The selection as full rows, in rendered order (so a batch op processes rows
   // top-to-bottom regardless of the order they were clicked). Paths without a
   // rendered row — a search page not yet revealed, a row removed by a refetch
@@ -493,15 +539,6 @@ export default function Listing({
     const rows = inSelection && selectedRows.length > 1 ? selectedRows : [row];
     if (!inSelection) selectOnly(row.path);
     setMenu({ x: e.clientX, y: e.clientY, items: rowMenu(row, rows) });
-  };
-
-  // Clicking the listing background (the empty area below/beside the rows)
-  // deselects, like Finder. Row clicks land on tr.row, header/sort clicks on
-  // th, and Load more on a button — none of those should clear.
-  const onBackgroundClick = (e: React.MouseEvent) => {
-    const t = e.target as HTMLElement;
-    if (t.closest("tr.row, th, button, input")) return;
-    if (sel.paths.length) clearSelection();
   };
 
   // Fires only for the listing background (rows stopPropagation above).
@@ -868,19 +905,27 @@ export default function Listing({
                     : "relevance"}
                 </button>
               )}
-              {!embedded && (
+              {/* Only while the pane is CLOSED — and then with its label. The
+                  collapse half of this toggle moved onto the pane itself
+                  (ListingPreviewPane's header), where the action is spatial
+                  and needs no words: the control sits on the thing it
+                  collapses, at the seam. Reopening cannot live there, because
+                  a closed pane has nowhere to host a control — so it comes
+                  back here, and it comes back LABELLED: an icon-only square in
+                  this corner would read as one more of the layout glyphs the
+                  title bar carries a few pixels above it, and "the pane is
+                  off" is exactly the state a user needs told rather than
+                  inferred. */}
+              {!embedded && !pane.on && (
                 <button
                   type="button"
-                  className={"bar-ctl listing-pane-toggle" + (pane.on ? " pressed" : "")}
-                  title={pane.on ? "Hide preview pane" : "Show preview pane"}
-                  aria-pressed={pane.on}
+                  className="bar-ctl listing-pane-toggle"
+                  title="Show preview"
                   onClick={togglePane}
                 >
-                  {/* A labelled toggle, not a bare chevron. The chevron had to
-                      encode its own state by flipping direction — which reads
-                      as "go that way", not "the pane is open" — and never said
-                      what it toggled. The pane glyph fills its right column
-                      when the pane is on; `.pressed` carries the rest. */}
+                  {/* The pane glyph with its right column empty — the pane it
+                      would open, drawn as it currently is. It used to fill that
+                      column for the on state; the button no longer has one. */}
                   <svg
                     viewBox="0 0 24 24"
                     width="16"
@@ -893,17 +938,6 @@ export default function Listing({
                   >
                     <rect x="3" y="4" width="18" height="16" rx="2" />
                     <line x1="14" y1="4" x2="14" y2="20" />
-                    {pane.on && (
-                      <rect
-                        x="14"
-                        y="4"
-                        width="7"
-                        height="16"
-                        fill="currentColor"
-                        stroke="none"
-                        opacity="0.35"
-                      />
-                    )}
                   </svg>
                   Preview
                 </button>
@@ -918,7 +952,12 @@ export default function Listing({
               "listing-scroll" +
               (isStale || showingHeld ? " listing-stale" : "")
             }
-            onClick={onBackgroundClick}
+            /* No onClick here: clicking the empty area below the rows does
+               NOT deselect. Finder's rule, and it cost more than it bought
+               once the preview pane arrived — a stray click anywhere in the
+               whitespace of a short listing blanked the pane and threw away
+               the row the user was reading. Escape still clears (the
+               deliberate gesture); the background is just background. */
             onContextMenu={openBackgroundMenu}
           >
             <table className="listing-table">
@@ -999,10 +1038,12 @@ export default function Listing({
             />
             <div
               className="listing-pane-slot"
-              // Null width = first open with nothing saved: half the container
-              // as a flex percentage until the measuring layout effect pins a
-              // pixel value (same visual, so no flash either way).
-              style={{ flexBasis: pane.width ?? `${PANE_DEFAULT_FRAC * 100}%` }}
+              // A PERCENTAGE, not a pixel width: the split is stored as a
+              // fraction of this container (listing/pane.ts), so a window
+              // resize keeps the proportion the user dragged instead of
+              // leaving the pane at one window's arithmetic. The pixel floors
+              // are the slot's / the list's CSS min-widths.
+              style={{ flexBasis: `${pane.frac * 100}%` }}
             >
               {/* Keyed on the previewed path: switching rows remounts the pane,
                   so a stale iframe never lingers a frame while the new row's
@@ -1032,7 +1073,7 @@ export default function Listing({
                       : null
                 }
                 selCount={sel.paths.length}
-                selfPrimary={selfPrimary}
+                onCollapse={togglePane}
               />
             </div>
           </>

@@ -40,6 +40,56 @@ export function rememberSelection(fsPath: string, sel: Selection): void {
   lastSelection = { fsPath, sel };
 }
 
+// The row a freshly opened folder previews when nothing else claims the
+// selection (Listing's auto-select, FS-16): the FIRST NON-DIRECTORY row in the
+// RENDERED order, so the choice follows the active sort and is the row the eye
+// is already on. Directories are skipped rather than previewed — a folder's
+// pane preview is a peek, and landing on one would make opening a folder feel
+// like it had navigated somewhere. null when there is no file to show at all
+// (an empty folder, or one holding only directories), which leaves the pane on
+// its self target exactly as before.
+export function firstFilePath(
+  rows: string[],
+  byPath: ReadonlyMap<string, { isDir: boolean }>,
+): string | null {
+  for (const path of rows) {
+    const row = byPath.get(path);
+    // A path with no rendered row can't be selected — it isn't on screen.
+    if (row && !row.isDir) return path;
+  }
+  return null;
+}
+
+// What a freshly opened folder should select for its preview pane, or null for
+// "leave the selection alone" (FS-16). The caller owns the TIMING — one shot
+// per mount, at the first settled non-search listing with the pane on, all of
+// which are conditions on WHEN to ask, not on the answer (see Listing). This
+// owns the decision.
+//
+// `urlSel` is the `?sel` param, and it is deliberately the ONLY reading of the
+// current selection taken here. Two reasons, and the second is the subtle one:
+//   • A `?sel` seed is a claim on the selection that must win, and
+//     useListingSelection applies it in an effect registered BEFORE the
+//     caller's — so on the commit this runs, its setSel has not landed yet and
+//     the component's `sel` is still the pre-seed value. The URL is what is
+//     already true.
+//   • A BARE url means the selection is about to be (or already is) empty,
+//     whatever `sel` currently holds: the seeding effect CLEARS a selection
+//     recalled across a remount when the URL carries no `sel`, and after the
+//     seed the mirror effect keeps `?sel` in step with the lead. Reading the
+//     component's `sel` here instead let a recalled-then-discarded selection —
+//     browse into a file and come back to its folder, whose URL no longer
+//     carries `sel` — burn the one shot and leave the pane empty for the whole
+//     mount.
+export function autoSelectPath(
+  urlSel: string | null,
+  rows: string[],
+  byPath: ReadonlyMap<string, { isDir: boolean }>,
+): string | null {
+  if (urlSel) return null;
+  return firstFilePath(rows, byPath);
+}
+
 // A contiguous range of rendered rows, inclusive, in row order. `rows` is the
 // live navRows order (the SORTED/rendered order, never the raw fs order).
 export function rangeBetween(rows: string[], from: string, to: string): string[] {
