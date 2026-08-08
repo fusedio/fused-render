@@ -8,9 +8,11 @@
 // with a lone top-level HTML "app" additionally offers the pane-only `_app`
 // mode that renders that app in place. The header carries a mode menu so the
 // previewed mode can be switched (pane-local, transient — it never touches
-// the URL or saved viewstate). Wire-up state (pane visibility, width, the
-// divider drag) stays in Listing — this component only owns what the pane
-// shows for a given selection.
+// the URL or saved viewstate). The one target with NO menu and no preview is
+// the self target (nothing selected — the folder already open on the left):
+// see its branch below. Wire-up state (pane visibility, width, the divider
+// drag) stays in Listing — this component only owns what the pane shows for a
+// given selection.
 import { useEffect, useState } from "react";
 import { listDir, resolveConditions, statPath } from "@platform/lib/api";
 import type { TemplateEntry } from "@platform/lib/api";
@@ -29,12 +31,9 @@ export interface PaneTarget {
   path: string;
   name: string;
   isDir: boolean;
-  // True when the target is the listing's OWN folder (nothing selected): the
-  // same mode logic runs, except `_listing` is never offered (that listing is
-  // already on the left side of the split) and the pane lands on NO mode at
-  // all — a neutral hint, with every offered mode one click away in the
-  // switcher — instead of the folder's first opt-in mode. See
-  // listing/pane-modes.ts.
+  // True when the target is the listing's OWN folder (nothing selected). It
+  // has no preview of its own at all: name, the folder's primary action, and
+  // the hint that says what to do. See the self branch below.
   self?: boolean;
 }
 
@@ -128,8 +127,11 @@ export default function ListingPreviewPane({
   // selected must not render.
   const path = row?.path;
   const isDir = row?.isDir;
+  // The self target renders without asking the server anything (no modes, no
+  // app probe — see its branch below), so neither fetch is started for it.
+  const self = !!row?.self;
   useEffect(() => {
-    if (!path) return;
+    if (!path || self) return;
     let alive = true;
     setInfo({ status: "loading" });
     statPath(path).then(
@@ -162,7 +164,7 @@ export default function ListingPreviewPane({
     return () => {
       alive = false;
     };
-  }, [path]);
+  }, [path, self]);
 
   // Folder lone-app probe, for the `_app` mode. A truncated listing is only a
   // partial page (server cap), so a lone HTML match in it doesn't prove it is
@@ -170,7 +172,7 @@ export default function ListingPreviewPane({
   // onSingleApp guard). Errors also just drop the mode; the embedded Listing
   // surfaces the folder's real error itself.
   useEffect(() => {
-    if (!path || !isDir) return;
+    if (!path || !isDir || self) return;
     let alive = true;
     setApp(undefined);
     listDir(path).then(
@@ -189,7 +191,7 @@ export default function ListingPreviewPane({
     return () => {
       alive = false;
     };
-  }, [path, isDir]);
+  }, [path, isDir, self]);
 
   // Placeholders need no fetch: nothing selected, or a multi-selection.
   if (!row) {
@@ -199,6 +201,39 @@ export default function ListingPreviewPane({
           <div className="pane-hint">
             {selCount > 1 ? `${selCount} items selected` : "Select a file to preview."}
           </div>
+        </div>
+      </div>
+    );
+  }
+
+  // The SELF target — nothing selected, so the pane's subject is the folder
+  // already open on the left. It has no preview: just the folder's name, its
+  // own primary action (`selfPrimary`, the host's "Open as app" — a folder
+  // with no single app passes nothing and the slot stays empty), and the hint
+  // that says what to do about it.
+  //
+  // NO MODE MENU. The folder's peers under the `/` key are heavyweight opt-ins
+  // (the chat, git, versions), so the picker's only job here was to offer a
+  // chat on the folder from a header that otherwise said "select something" —
+  // a "Choose view" chip pointing at a view nobody came for. The folder's own
+  // modes are still one click from the LEFT half (Preview's chip), and every
+  // file in it previews on selection; and since opening a folder now
+  // auto-selects its first file (FS-16), this state is mostly an empty folder
+  // or one holding only folders. With no picker there is no mode to activate,
+  // which is why this branch renders before any of the mode machinery — and
+  // why the stat/app-probe fetches above skip the self target entirely.
+  if (row.self) {
+    return (
+      <div className="listing-pane">
+        <div className="pane-header">
+          <span className="pane-header-icon">{iconForEntry(row.name, true)}</span>
+          <span className="pane-header-name" title={row.name}>
+            {row.name}
+          </span>
+          {selfPrimary}
+        </div>
+        <div className="pane-center">
+          <div className="pane-hint">Select a file to preview.</div>
         </div>
       </div>
     );
@@ -224,9 +259,9 @@ export default function ListingPreviewPane({
   // --- the pane's mode list ---------------------------------------------------
 
   // Mode order = pane priority, decided in listing/pane-modes.ts — which also
-  // documents why a SELF target lands on no mode at all, why a lone app leads
-  // over `_listing`, and why `app` and `_app` are never both offered.
-  // This component only turns those mode names into menu entries with icons.
+  // documents why a lone app leads over `_listing`, and why `app` and `_app`
+  // are never both offered. This component only turns those mode names into
+  // menu entries with icons.
   //
   // Gate policy is the shared one (lib/mode-visibility), on every mode surface
   // alike: an entry hides only on an EXPLICIT denial. A denied override is not
@@ -239,7 +274,6 @@ export default function ListingPreviewPane({
     templates: info.templates,
     conditions: info.conditions,
     isDir: !!row.isDir,
-    self: !!row.self,
     hasApp: !!app,
   });
   const byMode = new Map(info.templates.map((e) => [e.mode, e]));
@@ -252,12 +286,10 @@ export default function ListingPreviewPane({
   // never settle on an interim mode and then jump. Undecided means: the
   // folder's app probe is in flight (`_app` would lead the list), or any
   // gated template's verdict is unresolved (a higher-ranked conditional mode
-  // may still enter the list — and for a self target, an all-conditional
-  // list must not flash the "no preview" hint while a gate may yet allow).
-  // This holds even with a `_panelMode` override seeded from the URL: the
-  // override's mode may itself still be absent from the interim list (a gated
-  // entry), so rendering before the list settles could show the default and
-  // then jump. Both signals resolve exactly once per mount (the component is
+  // may still enter the list). This holds even with a `_panelMode` override
+  // seeded from the URL: the override's mode may itself still be absent from
+  // the interim list (a gated entry), so rendering before the list settles
+  // could show the default and then jump. Both signals resolve exactly once per mount (the component is
   // keyed on the previewed path), and a user's switcher click can only happen
   // after they resolve, so this never re-shows the skeleton post-settle.
   const gatesPending =
@@ -270,30 +302,15 @@ export default function ListingPreviewPane({
       </div>
     );
   }
-  // A self target with nothing offerable at all (no app, every template
-  // gate-denied) gets the bare hint — no header, because there is no mode to
-  // switch to. With modes to offer it falls through instead, so the header (and
-  // its switcher) stays on screen beside the hint.
-  if (row.self && modeNames.length === 0) {
-    return (
-      <div className="listing-pane">
-        <div className="pane-center">
-          <div className="pane-hint">Select a file to preview.</div>
-        </div>
-      </div>
-    );
-  }
-  // Default = the first mode in pane priority order, or NO mode for a self
-  // target without an app of its own; the menu override wins while it's still
-  // offered.
-  const activeMode = activePaneMode(modeNames, modeOverride, {
-    self: !!row.self,
-    hasApp: !!app,
-  });
+  // Default = the first mode in pane priority order; the menu override wins
+  // while it's still offered. null = this row offers nothing at all, which
+  // falls through to the metadata card at the bottom.
+  const activeMode = activePaneMode(modeNames, modeOverride);
   const activeEntry = embeddable.find((e) => e.mode === activeMode) ?? null;
 
-  // Header: name + mode menu + Open. Shown for every mode except the file
-  // metadata card, which carries its own big-icon layout instead.
+  // Header: name + mode menu + open-full-screen. Shown for every mode except
+  // the file metadata card, which carries its own big-icon layout instead.
+  // (The self target has its own, picker-less header — it returns above.)
   const header = (
     <div className="pane-header">
       <span className="pane-header-icon">{iconForEntry(row.name, row.isDir)}</span>
@@ -310,38 +327,31 @@ export default function ListingPreviewPane({
           the loudest thing in the pane's header for the one action the user
           least needs pointed out. Two arrows to opposite corners is the
           expand/full-screen glyph, which is also the truer description — the
-          preview is already open, this makes it the whole view.
-          Self target: "Open" would navigate to the folder already open, so the
-          slot goes to the folder's own primary instead — today the host's
-          "Open as app" (`selfPrimary`), which used to sit in the title bar
-          competing with the mode control and the layout zone. A folder with no
-          single app passes nothing and the slot stays empty. */}
-      {row.self ? selfPrimary : (
-        <button
-          type="button"
-          className="bar-ctl pane-header-btn"
-          title="Open"
-          aria-label="Open"
-          onClick={() => navigate(row.path, { isDir: row.isDir })}
+          preview is already open, this makes it the whole view. */}
+      <button
+        type="button"
+        className="bar-ctl pane-header-btn"
+        title="Open"
+        aria-label="Open"
+        onClick={() => navigate(row.path, { isDir: row.isDir })}
+      >
+        <svg
+          viewBox="0 0 24 24"
+          width="16"
+          height="16"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth={2}
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          aria-hidden="true"
         >
-          <svg
-            viewBox="0 0 24 24"
-            width="16"
-            height="16"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth={2}
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            aria-hidden="true"
-          >
-            <path d="M15 3h6v6" />
-            <path d="M21 3l-7 7" />
-            <path d="M9 21H3v-6" />
-            <path d="M3 21l7-7" />
-          </svg>
-        </button>
-      )}
+          <path d="M15 3h6v6" />
+          <path d="M21 3l-7 7" />
+          <path d="M9 21H3v-6" />
+          <path d="M3 21l7-7" />
+        </svg>
+      </button>
     </div>
   );
 
@@ -378,27 +388,6 @@ export default function ListingPreviewPane({
           src={`/render?path=${encodeURIComponent(app.path)}`}
           title={app.name}
         />
-      </>
-    );
-  } else if (activeMode === null && row.self) {
-    // "Nothing previewed" — the self target's default state, not a mode: the
-    // header (so every offered mode stays one click away in the switcher, none
-    // of them marked active) above the same hint the nothing-to-show path
-    // shows.
-    //
-    // `row.self` is load-bearing, not defensive. `activePaneMode` returns null
-    // for TWO unrelated reasons: this state, and `modes[0] ?? null` on an empty
-    // list — which a SELECTED row reaches when its file maps to nothing or every
-    // template is gate-denied. That row has a subject and must keep falling
-    // through to the metadata card below; only the self target means "no subject
-    // chosen yet". The predecessor sentinel (`NONE_MODE`) could not be produced
-    // by an empty list, so it never had to say so.
-    body = (
-      <>
-        {header}
-        <div className="pane-center">
-          <div className="pane-hint">Select a file to preview.</div>
-        </div>
       </>
     );
   } else if (activeMode === "_listing" && row.isDir) {

@@ -8,15 +8,13 @@
 // KNOWN_SENTINEL_MODES — the server never sees it):
 //   `_app`   — a folder's lone top-level HTML app, rendered in place.
 //
-// "Nothing previewed" is a STATE, not a mode. A SELF target (nothing selected,
-// i.e. the folder already open on the left) resolves to NO active mode, and the
-// pane renders its neutral hint for that. There used to be a `_none` entry in
-// the list instead, so "No preview" appeared in the mode menu as something to
-// pick — which it never was: closing the pane is that gesture. What the entry
-// was really solving stays solved by `activePaneMode` below: dropping the self
-// row's `_listing` (redundant — that listing is the left half) left `claude` as
-// modes[0], so with a plain first-wins default merely opening the pane opened a
-// chat on the user's folder.
+// Everything here describes a SELECTED row. The self target (nothing selected —
+// the folder already open on the left) never reaches this module: it shows no
+// mode menu at all and always renders the pane's neutral hint, so there is
+// nothing to rank and nothing to default to. It used to be modelled here, with
+// an elaborate no-default rule that existed only to stop a first-wins default
+// from opening a chat on the folder merely because the pane was on; hiding the
+// picker deletes the question instead of answering it.
 import type { TemplateEntry } from "@platform/lib/api";
 import { isModeVisible } from "@platform/lib/mode-visibility";
 
@@ -30,8 +28,6 @@ export interface PaneModeInput {
   // surface: an entry hides only on an explicit `false`.
   conditions: Record<string, boolean> | null;
   isDir: boolean;
-  // True when the target is the listing's OWN folder (nothing selected).
-  self: boolean;
   // A lone top-level HTML app was found in this folder (`_app` is offerable).
   hasApp: boolean;
 }
@@ -39,16 +35,13 @@ export interface PaneModeInput {
 // The pane's mode list, in pane priority order (first = default).
 //
 // A lone app LEADS pane priority — a folder's own app is what that folder IS,
-// so it stays the self target's default too (it is a preview, not an opt-in
-// tool). After it, the template system's own order untouched — `_listing` stays
-// exactly where the registry ranks it. `_listing` is dropped for a FILE (no
-// slot for a listing of a file) and for a SELF target (that listing is the left
-// half of the split).
+// so it outranks the opt-in tools aimed at it. After it, the template system's
+// own order untouched — `_listing` stays exactly where the registry ranks it.
+// `_listing` is dropped only for a FILE (no slot for a listing of a file).
 //
 // Every entry here is a REAL mode: the list says what the pane can show, never
-// that it should show nothing (see `activePaneMode` for the self target's
-// no-default rule). So a self target whose every peer is gate-denied gets an
-// EMPTY list, which the pane reads as "bare hint, no header".
+// that it should show nothing. An EMPTY list means a target with nothing to
+// offer at all, which the pane answers with its metadata card.
 //
 // The lone app has TWO possible carriers and only ever gets ONE entry. The
 // `_app` sentinel exists so a folder with no registry `app` binding still gets
@@ -62,14 +55,14 @@ export interface PaneModeInput {
 // when the lone-app probe is positive — a folder with an `app` binding but no
 // lone HTML page keeps `_listing` first.
 export function paneModeList(input: PaneModeInput): string[] {
-  const { templates, conditions, isDir, self, hasApp } = input;
+  const { templates, conditions, isDir, hasApp } = input;
   const visible = (e: TemplateEntry) => isModeVisible(e, conditions);
   const hasRegistryApp = templates.some((e) => e.mode === "app" && visible(e));
   const modes: string[] = [];
   if (isDir && hasApp && !hasRegistryApp) modes.push(PANE_APP_MODE);
   for (const e of templates) {
     if (e.mode === "_listing") {
-      if (isDir && !self) modes.push("_listing");
+      if (isDir) modes.push("_listing");
       continue;
     }
     if (visible(e)) modes.push(e.mode);
@@ -83,18 +76,9 @@ export function paneModeList(input: PaneModeInput): string[] {
 
 // The mode the pane shows: the user's override (from the switcher, seeded from
 // the `_panelMode` URL param) while that mode is still offered, else the first
-// mode in pane priority order — and `null`, meaning "nothing previewed", for a
-// SELF target that has no app of its own.
-//
-// The self rule is the whole point of this function. Previewing the folder you
-// are already looking at has no obvious subject, and the modes left after
-// `_listing` is dropped are the `/` key's heavyweight opt-ins (the chat, git,
-// versions), so a first-wins default would open a chat merely because the pane
-// was toggled on. The one exception is the folder's OWN app — `_app`, or the
-// registry `app` entry hoisted in its place — which is a preview of the folder
-// rather than a tool aimed at it, so `hasApp` (the lone-app probe, the same
-// input `paneModeList` takes) is what says the lead is that app and may default.
-// A selected row always has a subject, so it keeps the plain first-wins rule.
+// mode in pane priority order. `null` means the target offers nothing at all
+// (an empty list — a file that maps to no template, or one whose every
+// template is gate-denied), which the pane answers with its metadata card.
 //
 // Deliberately `modes[0]` and not `mode-visibility`'s `defaultMode` (first
 // UNCONDITIONAL entry, PT-8/PT-9): the pane's own ordering above already
@@ -103,12 +87,7 @@ export function paneModeList(input: PaneModeInput): string[] {
 // reaches here with verdicts in flight — the component holds a skeleton until
 // they land — so "unconditional" carries no render-now-don't-wait meaning here
 // the way it does on the preview route.
-export function activePaneMode(
-  modes: string[],
-  modeOverride: string | null,
-  target: { self?: boolean; hasApp?: boolean } = {}
-): string | null {
+export function activePaneMode(modes: string[], modeOverride: string | null): string | null {
   if (modeOverride !== null && modes.includes(modeOverride)) return modeOverride;
-  if (target.self && !target.hasApp) return null;
   return modes[0] ?? null;
 }
