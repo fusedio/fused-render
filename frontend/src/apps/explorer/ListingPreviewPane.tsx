@@ -248,6 +248,17 @@ export default function ListingPreviewPane({
     }
     if (allowed(e)) modes.push({ mode: e.mode, icon: templateModeIcon(e) });
   }
+  // One rule, two carriers: a lone app LEADS pane priority. The sentinel gets
+  // that lead by construction (pushed before the template loop); the registry
+  // `app` entry has to be hoisted, since the registry ranks `_listing` ahead
+  // of it and a child-row app folder would otherwise default to the nested
+  // listing instead of the app — the position the sentinel used to hold.
+  // Only when the probe is positive: a folder with an `app` binding but no
+  // lone HTML kept `_listing` first before this, and still does.
+  if (row.isDir && app && hasRegistryApp) {
+    const i = modes.findIndex((m) => m.mode === "app");
+    if (i > 0) modes.unshift(modes.splice(i, 1)[0]);
+  }
 
   // While the mode list is still undecided, hold the skeleton — the pane must
   // never settle on an interim mode and then jump. Undecided means: the
