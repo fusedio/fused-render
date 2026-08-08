@@ -320,16 +320,11 @@ async function pollStatus() {
     const res = await fused.runPython("./sessions/sessions.py",
       {mode: "status"}, {key: "status"});
     const byId = Object.fromEntries(res.statuses.map((x) => [x.sessionId, x.mtime]));
-    // Every id the last full scan SAW — not just the rows it produced. A
-    // transcript the scan drops (no timestamped line yet, housekeeping-only, or
-    // past the row limit) is still "known": treating it as new made every poll
-    // fire another full scan, forever, for one such file on disk.
-    const known = new Set(DATA.allSessionIds || DATA.sessions.map((s) => s.sessionId));
     let unknown = false;
     for (const id of Object.keys(byId)) {
       const s = DATA.sessions.find((x) => x.sessionId === id);
       if (s) s.mtime = byId[id];
-      else if (!known.has(id)) unknown = true;
+      else unknown = true;
     }
     if (unknown) { await load(); return; }  // a new session appeared → full reload
     // update times/dots in place — no re-render, so open editors are untouched
