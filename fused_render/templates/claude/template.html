@@ -109,8 +109,14 @@
      hides them), so a second switch has nothing left to govern. Deliberately
      quiet: plain label text and a small track that tints accent when armed —
      no filled pill, no border. */
+  /* `min-width: 0` because this row has to survive a 220px host (the listing
+     preview pane's floor, FS-12) and a flex item's default `min-width: auto`
+     refuses to shrink below its content — without it the row overflows a narrow
+     pane instead of letting its one elastic label give. Which label gives is
+     decided below: the view toggle never does, the annotate switch does. */
   #anntools {
     flex-shrink: 0;
+    min-width: 0;
     display: flex;
     align-items: center;
     gap: 12px;
@@ -120,6 +126,10 @@
   #annbtn {
     height: 26px;
     padding: 0;
+    /* The elastic one. Its label is a mode name, and "Annot…" beside a visible
+       accent track still reads — where half of "Back to chat" would not tell you
+       it is the way back. See #viewbtn's flex-shrink. */
+    min-width: 0;
     display: flex;
     align-items: center;
     gap: 7px;
@@ -135,6 +145,9 @@
   }
   #annbtn:hover { color: var(--fg); }
   #annbtn.on { color: var(--fg); }
+  /* Where the row's shrinking actually happens — on the TEXT, not on the track,
+     which stays 28px (a knob that slid off its rail would stop being a switch). */
+  #annbtn .lbl { overflow: hidden; text-overflow: ellipsis; }
   /* The slider: knob left = off, knob right = on. Off is drawn in the quiet
      currentColor; the on-state fills the track with the accent — the only
      colour the control ever shows, and only while armed. */
@@ -189,16 +202,20 @@
      on black. */
   #leftmode option { color: var(--fg); background: var(--panel); }
 
-  /* Chat ⇄ Preview toggle. Exists for the NARROW layout only (see the 880px
-     block at the end of this stylesheet): while both columns are on screen
-     there is nothing to toggle, so it is display:none here and the media query
-     is the only thing that reveals it. Drawn like #back (bordered, quiet)
-     rather than like #annbtn: it navigates between views, it is not a mode. */
+  /* "Annotate preview" ⇄ "Back to chat" toggle. Exists for the NARROW layout only
+     (see the 880px block at the end of this stylesheet): while both columns are on
+     screen there is nothing to toggle, so it is display:none here and the media
+     query is the only thing that reveals it. Drawn like #back (bordered, quiet)
+     rather than like #annbtn: it navigates between views, it is not a mode.
+     `flex-shrink: 0` and the tighter 8px padding are what let the longer labels
+     live in a 220px row: this is the control that must never be half-readable,
+     because a truncated "Back to cha…" is the only way out of the preview. */
   #viewbtn {
     display: none;
     margin-left: auto;
+    flex-shrink: 0;
     height: 26px;
-    padding: 0 10px;
+    padding: 0 8px;
     font: inherit;
     font-size: 12px;
     line-height: 1;
@@ -966,7 +983,12 @@
     <!-- The iframe's own box, and the offset parent for every overlay that is
          positioned in FRAME viewport coordinates (pins, highlight, composer). -->
     <div id="leftview">
-      <iframe id="leftframe" title="File preview"></iframe>
+      <!-- "Preview", not "File preview": this frame holds a file's preview for a
+           file target and the user's own app for an app folder, and an accessible
+           name that names the wrong one of those is the same bug the footnote
+           had. Nothing sets it per kind because "Preview" is already true of
+           both. -->
+      <iframe id="leftframe" title="Preview"></iframe>
       <div id="annhl"></div>
       <div id="annpins"></div>
       <div id="annpop">
@@ -999,8 +1021,8 @@
       <!-- Chat ⇄ Preview, for the narrow single-view layout only (hidden by CSS
            until the 880px media query reveals it). It sits in THIS strip
            because the strip is the one row that both views keep on screen. -->
-      <button id="viewbtn" type="button" aria-label="Show the preview pane"
-              title="Switch between the chat and the preview">Preview</button>
+      <button id="viewbtn" type="button" aria-label="Annotate preview"
+              title="Switch between the chat and the preview pane, where the annotation tools are">Annotate preview</button>
     </div>
     <!-- chat view -->
     <div id="topbar">
@@ -1037,7 +1059,12 @@
         </div>
       </div>
     </form>
-    <div id="footnote">Claude can read and edit files in this project. Approvals control what runs without asking.</div>
+    <!-- The second piece of chrome that names the target (the composer
+         placeholder is the first), and it ships the kind-FREE wording for the
+         same reason: the kind is not known until stat answers, and a sentence
+         that flips from a wrong noun to a right one is worse than one that gains
+         a noun. setTargetNoun writes both. -->
+    <div id="footnote">Claude can read and edit files here. Approvals control what runs without asking.</div>
 
     <!-- home view -->
     <div id="home">
@@ -1212,10 +1239,15 @@ const PANE_SHOT_TAG = "pane-shot";
 // it: the snapshot itself, and the pull channel's fallback answer (appStatePull)
 // — a divergence there would tell the model two different stories about the same
 // condition (D146: the duplicated rule gets a test, not a comment).
+// It enumerates CAUSES, so it may only name conditions that can actually
+// produce it. "A project may have no app entry" used to be one and is not any
+// more: a folder with no app entry has no pane at all now (D234), and no pane
+// means no `app_state` tool in the run's roster — the model cannot ask, so this
+// sentence can never be the answer to it. Naming that case here would have the
+// snapshot explain a structural absence as a failed read.
 const APP_STATE_UNREADABLE = "the left pane's document could not be read (a "
-  + "project may have no app entry, a file may have no preview view, or the pane "
-  + "has not finished loading), so nothing is "
-  + "known about its title, url or DOM right now";
+  + "file may have no preview view, or the pane has not finished loading), so "
+  + "nothing is known about its title, url or DOM right now";
 // {level, text, source?, line?, ts}. PARENT-side, deliberately: the buffer has
 // to outlive the framed app's own reloads, which is exactly what makes "that
 // error was already there before my edit" answerable.
@@ -1256,19 +1288,17 @@ function fmtLogArg(v) {
 // frame's contentDocument IS the app's document now, so the frame-walking layer
 // that used to live here is gone rather than merely unused.
 //
-// The no-app-entry folder pane is /embed again (paneURL), so THERE this returns
-// the shell's own window and app_state reports the file browser's DOM and
-// console. That is deliberate and disclosed: the directory system prompt for an
-// ordinary folder says the pane is fused-render's file browser, never the user's
-// app, so a reading of it cannot be mistaken for a reading of their code. The
-// alternative — walking back into the nested frame to report whatever file the
-// user happens to have open — was rejected: the reading would change identity
-// under the agent with every click in the browser, and app_state's contract is
-// "the page beside this chat", one page.
+// There is no third pane shape to describe here any more. An ordinary folder had
+// one — /embed, the file browser, whose DOM this used to report — and D234 took
+// the pane away entirely, which also took away the whole question of whether a
+// reading of OUR UI could be mistaken for a reading of the user's code: for that
+// target the `app_state` tool is not in the run's roster at all (agent.py), so
+// nothing calls this.
 //
 // Returns null — never this chat's own window — in the three cases that are
 // genuinely "no app":
-//   * the project has no app entry, so the loader below REMOVED the iframe;
+//   * the pane could not open its preview, so the loader below REMOVED the frame
+//     (and the no-pane target removed the whole column);
 //   * about:blank, the placeholder before the first real document;
 //   * unreachable (cross-origin, or mid-navigation).
 function appWindow() {
@@ -1577,24 +1607,29 @@ async function appStateFile(state) {
 // can't.
 const PANE_SKIP_MODES = new Set(["claude"]);
 
-// What the left pane should frame. Two kinds of target (D230):
+// What the left pane should frame. TWO shapes and a NO-PANE case (D230, D234):
 //
-//   * a FOLDER — the app's entry html (index.html, or its single top-level
+//   * an APP FOLDER — the app's entry html (index.html, or its single top-level
 //     html — the same rule as the shell's "Open as app" button), resolved by
-//     ./app.py; and when the folder has NO app entry, fused-render's own file
-//     browser for that folder (see the /embed fallback in paneURL);
+//     ./app.py;
 //   * a FILE — the file in its OWN default view, i.e. exactly what the
 //     explorer's preview pane would show it in: `.py` in `code`, `.parquet`
 //     in `duckdb`, an `.html` page rendered as itself. That is what makes the
 //     annotation tools usable while editing a standalone file, which is the
 //     whole point of binding this mode to the file keys (D230).
+//   * an ORDINARY FOLDER — NO PANE. The chat is full width; paneURL answers
+//     `null` and the loader below removes the column, the divider and the whole
+//     control strip. See enterNoPane for why that is a designed state rather
+//     than a missing element, and D234 for why the pane it replaces was not
+//     worth its width: framing /embed there put fused-render's own file browser
+//     beside the chat, and nothing flowed BACK from it — no postMessage, no
+//     listener, so a click in it attached nothing, fed nothing to the composer
+//     and changed no agent context.
 //
-// Framed via /render for anything the annotation layer points at — the RAW
-// rendered document, same as the annotate template — NOT /embed: /embed serves
-// the React shell, which nests the target one iframe deeper, putting its
-// document out of the annotation layer's reach (the anchor listeners would wire
-// the shell document and never see a click). The no-app-entry folder is the one
-// exception, and it is not a counter-example: see paneURL.
+// Framed via /render, never /embed: /embed serves the React shell, which nests
+// the target one iframe deeper, putting its document out of the annotation
+// layer's reach (the anchor listeners would wire the shell document and never
+// see a click). With the folder embed gone there is no exception left.
 //
 // The view is also SWITCHABLE for a file target (`leftmode`): a `.md` file's
 // default is the markdown view, and "show me the source instead" is an ordinary
@@ -1622,11 +1657,11 @@ const paneOfferable = (entries) =>
 let paneEntries = [];
 let paneRemote = false;
 let framedMode = null;   // the mode #leftframe is showing right now
-// True only for the no-app-entry folder pane, which frames /embed (the React
-// shell) instead of a rendered document. Tracked because the annotation layer
-// cannot work through that extra nesting — see paneURL's /embed branch and the
-// suppression in the boot block.
-let paneEmbedded = false;
+// True once enterNoPane has run: this target has no left pane at all, the column
+// and its whole control strip are out of the document, and every function that
+// would otherwise write to them (or to a param describing a layout that no
+// longer exists) checks this and returns. See enterNoPane.
+let noPane = false;
 
 // The chosen entry: `leftmode` if it names one that is present and offerable,
 // else the default. Unknown / no-longer-offered falls back SILENTLY, the same
@@ -1653,20 +1688,41 @@ function paneSrcFor(t) {
     + (paneRemote ? "&_remote=1" : "");
 }
 
-// The composer's placeholder names the target, and the noun has to match the
-// target's KIND — the same three shapes, decided by the same predicate, as the
-// system prompt (agent.py `_split_system_prompt`, keyed on whether
-// shared/app_entry resolves an entry html): an app folder is a "project", a
-// folder with no entry is a "folder", a file is a "file". Saying "project" over
+// EVERY piece of chrome that names the target goes through here, and the noun has
+// to match the target's KIND — the same three shapes, decided by the same
+// predicate, as the system prompt (agent.py `_split_system_prompt`, keyed on
+// whether shared/app_entry resolves an entry html): an app folder is a "project",
+// a folder with no entry is a "folder", a file is a "file". Saying "project" over
 // ~/Downloads is the same lie in the placeholder as it is in the prompt.
+//
+// TWO pieces of chrome, not one, and that is the point of routing them through a
+// single function. The composer placeholder was made kind-derived and the
+// FOOTNOTE under it was missed, so a chat about `notes.md` still read "files in
+// this project" the moment it left the home view. A second, independent kind
+// lookup would have been a second thing to forget; one writer cannot disagree
+// with itself. A test asserts no user-visible noun is hardcoded in the markup.
 //
 // Called from paneURL's three branches rather than computed up front because the
 // kind is not known until stat has answered (and, for a directory, until ./app.py
 // has said whether an entry resolves) — which is exactly the work paneURL is
 // already doing, so this costs no extra round trip. Until then the markup's
-// kind-free "Ask Claude…" stands.
+// kind-free "Ask Claude…" and "files here" stand.
+//
+// `targetNoun` is exported to the rest of the page as the ONE answer to "what
+// kind of thing is this chat about", so nothing else re-derives it. "" until
+// paneURL answers.
+let targetNoun = "";
 const setTargetNoun = (noun) => {
+  targetNoun = noun;
   homebox.placeholder = "Ask Claude about this " + noun + "…";
+  // A file is the subject itself, so "files in this file" is not a sentence —
+  // and "and the assets it references" is not decoration, it is exactly the
+  // reach `_system_prompt` gives the agent for a file target. A folder and a
+  // project both CONTAIN the files, so they share the shape.
+  document.getElementById("footnote").textContent =
+    (noun === "file" ? "Claude can read and edit this file and the assets it references."
+                     : "Claude can read and edit files in this " + noun + ".")
+    + " Approvals control what runs without asking.";
 };
 
 async function paneURL() {
@@ -1681,58 +1737,27 @@ async function paneURL() {
       appEntry = entry;
       return "/render?path=" + encodeURIComponent(entry);
     }
-    // No app entry: frame the FOLDER ITSELF in fused-render's chrome-free
-    // navigable shell (/embed, SPEC LM-4/D39) — a real file browser beside the
-    // chat, so "what's in here?" is answerable by looking and the user can walk
-    // into a file while talking about the folder. This mode is offered on every
-    // directory now, not just app folders, and the alternative was what this
-    // branch used to do: throw, leaving a permanent error panel beside a working
-    // chat for the ordinary case of a folder that is not an app.
+    // An ordinary folder, not a project: NO PANE (D234). `null` is the answer,
+    // and it is a distinct answer rather than a thrown error — a folder that is
+    // not an app is the ordinary case, not a failure, which is what the original
+    // `throw` here got wrong (it left a permanent error panel beside a working
+    // chat).
     //
-    // WHY /embed IS ACCEPTABLE HERE WHEN D230 REJECTED IT FOR A FILE TARGET:
-    // the objection is that /embed nests the target one iframe deeper, out of
-    // the annotation layer's reach. That objection is about a target the
-    // annotation layer POINTS AT. A folder listing is not one — there is no
-    // element of a file browser a note could be anchored to that would mean
-    // anything to the agent — so nesting costs nothing here. The corollary is
-    // enforced, not assumed: paneEmbedded suppresses the annotate affordance
-    // entirely (see the boot block below), because an Annotate button over a
-    // pane whose clicks can never resolve is a button that silently does
-    // nothing.
-    // An ordinary folder, not a project: the pane is our file browser over it.
+    // What this replaces, and why: D232 framed `/explorer/embed/<dir>` here —
+    // fused-render's own file browser, so "what's in here?" was answerable by
+    // looking. Nothing flowed back from it. This template has no postMessage and
+    // no message listener, so selecting a file in that pane attached nothing, fed
+    // nothing to the composer and changed no agent context; annotate was
+    // hard-disabled over it (nothing in a file listing is a thing a note could
+    // point at); and the `leftmode` picker was inert for it. So it was half the
+    // width of a folder chat spent on a view that reported to nobody, and the
+    // agent already has the ordinary file tools for the same question. The one
+    // thing genuinely given up is the `state.url` backchannel: because embed
+    // navigation rewrote the iframe's path, `app_state` could tell the agent
+    // which folder or file the user had walked into. That was the only signal
+    // that flowed back, and it goes.
     setTargetNoun("folder");
-    paneEmbedded = true;
-    // Same construction as the shell's own embedSrc (layout-codec.ts): strip
-    // leading slashes, encode PER SEGMENT so the separators survive, and hang it
-    // off the /explorer/embed prefix. Hand-rolled rather than imported because a
-    // template is a standalone document and cannot import the shell's TS.
-    // `?preview=false` closes the embedded listing's OWN split preview pane
-    // (FS-9's param, the owner's literal spelling — `pane.ts` `paneIsOpen`). Not
-    // cosmetic: that pane defaults ON, and for a folder with nothing selected it
-    // previews the folder ITSELF — which since D232 offers this very chat mode
-    // for any directory, so it opened a SECOND chat, with its own agent and its
-    // own composer, nested inside this chat's left pane. Three columns for one
-    // conversation, and a stray Send in the wrong one starting a run nobody was
-    // looking at. The pane is also the wrong thing to spend a narrow left half
-    // on: the point of framing /embed is the file BROWSER.
-    // Rejected: pinning the embed to `_mode=_listing`, which says nothing about
-    // the pane (the nested preview lives inside the listing view, so the mode
-    // would still carry it) and would additionally forbid the user navigating
-    // the pane into a file — the reason /embed was chosen over a bare listing.
-    //
-    // `?modechip=false` closes the SECOND door into that same nesting, and it
-    // was open until someone looked at the rendered page: an embed showing the
-    // listing pins a corner chip (Preview.tsx `.preview-browse-chip`) that
-    // switches it to its counterpart mode, and a directory's counterpart is this
-    // very chat (D232) — so a button reading "Chat" sat in the top-right corner
-    // of the chat's own preview column, one click from a second agent and a
-    // second composer inside the first one's pane. It is also simply a control
-    // that chooses between two views, offered in a host that is already showing
-    // one of them. Same param shape as `preview=false` (the owner's literal
-    // `false`; absent means the chip stays on for every other embed).
-    return "/explorer/embed/" + FILE.replace(/^\/+/, "").split("/")
-      .filter((s) => s.length > 0).map(encodeURIComponent).join("/")
-      + "?preview=false&modechip=false";
+    return null;
   }
 
   // The file's views, by the same rule the shell applies (Preview.tsx
@@ -1770,11 +1795,12 @@ function paneModeLabel(mode) {
 }
 
 function buildLeftPicker() {
-  // Nothing to pick, no control. A DIRECTORY target has exactly one thing to
-  // frame — the app entry resolved by app.py, or the folder's /embed browser
-  // when there is none; neither is a stat entry, so paneEntries stays empty —
-  // and a file with a single offerable view has no choice either. A one-item
-  // <select> is chrome that cannot do anything.
+  // Nothing to pick, no control. An APP FOLDER has exactly one thing to frame —
+  // the app entry resolved by app.py, which is not a stat entry, so paneEntries
+  // stays empty — an ORDINARY folder has no pane at all (and never reaches here,
+  // since the loader returns before calling this), and a file with a single
+  // offerable view has no choice either. A one-item <select> is chrome that
+  // cannot do anything.
   if (paneEntries.length < 2) return;
   for (const e of paneEntries) {
     const o = document.createElement("option");
@@ -1816,36 +1842,108 @@ function applyLeftMode() {
   frame.src = paneSrcFor(t);
 }
 
+// ── no pane at all: the ordinary folder's full-width chat (D234) ──────────
+//
+// THE HAZARD THIS SHAPE EXISTS TO AVOID. The obvious implementation — ship the
+// markup without `#leftframe` for this target — cannot work, and it fails in a
+// way that hides itself. The frame's `load` hook is wired at TOP LEVEL; with no
+// element to wire, that statement throws a TypeError, which aborts every
+// declaration after it: the agent poll loop, setViewShot, the composer wiring.
+// The boot catch below cannot report that either, because its first statement is
+// `.remove()` on the same missing element — so the throw lands INSIDE the catch
+// and neither the error panel nor pushAppLog ever runs. A blank page with a
+// working-looking composer.
+//
+// So the pane is a designed ABSENCE, not a missing element: the markup ships the
+// column exactly as it does for a file, every declaration initialises against
+// it, and this function takes it away afterwards. "Afterwards" is guaranteed,
+// not hoped for — this whole file is ONE <script>, and the loader below reaches
+// here only after `await`ing a fetch, so the script has finished executing
+// before the first node is removed.
+//
+// Removed rather than hidden, because there is no state in which any of it is
+// wanted again: the target's kind does not change mid-session (a folder that
+// grows an index.html gets its pane on the next open, which is where the
+// predicate is read). Three subtrees go:
+//   * #left — the frame, the pins, the highlight and the note popover;
+//   * #divider — no two columns, no ratio to drag;
+//   * #anntools — the annotate switch, the `leftmode` picker and the view
+//     toggle. It is a child of #chat, so it survives removing #left, and would
+//     otherwise sit there as an empty bordered row of controls for a pane that
+//     is not there.
+// Plus both copies of the pane-shot pill (#viewshot in the chat composer,
+// #hviewshot on the home card): "attach a picture of the WHOLE visible app pane"
+// has nothing to photograph, and its block's caption says "app pane"
+// unconditionally.
+//
+// What this deliberately does NOT do is tidy the URL. `split`, `paneview`,
+// `leftmode`, `annmode` and `annotations` left by an old bookmark are IGNORED,
+// silently — the same forgiving posture PT-9 takes for an unknown `_mode`.
+// Deleting them would break the bookmark's round trip for the day that folder
+// becomes an app and gets its pane back.
+// ORDER MATTERS HERE, and both of the first two steps are undoing something the
+// BOOT already did on the strength of a param, before anyone knew there was no
+// pane. Both were live bugs found by opening a folder URL that still carried an
+// old bookmark's `annotations` and `paneview=preview`.
+function enterNoPane() {
+  // 1. Drop the notes and repaint, while `noPane` is still false so renderAnn
+  //    actually runs. In-memory only: `pending` is what composeOutgoing reads,
+  //    so an emptied list is what stops a note anchored to a document that no
+  //    longer exists from riding the next message — and the boot renderAnn had
+  //    ALREADY painted a chip per composer from the `annotations` param, which a
+  //    later `noPane` early-return would have frozen on screen. A chip showing a
+  //    note that cannot be sent is a worse lie than no chip. The param itself is
+  //    left alone (see above): this drops the list, it does not rewrite the URL.
+  annotations = [];
+  renderAnn();
+  noPane = true;
+  // 2. Through annSetMode, the one door in and out of the mode: the boot default
+  //    already armed it. With `noPane` set the call is a plain disarm that writes
+  //    no param (see there).
+  annSetMode(false);
+  // 3. And drop the narrow layout's view class, which boot stamped from
+  //    `paneview`. It has to go rather than be left inert: `view-preview`
+  //    collapses #chat to its #anntools strip inside the 880px block, and with
+  //    the strip removed and no pane to show instead, a narrow host would have
+  //    rendered a blank page. applyNarrowView returns early from here on, so
+  //    nothing puts either class back.
+  document.body.classList.remove("view-preview", "view-chat");
+  for (const id of ["left", "divider", "anntools", "viewshot", "hviewshot"]) {
+    const el = document.getElementById(id);
+    if (el) el.remove();
+  }
+}
+
 // ── left pane: the target's ordinary preview ─────────────────────
 (async () => {
   try {
-    document.getElementById("leftframe").src = await paneURL();
+    const src = await paneURL();
+    if (src === null) { enterNoPane(); return; }
+    document.getElementById("leftframe").src = src;
     buildLeftPicker();
-    // An /embed pane is fused-render's file browser, one iframe deeper than the
-    // annotation layer can reach: every click would land on the shell document,
-    // no anchor would ever resolve, and the pins would sit over a page they are
-    // not measuring. So the toggle goes away rather than being offered and
-    // failing silently — the same reasoning as the error path below, where there
-    // is no pane to annotate at all. Hidden, not disabled: a disabled control
-    // still advertises a feature that does not apply to this target.
-    //
-    // The disarm goes through annSetMode (the one way in and out of the mode) so
-    // pins already painted by the boot default are cleared too — paneURL resolves
-    // asynchronously, so the mode was armed before we knew what the pane is.
-    if (paneEmbedded) {
-      annSetMode(false);
-      document.getElementById("annbtn").style.display = "none";
-    }
   } catch (err) {
     // Swap only the iframe for the message — #leftview also hosts the annotation
     // layer (button, pins, highlight, popover), and wiping it would leave JS
     // driving detached nodes. No app, nothing to annotate: hide the toggle.
-    document.getElementById("leftframe").remove();
-    document.getElementById("annbtn").style.display = "none";
-    const d = document.createElement("div");
-    d.id = "msg";
-    d.textContent = "Could not open preview: " + err.message;
-    document.getElementById("leftview").prepend(d);
+    //
+    // EVERY LOOKUP HERE IS NULL-CHECKED, and that is not defensive padding: this
+    // catch also covers a throw from enterNoPane(), by which point the elements
+    // it names may already be out of the document. An unguarded `.remove()` here
+    // would throw INSIDE the catch and take the error panel and the pushAppLog
+    // with it — the same self-hiding failure the no-pane branch exists to avoid,
+    // one layer down. If we got here after the column was removed there is no
+    // #leftview to put a message in, so only the log leg runs.
+    const frame = document.getElementById("leftframe");
+    if (frame) frame.remove();
+    const btn = document.getElementById("annbtn");
+    if (btn) btn.style.display = "none";
+    const host = document.getElementById("leftview");
+    if (host) {
+      const d = document.createElement("div");
+      d.id = "msg";
+      d.textContent = "Could not open preview: " + err.message;
+      host.prepend(d);
+    }
     // Tell Claude too: "the pane is showing an error instead of your app" is the
     // most important thing the state channel can carry, and from here the iframe
     // is gone (appWindow returns null forever) so nothing else will report it.
@@ -1863,6 +1961,9 @@ const clampPct = (pct) => Math.min(80, Math.max(20, pct));
 // about a scrollbar's width, and that disagreement is a half-collapsed layout.
 const NARROW_MQ = window.matchMedia("(max-width: 880px)");
 function applySplit() {
+  // No pane, no ratio: #left is out of the document (enterNoPane), so there is
+  // nothing to size and `split` describes a layout this target does not have.
+  if (noPane) return;
   // Below the breakpoint the stylesheet owns #left's width (one view at a time,
   // no divider, nothing to be a ratio OF), and an inline width would beat it —
   // inline outranks every rule short of the CSS force flag, which this file does
@@ -2003,6 +2104,12 @@ function annLabelFor(i) {
 }
 
 function renderAnn() {
+  // No pane, no pins and no chips: both hosts (#annpins over the frame, the two
+  // #annchips rows in the composers) describe notes anchored to a document this
+  // target does not have, and #annpins itself is out of the document. `annotations`
+  // is already emptied by enterNoPane, so this is belt-and-braces against a later
+  // caller — of which there are five, including a params.onChange for EVERY param.
+  if (noPane) return;
   // pins over the frame
   annPins.innerHTML = "";
   annPins.style.display = annOn ? "" : "none";
@@ -2176,13 +2283,18 @@ annTa.addEventListener("keydown", (e) => {
 // mode too, and a second copy of this would be a second chance for the banner's
 // text to disagree with `annOn`.
 function annSetMode(on) {
-  // An /embed pane can never be armed, whoever asks. Enforced HERE rather than
-  // only at the button because arming has four entry points (the click, the
+  // A target with no pane can never be armed, whoever asks. Enforced HERE rather
+  // than only at the button because arming has four entry points (the click, the
   // boot default below, the `annmode` param, the app menu's exit action) and a
   // check at each of them is a check that a fifth one will forget. `annmode=1`
   // left in a URL from a folder that used to have an app entry is the concrete
-  // case: it would arm a layer whose anchors resolve against the wrong document.
-  annOn = on && !paneEmbedded;
+  // case: it would arm a layer over a column that is not in the document.
+  //
+  // Returns BEFORE the param write, deliberately: `annmode` on a folder URL is
+  // ignored, not rewritten (see enterNoPane). Everything below this line reads
+  // or writes nodes that enterNoPane has removed.
+  if (noPane) { annOn = false; return; }
+  annOn = on;
   fused.params.set("annmode", annOn ? "1" : "0");
   annBtn.classList.toggle("on", annOn);
   annBtn.setAttribute("aria-pressed", String(annOn));
@@ -2310,15 +2422,30 @@ const viewBtn = document.getElementById("viewbtn");
 // until the first call: boot is not a flip.
 let narrowShown = null;
 function applyNarrowView() {
+  // No pane, no two views to be one of: the toggle and its strip are out of the
+  // document (enterNoPane) and `paneview` describes a collapse this target never
+  // does. Returning here rather than letting the body classes be written is the
+  // honest version — a `view-preview` class on a document with no preview is a
+  // state the stylesheet has rules for and the layout cannot reach.
+  if (noPane) return;
   // Default CHAT: an unset param reads as the chat, so a narrow pane opens on
   // the conversation — the reason the mode exists — and the preview is one click
   // away. Pane-local like `split`, so a reload keeps the view the user was on.
   const preview = fused.params.get("paneview") === "preview";
   document.body.classList.toggle("view-preview", preview);
   document.body.classList.toggle("view-chat", !preview);
-  // The button names its DESTINATION, not the current view.
-  viewBtn.textContent = preview ? "Chat" : "Preview";
-  viewBtn.setAttribute("aria-label", preview ? "Show the chat" : "Show the preview pane");
+  // The button names its DESTINATION, and names what the destination is FOR: the
+  // preview column is where the annotation tools live, which is the only reason
+  // to leave the conversation for it ("Preview" said where you would land and not
+  // why). It stays NAVIGATION — #annbtn is still what arms the mode once you are
+  // there, and merging the two would make one click both move the view and change
+  // what a click in the frame does.
+  // ONE string for the label and the aria-label: a second wording is a second
+  // thing to keep in step, and there is nothing the screen reader needs that the
+  // visible text does not already say.
+  const viewLabel = preview ? "Back to chat" : "Annotate preview";
+  viewBtn.textContent = viewLabel;
+  viewBtn.setAttribute("aria-label", viewLabel);
   // Leaving Preview while narrow DISARMS annotate mode. The media block hides
   // the annotate toggle in the chat-only view because there is no frame to point
   // at; leaving the mode armed behind that hidden toggle would keep the frame's
@@ -3158,8 +3285,17 @@ function annRevokeThumbs(result) {
 function formatAnnotations(arr) {
   const wire = arr.map(({ id, sent, createdAt, ...rest }) => rest);
   return (
+    // Same hardcoded-noun bug as the footnote, one audience over: this said "this
+    // project's entry HTML" for every target, and since D230 half of them are
+    // files, where the left pane is fused-render's preview OF the file and not an
+    // app at all. Telling the model to look for an entry HTML that does not exist
+    // is how a note about `notes.md` turns into a hunt for an app. Only the two
+    // shapes that HAVE a pane can get here (a no-pane target has no annotation
+    // layer), so `targetNoun` is "project" or "file" and never "folder".
     "The user annotated " + arr.length + " element" + (arr.length === 1 ? "" : "s") +
-    " in the running app (left preview of this project's entry HTML). " +
+    (targetNoun === "file"
+      ? " in the left preview of this file. "
+      : " in the running app (left preview of this project's entry HTML). ") +
     "anchorId = the element's HTML id, anchorPath = a tag:nth-of-type DOM path " +
     "from <body>, tag/text = a digest of the element, iu/iv = fractional click " +
     "position on an image/canvas, shot = the path of a PNG crop of the element " +

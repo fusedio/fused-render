@@ -12,6 +12,13 @@ directory branch widened from "an app folder" to "any directory", and the pane
 grew a fallback for the folder that has no app entry to frame. Both are pinned
 below, because both replace a rule this file used to assert the opposite of.
 
+Then D234 removed that fallback again — not back to the `throw`, but to NO PANE:
+an ordinary folder gets a full-width chat. The embedded file browser reported to
+nobody (no `postMessage`, no listener), annotate was hard-disabled over it and
+the view picker was inert for it, so it was half the width spent on decoration.
+There are now TWO pane shapes and a no-pane case, and the tests below say which
+is which.
+
 Three things are worth pinning down, and each of them broke once:
 
 * the FILE branch of the gate must test `isfile`, not `not isdir`. The loose form
@@ -149,6 +156,22 @@ def _pane_source() -> str:
         return f.read()
 
 
+def _pane_code() -> str:
+    """The template with its whole-line `//` comments, `/* … */` blocks and HTML
+    comments removed.
+
+    Needed by every "X is gone" assertion, because this file's comments RECORD
+    what was removed and why — that is the repo's convention — so grepping the
+    raw source would make a rejected design, described in prose, read as the
+    implementation. Same reasoning as `_media_rules()` below, applied to the
+    script rather than the stylesheet. Trailing `// …` on a code line survives;
+    nothing here depends on that, and stripping it needs a real tokenizer."""
+    src = re.sub(r"/\*.*?\*/", "", _pane_source(), flags=re.S)
+    src = re.sub(r"<!--.*?-->", "", src, flags=re.S)
+    return "\n".join(line for line in src.split("\n")
+                     if not line.lstrip().startswith("//"))
+
+
 def test_the_pane_resolves_a_file_through_stat_not_a_per_extension_table():
     """The pane asks stat which view a file gets and takes the first
     non-`conditional` entry — the shell's own rule (Preview.tsx
@@ -190,84 +213,180 @@ def test_a_folder_target_still_resolves_its_app_entry():
     assert 'if (entry) {' in page, "the app entry is still the first answer"
 
 
-def test_a_folder_with_no_app_entry_frames_the_folder_itself():
-    """The mode is offered on every directory now, so "this folder is not an app"
-    is the ordinary case, not an error. It used to THROW here — `no app entry
-    (index.html or a single top-level .html)` — which put a permanent error panel
-    beside a perfectly working chat. The fallback is `/embed/<dir>`, the
-    chrome-free navigable shell (LM-4/D39): a real file browser, so the user can
-    walk into a file while talking about the folder."""
+def test_an_ordinary_folder_gets_no_left_pane_at_all():
+    """D234: the ordinary folder's pane is GONE, and the chat is full-width.
+
+    The history in one line. The branch used to `throw` (`no app entry…`), which
+    put a permanent error panel beside a working chat; D232 replaced the throw
+    with `/explorer/embed/<dir>`, fused-render's own file browser. That framing
+    earned nothing: there is no `postMessage` and no message listener in this
+    template, so selecting a file in that pane attached nothing, fed nothing to
+    the composer and changed no agent context; annotate was hard-disabled over
+    it, and the `leftmode` picker was inert for it. A column that reports to
+    nobody is not a pane, it is decoration taking half the width away from the
+    one thing the folder chat is for. So `paneURL()` answers `null` for that
+    kind and the loader takes the no-pane branch.
+    """
     page = _pane_source()
     assert "no app entry (index.html" not in page, "the throw must be gone"
-    assert '"/explorer/embed/" + FILE.replace(/^\\/+/, "").split("/")' in page
-    # Per-segment encoding, the same construction as the shell's own embedSrc:
-    # encoding the whole path would eat the separators and the URL would 404.
-    assert '.map(encodeURIComponent).join("/")' in page
+    # The embed framing and BOTH of its nesting guards go with it — `modechip`
+    # loses its only producer in the codebase, so the param's plumbing is gone
+    # from its consumer too (asserted below). Matched as CODE, since the comment
+    # beside the branch records what it replaced.
+    code = _pane_code()
+    assert '"/explorer/embed/"' not in code
+    assert "modechip=false" not in code
+    assert "preview=false" not in code
+    # `null` is the pane's answer for "there is no pane", read at the one place
+    # that frames the iframe.
+    assert "if (src === null) { enterNoPane(); return; }" in code
 
 
-def test_the_embedded_browser_opens_with_its_own_preview_pane_closed():
-    """`?preview=false` on the embed URL, and it is load-bearing rather than tidy.
+def test_the_dead_modechip_param_is_gone_from_its_consumer_too():
+    """`?modechip=false` existed for exactly one caller — the chat template's
+    folder pane — and that caller is deleted. A URL param with no producer is a
+    branch in the shell that nothing can ever take, so `Preview.tsx` loses the
+    read and the guard rather than keeping an untestable tolerance alive.
 
-    The listing's split preview pane defaults ON (FS-9), and with nothing selected
-    it previews the folder ITSELF — which since D232 offers this same chat mode for
-    any directory. So the pane opened a SECOND chat, with its own agent and its own
-    composer, nested inside this chat's left half: three columns for one
-    conversation, and a stray Send in the wrong composer starting a run nobody was
-    watching. Found by looking at the rendered page, which is the only way this
-    class of bug shows up — every piece of it is correct on its own.
-
-    `preview=false` is the owner's literal spelling (`listing/pane.ts` `paneIsOpen`
-    reads exactly `true`/`false`); an absent param means ON, so the param has to be
-    present and explicit. Rejected: `_mode=_listing`, which says nothing about the
-    pane (the nested preview lives *inside* the listing view) and would forbid
-    navigating the pane into a file — the reason /embed was chosen at all.
+    `preview=false` is NOT removed alongside it: the listing writes that one
+    itself when the user closes the pane (`listing/pane.ts`), so it still has a
+    producer and still means something.
     """
-    page = _pane_source()
-    assert '+ "?preview=false&modechip=false"' in page
-
-
-def test_the_embedded_browser_offers_no_way_into_a_second_chat():
-    """`?modechip=false` on the same embed URL, and it closes the second door into
-    the nesting `preview=false` closes the first one into.
-
-    An embed showing the listing pins a corner chip (Preview.tsx
-    `.preview-browse-chip`, `body.embed` top-right) that switches it to its
-    COUNTERPART mode — and a directory's counterpart is this very chat (D232). So
-    a button labelled "Chat" sat in the top-right corner of the chat's own
-    preview column, one click from a second agent and a second composer nested
-    inside the first one's pane. Found in the rendered DOM, not the source: the
-    template's own `#viewbtn` is display:none in the wide layout and stays that
-    way, so reading this file alone said the invariant held.
-
-    It is also the plain form of PT-15's rule (c): a control whose only job is to
-    choose between two views has nothing to offer a host that is already showing
-    one of them.
-    """
-    page = _pane_source()
-    assert "modechip=false" in page
-    # The chip's owner has to actually honour the param, or the URL is a comment.
     with open(os.path.join("frontend", "src", "apps", "explorer", "Preview.tsx"),
               encoding="utf-8") as f:
-        tsx = f.read()
-    assert 'get("modechip") === "false"' in tsx
-    assert "!modeChipOff && otherEntry" in tsx
+        tsx = "\n".join(line for line in f.read().split("\n")
+                        if not line.lstrip().startswith("//"))
+    assert 'get("modechip")' not in tsx
+    assert "modeChipOff" not in tsx
+    # The chip itself survives for every other embed — only the opt-out is gone.
+    assert "otherEntry" in tsx
+    with open(os.path.join("frontend", "src", "apps", "explorer", "listing",
+                           "pane.ts"), encoding="utf-8") as f:
+        assert "preview=false" in f.read(), "preview=false keeps its own producer"
 
 
-def test_the_embed_pane_is_not_an_annotation_surface():
-    """D230 rejected /embed for a FILE target because it nests the target one
-    iframe deeper, out of the annotation layer's reach. That objection does not
-    apply to a folder listing — nothing there is a thing a note could point at —
-    but the corollary must be ENFORCED, not assumed: an Annotate button over a
-    pane whose clicks can never resolve is a button that silently does nothing.
+def test_the_no_pane_state_removes_the_column_the_divider_and_the_strip():
+    """The no-pane case is a DESIGNED state, not a missing element — and the
+    difference is load-bearing.
 
-    Two mechanisms, because the toggle has several entry points (the click, the
-    boot default, the `annmode` param, the app menu): the button is hidden, and
-    annSetMode itself refuses to arm."""
+    Simply dropping `#leftframe` from the markup would have thrown a TypeError
+    at `annFrame.addEventListener("load", …)`, which is top-level script: every
+    declaration after it — the agent poll loop, `setViewShot`, the composer
+    wiring — would never have been created, and the boot catch would then have
+    thrown INSIDE the catch (it calls `.remove()` on the same missing element),
+    so not even the error panel would have appeared. So the markup ships the
+    pane exactly as before and the no-pane target REMOVES it, from the async
+    loader — which, because `paneURL()` awaits a fetch, runs after the whole
+    script has finished: every declaration is initialised before anything is
+    taken away.
+
+    Three things go, and each one is chrome that acts on the pane: `#left` (the
+    frame, the pins, the highlight, the popover), `#divider` (no ratio to drag)
+    and `#anntools` (the annotate switch, the `leftmode` picker and the view
+    toggle all live in that strip, which is a child of `#chat` and would
+    otherwise stay behind as an empty bordered row).
+    """
+    code = _pane_code()
+    i = code.index("function enterNoPane()")
+    body = code[i:code.index("\n}", i)]
+    assert ('for (const id of ["left", "divider", "anntools", "viewshot", '
+            '"hviewshot"]) {') in body
+    assert "if (el) el.remove();" in body
+
+
+def test_the_no_pane_state_undoes_what_boot_did_from_a_stale_param():
+    """The ordering inside `enterNoPane`, which is where two real bugs lived.
+
+    Boot runs before `paneURL` has answered, so it acts on params in ignorance of
+    the target's kind — and two of those actions are visible:
+
+    * `renderAnn()` paints a chip per composer from the `annotations` param. A
+      `noPane` early-return added to renderAnn would have FROZEN those chips on
+      screen: a note the send can no longer carry, still shown as pending. So the
+      list is emptied and repainted while `noPane` is still false, and only then
+      is the flag set — the assertion below is the order, not the statements.
+    * `applyNarrowView()` stamps `view-preview` on the body when `paneview=preview`
+      is on the URL. Inside the 880px block that class collapses `#chat` to its
+      `#anntools` strip — and this state removes that strip and has no pane to
+      show instead, so a narrow host rendered a BLANK PAGE. The class is removed,
+      not left inert.
+    """
+    code = _pane_code()
+    i = code.index("function enterNoPane()")
+    body = code[i:code.index("\n}", i)]
+    assert body.index("annotations = [];") < body.index("renderAnn();")
+    assert body.index("renderAnn();") < body.index("noPane = true;")
+    assert ('document.body.classList.remove("view-preview", "view-chat");'
+            in body)
+    # Removal happens from the async loader, i.e. after the script — pinned as
+    # the call site, since that ordering is the whole reason this is safe.
+    loader = code[code.index("const src = await paneURL();"):]
+    assert loader.index("enterNoPane()") < loader.index("} catch (err) {")
+
+
+def test_nothing_drives_the_pane_machinery_once_the_pane_is_gone():
+    """One flag, checked in the four functions that would otherwise write to
+    detached nodes or to a param describing a layout that no longer exists.
+
+    `paneEmbedded` — the "this pane is the embedded listing, refuse to arm"
+    flag — is deleted rather than repurposed: there is no embedded listing any
+    more, and the condition it guarded (an annotate button over a pane whose
+    clicks can never resolve) is now impossible by construction, because the
+    button is not in the document.
+    """
+    code = _pane_code()
+    assert "let noPane = false;" in code
+    assert "paneEmbedded" not in _pane_source(), "the flag is deleted, not renamed"
+    # annSetMode stays the ONE door in and out of the mode, and it refuses
+    # without writing `annmode`: a stale param on a folder URL is ignored, not
+    # rewritten.
+    ann = code[code.index("function annSetMode(on) {"):]
+    ann = ann[:ann.index("\nannBtn.addEventListener")]
+    assert "if (noPane) { annOn = false; return; }" in ann
+    assert ann.index("if (noPane)") < ann.index('fused.params.set("annmode"')
+    for fn in ("function applySplit() {", "function applyNarrowView() {",
+               "function renderAnn() {"):
+        body = code[code.index(fn):code.index(fn) + 300]
+        assert "if (noPane) return;" in body, fn
+
+
+def test_a_stale_split_param_on_a_folder_url_is_ignored_not_an_error():
+    """`split`, `paneview`, `leftmode` and `annmode` left on a folder URL by an
+    old bookmark describe a layout that folder no longer has. They are ignored
+    SILENTLY — not stripped, not an error — the same forgiving posture PT-9
+    takes for an unknown `_mode`: the folder chat simply opens full-screen.
+
+    Pinned as "nothing deletes them", because the tempting fix is to tidy the
+    URL, and tidying it means a bookmark that no longer round-trips when the
+    same folder later grows an `index.html` and gets its pane back.
+    """
     page = _pane_source()
-    assert "paneEmbedded = true;" in page
-    assert 'annSetMode(false);' in page
-    assert 'document.getElementById("annbtn").style.display = "none";' in page
-    assert "annOn = on && !paneEmbedded;" in page
+    no_pane = page[page.index("function enterNoPane()"):]
+    no_pane = no_pane[:no_pane.index("\n}")]
+    for param in ("split", "paneview", "leftmode", "annmode", "annotations"):
+        assert 'params.set("%s"' % param not in no_pane, param
+        assert 'params.delete("%s"' % param not in no_pane, param
+
+
+def test_the_no_pane_state_cannot_ship_a_stale_entry_or_a_pane_screenshot():
+    """Two things the app-state channel must not do for a target with no pane.
+
+    `appEntry` is write-once and never cleared, and `entry` is the only field in
+    the payload that distinguishes the user's real app from our own UI — so the
+    no-pane path must never set it. And the pane-shot pill captures "the WHOLE
+    visible app pane", captioned unconditionally; with no pane there is nothing
+    to photograph, so both copies of the pill are removed and the block is
+    unreachable rather than merely unused.
+    """
+    page = _pane_source()
+    folder = page[page.index("if (st.is_dir) {"):page.index("setTargetNoun(\"file\")")]
+    assert "appEntry" not in folder.split('setTargetNoun("folder")')[1]
+    # And the unreadable sentence does not become the explanation for it: the
+    # prose enumerates causes, and "this target has no pane" is none of them.
+    assert "APP_STATE_UNREADABLE" in page
+    unreadable = page[page.index("const APP_STATE_UNREADABLE"):]
+    unreadable = unreadable[:unreadable.index(";\n")]
+    assert "no app entry" not in unreadable
 
 
 def test_the_composer_placeholder_names_the_targets_kind():
@@ -296,9 +415,49 @@ def test_the_composer_placeholder_names_the_targets_kind():
         assert 'setTargetNoun("%s")' % noun in page
     # The app-folder noun hangs off the entry resolution, the prompt's predicate.
     app_branch = page[page.index("const { entry } = await fused.runPython"):]
-    app_branch = app_branch[:app_branch.index("paneEmbedded = true;")]
+    app_branch = app_branch[:app_branch.index('setTargetNoun("file")')]
     assert app_branch.index('setTargetNoun("project")') < app_branch.index(
         'setTargetNoun("folder")')
+
+
+def test_no_piece_of_chrome_hardcodes_the_targets_kind():
+    """The general form of the bug above, so the next instance fails here instead
+    of reaching a reviewer.
+
+    The placeholder was made kind-derived and the FOOTNOTE beneath it was missed:
+    it still read "Claude can read and edit files in this project", so a chat
+    about `notes.md` described the wrong kind of thing the moment it left the home
+    view. Both now go through `setTargetNoun`, the single writer — a second,
+    independent kind lookup is a second thing to forget.
+
+    So: NO kind noun appears anywhere in the rendered markup. Asserted over the
+    <body> (the stylesheet's comments talk about panes and projects at length, and
+    that prose is not chrome), and only over what a user can read — element text
+    and the three attributes that get spoken or shown.
+    """
+    page = _pane_source()
+    body = page[page.index("<body>"):page.index("<script>")]
+    body = re.sub(r"<!--.*?-->", "", body, flags=re.S)
+    # What a user can actually READ or HEAR: element text plus the three
+    # attributes that get shown or spoken. Ids and class names are excluded on
+    # purpose — `tb-file` and `home-file` are selectors, not sentences.
+    spoken = re.findall(r'(?:title|aria-label|placeholder)="([^"]*)"', body)
+    visible = " ".join(spoken) + " " + re.sub(r"<[^>]*>", " ", body)
+    # SINGULAR and word-bounded: the plural is generic ("Claude can read and edit
+    # files here" is true of every target and names no kind), the singular is a
+    # claim about THIS target and belongs to setTargetNoun.
+    for noun in ("project", "folder", "file"):
+        assert not re.search(r"\b%s\b" % noun, visible, re.I), noun
+    # The kind-free wording the markup ships instead, for both pieces.
+    assert 'placeholder="Ask Claude…"' in page
+    assert ">Claude can read and edit files here." in page
+    # One writer, and it writes BOTH.
+    setter = page[page.index("const setTargetNoun = (noun) => {"):]
+    setter = setter[:setter.index("\n};")]
+    assert "homebox.placeholder" in setter
+    assert 'getElementById("footnote").textContent' in setter
+    # "files in this file" is not a sentence — the file case is its own shape.
+    assert 'noun === "file"' in setter
 
 
 # -------------------------------------------- the left pane's view PICKER
@@ -639,6 +798,53 @@ def test_the_divider_is_not_a_drag_target_while_narrow():
     rules = _media_rules()
     assert "#divider { display: none; }" in rules
     assert "visibility: hidden" not in rules.split("body.view-chat #left {")[0]
+
+
+def test_the_view_toggle_names_the_annotate_surface_it_navigates_to():
+    """The toggle read "Preview" outbound and "Chat" on the return, which named
+    the destination but not what the destination is FOR: the preview column is
+    where the annotation tools live, and that is the only reason a person leaves
+    the conversation for it. So it reads "Annotate preview" and "Back to chat".
+
+    It stays NAVIGATION, not a mode: `#annbtn` is still what arms annotate once
+    you are there, and the two controls are deliberately not merged — one moves
+    between views, the other changes what a click in the frame does.
+
+    The aria-label is the SAME string as the visible label rather than a second
+    wording, so the two cannot drift apart.
+    """
+    page = _pane_source()
+    assert 'const viewLabel = preview ? "Back to chat" : "Annotate preview";' in page
+    assert "viewBtn.textContent = viewLabel;" in page
+    assert 'viewBtn.setAttribute("aria-label", viewLabel);' in page
+    # The markup ships the outbound label, since Chat is the default view.
+    assert 'aria-label="Annotate preview"' in page
+    assert ">Annotate preview</button>" in page
+    # The old wording must not survive as a second answer.
+    assert 'viewBtn.textContent = preview ? "Chat" : "Preview";' not in page
+
+
+def test_the_longer_toggle_label_cannot_squeeze_the_strip_into_an_overflow():
+    """#anntools is a fixed 26px row that has to survive a 220px host (the
+    listing preview pane's floor, FS-12), and the relabelled toggle is ~50px
+    wider than "Preview" was. In Preview view the row carries the annotate
+    switch AND the toggle, which is the tight case.
+
+    The toggle never shrinks (its label is the navigation, and half of "Back to
+    chat" is not a way back); the annotate switch is the thing that gives, by
+    ellipsis on its own label. `min-width: 0` on both the row and the switch is
+    what makes that possible at all — a flex item's default `min-width: auto`
+    refuses to go below its content.
+    """
+    rules = _style_rules()
+    for decl in ("#anntools", "#annbtn", "#viewbtn"):
+        assert decl in rules
+    assert "#viewbtn" in rules and "flex-shrink: 0" in rules
+    assert "text-overflow: ellipsis" in rules
+    # Still no cascade force flag anywhere (D146) — asserted whole-file in
+    # test_claude_shots.py; repeated here because this is the change that
+    # touched the button's own box.
+    assert "!important" not in rules
 
 
 def test_the_view_toggle_is_the_one_control_reachable_from_both_views():

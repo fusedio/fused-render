@@ -1036,7 +1036,11 @@ def test_the_wrapper_calls_through_so_the_apps_own_logging_still_happens(html):
 # ------------------------- one composition point, one strip (both blocks)
 
 _WIRE_FNS = ["const APP_STATE_TAG", "function appStateBlock(",
-             "function formatAnnotations(", "function composeOutgoing(",
+             # formatAnnotations' preamble names the target's KIND (a file's pane
+             # is fused-render's preview OF the file, not an app with an entry
+             # page), and this is the one writer of that noun.
+             "let targetNoun", "function formatAnnotations(",
+             "function composeOutgoing(",
              "function stripAppStateBlock(", "function stripBlocks(",
              # The pane shot is a third block on the same wire (see
              # test_claude_shots.py); these two are what stripBlocks needs to

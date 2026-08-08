@@ -1451,7 +1451,8 @@ annotations = [a];
 def test_a_thrown_capture_degrades_to_sending_the_annotations_without_shots(html):
     """The non-negotiable one: a user losing their typed message because a
     screenshot did not work is not a trade this feature makes."""
-    out = _node(_CAPTURE_FNS + ["function formatAnnotations("],
+    out = _node(_CAPTURE_FNS + ["let targetNoun",
+                                "function formatAnnotations("],
                 _CAPTURE_STUBS + """
 var console2 = console;
 console = {warn: () => {}};
@@ -1506,7 +1507,10 @@ const a = {id: "a"};
     assert "const SHOT_TIMEOUT_MS" in html, "the real cap still has to exist"
 
 
-_WIRE_ALSO = ["function formatAnnotations(", "const PANE_SHOT_TAG",
+# `targetNoun` is what formatAnnotations' preamble names the target kind
+# from — one writer for every piece of chrome that says "project"/"file"
+# (test_claude_kind.py), and the annotation block is one of them.
+_WIRE_ALSO = ["let targetNoun", "function formatAnnotations(", "const PANE_SHOT_TAG",
               "function paneShotBlock(", "function stripPaneBlock(",
               "function stripAnnBlock(", "function stripAppStateBlock(",
               "const APP_STATE_TAG", "function appStateBlock(",
@@ -1675,7 +1679,11 @@ console.log(JSON.stringify({keys: Object.keys(a).sort()}));
 
 # ----------------------------------------------------------------- the wire shape
 
-_WIRE_FNS = ["function formatAnnotations(", "function stripAnnBlock(",
+# `targetNoun` is what formatAnnotations' preamble names the target kind
+# from — one writer for every piece of chrome that says "project"/"file"
+# (test_claude_kind.py), and the annotation block is one of them.
+_WIRE_FNS = ["let targetNoun", "function formatAnnotations(",
+             "function stripAnnBlock(",
              "function stripAppStateBlock(", "function stripBlocks(",
              "const APP_STATE_TAG", "function appStateBlock(",
              "const PANE_SHOT_TAG", "function paneShotBlock(",
