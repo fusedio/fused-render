@@ -196,12 +196,16 @@ export default function ListingPreviewPane({
   }, [path, isDir, self]);
 
   // Collapse the pane. It lives HERE, not in the listing's search row, because
-  // collapsing is spatial: the control sits at the top of the thing it folds
-  // away, beside the seam it moves. (Re-opening cannot live here — a closed
-  // pane hosts nothing — so that half stayed in the search row, and stayed
-  // labelled. See Listing's toggle.) Rightmost in the strip, and deliberately
-  // a different glyph from the expand button beside it: that one opens the
-  // FILE, this one closes the PANE.
+  // collapsing is spatial — and for the same reason it is the FIRST thing in
+  // the strip: the pane's left edge is the seam between the list and the pane,
+  // the divider the user drags, and the edge this control sends the pane back
+  // to. A close affordance sits on the boundary the action happens at, not in
+  // the far corner opposite it. (Re-opening cannot live here — a closed pane
+  // hosts nothing — so that half stayed in the search row, and stayed
+  // labelled. See Listing's toggle.) The glyph still points INTO the right
+  // edge, which is where the pane goes, and stays deliberately unlike the
+  // expand button at the other end of the strip: that one opens the FILE, this
+  // one closes the PANE.
   const collapseBtn = (
     <button
       type="button"
@@ -235,16 +239,16 @@ export default function ListingPreviewPane({
   // toggle and is not now: a pane with no strip would be a pane with no way to
   // close it. It also keeps the strip's height agreeing with the search row
   // beside it in every state rather than most of them (see .pane-header).
-  // `extra` is what the settled preview adds between the name and the collapse
-  // control: the mode menu and the open-full-screen button.
+  // `extra` is what the settled preview adds after the name, at the strip's
+  // far end: the mode menu and the open-full-screen button.
   const strip = (extra?: React.ReactNode) => (
     <div className="pane-header">
+      {collapseBtn}
       {row && <span className="pane-header-icon">{iconForEntry(row.name, row.isDir)}</span>}
       <span className="pane-header-name" title={row?.name}>
         {row?.name ?? ""}
       </span>
       {extra}
-      {collapseBtn}
     </div>
   );
 
@@ -366,7 +370,8 @@ export default function ListingPreviewPane({
   const activeEntry = embeddable.find((e) => e.mode === activeMode) ?? null;
 
   // The settled header: the shared strip, with the mode control and the
-  // open-full-screen button between the name and the collapse control. Every
+  // open-full-screen button after the name, at the end opposite the collapse
+  // control. Every
   // OTHER state renders the bare strip instead — same chrome, nothing to
   // switch or expand yet. (The self target has its own, picker-less one and
   // returns above.)
