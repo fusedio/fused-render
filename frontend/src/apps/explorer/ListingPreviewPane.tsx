@@ -304,19 +304,42 @@ export default function ListingPreviewPane({
           to be four naked squares here, indistinguishable from the one-shot
           glyphs beside them. */}
       <ModeMenu entries={modes} active={activeMode ?? ""} onSelect={selectMode} />
-      {/* One label for every mode, and the row's ONE bordered primary. Self
-          target: "Open" would navigate to the folder already open, so the slot
-          goes to the folder's own primary instead — today the host's "Open as
-          app" (`selfPrimary`), which used to sit in the title bar competing
-          with the mode control and the layout zone. A folder with no single
-          app passes nothing and the slot stays empty. */}
+      {/* Open the previewed row full-screen — as a quiet icon, not the bordered
+          "Open" primary it used to be. Nothing in this strip is a primary: the
+          row's double-click and Enter already open it, so a bordered word was
+          the loudest thing in the pane's header for the one action the user
+          least needs pointed out. Two arrows to opposite corners is the
+          expand/full-screen glyph, which is also the truer description — the
+          preview is already open, this makes it the whole view.
+          Self target: "Open" would navigate to the folder already open, so the
+          slot goes to the folder's own primary instead — today the host's
+          "Open as app" (`selfPrimary`), which used to sit in the title bar
+          competing with the mode control and the layout zone. A folder with no
+          single app passes nothing and the slot stays empty. */}
       {row.self ? selfPrimary : (
         <button
           type="button"
-          className="bar-ctl bar-ctl-primary pane-header-btn"
+          className="bar-ctl pane-header-btn"
+          title="Open"
+          aria-label="Open"
           onClick={() => navigate(row.path, { isDir: row.isDir })}
         >
-          Open
+          <svg
+            viewBox="0 0 24 24"
+            width="16"
+            height="16"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth={2}
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-hidden="true"
+          >
+            <path d="M15 3h6v6" />
+            <path d="M21 3l-7 7" />
+            <path d="M9 21H3v-6" />
+            <path d="M3 21l7-7" />
+          </svg>
         </button>
       )}
     </div>

@@ -742,11 +742,14 @@
   color: var(--fg);
 }
 
-/* "Open" is the row's one bordered primary; everything else it sits beside is
-   ghost chrome, so it needs no accent to be the obvious action. Chrome comes
-   from .bar-ctl-primary — only the padding is tightened for the slim strip. */
+/* Open-full-screen: one of the strip's muted glyphs, square like
+   .bar-ctl-icon, with no border and no accent of its own — everything else in
+   this header is ghost chrome, and the row's double-click already opens it.
+   It was a bordered "Open" primary, which made a redundant action the loudest
+   thing in the pane's header. */
 .listing-pane .pane-header-btn {
-  padding: 0 12px;
+  width: 28px;
+  padding: 0;
 }
 
 /* Folder preview fallback: the folder's own entries, read-only. Narrower
