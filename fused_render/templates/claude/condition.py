@@ -1,30 +1,44 @@
-"""Gate for the `claude` template — the split view: the target's own
-preview beside a Claude chat, with the annotation / app_state machinery
-(D235).
+"""Gate for the `claude` template — the ONE chat mode, with the annotation /
+app_state machinery (D235).
 
-There is now ONE chat template for both kinds of target (D235 deleted the
-second, plain chat template this one used to sit beside), so this gate no longer
-sorts folders into "app folder → split chat" and "ordinary folder → the other
-chat". It asks a single question of both kinds:
+Deliberately not called "the split view" any more. It is a split for two of its
+three target shapes and NOT a split for the third: an ordinary folder gets a
+full-width chat with no left pane at all (D239). A gate that opens with the wrong
+layout tells the next reader that the layout is what it is gating on, and it is
+not — the layout is `paneURL`'s business, and this file's only question is
+whether the mode is offered at all.
+
+There is now ONE chat template for both kinds of target (D237 deleted the second,
+plain chat template this one used to sit beside), so this gate no longer sorts
+folders into "app folder → split chat" and "ordinary folder → the other chat". It
+asks a single question of both kinds:
 
 * **A FILE** (every key in the registry's authored-file set — source, config,
   prose, data, image assets) → allowed. This is the file-scoped chat: the left
   pane renders the file in its OWN default template and the annotation tools
-  work over that, which is the whole reason this split view replaced the plain
+  work over that, which is the whole reason this chat replaced the plain
   chat mode on file keys (D235). Nothing more is asked of a file: the
   registry already decided which extensions offer the mode, and a file needs
   neither a workspace nor a repository to be worth talking about.
 * **A DIRECTORY** (the universal "/" key) → allowed for ANY directory. The old
   rule here was `<workspace>/<tag>/<project>` or a registered linked app, on the
   reasoning that an ordinary folder's left pane "would have no app entry to
-  render" and its chat was the separate plain chat mode. Both halves of that are
-  now false: that mode is deleted, and the pane falls back to `/embed/<dir>` —
-  fused-render's own file browser for the folder — when no app entry resolves
-  (see paneURL in template.html). A folder with nothing to frame is no longer a
-  reason to hide a chat about the folder. The rejected alternative was keeping
-  the app-folder narrowing and letting ordinary folders have no chat at all,
-  which is exactly the capability the removal of the plain chat mode would have
-  taken away.
+  render" and its chat was the separate plain chat mode.
+
+  The FIRST half of that is false — the plain chat mode is deleted (D237), so
+  narrowing here would leave an ordinary folder with no chat at all, which is
+  precisely the capability the delete was meant to preserve. That is the whole
+  reason the directory branch is wide, and it is the only reason it needs.
+
+  The SECOND half is TRUE, and conceding it is what D239 did: an ordinary folder
+  really does have nothing to frame, so it gets no pane. What does not follow is
+  that the chat should be hidden. D237 briefly answered the same objection by
+  framing `/embed/<dir>` — fused-render's own file browser — and this docstring
+  used to cite that pane as the justification for widening the branch. It is
+  gone, and citing it now would rest this gate's reason on a `paneURL` branch
+  that returns `null`. A folder worth talking to an agent about does not become
+  less worth it because there is nothing to render beside the conversation; if
+  anything the reverse, since the full width goes to the transcript.
 
 WHY THIS GATE STILL EXISTS. Everything above reduces to "the path exists",
 which the shell already knows before it calls a gate — so the gate would be

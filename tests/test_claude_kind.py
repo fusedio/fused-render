@@ -97,9 +97,13 @@ def test_every_directory_is_offered_the_chat(tmp_path, workspace):
     """The directory rule is now "any directory". It used to be exactly
     <workspace>/<tag>/<project>, plus a registered linked app — a narrowing that
     existed only because an ordinary folder's chat was the separate `claude` mode,
-    whose pane had no app entry to render. `claude` is deleted and the pane falls
-    back to the folder's own /embed browser, so every one of these is a folder
-    worth talking about and none of them is a special case."""
+    whose pane had no app entry to render. `claude` is deleted, so narrowing here
+    would leave an ordinary folder with no chat at all — the capability the delete
+    was meant to preserve. D239 has since conceded the pane half of the old
+    reasoning (such a folder really does have nothing to frame, and gets no pane)
+    without conceding the gate: a folder worth talking to an agent about does not
+    become less worth it because there is nothing to render beside the
+    conversation."""
     gate = _gate()
     project = workspace / "local" / "demo"
     project.mkdir(parents=True)
@@ -1015,3 +1019,30 @@ def test_the_registry_binds_the_split_view_to_files_and_keeps_the_directory_key(
             continue
         if "claude" in names and "versions" in names:
             assert names.index("claude") + 1 == names.index("versions"), key
+
+
+def test_the_gates_docstring_does_not_justify_itself_with_the_deleted_pane():
+    """The gate's directory branch is wide for ONE reason — the plain chat mode is
+    deleted (D237), so narrowing would leave an ordinary folder with no chat at
+    all. Its docstring used to give a second reason: that the pane "falls back to
+    /embed/<dir> — fused-render's own file browser", citing `paneURL` by name.
+    D239 deleted that pane, so the stated justification rested on a branch that now
+    returns `null`.
+
+    Pinned because a gate is the first thing read when asking "why is this mode
+    offered here", and a reason that points at deleted code is worse than no
+    reason: it sends the reader to `paneURL` to find the opposite of what they were
+    told. Also pinned: the gate does not open by calling this template "the split
+    view", which is true of two of its three target shapes and is not what the
+    gate decides anyway."""
+    src = open(os.path.join("fused_render", "templates", "claude",
+                            "condition.py"), encoding="utf-8").read()
+    doc = src[:src.index('"""', 3) + 3]
+    assert "/embed" in doc, "the history is kept — it is the citation that goes"
+    assert "returns `null`" in doc or "It is gone" in doc, \
+        "the embed must be named as REMOVED, not cited as live"
+    assert "(see paneURL in template.html)" not in doc
+    assert not doc.lstrip('"').lstrip().startswith("Gate for the `claude` template"
+                                                   " — the split view")
+    # The delete, not D235, is what widened the branch.
+    assert "D237 deleted the second" in doc
