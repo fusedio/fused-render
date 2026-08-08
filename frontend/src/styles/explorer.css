@@ -42,6 +42,16 @@
     background-color var(--dur-fast) var(--ease-out);
 }
 
+/* Optical, not geometric: the star box centres on the crumb row's centre
+   line, but a five-pointed star carries its visual mass below its own box
+   centre, so it read as sitting low beside the crumb text. Half a pixel up
+   lands its perceived centre on the text's. Applies at both scales the star
+   renders at (this bar and the 24px panel pane bars). */
+.bookmark-star-btn svg {
+  position: relative;
+  top: -0.5px;
+}
+
 .bookmark-star-btn:hover {
   color: var(--fg);
   background: rgba(var(--tint), 0.08);
@@ -832,6 +842,17 @@ table.listing-table tr.skel-row:hover {
   background: var(--bg);
 }
 
+/* Optical gutter alignment for the leading Up button. The row pads 16px like
+   the listing gutter below it, but a ghost icon button is a 28px square with a
+   16px glyph centred, so its ARROW started ~6px right of the gutter while the
+   NAME header and the row icons underneath start exactly on it — the row read
+   as over-indented. Hang the button back into the padding so the glyph, not
+   the box, lines up. The 28px hit area is unchanged, and this is scoped to
+   this row: the topbar's controls sit against a right edge and are fine. */
+.listing-search > .bar-ctl-icon:first-child {
+  margin-left: -6px;
+}
+
 /* Wraps the input plus its pinned chips (count / spinner), so the preview-pane
    toggle can sit beside them without disturbing the inside-the-input pin. */
 .listing-search-box {
@@ -955,6 +976,26 @@ table.listing-table {
   width: 100%;
   table-layout: fixed;
   border-collapse: collapse;
+}
+
+/* Empty folder: no column headers over zero rows (Listing.tsx `emptyDir`). */
+table.listing-table thead.listing-head-empty {
+  display: none;
+}
+
+/* SIZE is a quantity: right-aligned so the magnitudes line up by digit, header
+   included (a column heading that doesn't sit over its own values reads as a
+   different column). MODIFIED stays left-aligned with its header — dates are
+   read left to right, not compared by magnitude. Both get tabular figures so
+   digits don't jitter between rows. */
+table.listing-table th.col-size,
+table.listing-table td.size {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+table.listing-table td.mtime {
+  font-variant-numeric: tabular-nums;
 }
 
 /* Enough for "1023.9 KB" and "12/31/25, 11:59 PM" plus the 16px cell padding

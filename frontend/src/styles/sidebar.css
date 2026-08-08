@@ -75,18 +75,15 @@ body:has(.sidebar-resize-handle.resizing) {
 }
 
 /* Collapsed sidebar = a slim full-height strip that expands it back.
-   overflow: visible (not the expanded state's auto) so the bubble can
-   protrude past the strip into the content area. */
+   The expand affordance itself is NOT here: it is the explorer topbar's
+   "Open sidebar" button (Breadcrumb.tsx). A floating bubble anchored to this
+   10px strip's right edge hung half off the viewport and sat level with the
+   topbar's bookmark star, reading as a second star. The strip stays clickable
+   as a secondary target. */
 #sidebar.sidebar-collapsed {
   flex: 0 0 10px;
   width: 10px;
-  /* Wins over the base rule's overflow-x: hidden — the expand bubble has to be
-     able to protrude past the strip. */
-  overflow: visible;
-  /* The bubble overhangs #content; lift the whole strip above it so a
-     stacking context inside #content can't paint over the bubble. */
   position: relative;
-  z-index: 10;
 }
 
 .sidebar-expand-strip {
@@ -106,47 +103,10 @@ body:has(.sidebar-resize-handle.resizing) {
   background: rgba(var(--tint), 0.06);
 }
 
-/* Circular expand bubble, half overlapping the strip's right edge (classic
-   collapsed-panel pill). Purely visual — the strip is the button; hover/focus
-   styling keys off the strip's state.
-
-   Pinned to the top bar's centre line, not the viewport's: at `top: 50%` it
-   floated in the middle of a full-height strip with nothing around it,
-   reading as unanchored. 24px is half of the 48px the sidebar header and
-   #breadcrumb both stand at, so collapsed and expanded put the control on the
-   same line — the toggle stays where the hand left it. */
-.sidebar-expand-bubble {
-  position: absolute;
-  top: 24px;
-  left: 100%;
-  transform: translate(-50%, -50%);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 32px;
-  height: 32px;
-  border-radius: 50%;
-  background: var(--bg-alt);
-  border: 1px solid var(--border);
-  box-shadow: 0 1px 4px var(--shadow-sm);
-  color: var(--fg-muted);
-  /* Protrudes over #content — stay above its content. */
-  z-index: 10;
-}
-
-.sidebar-expand-strip:hover .sidebar-expand-bubble {
-  background: rgba(var(--tint), 0.1);
-  color: var(--fg);
-}
-
+/* Focus ring on the strip itself now that there is no bubble to carry it. */
 .sidebar-expand-strip:focus-visible {
-  outline: none;
-}
-
-.sidebar-expand-strip:focus-visible .sidebar-expand-bubble {
   outline: 2px solid var(--accent);
-  outline-offset: 1px;
-  color: var(--fg);
+  outline-offset: -2px;
 }
 
 /* Phones: give the whole width to the rendered view */

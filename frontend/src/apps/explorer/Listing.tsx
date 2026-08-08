@@ -506,6 +506,11 @@ export default function Listing({
   // --- table body -----------------------------------------------------------
 
   let body: React.ReactNode;
+  // Column headers describe columns of data; over an empty folder they label
+  // nothing and just push the "Empty directory" message down (most visible in
+  // the preview pane, where NAME/SIZE/MODIFIED sat above one line of text).
+  // Set by the empty branch below, read by the <thead> render.
+  let emptyDir = false;
   if (searching) {
     if (validWalk.status === "error") {
       body = (
@@ -718,19 +723,19 @@ export default function Listing({
         </td>
       </tr>
     ) : null;
-    body =
-      rows.length || banner ? (
-        <>
-          {rows}
-          {banner}
-        </>
-      ) : (
-        <tr>
-          <td colSpan={3} className="status-message">
-            Empty directory
-          </td>
-        </tr>
-      );
+    emptyDir = !rows.length && !banner;
+    body = emptyDir ? (
+      <tr>
+        <td colSpan={3} className="status-message">
+          Empty directory
+        </td>
+      </tr>
+    ) : (
+      <>
+        {rows}
+        {banner}
+      </>
+    );
   }
 
   // --- search match count (inline in the search row) ------------------------
@@ -898,7 +903,10 @@ export default function Listing({
             onContextMenu={openBackgroundMenu}
           >
             <table className="listing-table">
-              <thead>
+              {/* Header row hidden (not unmounted — the sticky header's box is
+                  part of the table's own layout) over an empty folder: see
+                  `emptyDir`. */}
+              <thead className={emptyDir ? "listing-head-empty" : undefined}>
                 <tr>
                   {(Object.entries(SORT_KEYS) as [SortKey, string][]).map(
                     ([key, label]) =>
