@@ -340,34 +340,6 @@ function useConditions(fsPath: string, templates: TemplateEntry[]): Record<strin
 // reconciles against `share list`. A user who rebinds .html away from
 // "_render" loses the button too, consistently with losing the rendered view.
 
-// The Claude split panel's mode key. Named here because two things key off it
-// — the toggle that opens it and the dropdown filter that hides it — and they
-// must never disagree about which mode is "the Claude panel".
-const CLAUDE_SPLIT_MODE = "claude_split";
-
-// The toggle's asterisk, drawn rather than masked from the template's icon.
-// That icon is the full many-spoked mark: correct at its own scale, but at
-// 16px beside a 12px label the spokes fill in and it reads as a blob. Six
-// spokes at a hairline weight keep the mark recognisable and let the label
-// carry the meaning. (The dropdown no longer shows this mode at all, so there
-// is no second Claude glyph to disagree with.)
-const CLAUDE_ASTERISK = (
-  <svg
-    width="16"
-    height="16"
-    viewBox="0 0 24 24"
-    fill="none"
-    stroke="currentColor"
-    strokeWidth="1.7"
-    strokeLinecap="round"
-    aria-hidden="true"
-  >
-    <path d="M12 4.5v15" />
-    <path d="M5.5 8.25l13 7.5" />
-    <path d="M18.5 8.25l-13 7.5" />
-  </svg>
-);
-
 // --- Held-frame mode swap (A1) ----------------------------------------------
 // How long the incoming preview frame takes to fade in over the outgoing one.
 // Must match `--dur-med` in shell.css (the CSS owns the actual transition; this
@@ -778,45 +750,6 @@ function TemplatePreview({
   const appBtnLabel = linkStatus?.status === "unlinked" ? "Add as app" : "Open as app";
   const appBtnAction = linkStatus?.status === "unlinked" ? convertToApp : openAsApp;
 
-  // --- Claude panel toggle (APP ROUTES ONLY) ---------------------------------
-  // Promoting `claude_split` out of the dropdown is app chrome: building an app
-  // beside its preview is what that route is for. The explorer is a file
-  // browser — there `claude_split` stays an ordinary dropdown entry, reachable
-  // but not advertised, exactly as before the toggle existed. `appChrome` is
-  // the same flag that pins the app route's mode list.
-  //
-  // Visibility also rides the shared policy: a denied verdict never reaches
-  // `templates` at all, and an unresolved one is simply not offered yet — a
-  // spinner-button for a control that may never appear is worse than one that
-  // arrives a beat late.
-  const claudeEntry = appChrome
-    ? (templates.find((t) => t.mode === CLAUDE_SPLIT_MODE && !isPending(t)) ?? null)
-    : null;
-  const claudeOn = activeMode === CLAUDE_SPLIT_MODE;
-  // The dropdown loses Claude only where the toggle replaces it. `templates`
-  // (not menuEntries) stays the list every mode RESOLUTION runs against, so a
-  // URL carrying `_mode=claude_split` still lands on it in either chrome.
-  const menuEntries = claudeEntry
-    ? templates.filter((t) => t.mode !== CLAUDE_SPLIT_MODE)
-    : templates;
-  // Where turning Claude OFF goes back to: the mode the user was on when they
-  // opened it, so the toggle is genuinely reversible. Falls back to the first
-  // non-Claude entry (or the default) when there is no such history — a URL
-  // that opened straight into `_mode=claude_split` has none.
-  const beforeClaude = useRef<string | null>(null);
-  useEffect(() => {
-    if (activeMode !== CLAUDE_SPLIT_MODE) beforeClaude.current = activeMode;
-  }, [activeMode]);
-  const toggleClaude = () => {
-    if (!claudeOn) return void setMode(CLAUDE_SPLIT_MODE);
-    const previous = beforeClaude.current;
-    const back =
-      (previous && menuEntries.some((t) => t.mode === previous) && previous) ||
-      (defaultEntry.mode !== CLAUDE_SPLIT_MODE && defaultEntry.mode) ||
-      menuEntries[0]?.mode;
-    if (back) void setMode(back);
-  };
-
   // The folder's primary action, built once and rendered in exactly one place.
   // With the listing's preview pane OPEN it goes down into that pane's header,
   // whose primary slot is otherwise empty for the folder's own row — the title
@@ -845,25 +778,8 @@ function TemplatePreview({
         deployEnabled &&
         templates.some((t) => t.mode === "_render") &&
         /\.html?$/i.test(fsPath) && <DeployButton fsPath={fsPath} />}
-      {/* Claude is a PANEL you open beside the view, not a view mode you
-          switch into — burying it in the mode dropdown made a headline
-          feature a two-click discovery problem. It gets the labelled toggle
-          (same recipe as the listing's Preview toggle) and comes OUT of the
-          dropdown below, which is left describing real view modes. */}
-      {claudeEntry && (
-        <button
-          type="button"
-          className={"bar-ctl claude-toggle" + (claudeOn ? " pressed" : "")}
-          aria-pressed={claudeOn}
-          title={claudeOn ? "Close the Claude panel" : "Open this in Claude"}
-          onClick={toggleClaude}
-        >
-          {CLAUDE_ASTERISK}
-          <span>Claude</span>
-        </button>
-      )}
       <ModeMenu
-        entries={menuEntries.map((t) => ({
+        entries={templates.map((t) => ({
           mode: t.mode,
           icon: templateModeIcon(t),
           pending: isPending(t),
