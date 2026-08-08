@@ -410,7 +410,14 @@ export default function Listing({
   //     exactly that);
   //   • search mode — the rendered rows are a query's answer, not the folder's,
   //     so clearing the query still lands on the folder's first file;
-  //   • the listing has not settled — there is nothing to choose from.
+  //   • the listing is not OK — `status !== "ok"` and not merely "still
+  //     loading". A failed first fetch settles with zero rows, and the
+  //     dir-watch refetch that succeeds afterwards does NOT pass back through
+  //     "loading" — so spending the shot on the error state meant a folder
+  //     whose first request blipped never auto-selected at all, for the whole
+  //     mount. `listingLoaded` (which is true for a terminal error, by design —
+  //     the selection reconcile WANTS to clear a stale selection there) is the
+  //     wrong question for this effect.
   // TWO Listings never fire at all:
   //   • an EMBEDDED one (the pane's own `_listing` mode) — it has no pane of
   //     its own to fill;
@@ -427,7 +434,7 @@ export default function Listing({
   const autoSelectedRef = useRef(false);
   useEffect(() => {
     if (embedded || provisional || autoSelectedRef.current) return;
-    if (searching || !listingLoaded || !pane.on) return;
+    if (searching || state.status !== "ok" || !pane.on) return;
     autoSelectedRef.current = true;
     const first = autoSelectPath(
       new URLSearchParams(location.search).get("sel"),
@@ -438,7 +445,7 @@ export default function Listing({
     // Fires on the commit that first satisfies the guards above; the rows it
     // reads are current as of that commit.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [embedded, provisional, searching, listingLoaded, pane.on]);
+  }, [embedded, provisional, searching, state.status, pane.on]);
 
   // The selection as full rows, in rendered order (so a batch op processes rows
   // top-to-bottom regardless of the order they were clicked). Paths without a
