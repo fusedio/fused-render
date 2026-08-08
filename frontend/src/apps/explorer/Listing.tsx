@@ -411,11 +411,22 @@ export default function Listing({
   //   • search mode — the rendered rows are a query's answer, not the folder's,
   //     so clearing the query still lands on the folder's first file;
   //   • the listing has not settled — there is nothing to choose from.
-  // An embedded Listing (the pane's own `_listing` mode) is the one case that
-  // never fires at all: it has no pane of its own to fill.
+  // TWO Listings never fire at all:
+  //   • an EMBEDDED one (the pane's own `_listing` mode) — it has no pane of
+  //     its own to fill;
+  //   • a PROVISIONAL one (App's pre-stat loading scaffold, mounted off a nav
+  //     hint). Auto-selecting there mounts a real /render iframe that the swap
+  //     to the resolved Listing tears down and re-issues a beat later — a
+  //     doubled stat and a doubled frame load on every folder navigation, for a
+  //     preview nobody saw. The scaffold's job is to hold the SHAPE (the split,
+  //     the divider, the pane's chrome) so nothing jumps when the real listing
+  //     lands; it is not the place to start work that is about to be thrown
+  //     away. The pane itself stays — only the automatic selection waits. A
+  //     user's own click in the scaffold still previews, and still carries
+  //     across the swap (recallSelection), because that one was asked for.
   const autoSelectedRef = useRef(false);
   useEffect(() => {
-    if (embedded || autoSelectedRef.current) return;
+    if (embedded || provisional || autoSelectedRef.current) return;
     if (searching || !listingLoaded || !pane.on) return;
     autoSelectedRef.current = true;
     const first = autoSelectPath(
@@ -427,7 +438,7 @@ export default function Listing({
     // Fires on the commit that first satisfies the guards above; the rows it
     // reads are current as of that commit.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [embedded, searching, listingLoaded, pane.on]);
+  }, [embedded, provisional, searching, listingLoaded, pane.on]);
 
   // The selection as full rows, in rendered order (so a batch op processes rows
   // top-to-bottom regardless of the order they were clicked). Paths without a
