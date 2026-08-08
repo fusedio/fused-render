@@ -2,7 +2,7 @@
 <html data-fused-theme="shell">
 <head>
 <meta charset="utf-8">
-<title>Claude split</title>
+<title>Claude</title>
 <style>
   /* Chat pane styled like a modern assistant app (claude.ai / v0 / ChatGPT):
      sans-serif UI, a centered message column, right-aligned user bubbles,
@@ -1112,9 +1112,14 @@
   </div>
 
 <script>
-// THE chat, as the right pane of a split view: ./agent.py behind it
+// THE chat: ./agent.py behind it
 // (start/poll/decide/history/sessions), permission cards, run/session params,
-// resume semantics. It began as a 1:1 fork of the `claude` template's chat and
+// resume semantics. It is the RIGHT pane of a split for a file and for an app
+// folder, and the WHOLE window for an ordinary folder, which has no pane at all
+// (D239) — so "the right pane of a split view", which this comment used to say,
+// is true of two of its three shapes and the layout is paneURL's business, not
+// this description's.
+// It began as a 1:1 fork of the `claude` template's chat and
 // is now the only one — `claude` is deleted, this mode is offered on files and
 // on every directory, and the one feature that never came across is the annotate
 // comment handoff (claudeComments/claudeReturn): annotate hands off to
@@ -1150,7 +1155,7 @@ if (!FILE) {
 document.getElementById("banner-sub").textContent = BASENAME;
 document.getElementById("home-file").textContent = BASENAME;
 document.getElementById("home-path").textContent = FILE;
-document.title = "Claude split — " + BASENAME;
+document.title = "Claude — " + BASENAME;
 
 // ── live app state: what the agent can SEE of the running app ──
 // Without this the agent is editing a page it cannot look at: it has no way to
@@ -3446,12 +3451,17 @@ function isMarkerOnly(text) {
 // name what went out rather than render empty.
 function stripBlocks(text) {
   const noState = stripAppStateBlock(text);
-  const noPane = stripPaneBlock(noState);
-  const bare = stripAnnBlock(noPane);
+  // `noPaneShot`, not `noPane`: the module-level `noPane` is the LAYOUT flag
+  // (there is no left pane at all), declared ~1700 lines up and guarding four
+  // functions with `if (noPane) return`. A local of the same name made that guard
+  // form read as true in here for an unrelated reason. Correct either way — which
+  // is exactly why it was worth renaming rather than leaving as a trap.
+  const noPaneShot = stripPaneBlock(noState);
+  const bare = stripAnnBlock(noPaneShot);
   if (bare) return bare;
   const carried = [];
-  if (bare !== noPane) carried.push(MARKER_ANN);
-  if (noPane !== noState) carried.push(MARKER_VIEW);
+  if (bare !== noPaneShot) carried.push(MARKER_ANN);
+  if (noPaneShot !== noState) carried.push(MARKER_VIEW);
   return carried.join(MARKER_JOIN);
 }
 

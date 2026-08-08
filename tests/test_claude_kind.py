@@ -1046,3 +1046,43 @@ def test_the_gates_docstring_does_not_justify_itself_with_the_deleted_pane():
                                                    " — the split view")
     # The delete, not D235, is what widened the branch.
     assert "D237 deleted the second" in doc
+
+
+def test_nothing_still_calls_this_template_the_split_view():
+    """`claude_split` was renamed to `claude` when it became the only chat (D237),
+    and two user-visible survivors of that rename were still calling it "Claude
+    split": the document `<title>` and the tab title `document.title` writes per
+    target.
+
+    Doubly wrong since D239: for an ordinary folder there IS no split, so a user
+    opening `~/Downloads` in this mode got a tab reading "Claude split —
+    Downloads" over a single-column chat. The tab is the one label a user sees
+    without looking at the page, and it named a layout the page does not have.
+
+    Pinned over the whole file rather than the two sites, because the name is the
+    kind of thing that gets copied into a third place."""
+    page = _pane_source()
+    assert "Claude split" not in page
+    assert "<title>Claude</title>" in page
+    assert 'document.title = "Claude — " + BASENAME;' in page
+    # The FOLDER name is the honest subject either way, so the tab keeps it.
+    assert "claude_split" not in page, "the old template name is gone too"
+
+
+def test_the_no_pane_flag_is_not_shadowed_by_a_local():
+    """`stripBlocks` used to declare `const noPane = stripPaneBlock(noState)` —
+    the pane-SHOT strip's intermediate value, named identically to the
+    module-level `noPane` layout flag declared 1,700 lines earlier.
+
+    Correct as written, and that is the problem: `if (noPane)` meant two unrelated
+    things in one file, and the guard form the layout flag uses everywhere reads
+    as true inside that function for a completely different reason. In a 4,600-line
+    template that is a trap set for the next reader, not a bug report."""
+    code = _pane_code()
+    assert "let noPane = false;" in code            # the layout flag, module scope
+    body = code[code.index("function stripBlocks(text) {"):]
+    body = body[:body.index("\n}")]
+    assert not re.search(r"\bnoPane\b", body), body
+    # The intermediate keeps a name that says what it IS: text with the pane-shot
+    # block taken out.
+    assert "const noPaneShot = stripPaneBlock(noState);" in body
