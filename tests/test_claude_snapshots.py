@@ -308,18 +308,54 @@ def test_the_page_asks_for_snapshots_and_renders_them(source):
     assert 'id="snaps"' in source
 
 
-def test_the_panel_is_only_built_for_a_file_target(source):
+def test_the_panel_is_only_offered_for_a_file_target(source):
     # `targetNoun` is the template's own file/folder/project answer (set by
     # paneURL from the stat), so the panel hangs off that rather than a second
     # kind probe that could disagree with it. NOT `paneNoun`, which names the
     # left pane's document ("preview"/"app") and is never "file".
-    body = source[source.index("async function loadSnapshots"):]
+    body = source[source.index("async function mountSnapshots"):]
     body = body[: body.index("\n}")]
     assert 'targetNoun !== "file"' in body
     assert 'paneNoun !==' not in body
     # And it must WAIT for that answer: both boot IIFEs start together, so an
     # unordered read gets "" and the panel never shows.
     assert "await paneReady" in body
+
+
+def test_the_panel_is_collapsed_and_reads_nothing_until_opened(source):
+    # The heading is a control, and the timeline behind it is a round trip
+    # through the worker that most file opens never want.
+    assert 'id="snapstoggle"' in source
+    assert 'aria-expanded="false"' in source
+    assert 'id="snapsbody"' in source
+    # Mounting the section reveals it and asks the backend for nothing.
+    mount = source[source.index("async function mountSnapshots"):]
+    mount = mount[: mount.index("\n}")]
+    assert "runPython" not in mount
+    assert "loadSnapshots" not in mount
+    # The read hangs off the toggle, and only the FIRST time.
+    toggle = source[source.index('document.getElementById("snapstoggle").onclick'):]
+    toggle = toggle[: toggle.index("\n};")]
+    assert "snapLoaded" in toggle
+    assert "loadSnapshots()" in toggle
+
+
+def test_a_loaded_timeline_is_cached_for_the_page(source):
+    # Re-opening the section must not re-ask: the target file cannot change
+    # under the page. Only a successful read arms the cache — a failure has to
+    # be retryable on the next expand.
+    body = source[source.index("async function loadSnapshots"):]
+    body = body[: body.index("\n}")]
+    assert "snapLoaded = true;" in body
+    ok, err = body.split("} catch", 1)
+    assert "snapLoaded = true;" in ok
+    assert "snapLoaded =" not in err
+    # And a revert, which appends to the chain, repaints from the timeline the
+    # write returned rather than trusting the cached one.
+    revert = source[source.index("async function snapGoBack"):]
+    revert = revert[: revert.index("\n}\n")]
+    assert "renderSnapshots(out.timeline)" in revert
+    assert "loadSnapshots()" in revert
 
 
 def test_a_row_can_be_opened_and_gone_back_to(source):
@@ -347,12 +383,14 @@ def test_a_refusal_is_shown_in_the_row_rather_than_hiding_it(source):
     assert "plan.error" in body
 
 
-def test_the_landing_page_always_loads_the_snapshots_panel(source):
+def test_the_landing_page_always_offers_the_snapshots_panel(source):
     # Both paths onto the landing page — boot with no session, and "Back to
-    # chats" — must build it, or a resumed chat can never see the panel.
+    # chats" — must offer it, or a resumed chat can never see the panel.
     back = source[source.index('document.getElementById("back").onclick'):]
     back = back[: back.index("\n};")]
-    assert "loadSnapshots()" in back
+    assert "mountSnapshots()" in back
+    boot = source[source.index("// ── boot: resume from URL"):]
+    assert "mountSnapshots()" in boot
 
 
 def test_the_boot_call_does_not_enrich(source):

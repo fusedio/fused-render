@@ -846,7 +846,9 @@
   /* Claude snapshots (SPEC §34). Same visual family as .chat-row — this is
      another "list of past things about this target" on the same landing page —
      and like those rows it is pressable: a row expands to its diff and the one
-     action that goes back to it. */
+     action that goes back to it. The SECTION itself is pressable too: it is a
+     collapsed heading until asked for, so the landing page costs no round trip
+     for a history most opens never look at. */
   #snaps { margin-top: 28px; padding-bottom: 32px; }
   #snaps .head {
     color: var(--faint);
@@ -857,6 +859,25 @@
     margin-bottom: 8px;
     padding: 0 4px;
   }
+  /* The heading IS the control, so it keeps the heading's own type and simply
+     stops looking like a button — the affordance is the caret and the hover,
+     the same grammar the rows below it use. */
+  button#snapstoggle {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    width: 100%;
+    font: inherit;
+    background: none;
+    border: none;
+    border-radius: 8px;
+    padding: 4px;
+    cursor: pointer;
+    text-align: left;
+  }
+  button#snapstoggle:hover { color: var(--fg); }
+  button#snapstoggle:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+  #snapstoggle .snap-head-caret { font-size: 9px; }
   .snap-row {
     display: flex;
     align-items: center;
@@ -1300,12 +1321,18 @@
              §34). Ported from the superseded `annotate` template, whose reader
              (shared/file_history.py) was written annotate-agnostic for exactly
              this adoption. FILE targets only — the store keys on one absolute
-             file path, so a folder has no chain — and hidden until the reader
-             says there is a store worth showing. -->
+             file path, so a folder has no chain. COLLAPSED by default: the
+             heading is offered as soon as the target is known to be a file, and
+             the timeline behind it is only read when the user opens it. -->
         <div id="snaps" hidden>
-          <div class="head">Claude snapshots</div>
-          <div id="snapslist"></div>
-          <div id="snapsnote"></div>
+          <button id="snapstoggle" type="button" class="head"
+                  aria-expanded="false" aria-controls="snapsbody">
+            <span class="snap-head-caret">▸</span><span>Claude snapshots</span>
+          </button>
+          <div id="snapsbody" hidden>
+            <div id="snapslist"></div>
+            <div id="snapsnote"></div>
+          </div>
         </div>
       </div>
     </div>
@@ -3947,11 +3974,12 @@ document.getElementById("back").onclick = () => {
   document.getElementById("recentlist").innerHTML = "";
   document.getElementById("recent").style.display = "";
   loadRecent();
-  // The snapshots panel belongs to the LANDING page, so it is rebuilt on every
+  // The snapshots panel belongs to the LANDING page, so it is offered on every
   // path onto it — not just the boot with no session. A page opened straight
   // into a resumed chat (`?session_id=`) never ran the boot's landing branch, so
   // without this the panel could never appear for the rest of that page's life.
-  loadSnapshots();
+  // This only reveals the collapsed heading; nothing is read until it is opened.
+  mountSnapshots();
   homebox.focus();
 };
 
@@ -5192,6 +5220,11 @@ async function loadRecent() {
 // between it and the file as it is now, and carries the one action that makes
 // the list mean anything — going back to it.
 //
+// It is also COLLAPSED until asked for. The question it answers is one a user
+// arrives at deliberately, so the landing page shows a heading and reads the
+// timeline on the first expand rather than paying a worker round trip on every
+// file open. See `mountSnapshots` / `loadSnapshots` below for the caching rule.
+//
 // The two-call contract is annotate's, unchanged, because it is the reason the
 // write is safe: `snapshot_plan` describes (diff, counts, whether a copy of the
 // current bytes will be kept), `snapshot_revert` only ever applies the id the
@@ -5238,19 +5271,20 @@ let snapTimeline = null;
 let snapOpenId = null;
 
 function renderSnapshots(timeline) {
-  const box = document.getElementById("snaps");
   const list = document.getElementById("snapslist");
   const note = document.getElementById("snapsnote");
-  if (!box) return;
+  if (!list) return;
   snapTimeline = timeline;
-  // No store at all means Claude Code has never run on this machine — that is
-  // not an empty state worth a panel, it is "this feature does not apply", so
-  // the block stays off the page entirely. A store that exists but holds
-  // nothing for THIS file DOES get a line, because there the absence is a fact
-  // about the file and worth saying. (Annotate drew the same distinction.)
-  box.hidden = !timeline.available;
-  if (box.hidden) return;
   list.textContent = "";
+  // Every absence is answered with the reader's own sentence rather than by
+  // taking the section away. The panel is now something the user OPENED, and a
+  // heading that vanishes under the click that opened it reads as a bug; the
+  // reader already distinguishes "no store on this machine" from "a store with
+  // nothing for this file" in `note`, so the honest thing is to say which.
+  if (!timeline.available) {
+    note.textContent = timeline.note || "No Claude Code file history on this machine.";
+    return;
+  }
   for (const v of timeline.versions) {
     // The row and its expansion share one box, so the open body is visibly part
     // of the row it belongs to rather than a panel floating under the list.
@@ -5454,7 +5488,27 @@ async function snapGoBack(plan, bar) {
   }
 }
 
-async function loadSnapshots() {
+// ── the section itself: collapsed, and read only when opened ──
+//
+// The timeline was fetched on every landing-page build, which is a round trip
+// through the worker on every file open for a history most opens never look at.
+// So the heading is offered as soon as the target is known to be a file and the
+// read is deferred to the first expand.
+//
+// The list is cached for the life of the page — the target file never changes
+// under it — so re-opening is instant and costs nothing. What invalidates that
+// cache is a WRITE: `snapGoBack` repaints from the post-revert timeline the
+// write itself returned (and falls back to a refetch), which is the only event
+// that appends to the chain from here. A failed read caches nothing, so the
+// next expand retries rather than leaving the section permanently empty.
+let snapLoaded = false;
+let snapExpanded = false;
+
+// Reveal the collapsed heading. Called on every path onto the landing page; it
+// fetches nothing, and it deliberately does NOT reset `snapExpanded` — a user
+// who opened the panel, entered a chat and came back is still looking at the
+// same file's history.
+async function mountSnapshots() {
   // FILES only, and `targetNoun` is the page's ONE answer to what the target is
   // (set by paneURL from the stat). Reusing it rather than re-probing is what
   // keeps this panel from ever disagreeing with the rest of the page — and
@@ -5468,17 +5522,43 @@ async function loadSnapshots() {
   // UX, the module is the guarantee (MD-11).
   await paneReady;
   if (targetNoun !== "file") return;
+  document.getElementById("snaps").hidden = false;
+}
+
+function snapSetExpanded(open) {
+  snapExpanded = open;
+  const btn = document.getElementById("snapstoggle");
+  btn.setAttribute("aria-expanded", open ? "true" : "false");
+  btn.querySelector(".snap-head-caret").textContent = open ? "▾" : "▸";
+  document.getElementById("snapsbody").hidden = !open;
+}
+
+document.getElementById("snapstoggle").onclick = () => {
+  snapSetExpanded(!snapExpanded);
+  if (snapExpanded && !snapLoaded) loadSnapshots();
+};
+
+// The read. Only ever reached from an expand (or from a revert whose write did
+// not hand back a timeline), so the gate is `mountSnapshots`' and this call is
+// free to assume the target is a file.
+async function loadSnapshots() {
+  const note = document.getElementById("snapsnote");
+  note.textContent = "reading the snapshots…";
   try {
-    // No `enrich`: enrichment reads session transcripts (5 MB+), and this runs
-    // on every file open. The unenriched timeline cannot see the creation
-    // boundary, which is why this panel never claims a chain is complete.
+    // No `enrich`: enrichment reads session transcripts (5 MB+). The unenriched
+    // timeline cannot see the creation boundary, which is why this panel never
+    // claims a chain is complete.
     const timeline = await fused.runPython(AGENT, { action: "snapshots", file: FILE }, { key: null });
     if (timeline.error) throw new Error(timeline.error);
+    snapLoaded = true;
     renderSnapshots(timeline);
   } catch (err) {
     // An ordinary absence, never the red overlay: a file Claude has never
-    // touched is the common case, not a bug in this view.
+    // touched is the common case, not a bug in this view. `snapLoaded` stays
+    // false so the next expand asks again instead of leaving the section stuck
+    // on the failure for the life of the page.
     console.warn("snapshots failed:", err.message);
+    note.textContent = "The snapshots could not be read (" + err.message + ").";
   }
 }
 
@@ -5495,7 +5575,7 @@ async function loadSnapshots() {
   } else {
     homebox.focus();
     await loadRecent();
-    await loadSnapshots();
+    await mountSnapshots();
   }
 })();
 </script>

@@ -4986,9 +4986,10 @@ wanting "what has this file been through" wants §33.
   user the panel on screen is stale.
 
 - **FH-18** **`claude` shows the snapshots AND goes back to them.** The
-  panel is a section of the chat template's LANDING page (`#snaps`, beside
-  "Recent chats"), fed by `agent.py`'s `action="snapshots"` — a pass-through to
-  `file_history.timeline`, adding nothing but the offer. The store stays
+  panel is a COLLAPSED section of the chat template's LANDING page (`#snaps`,
+  beside "Recent chats"), fed by `agent.py`'s `action="snapshots"` — a
+  pass-through to `file_history.timeline`, adding nothing but the offer. The
+  store stays
   strictly read-only; what a restore writes is the TARGET FILE and the sidecar.
   - **The action is not called `history`.** That name is already taken on this
     module by the chat SESSION TRANSCRIPT replay. Two meanings on one action
@@ -5002,21 +5003,40 @@ wanting "what has this file been through" wants §33.
     never `"file"`.) `_snapshots` refuses a directory independently, so a
     hand-written call cannot reach a state the panel does not offer: the gate is
     the UX, the module is the guarantee (MD-11).
-  - **The boot call does not enrich.** Enrichment reads session transcripts
-    (5 MB+) and this runs on every file open, so the panel takes the unenriched
-    timeline — which is why it never claims a chain is complete (FH-3). (A
-    `snapshot_plan`/`snapshot_revert` always enriches: it is paid once, on an
-    explicit click, and an unenriched plan cannot see the did-not-exist
-    boundary.)
-  - **The panel is built on EVERY path onto the landing page**, the boot with no
-    session and "Back to chats" alike. A page opened straight into a resumed
-    chat (`?session_id=`) never runs the boot's landing branch, so a panel built
-    only there could never appear for the rest of that page's life.
-  - **No store at all → no panel** (Claude Code has never run here: not an empty
-    state, a feature that does not apply). **A store with nothing for this
-    file → a line of text**, because there the absence is a fact about the file.
-    Same distinction `annotate` drew, and the reason the reader returns its own
-    empty states as data rather than raising.
+  - **COLLAPSED by default, and read only when OPENED.** The heading
+    ("Claude snapshots", a `button` carrying `aria-expanded`, caret ▸/▾) is the
+    control; the list and its note live in `#snapsbody`. "Can I get that back?"
+    is a question a user arrives at deliberately, and the timeline was being
+    fetched — a worker round trip — on every single file open for a history most
+    opens never look at. So `mountSnapshots()` only REVEALS the heading and asks
+    the backend nothing; `loadSnapshots()` runs on the FIRST expand.
+    A loaded timeline is then **cached for the life of the page** (the target
+    file cannot change under it), so re-opening costs nothing; a FAILED read
+    caches nothing, so the next expand retries rather than leaving the section
+    stuck on the failure. The one event that appends to the chain from here is a
+    **revert**, and that already repaints from the post-revert timeline the write
+    returned (falling back to a refetch) — so the cache is never the stale copy.
+  - **The read does not enrich.** Enrichment reads session transcripts (5 MB+),
+    so the panel takes the unenriched timeline — which is why it never claims a
+    chain is complete (FH-3). (A `snapshot_plan`/`snapshot_revert` always
+    enriches: it is paid once, on an explicit click, and an unenriched plan
+    cannot see the did-not-exist boundary.)
+  - **The panel is offered on EVERY path onto the landing page**, the boot with
+    no session and "Back to chats" alike. A page opened straight into a resumed
+    chat (`?session_id=`) never runs the boot's landing branch, so a panel
+    mounted only there could never appear for the rest of that page's life.
+    Returning to the landing page does **not** re-collapse an opened section or
+    drop its cache: it is the same file's history either way.
+  - **Every absence is a LINE OF TEXT inside the opened section**, the reader's
+    own `note`: "no store on this machine" (Claude Code has never run here) and
+    "a store with nothing for this file" are distinguished by that sentence
+    rather than by whether a panel exists. *This overturns the earlier "no store
+    at all → no panel" rule, which `annotate` also drew:* it was affordable when
+    the timeline was fetched before the section was drawn, and it is not once the
+    section is something the user OPENED — a heading that vanishes under the
+    click that opened it reads as a bug, not as "this feature does not apply".
+    The reader still returns its empty states as data rather than raising, which
+    is what makes a sentence available to print.
   - **A row expands to its diff and carries one action: "Go back to this
     snapshot".** A list that can only be looked at answers no question the user
     actually has. Clicking a row fetches `action="snapshot_plan"` (never cached
