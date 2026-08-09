@@ -312,6 +312,135 @@ def test_log_for_a_plain_directory_is_scoped_to_its_subtree(workspace, tmp_path)
         ["Add docs/c", "Add src/b", "Add docs/a"]
 
 
+# --------------------------------------------------------------- log paging
+
+def _many(repo, n, rel="notes.md"):
+    """`n` commits touching one file, oldest first. Returns their shas in the
+    order `git log` reports them — NEWEST first — so a slice of this list is
+    exactly what a page of the log must be."""
+    for i in range(n):
+        _commit(repo, rel, "v%d\n" % i, "Edit %d" % i)
+    return _shas(repo)
+
+
+def test_log_returns_one_page_and_says_history_continues(workspace, tmp_path):
+    # The reason this exists at all: `_log` had no --max-count, so a directory
+    # target in the user's own long-lived repository formatted and shipped every
+    # commit that ever touched the subtree — for a spine whose first screen is
+    # twenty rows.
+    v = _load("versions")
+    repo = _plain_repo(workspace, tmp_path)
+    shas = _many(repo, 25)
+
+    res = v.main(action="log", file=str(repo))
+    assert v.PAGE_SIZE == 20
+    assert [c["sha"] for c in res["commits"]] == shas[:20]
+    assert res["more"] is True
+    assert res["skip"] == 0
+
+
+def test_the_next_page_continues_with_no_overlap_and_no_gap(workspace, tmp_path):
+    # `skip` is the cursor and `commits.length` is what the view passes for it,
+    # so page 2 must begin exactly where page 1 stopped: an off-by-one either
+    # way is a repeated row or a commit nobody can ever reach.
+    v = _load("versions")
+    repo = _plain_repo(workspace, tmp_path)
+    shas = _many(repo, 25)
+
+    first = v.main(action="log", file=str(repo))
+    second = v.main(action="log", file=str(repo), skip=len(first["commits"]))
+    assert [c["sha"] for c in second["commits"]] == shas[20:]
+    assert second["skip"] == 20
+    assert second["more"] is False
+    got = [c["sha"] for c in first["commits"]] + [c["sha"] for c in second["commits"]]
+    assert got == shas
+    assert len(set(got)) == len(shas)
+
+
+def test_a_short_history_is_one_page_with_no_more(workspace, tmp_path):
+    v = _load("versions")
+    repo = _plain_repo(workspace, tmp_path)
+    shas = _many(repo, 3)
+
+    res = v.main(action="log", file=str(repo))
+    assert [c["sha"] for c in res["commits"]] == shas
+    assert res["more"] is False
+
+
+def test_exactly_one_page_of_history_does_not_claim_more(workspace, tmp_path):
+    # The +1 probe is the whole mechanism: fetch PAGE_SIZE + 1 and let the
+    # overflow row (never shipped) answer `more`. At exactly PAGE_SIZE there is
+    # no overflow row, so a `>=` here would offer a "show older" that pages to
+    # nothing.
+    v = _load("versions")
+    repo = _plain_repo(workspace, tmp_path)
+    shas = _many(repo, 20)
+
+    res = v.main(action="log", file=str(repo))
+    assert [c["sha"] for c in res["commits"]] == shas
+    assert len(res["commits"]) == 20
+    assert res["more"] is False
+    # And the page past the end is empty rather than an error.
+    tail = v.main(action="log", file=str(repo), skip=20)
+    assert tail["commits"] == [] and tail["more"] is False
+
+
+def test_paging_is_scoped_by_the_pathspec_like_the_first_page(workspace, tmp_path):
+    # A page is a slice of the TARGET'S log, not of the repository's: the
+    # pathspec has to survive onto the --skip call or page 2 starts listing a
+    # sibling's commits.
+    v = _load("versions")
+    repo = _plain_repo(workspace, tmp_path)
+    _many(repo, 22, rel="a.md")
+    for i in range(5):
+        _commit(repo, "b.md", "b%d\n" % i, "B %d" % i)
+
+    first = v.main(action="log", file=str(repo / "a.md"))
+    second = v.main(action="log", file=str(repo / "a.md"), skip=20)
+    subjects = [c["subject"] for c in first["commits"] + second["commits"]]
+    assert len(subjects) == 22
+    assert all(s.startswith("Edit ") for s in subjects)
+    assert second["more"] is False
+
+
+def test_a_junk_skip_is_the_first_page_not_an_error(workspace, tmp_path):
+    # `skip` arrives from a URL-driven client, so it is coerced rather than
+    # trusted: a negative or unparseable value must not reach git as an option.
+    v = _load("versions")
+    repo = _plain_repo(workspace, tmp_path)
+    shas = _many(repo, 3)
+    for bad in (-5, "", "abc", None):
+        res = v.main(action="log", file=str(repo), skip=bad)
+        assert [c["sha"] for c in res["commits"]] == shas
+        assert res["skip"] == 0
+
+
+def test_the_view_pages_by_skip_and_trusts_the_more_flag():
+    # The page size is defined ONCE, in versions.py. The template asks for the
+    # next page by `skip` alone and reads `more` off the payload, so a change to
+    # PAGE_SIZE cannot leave the two halves disagreeing about where a page ends.
+    html = _html()
+    assert "skip: commits.length" in html
+    assert "more = !!res.more" in html
+    # No second copy of the page size on this side (the name may appear in a
+    # comment pointing AT the backend; a `--max-count` here would be a fork).
+    assert "max-count" not in html
+
+
+def test_the_pager_row_is_not_a_commit_row():
+    # The "show older" row is a sibling of the rows inside #commits, so the
+    # delegated click handler has to answer it FIRST — landing in the `.commit`
+    # branch would select nothing and, below the breakpoint, would flip the
+    # layout to the preview while the user was reading the list.
+    html = _html()
+    handler = html.split('commitsEl.addEventListener("click"')[1]
+    older = handler.index('closest(".older")')
+    row = handler.index('closest(".commit")')
+    assert older < row
+    # And the loading state lives on that row, not in the snapshot notice.
+    assert 'loadingMore ? " loading" : ""' in html
+
+
 def test_a_plain_directory_is_read_only_but_still_previews(workspace, tmp_path):
     # Read-only is about the WRITE (the repository is the user's own, so a
     # revert commit carrying the Fused identity is refused). It says nothing

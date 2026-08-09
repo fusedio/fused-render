@@ -26,7 +26,12 @@ nested repos, worktrees and submodules.
 
 Three actions:
 
-* `log`      — the commit list, newest first, scoped to the target.
+* `log`      — one PAGE of the commit list, newest first, scoped to the target:
+               `skip` rows in, `PAGE_SIZE` (20) rows long, with `more` saying
+               whether history continues past it. Never unbounded — outside a
+               fused app the repository is the user's own and its subtree may
+               carry decades of commits, all of which used to be formatted and
+               shipped for a spine whose first screen is twenty rows.
 * `snapshot` — materialise one commit as a plain folder so the explorer can
                render the app, the file, or the folder *as it was*. `git archive <sha>` is
                extracted into a per-target, per-commit dir under the shell home
@@ -93,6 +98,11 @@ _SHA_RE = re.compile(r"^[0-9a-f]{7,40}$")
 
 # Unit separator: cannot appear in a commit subject, so a plain split is safe.
 _US = "\x1f"
+
+# One page of history. Defined once and read by nothing else: the view asks for
+# a page by `skip` alone and lets the payload's own `more` flag decide whether
+# there is another, so the page size is never duplicated in the template.
+PAGE_SIZE = 20
 
 
 def _app_dir_for(path: str) -> str:
@@ -262,7 +272,7 @@ def _resolve_sha(app: str, sha: str):
     return out if r.returncode == 0 and _SHA_RE.match(out) else None
 
 
-def _log(target):
+def _log(target, skip: int = 0):
     kind, app, pathspec, _name = target
     # The pathspec is what scopes the log (pathspecs are relative to `-C app`):
     # `.` is the app's own subtree — for a workspace app the repo root IS the app
@@ -270,7 +280,25 @@ def _log(target):
     # is what makes the list "this app's history" rather than the whole repo's —
     # and for a file target it is that one file, so the list is that file's
     # commits and nothing else (D235).
-    r = _git(app, "log", f"--format=%H{_US}%ct{_US}%s", "--", pathspec)
+    #
+    # PAGED, and unconditionally so: this used to be an unbounded `git log`, and
+    # outside a fused app the repository is the user's own — a directory target
+    # in a long-lived repo formats and ships every commit that ever touched the
+    # subtree, for a spine the user reads the top twenty rows of. The page is
+    # `--skip=N --max-count=PAGE+1`: the +1 is the PROBE, one process instead of
+    # a second `rev-list --count`, and it is dropped before the payload is built
+    # so `more` is the only thing it is ever visible as. Newest-first is git's
+    # own default order, which is what makes skip/limit a stable cursor here:
+    # pages are only ever appended below what is already drawn, and any commit
+    # landing on top while the user pages would shift the window by one — an
+    # accepted duplicate row, not a torn timeline, and the view reloads from the
+    # first page after the one action (revert) that can add one.
+    try:
+        skip = max(0, int(skip))
+    except (TypeError, ValueError):
+        skip = 0
+    r = _git(app, "log", f"--format=%H{_US}%ct{_US}%s",
+             f"--skip={skip}", f"--max-count={PAGE_SIZE + 1}", "--", pathspec)
     if r.returncode != 0:
         return {"error": "git log failed: " + (r.stderr or "").strip()[:200]}
     commits = []
@@ -284,6 +312,8 @@ def _log(target):
         except ValueError:
             ts = 0
         commits.append({"sha": sha, "ts": ts, "subject": subject})
+    more = len(commits) > PAGE_SIZE
+    del commits[PAGE_SIZE:]
     # `can_revert` drives the UI: revert is refused server-side for linked apps
     # and for file and dir targets (see main), so the button must not be offered
     # either. `kind` rides along as the target's own name for itself — every
@@ -292,6 +322,7 @@ def _log(target):
     # view branches on the SNAPSHOT payload (`browse` vs `entry` vs `file`),
     # which is the thing that actually differs.
     return {"app": app, "commits": commits, "kind": kind,
+            "skip": skip, "more": more,
             "can_revert": kind == "app" and not _is_linked(app)}
 
 
@@ -499,14 +530,14 @@ def _head(app: str) -> str:
     return r.stdout.strip() if r.returncode == 0 else ""
 
 
-def main(action: str = "log", file: str = "", sha: str = ""):
+def main(action: str = "log", file: str = "", sha: str = "", skip: int = 0):
     target, err = _resolve_target(file)
     if target is None:
         return err
     kind, app, _pathspec, _name = target
     try:
         if action == "log":
-            return _log(target)
+            return _log(target, skip)
         if action == "snapshot":
             return _snapshot(target, sha)
         if action == "revert":

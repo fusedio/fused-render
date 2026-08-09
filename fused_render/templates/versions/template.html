@@ -117,6 +117,25 @@
     font-size: 11px;
     font-family: ui-monospace, Menlo, Consolas, monospace;
   }
+  /* The pager. A timeline is append-only, so there are no page numbers and no
+     "back": one quiet row at the FOOT of the spine that grows the list in
+     place. It is styled as chrome (the #side-head vocabulary — small, upper,
+     tracked) rather than as a commit, so it never reads as a revision that can
+     be selected. */
+  .older {
+    padding: 8px 12px;
+    border-top: 1px solid var(--line);
+    color: var(--ink-2);
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    cursor: pointer;
+  }
+  .older:hover { color: var(--accent); }
+  .older.loading, .older.loading:hover { color: var(--ink-3); cursor: default; }
+  /* Same ink as #notice.error — a failed page is reported where it was asked
+     for, so the snapshot in the other half is left alone. */
+  .older-error { padding: 2px 12px 8px; color: var(--danger); font-size: 11px; }
   .badge {
     display: inline-block;
     margin-left: 6px;
@@ -286,7 +305,18 @@ NARROW.addEventListener("change", () => {
   if (!NARROW.matches) showNarrow("list");
 });
 
+// The spine is PAGED (versions.py `PAGE_SIZE`): `commits` holds every page
+// fetched so far, newest first and contiguous from skip 0, which is what makes
+// `commits.length` the next page's `skip`. `more` is the backend's own answer
+// (it fetches one row past the page as a probe), so the page size lives in one
+// place and this half never has to know it.
 let commits = [];      // newest first, from versions.py `log`
+let more = false;      // history continues past what is loaded
+let loadingMore = false;
+let moreError = "";
+// Bumped by every full reload (boot, revert). A page that lands after one is
+// answering a question about a list that no longer exists, so it is dropped.
+let logGen = 0;
 let selected = null;   // full sha
 
 function esc(s) {
@@ -312,14 +342,63 @@ function notice(msg, isError) {
 
 function clearNotice() { noticeEl.className = ""; }
 
+// A full repaint, and deliberately so: appending a page changes the FOOT of the
+// list only, but the selected row, the `latest` badge and the pager row are all
+// derived state, and one function that redraws all of it from `commits` +
+// `selected` cannot leave them disagreeing. The one thing a repaint does lose is
+// the scroll offset, which is exactly what a "show older" click must keep — so
+// it is saved and restored around the write, and the new rows appear below the
+// user's viewport instead of under it.
 function renderList() {
-  commitsEl.innerHTML = commits.map((c, i) =>
+  const scroll = commitsEl.scrollTop;
+  let html = commits.map((c, i) =>
     '<div class="commit' + (c.sha === selected ? " selected" : "") +
     '" data-sha="' + c.sha + '">' +
     '<div class="subject">' + esc(c.subject || "(no subject)") +
     (i === 0 ? '<span class="badge">latest</span>' : "") + "</div>" +
     '<div class="meta">' + c.sha.slice(0, 7) + " · " + ago(c.ts) + "</div>" +
     "</div>").join("");
+  if (more) {
+    html += '<div class="older' + (loadingMore ? " loading" : "") + '">' +
+      (loadingMore ? "Loading…" : "Show older") + "</div>";
+  }
+  // The row stays (so the failed page can simply be asked for again) and the
+  // reason sits under it.
+  if (moreError) html += '<div class="older-error">' + esc(moreError) + "</div>";
+  commitsEl.innerHTML = html;
+  commitsEl.scrollTop = scroll;
+}
+
+// The next page, appended. Nothing here touches `selected` or the frame: paging
+// grows the timeline, it does not move the preview.
+async function loadMore() {
+  if (loadingMore || !more) return;
+  loadingMore = true;
+  moreError = "";
+  renderList();
+  const gen = logGen;
+  try {
+    const res = await fused.runPython("./versions.py",
+      { action: "log", file: FILE, skip: commits.length }, { key: "log-more" });
+    if (gen !== logGen) return;  // a reload replaced the list under us
+    if (res.error) throw new Error(res.error);
+    // De-duped by sha rather than trusted blindly: a commit landing on HEAD
+    // between two pages shifts the window down by one, and a repeated row is
+    // the visible symptom. Cheap to drop, and it keeps `commits.length` an
+    // honest cursor for the page after this one.
+    const seen = new Set(commits.map(c => c.sha));
+    for (const c of (res.commits || [])) {
+      if (!seen.has(c.sha)) commits.push(c);
+    }
+    more = !!res.more;
+  } catch (err) {
+    moreError = "Could not load older versions: " + err.message;
+  } finally {
+    if (gen === logGen) {
+      loadingMore = false;
+      renderList();
+    }
+  }
 }
 
 // The iframe src that shows `path` the way the explorer would: its own default
@@ -385,7 +464,9 @@ async function select(sha) {
   // URL-synced so a reload (or a shared link) lands on the same revision.
   fused.params.set("rev", sha.slice(0, 7));
   renderList();
-  const isLatest = commits.length && commits[0].sha === sha;
+  // `startsWith`, not equality: a deep link's `rev` is a 7-char prefix, and it
+  // is selected before any page has resolved it to a full sha (below).
+  const isLatest = commits.length && commits[0].sha.startsWith(sha);
   revertBtn.disabled = isLatest;
 
   notice("Preparing snapshot…");
@@ -428,14 +509,27 @@ async function select(sha) {
     }
     clearNotice();
     frameEl.src = src;
+    // The snapshot resolved whatever was asked for into a FULL sha. Adopt it, so
+    // a revision deep-linked by prefix (and therefore not on the first page)
+    // highlights the moment paging reaches the row that holds it.
+    if (snap.sha && snap.sha !== selected) {
+      selected = snap.sha;
+      renderList();
+    }
   } catch (err) {
     if (sha === selected) notice("Snapshot failed: " + err.message, true);
   }
 }
 
+// The FIRST page, from scratch. Every caller (boot, and revert — whose new
+// commit is the newest, so the first page is where it is) wants the list reset,
+// not extended.
 async function loadLog(preferSha) {
+  logGen++;
+  loadingMore = false;
+  moreError = "";
   const res = await fused.runPython("./versions.py",
-    { action: "log", file: FILE }, { key: "log" });
+    { action: "log", file: FILE, skip: 0 }, { key: "log" });
   if (res.error) return notice(res.error, true);
   // Linked apps are view-only history: versions.py refuses `revert` for them
   // (the repo is the user's own), so the button disappears rather than
@@ -443,16 +537,30 @@ async function loadLog(preferSha) {
   // `can_revert` key) keep the button — workspace apps always could.
   if (res.can_revert === false) revertBtn.style.display = "none";
   commits = res.commits || [];
+  more = !!res.more;
+  commitsEl.scrollTop = 0;
   if (!commits.length) return notice("No commits yet.");
+  // A `rev` deep link that is NOT on the first page is still honoured: the
+  // prefix is handed to select() as-is (the backend resolves it), so the link
+  // shows the revision it names rather than silently falling back to HEAD, and
+  // select() adopts the full sha so the row highlights once paging reaches it.
   let pick = commits[0].sha;
   if (preferSha) {
     const hit = commits.find(c => c.sha.startsWith(preferSha));
+    // Shape-checked before it is trusted off-page, so a junk param still falls
+    // back to HEAD the way it always did rather than opening on "unknown
+    // revision".
     if (hit) pick = hit.sha;
+    else if (/^[0-9a-f]{7,40}$/.test(preferSha)) pick = preferSha;
   }
   await select(pick);
 }
 
 commitsEl.addEventListener("click", (e) => {
+  // The pager first: it is a sibling of the rows, not one of them, and it must
+  // NOT flip the narrow layout to the preview — asking for more history is a
+  // request to keep reading the list.
+  if (e.target.closest(".older")) return loadMore();
   const row = e.target.closest(".commit");
   if (!row) return;
   // Picking a revision in the narrow layout is a request to SEE it, so reveal
