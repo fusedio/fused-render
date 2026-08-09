@@ -2792,7 +2792,23 @@ function annSetMode(on) {
   // or writes nodes that enterNoPane has removed.
   if (noPane) { annOn = false; return; }
   annOn = on;
-  fused.params.set("annmode", annOn ? "1" : "0");
+  // STILL THE ONE WRITER — but it does not write when the URL already MEANS
+  // this. `annmode` is effectively-on: absent, or anything that is not "0".
+  //
+  // The boot default calls through here with `on` derived from that very
+  // reading, so on a freshly loaded entry the write was a semantic no-op that
+  // cost a HISTORY ENTRY anyway: runtime.js pushes on the first param write of a
+  // pristine entry, deliberately, so Back can still reach the URL as it was
+  // loaded (RH/PR). The visible bug was that expanding the preview pane to full
+  // screen (`?_mode=claude`) took TWO presses of Back to undo — one for the
+  // navigation, one for this normalisation landing `annmode=1` on top of it.
+  //
+  // Writing "0" over an ABSENT param is not a no-op and still writes: a narrow
+  // pane really does boot disarmed (see applyNarrowView), and that push is the
+  // state change it looks like. Only the normalisation is silenced.
+  if ((fused.params.get("annmode") !== "0") !== annOn) {
+    fused.params.set("annmode", annOn ? "1" : "0");
+  }
   annBtn.classList.toggle("on", annOn);
   annBtn.setAttribute("aria-pressed", String(annOn));
   annBtn.querySelector(".lbl").textContent = annOn ? "Annotating" : "Annotate";

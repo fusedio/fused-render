@@ -1797,6 +1797,17 @@ def test_annotate_mode_defaults_on_and_owns_pin_visibility(html):
     # pins gate on the mode itself, and toggling the mode repaints them
     assert 'annPins.style.display = annOn ? "" : "none"' in html
     assert "renderAnn()" in _between(html, "function annSetMode(", "\n}")
+    # ...and reading the default back through the one writer must not WRITE it.
+    # runtime.js pushes a history entry on the first param write of a pristine
+    # entry (so Back reaches the URL as loaded), so this boot-time normalisation
+    # of an absent `annmode` to "1" burned a second entry: expanding the preview
+    # pane to full screen took TWO presses of Back to undo. The DOM and state
+    # work still runs; only the write is conditional, and only on a no-op —
+    # writing "0" over an absent param is a real disarm (a narrow pane boots
+    # that way) and still pushes.
+    mode = _between(html, "function annSetMode(on) {", "\nannBtn.addEventListener")
+    assert 'if ((fused.params.get("annmode") !== "0") !== annOn) {' in mode
+    assert mode.count('fused.params.set("annmode"') == 1
     # auto-send is unconditional (bar the in-flight / typed-draft guards)
     assert "if (isNew && filled && !sending) annAutoSubmit();" in html
     assert "annAutoEl" not in html and 'id="annauto"' not in html
