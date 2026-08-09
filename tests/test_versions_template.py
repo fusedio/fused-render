@@ -285,30 +285,91 @@ def test_log_for_a_plain_directory_is_scoped_to_its_subtree(workspace, tmp_path)
         ["Add docs/c", "Add src/b", "Add docs/a"]
 
 
-def test_a_plain_directory_is_read_only_and_has_nothing_to_frame(
-        workspace, tmp_path):
-    # Two different facts, reported separately: the repository is the user's own
-    # (no revert, the Fused-identity rule), and a folder is not a document
-    # /render can serve (no snapshot to frame). The second is why the view drops
-    # its preview column for this kind rather than keeping an empty one.
+def test_a_plain_directory_is_read_only_but_still_previews(workspace, tmp_path):
+    # Read-only is about the WRITE (the repository is the user's own, so a
+    # revert commit carrying the Fused identity is refused). It says nothing
+    # about the read: a folder's history previews like everything else's.
     v = _load("versions")
     repo = _plain_repo(workspace, tmp_path)
     sha = _commit(repo, "docs/a.md", "a1\n", "Add docs/a")
     before = _shas(repo)
 
-    res = v.main(action="log", file=str(repo / "docs"))
-    assert res["can_revert"] is False
-    assert res["can_snapshot"] is False
-
-    # And refused at the module, not only hidden in the page (MD-11).
-    snap = v.main(action="snapshot", file=str(repo / "docs"), sha=sha)
-    assert "error" in snap
+    assert v.main(action="log", file=str(repo / "docs"))["can_revert"] is False
     rev = v.main(action="revert", file=str(repo / "docs"), sha=sha)
     assert "error" in rev and "managed by you" in rev["error"]
     assert _shas(repo) == before
     assert _git(repo, "status", "--porcelain").stdout.strip() == ""
-    # Nothing was extracted for a preview that was never going to appear.
-    assert not os.path.isdir(os.path.join(str(tmp_path / "home"), "app-versions"))
+
+
+def test_snapshot_of_a_directory_materialises_its_subtree(workspace, tmp_path):
+    # The dir kind archives exactly like an app: `-C <the dir>` with NO
+    # pathspec, because the directory IS the scope — a workspace app (where the
+    # app is the repo root) is the same call, degenerately.
+    v = _load("versions")
+    repo = _plain_repo(workspace, tmp_path)
+    _commit(repo, "docs/a.md", "a1\n", "Add docs/a")
+    _commit(repo, "docs/sub/b.md", "b1\n", "Add docs/sub/b")
+    old_sha = _shas(repo)[-1]          # the commit BEFORE sub/ existed
+    _commit(repo, "src/out.py", "x = 1\n", "Add src/out")
+
+    snap = v.main(action="snapshot", file=str(repo / "docs"), sha=_shas(repo)[0])
+    assert "error" not in snap
+    # Entry names are relative to `-C`, so the folder's own contents sit at the
+    # top of the snapshot — not `docs/a.md` under a rebuilt prefix.
+    with open(os.path.join(snap["dir"], "a.md"), encoding="utf-8") as f:
+        assert f.read() == "a1\n"
+    with open(os.path.join(snap["dir"], "sub", "b.md"), encoding="utf-8") as f:
+        assert f.read() == "b1\n"
+    # Scoped to the subtree: a sibling folder's file is not in this snapshot.
+    assert not os.path.exists(os.path.join(snap["dir"], "src"))
+    # A folder is not a document /render can serve, so it is reported as
+    # something to BROWSE instead — the view frames it through /explorer/embed.
+    assert snap["browse"] == snap["dir"]
+    assert snap["entry"] is None
+
+    # ...and the past really is the past: at the older commit `sub/` is absent.
+    older = v.main(action="snapshot", file=str(repo / "docs"), sha=old_sha)
+    assert os.path.isfile(os.path.join(older["dir"], "a.md"))
+    assert not os.path.exists(os.path.join(older["dir"], "sub"))
+    assert older["dir"] != snap["dir"]
+
+
+def test_a_directory_snapshot_is_extracted_once_and_then_reused(
+        workspace, tmp_path):
+    # A commit is immutable, so the completion marker is what makes the second
+    # click free — the same contract the app snapshot has. It matters more here:
+    # this is the user's own repository and the subtree can be large, so the
+    # extraction is lazy (per commit clicked) and paid at most once.
+    v = _load("versions")
+    repo = _plain_repo(workspace, tmp_path)
+    sha = _commit(repo, "docs/a.md", "a1\n", "Add docs/a")
+
+    first = v.main(action="snapshot", file=str(repo / "docs"), sha=sha)
+    marker = os.path.join(first["dir"], ".fused-snapshot-complete")
+    assert os.path.isfile(marker)
+    # Prove the reuse rather than assert the path twice: a hand-edit of the
+    # extracted tree survives a second call iff nothing re-extracted.
+    with open(os.path.join(first["dir"], "a.md"), "w", encoding="utf-8") as f:
+        f.write("touched\n")
+    again = v.main(action="snapshot", file=str(repo / "docs"), sha=sha)
+    assert again["dir"] == first["dir"]
+    with open(os.path.join(again["dir"], "a.md"), encoding="utf-8") as f:
+        assert f.read() == "touched\n"
+
+
+def test_a_directory_and_a_file_snapshot_of_one_path_never_collide(
+        workspace, tmp_path):
+    # The cache key folds the pathspec in for every non-app kind, so a folder's
+    # subtree snapshot and a file's one-file snapshot at the SAME commit land in
+    # different trees. Sharing one would serve a folder listing where the file
+    # was asked for (or the reverse), silently.
+    v = _load("versions")
+    repo = _plain_repo(workspace, tmp_path)
+    sha = _commit(repo, "docs/a.md", "a1\n", "Add docs/a")
+    d = v.main(action="snapshot", file=str(repo / "docs"), sha=sha)
+    f = v.main(action="snapshot", file=str(repo / "docs" / "a.md"), sha=sha)
+    assert d["dir"] != f["dir"]
+    assert f["browse"] is None and f["file"].endswith("a.md")
 
 
 def test_a_directory_outside_any_repository_is_still_refused(workspace, tmp_path):
@@ -329,7 +390,6 @@ def test_an_app_directory_still_resolves_as_an_app(workspace):
     res = v.main(action="log", file=str(d))
     assert res["kind"] == "app"
     assert res["can_revert"] is True
-    assert res["can_snapshot"] is True
 
 
 def test_a_mount_backed_target_is_refused_before_git_is_asked(workspace, tmp_path):
@@ -589,19 +649,73 @@ def test_narrow_layout_neutralises_the_inline_split_width():
     assert 'showNarrow("list");' in html
 
 
-def test_the_view_drops_its_preview_column_when_there_is_nothing_to_frame():
-    # The layout answer for the third target kind, mirroring the chat template's
-    # `enterNoPane`: the parts that describe a second column are REMOVED, not
-    # hidden, so nothing left on the page implies a view that is not coming.
+def test_an_app_revision_with_no_page_is_browsable_instead_of_a_dead_end(
+        workspace):
+    # The dead end this removes: an app whose tree holds no html answered
+    # `entry: None` and the view drew "this revision has no entry page —
+    # nothing to render" over a tree full of perfectly viewable files. An app
+    # whose page arrives in a LATER commit is the ordinary way to meet it, so
+    # the early half of such a timeline was unviewable.
+    v = _load("versions")
+    d = _make_app(workspace)
+    (d / "index.html").unlink()
+    (d / "notes.md").write_text("# not a page\n")
+    app_git.commit(str(d), "Drop the page")
+
+    snap = v.main(action="snapshot", file=str(d), sha=_shas(d)[0])
+    assert "error" not in snap
+    assert snap["entry"] is None
+    assert snap["browse"] == snap["dir"]
+    assert os.path.isfile(os.path.join(snap["dir"], "notes.md"))
+
+    # ...and an entry-ful revision of the SAME app still renders its page.
+    older = v.main(action="snapshot", file=str(d), sha=_shas(d)[-1])
+    assert os.path.basename(older["entry"]) == "index.html"
+    assert older["browse"] is None
+
+
+def test_an_app_with_several_pages_and_no_index_renders_the_first(workspace):
+    # The shared entry rule picks the first page in name order now (it used to
+    # call several-without-an-index "ambiguous" and resolve to nothing), so this
+    # revision renders a page rather than falling back to the browsable tree.
+    v = _load("versions")
+    d = _make_app(workspace)
+    (d / "index.html").unlink()
+    for name in ("zzz.html", "about.html"):
+        (d / name).write_text("<html></html>")
+    app_git.commit(str(d), "Two pages, no index")
+
+    snap = v.main(action="snapshot", file=str(d), sha=_shas(d)[0])
+    assert os.path.basename(snap["entry"]) == "about.html"
+    assert snap["browse"] is None
+
+
+def test_a_revision_that_predates_the_folder_is_a_sentence_not_a_traceback(
+        workspace, tmp_path):
+    # `git archive` of a commit with nothing at this path is not an empty tar
+    # this code can extract — it is a lone pax_global_header plus tar's EOF
+    # blocks, and `tarfile.open` raises ReadError on it, which reaches the page
+    # as the red /api/run traceback overlay. Latent while only apps had
+    # snapshots; reachable the moment any directory could be a target.
+    v = _load("versions")
+    repo = _plain_repo(workspace, tmp_path)
+    first = _commit(repo, "README.md", "hi\n", "Add readme")
+    _commit(repo, "docs/a.md", "a1\n", "Add docs/a")
+    got = v.main(action="snapshot", file=str(repo / "docs"), sha=first)
+    assert "error" in got and "nothing under this folder" in got["error"]
+
+
+def test_a_directory_snapshot_is_framed_as_a_browsable_tree():
+    # A folder snapshot is not a document, so it is framed through the shell's
+    # chrome-free embed of the extracted tree — the user browses the folder as
+    # it was, in the same column every other target previews in.
     src = _html()
-    assert "can_snapshot === false" in src
-    body = src[src.index("function enterNoPreview"):]
-    body = body[: body.index("\n}")]
-    for gone in ("main", "divider", "view-toggle"):
-        assert '"' + gone + '"' in body
-    # The narrow layout's one-view state must go with them: `narrow-preview`
-    # hides the commit list to show a preview that no longer exists.
-    assert 'classList.remove("narrow-preview")' in body
-    # And the inline split width is beaten from CSS, the same way the narrow
-    # block does it — applySplit stays unconditional and stateless.
-    assert "body.no-preview #side { flex: 1; width: 100% !important" in src
+    assert "snap.browse" in src
+    assert "/explorer/embed/" in src
+    # ...with the listing's OWN split pane suppressed: it is already inside a
+    # preview column, and two previews deep is neither of them readable.
+    assert "preview=false" in src
+    # And nothing drops the preview column any more: the split is the one
+    # layout, for all three kinds.
+    assert "enterNoPreview" not in src
+    assert "no-preview" not in src

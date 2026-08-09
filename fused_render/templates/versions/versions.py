@@ -13,9 +13,10 @@ module:
   repository is the user's own and a revert commit carries the Fused identity
   (the rule linked apps already live by).
 * **A directory** — an ordinary folder inside any git work tree, scoped to its
-  own subtree. Read-only for the same reason, and additionally **log-only**: a
-  folder is not a document, so there is nothing for `snapshot` to materialise
-  into a frame (see `_snapshot`).
+  own subtree. Read-only for the same reason. Its snapshot is the subtree at
+  that commit, archived exactly as an app's is, and reported as something to
+  **browse** (`browse`) rather than to render: a folder is not a document, so
+  the view frames it through the shell's chrome-free directory listing.
 
 Everything outside a fused app is resolved by asking GIT where the work tree is
 (`rev-parse --show-toplevel`), never by workspace-relative path arithmetic —
@@ -26,14 +27,16 @@ Three actions:
 
 * `log`      — the commit list, newest first, scoped to the target.
 * `snapshot` — materialise one commit as a plain folder so the explorer can
-               render the app (or the file) *as it was*. `git archive <sha>` is
+               render the app, the file, or the folder *as it was*. `git archive <sha>` is
                extracted into a per-target, per-commit dir under the shell home
                (`~/.fused-render/app-versions/<key>/<sha>/`); a commit is
                immutable, so an existing complete snapshot is reused as-is.
                An app reports its `entry` page for `/render?path=`; a file
                reports the materialised `file` (plus `entry` when the file is
                itself a page), and the view frames non-page files through their
-               own default template.
+               own default template; a directory reports `browse` — the
+               extracted tree, which the view frames through
+               `/explorer/embed/<path>`, the shell's chrome-free listing.
 * `revert`   — restore the working tree AND index to the selected commit and
                record that as a NEW commit on top ("Reverted to <sha> — …").
                History is never rewritten: revert of a revert works, and
@@ -279,28 +282,17 @@ def _log(target):
         commits.append({"sha": sha, "ts": ts, "subject": subject})
     # `can_revert` drives the UI: revert is refused server-side for linked apps
     # and for file and dir targets (see main), so the button must not be offered
-    # either. `kind` is reported for the same reason one layer up — the view's
-    # LAYOUT differs by target (a plain folder has no snapshot to frame, so it
-    # drops its preview column outright, the way the chat template drops its
-    # pane for a folder), and a page that guessed the kind from `can_revert`
-    # would be reading one fact to answer a different question.
+    # either. `kind` rides along as the target's own name for itself — every
+    # kind previews now, so there is deliberately no second "can this preview"
+    # flag: a field that is true for every caller is one nobody reads, and the
+    # view branches on the SNAPSHOT payload (`browse` vs `entry` vs `file`),
+    # which is the thing that actually differs.
     return {"app": app, "commits": commits, "kind": kind,
-            "can_snapshot": kind != "dir",
             "can_revert": kind == "app" and not _is_linked(app)}
 
 
 def _snapshot(target, sha: str):
     kind, app, pathspec, name = target
-    # An ordinary folder has nothing to materialise INTO a view: a directory is
-    # not a document /render can serve, so the extracted tree would be framed by
-    # nothing. Refused rather than extracted-and-then-not-shown, because the
-    # extraction is the expensive half — this is the user's own repository, and
-    # a subtree of it, per commit, unpacked under the shell home is a cost paid
-    # for a preview that was never going to appear. The view knows too
-    # (`can_snapshot`); this is the module's own guarantee (MD-11).
-    if kind == "dir":
-        return {"error": "a folder outside a fused app has no page to show as "
-                         "it was — its history is the view"}
     full = _resolve_sha(app, sha)
     if full is None:
         return {"error": "unknown revision"}
@@ -324,11 +316,47 @@ def _snapshot(target, sha: str):
         # (where the app IS the repo root) is the degenerate same case.
         # Verified against git 2.x; a commit that predates the folder just
         # produces an empty tar, which lands in the no-entry notice below.
-        # A FILE target additionally narrows the archive to its own pathspec, so
-        # the snapshot holds exactly that one file at that revision rather than
-        # the whole surrounding directory (which, outside an app, is the user's
-        # repository and could be enormous).
-        narrow = [] if kind == "app" else ["--", pathspec]
+        # Only a FILE target narrows the archive, to its own pathspec, so the
+        # snapshot holds exactly that one file at that revision rather than the
+        # whole surrounding directory. A "dir" target takes the SAME
+        # pathspec-free call an app does, because `-C` has already scoped it:
+        # the directory IS the subtree being asked about, and a workspace app
+        # (where the app is the repo root) is that same call, degenerately.
+        #
+        # The cost is real and is accepted here rather than refused: this is the
+        # user's own repository, so the subtree can be large. It is paid LAZILY
+        # — only for a commit the user actually clicks — and at most once per
+        # commit, because a commit is immutable and the completion marker below
+        # makes every later click a no-op. No size cap, deliberately: app
+        # snapshots have never had one, and inventing a limit here would mean a
+        # folder whose history silently stops previewing at some size nobody
+        # can see.
+        narrow = ["--", pathspec] if kind == "file" else []
+        # Does this commit have ANYTHING at this path? Asked before the archive,
+        # because an archive of nothing is not an empty tar this code can
+        # extract — it is a lone `pax_global_header` and tar's EOF blocks, and
+        # `tarfile.open` REFUSES that ("end of file header"), raising ReadError.
+        # The comment further down used to say a commit predating the folder
+        # "just produces an empty tar, which lands in the no-entry notice"; it
+        # did not, it raised, and the red /api/run traceback overlay was the
+        # answer the user got. Latent while only apps had snapshots (an app's
+        # folder exists in every commit that built it), and reachable the moment
+        # any directory in the user's own repository could be a target.
+        #
+        # `ls-tree` rather than a guess at the archive's bytes: it answers the
+        # question being asked, and a genuinely unreadable archive still reports
+        # as one instead of being explained away as an empty revision. `.` is
+        # resolved against `-C app`, exactly as the archive's own scoping is.
+        #
+        # TREE kinds only. A file target that the commit does not contain makes
+        # `git archive` fail outright (`fatal: pathspec ... did not match any
+        # files`, exit 128), so it is already answered by the branch below — in
+        # the file's own words, which are more use than a sentence about a
+        # folder.
+        if kind != "file":
+            listing = _git(app, "ls-tree", "--name-only", full, ".")
+            if listing.returncode == 0 and not listing.stdout.strip():
+                return {"error": "this revision has nothing under this folder"}
         r = _git(app, "archive", "--format=tar", full, *narrow, binary=True)
         if r.returncode != 0:
             err = r.stderr.decode("utf-8", "replace") if r.stderr else ""
@@ -355,24 +383,46 @@ def _snapshot(target, sha: str):
     # template (the same resolution the claude pane does), which is why
     # `file` is reported separately rather than squeezed into `entry` — `entry`
     # means "a document /render can serve directly".
-    if kind != "app":
+    if kind == "file":
         out = os.path.join(snap, name)
         if not os.path.isfile(out):
             return {"error": "this revision does not contain that file"}
         is_page = out.lower().endswith((".html", ".htm"))
         return {"app": app, "sha": full, "dir": snap, "file": out,
-                "entry": out if is_page else None}
+                "browse": None, "entry": out if is_page else None}
 
-    # The snapshot's entry page, by the app-entry rule (index.html first, else
-    # the single top-level .html — shared/app_entry.py), NOT a hardcoded
-    # index.html: an app whose page is `main.html` must preview its history
-    # exactly like it renders live.
-    from app_entry import entry_html
+    # Both remaining kinds materialise a TREE, and there are exactly two ways to
+    # show one:
+    #
+    #   `entry`  — a page /render can serve directly. Only an APP resolves one,
+    #              by the shared app-entry rule (index.html first, else the
+    #              first top-level .html — shared/app_entry.py), NOT a
+    #              hardcoded index.html: an app whose page is `main.html` must
+    #              preview its history exactly like it renders live.
+    #   `browse` — the extracted tree itself, framed by the view through
+    #              `/explorer/embed/<path>`, the shell's own chrome-free
+    #              directory listing. This is what a DIRECTORY always gets: a
+    #              folder is not a document, and the explorer's answer for a
+    #              folder is a listing, not a guess at which page inside it is
+    #              "the" one.
+    #
+    # An app with NO entry page gets `browse` too, and that is a dead end
+    # removed: such a snapshot used to answer `entry: None` and the view drew
+    # "this revision has no entry page — nothing to render" over a tree full of
+    # files the user could perfectly well have looked at. An app whose page
+    # arrived in a later commit is the common way to meet it — the timeline's
+    # early half was unviewable.
+    #
+    # Two fields rather than one overloaded key, because the two are framed by
+    # DIFFERENT routes; one key meaning both is how a folder ends up handed to a
+    # document renderer.
+    entry = None
+    if kind == "app":
+        from app_entry import entry_html
 
-    entry = entry_html(snap)
-    if entry is None:
-        return {"app": app, "sha": full, "dir": snap, "entry": None}
-    return {"app": app, "sha": full, "dir": snap, "entry": entry}
+        entry = entry_html(snap)
+    return {"app": app, "sha": full, "dir": snap, "file": None,
+            "browse": None if entry else snap, "entry": entry}
 
 
 def _revert(app: str, sha: str):
