@@ -11,20 +11,17 @@ about the presence of a rule:
   usual escape hatch is closed: `!important` is FORBIDDEN in this file (D146,
   enforced by tests/test_claude_shots.py). The composer form carried exactly such
   an inline declaration, so the whole composer — textarea, three selects, the
-  pane-shot pill, the send button — rendered under the strip and ate the height
+  the send button — rendered under the strip and ate the height
   the preview was supposed to get. The rule is now a stylesheet rule the media
   block can override, and the test is the general one: no child of `#chat` may
   carry an inline `display`.
 * **crossing the breakpoint is not a view flip, and the reset has to fire for
-  both.** Arming the pane-shot pill (or annotate mode) in the WIDE layout and
-  then narrowing the pane hides the control while leaving the state armed — the
-  next send silently carries a screenshot of a pane nothing on screen mentions.
-  The reset guard used to test `narrowShown === true`, which only ever describes
-  a Preview→Chat flip; a media crossing arrives with `narrowShown === false` from
-  the wide boot call. It now tests `narrowShown !== null`, which still excludes
-  BOOT (the one call that must not run it: `viewShotWanted` is a `let` declared
-  further down the script, so reading it that early is a temporal-dead-zone
-  error).
+  it too.** Arming annotate mode in the WIDE layout and then narrowing the pane
+  hides the control while leaving the state armed. The reset guard used to test
+  `narrowShown === true`, which only ever describes a Preview→Chat flip; a media
+  crossing arrives with `narrowShown === false` from the wide boot call. It now
+  tests `narrowShown !== null`, which still excludes BOOT — writing `annmode=0`
+  there would clobber the ON-by-default the wide layout shares.
 * **an auto-submitted note must not park a permission card in a hidden `#log`.**
   Saving an annotation sends immediately, and in Preview view the transcript is
   collapsed with the rest of the chat column. A permission card IS the prompt —
@@ -129,14 +126,13 @@ def _apply_narrow_view(html, prelude, call):
 # Everything applyNarrowView touches, stubbed so the only real logic left is the
 # reset guard. `narrow` and `paneview` are the two inputs that decide it.
 _STUBS = """
-let narrow = true, paneview = "chat", annOn = false, shot = false, noPane = false;
+let narrow = true, paneview = "chat", annOn = false, noPane = false;
 const calls = [];
 const NARROW_MQ = { get matches() { return narrow; } };
 const fused = { params: { get: (k) => (k === "paneview" ? paneview : null) } };
 const viewBtn = { textContent: "", setAttribute() {} };
 document = { body: { classList: { toggle() {} } } };
 function annSetMode(v) { annOn = v; calls.push("annSetMode:" + v); }
-function setViewShot(v) { shot = v; calls.push("setViewShot:" + v); }
 function renderAnn() {}
 function requestAnimationFrame() {}
 let narrowShown = null;
@@ -144,14 +140,13 @@ let narrowShown = null;
 
 
 def test_boot_never_touches_the_armed_controls(html):
-    """The one call that must NOT reset: `viewShotWanted` is a `let` declared
-    further down the script, so setViewShot() at boot is a temporal-dead-zone
-    error — and boot is never a crossing either. `narrowShown === null` is what
-    "boot" means here."""
+    """The one call that must NOT reset: boot is never a crossing, and disarming
+    there would write `annmode=0` the first time this view opened in a narrow
+    pane. `narrowShown === null` is what "boot" means here."""
     out = _apply_narrow_view(html, _STUBS, """
 narrow = true; paneview = "chat"; annOn = true;
 applyNarrowView();
-console.log(JSON.stringify({ calls, annOn, shot, narrowShown }));
+console.log(JSON.stringify({ calls, annOn, narrowShown }));
 """)
     assert out["calls"] == []
     assert out["annOn"] is True
@@ -159,32 +154,30 @@ console.log(JSON.stringify({ calls, annOn, shot, narrowShown }));
 
 def test_narrowing_a_wide_pane_disarms_the_now_hidden_controls(html):
     """The regression this test exists for: a WIDE boot leaves narrowShown false,
-    so a later media crossing is not a flip. Arming the pane-shot pill wide and
-    then narrowing the pane hid the pill and kept it armed — the next message
-    carried a screenshot with nothing on screen saying so."""
+    so a later media crossing is not a flip. Arming annotate mode wide and then
+    narrowing the pane hid the switch and kept the mode armed, swallowing clicks
+    in a document the user could not see."""
     out = _apply_narrow_view(html, _STUBS, """
 narrow = false; paneview = "chat";
 applyNarrowView();                       // boot, wide
-annOn = true; shot = true;               // the user arms both while both columns show
+annOn = true;                            // the user arms it while both columns show
 narrow = true;                           // the divider drag crosses 880px
 applyNarrowView();
-console.log(JSON.stringify({ calls, annOn, shot }));
+console.log(JSON.stringify({ calls, annOn }));
 """)
     assert out["annOn"] is False, "annotate mode stayed armed behind a hidden #annbtn"
-    assert out["shot"] is False, "the pane-shot pill stayed armed behind a hidden .viewshot"
 
 
 def test_the_preview_to_chat_flip_still_disarms(html):
     out = _apply_narrow_view(html, _STUBS, """
 narrow = true; paneview = "preview";
 applyNarrowView();                       // boot, narrow, in Preview
-annOn = true; shot = true;
+annOn = true;
 paneview = "chat";
 applyNarrowView();
-console.log(JSON.stringify({ calls, annOn, shot }));
+console.log(JSON.stringify({ calls, annOn }));
 """)
     assert out["annOn"] is False
-    assert out["shot"] is False
 
 
 def test_arming_inside_preview_view_is_left_alone(html):
@@ -196,12 +189,11 @@ narrow = true; paneview = "chat";
 applyNarrowView();
 paneview = "preview";
 applyNarrowView();
-annOn = true; shot = true;
+annOn = true;
 applyNarrowView();                       // e.g. a `split` param change
-console.log(JSON.stringify({ calls, annOn, shot }));
+console.log(JSON.stringify({ calls, annOn }));
 """)
     assert out["annOn"] is True
-    assert out["shot"] is True
 
 
 def test_a_wide_pane_keeps_both_armed(html):
@@ -210,12 +202,11 @@ def test_a_wide_pane_keeps_both_armed(html):
     out = _apply_narrow_view(html, _STUBS, """
 narrow = false; paneview = "chat";
 applyNarrowView();
-annOn = true; shot = true;
+annOn = true;
 applyNarrowView();
-console.log(JSON.stringify({ calls, annOn, shot }));
+console.log(JSON.stringify({ calls, annOn }));
 """)
     assert out["annOn"] is True
-    assert out["shot"] is True
 
 
 # --------------------- 3. an auto-submitted note cannot hide a permission card

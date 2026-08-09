@@ -1045,7 +1045,7 @@ _WIRE_FNS = ["const APP_STATE_TAG", "function appStateBlock(",
              # The pane shot is a third block on the same wire (see
              # test_claude_shots.py); these two are what stripBlocks needs to
              # be its exact inverse, whether or not a given message carries one.
-             "const PANE_SHOT_TAG", "function paneShotBlock(",
+             "const PANE_SHOT_TAG",
              # stripBlocks names its no-words markers through these (see
              # test_claude_shots.py) so resumeRun cannot drift from it.
              "const MARKER_ANN", "const MARKER_VIEW", "const MARKER_JOIN",
@@ -1482,7 +1482,7 @@ def test_the_send_path_writes_the_outline_before_it_composes(html):
     """composeOutgoing is sync and pure — the exact inverse of stripBlocks — so
     the write cannot happen inside it."""
     assert "const sentState = await appStateFile(state);" in html
-    assert "composeOutgoing(message, pending, sentState," in html
+    assert "composeOutgoing(message, pending, sentState)" in html
 
 
 def test_the_outline_path_comes_from_the_shots_directory_the_agent_grants(html):

@@ -295,8 +295,7 @@ def test_the_no_pane_state_removes_the_column_the_divider_and_the_strip():
     code = _pane_code()
     i = code.index("function enterNoPane()")
     body = code[i:code.index("\n}", i)]
-    assert ('for (const id of ["left", "divider", "anntools", "viewshot", '
-            '"hviewshot"]) {') in body
+    assert 'for (const id of ["left", "divider", "anntools"]) {' in body
     assert "if (el) el.remove();" in body
 
 
@@ -487,8 +486,7 @@ _SINK_STARTS = (
     r"\.(?:title|alt|placeholder|textContent)\s*=",
     r"""setAttribute\("(?:aria-label|title|alt)",""",
 )
-_SINK_FNS = ("function appStateBlock(", "function paneShotBlock(",
-             "function formatAnnotations(")
+_SINK_FNS = ("function appStateBlock(", "function formatAnnotations(")
 # Reading any of these means the noun came from the target's kind, so whatever
 # literals sit in that branch are selected BY kind and are correct there.
 _DERIVED = ("paneNoun", "targetNoun", "noun")
@@ -500,10 +498,9 @@ def test_no_chrome_sink_hardcodes_a_kind_noun():
 
     First the composer placeholder said "this project" for all three kinds.
     Fixing that missed the footnote. Fixing the footnote missed "app": the
-    annotate switch announced "Annotate the app" over a markdown preview, both
-    pane-shot pills offered "a screenshot of the app pane", the summary
-    thumbnail's `alt` said "the whole app pane", and — worse than any of the
-    visible ones — `paneShotBlock` and `appStateBlock` told the MODEL "app pane"
+    annotate switch announced "Annotate the app" over a markdown preview, the
+    now-deleted pane-shot pills offered "a screenshot of the app pane", and —
+    worse than any of the visible ones — `appStateBlock` told the MODEL "app pane"
     while `agent.py`'s file prompt was telling it that same pane is *our viewer,
     never edit the viewer*. Two halves of one turn contradicting each other, with
     an edit to `templates/code/template.html` as the invited action.
@@ -892,19 +889,16 @@ def test_no_control_for_the_hidden_half_is_reachable_in_the_chat_only_view():
     and the left-view picker (nothing to choose a view FOR) — so the chat-only
     view drops them, and Preview, where they both work, keeps them.
 
-    `.viewshot` — the composer's "attach a screenshot of the app pane" pill — is
-    in the list too, and it is the one that does NOT follow from "it cannot work
-    here": the hidden column is parked with a real viewport, so shotPane
-    rasterises the app correctly from the chat view. It is hidden under the
-    stronger reading of the rule, the one this test is named for — a view showing
-    no preview offers no features OF the preview — because attaching a picture of
-    something the user cannot see is an affordance that misleads even while it
-    works. Preview view is one click away and is where that decision can be made
-    with the app on screen.
+    A third control used to be in the list, the composer's "attach a screenshot
+    of the app pane" pill, and it was the one that did NOT follow from "it cannot
+    work here" — the parked column keeps a real viewport, so the capture worked
+    fine from the chat view. It was hidden under the stronger reading of the rule
+    this test is named for: a view showing no preview offers no features OF the
+    preview. That control has since been deleted outright, which is the same
+    answer taken further.
     """
     block = _media_block()
     assert ("body.view-chat #annbtn,\n"
-            "    body.view-chat .viewshot,\n"
             "    body.view-chat #leftmode { display: none; }") in block
     # Absent, not disabled: nothing here reaches for `disabled` or aria-disabled
     # as a substitute.
@@ -927,20 +921,13 @@ def test_no_armed_preview_control_survives_leaving_the_preview_view():
     out, which is what keeps the label, aria-pressed, the `annmode` param and the
     pins from disagreeing.
 
-    The pane-shot pill is reset under the same condition: armed behind a hidden
-    control it would put a picture of the app on the next message with nothing on
-    screen saying so. It has no param to leak (viewShotWanted is per-message), so
-    this one is purely about the send not carrying something invisible.
-
     "ARRIVING", NOT "FLIPPING". This assertion used to read `narrowShown === true`,
     which describes a Preview→Chat flip and nothing else — and a MEDIA CROSSING is
-    not a flip: a wide boot leaves `narrowShown === false`, so arming either
-    control with both columns on screen and then dragging the pane under 880px hid
-    the control and kept the state. `narrowShown !== null` is the honest test: it
-    means "not boot", which is the one call that must not run the reset —
-    `viewShotWanted` is a `let` declared further down the script, so reading it
-    during the boot call would be a temporal-dead-zone error, and boot is also
-    where writing annmode=0 would clobber the ON-by-default the wide layout shares.
+    not a flip: a wide boot leaves `narrowShown === false`, so arming the mode
+    with both columns on screen and then dragging the pane under 880px hid the
+    control and kept the state. `narrowShown !== null` is the honest test: it
+    means "not boot", which is the one call that must not run the reset — writing
+    annmode=0 there would clobber the ON-by-default the wide layout shares.
     The behaviour, including the crossing, is exercised under node in
     tests/test_claude_narrow.py; this is the source pin that keeps the shape.
 
@@ -952,7 +939,6 @@ def test_no_armed_preview_control_survives_leaving_the_preview_view():
     page = _pane_source()
     assert "if (NARROW_MQ.matches && narrowShown !== null && !preview) {" in page
     assert "if (annOn) annSetMode(false);" in page
-    assert "setViewShot(false);" in page
     assert "let narrowShown = null;" in page
 
 
