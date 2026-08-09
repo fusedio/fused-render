@@ -361,14 +361,23 @@ async function frameSrcForFile(path) {
 // drive-letter path has its backslashes rewritten, because on POSIX a backslash
 // is a legal filename character that must round-trip untouched.
 //
-// `preview=false` because this listing is ALREADY inside a preview column: the
-// listing's own split pane (FS-9) nested in half of this view would be two
-// previews deep and neither wide enough to read. The same param the chat
-// template passed when it framed this same embed (D237).
+// Two framing params, both the shell's own:
+//
+//   `preview=false` — this listing is ALREADY inside a preview column, and its
+//                     own split pane (FS-9) nested in half of this view would be
+//                     two previews deep and neither wide enough to read. The
+//                     same param the chat template passed when it framed this
+//                     same embed (D237).
+//   `snapshot=1`    — a FROZEN TREE, not a live folder. It suppresses the chrome
+//                     that would act on it as one: the breadcrumb (whose crumbs
+//                     walk up out of the snapshot and into the cache's own
+//                     internals) and the two corner chips (the mode chip offered
+//                     a Claude chat ON THE EXTRACTED COPY; "Open as app" would
+//                     run one). See router.ts IS_SNAPSHOT.
 function embedUrl(dirPath) {
   const norm = /^[A-Za-z]:[\\/]/.test(dirPath) ? dirPath.replace(/\\/g, "/") : dirPath;
   return "/explorer/embed/" + norm.split("/").filter(Boolean)
-    .map(encodeURIComponent).join("/") + "?preview=false";
+    .map(encodeURIComponent).join("/") + "?preview=false&snapshot=1";
 }
 
 async function select(sha) {

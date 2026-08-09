@@ -101,10 +101,9 @@ def _shas(d):
 # ------------------------------------------------------------------- gate
 
 def test_condition_true_inside_a_git_backed_app(workspace, tmp_path):
-    # The app dir and everything real inside it. There is no longer an app-dir
-    # RULE — the gate asks git whether the path is in a work tree, and an app is
-    # a work tree — but the app case is still worth pinning, because it is the
-    # one the app-builder view depends on (App.tsx APP_MODES).
+    # An app is a work tree whose folder has an entry page, so it satisfies both
+    # halves of the folder rule. Worth pinning on its own, because it is the
+    # case the app-builder view depends on (App.tsx APP_MODES).
     cond = _load("condition")
     d = _make_app(workspace)
     (d / "sub").mkdir()
@@ -112,15 +111,17 @@ def test_condition_true_inside_a_git_backed_app(workspace, tmp_path):
     assert cond.main(str(d)) is True                     # the app dir itself
     assert cond.main(str(d / "index.html")) is True      # a file inside
     assert cond.main(str(d / "sub" / "x.py")) is True    # nested path
-    assert cond.main(str(d / "sub")) is True             # nested directory
-    # The workspace and its tag level are not repositories, so git says no —
-    # which is now the only reason a path is refused.
+    # A nested FOLDER with no page of its own is not offered, app or not: the
+    # folder rule is about what can be rendered, and `sub/` renders nothing.
+    assert cond.main(str(d / "sub")) is False
+    # The workspace and its tag level are not repositories, and have no page.
     assert cond.main(str(workspace)) is False            # workspace root
     assert cond.main(str(workspace / "local")) is False  # tag level
     assert cond.main(str(tmp_path / "elsewhere")) is False
     # App-shaped folder without a repo: no history to show.
     plain = workspace / "local" / "plain"
     plain.mkdir(parents=True)
+    (plain / "index.html").write_text("<html></html>")
     assert cond.main(str(plain)) is False
 
 
@@ -139,18 +140,44 @@ def test_condition_true_for_a_file_in_any_git_repo(workspace, tmp_path):
     assert cond.main(str(repo / "fresh.txt")) is True
 
 
-def test_condition_true_for_a_directory_inside_any_repo(workspace, tmp_path):
-    # This used to be a refusal: folder-wide history outside a fused app was
-    # said to belong to `git`, and two modes for one story was the thing to
-    # avoid. `git` is the WORKING TREE view now and draws no history at all, so
-    # there is no second story — a folder has a timeline like anything else,
-    # wherever it lives. The mode is read-only there, enforced by versions.py
-    # refusing `revert` rather than by hiding the view (MD-11).
+def test_condition_offers_a_folder_only_when_it_has_a_page_to_render(
+        workspace, tmp_path):
+    # A folder needs BOTH halves: in a work tree, and renderable by the shared
+    # entry rule (index.html, else the first top-level .html — the same
+    # predicate the `app` view and the chat's pane resolve their page with).
+    #
+    # The gate briefly offered EVERY folder in a work tree. That put a history
+    # mode in the switcher of every directory of every repository the user
+    # opens, for a preview that is a listing of a frozen tree — worth having by
+    # URL, not worth a mode everywhere.
     cond = _load("condition")
     repo = _plain_repo(workspace, tmp_path)
     _commit(repo, "sub/notes.md", "# one\n", "Add notes")
+    assert cond.main(str(repo)) is False        # in a work tree, but no page
+    assert cond.main(str(repo / "sub")) is False
+
+    (repo / "sub" / "page.html").write_text("<html></html>")
+    assert cond.main(str(repo / "sub")) is True   # first top-level .html
+    (repo / "index.html").write_text("<html></html>")
+    assert cond.main(str(repo)) is True           # index.html
+
+    # A page NESTED below the folder does not make the folder renderable — the
+    # entry rule is top-level only, and so is this.
+    deep = repo / "deep"
+    (deep / "inner").mkdir(parents=True)
+    (deep / "inner" / "page.html").write_text("<html></html>")
+    assert cond.main(str(deep)) is False
+
+
+def test_condition_is_indifferent_to_the_page_being_tracked(workspace, tmp_path):
+    # The two halves answer different questions: git says "is there a history
+    # here", the entry rule says "is this a thing we render". An untracked page
+    # still makes the folder renderable, and its folder still has a timeline.
+    cond = _load("condition")
+    repo = _plain_repo(workspace, tmp_path)
+    _commit(repo, "notes.md", "# one\n", "Add notes")
+    (repo / "fresh.html").write_text("<html></html>")
     assert cond.main(str(repo)) is True
-    assert cond.main(str(repo / "sub")) is True
 
 
 def test_condition_false_for_a_path_that_does_not_exist(workspace, tmp_path):
@@ -345,8 +372,11 @@ def test_a_directory_snapshot_is_extracted_once_and_then_reused(
     sha = _commit(repo, "docs/a.md", "a1\n", "Add docs/a")
 
     first = v.main(action="snapshot", file=str(repo / "docs"), sha=sha)
-    marker = os.path.join(first["dir"], ".fused-snapshot-complete")
-    assert os.path.isfile(marker)
+    # BESIDE the tree, not inside it: everything inside is content the
+    # snapshot's own listing shows, and a marker row in a browsable historical
+    # tree is a file the user never wrote and cannot explain.
+    assert os.path.isfile(first["dir"] + ".complete")
+    assert ".fused-snapshot-complete" not in os.listdir(first["dir"])
     # Prove the reuse rather than assert the path twice: a hand-edit of the
     # extracted tree survives a second call iff nothing re-extracted.
     with open(os.path.join(first["dir"], "a.md"), "w", encoding="utf-8") as f:
@@ -355,6 +385,30 @@ def test_a_directory_snapshot_is_extracted_once_and_then_reused(
     assert again["dir"] == first["dir"]
     with open(os.path.join(again["dir"], "a.md"), encoding="utf-8") as f:
         assert f.read() == "touched\n"
+
+
+def test_a_snapshot_extracted_by_an_older_build_is_still_reused(
+        workspace, tmp_path):
+    # Cache compat: snapshots already on disk carry the marker INSIDE the tree.
+    # Both locations are read and only the new one written, so an upgrade is not
+    # a silent cache wipe (re-extracting every commit the user has ever opened).
+    v = _load("versions")
+    repo = _plain_repo(workspace, tmp_path)
+    sha = _commit(repo, "docs/a.md", "a1\n", "Add docs/a")
+    first = v.main(action="snapshot", file=str(repo / "docs"), sha=sha)
+
+    # Rewind to exactly what an older build left behind.
+    os.remove(first["dir"] + ".complete")
+    legacy = os.path.join(first["dir"], ".fused-snapshot-complete")
+    with open(legacy, "w", encoding="utf-8") as f:
+        f.write("whatever\n")
+    with open(os.path.join(first["dir"], "a.md"), "w", encoding="utf-8") as f:
+        f.write("touched\n")
+
+    again = v.main(action="snapshot", file=str(repo / "docs"), sha=sha)
+    assert again["dir"] == first["dir"]
+    with open(os.path.join(again["dir"], "a.md"), encoding="utf-8") as f:
+        assert f.read() == "touched\n"   # not re-extracted
 
 
 def test_a_directory_and_a_file_snapshot_of_one_path_never_collide(
@@ -460,7 +514,7 @@ def test_snapshot_of_a_file_materialises_that_revision_only(workspace, tmp_path)
         assert f.read() == "# one\n"
     # Only that file is archived: outside an app the surrounding directory is
     # the user's repository and could be enormous.
-    assert set(os.listdir(res["dir"])) == {"notes.md", ".fused-snapshot-complete"}
+    assert set(os.listdir(res["dir"])) == {"notes.md"}
     # A revision that predates the file is a clean error, not an empty preview.
     older = v.main(action="snapshot", file=str(repo / "other.md"), sha=first)
     assert "error" in older
@@ -712,9 +766,13 @@ def test_a_directory_snapshot_is_framed_as_a_browsable_tree():
     src = _html()
     assert "snap.browse" in src
     assert "/explorer/embed/" in src
-    # ...with the listing's OWN split pane suppressed: it is already inside a
-    # preview column, and two previews deep is neither of them readable.
+    # ...with the listing's OWN split pane suppressed (it is already inside a
+    # preview column, and two previews deep is neither of them readable), and
+    # under the frozen-tree framing, which drops the chrome that would act on a
+    # snapshot as a live folder — the breadcrumb walking up into the cache's
+    # internals, and the chips offering a chat on the extracted copy.
     assert "preview=false" in src
+    assert "snapshot=1" in src
     # And nothing drops the preview column any more: the split is the one
     # layout, for all three kinds.
     assert "enterNoPreview" not in src

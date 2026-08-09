@@ -111,13 +111,29 @@ def test_both_gates_take_a_file_inside_any_work_tree(work_tree):
     assert _load("versions").main(target) is True
 
 
-def test_both_gates_take_a_nested_folder_inside_any_work_tree(work_tree):
-    # `versions` used to refuse every directory that was not a fused app, which
-    # is why a folder offered `git` alone. A folder has a history like anything
-    # else does.
+def test_the_two_folder_gates_ask_different_questions(work_tree):
+    # This is where the pair stops being symmetric, and deliberately so.
+    #
+    # `git` is the WORKING TREE of the repository a folder sits in, which every
+    # folder in a work tree has — so it takes them all.
+    #
+    # `versions` previews the target AS IT WAS, so it also asks whether there is
+    # anything to preview: a folder qualifies when it has a top-level page, by
+    # the shared entry rule. Without that half it put a history mode in the
+    # switcher of every directory of every repository the user opens, whose
+    # preview is a listing of a frozen tree.
+    #
+    # The pair is still bound together in the registry (the tests above): what
+    # differs is which targets each GATE answers for, which is the mechanism
+    # that exists for exactly this.
     for target in (str(work_tree), str(work_tree / "pkg")):
         assert _load("git").main(target) is True, target
-        assert _load("versions").main(target) is True, target
+        assert _load("versions").main(target) is False, target
+
+    # ...and the moment such a folder has a page, both take it.
+    (work_tree / "pkg" / "page.html").write_text("<html></html>")
+    assert _load("git").main(str(work_tree / "pkg")) is True
+    assert _load("versions").main(str(work_tree / "pkg")) is True
 
 
 def test_neither_gate_excludes_the_other_on_an_app_folder(tmp_path, monkeypatch):

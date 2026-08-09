@@ -324,6 +324,29 @@ body.embed .preview-header {
   display: none;
 }
 
+/* ── Frozen-tree framing (`?snapshot=1`, router.ts IS_SNAPSHOT) ─────────────
+   A materialised historical snapshot embedded by a view — `versions` extracts a
+   commit into ~/.fused-render/app-versions/<key>/<sha>/ and frames THAT
+   directory, so the listing is a frozen copy rather than a live folder.
+
+   Everything hidden here is chrome that acts on it as a live folder:
+
+     * the BREADCRUMB, whose crumbs walk above the framed directory and straight
+       into the snapshot cache's internals — a path the user never chose, cannot
+       act on, and should not be able to wander into. (`body.embed` hides it
+       already; this stands on its own so the framing does not depend on which
+       route it was reached by.)
+     * the two corner chips, below — the mode chip would offer this frozen tree's
+       "counterpart mode" (a Claude chat ON THE EXTRACTED COPY), and "Open as
+       app" would run one.
+
+   The listing itself stays fully browsable, and its file operations are refused
+   at the mutation boundary rather than here (`server/mount.py::
+   _is_under_snapshot_root`, PT-14) — read-only, not sealed. */
+body.snapshot #breadcrumb {
+  display: none;
+}
+
 /* Directory templates (.zarr etc.) surface their member listing through the
    "Browse contents" chip pinned over the preview. Hidden by default and
    revealed by ONE state: `body.embed`, which hides .preview-header entirely,
@@ -342,12 +365,14 @@ body.embed .preview-header {
    the navigation is what undoes it.
 
    File (non-directory) previews render no chip at all, so embed chrome stays
-   empty for them. */
+   empty for them. And an embed under the frozen-tree framing above renders none
+   either — `:not(.snapshot)` on the reveal, so the chip stays at its default
+   `display: none` rather than being un-hidden and re-hidden. */
 .preview-browse-chip {
   display: none;
 }
 
-body.embed .preview-browse-chip {
+body.embed:not(.snapshot) .preview-browse-chip {
   position: absolute;
   top: 10px;
   right: 10px;
@@ -365,7 +390,7 @@ body.embed .preview-browse-chip {
   cursor: pointer;
 }
 
-body.embed .preview-browse-chip:hover {
+body.embed:not(.snapshot) .preview-browse-chip:hover {
   color: var(--fg);
   border-color: var(--accent);
 }
@@ -378,7 +403,7 @@ body.embed .preview-browse-chip:hover {
   display: none;
 }
 
-body.embed .open-as-app-chip {
+body.embed:not(.snapshot) .open-as-app-chip {
   position: absolute;
   top: 10px;
   left: 10px;
@@ -399,7 +424,7 @@ body.embed .open-as-app-chip {
   cursor: pointer;
 }
 
-body.embed .open-as-app-chip:hover {
+body.embed:not(.snapshot) .open-as-app-chip:hover {
   color: var(--accent);
   border-color: var(--accent);
 }

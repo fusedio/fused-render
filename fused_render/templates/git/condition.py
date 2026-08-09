@@ -160,6 +160,7 @@ def main(path: str) -> bool:
             timeout=_TIMEOUT_S,
             creationflags=(subprocess.CREATE_NO_WINDOW
                            if sys.platform == "win32" else 0),
+            close_fds=False,
         )
         if proc.returncode != 0:
             return False

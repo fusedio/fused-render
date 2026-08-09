@@ -47,6 +47,35 @@ export function rewriteLegacyUrl(url: string): string {
 export const IS_EMBED =
   location.pathname.startsWith(EMBED_PREFIX) ||
   location.pathname === "/explorer/embed";
+
+// A FROZEN TREE, not a live folder: the framing a view uses when it embeds a
+// materialised historical snapshot (`versions`, which extracts a commit into
+// ~/.fused-render/app-versions/<key>/<sha>/ and frames that directory).
+//
+// One flag for three symptoms of one cause, all of which are chrome that acts
+// on the listing AS A LIVE FOLDER and has no meaning over a frozen copy:
+//
+//   * the breadcrumb, whose crumbs walk ABOVE the framed directory — straight
+//     into the snapshot cache's own internals (`~ / .fused-render / branches /
+//     … / app-versions / <hash> / <sha>`), a path the user never chose and
+//     cannot act on;
+//   * the "Browse contents" mode chip, which over a snapshot dir offers the
+//     folder's counterpart mode — a Claude chat ON THE EXTRACTED COPY, which is
+//     nonsense pointed at a frozen tree;
+//   * the "Open as app" chip, same argument.
+//
+// A param and not a prefix (a third `/explorer/frozen/` route) because this is
+// the SAME view of the same path — only its chrome differs — and the shell
+// already carries exactly this kind of framing flag on this exact surface:
+// `preview=false` (the listing's own pane) rides beside it, and `modechip=false`
+// was its predecessor until D237's only producer went away, with the SPEC noting
+// the opt-out "comes back with that caller". This is that caller.
+//
+// Read ONCE at module init, like IS_EMBED: both prefixes are served by full page
+// loads, so the framing cannot change without one, and a value read per render
+// would be a second source of truth for a fact that never moves.
+export const IS_SNAPSHOT =
+  new URLSearchParams(location.search).get("snapshot") === "1";
 // URL prefix for this page's mode. Keeps refresh, in-listing navigation, and
 // param sync (iframe runtime's history.replaceState) inside the active prefix.
 const PREFIX = IS_EMBED ? EMBED_PREFIX : VIEW_PREFIX;

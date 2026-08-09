@@ -306,9 +306,20 @@ def _snapshot(target, sha: str):
     key_src = app if kind == "app" else app + "\0" + pathspec
     key = hashlib.sha1(key_src.encode("utf-8", "surrogateescape")).hexdigest()[:12]
     snap = os.path.join(home_dir(), "app-versions", key, full)
-    marker = os.path.join(snap, ".fused-snapshot-complete")
+    # The completion marker sits BESIDE the extracted tree, not inside it:
+    # anything inside is content the snapshot's own listing shows, and a
+    # `.fused-snapshot-complete` row in a browsable historical tree is a file the
+    # user never wrote and cannot explain. (It only became visible when a
+    # directory snapshot started being LISTED — an app snapshot frames its entry
+    # page, which never shows its siblings.)
+    #
+    # Both locations are READ, because snapshots already on disk carry the old
+    # in-tree marker and re-extracting them would be a pointless cache wipe; only
+    # the new one is ever written.
+    marker = snap + ".complete"
+    legacy_marker = os.path.join(snap, ".fused-snapshot-complete")
 
-    if not os.path.isfile(marker):
+    if not (os.path.isfile(marker) or os.path.isfile(legacy_marker)):
         # `-C app` scopes this for free: git archive run from a subdirectory
         # of the work tree archives only that subtree, with entry names
         # relative to it — so a linked app nested in a larger repository gets
