@@ -604,7 +604,7 @@ def test_the_left_view_is_switchable_through_a_pane_local_leftmode_param():
     """
     page = _pane_source()
     assert 'fused.params.get("leftmode")' in page
-    assert 'fused.params.set("leftmode", leftSel.value)' in page
+    assert 'fused.params.set("leftmode", e.mode)' in page
     # Applied from the param change, beside applySplit — not from the change
     # handler directly, which would be a second code path for the same swap.
     assert "applyLeftMode()" in page
@@ -657,10 +657,54 @@ def test_a_single_view_target_shows_no_picker():
     """A directory target frames its app entry — resolved by app.py, not a stat
     entry at all — and a file with one offerable view has nothing to choose
     between. Either way a one-item control is chrome that cannot do anything, so
-    the <select> ships `hidden` and only unhides when there is a real choice."""
+    the whole control ships `hidden` and only unhides when there is a real
+    choice."""
     page = _pane_source()
-    assert '<select id="leftmode" hidden' in page
+    assert '<div id="leftmode" hidden>' in page
     assert "if (paneEntries.length < 2) return;" in page
+
+
+def test_the_view_picker_sits_at_the_right_hand_end_of_the_panes_own_bar():
+    """The left bar exists to carry this one control, and a lone control hard
+    against the left edge reads as a LABEL for the pane rather than as a switch
+    on it. The auto margin is scoped to `#leftbar`: in the narrow layout the
+    picker shares `#anntools` with `#viewbtn`, which already owns an auto margin
+    there, and a second one would split the free space between the two and float
+    the picker into the middle of the row."""
+    page = _pane_source()
+    assert "#leftbar #leftmode { margin-left: auto; }" in page
+    # Not on the element's own rule, which travels between the two hosts.
+    bare = page[page.index("  #leftmode { position"):]
+    assert "margin-left: auto" not in bare[: bare.index("}")]
+
+
+def test_the_view_picker_shows_each_templates_own_icon():
+    """The rows carry the template's `icon.svg`, which is why this control is a
+    listbox and not a `<select>`: an `<option>` renders text in every engine.
+
+    It needs no new server plumbing, which was the bar the feature was asked
+    under. stat's `templates` entries already carry the icon's ABSOLUTE path
+    (`_icon_for`, PT-11), and `/api/fs/raw` serves it — the same locator every
+    other template in this repo builds. Drawn as a mask filled with
+    `currentColor`, exactly as the shell draws the same file
+    (`templateModeIcon` / `.mode-icon-mask`), so one flat glyph follows the row's
+    ink in both themes and a selected row's icon takes the accent with its label.
+    """
+    page = _pane_source()
+    assert 'aria-haspopup="listbox"' in page
+    assert 'id="leftmodepop" role="listbox"' in page
+    # The icon comes off the entry stat already returned — never a second call.
+    code = _pane_code()
+    icon = code[code.index("function paneModeIcon("):]
+    icon = icon[: icon.index("\n}")]
+    assert "e.icon" in icon
+    assert '"/api/fs/raw?path="' in icon
+    assert "encodeURIComponent(e.icon)" in icon
+    assert "maskImage" in icon
+    # A template with no icon.svg (and the `_render` sentinel, which is not a
+    # folder) falls back to the shell's own lettered box rather than a hole.
+    assert 'el.classList.add("letter")' in icon
+    assert "background-color: currentColor;" in page
 
 
 def test_the_view_picker_sits_on_the_pane_it_controls_in_the_split_layout():
@@ -1169,10 +1213,11 @@ def _node_apply_left_mode(prelude, call):
 _LEFT_STUBS = """
 let framedMode = "markdown", entry = null;
 const frame = { src: "" };
-const leftSel = { options: { length: 0 }, value: "" };
 const FILE = "/w/notes.md";
 let paneRemote = false;
+let synced = null;
 function curLeftEntry() { return entry; }
+function syncLeftPicker(e) { synced = e ? e.mode : null; }
 document = { getElementById: (id) => (id === "leftframe" ? frame : null) };
 """
 
@@ -1193,19 +1238,22 @@ def test_the_framed_mode_is_committed_only_once_the_frame_has_been_pointed():
 entry = { mode: "code" };            // offerable, but no `path` — paneSrcFor throws
 let threw = "";
 try { applyLeftMode(); } catch (e) { threw = e.message; }
-console.log(JSON.stringify({ threw, framedMode, src: frame.src, sel: leftSel.value }));
+console.log(JSON.stringify({ threw, framedMode, src: frame.src, synced }));
 """)
     assert out["threw"], "paneSrcFor must still surface the broken entry"
     assert out["framedMode"] == "markdown", \
         "framedMode named a mode the frame was never pointed at"
     assert out["src"] == ""
+    # And the CONTROL was not left saying the frame moved either.
+    assert out["synced"] is None
 
 
 def test_a_good_switch_still_commits_and_frames():
     out = _node_apply_left_mode(_LEFT_STUBS, """
 entry = { mode: "code", path: "/t/code/template.html" };
 applyLeftMode();
-console.log(JSON.stringify({ framedMode, src: frame.src }));
+console.log(JSON.stringify({ framedMode, src: frame.src, synced }));
 """)
     assert out["framedMode"] == "code"
     assert "%2Ft%2Fcode%2Ftemplate.html" in out["src"]
+    assert out["synced"] == "code"

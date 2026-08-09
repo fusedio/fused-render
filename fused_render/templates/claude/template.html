@@ -212,22 +212,42 @@
      win. */
   #leftbar[hidden] { display: none; }
 
-  /* WHICH view the left pane frames (`leftmode`). A native <select>, quiet to
-     the same degree as #annbtn: borderless, transparent, 12px, the muted colour
-     until hovered. Loud chrome here would read as the pane's TITLE rather than
-     a switch, and the pane's title is the file name in the topbar. Native
-     rather than a custom menu (the shell has one, ModeSwitcher) because a
-     <select> brings the platform popup, keyboard handling and accessible name
-     for free and the list is at most a handful of modes — reimplementing that
-     inside a template buys nothing. Hidden until there is more than one view to
-     choose between; see buildLeftPicker(). It is ONE element that MOVES between
-     the two hosts above (placeLeftPicker), not one per layout: a second copy
-     would be a second value, a second listener and a second thing to keep in
-     step with `leftmode`. */
-  #leftmode {
+  /* WHICH view the left pane frames (`leftmode`): a trigger and its own listbox
+     popup, quiet to the same degree as #annbtn — borderless, transparent, 12px,
+     the muted colour until hovered. Loud chrome here would read as the pane's
+     TITLE rather than a switch, and the pane's title is the file name in the
+     topbar. Hidden until there is more than one view to choose between; see
+     buildLeftPicker(). It is ONE element that MOVES between the two hosts above
+     (placeLeftPicker), not one per layout: a second copy would be a second
+     value, a second listener and a second thing to keep in step with
+     `leftmode`.
+
+     It WAS a native <select>, chosen for the platform popup, keyboard handling
+     and accessible name it brings for free. What overturned that is the ICON: a
+     `<option>` renders text and nothing else in every engine, so a mode list
+     that shows what the shell's own mode menu shows — the template's icon.svg
+     beside its name — cannot be built out of one. The replacement is the same
+     shape the `reader` template's voice menu already uses in this codebase
+     (a button carrying `aria-haspopup="listbox"` over a `role="listbox"` div),
+     and its rows are real <button>s, so focus, Enter and Space stay the
+     platform's job and only the arrows and Escape are ours. */
+  #leftmode { position: relative; flex-shrink: 0; }
+  /* THE RIGHT-HAND END of the pane's own bar. The bar exists to carry this one
+     control, and a lone control hard against the left edge reads as a label for
+     the pane rather than as a switch on it — the same reason #viewbtn parks
+     itself at the end of the strip across the divider. Scoped to #leftbar: in
+     the narrow layout the picker shares #anntools with the annotate switch and
+     the view toggle, where #viewbtn already owns the auto margin and a second
+     one would split the free space between them and float the picker into the
+     middle of the row. */
+  #leftbar #leftmode { margin-left: auto; }
+  #leftmodebtn {
+    display: flex;
+    align-items: center;
+    gap: 6px;
     height: 26px;
-    max-width: 140px;
-    padding: 0 2px;
+    max-width: 160px;
+    padding: 0 6px;
     font: inherit;
     font-size: 12px;
     line-height: 1;
@@ -241,11 +261,73 @@
     cursor: pointer;
     transition: color .12s, background .12s;
   }
-  #leftmode:hover { color: var(--fg); background: var(--surface); }
-  /* The popup list is drawn by the platform, which does not inherit the
-     transparent background — name both colours or a dark theme gets black text
-     on black. */
-  #leftmode option { color: var(--fg); background: var(--panel); }
+  /* Open is a state the trigger has to WEAR: with the popup drawn below it, a
+     trigger that goes back to looking untouched reads as a menu belonging to
+     nothing. */
+  #leftmodebtn:hover,
+  #leftmodebtn[aria-expanded="true"] { color: var(--fg); background: var(--surface); }
+  #leftmodebtn .mode-lbl { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #leftmodebtn .mode-chev { font-size: 9px; flex-shrink: 0; }
+  /* The template's own icon.svg, drawn the way the shell draws it (mode-icon-mask
+     in preview.css): a MASK filled with currentColor, so one flat glyph inherits
+     the row's ink and both themes instead of shipping two colourways. */
+  .mode-ic {
+    display: inline-block;
+    flex-shrink: 0;
+    width: 14px;
+    height: 14px;
+    background-color: currentColor;
+    -webkit-mask-position: center; mask-position: center;
+    -webkit-mask-repeat: no-repeat; mask-repeat: no-repeat;
+    -webkit-mask-size: contain; mask-size: contain;
+  }
+  /* A template folder with no icon.svg (and the `_render` sentinel, which is not
+     a folder at all) gets the shell's own fallback: a lettered box, so the
+     column of icons never goes ragged. */
+  .mode-ic.letter {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: none;
+    border: 1px solid var(--border-strong);
+    border-radius: 3px;
+    font-size: 9px;
+    font-weight: 600;
+  }
+  #leftmodepop {
+    position: absolute;
+    top: calc(100% + 6px);
+    right: 0;
+    z-index: 30;
+    min-width: 172px;
+    padding: 4px;
+    background: var(--panel);
+    border: 1px solid var(--border-strong);
+    border-radius: 10px;
+    box-shadow: 0 6px 24px var(--shadow);
+  }
+  /* `display: flex`-shaped children do not save it: the popup itself is the box
+     the attribute has to hide, and `position: absolute` outranks the UA's
+     `[hidden]` rule the same way #leftbar's `display: flex` does. */
+  #leftmodepop[hidden] { display: none; }
+  .mode-opt {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    padding: 7px 9px;
+    font: inherit;
+    font-size: 12px;
+    line-height: 1;
+    border: 0;
+    border-radius: 7px;
+    background: none;
+    color: var(--fg);
+    cursor: pointer;
+    text-align: left;
+  }
+  .mode-opt:hover, .mode-opt:focus-visible { background: var(--surface-2); }
+  .mode-opt[aria-selected="true"] { color: var(--accent); }
 
   /* "Annotate preview" ⇄ "Back to chat" toggle. Exists for the NARROW layout only
      (see the 880px block at the end of this stylesheet): while both columns are on
@@ -1226,10 +1308,12 @@
       <button id="annbtn" type="button" aria-pressed="false" aria-label="Annotate the preview"
               title="Annotate the preview, then send the notes to Claude"><span
         class="lbl">Annotate</span><span class="track" aria-hidden="true"><span class="knob"></span></span></button>
-      <!-- Which view the LEFT pane frames. Empty and `hidden` in the markup:
-           the options are the target's own preview modes, which only the stat
-           call in paneURL() knows, and there is no picker to show at all unless
-           that call found more than one of them (buildLeftPicker).
+      <!-- Which view the LEFT pane frames. The popup ships EMPTY and the whole
+           control `hidden`: the options are the target's own preview modes,
+           which only the stat call in paneURL() knows, and there is no picker to
+           show at all unless that call found more than one of them
+           (buildLeftPicker). The rows carry each template's own icon.svg, which
+           is why this is a listbox and not a <select> — see the stylesheet.
            It SHIPS here and lives here in the NARROW layout, where this strip is
            the one row both views keep and there is no persistent left column to
            put a bar on. In the split layout placeLeftPicker moves this same
@@ -1237,8 +1321,15 @@
            than there because this is the position that needs no JS to be right:
            a picker in an unbuilt left bar would be a control in a bar that may
            never be shown. -->
-      <select id="leftmode" hidden aria-label="Preview pane view"
-              title="Which view the preview pane shows"></select>
+      <div id="leftmode" hidden>
+        <button id="leftmodebtn" type="button" aria-haspopup="listbox" aria-expanded="false"
+                aria-label="Preview pane view" title="Which view the preview pane shows">
+          <span class="mode-ic" aria-hidden="true"></span>
+          <span class="mode-lbl"></span>
+          <span class="mode-chev" aria-hidden="true">▾</span>
+        </button>
+        <div id="leftmodepop" role="listbox" aria-label="Preview pane view" hidden></div>
+      </div>
       <!-- Chat ⇄ Preview, for the narrow single-view layout only (hidden by CSS
            until the 880px media query reveals it). It sits in THIS strip
            because the strip is the one row that both views keep on screen. -->
@@ -2075,7 +2166,9 @@ async function paneURL() {
 }
 
 // ── the left-view picker ────────────────────────────────────────────────
-const leftSel = document.getElementById("leftmode");
+const leftSel = document.getElementById("leftmode");        // the whole control
+const leftBtn = document.getElementById("leftmodebtn");     // its trigger
+const leftPop = document.getElementById("leftmodepop");     // its listbox
 
 // The shell's `modeTitle` (ModeSwitcher.tsx), reimplemented in four lines: a
 // template is a standalone document and cannot import the shell's TS. Worth the
@@ -2090,27 +2183,111 @@ function paneModeLabel(mode) {
     || mode.charAt(0).toUpperCase() + mode.slice(1);
 }
 
+// The template's own icon.svg, which stat already resolved to an absolute path
+// on the `templates` entry (`_icon_for`, PT-11) — so this needs no new endpoint
+// and no second call: it is served by /api/fs/raw, the locator every other
+// template in this repo builds the same way. Drawn as a MASK filled with
+// currentColor, which is exactly what the shell does with the same file
+// (`templateModeIcon` / .mode-icon-mask), so a selected row's glyph takes the
+// accent along with its label. No icon (a template folder that ships none, and
+// the `_render` sentinel, which is not a folder) → the shell's own fallback, a
+// lettered box, rather than a hole in the column.
+function paneModeIcon(e) {
+  const el = document.createElement("span");
+  el.className = "mode-ic";
+  el.setAttribute("aria-hidden", "true");
+  if (!e.icon) {
+    el.classList.add("letter");
+    el.textContent = paneModeLabel(e.mode).charAt(0).toUpperCase();
+    return el;
+  }
+  const url = 'url("' + location.origin + "/api/fs/raw?path="
+    + encodeURIComponent(e.icon) + '")';
+  el.style.webkitMaskImage = url;
+  el.style.maskImage = url;
+  return el;
+}
+
+// The trigger and the rows both show icon + name, and the rows say which one is
+// current. Called on every swap, so a `leftmode` change from anywhere — a click,
+// a reload, a later param write — leaves the control agreeing with the frame.
+function syncLeftPicker(entry) {
+  if (leftSel.hidden || !entry) return;
+  const ic = paneModeIcon(entry);
+  leftBtn.replaceChild(ic, leftBtn.querySelector(".mode-ic"));
+  leftBtn.querySelector(".mode-lbl").textContent = paneModeLabel(entry.mode);
+  for (const o of leftPop.querySelectorAll(".mode-opt")) {
+    o.setAttribute("aria-selected", o.dataset.mode === entry.mode ? "true" : "false");
+  }
+}
+
+function openLeftPop() {
+  leftPop.hidden = false;
+  leftBtn.setAttribute("aria-expanded", "true");
+}
+function closeLeftPop(refocus) {
+  if (leftPop.hidden) return;
+  leftPop.hidden = true;
+  leftBtn.setAttribute("aria-expanded", "false");
+  // Only when the close was the user's own keystroke: stealing focus back on an
+  // outside click would yank it off whatever they actually clicked.
+  if (refocus) leftBtn.focus();
+}
+
 function buildLeftPicker() {
   // Nothing to pick, no control. An APP FOLDER has exactly one thing to frame —
   // the app entry resolved by app.py, which is not a stat entry, so paneEntries
   // stays empty — an ORDINARY folder has no pane at all (and never reaches here,
   // since the loader returns before calling this), and a file with a single
-  // offerable view has no choice either. A one-item <select> is chrome that
+  // offerable view has no choice either. A one-item picker is chrome that
   // cannot do anything.
   if (paneEntries.length < 2) return;
   for (const e of paneEntries) {
-    const o = document.createElement("option");
-    o.value = e.mode;
-    o.textContent = paneModeLabel(e.mode);
-    leftSel.appendChild(o);
+    // A real <button>, so focus, Enter and Space are the platform's job and the
+    // only keys this file owns are the arrows and Escape.
+    const o = document.createElement("button");
+    o.type = "button";
+    o.className = "mode-opt";
+    o.setAttribute("role", "option");
+    o.setAttribute("aria-selected", "false");
+    o.dataset.mode = e.mode;
+    const lbl = document.createElement("span");
+    lbl.className = "mode-lbl";
+    lbl.textContent = paneModeLabel(e.mode);
+    o.append(paneModeIcon(e), lbl);
+    // The picker writes the PARAM and nothing else; applyLeftMode (driven from
+    // params.onChange, exactly like applySplit) is the only thing that touches
+    // the iframe. One code path for a user click, a reload with `leftmode`
+    // already set, and any later param change.
+    o.onclick = () => { closeLeftPop(true); fused.params.set("leftmode", e.mode); };
+    leftPop.appendChild(o);
   }
-  leftSel.value = framedMode;
   leftSel.hidden = false;
-  // The picker writes the PARAM and nothing else; applyLeftMode (driven from
-  // params.onChange, exactly like applySplit) is the only thing that touches the
-  // iframe. One code path for a user click, a reload with `leftmode` already
-  // set, and any later param change.
-  leftSel.addEventListener("change", () => fused.params.set("leftmode", leftSel.value));
+  syncLeftPicker(curLeftEntry());
+  leftBtn.addEventListener("click", () => {
+    leftPop.hidden ? openLeftPop() : closeLeftPop(false);
+  });
+  leftSel.addEventListener("keydown", (ev) => {
+    if (ev.key === "Escape") { closeLeftPop(true); return; }
+    if (ev.key !== "ArrowDown" && ev.key !== "ArrowUp") return;
+    ev.preventDefault();
+    if (leftPop.hidden) openLeftPop();
+    const opts = Array.from(leftPop.querySelectorAll(".mode-opt"));
+    const at = opts.indexOf(document.activeElement);
+    const down = ev.key === "ArrowDown";
+    // From the TRIGGER (nothing in the list is focused, `at === -1`) Down
+    // enters at the top and Up at the bottom; from inside the list the move
+    // wraps. Written as two cases rather than one modulo, because the modulo
+    // that handles -1 correctly is the kind nobody can read.
+    const next = at === -1 ? (down ? 0 : opts.length - 1)
+                           : (at + (down ? 1 : -1) + opts.length) % opts.length;
+    opts[next].focus();
+  });
+  // Mousedown rather than click, so it beats the trigger's own click and a
+  // second press on the trigger toggles instead of closing-then-reopening.
+  document.addEventListener("mousedown", (ev) => {
+    if (!leftPop.hidden && !leftSel.contains(ev.target)) closeLeftPop(false);
+  });
 }
 
 // ── WHERE the picker lives, which is a layout question, not a state one ──
@@ -2124,11 +2301,11 @@ function buildLeftPicker() {
 // to hang a bar on, and #anntools is the one row BOTH views keep on screen
 // (which is why the Chat ⇄ Preview toggle lives there too).
 //
-// ONE element, MOVED, never two copies: a <select> keeps its options, its value
-// and its `change` listener across a DOM move, so relocating it cannot desync
-// from `leftmode` the way a second control would. The move is skipped when the
-// element is already in the right host, so a params.onChange storm cannot yank
-// an open popup shut.
+// ONE element, MOVED, never two copies: the control is a single subtree —
+// trigger, listbox and every listener — and a DOM move carries all of it, so
+// relocating it cannot desync from `leftmode` the way a second control would.
+// The move is skipped when the element is already in the right host, so a
+// params.onChange storm cannot yank an open popup shut.
 //
 // TDZ, worth stating: this reads NARROW_MQ and calls renderAnn, both declared
 // further down the file. Every caller is reached only AFTER the script has
@@ -2188,7 +2365,7 @@ function applyLeftMode() {
   // ordering is pinned by a test rather than left to be remembered.
   const src = paneSrcFor(t);
   framedMode = t.mode;
-  if (leftSel.options.length) leftSel.value = t.mode;
+  syncLeftPicker(t);
   // ANNOTATIONS SURVIVE THE SWAP, deliberately. Every pin is anchored to an
   // element of the LEFT document (anchorId, or a tag:nth-of-type path), so a new
   // left view invalidates the anchors — the same note points at nothing in
