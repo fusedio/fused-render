@@ -229,6 +229,27 @@
     body.narrow-preview #commits { display: none; }
     body.narrow-preview #main { display: flex; }
   }
+
+  /* ── Single column: a target with no snapshot to frame ────────────────────
+     An ordinary folder in the user's own repository has a timeline but no
+     document to render AS IT WAS, so the view is the history and nothing else
+     — the same answer the chat template gives a folder (it drops its preview
+     pane rather than keeping an empty one). JS removes #main, #divider and the
+     toggle; this is what the surviving column needs.
+
+     `width: 100% !important` for the same reason the narrow block uses it: it
+     is beating the INLINE width applySplit() writes, which no plain rule can,
+     and doing it from CSS keeps applySplit unconditional and stateless. */
+  body.no-preview #side { flex: 1; width: 100% !important; min-width: 0; }
+  /* The notice moved into #side (see enterNoPreview), where an absolute
+     inset: 0 scoped to the departed #stage would have covered the list. */
+  body.no-preview #notice {
+    position: static;
+    padding: 16px 12px;
+    text-align: left;
+    justify-content: flex-start;
+    background: none;
+  }
 </style>
 </head>
 <body>
@@ -287,6 +308,35 @@ NARROW.addEventListener("change", () => {
 
 let commits = [];      // newest first, from versions.py `log`
 let selected = null;   // full sha
+// True once the preview column has been removed (see enterNoPreview): the one
+// flag that stops select() asking for a snapshot there is no frame for.
+let noPreview = false;
+
+// The single-column shape: history full width, no frame, no divider, no toggle.
+// Mirrors the chat template's `enterNoPane` — REMOVE the parts that describe a
+// second column rather than hiding them, so nothing left on the page implies a
+// view that is not coming, and the narrow layout's one-view state goes with
+// them (`narrow-preview` collapses the commit list to show a preview, which
+// would leave a blank page with no preview to show).
+//
+// The `split` param is left alone, deliberately, the same forgiving posture the
+// chat template takes: it describes a layout this target does not have, and
+// deleting it would break an old bookmark's round trip for the day the folder
+// becomes an app and gets its preview back.
+function enterNoPreview() {
+  noPreview = true;
+  document.body.classList.remove("narrow-preview");
+  // The notice is the view's only channel for "no commits yet" and for every
+  // refusal, and it lives INSIDE the column about to be removed. It moves into
+  // the list column first; `body.no-preview` restyles it there (its absolute
+  // inset was scoped to #stage, which is going).
+  document.body.classList.add("no-preview");
+  sideEl.appendChild(noticeEl);
+  for (const id of ["main", "divider", "view-toggle"]) {
+    const el = document.getElementById(id);
+    if (el) el.remove();
+  }
+}
 
 function esc(s) {
   return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;")
@@ -356,6 +406,11 @@ async function select(sha) {
   const isLatest = commits.length && commits[0].sha === sha;
   revertBtn.disabled = isLatest;
 
+  // Nothing to frame, so nothing to prepare: a folder outside a fused app is
+  // log-only (versions.py `_snapshot` refuses it too — the gate is the UX, the
+  // module is the guarantee, MD-11).
+  if (noPreview) return;
+
   notice("Preparing snapshot…");
   try {
     // Cancellation key per template, not per call: picking a new commit
@@ -395,6 +450,13 @@ async function loadLog(preferSha) {
   // offering an action the backend will reject. Older payloads (no
   // `can_revert` key) keep the button — workspace apps always could.
   if (res.can_revert === false) revertBtn.style.display = "none";
+  // A target with no snapshot to frame (an ordinary folder in the user's own
+  // repository — a folder is not a document /render can serve) drops the whole
+  // preview column, exactly as the chat template drops its pane for a folder
+  // rather than keeping an empty one. Answered by the payload's `can_snapshot`,
+  // not guessed from `can_revert`: read-only and un-framable are two different
+  // facts, and a file target is the first but not the second.
+  if (res.can_snapshot === false) enterNoPreview();
   commits = res.commits || [];
   if (!commits.length) return notice("No commits yet.");
   let pick = commits[0].sha;

@@ -747,9 +747,11 @@ def _templates_for(path: str, is_dir: bool):
         # dotfile (".gitignore", ".gitconfig", ".npmrc") never matches, and
         # extensionless files ("Makefile", "LICENSE") have no suffix at all.
         # Rather than the bare metadata card, sniff the bytes and, when they're
-        # text, offer the same viewers .txt gets. Binary keeps the metadata
-        # fallback (empty list).
-        entries, _ = _resolve_mode_list(["text", "code"])
+        # text, offer the code viewer — it renders the same bytes as `text` but
+        # with syntax highlighting, line numbers and an editor, so it is the only
+        # viewer worth offering here. Binary keeps the metadata fallback (empty
+        # list).
+        entries, _ = _resolve_mode_list(["code"])
 
     # Conditional templates (SPEC PT-8): a template folder may gate itself on
     # the file with a `condition.py`. Mark after resolution so gating is

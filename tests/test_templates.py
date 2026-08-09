@@ -329,13 +329,21 @@ def test_unmapped_text_file_falls_back_to_text_viewers(tmp_path):
     ]:
         p = tmp_path / name
         p.write_text(body)
-        assert modes(str(p)) == (["text", "code"], None), name
+        assert modes(str(p)) == (["code", "text"], None), name
 
 
 def test_unmapped_empty_file_is_text(tmp_path):
     p = tmp_path / ".npmrc"
     p.write_text("")
-    assert modes(str(p)) == (["text", "code"], None)
+    assert modes(str(p)) == (["code", "text"], None)
+
+
+def test_text_sniff_fallback_offers_code_only(tmp_path):
+    # `code` renders the same bytes as `text` but better, so the sniff fallback
+    # offers it alone — no `text` peer to switch to.
+    p = tmp_path / ".gitignore"
+    p.write_text("node_modules\n*.log\n")
+    assert modes(str(p)) == (["code"], None)
 
 
 def test_unmapped_binary_file_stays_metadata(tmp_path):

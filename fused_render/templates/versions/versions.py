@@ -1,7 +1,7 @@
-"""Git backend for the `versions` template: history of a *fused app*, or of a
-single *file* (D235).
+"""Git backend for the `versions` template: history of a *fused app*, of a
+single *file*, or of an ordinary *directory* — anywhere git works.
 
-There are exactly two kinds of target, resolved once per call by
+There are exactly three kinds of target, resolved once per call by
 `_resolve_target`, and the difference between them is the whole shape of this
 module:
 
@@ -9,10 +9,18 @@ module:
   (`<workspace>/<tag>/<name>`, see `condition.py`), where the module operates on
   the WHOLE app: the repo is the app, not the file. Writable (`revert`).
 * **A file** — a single tracked file in whatever repository it happens to live
-  in, scoped to that one path. This is the file-side history view now that the
-  `git` mode is directory-only (D235), and it is **read-only**: `revert` is
-  refused, because the repository is the user's own and a revert commit carries
-  the Fused identity (the rule linked apps already live by).
+  in, scoped to that one path. **Read-only**: `revert` is refused, because the
+  repository is the user's own and a revert commit carries the Fused identity
+  (the rule linked apps already live by).
+* **A directory** — an ordinary folder inside any git work tree, scoped to its
+  own subtree. Read-only for the same reason, and additionally **log-only**: a
+  folder is not a document, so there is nothing for `snapshot` to materialise
+  into a frame (see `_snapshot`).
+
+Everything outside a fused app is resolved by asking GIT where the work tree is
+(`rev-parse --show-toplevel`), never by workspace-relative path arithmetic —
+the discipline `git/log.py` follows, and the only one that answers correctly for
+nested repos, worktrees and submodules.
 
 Three actions:
 
@@ -68,7 +76,8 @@ if "__file__" not in globals():
 _SHARED = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "shared")
 if _SHARED not in sys.path:
     sys.path.insert(0, _SHARED)
-from appenv import home_dir, linked_app_dir_for, workspace_dir  # noqa: E402
+from appenv import (  # noqa: E402
+    home_dir, is_mount_backed, linked_app_dir_for, workspace_dir)
 
 # Mirrors fused_render/app_git.py `_IDENTITY`; keep in step.
 _IDENTITY = ["-c", "user.name=Fused", "-c", "user.email=apps@fused.io"]
@@ -162,34 +171,62 @@ def _resolve_target(file: str):
 
     A target is `(kind, cwd, pathspec, name)`, and every git invocation below is
     built from it: `-C cwd` and `-- <pathspec>`. `name` is the file's basename for
-    a file target and "" for an app one — the pathspec is for git, `name` is for
-    finding the file again inside an extracted snapshot.
+    a file target and "" for the two whole-subtree ones — the pathspec is for
+    git, `name` is for finding the file again inside an extracted snapshot.
 
       ("app",  <app dir>,        ".",                     "")
           A fused app or a git-backed linked app, scoped to the app's own
           subtree. Writable: `revert` is offered for a workspace app.
       ("file", <the file's dir>, ":(literal)<basename>", <basename>)
           A single tracked file in whatever repository it happens to live in —
-          the file-side history view, since `git` is directory-only now (D235).
-          READ-ONLY, always: `main` refuses `revert` for this kind, because the
-          repository is the user's own and a revert commit carries the Fused
-          identity. Same rule, same reason, as a linked app.
+          the file-side history view. READ-ONLY, always: `main` refuses `revert`
+          for this kind, because the repository is the user's own and a revert
+          commit carries the Fused identity. Same rule, same reason, as a linked
+          app.
+      ("dir",  <the directory>,  ".",                     "")
+          An ordinary directory inside any git work tree — the folder-side
+          history view, and the one this module used to have no answer for at
+          all. `condition.py` was widened to offer `versions` on any path in a
+          work tree (the `git` mode is the WORKING TREE view now and draws no
+          history), and this was left behind: the gate said yes and the log said
+          "not inside a fused app folder". READ-ONLY like "file", and for the
+          same reason. Membership is asked of GIT (`_repo_root`), never of
+          workspace-relative path arithmetic — the discipline `git/log.py`
+          follows, and the only one that gets nested repos, worktrees and
+          submodules right.
 
-    App-ness is asked FIRST, so a file inside an app keeps the app's history
-    (the timeline the auto-commits actually produced) rather than being demoted
-    to its own single-file log. The pathspec is `:(literal)`-wrapped so a
-    filename holding `*`, `?`, `[` or a leading `:` is matched as itself rather
-    than as a glob or as pathspec magic — the discipline `git/log.py` documents.
+    App-ness is asked FIRST, so a file or folder inside an app keeps the app's
+    history (the timeline the auto-commits actually produced) rather than being
+    demoted to its own log. The pathspec is `:(literal)`-wrapped so a filename
+    holding `*`, `?`, `[` or a leading `:` is matched as itself rather than as a
+    glob or as pathspec magic — the discipline `git/log.py` documents.
+
+    A MOUNT-BACKED path is refused before anything stats it, matching the gate:
+    git over an rclone-NFS mount stats and lists its way through the work tree,
+    which is the exact pattern that wedges a flat million-key S3 prefix.
     """
+    if not file:
+        return None, {"error": "no target (missing _file param?)"}
+    try:
+        mounted = is_mount_backed(file)
+    except Exception:  # noqa: BLE001 — cannot tell -> refuse (CT-12)
+        return None, {"error": "cannot tell whether this path is on a remote "
+                               "mount, so git history is not offered here"}
+    if mounted:
+        return None, {"error": "this path is on a remote mount, where git "
+                               "history is not offered"}
+
     app, _err = _require_app(file)
     if app:
         return ("app", app, ".", ""), None
 
-    # Not an app target. A file still has a history of its own; a directory does
-    # not get one here (that is the `git` mode's story — see condition.py).
+    # Not an app target. Both remaining kinds are somebody else's repository,
+    # and git's own ascent is what decides whether there is one.
     path = os.path.abspath(file)
-    if not file or os.path.isdir(path):
-        return None, {"error": "not inside a fused app folder"}
+    if os.path.isdir(path):
+        if not _repo_root(path):
+            return None, {"error": "this folder is not in a git repository"}
+        return ("dir", path, ".", ""), None
     # An EXISTING regular file, the same `isfile` the gate insists on rather than
     # `not isdir`. Without it a missing name inside a repository resolves to a
     # perfectly valid file target, and `log` answers with an empty-but-successful
@@ -241,13 +278,29 @@ def _log(target):
             ts = 0
         commits.append({"sha": sha, "ts": ts, "subject": subject})
     # `can_revert` drives the UI: revert is refused server-side for linked apps
-    # and for file targets (see main), so the button must not be offered either.
-    return {"app": app, "commits": commits,
+    # and for file and dir targets (see main), so the button must not be offered
+    # either. `kind` is reported for the same reason one layer up — the view's
+    # LAYOUT differs by target (a plain folder has no snapshot to frame, so it
+    # drops its preview column outright, the way the chat template drops its
+    # pane for a folder), and a page that guessed the kind from `can_revert`
+    # would be reading one fact to answer a different question.
+    return {"app": app, "commits": commits, "kind": kind,
+            "can_snapshot": kind != "dir",
             "can_revert": kind == "app" and not _is_linked(app)}
 
 
 def _snapshot(target, sha: str):
     kind, app, pathspec, name = target
+    # An ordinary folder has nothing to materialise INTO a view: a directory is
+    # not a document /render can serve, so the extracted tree would be framed by
+    # nothing. Refused rather than extracted-and-then-not-shown, because the
+    # extraction is the expensive half — this is the user's own repository, and
+    # a subtree of it, per commit, unpacked under the shell home is a cost paid
+    # for a preview that was never going to appear. The view knows too
+    # (`can_snapshot`); this is the module's own guarantee (MD-11).
+    if kind == "dir":
+        return {"error": "a folder outside a fused app has no page to show as "
+                         "it was — its history is the view"}
     full = _resolve_sha(app, sha)
     if full is None:
         return {"error": "unknown revision"}
@@ -387,13 +440,14 @@ def main(action: str = "log", file: str = "", sha: str = ""):
         if action == "revert":
             # The security boundary, not just UI politeness: a revert records a
             # commit with the Fused identity and resets the working tree. Only a
-            # WORKSPACE app is ours to do that to. A linked app's repo and a
-            # standalone file's repo are both the user's own — history is
-            # view-only there, and this refusal is what makes the read-only
-            # promise in condition.py true even for a hand-crafted call.
+            # WORKSPACE app is ours to do that to. A linked app's repo, a
+            # standalone file's and a plain folder's are all the user's own —
+            # history is view-only there, and this refusal is what makes the
+            # read-only promise in condition.py true even for a hand-crafted
+            # call, now that the gate offers every path in a work tree.
             if kind != "app":
-                return {"error": "revert is disabled outside fused apps — "
-                                 "this file's git history is managed by you"}
+                return {"error": "revert is disabled outside fused apps — this "
+                                 "git history is managed by you"}
             if _is_linked(app):
                 return {"error": "revert is disabled for linked apps — "
                                  "this folder's git history is managed by you"}

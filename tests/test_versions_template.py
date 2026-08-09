@@ -266,6 +266,86 @@ def test_a_pathspec_magic_filename_is_matched_literally(workspace, tmp_path):
         assert f.read() == "bracketed\n"
 
 
+def test_log_for_a_plain_directory_is_scoped_to_its_subtree(workspace, tmp_path):
+    # The gate offers `versions` on any path in a work tree, and this module had
+    # no answer for the plain-directory half of that: it fell through the app
+    # rule and refused with "not inside a fused app folder" while the mode sat
+    # in the switcher offering history for the folder.
+    v = _load("versions")
+    repo = _plain_repo(workspace, tmp_path)
+    _commit(repo, "docs/a.md", "a1\n", "Add docs/a")
+    _commit(repo, "src/b.py", "b = 1\n", "Add src/b")
+    _commit(repo, "docs/c.md", "c1\n", "Add docs/c")
+
+    res = v.main(action="log", file=str(repo / "docs"))
+    assert [c["subject"] for c in res["commits"]] == ["Add docs/c", "Add docs/a"]
+    assert res["kind"] == "dir"
+    # The repo ROOT is a directory in a work tree like any other.
+    assert [c["subject"] for c in v.main(action="log", file=str(repo))["commits"]] == \
+        ["Add docs/c", "Add src/b", "Add docs/a"]
+
+
+def test_a_plain_directory_is_read_only_and_has_nothing_to_frame(
+        workspace, tmp_path):
+    # Two different facts, reported separately: the repository is the user's own
+    # (no revert, the Fused-identity rule), and a folder is not a document
+    # /render can serve (no snapshot to frame). The second is why the view drops
+    # its preview column for this kind rather than keeping an empty one.
+    v = _load("versions")
+    repo = _plain_repo(workspace, tmp_path)
+    sha = _commit(repo, "docs/a.md", "a1\n", "Add docs/a")
+    before = _shas(repo)
+
+    res = v.main(action="log", file=str(repo / "docs"))
+    assert res["can_revert"] is False
+    assert res["can_snapshot"] is False
+
+    # And refused at the module, not only hidden in the page (MD-11).
+    snap = v.main(action="snapshot", file=str(repo / "docs"), sha=sha)
+    assert "error" in snap
+    rev = v.main(action="revert", file=str(repo / "docs"), sha=sha)
+    assert "error" in rev and "managed by you" in rev["error"]
+    assert _shas(repo) == before
+    assert _git(repo, "status", "--porcelain").stdout.strip() == ""
+    # Nothing was extracted for a preview that was never going to appear.
+    assert not os.path.isdir(os.path.join(str(tmp_path / "home"), "app-versions"))
+
+
+def test_a_directory_outside_any_repository_is_still_refused(workspace, tmp_path):
+    # Unchanged behaviour, and the reason the membership question is asked of
+    # GIT rather than of workspace-relative path arithmetic.
+    v = _load("versions")
+    plain = tmp_path / "just-a-folder"
+    plain.mkdir()
+    assert "error" in v.main(action="log", file=str(plain))
+
+
+def test_an_app_directory_still_resolves_as_an_app(workspace):
+    # App-ness is asked FIRST, or a workspace app would be demoted to a plain
+    # directory target and silently lose `revert` — the timeline the auto-
+    # commits actually produced is the app's, not a folder's.
+    v = _load("versions")
+    d = _make_app(workspace)
+    res = v.main(action="log", file=str(d))
+    assert res["kind"] == "app"
+    assert res["can_revert"] is True
+    assert res["can_snapshot"] is True
+
+
+def test_a_mount_backed_target_is_refused_before_git_is_asked(workspace, tmp_path):
+    # Same refusal the gate makes, for the same reason: git over a kernel NFS
+    # mount stats and lists its way through the work tree. The module holds the
+    # line for a hand-crafted call, which the gate cannot.
+    v = _load("versions")
+    mount = tmp_path / "home" / "mounts" / "remote"
+    mount.mkdir(parents=True)
+    _git(mount, "init", "-q")
+    _commit(mount, "notes.md", "# one\n", "Add notes")
+    for target in (str(mount), str(mount / "notes.md")):
+        got = v.main(action="log", file=target)
+        assert "error" in got and "mount" in got["error"]
+
+
 def test_actions_refuse_paths_outside_apps(workspace, tmp_path):
     # Still all errors after D235, but for three different reasons now that a
     # file target is legal: `log` because the repo has no commits at all,
@@ -507,3 +587,21 @@ def test_narrow_layout_neutralises_the_inline_split_width():
     assert "showNarrow" not in select_body
     # And the load path opens on the list, never on an unvisited preview.
     assert 'showNarrow("list");' in html
+
+
+def test_the_view_drops_its_preview_column_when_there_is_nothing_to_frame():
+    # The layout answer for the third target kind, mirroring the chat template's
+    # `enterNoPane`: the parts that describe a second column are REMOVED, not
+    # hidden, so nothing left on the page implies a view that is not coming.
+    src = _html()
+    assert "can_snapshot === false" in src
+    body = src[src.index("function enterNoPreview"):]
+    body = body[: body.index("\n}")]
+    for gone in ("main", "divider", "view-toggle"):
+        assert '"' + gone + '"' in body
+    # The narrow layout's one-view state must go with them: `narrow-preview`
+    # hides the commit list to show a preview that no longer exists.
+    assert 'classList.remove("narrow-preview")' in body
+    # And the inline split width is beaten from CSS, the same way the narrow
+    # block does it — applySplit stays unconditional and stateless.
+    assert "body.no-preview #side { flex: 1; width: 100% !important" in src
