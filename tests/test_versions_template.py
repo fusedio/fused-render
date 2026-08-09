@@ -387,6 +387,48 @@ def test_a_directory_snapshot_is_extracted_once_and_then_reused(
         assert f.read() == "touched\n"
 
 
+def test_a_folder_with_a_page_previews_that_page_not_a_file_listing(
+        workspace, tmp_path):
+    # The gate admits a folder BECAUSE `entry_html` finds a top-level page, so
+    # the snapshot has to resolve the page with the same predicate — otherwise
+    # the very folders the gate lets in preview as a file listing of themselves,
+    # which is what the user saw: "the versions template does not render the
+    # comfy.html file and instead shows me a file explorer in split view".
+    v = _load("versions")
+    repo = _plain_repo(workspace, tmp_path)
+    _commit(repo, "tool/readme.md", "docs\n", "Add docs")
+    before_page = _shas(repo)[0]
+    _commit(repo, "tool/tool.html", "<html>v1</html>", "Add the page")
+
+    snap = v.main(action="snapshot", file=str(repo / "tool"), sha=_shas(repo)[0])
+    assert os.path.basename(snap["entry"]) == "tool.html"
+    assert snap["browse"] is None
+
+    # Per-COMMIT, not per-target: the revision before the page existed has no
+    # page to frame, so it browses. That is the whole reason the shape rides on
+    # the snapshot payload rather than on the target's kind.
+    older = v.main(action="snapshot", file=str(repo / "tool"), sha=before_page)
+    assert older["entry"] is None
+    assert older["browse"] == older["dir"]
+
+
+def test_a_folder_snapshot_resolves_its_page_by_the_shared_rule(
+        workspace, tmp_path):
+    # Same rule as the app branch, and as the gate: index.html wins, and a
+    # folder with no top-level page browses. One predicate across all of it, or
+    # the gate offers a mode whose preview disagrees with why it was offered.
+    v = _load("versions")
+    repo = _plain_repo(workspace, tmp_path)
+    _commit(repo, "site/zzz.html", "<html>z</html>", "Add zzz")
+    _commit(repo, "site/index.html", "<html>i</html>", "Add index")
+    snap = v.main(action="snapshot", file=str(repo / "site"), sha=_shas(repo)[0])
+    assert os.path.basename(snap["entry"]) == "index.html"
+
+    _commit(repo, "data/rows.csv", "a,b\n", "Add data")
+    plain = v.main(action="snapshot", file=str(repo / "data"), sha=_shas(repo)[0])
+    assert plain["entry"] is None and plain["browse"] == plain["dir"]
+
+
 def test_a_snapshot_extracted_by_an_older_build_is_still_reused(
         workspace, tmp_path):
     # Cache compat: snapshots already on disk carry the marker INSIDE the tree.

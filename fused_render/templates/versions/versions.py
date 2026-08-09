@@ -14,9 +14,10 @@ module:
   (the rule linked apps already live by).
 * **A directory** — an ordinary folder inside any git work tree, scoped to its
   own subtree. Read-only for the same reason. Its snapshot is the subtree at
-  that commit, archived exactly as an app's is, and reported as something to
-  **browse** (`browse`) rather than to render: a folder is not a document, so
-  the view frames it through the shell's chrome-free directory listing.
+  that commit, archived exactly as an app's is, and shown exactly as an app's
+  is: its **page** when the extracted tree has one (the shared entry rule — the
+  same predicate the gate admits the folder by), else the tree itself to
+  **browse** (`browse`).
 
 Everything outside a fused app is resolved by asking GIT where the work tree is
 (`rev-parse --show-toplevel`), never by workspace-relative path arithmetic —
@@ -31,12 +32,15 @@ Three actions:
                extracted into a per-target, per-commit dir under the shell home
                (`~/.fused-render/app-versions/<key>/<sha>/`); a commit is
                immutable, so an existing complete snapshot is reused as-is.
-               An app reports its `entry` page for `/render?path=`; a file
-               reports the materialised `file` (plus `entry` when the file is
-               itself a page), and the view frames non-page files through their
-               own default template; a directory reports `browse` — the
-               extracted tree, which the view frames through
-               `/explorer/embed/<path>`, the shell's chrome-free listing.
+               A TREE (an app or a directory) reports its `entry` page for
+               `/render?path=` when the extracted tree has one; a file reports
+               the materialised `file` (plus `entry` when the file is itself a
+               page), and the view frames non-page files through their own
+               default template. A tree with NO page reports `browse` — the
+               extracted tree, framed through `/explorer/embed/<path>`, the
+               shell's chrome-free listing. Which of the two a tree gets is a
+               fact about the COMMIT, not the target: a revision predating the
+               page browses, the next one renders.
 * `revert`   — restore the working tree AND index to the selected commit and
                record that as a NEW commit on top ("Reverted to <sha> — …").
                History is never rewritten: revert of a revert works, and
@@ -402,36 +406,43 @@ def _snapshot(target, sha: str):
         return {"app": app, "sha": full, "dir": snap, "file": out,
                 "browse": None, "entry": out if is_page else None}
 
-    # Both remaining kinds materialise a TREE, and there are exactly two ways to
-    # show one:
+    # Both remaining kinds materialise a TREE, and ONE rule decides how it is
+    # shown — the shared app-entry rule, asked of the EXTRACTED tree:
     #
-    #   `entry`  — a page /render can serve directly. Only an APP resolves one,
-    #              by the shared app-entry rule (index.html first, else the
-    #              first top-level .html — shared/app_entry.py), NOT a
-    #              hardcoded index.html: an app whose page is `main.html` must
-    #              preview its history exactly like it renders live.
-    #   `browse` — the extracted tree itself, framed by the view through
-    #              `/explorer/embed/<path>`, the shell's own chrome-free
-    #              directory listing. This is what a DIRECTORY always gets: a
-    #              folder is not a document, and the explorer's answer for a
-    #              folder is a listing, not a guess at which page inside it is
-    #              "the" one.
+    #   `entry`  — the page it resolves (index.html first, else the first
+    #              top-level .html — shared/app_entry.py), served directly by
+    #              /render. Never a hardcoded index.html: a folder whose page is
+    #              `main.html` must preview its history exactly like it renders
+    #              live.
+    #   `browse` — no page: the extracted tree itself, framed by the view
+    #              through `/explorer/embed/<path>`, the shell's own chrome-free
+    #              directory listing.
     #
-    # An app with NO entry page gets `browse` too, and that is a dead end
-    # removed: such a snapshot used to answer `entry: None` and the view drew
-    # "this revision has no entry page — nothing to render" over a tree full of
-    # files the user could perfectly well have looked at. An app whose page
-    # arrived in a later commit is the common way to meet it — the timeline's
-    # early half was unviewable.
+    # The rule is shared with the GATE deliberately, and that is not a tidiness
+    # argument — it is the same predicate `versions/condition.py` uses to decide
+    # a folder is worth offering this mode at all. Resolving the page for an app
+    # and not for a directory made the gate and the view disagree about the very
+    # folders the gate had just admitted: they were offered `versions` BECAUSE
+    # they have a page, and then previewed as a file listing of themselves.
+    # (Which is exactly how it was found — "the versions template does not
+    # render the comfy.html file and instead shows me a file explorer".)
+    #
+    # Asked per COMMIT, of the extracted tree rather than of the live folder, so
+    # a revision that predates the page browses and the one after it renders.
+    # That is also why the shape rides on the SNAPSHOT payload and not on the
+    # target's kind: within one timeline it changes.
+    #
+    # A tree with no page is not a dead end either. It used to answer
+    # `entry: None` and the view drew "this revision has no entry page —
+    # nothing to render" over a tree full of files the user could perfectly well
+    # have looked at.
     #
     # Two fields rather than one overloaded key, because the two are framed by
     # DIFFERENT routes; one key meaning both is how a folder ends up handed to a
     # document renderer.
-    entry = None
-    if kind == "app":
-        from app_entry import entry_html
+    from app_entry import entry_html
 
-        entry = entry_html(snap)
+    entry = entry_html(snap)
     return {"app": app, "sha": full, "dir": snap, "file": None,
             "browse": None if entry else snap, "entry": entry}
 
