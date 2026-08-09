@@ -111,7 +111,7 @@ def test_reader_is_the_last_mode_on_text_keys():
         "/x/data.csv": ["duckdb", "excel", "code", "claude", "versions", "git",
                         "reader"],
         "/x/paper.pdf": ["pdf", "pdf_studio", "reader"],
-        "/x/log.txt": ["code", "text", "claude", "versions", "git", "reader"],
+        "/x/log.txt": ["code", "claude", "versions", "git", "reader"],
     }
     for path, expected in cases.items():
         got, error = modes(path)
@@ -121,20 +121,29 @@ def test_reader_is_the_last_mode_on_text_keys():
         assert got[-1] == "reader", path      # always last
 
 
-def test_code_outranks_text_on_every_key_that_offers_both():
+def test_no_builtin_key_binds_text():
     # `text` and `code` render the same bytes; `code` just renders them better
-    # (syntax, line numbers, an editor). Wherever a key offers both, `code`
-    # comes first — which on `.txt` also makes it the default. Derived from the
-    # registry rather than spelled out per key, so a key added later is covered.
+    # (syntax, line numbers, an editor), so no built-in key offers `text` at
+    # all — the plain viewer survives only as a template a user registry can
+    # bind by hand. Derived from the registry rather than spelled out per key,
+    # so a key added later is covered.
     with open(os.path.join(server.TEMPLATES_DIR, "registry.json"),
               encoding="utf-8") as f:
         registry = json.load(f)
     offenders = [
         key for key, value in registry.items()
-        if isinstance(value, list) and "text" in value and "code" in value
-        and value.index("code") > value.index("text")
+        if isinstance(value, list) and "text" in value
     ]
     assert offenders == []
+
+
+def test_former_text_keys_still_offer_code():
+    # Dropping `text` must never leave a key without a plain-bytes viewer:
+    # every key that used to lean on it opens in `code` instead.
+    for path in ["/x/readme.txt", "/x/server.log"]:
+        got, error = modes(path)
+        assert error is None, path
+        assert "code" in got, path
 
 
 def test_reader_absent_on_binary_visual_keys():
@@ -318,9 +327,9 @@ def test_unmapped_file_empty_and_plain_dir_lists():
 
 # --------------------------------------------- text sniff for unmapped files
 
-def test_unmapped_text_file_falls_back_to_text_viewers(tmp_path):
+def test_unmapped_text_file_falls_back_to_the_code_viewer(tmp_path):
     # Whole-name dotfiles and extensionless files can't match any suffix key,
-    # but they're plain text -> the sniff offers the same viewers .txt gets.
+    # but they're plain text -> the sniff offers the viewer .txt gets.
     for name, body in [
         (".gitignore", "node_modules\n*.log\n"),
         (".gitconfig", "[user]\n  name = x\n"),
@@ -329,13 +338,13 @@ def test_unmapped_text_file_falls_back_to_text_viewers(tmp_path):
     ]:
         p = tmp_path / name
         p.write_text(body)
-        assert modes(str(p)) == (["code", "text"], None), name
+        assert modes(str(p)) == (["code"], None), name
 
 
 def test_unmapped_empty_file_is_text(tmp_path):
     p = tmp_path / ".npmrc"
     p.write_text("")
-    assert modes(str(p)) == (["code", "text"], None)
+    assert modes(str(p)) == (["code"], None)
 
 
 def test_text_sniff_fallback_offers_code_only(tmp_path):

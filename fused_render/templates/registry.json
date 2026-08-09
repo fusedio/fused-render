@@ -443,7 +443,6 @@
   ],
   ".txt": [
     "code",
-    "text",
     "claude",
     "versions",
     "git",
@@ -452,7 +451,6 @@
   ".log": [
     "log_studio",
     "code",
-    "text",
     "claude",
     "versions",
     "git",
