@@ -24,8 +24,12 @@ Everything outside a fused app is resolved by asking GIT where the work tree is
 the discipline `git/log.py` follows, and the only one that answers correctly for
 nested repos, worktrees and submodules.
 
-Three actions:
+Four actions:
 
+* `has_rev`  — is one sha part of THIS target's log? The question a `rev` deep
+               link has to answer before it is honoured off-page, because in the
+               preview pane the param outlives the target it was set for. See
+               `_has_rev`; the answer is a flag, never an error.
 * `log`      — one PAGE of the commit list, newest first, scoped to the target:
                `skip` rows in, `PAGE_SIZE` (20) rows long, with `more` saying
                whether history continues past it. Never unbounded — outside a
@@ -326,6 +330,42 @@ def _log(target, skip: int = 0):
             "can_revert": kind == "app" and not _is_linked(app)}
 
 
+def _has_rev(target, sha: str):
+    """Is `sha` a commit of THIS target's own log? `{"known": bool, "sha": ...}`.
+
+    The question a deep link has to be able to ask before it is honoured off-page.
+    `rev` is URL state, and in the explorer's PREVIEW PANE that URL outlives the
+    target: pane params mirror onto the explorer's own URL, so selecting another
+    file in the listing reboots this template for the NEW target with the PREVIOUS
+    file's `rev` still on it. Honoured as a deep link, that commit is resolved as
+    given and previews as "this revision has nothing under this folder" — a
+    refusal about a revision the user never picked, for a file they just clicked.
+
+    The probe is the LOG's own machinery, one process, so "in this target's
+    history" means exactly what the spine lists and cannot drift from it:
+    `git log --max-count=1 <full> -- <pathspec>` walks back from `full` through
+    the commits that touch the pathspec, so its FIRST row is `full` itself when
+    `full` is one of them, and some older commit when it is not. Comparing the
+    two is the whole test — merely getting a row back is not, because a commit
+    in the same repository that never touched this path still has ancestors that
+    did (the cross-file case this exists for).
+
+    Membership, not reachability from HEAD: a commit on another branch that does
+    touch the path is still a revision of this target, and snapshotting it has
+    always worked. Unknown or malformed revisions answer `known: False` rather
+    than an error — the caller's next move is a silent fall back to the newest
+    commit (PT-9's forgiving posture for stale URL state), not a notice.
+    """
+    _kind, app, pathspec, _name = target
+    full = _resolve_sha(app, sha)
+    if full is None:
+        return {"known": False, "sha": ""}
+    r = _git(app, "log", "--format=%H", "--max-count=1", full, "--", pathspec)
+    top = r.stdout.strip() if r.returncode == 0 else ""
+    known = top == full
+    return {"known": known, "sha": full if known else ""}
+
+
 def _snapshot(target, sha: str):
     kind, app, pathspec, name = target
     full = _resolve_sha(app, sha)
@@ -540,6 +580,8 @@ def main(action: str = "log", file: str = "", sha: str = "", skip: int = 0):
             return _log(target, skip)
         if action == "snapshot":
             return _snapshot(target, sha)
+        if action == "has_rev":
+            return _has_rev(target, sha)
         if action == "revert":
             # The security boundary, not just UI politeness: a revert records a
             # commit with the Fused identity and resets the working tree. Only a

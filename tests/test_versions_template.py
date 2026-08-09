@@ -415,6 +415,109 @@ def test_a_junk_skip_is_the_first_page_not_an_error(workspace, tmp_path):
         assert res["skip"] == 0
 
 
+# -------------------------------------------------- a stale `rev` deep link
+
+def test_has_rev_recognises_a_commit_of_the_targets_own_log(workspace, tmp_path):
+    # The off-page deep link's own question: page 1 does not hold this commit,
+    # but the target's history does, so the link is honoured as it always was.
+    v = _load("versions")
+    repo = _plain_repo(workspace, tmp_path)
+    shas = _many(repo, 25, rel="notes.md")
+    old = shas[-1]  # the oldest, well past the first page
+
+    res = v.main(action="has_rev", file=str(repo / "notes.md"), sha=old)
+    assert res["known"] is True
+    # Resolved, so the caller never has to re-resolve the prefix it asked with.
+    assert res["sha"] == old
+    assert v.main(action="has_rev", file=str(repo / "notes.md"),
+                  sha=old[:7])["sha"] == old
+
+
+def test_has_rev_rejects_a_commit_that_never_touched_this_target(
+        workspace, tmp_path):
+    # THE BUG. `rev` is URL state, and in the explorer's preview pane it outlives
+    # the target: pick a commit while previewing a.md, then click b.md in the
+    # listing, and the pane reboots the template for b.md with a.md's `rev` still
+    # on the URL. a.md's commit is a perfectly valid commit of this repository —
+    # so `_resolve_sha` says yes and the old deep-link path resolved it as given,
+    # previewing "this revision does not contain that file" about a revision the
+    # user never picked. Membership has to be asked of the TARGET'S log.
+    #
+    # Note what a naive `git log <rev> -- b.md` would answer here: a row, because
+    # b.md's own older commit is an ancestor of a.md's. The test is that the row
+    # IS the rev.
+    v = _load("versions")
+    repo = _plain_repo(workspace, tmp_path)
+    _commit(repo, "b.md", "b1\n", "Add b")
+    a_sha = _commit(repo, "a.md", "a1\n", "Add a")
+
+    assert v.main(action="has_rev", file=str(repo / "b.md"),
+                  sha=a_sha) == {"known": False, "sha": ""}
+    # Same story one level up: a commit that touched nothing under the folder.
+    _commit(repo, "docs/d.md", "d\n", "Add docs/d")
+    top = _commit(repo, "top.md", "t\n", "Add top")
+    assert v.main(action="has_rev", file=str(repo / "docs"),
+                  sha=top)["known"] is False
+
+
+def test_has_rev_answers_a_junk_revision_with_a_flag_not_an_error(
+        workspace, tmp_path):
+    # The caller's next move is a silent fall back to the newest commit, so an
+    # unknown or malformed rev must be the same shape of answer as a known one —
+    # an `error` key here would surface a notice for the ordinary case of a
+    # preview pane moving to another file.
+    v = _load("versions")
+    repo = _plain_repo(workspace, tmp_path)
+    _many(repo, 2)
+    for bad in ("", "zzzzzzz", "not a sha", "0" * 40, "--output=/tmp/x", None):
+        res = v.main(action="has_rev", file=str(repo / "notes.md"), sha=bad)
+        assert res == {"known": False, "sha": ""}, bad
+
+
+def test_has_rev_is_scoped_like_the_log_for_every_kind(workspace, tmp_path):
+    # Whatever `log` lists, `has_rev` accepts — the two share the pathspec so the
+    # spine and the deep link can never disagree about what this target's history
+    # is. An app is the widest scope (its whole subtree), a file the narrowest.
+    v = _load("versions")
+    app = _make_app(workspace)
+    _commit(app, "index.html", "<html>v2</html>", "Edit index")
+    for sha in _shas(app):
+        assert v.main(action="has_rev", file=str(app), sha=sha)["known"] is True
+        assert v.main(action="has_rev", file=str(app / "index.html"),
+                      sha=sha)["known"] is True
+
+    repo = _plain_repo(workspace, tmp_path)
+    _commit(repo, "a.md", "a\n", "Add a")
+    _commit(repo, "sub/b.md", "b\n", "Add sub/b")
+    listed = {c["sha"] for c in v.main(action="log",
+                                       file=str(repo / "sub"))["commits"]}
+    for sha in _shas(repo):
+        assert v.main(action="has_rev", file=str(repo / "sub"),
+                      sha=sha)["known"] is (sha in listed)
+
+
+def test_the_view_verifies_an_off_page_rev_before_honouring_it():
+    # No behavioural seam on this side (it is boot glue around the runPython
+    # bridge), so the pin is on the source: the off-page branch must ask the
+    # backend, must fall through to the newest commit when the answer is no, and
+    # must not grow a second `rev` writer to do it — select() is the one funnel,
+    # and an extra params.set on a pristine entry is an extra history entry.
+    html = _html()
+    body = html.split("async function loadLog(")[1].split("commitsEl.add")[0]
+    assert 'action: "has_rev"' in body
+    # The first-page hit still short-circuits: no round trip for the common case.
+    hit = body.index("commits.find(c => c.sha.startsWith(preferSha))")
+    probe = body.index('action: "has_rev"')
+    assert hit < probe
+    # `pick` starts at the newest commit and is only moved by a verified rev, so
+    # "not in this history" is the fallback rather than a branch of its own.
+    assert "let pick = commits[0].sha;" in body
+    assert "if (known) pick = preferSha;" in body
+    # Selection stays the single params writer.
+    assert 'params.set("rev"' not in body
+    assert html.count('params.set("rev"') == 1
+
+
 def test_the_view_pages_by_skip_and_trusts_the_more_flag():
     # The page size is defined ONCE, in versions.py. The template asks for the
     # next page by `skip` alone and reads `more` off the payload, so a change to

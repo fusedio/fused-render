@@ -560,6 +560,25 @@ async function loadLog(preferSha) {
   // prefix is handed to select() as-is (the backend resolves it), so the link
   // shows the revision it names rather than silently falling back to HEAD, and
   // select() adopts the full sha so the row highlights once paging reaches it.
+  //
+  // Off-page, though, it is VERIFIED first, and that is not belt-and-braces —
+  // `rev` is URL state that outlives the target it was set for. In the
+  // explorer's preview pane the pane's params mirror onto the explorer's own
+  // URL, so selecting a DIFFERENT file in the listing reboots this template for
+  // the new target with the previous file's `rev` still present. Resolved as
+  // given, that commit is one the new file's history has never heard of, and the
+  // first thing the user sees after a click is "this revision has nothing under
+  // this folder" about a revision they never picked. So a rev that is not in
+  // THIS target's log is treated as stale and falls back to the newest commit,
+  // silently — the same forgiving posture the app takes for an unknown `_mode`
+  // (PT-9), and for the same reason: stale URL state is the ordinary case here,
+  // not an error to report. A rev that IS in the history, merely past page one,
+  // keeps the deep link exactly as before.
+  //
+  // No second params writer comes out of this: select() is still the only thing
+  // that writes `rev`, so the fallback re-points the param at the newest commit
+  // through the one funnel (and a pristine entry pushes at most the one history
+  // entry selecting a commit has always pushed).
   let pick = commits[0].sha;
   if (preferSha) {
     const hit = commits.find(c => c.sha.startsWith(preferSha));
@@ -567,7 +586,24 @@ async function loadLog(preferSha) {
     // back to HEAD the way it always did rather than opening on "unknown
     // revision".
     if (hit) pick = hit.sha;
-    else if (/^[0-9a-f]{7,40}$/.test(preferSha)) pick = preferSha;
+    else if (/^[0-9a-f]{7,40}$/.test(preferSha)) {
+      const gen = logGen;
+      let known = false;
+      try {
+        const probe = await fused.runPython("./versions.py",
+          { action: "has_rev", file: FILE, sha: preferSha }, { key: "hasrev" });
+        known = !!(probe && probe.known);
+      } catch (err) {
+        // The probe is a REFINEMENT of the deep link, not a gate on the view:
+        // if it cannot be asked, keep the behaviour it refines rather than
+        // dropping the user's own link on a transport failure.
+        known = true;
+      }
+      // Another reload started while this was in flight — its own selection is
+      // the current one, and selecting here would fight it.
+      if (gen !== logGen) return;
+      if (known) pick = preferSha;
+    }
   }
   await select(pick);
 }
