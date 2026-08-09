@@ -4985,11 +4985,11 @@ wanting "what has this file been through" wants §33.
   page falls back to its own `history` call, whose error channel is what tells the
   user the panel on screen is stale.
 
-- **FH-18** **`claude` shows the snapshots; it does not revert from them.** The
+- **FH-18** **`claude` shows the snapshots AND goes back to them.** The
   panel is a section of the chat template's LANDING page (`#snaps`, beside
   "Recent chats"), fed by `agent.py`'s `action="snapshots"` — a pass-through to
   `file_history.timeline`, adding nothing but the offer. The store stays
-  strictly read-only.
+  strictly read-only; what a restore writes is the TARGET FILE and the sidecar.
   - **The action is not called `history`.** That name is already taken on this
     module by the chat SESSION TRANSCRIPT replay. Two meanings on one action
     name is a collision only ever found in production.
@@ -5004,14 +5004,45 @@ wanting "what has this file been through" wants §33.
     the UX, the module is the guarantee (MD-11).
   - **The boot call does not enrich.** Enrichment reads session transcripts
     (5 MB+) and this runs on every file open, so the panel takes the unenriched
-    timeline — which is why it never claims a chain is complete (FH-3).
+    timeline — which is why it never claims a chain is complete (FH-3). (A
+    `snapshot_plan`/`snapshot_revert` always enriches: it is paid once, on an
+    explicit click, and an unenriched plan cannot see the did-not-exist
+    boundary.)
+  - **The panel is built on EVERY path onto the landing page**, the boot with no
+    session and "Back to chats" alike. A page opened straight into a resumed
+    chat (`?session_id=`) never runs the boot's landing branch, so a panel built
+    only there could never appear for the rest of that page's life.
   - **No store at all → no panel** (Claude Code has never run here: not an empty
     state, a feature that does not apply). **A store with nothing for this
     file → a line of text**, because there the absence is a fact about the file.
     Same distinction `annotate` drew, and the reason the reader returns its own
     empty states as data rather than raising.
-  - **The rows are inert, by construction rather than by a disabled state.**
-    Annotate's revert half — the confirm sheet, the diff disclosure, the
-    pre-revert stash, `revert_plan`/`apply_revert` — is deliberately NOT carried
-    over: it is a destructive write with a multi-step contract, and half a port
-    of that is worse than none. There is nothing here to press that could refuse.
+  - **A row expands to its diff and carries one action: "Go back to this
+    snapshot".** A list that can only be looked at answers no question the user
+    actually has. Clicking a row fetches `action="snapshot_plan"` (never cached
+    — a plan is a statement about the file as it is NOW, and a stale one is how
+    a user confirms one diff and gets another) and renders `revert_plan`'s
+    `diff`, because the counts on the row answer how MUCH changes and never
+    WHAT. The confirm is INLINE — the button becomes "Really go back? Yes / No"
+    — so the diff being confirmed stays on screen; no sheet, no modal.
+  - **The two-call contract is annotate's, unchanged (FH-13/FH-14).**
+    `snapshot_plan` describes, `snapshot_revert` applies and is handed the
+    `id` the plan returned — it never picks a version itself, and refuses
+    outright without one. `unique_current` (the bytes on disk are in no
+    checkpoint, so the write destroys the only copy) additionally demands
+    `confirm_unique`, which the page sends ONLY for that case: a token passed on
+    every call is a token nobody reads. Before the write, the current content is
+    stashed into the sidecar's `revertStash` (`STASH_KEEP` 3, `STASH_BYTE_CAP`
+    256 KB) — and an unwritable target is refused BEFORE that stash, or a failed
+    revert would still have mutated the sidecar. The write answers with the
+    POST-revert enriched `timeline`, so the list never spends a round trip
+    showing the pre-revert position back to the user who just clicked.
+  - **A refusal is shown in the row, not by hiding it.** An unwritable file, a
+    read-only mount, a version the store can no longer resolve: the row stays,
+    states the reason, and offers no button — a row that vanished would read as
+    a bug rather than as an answer.
+  - **Every snapshot action refuses a MOUNT-BACKED path first, before any
+    stat.** The bytes under the mounts dir come from a remote over FUSE and a
+    kernel stat on a wedged mount hangs the worker; `condition.py` already keeps
+    the whole chat template off those paths, and `_snap_target` is the module's
+    own guarantee of the same answer (cannot tell → refuse, CT-12).

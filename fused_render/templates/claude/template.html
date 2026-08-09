@@ -845,8 +845,8 @@
   }
   /* Claude snapshots (SPEC §34). Same visual family as .chat-row — this is
      another "list of past things about this target" on the same landing page —
-     but the rows are INERT: this panel shows the checkpoint chain, it does not
-     revert from it. */
+     and like those rows it is pressable: a row expands to its diff and the one
+     action that goes back to it. */
   #snaps { margin-top: 28px; padding-bottom: 32px; }
   #snaps .head {
     color: var(--faint);
@@ -878,6 +878,55 @@
   .snap-row .snap-d { color: var(--faint); flex-shrink: 0; }
   .snap-row .snap-plus { color: var(--accent); }
   .snap-row .snap-minus { color: var(--faint); }
+  .snap-row .snap-caret { color: var(--faint); font-size: 9px; flex-shrink: 0; }
+  .snap-row { cursor: pointer; }
+  .snap-row:hover { background: var(--surface); }
+  .snap-row:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+  /* An open row and its body are one box: the expansion is part of the row it
+     belongs to, not a panel floating under the list. */
+  .snap-item { margin-bottom: 6px; }
+  .snap-item .snap-row { margin-bottom: 0; }
+  .snap-row.open { border-bottom-left-radius: 0; border-bottom-right-radius: 0;
+                   border-bottom-color: transparent; }
+  .snap-body {
+    border: 1px solid var(--border);
+    border-top: none;
+    border-radius: 0 0 12px 12px;
+    padding: 10px 14px 12px;
+    font-size: 12px;
+  }
+  .snap-row.open + .snap-body { border-color: var(--border-strong); }
+  .snap-diff {
+    background: var(--pre-bg);
+    color: var(--pre-fg);
+    border-radius: 8px;
+    padding: 8px 10px;
+    margin: 0 0 10px;
+    max-height: 240px;
+    overflow: auto;
+    font-size: 11.5px;
+    line-height: 1.45;
+    white-space: pre;
+  }
+  .snap-diff .dl-add { color: var(--ok); }
+  .snap-diff .dl-del { color: var(--error); }
+  .snap-diff .dl-hunk { color: var(--link); }
+  .snap-diff .dl-head { color: var(--faint); }
+  .snap-act { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+  .snap-ask { color: var(--fg); }
+  .snap-go, .snap-no {
+    font: inherit;
+    padding: 5px 12px;
+    border-radius: 999px;
+    border: 1px solid var(--border-strong);
+    background: var(--surface);
+    color: var(--fg);
+    cursor: pointer;
+  }
+  .snap-go { border-color: var(--accent); color: var(--accent); }
+  .snap-go:hover, .snap-no:hover { background: var(--surface-2); }
+  .snap-note { color: var(--faint); flex-basis: 100%; }
+  .snap-err { color: var(--error); }
   #snapsnote { color: var(--faint); font-size: 11.5px; padding: 4px; }
 
   .chat-row {
@@ -3898,6 +3947,11 @@ document.getElementById("back").onclick = () => {
   document.getElementById("recentlist").innerHTML = "";
   document.getElementById("recent").style.display = "";
   loadRecent();
+  // The snapshots panel belongs to the LANDING page, so it is rebuilt on every
+  // path onto it — not just the boot with no session. A page opened straight
+  // into a resumed chat (`?session_id=`) never ran the boot's landing branch, so
+  // without this the panel could never appear for the rest of that page's life.
+  loadSnapshots();
   homebox.focus();
 };
 
@@ -5133,12 +5187,18 @@ async function loadRecent() {
 // store, which stays strictly read-only (it is Claude Code's data, and the very
 // edit history the feature exists to protect).
 //
-// This panel SHOWS the chain; it does not revert from it. Annotate's revert
-// half — the confirm sheet, the diff disclosure, the pre-revert stash — is
-// deliberately not carried over here: it is a destructive write with its own
-// multi-step contract, and half a port of that is worse than none. The rows are
-// inert by construction rather than by a disabled state, so there is nothing to
-// press that could refuse.
+// The panel is INTERACTIVE: a list you can only look at answers no question the
+// user actually has ("can I get that back?"). A row expands in place to the diff
+// between it and the file as it is now, and carries the one action that makes
+// the list mean anything — going back to it.
+//
+// The two-call contract is annotate's, unchanged, because it is the reason the
+// write is safe: `snapshot_plan` describes (diff, counts, whether a copy of the
+// current bytes will be kept), `snapshot_revert` only ever applies the id the
+// plan handed back. The page never names a version to the write itself. The
+// confirm is inline — the row's button turns into "Really go back?" — rather
+// than a sheet: one destructive action, one click to arm it, and the diff the
+// user is confirming stays on screen the whole time.
 
 // What restoring a version would do to the file AS IT IS NOW. `exact:false`
 // means the helper refused to diff (too big, or not text) and only net counts
@@ -5171,11 +5231,18 @@ function snapAgo(sec) {
   return new Date(sec * 1000).toLocaleDateString();
 }
 
+// The timeline the panel is painted from, and the row expanded right now. Page
+// state rather than DOM state, because a revert repaints the whole list from the
+// timeline the write returned and both facts have to survive that.
+let snapTimeline = null;
+let snapOpenId = null;
+
 function renderSnapshots(timeline) {
   const box = document.getElementById("snaps");
   const list = document.getElementById("snapslist");
   const note = document.getElementById("snapsnote");
   if (!box) return;
+  snapTimeline = timeline;
   // No store at all means Claude Code has never run on this machine — that is
   // not an empty state worth a panel, it is "this feature does not apply", so
   // the block stays off the page entirely. A store that exists but holds
@@ -5185,9 +5252,23 @@ function renderSnapshots(timeline) {
   if (box.hidden) return;
   list.textContent = "";
   for (const v of timeline.versions) {
+    // The row and its expansion share one box, so the open body is visibly part
+    // of the row it belongs to rather than a panel floating under the list.
+    const item = document.createElement("div");
+    item.className = "snap-item";
     const row = document.createElement("div");
     const here = v.id === timeline.position;
-    row.className = "snap-row" + (here ? " here" : "");
+    const open = v.id === snapOpenId;
+    row.className = "snap-row" + (here ? " here" : "") + (open ? " open" : "");
+    row.setAttribute("role", "button");
+    row.setAttribute("aria-expanded", open ? "true" : "false");
+    row.tabIndex = 0;
+    const toggle = () => {
+      snapOpenId = open ? null : v.id;
+      renderSnapshots(snapTimeline);
+    };
+    row.onclick = toggle;
+    row.onkeydown = (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggle(); } };
     if (here) row.title = "what is on disk now";
     const dot = document.createElement("span");
     dot.className = "snap-dot";
@@ -5209,10 +5290,168 @@ function renderSnapshots(timeline) {
     const d = document.createElement("span");
     d.className = "snap-d";
     d.append(snapDelta(v));
-    row.append(dot, num, when, d);
-    list.appendChild(row);
+    const caret = document.createElement("span");
+    caret.className = "snap-caret";
+    caret.textContent = open ? "▾" : "▸";
+    row.append(dot, num, when, d, caret);
+    item.append(row);
+    if (open) item.append(snapExpand(v));
+    list.appendChild(item);
   }
   note.textContent = timeline.note || "";
+}
+
+function snapNote(text) {
+  const el = document.createElement("div");
+  el.className = "snap-note";
+  el.textContent = text;
+  return el;
+}
+
+function snapErr(text) {
+  const el = document.createElement("div");
+  el.className = "snap-err";
+  el.textContent = text;
+  return el;
+}
+
+// The expanded row: what going back to this version WOULD do, then the action.
+//
+// The plan is fetched fresh on every expansion and never cached: it is a
+// statement about the file as it is right now, and a stale one is exactly how a
+// user confirms one diff and gets a different one. A refusal (unwritable file, a
+// version the store can no longer resolve) is rendered IN the row — the row is a
+// real thing that exists, and hiding it would read as a bug rather than as an
+// answer.
+function snapExpand(v) {
+  const body = document.createElement("div");
+  body.className = "snap-body";
+  body.append(snapNote("reading this snapshot…"));
+  fused.runPython(AGENT, { action: "snapshot_plan", file: FILE, version_id: v.id }, { key: null })
+    .then((plan) => {
+      body.textContent = "";
+      if (!plan.ok) {
+        body.append(snapErr(plan.error || "this snapshot cannot be restored"));
+        return;
+      }
+      body.append(snapDiff(plan), snapAction(plan));
+    })
+    .catch((err) => {
+      body.textContent = "";
+      body.append(snapErr(err.message));
+    });
+  return body;
+}
+
+// The change itself, because the counts on the row answer how MUCH and never
+// WHAT — and on the one destructive action here the second is the question being
+// confirmed. `reason` is the helper's single channel for every "no diff", the
+// genuinely empty one included, so a missing diff always says why rather than
+// rendering a blank block that reads as broken.
+function snapDiff(plan) {
+  const wrap = document.createElement("div");
+  const d = plan.diff || {};
+  if (!d.lines || !d.lines.length) {
+    wrap.append(snapNote(d.reason || "There is no diff to show for this snapshot."));
+    return wrap;
+  }
+  const pre = document.createElement("pre");
+  pre.className = "snap-diff";
+  for (const ln of d.lines) {
+    const el = document.createElement("span");
+    // The `---`/`+++` file headers before the `+`/`-` test: they open with the
+    // same characters and colouring them as added and removed lines is how a
+    // two-line header reads as part of the change.
+    el.className =
+      ln.startsWith("---") || ln.startsWith("+++") ? "dl-head"
+      : ln.startsWith("@@") ? "dl-hunk"
+      : ln.startsWith("+") ? "dl-add"
+      : ln.startsWith("-") ? "dl-del" : "";
+    el.textContent = ln + "\n";
+    pre.append(el);
+  }
+  wrap.append(pre);
+  if (d.truncated) {
+    wrap.append(snapNote("Showing part of " + d.changed + " changed lines."));
+  }
+  return wrap;
+}
+
+// One button, armed by a click rather than acting on it. The confirm is inline
+// so the diff being confirmed stays on screen underneath it, and the cost is
+// stated BEFORE the click: when the bytes on disk are in no snapshot this write
+// destroys the only copy, and whether a copy is kept is the plan's `stash`
+// answer rather than a permanent hedge.
+function snapAction(plan) {
+  const bar = document.createElement("div");
+  bar.className = "snap-act";
+  const gone = plan.action === "delete";
+  const risk = !plan.unique_current ? ""
+    : plan.stash
+      ? "What is on disk now is in no snapshot — a copy of it is kept for you."
+      : "What is on disk now is in no snapshot, and "
+        + (plan.stash_note || "no copy of it can be kept") + ".";
+  const arm = document.createElement("button");
+  arm.type = "button";
+  arm.className = "snap-go";
+  // No kind noun in any of this copy: the panel is files-only, but a literal
+  // "file" in a spoken string is the sink this page has regressed on three
+  // times (see test_claude_kind), so the wording simply makes no claim.
+  arm.textContent = gone ? "Go back to before it existed"
+                         : "Go back to this snapshot";
+  arm.onclick = () => {
+    bar.textContent = "";
+    const ask = document.createElement("span");
+    ask.className = "snap-ask";
+    ask.textContent = gone ? "Really delete it?" : "Really go back?";
+    const yes = document.createElement("button");
+    yes.type = "button";
+    yes.className = "snap-go";
+    yes.textContent = "Yes";
+    yes.onclick = () => snapGoBack(plan, bar);
+    const no = document.createElement("button");
+    no.type = "button";
+    no.className = "snap-no";
+    no.textContent = "No";
+    no.onclick = () => { bar.textContent = ""; bar.append(arm); if (risk) bar.append(snapNote(risk)); };
+    bar.append(ask, yes, no);
+    if (risk) bar.append(snapNote(risk));
+  };
+  bar.append(arm);
+  if (risk) bar.append(snapNote(risk));
+  return bar;
+}
+
+// The write. It is handed the id the PLAN returned and nothing else — the page
+// never names a version to this action itself, which is the whole of the
+// two-call contract the module also enforces.
+async function snapGoBack(plan, bar) {
+  bar.textContent = "";
+  bar.append(snapNote("going back…"));
+  try {
+    const out = await fused.runPython(AGENT, {
+      action: "snapshot_revert", file: FILE, version_id: plan.id,
+      // Sent only for the case the user was actually shown the loss for: a
+      // token passed on every call is a token nobody reads.
+      confirm_unique: plan.unique_current ? "1" : "",
+    }, { key: null });
+    if (out.error) throw new Error(out.error);
+    // Repaint from the timeline the write returned rather than following with a
+    // second round trip, for the length of which the list would go on showing
+    // the pre-revert position — precisely when the user is staring at it to find
+    // out whether it worked.
+    snapOpenId = null;
+    if (out.timeline) renderSnapshots(out.timeline); else await loadSnapshots();
+    document.getElementById("snapsnote").textContent =
+      (out.action === "delete"
+        ? "Removed — that is how it was at this snapshot."
+        : "Back at this snapshot.")
+      + (out.stashed ? " The previous content was kept, in case."
+                     : out.stash_note ? " " + out.stash_note : "");
+  } catch (err) {
+    bar.textContent = "";
+    bar.append(snapErr(err.message));
+  }
 }
 
 async function loadSnapshots() {
