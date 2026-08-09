@@ -381,10 +381,9 @@ def test_the_wait_and_the_failure_both_keep_the_row(source):
     assert 'snapShow("error");' in body
 
 
-def test_a_loaded_timeline_is_cached_for_the_page(source):
-    # Re-opening the section must not re-ask: the target file cannot change
-    # under the page. Only a successful read arms the cache — a failure has to
-    # be retryable on the next expand.
+def test_a_loaded_timeline_is_cached_until_something_appends_to_the_chain(source):
+    # Re-opening the section must not re-ask. Only a successful read arms the
+    # cache — a failure has to be retryable on the next expand.
     body = source[source.index("async function loadSnapshots"):]
     body = body[: body.index("\n}")]
     assert "snapLoaded = true;" in body
@@ -397,6 +396,30 @@ def test_a_loaded_timeline_is_cached_for_the_page(source):
     revert = revert[: revert.index("\n}\n")]
     assert "renderSnapshots(out.timeline)" in revert
     assert "loadSnapshots()" in revert
+
+
+def test_a_finished_chat_turn_drops_the_cached_timeline(source):
+    # A revert is not the only thing that appends to this chain: Claude edits the
+    # file in the SAME page's chat and Claude Code checkpoints what it edits. The
+    # cache is keyed to nothing but the page, so without this a landing page
+    # reached after a turn showed the pre-turn position, stale deltas and none of
+    # the new versions.
+    inv = source[source.index("function snapInvalidate() {"):]
+    inv = inv[: inv.index("\n}")]
+    assert "snapLoaded = false;" in inv
+    # Collapsed: drop the cache and read NOTHING — a turn is not an expand, and
+    # the whole point of the panel is that it costs no round trip until asked.
+    # Open: refetch now, the way the revert path refuses to leave a stale list up.
+    assert "if (snapExpanded) loadSnapshots();" in inv
+
+    # Hooked at every place a run ENDS, beside annResolveSent — the template's
+    # existing "that turn is over" moment. Both: the poll loop's own `done`
+    # branch, and resumeRun's, for a turn this frame was not attached to.
+    ends = [i for i in range(len(source))
+            if source.startswith("annResolveSent();", i)]
+    assert len(ends) >= 2
+    hooked = sum(1 for i in ends if "snapInvalidate();" in source[i: i + 400])
+    assert hooked >= 2, "a run can end without the snapshots cache being dropped"
 
 
 def test_a_row_can_be_opened_and_gone_back_to(source):

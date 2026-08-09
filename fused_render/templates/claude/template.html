@@ -4765,6 +4765,9 @@ async function pollLoop(run_id) {
         // stamped `sent` and folded into the transcript, so they resolve
         // either way — re-annotating is one click, silently re-sending isn't.
         annResolveSent();
+        // The turn may have edited the file, and Claude Code checkpoints what it
+        // edits — so the snapshots panel's cached timeline is now behind.
+        snapInvalidate();
         const end = runEnding(data, stoppedRun === run_id);
         if (!end.keepText) {
           if (typer) typer.abort();
@@ -4998,6 +5001,7 @@ async function resumeRun(run_id) {
       // transcript can provably be missing (see the claude template).
       fused.params.set("run", "");
       annResolveSent();  // the run this frame missed still handled its notes
+      snapInvalidate();  // ...and may have edited the file while we were away
       if (probe.error) {
         if (matches || !users.length) addError(probe.error);
         return;
@@ -5480,6 +5484,29 @@ async function snapGoBack(plan, bar) {
 // next expand retries rather than leaving the section permanently empty.
 let snapLoaded = false;
 let snapExpanded = false;
+
+// A FINISHED TURN is the other way this chain grows. Claude edits the file, and
+// Claude Code checkpoints what it edits — exactly what a revert does, and the
+// panel has no way to see it: the cache is keyed to nothing but the page, so a
+// landing page reached after a turn showed the pre-turn position, stale deltas
+// and none of the new versions. Called from every place a run ENDS (the poll
+// loop's `done` branch, and resumeRun's, for a turn this frame was not attached
+// to), beside `annResolveSent` — the same "that turn is over" moment.
+//
+// The lazy contract survives: a COLLAPSED panel drops the cache and reads
+// nothing, because a turn is not an expand. An OPEN one refetches and repaints
+// now, for the reason the revert path repaints rather than waiting — a list left
+// on screen saying the wrong thing is worse than one that costs a round trip.
+// The expanded ROW is left open on purpose: `snapExpand` fetches its plan fresh
+// on every render, so it re-reads against the new bytes rather than going stale,
+// and closing it under the user would lose the thing they were reading.
+//
+// Hoisted past its own `let`s, like the rest of this section: every caller is an
+// async continuation that cannot run until the script has finished executing.
+function snapInvalidate() {
+  snapLoaded = false;
+  if (snapExpanded) loadSnapshots();
+}
 
 // Reveal the collapsed section. Called on every path onto the landing page; it
 // fetches nothing, and it deliberately does NOT reset `snapExpanded` — a user
