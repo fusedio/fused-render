@@ -528,6 +528,19 @@ async function loadLog(preferSha) {
   logGen++;
   loadingMore = false;
   moreError = "";
+  // THE FENCE, and it has to be here — before the first await, in the same
+  // synchronous run as the `logGen` bump. `logGen` alone only fences pages
+  // already IN FLIGHT: a click that lands DURING the reload's await reads the
+  // NEW generation, so its own guard passes, while its `skip` was computed from
+  // the stale list — its page then appends onto the fresh first page, leaving a
+  // hole between them (after a revert: 20 fresh rows, then rows 40+, with 20–39
+  // unreachable and `more` overwritten by that page's flag). Dropping `more`
+  // takes the pager row out of the DOM for the whole reload, so there is nothing
+  // to click; and because JS runs this block to completion, a click either
+  // happened entirely BEFORE it (in flight, dropped by the generation check) or
+  // entirely after it (refused by `!more`). No third case.
+  more = false;
+  renderList();
   const res = await fused.runPython("./versions.py",
     { action: "log", file: FILE, skip: 0 }, { key: "log" });
   if (res.error) return notice(res.error, true);

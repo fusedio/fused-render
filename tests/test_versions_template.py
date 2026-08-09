@@ -427,6 +427,27 @@ def test_the_view_pages_by_skip_and_trusts_the_more_flag():
     assert "max-count" not in html
 
 
+def test_a_reload_fences_out_paging_before_it_awaits():
+    # The generation counter alone does NOT close this: a "show older" click that
+    # lands DURING a reload's await reads the NEW generation, so its own guard
+    # passes, while its `skip` came from the stale list — its page then appends
+    # onto the fresh first page and leaves a hole between them (after a revert:
+    # 20 fresh rows, then rows 40+, with 20-39 unreachable and `more` overwritten
+    # by that page's flag). The fence is `more = false; renderList()` in the same
+    # SYNCHRONOUS run as the bump, which takes the pager row out of the DOM for
+    # the whole reload — so a click is either already in flight (dropped by the
+    # generation check) or refused by `!more`, with no third case.
+    html = _html()
+    body = html.split("async function loadLog(")[1]
+    fence = body.index("more = false;")
+    bump = body.index("logGen++")
+    first_await = body.index("await fused.runPython")
+    assert bump < fence < first_await
+    assert body.index("renderList();") < first_await
+    # And the guard the fence works through is still the one on the way in.
+    assert "if (loadingMore || !more) return;" in html
+
+
 def test_the_pager_row_is_not_a_commit_row():
     # The "show older" row is a sibling of the rows inside #commits, so the
     # delegated click handler has to answer it FIRST — landing in the `.commit`
