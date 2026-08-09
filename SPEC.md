@@ -5004,8 +5004,14 @@ wanting "what has this file been through" wants §33.
     hand-written call cannot reach a state the panel does not offer: the gate is
     the UX, the module is the guarantee (MD-11).
   - **COLLAPSED by default, and read only when OPENED.** The heading
-    ("Claude snapshots", a `button` carrying `aria-expanded`, caret ▸/▾) is the
-    control; the list and its note live in `#snapsbody`. "Can I get that back?"
+    ("Claude snapshots", a `button` carrying `aria-expanded`) is the control and
+    **wears the same bordered row as the snapshots it opens into** — full-width
+    `--surface` on `--border`, radius 12, ending in a muted `show`/`hide` hint
+    and the ▸/▾ caret — because a caret plus a hover state is an affordance you
+    can only find by already suspecting it is there. Its type stays the section
+    heading's, so it reads as a section and not as a stray button; the whole row
+    is the hit target, and the hint names the ACTION rather than the state. The
+    list and its note live in `#snapsbody`. "Can I get that back?"
     is a question a user arrives at deliberately, and the timeline was being
     fetched — a worker round trip — on every single file open for a history most
     opens never look at. So `mountSnapshots()` only REVEALS the heading and asks

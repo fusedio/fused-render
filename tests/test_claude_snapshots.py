@@ -328,6 +328,7 @@ def test_the_panel_is_collapsed_and_reads_nothing_until_opened(source):
     assert 'id="snapstoggle"' in source
     assert 'aria-expanded="false"' in source
     assert 'id="snapsbody"' in source
+    assert '<span class="snap-head-hint">show</span>' in source
     # Mounting the section reveals it and asks the backend for nothing.
     mount = source[source.index("async function mountSnapshots"):]
     mount = mount[: mount.index("\n}")]
@@ -338,6 +339,25 @@ def test_the_panel_is_collapsed_and_reads_nothing_until_opened(source):
     toggle = toggle[: toggle.index("\n};")]
     assert "snapLoaded" in toggle
     assert "loadSnapshots()" in toggle
+
+
+def test_the_collapsed_heading_looks_pressable_standing_still(source):
+    # A caret plus a hover state is an affordance you only find by already
+    # suspecting it is there ("the UI does not really show that the claude
+    # snapshots was clickable"). The heading wears the same bordered row as the
+    # snapshots it opens into, and says what the click does.
+    css = source[source.index("button#snapstoggle {"):]
+    css = css[: css.index("\n  }")]
+    assert "cursor: pointer" in css
+    assert "border: 1px solid var(--border)" in css
+    assert "background: var(--surface)" in css
+    assert "border-radius: 12px" in css
+    # Full-width row, so the whole thing is the hit target rather than the words.
+    assert "width: 100%" in css
+    # And the hint flips to name the action it would do next, not the state.
+    toggle = source[source.index("function snapSetExpanded"):]
+    toggle = toggle[: toggle.index("\n}")]
+    assert '"hide" : "show"' in toggle
 
 
 def test_a_loaded_timeline_is_cached_for_the_page(source):

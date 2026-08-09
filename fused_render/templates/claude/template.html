@@ -859,25 +859,35 @@
     margin-bottom: 8px;
     padding: 0 4px;
   }
-  /* The heading IS the control, so it keeps the heading's own type and simply
-     stops looking like a button — the affordance is the caret and the hover,
-     the same grammar the rows below it use. */
+  /* The heading IS the control, and it has to LOOK like one standing still: a
+     caret plus a hover state is an affordance you can only discover by already
+     suspecting it is there. So it wears the same bordered row the snapshots
+     themselves wear — a full-width pressable row, ending in a caret, that opens
+     into more rows exactly like it — rather than a new kind of chrome. Its type
+     stays the section heading's (`.head`), which is what keeps it reading as
+     the section it is and not as a stray button in the middle of the page. */
   button#snapstoggle {
     display: flex;
     align-items: center;
-    gap: 6px;
+    gap: 10px;
     width: 100%;
     font: inherit;
-    background: none;
-    border: none;
-    border-radius: 8px;
-    padding: 4px;
+    color: var(--faint);
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 8px 14px;
+    margin-bottom: 8px;
     cursor: pointer;
     text-align: left;
   }
-  button#snapstoggle:hover { color: var(--fg); }
+  button#snapstoggle:hover { background: var(--surface-2); border-color: var(--border-strong); }
   button#snapstoggle:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
-  #snapstoggle .snap-head-caret { font-size: 9px; }
+  /* The label carries the row's weight; the hint and caret are the quiet pair
+     on the right that say which way this row goes. */
+  #snapstoggle .snap-head-label { color: var(--fg); flex: 1; }
+  #snapstoggle .snap-head-hint { color: var(--faint); }
+  #snapstoggle .snap-head-caret { color: var(--faint); font-size: 9px; }
   .snap-row {
     display: flex;
     align-items: center;
@@ -1327,7 +1337,9 @@
         <div id="snaps" hidden>
           <button id="snapstoggle" type="button" class="head"
                   aria-expanded="false" aria-controls="snapsbody">
-            <span class="snap-head-caret">▸</span><span>Claude snapshots</span>
+            <span class="snap-head-label">Claude snapshots</span>
+            <span class="snap-head-hint">show</span>
+            <span class="snap-head-caret">▸</span>
           </button>
           <div id="snapsbody" hidden>
             <div id="snapslist"></div>
@@ -5530,6 +5542,9 @@ function snapSetExpanded(open) {
   const btn = document.getElementById("snapstoggle");
   btn.setAttribute("aria-expanded", open ? "true" : "false");
   btn.querySelector(".snap-head-caret").textContent = open ? "▾" : "▸";
+  // The hint states the ACTION, not the state — it is the label of the thing
+  // the click does, which is the whole reason it is there at rest.
+  btn.querySelector(".snap-head-hint").textContent = open ? "hide" : "show";
   document.getElementById("snapsbody").hidden = !open;
 }
 
