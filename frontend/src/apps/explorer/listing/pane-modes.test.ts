@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { TemplateEntry } from "@platform/lib/api";
 import { KNOWN_SENTINEL_MODES } from "@apps/explorer/ModeSwitcher";
-import { PANE_APP_MODE, activePaneMode, paneModeList } from "./pane-modes";
+import { PANE_APP_MODE, activePaneMode, paneModeList, paneOpenTarget } from "./pane-modes";
 
 // The universal `/` directory key as the built-in registry ships it (SPEC
 // PT-13): `_listing` first and unconditional, every peer condition.py-gated.
@@ -154,4 +154,48 @@ test("the pane's own sentinel is never sent to the server", () => {
   // KNOWN_SENTINEL_MODES is the set the shell will build a render URL for
   // (PT-12). `_app` is pane-local: the pane renders it itself.
   expect(KNOWN_SENTINEL_MODES.has(PANE_APP_MODE)).toBe(false);
+});
+
+// The expand icon opens what the pane is SHOWING, not what the row defaults to
+// — the whole point of "make this the whole view".
+describe("paneOpenTarget", () => {
+  const file = { path: "/w/notes.md", isDir: false };
+  const dir = { path: "/w/proj", isDir: true };
+
+  test("a template mode is carried into the full-screen open", () => {
+    expect(paneOpenTarget(file, "claude", null)).toEqual({
+      path: "/w/notes.md",
+      isDir: false,
+      mode: "claude",
+    });
+    // `_render` is a real sentinel the full-screen view understands (PT-12),
+    // so it travels like any other mode.
+    expect(paneOpenTarget(file, "_render", null)).toEqual({
+      path: "/w/notes.md",
+      isDir: false,
+      mode: "_render",
+    });
+  });
+
+  test("a folder shown as its listing opens plainly", () => {
+    // `_mode=_listing` would be the destination's own default written out
+    // longhand — Preview strips it again on the next mode switch anyway.
+    expect(paneOpenTarget(dir, "_listing", null)).toEqual({ path: "/w/proj", isDir: true });
+  });
+
+  test("nothing offered means nothing to carry", () => {
+    expect(paneOpenTarget(file, null, null)).toEqual({ path: "/w/notes.md", isDir: false });
+  });
+
+  test("the pane-only app sentinel opens the app FILE, never `_mode=_app`", () => {
+    // The server has never heard of `_app`; what the pane frames is the
+    // folder's lone app page, and that page's own default view IS the app.
+    expect(paneOpenTarget(dir, PANE_APP_MODE, { path: "/w/proj/app.html" })).toEqual({
+      path: "/w/proj/app.html",
+      isDir: false,
+    });
+    // With no app resolved there is nothing to translate to, so the folder
+    // itself opens rather than a mode the destination would not recognise.
+    expect(paneOpenTarget(dir, PANE_APP_MODE, null)).toEqual({ path: "/w/proj", isDir: true });
+  });
 });
