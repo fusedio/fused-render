@@ -273,6 +273,20 @@
     margin-top: 8px;
     flex-wrap: wrap;
   }
+  /* The AI sparkle. Quiet by default — it is an offer, not the action this box
+     is for — and it announces WORK by pulsing rather than by swapping in a
+     spinner glyph, so its box never changes size mid-generation and the row
+     does not reflow while text is streaming into the textarea above it. */
+  .btn.ai { color: var(--ink-3); }
+  .btn.ai:hover:not([disabled]) { color: var(--accent); }
+  .btn.ai.working { opacity: 1; color: var(--accent); animation: ai-pulse 1.2s ease-in-out infinite; }
+  @keyframes ai-pulse {
+    0%, 100% { opacity: 0.45; }
+    50% { opacity: 1; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .btn.ai.working { animation: none; }
+  }
 
   /* ================= notices ================= */
   .note {
@@ -987,6 +1001,7 @@ function commitBox(data) {
       title: "Commit everything that is staged",
       onClick: () => commit(box.value),
     }),
+    generateButton(),
     el("span", { className: "hint",
                  textContent: plural(total, "staged change") + " will be committed" }));
 
@@ -1011,6 +1026,157 @@ function commitBox(data) {
     wrap.append(warn);
   }
   return wrap;
+}
+
+/* ------------------------------------------------- AI commit message (GT-18)
+ *
+ * The sparkle writes the message the user was about to type, from the diff the
+ * commit would record. Everything about it is deliberately narrow: it fills a
+ * TEXTAREA and never commits, it is one button with no options, and what it
+ * produces is a draft the user edits and sends — Ctrl+Enter still commits
+ * whatever is in the box, generated or typed.
+ */
+
+const SPARK_GLYPH = ["M11 3.5l1.7 4.3 4.3 1.7-4.3 1.7L11 15.5 9.3 11.2 5 9.5l4.3-1.7z",
+                     "M17.5 15l.8 2 2 .8-2 .8-.8 2-.8-2-2-.8 2-.8z"];
+
+/* Written as a SYSTEM prompt rather than folded into the diff message, so the
+   rules are not one more thing the model has to notice inside 80 KB of patch.
+   Every clause here is a failure mode of the naive version: a preamble ("Here
+   is a commit message:"), a code fence around it, a subject that runs past what
+   `git log --oneline` shows, and a three-paragraph body explaining a one-line
+   change. */
+const AI_SYSTEM = [
+  "You write git commit messages. Reply with the commit message ONLY —",
+  "no preamble, no explanation, no code fences, no surrounding quotes.",
+  "Line 1 is a summary in the imperative mood ('add', not 'added'/'adds'),",
+  "at most 72 characters, no trailing period. Use a conventional-commit",
+  "prefix (feat/fix/docs/refactor/test/chore) when one clearly applies.",
+  "Add a body ONLY when the change genuinely needs one: separate it with a",
+  "blank line, wrap at 72 columns, and say WHY rather than restating the diff.",
+  "Most changes need no body at all. Never invent an issue number.",
+].join(" ");
+
+/* True while a generation is in flight. Module-level rather than a closure over
+   the button, because a repaint (any mutation elsewhere in the view) rebuilds
+   the button — reading the flag at BUILD time is what keeps the rebuilt button
+   disabled instead of handing the user a second click into the same stream. */
+let aiBusy = false;
+
+function generateButton() {
+  return action("ai", icon(SPARK_GLYPH, 14), {
+    className: "icon ai" + (aiBusy ? " working" : ""),
+    disabled: aiBusy,
+    label: "Generate a commit message with AI",
+    title: aiBusy ? "Writing a commit message…"
+                  : "Write a commit message from the staged changes",
+    onClick: generateMessage,
+  });
+}
+
+/* The one writer of the box during generation, and it re-finds the node every
+   time rather than closing over it: a mutation elsewhere in the view repaints
+   between two chunks, and the textarea the stream started in is by then
+   detached. Writing `msg` as well is what makes that survivable — the rebuilt
+   box is filled from the param, so the text picks up where it left off. */
+function setMessage(text) {
+  const box = document.getElementById("msg");
+  if (box) box.value = text;
+  setParams({ msg: text });
+}
+
+/* The model is asked not to fence its answer (AI_SYSTEM), so this is the belt
+   to that braces: a stray ``` wrapper is stripped rather than committed. */
+function cleanMessage(text) {
+  const trimmed = (text || "").trim();
+  const fenced = trimmed.match(/^```[a-z]*\n([\s\S]*?)\n?```$/i);
+  return (fenced ? fenced[1] : trimmed).trim();
+}
+
+function aiPrompt(payload) {
+  const parts = [payload.kind === "staged"
+    ? "These changes are STAGED — they are exactly what the next commit will record."
+    : "NOTHING is staged yet; these are the uncommitted changes in the working tree."];
+  if (payload.branch) parts.push("Branch: " + payload.branch);
+  if (payload.scope) parts.push("The view is scoped to: " + payload.scope);
+  if (payload.files.length) {
+    parts.push("Files changed:\n" + payload.files.map((f) => "- " + f).join("\n")
+      + (payload.files_truncated ? "\n- (more files than are listed here)" : ""));
+  }
+  if (payload.diff) {
+    parts.push("Diff:\n```diff\n" + payload.diff + "\n```"
+      + (payload.truncated
+         ? "\n(The diff was cut off at this view's size cap — describe what is "
+           + "shown and do not guess at the rest.)"
+         : ""));
+  }
+  parts.push("Write the commit message.");
+  return parts.join("\n\n");
+}
+
+/* A failure is a `flash`, exactly like a failed mutation: an AI that is not
+   configured on this server, or a model that errored, is an ordinary answer
+   this view reports in its own words — never the red traceback overlay. */
+function aiFailed(message) {
+  aiBusy = false;
+  flash = { ok: false, message };
+  announce(message);
+  draw(true);
+}
+
+async function generateMessage() {
+  if (aiBusy || busy !== null) return;
+  aiBusy = true;
+  flash = null;
+  draw(true);                       // repaint with the sparkle pulsing
+
+  let payload;
+  try {
+    payload = await fused.runPython(READER, { file, op: "pending" }, chan("pending"));
+  } catch (err) {
+    payload = { ok: false, message: err && err.message ? err.message : String(err) };
+  }
+  if (!payload.ok) {
+    aiFailed("Could not read the changes: " + (payload.message || "git refused that."));
+    return;
+  }
+  if (payload.empty) {
+    aiFailed("There is nothing to describe — no changes were found.");
+    return;
+  }
+
+  /* Cleared on click, VS Code's behaviour: the button REPLACES the draft rather
+     than appending to it, so what streams in is readable as it arrives. The
+     previous text is kept for the failure path — losing a typed message to a
+     server that has no AI configured would be the worst outcome here. */
+  const box = document.getElementById("msg");
+  const before = box ? box.value : param("msg");
+  let received = "";
+  setMessage("");
+  try {
+    const result = await fused.ai(aiPrompt(payload), {
+      systemPrompt: AI_SYSTEM,
+      effort: "low",              // a commit message is not a thinking problem
+      onChunk: (text) => {
+        received += text;
+        setMessage(cleanMessage(received));
+      },
+    });
+    const message = cleanMessage(result.text);
+    if (!message) throw new Error("The AI returned an empty message.");
+    aiBusy = false;
+    setMessage(message);
+    announce("Commit message written. Review it, then commit.");
+    draw(true);
+    const written = document.getElementById("msg");
+    if (written) written.focus();
+  } catch (err) {
+    if (!received) setMessage(before);
+    aiFailed(err && err.type === "ai_unavailable"
+      ? "AI is not available on this server."
+      : "Could not write a commit message: "
+        + ((err && err.message) || "the request failed."));
+  }
 }
 
 function commit(message) {

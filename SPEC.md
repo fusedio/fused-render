@@ -4467,7 +4467,8 @@ caller that wants the log on purpose.
   the kind of ceremony that trains people to click through.
 - **GT-17** **The view is the Source-Control shape, and the params are still the
   state.** Toolbar (branch ▾ · ⟳ fetch · ↓ pull *n behind* · ↑ push *n ahead* ·
-  stash ▾) → commit message box with the ✓ Commit button and the GT-14 warning →
+  stash ▾) → commit message box with the ✓ Commit button, the GT-18 AI sparkle
+  and the GT-14 warning →
   **Staged changes** / **Changes** / **Untracked** / **Stashes** / **History**,
   The commit box is **present only when the index has something in it** — a
   permanently disabled button reading "nothing staged" is a control teaching you
@@ -4505,6 +4506,50 @@ caller that wants the log on purpose.
   because it is what you click to change branches), the body never scrolls
   horizontally, rows are real `<button>`s, Escape closes the innermost open thing
   (confirmation → dropdown → diff pane), and `prefers-reduced-motion` is honoured.
+- **GT-18** **The commit message can be WRITTEN for you, and the writer is an
+  offer rather than a step (D241).** A sparkle button sits in the commit-actions
+  row beside ✓ Commit; it fills the textarea with a draft and stops there. It
+  never commits: the user reads the draft, edits it, and sends it with the same
+  ✓ Commit / Ctrl+Enter as a typed one — an AI that both wrote and committed
+  would remove the only review step this box has.
+  **What it reads is a new READ op**, `log.py` `op="pending"` — not an `ops.py`
+  op, because it forks `git diff` and touches no ref, no index and no file, and
+  routing a read through the write module's confirmation machinery would say it
+  can lose work. Its shape mirrors GT-14: the **staged** diff (`git diff
+  --cached`), deliberately **unscoped**, because `git commit` records the whole
+  index wherever it lives and a message written from a scope-filtered diff would
+  describe less than the commit is about to make; with **nothing staged at all**
+  it falls back to the uncommitted changes under the open scope (what the panel
+  is showing), with untracked files NAMED rather than diffed — an untracked file
+  has no `git diff`, and per-file `--no-index` would be a fan-out this one
+  bounded call will not do. `empty` is a first-class answer (GT-9): the view says
+  *"there is nothing to describe"* rather than prompting a model with no change.
+  **Its own budget, smaller than the pane's** (GT-8 still applies, with different
+  numbers): `MAX_PROMPT_DIFF_BYTES` 80 KB and `MAX_PROMPT_DIFF_LINES` 1 500
+  against the diff pane's 400 KB / 3 000, plus `MAX_PROMPT_FILES` 100 on the name
+  list, which is streamed under the status byte cap and cut back to whole
+  NUL-terminated fields exactly like `git status`. The consumer is a PROMPT, not
+  a reader: it is billed per token and summarises worse the longer it gets. The
+  truncation flag is **carried into the prompt** ("the diff was cut off — do not
+  guess at the rest") rather than dropped, so the model cannot describe a change
+  it only half saw.
+  **The call** is `fused.ai` at `effort: "low"` (a commit message is not a
+  thinking problem) with a system prompt fixing the format — imperative subject
+  ≤72 characters, conventional prefix where one applies, a body only when the
+  change genuinely needs one, and no preamble, fences or quotes; a stray fence is
+  stripped anyway. It **streams** through `onChunk` into the textarea, clearing
+  it first (VS Code's behaviour: the button replaces the draft rather than
+  appending to it) and keeping the previous text for the failure path, so a
+  server with no AI configured cannot cost the user a message they typed. Each
+  chunk is written to `msg` as well as to the node, and the node is re-found on
+  every write rather than closed over — a mutation elsewhere in the view repaints
+  between two chunks, and the rebuilt textarea is filled from the param, so the
+  stream picks up where it left off instead of disappearing into a detached DOM.
+  The button's disabled state is read from module state at BUILD time for the
+  same reason: a repaint mid-generation must not hand back a second click into
+  the same stream. Failure is the ordinary `flash` a failed mutation gets —
+  never the traceback overlay — and `ai_unavailable` reads as *"AI is not
+  available on this server."*
 
 **See also §34** (`file_history`), the other history view. It is complementary
 rather than an alternative: this one drives the repository's own commit graph and

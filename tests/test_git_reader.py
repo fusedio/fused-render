@@ -1402,3 +1402,192 @@ def test_staged_outside_paths_are_bounded_but_the_count_is_the_true_total(
     got = reader.main(os.path.join(root, "pkg"))
     assert len(got["staged_outside"]["paths"]) == 2
     assert got["staged_outside"]["count"] == 6, "the count is a total, not a page"
+
+
+# ---------------------------------------------- the AI prompt diff (`pending`)
+#
+# The read behind the commit box's AI sparkle (GT-18). It is a READ — it forks
+# `git diff` and touches no ref, index or file — so it lives here beside the
+# other bounded reads rather than in ops.py. What these pin is the part a
+# prompt-shaped consumer makes newly load-bearing: which diff it picks (the
+# INDEX, unscoped, because that is what `git commit` records — GT-14), what it
+# falls back to when the index is empty, and that its own smaller budget really
+# bounds it.
+
+
+def test_pending_reads_the_staged_diff_not_the_working_tree(reader, tmp_path):
+    root = str(tmp_path / "pending-staged")
+    os.makedirs(root)
+    git(root, "init", "-q")
+    write(root, "a.txt", "one\n")
+    git(root, "add", "-A")
+    git(root, "commit", "-q", "-m", "seed", when="2026-10-01T10:00:00+00:00")
+    write(root, "a.txt", "one staged\n")
+    git(root, "add", "a.txt")
+    write(root, "b.txt", "unstaged and untracked\n")
+
+    got = reader.main(root, op="pending")
+    assert got["ok"] is True
+    assert got["kind"] == "staged"
+    assert got["files"] == ["a.txt"]
+    assert "one staged" in got["diff"]
+    # The untracked file is NOT in the index, so it is not in the commit and must
+    # not be in the message either.
+    assert "b.txt" not in got["diff"] and "b.txt" not in got["files"]
+    assert got["empty"] is False
+    assert got["branch"] == "main"
+
+
+def test_pending_staged_diff_is_unscoped_because_commit_is_index_based(
+        reader, tmp_path):
+    # GT-14: a commit made from a view scoped to `pkg/` records the whole index.
+    # A message written from a scope-filtered diff would describe less than the
+    # commit makes, so the staged read deliberately ignores the scope.
+    root = str(tmp_path / "pending-scope")
+    os.makedirs(root)
+    git(root, "init", "-q")
+    write(root, "pkg/in.txt", "in\n")
+    write(root, "top.txt", "top\n")
+    git(root, "add", "-A")
+    git(root, "commit", "-q", "-m", "seed", when="2026-10-02T10:00:00+00:00")
+    write(root, "pkg/in.txt", "in changed\n")
+    write(root, "top.txt", "top changed\n")
+    git(root, "add", "-A")
+
+    got = reader.main(os.path.join(root, "pkg"), op="pending")
+    assert got["ok"] is True and got["kind"] == "staged"
+    assert got["scope"] == "pkg"
+    assert sorted(got["files"]) == ["pkg/in.txt", "top.txt"]
+
+
+def test_pending_falls_back_to_the_working_tree_when_nothing_is_staged(
+        reader, tmp_path):
+    root = str(tmp_path / "pending-worktree")
+    os.makedirs(root)
+    git(root, "init", "-q")
+    write(root, "a.txt", "one\n")
+    git(root, "add", "-A")
+    git(root, "commit", "-q", "-m", "seed", when="2026-10-03T10:00:00+00:00")
+    write(root, "a.txt", "one modified\n")
+    write(root, "fresh.txt", "brand new\n")
+
+    got = reader.main(root, op="pending")
+    assert got["ok"] is True
+    assert got["kind"] == "worktree"
+    assert "one modified" in got["diff"]
+    # An untracked file has no `git diff` at all, so it is NAMED rather than
+    # diffed — enough for "this adds fresh.txt", without a per-file fan-out.
+    assert "fresh.txt" in got["files"]
+    assert "a.txt" in got["files"]
+
+
+def test_pending_worktree_fallback_is_scoped_to_the_open_path(reader, tmp_path):
+    root = str(tmp_path / "pending-wt-scope")
+    os.makedirs(root)
+    git(root, "init", "-q")
+    write(root, "pkg/in.txt", "in\n")
+    write(root, "top.txt", "top\n")
+    git(root, "add", "-A")
+    git(root, "commit", "-q", "-m", "seed", when="2026-10-04T10:00:00+00:00")
+    write(root, "pkg/in.txt", "in changed\n")
+    write(root, "top.txt", "top changed\n")
+
+    got = reader.main(os.path.join(root, "pkg"), op="pending")
+    assert got["kind"] == "worktree"
+    assert got["files"] == ["pkg/in.txt"]
+    assert "top.txt" not in got["diff"]
+
+
+def test_pending_on_a_clean_tree_is_empty_not_an_error(reader, tmp_path):
+    root = str(tmp_path / "pending-clean")
+    os.makedirs(root)
+    git(root, "init", "-q")
+    write(root, "a.txt", "one\n")
+    git(root, "add", "-A")
+    git(root, "commit", "-q", "-m", "seed", when="2026-10-05T10:00:00+00:00")
+
+    got = reader.main(root, op="pending")
+    assert got["ok"] is True
+    assert got["empty"] is True and got["files"] == [] and got["diff"] == ""
+
+
+def test_pending_works_before_the_first_commit(reader, tmp_path):
+    # An unborn HEAD has nothing to diff --cached against; git compares the index
+    # to the empty tree, which is exactly the right answer for a first commit.
+    root = empty_repo(str(tmp_path / "pending-unborn"))
+    write(root, "draft.md", "hello\n")
+    git(root, "add", "-A")
+    got = reader.main(root, op="pending")
+    assert got["ok"] is True and got["kind"] == "staged"
+    assert got["files"] == ["draft.md"] and "hello" in got["diff"]
+
+
+def test_pending_diff_is_capped_by_bytes_and_says_so(reader, tmp_path, monkeypatch):
+    root = str(tmp_path / "pending-big")
+    os.makedirs(root)
+    git(root, "init", "-q")
+    write(root, "big.txt", "".join(f"line {i}\n" for i in range(20000)))
+    git(root, "add", "-A")
+
+    monkeypatch.setattr(reader, "MAX_PROMPT_DIFF_BYTES", 2048)
+    got = reader.main(root, op="pending")
+    assert got["ok"] is True
+    assert got["truncated"] is True
+    assert len(got["diff"].encode("utf-8")) <= 2048 + 8  # + a partial-char slack
+    assert got["max_bytes"] == 2048
+    assert got["shown_lines"] < 20000
+
+
+def test_pending_diff_is_capped_by_lines_and_says_so(reader, tmp_path, monkeypatch):
+    root = str(tmp_path / "pending-tall")
+    os.makedirs(root)
+    git(root, "init", "-q")
+    write(root, "tall.txt", "".join(f"line {i}\n" for i in range(5000)))
+    git(root, "add", "-A")
+
+    monkeypatch.setattr(reader, "MAX_PROMPT_DIFF_LINES", 40)
+    got = reader.main(root, op="pending")
+    assert got["truncated"] is True
+    assert got["shown_lines"] == 40
+    assert got["diff"].count("\n") <= 40
+
+
+def test_pending_prompt_budget_is_smaller_than_the_panes(reader):
+    # The consumer is a PROMPT, not a reader: billed per token, and worse at
+    # summarising the longer it gets. A regression that pointed this op at the
+    # pane's caps would be invisible except in the bill.
+    assert reader.MAX_PROMPT_DIFF_BYTES < reader.MAX_DIFF_BYTES
+    assert reader.MAX_PROMPT_DIFF_LINES < reader.MAX_DIFF_LINES
+
+
+def test_pending_file_list_is_bounded(reader, tmp_path, monkeypatch):
+    root = str(tmp_path / "pending-many")
+    os.makedirs(root)
+    git(root, "init", "-q")
+    for i in range(12):
+        write(root, f"f{i}.txt", "x\n")
+    git(root, "add", "-A")
+
+    monkeypatch.setattr(reader, "MAX_PROMPT_FILES", 5)
+    got = reader.main(root, op="pending")
+    assert len(got["files"]) == 5
+    assert got["files_truncated"] is True
+
+
+def test_pending_outside_a_repository_is_refused(reader, tmp_path):
+    plain = tmp_path / "pending-plain"
+    plain.mkdir()
+    (plain / "a.py").write_text("x = 1\n", encoding="utf-8")
+    got = reader.main(str(plain), op="pending")
+    assert got["ok"] is False and got["reason"] == "not-a-repo"
+
+    got = reader.main(str(tmp_path / "pending-gone" / "f.py"), op="pending")
+    assert got["ok"] is False and got["reason"] == "missing"
+
+
+def test_pending_on_a_mount_backed_target_is_refused(reader, repo, monkeypatch):
+    # GT-4 covers every op, including the one that feeds a prompt: running git
+    # across an rclone-NFS mount is the failure the refusal exists to prevent.
+    monkeypatch.setenv("FUSED_RENDER_MOUNTS_DIR", repo)
+    got = reader.main(repo, op="pending")
+    assert got["ok"] is False and got["reason"] == "mount"
