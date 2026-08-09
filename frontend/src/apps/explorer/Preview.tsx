@@ -465,7 +465,8 @@ function TemplatePreview({
   // would otherwise read the now-default-on value here.
   //
   // Used for the one thing the pane displaces: .preview-browse-chip, whose
-  // corner is INSIDE the pane when there is one (see its comment below). The
+  // corner is INSIDE the pane when there is one (see its comment below) — an
+  // embed-only control now, but an embedded listing can have a pane too. The
   // top-bar mode control is not displaced but removed — for an explorer folder
   // it is gone whether the pane is open or not; see headerActions. And the
   // folder's "Open as app" is not conditioned on the pane at all any more (see
@@ -801,15 +802,16 @@ function TemplatePreview({
           Files keep this control (they have no pane), and the app view/page
           (`appChrome`) keeps everything it has — its folder is the whole
           subject of the route, not a listing beside a preview.
-          A folder is not stranded in one of its non-listing modes:
-          .preview-browse-chip below is the way back ("Browse contents"), and
-          it is REVEALED for exactly that state — `is-exit`. It was not, when
-          this comment first claimed it was: the chip was `display: none`
-          outside the embed, so a folder opened straight into `git` or `graph`
-          had no control anywhere that could return it to the listing. A
-          tradeoff argued from an escape hatch that does not exist is just a
-          dead end, so the hatch was made real rather than the argument
-          softened.
+          Getting back out of one of the non-listing modes is the BROWSER'S
+          BACK button, and deliberately nothing else (owner call). A folder
+          only ever enters those modes by navigating — a typed `?_mode=`, a
+          bookmark, Open With — so the navigation that got the user there is
+          the thing that undoes it, and it is already at the top of the window.
+          This view carried a floating "Browse contents" chip for that state
+          for one release; over a template that draws its own header row it sat
+          on the content and read as a stray tooltip rather than as a way out.
+          A control that has to be explained is worse than the standard one
+          every user already has.
           ACCEPTED TRADEOFF, and this part IS the product decision: nothing
           switches a folder INTO one of those modes from the explorer any more.
           The pane's menu writes `_panelMode` — what the PANE previews — not
@@ -906,29 +908,30 @@ function TemplatePreview({
             ))}
           </div>
         )}
-        {/* Not while the listing's preview pane is open: the chip pins to this
+        {/* EMBED ONLY, by the CSS (see .preview-browse-chip): it is the embed's
+            whole mode affordance, because the embed hides .preview-header and
+            with it the switcher (PT-13/D65).
+
+            It briefly had a second, explorer-side reveal — `is-exit`, for a
+            folder showing a non-listing mode — on the grounds that PT-13b's
+            missing top-bar switcher left that state with no way back to the
+            listing. Removed by owner call: floating over the template's own
+            content it read as a stray tooltip rather than as chrome (a
+            full-width `versions` history wore it on its HISTORY header), and
+            the way back out of a mode you navigated into is the browser's Back
+            button, which costs the view nothing to provide.
+
+            Not while the listing's preview pane is open: the chip pins to this
             element's top-right corner, and with the pane on, that corner is
             INSIDE the pane — the chip lands in the pane's header row, where it
             reads as pane chrome. It is not (it switches the FOLDER's mode, not
             the previewed file's), so a bare mode name like "Claude" sitting
-            there is a mystery button. That guard only ever bites in `_listing`
-            mode, since the pane exists only there — so the `!isListing` case,
-            "Browse contents" over a directory template's iframe, is always
-            rendered, and `is-exit` is what makes the explorer actually SHOW it
-            (PT-13/D65, PT-13b). In `_listing` mode with the pane closed the
-            chip still renders and still stays hidden outside the embed: that
-            direction (listing → counterpart) is the half the product decision
-            removed from the explorer. */}
+            there is a mystery button. The guard only ever bites in `_listing`
+            mode, since the pane exists only there. */}
         {toggleListing && !listingPaneOpen && (
           <button
             type="button"
-            /* `is-exit` = a directory showing a NON-listing mode, which is the
-               state that has no other way back to the listing (PT-13b) and so
-               is the one the explorer reveals the chip for; see the rule. Set
-               unconditionally rather than only outside the embed, because the
-               embed's own selectors outrank it and keep their look — one
-               condition instead of two that could disagree. */
-            className={"preview-browse-chip" + (isListing ? "" : " is-exit")}
+            className="preview-browse-chip"
             onClick={toggleListing}
           >
             {!isListing

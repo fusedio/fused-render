@@ -326,17 +326,21 @@ body.embed .preview-header {
 
 /* Directory templates (.zarr etc.) surface their member listing through the
    "Browse contents" chip pinned over the preview. Hidden by default and
-   revealed by exactly two states, which are two different arguments:
-     * `body.embed` — the embed hides .preview-header entirely, so the chip is
-       how the action reaches the user at all (PT-13/D65, the chip's original
-       job);
-     * `.is-exit` — an explorer directory showing a NON-listing mode. The
-       explorer's folder views carry no top-bar mode control (PT-13b), so
-       without this the chip's `display: none` made a folder opened straight
-       into `git` or `graph` (Open With, a `?_mode=` bookmark, a `.zarr` store
-       whose default is `zarr_aoi`) a DEAD END: no control anywhere could get
-       back to the listing. The comment that justified removing the mode
-       control named this chip as the way back while this rule was hiding it.
+   revealed by ONE state: `body.embed`, which hides .preview-header entirely,
+   so the chip is how the action reaches the user at all (PT-13/D65 — the
+   chip's original job, and now its only one).
+
+   There was briefly a second reveal, `.is-exit`, for an explorer directory
+   showing a non-listing mode: the explorer's folder views carry no top-bar
+   mode control (PT-13b), and the chip was offered as the way back to the
+   listing. Removed by owner call. Pinned absolutely over the iframe it landed
+   on whatever the template drew in its own top-right — a full-width `versions`
+   history wore it across the HISTORY header and the newest commit — so it read
+   as a stray tooltip rather than as chrome, in the two folder modes people
+   actually open (`versions`, `claude`). The explorer's answer for that state is
+   the browser's Back button (PT-13b): the mode was reached by navigating, so
+   the navigation is what undoes it.
+
    File (non-directory) previews render no chip at all, so embed chrome stays
    empty for them. */
 .preview-browse-chip {
@@ -364,35 +368,6 @@ body.embed .preview-browse-chip {
 body.embed .preview-browse-chip:hover {
   color: var(--fg);
   border-color: var(--accent);
-}
-
-/* The explorer's copy. Same box, quiet-control chrome (tokens.css) rather than
-   the embed copy's accent hover: in the explorer this chip sits beside a
-   toolbar full of controls that were deliberately quietened, and a chip that
-   lit up accent on hover would be the loudest thing on the page. It is an
-   ordinary way out, not an alarm. */
-.preview-browse-chip.is-exit {
-  position: absolute;
-  top: 10px;
-  right: 10px;
-  z-index: 2;
-  display: inline-flex;
-  align-items: center;
-  font: inherit;
-  font-size: 11px;
-  line-height: 1;
-  padding: 5px 9px;
-  border: 1px solid var(--ctl-quiet-border);
-  border-radius: 8px;
-  background: var(--ctl-quiet-bg);
-  color: var(--fg-muted);
-  cursor: pointer;
-}
-
-.preview-browse-chip.is-exit:hover {
-  background: var(--ctl-quiet-bg-hover);
-  border-color: var(--ctl-quiet-border-hover);
-  color: var(--fg);
 }
 
 /* Embed counterpart of .open-as-app-btn (embed hides .preview-header, so the
