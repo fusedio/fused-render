@@ -800,9 +800,12 @@ def test_same_tree_revert_preserves_uncommitted_edits(workspace):
 # ------------------------------------------------------- narrow-host layout
 
 # The narrow-layout breakpoint, in one place because four tests name it.
-# Raised from D236's original 560px: see
-# test_the_breakpoint_is_the_useful_width_not_the_overflow_floor.
-NARROW_PX = 880
+# 640 = #side 200 + divider 4 + a 420px preview (the "still a page" figure
+# claude uses for its own framed column) = 624, rounded up for a scrollbar.
+# Deliberately LOWER than claude's 800: the non-preview column here is a 200px
+# commit spine, not a 440px chat, so the split stays useful in hosts claude's
+# cannot survive. See test_the_breakpoint_is_the_useful_width_not_the_overflow_floor.
+NARROW_PX = 640
 
 def test_template_collapses_the_split_below_a_breakpoint():
     """D235 bound this mode to 47 file extensions, so it now renders in the
@@ -816,12 +819,11 @@ def test_template_collapses_the_split_below_a_breakpoint():
     html = _html()
     assert "@media (max-width: %dpx)" % NARROW_PX in html
     # The breakpoint must stay derivable from the layout's own arithmetic, not be
-    # a magic number: #side's 200 + the 4px divider + a preview frame wide enough
-    # that the FRAMED template still renders its own wide layout in it (640, the
-    # `bundle` family number) = 844.
+    # a magic number: #side's 200 + the 4px divider + a preview frame that is
+    # still a page (420, the phone-viewport figure claude uses too) = 624.
     assert "min-width: 200px" in html          # #side, the 200 in that sum
     assert "width: 4px" in html                # #divider, the 4
-    assert "844px floor" in html               # the arithmetic, in a comment
+    assert "624px floor" in html               # the arithmetic, in a comment
 
 
 def test_the_breakpoint_is_the_useful_width_not_the_overflow_floor():
@@ -833,9 +835,11 @@ def test_the_breakpoint_is_the_useful_width_not_the_overflow_floor():
     at 560 the split engaged in a pane that could hold it without overflowing and
     could not hold it usefully: a 320px frame is a viewport the framed template
     has already collapsed ITSELF for, i.e. a preview of some other template's
-    narrow layout. 640 is the narrowest frame that still shows a wide layout, so
-    200 + 4 + 640 = 844 → 880 — the same figure `claude`, the other split-layout
-    template, reaches from its own sum, so the two collapse together.
+    narrow layout. 420 is the narrowest frame that is still a page (the same
+    figure `claude` uses for its own framed column), so the useful-width floor
+    is 200 + 4 + 420 = 624 → 640. That is deliberately LOWER than `claude`'s
+    800px: its non-preview column is a 440px chat, ours a 200px commit spine,
+    so the two templates no longer share a breakpoint.
 
     The CSS query and the JS matchMedia string are one breakpoint with two
     readers; a disagreement between them is a half-collapsed layout that only
@@ -845,7 +849,7 @@ def test_the_breakpoint_is_the_useful_width_not_the_overflow_floor():
     assert 'matchMedia("(max-width: %dpx)")' % NARROW_PX in html
     assert "560px)" not in html                # no live 560 breakpoint survives
     doc = html[:html.index("@media (max-width: %dpx)" % NARROW_PX)]
-    for term in ("200px", "4px", "640px", "844px", "880px"):
+    for term in ("200px", "4px", "420px", "624px", "640px"):
         assert term in doc, term
 
 

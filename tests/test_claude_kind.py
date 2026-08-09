@@ -311,7 +311,7 @@ def test_the_no_pane_state_undoes_what_boot_did_from_a_stale_param():
       list is emptied and repainted while `noPane` is still false, and only then
       is the flag set — the assertion below is the order, not the statements.
     * `applyNarrowView()` stamps `view-preview` on the body when `paneview=preview`
-      is on the URL. Inside the 880px block that class collapses `#chat` to its
+      is on the URL. Inside the 800px block that class collapses `#chat` to its
       `#anntools` strip — and this state removes that strip and has no pane to
       show instead, so a narrow host rendered a BLANK PAGE. The class is removed,
       not left inert.
@@ -542,9 +542,11 @@ def test_no_chrome_sink_hardcodes_a_kind_noun():
 # -------------------------------------------- the left pane's view PICKER
 
 # The narrow-layout breakpoint, in one place because three tests and the block
-# extractor all have to name it. Raised from D236's original 560px: see
-# test_the_split_collapses_only_when_two_columns_are_useful.
-NARROW_PX = 880
+# extractor all have to name it. Raised from D236's original 560px (see
+# test_the_split_collapses_only_when_two_columns_are_useful), then lowered from
+# the 880 round-up to 800 — deliberately a little below the 864 useful-width
+# floor, to keep the split alive on more hosts.
+NARROW_PX = 800
 
 
 def _media_block() -> str:
@@ -795,7 +797,7 @@ def test_the_split_collapses_to_one_view_below_the_layouts_width_floor():
 
 
 def test_the_split_collapses_only_when_two_columns_are_useful():
-    """The breakpoint is 880px, not D236's original 560px, and the raise is the
+    """The breakpoint is 800px, not D236's original 560px, and the raise is the
     regression this pins.
 
     560 came from the layout's HARD floor (200 + 4 + 340 ≈ 544, rounded up): the
@@ -803,10 +805,11 @@ def test_the_split_collapses_only_when_two_columns_are_useful():
     pane defaults to HALF its split container — about 700px on a 1700px window —
     so at 560 the split engaged in a host that could hold it without overflowing
     and could not hold it usefully: two cramped columns where one readable view
-    was wanted. The new figure comes from the columns' minimum USEFUL widths,
-    #left 420 + divider 4 + #chat 440 = 864 → 880, and the arithmetic is written
-    down beside the query so the next reader can check it instead of guessing —
-    which is also why this asserts the sum, not just the number.
+    was wanted. The floor comes from the columns' minimum USEFUL widths,
+    #left 420 + divider 4 + #chat 440 = 864 (the live breakpoint sits at 800, a
+    deliberate notch below it), and the arithmetic is written down beside the
+    query so the next reader can check it instead of guessing — which is also
+    why this asserts the sum, not just the number.
 
     The CSS query and the JS matchMedia string must carry the SAME number: they
     are one breakpoint with two readers, and a disagreement is a half-collapsed
@@ -821,7 +824,7 @@ def test_the_split_collapses_only_when_two_columns_are_useful():
     # The arithmetic, in the comment beside the query.
     style = page[page.index("<style>"):page.index("</style>")]
     narrow_doc = style[:style.index("@media (max-width: %dpx) {" % NARROW_PX)]
-    for term in ("420px", "440px", "864px", "880px"):
+    for term in ("420px", "440px", "864px", "800px"):
         assert term in narrow_doc, term
 
 
@@ -924,7 +927,7 @@ def test_no_armed_preview_control_survives_leaving_the_preview_view():
     "ARRIVING", NOT "FLIPPING". This assertion used to read `narrowShown === true`,
     which describes a Preview→Chat flip and nothing else — and a MEDIA CROSSING is
     not a flip: a wide boot leaves `narrowShown === false`, so arming the mode
-    with both columns on screen and then dragging the pane under 880px hid the
+    with both columns on screen and then dragging the pane under 800px hid the
     control and kept the state. `narrowShown !== null` is the honest test: it
     means "not boot", which is the one call that must not run the reset — writing
     annmode=0 there would clobber the ON-by-default the wide layout shares.

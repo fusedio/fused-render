@@ -1,4 +1,4 @@
-"""The `claude` template's NARROW layout (one view at a time below 880px).
+"""The `claude` template's NARROW layout (one view at a time below 800px).
 
 Three separate defects live here, and each of them is invisible to a reading of
 the stylesheet alone — which is why the pins below are about the *mechanism*, not
@@ -59,9 +59,9 @@ def _style_block(html):
 
 
 def _narrow_block(html):
-    """The `@media (max-width: 880px)` block's body."""
-    m = re.search(r"@media \(max-width: 880px\) \{", html)
-    assert m, "the 880px media block is what makes the narrow layout exist"
+    """The `@media (max-width: 800px)` block's body."""
+    m = re.search(r"@media \(max-width: 800px\) \{", html)
+    assert m, "the 800px media block is what makes the narrow layout exist"
     depth, i = 1, m.end()
     while depth:
         if html[i] == "{":
@@ -161,7 +161,7 @@ def test_narrowing_a_wide_pane_disarms_the_now_hidden_controls(html):
 narrow = false; paneview = "chat";
 applyNarrowView();                       // boot, wide
 annOn = true;                            // the user arms it while both columns show
-narrow = true;                           // the divider drag crosses 880px
+narrow = true;                           // the divider drag crosses 800px
 applyNarrowView();
 console.log(JSON.stringify({ calls, annOn }));
 """)

@@ -198,13 +198,16 @@
      itself for, i.e. a preview of a preview's narrow layout. The useful sum:
          #side min-width           200px  (the commit spine: hash + date + tag)
        + #divider                    4px
-       + a usable preview frame     640px  (the `bundle` family number — the
-                                            narrowest frame a framed template
-                                            still renders its WIDE layout in)
-       = 844px floor → 880px, rounding up for a scrollbar and matching what
-         `claude`, the other split-layout template, lands on from its own
-         arithmetic (#left 420 + divider 4 + #chat 440 = 864 → 880), so the two
-         collapse together.
+       + a usable preview frame     420px  (the phone-viewport family, the same
+                                            "a framed preview that is still a
+                                            page" figure `claude` uses for ITS
+                                            framed column)
+       = 624px floor → 640px, rounded up for a scrollbar (and landing on the
+         `bundle` family number). This is deliberately LOWER than `claude`'s
+         800px: claude's narrower column is a 420px preview but its OTHER
+         column is a 440px chat, while ours is a 200px commit spine — the
+         split here stays useful in hosts claude's cannot survive, so the two
+         templates no longer share a breakpoint.
 
      Below it: ONE view at a time. #side-head stays put as the control strip
      (it already carries Revert), so the toggle is reachable from both views,
@@ -225,7 +228,7 @@
     cursor: pointer;
   }
   #view-toggle:hover { border-color: var(--accent); color: var(--accent); }
-  @media (max-width: 880px) {
+  @media (max-width: 640px) {
     /* Stack, so #side can be the full-width control strip + list. */
     body { flex-direction: column; }
     #divider { display: none; }  /* nothing left to resize */
@@ -283,12 +286,12 @@ const noticeEl = document.getElementById("notice");
 const revertBtn = document.getElementById("revert");
 const toggleBtn = document.getElementById("view-toggle");
 
-// ── narrow layout: one view at a time (see the @media block for the 880px
+// ── narrow layout: one view at a time (see the @media block for the 640px
 // arithmetic and for why this lives in the template, not the shell) ──
 // The breakpoint is asked of matchMedia with the SAME query string as the CSS so
 // the two can't drift, and only to keep the button's label honest — the layout
 // itself is pure CSS, so a resize needs no JS to be correct.
-const NARROW = window.matchMedia("(max-width: 880px)");
+const NARROW = window.matchMedia("(max-width: 640px)");
 function showNarrow(view) {
   // `narrow-preview` is inert above the breakpoint (every rule that reads it is
   // inside the media block), so it is safe to leave set while the host is wide.

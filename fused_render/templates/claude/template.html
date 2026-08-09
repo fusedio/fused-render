@@ -205,7 +205,7 @@
      outranks the UA's `[hidden] { display: none }`. TWO independent things can
      hide this bar, and they are separate on purpose: JS sets `hidden` when
      there is nothing to pick (buildLeftPicker / placeLeftPicker — a content
-     fact), and the 880px media block drops it outright (a layout fact — the
+     fact), and the 800px media block drops it outright (a layout fact — the
      narrow layout has one column and one shared strip, so the picker goes back
      to #anntools). Neither can disagree with the other, because they answer
      different questions. Both are declared AFTER the shared rule, so both
@@ -330,7 +330,7 @@
   .mode-opt[aria-selected="true"] { color: var(--accent); }
 
   /* "Annotate preview" ⇄ "Back to chat" toggle. Exists for the NARROW layout only
-     (see the 880px block at the end of this stylesheet): while both columns are on
+     (see the 800px block at the end of this stylesheet): while both columns are on
      screen there is nothing to toggle, so it is display:none here and the media
      query is the only thing that reveals it. Drawn like #back (bordered, quiet)
      rather than like #annbtn: it navigates between views, it is not a mode.
@@ -1098,14 +1098,15 @@
        + #chat   ~60 characters of transcript prose at the    440px
                  composer's own size (340 above is the
                  squeeze floor, not a target)
-       = 864px → 880px, rounded up for a scrollbar and so the framed template's
-                 own breakpoints fire before it is being crushed.
+       = 864px floor. The breakpoint currently sits at 800px — deliberately a
+                 little BELOW that floor, trading a slightly-squeezed band
+                 (800–864) for keeping the split alive on more hosts.
 
-     Below 880px the split becomes ONE view at a time with a toggle, the same
+     Below 800px the split becomes ONE view at a time with a toggle, the same
      idiom log_studio (780px), map (650), duckdb/sqlite (560) and bundle (640)
-     already use — and `versions`, the other split-layout template, lands on the
-     same 880px from its own arithmetic (#side 200 + divider 4 + a 640px preview
-     frame = 844), so the two collapse together.
+     already use. `versions`, the other split-layout template, collapses LOWER
+     (640px): its non-preview column is a 200px commit spine, not a 440px chat,
+     so its split stays useful in hosts this one cannot survive.
 
      WHY this lives in the template and not in the shell: the alternative was to
      have the shell filter split-layout modes out of a narrow pane. A pane's
@@ -1121,7 +1122,7 @@
 
      No min-width declaration was added to the registry or to stat for exactly
      that reason. */
-  @media (max-width: 880px) {
+  @media (max-width: 800px) {
     /* One column, holding one of the two views (plus the shared #anntools
        strip — see below). `position: relative` because the hidden view is
        PARKED out of flow against the body box, not display:none'd — see
@@ -1147,7 +1148,7 @@
        behaviour is the same either way, because the `split` PARAM is never
        touched by the collapse:
        applySplit rewrites the inline percentage from it the moment the host grows
-       back past 880px, so the wide layout returns with the user's own ratio and
+       back past 800px, so the wide layout returns with the user's own ratio and
        with no reload. `min-width` is a stylesheet declaration and does need
        clearing here — the 200px floor is a promise about the wide layout. */
     #left { min-width: 0; }
@@ -1293,7 +1294,7 @@
         <div id="leftmodepop" role="listbox" aria-label="Preview pane view" hidden></div>
       </div>
       <!-- Chat ⇄ Preview, for the narrow single-view layout only (hidden by CSS
-           until the 880px media query reveals it). It sits in THIS strip
+           until the 800px media query reveals it). It sits in THIS strip
            because the strip is the one row that both views keep on screen. -->
       <button id="viewbtn" type="button" aria-label="Annotate preview"
               title="Switch between the chat and the preview pane, where the annotation tools are">Annotate preview</button>
@@ -2241,7 +2242,7 @@ function buildLeftPicker() {
 // that chooses what that pane frames, sitting on that pane. It spent a while in
 // #anntools, across the divider, which put a control for one column on the other
 // one and left the pane it governs with no chrome of its own.
-// NARROW layout (<880px): back into #anntools. There is no persistent left
+// NARROW layout (<800px): back into #anntools. There is no persistent left
 // column below the breakpoint — one view shows at a time — so there is nothing
 // to hang a bar on, and #anntools is the one row BOTH views keep on screen
 // (which is why the Chat ⇄ Preview toggle lives there too).
@@ -2385,7 +2386,7 @@ function enterNoPane() {
   annSetMode(false);
   // 3. And drop the narrow layout's view class, which boot stamped from
   //    `paneview`. It has to go rather than be left inert: `view-preview`
-  //    collapses #chat to its #anntools strip inside the 880px block, and with
+  //    collapses #chat to its #anntools strip inside the 800px block, and with
   //    the strip removed and no pane to show instead, a narrow host would have
   //    rendered a blank page. applyNarrowView returns early from here on, so
   //    nothing puts either class back.
@@ -2447,9 +2448,9 @@ const clampPct = (pct) => Math.min(80, Math.max(20, pct));
 // The narrow single-view layout's breakpoint, duplicated from the media query at
 // the end of the stylesheet because applySplit has to know about it — see below.
 // A `matchMedia` object rather than a width comparison so the two stay one
-// definition and one evaluation: `innerWidth < 880` and the media query disagree
+// definition and one evaluation: `innerWidth < 800` and the media query disagree
 // about a scrollbar's width, and that disagreement is a half-collapsed layout.
-const NARROW_MQ = window.matchMedia("(max-width: 880px)");
+const NARROW_MQ = window.matchMedia("(max-width: 800px)");
 function applySplit() {
   // No pane, no ratio: #left is out of the document (enterNoPane), so there is
   // nothing to size and `split` describes a layout this target does not have.
@@ -2926,7 +2927,7 @@ renderAnn();  // chips from a persisted review show before the frame loads
 watchApp();   // a document already in the frame at boot never fires `load`
 
 // ── narrow host: which of the two views is on screen ────────────────────
-// Below 880px the stylesheet collapses the split to one view at a time (see the
+// Below 800px the stylesheet collapses the split to one view at a time (see the
 // media block, which also records why this is the template's job and not the
 // shell's). All this code does is say WHICH one, as a body class — and the class
 // is set unconditionally, wide or narrow, because the rules that read it live
@@ -2968,7 +2969,7 @@ function applyNarrowView() {
   viewBtn.textContent = viewLabel;
   viewBtn.setAttribute("aria-label", viewLabel);
   // ARRIVING AT THE NARROW CHAT VIEW DISARMS annotate mode — by flipping there
-  // from Preview, or by the pane crossing 880px while the chat is what shows. The
+  // from Preview, or by the pane crossing 800px while the chat is what shows. The
   // media block hides the annotate toggle in the chat-only view because there is
   // no frame to point at; leaving the mode armed behind that hidden toggle would
   // keep the frame's capture-phase click swallower live over a document the user
@@ -2992,7 +2993,7 @@ function applyNarrowView() {
   // narrower test describes a Preview→Chat FLIP and nothing else, and a media
   // CROSSING is not a flip. A wide boot leaves `narrowShown === false`, so
   // arming annotate mode with both columns on screen and then dragging the
-  // divider under 880px used to hide the control and keep the state: NARROW_MQ's
+  // divider under 800px used to hide the control and keep the state: NARROW_MQ's
   // change handler called through to here and the guard failed. The cost was
   // `escapeAction` returning "exit-annotate" ahead of "stop-run", so the user's
   // first Escape during a live turn disarmed an invisible switch instead of
