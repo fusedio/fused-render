@@ -1736,7 +1736,7 @@ async function loadBranches(mine) {
 
 /* Everything the DOM's shape depends on. A `msg` keystroke is deliberately NOT
    in here: it changes the URL and must not repaint the view. */
-const structural = () => [param("wt"), param("panel"), param("ask")].join(" ");
+const structural = () => [param("wt"), param("panel"), param("ask")].join("\u0000");
 
 async function draw(force) {
   const key = structural();
