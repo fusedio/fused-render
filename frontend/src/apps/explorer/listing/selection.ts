@@ -58,34 +58,40 @@ export function firstEntryPath(
   return null;
 }
 
-// What a freshly opened folder should select for its preview pane, or null for
-// "leave the selection alone" (FS-16). The caller owns the TIMING — one shot
-// per mount, at the first settled non-search listing with the pane on, all of
-// which are conditions on WHEN to ask, not on the answer (see Listing). This
-// owns the decision.
+// What a freshly opened folder should select for its preview pane, or null when
+// there is nothing to select (FS-16). The caller owns the TIMING — one shot per
+// mount, at the first settled non-search listing with the pane on, all of which
+// are conditions on WHEN to ask, not on the answer (see Listing). This owns the
+// decision.
 //
-// `urlSel` is the `?sel` param, and it is deliberately the ONLY reading of the
-// current selection taken here. Two reasons, and the second is the subtle one:
-//   • A `?sel` seed is a claim on the selection that must win, and
-//     useListingSelection applies it in an effect registered BEFORE the
-//     caller's — so on the commit this runs, its setSel has not landed yet and
-//     the component's `sel` is still the pre-seed value. The URL is what is
-//     already true.
-//   • A BARE url means the selection is about to be (or already is) empty,
-//     whatever `sel` currently holds: the seeding effect CLEARS a selection
-//     recalled across a remount when the URL carries no `sel`, and after the
-//     seed the mirror effect keeps `?sel` in step with the lead. Reading the
-//     component's `sel` here instead let a recalled-then-discarded selection —
-//     browse into a file and come back to its folder, whose URL no longer
-//     carries `sel` — burn the one shot and leave the pane empty for the whole
-//     mount.
+// The decision takes NO reading of the current selection, and deliberately so.
+// It used to defer to a `?sel` URL param — a per-folder claim on the selection
+// mirrored into the address bar — and that param is gone: it wrote to the URL
+// on every arrow-key press, and what it bought (a shareable link to a
+// highlighted row) is not what folder URLs are for. With no claim to defer to,
+// the ANSWER is always the first entry (D240).
+//
+// That rationale was about the URL, never about the user: **auto-select fills
+// an EMPTY selection, it never replaces one.** A row the user clicked in the
+// pre-stat provisional listing rides across the swap (recallSelection), and
+// overwriting it with row one would undo a click the user had already made and
+// seen. That yield is a condition on WHEN to ask, not on the answer, so it
+// lives in Listing's effect (`selectionClaimed`) and this stays pure.
 export function autoSelectPath(
-  urlSel: string | null,
   rows: string[],
   byPath: ReadonlyMap<string, unknown>,
 ): string | null {
-  if (urlSel) return null;
   return firstEntryPath(rows, byPath);
+}
+
+// Does something already own the selection? The one question the auto-select
+// effect asks before it spends its shot (FS-16): a non-empty selection at that
+// moment was put there by the user — a click in the provisional scaffold,
+// carried over by recallSelection — or by the reconcile clamping onto a
+// surviving row, and either way it outranks "row one, because the folder just
+// opened". Anchor/lead are not consulted: `paths` is what is highlighted.
+export function selectionClaimed(sel: Selection): boolean {
+  return sel.paths.length > 0;
 }
 
 // A contiguous range of rendered rows, inclusive, in row order. `rows` is the

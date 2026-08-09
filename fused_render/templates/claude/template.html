@@ -205,29 +205,49 @@
      outranks the UA's `[hidden] { display: none }`. TWO independent things can
      hide this bar, and they are separate on purpose: JS sets `hidden` when
      there is nothing to pick (buildLeftPicker / placeLeftPicker — a content
-     fact), and the 880px media block drops it outright (a layout fact — the
+     fact), and the 800px media block drops it outright (a layout fact — the
      narrow layout has one column and one shared strip, so the picker goes back
      to #anntools). Neither can disagree with the other, because they answer
      different questions. Both are declared AFTER the shared rule, so both
      win. */
   #leftbar[hidden] { display: none; }
 
-  /* WHICH view the left pane frames (`leftmode`). A native <select>, quiet to
-     the same degree as #annbtn: borderless, transparent, 12px, the muted colour
-     until hovered. Loud chrome here would read as the pane's TITLE rather than
-     a switch, and the pane's title is the file name in the topbar. Native
-     rather than a custom menu (the shell has one, ModeSwitcher) because a
-     <select> brings the platform popup, keyboard handling and accessible name
-     for free and the list is at most a handful of modes — reimplementing that
-     inside a template buys nothing. Hidden until there is more than one view to
-     choose between; see buildLeftPicker(). It is ONE element that MOVES between
-     the two hosts above (placeLeftPicker), not one per layout: a second copy
-     would be a second value, a second listener and a second thing to keep in
-     step with `leftmode`. */
-  #leftmode {
+  /* WHICH view the left pane frames (`leftmode`): a trigger and its own listbox
+     popup, quiet to the same degree as #annbtn — borderless, transparent, 12px,
+     the muted colour until hovered. Loud chrome here would read as the pane's
+     TITLE rather than a switch, and the pane's title is the file name in the
+     topbar. Hidden until there is more than one view to choose between; see
+     buildLeftPicker(). It is ONE element that MOVES between the two hosts above
+     (placeLeftPicker), not one per layout: a second copy would be a second
+     value, a second listener and a second thing to keep in step with
+     `leftmode`.
+
+     It WAS a native <select>, chosen for the platform popup, keyboard handling
+     and accessible name it brings for free. What overturned that is the ICON: a
+     `<option>` renders text and nothing else in every engine, so a mode list
+     that shows what the shell's own mode menu shows — the template's icon.svg
+     beside its name — cannot be built out of one. The replacement is the same
+     shape the `reader` template's voice menu already uses in this codebase
+     (a button carrying `aria-haspopup="listbox"` over a `role="listbox"` div),
+     and its rows are real <button>s, so focus, Enter and Space stay the
+     platform's job and only the arrows and Escape are ours. */
+  #leftmode { position: relative; flex-shrink: 0; }
+  /* THE RIGHT-HAND END of the pane's own bar. The bar exists to carry this one
+     control, and a lone control hard against the left edge reads as a label for
+     the pane rather than as a switch on it — the same reason #viewbtn parks
+     itself at the end of the strip across the divider. Scoped to #leftbar: in
+     the narrow layout the picker shares #anntools with the annotate switch and
+     the view toggle, where #viewbtn already owns the auto margin and a second
+     one would split the free space between them and float the picker into the
+     middle of the row. */
+  #leftbar #leftmode { margin-left: auto; }
+  #leftmodebtn {
+    display: flex;
+    align-items: center;
+    gap: 6px;
     height: 26px;
-    max-width: 140px;
-    padding: 0 2px;
+    max-width: 160px;
+    padding: 0 6px;
     font: inherit;
     font-size: 12px;
     line-height: 1;
@@ -241,14 +261,76 @@
     cursor: pointer;
     transition: color .12s, background .12s;
   }
-  #leftmode:hover { color: var(--fg); background: var(--surface); }
-  /* The popup list is drawn by the platform, which does not inherit the
-     transparent background — name both colours or a dark theme gets black text
-     on black. */
-  #leftmode option { color: var(--fg); background: var(--panel); }
+  /* Open is a state the trigger has to WEAR: with the popup drawn below it, a
+     trigger that goes back to looking untouched reads as a menu belonging to
+     nothing. */
+  #leftmodebtn:hover,
+  #leftmodebtn[aria-expanded="true"] { color: var(--fg); background: var(--surface); }
+  #leftmodebtn .mode-lbl { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #leftmodebtn .mode-chev { font-size: 9px; flex-shrink: 0; }
+  /* The template's own icon.svg, drawn the way the shell draws it (mode-icon-mask
+     in preview.css): a MASK filled with currentColor, so one flat glyph inherits
+     the row's ink and both themes instead of shipping two colourways. */
+  .mode-ic {
+    display: inline-block;
+    flex-shrink: 0;
+    width: 14px;
+    height: 14px;
+    background-color: currentColor;
+    -webkit-mask-position: center; mask-position: center;
+    -webkit-mask-repeat: no-repeat; mask-repeat: no-repeat;
+    -webkit-mask-size: contain; mask-size: contain;
+  }
+  /* A template folder with no icon.svg (and the `_render` sentinel, which is not
+     a folder at all) gets the shell's own fallback: a lettered box, so the
+     column of icons never goes ragged. */
+  .mode-ic.letter {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: none;
+    border: 1px solid var(--border-strong);
+    border-radius: 3px;
+    font-size: 9px;
+    font-weight: 600;
+  }
+  #leftmodepop {
+    position: absolute;
+    top: calc(100% + 6px);
+    right: 0;
+    z-index: 30;
+    min-width: 172px;
+    padding: 4px;
+    background: var(--panel);
+    border: 1px solid var(--border-strong);
+    border-radius: 10px;
+    box-shadow: 0 6px 24px var(--shadow);
+  }
+  /* `display: flex`-shaped children do not save it: the popup itself is the box
+     the attribute has to hide, and `position: absolute` outranks the UA's
+     `[hidden]` rule the same way #leftbar's `display: flex` does. */
+  #leftmodepop[hidden] { display: none; }
+  .mode-opt {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    padding: 7px 9px;
+    font: inherit;
+    font-size: 12px;
+    line-height: 1;
+    border: 0;
+    border-radius: 7px;
+    background: none;
+    color: var(--fg);
+    cursor: pointer;
+    text-align: left;
+  }
+  .mode-opt:hover, .mode-opt:focus-visible { background: var(--surface-2); }
+  .mode-opt[aria-selected="true"] { color: var(--accent); }
 
   /* "Annotate preview" ⇄ "Back to chat" toggle. Exists for the NARROW layout only
-     (see the 880px block at the end of this stylesheet): while both columns are on
+     (see the 800px block at the end of this stylesheet): while both columns are on
      screen there is nothing to toggle, so it is display:none here and the media
      query is the only thing that reveals it. Drawn like #back (bordered, quiet)
      rather than like #annbtn: it navigates between views, it is not a mode.
@@ -487,37 +569,6 @@
   /* The push channel's receipt: this message carried a description of the app
      the user is looking at, and they should be able to see that it did. */
   .user .attach { margin-top: 4px; font-size: 11px; color: var(--faint); }
-  /* The per-message pane-shot toggle. Pressed state has to be unmistakable: it
-     resets after every send, so a user who cannot see whether it is on will
-     either not use it or expect it to have stayed on.
-
-     Its content is a monochrome inline svg on `currentColor`, not the colour emoji
-     it used to be: `.pill` paints only `color`, so its three neighbours are quiet
-     dim TEXT and a saturated multicolour glyph was the one loud thing in the row.
-     Inheriting `color` also gets the hover colour and the pressed accent applied to
-     the icon for free — an emoji cannot be recoloured at all. Icon-only, and no
-     word beside it: the row already carries three selects and a send button and
-     wraps in a narrow chat pane, so every extra millimetre costs a line.
-
-     It deliberately does NOT override `.pill`'s padding. The pill box is the shared
-     visual language of that row, and while every background is transparent a
-     different box is invisible — it only appears once hover paints one, as a pill
-     that is taller and narrower than the selects beside it. So the icon is centred
-     inside the pill's own box instead: `min-height` is the pills' text line box
-     (their font-size × the inherited line-height), which is what gives a text pill
-     its height. */
-  .viewshot {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    min-height: 1.65em;
-  }
-  .viewshot svg { display: block; }
-  .viewshot[aria-pressed="true"] {
-    background: var(--accent);
-    border-color: var(--accent);
-    color: var(--on-accent);
-  }
   .user .bubble {
     background: var(--bubble-user);
     border-radius: 18px 18px 4px 18px;
@@ -708,12 +759,14 @@
   /* THE ONE RULE about hover and an active state, shared with #annbtn in the left
      pane's banner: a neutral hover never applies to a control that is switched on,
      and an on control hovers WITHIN its accent.
-     Spelled out in the selectors on purpose. `.pill:hover` and
-     `.viewshot[aria-pressed="true"]` are both specificity (0,2,0), so a plain
-     `.pill:hover` won on source order alone and repainted an ARMED pane-shot toggle
-     neutral — the "this send carries a picture" receipt disappeared under the
-     cursor, at exactly the moment the user was deciding whether to click. Relying on
-     rule order for that is one reshuffle away from the bug coming back. */
+     Spelled out in the selectors on purpose, and kept after the pane-shot pill
+     that motivated it was deleted: `.pill:hover` and a pill's own
+     `[aria-pressed="true"]` rule are both specificity (0,2,0), so a plain
+     `.pill:hover` wins on source order alone and repaints an ARMED pill neutral —
+     the "this is on" receipt disappearing under the cursor at exactly the moment
+     the user is deciding whether to click. Relying on rule order for that is one
+     reshuffle away from the bug coming back, and the next pressable pill in this
+     row inherits the fix rather than rediscovering it. */
   .pill:hover:not([aria-pressed="true"]) { background: var(--surface-2); color: var(--fg); }
   .pill[aria-pressed="true"]:hover { filter: brightness(1.1); }
   .pill option { background: var(--bg); color: var(--fg); }
@@ -752,7 +805,7 @@
      narrow layout's `body.view-preview #chat > *:not(#anntools) { display: none }`
      could not collapse it. In Preview view #composer-chat was promoted into
      #chat's flex layout under the #anntools strip and the whole composer
-     (textarea, three selects, the pane-shot pill, the send button) rendered there,
+     (textarea, three selects, the send button) rendered there,
      eating ~105px of the height the preview was supposed to get. As a rule it is
      plain specificity (0,1,0,0) against the media block's (0,2,1,1), so the collapse
      wins. tests/test_claude_narrow.py forbids an inline `display` anywhere in the
@@ -843,6 +896,133 @@
     margin-bottom: 8px;
     padding: 0 4px;
   }
+  /* Claude snapshots (SPEC §34). Same visual family as .chat-row — this is
+     another "list of past things about this target" on the same landing page —
+     and like those rows it is pressable: a row expands to its diff and the one
+     action that goes back to it. The SECTION itself is pressable too: it is a
+     collapsed heading until asked for, so the landing page costs no round trip
+     for a history most opens never look at. */
+  #snaps { margin-top: 28px; padding-bottom: 32px; }
+  #snaps .head {
+    color: var(--faint);
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: .8px;
+    text-transform: uppercase;
+    margin-bottom: 8px;
+    padding: 0 4px;
+  }
+  /* WHAT OPENS THE SECTION IS A ROW, not the heading.
+     The heading was the control for one revision and it was the wrong element:
+     11px uppercase letter-spaced micro-type stretched across a full-width
+     bordered pill reads as neither a heading nor a button ("the claude
+     snapshots toggle thing UI is very ugly"), and a lowercase "show" hint
+     sitting beside an uppercase label made two type systems argue inside one
+     box. The page already has an affordance vocabulary and it is not headings:
+     EVERY section here is a quiet static uppercase label over a stack of
+     pressable rows (#recent's heading over .chat-row). So the heading goes back
+     to being a label, and the thing you press is one placeholder .snap-row —
+     the SAME class the snapshots themselves use, borrowed rather than copied —
+     which is literally a preview of what is inside: a row that opens into more
+     rows exactly like it. */
+  #snapshead { display: flex; align-items: center; gap: 8px; }
+  /* The way back out, and it only exists once there is something to close. It
+     lives on the heading LINE (there is no placeholder row to press any more)
+     but not in the heading's type: normal case, so it reads as a control beside
+     the label rather than as part of it. */
+  #snapshide {
+    margin-left: auto;
+    font: inherit;
+    font-size: 11.5px;
+    font-weight: 400;
+    letter-spacing: 0;
+    text-transform: none;
+    color: var(--faint);
+    background: none;
+    border: 0;
+    border-radius: 6px;
+    padding: 2px 6px;
+    cursor: pointer;
+  }
+  #snapshide:hover { color: var(--fg); }
+  /* `.snap-row` is `display: flex`, which outranks the UA's `[hidden]` rule. */
+  #snapsopen[hidden] { display: none; }
+  /* The one thing the placeholder does not take from .snap-row: its label is the
+     row's SUBJECT, so it carries the row's own ink rather than the muted
+     timestamp colour .snap-when is for. */
+  #snapsopen .snap-open-label { color: var(--fg); flex: 1; }
+  .snap-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 14px;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    margin-bottom: 6px;
+    font-size: 12.5px;
+  }
+  /* The dot answers exactly ONE question — where is disk right now — rather
+     than competing with a second marker for the same column. */
+  .snap-row .snap-dot { color: var(--faint); flex-shrink: 0; font-size: 10px; }
+  .snap-row.here { border-color: var(--border-strong); }
+  .snap-row.here .snap-dot { color: var(--accent); }
+  .snap-row .snap-v { color: var(--fg); flex-shrink: 0; font-variant-numeric: tabular-nums; }
+  .snap-row .snap-when { color: var(--faint); flex: 1; overflow: hidden;
+                         text-overflow: ellipsis; white-space: nowrap; }
+  .snap-row .snap-d { color: var(--faint); flex-shrink: 0; }
+  .snap-row .snap-plus { color: var(--accent); }
+  .snap-row .snap-minus { color: var(--faint); }
+  .snap-row .snap-caret { color: var(--faint); font-size: 9px; flex-shrink: 0; }
+  .snap-row { cursor: pointer; }
+  .snap-row:hover { background: var(--surface); }
+  .snap-row:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+  /* An open row and its body are one box: the expansion is part of the row it
+     belongs to, not a panel floating under the list. */
+  .snap-item { margin-bottom: 6px; }
+  .snap-item .snap-row { margin-bottom: 0; }
+  .snap-row.open { border-bottom-left-radius: 0; border-bottom-right-radius: 0;
+                   border-bottom-color: transparent; }
+  .snap-body {
+    border: 1px solid var(--border);
+    border-top: none;
+    border-radius: 0 0 12px 12px;
+    padding: 10px 14px 12px;
+    font-size: 12px;
+  }
+  .snap-row.open + .snap-body { border-color: var(--border-strong); }
+  .snap-diff {
+    background: var(--pre-bg);
+    color: var(--pre-fg);
+    border-radius: 8px;
+    padding: 8px 10px;
+    margin: 0 0 10px;
+    max-height: 240px;
+    overflow: auto;
+    font-size: 11.5px;
+    line-height: 1.45;
+    white-space: pre;
+  }
+  .snap-diff .dl-add { color: var(--ok); }
+  .snap-diff .dl-del { color: var(--error); }
+  .snap-diff .dl-hunk { color: var(--link); }
+  .snap-diff .dl-head { color: var(--faint); }
+  .snap-act { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+  .snap-ask { color: var(--fg); }
+  .snap-go, .snap-no {
+    font: inherit;
+    padding: 5px 12px;
+    border-radius: 999px;
+    border: 1px solid var(--border-strong);
+    background: var(--surface);
+    color: var(--fg);
+    cursor: pointer;
+  }
+  .snap-go { border-color: var(--accent); color: var(--accent); }
+  .snap-go:hover, .snap-no:hover { background: var(--surface-2); }
+  .snap-note { color: var(--faint); flex-basis: 100%; }
+  .snap-err { color: var(--error); }
+  #snapsnote { color: var(--faint); font-size: 11.5px; padding: 4px; }
+
   .chat-row {
     display: flex;
     align-items: center;
@@ -918,14 +1098,15 @@
        + #chat   ~60 characters of transcript prose at the    440px
                  composer's own size (340 above is the
                  squeeze floor, not a target)
-       = 864px → 880px, rounded up for a scrollbar and so the framed template's
-                 own breakpoints fire before it is being crushed.
+       = 864px floor. The breakpoint currently sits at 800px — deliberately a
+                 little BELOW that floor, trading a slightly-squeezed band
+                 (800–864) for keeping the split alive on more hosts.
 
-     Below 880px the split becomes ONE view at a time with a toggle, the same
+     Below 800px the split becomes ONE view at a time with a toggle, the same
      idiom log_studio (780px), map (650), duckdb/sqlite (560) and bundle (640)
-     already use — and `versions`, the other split-layout template, lands on the
-     same 880px from its own arithmetic (#side 200 + divider 4 + a 640px preview
-     frame = 844), so the two collapse together.
+     already use. `versions`, the other split-layout template, collapses LOWER
+     (640px): its non-preview column is a 200px commit spine, not a 440px chat,
+     so its split stays useful in hosts this one cannot survive.
 
      WHY this lives in the template and not in the shell: the alternative was to
      have the shell filter split-layout modes out of a narrow pane. A pane's
@@ -941,7 +1122,7 @@
 
      No min-width declaration was added to the registry or to stat for exactly
      that reason. */
-  @media (max-width: 880px) {
+  @media (max-width: 800px) {
     /* One column, holding one of the two views (plus the shared #anntools
        strip — see below). `position: relative` because the hidden view is
        PARKED out of flow against the body box, not display:none'd — see
@@ -967,7 +1148,7 @@
        behaviour is the same either way, because the `split` PARAM is never
        touched by the collapse:
        applySplit rewrites the inline percentage from it the moment the host grows
-       back past 880px, so the wide layout returns with the user's own ratio and
+       back past 800px, so the wide layout returns with the user's own ratio and
        with no reload. `min-width` is a stylesheet declaration and does need
        clearing here — the 200px floor is a promise about the wide layout. */
     #left { min-width: 0; }
@@ -1001,24 +1182,6 @@
        visible frame is worse than a dead one: it swallows clicks in a document
        the user cannot see. applyNarrowView disarms the mode when the view flips
        away from Preview for exactly that reason.
-       `.viewshot` — the composer's "attach a screenshot of the app pane" pill —
-       is in the list too, and that one is a genuine judgement call: it still
-       WORKS here (the parked column keeps a real viewport, so shotPane
-       rasterises the app correctly rather than a 1×1 image), so the narrow
-       "it cannot work" test does not catch it. The rule that does is the
-       stronger one: a view that shows no preview offers no features OF the
-       preview. Attaching a picture of something the user cannot see is a worse
-       affordance than a working one is a good affordance, and Preview view — one
-       click away, where the pill is hidden anyway because the whole composer
-       collapses — is where a person deciding to attach the app can actually see
-       what they are attaching — where the pill is out of sight for a DIFFERENT
-       reason, not a second rule: it is inside the composer, and Preview view
-       collapses the whole composer with the rest of the chat column. That was a
-       claim this comment made before it was true (the composer's inline
-       `display:contents` outranked the collapse, so the pill was live and visible
-       in Preview view); it holds now because the declaration moved into the
-       stylesheet. It is still ONE mechanism deep, so
-       tests/test_claude_narrow.py pins the collapse rather than the pill.
        Two things are deliberately NOT in this list:
          * the Chat ⇄ Preview toggle — it is the navigation between the two
            views, not a feature of either, so it is the one control that has to
@@ -1027,7 +1190,6 @@
            notes about to be sent, in the user's own words), not a control that
            acts on the preview. Hiding them would hide part of the message. */
     body.view-chat #annbtn,
-    body.view-chat .viewshot,
     body.view-chat #leftmode { display: none; }
     /* The pin overlay (#annpins, #annhl, #annpop) needs no rule of its own: all
        three are children of #left, so parking the column takes them with it —
@@ -1109,10 +1271,12 @@
       <button id="annbtn" type="button" aria-pressed="false" aria-label="Annotate the preview"
               title="Annotate the preview, then send the notes to Claude"><span
         class="lbl">Annotate</span><span class="track" aria-hidden="true"><span class="knob"></span></span></button>
-      <!-- Which view the LEFT pane frames. Empty and `hidden` in the markup:
-           the options are the target's own preview modes, which only the stat
-           call in paneURL() knows, and there is no picker to show at all unless
-           that call found more than one of them (buildLeftPicker).
+      <!-- Which view the LEFT pane frames. The popup ships EMPTY and the whole
+           control `hidden`: the options are the target's own preview modes,
+           which only the stat call in paneURL() knows, and there is no picker to
+           show at all unless that call found more than one of them
+           (buildLeftPicker). The rows carry each template's own icon.svg, which
+           is why this is a listbox and not a <select> — see the stylesheet.
            It SHIPS here and lives here in the NARROW layout, where this strip is
            the one row both views keep and there is no persistent left column to
            put a bar on. In the split layout placeLeftPicker moves this same
@@ -1120,10 +1284,17 @@
            than there because this is the position that needs no JS to be right:
            a picker in an unbuilt left bar would be a control in a bar that may
            never be shown. -->
-      <select id="leftmode" hidden aria-label="Preview pane view"
-              title="Which view the preview pane shows"></select>
+      <div id="leftmode" hidden>
+        <button id="leftmodebtn" type="button" aria-haspopup="listbox" aria-expanded="false"
+                aria-label="Preview pane view" title="Which view the preview pane shows">
+          <span class="mode-ic" aria-hidden="true"></span>
+          <span class="mode-lbl"></span>
+          <span class="mode-chev" aria-hidden="true">▾</span>
+        </button>
+        <div id="leftmodepop" role="listbox" aria-label="Preview pane view" hidden></div>
+      </div>
       <!-- Chat ⇄ Preview, for the narrow single-view layout only (hidden by CSS
-           until the 880px media query reveals it). It sits in THIS strip
+           until the 800px media query reveals it). It sits in THIS strip
            because the strip is the one row that both views keep on screen. -->
       <button id="viewbtn" type="button" aria-label="Annotate preview"
               title="Switch between the chat and the preview pane, where the annotation tools are">Annotate preview</button>
@@ -1151,9 +1322,6 @@
             <select id="model" class="pill model-sel" title="Model"></select>
             <select id="effort" class="pill effort-sel" title="Effort"></select>
             <select id="perm" class="pill perm-sel" title="How much Claude may do without asking"></select>
-            <button id="viewshot" class="pill viewshot" type="button" aria-pressed="false"
-                    aria-label="Attach a screenshot of the preview pane to this message"
-                    title="Attach a screenshot of the whole preview pane to this message (for layout problems that are not about one element)"><svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true"><rect x="2.2" y="3.2" width="11.6" height="9.6" rx="2.2" stroke="currentColor" stroke-width="1.4"/><path d="M2.9 11.4 6 8.3a1.2 1.2 0 0 1 1.7 0l3 3" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/><circle cx="10.6" cy="6.3" r="1.1" fill="currentColor"/></svg></button>
             <span class="spacer"></span>
             <button class="send" type="submit" aria-label="Send">
               <svg class="ic-send" width="14" height="14" viewBox="0 0 16 16" fill="none">
@@ -1192,9 +1360,6 @@
             <select id="hmodel" class="pill model-sel" title="Model"></select>
             <select id="heffort" class="pill effort-sel" title="Effort"></select>
             <select id="hperm" class="pill perm-sel" title="How much Claude may do without asking"></select>
-            <button id="hviewshot" class="pill viewshot" type="button" aria-pressed="false"
-                    aria-label="Attach a screenshot of the preview pane to this message"
-                    title="Attach a screenshot of the whole preview pane to this message (for layout problems that are not about one element)"><svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true"><rect x="2.2" y="3.2" width="11.6" height="9.6" rx="2.2" stroke="currentColor" stroke-width="1.4"/><path d="M2.9 11.4 6 8.3a1.2 1.2 0 0 1 1.7 0l3 3" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/><circle cx="10.6" cy="6.3" r="1.1" fill="currentColor"/></svg></button>
             <span class="spacer"></span>
             <button class="send" type="submit" aria-label="Send">
               <svg class="ic-send" width="14" height="14" viewBox="0 0 16 16" fill="none">
@@ -1209,6 +1374,36 @@
         <div id="recent">
           <div class="head">Recent chats</div>
           <div id="recentlist"></div>
+        </div>
+        <!-- Claude Code's own file-history checkpoints for this file (SPEC
+             §34). Ported from the superseded `annotate` template, whose reader
+             (shared/file_history.py) was written annotate-agnostic for exactly
+             this adoption. FILE targets only — the store keys on one absolute
+             file path, so a folder has no chain. COLLAPSED by default: the
+             heading is offered as soon as the target is known to be a file, and
+             the timeline behind it is only read when the user opens it. -->
+        <div id="snaps" hidden>
+          <div class="head" id="snapshead">
+            <span>Claude snapshots</span>
+            <!-- Only ever shown once the section is open: a "hide" for something
+                 that is not showing is a control for nothing. -->
+            <button id="snapshide" type="button" hidden
+                    aria-expanded="true" aria-controls="snapsbody">hide ▾</button>
+          </div>
+          <!-- The one pressable thing while collapsed, and a .snap-row on
+               purpose: it is a preview of what opening does, in the same shape
+               as what it opens into. Ships BEFORE the body so a failed read can
+               put it back with the error underneath it. -->
+          <div class="snap-row" id="snapsopen" role="button" tabindex="0"
+               aria-expanded="false" aria-controls="snapsbody">
+            <span class="snap-dot">●</span>
+            <span class="snap-open-label">Show version history</span>
+            <span class="snap-caret">▸</span>
+          </div>
+          <div id="snapsbody" hidden>
+            <div id="snapslist"></div>
+            <div id="snapsnote"></div>
+          </div>
         </div>
       </div>
     </div>
@@ -1316,19 +1511,6 @@ const SHOT_MAX_ELEMENTS = 3000;
 // for the whole capture. Small enough that a frame is never missed by much, large
 // enough that the yields themselves are not the cost.
 const SHOT_STYLE_CHUNK = 200;
-// ── the opt-in full-pane shot ──
-// A crop answers "what does THIS element look like". It cannot answer "the whole
-// layout is wrong", "these two panels overlap", "everything shifted down" — none
-// of which has a single element as its subject, and for which a crop actively hides
-// the answer. So the composer has a per-message toggle for a picture of the whole
-// visible pane, which is ONE extra encode of a bitmap shotPane already made.
-//
-// Its own caps, and the edge cap is emphatically not SHOT_MAX_EDGE: a whole pane
-// squeezed into 640px is unreadable, which defeats the only reason to send one.
-// 1600 is ~6x the pixels of a 640px crop, which is why WebP's quality dial matters
-// here more than anywhere else (see shotEncode).
-const SHOT_VIEW_EDGE = 1600;
-const SHOT_VIEW_BYTES = 900 * 1024;
 // Fraction of an annotated element's own area that may sit over an unreadable
 // canvas before the crop is suppressed instead of annotated. Half is the line
 // between "a picture of the thing, with a hole in a corner" (worth sending, with
@@ -1340,13 +1522,12 @@ const SHOT_BLANK_BLOCK = 0.5;
 // three together, because a drift is invisible until the chat starts showing
 // the user a screenful of JSON they never typed (D146).
 const APP_STATE_TAG = "live-app-state";
-// The pane shot's own block delimiter. A separate, tag-delimited block rather than
-// a field on the annotation JSON for two reasons: `shot`/`shotNote` are per-anchor
-// and the pane belongs to no anchor (hanging it off one annotation would be a
-// category error, and repeating it on all of them a lie), and a pane shot can ride
-// a message with NO annotations, where there is no annotation block to put it in.
-// Tag-delimited like the app-state block so its strip is position-independent —
-// the annotation block's is not, and only one such fragile strip is affordable.
+// The whole-pane screenshot's block delimiter. NOTHING WRITES ONE ANY MORE — the
+// composer's per-message "attach a picture of the whole pane" pill was deleted —
+// and this stays because sessions already on disk carry those blocks: a restored
+// transcript has to peel one off and show what the user typed, or it renders a
+// screenful of JSON they never wrote. Reading an old wire format is a permanent
+// obligation; being able to write it is not.
 const PANE_SHOT_TAG = "pane-shot";
 // Why there is nothing to say about the app. ONE const because two callers say
 // it: the snapshot itself, and the pull channel's fallback answer (appStatePull)
@@ -1848,22 +2029,14 @@ let paneNoun = "preview";
 // Everything that names the pane, rewritten in ONE place. Called from
 // setTargetNoun (never on its own) so the noun and the chrome that speaks it
 // cannot get out of step, and it covers exactly the sinks a person or the model
-// reaches: two spoken attributes on the annotate switch, four on the two pane-shot
-// pills (there are two composers, home and chat, and both carry the pill), and —
-// live, because they are built per message — the summary thumbnail's `alt` and the
-// two block preambles further down.
+// reaches: two spoken attributes on the annotate switch and — live, because they
+// are built per message — the two block preambles further down.
 function applyPaneNoun() {
   annBtn.setAttribute("aria-label", "Annotate the " + paneNoun);
   // Not written directly: annSetMode rewrites this title on every disarm, so the
   // idle wording has to have exactly one definition or the noun comes back wrong
   // the first time the user toggles the switch off. That is how it broke here.
   if (!annOn) annBtn.title = annIdleTitle();
-  for (const b of viewShotButtons()) {
-    b.setAttribute("aria-label", "Attach a screenshot of the " + paneNoun
-                   + " pane to this message");
-    b.title = "Attach a screenshot of the whole " + paneNoun + " pane to this "
-      + "message (for layout problems that are not about one element)";
-  }
 }
 
 const setTargetNoun = (noun) => {
@@ -1939,7 +2112,9 @@ async function paneURL() {
 }
 
 // ── the left-view picker ────────────────────────────────────────────────
-const leftSel = document.getElementById("leftmode");
+const leftSel = document.getElementById("leftmode");        // the whole control
+const leftBtn = document.getElementById("leftmodebtn");     // its trigger
+const leftPop = document.getElementById("leftmodepop");     // its listbox
 
 // The shell's `modeTitle` (ModeSwitcher.tsx), reimplemented in four lines: a
 // template is a standalone document and cannot import the shell's TS. Worth the
@@ -1954,27 +2129,111 @@ function paneModeLabel(mode) {
     || mode.charAt(0).toUpperCase() + mode.slice(1);
 }
 
+// The template's own icon.svg, which stat already resolved to an absolute path
+// on the `templates` entry (`_icon_for`, PT-11) — so this needs no new endpoint
+// and no second call: it is served by /api/fs/raw, the locator every other
+// template in this repo builds the same way. Drawn as a MASK filled with
+// currentColor, which is exactly what the shell does with the same file
+// (`templateModeIcon` / .mode-icon-mask), so a selected row's glyph takes the
+// accent along with its label. No icon (a template folder that ships none, and
+// the `_render` sentinel, which is not a folder) → the shell's own fallback, a
+// lettered box, rather than a hole in the column.
+function paneModeIcon(e) {
+  const el = document.createElement("span");
+  el.className = "mode-ic";
+  el.setAttribute("aria-hidden", "true");
+  if (!e.icon) {
+    el.classList.add("letter");
+    el.textContent = paneModeLabel(e.mode).charAt(0).toUpperCase();
+    return el;
+  }
+  const url = 'url("' + location.origin + "/api/fs/raw?path="
+    + encodeURIComponent(e.icon) + '")';
+  el.style.webkitMaskImage = url;
+  el.style.maskImage = url;
+  return el;
+}
+
+// The trigger and the rows both show icon + name, and the rows say which one is
+// current. Called on every swap, so a `leftmode` change from anywhere — a click,
+// a reload, a later param write — leaves the control agreeing with the frame.
+function syncLeftPicker(entry) {
+  if (leftSel.hidden || !entry) return;
+  const ic = paneModeIcon(entry);
+  leftBtn.replaceChild(ic, leftBtn.querySelector(".mode-ic"));
+  leftBtn.querySelector(".mode-lbl").textContent = paneModeLabel(entry.mode);
+  for (const o of leftPop.querySelectorAll(".mode-opt")) {
+    o.setAttribute("aria-selected", o.dataset.mode === entry.mode ? "true" : "false");
+  }
+}
+
+function openLeftPop() {
+  leftPop.hidden = false;
+  leftBtn.setAttribute("aria-expanded", "true");
+}
+function closeLeftPop(refocus) {
+  if (leftPop.hidden) return;
+  leftPop.hidden = true;
+  leftBtn.setAttribute("aria-expanded", "false");
+  // Only when the close was the user's own keystroke: stealing focus back on an
+  // outside click would yank it off whatever they actually clicked.
+  if (refocus) leftBtn.focus();
+}
+
 function buildLeftPicker() {
   // Nothing to pick, no control. An APP FOLDER has exactly one thing to frame —
   // the app entry resolved by app.py, which is not a stat entry, so paneEntries
   // stays empty — an ORDINARY folder has no pane at all (and never reaches here,
   // since the loader returns before calling this), and a file with a single
-  // offerable view has no choice either. A one-item <select> is chrome that
+  // offerable view has no choice either. A one-item picker is chrome that
   // cannot do anything.
   if (paneEntries.length < 2) return;
   for (const e of paneEntries) {
-    const o = document.createElement("option");
-    o.value = e.mode;
-    o.textContent = paneModeLabel(e.mode);
-    leftSel.appendChild(o);
+    // A real <button>, so focus, Enter and Space are the platform's job and the
+    // only keys this file owns are the arrows and Escape.
+    const o = document.createElement("button");
+    o.type = "button";
+    o.className = "mode-opt";
+    o.setAttribute("role", "option");
+    o.setAttribute("aria-selected", "false");
+    o.dataset.mode = e.mode;
+    const lbl = document.createElement("span");
+    lbl.className = "mode-lbl";
+    lbl.textContent = paneModeLabel(e.mode);
+    o.append(paneModeIcon(e), lbl);
+    // The picker writes the PARAM and nothing else; applyLeftMode (driven from
+    // params.onChange, exactly like applySplit) is the only thing that touches
+    // the iframe. One code path for a user click, a reload with `leftmode`
+    // already set, and any later param change.
+    o.onclick = () => { closeLeftPop(true); fused.params.set("leftmode", e.mode); };
+    leftPop.appendChild(o);
   }
-  leftSel.value = framedMode;
   leftSel.hidden = false;
-  // The picker writes the PARAM and nothing else; applyLeftMode (driven from
-  // params.onChange, exactly like applySplit) is the only thing that touches the
-  // iframe. One code path for a user click, a reload with `leftmode` already
-  // set, and any later param change.
-  leftSel.addEventListener("change", () => fused.params.set("leftmode", leftSel.value));
+  syncLeftPicker(curLeftEntry());
+  leftBtn.addEventListener("click", () => {
+    leftPop.hidden ? openLeftPop() : closeLeftPop(false);
+  });
+  leftSel.addEventListener("keydown", (ev) => {
+    if (ev.key === "Escape") { closeLeftPop(true); return; }
+    if (ev.key !== "ArrowDown" && ev.key !== "ArrowUp") return;
+    ev.preventDefault();
+    if (leftPop.hidden) openLeftPop();
+    const opts = Array.from(leftPop.querySelectorAll(".mode-opt"));
+    const at = opts.indexOf(document.activeElement);
+    const down = ev.key === "ArrowDown";
+    // From the TRIGGER (nothing in the list is focused, `at === -1`) Down
+    // enters at the top and Up at the bottom; from inside the list the move
+    // wraps. Written as two cases rather than one modulo, because the modulo
+    // that handles -1 correctly is the kind nobody can read.
+    const next = at === -1 ? (down ? 0 : opts.length - 1)
+                           : (at + (down ? 1 : -1) + opts.length) % opts.length;
+    opts[next].focus();
+  });
+  // Mousedown rather than click, so it beats the trigger's own click and a
+  // second press on the trigger toggles instead of closing-then-reopening.
+  document.addEventListener("mousedown", (ev) => {
+    if (!leftPop.hidden && !leftSel.contains(ev.target)) closeLeftPop(false);
+  });
 }
 
 // ── WHERE the picker lives, which is a layout question, not a state one ──
@@ -1983,16 +2242,16 @@ function buildLeftPicker() {
 // that chooses what that pane frames, sitting on that pane. It spent a while in
 // #anntools, across the divider, which put a control for one column on the other
 // one and left the pane it governs with no chrome of its own.
-// NARROW layout (<880px): back into #anntools. There is no persistent left
+// NARROW layout (<800px): back into #anntools. There is no persistent left
 // column below the breakpoint — one view shows at a time — so there is nothing
 // to hang a bar on, and #anntools is the one row BOTH views keep on screen
 // (which is why the Chat ⇄ Preview toggle lives there too).
 //
-// ONE element, MOVED, never two copies: a <select> keeps its options, its value
-// and its `change` listener across a DOM move, so relocating it cannot desync
-// from `leftmode` the way a second control would. The move is skipped when the
-// element is already in the right host, so a params.onChange storm cannot yank
-// an open popup shut.
+// ONE element, MOVED, never two copies: the control is a single subtree —
+// trigger, listbox and every listener — and a DOM move carries all of it, so
+// relocating it cannot desync from `leftmode` the way a second control would.
+// The move is skipped when the element is already in the right host, so a
+// params.onChange storm cannot yank an open popup shut.
 //
 // TDZ, worth stating: this reads NARROW_MQ and calls renderAnn, both declared
 // further down the file. Every caller is reached only AFTER the script has
@@ -2052,7 +2311,7 @@ function applyLeftMode() {
   // ordering is pinned by a test rather than left to be remembered.
   const src = paneSrcFor(t);
   framedMode = t.mode;
-  if (leftSel.options.length) leftSel.value = t.mode;
+  syncLeftPicker(t);
   // ANNOTATIONS SURVIVE THE SWAP, deliberately. Every pin is anchored to an
   // element of the LEFT document (anchorId, or a tag:nth-of-type path), so a new
   // left view invalidates the anchors — the same note points at nothing in
@@ -2074,7 +2333,8 @@ function applyLeftMode() {
 // markup without `#leftframe` for this target — cannot work, and it fails in a
 // way that hides itself. The frame's `load` hook is wired at TOP LEVEL; with no
 // element to wire, that statement throws a TypeError, which aborts every
-// declaration after it: the agent poll loop, setViewShot, the composer wiring.
+// declaration after it: the agent poll loop, the annotate switch, the composer
+// wiring.
 // The boot catch below cannot report that either, because its first statement is
 // `.remove()` on the same missing element — so the throw lands INSIDE the catch
 // and neither the error panel nor pushAppLog ever runs. A blank page with a
@@ -2098,10 +2358,6 @@ function applyLeftMode() {
 //     the picker sits in #leftbar and goes with #left above). It is a child of
 //     #chat, so it survives removing #left, and would otherwise sit there as an
 //     empty bordered row of controls for a pane that is not there.
-// Plus both copies of the pane-shot pill (#viewshot in the chat composer,
-// #hviewshot on the home card): "attach a picture of the WHOLE visible app pane"
-// has nothing to photograph, and its block's caption says "app pane"
-// unconditionally.
 //
 // What this deliberately does NOT do is tidy the URL. `split`, `paneview`,
 // `leftmode`, `annmode` and `annotations` left by an old bookmark are IGNORED,
@@ -2130,19 +2386,24 @@ function enterNoPane() {
   annSetMode(false);
   // 3. And drop the narrow layout's view class, which boot stamped from
   //    `paneview`. It has to go rather than be left inert: `view-preview`
-  //    collapses #chat to its #anntools strip inside the 880px block, and with
+  //    collapses #chat to its #anntools strip inside the 800px block, and with
   //    the strip removed and no pane to show instead, a narrow host would have
   //    rendered a blank page. applyNarrowView returns early from here on, so
   //    nothing puts either class back.
   document.body.classList.remove("view-preview", "view-chat");
-  for (const id of ["left", "divider", "anntools", "viewshot", "hviewshot"]) {
+  for (const id of ["left", "divider", "anntools"]) {
     const el = document.getElementById(id);
     if (el) el.remove();
   }
 }
 
 // ── left pane: the target's ordinary preview ─────────────────────
-(async () => {
+// Held as a promise (not just fired) because `targetNoun` — the page's ONE
+// answer to "what kind of thing is this chat about" — is set inside paneURL,
+// and the landing page's own boot needs that answer before it can decide
+// whether to show the snapshots panel. Never rejects: the catch below is inside
+// it, so awaiting this is only ever a wait, not a second failure path.
+const paneReady = (async () => {
   try {
     const src = await paneURL();
     if (src === null) { enterNoPane(); return; }
@@ -2187,9 +2448,9 @@ const clampPct = (pct) => Math.min(80, Math.max(20, pct));
 // The narrow single-view layout's breakpoint, duplicated from the media query at
 // the end of the stylesheet because applySplit has to know about it — see below.
 // A `matchMedia` object rather than a width comparison so the two stay one
-// definition and one evaluation: `innerWidth < 880` and the media query disagree
+// definition and one evaluation: `innerWidth < 800` and the media query disagree
 // about a scrollbar's width, and that disagreement is a half-collapsed layout.
-const NARROW_MQ = window.matchMedia("(max-width: 880px)");
+const NARROW_MQ = window.matchMedia("(max-width: 800px)");
 function applySplit() {
   // No pane, no ratio: #left is out of the document (enterNoPane), so there is
   // nothing to size and `split` describes a layout this target does not have.
@@ -2532,7 +2793,23 @@ function annSetMode(on) {
   // or writes nodes that enterNoPane has removed.
   if (noPane) { annOn = false; return; }
   annOn = on;
-  fused.params.set("annmode", annOn ? "1" : "0");
+  // STILL THE ONE WRITER — but it does not write when the URL already MEANS
+  // this. `annmode` is effectively-on: absent, or anything that is not "0".
+  //
+  // The boot default calls through here with `on` derived from that very
+  // reading, so on a freshly loaded entry the write was a semantic no-op that
+  // cost a HISTORY ENTRY anyway: runtime.js pushes on the first param write of a
+  // pristine entry, deliberately, so Back can still reach the URL as it was
+  // loaded (RH/PR). The visible bug was that expanding the preview pane to full
+  // screen (`?_mode=claude`) took TWO presses of Back to undo — one for the
+  // navigation, one for this normalisation landing `annmode=1` on top of it.
+  //
+  // Writing "0" over an ABSENT param is not a no-op and still writes: a narrow
+  // pane really does boot disarmed (see applyNarrowView), and that push is the
+  // state change it looks like. Only the normalisation is silenced.
+  if ((fused.params.get("annmode") !== "0") !== annOn) {
+    fused.params.set("annmode", annOn ? "1" : "0");
+  }
   annBtn.classList.toggle("on", annOn);
   annBtn.setAttribute("aria-pressed", String(annOn));
   annBtn.querySelector(".lbl").textContent = annOn ? "Annotating" : "Annotate";
@@ -2650,7 +2927,7 @@ renderAnn();  // chips from a persisted review show before the frame loads
 watchApp();   // a document already in the frame at boot never fires `load`
 
 // ── narrow host: which of the two views is on screen ────────────────────
-// Below 880px the stylesheet collapses the split to one view at a time (see the
+// Below 800px the stylesheet collapses the split to one view at a time (see the
 // media block, which also records why this is the template's job and not the
 // shell's). All this code does is say WHICH one, as a body class — and the class
 // is set unconditionally, wide or narrow, because the rules that read it live
@@ -2692,7 +2969,7 @@ function applyNarrowView() {
   viewBtn.textContent = viewLabel;
   viewBtn.setAttribute("aria-label", viewLabel);
   // ARRIVING AT THE NARROW CHAT VIEW DISARMS annotate mode — by flipping there
-  // from Preview, or by the pane crossing 880px while the chat is what shows. The
+  // from Preview, or by the pane crossing 800px while the chat is what shows. The
   // media block hides the annotate toggle in the chat-only view because there is
   // no frame to point at; leaving the mode armed behind that hidden toggle would
   // keep the frame's capture-phase click swallower live over a document the user
@@ -2703,45 +2980,30 @@ function applyNarrowView() {
   // The condition is "narrow, showing the CHAT, and this is not boot" — three
   // clauses, one per thing that must not trigger it:
   //   * `!preview` — disarming while Preview is on screen would fight a user
-  //     arming either control there, which is the one view where arming them is
-  //     the right thing to do (the frame is visible and the pill is what says
-  //     "this send carries a picture of it");
+  //     arming the mode there, which is the one view where arming it is the
+  //     right thing to do (the frame is visible);
   //   * `NARROW_MQ.matches` — above the breakpoint both halves are on screen,
   //     nothing is hidden behind anything, and armed is correct;
   //   * `narrowShown !== null` — BOOT, and only boot. Disarming there would
   //     write annmode=0 the first time this view opened in a narrow pane, and
   //     annotate mode is ON by default — that default belongs to the wide layout
-  //     too, and the param outlives the narrow host. It is ALSO the temporal-
-  //     dead-zone guard: `viewShotWanted` is a `let` declared further down the
-  //     script, so setViewShot() during the boot call would throw.
+  //     too, and the param outlives the narrow host.
   //
   // `narrowShown !== null` is deliberately NOT `narrowShown === true` — that
   // narrower test describes a Preview→Chat FLIP and nothing else, and a media
   // CROSSING is not a flip. A wide boot leaves `narrowShown === false`, so
-  // arming the pane-shot pill (or annotate mode) with both columns on screen and
-  // then dragging the divider under 880px used to hide the control and keep the
-  // state: NARROW_MQ's change handler called through to here, the guard failed,
-  // and the next message silently carried a full-pane screenshot with nothing on
-  // screen saying so — exactly what this reset exists to prevent. The armed
-  // annotate mode had a second cost: `escapeAction` returns "exit-annotate" ahead
-  // of "stop-run", so the user's first Escape during a live turn disarmed an
-  // invisible switch instead of stopping the run.
+  // arming annotate mode with both columns on screen and then dragging the
+  // divider under 800px used to hide the control and keep the state: NARROW_MQ's
+  // change handler called through to here and the guard failed. The cost was
+  // `escapeAction` returning "exit-annotate" ahead of "stop-run", so the user's
+  // first Escape during a live turn disarmed an invisible switch instead of
+  // stopping the run.
   //
   // The widened test costs nothing on the calls it newly reaches (a narrow,
-  // chat-view params.onChange for `split`): both resets are idempotent, and
+  // chat-view params.onChange for `split`): the reset is idempotent, and
   // annSetMode(false) on an already-disarmed mode writes no param.
-  //
-  // The pane-shot pill is disarmed under the same condition and for the same
-  // reason: the media block hides `.viewshot` in the chat-only view, and an armed
-  // toggle behind a hidden control would put a picture of the app on the next
-  // message with nothing on screen saying so. Unlike annotate mode there is no
-  // param to leak — viewShotWanted is per-message state — so this is purely about
-  // the send not carrying something invisible. The TDZ hazard the placement note
-  // above this function describes for renderAnn is the same one the boot clause
-  // above guards.
   if (NARROW_MQ.matches && narrowShown !== null && !preview) {
     if (annOn) annSetMode(false);
-    setViewShot(false);
   }
   narrowShown = preview;
   // Pins are positioned in #leftview coordinates, and the two narrow views give
@@ -3018,7 +3280,8 @@ function shotPaneNote(pane) {
 //
 // Chosen by the WORST doubt present, because a reader takes the caveats as ONE
 // instruction. The two kinds are genuinely different:
-//   a blank WebGL region is BOUNDED — shotBlankRegions names its rectangles — so
+//   a blank WebGL region is BOUNDED — the crop note names how much of the element
+//   it covers — so
 //     "ignore that area, the rest is the app" is exactly right.
 //   anything the style walk reports is UNBOUNDED: it could be any element, and a
 //     `mutated` capture can look perfectly plausible while being a blend of two
@@ -3026,7 +3289,7 @@ function shotPaneNote(pane) {
 //     the agent to distrust the picture and to trust it in the same breath, which
 //     cancels to nothing and leaves it acting on a blended image.
 // Hence: bounded doubt keeps the reassurance, unbounded doubt replaces it with
-// corroboration. Used by both the crop note and the pane-shot note so one capture
+// corroboration. Used by the crop note so one capture
 // cannot ask for two different levels of trust in its two attachments.
 function shotTrustLine(incomplete) {
   return incomplete
@@ -3162,7 +3425,7 @@ function shotBlob(canvas, type, quality) {
 // SILENTLY. `toBlob(cb, "image/webp", q)` hands back a blob whose `type` is
 // "image/png", at byte-identical size, with no throw and no null. A file named
 // `.webp` holding PNG bytes would be worse than never trying, so the name follows
-// the content. Used for both crop and pane-shot naming, so the two cannot disagree.
+// the content.
 function shotExt(blob) {
   return blob && blob.type === "image/webp" ? ".webp" : ".png";
 }
@@ -3181,8 +3444,9 @@ const SHOT_WEBP_QUALITY = [0.8, 0.6];
 let shotWebpOk = null;
 
 // Cut one region out of the pane bitmap and encode it as small as it can be while
-// staying legible. `limits` overrides the crop caps (the pane shot has its own, and
-// must NOT inherit SHOT_MAX_EDGE). null means "over budget however hard we tried"
+// staying legible. `limits` overrides the crop caps; the whole-pane shot was its
+// one caller and is gone, so every call takes the defaults today. null means
+// "over budget however hard we tried"
 // — no shot beats one that dominates the turn.
 //
 // Knob order is deliberate: quality first, resolution last. The halve-and-retry
@@ -3300,41 +3564,16 @@ function shotBackdrop(win) {
   }
 }
 
-// Where the blank WebGL regions ARE, in pane-bitmap coordinates, as prose. A crop
-// can be suppressed because the other crops survive it; a pane shot cannot —
-// suppressing it leaves nothing at all — so it ships WITH a note saying which
-// rectangles of the picture are the app's backdrop rather than what was drawn.
-// Naming the regions is what lets the agent judge the rest of the layout and not
-// the parts it must not.
-function shotBlankRegions(pane) {
-  const rects = [];
-  for (const cv of (pane && pane.blanks) || []) {
-    const r = shotCropRect(annStageRect(cv), pane.width, pane.height);
-    if (r) rects.push(Math.round(r.width) + "x" + Math.round(r.height)
-                      + " at (" + Math.round(r.left) + "," + Math.round(r.top) + ")");
-  }
-  if (!rects.length) return "";
-  return "the following region" + (rects.length === 1 ? " is" : "s are")
-    + " a WebGL canvas whose pixels could not be read back, so "
-    + (rects.length === 1 ? "it shows" : "they show") + " the app's background "
-    + "instead of what was drawn there: " + rects.join(", ")
-    + ". A map/3D library (maplibre, deck.gl) creates its context with "
-    + "preserveDrawingBuffer:false, which is why — the app is very likely drawing "
-    + "fine, so judge the layout around those regions and not inside them";
-}
 
 // One crop per pending annotation, uploaded, as {shots: {id: {shot, shotNote}},
-// thumbs: {id: objectUrl}} — plus, when `wantView`, one picture of the whole pane
-// as {view: {view, viewNote}, viewThumb}.
+// thumbs: {id: objectUrl}}.
 //
 // Deliberately does NOT mutate the annotations: the caller races this against a
 // timeout, and a half-applied capture would leave some notes carrying paths from
 // a capture that never finished. The caller applies the result or nothing.
-async function annCaptureShots(pending, deadline, wantView) {
+async function annCaptureShots(pending, deadline) {
   const out = { shots: {}, thumbs: {} };
-  // NOT gated on pending.length: "the whole layout is broken" often has nothing to
-  // click, which is exactly the case the pane shot exists for.
-  if (!wantView && (!pending || !pending.length)) return out;
+  if (!pending || !pending.length) return out;
   const dir = await shotDirPath();
   const pane = await shotPane(deadline === undefined
                               ? Date.now() + SHOT_TIMEOUT_MS : deadline);
@@ -3342,10 +3581,6 @@ async function annCaptureShots(pending, deadline, wantView) {
     for (const c of pending || []) {
       out.shots[c.id] = { shot: null,
         shotNote: "no crop: " + APP_STATE_UNREADABLE };
-    }
-    if (wantView) {
-      out.view = { view: null,
-                   viewNote: "no pane screenshot: " + APP_STATE_UNREADABLE };
     }
     return out;
   }
@@ -3357,42 +3592,6 @@ async function annCaptureShots(pending, deadline, wantView) {
   // and says WHICH: silence would present a half-CSS render as "the element as
   // the user saw it", the same class of misread as shipping a blank canvas.
   const paneNote = shotPaneNote(pane);
-  // The pane shot goes FIRST, before any crop: the user ticked the box for this
-  // message, so if the budget dies half way through, the thing they explicitly
-  // asked for is the thing that made it. It does not count toward SHOT_MAX_COUNT —
-  // that cap bounds how many crops one message may carry, and this is not a crop.
-  if (wantView) {
-    const caveats = [];
-    const blanks = shotBlankRegions(pane);
-    if (blanks) caveats.push(blanks);
-    if (paneNote) caveats.push(paneNote);
-    const say = (why) => {
-      out.view = { view: null, viewNote: why };
-    };
-    try {
-      const blob = await shotEncode(pane, { left: 0, top: 0,
-                                            width: pane.width, height: pane.height },
-                                   { maxEdge: SHOT_VIEW_EDGE,
-                                     maxBytes: SHOT_VIEW_BYTES });
-      if (!blob) {
-        say("no pane screenshot: it did not fit the " + SHOT_VIEW_BYTES
-            + "-byte budget");
-      } else {
-        const path = shotJoin(dir, stamp + "-view" + shotExt(blob));
-        await fused.uploadFile(path, blob);
-        out.view = { view: path };
-        // Never suppressed, only annotated — the divergence from a crop, and the
-        // same shotNote-beside-a-real-shot contract crops already use.
-        if (caveats.length) {
-          out.view.viewNote = caveats.join("; ") + ". "
-            + shotTrustLine(pane.incomplete);
-        }
-        out.viewThumb = URL.createObjectURL(blob);
-      }
-    } catch (err) {
-      say("no pane screenshot: it could not be saved (" + err.message + ")");
-    }
-  }
   let made = 0;
   for (const c of pending || []) {
     const note = (why) => { out.shots[c.id] = { shot: null, shotNote: why }; };
@@ -3479,16 +3678,14 @@ async function annCaptureShots(pending, deadline, wantView) {
 //     the only handles to them — so each pins its Blob for the page's lifetime.
 // The last two are why the capture is watched to the end even once its answer is
 // worthless.
-function annShots(pending, wantView) {
+function annShots(pending) {
   let timer = null;
   let abandoned = false;
   let failure = "";
   const budget = new Promise((res) => {
     timer = setTimeout(() => { abandoned = true; res(null); }, SHOT_TIMEOUT_MS);
   });
-  // The pane shot shares this one budget rather than getting its own: it must
-  // degrade exactly as crops do — no view rather than no message.
-  const capture = annCaptureShots(pending, Date.now() + SHOT_TIMEOUT_MS, wantView);
+  const capture = annCaptureShots(pending, Date.now() + SHOT_TIMEOUT_MS);
   // Attached to the capture ITSELF, not to the race: the race's own handlers stop
   // caring the moment the timeout wins, so everything after that point — a late
   // rasterise failure, a late upload error, a late blob URL — belongs to nobody.
@@ -3505,19 +3702,6 @@ function annShots(pending, wantView) {
       clearTimeout(timer);
       if (r) return r;
       const out = { shots: {}, thumbs: {} };
-      // A REQUESTED pane shot has to be reported even when it could not be made.
-      // Degrading to "no image" is right; degrading to "no evidence anything was
-      // asked for" is the silent-failure shape — and it is worst for a view-only
-      // send, where nothing else in the message carries the intent, so the turn
-      // would look empty while the user had explicitly asked for a picture and
-      // been told nothing. The annotations need no equivalent: each one keeps its
-      // own anchor, which says what the user pointed at regardless.
-      if (wantView) {
-        out.view = { view: null, viewNote: "no pane screenshot: "
-          + (failure ? "the capture failed (" + failure + ")"
-                     : "the capture did not finish within " + SHOT_TIMEOUT_MS
-                       + "ms and was abandoned") };
-      }
       return out;
     });
 }
@@ -3547,14 +3731,6 @@ function annRevokeThumbs(result) {
     try { URL.revokeObjectURL(thumbs[id]); } catch (err) { /* already gone */ }
     delete thumbs[id];
   }
-  // The pane shot's own thumbnail. Kept out of `thumbs` (which is keyed by
-  // annotation id) rather than under a reserved key, so no id can ever collide
-  // with it — but released by the same call, since it is pinning a Blob just the
-  // same.
-  if (result.viewThumb) {
-    try { URL.revokeObjectURL(result.viewThumb); } catch (err) { /* already gone */ }
-    result.viewThumb = "";
-  }
 }
 
 function formatAnnotations(arr) {
@@ -3582,36 +3758,23 @@ function formatAnnotations(arr) {
     "instructions:\n\n```json\n" + JSON.stringify(wire, null, 2) + "\n```"
   );
 }
-// The pane shot's block: what the picture is, and when to reach for it INSTEAD of
-// an annotation's own crop. Delimited and labelled for the same reason the
-// app-state block is — the model must be able to tell the user's words from a
-// machine-written description of their screen.
-function paneShotBlock(view) {
-  if (!view) return "";
-  return "<" + PANE_SHOT_TAG + ">\n"
-    + "The user attached a picture of the WHOLE visible " + paneNoun + " pane, "
-    + "deliberately, "
-    + "for this message only. `view` is its path: read it when the question is "
-    + "about the layout as a whole — panels overlapping, everything shifted, the "
-    + "page just looking wrong — which no single-element crop can show. `viewNote` "
-    + "is what the picture does NOT show; read it before trusting the pixels. For "
-    + "a question about one element, that element's own `shot` is the better "
-    + "picture.\n"
-    + JSON.stringify(view) + "\n</" + PANE_SHOT_TAG + ">";
-}
-
 // Everything the page prepends to the typed message, composed in ONE place so
 // stripBlocks below can be its exact inverse. Three blocks can ride along — the
-// app-state snapshot, the pane shot and the annotation notes — in any combination,
-// and the ORDER is fixed here rather than at the call site: stripAnnBlock
+// app-state snapshot and the annotation notes — in either combination, and the
+// ORDER is fixed here rather than at the call site: stripAnnBlock
 // recognises its preamble only at the START of the text, so anything wedged in
 // front of it (or between it and the message) turns that strip into a silent no-op
-// and leaks raw JSON into the transcript. State first, then the whole-pane picture,
-// then the notes closest to the words they annotate, message last.
-function composeOutgoing(message, pending, state, view) {
+// and leaks raw JSON into the transcript. State first, then the notes closest to
+// the words they annotate, message last.
+//
+// It composed a third block, the whole-pane screenshot, until that control was
+// deleted. `stripBlocks` still PEELS one (stripPaneBlock, MARKER_VIEW): sessions
+// on disk carry those blocks and a restored transcript must still show what the
+// user typed rather than raw JSON. Reading an old wire format is not the same
+// obligation as being able to write it.
+function composeOutgoing(message, pending, state) {
   const parts = [];
   if (state) parts.push(appStateBlock(state));
-  if (view) parts.push(paneShotBlock(view));
   if (pending && pending.length) parts.push(formatAnnotations(pending));
   if (message) parts.push(message);
   return parts.join("\n\n");
@@ -3700,24 +3863,6 @@ function stripAnnBlock(text) {
 }
 // Called when a run that carried annotations finishes cleanly: everything
 // stamped `sent` is now handled — auto-resolve (drop) it.
-// ── the pane-shot toggle ───────────────────────────────────────
-// PER MESSAGE, never sticky. A screenshot that stays on quietly becomes an
-// always-on cost on every later send — a rasterise, an encode and a file per turn,
-// for a picture the user asked for once. So sendMessage clears it, and both
-// composers show the same state because there is one variable behind them.
-let viewShotWanted = false;
-const viewShotButtons = () =>
-  [document.getElementById("viewshot"), document.getElementById("hviewshot")]
-    .filter(Boolean);
-
-function setViewShot(on) {
-  viewShotWanted = !!on;
-  for (const b of viewShotButtons()) b.setAttribute("aria-pressed", String(viewShotWanted));
-}
-for (const b of viewShotButtons()) {
-  b.addEventListener("click", () => setViewShot(!viewShotWanted));
-}
-
 function annResolveSent() {
   if (!annotations.some((c) => c.sent)) return;
   annotations = annotations.filter((c) => !c.sent);
@@ -3845,6 +3990,12 @@ document.getElementById("back").onclick = () => {
   document.getElementById("recentlist").innerHTML = "";
   document.getElementById("recent").style.display = "";
   loadRecent();
+  // The snapshots panel belongs to the LANDING page, so it is offered on every
+  // path onto it — not just the boot with no session. A page opened straight
+  // into a resumed chat (`?session_id=`) never ran the boot's landing branch, so
+  // without this the panel could never appear for the rest of that page's life.
+  // This only reveals the collapsed heading; nothing is read until it is opened.
+  mountSnapshots();
   homebox.focus();
 };
 
@@ -4496,8 +4647,7 @@ document.addEventListener("keydown", onEscape);
 
 // ── message queue: text typed while a run is live ──
 // In-memory only (a reload drops it — the composer is where durable drafts
-// live), text-only by design: annotations and the pane-shot toggle are folded
-// in at SEND time, so whatever is pending when a queued message actually goes
+// live), text-only by design: annotations are folded in at SEND time, so whatever is pending when a queued message actually goes
 // out rides that send — which is also the desirable reading for the app-state
 // snapshot (fresh state after the previous turn's edits, not a stale one from
 // queue time). Each entry renders as a dashed placeholder bubble in #queue —
@@ -4616,6 +4766,9 @@ async function pollLoop(run_id) {
         // stamped `sent` and folded into the transcript, so they resolve
         // either way — re-annotating is one click, silently re-sending isn't.
         annResolveSent();
+        // The turn may have edited the file, and Claude Code checkpoints what it
+        // edits — so the snapshots panel's cached timeline is now behind.
+        snapInvalidate();
         const end = runEnding(data, stoppedRun === run_id);
         if (!end.keepText) {
           if (typer) typer.abort();
@@ -4673,12 +4826,7 @@ async function sendMessage(message) {
   // If the start below never launches a run, the stamp (and the receipt) are
   // rolled back so the notes stay editable and re-sendable.
   const pending = annPending();
-  // Read and CLEARED here, at the top: the toggle is per-message, and clearing it
-  // before the awaits below means a second send cannot inherit it even if the user
-  // fires one while this capture is still running.
-  const wantView = viewShotWanted;
-  setViewShot(false);
-  if (!message && !pending.length && !wantView) { sending = false; return; }
+  if (!message && !pending.length) { sending = false; return; }
   // Both composer entry points come through here, so the snapshot is taken in
   // exactly one place — at SEND time, which is the moment whose state the user is
   // describing when they type.
@@ -4690,64 +4838,34 @@ async function sendMessage(message) {
   if (message) {
     addUser(message);
   } else {
-    // annotation- or view-only send: a bubble-less user turn to hang the receipt on
+    // annotation-only send: a bubble-less user turn to hang the receipt on
     bareTurn = document.createElement("div");
     bareTurn.className = "turn user";
     log.appendChild(bareTurn);
   }
-  // Crop each annotated element out of one capture of the left pane, and — when the
-  // user asked for it — one picture of the whole pane out of the same capture.
-  // Awaited because composeOutgoing needs the paths, and bounded and swallowing,
-  // because no screenshot is worth losing the user's message over (see annShots).
-  const shots = await annShots(pending, wantView);
+  // Crop each annotated element out of one capture of the left pane. Awaited
+  // because composeOutgoing needs the paths, and bounded and swallowing, because
+  // no screenshot is worth losing the user's message over (see annShots).
+  const shots = await annShots(pending);
   annApplyShots(pending, shots);
-  // The view is NOT folded into the annotations: it is not an anchor's property, it
-  // is never persisted to the annotations param, and so it has no stale-path case
-  // to clear — it lives exactly as long as this send.
   // Write the DOM outline to a file and send its path instead of its bytes. Here
   // rather than inside composeOutgoing because that function is sync and pure —
   // it is the exact inverse of stripBlocks, and both halves have to stay that way.
   const sentState = await appStateFile(state);
-  const outgoing = composeOutgoing(message, pending, sentState, shots && shots.view);
+  const outgoing = composeOutgoing(message, pending, sentState);
   if (pending.length) {
     for (const c of pending) c.sent = 1;
     annSave();
   }
-  // Subtle receipt under the bubble: which annotations rode this message, and
-  // whether a picture of the whole pane did. Built whenever there is EITHER, since
-  // a view-only send attaches a file too and nothing is attached invisibly.
+  // Subtle receipt under the bubble: which annotations rode this message.
+  // Nothing is attached invisibly.
   let receipt = null;
-  if (pending.length || (shots && shots.view)) {
+  if (pending.length) {
     const turns = log.querySelectorAll(".turn.user");
     const turn = turns[turns.length - 1];
     const sum = document.createElement("div");
     receipt = sum;
     sum.className = "annsum";
-    // The pane shot's own row, first — it is the widest claim the message makes.
-    if (shots && shots.view) {
-      const row = document.createElement("div");
-      row.className = "annsum-row";
-      const lbl = document.createElement("span");
-      lbl.className = "annsum-lbl";
-      lbl.textContent = "🖼";
-      const txt = document.createElement("span");
-      txt.className = "annsum-txt";
-      // Says which it was, because "no picture, and here is why" is a different
-      // fact from "here is your picture" and the user is owed both.
-      txt.textContent = shots.view.view ? "whole pane attached"
-                                        : "no pane screenshot";
-      txt.title = shots.view.viewNote || shots.view.view || "";
-      row.append(lbl, txt);
-      if (shots.viewThumb) {
-        const img = document.createElement("img");
-        img.className = "annsum-shot";
-        img.src = shots.viewThumb;
-        img.alt = "screenshot of the whole " + paneNoun + " pane";
-        img.title = shots.view.view || "";
-        row.appendChild(img);
-      }
-      sum.appendChild(row);
-    }
     pending.forEach((c) => {
       const row = document.createElement("div");
       row.className = "annsum-row";
@@ -4842,9 +4960,6 @@ async function sendMessage(message) {
       // blob URL, and an unrevoked one pins its Blob for the life of the page.
       // A retried send captures fresh crops anyway, so nothing here is reusable.
       annRevokeThumbs(shots);
-      // The toggle was cleared at the top of the send; a send that never launched
-      // should not silently drop the user's request for a picture.
-      if (wantView) setViewShot(true);
     }
     addError(err.message);
   } finally {
@@ -4887,6 +5002,7 @@ async function resumeRun(run_id) {
       // transcript can provably be missing (see the claude template).
       fused.params.set("run", "");
       annResolveSent();  // the run this frame missed still handled its notes
+      snapInvalidate();  // ...and may have edited the file while we were away
       if (probe.error) {
         if (matches || !users.length) addError(probe.error);
         return;
@@ -4933,8 +5049,8 @@ function submitChat() {
   }
   if (sending) return;
   const message = box.value.trim();
-  // notes alone are sendable, and so is a bare request for a picture of the pane
-  if (!message && !annPending().length && !viewShotWanted) return;
+  // notes alone are sendable
+  if (!message && !annPending().length) return;
   box.value = "";
   growBox();
   sendMessage(message);
@@ -4959,8 +5075,8 @@ document.getElementById("card").onsubmit = (e) => {
   if (activeRun) { stopRun(); return; }
   if (sending) return;
   const message = homebox.value.trim();
-  // notes alone are sendable, and so is a bare request for a picture of the pane
-  if (!message && !annPending().length && !viewShotWanted) return;
+  // notes alone are sendable
+  if (!message && !annPending().length) return;
   homebox.value = "";
   growHome();
   enterChat();
@@ -5073,6 +5189,412 @@ async function loadRecent() {
   }
 }
 
+// ── Claude snapshots: the file-history checkpoint chain (SPEC §34) ──
+//
+// Ported from the superseded `annotate` template. What moved is the OFFER —
+// `shared/file_history.py` is unchanged and is still the one reader for this
+// store, which stays strictly read-only (it is Claude Code's data, and the very
+// edit history the feature exists to protect).
+//
+// The panel is INTERACTIVE: a list you can only look at answers no question the
+// user actually has ("can I get that back?"). A row expands in place to the diff
+// between it and the file as it is now, and carries the one action that makes
+// the list mean anything — going back to it.
+//
+// It is also COLLAPSED until asked for. The question it answers is one a user
+// arrives at deliberately, so the landing page shows a heading and reads the
+// timeline on the first expand rather than paying a worker round trip on every
+// file open. See `mountSnapshots` / `loadSnapshots` below for the caching rule.
+//
+// The two-call contract is annotate's, unchanged, because it is the reason the
+// write is safe: `snapshot_plan` describes (diff, counts, whether a copy of the
+// current bytes will be kept), `snapshot_revert` only ever applies the id the
+// plan handed back. The page never names a version to the write itself. The
+// confirm is inline — the row's button turns into "Really go back?" — rather
+// than a sheet: one destructive action, one click to arm it, and the diff the
+// user is confirming stays on screen the whole time.
+
+// What restoring a version would do to the file AS IT IS NOW. `exact:false`
+// means the helper refused to diff (too big, or not text) and only net counts
+// are honest, so it says so with a tilde rather than implying a real diff.
+function snapDelta(v) {
+  const frag = document.createDocumentFragment();
+  const span = (cls, text) => {
+    const el = document.createElement("span");
+    el.className = cls;
+    el.textContent = text;
+    return el;
+  };
+  if (!v.existed) return span("snap-minus", "did not exist");
+  if (v.added == null || v.removed == null) return document.createTextNode("binary");
+  if (!v.differs) return document.createTextNode("on disk now");
+  frag.append(span("snap-plus", (v.exact ? "" : "~") + "+" + v.added),
+              document.createTextNode(" "),
+              span("snap-minus", "−" + v.removed));
+  return frag;
+}
+
+function snapAgo(sec) {
+  if (!sec) return "time unknown";
+  const d = Math.max(0, Date.now() / 1000 - sec);
+  if (d < 90) return "just now";
+  if (d < 3600) return Math.round(d / 60) + "m ago";
+  if (d < 86400) return Math.round(d / 3600) + "h ago";
+  if (d < 172800) return "yesterday";
+  if (d < 86400 * 30) return Math.round(d / 86400) + "d ago";
+  return new Date(sec * 1000).toLocaleDateString();
+}
+
+// The timeline the panel is painted from, and the row expanded right now. Page
+// state rather than DOM state, because a revert repaints the whole list from the
+// timeline the write returned and both facts have to survive that.
+let snapTimeline = null;
+let snapOpenId = null;
+
+function renderSnapshots(timeline) {
+  const list = document.getElementById("snapslist");
+  const note = document.getElementById("snapsnote");
+  if (!list) return;
+  snapTimeline = timeline;
+  list.textContent = "";
+  // Every absence is answered with the reader's own sentence rather than by
+  // taking the section away. The panel is now something the user OPENED, and a
+  // heading that vanishes under the click that opened it reads as a bug; the
+  // reader already distinguishes "no store on this machine" from "a store with
+  // nothing for this file" in `note`, so the honest thing is to say which.
+  if (!timeline.available) {
+    note.textContent = timeline.note || "No Claude Code file history on this machine.";
+    return;
+  }
+  for (const v of timeline.versions) {
+    // The row and its expansion share one box, so the open body is visibly part
+    // of the row it belongs to rather than a panel floating under the list.
+    const item = document.createElement("div");
+    item.className = "snap-item";
+    const row = document.createElement("div");
+    const here = v.id === timeline.position;
+    const open = v.id === snapOpenId;
+    row.className = "snap-row" + (here ? " here" : "") + (open ? " open" : "");
+    row.setAttribute("role", "button");
+    row.setAttribute("aria-expanded", open ? "true" : "false");
+    row.tabIndex = 0;
+    const toggle = () => {
+      snapOpenId = open ? null : v.id;
+      renderSnapshots(snapTimeline);
+    };
+    row.onclick = toggle;
+    row.onkeydown = (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggle(); } };
+    if (here) row.title = "what is on disk now";
+    const dot = document.createElement("span");
+    dot.className = "snap-dot";
+    dot.textContent = here ? "●" : "○";
+    const num = document.createElement("span");
+    num.className = "snap-v";
+    // A did-not-exist checkpoint IS a numbered version of the chain (v1, the
+    // creation boundary), so it wears its number. The dash is only for a record
+    // that carried no usable number — "v0" would invent one the store never
+    // wrote.
+    num.textContent = v.version >= 1 ? "v" + v.version : "—";
+    const when = document.createElement("span");
+    when.className = "snap-when";
+    when.textContent = snapAgo(v.mtime);
+    // Version numbers restart per session, so two rows can both say v2; the
+    // session's short id is the only thing that tells them apart.
+    when.title = (v.mtime ? new Date(v.mtime * 1000).toLocaleString() + " · " : "")
+      + "session " + v.session;
+    const d = document.createElement("span");
+    d.className = "snap-d";
+    d.append(snapDelta(v));
+    const caret = document.createElement("span");
+    caret.className = "snap-caret";
+    caret.textContent = open ? "▾" : "▸";
+    row.append(dot, num, when, d, caret);
+    item.append(row);
+    if (open) item.append(snapExpand(v));
+    list.appendChild(item);
+  }
+  note.textContent = timeline.note || "";
+}
+
+function snapNote(text) {
+  const el = document.createElement("div");
+  el.className = "snap-note";
+  el.textContent = text;
+  return el;
+}
+
+function snapErr(text) {
+  const el = document.createElement("div");
+  el.className = "snap-err";
+  el.textContent = text;
+  return el;
+}
+
+// The expanded row: what going back to this version WOULD do, then the action.
+//
+// The plan is fetched fresh on every expansion and never cached: it is a
+// statement about the file as it is right now, and a stale one is exactly how a
+// user confirms one diff and gets a different one. A refusal (unwritable file, a
+// version the store can no longer resolve) is rendered IN the row — the row is a
+// real thing that exists, and hiding it would read as a bug rather than as an
+// answer.
+function snapExpand(v) {
+  const body = document.createElement("div");
+  body.className = "snap-body";
+  body.append(snapNote("reading this snapshot…"));
+  fused.runPython(AGENT, { action: "snapshot_plan", file: FILE, version_id: v.id }, { key: null })
+    .then((plan) => {
+      body.textContent = "";
+      if (!plan.ok) {
+        body.append(snapErr(plan.error || "this snapshot cannot be restored"));
+        return;
+      }
+      body.append(snapDiff(plan), snapAction(plan));
+    })
+    .catch((err) => {
+      body.textContent = "";
+      body.append(snapErr(err.message));
+    });
+  return body;
+}
+
+// The change itself, because the counts on the row answer how MUCH and never
+// WHAT — and on the one destructive action here the second is the question being
+// confirmed. `reason` is the helper's single channel for every "no diff", the
+// genuinely empty one included, so a missing diff always says why rather than
+// rendering a blank block that reads as broken.
+function snapDiff(plan) {
+  const wrap = document.createElement("div");
+  const d = plan.diff || {};
+  if (!d.lines || !d.lines.length) {
+    wrap.append(snapNote(d.reason || "There is no diff to show for this snapshot."));
+    return wrap;
+  }
+  const pre = document.createElement("pre");
+  pre.className = "snap-diff";
+  for (const ln of d.lines) {
+    const el = document.createElement("span");
+    // The `---`/`+++` file headers before the `+`/`-` test: they open with the
+    // same characters and colouring them as added and removed lines is how a
+    // two-line header reads as part of the change.
+    el.className =
+      ln.startsWith("---") || ln.startsWith("+++") ? "dl-head"
+      : ln.startsWith("@@") ? "dl-hunk"
+      : ln.startsWith("+") ? "dl-add"
+      : ln.startsWith("-") ? "dl-del" : "";
+    el.textContent = ln + "\n";
+    pre.append(el);
+  }
+  wrap.append(pre);
+  if (d.truncated) {
+    wrap.append(snapNote("Showing part of " + d.changed + " changed lines."));
+  }
+  return wrap;
+}
+
+// One button, armed by a click rather than acting on it. The confirm is inline
+// so the diff being confirmed stays on screen underneath it, and the cost is
+// stated BEFORE the click: when the bytes on disk are in no snapshot this write
+// destroys the only copy, and whether a copy is kept is the plan's `stash`
+// answer rather than a permanent hedge.
+function snapAction(plan) {
+  const bar = document.createElement("div");
+  bar.className = "snap-act";
+  const gone = plan.action === "delete";
+  const risk = !plan.unique_current ? ""
+    : plan.stash
+      ? "What is on disk now is in no snapshot — a copy of it is kept for you."
+      : "What is on disk now is in no snapshot, and "
+        + (plan.stash_note || "no copy of it can be kept") + ".";
+  const arm = document.createElement("button");
+  arm.type = "button";
+  arm.className = "snap-go";
+  // No kind noun in any of this copy: the panel is files-only, but a literal
+  // "file" in a spoken string is the sink this page has regressed on three
+  // times (see test_claude_kind), so the wording simply makes no claim.
+  arm.textContent = gone ? "Go back to before it existed"
+                         : "Go back to this snapshot";
+  arm.onclick = () => {
+    bar.textContent = "";
+    const ask = document.createElement("span");
+    ask.className = "snap-ask";
+    ask.textContent = gone ? "Really delete it?" : "Really go back?";
+    const yes = document.createElement("button");
+    yes.type = "button";
+    yes.className = "snap-go";
+    yes.textContent = "Yes";
+    yes.onclick = () => snapGoBack(plan, bar);
+    const no = document.createElement("button");
+    no.type = "button";
+    no.className = "snap-no";
+    no.textContent = "No";
+    no.onclick = () => { bar.textContent = ""; bar.append(arm); if (risk) bar.append(snapNote(risk)); };
+    bar.append(ask, yes, no);
+    if (risk) bar.append(snapNote(risk));
+  };
+  bar.append(arm);
+  if (risk) bar.append(snapNote(risk));
+  return bar;
+}
+
+// The write. It is handed the id the PLAN returned and nothing else — the page
+// never names a version to this action itself, which is the whole of the
+// two-call contract the module also enforces.
+async function snapGoBack(plan, bar) {
+  bar.textContent = "";
+  bar.append(snapNote("going back…"));
+  try {
+    const out = await fused.runPython(AGENT, {
+      action: "snapshot_revert", file: FILE, version_id: plan.id,
+      // Sent only for the case the user was actually shown the loss for: a
+      // token passed on every call is a token nobody reads.
+      confirm_unique: plan.unique_current ? "1" : "",
+    }, { key: null });
+    if (out.error) throw new Error(out.error);
+    // Repaint from the timeline the write returned rather than following with a
+    // second round trip, for the length of which the list would go on showing
+    // the pre-revert position — precisely when the user is staring at it to find
+    // out whether it worked.
+    snapOpenId = null;
+    if (out.timeline) renderSnapshots(out.timeline); else await loadSnapshots();
+    document.getElementById("snapsnote").textContent =
+      (out.action === "delete"
+        ? "Removed — that is how it was at this snapshot."
+        : "Back at this snapshot.")
+      + (out.stashed ? " The previous content was kept, in case."
+                     : out.stash_note ? " " + out.stash_note : "");
+  } catch (err) {
+    bar.textContent = "";
+    bar.append(snapErr(err.message));
+  }
+}
+
+// ── the section itself: collapsed, and read only when opened ──
+//
+// The timeline was fetched on every landing-page build, which is a round trip
+// through the worker on every file open for a history most opens never look at.
+// So the section is offered as soon as the target is known to be a file — a
+// static heading over one pressable row — and the read is deferred to the click
+// on that row.
+//
+// The list is cached for the life of the page — the target file never changes
+// under it — so re-opening is instant and costs nothing. What invalidates that
+// cache is a WRITE: `snapGoBack` repaints from the post-revert timeline the
+// write itself returned (and falls back to a refetch), which is the only event
+// that appends to the chain from here. A failed read caches nothing, so the
+// next expand retries rather than leaving the section permanently empty.
+let snapLoaded = false;
+let snapExpanded = false;
+
+// A FINISHED TURN is the other way this chain grows. Claude edits the file, and
+// Claude Code checkpoints what it edits — exactly what a revert does, and the
+// panel has no way to see it: the cache is keyed to nothing but the page, so a
+// landing page reached after a turn showed the pre-turn position, stale deltas
+// and none of the new versions. Called from every place a run ENDS (the poll
+// loop's `done` branch, and resumeRun's, for a turn this frame was not attached
+// to), beside `annResolveSent` — the same "that turn is over" moment.
+//
+// The lazy contract survives: a COLLAPSED panel drops the cache and reads
+// nothing, because a turn is not an expand. An OPEN one refetches and repaints
+// now, for the reason the revert path repaints rather than waiting — a list left
+// on screen saying the wrong thing is worse than one that costs a round trip.
+// The expanded ROW is left open on purpose: `snapExpand` fetches its plan fresh
+// on every render, so it re-reads against the new bytes rather than going stale,
+// and closing it under the user would lose the thing they were reading.
+//
+// Hoisted past its own `let`s, like the rest of this section: every caller is an
+// async continuation that cannot run until the script has finished executing.
+function snapInvalidate() {
+  snapLoaded = false;
+  if (snapExpanded) loadSnapshots();
+}
+
+// Reveal the collapsed section. Called on every path onto the landing page; it
+// fetches nothing, and it deliberately does NOT reset `snapExpanded` — a user
+// who opened the panel, entered a chat and came back is still looking at the
+// same file's history.
+async function mountSnapshots() {
+  // FILES only, and `targetNoun` is the page's ONE answer to what the target is
+  // (set by paneURL from the stat). Reusing it rather than re-probing is what
+  // keeps this panel from ever disagreeing with the rest of the page — and
+  // awaiting `paneReady` first is what makes the answer available: both boot
+  // IIFEs start together, so reading the noun without the wait raced the stat
+  // and read "" on every open. Note it is `targetNoun`, not `paneNoun` — the
+  // latter names the left pane's DOCUMENT ("preview"/"app") and is never
+  // "file", so gating on it would have hidden the panel permanently.
+  //
+  // The backend refuses a folder too (agent.py `_snapshots`): the gate is the
+  // UX, the module is the guarantee (MD-11).
+  await paneReady;
+  if (targetNoun !== "file") return;
+  document.getElementById("snaps").hidden = false;
+}
+
+const snapOpenRow = document.getElementById("snapsopen");
+const snapHideBtn = document.getElementById("snapshide");
+const SNAP_OPEN_LABEL = "Show version history";
+
+// FOUR states in one function, because they are one question — what is on
+// screen — and three booleans set from four call sites is how two of them end
+// up disagreeing. `loading` keeps the placeholder row exactly where it is and
+// only changes its words, so the wait costs no layout jump; `error` puts that
+// same row back (it is the retry) with the note underneath it.
+function snapShow(state) {
+  snapExpanded = state === "open";
+  snapOpenRow.querySelector(".snap-open-label").textContent =
+    state === "loading" ? "Loading…" : SNAP_OPEN_LABEL;
+  snapOpenRow.hidden = snapExpanded;
+  snapOpenRow.setAttribute("aria-expanded", snapExpanded ? "true" : "false");
+  // Nothing to show while collapsed, and nothing to show WHILE READING either:
+  // an empty bordered body under the row would be a box that says nothing.
+  document.getElementById("snapsbody").hidden = state === "collapsed" || state === "loading";
+  snapHideBtn.hidden = !snapExpanded;
+}
+
+const snapToggle = () => {
+  if (snapExpanded) { snapShow("collapsed"); return; }
+  // Cached: the target file cannot change under this page, so a second open is
+  // instant and costs no round trip.
+  if (snapLoaded) { snapShow("open"); return; }
+  snapShow("loading");
+  loadSnapshots();
+};
+// A div with role=button gets Enter and Space by hand — the same wiring the
+// snapshot rows below it use, for the same reason.
+snapOpenRow.onclick = snapToggle;
+snapOpenRow.onkeydown = (e) => {
+  if (e.key === "Enter" || e.key === " ") { e.preventDefault(); snapToggle(); }
+};
+snapHideBtn.onclick = snapToggle;
+
+// The read. Only ever reached from an expand (or from a revert whose write did
+// not hand back a timeline), so the gate is `mountSnapshots`' and this call is
+// free to assume the target is a file. The waiting state is the ROW's business
+// (snapShow), not this function's.
+async function loadSnapshots() {
+  const note = document.getElementById("snapsnote");
+  note.textContent = "";
+  try {
+    // No `enrich`: enrichment reads session transcripts (5 MB+). The unenriched
+    // timeline cannot see the creation boundary, which is why this panel never
+    // claims a chain is complete.
+    const timeline = await fused.runPython(AGENT, { action: "snapshots", file: FILE }, { key: null });
+    if (timeline.error) throw new Error(timeline.error);
+    snapLoaded = true;
+    renderSnapshots(timeline);
+    snapShow("open");
+  } catch (err) {
+    // An ordinary absence, never the red overlay: a file Claude has never
+    // touched is the common case, not a bug in this view. `snapLoaded` stays
+    // false so the next expand asks again instead of leaving the section stuck
+    // on the failure for the life of the page — which is exactly why the
+    // pressable row comes BACK rather than the section opening onto an error.
+    console.warn("snapshots failed:", err.message);
+    snapShow("error");
+    note.textContent = "The snapshots could not be read (" + err.message + ").";
+  }
+}
+
 // ── boot: resume from URL, or show the landing page ──
 (async () => {
   const session_id = fused.params.get("session_id");
@@ -5086,6 +5608,7 @@ async function loadRecent() {
   } else {
     homebox.focus();
     await loadRecent();
+    await mountSnapshots();
   }
 })();
 </script>

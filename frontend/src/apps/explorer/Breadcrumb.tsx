@@ -14,7 +14,7 @@
 // the layout modes (LM-11 / TM-9 — ★/update still operate on currentUrl()).
 import React, { useEffect, useRef, useState } from "react";
 import { requestCloneApp } from "@platform/cloud/cloneApp";
-import { navigate, navigateUrl, urlForFsPath, currentUrl, IS_EMBED } from "@platform/lib/router";
+import { navigate, navigateUrl, currentUrl, IS_EMBED } from "@platform/lib/router";
 import { basename } from "@platform/lib/format";
 import { isMod } from "@platform/lib/platform";
 import {
@@ -268,31 +268,6 @@ function enterPanel(fsPath: string, dir: "row" | "col"): void {
   navigateUrl(panelUrl(seg + (dir === "row" ? "," : ";") + seg, null));
 }
 
-// Carry the active `_mode` (e.g. a folder viewed as "graph") across top-bar
-// navigation so moving between folders preserves the chosen view. Other query
-// params are dropped — a fresh path is a fresh view — except the listing's
-// sticky `preview` (pane visibility), which navigate() itself carries for
-// directory targets; the `_mode` branch here must carry it the same way or a
-// breadcrumb hop out of a moded folder would silently close the pane. An
-// unknown `_mode` on the target silently falls back to its default
-// (Preview.activeTemplate).
-function navigatePreservingMode(target: string): void {
-  const url = new URLSearchParams(location.search);
-  const mode = url.get("_mode");
-  if (mode) {
-    const params = new URLSearchParams({ _mode: mode });
-    const preview = url.get("preview");
-    if (preview !== null) {
-      params.set("preview", preview);
-      const panelMode = url.get("_panelMode");
-      if (panelMode !== null) params.set("_panelMode", panelMode);
-    }
-    navigateUrl(urlForFsPath(target, "?" + params.toString()));
-  } else {
-    navigate(target, { isDir: true }); // breadcrumb targets are always dirs
-  }
-}
-
 // Open a URL typed/pasted into the path bar. Every failure is an error toast
 // carrying the reason — the path bar has already closed by now, so a silent
 // no-op would read as "Enter did nothing". A cloud URL keeps its trailing
@@ -417,7 +392,12 @@ export function Breadcrumb({
       className={"path-crumb" + (parts.length === 0 ? " last" : "")}
       onClick={(e) => {
         e.preventDefault();
-        navigatePreservingMode(underHome ? home : "/");
+        // A top-bar hop always lands on the plain listing: `_mode` is dropped
+        // (a full-screen `claude` folder view reopening as another folder's
+        // `claude` view read as "nothing happened"). navigate() still carries
+        // the sticky `preview` onto directory targets, so pane visibility
+        // survives the hop. Breadcrumb targets are always dirs.
+        navigate(underHome ? home : "/", { isDir: true });
       }}
     >
       {underHome ? "~" : "/"}
@@ -460,7 +440,7 @@ export function Breadcrumb({
           title={part}
           onClick={(e) => {
             e.preventDefault();
-            navigatePreservingMode(target);
+            navigate(target, { isDir: true }); // plain listing, no `_mode`
           }}
         >
           {part}

@@ -286,11 +286,27 @@ function timeLabel(s) {
     ? `<span class="running">● running</span>` : esc(ago(lastActive(s)));
 }
 
+// The full scan re-parses every transcript end to end (inbox.py → sessions.py),
+// so it is the expensive call on this page and everything below rations it.
+const RELOAD_COOLDOWN_MS = 30000;
+let lastLoad = 0;
+
 async function load() {
+  lastLoad = Date.now();
   DATA = await fused.runPython("./inbox.py", {});
   DATA.sessions.sort((a, b) => (Date.parse(lastActive(b)) || 0) - (Date.parse(lastActive(a)) || 0));
+  // Stamp again: the scan itself takes seconds on a large store, and the
+  // cooldown is about how often we START one, not when the last one landed.
+  lastLoad = Date.now();
   render();
   autoFlow();
+}
+
+// A full scan, unless one ran recently. Every caller that reaches for `load()`
+// on an *event* (tab focus, a session that appeared) goes through here.
+function reload() {
+  if (Date.now() - lastLoad < RELOAD_COOLDOWN_MS) return Promise.resolve();
+  return load();
 }
 
 // running session → In Progress; a session this page saw running that has now
@@ -319,25 +335,63 @@ async function pollStatus() {
   try {
     const res = await fused.runPython("./sessions/sessions.py",
       {mode: "status"}, {key: "status"});
-    const byId = Object.fromEntries(res.statuses.map((x) => [x.sessionId, x.mtime]));
-    let unknown = false;
-    for (const id of Object.keys(byId)) {
-      const s = DATA.sessions.find((x) => x.sessionId === id);
-      if (s) s.mtime = byId[id];
-      else unknown = true;
+    // Index DATA once. The old shape searched DATA.sessions per polled id,
+    // which is O(sessions × transcripts) of array scanning every tick.
+    const known = new Map(DATA.sessions.map((s) => [s.sessionId, s]));
+    // An id the scan didn't return is NOT by itself evidence of a new session:
+    // the two scans disagree by construction. `mode="status"` lists every
+    // *.jsonl on disk, while the summarizing scan drops transcripts with no
+    // timestamped entry (an empty or just-created file, a truncated one) and
+    // then clamps what survives to `limit`. Those ids are permanently absent,
+    // so "absent ⇒ reload" made the page re-parse every transcript on disk
+    // every 5s, forever — the whole reason this poll was expensive.
+    //
+    // What a genuinely new session actually looks like is ACTIVE, and an
+    // active transcript necessarily has a fresh timestamped entry, so the scan
+    // will return it. Gating on that fixes the loop without missing anything.
+    let appeared = false;
+    for (const {sessionId, mtime} of res.statuses) {
+      const s = known.get(sessionId);
+      if (s) s.mtime = mtime;
+      else if (isRunning(mtime)) appeared = true;
     }
-    if (unknown) { await load(); return; }  // a new session appeared → full reload
+    // Still rationed: a store with more running sessions than `limit` would
+    // otherwise re-arm this on every tick.
+    if (appeared) { await reload(); return; }
     // update times/dots in place — no re-render, so open editors are untouched
     document.querySelectorAll(".row-time[data-id]").forEach((el) => {
-      const s = DATA.sessions.find((x) => x.sessionId === el.dataset.id);
+      const s = known.get(el.dataset.id);
       if (s) el.innerHTML = timeLabel(s);
     });
     updateInboxDot();
     autoFlow();
   } catch (e) { /* transient poll failure — next tick retries */ }
 }
-setInterval(pollStatus, 5000);
-document.addEventListener("visibilitychange", () => { if (!document.hidden) load(); });
+
+// Self-rescheduling rather than setInterval: a full scan outlasts the period on
+// a large store, so a fixed interval stacked polls on top of a load that was
+// still running. The period also follows the work — an inbox with nothing
+// running has no dot to keep alive and no time label that changes by the
+// second, so paying a subprocess every 5s to learn that is pure waste.
+const ACTIVE_POLL_MS = 5000;
+const IDLE_POLL_MS = 30000;
+let pollTimer = null;
+function schedulePoll() {
+  clearTimeout(pollTimer);
+  const active = !!DATA && DATA.sessions.some((s) => isRunning(s.mtime));
+  pollTimer = setTimeout(async () => {
+    await pollStatus();
+    schedulePoll();
+  }, active ? ACTIVE_POLL_MS : IDLE_POLL_MS);
+}
+
+// Coming back to the window refreshes, but through the cooldown: flipping tabs
+// is not new information, and this used to launch a full scan every time.
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) return;
+  reload();
+  schedulePoll();  // an idle-period timer shouldn't hold a just-focused page
+});
 
 // background updates (status poll, autoFlow saves) must not rebuild the DOM
 // out from under an open tag/note editor — defer the render until blur
@@ -978,7 +1032,7 @@ document.addEventListener("mouseover", (e) => {
 });
 
 fused.params.onChange(render);
-load();
+load().then(schedulePoll, schedulePoll);
 </script>
 </body>
 </html>

@@ -91,3 +91,45 @@ export function activePaneMode(modes: string[], modeOverride: string | null): st
   if (modeOverride !== null && modes.includes(modeOverride)) return modeOverride;
   return modes[0] ?? null;
 }
+
+// Where the pane's expand button goes: the previewed row, opened full-screen IN
+// THE MODE THE PANE IS SHOWING. Without the mode the expand icon silently threw
+// away the template the user had switched to and reopened the target in its
+// default — the one thing "make this the whole view" must not do.
+//
+// It takes the RESOLVED active mode, never the raw `_panelMode` param: when the
+// param names a mode this selection does not offer, the pane has already fallen
+// back to its default, and the open has to match what is on screen.
+//
+// Three modes are not `_mode` values and are translated rather than passed on:
+//
+//   `_app`      — a pane-only sentinel; the server has never heard of it. What
+//                 the pane frames is the folder's lone app FILE, so that file
+//                 is what opens full-screen (in its own default view, which is
+//                 that app). With no app resolved there is nothing to translate
+//                 and the folder itself opens.
+//   `_listing`  — a folder full-screen IS its listing; `_mode=_listing` would
+//                 be the destination's own default written out longhand, and
+//                 Preview strips it again the moment the user switches modes.
+//   null        — the target offers nothing at all (the pane is showing its
+//                 metadata card), so there is no mode to carry.
+export interface PaneOpenTarget {
+  path: string;
+  isDir: boolean;
+  // Absent = open the destination's own default view.
+  mode?: string;
+}
+
+export function paneOpenTarget(
+  row: { path: string; isDir: boolean },
+  activeMode: string | null,
+  app: { path: string } | null | undefined
+): PaneOpenTarget {
+  if (activeMode === PANE_APP_MODE) {
+    return app ? { path: app.path, isDir: false } : { path: row.path, isDir: row.isDir };
+  }
+  if (activeMode === null || activeMode === "_listing") {
+    return { path: row.path, isDir: row.isDir };
+  }
+  return { path: row.path, isDir: row.isDir, mode: activeMode };
+}

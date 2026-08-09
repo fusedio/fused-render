@@ -45,6 +45,14 @@ Actions:
                                       -> {"answered": ...}
   main(action="sessions", file=...)   -> {"sessions": [...]}   (sidecar only)
   main(action="history", file=..., session_id=...) -> {"turns": [...]}
+  main(action="snapshots", file=..., enrich=...)
+      -> file_history.timeline(...) — Claude Code's checkpoints for this FILE
+  main(action="snapshot_plan", file=..., version_id=...)
+      -> what going back to that snapshot would do (diff, counts, stash
+         predicate), or `ok: False` + `error` saying why it cannot
+  main(action="snapshot_revert", file=..., version_id=..., confirm_unique=...)
+      -> {"ok": True, "action": "restore"|"delete", "stashed": bool,
+          "timeline": {...}}  # version_id MUST come from a snapshot_plan call
   main(action="cancel", run_id=...)   -> {"cancelled": ...}
 """
 import json
@@ -1847,6 +1855,306 @@ def _sessions(file: str) -> dict:
     return {"sessions": sessions}
 
 
+def _snapshots(file: str, enrich: bool) -> dict:
+    """Claude Code's file-history checkpoints for `file` (SPEC §34).
+
+    A pass-through to `shared/file_history.timeline`, which is the ONE reader
+    for this store and already returns its own empty states as data ("no store
+    on this machine", "no versions for this file") — that is the whole reason it
+    can be adopted here unchanged, and the reason a file Claude has never
+    touched renders a sentence rather than the red traceback overlay. This
+    module adds nothing but the offer; the store stays strictly READ-ONLY, as it
+    must, because it is Claude Code's data and the very edit history the feature
+    exists to protect.
+
+    Deliberately NOT the `history` action: that one on this module replays a
+    chat SESSION TRANSCRIPT. Two meanings on one action name is the sort of
+    collision that is only ever found in production.
+
+    **Files only.** A directory has no checkpoint chain — the store keys on one
+    absolute file path (`sha256(abspath)[:16]@vN`) — so a folder target is a
+    refusal here as well as being hidden in the page. The gate is the UX, the
+    module is the guarantee (MD-11): a hand-written call cannot reach a state
+    the panel does not offer.
+
+    `enrich` is honoured here and nowhere else, exactly as the annotate panel
+    had it: enrichment reads session transcripts (5 MB+), so the boot call skips
+    them and only a deliberate expansion pays.
+
+    ImportError alone is caught, and it means one thing: this folder was copied
+    without its `shared/` sibling. A blanket `except Exception` would report a
+    SyntaxError inside `file_history.py` as "helper is not available", which
+    sends the reader to entirely the wrong place.
+    """
+    bad = _snap_target(file)
+    if bad:
+        return {"error": bad}
+    try:
+        import file_history
+    except ImportError:
+        return {"error": "file history helper (../shared/file_history.py) "
+                         "is not available"}
+    try:
+        return file_history.timeline(file, enrich=enrich)
+    except Exception as exc:  # noqa: BLE001 — a state to render, never an overlay
+        return {"error": f"{type(exc).__name__}: {exc}"}
+
+
+# ------------------------------------------------- going back to a snapshot
+
+#: Stash entries kept in the sidecar. Small on purpose: this is an "oh no, undo
+#: the undo" buffer, not a version store — the file-history store already is one
+#: — and the sidecar is a small JSON file this template rewrites constantly.
+STASH_KEEP = 3
+#: Content above this is NOT copied into the sidecar. Better a revert with no
+#: stash (and the caller told, so the confirm step can be firmer) than a
+#: multi-megabyte sidecar every other writer of it then has to round-trip.
+STASH_BYTE_CAP = 256 * 1024
+
+
+def _snap_target(file: str) -> str:
+    """Empty when this panel may touch `file`, else the sentence saying why not.
+
+    One gate for all three actions, cheapest and most dangerous first, so a
+    hand-written call cannot reach a target the panel does not offer (MD-11):
+
+      * no target at all;
+      * a MOUNT-BACKED path. This runs BEFORE any stat, deliberately: the bytes
+        under the mounts dir come from a remote over FUSE and an ordinary kernel
+        stat on a wedged mount hangs the worker — the very reason
+        `condition.py` refuses to offer this template there at all. `appenv`
+        unreachable means we cannot tell, which reads as refuse (CT-12), and it
+        can only happen for a copy of this folder taken without its `shared/`
+        sibling;
+      * a DIRECTORY. The store keys on one absolute FILE path
+        (`sha256(abspath)[:16]@vN`), so a folder has no checkpoint chain to
+        show, plan against, or write back.
+    """
+    if not file:
+        return "missing target file (no _file param?)"
+    try:
+        from appenv import is_mount_backed
+    except Exception:  # noqa: BLE001 — cannot tell -> refuse (CT-12)
+        return ("cannot tell whether this path is on a remote mount, so "
+                "file history is not offered here")
+    if is_mount_backed(file):
+        return ("this file is on a remote mount, where file history is not "
+                "offered")
+    if os.path.isdir(file):
+        return "file history is per-file; a folder has no checkpoints"
+    return ""
+
+
+def _stash_plan(file: str) -> tuple:
+    """(will_stash, note, raw_bytes) — WITHOUT writing anything.
+
+    Split from `_stash` so the confirm step can state the truth BEFORE the
+    click: the one genuinely unrecoverable combination — content in no
+    checkpoint AND no stash — must not be something the user finds out about in
+    the past tense. The predicate is cheap (a stat, a read, a decode), and
+    `_stash` consumes this same function, so the promise and the action cannot
+    drift apart.
+
+    Each refusal is reported separately and truthfully: folding an EACCES into
+    "not UTF-8 text" describes a fixable machine problem as a fact about the
+    content. The read is BINARY with an explicit decode — text mode's
+    universal-newline translation would stash a CRLF file as LF, i.e. not the
+    bytes that are about to be destroyed.
+    """
+    try:
+        size = os.path.getsize(file)
+    except FileNotFoundError:
+        return False, "nothing on disk to stash", None
+    except OSError as exc:
+        return False, ("could not measure the previous content — %s"
+                       % _snap_why(exc, file)), None
+    if size > STASH_BYTE_CAP:
+        return False, ("previous content (%d bytes) is too large to stash in "
+                       "the sidecar — it is not recoverable from here"
+                       % size), None
+    try:
+        with open(file, "rb") as fh:
+            raw = fh.read()
+    except OSError as exc:
+        return False, ("previous content could not be read — %s"
+                       % _snap_why(exc, file)), None
+    try:
+        raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return False, ("previous content is not UTF-8 text — not stashed, and "
+                       "not recoverable from here"), None
+    if not _sidecar_writable(file):
+        return False, "%r is read-only — nothing stashed" % _sidecar_path(file), None
+    return True, "", raw
+
+
+def _snap_why(exc, path) -> str:
+    errno = getattr(exc, "errno", None)
+    reason = getattr(exc, "strerror", None) or str(exc) or type(exc).__name__
+    return "%s: %s%s" % (path, reason,
+                         "" if errno is None else " (errno %d)" % errno)
+
+
+def _sidecar_writable(file: str) -> bool:
+    """True iff `_save_sidecar` would succeed.
+
+    An existing sidecar needs W_OK on ITSELF — `_save_sidecar`'s os.replace goes
+    through the directory and would otherwise sail straight past a read-only
+    bit. A fresh one needs W_OK on the nearest existing parent, since mkstemp
+    and replace both land there. No mount check: the sidecar lives under
+    home_dir()/sidecar/ (D205), never on the target's own mount.
+    """
+    path = _sidecar_path(os.path.abspath(file))
+    if os.path.exists(path):
+        return os.access(path, os.W_OK)
+    from appenv import nearest_existing_dir
+    return os.access(nearest_existing_dir(os.path.dirname(path)), os.W_OK)
+
+
+def _stash(file: str, version_id: str) -> tuple:
+    """Copy the CURRENT content into the sidecar's `revertStash`, newest last.
+
+    Called before the write lands, because after it there is nothing left to
+    copy. Returns (stashed, note) rather than raising: a revert the user
+    confirmed — having been told by `_stash_plan` whether a copy would be kept —
+    must not then be blocked by a sidecar we could not write.
+
+    `size` is the BYTE count of what was on disk and `content` decodes back to
+    exactly those bytes; the two must agree or a hand-recovery from the sidecar
+    restores something that was never there.
+    """
+    ok, note, raw = _stash_plan(file)
+    if not ok:
+        return False, note
+    content = raw.decode("utf-8")
+    data = _load_sidecar(file)
+    stash = data.get("revertStash")
+    if not isinstance(stash, list):
+        stash = []
+    stash.append({"version_id": version_id, "at": time.time(),
+                  "size": len(raw), "lines": len(content.splitlines()),
+                  "content": content})
+    data["revertStash"] = stash[-STASH_KEEP:]
+    try:
+        _save_sidecar(file, data)
+    except OSError as exc:
+        return False, "could not write the stash: %s" % exc
+    return True, ""
+
+
+def _snap_plan(file: str, version_id: str, fh) -> dict:
+    """`file_history.revert_plan` completed with the stash predicate.
+
+    The reader has no business knowing the sidecar exists, and the panel has no
+    business guessing whether a copy will be kept, so the bridge that owns the
+    sidecar is where the two facts meet.
+    """
+    plan = fh.revert_plan(file, version_id)
+    if plan.get("ok"):
+        ok, note, _raw = _stash_plan(file)
+        plan["stash"] = ok
+        plan["stash_note"] = note
+    return plan
+
+
+def _snapshot_plan(file: str, version_id: str) -> dict:
+    """What going back to `version_id` would do — what the expanded row shows.
+
+    `version_id` is REQUIRED here, unlike annotate's equivalent. This panel is a
+    list of rows and every plan comes from clicking one, so there is no "the
+    last change" to resolve and nothing for this action to guess. The plan
+    carries the diff itself (see `file_history._diff`), because the counts
+    beside it answer how MUCH changes and never WHAT — and on the one
+    destructive action here the second is the question being confirmed.
+    """
+    bad = _snap_target(file)
+    if bad:
+        return {"error": bad}
+    if not isinstance(version_id, str) or not version_id:
+        return {"error": "snapshot_plan needs the version_id of the row that "
+                         "was clicked — it never picks a snapshot itself"}
+    try:
+        import file_history
+    except ImportError:
+        return {"error": "file history helper (../shared/file_history.py) "
+                         "is not available"}
+    try:
+        return _snap_plan(file, version_id, file_history)
+    except Exception as exc:  # noqa: BLE001 — a state to render, never an overlay
+        return {"error": f"{type(exc).__name__}: {exc}"}
+
+
+def _snapshot_revert(file: str, version_id: str, confirm_unique: bool) -> dict:
+    """Put a snapshot back on disk — applying a plan the caller has already seen.
+
+    Two refusals, both structural rather than cosmetic:
+
+      * the plan's `id` must be echoed back. A destructive write off its own
+        freshly-computed choice has no confirmation token at all, and the echo
+        doubles as a freshness check — a plan built against one disk state and
+        applied against another is exactly how a user confirms one diff and gets
+        a different one.
+      * when the plan reports `unique_current` — the bytes on disk are in no
+        checkpoint, so the write destroys the only copy — `confirm_unique` must
+        be true. Deliberately NOT demanded for an ordinary step back, where
+        nothing unrecorded is lost: a token the caller always passes is a token
+        nobody reads.
+
+    The writability re-read happens BEFORE the stash by design: `_stash` runs
+    first (after the write there is nothing left to copy), so an unwritable
+    target must be refused here or the stash lands and `apply_revert` then
+    raises — a failed revert that still mutated the sidecar.
+    """
+    bad = _snap_target(file)
+    if bad:
+        return {"error": bad}
+    if not isinstance(version_id, str) or not version_id:
+        return {"error": "snapshot_revert needs the version_id from a "
+                         "snapshot_plan call — it never picks a snapshot itself"}
+    try:
+        import file_history
+    except ImportError:
+        return {"error": "file history helper (../shared/file_history.py) "
+                         "is not available"}
+    try:
+        plan = _snap_plan(file, version_id, file_history)
+        if not plan.get("ok"):
+            return plan
+        if plan.get("writable") is False:
+            return {"error": "This file cannot be restored: "
+                             + (plan.get("writable_reason")
+                                or "it is not writable")}
+        if plan.get("unique_current") and not confirm_unique:
+            return {"error": "what is on disk now is in no snapshot, so going "
+                             "back would destroy the only copy — confirm once "
+                             "the user has been shown that",
+                    "plan": plan}
+        stashed, note = _stash(file, plan["id"])
+        res = file_history.apply_revert(file, plan["id"])
+        res["stashed"] = stashed
+        res["stash_note"] = note
+    except Exception as exc:  # noqa: BLE001 — a state to render, never an overlay
+        return {"error": f"{type(exc).__name__}: {exc}"}
+    # The POST-write timeline, in the same response: without it the row list
+    # goes on showing the pre-revert position for a whole round trip —
+    # precisely the window in which the user is staring at it to find out
+    # whether it worked. Enriched, because an unenriched timeline cannot see the
+    # did-not-exist boundary and would report the chain a step short.
+    #
+    # Best-effort, and the key is simply ABSENT when it fails: the write already
+    # landed and is already reported, so a failure to re-enumerate the store must
+    # not turn a successful revert into an error. The page falls back to its own
+    # `snapshots` call. Named on stderr all the same — with no trace at all, a
+    # timeline that has started failing every time is indistinguishable from one
+    # that never fails.
+    try:
+        res["timeline"] = file_history.timeline(file, enrich=True)
+    except Exception as exc:  # noqa: BLE001
+        print("claude: post-revert timeline failed, the page will re-read it "
+              "itself — %s: %s" % (type(exc).__name__, exc), file=sys.stderr)
+    return res
+
+
 def _history(file: str, session_id: str) -> dict:
     """Rebuild the conversation from the Claude Code session transcript.
 
@@ -1943,7 +2251,8 @@ def main(action: str = "start", file: str = "", message: str = "",
          session_id: str = "", model: str = "", effort: str = "",
          run_id: str = "", request_id: str = "", decision: str = "",
          scope: str = "once", permission_mode: str = "", mode: str = "",
-         state: str = "", has_pane: str = "") -> dict:
+         state: str = "", has_pane: str = "", enrich: str = "",
+         version_id: str = "", confirm_unique: str = "") -> dict:
     if action == "start":
         if not file:
             return {"error": "missing target file (no _file param?)"}
@@ -1976,6 +2285,19 @@ def main(action: str = "start", file: str = "", message: str = "",
         if not file:
             return {"error": "missing target file (no _file param?)"}
         return _history(file, session_id)
+    if action == "snapshots":
+        # `enrich` arrives as a STRING like every other param (the binder is
+        # str-shaped), so "" and "0" both mean don't — the boot call sends
+        # nothing and pays for no transcript reads.
+        return _snapshots(file, enrich not in ("", "0", "false"))
+    if action == "snapshot_plan":
+        return _snapshot_plan(file, version_id)
+    if action == "snapshot_revert":
+        # `confirm_unique` arrives as a STRING like every other param, and only
+        # a positive one counts: this is the token that stands between a click
+        # and destroying the only copy of what is on disk.
+        return _snapshot_revert(file, version_id,
+                                confirm_unique not in ("", "0", "false"))
     if action == "shots_dir":
         # Asked for by the page BEFORE it composes a message, because that is
         # when it has crops to upload — see SHOTS for why this is not a run dir.

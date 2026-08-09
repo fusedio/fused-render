@@ -1,6 +1,6 @@
 // Bootstrap: history wrapping, embed class, config load, React mount.
 import { createRoot } from "react-dom/client";
-import { IS_EMBED } from "@platform/lib/router";
+import { IS_EMBED, IS_SNAPSHOT } from "@platform/lib/router";
 import { getConfig } from "@platform/lib/api";
 import { hydrateBookmarks, refreshBookmarks } from "@platform/lib/bookmarks";
 import { hydrateRecents } from "@apps/explorer/lib/recents";
@@ -28,6 +28,10 @@ history.pushState = function (...args: Parameters<History["pushState"]>) {
 };
 
 if (IS_EMBED) document.body.classList.add("embed");
+// Frozen-tree framing (router.ts IS_SNAPSHOT): a body class rather than props
+// threaded through the view tree, exactly like `embed` above — every rule it
+// drives is chrome, and chrome is what stylesheets already own.
+if (IS_SNAPSHOT) document.body.classList.add("snapshot");
 
 const root = createRoot(document.getElementById("root")!);
 

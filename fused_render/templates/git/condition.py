@@ -2,15 +2,27 @@
 
 `main(path)` decides whether a path is inside a git work tree.
 
-Since D235 the mode is bound to the universal "/" DIRECTORY key alone, so in
-practice the path is always a directory: `git` is the repo-wide Source Control
-view of a folder, and the file-side "what changed in this one file" story is the
-`versions` mode's (its gate takes any file in any work tree). The file branch
-below is kept anyway — it costs one stat, and a gate that answers only one of
-the two shapes would be a trap for a future binding.
+The answer is: anything inside one, file or directory alike. That is the WHOLE
+rule now, and it used to be two rules with a set of exclusions bolted on.
 
-Three questions, in this order, because the first two are refusals rather than
-preferences:
+`git` is the working-tree view — staging, discarding, stashing, committing,
+branches, push/pull. The commit LOG belongs to `versions`, which renders the
+same commits with a timeline this view never had. Because they answer different
+questions, they no longer need to take turns: this gate used to refuse a fused
+app folder ("versions handles app history") and its peer used to refuse every
+directory that was not one, each with a comment telling the reader to keep the
+two in step. Both refusals are gone, and the pair is simply offered together
+(the registry binds them together too).
+
+The binding was the other half of the same mistake. `git` sat on the universal
+"/" DIRECTORY key alone, while the explorer gives a FOLDER no mode switcher of
+its own — the only mode surface a browsing user has is the preview pane's, and
+the pane acts on the SELECTED ROW, which is usually a file. Bound to no file
+extension, the view was effectively unreachable without hand-writing
+`?_mode=git`. It is now offered on every key `versions` is.
+
+Two questions, in this order, because the first is a refusal rather than a
+preference:
 
 1. **Is the path mount-backed?** Then False, always, and the refusal happens
    BEFORE any subprocess. `graph/condition.py` refuses one for the shape of I/O
@@ -30,7 +42,7 @@ preferences:
    file asks from its parent (handing git a file as `-C`/`cwd` is an ENOTDIR,
    not an answer). Two `os.path.isdir` stats at most.
 
-3. **Does git say this is inside a work tree?** `git rev-parse
+   Then: **does git say this is inside a work tree?** `git rev-parse
    --is-inside-work-tree`, one bounded subprocess, and its literal `true` is the
    only answer that passes.
 
@@ -117,53 +129,14 @@ def main(path: str) -> bool:
         if not path:
             return False
 
-        # A *fused app* dir (a git-initialized folder exactly two levels under
-        # the workspace) is `versions` territory: that template renders the
-        # same history with the app's auto-commit semantics, so offering `git`
-        # there would be two modes for one story. This is the exact complement
-        # of versions/condition.py's app-dir rule — keep the two in step (and
-        # with app_git.app_dir_for). Same constant-time shape: one relpath,
-        # one `.git` isdir stat, never a listing.
-        try:
-            from appenv import workspace_dir
-            root = workspace_dir()
-            rel = os.path.relpath(os.path.abspath(path), root)
-            if rel != os.curdir and rel.split(os.sep, 1)[0] != os.pardir:
-                parts = rel.split(os.sep)
-                if (len(parts) >= 2
-                        and not parts[0].startswith(".")
-                        and not parts[1].startswith(".")):
-                    app_dir = os.path.join(root, parts[0], parts[1])
-                    if os.path.isdir(os.path.join(app_dir, ".git")):
-                        return False  # versions handles app history
-        except Exception:  # noqa: BLE001 — cannot tell -> fall through to git
-            pass
-
-        # Registered linked apps are `versions` territory too — but only when
-        # the LINKED FOLDER itself is git-backed, mirroring the `.git` check
-        # the workspace-app exclusion makes above (versions' gate asks the
-        # same question, so this is exactly "versions will take this story").
-        # A linked folder outside any repo — or a path in a nested repo deeper
-        # than the linked folder — falls through and keeps plain `git`.
-        try:
-            from appenv import linked_app_dir_for
-            linked = linked_app_dir_for(path)
-            if linked:
-                probe = subprocess.run(
-                    ["git", "--no-pager", "-C", linked, "rev-parse",
-                     "--is-inside-work-tree"],
-                    env={**os.environ, **_ENV},
-                    stdin=subprocess.DEVNULL,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.DEVNULL,
-                    timeout=_TIMEOUT_S,
-                    creationflags=(subprocess.CREATE_NO_WINDOW
-                                   if sys.platform == "win32" else 0),
-                )
-                if probe.returncode == 0 and probe.stdout.strip() == b"true":
-                    return False  # versions handles linked-app history
-        except Exception:  # noqa: BLE001 — cannot tell -> fall through to git
-            pass
+        # NO peer exclusions here. This gate used to refuse a fused app folder,
+        # and then a git-backed registered linked app, on the grounds that
+        # `versions` rendered the same history — one relpath + a `.git` stat for
+        # the first, a whole second `rev-parse` fork for the second, both of
+        # them on every directory the user opened. `git` is the working tree and
+        # `versions` is the history; they answer different questions, so a
+        # folder gets both and the two forks go away with the rules that needed
+        # them.
 
         # (2) The directory to ask git from: the path itself, or a file's parent.
         # Two stats at most, never a listing.
@@ -187,6 +160,7 @@ def main(path: str) -> bool:
             timeout=_TIMEOUT_S,
             creationflags=(subprocess.CREATE_NO_WINDOW
                            if sys.platform == "win32" else 0),
+            close_fds=False,
         )
         if proc.returncode != 0:
             return False

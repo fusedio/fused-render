@@ -117,6 +117,25 @@
     font-size: 11px;
     font-family: ui-monospace, Menlo, Consolas, monospace;
   }
+  /* The pager. A timeline is append-only, so there are no page numbers and no
+     "back": one quiet row at the FOOT of the spine that grows the list in
+     place. It is styled as chrome (the #side-head vocabulary — small, upper,
+     tracked) rather than as a commit, so it never reads as a revision that can
+     be selected. */
+  .older {
+    padding: 8px 12px;
+    border-top: 1px solid var(--line);
+    color: var(--ink-2);
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    cursor: pointer;
+  }
+  .older:hover { color: var(--accent); }
+  .older.loading, .older.loading:hover { color: var(--ink-3); cursor: default; }
+  /* Same ink as #notice.error — a failed page is reported where it was asked
+     for, so the snapshot in the other half is left alone. */
+  .older-error { padding: 2px 12px 8px; color: var(--danger); font-size: 11px; }
   .badge {
     display: inline-block;
     margin-left: 6px;
@@ -179,13 +198,16 @@
      itself for, i.e. a preview of a preview's narrow layout. The useful sum:
          #side min-width           200px  (the commit spine: hash + date + tag)
        + #divider                    4px
-       + a usable preview frame     640px  (the `bundle` family number — the
-                                            narrowest frame a framed template
-                                            still renders its WIDE layout in)
-       = 844px floor → 880px, rounding up for a scrollbar and matching what
-         `claude`, the other split-layout template, lands on from its own
-         arithmetic (#left 420 + divider 4 + #chat 440 = 864 → 880), so the two
-         collapse together.
+       + a usable preview frame     420px  (the phone-viewport family, the same
+                                            "a framed preview that is still a
+                                            page" figure `claude` uses for ITS
+                                            framed column)
+       = 624px floor → 640px, rounded up for a scrollbar (and landing on the
+         `bundle` family number). This is deliberately LOWER than `claude`'s
+         800px: claude's narrower column is a 420px preview but its OTHER
+         column is a 440px chat, while ours is a 200px commit spine — the
+         split here stays useful in hosts claude's cannot survive, so the two
+         templates no longer share a breakpoint.
 
      Below it: ONE view at a time. #side-head stays put as the control strip
      (it already carries Revert), so the toggle is reachable from both views,
@@ -206,7 +228,7 @@
     cursor: pointer;
   }
   #view-toggle:hover { border-color: var(--accent); color: var(--accent); }
-  @media (max-width: 880px) {
+  @media (max-width: 640px) {
     /* Stack, so #side can be the full-width control strip + list. */
     body { flex-direction: column; }
     #divider { display: none; }  /* nothing left to resize */
@@ -229,6 +251,7 @@
     body.narrow-preview #commits { display: none; }
     body.narrow-preview #main { display: flex; }
   }
+
 </style>
 </head>
 <body>
@@ -263,12 +286,12 @@ const noticeEl = document.getElementById("notice");
 const revertBtn = document.getElementById("revert");
 const toggleBtn = document.getElementById("view-toggle");
 
-// ── narrow layout: one view at a time (see the @media block for the 880px
+// ── narrow layout: one view at a time (see the @media block for the 640px
 // arithmetic and for why this lives in the template, not the shell) ──
 // The breakpoint is asked of matchMedia with the SAME query string as the CSS so
 // the two can't drift, and only to keep the button's label honest — the layout
 // itself is pure CSS, so a resize needs no JS to be correct.
-const NARROW = window.matchMedia("(max-width: 880px)");
+const NARROW = window.matchMedia("(max-width: 640px)");
 function showNarrow(view) {
   // `narrow-preview` is inert above the breakpoint (every rule that reads it is
   // inside the media block), so it is safe to leave set while the host is wide.
@@ -285,7 +308,18 @@ NARROW.addEventListener("change", () => {
   if (!NARROW.matches) showNarrow("list");
 });
 
+// The spine is PAGED (versions.py `PAGE_SIZE`): `commits` holds every page
+// fetched so far, newest first and contiguous from skip 0, which is what makes
+// `commits.length` the next page's `skip`. `more` is the backend's own answer
+// (it fetches one row past the page as a probe), so the page size lives in one
+// place and this half never has to know it.
 let commits = [];      // newest first, from versions.py `log`
+let more = false;      // history continues past what is loaded
+let loadingMore = false;
+let moreError = "";
+// Bumped by every full reload (boot, revert). A page that lands after one is
+// answering a question about a list that no longer exists, so it is dropped.
+let logGen = 0;
 let selected = null;   // full sha
 
 function esc(s) {
@@ -311,14 +345,63 @@ function notice(msg, isError) {
 
 function clearNotice() { noticeEl.className = ""; }
 
+// A full repaint, and deliberately so: appending a page changes the FOOT of the
+// list only, but the selected row, the `latest` badge and the pager row are all
+// derived state, and one function that redraws all of it from `commits` +
+// `selected` cannot leave them disagreeing. The one thing a repaint does lose is
+// the scroll offset, which is exactly what a "show older" click must keep — so
+// it is saved and restored around the write, and the new rows appear below the
+// user's viewport instead of under it.
 function renderList() {
-  commitsEl.innerHTML = commits.map((c, i) =>
+  const scroll = commitsEl.scrollTop;
+  let html = commits.map((c, i) =>
     '<div class="commit' + (c.sha === selected ? " selected" : "") +
     '" data-sha="' + c.sha + '">' +
     '<div class="subject">' + esc(c.subject || "(no subject)") +
     (i === 0 ? '<span class="badge">latest</span>' : "") + "</div>" +
     '<div class="meta">' + c.sha.slice(0, 7) + " · " + ago(c.ts) + "</div>" +
     "</div>").join("");
+  if (more) {
+    html += '<div class="older' + (loadingMore ? " loading" : "") + '">' +
+      (loadingMore ? "Loading…" : "Show older") + "</div>";
+  }
+  // The row stays (so the failed page can simply be asked for again) and the
+  // reason sits under it.
+  if (moreError) html += '<div class="older-error">' + esc(moreError) + "</div>";
+  commitsEl.innerHTML = html;
+  commitsEl.scrollTop = scroll;
+}
+
+// The next page, appended. Nothing here touches `selected` or the frame: paging
+// grows the timeline, it does not move the preview.
+async function loadMore() {
+  if (loadingMore || !more) return;
+  loadingMore = true;
+  moreError = "";
+  renderList();
+  const gen = logGen;
+  try {
+    const res = await fused.runPython("./versions.py",
+      { action: "log", file: FILE, skip: commits.length }, { key: "log-more" });
+    if (gen !== logGen) return;  // a reload replaced the list under us
+    if (res.error) throw new Error(res.error);
+    // De-duped by sha rather than trusted blindly: a commit landing on HEAD
+    // between two pages shifts the window down by one, and a repeated row is
+    // the visible symptom. Cheap to drop, and it keeps `commits.length` an
+    // honest cursor for the page after this one.
+    const seen = new Set(commits.map(c => c.sha));
+    for (const c of (res.commits || [])) {
+      if (!seen.has(c.sha)) commits.push(c);
+    }
+    more = !!res.more;
+  } catch (err) {
+    moreError = "Could not load older versions: " + err.message;
+  } finally {
+    if (gen === logGen) {
+      loadingMore = false;
+      renderList();
+    }
+  }
 }
 
 // The iframe src that shows `path` the way the explorer would: its own default
@@ -348,12 +431,45 @@ async function frameSrcForFile(path) {
     + "&_file=" + encodeURIComponent(path);
 }
 
+// The shell's chrome-free view of a DIRECTORY — its browsable listing with no
+// sidebar, breadcrumb or preview header (`body.embed`). Used to frame a
+// snapshot that is a tree rather than a document.
+//
+// The path→URL codec mirrors the shell's own (platform/lib/router.ts
+// `urlForFsPath`): strip the leading separator, encode each segment, join. A
+// template cannot import the shell's module, so this rule is duplicated here
+// rule — four lines, and the only part of the shell's routing a template needs
+// to know. The Windows normalisation is the same narrow one — ONLY a
+// drive-letter path has its backslashes rewritten, because on POSIX a backslash
+// is a legal filename character that must round-trip untouched.
+//
+// Two framing params, both the shell's own:
+//
+//   `preview=false` — this listing is ALREADY inside a preview column, and its
+//                     own split pane (FS-9) nested in half of this view would be
+//                     two previews deep and neither wide enough to read. The
+//                     same param the chat template passed when it framed this
+//                     same embed (D237).
+//   `snapshot=1`    — a FROZEN TREE, not a live folder. It suppresses the chrome
+//                     that would act on it as one: the breadcrumb (whose crumbs
+//                     walk up out of the snapshot and into the cache's own
+//                     internals) and the two corner chips (the mode chip offered
+//                     a Claude chat ON THE EXTRACTED COPY; "Open as app" would
+//                     run one). See router.ts IS_SNAPSHOT.
+function embedUrl(dirPath) {
+  const norm = /^[A-Za-z]:[\\/]/.test(dirPath) ? dirPath.replace(/\\/g, "/") : dirPath;
+  return "/explorer/embed/" + norm.split("/").filter(Boolean)
+    .map(encodeURIComponent).join("/") + "?preview=false&snapshot=1";
+}
+
 async function select(sha) {
   selected = sha;
   // URL-synced so a reload (or a shared link) lands on the same revision.
   fused.params.set("rev", sha.slice(0, 7));
   renderList();
-  const isLatest = commits.length && commits[0].sha === sha;
+  // `startsWith`, not equality: a deep link's `rev` is a 7-char prefix, and it
+  // is selected before any page has resolved it to a full sha (below).
+  const isLatest = commits.length && commits[0].sha.startsWith(sha);
   revertBtn.disabled = isLatest;
 
   notice("Preparing snapshot…");
@@ -364,31 +480,72 @@ async function select(sha) {
       { action: "snapshot", file: FILE, sha: sha }, { key: "snapshot" });
     if (snap.error) return notice(snap.error, true);
     if (sha !== selected) return; // stale — a newer selection already landed
-    // Two shapes of snapshot (D235). An APP snapshot reports `entry`, the page
-    // /render can serve directly. A FILE snapshot reports `file` — the one file
-    // materialised at that revision — and `entry` only when that file is itself
-    // a page; anything else has to be framed through its own default template,
-    // exactly the way the explorer previews it live.
+    // Three shapes of snapshot, and the payload names which one this is rather
+    // than the page inferring it from the target's kind — an app's entry page
+    // can arrive mid-history, so the shape differs per COMMIT, not per target.
+    //
+    //   `browse` — a TREE with no page to serve: any directory target, and an
+    //              app whose tree holds no html. Framed through the shell's own
+    //              chrome-free listing, so the user browses the folder as it
+    //              was. This used to be the dead end: a bare notice over a tree
+    //              full of files that were perfectly viewable.
+    //   `entry`  — a page /render can serve directly (an app's entry).
+    //   `file`   — the one file a FILE target materialised; framed through its
+    //              own default template unless it is itself a page, exactly the
+    //              way the explorer previews it live.
+    //
+    // `browse` is tested FIRST because it is the only one of the three that can
+    // never coexist with another: the backend sets it only when there is no
+    // entry.
     let src = "";
-    if (snap.entry) {
+    if (snap.browse) {
+      src = embedUrl(snap.browse);
+    } else if (snap.entry) {
       src = "/render?path=" + encodeURIComponent(snap.entry);
     } else if (snap.file) {
       src = await frameSrcForFile(snap.file);
       if (sha !== selected) return; // the stat above is another await point
       if (!src) return notice("No view for this file type — nothing to render.");
     } else {
-      return notice("This revision has no entry page (index.html or a single .html) — nothing to render.");
+      // Defensive: every snapshot payload carries one of the three above.
+      return notice("Nothing to show for this revision.");
     }
     clearNotice();
     frameEl.src = src;
+    // The snapshot resolved whatever was asked for into a FULL sha. Adopt it, so
+    // a revision deep-linked by prefix (and therefore not on the first page)
+    // highlights the moment paging reaches the row that holds it.
+    if (snap.sha && snap.sha !== selected) {
+      selected = snap.sha;
+      renderList();
+    }
   } catch (err) {
     if (sha === selected) notice("Snapshot failed: " + err.message, true);
   }
 }
 
+// The FIRST page, from scratch. Every caller (boot, and revert — whose new
+// commit is the newest, so the first page is where it is) wants the list reset,
+// not extended.
 async function loadLog(preferSha) {
+  logGen++;
+  loadingMore = false;
+  moreError = "";
+  // THE FENCE, and it has to be here — before the first await, in the same
+  // synchronous run as the `logGen` bump. `logGen` alone only fences pages
+  // already IN FLIGHT: a click that lands DURING the reload's await reads the
+  // NEW generation, so its own guard passes, while its `skip` was computed from
+  // the stale list — its page then appends onto the fresh first page, leaving a
+  // hole between them (after a revert: 20 fresh rows, then rows 40+, with 20–39
+  // unreachable and `more` overwritten by that page's flag). Dropping `more`
+  // takes the pager row out of the DOM for the whole reload, so there is nothing
+  // to click; and because JS runs this block to completion, a click either
+  // happened entirely BEFORE it (in flight, dropped by the generation check) or
+  // entirely after it (refused by `!more`). No third case.
+  more = false;
+  renderList();
   const res = await fused.runPython("./versions.py",
-    { action: "log", file: FILE }, { key: "log" });
+    { action: "log", file: FILE, skip: 0 }, { key: "log" });
   if (res.error) return notice(res.error, true);
   // Linked apps are view-only history: versions.py refuses `revert` for them
   // (the repo is the user's own), so the button disappears rather than
@@ -396,16 +553,66 @@ async function loadLog(preferSha) {
   // `can_revert` key) keep the button — workspace apps always could.
   if (res.can_revert === false) revertBtn.style.display = "none";
   commits = res.commits || [];
+  more = !!res.more;
+  commitsEl.scrollTop = 0;
   if (!commits.length) return notice("No commits yet.");
+  // A `rev` deep link that is NOT on the first page is still honoured: the
+  // prefix is handed to select() as-is (the backend resolves it), so the link
+  // shows the revision it names rather than silently falling back to HEAD, and
+  // select() adopts the full sha so the row highlights once paging reaches it.
+  //
+  // Off-page, though, it is VERIFIED first, and that is not belt-and-braces —
+  // `rev` is URL state that outlives the target it was set for. In the
+  // explorer's preview pane the pane's params mirror onto the explorer's own
+  // URL, so selecting a DIFFERENT file in the listing reboots this template for
+  // the new target with the previous file's `rev` still present. Resolved as
+  // given, that commit is one the new file's history has never heard of, and the
+  // first thing the user sees after a click is "this revision has nothing under
+  // this folder" about a revision they never picked. So a rev that is not in
+  // THIS target's log is treated as stale and falls back to the newest commit,
+  // silently — the same forgiving posture the app takes for an unknown `_mode`
+  // (PT-9), and for the same reason: stale URL state is the ordinary case here,
+  // not an error to report. A rev that IS in the history, merely past page one,
+  // keeps the deep link exactly as before.
+  //
+  // No second params writer comes out of this: select() is still the only thing
+  // that writes `rev`, so the fallback re-points the param at the newest commit
+  // through the one funnel (and a pristine entry pushes at most the one history
+  // entry selecting a commit has always pushed).
   let pick = commits[0].sha;
   if (preferSha) {
     const hit = commits.find(c => c.sha.startsWith(preferSha));
+    // Shape-checked before it is trusted off-page, so a junk param still falls
+    // back to HEAD the way it always did rather than opening on "unknown
+    // revision".
     if (hit) pick = hit.sha;
+    else if (/^[0-9a-f]{7,40}$/.test(preferSha)) {
+      const gen = logGen;
+      let known = false;
+      try {
+        const probe = await fused.runPython("./versions.py",
+          { action: "has_rev", file: FILE, sha: preferSha }, { key: "hasrev" });
+        known = !!(probe && probe.known);
+      } catch (err) {
+        // The probe is a REFINEMENT of the deep link, not a gate on the view:
+        // if it cannot be asked, keep the behaviour it refines rather than
+        // dropping the user's own link on a transport failure.
+        known = true;
+      }
+      // Another reload started while this was in flight — its own selection is
+      // the current one, and selecting here would fight it.
+      if (gen !== logGen) return;
+      if (known) pick = preferSha;
+    }
   }
   await select(pick);
 }
 
 commitsEl.addEventListener("click", (e) => {
+  // The pager first: it is a sibling of the rows, not one of them, and it must
+  // NOT flip the narrow layout to the preview — asking for more history is a
+  // request to keep reading the list.
+  if (e.target.closest(".older")) return loadMore();
   const row = e.target.closest(".commit");
   if (!row) return;
   // Picking a revision in the narrow layout is a request to SEE it, so reveal

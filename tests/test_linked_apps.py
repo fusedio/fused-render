@@ -399,19 +399,21 @@ def test_versions_gate_finds_the_git_at_an_ancestor(client, tmp_path):
     _git_repo(repo)
     client.post("/api/apps/link", json={"path": str(d)}, headers=HDRS)
     assert _condition("versions").main(str(d)) is True
-    # ...and the git template steps aside there (one story, one mode).
-    assert _condition("git").main(str(d)) is False
+    # ...and `git` is offered there too. It used to step aside ("one story, one
+    # mode") with a whole extra `rev-parse` fork on every stat to work out
+    # whether it should. `git` is the working tree and `versions` is the
+    # history, so both answer and the fork is gone.
+    assert _condition("git").main(str(d)) is True
 
 
 def test_git_gate_keeps_serving_ungitted_linked_folders(client, tmp_path, workspace):
-    """The git exclusion only fires when versions will actually take the
-    story — a linked folder outside any repo (or a nested repo deeper than
-    the linked folder) keeps the plain git mode."""
+    """Being linked has no bearing on the git gate either way: the only
+    question is whether git says the path is in a work tree."""
     d = _folder(tmp_path, "notes")
     client.post("/api/apps/link", json={"path": str(d)}, headers=HDRS)
-    # linked but not git-backed: versions has nothing, git stays out only
-    # because there is genuinely no repo — not because of the exclusion
+    # linked but not git-backed: there is genuinely no repo, so no mode
     assert _condition("git").main(str(d)) is False
+    assert _condition("versions").main(str(d)) is False
     # a repo nested DEEPER than the linked folder: git serves it
     nested = d / "vendor"
     nested.mkdir()

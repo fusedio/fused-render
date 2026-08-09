@@ -1,7 +1,7 @@
-"""Git backend for the `versions` template: history of a *fused app*, or of a
-single *file* (D235).
+"""Git backend for the `versions` template: history of a *fused app*, of a
+single *file*, or of an ordinary *directory* — anywhere git works.
 
-There are exactly two kinds of target, resolved once per call by
+There are exactly three kinds of target, resolved once per call by
 `_resolve_target`, and the difference between them is the whole shape of this
 module:
 
@@ -9,23 +9,47 @@ module:
   (`<workspace>/<tag>/<name>`, see `condition.py`), where the module operates on
   the WHOLE app: the repo is the app, not the file. Writable (`revert`).
 * **A file** — a single tracked file in whatever repository it happens to live
-  in, scoped to that one path. This is the file-side history view now that the
-  `git` mode is directory-only (D235), and it is **read-only**: `revert` is
-  refused, because the repository is the user's own and a revert commit carries
-  the Fused identity (the rule linked apps already live by).
+  in, scoped to that one path. **Read-only**: `revert` is refused, because the
+  repository is the user's own and a revert commit carries the Fused identity
+  (the rule linked apps already live by).
+* **A directory** — an ordinary folder inside any git work tree, scoped to its
+  own subtree. Read-only for the same reason. Its snapshot is the subtree at
+  that commit, archived exactly as an app's is, and shown exactly as an app's
+  is: its **page** when the extracted tree has one (the shared entry rule — the
+  same predicate the gate admits the folder by), else the tree itself to
+  **browse** (`browse`).
 
-Three actions:
+Everything outside a fused app is resolved by asking GIT where the work tree is
+(`rev-parse --show-toplevel`), never by workspace-relative path arithmetic —
+the discipline `git/log.py` follows, and the only one that answers correctly for
+nested repos, worktrees and submodules.
 
-* `log`      — the commit list, newest first, scoped to the target.
+Four actions:
+
+* `has_rev`  — is one sha part of THIS target's log? The question a `rev` deep
+               link has to answer before it is honoured off-page, because in the
+               preview pane the param outlives the target it was set for. See
+               `_has_rev`; the answer is a flag, never an error.
+* `log`      — one PAGE of the commit list, newest first, scoped to the target:
+               `skip` rows in, `PAGE_SIZE` (20) rows long, with `more` saying
+               whether history continues past it. Never unbounded — outside a
+               fused app the repository is the user's own and its subtree may
+               carry decades of commits, all of which used to be formatted and
+               shipped for a spine whose first screen is twenty rows.
 * `snapshot` — materialise one commit as a plain folder so the explorer can
-               render the app (or the file) *as it was*. `git archive <sha>` is
+               render the app, the file, or the folder *as it was*. `git archive <sha>` is
                extracted into a per-target, per-commit dir under the shell home
                (`~/.fused-render/app-versions/<key>/<sha>/`); a commit is
                immutable, so an existing complete snapshot is reused as-is.
-               An app reports its `entry` page for `/render?path=`; a file
-               reports the materialised `file` (plus `entry` when the file is
-               itself a page), and the view frames non-page files through their
-               own default template.
+               A TREE (an app or a directory) reports its `entry` page for
+               `/render?path=` when the extracted tree has one; a file reports
+               the materialised `file` (plus `entry` when the file is itself a
+               page), and the view frames non-page files through their own
+               default template. A tree with NO page reports `browse` — the
+               extracted tree, framed through `/explorer/embed/<path>`, the
+               shell's chrome-free listing. Which of the two a tree gets is a
+               fact about the COMMIT, not the target: a revision predating the
+               page browses, the next one renders.
 * `revert`   — restore the working tree AND index to the selected commit and
                record that as a NEW commit on top ("Reverted to <sha> — …").
                History is never rewritten: revert of a revert works, and
@@ -68,7 +92,8 @@ if "__file__" not in globals():
 _SHARED = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "shared")
 if _SHARED not in sys.path:
     sys.path.insert(0, _SHARED)
-from appenv import home_dir, linked_app_dir_for, workspace_dir  # noqa: E402
+from appenv import (  # noqa: E402
+    home_dir, is_mount_backed, linked_app_dir_for, workspace_dir)
 
 # Mirrors fused_render/app_git.py `_IDENTITY`; keep in step.
 _IDENTITY = ["-c", "user.name=Fused", "-c", "user.email=apps@fused.io"]
@@ -77,6 +102,11 @@ _SHA_RE = re.compile(r"^[0-9a-f]{7,40}$")
 
 # Unit separator: cannot appear in a commit subject, so a plain split is safe.
 _US = "\x1f"
+
+# One page of history. Defined once and read by nothing else: the view asks for
+# a page by `skip` alone and lets the payload's own `more` flag decide whether
+# there is another, so the page size is never duplicated in the template.
+PAGE_SIZE = 20
 
 
 def _app_dir_for(path: str) -> str:
@@ -162,34 +192,62 @@ def _resolve_target(file: str):
 
     A target is `(kind, cwd, pathspec, name)`, and every git invocation below is
     built from it: `-C cwd` and `-- <pathspec>`. `name` is the file's basename for
-    a file target and "" for an app one — the pathspec is for git, `name` is for
-    finding the file again inside an extracted snapshot.
+    a file target and "" for the two whole-subtree ones — the pathspec is for
+    git, `name` is for finding the file again inside an extracted snapshot.
 
       ("app",  <app dir>,        ".",                     "")
           A fused app or a git-backed linked app, scoped to the app's own
           subtree. Writable: `revert` is offered for a workspace app.
       ("file", <the file's dir>, ":(literal)<basename>", <basename>)
           A single tracked file in whatever repository it happens to live in —
-          the file-side history view, since `git` is directory-only now (D235).
-          READ-ONLY, always: `main` refuses `revert` for this kind, because the
-          repository is the user's own and a revert commit carries the Fused
-          identity. Same rule, same reason, as a linked app.
+          the file-side history view. READ-ONLY, always: `main` refuses `revert`
+          for this kind, because the repository is the user's own and a revert
+          commit carries the Fused identity. Same rule, same reason, as a linked
+          app.
+      ("dir",  <the directory>,  ".",                     "")
+          An ordinary directory inside any git work tree — the folder-side
+          history view, and the one this module used to have no answer for at
+          all. `condition.py` was widened to offer `versions` on any path in a
+          work tree (the `git` mode is the WORKING TREE view now and draws no
+          history), and this was left behind: the gate said yes and the log said
+          "not inside a fused app folder". READ-ONLY like "file", and for the
+          same reason. Membership is asked of GIT (`_repo_root`), never of
+          workspace-relative path arithmetic — the discipline `git/log.py`
+          follows, and the only one that gets nested repos, worktrees and
+          submodules right.
 
-    App-ness is asked FIRST, so a file inside an app keeps the app's history
-    (the timeline the auto-commits actually produced) rather than being demoted
-    to its own single-file log. The pathspec is `:(literal)`-wrapped so a
-    filename holding `*`, `?`, `[` or a leading `:` is matched as itself rather
-    than as a glob or as pathspec magic — the discipline `git/log.py` documents.
+    App-ness is asked FIRST, so a file or folder inside an app keeps the app's
+    history (the timeline the auto-commits actually produced) rather than being
+    demoted to its own log. The pathspec is `:(literal)`-wrapped so a filename
+    holding `*`, `?`, `[` or a leading `:` is matched as itself rather than as a
+    glob or as pathspec magic — the discipline `git/log.py` documents.
+
+    A MOUNT-BACKED path is refused before anything stats it, matching the gate:
+    git over an rclone-NFS mount stats and lists its way through the work tree,
+    which is the exact pattern that wedges a flat million-key S3 prefix.
     """
+    if not file:
+        return None, {"error": "no target (missing _file param?)"}
+    try:
+        mounted = is_mount_backed(file)
+    except Exception:  # noqa: BLE001 — cannot tell -> refuse (CT-12)
+        return None, {"error": "cannot tell whether this path is on a remote "
+                               "mount, so git history is not offered here"}
+    if mounted:
+        return None, {"error": "this path is on a remote mount, where git "
+                               "history is not offered"}
+
     app, _err = _require_app(file)
     if app:
         return ("app", app, ".", ""), None
 
-    # Not an app target. A file still has a history of its own; a directory does
-    # not get one here (that is the `git` mode's story — see condition.py).
+    # Not an app target. Both remaining kinds are somebody else's repository,
+    # and git's own ascent is what decides whether there is one.
     path = os.path.abspath(file)
-    if not file or os.path.isdir(path):
-        return None, {"error": "not inside a fused app folder"}
+    if os.path.isdir(path):
+        if not _repo_root(path):
+            return None, {"error": "this folder is not in a git repository"}
+        return ("dir", path, ".", ""), None
     # An EXISTING regular file, the same `isfile` the gate insists on rather than
     # `not isdir`. Without it a missing name inside a repository resolves to a
     # perfectly valid file target, and `log` answers with an empty-but-successful
@@ -218,7 +276,7 @@ def _resolve_sha(app: str, sha: str):
     return out if r.returncode == 0 and _SHA_RE.match(out) else None
 
 
-def _log(target):
+def _log(target, skip: int = 0):
     kind, app, pathspec, _name = target
     # The pathspec is what scopes the log (pathspecs are relative to `-C app`):
     # `.` is the app's own subtree — for a workspace app the repo root IS the app
@@ -226,7 +284,25 @@ def _log(target):
     # is what makes the list "this app's history" rather than the whole repo's —
     # and for a file target it is that one file, so the list is that file's
     # commits and nothing else (D235).
-    r = _git(app, "log", f"--format=%H{_US}%ct{_US}%s", "--", pathspec)
+    #
+    # PAGED, and unconditionally so: this used to be an unbounded `git log`, and
+    # outside a fused app the repository is the user's own — a directory target
+    # in a long-lived repo formats and ships every commit that ever touched the
+    # subtree, for a spine the user reads the top twenty rows of. The page is
+    # `--skip=N --max-count=PAGE+1`: the +1 is the PROBE, one process instead of
+    # a second `rev-list --count`, and it is dropped before the payload is built
+    # so `more` is the only thing it is ever visible as. Newest-first is git's
+    # own default order, which is what makes skip/limit a stable cursor here:
+    # pages are only ever appended below what is already drawn, and any commit
+    # landing on top while the user pages would shift the window by one — an
+    # accepted duplicate row, not a torn timeline, and the view reloads from the
+    # first page after the one action (revert) that can add one.
+    try:
+        skip = max(0, int(skip))
+    except (TypeError, ValueError):
+        skip = 0
+    r = _git(app, "log", f"--format=%H{_US}%ct{_US}%s",
+             f"--skip={skip}", f"--max-count={PAGE_SIZE + 1}", "--", pathspec)
     if r.returncode != 0:
         return {"error": "git log failed: " + (r.stderr or "").strip()[:200]}
     commits = []
@@ -240,10 +316,54 @@ def _log(target):
         except ValueError:
             ts = 0
         commits.append({"sha": sha, "ts": ts, "subject": subject})
+    more = len(commits) > PAGE_SIZE
+    del commits[PAGE_SIZE:]
     # `can_revert` drives the UI: revert is refused server-side for linked apps
-    # and for file targets (see main), so the button must not be offered either.
-    return {"app": app, "commits": commits,
+    # and for file and dir targets (see main), so the button must not be offered
+    # either. `kind` rides along as the target's own name for itself — every
+    # kind previews now, so there is deliberately no second "can this preview"
+    # flag: a field that is true for every caller is one nobody reads, and the
+    # view branches on the SNAPSHOT payload (`browse` vs `entry` vs `file`),
+    # which is the thing that actually differs.
+    return {"app": app, "commits": commits, "kind": kind,
+            "skip": skip, "more": more,
             "can_revert": kind == "app" and not _is_linked(app)}
+
+
+def _has_rev(target, sha: str):
+    """Is `sha` a commit of THIS target's own log? `{"known": bool, "sha": ...}`.
+
+    The question a deep link has to be able to ask before it is honoured off-page.
+    `rev` is URL state, and in the explorer's PREVIEW PANE that URL outlives the
+    target: pane params mirror onto the explorer's own URL, so selecting another
+    file in the listing reboots this template for the NEW target with the PREVIOUS
+    file's `rev` still on it. Honoured as a deep link, that commit is resolved as
+    given and previews as "this revision has nothing under this folder" — a
+    refusal about a revision the user never picked, for a file they just clicked.
+
+    The probe is the LOG's own machinery, one process, so "in this target's
+    history" means exactly what the spine lists and cannot drift from it:
+    `git log --max-count=1 <full> -- <pathspec>` walks back from `full` through
+    the commits that touch the pathspec, so its FIRST row is `full` itself when
+    `full` is one of them, and some older commit when it is not. Comparing the
+    two is the whole test — merely getting a row back is not, because a commit
+    in the same repository that never touched this path still has ancestors that
+    did (the cross-file case this exists for).
+
+    Membership, not reachability from HEAD: a commit on another branch that does
+    touch the path is still a revision of this target, and snapshotting it has
+    always worked. Unknown or malformed revisions answer `known: False` rather
+    than an error — the caller's next move is a silent fall back to the newest
+    commit (PT-9's forgiving posture for stale URL state), not a notice.
+    """
+    _kind, app, pathspec, _name = target
+    full = _resolve_sha(app, sha)
+    if full is None:
+        return {"known": False, "sha": ""}
+    r = _git(app, "log", "--format=%H", "--max-count=1", full, "--", pathspec)
+    top = r.stdout.strip() if r.returncode == 0 else ""
+    known = top == full
+    return {"known": known, "sha": full if known else ""}
 
 
 def _snapshot(target, sha: str):
@@ -261,9 +381,20 @@ def _snapshot(target, sha: str):
     key_src = app if kind == "app" else app + "\0" + pathspec
     key = hashlib.sha1(key_src.encode("utf-8", "surrogateescape")).hexdigest()[:12]
     snap = os.path.join(home_dir(), "app-versions", key, full)
-    marker = os.path.join(snap, ".fused-snapshot-complete")
+    # The completion marker sits BESIDE the extracted tree, not inside it:
+    # anything inside is content the snapshot's own listing shows, and a
+    # `.fused-snapshot-complete` row in a browsable historical tree is a file the
+    # user never wrote and cannot explain. (It only became visible when a
+    # directory snapshot started being LISTED — an app snapshot frames its entry
+    # page, which never shows its siblings.)
+    #
+    # Both locations are READ, because snapshots already on disk carry the old
+    # in-tree marker and re-extracting them would be a pointless cache wipe; only
+    # the new one is ever written.
+    marker = snap + ".complete"
+    legacy_marker = os.path.join(snap, ".fused-snapshot-complete")
 
-    if not os.path.isfile(marker):
+    if not (os.path.isfile(marker) or os.path.isfile(legacy_marker)):
         # `-C app` scopes this for free: git archive run from a subdirectory
         # of the work tree archives only that subtree, with entry names
         # relative to it — so a linked app nested in a larger repository gets
@@ -271,11 +402,47 @@ def _snapshot(target, sha: str):
         # (where the app IS the repo root) is the degenerate same case.
         # Verified against git 2.x; a commit that predates the folder just
         # produces an empty tar, which lands in the no-entry notice below.
-        # A FILE target additionally narrows the archive to its own pathspec, so
-        # the snapshot holds exactly that one file at that revision rather than
-        # the whole surrounding directory (which, outside an app, is the user's
-        # repository and could be enormous).
-        narrow = [] if kind == "app" else ["--", pathspec]
+        # Only a FILE target narrows the archive, to its own pathspec, so the
+        # snapshot holds exactly that one file at that revision rather than the
+        # whole surrounding directory. A "dir" target takes the SAME
+        # pathspec-free call an app does, because `-C` has already scoped it:
+        # the directory IS the subtree being asked about, and a workspace app
+        # (where the app is the repo root) is that same call, degenerately.
+        #
+        # The cost is real and is accepted here rather than refused: this is the
+        # user's own repository, so the subtree can be large. It is paid LAZILY
+        # — only for a commit the user actually clicks — and at most once per
+        # commit, because a commit is immutable and the completion marker below
+        # makes every later click a no-op. No size cap, deliberately: app
+        # snapshots have never had one, and inventing a limit here would mean a
+        # folder whose history silently stops previewing at some size nobody
+        # can see.
+        narrow = ["--", pathspec] if kind == "file" else []
+        # Does this commit have ANYTHING at this path? Asked before the archive,
+        # because an archive of nothing is not an empty tar this code can
+        # extract — it is a lone `pax_global_header` and tar's EOF blocks, and
+        # `tarfile.open` REFUSES that ("end of file header"), raising ReadError.
+        # The comment further down used to say a commit predating the folder
+        # "just produces an empty tar, which lands in the no-entry notice"; it
+        # did not, it raised, and the red /api/run traceback overlay was the
+        # answer the user got. Latent while only apps had snapshots (an app's
+        # folder exists in every commit that built it), and reachable the moment
+        # any directory in the user's own repository could be a target.
+        #
+        # `ls-tree` rather than a guess at the archive's bytes: it answers the
+        # question being asked, and a genuinely unreadable archive still reports
+        # as one instead of being explained away as an empty revision. `.` is
+        # resolved against `-C app`, exactly as the archive's own scoping is.
+        #
+        # TREE kinds only. A file target that the commit does not contain makes
+        # `git archive` fail outright (`fatal: pathspec ... did not match any
+        # files`, exit 128), so it is already answered by the branch below — in
+        # the file's own words, which are more use than a sentence about a
+        # folder.
+        if kind != "file":
+            listing = _git(app, "ls-tree", "--name-only", full, ".")
+            if listing.returncode == 0 and not listing.stdout.strip():
+                return {"error": "this revision has nothing under this folder"}
         r = _git(app, "archive", "--format=tar", full, *narrow, binary=True)
         if r.returncode != 0:
             err = r.stderr.decode("utf-8", "replace") if r.stderr else ""
@@ -302,24 +469,53 @@ def _snapshot(target, sha: str):
     # template (the same resolution the claude pane does), which is why
     # `file` is reported separately rather than squeezed into `entry` — `entry`
     # means "a document /render can serve directly".
-    if kind != "app":
+    if kind == "file":
         out = os.path.join(snap, name)
         if not os.path.isfile(out):
             return {"error": "this revision does not contain that file"}
         is_page = out.lower().endswith((".html", ".htm"))
         return {"app": app, "sha": full, "dir": snap, "file": out,
-                "entry": out if is_page else None}
+                "browse": None, "entry": out if is_page else None}
 
-    # The snapshot's entry page, by the app-entry rule (index.html first, else
-    # the single top-level .html — shared/app_entry.py), NOT a hardcoded
-    # index.html: an app whose page is `main.html` must preview its history
-    # exactly like it renders live.
+    # Both remaining kinds materialise a TREE, and ONE rule decides how it is
+    # shown — the shared app-entry rule, asked of the EXTRACTED tree:
+    #
+    #   `entry`  — the page it resolves (index.html first, else the first
+    #              top-level .html — shared/app_entry.py), served directly by
+    #              /render. Never a hardcoded index.html: a folder whose page is
+    #              `main.html` must preview its history exactly like it renders
+    #              live.
+    #   `browse` — no page: the extracted tree itself, framed by the view
+    #              through `/explorer/embed/<path>`, the shell's own chrome-free
+    #              directory listing.
+    #
+    # The rule is shared with the GATE deliberately, and that is not a tidiness
+    # argument — it is the same predicate `versions/condition.py` uses to decide
+    # a folder is worth offering this mode at all. Resolving the page for an app
+    # and not for a directory made the gate and the view disagree about the very
+    # folders the gate had just admitted: they were offered `versions` BECAUSE
+    # they have a page, and then previewed as a file listing of themselves.
+    # (Which is exactly how it was found — "the versions template does not
+    # render the comfy.html file and instead shows me a file explorer".)
+    #
+    # Asked per COMMIT, of the extracted tree rather than of the live folder, so
+    # a revision that predates the page browses and the one after it renders.
+    # That is also why the shape rides on the SNAPSHOT payload and not on the
+    # target's kind: within one timeline it changes.
+    #
+    # A tree with no page is not a dead end either. It used to answer
+    # `entry: None` and the view drew "this revision has no entry page —
+    # nothing to render" over a tree full of files the user could perfectly well
+    # have looked at.
+    #
+    # Two fields rather than one overloaded key, because the two are framed by
+    # DIFFERENT routes; one key meaning both is how a folder ends up handed to a
+    # document renderer.
     from app_entry import entry_html
 
     entry = entry_html(snap)
-    if entry is None:
-        return {"app": app, "sha": full, "dir": snap, "entry": None}
-    return {"app": app, "sha": full, "dir": snap, "entry": entry}
+    return {"app": app, "sha": full, "dir": snap, "file": None,
+            "browse": None if entry else snap, "entry": entry}
 
 
 def _revert(app: str, sha: str):
@@ -374,26 +570,29 @@ def _head(app: str) -> str:
     return r.stdout.strip() if r.returncode == 0 else ""
 
 
-def main(action: str = "log", file: str = "", sha: str = ""):
+def main(action: str = "log", file: str = "", sha: str = "", skip: int = 0):
     target, err = _resolve_target(file)
     if target is None:
         return err
     kind, app, _pathspec, _name = target
     try:
         if action == "log":
-            return _log(target)
+            return _log(target, skip)
         if action == "snapshot":
             return _snapshot(target, sha)
+        if action == "has_rev":
+            return _has_rev(target, sha)
         if action == "revert":
             # The security boundary, not just UI politeness: a revert records a
             # commit with the Fused identity and resets the working tree. Only a
-            # WORKSPACE app is ours to do that to. A linked app's repo and a
-            # standalone file's repo are both the user's own — history is
-            # view-only there, and this refusal is what makes the read-only
-            # promise in condition.py true even for a hand-crafted call.
+            # WORKSPACE app is ours to do that to. A linked app's repo, a
+            # standalone file's and a plain folder's are all the user's own —
+            # history is view-only there, and this refusal is what makes the
+            # read-only promise in condition.py true even for a hand-crafted
+            # call, now that the gate offers every path in a work tree.
             if kind != "app":
-                return {"error": "revert is disabled outside fused apps — "
-                                 "this file's git history is managed by you"}
+                return {"error": "revert is disabled outside fused apps — this "
+                                 "git history is managed by you"}
             if _is_linked(app):
                 return {"error": "revert is disabled for linked apps — "
                                  "this folder's git history is managed by you"}

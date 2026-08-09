@@ -130,14 +130,23 @@ def test_a_single_html_is_the_entry_whatever_it_is_called(tmp_path, entry_of):
     assert entry_of(str(tmp_path)) == str(tmp_path / "dashboard.html")
 
 
-def test_no_html_and_several_htmls_both_resolve_to_nothing(tmp_path, entry_of):
+def test_a_folder_with_no_html_at_all_resolves_to_nothing(tmp_path, entry_of):
     assert entry_of(str(tmp_path)) is None
     (tmp_path / "data.csv").write_text("a,b\n")
     assert entry_of(str(tmp_path)) is None
-    (tmp_path / "a.html").write_text("<html></html>")
-    (tmp_path / "b.html").write_text("<html></html>")
-    # Ambiguous without an index.html: the UI opens the folder instead.
-    assert entry_of(str(tmp_path)) is None
+
+
+def test_several_htmls_without_an_index_resolve_to_the_first(tmp_path, entry_of):
+    # This used to be None as "ambiguous", and every consumer dead-ended on it:
+    # the `app` mode and the chat pane drew "no entry page" over a folder plainly
+    # full of pages. First in NAME order, so the answer does not depend on
+    # readdir order and two consumers cannot land on different pages.
+    for name in ("zzz.html", "about.html", "middle.html"):
+        (tmp_path / name).write_text("<html></html>")
+    assert entry_of(str(tmp_path)) == str(tmp_path / "about.html")
+    # ...and index.html still outranks all of them, wherever it sorts.
+    (tmp_path / "index.html").write_text("<html></html>")
+    assert entry_of(str(tmp_path)) == str(tmp_path / "index.html")
 
 
 def test_hidden_and_nested_html_files_are_ignored(tmp_path, entry_of):

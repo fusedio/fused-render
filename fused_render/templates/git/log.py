@@ -6,7 +6,7 @@ knowledge of anything: not what a repository is, not what "dirty" means, not how
 a rename is detected, not how long ago a commit was. The module's whole job is to
 ask the right bounded question and turn the answer into JSON.
 
-Four operations, one per thing the view can ask for:
+Five operations, one per thing the view can ask for:
 
   overview  — the header (repo, branch, detached, dirty, scope), the uncommitted
               changes under the scope, and the FIRST page of the scoped log; one
@@ -14,6 +14,8 @@ Four operations, one per thing the view can ask for:
   log       — a later page of the same log ("load more").
   commit    — one commit's metadata plus its diff, restricted to the scope.
   worktree  — the working tree vs HEAD for one uncommitted entry.
+  pending   — the diff a commit made right now would RECORD, under its own
+              (smaller) cap, for the AI commit-message writer (GT-18).
 
 The rules every invocation obeys, because each one is a way this could go wrong:
 
@@ -91,6 +93,17 @@ TIMEOUT_S = 12.0
 # and the payload says which.
 MAX_DIFF_BYTES = 400_000
 MAX_DIFF_LINES = 3_000
+
+# The `pending` diff has its OWN, much smaller budget, because its consumer is
+# not a reader but a PROMPT (GT-18). A diff that is merely long for a human is
+# ruinous for a model: it is billed per token, the summary quality falls off long
+# before the cap is reached, and the whole point of the feature is a one-line
+# subject. So the AI sees ~80 KB where the pane shows 400 KB, and the truncation
+# is reported so the prompt can say the diff was cut rather than let the model
+# describe a change it only half saw.
+MAX_PROMPT_DIFF_BYTES = 80_000
+MAX_PROMPT_DIFF_LINES = 1_500
+MAX_PROMPT_FILES = 100
 
 # `git status` is unbounded in principle (a build tree can hold 100k untracked
 # files). Bounded on the way in — bytes off the pipe — and again on the way out.
@@ -799,7 +812,8 @@ def _check_op(op, sha, entry):
     afterwards would mean an option-shaped `sha` had already caused a subprocess
     (with the target's cwd) to run. Cheap string checks come first, always.
     """
-    if op not in ("overview", "log", "commit", "worktree", "branches", "stashes"):
+    if op not in ("overview", "log", "commit", "worktree", "branches", "stashes",
+                  "pending"):
         raise _Refused("bad-op", f"Unknown operation: {op}")
     if op == "commit" and not _SHA_RE.match(sha or ""):
         raise _Refused("bad-sha", "That is not a commit id.")
@@ -955,6 +969,85 @@ def _worktree(root, entry, has_commits):
     }
 
 
+def _name_list(root, args):
+    """A `-z` name list off a git command, bounded on the way in and out.
+
+    Same two-sided bound as `_untracked_dir`: streamed under the status byte cap
+    (a repo-wide `--name-only` is "however many files the user touched", i.e.
+    unbounded in principle), the cap's fragment cut back to the last whole
+    NUL-terminated field, and capped again by entry count.
+    """
+    raw, byte_capped = _git_stream(root, args, MAX_STATUS_BYTES, allow=(0, 1))
+    if byte_capped:
+        raw = raw[: raw.rfind(b"\0") + 1]
+    names = [chunk.decode("utf-8", "replace") for chunk in raw.split(b"\0") if chunk]
+    return names[:MAX_PROMPT_FILES], byte_capped or len(names) > MAX_PROMPT_FILES
+
+
+def _pending(root, rel, branch):
+    """What a commit made right now would record — as prompt material (GT-18).
+
+    A READ, and it belongs here rather than in `ops.py`: it forks `git diff` and
+    nothing else, changes no ref, no index and no file. The write module's
+    confirmation-and-refusal machinery is for operations that can lose work, and
+    putting a read behind it would say this one can.
+
+    Two shapes, mirroring what the button means in each state — and the choice is
+    made from what git says is staged, not from what the view happens to be
+    listing:
+
+    * **staged** (the normal case) — `git diff --cached`, deliberately
+      **UNSCOPED**. `git commit` records the INDEX, all of it, wherever it lives
+      (GT-14), so a message written from a diff scoped to the open folder would
+      describe less than the commit is about to make. The scope is a reading lens
+      on this view; it is not a lens on the commit.
+    * **worktree** — nothing is staged at all, so there is no commit to describe
+      yet and the honest fallback is what the panel is showing: the uncommitted
+      changes under the open scope, untracked names included. They are named
+      rather than diffed because an untracked file has no `git diff` at all
+      (`_worktree` reaches for `--no-index` per file, which is a fan-out this one
+      bounded call will not do) — a name list is enough for "this adds X".
+
+    `empty` is the state the view needs to say "there is nothing to describe":
+    a message cannot be written from no change, and it is a first-class answer
+    rather than an error, exactly like every other awkward state here (GT-9).
+    """
+    files, files_truncated = _name_list(
+        root, ("diff", "--cached", "--name-only", "-z", *_pathspec("")))
+    if files:
+        kind = "staged"
+        diff, truncated, shown = _git_capped(
+            root, "diff", "--cached", "--no-color", _NO_EXT_DIFF, "--find-renames",
+            *_pathspec(""),
+            cap_bytes=MAX_PROMPT_DIFF_BYTES, cap_lines=MAX_PROMPT_DIFF_LINES)
+    else:
+        kind = "worktree"
+        files, files_truncated = _name_list(
+            root, ("diff", "--name-only", "-z", *_pathspec(rel)))
+        untracked, untracked_truncated = _untracked_dir(root, rel)
+        files_truncated = files_truncated or untracked_truncated
+        files = (files + untracked)[:MAX_PROMPT_FILES]
+        diff, truncated, shown = _git_capped(
+            root, "diff", "--no-color", _NO_EXT_DIFF, "--find-renames",
+            *_pathspec(rel),
+            cap_bytes=MAX_PROMPT_DIFF_BYTES, cap_lines=MAX_PROMPT_DIFF_LINES)
+    diff, shown = _trim(diff, shown)
+    return {
+        "ok": True,
+        "kind": kind,
+        "scope": rel,
+        "branch": branch,
+        "diff": diff,
+        "files": files,
+        "files_truncated": files_truncated,
+        "empty": not diff and not files,
+        "truncated": truncated,
+        "shown_lines": shown,
+        "max_bytes": MAX_PROMPT_DIFF_BYTES,
+        "max_lines": MAX_PROMPT_DIFF_LINES,
+    }
+
+
 def main(
     file: str,
     op: str = "overview",
@@ -962,7 +1055,22 @@ def main(
     page: int = 0,
     sha: str = "",
     entry: str = "",
+    history: bool = True,
 ) -> dict:
+    """`history=False` drops the commit log from the `overview` payload.
+
+    The `git` view is commit MANAGEMENT — staging, discarding, stashing,
+    committing, branches, push/pull — and draws no History section; the log is
+    the `versions` mode's story, rendered there with a timeline this reader's
+    consumer never had. So the view opts out and the `git log` fork does not
+    happen at all on an ordinary open.
+
+    Defaulted TRUE rather than flipped, because `overview` is the reader's
+    documented shape and its `commits`/`has_more`/`capped` fields are what every
+    other caller (and this module's own test suite) reads. Opting out empties
+    those fields rather than removing them, so the payload keeps ONE shape.
+    Ignored by every other op — `op="log"` is how you ask for the log on
+    purpose, and it is unaffected."""
     try:
         _check_op(op, sha, entry)
         root, rel, is_dir = _locate(file)
@@ -980,6 +1088,10 @@ def main(
             return {"ok": True, "current": branch, "detached": detached,
                     "branches": branches, "remotes": _remotes(root),
                     "truncated": truncated}
+        if op == "pending":
+            branch, detached, head, _ = _head(root)
+            return _pending(root, rel,
+                            branch or (("detached at " + head) if head else None))
         if op == "stashes":
             stashes, truncated = _stashes(root)
             return {"ok": True, "stashes": stashes, "truncated": truncated}
@@ -993,7 +1105,7 @@ def main(
         changes, changes_truncated, dirty, staged_outside = _status(root, rel, is_dir)
         upstream, ahead, behind, remote = _upstream_state(root, has_commits)
         commits, has_more, capped, limit, page = (
-            _log(root, rel, limit, page) if has_commits
+            _log(root, rel, limit, page) if (has_commits and history)
             else ([], False, False,
                   min(max(1, int(limit or DEFAULT_LOG_LIMIT)), MAX_LOG_LIMIT), 0))
         return {

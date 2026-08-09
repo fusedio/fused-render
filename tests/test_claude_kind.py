@@ -295,8 +295,7 @@ def test_the_no_pane_state_removes_the_column_the_divider_and_the_strip():
     code = _pane_code()
     i = code.index("function enterNoPane()")
     body = code[i:code.index("\n}", i)]
-    assert ('for (const id of ["left", "divider", "anntools", "viewshot", '
-            '"hviewshot"]) {') in body
+    assert 'for (const id of ["left", "divider", "anntools"]) {' in body
     assert "if (el) el.remove();" in body
 
 
@@ -312,7 +311,7 @@ def test_the_no_pane_state_undoes_what_boot_did_from_a_stale_param():
       list is emptied and repainted while `noPane` is still false, and only then
       is the flag set — the assertion below is the order, not the statements.
     * `applyNarrowView()` stamps `view-preview` on the body when `paneview=preview`
-      is on the URL. Inside the 880px block that class collapses `#chat` to its
+      is on the URL. Inside the 800px block that class collapses `#chat` to its
       `#anntools` strip — and this state removes that strip and has no pane to
       show instead, so a narrow host rendered a BLANK PAGE. The class is removed,
       not left inert.
@@ -487,8 +486,7 @@ _SINK_STARTS = (
     r"\.(?:title|alt|placeholder|textContent)\s*=",
     r"""setAttribute\("(?:aria-label|title|alt)",""",
 )
-_SINK_FNS = ("function appStateBlock(", "function paneShotBlock(",
-             "function formatAnnotations(")
+_SINK_FNS = ("function appStateBlock(", "function formatAnnotations(")
 # Reading any of these means the noun came from the target's kind, so whatever
 # literals sit in that branch are selected BY kind and are correct there.
 _DERIVED = ("paneNoun", "targetNoun", "noun")
@@ -500,10 +498,9 @@ def test_no_chrome_sink_hardcodes_a_kind_noun():
 
     First the composer placeholder said "this project" for all three kinds.
     Fixing that missed the footnote. Fixing the footnote missed "app": the
-    annotate switch announced "Annotate the app" over a markdown preview, both
-    pane-shot pills offered "a screenshot of the app pane", the summary
-    thumbnail's `alt` said "the whole app pane", and — worse than any of the
-    visible ones — `paneShotBlock` and `appStateBlock` told the MODEL "app pane"
+    annotate switch announced "Annotate the app" over a markdown preview, the
+    now-deleted pane-shot pills offered "a screenshot of the app pane", and —
+    worse than any of the visible ones — `appStateBlock` told the MODEL "app pane"
     while `agent.py`'s file prompt was telling it that same pane is *our viewer,
     never edit the viewer*. Two halves of one turn contradicting each other, with
     an edit to `templates/code/template.html` as the invited action.
@@ -545,9 +542,11 @@ def test_no_chrome_sink_hardcodes_a_kind_noun():
 # -------------------------------------------- the left pane's view PICKER
 
 # The narrow-layout breakpoint, in one place because three tests and the block
-# extractor all have to name it. Raised from D236's original 560px: see
-# test_the_split_collapses_only_when_two_columns_are_useful.
-NARROW_PX = 880
+# extractor all have to name it. Raised from D236's original 560px (see
+# test_the_split_collapses_only_when_two_columns_are_useful), then lowered from
+# the 880 round-up to 800 — deliberately a little below the 864 useful-width
+# floor, to keep the split alive on more hosts.
+NARROW_PX = 800
 
 
 def _media_block() -> str:
@@ -604,7 +603,7 @@ def test_the_left_view_is_switchable_through_a_pane_local_leftmode_param():
     """
     page = _pane_source()
     assert 'fused.params.get("leftmode")' in page
-    assert 'fused.params.set("leftmode", leftSel.value)' in page
+    assert 'fused.params.set("leftmode", e.mode)' in page
     # Applied from the param change, beside applySplit — not from the change
     # handler directly, which would be a second code path for the same swap.
     assert "applyLeftMode()" in page
@@ -657,10 +656,54 @@ def test_a_single_view_target_shows_no_picker():
     """A directory target frames its app entry — resolved by app.py, not a stat
     entry at all — and a file with one offerable view has nothing to choose
     between. Either way a one-item control is chrome that cannot do anything, so
-    the <select> ships `hidden` and only unhides when there is a real choice."""
+    the whole control ships `hidden` and only unhides when there is a real
+    choice."""
     page = _pane_source()
-    assert '<select id="leftmode" hidden' in page
+    assert '<div id="leftmode" hidden>' in page
     assert "if (paneEntries.length < 2) return;" in page
+
+
+def test_the_view_picker_sits_at_the_right_hand_end_of_the_panes_own_bar():
+    """The left bar exists to carry this one control, and a lone control hard
+    against the left edge reads as a LABEL for the pane rather than as a switch
+    on it. The auto margin is scoped to `#leftbar`: in the narrow layout the
+    picker shares `#anntools` with `#viewbtn`, which already owns an auto margin
+    there, and a second one would split the free space between the two and float
+    the picker into the middle of the row."""
+    page = _pane_source()
+    assert "#leftbar #leftmode { margin-left: auto; }" in page
+    # Not on the element's own rule, which travels between the two hosts.
+    bare = page[page.index("  #leftmode { position"):]
+    assert "margin-left: auto" not in bare[: bare.index("}")]
+
+
+def test_the_view_picker_shows_each_templates_own_icon():
+    """The rows carry the template's `icon.svg`, which is why this control is a
+    listbox and not a `<select>`: an `<option>` renders text in every engine.
+
+    It needs no new server plumbing, which was the bar the feature was asked
+    under. stat's `templates` entries already carry the icon's ABSOLUTE path
+    (`_icon_for`, PT-11), and `/api/fs/raw` serves it — the same locator every
+    other template in this repo builds. Drawn as a mask filled with
+    `currentColor`, exactly as the shell draws the same file
+    (`templateModeIcon` / `.mode-icon-mask`), so one flat glyph follows the row's
+    ink in both themes and a selected row's icon takes the accent with its label.
+    """
+    page = _pane_source()
+    assert 'aria-haspopup="listbox"' in page
+    assert 'id="leftmodepop" role="listbox"' in page
+    # The icon comes off the entry stat already returned — never a second call.
+    code = _pane_code()
+    icon = code[code.index("function paneModeIcon("):]
+    icon = icon[: icon.index("\n}")]
+    assert "e.icon" in icon
+    assert '"/api/fs/raw?path="' in icon
+    assert "encodeURIComponent(e.icon)" in icon
+    assert "maskImage" in icon
+    # A template with no icon.svg (and the `_render` sentinel, which is not a
+    # folder) falls back to the shell's own lettered box rather than a hole.
+    assert 'el.classList.add("letter")' in icon
+    assert "background-color: currentColor;" in page
 
 
 def test_the_view_picker_sits_on_the_pane_it_controls_in_the_split_layout():
@@ -754,7 +797,7 @@ def test_the_split_collapses_to_one_view_below_the_layouts_width_floor():
 
 
 def test_the_split_collapses_only_when_two_columns_are_useful():
-    """The breakpoint is 880px, not D236's original 560px, and the raise is the
+    """The breakpoint is 800px, not D236's original 560px, and the raise is the
     regression this pins.
 
     560 came from the layout's HARD floor (200 + 4 + 340 ≈ 544, rounded up): the
@@ -762,10 +805,11 @@ def test_the_split_collapses_only_when_two_columns_are_useful():
     pane defaults to HALF its split container — about 700px on a 1700px window —
     so at 560 the split engaged in a host that could hold it without overflowing
     and could not hold it usefully: two cramped columns where one readable view
-    was wanted. The new figure comes from the columns' minimum USEFUL widths,
-    #left 420 + divider 4 + #chat 440 = 864 → 880, and the arithmetic is written
-    down beside the query so the next reader can check it instead of guessing —
-    which is also why this asserts the sum, not just the number.
+    was wanted. The floor comes from the columns' minimum USEFUL widths,
+    #left 420 + divider 4 + #chat 440 = 864 (the live breakpoint sits at 800, a
+    deliberate notch below it), and the arithmetic is written down beside the
+    query so the next reader can check it instead of guessing — which is also
+    why this asserts the sum, not just the number.
 
     The CSS query and the JS matchMedia string must carry the SAME number: they
     are one breakpoint with two readers, and a disagreement is a half-collapsed
@@ -780,7 +824,7 @@ def test_the_split_collapses_only_when_two_columns_are_useful():
     # The arithmetic, in the comment beside the query.
     style = page[page.index("<style>"):page.index("</style>")]
     narrow_doc = style[:style.index("@media (max-width: %dpx) {" % NARROW_PX)]
-    for term in ("420px", "440px", "864px", "880px"):
+    for term in ("420px", "440px", "864px", "800px"):
         assert term in narrow_doc, term
 
 
@@ -848,19 +892,16 @@ def test_no_control_for_the_hidden_half_is_reachable_in_the_chat_only_view():
     and the left-view picker (nothing to choose a view FOR) — so the chat-only
     view drops them, and Preview, where they both work, keeps them.
 
-    `.viewshot` — the composer's "attach a screenshot of the app pane" pill — is
-    in the list too, and it is the one that does NOT follow from "it cannot work
-    here": the hidden column is parked with a real viewport, so shotPane
-    rasterises the app correctly from the chat view. It is hidden under the
-    stronger reading of the rule, the one this test is named for — a view showing
-    no preview offers no features OF the preview — because attaching a picture of
-    something the user cannot see is an affordance that misleads even while it
-    works. Preview view is one click away and is where that decision can be made
-    with the app on screen.
+    A third control used to be in the list, the composer's "attach a screenshot
+    of the app pane" pill, and it was the one that did NOT follow from "it cannot
+    work here" — the parked column keeps a real viewport, so the capture worked
+    fine from the chat view. It was hidden under the stronger reading of the rule
+    this test is named for: a view showing no preview offers no features OF the
+    preview. That control has since been deleted outright, which is the same
+    answer taken further.
     """
     block = _media_block()
     assert ("body.view-chat #annbtn,\n"
-            "    body.view-chat .viewshot,\n"
             "    body.view-chat #leftmode { display: none; }") in block
     # Absent, not disabled: nothing here reaches for `disabled` or aria-disabled
     # as a substitute.
@@ -883,20 +924,13 @@ def test_no_armed_preview_control_survives_leaving_the_preview_view():
     out, which is what keeps the label, aria-pressed, the `annmode` param and the
     pins from disagreeing.
 
-    The pane-shot pill is reset under the same condition: armed behind a hidden
-    control it would put a picture of the app on the next message with nothing on
-    screen saying so. It has no param to leak (viewShotWanted is per-message), so
-    this one is purely about the send not carrying something invisible.
-
     "ARRIVING", NOT "FLIPPING". This assertion used to read `narrowShown === true`,
     which describes a Preview→Chat flip and nothing else — and a MEDIA CROSSING is
-    not a flip: a wide boot leaves `narrowShown === false`, so arming either
-    control with both columns on screen and then dragging the pane under 880px hid
-    the control and kept the state. `narrowShown !== null` is the honest test: it
-    means "not boot", which is the one call that must not run the reset —
-    `viewShotWanted` is a `let` declared further down the script, so reading it
-    during the boot call would be a temporal-dead-zone error, and boot is also
-    where writing annmode=0 would clobber the ON-by-default the wide layout shares.
+    not a flip: a wide boot leaves `narrowShown === false`, so arming the mode
+    with both columns on screen and then dragging the pane under 800px hid the
+    control and kept the state. `narrowShown !== null` is the honest test: it
+    means "not boot", which is the one call that must not run the reset — writing
+    annmode=0 there would clobber the ON-by-default the wide layout shares.
     The behaviour, including the crossing, is exercised under node in
     tests/test_claude_narrow.py; this is the source pin that keeps the shape.
 
@@ -908,7 +942,6 @@ def test_no_armed_preview_control_survives_leaving_the_preview_view():
     page = _pane_source()
     assert "if (NARROW_MQ.matches && narrowShown !== null && !preview) {" in page
     assert "if (annOn) annSetMode(false);" in page
-    assert "setViewShot(false);" in page
     assert "let narrowShown = null;" in page
 
 
@@ -1169,10 +1202,11 @@ def _node_apply_left_mode(prelude, call):
 _LEFT_STUBS = """
 let framedMode = "markdown", entry = null;
 const frame = { src: "" };
-const leftSel = { options: { length: 0 }, value: "" };
 const FILE = "/w/notes.md";
 let paneRemote = false;
+let synced = null;
 function curLeftEntry() { return entry; }
+function syncLeftPicker(e) { synced = e ? e.mode : null; }
 document = { getElementById: (id) => (id === "leftframe" ? frame : null) };
 """
 
@@ -1193,19 +1227,22 @@ def test_the_framed_mode_is_committed_only_once_the_frame_has_been_pointed():
 entry = { mode: "code" };            // offerable, but no `path` — paneSrcFor throws
 let threw = "";
 try { applyLeftMode(); } catch (e) { threw = e.message; }
-console.log(JSON.stringify({ threw, framedMode, src: frame.src, sel: leftSel.value }));
+console.log(JSON.stringify({ threw, framedMode, src: frame.src, synced }));
 """)
     assert out["threw"], "paneSrcFor must still surface the broken entry"
     assert out["framedMode"] == "markdown", \
         "framedMode named a mode the frame was never pointed at"
     assert out["src"] == ""
+    # And the CONTROL was not left saying the frame moved either.
+    assert out["synced"] is None
 
 
 def test_a_good_switch_still_commits_and_frames():
     out = _node_apply_left_mode(_LEFT_STUBS, """
 entry = { mode: "code", path: "/t/code/template.html" };
 applyLeftMode();
-console.log(JSON.stringify({ framedMode, src: frame.src }));
+console.log(JSON.stringify({ framedMode, src: frame.src, synced }));
 """)
     assert out["framedMode"] == "code"
     assert "%2Ft%2Fcode%2Ftemplate.html" in out["src"]
+    assert out["synced"] == "code"

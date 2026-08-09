@@ -6,10 +6,19 @@ page from the folder alone: `claude` (the app beside a Claude chat) and
 would silently swap which page you are looking at — so the rule lives here and
 both `app.py` backends delegate to it.
 
-The rule: `index.html` if the folder has one, else the folder's single
-non-hidden top-level `.html`. Zero or several (without an index) is ambiguous
-and resolves to None — the UI opens the plain folder listing instead of picking
-a page for the user.
+The rule: `index.html` if the folder has one, else the FIRST non-hidden
+top-level `.html` in name order. Only a folder with no top-level html at all
+resolves to None, and then the UI opens the plain folder listing.
+
+Several pages and no `index.html` used to resolve to None as "ambiguous". It is
+ambiguous, but None is not the better answer to it: every consumer of this rule
+dead-ended on such a folder — the `app` mode and the chat's pane drew "no entry
+page" over a folder plainly full of pages, and a `versions` snapshot of one
+showed the same notice instead of the app at that commit. Picking the first page
+in name order is deterministic (`sorted`, the order the listing shows), it is
+the same page every consumer picks, and it is one click from any of the others
+once the folder is open. Owner call, on the user's own wording: "for multiple
+html files, just pick the first one".
 
 The server keeps its OWN copy in `fused_render/app_listing.py` (`app_entry`),
 deliberately: a template must not import `fused_render` (SPEC PY-15 / D166), and
@@ -51,6 +60,7 @@ def entry_html(dir: str) -> str | None:
     for n in htmls:
         if n.lower() == "index.html":
             return os.path.join(dir, n)
-    if len(htmls) == 1:
-        return os.path.join(dir, htmls[0])
-    return None
+    # `sorted` above is what makes "the first" a fact rather than whatever order
+    # the filesystem handed back — two consumers reading the same folder must
+    # land on the same page, and readdir order is not a promise anywhere.
+    return os.path.join(dir, htmls[0]) if htmls else None

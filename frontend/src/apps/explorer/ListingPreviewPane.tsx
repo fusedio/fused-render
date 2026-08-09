@@ -23,7 +23,12 @@ import { iconForEntry, isAppEntry } from "@platform/ui/FileIcons";
 import { KNOWN_SENTINEL_MODES, templateModeIcon } from "@apps/explorer/ModeSwitcher";
 import { ModeMenu } from "@apps/explorer/BarMenu";
 import Listing from "@apps/explorer/Listing";
-import { PANE_APP_MODE, activePaneMode, paneModeList } from "@apps/explorer/listing/pane-modes";
+import {
+  PANE_APP_MODE,
+  activePaneMode,
+  paneModeList,
+  paneOpenTarget,
+} from "@apps/explorer/listing/pane-modes";
 
 // The selected row, as the pane needs it. Structurally a subset of Listing's
 // RowCtx, so the lead row can be passed straight through.
@@ -407,13 +412,21 @@ export default function ListingPreviewPane({
           preview is already open, this makes it the whole view. Plain
           .bar-ctl-icon metrics, like every other glyph-only control in these
           bars — it had a rule of its own for one release that only restated
-          them. */}
+          them.
+
+          It opens in the mode the pane is SHOWING (paneOpenTarget) — "make this
+          the whole view" cannot be the one action that discards the template
+          the user picked. The row's own double-click and Enter stay a plain
+          open: those are "open this thing", not "open what I am looking at". */}
       <button
         type="button"
         className="bar-ctl bar-ctl-icon"
         title="Open"
         aria-label="Open"
-        onClick={() => navigate(row.path, { isDir: row.isDir })}
+        onClick={() => {
+          const open = paneOpenTarget(row, activeMode, app);
+          navigate(open.path, { isDir: open.isDir, mode: open.mode });
+        }}
       >
         <svg
           viewBox="0 0 24 24"

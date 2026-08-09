@@ -48,7 +48,7 @@ import {
   measureScrollAnchor,
 } from "@apps/explorer/listing/bits";
 import { usePreviewPane, reflectPaneInUrl } from "@apps/explorer/listing/pane";
-import { autoSelectPath } from "@apps/explorer/listing/selection";
+import { autoSelectPath, selectionClaimed } from "@apps/explorer/listing/selection";
 import { useDirListing } from "@apps/explorer/listing/useDirListing";
 import { useWalkSearch } from "@apps/explorer/listing/useWalkSearch";
 import { useListingSelection } from "@apps/explorer/listing/useListingSelection";
@@ -197,23 +197,16 @@ export default function Listing({
   const base = fsPath.replace(/\/$/, "");
 
   // "Up" navigation for the button beside the search box: hop to the parent
-  // folder with THIS folder selected there (`?sel=<name>`), so the row you
-  // came from is highlighted — the same seed path a shared ?sel URL takes
-  // (useListingSelection). navigate() first (it carries the sticky pane
-  // params and the isDir scaffold hint), then the sel param is appended onto
-  // that same history entry via replaceSearch. Disabled at the filesystem /
-  // drive root, where dirname collapses to the folder itself.
+  // folder. It used to also seed `?sel=<name>` there so the row you came from
+  // was highlighted; that param is gone (useListingSelection documents why), so
+  // the parent lands on its first entry like any other folder open. Disabled at
+  // the filesystem / drive root, where dirname collapses to the folder itself.
   const here = normDir(base);
   const parentDir = dirname(here);
   const atRoot = parentDir === here;
   const goUp = () => {
     if (atRoot) return;
-    const name = here.replace(/\/+$/, "").split("/").pop();
     navigate(parentDir, { isDir: true });
-    if (!name) return;
-    const params = new URLSearchParams(location.search);
-    params.set("sel", name);
-    replaceSearch(location.pathname + "?" + params.toString());
   };
 
   // Tell the caller whether this folder's top level holds exactly one HTML
@@ -277,7 +270,6 @@ export default function Listing({
     rowCtxByPathRef,
     overlayOpenRef,
     globalKeys: !embedded,
-    urlSync: !embedded,
   });
 
   const {
@@ -397,8 +389,7 @@ export default function Listing({
   // folder is overwhelmingly opened to look at what is in it.
   //
   // ONE SHOT, and this effect owns only the TIMING of it — autoSelectPath owns
-  // the decision (and documents why the `?sel` URL param, not `sel`, is what it
-  // reads). The shot is taken at the first settled non-search listing WITH THE
+  // the decision. The shot is taken at the first settled non-search listing WITH THE
   // PANE ON. Listing remounts per fsPath, so that is once per folder
   // navigation: a dir-watch refresh never re-fires it, and a selection the user
   // cleared (Escape) stays cleared.
@@ -431,16 +422,21 @@ export default function Listing({
   //     away. The pane itself stays — only the automatic selection waits. A
   //     user's own click in the scaffold still previews, and still carries
   //     across the swap (recallSelection), because that one was asked for.
+  //
+  // And it FILLS AN EMPTY SELECTION, never replaces one: the shot is spent
+  // silently when something already holds the selection at the moment the
+  // guards are first met (`selectionClaimed`). That is exactly the scaffold
+  // click above — the user clicked row five during a slow mount, the resolved
+  // listing settled, and row one used to land on top of it. The decision half
+  // (autoSelectPath) stays blind to the selection (D240); this is a condition
+  // on WHEN to ask, which is this effect's half.
   const autoSelectedRef = useRef(false);
   useEffect(() => {
     if (embedded || provisional || autoSelectedRef.current) return;
     if (searching || state.status !== "ok" || !pane.on) return;
     autoSelectedRef.current = true;
-    const first = autoSelectPath(
-      new URLSearchParams(location.search).get("sel"),
-      navRows,
-      rowCtxByPath,
-    );
+    if (selectionClaimed(sel)) return;
+    const first = autoSelectPath(navRows, rowCtxByPath);
     if (first) selectOnly(first);
     // Fires on the commit that first satisfies the guards above; the rows it
     // reads are current as of that commit.
