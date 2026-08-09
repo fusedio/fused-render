@@ -323,41 +323,62 @@ def test_the_panel_is_only_offered_for_a_file_target(source):
 
 
 def test_the_panel_is_collapsed_and_reads_nothing_until_opened(source):
-    # The heading is a control, and the timeline behind it is a round trip
-    # through the worker that most file opens never want.
-    assert 'id="snapstoggle"' in source
+    # One pressable row stands in for the section, and the timeline behind it is
+    # a round trip through the worker that most file opens never want.
+    assert 'id="snapsopen"' in source
     assert 'aria-expanded="false"' in source
     assert 'id="snapsbody"' in source
-    assert '<span class="snap-head-hint">show</span>' in source
     # Mounting the section reveals it and asks the backend for nothing.
     mount = source[source.index("async function mountSnapshots"):]
     mount = mount[: mount.index("\n}")]
     assert "runPython" not in mount
     assert "loadSnapshots" not in mount
-    # The read hangs off the toggle, and only the FIRST time.
-    toggle = source[source.index('document.getElementById("snapstoggle").onclick'):]
+    # The read hangs off the row, and only the FIRST time.
+    toggle = source[source.index("const snapToggle = () =>"):]
     toggle = toggle[: toggle.index("\n};")]
-    assert "snapLoaded" in toggle
+    assert "if (snapLoaded) { snapShow(\"open\"); return; }" in toggle
     assert "loadSnapshots()" in toggle
 
 
-def test_the_collapsed_heading_looks_pressable_standing_still(source):
-    # A caret plus a hover state is an affordance you only find by already
-    # suspecting it is there ("the UI does not really show that the claude
-    # snapshots was clickable"). The heading wears the same bordered row as the
-    # snapshots it opens into, and says what the click does.
-    css = source[source.index("button#snapstoggle {"):]
+def test_what_opens_the_section_is_a_row_and_not_the_heading(source):
+    # First attempt made the HEADING the button — a bordered full-width pill
+    # wearing 11px uppercase letter-spaced micro-type, with a lowercase "show"
+    # hint arguing beside an uppercase label ("the claude snapshots toggle thing
+    # UI is very ugly"). The page already has an affordance vocabulary and it is
+    # rows: every section here is a quiet static heading over a stack of
+    # pressable rows (#recent's .head over .chat-row).
+    assert "<button id=\"snapstoggle\"" not in source
+    assert 'class="head" id="snapshead"' in source
+    # The pressable thing REUSES .snap-row rather than cloning its look, so the
+    # placeholder is literally a preview of what it opens into.
+    assert '<div class="snap-row" id="snapsopen"' in source
+    assert "Show version history" in source
+    # It behaves like the rows it opens into, keyboard included.
+    row = source[source.index("snapOpenRow.onkeydown"):]
+    row = row[: row.index("\n};")]
+    assert '"Enter"' in row and '" "' in row
+    # And the way back out is a quiet control on the heading LINE, shown only
+    # once there is something to hide.
+    assert '<button id="snapshide" type="button" hidden' in source
+    css = source[source.index("  #snapshide {"):]
     css = css[: css.index("\n  }")]
-    assert "cursor: pointer" in css
-    assert "border: 1px solid var(--border)" in css
-    assert "background: var(--surface)" in css
-    assert "border-radius: 12px" in css
-    # Full-width row, so the whole thing is the hit target rather than the words.
-    assert "width: 100%" in css
-    # And the hint flips to name the action it would do next, not the state.
-    toggle = source[source.index("function snapSetExpanded"):]
-    toggle = toggle[: toggle.index("\n}")]
-    assert '"hide" : "show"' in toggle
+    assert "border: 0;" in css
+    assert "color: var(--faint);" in css
+    assert "text-transform: none;" in css
+
+
+def test_the_wait_and_the_failure_both_keep_the_row(source):
+    # The row's label changes and nothing else moves, so opening costs no layout
+    # jump; a failed read puts the row back (it IS the retry) with the note
+    # under it rather than opening the section onto an error.
+    show = source[source.index("function snapShow(state)"):]
+    show = show[: show.index("\n}")]
+    assert '"Loading…"' in show
+    assert 'state === "collapsed" || state === "loading"' in show
+    body = source[source.index("async function loadSnapshots"):]
+    body = body[: body.index("\n}")]
+    assert 'snapShow("open");' in body
+    assert 'snapShow("error");' in body
 
 
 def test_a_loaded_timeline_is_cached_for_the_page(source):

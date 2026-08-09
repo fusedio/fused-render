@@ -941,35 +941,45 @@
     margin-bottom: 8px;
     padding: 0 4px;
   }
-  /* The heading IS the control, and it has to LOOK like one standing still: a
-     caret plus a hover state is an affordance you can only discover by already
-     suspecting it is there. So it wears the same bordered row the snapshots
-     themselves wear — a full-width pressable row, ending in a caret, that opens
-     into more rows exactly like it — rather than a new kind of chrome. Its type
-     stays the section heading's (`.head`), which is what keeps it reading as
-     the section it is and not as a stray button in the middle of the page. */
-  button#snapstoggle {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    width: 100%;
+  /* WHAT OPENS THE SECTION IS A ROW, not the heading.
+     The heading was the control for one revision and it was the wrong element:
+     11px uppercase letter-spaced micro-type stretched across a full-width
+     bordered pill reads as neither a heading nor a button ("the claude
+     snapshots toggle thing UI is very ugly"), and a lowercase "show" hint
+     sitting beside an uppercase label made two type systems argue inside one
+     box. The page already has an affordance vocabulary and it is not headings:
+     EVERY section here is a quiet static uppercase label over a stack of
+     pressable rows (#recent's heading over .chat-row). So the heading goes back
+     to being a label, and the thing you press is one placeholder .snap-row —
+     the SAME class the snapshots themselves use, borrowed rather than copied —
+     which is literally a preview of what is inside: a row that opens into more
+     rows exactly like it. */
+  #snapshead { display: flex; align-items: center; gap: 8px; }
+  /* The way back out, and it only exists once there is something to close. It
+     lives on the heading LINE (there is no placeholder row to press any more)
+     but not in the heading's type: normal case, so it reads as a control beside
+     the label rather than as part of it. */
+  #snapshide {
+    margin-left: auto;
     font: inherit;
+    font-size: 11.5px;
+    font-weight: 400;
+    letter-spacing: 0;
+    text-transform: none;
     color: var(--faint);
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: 12px;
-    padding: 8px 14px;
-    margin-bottom: 8px;
+    background: none;
+    border: 0;
+    border-radius: 6px;
+    padding: 2px 6px;
     cursor: pointer;
-    text-align: left;
   }
-  button#snapstoggle:hover { background: var(--surface-2); border-color: var(--border-strong); }
-  button#snapstoggle:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
-  /* The label carries the row's weight; the hint and caret are the quiet pair
-     on the right that say which way this row goes. */
-  #snapstoggle .snap-head-label { color: var(--fg); flex: 1; }
-  #snapstoggle .snap-head-hint { color: var(--faint); }
-  #snapstoggle .snap-head-caret { color: var(--faint); font-size: 9px; }
+  #snapshide:hover { color: var(--fg); }
+  /* `.snap-row` is `display: flex`, which outranks the UA's `[hidden]` rule. */
+  #snapsopen[hidden] { display: none; }
+  /* The one thing the placeholder does not take from .snap-row: its label is the
+     row's SUBJECT, so it carries the row's own ink rather than the muted
+     timestamp colour .snap-when is for. */
+  #snapsopen .snap-open-label { color: var(--fg); flex: 1; }
   .snap-row {
     display: flex;
     align-items: center;
@@ -1426,12 +1436,23 @@
              heading is offered as soon as the target is known to be a file, and
              the timeline behind it is only read when the user opens it. -->
         <div id="snaps" hidden>
-          <button id="snapstoggle" type="button" class="head"
-                  aria-expanded="false" aria-controls="snapsbody">
-            <span class="snap-head-label">Claude snapshots</span>
-            <span class="snap-head-hint">show</span>
-            <span class="snap-head-caret">▸</span>
-          </button>
+          <div class="head" id="snapshead">
+            <span>Claude snapshots</span>
+            <!-- Only ever shown once the section is open: a "hide" for something
+                 that is not showing is a control for nothing. -->
+            <button id="snapshide" type="button" hidden
+                    aria-expanded="true" aria-controls="snapsbody">hide ▾</button>
+          </div>
+          <!-- The one pressable thing while collapsed, and a .snap-row on
+               purpose: it is a preview of what opening does, in the same shape
+               as what it opens into. Ships BEFORE the body so a failed read can
+               put it back with the error underneath it. -->
+          <div class="snap-row" id="snapsopen" role="button" tabindex="0"
+               aria-expanded="false" aria-controls="snapsbody">
+            <span class="snap-dot">●</span>
+            <span class="snap-open-label">Show version history</span>
+            <span class="snap-caret">▸</span>
+          </div>
           <div id="snapsbody" hidden>
             <div id="snapslist"></div>
             <div id="snapsnote"></div>
@@ -5681,8 +5702,9 @@ async function snapGoBack(plan, bar) {
 //
 // The timeline was fetched on every landing-page build, which is a round trip
 // through the worker on every file open for a history most opens never look at.
-// So the heading is offered as soon as the target is known to be a file and the
-// read is deferred to the first expand.
+// So the section is offered as soon as the target is known to be a file — a
+// static heading over one pressable row — and the read is deferred to the click
+// on that row.
 //
 // The list is cached for the life of the page — the target file never changes
 // under it — so re-opening is instant and costs nothing. What invalidates that
@@ -5693,7 +5715,7 @@ async function snapGoBack(plan, bar) {
 let snapLoaded = false;
 let snapExpanded = false;
 
-// Reveal the collapsed heading. Called on every path onto the landing page; it
+// Reveal the collapsed section. Called on every path onto the landing page; it
 // fetches nothing, and it deliberately does NOT reset `snapExpanded` — a user
 // who opened the panel, entered a chat and came back is still looking at the
 // same file's history.
@@ -5714,28 +5736,50 @@ async function mountSnapshots() {
   document.getElementById("snaps").hidden = false;
 }
 
-function snapSetExpanded(open) {
-  snapExpanded = open;
-  const btn = document.getElementById("snapstoggle");
-  btn.setAttribute("aria-expanded", open ? "true" : "false");
-  btn.querySelector(".snap-head-caret").textContent = open ? "▾" : "▸";
-  // The hint states the ACTION, not the state — it is the label of the thing
-  // the click does, which is the whole reason it is there at rest.
-  btn.querySelector(".snap-head-hint").textContent = open ? "hide" : "show";
-  document.getElementById("snapsbody").hidden = !open;
+const snapOpenRow = document.getElementById("snapsopen");
+const snapHideBtn = document.getElementById("snapshide");
+const SNAP_OPEN_LABEL = "Show version history";
+
+// FOUR states in one function, because they are one question — what is on
+// screen — and three booleans set from four call sites is how two of them end
+// up disagreeing. `loading` keeps the placeholder row exactly where it is and
+// only changes its words, so the wait costs no layout jump; `error` puts that
+// same row back (it is the retry) with the note underneath it.
+function snapShow(state) {
+  snapExpanded = state === "open";
+  snapOpenRow.querySelector(".snap-open-label").textContent =
+    state === "loading" ? "Loading…" : SNAP_OPEN_LABEL;
+  snapOpenRow.hidden = snapExpanded;
+  snapOpenRow.setAttribute("aria-expanded", snapExpanded ? "true" : "false");
+  // Nothing to show while collapsed, and nothing to show WHILE READING either:
+  // an empty bordered body under the row would be a box that says nothing.
+  document.getElementById("snapsbody").hidden = state === "collapsed" || state === "loading";
+  snapHideBtn.hidden = !snapExpanded;
 }
 
-document.getElementById("snapstoggle").onclick = () => {
-  snapSetExpanded(!snapExpanded);
-  if (snapExpanded && !snapLoaded) loadSnapshots();
+const snapToggle = () => {
+  if (snapExpanded) { snapShow("collapsed"); return; }
+  // Cached: the target file cannot change under this page, so a second open is
+  // instant and costs no round trip.
+  if (snapLoaded) { snapShow("open"); return; }
+  snapShow("loading");
+  loadSnapshots();
 };
+// A div with role=button gets Enter and Space by hand — the same wiring the
+// snapshot rows below it use, for the same reason.
+snapOpenRow.onclick = snapToggle;
+snapOpenRow.onkeydown = (e) => {
+  if (e.key === "Enter" || e.key === " ") { e.preventDefault(); snapToggle(); }
+};
+snapHideBtn.onclick = snapToggle;
 
 // The read. Only ever reached from an expand (or from a revert whose write did
 // not hand back a timeline), so the gate is `mountSnapshots`' and this call is
-// free to assume the target is a file.
+// free to assume the target is a file. The waiting state is the ROW's business
+// (snapShow), not this function's.
 async function loadSnapshots() {
   const note = document.getElementById("snapsnote");
-  note.textContent = "reading the snapshots…";
+  note.textContent = "";
   try {
     // No `enrich`: enrichment reads session transcripts (5 MB+). The unenriched
     // timeline cannot see the creation boundary, which is why this panel never
@@ -5744,12 +5788,15 @@ async function loadSnapshots() {
     if (timeline.error) throw new Error(timeline.error);
     snapLoaded = true;
     renderSnapshots(timeline);
+    snapShow("open");
   } catch (err) {
     // An ordinary absence, never the red overlay: a file Claude has never
     // touched is the common case, not a bug in this view. `snapLoaded` stays
     // false so the next expand asks again instead of leaving the section stuck
-    // on the failure for the life of the page.
+    // on the failure for the life of the page — which is exactly why the
+    // pressable row comes BACK rather than the section opening onto an error.
     console.warn("snapshots failed:", err.message);
+    snapShow("error");
     note.textContent = "The snapshots could not be read (" + err.message + ").";
   }
 }
