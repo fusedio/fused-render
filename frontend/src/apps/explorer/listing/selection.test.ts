@@ -2,7 +2,16 @@
 // handler, the reconcile) needs a DOM and a React renderer, neither of which
 // the frontend test setup has — see shortcut-chord.test.ts.
 import { describe, expect, test } from "bun:test";
-import { autoSelectPath, firstEntryPath, rangeBetween } from "./selection";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import {
+  EMPTY_SELECTION,
+  autoSelectPath,
+  firstEntryPath,
+  oneSelected,
+  rangeBetween,
+  selectionClaimed,
+} from "./selection";
 
 // Rows as the listing hands them over: the rendered (sorted) path order plus
 // the path→row map the table builds anyway.
@@ -77,6 +86,42 @@ describe("autoSelectPath", () => {
 
   test("an empty folder leaves the selection empty", () => {
     expect(autoSelectPath([], new Map())).toBeNull();
+  });
+});
+
+describe("selectionClaimed", () => {
+  test("a fresh folder claims nothing", () => {
+    expect(selectionClaimed(EMPTY_SELECTION)).toBe(false);
+  });
+
+  test("one clicked row is a claim", () => {
+    expect(selectionClaimed(oneSelected("/d/b.txt"))).toBe(true);
+  });
+
+  test("a multi-row selection is a claim", () => {
+    expect(selectionClaimed({ paths: ["/d/a", "/d/b"], anchor: "/d/a", lead: "/d/b" })).toBe(true);
+  });
+
+  test("a leftover anchor with no rows is not a claim", () => {
+    // Nothing is highlighted, so nothing outranks the auto-select: `paths` is
+    // the whole question.
+    expect(selectionClaimed({ paths: [], anchor: "/d/a", lead: "/d/a" })).toBe(false);
+  });
+
+  // The yield lives in Listing's auto-select effect (the effect owns WHEN;
+  // autoSelectPath owns the answer and stays blind to the selection, D240), and
+  // that effect needs a DOM and a React renderer this test setup does not have.
+  // So the wiring is pinned at the source: the guard must run BEFORE the
+  // selectOnly, or a click made in the provisional scaffold — carried across
+  // the swap by recallSelection — is overwritten with row one the moment the
+  // resolved listing settles.
+  test("the auto-select effect yields to a claim before it selects", () => {
+    const src = readFileSync(join(import.meta.dir, "../Listing.tsx"), "utf8");
+    const guard = src.indexOf("if (selectionClaimed(sel)) return;");
+    const auto = src.indexOf("const first = autoSelectPath(");
+    expect(guard).toBeGreaterThan(-1);
+    expect(auto).toBeGreaterThan(-1);
+    expect(guard).toBeLessThan(auto);
   });
 });
 

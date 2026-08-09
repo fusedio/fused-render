@@ -48,7 +48,7 @@ import {
   measureScrollAnchor,
 } from "@apps/explorer/listing/bits";
 import { usePreviewPane, reflectPaneInUrl } from "@apps/explorer/listing/pane";
-import { autoSelectPath } from "@apps/explorer/listing/selection";
+import { autoSelectPath, selectionClaimed } from "@apps/explorer/listing/selection";
 import { useDirListing } from "@apps/explorer/listing/useDirListing";
 import { useWalkSearch } from "@apps/explorer/listing/useWalkSearch";
 import { useListingSelection } from "@apps/explorer/listing/useListingSelection";
@@ -422,11 +422,20 @@ export default function Listing({
   //     away. The pane itself stays — only the automatic selection waits. A
   //     user's own click in the scaffold still previews, and still carries
   //     across the swap (recallSelection), because that one was asked for.
+  //
+  // And it FILLS AN EMPTY SELECTION, never replaces one: the shot is spent
+  // silently when something already holds the selection at the moment the
+  // guards are first met (`selectionClaimed`). That is exactly the scaffold
+  // click above — the user clicked row five during a slow mount, the resolved
+  // listing settled, and row one used to land on top of it. The decision half
+  // (autoSelectPath) stays blind to the selection (D240); this is a condition
+  // on WHEN to ask, which is this effect's half.
   const autoSelectedRef = useRef(false);
   useEffect(() => {
     if (embedded || provisional || autoSelectedRef.current) return;
     if (searching || state.status !== "ok" || !pane.on) return;
     autoSelectedRef.current = true;
+    if (selectionClaimed(sel)) return;
     const first = autoSelectPath(navRows, rowCtxByPath);
     if (first) selectOnly(first);
     // Fires on the commit that first satisfies the guards above; the rows it
