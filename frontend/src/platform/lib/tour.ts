@@ -54,11 +54,19 @@ const STEPS: DriveStep[] = [
       description: "Every view lives in the URL — copy or bookmark it to return.",
     },
   },
+  // Targets the listing body, NOT `#split-right-btn`. The tour auto-starts on
+  // the explorer's first screen, which is always a folder — and over a folder
+  // the crumb bar's layout zone is claimed (listing/folder-chrome.ts), so the
+  // split buttons aren't in the DOM and this step was silently filtered out of
+  // every first run. `.listing-split` is always there, and the copy now covers
+  // both halves of the feature: the pane the folder view opens for itself, and
+  // the buttons that appear once a file is open.
   {
-    element: "#split-right-btn",
+    element: ".listing-split",
     popover: {
-      title: "Split view",
-      description: "Open two panes side by side — like code next to its render.",
+      title: "Side by side",
+      description:
+        "Pick a file and it previews right here, beside the list. Open one and the bar offers full split panes.",
     },
   },
   {
