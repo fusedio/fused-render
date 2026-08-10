@@ -22,6 +22,7 @@ import { isModeVisible } from "@platform/lib/mode-visibility";
 import { iconForEntry, isAppEntry } from "@platform/ui/FileIcons";
 import { KNOWN_SENTINEL_MODES, templateModeIcon } from "@apps/explorer/ModeSwitcher";
 import { ModeMenu } from "@apps/explorer/BarMenu";
+import { useAppButton } from "@apps/explorer/lib/app-button";
 import Listing from "@apps/explorer/Listing";
 import {
   PANE_APP_MODE,
@@ -194,6 +195,14 @@ export default function ListingPreviewPane({
     };
   }, [path, isDir, self]);
 
+  // The "Open as app" / "Add as app" button for a previewed FOLDER that holds a
+  // lone top-level page — label, click and destination decided in one shared
+  // place (lib/app-button), so this pane and the title bar's own button can
+  // never mean different things. Called before the early returns below, as a
+  // hook must be; a null folder switches the whole thing off and makes no
+  // request, which covers files, the self target and a multi-selection alike.
+  const appBtn = useAppButton(isDir && !self ? (path as string) : null, app?.path ?? null);
+
   // The pane's chrome strip, and EVERY state gets one — a loading skeleton, an
   // error, the metadata card and the multi-selection placeholder alike. It
   // keeps the strip's height agreeing with the search row beside it in every
@@ -339,7 +348,7 @@ export default function ListingPreviewPane({
   // listing/pane-modes (paneOpenAction), which documents why a plain folder
   // gets nothing: expanding one means opening its listing, and its listing is
   // what the left half of this very split already is.
-  const open = paneOpenAction(row, activeMode, app);
+  const open = paneOpenAction(row, activeMode);
   const openTarget = open.kind === "none" ? null : open.target;
   const goToTarget = () => {
     if (!openTarget) return;
@@ -401,12 +410,14 @@ export default function ListingPreviewPane({
       {/* A folder that IS an app gets the folder's real primary in that slot
           instead, and this one is LABELLED: the expand glyph reads as "bigger",
           which is not what happens — the folder's page opens, and no icon says
-          that. Same words as the title bar's own button for the open folder
-          (Preview's openAsAppBtn), because it is the same action one level
-          down. */}
-      {open.kind === "app" && (
-        <button type="button" className="bar-ctl" title="Open as app" onClick={goToTarget}>
-          Open as app
+          that. It is literally the title bar's own button for the open folder
+          (lib/app-button), because it is the same action one level down — down
+          to offering "Add as app" for a folder the registry doesn't know yet,
+          which the pane's older, listing-only version of this button could not
+          see and so could not offer. */}
+      {appBtn && (
+        <button type="button" className="bar-ctl" title={appBtn.label} onClick={appBtn.onClick}>
+          {appBtn.label}
         </button>
       )}
     </>

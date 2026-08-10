@@ -169,14 +169,14 @@ describe("paneOpenTarget", () => {
   const dir = { path: "/w/proj", isDir: true };
 
   test("a template mode is carried into the full-screen open", () => {
-    expect(paneOpenTarget(file, "claude", null)).toEqual({
+    expect(paneOpenTarget(file, "claude")).toEqual({
       path: "/w/notes.md",
       isDir: false,
       mode: "claude",
     });
     // `_render` is a real sentinel the full-screen view understands (PT-12),
     // so it travels like any other mode.
-    expect(paneOpenTarget(file, "_render", null)).toEqual({
+    expect(paneOpenTarget(file, "_render")).toEqual({
       path: "/w/notes.md",
       isDir: false,
       mode: "_render",
@@ -186,69 +186,46 @@ describe("paneOpenTarget", () => {
   test("a folder shown as its listing opens plainly", () => {
     // `_mode=_listing` would be the destination's own default written out
     // longhand — Preview strips it again on the next mode switch anyway.
-    expect(paneOpenTarget(dir, "_listing", null)).toEqual({ path: "/w/proj", isDir: true });
+    expect(paneOpenTarget(dir, "_listing")).toEqual({ path: "/w/proj", isDir: true });
   });
 
   test("nothing offered means nothing to carry", () => {
-    expect(paneOpenTarget(file, null, null)).toEqual({ path: "/w/notes.md", isDir: false });
+    expect(paneOpenTarget(file, null)).toEqual({ path: "/w/notes.md", isDir: false });
   });
 
-  test("the pane-only app sentinel opens the app FILE, never `_mode=_app`", () => {
-    // The server has never heard of `_app`; what the pane frames is the
-    // folder's lone app page, and that page's own default view IS the app.
-    expect(paneOpenTarget(dir, PANE_APP_MODE, { path: "/w/proj/app.html" })).toEqual({
-      path: "/w/proj/app.html",
-      isDir: false,
-    });
-    // With no app resolved there is nothing to translate to, so the folder
-    // itself opens rather than a mode the destination would not recognise.
-    expect(paneOpenTarget(dir, PANE_APP_MODE, null)).toEqual({ path: "/w/proj", isDir: true });
+  test("the pane-only app sentinel is never written out as `_mode=_app`", () => {
+    // The server has never heard of `_app`. It used to be TRANSLATED here, to
+    // the folder's lone page — which quietly answered "where does this app
+    // open" from the previewed row alone, and so could neither reach an app's
+    // builder route nor notice that an unlinked folder has no app view at all.
+    // That question belongs to lib/app-button now; all this has to guarantee is
+    // that the sentinel never leaks into a URL.
+    expect(paneOpenTarget(dir, PANE_APP_MODE)).toEqual({ path: "/w/proj", isDir: true });
   });
 });
 
 // Which control the pane's header offers for the previewed row. "Expand" means
 // something for a FILE and nothing for a folder — a folder full-screen is just
 // its listing, which is already on the left of the very split the button sits
-// in. A folder that IS an app has a real primary instead.
+// in. A folder that IS an app gets its own button, from lib/app-button, which
+// this module deliberately does not decide (see paneOpenAction's comment).
 describe("paneOpenAction", () => {
   const file = { path: "/w/notes.md", isDir: false };
   const dir = { path: "/w/proj", isDir: true };
-  const app = { path: "/w/proj/app.html" };
 
   test("a file expands, in the mode the pane is showing", () => {
-    expect(paneOpenAction(file, "claude", null)).toEqual({
+    expect(paneOpenAction(file, "claude")).toEqual({
       kind: "expand",
       target: { path: "/w/notes.md", isDir: false, mode: "claude" },
     });
   });
 
-  test("a plain folder offers nothing", () => {
-    expect(paneOpenAction(dir, "_listing", null)).toEqual({ kind: "none" });
-    expect(paneOpenAction(dir, "claude", null)).toEqual({ kind: "none" });
-  });
-
-  test("a folder that is an app opens as that app", () => {
-    expect(paneOpenAction(dir, PANE_APP_MODE, app)).toEqual({
-      kind: "app",
-      target: { path: "/w/proj/app.html", isDir: false },
-    });
-  });
-
-  test("the app button does not depend on the mode the pane happens to show", () => {
-    // Switched to the embedded listing, or to a chat on the folder: the folder
-    // is still an app, and "Open as app" still means open the app.
-    for (const mode of ["_listing", "claude", "app", null]) {
-      expect(paneOpenAction(dir, mode, app)).toEqual({
-        kind: "app",
-        target: { path: "/w/proj/app.html", isDir: false },
-      });
+  test("a folder offers nothing here, whatever mode it is showing", () => {
+    // Including a folder that IS an app: its button is the shared one, and it
+    // must not ALSO get an expand control — that one would open the folder's
+    // listing, which is what the left half of this very split already shows.
+    for (const mode of ["_listing", "claude", "app", PANE_APP_MODE, null]) {
+      expect(paneOpenAction(dir, mode)).toEqual({ kind: "none" });
     }
-  });
-
-  test("an unsettled app probe offers nothing yet", () => {
-    // `undefined` is the probe in flight. The pane holds a skeleton through it,
-    // so this is belt and braces — but a button that appears and then changes
-    // meaning is the one outcome worth ruling out.
-    expect(paneOpenAction(dir, "_listing", undefined)).toEqual({ kind: "none" });
   });
 });

@@ -6,10 +6,7 @@
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import {
-  getAppLinkStatus,
-  type AppLinkStatus,
   getDeployStatus,
-  linkApp,
   rawUrl,
   resolveConditions,
   renameEntry,
@@ -19,7 +16,6 @@ import {
 } from "@platform/lib/api";
 import type { Deployment, StatResult, TemplateEntry } from "@platform/lib/api";
 import { navigate, navigateUrl, urlForFsPath, replaceSearch } from "@platform/lib/router";
-import { appRouteUrl, APP_OPEN_MODE } from "@platform/lib/appEntry";
 import { formatSize, formatMtimeFull, basename } from "@platform/lib/format";
 import { useRefreshOnReturn } from "@platform/lib/hooks";
 import { useDeployEnabled } from "@platform/lib/prefs";
@@ -34,6 +30,7 @@ import {
   buildOpenWithItems,
   friendlyFsError,
 } from "@apps/explorer/lib/fs-actions";
+import { useAppButton } from "@apps/explorer/lib/app-button";
 import { acquireOverlay, releaseOverlay } from "@platform/lib/ui-overlay";
 import { setClipboard } from "@apps/explorer/lib/fs-clipboard";
 import { pushToast } from "@platform/lib/toast";
@@ -714,50 +711,13 @@ function TemplatePreview({
     Promise.resolve(buildOpenWithItems(templates, (m) => void setMode(m)));
   const fileMenu = usePreviewFileMenu(fsPath, stat, loadOpenWith);
 
-  // How the listed folder relates to the app system, for the button below:
-  // "workspace"/"linked" folders open as an app, an "unlinked" one offers
-  // "Add as app" (registers it in the linked-apps registry — it then shows
-  // up on the Home grid under the "linked" tag). Fetched per folder, only when
-  // the single-HTML button would show at all; a fetch failure (older backend)
-  // falls back to "workspace" so the button degrades to plain "Open as app".
-  const [linkStatus, setLinkStatus] = useState<AppLinkStatus | null>(null);
-  useEffect(() => {
-    setLinkStatus(null);
-    if (!isListing || !singleAppPath) return;
-    let stale = false;
-    getAppLinkStatus(fsPath).then(
-      (s) => { if (!stale) setLinkStatus(s); },
-      () => { if (!stale) setLinkStatus({ status: "workspace", name: null }); }
-    );
-    return () => { stale = true; };
-  }, [isListing, singleAppPath, fsPath]);
-
-  const convertToApp = async () => {
-    try {
-      const { app } = await linkApp(fsPath);
-      setLinkStatus({ status: "linked", name: app.name, tag: app.tag });
-      pushToast({ msg: `Linked as app “${app.name}” — it's on the Home grid now`, tone: "info" });
-    } catch (e) {
-      pushToast({ msg: (e as Error).message, tone: "error" });
-    }
-  };
-  // "Open as app" goes to the builder route (/apps/<tag>/<name>?_mode=app) —
-  // the same 1:1 app experience a Home card opens — whenever the status
-  // carries the identity; the fs-path fallback covers older backends and
-  // workspace folders that aren't exactly an app dir.
-  const openAsApp = () => {
-    if (linkStatus?.tag && linkStatus.name) {
-      navigateUrl(
-        appRouteUrl({ tag: linkStatus.tag, name: linkStatus.name }) +
-          "?_mode=" + APP_OPEN_MODE,
-        { isDir: true }
-      );
-    } else {
-      navigate(singleAppPath as string, { isDir: false });
-    }
-  };
-  const appBtnLabel = linkStatus?.status === "unlinked" ? "Add as app" : "Open as app";
-  const appBtnAction = linkStatus?.status === "unlinked" ? convertToApp : openAsApp;
+  // The folder's relationship to the app system, and the button that follows
+  // from it — label, click and destination alike (lib/app-button). The rule
+  // used to live here, inline, which is exactly why the preview PANE's version
+  // of this button was a different, weaker one: it could only ever say "Open as
+  // app", including for folders where that could not work. Both surfaces now
+  // render this one.
+  const appBtn = useAppButton(isListing ? fsPath : null, singleAppPath);
 
   // The folder's primary action, built once and rendered in exactly one place:
   // the title bar, whenever the folder qualifies.
@@ -770,12 +730,11 @@ function TemplatePreview({
   // the selection the moment the folder opens. So the self row almost never
   // shows, and the button had effectively disappeared from the default view of
   // exactly the folders it exists for.
-  const openAsAppBtn =
-    isListing && singleAppPath && linkStatus ? (
-      <button type="button" className="open-as-app-btn" onClick={appBtnAction}>
-        {appBtnLabel}
-      </button>
-    ) : null;
+  const openAsAppBtn = appBtn ? (
+    <button type="button" className="open-as-app-btn" onClick={appBtn.onClick}>
+      {appBtn.label}
+    </button>
+  ) : null;
 
   const headerActions = (
     <>
@@ -947,9 +906,9 @@ function TemplatePreview({
             preview-browse-chip. Opposite corner so the two can coexist (a
             directory can have both a browsable counterpart mode AND a lone
             HTML file). */}
-        {isListing && singleAppPath && linkStatus && (
-          <button type="button" className="open-as-app-chip" onClick={appBtnAction}>
-            {appBtnLabel}
+        {appBtn && (
+          <button type="button" className="open-as-app-chip" onClick={appBtn.onClick}>
+            {appBtn.label}
           </button>
         )}
       </div>
