@@ -908,6 +908,7 @@
     font-size: 12.5px;
   }
   .assistant pre {
+    position: relative;  /* anchors .copybtn, top-right */
     background: var(--pre-bg);
     border: 1px solid var(--border);
     border-radius: 12px;
@@ -919,8 +920,50 @@
     line-height: 1.55;
   }
   .assistant pre code { background: transparent; color: var(--pre-fg); padding: 0; }
-  .assistant .h { color: var(--fg-strong); font-weight: 600; font-size: 15px; }
-  .assistant .bullet { color: var(--accent); }
+  /* Copy button: hidden until the pre is hovered (or focused, keyboard-only
+     users get no hover) — a permanently-visible button on every code block
+     is noise the eye has to filter on every single message. */
+  .assistant pre .copybtn {
+    position: absolute;
+    top: 6px;
+    right: 6px;
+    opacity: 0;
+    transition: opacity .12s;
+    font: inherit;
+    font-size: 11px;
+    padding: 3px 9px;
+    border: 1px solid var(--border-strong);
+    border-radius: 999px;
+    background: var(--surface);
+    color: var(--dim);
+    cursor: pointer;
+  }
+  .assistant pre:hover .copybtn,
+  .assistant pre .copybtn:focus-visible { opacity: 1; }
+  .assistant pre .copybtn:hover { color: var(--fg); border-color: var(--faint); }
+  /* GFM tables (marked) — borders only, the assistant column is narrow
+     enough that anything fancier just fights word-break. */
+  .assistant table { border-collapse: collapse; margin: 8px 0; font-size: 12.5px; }
+  .assistant th, .assistant td {
+    border: 1px solid var(--border);
+    padding: 4px 10px;
+    text-align: left;
+  }
+  .assistant th { color: var(--fg-strong); background: var(--surface); }
+  /* marked emits real h1-h4/ul/ol/li/blockquote now — the old renderMd's
+     hand-rolled `.h`/`.bullet` span markup (and this CSS's old targets of
+     the same names) is gone with it. */
+  .assistant h1, .assistant h2, .assistant h3, .assistant h4 {
+    color: var(--fg-strong); font-weight: 600; font-size: 15px; margin: 10px 0 4px;
+  }
+  .assistant ul, .assistant ol { margin: 4px 0; padding-left: 22px; }
+  .assistant li { margin: 2px 0; }
+  .assistant li::marker { color: var(--accent); }
+  .assistant blockquote {
+    margin: 8px 0; padding: 2px 0 2px 12px;
+    border-left: 3px solid var(--border-strong);
+    color: var(--dim);
+  }
   .assistant a { color: var(--link); text-decoration: none; }
   .assistant a:hover { text-decoration: underline; }
   .cursor { color: var(--accent); animation: blink 1s step-end infinite; }
@@ -1551,6 +1594,39 @@ fused.autoReload(false);
 // The agent is this template's own copy (templates are self-contained, no
 // cross-template imports).
 const AGENT = "./agent.py";
+
+// ── vendored markdown libs (marked/DOMPurify/hljs), same relative-path style
+// as tableau/template.html:364 — templates render at /render?path=…, so a
+// relative <script src> here would resolve against /render, not this
+// template's own directory; folding this template's own absolute directory
+// into the path (fused.rawUrl(BASE_DIR + rel) instead of a bare relative rel)
+// is what makes it resolve correctly regardless.
+const HTML_PATH = new URLSearchParams(window.location.search).get("path") || "";
+const BASE_DIR = HTML_PATH.slice(0, Math.max(HTML_PATH.lastIndexOf("/"), HTML_PATH.lastIndexOf("\\")) + 1);
+const loadScript = (rel) => new Promise((ok, bad) => {
+  const s = document.createElement("script");
+  s.src = fused.rawUrl(BASE_DIR + rel);
+  s.onload = ok; s.onerror = () => bad(new Error("failed to load " + rel));
+  document.head.appendChild(s);
+});
+{
+  const hljsTheme = document.createElement("link");
+  hljsTheme.rel = "stylesheet";
+  hljsTheme.href = fused.rawUrl(BASE_DIR + "vendor/hljs.css");
+  document.head.appendChild(hljsTheme);
+}
+// Fire-and-forget, not gating anything below: nothing in this file calls
+// renderMd() synchronously at boot — every call site sits downstream of an
+// `await fused.runPython(...)` round trip (the poll loop, resumeRun, the
+// boot-time run probe), which dwarfs the time to load three small
+// same-origin files. Unlike tableau/usd this script isn't wrapped in its own
+// async boot IIFE to `await` this — that would mean restructuring the whole
+// file, out of scope here.
+(async () => {
+  await loadScript("vendor/marked.min.js");
+  await loadScript("vendor/purify.min.js");
+  await loadScript("vendor/highlight.min.js");
+})();
 
 const log = document.getElementById("log");
 const logwrap = document.getElementById("logwrap");
@@ -4658,42 +4734,61 @@ function addWorking() {
   };
 }
 
-// ── minimal markdown → HTML, tolerant of unclosed markers mid-stream ──
+// ── real markdown: vendored marked + DOMPurify (vendor/, loaded at boot —
+// see loadScript below), tolerant of an unclosed fence mid-stream (the typer
+// calls this on partial text every animation frame). marked never touches
+// model-authored raw HTML on its own — an `<img onerror=…>` in the model's
+// own reply sails through marked's parser unchanged — so DOMPurify is the
+// only thing standing between marked's output and bodyEl.innerHTML, and
+// every render (partial or final) goes through both, never marked alone. ──
+let _md;  // configured once, lazily — marked.use() mutates shared state
+function _mdSetup() {
+  if (_md) return _md;
+  marked.use({
+    gfm: true, breaks: true,
+    renderer: {
+      // Positional (href, title, text) — the vendored marked@12's actual
+      // renderer-override signature (checked by hand against
+      // vendor/marked.min.js; some marked docs show a token-object shape
+      // that belongs to a later major version and silently no-ops here).
+      link(href, title, text) {
+        const h = DOMPurify.sanitize(href || "");
+        return `<a href="${h}" target="_blank" rel="noopener noreferrer">${text}</a>`;
+      },
+    },
+  });
+  _md = (t) => DOMPurify.sanitize(marked.parse(t), {
+    FORBID_TAGS: ["style", "form", "input", "iframe"],
+    ADD_ATTR: ["target", "rel"],
+  });
+  return _md;
+}
 function renderMd(text) {
-  const esc = (s) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-  const inline = (s) => {
-    // pull inline code out first so its contents stay literal
-    const codes = [];
-    return esc(s)
-      .replace(/`([^`]+)`/g, (_, c) => "" + (codes.push(c) - 1) + "")
-      .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
-      .replace(/(^|\W)\*([^*\s][^*]*)\*/g, "$1<em>$2</em>")
-      .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank">$1</a>')
-      .replace(/(^|[^"(\]])(https?:\/\/[^\s)<]+)/g, '$1<a href="$2" target="_blank">$2</a>')
-      .replace(/(\d+)/g, (_, i) => "<code>" + codes[i] + "</code>");
-  };
-
-  const out = [];
-  const parts = text.split(/```/);
-  for (let i = 0; i < parts.length; i++) {
-    if (i % 2 === 1) {  // inside a fence (possibly still open mid-stream)
-      const body = parts[i].replace(/^[\w+-]*\n?/, "");  // drop language tag
-      out.push("<pre><code>" + esc(body) + "</code></pre>");
-      continue;
-    }
-    const lines = parts[i].split("\n").map((line) => {
-      let m;
-      if ((m = line.match(/^(#{1,4})\s+(.*)$/)))
-        return '<span class="h">' + inline(m[2]) + "</span>";
-      if ((m = line.match(/^(\s*)[-*]\s+(.*)$/)))
-        return m[1] + '<span class="bullet">•</span> ' + inline(m[2]);
-      if ((m = line.match(/^(\s*)(\d+)\.\s+(.*)$/)))
-        return m[1] + '<span class="bullet">' + m[2] + ".</span> " + inline(m[3]);
-      return inline(line);
-    });
-    out.push(lines.join("\n"));
+  // Mid-stream tolerance: an odd number of ``` means a fence is still open —
+  // close it so marked doesn't swallow the tail as one giant unterminated
+  // code block while the reply is still arriving.
+  const fences = (text.match(/```/g) || []).length;
+  if (fences % 2 === 1) text += "\n```";
+  let html = _mdSetup()(text);
+  if (window.hljs) {
+    const box = document.createElement("div");
+    box.innerHTML = html;
+    box.querySelectorAll("pre code").forEach((el) => { try { hljs.highlightElement(el); } catch {} });
+    html = box.innerHTML;
   }
-  return out.join("");
+  return html;
+}
+// Copy-to-clipboard on every rendered <pre> — wired into the typer's
+// finish() and the static (non-typed) renders that never run finish() at
+// all (history restore, resumed runs).
+function attachCodeCopy(rootEl) {
+  rootEl.querySelectorAll("pre").forEach((pre) => {
+    if (pre.querySelector(".copybtn")) return;
+    const b = document.createElement("button");
+    b.className = "copybtn"; b.textContent = "copy"; b.type = "button";
+    b.onclick = () => { navigator.clipboard.writeText(pre.querySelector("code")?.textContent || pre.textContent); b.textContent = "copied"; setTimeout(() => (b.textContent = "copy"), 1200); };
+    pre.appendChild(b);
+  });
 }
 
 // ── typewriter: polls fill `target`; a rAF loop drains it smoothly ──
@@ -4734,7 +4829,11 @@ function makeTyper(bodyEl) {
       finished = true;
       if (!raf) raf = requestAnimationFrame(tick);
       return new Promise((resolve) => {
-        (function wait() { raf ? requestAnimationFrame(wait) : resolve(); })();
+        (function wait() {
+          if (raf) { requestAnimationFrame(wait); return; }
+          attachCodeCopy(bodyEl.parentElement);
+          resolve();
+        })();
       });
     },
     abort() { if (raf) cancelAnimationFrame(raf); cur.remove(); },
@@ -5229,7 +5328,9 @@ async function pollLoop(run_id) {
         } else if (typer) {
           await typer.finish(data.text);
         } else if (data.text) {
-          addAssistant("").lastChild.innerHTML = renderMd(data.text);
+          const turn = addAssistant("");
+          turn.lastChild.innerHTML = renderMd(data.text);
+          attachCodeCopy(turn);
         }
         if (end.error) addError(end.error);
         if (end.note) addNote(end.note, null, "⏹");
