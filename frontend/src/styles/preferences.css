@@ -455,7 +455,7 @@
      --bg well; separation is carried by shadow, the hairline only stops
      same-value surfaces from fusing. */
   background: color-mix(in srgb, var(--fg) 7%, var(--bg-panel));
-  border: 1px solid color-mix(in srgb, var(--fg) 8%, var(--bg-panel));
+  border: 1px solid color-mix(in srgb, var(--fg) 13%, var(--bg-panel));
   border-radius: 12px;
   box-shadow: 0 1px 2px var(--shadow-sm), 0 4px 12px var(--shadow-sm);
   transition: margin 0.18s ease;
@@ -466,14 +466,13 @@
   align-items: center;
   gap: 8px;
   min-width: 0;
-  padding: 8px 12px;
+  padding: 6px 11px;
 }
 
 /* Depth cascade: the front sheet (d0) is full width and holds the body; each
-   step back is inset further from the left (a touch from the right), with
-   its card body tucked behind the sheet in front — extra bottom padding
-   pulled back under the next sheet by the matching negative margin, so what
-   peeks out reads as a page edge, not a closed pill. */
+   step back is centered and narrower, its card body tucked behind the sheet
+   in front — the peek strip pulled back under the next sheet by the negative
+   margin, so what peeks out reads as a page edge, not a closed pill. */
 .fhb-sheet-d0 {
   flex: 1 1 auto;
   min-height: 0;
@@ -484,12 +483,12 @@
 }
 
 .fhb-sheet-d1 {
-  margin: 0 4px -20px 20px;
+  margin: 0 10px -17px;
   z-index: 2;
 }
 
 .fhb-sheet-d2 {
-  margin: 0 8px -20px 40px;
+  margin: 0 20px -17px;
   z-index: 1;
 }
 
@@ -502,12 +501,15 @@
   border-radius: 12px 12px 0 0;
 }
 
-/* The back sheet's page body: a strip of the entry's live view, exactly as
-   tall as the overlap that hides it, so at rest only the title row shows. */
+/* The back sheet's page body: a blank strip a step off the sheet's own fill,
+   3px of which stays visible at rest (peek height minus the -17px overlap) —
+   the sliver of page edge that keeps stacked rows readable as separate
+   sheets; the hover fan slides the rest out. */
 .fhb-sheet-peek {
   position: relative;
   flex: 0 0 auto;
   height: 20px;
+  background: rgba(var(--tint), 0.03);
   overflow: hidden;
 }
 
@@ -533,7 +535,7 @@
    edge shows, the ref design's "contents fan". */
 .fhb-card:hover .fhb-sheet-d1,
 .fhb-card:hover .fhb-sheet-d2 {
-  margin-bottom: -2px;
+  margin-bottom: -10px;
 }
 
 .fhb-sheet-icon {
