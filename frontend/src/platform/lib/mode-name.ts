@@ -9,10 +9,10 @@
 const SENTINEL_NAMES: Record<string, string> = {
   _render: "Rendered",
   _listing: "Listing",
-  // Pane-only sentinel (ListingPreviewPane). "View", like the `app` mode
+  // Pane-only sentinel (ListingPreviewPane). "Preview", like the `app` mode
   // below and for the same reason — the two are the same thing seen from the
   // pane and from the app route, and they must not disagree on screen.
-  _app: "View",
+  _app: "Preview",
 };
 
 // Registry keys whose conventional casing a generic capitalize would destroy.
@@ -21,11 +21,13 @@ const SENTINEL_NAMES: Record<string, string> = {
 const NICE_NAMES: Record<string, string> = {
   // Not "App": by the time this label is on screen the user is already inside
   // the app, so naming the mode after the app says nothing — it is the app's
-  // own view, as opposed to its history (Versions) or its build surface
-  // (Claude split). The KEY stays `app` everywhere it is not a display string:
-  // the registry, `?_mode=app`, APP_OPEN_MODE, and the "Open as app" /
-  // "Add as app" buttons, which are about the app concept, not this view.
-  app: "View",
+  // own rendered preview, as opposed to its history (Versions) or its build
+  // surface (Claude split). "Preview" also names it the way the rest of the
+  // shell talks about this surface (the preview pane, the preview header).
+  // The KEY stays `app` everywhere it is not a display string: the registry,
+  // `?_mode=app`, APP_OPEN_MODE, and the "Open as app" / "Add as app"
+  // buttons, which are about the app concept, not this view.
+  app: "Preview",
   duckdb: "DuckDB",
   geojson: "GeoJSON",
   json: "JSON",

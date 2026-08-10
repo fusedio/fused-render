@@ -5,14 +5,14 @@ import { modeTitle } from "./mode-name";
 test("sentinel modes read as their shell names, not as underscore junk", () => {
   expect(modeTitle("_render")).toBe("Rendered");
   expect(modeTitle("_listing")).toBe("Listing");
-  expect(modeTitle("_app")).toBe("View");
+  expect(modeTitle("_app")).toBe("Preview");
 });
 
-test("the app's own view is called View, in both the pane and the app route", () => {
+test("the app's own view is called Preview, in both the pane and the app route", () => {
   // "App" told a user already inside the app nothing. The pane sentinel and
   // the registry mode are the same view from two surfaces, so they share the
   // label — a disagreement here reads as two different things.
-  expect(modeTitle("app")).toBe("View");
+  expect(modeTitle("app")).toBe("Preview");
   expect(modeTitle("_app")).toBe(modeTitle("app"));
 });
 
