@@ -15,7 +15,9 @@
 // Shift-range built in the provisional Listing survives too.
 export interface Selection {
   // Selected row paths, in the order they entered the selection (a Shift-range
-  // enters in rendered row order). Empty = nothing selected.
+  // enters in rendered row order, and so does a sweep — an ADDITIVE sweep keeps
+  // the rows it started with in front of the ones it collects).
+  // Empty = nothing selected.
   paths: string[];
   // Where a Shift-range extends FROM: the last row selected by a plain or
   // Mod-click / plain arrow move. null when nothing has been selected yet.

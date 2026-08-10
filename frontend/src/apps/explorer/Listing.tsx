@@ -19,6 +19,8 @@
 //   useListingSelection.ts selection state + keyboard nav + reconcile
 //   useFileOps.ts          file operations + context menus + dialogs
 //   drag-drop.ts           what a drag carries + which drops are legal (pure)
+//   marquee.ts             sweep-to-select geometry: region, hits, auto-scroll (pure)
+//   useMarquee.ts          the sweep's pointer drag + edge auto-scroll
 //   useRowDrag.ts          the drag/drop handlers rows + background hang off
 //   shortcut-chord.ts       which chord means which action (pure)
 //   useListingShortcuts.ts file-op keyboard chords
@@ -56,6 +58,7 @@ import {
   selectionClaimed,
 } from "@apps/explorer/listing/selection";
 import { ROW_DRAG_HANDLE, useRowDrag } from "@apps/explorer/listing/useRowDrag";
+import { useMarquee } from "@apps/explorer/listing/useMarquee";
 import { useDirListing } from "@apps/explorer/listing/useDirListing";
 import { useWalkSearch } from "@apps/explorer/listing/useWalkSearch";
 import { useListingSelection } from "@apps/explorer/listing/useListingSelection";
@@ -261,6 +264,7 @@ export default function Listing({
     selectedPath,
     selectedSet,
     selectOnly,
+    selectPaths,
     toggleSelected,
     extendTo,
     pendingSelectRef,
@@ -484,6 +488,18 @@ export default function Listing({
     rowCtxByPath,
     selectOnly,
     onMove: doMove,
+  });
+
+  // Sweep-to-select from a row's dead space or the listing background. It writes
+  // through the ONE selection model that clicks and the keyboard use
+  // (selectPaths above) — no parallel store, no second `?sel=` writer — and it
+  // draws nothing: the rows lighting up as the pointer crosses them is the
+  // feedback, which is precisely what made the old rubber band redundant.
+  const { onPointerDown: onSweepPointerDown } = useMarquee({
+    scrollRef,
+    navRows,
+    selectedPaths: sel.paths,
+    selectPaths,
   });
 
   useListingShortcuts({
@@ -989,6 +1005,11 @@ export default function Listing({
               (backgroundActive ? " drop-into" : "")
             }
             {...backgroundDrag}
+            /* A press on a row's dead space or on the background below the rows
+               sweeps a selection; a press on the name/icon (or anywhere on an
+               already-selected row) drags instead, and a press that barely
+               moves is still the click it always was. */
+            onPointerDown={onSweepPointerDown}
             /* No onClick here: clicking the empty area below the rows does
                NOT deselect. Finder's rule, and it cost more than it bought
                once the preview pane arrived — a stray click anywhere in the

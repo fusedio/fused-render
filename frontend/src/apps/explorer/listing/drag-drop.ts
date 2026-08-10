@@ -93,10 +93,13 @@ export function springDisarms(leaving: string, armed: string | null): boolean {
 
 // --- where a drag may start from ---------------------------------------------
 //
-// Not everywhere on a row. The drag handle is the part of the row that IS the
-// file — its icon and its name — plus the whole of any row that is ALREADY
-// SELECTED. A press anywhere else on a row starts nothing at all; it is just
-// the click the listing has always had.
+// Not everywhere on a row, because the listing has TWO press-and-move gestures
+// and this is the one rule that separates them. The drag handle is the part of
+// the row that IS the file — its icon and its name — plus the whole of any row
+// that is ALREADY SELECTED. `false` is not "nothing happens": everywhere else
+// SWEEPS, selecting the rows the pointer crosses (useMarquee reads this
+// function backwards to know where a sweep may start, so the two gestures
+// cannot claim the same pixel).
 //
 // Dragging a file into another folder is a destructive-ish, irreversible-ish
 // act (it moves it), and rows span the full width of the listing. With the
@@ -111,9 +114,8 @@ export function springDisarms(leaving: string, armed: string | null): boolean {
 // row's name to move all five. Selection outranks hit region — the only case
 // where the two clauses could disagree.
 //
-// (This split first arrived to leave room for a rubber-band marquee, which has
-// since been removed as unwanted. It is kept because the reason above holds on
-// its own, not because of what it used to share the row with.)
+// Either way a press that never travels the sweep's 4px slop is neither
+// gesture: it is the plain click that selects one row.
 export function pressStartsDrag(press: { onHandle: boolean; rowSelected: boolean }): boolean {
   return press.onHandle || press.rowSelected;
 }
