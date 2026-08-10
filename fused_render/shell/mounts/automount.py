@@ -222,10 +222,12 @@ def builtin_mount_ready(name: str) -> bool:
     seconds run_automount takes to attach cost only a briefly-absent sidebar
     entry, never a wrong one. True is written only by an operation that
     SUCCESSFULLY attached the mount this run — run_automount's own attach, or a
-    manual reconnect_mount after the split-brain `continue` — never inferred
-    from an observed "mounted" (a mount lingering from a failed force-detach
-    would read mounted while serving stale content). The health monitor only
-    ever CLEARS the flag, when a mount is observed no longer live."""
+    manual reconnect_mount after the split-brain `continue` — and reset to False
+    by run_automount at the start of each pass. It is never inferred from an
+    observed "mounted": a mount lingering from a failed force-detach reads
+    mounted while serving stale content, and a transient post-attach snapshot
+    can read not-mounted, so the health monitor deliberately leaves this flag
+    alone."""
     with _builtin_ready_lock:
         return _builtin_ready.get(name, False)
 

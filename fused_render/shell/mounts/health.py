@@ -129,13 +129,6 @@ def poll_once() -> None:
     for m in list_mounts():
         mid = m["id"]
         state = mount_state(m, live, probe_io=False)
-        # Clear builtin readiness when the mount is no longer live, so a later
-        # drop hides the sidebar entry. Never SET it True here: True is only ever
-        # a successful attach THIS run (run_automount / reconnect_mount), so a
-        # mount lingering from a failed force-detach or surviving a previous run
-        # can't read as ready off an ambiguous "mounted" observation.
-        if m.get("builtin") and state != "mounted":
-            set_builtin_ready(m["builtin"], False)
         ep = _health_episodes.setdefault(mid, {"state": None, "notified": False})
         prev = ep["state"]
         ep["state"] = state

@@ -455,15 +455,16 @@ def test_poll_once_never_marks_builtin_ready_from_observation(home, learn_zip, m
     assert mounts_mod.learn_mount_ready() is False
 
 
-def test_poll_once_clears_builtin_ready_on_drop(home, learn_zip, monkeypatch):
-    # It does the opposite direction though: a builtin that was ready and later
-    # drops is cleared, so the sidebar entry hides.
+def test_poll_once_leaves_ready_flag_untouched(home, learn_zip, monkeypatch):
+    # The health monitor must not disturb a readiness set by a real attach: a
+    # transient post-attach snapshot can read not-mounted, and clearing off that
+    # would strand the flag (nothing restores it). Readiness is attach-owned.
     mounts_mod.ensure_learn_mount()
     mounts_mod.set_builtin_ready("learn", True)
     monkeypatch.setattr(mounts_mod, "mounted_paths", lambda: set())
     monkeypatch.setattr(mounts_mod, "mount_state", lambda m, live, **k: "disconnected")
     mounts_mod.poll_once()
-    assert mounts_mod.learn_mount_ready() is False
+    assert mounts_mod.learn_mount_ready() is True
 
 
 def test_reconnect_marks_builtin_ready_on_success(home, learn_zip, monkeypatch):
