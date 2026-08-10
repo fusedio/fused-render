@@ -3004,6 +3004,19 @@ annFrame.addEventListener("load", () => {
   doc.addEventListener("mousedown", () => {
     if (annPop.style.display === "block") annCloseComposer();
   }, true);
+  // One placement path for both writers: the hover follow below and the click
+  // handler's re-anchor. The click MUST place, not trust the last hover — on
+  // the "move the popover" flow the ring was frozen on the PREVIOUS element
+  // for the whole trip over (see the composer guard in mousemove), so at
+  // click time it shows the box the user just left.
+  const annPlaceHl = (el) => {
+    const r = annStageRect(el);
+    annHl.style.display = "block";
+    annHl.style.left = r.left + "px";
+    annHl.style.top = r.top + "px";
+    annHl.style.width = r.width + "px";
+    annHl.style.height = r.height + "px";
+  };
   doc.addEventListener("mousemove", (e) => {
     if (!annOn) return;
     // An open composer means the user CLICKED an element and is writing about
@@ -3018,12 +3031,7 @@ annFrame.addEventListener("load", () => {
       annHl.style.display = "none";
       return;
     }
-    const r = annStageRect(el);
-    annHl.style.display = "block";
-    annHl.style.left = r.left + "px";
-    annHl.style.top = r.top + "px";
-    annHl.style.width = r.width + "px";
-    annHl.style.height = r.height + "px";
+    annPlaceHl(el);
   });
   // Capture phase, everything swallowed while annotating — buttons and links
   // included: annotate mode exists precisely to point at controls without
@@ -3048,6 +3056,10 @@ annFrame.addEventListener("load", () => {
     anchor.tag = el.tagName.toLowerCase();
     const t = (el.textContent || "").trim().replace(/\s+/g, " ");
     if (t) anchor.text = t.slice(0, 80);
+    // Re-anchor the ring to what was CLICKED before freezing on it: the hover
+    // follow stops while a composer is open, so on a click that moves the
+    // popover the last-painted ring belongs to the previous element.
+    annPlaceHl(el);
     annOpenComposer(e.clientX, e.clientY, anchor);
   }, true);
   // Scroll and mutation storms coalesce to one re-render per frame.

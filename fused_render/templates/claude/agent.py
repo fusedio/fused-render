@@ -629,7 +629,7 @@ def _terminal_command(file: str, session_id: str = "") -> dict:
     else:
         try:
             binary = _claude_bin()
-        except RuntimeError:
+        except FileNotFoundError:
             # Not installed anywhere we know. Still hand over the command the
             # user WOULD run — pasted, it produces the shell's own "command
             # not found", which names the actual problem.
