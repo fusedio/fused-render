@@ -83,3 +83,20 @@ body {
   height: 100vh;
 }
 
+/* Every embedded document renders on the shell's own backdrop. Two reasons,
+   both about what shows through:
+     * WHILE A FRAME LOADS there is no document to paint, and the browser's
+       default canvas is white — the flash you got switching files in a preview
+       pane, since each switch is a fresh navigation;
+     * ONCE IT HAS, a template that sets no background of its own is
+       transparent, and the same white shows through for good.
+   `background` covers both. `color-scheme` is inherited from :root
+   (styles/tokens.css) and rides along to the embedded document, so the browser
+   paints ITS default surfaces (scrollbars, form controls) in the shell's
+   appearance rather than a light-mode set inside a dark page.
+   A template that wants a different surface just sets one — its own opaque
+   background paints over this. */
+iframe {
+  background: var(--bg);
+}
+
