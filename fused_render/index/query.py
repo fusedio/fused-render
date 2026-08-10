@@ -80,12 +80,14 @@ def pattern_for(q: str):
     return pat, prune_prefix
 
 
-def _has_partitions(cfg: IndexConfig) -> bool:
-    return os.path.isdir(cfg.files_dir) and any(
-        f.endswith(".parquet") for f in os.listdir(cfg.files_dir))
-
-
 def _sources(cfg: IndexConfig, parts) -> str:
+    """A duckdb source over exactly the partitions the MANIFEST names.
+
+    Never a `files/*.parquet` glob: a compaction writes the next generation
+    into the same directory (index-store.md §4), so a glob would read a
+    half-written set — and would keep counting the previous generation's rows,
+    which are deliberately left on disk for readers still holding the old
+    manifest."""
     files = [_q(os.path.join(cfg.files_dir, p["file"])) for p in parts]
     return "read_parquet([" + ",".join(f"'{f}'" for f in files) + "])"
 
@@ -149,11 +151,11 @@ def stats(cfg: IndexConfig, root: str = "") -> dict:
         n_dirs = con.execute(
             f"SELECT count(*) FROM read_parquet('{_q(cfg.dirs_parquet)}') "
             f"WHERE {inside}").fetchone()[0]
-    if _has_partitions(cfg):
+    if m.get("partitions"):
         by_ext = con.execute(
             f"SELECT coalesce(nullif(ext, ''), 'no ext') e, count(*) n, "
             f"coalesce(sum(size), 0) s "
-            f"FROM read_parquet('{_q(cfg.files_dir)}/*.parquet') "
+            f"FROM {_sources(cfg, m['partitions'])} "
             f"WHERE {inside} "
             f"GROUP BY 1 ORDER BY s DESC").fetchall()
         n_rows = sum(r[1] for r in by_ext)

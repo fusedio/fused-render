@@ -27,8 +27,8 @@ describe("indexCorpusFrom", () => {
     expect(indexCorpusFrom(res({ covered: false }))).toBeNull();
   });
 
-  it("falls back to the walk when the index is stale", () => {
-    expect(indexCorpusFrom(res({ fresh: false }))).toBeNull();
+  it("still answers from a stale index — the UI says so, the walk is not faster", () => {
+    expect(indexCorpusFrom(res({ fresh: false }))?.entries).toHaveLength(1);
   });
 
   it("falls back to the walk when there is no answer at all", () => {

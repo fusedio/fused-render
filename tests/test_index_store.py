@@ -221,6 +221,60 @@ def test_compact_emits_phase_events_when_given_a_sink(tmp_path):
     assert any(e.get("msg") == "writing index" for e in seen)
 
 
+# -- readability while a scan is compacting -----------------------------------
+
+def test_a_compaction_writes_a_new_generation_beside_the_old_one(tmp_path):
+    """A rescan must never make the index unreadable. Partitions are named per
+    generation and the manifest is swapped atomically last, so a reader either
+    sees the whole old set or the whole new one — never a half-written mix."""
+    cfg = _cfg(tmp_path)
+    compact(cfg, "/r", _shard(tmp_path, cfg, [
+        ("/r", _scanned("s", [_row("/r/a.txt")], 10, 1, 0))]), pa, pq)
+    first = read_manifest(cfg)
+    first_files = [p["file"] for p in first["partitions"]]
+    compact(cfg, "/r", _shard(tmp_path, cfg, [
+        ("/r", _scanned("s", [_row("/r/a.txt"), _row("/r/b.txt")], 20, 2, 0))]),
+        pa, pq)
+    second = read_manifest(cfg)
+    assert second["generation"] > first["generation"]
+    assert [p["file"] for p in second["partitions"]] != first_files
+    # a reader that read the OLD manifest a moment before the swap can still
+    # open every file it named
+    for name in first_files:
+        assert os.path.exists(os.path.join(cfg.files_dir, name))
+
+
+def test_a_third_compaction_reclaims_the_generation_before_last(tmp_path):
+    cfg = _cfg(tmp_path)
+    names = []
+    for i in range(3):
+        compact(cfg, "/r", _shard(tmp_path, cfg, [
+            ("/r", _scanned("s", [_row(f"/r/a{i}.txt")], 10, i + 1, 0))],
+            ), pa, pq)
+        names.append([p["file"] for p in read_manifest(cfg)["partitions"]])
+    live = set(os.listdir(cfg.files_dir))
+    assert set(names[2]) <= live      # current generation
+    assert set(names[1]) <= live      # the one a live reader may still hold
+    assert not (set(names[0]) & live)  # older than that: reclaimed
+
+
+def test_compact_reads_the_previous_index_through_the_manifest(tmp_path):
+    """A stray parquet left in the files dir must not become index rows: the
+    manifest, not a glob, says what the index IS."""
+    cfg = _cfg(tmp_path)
+    compact(cfg, "/one", _shard(tmp_path, cfg, [
+        ("/one", _scanned("s", [_row("/one/a.txt")], 10, 1, 0))]), pa, pq)
+    stray = os.path.join(cfg.files_dir, "part-99999-99999.parquet")
+    file_schema, _ = __import__("fused_render.index.store", fromlist=["schemas"]).schemas(pa)
+    pq.write_table(pa.table({k: [v] for k, v in zip(
+        file_schema.names, ["/one/ghost.txt", "/one", "ghost.txt", "txt", 1, 1.0])},
+        schema=file_schema), stray)
+    compact(cfg, "/two", _shard(tmp_path, cfg, [
+        ("/two", _scanned("s", [_row("/two/b.txt")], 10, 1, 0))]), pa, pq)
+    part = os.path.join(cfg.files_dir, read_manifest(cfg)["partitions"][0]["file"])
+    assert pq.read_table(part).column("path").to_pylist() == ["/one/a.txt", "/two/b.txt"]
+
+
 # -- the applied-ignore fingerprint -------------------------------------------
 
 def test_applied_ignore_sig_round_trips(tmp_path):

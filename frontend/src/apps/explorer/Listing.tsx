@@ -51,6 +51,7 @@ import { usePreviewPane, reflectPaneInUrl } from "@apps/explorer/listing/pane";
 import { autoSelectPath, selectionClaimed } from "@apps/explorer/listing/selection";
 import { useDirListing } from "@apps/explorer/listing/useDirListing";
 import { useWalkSearch } from "@apps/explorer/listing/useWalkSearch";
+import { useIndexStatus } from "@platform/lib/index-status";
 import { useListingSelection } from "@apps/explorer/listing/useListingSelection";
 import { useFileOps } from "@apps/explorer/listing/useFileOps";
 import { useListingShortcuts } from "@apps/explorer/listing/useListingShortcuts";
@@ -161,6 +162,10 @@ export default function Listing({
     setSearchSort,
     setSearchSortKey,
   } = useWalkSearch(fsPath, refresh, !embedded);
+
+  // Scan state for the search box's "indexing…" caveat. Gated on `searching`
+  // so an idle listing never polls.
+  const indexScan = useIndexStatus(searching);
 
   // An embedded Listing never opens its own pane (no nesting): the feature is
   // disabled at the hook, whatever the folder's saved viewstate says.
@@ -795,6 +800,23 @@ export default function Listing({
       searchCountTitle = `Search covers the first ${validWalk.total.toLocaleString()} entries of this folder tree`;
   }
 
+  // --- index scan indicator -------------------------------------------------
+  // Polled only while the search box is in use, and only until the scan ends
+  // (see useIndexStatus). `has_index` is what splits the two cases: an index
+  // that already exists keeps answering while a rescan runs, so the user is
+  // told the results may lag; with no index yet, the walk is answering and the
+  // badge is pure progress.
+  let indexBadge: string | null = null;
+  let indexBadgeTitle: string | undefined;
+  if (searching && indexScan?.scanning) {
+    indexBadge = indexScan.has_index
+      ? "indexing…"
+      : `building index… ${indexScan.files.toLocaleString()} files`;
+    indexBadgeTitle = indexScan.has_index
+      ? "A scan is running. Results come from the last completed index, so a very recent change may be missing."
+      : "Building the file index for the first time. This folder is being searched live meanwhile.";
+  }
+
   // Is anything pinned inside the search input right now? Mirrors the three
   // chip conditions in the render below; drives the input's right padding, so
   // an idle box gives its whole width to the placeholder.
@@ -879,6 +901,19 @@ export default function Listing({
                   </span>
                 )}
               </div>
+              {/* A scan is running. Two different messages because they mean
+                  two different things to trust: with an index already built,
+                  these results ARE the index (its last completed generation)
+                  and may be slightly behind the disk; without one, the search
+                  is walking the tree live and the index is merely warming up.
+                  Either way the box keeps working — this is a caveat, not an
+                  error state. */}
+              {indexBadge && (
+                <span className="listing-index-badge" title={indexBadgeTitle}>
+                  <span className="listing-search-spinner inline" aria-hidden="true" />
+                  {indexBadge}
+                </span>
+              )}
               {/* Current result ordering, and the way back to relevance. Without it
             "no arrow anywhere" was the only signal that results were in fuzzy
             rank order, and a column sort had no explicit escape. */}

@@ -275,18 +275,61 @@ export function indexSearch(
 // which is what a page that just loaded can ask about (it has no run id, but
 // the startup scan may well be running).
 export interface IndexStatus {
-  running: boolean;
-  indexed: boolean;
+  // A scan is in flight. Independent of has_index: a rescan keeps serving the
+  // last completed generation, so this means "say indexing…", not "stop using
+  // the index".
+  scanning: boolean;
+  has_index: boolean;
+  files_indexed: number; // rows in the last COMPLETED index
+  last_completed_at: number | null;
+  running: boolean; // the polled run specifically (== scanning with no run_id)
   run_id: string | null;
   root: string | null;
   phase: string;
   dirs: number;
-  files: number;
-  updated: number | null;
+  files: number; // this run's progress
+  error: string | null;
 }
 
 export function indexStatus(signal?: AbortSignal): Promise<IndexStatus> {
   return getJsonSignal<IndexStatus>("/api/index/status", signal);
+}
+
+// Preferences > Indexing. `roots` is what the scheduler scans (defaulted to
+// the home dir server-side); `ignore` is the prune list; `defaults` is what
+// "Restore defaults" restores to.
+export interface IndexConfig {
+  roots: string[];
+  configured_roots: string[];
+  ignore: string[];
+  defaults: string[];
+  location: string;
+  // Set by a write: the saved rules no longer match the ones the index was
+  // built under, so a reconciling scan was started (rescan_run_id).
+  needs_rescan?: boolean;
+  rescan_run_id?: string | null;
+}
+
+export function getIndexConfig(): Promise<IndexConfig> {
+  return getJson<IndexConfig>("/api/index/config");
+}
+
+export function putIndexConfig(body: {
+  roots?: string[];
+  ignore?: string[];
+}): Promise<IndexConfig> {
+  return mutateJson<IndexConfig>("POST", "/api/index/config", body);
+}
+
+export function startIndexScan(opts: { root?: string; full?: boolean } = {}): Promise<{
+  run_id: string;
+  root: string;
+}> {
+  return mutateJson("POST", "/api/index/scan", opts);
+}
+
+export function deleteIndex(): Promise<{ deleted: boolean }> {
+  return mutateJson("POST", "/api/index/delete", {});
 }
 
 // One hit from POST /api/search/files (the AI search's execution engine —

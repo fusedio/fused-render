@@ -949,6 +949,21 @@ table.listing-table tr.skel-row:hover {
   pointer-events: none;
 }
 
+/* "indexing…" caveat beside the search box while a scan is running. Sits
+   OUTSIDE the input (unlike the match count, which is pinned inside it) so the
+   two can never overlap, and stays quiet: this is a note about freshness, not
+   a warning. */
+.listing-index-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex: 0 0 auto;
+  color: var(--fg-muted);
+  font-size: 12px;
+  white-space: nowrap;
+  cursor: default;
+}
+
 /* Small spinner shown while the recursive walk is still in flight, so a
    search on a huge folder doesn't look stalled while the input stays
    fully interactive. */
@@ -964,6 +979,13 @@ table.listing-table tr.skel-row:hover {
   border-radius: 50%;
   pointer-events: none;
   animation: listing-search-spin 0.6s linear infinite;
+}
+
+/* The same spinner, in normal flow rather than pinned inside the input — the
+   badge above places it itself. */
+.listing-search-spinner.inline {
+  position: static;
+  margin-top: 0;
 }
 
 @keyframes listing-search-spin {

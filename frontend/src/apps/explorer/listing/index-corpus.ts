@@ -13,12 +13,17 @@ export interface IndexCorpus {
   truncated: boolean;
 }
 
-// The index answers only when it has visited THIS folder and is recent enough
-// (both flags come from the server, which owns the freshness threshold — one
-// definition, not one per caller). A truncated corpus is still used: it is the
-// same cap the walk hits, and the walk flags it the same way.
+// Coverage — "the scan visited THIS folder" — is the whole gate. Age is not:
+// the index is rescanned at every startup, a rescan keeps serving its last
+// completed generation while it runs, and the search box says "indexing…"
+// while that is happening (useIndexStatus). An instant, mostly-right answer
+// with a visible caveat beats re-walking the tree; a folder the index never
+// reached has no answer at all, and that is what falls back to the walk.
+//
+// A truncated corpus is still used: it is the same cap the walk hits, and the
+// walk flags it the same way.
 export function indexCorpusFrom(res: IndexSearchResult | null | undefined): IndexCorpus | null {
-  if (!res || !res.covered || !res.fresh) return null;
+  if (!res || !res.covered) return null;
   if (!Array.isArray(res.entries)) return null;
   return { entries: res.entries, truncated: !!res.truncated };
 }

@@ -26,7 +26,12 @@ from fused_render.index.query import MAX_CORPUS
 from fused_render.index.query import lookup as index_lookup
 from fused_render.index.query import search_under as index_search
 from fused_render.index.query import stats as index_stats
-from fused_render.index.store import read_manifest
+from fused_render.index.store import (
+    applied_ignore_sig,
+    delete_store,
+    read_manifest,
+    save_applied_ignore,
+)
 from fused_render.server.common import _error, _require_fused
 
 logger = logging.getLogger(__name__)
@@ -138,23 +143,32 @@ def api_index_status(run_id: str = Query(default=""),
     """
     cfg = load_config()
     manifest = read_manifest(cfg)
-    base = {"ok": True, "indexed": manifest is not None,
+    runs = runner.list_runs(cfg, limit=KEEP_RUNS)["runs"]
+    # `has_index` and `scanning` are the two bits the explorer's decision table
+    # turns on, and they are independent: a rescan over an existing index keeps
+    # serving the last completed generation (index-store.md §4), so "scanning"
+    # means "say indexing…", not "stop using the index".
+    base = {"ok": True,
+            "has_index": manifest is not None,
+            "scanning": bool(runs and runs[0]["running"]),
+            "files_indexed": int((manifest or {}).get("rows") or 0),
+            "last_completed_at": (manifest or {}).get("updated"),
+            # kept as the pre-existing names for the same two facts
+            "indexed": manifest is not None,
             "updated": (manifest or {}).get("updated")}
     if not run_id:
-        runs = runner.list_runs(cfg, limit=1)["runs"]
         if not runs:
             return {**base, "run_id": None, "root": None, "phase": "",
                     "dirs": 0, "files": 0, "reused": 0, "current": "",
                     "summary": None, "cancelled": False, "error": None,
                     "running": False}
-        run = runs[0]
-        return {**base, **run}
+        return {**base, **runs[0]}
     try:
         out = runner.status(cfg, run_id, since=since)
     except ValueError as e:
         return _error(str(e))
     root = None
-    for run in runner.list_runs(cfg, limit=KEEP_RUNS)["runs"]:
+    for run in runs:
         if run["run_id"] == run_id:
             root = run["root"]
             break
@@ -228,5 +242,50 @@ def api_index_config_write(body: dict = Body(default={}),
             cfg.ignore = cleaned
             cfg._rules = None
     saved = save_config(cfg)
+    # Reconcile. The engine fingerprints the rules an index was BUILT under
+    # (index/specs/scan-ignore.md §4): while they differ, the store still holds
+    # rows for folders the user just excluded and is still missing the ones
+    # they just re-included. The next scan is what fixes that — it sees the
+    # mismatch, discards the reuse cache and rebuilds — so a save starts one
+    # rather than leaving the index disagreeing with the rules until a reboot.
+    # Nothing to reconcile before a first scan: an absent fingerprint means
+    # there is no index, and the startup scheduler will use the new rules.
+    applied = applied_ignore_sig(saved)
+    needs_rescan = applied is not None and applied != saved.rules.sig()
+    rescan_run_id = None
+    if needs_rescan:
+        try:
+            roots = scan_roots(saved)
+            started = runner.start(saved, roots[0]) if roots else None
+            rescan_run_id = (started or {}).get("run_id")
+        except (ValueError, OSError):
+            logger.exception("could not start the post-edit index rescan")
     return {"ok": True, "roots": saved.roots, "ignore": saved.ignore,
-            "defaults": default_ignore(), "location": saved.dir}
+            "defaults": default_ignore(), "location": saved.dir,
+            "needs_rescan": needs_rescan, "rescan_run_id": rescan_run_id}
+
+
+@router.post("/api/index/delete")
+def api_index_delete(x_fused: str | None = Header(default=None)):
+    """Drop the whole index. Search silently falls back to the live walk until
+    the next scan, so this is a reclaim-disk / start-over button, not a
+    destructive one — the only thing lost is derived data.
+
+    Any scan in flight is cancelled first: a worker that survived the delete
+    would compact its shards into the store moments later and quietly undo
+    it."""
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    cfg = load_config()
+    cancelled = []
+    for run in runner.list_runs(cfg, limit=KEEP_RUNS)["runs"]:
+        if run["running"]:
+            try:
+                runner.cancel(cfg, run["run_id"])
+                cancelled.append(run["run_id"])
+            except ValueError:
+                pass
+    delete_store(cfg)
+    return {"ok": True, "deleted": True, "cancelled": cancelled,
+            "location": cfg.dir}
