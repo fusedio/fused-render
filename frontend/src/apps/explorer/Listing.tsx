@@ -48,7 +48,11 @@ import {
   measureScrollAnchor,
 } from "@apps/explorer/listing/bits";
 import { usePreviewPane } from "@apps/explorer/listing/pane";
-import { autoSelectPath, selectionClaimed } from "@apps/explorer/listing/selection";
+import {
+  autoSelectPath,
+  rowClickAction,
+  selectionClaimed,
+} from "@apps/explorer/listing/selection";
 import { useDirListing } from "@apps/explorer/listing/useDirListing";
 import { useWalkSearch } from "@apps/explorer/listing/useWalkSearch";
 import { useListingSelection } from "@apps/explorer/listing/useListingSelection";
@@ -467,38 +471,33 @@ export default function Listing({
     globalKeys: !embedded,
   });
 
-  // Mouse selection on a row:
+  // Mouse selection on a row — SELECTION ONLY, never navigation:
   //   • Shift+click  — select the contiguous range anchor..row (rendered order);
   //   • Mod+click    — toggle this row in/out and re-anchor on it;
-  //   • plain click  — depends on the preview pane. Pane OFF (the default):
-  //     select AND open, what a single click has always done in this explorer.
-  //     Pane ON: select only — the click's job is to drive the pane preview
-  //     (files and folders both), and double-click is what opens. Enter still
-  //     opens either way (the keyboard model doesn't change with the pane).
-  // No single/double-click delay timer: with the pane on, the first click of a
-  // double-click selects (harmless — the pane fetch is superseded/unmounted by
-  // the navigation the second click triggers).
+  //   • plain click  — select this row alone.
+  // Which of the three a gesture means is listing/selection's rowClickAction,
+  // where the one-model rule is written down and tested.
   // Native text selection is suppressed in onRowMouseDown, not here — see there.
-  const onRowClick = (e: React.MouseEvent, path: string, row: RowCtx) => {
-    if (e.shiftKey && !isMod(e)) {
-      e.preventDefault();
-      extendTo(path);
+  const onRowClick = (e: React.MouseEvent, path: string, _row: RowCtx) => {
+    const action = rowClickAction({ mod: isMod(e), shift: e.shiftKey });
+    if (action === "select") {
+      selectOnly(path);
       return;
     }
-    if (isMod(e)) {
-      e.preventDefault();
-      toggleSelected(path);
-      return;
-    }
-    selectOnly(path);
-    if (!pane.on) navigate(row.path, { isDir: row.isDir });
+    e.preventDefault();
+    if (action === "extend") extendTo(path);
+    else toggleSelected(path);
   };
 
-  // Double-click opens when the pane owns the single click. Pane off: the
-  // single click already navigated, so this is a no-op (navigation unmounts
-  // the listing before a second click can land anyway).
+  // Double-click OPENS. Unconditionally: the same gesture in the same folder
+  // has to mean the same thing whether or not the window happens to be wide
+  // enough for the preview pane (listing/selection documents the model). Enter
+  // opens the same target from the keyboard.
+  // No single/double-click delay timer: the first click of a double-click
+  // selects, which is harmless — any pane fetch it starts is superseded or
+  // unmounted by the navigation the second click triggers.
   const onRowDoubleClick = (row: RowCtx) => {
-    if (pane.on) navigate(row.path, { isDir: row.isDir });
+    navigate(row.path, { isDir: row.isDir });
   };
 
   // Kill the browser's own text selection for Shift/Mod+click, on MOUSEDOWN —

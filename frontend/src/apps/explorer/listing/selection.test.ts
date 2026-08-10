@@ -10,6 +10,7 @@ import {
   firstEntryPath,
   oneSelected,
   rangeBetween,
+  rowClickAction,
   selectionClaimed,
 } from "./selection";
 
@@ -135,5 +136,55 @@ describe("rangeBetween", () => {
   test("an anchor that is gone collapses onto the target", () => {
     expect(rangeBetween(["a", "b"], "gone", "b")).toEqual(["b"]);
     expect(rangeBetween(["a", "b"], "a", "gone")).toEqual([]);
+  });
+});
+
+// ONE click model for the whole explorer: single click selects, double click
+// opens. The pure half of it is which SELECTION a click means; the opening is
+// the row's onDoubleClick and needs no decision at all.
+describe("rowClickAction", () => {
+  test("a plain click selects that row alone", () => {
+    expect(rowClickAction({ mod: false, shift: false })).toBe("select");
+  });
+
+  test("Shift extends the range", () => {
+    expect(rowClickAction({ mod: false, shift: true })).toBe("extend");
+  });
+
+  test("Mod toggles the row in or out", () => {
+    expect(rowClickAction({ mod: true, shift: false })).toBe("toggle");
+  });
+
+  test("Mod wins over Shift when both are held", () => {
+    // Both modifiers down is ambiguous, and Finder resolves it the same way:
+    // the toggle is the more precise gesture, and an accidental Shift held
+    // while Mod-picking rows must not replace the picks with a range.
+    expect(rowClickAction({ mod: true, shift: true })).toBe("toggle");
+  });
+});
+
+// The unified model, pinned at the source: neither half may be conditioned on
+// the preview pane again. A single click used to OPEN when the pane was off
+// and merely SELECT when it was on — two click models in one view, decided by
+// a layout state the user no longer even controls (listing/pane.ts).
+describe("the listing rows wire both halves of the model", () => {
+  const src = readFileSync(join(import.meta.dir, "../Listing.tsx"), "utf8");
+
+  test("a single click never navigates", () => {
+    const click = src.slice(
+      src.indexOf("const onRowClick ="),
+      src.indexOf("const onRowDoubleClick ="),
+    );
+    expect(click).toContain("rowClickAction");
+    expect(click).not.toContain("navigate(");
+  });
+
+  test("a double click always opens, pane or no pane", () => {
+    const dbl = src.slice(
+      src.indexOf("const onRowDoubleClick ="),
+      src.indexOf("const onRowMouseDown ="),
+    );
+    expect(dbl).toContain("navigate(row.path");
+    expect(dbl).not.toContain("pane.on");
   });
 });

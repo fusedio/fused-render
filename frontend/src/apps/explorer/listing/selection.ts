@@ -94,6 +94,34 @@ export function selectionClaimed(sel: Selection): boolean {
   return sel.paths.length > 0;
 }
 
+// What a mouse click on a row does TO THE SELECTION — and nothing else, which
+// is the point.
+//
+// The explorer has ONE click model now: a single click selects, a double click
+// opens, on every row in every view mode. It used to have two, chosen by
+// whether the preview pane happened to be showing — pane off, a single click
+// selected AND opened; pane on, it only selected and the double click opened.
+// That was defensible while the pane was a thing the user switched on, and
+// stopped being so the moment the split became a measurement of the window
+// (listing/pane.ts): the same click in the same folder would open a file or
+// not depending on how wide the window was when you clicked it.
+//
+// So: this function answers only which SELECTION a click means. Opening has no
+// decision left to make — it is the row's onDoubleClick, unconditionally.
+//
+// `mod` is the caller's isMod(e) verdict rather than the raw event, so the
+// rule stays pure and platform-free (isMod is exclusive per-platform by
+// design; see lib/platform). Mod outranks Shift when both are down: the toggle
+// is the more precise gesture, and a stray Shift while Mod-picking rows must
+// not replace the picks with a range.
+export type RowClickAction = "extend" | "toggle" | "select";
+
+export function rowClickAction(gesture: { mod: boolean; shift: boolean }): RowClickAction {
+  if (gesture.mod) return "toggle";
+  if (gesture.shift) return "extend";
+  return "select";
+}
+
 // A contiguous range of rendered rows, inclusive, in row order. `rows` is the
 // live navRows order (the SORTED/rendered order, never the raw fs order).
 export function rangeBetween(rows: string[], from: string, to: string): string[] {
