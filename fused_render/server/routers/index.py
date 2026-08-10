@@ -33,6 +33,7 @@ from fused_render.index.store import (
     save_applied_ignore,
 )
 from fused_render.server.common import _error, _require_fused
+from fused_render.server.index_gitignore import filter_corpus
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -214,10 +215,16 @@ def api_index_search(root: str = Query(default=""), q: str = Query(default=""),
     decide whether to use it. A miss is `{covered: false, entries: []}` with a
     200 — never an error: the explorer falls back to the live walk, and a red
     search box during the first-boot scan would be a lie about a system that
-    is working exactly as designed."""
+    is working exactly as designed.
+
+    Entries pass through the gitignore filter before leaving: the walk this
+    corpus replaces prunes gitignored entries, and the swap must not change
+    what search shows (server/index_gitignore.py)."""
     if not root.strip():
         return _error("'root' is required")
-    return {"ok": True, **index_search(load_config(), root, q=q, limit=limit)}
+    out = index_search(load_config(), root, q=q, limit=limit)
+    out = filter_corpus(out, cacheable=not q.strip())
+    return {"ok": True, **out}
 
 
 # --------------------------------------------------------------------- config
