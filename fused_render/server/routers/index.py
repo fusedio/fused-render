@@ -278,7 +278,11 @@ def api_index_config_write(body: dict = Body(default={}),
             rescan_run_ids.append((started or {}).get("run_id"))
         except (ValueError, OSError):
             logger.exception("could not start the post-edit rescan of %s", root)
-    return {"ok": True, "roots": saved.roots, "ignore": saved.ignore,
+    # Same shape as the GET: the panel swaps its whole state for this
+    # response, so a save that reported the raw configured list would blank
+    # the coverage line whenever the roots are the unconfigured home default.
+    return {"ok": True, "roots": scan_roots(saved),
+            "configured_roots": saved.roots, "ignore": saved.ignore,
             "defaults": default_ignore(), "location": saved.dir,
             "needs_rescan": bool(stale),
             "rescan_run_id": rescan_run_ids[0] if rescan_run_ids else None,

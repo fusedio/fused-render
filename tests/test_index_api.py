@@ -219,6 +219,22 @@ def test_saving_rules_with_no_index_yet_starts_nothing(home, tmp_path, monkeypat
     assert started == []
 
 
+def test_saving_the_config_answers_in_the_same_shape_as_reading_it(home, tmp_path):
+    """The panel replaces its whole state with the save's response, so the two
+    shapes must agree. They did not: GET reports `roots` as the roots actually
+    scanned (home, when none are configured) plus `configured_roots`, while
+    the save reported the raw configured list and omitted the second field —
+    so with no configured roots the panel's "Covers …" line vanished on save
+    even though coverage had not changed."""
+    client = _client(tmp_path)
+    read = client.get("/api/index/config").json()
+    saved = client.post("/api/index/config", json={"ignore": ["node_modules"]},
+                        headers={"X-Fused": "1"}).json()
+    assert saved["roots"] == read["roots"]  # the effective (home) fallback
+    assert saved["roots"]  # ...and it is not empty
+    assert saved["configured_roots"] == read["configured_roots"] == []
+
+
 def test_config_rejects_a_non_list(home, tmp_path):
     resp = _client(tmp_path).post("/api/index/config", json={"roots": "nope"},
                                   headers={"X-Fused": "1"})
