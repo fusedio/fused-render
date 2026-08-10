@@ -48,6 +48,24 @@ def test_reading_the_index_survives_a_store_path_with_metachars(tmp_path, awkwar
     assert [e["rel"] for e in out["entries"]] == ["alpha.txt"]
 
 
+def test_search_under_covers_the_filesystem_root(tmp_path):
+    """Searching "/" answered covered:false every time: rstrip("/") reduced the
+    root to the empty string, which the guard then read as "no root given".
+    Every line after that already special-cased "/" — only the normalisation
+    did not, and `stats` next door had the `or "/"` this was missing."""
+    cfg = _index(tmp_path, "/", ["/alpha.txt", "/sub/beta.md"], dirs=["/sub"])
+    out = search_under(cfg, "/")
+    assert out["covered"] is True
+    assert "alpha.txt" in [e["rel"] for e in out["entries"]]
+    assert "sub/beta.md" in [e["rel"] for e in out["entries"]]
+
+
+def test_search_under_ignores_a_trailing_slash(tmp_path):
+    cfg = _index(tmp_path, "/r", ["/r/a.txt"])
+    assert (search_under(cfg, "/r/")["entries"]
+            == search_under(cfg, "/r")["entries"])
+
+
 def test_search_under_returns_walk_shaped_entries(tmp_path):
     cfg = _index(tmp_path, "/r", ["/r/alpha.txt", "/r/sub/beta.md"],
                  dirs=["/r/sub"])

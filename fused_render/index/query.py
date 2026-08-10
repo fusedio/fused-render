@@ -226,7 +226,11 @@ def search_under(cfg: IndexConfig, root: str, q: str = "", limit: int = MAX_CORP
     subsequence-based rather than being pre-narrowed to substrings — but it
     keeps the endpoint useful for a caller that only wants the hits.
     """
-    root = norm(os.path.abspath(os.path.expanduser((root or "").strip()))).rstrip("/")
+    # `or "/"` because rstrip eats the filesystem root down to the empty
+    # string, which the guard below then reads as "no root given" — so a
+    # search of "/" answered `covered: false` every time. Everything past
+    # here already special-cases "/" (see `prefix`); only this line did not.
+    root = norm(os.path.abspath(os.path.expanduser((root or "").strip()))).rstrip("/") or "/"
     m = read_manifest(cfg)
     empty = {"covered": False, "fresh": False, "updated": None, "age_s": None,
              "root": root, "entries": [], "truncated": False, "total": 0,
