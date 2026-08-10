@@ -51,20 +51,57 @@ def _detach_kwargs() -> dict:
     return {"close_fds": False}
 
 
+def _run_spec(run_dir: str) -> dict:
+    try:
+        with open(os.path.join(run_dir, "spec.json")) as f:
+            spec = json.load(f)
+        return spec if isinstance(spec, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _spec_ignore_sig(spec: dict):
+    """The ignore fingerprint a live run is scanning under, or None.
+
+    Recorded explicitly at spawn; derived from the config the spec carries for
+    runs started before that field existed, so an in-flight legacy run is
+    still joinable instead of being cancelled once on upgrade."""
+    sig = spec.get("ignore_sig")
+    if isinstance(sig, str):
+        return sig
+    conf = spec.get("config")
+    if isinstance(conf, dict):
+        try:
+            return IndexConfig.from_dict(conf).rules.sig()
+        except (TypeError, ValueError, KeyError):
+            return None
+    return None
+
+
 def active_run(cfg: IndexConfig, root: str):
     """The live run scanning exactly `root`, or None.
 
     Liveness is the heartbeat _with_liveness applies, not the presence of a
     run directory: a killed worker leaves a `running` log behind forever, and
-    reading that as live would wedge every future scan of the root."""
+    reading that as live would wedge every future scan of the root.
+
+    A run already told to stop does not count. Cancelling is asynchronous —
+    the worker notices its flag within a couple hundred directories — so a
+    dying run's log still reads `running`, and offering it as joinable would
+    hand the caller a scan that is about to produce nothing."""
     now = time.time()
     for rid in _run_ids(cfg):
         rd = os.path.join(cfg.runs_dir, rid)
         folded = _folded(rd)
         if folded["root"] != root:
             continue
+        if os.path.exists(os.path.join(rd, "cancel")):
+            continue
         if _with_liveness(dict(folded), rd, now)["running"]:
-            return {"run_id": rid, "root": root}
+            spec = _run_spec(rd)
+            return {"run_id": rid, "root": root,
+                    "ignore_sig": _spec_ignore_sig(spec),
+                    "full": bool(spec.get("full"))}
     return None
 
 
@@ -88,15 +125,35 @@ def start(cfg: IndexConfig, root: str, full: bool = False) -> dict:
             "(a kernel crawl of an rclone mount can wedge it)")
     if not os.path.isdir(root):
         raise ValueError(f"not a directory: {root}")
+    sig = cfg.rules.sig()
     live = active_run(cfg, root)
     if live is not None:
-        return {**live, "already_running": True}
+        # Join only a run that can actually answer THIS request. A live scan
+        # carries the ignore list it was spawned with and stamps that as
+        # applied, so joining one started under different rules is how a
+        # skip-rules save silently loses its reconciling rescan: the old
+        # worker finishes, stamps the OLD fingerprint, and the root reads as
+        # reconciled while the store still holds the folders just excluded —
+        # with the UI having reported a rebuild. `full` is one-way: a full
+        # rebuild already covers an incremental request, not the reverse.
+        if live["ignore_sig"] == sig and (live["full"] or not full):
+            return {"run_id": live["run_id"], "root": root,
+                    "already_running": True}
+        # Otherwise supersede it. Cancelling is safe to do bluntly: a
+        # cancelled worker returns before it compacts or stamps anything
+        # (index/scan.py), so its output was going to be discarded regardless
+        # and only the walk done so far is lost.
+        cancel(cfg, live["run_id"])
     run_id = time.strftime("%Y%m%d-%H%M%S") + "-" + os.urandom(3).hex()
     run_dir = os.path.join(cfg.runs_dir, run_id)
     os.makedirs(run_dir)
     with open(os.path.join(run_dir, "spec.json"), "w") as f:
+        # `ignore_sig` is redundant with `config` and recorded anyway: the join
+        # check above reads it on every start, and deriving it from the config
+        # means compiling the rules just to answer "same rules?".
         json.dump({"root": root, "full": bool(full), "started": time.time(),
-                   "config": cfg.to_dict(), "mounts_dir": _mounts_dir()}, f)
+                   "ignore_sig": sig, "config": cfg.to_dict(),
+                   "mounts_dir": _mounts_dir()}, f)
     with open(os.path.join(run_dir, "worker.log"), "w") as logf:
         subprocess.Popen(
             [sys.executable, "-m", WORKER_MODULE, run_dir],

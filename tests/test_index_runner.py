@@ -152,6 +152,68 @@ def test_start_ignores_a_finished_run_of_the_same_root(tmp_path, spawned):
     assert len(spawned) == 2
 
 
+def test_start_does_NOT_join_a_run_built_on_different_ignore_rules(tmp_path, spawned):
+    """The join guard must not swallow the rescan a rules save promises.
+
+    A live run carries the ignore list it was SPAWNED with in its spec, and
+    that is what its worker stamps as applied. Joining it after the user edits
+    the skip rules means the reconciling scan never happens: the old worker
+    finishes, stamps the OLD fingerprint, and the root looks reconciled while
+    the store still holds rows for folders the user just excluded — with the
+    UI having said it was rebuilding. A cancelled worker returns before it
+    compacts or stamps anything (index/scan.py), so the old run's output is
+    discarded by definition and restarting costs only the walk so far."""
+    cfg = _cfg(tmp_path)
+    cfg.ignore = ["node_modules"]
+    first = runner.start(cfg, str(tmp_path))
+
+    cfg.ignore = ["node_modules", "target"]
+    second = runner.start(cfg, str(tmp_path))
+    assert second["run_id"] != first["run_id"]
+    assert "already_running" not in second
+    assert len(spawned) == 2
+    # the superseded run is told to stop...
+    assert os.path.exists(os.path.join(cfg.runs_dir, first["run_id"], "cancel"))
+    # ...and the new one carries the rules the user actually saved
+    spec = json.load(open(os.path.join(cfg.runs_dir, second["run_id"], "spec.json")))
+    assert spec["config"]["ignore"] == ["node_modules", "target"]
+    assert spec["ignore_sig"] == cfg.rules.sig()
+
+
+def test_start_does_not_join_a_cancelled_run_still_winding_down(tmp_path, spawned):
+    """Cancelling is asynchronous — the worker notices its flag within a couple
+    hundred directories — so the dying run's log still reads `running`. A
+    second rules save in that window must not join it."""
+    cfg = _cfg(tmp_path)
+    first = runner.start(cfg, str(tmp_path))
+    runner.cancel(cfg, first["run_id"])
+    second = runner.start(cfg, str(tmp_path))
+    assert second["run_id"] != first["run_id"]
+    assert len(spawned) == 2
+
+
+def test_start_does_not_join_an_incremental_run_when_a_FULL_scan_is_asked_for(
+        tmp_path, spawned):
+    """"Rescan from scratch" is a different job from the incremental scan in
+    flight; joining it would silently answer a rebuild with a reuse pass."""
+    cfg = _cfg(tmp_path)
+    first = runner.start(cfg, str(tmp_path))
+    second = runner.start(cfg, str(tmp_path), full=True)
+    assert second["run_id"] != first["run_id"]
+    assert len(spawned) == 2
+
+
+def test_start_joins_a_full_run_when_only_an_incremental_is_asked_for(tmp_path, spawned):
+    """The other direction is fine: a full rebuild already covers everything
+    an incremental scan would have done."""
+    cfg = _cfg(tmp_path)
+    first = runner.start(cfg, str(tmp_path), full=True)
+    second = runner.start(cfg, str(tmp_path))
+    assert second["run_id"] == first["run_id"]
+    assert second["already_running"] is True
+    assert len(spawned) == 1
+
+
 def test_start_ignores_an_abandoned_run_of_the_same_root(tmp_path, spawned):
     """Liveness is the heartbeat, not the mere presence of a run dir: a
     killed worker leaves a `running` log behind, and treating that as live

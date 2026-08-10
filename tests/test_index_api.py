@@ -15,6 +15,12 @@ from fused_render.server import create_app
 from fused_render.server.routers import index as index_router
 
 
+class _FakePopen:
+    """Stands in for a detached worker: the scan never actually runs."""
+
+    pid = 4242
+
+
 def _client(tmp_path):
     return TestClient(create_app(start_dir=str(tmp_path)))
 
@@ -325,6 +331,38 @@ def test_a_comment_only_edit_needs_no_rescan(home, tmp_path, monkeypatch):
                        headers={"X-Fused": "1"}).json()
     assert body["needs_rescan"] is False
     assert started == []
+
+
+def test_saving_rules_mid_scan_supersedes_the_running_scan(home, tmp_path, monkeypatch):
+    """The reported bug, end to end: a skip-rules save while a scan is in
+    flight must not be answered by joining that scan. The running worker
+    carries the OLD ignore list and stamps it as applied, so joining it means
+    the reconciling rescan the save promised never happens — while the panel
+    says the index is being rebuilt."""
+    spawned = []
+    monkeypatch.setattr(index_router.runner.subprocess, "Popen",
+                        lambda argv, **kw: spawned.append(argv) or _FakePopen())
+    root = tmp_path / "proj"
+    root.mkdir()
+    cfg = load_config()
+    cfg.roots = [str(root)]
+    cfg.ignore = ["node_modules"]
+    index_router.save_config(cfg)
+    # A scan is running under rules A, and rules A are what the index claims.
+    live = index_router.runner.start(load_config(), str(root))
+    index_router.save_applied_ignore(load_config(), str(root))
+
+    body = _client(tmp_path).post(
+        "/api/index/config", json={"ignore": ["node_modules", "target"]},
+        headers={"X-Fused": "1"}).json()
+
+    assert body["needs_rescan"] is True
+    assert body["rescan_run_id"] is not None
+    assert body["rescan_run_id"] != live["run_id"]  # not the joined old run
+    runs_dir = load_config().runs_dir
+    assert os.path.exists(os.path.join(runs_dir, live["run_id"], "cancel"))
+    fresh = json.load(open(os.path.join(runs_dir, body["rescan_run_id"], "spec.json")))
+    assert fresh["config"]["ignore"] == ["node_modules", "target"]
 
 
 def test_config_rejects_a_non_list(home, tmp_path):
