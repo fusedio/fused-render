@@ -113,6 +113,49 @@ def test_status_without_a_run_id_reports_the_latest_run(home, tmp_path):
     assert body["run_id"] == "20260101-000000-aa"
 
 
+def _write_run(cfg, run_id, root, events):
+    d = os.path.join(cfg.runs_dir, run_id)
+    os.makedirs(d, exist_ok=True)
+    with open(os.path.join(d, "spec.json"), "w") as f:
+        json.dump({"root": root}, f)
+    with open(os.path.join(d, "events.jsonl"), "w") as f:
+        for e in events:
+            f.write(json.dumps(e) + "\n")
+    return d
+
+
+def test_status_without_a_run_id_reports_a_RUNNING_run(home, tmp_path):
+    """With several roots the newest run is not the interesting one: a small
+    root can finish while the big one still walks, and the newest-first pick
+    then froze the panel on the finished run's counts for minutes while
+    `scanning` stayed true. The run reported must be one that is running."""
+    cfg = load_config()
+    _write_run(cfg, "20260101-000000-aa", "/big",
+               [{"type": "progress", "dirs": 2, "files": 7, "current": "/big/x"}])
+    _write_run(cfg, "20260101-000100-bb", "/small",
+               [{"type": "progress", "dirs": 1, "files": 1},
+                {"type": "run_end", "summary": {"rows": 1}}])
+    body = _client(tmp_path).get("/api/index/status").json()
+    assert body["scanning"] is True
+    assert body["running"] is True
+    assert body["run_id"] == "20260101-000000-aa"
+    assert body["root"] == "/big"
+    assert body["files"] == 7
+
+
+def test_status_without_a_run_id_falls_back_to_the_latest_when_none_run(home, tmp_path):
+    cfg = load_config()
+    _write_run(cfg, "20260101-000000-aa", "/old",
+               [{"type": "run_end", "summary": {}}])
+    _write_run(cfg, "20260101-000100-bb", "/new",
+               [{"type": "progress", "files": 4},
+                {"type": "run_end", "summary": {}}])
+    body = _client(tmp_path).get("/api/index/status").json()
+    assert body["scanning"] is False
+    assert body["run_id"] == "20260101-000100-bb"
+    assert body["root"] == "/new"
+
+
 def test_status_with_no_runs_at_all_is_a_quiet_idle(home, tmp_path):
     body = _client(tmp_path).get("/api/index/status").json()
     assert body == {"ok": True, "running": False, "run_id": None, "root": None,

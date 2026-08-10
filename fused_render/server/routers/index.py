@@ -171,7 +171,13 @@ def api_index_status(run_id: str = Query(default=""),
                     "dirs": 0, "files": 0, "reused": 0, "current": "",
                     "summary": None, "cancelled": False, "error": None,
                     "running": False}
-        return {**base, **runs[0]}
+        # The most recent RUNNING run, not simply the most recent: with
+        # several roots a quick scan can finish while a big one still walks,
+        # and reporting the finished one froze the panel's counts for minutes
+        # while `scanning` (rightly) stayed true. Falls back to the latest run
+        # when nothing is running, which is the idle "last scan" readout.
+        live = next((r for r in runs if r["running"]), None)
+        return {**base, **(live or runs[0])}
     try:
         out = runner.status(cfg, run_id, since=since)
     except ValueError as e:
