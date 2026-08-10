@@ -21,7 +21,7 @@ from fastapi import APIRouter, Body, Header, Query
 
 from fused_render.index import runner
 from fused_render.index.config import IndexConfig, load_config, save_config
-from fused_render.index.ignore import clean_patterns, default_ignore
+from fused_render.index.ignore import clean_patterns, default_ignore, norm
 from fused_render.index.query import MAX_CORPUS
 from fused_render.index.query import lookup as index_lookup
 from fused_render.index.query import search_under as index_search
@@ -155,7 +155,10 @@ def api_index_status(run_id: str = Query(default=""),
     # means "say indexing…", not "stop using the index".
     base = {"ok": True,
             "has_index": manifest is not None,
-            "scanning": bool(runs and runs[0]["running"]),
+            # any(), not runs[0]: with several roots, a quick second scan can
+            # finish (and become runs[0]) while the first root's is still
+            # walking — the indexing caveat must hold until they ALL settle
+            "scanning": any(r["running"] for r in runs),
             "files_indexed": int((manifest or {}).get("rows") or 0),
             "last_completed_at": (manifest or {}).get("updated"),
             # kept as the pre-existing names for the same two facts
@@ -240,11 +243,13 @@ def api_index_config_write(body: dict = Body(default={}),
         value = body[key]
         if not isinstance(value, list) or any(not isinstance(v, str) for v in value):
             return _error(f"'{key}' must be an array of strings")
-        cleaned = clean_patterns(value)
         if key == "roots":
-            cfg.roots = cleaned
+            # Roots are PATHS, not ignore patterns: clean_patterns rstrips
+            # "/" into the empty string, silently destroying a root of "/".
+            cfg.roots = [norm(os.path.abspath(os.path.expanduser(r.strip())))
+                         for r in value if r.strip()]
         else:
-            cfg.ignore = cleaned
+            cfg.ignore = clean_patterns(value)
             cfg._rules = None
     saved = save_config(cfg)
     # Reconcile. The engine fingerprints the rules each root's slice of the

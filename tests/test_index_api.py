@@ -410,6 +410,32 @@ def test_startup_scan_skips_a_root_that_is_gone(home, tmp_path, monkeypatch):
     assert started == [str(ok)]
 
 
+def test_a_root_of_slash_survives_the_config_write(home, tmp_path):
+    """Roots are paths, not ignore patterns: clean_patterns rstrips '/' into
+    the empty string and silently drops the root."""
+    body = _client(tmp_path).post("/api/index/config", json={"roots": ["/"]},
+                                  headers={"X-Fused": "1"}).json()
+    assert body["roots"] == ["/"]
+
+
+def test_scanning_reflects_every_run_not_just_the_newest(home, tmp_path):
+    """With several roots, a quick second scan can finish (and become the
+    newest run) while the first root's is still walking — the status bit
+    must keep saying scanning until they all settle."""
+    cfg = load_config()
+    for rid, events in (("20260101-000000-aa", [{"type": "phase", "msg": "scanning"}]),
+                        ("20260102-000000-bb", [{"type": "run_end", "msg": "complete"}])):
+        d = os.path.join(cfg.runs_dir, rid)
+        os.makedirs(d)
+        with open(os.path.join(d, "spec.json"), "w") as f:
+            json.dump({"root": "/r"}, f)
+        with open(os.path.join(d, "events.jsonl"), "w") as f:
+            for e in events:
+                f.write(json.dumps(e) + "\n")
+    body = _client(tmp_path).get("/api/index/status").json()
+    assert body["scanning"] is True
+
+
 def test_a_rules_edit_rescans_every_stale_root_not_just_the_first(home, tmp_path, monkeypatch):
     """The reconciling rescan used to go to roots[0] only; the first root's
     scan then stamped the (global) fingerprint and every other root looked
