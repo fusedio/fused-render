@@ -216,7 +216,10 @@
     HTMLElement.prototype.focus = function () {
       /* embedded in the preview pane, and the reader hasn't asked: ignore */
     };
+    var released = false;
     var release = function () {
+      if (released) return;
+      released = true;
       HTMLElement.prototype.focus = realFocus;
       window.__fusedNoAutofocus = false;
       if (observer) observer.disconnect();
@@ -225,10 +228,22 @@
       // unfocusable for the reader who just clicked into it.
       document.removeEventListener("focusin", bounceFocus, true);
       document.removeEventListener("pointerdown", release, true);
-      document.removeEventListener("keydown", release, true);
     };
+    // POINTER only, and deliberately not keydown: a key reaching an embedded
+    // preview means focus LEAKED into it, not that the reader aimed at it, and
+    // lifting the suppression there let the page take the keyboard for good on
+    // the very keystroke the shell was about to rescue. A reader who really is
+    // driving this page with the keyboard got here by Tab, and the shell lifts
+    // the suppression for that (window.__fusedReleaseNoFocus below).
     document.addEventListener("pointerdown", release, true);
-    document.addEventListener("keydown", release, true);
+    // The same release, reachable from the EMBEDDER. Some deliberate acts are
+    // invisible in here: a reader tabbing into the pane presses Tab in the
+    // SHELL's document, so this page never sees a keydown and would bounce the
+    // focus it was just deliberately given — the two halves of the contract
+    // contradicting each other. The shell calls this the moment it recognises
+    // such an act (see usePaneFocusGuard). An app-internal global, not part of
+    // `fused`, for the same reason `__fusedFlushEdits` is.
+    window.__fusedReleaseNoFocus = release;
     document.addEventListener("DOMContentLoaded", function () {
       if (observer) observer.disconnect();
     });

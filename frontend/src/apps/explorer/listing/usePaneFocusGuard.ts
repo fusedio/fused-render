@@ -42,10 +42,11 @@ const TAB_GRACE_MS = 300;
 
 // Re-checks after the frame's `load`, for the focus a page takes without the
 // parent hearing a focus event — `autofocus` applied at the end of parsing, and
-// engines that do not surface an iframe focus to the embedder at all. Bounded
-// and few: a preview that has not tried to take focus within a second of
-// loading is not going to.
-const SETTLE_CHECKS_MS = [0, 60, 250, 800];
+// engines that do not surface an iframe focus to the embedder at all. They also
+// re-attempt the inner wiring below, so a document that arrives late is still
+// watched. Bounded and few, but they run out to a couple of seconds: a template
+// that fetches before it focuses does so well after `load`.
+const SETTLE_CHECKS_MS = [0, 60, 250, 800, 1600, 2600];
 
 export function usePaneFocusGuard<T extends HTMLElement>() {
   const rootRef = useRef<T | null>(null);
@@ -57,8 +58,6 @@ export function usePaneFocusGuard<T extends HTMLElement>() {
   const lastTabAt = useRef(0);
 
   useEffect(() => {
-    const root = rootRef.current;
-    if (!root) return;
     const timers: number[] = [];
     const cleanups: (() => void)[] = [];
 
@@ -66,10 +65,57 @@ export function usePaneFocusGuard<T extends HTMLElement>() {
       pointerEngaged.current || Date.now() - lastTabAt.current < TAB_GRACE_MS;
 
     const reclaim = () => {
+      // Read the root through the ref EVERY time, never captured once. The pane
+      // renders a different element per state — a skeleton while the target is
+      // being stat'ed, then the settled preview — and this effect runs on the
+      // FIRST of those. Capturing the node it found there meant capturing the
+      // skeleton's div, or null: the guard silently never installed, and the
+      // runtime's focus bounce was carrying the whole contract on its own.
+      const root = rootRef.current;
+      if (!root) return;
       const active = document.activeElement;
       const inFrame = active instanceof HTMLIFrameElement && root.contains(active);
       if (!shouldReclaimFocus(inFrame, engaged())) return;
-      (active as HTMLIFrameElement).blur();
+      const frameEl = active as HTMLIFrameElement;
+      // Clear whatever holds focus INSIDE the frame first, so the page is not
+      // left with a live caret in a composer the reader never put it in, and so
+      // a page that re-asserts focus has nothing to re-assert from.
+      try {
+        const innerActive = frameEl.contentDocument?.activeElement;
+        if (innerActive instanceof HTMLElement) innerActive.blur();
+      } catch {
+        /* cross-origin: the outer half below is all we get */
+      }
+      frameEl.blur();
+      // …and blurring the frame is not enough on its own. WebKit treats
+      // `iframe.blur()` as a no-op: the embedder's activeElement stays on the
+      // frame, so the keystrokes keep going there and the listing's arrows stay
+      // dead — the exact bug this guard exists to prevent, surviving the guard.
+      // Focus has to be moved TO something, so it goes where the keyboard
+      // belongs: the listing's search box, which is a state the listing already
+      // treats as its own (useListingSelection's `navActive` drives the arrows
+      // from there deliberately, since a single-line input has no use for them).
+      if (document.activeElement !== frameEl) return;
+      const search = root
+        .closest(".listing-split")
+        ?.querySelector<HTMLInputElement>(".listing-search-input");
+      search?.focus();
+    };
+
+    // Tell the page it may keep focus: the reader has done something deliberate
+    // that the PAGE cannot see. Tab is the case — it is pressed in this
+    // document, so the frame never receives the keydown that would lift its own
+    // suppression, and its focusin bounce would throw away the focus the user
+    // just aimed at it (runtime.js). Nothing happens for a page that never
+    // installed the hook.
+    const releaseFrameSuppression = () => {
+      const frameEl = rootRef.current?.querySelector("iframe");
+      try {
+        (frameEl?.contentWindow as { __fusedReleaseNoFocus?: () => void } | null)
+          ?.__fusedReleaseNoFocus?.();
+      } catch {
+        /* cross-origin: it has no suppression of ours to lift */
+      }
     };
 
     // A focus move inside the frame is reported to us BEFORE the parent's
@@ -79,7 +125,12 @@ export function usePaneFocusGuard<T extends HTMLElement>() {
 
     const onFocusIn = () => reclaim();
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Tab") lastTabAt.current = Date.now();
+      if (e.key !== "Tab") return;
+      lastTabAt.current = Date.now();
+      // Before the focus moves, not after: the frame's bounce fires the instant
+      // focus lands in it, so lifting the suppression afterwards would already
+      // have cost the user the tab stop they aimed at.
+      releaseFrameSuppression();
     };
     window.addEventListener("focusin", onFocusIn);
     window.addEventListener("keydown", onKeyDown, true);
@@ -88,47 +139,73 @@ export function usePaneFocusGuard<T extends HTMLElement>() {
       window.removeEventListener("keydown", onKeyDown, true);
     });
 
-    const frame = root.querySelector("iframe");
-    if (frame) {
-      // The frame element taking focus, straight from the element: `focusin` on
-      // the window does not report it everywhere.
-      frame.addEventListener("focus", reclaimSoon);
-      cleanups.push(() => frame.removeEventListener("focus", reclaimSoon));
+    // The frame is looked up on every attempt, for the same reason as the root:
+    // it does not exist yet on the commit this effect runs on. `watched` keeps
+    // the wiring idempotent across the repeated attempts below.
+    const watchedFrames = new WeakSet<HTMLIFrameElement>();
+    const watchedDocs = new WeakSet<Document>();
 
-      // Same-origin, so the frame's own document is readable. This is where the
-      // two facts the shell cannot otherwise learn come from.
-      const watchInside = () => {
-        let doc: Document | null = null;
-        try {
-          doc = frame.contentDocument;
-        } catch {
-          return; // not same-origin after all — the outer listeners still hold
-        }
-        if (!doc) return;
-        const engage = () => {
-          pointerEngaged.current = true;
-        };
-        doc.addEventListener("pointerdown", engage, true);
-        doc.addEventListener("keydown", engage, true);
-        doc.addEventListener("focusin", reclaimSoon, true);
-        cleanups.push(() => {
-          doc.removeEventListener("pointerdown", engage, true);
-          doc.removeEventListener("keydown", engage, true);
-          doc.removeEventListener("focusin", reclaimSoon, true);
+    // Same-origin, so the frame's own document is readable. This is where the
+    // two facts the shell cannot otherwise learn come from: that focus landed
+    // inside, and that the USER is the one who reached in. Events do not cross
+    // an iframe boundary, so without listening in there a click into the
+    // preview raises nothing out here and the guard would keep snatching focus
+    // back from a reader who deliberately reached in.
+    const watchInside = () => {
+      const frame = rootRef.current?.querySelector("iframe");
+      if (!frame) return;
+      if (!watchedFrames.has(frame)) {
+        watchedFrames.add(frame);
+        // The frame element taking focus, straight from the element: `focusin`
+        // on the window does not report it everywhere.
+        frame.addEventListener("focus", reclaimSoon);
+        frame.addEventListener("load", () => {
+          watchInside();
+          settle();
         });
+        cleanups.push(() => frame.removeEventListener("focus", reclaimSoon));
+      }
+      let doc: Document | null = null;
+      try {
+        doc = frame.contentDocument;
+      } catch {
+        return; // not same-origin after all — the outer listeners still hold
+      }
+      // A fresh iframe starts on an about:blank that the real page REPLACES, so
+      // listeners attached too early go with it; each document is wired once,
+      // whenever it turns up.
+      if (!doc || watchedDocs.has(doc)) return;
+      watchedDocs.add(doc);
+      const seen = doc;
+      // POINTER only. A keydown reaching this document is not evidence the
+      // reader chose the preview — it is evidence focus leaked into it, and
+      // counting it stood the guard down permanently on the very keystroke it
+      // was meant to rescue. A click is unambiguous; a keyboard user's
+      // deliberate route in is Tab, which the shell sees for itself.
+      const engage = () => {
+        pointerEngaged.current = true;
       };
+      seen.addEventListener("pointerdown", engage, true);
+      seen.addEventListener("focusin", reclaimSoon, true);
+      cleanups.push(() => {
+        seen.removeEventListener("pointerdown", engage, true);
+        seen.removeEventListener("focusin", reclaimSoon, true);
+      });
+    };
 
-      const onLoad = () => {
-        watchInside();
-        SETTLE_CHECKS_MS.forEach((ms) => timers.push(window.setTimeout(reclaim, ms)));
-      };
-      frame.addEventListener("load", onLoad);
-      cleanups.push(() => frame.removeEventListener("load", onLoad));
-      // A frame that finished loading before this effect ran (a cached
-      // template, a re-render) fires no further `load` — watch it now too.
-      watchInside();
+    // Each tick re-checks focus AND re-attempts the wiring, which is what makes
+    // the whole thing survive a frame that does not exist yet on this commit.
+    function settle() {
+      SETTLE_CHECKS_MS.forEach((ms) =>
+        timers.push(
+          window.setTimeout(() => {
+            watchInside();
+            reclaim();
+          }, ms)
+        )
+      );
     }
-    SETTLE_CHECKS_MS.forEach((ms) => timers.push(window.setTimeout(reclaim, ms)));
+    settle();
 
     return () => {
       timers.forEach(clearTimeout);
