@@ -4799,18 +4799,42 @@ function queueRestore(raw, sessionId, runId) {
 // Returns whether the queue is safely stored, which is what the teardown hook
 // answers with. A refused write (quota, a locked-down profile) is a real
 // failure and says so; an empty queue is nothing to lose and says ok.
+//
+// The DELETE is gated by queueOwnedBy, exactly as restoreQueue's is, and for
+// the same reason: an empty queue is not evidence the stored record is this
+// page's. The pane's claude frame has no ids and no queue, and it reaches here
+// on every mode switch — the shell awaits `__fusedFlushEdits` before it
+// remounts anything — so an ungated removeItem let selecting a row bin the
+// queue a live conversation elsewhere in the same tab had parked behind a
+// running turn. The identical bug the restore side already had; both sites now
+// ask the one question, which is why the rule is a function and not an inline
+// comparison.
 function persistQueue() {
+  const sessionId = fused.params.get("session_id") || "";
+  const runId = fused.params.get("run") || "";
   const texts = queuedMsgs.map((q) => q.text);
-  const rec = queueRecord(fused.params.get("session_id") || "",
-                          fused.params.get("run") || "", texts);
+  const rec = queueRecord(sessionId, runId, texts);
   try {
     if (rec) sessionStorage.setItem(QUEUE_STORE, JSON.stringify(rec));
-    else if (!texts.length) sessionStorage.removeItem(QUEUE_STORE);
+    else if (!texts.length) {
+      // Nothing of ours to keep — so bin the record only if it IS ours. A
+      // record we cannot name is left alone: it dies with the tab anyway, and
+      // it may well be a running chat's.
+      const raw = sessionStorage.getItem(QUEUE_STORE);
+      if (raw && queueOwnedBy(raw, sessionId, runId)) sessionStorage.removeItem(QUEUE_STORE);
+    }
     else return false;  // queued text with no id to key it by — see queueRecord
     return true;
   } catch (err) {
     console.warn("the message queue could not be saved:", err.message);
-    return false;
+    // An EMPTY queue still says ok, whichever storage call threw. The hook's
+    // {ok:false} exists to stop a teardown eating the user's TEXT, and there is
+    // none here — the failed call was the removal of a record we no longer
+    // need. Refusing the mode switch over that would strand the reader in a
+    // pane to protect nothing. It read `return false` while the doc comment
+    // above said the opposite, which held only because nothing had made a
+    // locked-down store refuse a removal.
+    return !texts.length;
   }
 }
 

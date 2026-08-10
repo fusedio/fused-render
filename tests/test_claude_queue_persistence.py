@@ -169,17 +169,25 @@ def test_a_damaged_record_is_ignored_rather_than_thrown():
 
 # ------------------------------------------------------- persist / the hook
 
-def _persist(texts, session="sess-1", run="run-1", throws=False):
-    """Drive the page's `persistQueue` over a stubbed sessionStorage."""
+def _persist(texts, session="sess-1", run="run-1", throws=False, stored=None):
+    """Drive the page's `persistQueue` over a stubbed sessionStorage.
+
+    `stored` seeds the record already in the tab's storage — which is the whole
+    question when the queue is empty: whose record is it?
+    """
     stub = """
     const store = {};
+    if (%s !== null) store[QUEUE_STORE] = %s;
     globalThis.sessionStorage = {
+      getItem: (k) => (k in store ? store[k] : null),
       setItem: (k, v) => { if (%s) throw new Error("quota"); store[k] = v; },
-      removeItem: (k) => { delete store[k]; },
+      removeItem: (k) => { if (%s) throw new Error("quota"); delete store[k]; },
     };
     globalThis.fused = { params: { get: (k) => ({session_id: %s, run: %s})[k] } };
     globalThis.queuedMsgs = %s.map((t) => ({ text: t }));
-    """ % (json.dumps(bool(throws)), json.dumps(session), json.dumps(run),
+    """ % (json.dumps(stored), json.dumps(stored),
+           json.dumps(bool(throws)), json.dumps(bool(throws)),
+           json.dumps(session), json.dumps(run),
            json.dumps(texts))
     return _node(stub + """
     const ok = persistQueue();
@@ -195,6 +203,32 @@ def test_persisting_writes_the_live_queue_under_the_url_s_ids():
 
 
 def test_persisting_an_emptied_queue_clears_the_record():
+    out = _persist([], stored=json.dumps({"session": "sess-1", "run": "run-1",
+                                          "texts": ["gone"]}))
+    assert out["ok"] is True and out["stored"] is None
+
+
+def test_persisting_an_empty_queue_leaves_another_conversations_record_alone():
+    """The same rule the restore side has (`queueOwnedBy`), at the second and
+    more dangerous site: an empty queue says nothing about WHOSE record is in
+    storage.
+
+    The page that reaches here with an empty queue is typically the preview
+    pane's claude frame — id-less, no run, no queued text — and it reaches here
+    on every mode switch, because the shell awaits `__fusedFlushEdits` before
+    remounting the iframe. An ungated `removeItem` therefore binned the queue a
+    live conversation in the same tab had parked behind a running turn, from a
+    page that had merely been LOOKED at."""
+    raw = json.dumps({"session": "sess-1", "run": "run-1", "texts": ["parked"]})
+    # Another conversation's record.
+    assert _persist([], session="sess-2", run="run-2", stored=raw)["stored"] == raw
+    # The pane's frame: no ids at all, so it can name nothing and owns nothing.
+    assert _persist([], session="", run="", stored=raw)["stored"] == raw
+
+
+def test_persisting_an_empty_queue_over_an_empty_store_is_still_a_success():
+    """Nothing stored, nothing owned, nothing to do — and the teardown hook must
+    still let the frame go."""
     out = _persist([])
     assert out["ok"] is True and out["stored"] is None
 
@@ -208,8 +242,10 @@ def test_persisting_reports_failure_when_the_write_is_refused():
 
 def test_a_failed_write_of_an_empty_queue_is_still_a_success():
     """Nothing to lose: refusing the mode switch here would strand the user in a
-    pane for no reason."""
-    assert _persist([], throws=True)["ok"] is True
+    pane for no reason. Seeded with this page's OWN record so the refusal is a
+    real one — the storage call the empty branch makes is the removal."""
+    raw = json.dumps({"session": "sess-1", "run": "run-1", "texts": ["stale"]})
+    assert _persist([], throws=True, stored=raw)["ok"] is True
 
 
 def test_the_flush_hook_answers_with_whether_the_queue_was_saved():
