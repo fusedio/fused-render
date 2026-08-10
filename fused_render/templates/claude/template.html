@@ -135,6 +135,11 @@
   #annbtn {
     height: 26px;
     padding: 0;
+    /* The row's ONE auto margin, and the strip's right-hand anchor: everything
+       before it (#back) sits left, everything after it (the picker, the view
+       toggle) rides right with it. It was #viewbtn's, back when the switch led
+       the row — see #leftbar #leftmode for why a row gets exactly one. */
+    margin-left: auto;
     /* The elastic one. Its label is a mode name, and "Annot…" beside a visible
        accent track still reads — where half of "Back to chat" would not tell you
        it is the way back. See #viewbtn's flex-shrink. */
@@ -234,10 +239,10 @@
   #leftmode { position: relative; flex-shrink: 0; }
   /* THE RIGHT-HAND END of the pane's own bar. The bar exists to carry this one
      control, and a lone control hard against the left edge reads as a label for
-     the pane rather than as a switch on it — the same reason #viewbtn parks
+     the pane rather than as a switch on it — the same reason #annbtn parks
      itself at the end of the strip across the divider. Scoped to #leftbar: in
      the narrow layout the picker shares #anntools with the annotate switch and
-     the view toggle, where #viewbtn already owns the auto margin and a second
+     the view toggle, where #annbtn already owns the auto margin and a second
      one would split the free space between them and float the picker into the
      middle of the row. */
   #leftbar #leftmode { margin-left: auto; }
@@ -339,7 +344,6 @@
      because a truncated "Back to cha…" is the only way out of the preview. */
   #viewbtn {
     display: none;
-    margin-left: auto;
     flex-shrink: 0;
     height: 26px;
     padding: 0 8px;
@@ -468,6 +472,10 @@
     overflow: hidden;
   }
   #chat.home #topbar, #chat.home #logwrap, #chat.home #composer-chat { display: none; }
+  /* #back rides the #anntools strip (which BOTH views keep), so its home-view
+     hiding is its own rule — the landing page IS the chat list, and a "back to
+     where you already are" is a control for nothing. */
+  #chat.home #back { display: none; }
   #chat:not(.home) #home { display: none; }
 
   /* top bar */
@@ -1191,6 +1199,12 @@
            acts on the preview. Hiding them would hide part of the message. */
     body.view-chat #annbtn,
     body.view-chat #leftmode { display: none; }
+    /* The rule above also removes the row's ONE auto margin (#annbtn owns it,
+       see the wide styles), which would let the view toggle fall in next to
+       #back at the LEFT edge. The toggle takes the margin over only while the
+       switch is off screen, so the strip keeps its shape — way back at one end,
+       way forward at the other — in both views. */
+    body.view-chat #viewbtn { margin-left: auto; }
     /* The pin overlay (#annpins, #annhl, #annpop) needs no rule of its own: all
        three are children of #left, so parking the column takes them with it —
        `visibility: hidden` inherits (none of them sets `visibility: visible`)
@@ -1221,6 +1235,11 @@
     body.view-preview #left { flex: 1; min-height: 0; }
     body.view-preview #chat { flex: 0 0 auto; }
     body.view-preview #chat > *:not(#anntools) { display: none; }
+    /* #back survived the collapse above only because it moved into #anntools.
+       It stays hidden HERE for the same reason the rest of the chat column is:
+       the chat list it returns to is off screen in this view, so the button
+       would navigate to something the layout cannot show. */
+    body.view-preview #back { display: none; }
 
     #viewbtn { display: flex; align-items: center; }
   }
@@ -1263,6 +1282,14 @@
          document only). One switch is enough: the comment pins over the app
          show while annotating and hide when the mode is off. -->
     <div id="anntools">
+      <!-- The way back to the chat list, at the strip's left end. It lived at
+           the right end of #topbar; it sits HERE so the strip reads
+           [← Chats … Annotate] on one line, with the topbar below carrying only
+           the session's identity. Hidden on the home view (there is no chat to
+           leave) and in the narrow preview view (the view it returns to is off
+           screen there) — both rules are in the stylesheet, where the topbar's
+           own home-view hiding already lives. -->
+      <button id="back" type="button" aria-label="Back to chats">← Chats</button>
       <!-- Kind-free wording, and rewritten by applyPaneNoun once stat says what
            the pane is: "the app" for an app folder, "the preview" for a file. It
            said "the app" unconditionally, so a screen-reader user on `notes.md`
@@ -1305,7 +1332,6 @@
       <span class="tb-title">Claude</span>
       <span class="tb-file" id="banner-sub"></span>
       <span id="session" class="mono"></span>
-      <button id="back" type="button" aria-label="Back to chats">← Chats</button>
     </div>
     <div id="logwrap"><div id="log"></div><div id="queue"></div></div>
     <!-- `display: contents` is in the stylesheet, deliberately not here: an inline
@@ -2274,8 +2300,8 @@ function placeLeftPicker() {
   // Looked up rather than closed over: `viewbtn` has a const of its own further
   // down (viewBtn), and a second `const` of the same name here would be a
   // redeclaration. In the shared strip the picker belongs BETWEEN the annotate
-  // switch and the view toggle — appending would put it after #viewbtn, whose
-  // `margin-left: auto` pins it to the row's right end.
+  // switch and the view toggle — appending would put it after #viewbtn, and the
+  // toggle must stay the row's last word (it is the way out of the preview).
   const host = wide ? leftBar : document.getElementById("anntools");
   if (leftSel.parentElement !== host) {
     host.insertBefore(leftSel, wide ? null : document.getElementById("viewbtn"));
@@ -2391,6 +2417,14 @@ function enterNoPane() {
   //    rendered a blank page. applyNarrowView returns early from here on, so
   //    nothing puts either class back.
   document.body.classList.remove("view-preview", "view-chat");
+  // 4. Rescue #back before its host goes: the button lives in #anntools (the
+  //    strip earns its place as the [← Chats … Annotate] row), but the way back
+  //    to the chat list must outlive the pane. The topbar takes it — the row
+  //    that held it before the strip existed, and the one piece of chat chrome
+  //    this teardown keeps.
+  const backBtn = document.getElementById("back");
+  const topBar = document.getElementById("topbar");
+  if (backBtn && topBar) topBar.appendChild(backBtn);
   for (const id of ["left", "divider", "anntools"]) {
     const el = document.getElementById(id);
     if (el) el.remove();
