@@ -174,7 +174,7 @@ def test_reaching_a_terminal_state_spends_the_cancel_request(client):
 # ------------------------------------------------------------------ dismissal
 
 
-def test_a_finished_row_can_be_dismissed_and_a_running_one_cannot(client):
+def test_a_finished_row_can_be_dismissed_and_a_live_one_cannot(client):
     report(client, id="run", title="running")
     report(client, id="fin", title="finished", state="done")
 
@@ -186,30 +186,49 @@ def test_a_finished_row_can_be_dismissed_and_a_running_one_cannot(client):
     assert [r["id"] for r in listing(client)] == ["run"]
 
 
+def test_a_stalled_row_can_be_dismissed():
+    """Not a softening of the rule above but the same rule: nobody is reporting
+    on it, so the row hides nothing the app could otherwise say — it IS the app
+    saying it stopped knowing. The user closing it usually knows exactly what it
+    was, because they closed the page."""
+    jobs.upsert({"id": "gone", "title": "abandoned"}, now=1000.0)
+    at = 1000.0 + jobs.STALE_AFTER_S + 1
+    assert jobs.list_jobs(now=at)[0]["stalled"] is True
+    assert jobs.dismiss("gone", now=at) is True
+    assert jobs.list_jobs(now=at) == []
+
+
 def test_a_dismissed_row_does_not_come_back_on_a_late_tick(client):
     report(client, id="a", title="t", state="done")
     client.post("/api/jobs/a/dismiss", headers={"X-Fused": "1"})
-    # A poll loop that ran one more time after its job finished.
+    # A poll loop that ran one more time after its job finished. Answered 200 —
+    # a reporter mid-loop must not start erroring — but nothing is stored.
     assert report(client, id="a", title="t", done=5).status_code == 200
     assert listing(client) == []
 
 
-def test_a_dismissal_expires_so_a_stable_id_can_be_reused():
-    """The race a dismissal defends against is a poll loop ticking once more —
-    seconds. Refusing the id forever instead breaks the documented pattern of
-    reusing a STABLE id so a reloaded page re-attaches to its row: the id would
-    be dead for the rest of the session the first time anyone dismissed it."""
-    jobs.upsert({"id": "flux:job", "title": "run one", "state": "done"}, now=1000.0)
-    jobs.dismiss("flux:job", now=1000.0)
-    # A late tick from the run that just ended: still refused.
-    jobs.upsert({"id": "flux:job", "title": "run one", "done": 5}, now=1001.0)
-    assert jobs.list_jobs(now=1001.0) == []
+def test_a_dismissal_silences_late_ticks_but_not_a_fresh_start():
+    """What a dismissal refuses is a LATE TICK, never a new job.
 
-    # A genuinely new run, well after. This is a different job wearing the same
-    # name, and it gets its row.
-    later = 1000.0 + jobs.DISMISS_GRACE_S + 1
-    jobs.upsert({"id": "flux:job", "title": "run two"}, now=later)
-    assert [r["title"] for r in jobs.list_jobs(now=later)] == ["run two"]
+    Refusing the id outright would break the documented pattern of reusing a
+    STABLE id so a reloaded page re-attaches to its own row — the id would be
+    dead the first time anyone dismissed it. A tick is a delta or a terminal
+    state; only the opening report a `fused.job()` handle sends states
+    `running` outright, which is what tells the two apart.
+    """
+    jobs.upsert({"id": "flux:job", "title": "run one", "state": "running"}, now=1000.0)
+    jobs.upsert({"id": "flux:job", "state": "done"}, now=1001.0)
+    jobs.dismiss("flux:job", now=1001.0)
+
+    # The poll loop of the run that just ended, still going: refused, however
+    # long it keeps at it.
+    jobs.upsert({"id": "flux:job", "done": 5}, now=1002.0)
+    jobs.upsert({"id": "flux:job", "state": "error", "message": "late"}, now=1600.0)
+    assert jobs.list_jobs(now=1600.0) == []
+
+    # A new run announcing itself. Same name, different job — it gets its row.
+    jobs.upsert({"id": "flux:job", "title": "run two", "state": "running"}, now=1003.0)
+    assert [r["title"] for r in jobs.list_jobs(now=1003.0)] == ["run two"]
 
 
 def test_clear_takes_the_finished_rows_and_leaves_the_running_ones(client):

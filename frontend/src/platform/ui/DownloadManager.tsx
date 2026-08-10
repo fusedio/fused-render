@@ -174,13 +174,17 @@ function JobRow({ job, onChanged }: { job: Job; onChanged: () => void }) {
   // a job's life: stop this / take it off my screen. A running job that its
   // reporter never marked cancellable has no ✕ at all rather than a dead one —
   // the flag would be set and nothing would ever read it.
+  //
+  // A STALLED row dismisses rather than cancels: there is nobody left to hear a
+  // cancel request, and the row is the app admitting it has stopped knowing —
+  // so letting the user close it hides nothing the app could otherwise say.
   const canCancel = running && job.cancellable && !job.cancel_requested && !job.stalled;
-  const canDismiss = !running;
+  const canDismiss = !running || job.stalled;
 
   const act = async () => {
     setBusy(true);
     try {
-      if (running) await cancelJob(job.id);
+      if (canCancel) await cancelJob(job.id);
       else await dismissJob(job.id);
     } catch {
       /* the row is about to be re-read from the server either way */
@@ -205,8 +209,8 @@ function JobRow({ job, onChanged }: { job: Job; onChanged: () => void }) {
             className="dl-x"
             onClick={act}
             disabled={busy}
-            title={running ? "Cancel" : "Dismiss"}
-            aria-label={running ? `Cancel ${job.title}` : `Dismiss ${job.title}`}
+            title={canCancel ? "Cancel" : "Dismiss"}
+            aria-label={canCancel ? `Cancel ${job.title}` : `Dismiss ${job.title}`}
           >
             ✕
           </button>
@@ -227,7 +231,10 @@ export default function DownloadManager() {
   if (jobs.length === 0) return null;
 
   const overall = overallFraction(jobs);
-  const finished = jobs.filter((j) => !isRunning(j)).length;
+  // What "Clear" would actually take — which includes stalled rows, since those
+  // are dismissible too. Counting only finished ones hid the button in exactly
+  // the case a user most wants it: a column of rows nobody is reporting on.
+  const clearable = jobs.filter((j) => !isRunning(j) || j.stalled).length;
 
   const toggle = () => {
     setCollapsed((was) => {
@@ -260,7 +267,7 @@ export default function DownloadManager() {
           <span className="dl-summary">{jobsSummary(jobs)}</span>
         </button>
         {overall !== null && <span className="dl-pct">{Math.round(overall * 100)}%</span>}
-        {finished > 0 && (
+        {clearable > 0 && (
           <button className="dl-clear" onClick={clear} title="Dismiss finished">
             Clear
           </button>

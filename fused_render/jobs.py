@@ -88,20 +88,22 @@ DETAIL_MAX = 200
 MESSAGE_MAX = 4000
 PAGE_MAX = 1024
 
-# How long a dismissed id stays refused. A reporter that keeps posting after
-# its job finished would otherwise resurrect the row the user just closed, and
-# "it came back" reads as a bug in the app rather than as a late report.
+# Dismissed ids, bounded. A reporter that keeps posting after its job finished
+# would otherwise resurrect the row the user just closed, and "it came back"
+# reads as a bug in the app rather than as a late report.
 #
-# It EXPIRES rather than being permanent, which is the whole subtlety here: the
-# race it defends against is a poll loop running one more tick, which is
-# seconds. A permanent block breaks the legitimate case instead — a page that
-# reuses a STABLE id so a reload re-attaches to its row (the documented pattern)
-# would find that id dead for the rest of the session the first time anyone
-# dismissed it, and its next real download would never appear.
-DISMISS_GRACE_S = 60.0
-
-# ...and bounded, so a session that dismisses thousands of rows cannot grow this
-# without limit between sweeps.
+# What is refused is precise, and the precision is the point: a LATE TICK, never
+# a fresh start. A tick from a poll loop is a delta (`done`, `detail`) or a
+# terminal state; the opening report a `fused.job()` handle sends is the only
+# thing that carries `state: "running"` explicitly. So an opening report CLEARS
+# the dismissal and re-opens the row, and everything else stays refused.
+#
+# That distinction is what lets a page reuse a STABLE id (the documented pattern
+# — a reload re-attaches to its own row) without the id dying the first time
+# anyone dismissed it: the next real run announces itself and gets a row, while
+# the previous run's trailing ticks stay silenced. A plain time window was tried
+# first and is strictly worse at both ends — too short and a slow poll loop
+# resurrects the row anyway, too long and a legitimate re-run is invisible.
 _DISMISSED_MAX = 256
 
 
@@ -222,19 +224,20 @@ def upsert(body: dict, *, page: str = "", now: float | None = None) -> dict:
     job_id = clean_id(body.get("id"))
 
     with _lock:
-        dismissed_at = _dismissed.get(job_id)
-        if dismissed_at is not None and (now - dismissed_at) <= DISMISS_GRACE_S:
-            # Dismissed by the user moments ago; a late tick must not bring the
-            # row back. Answered as if it had been stored, so a reporter mid-loop
-            # does not start erroring — it simply has no row any more.
-            return _public(
-                Job(id=job_id, title="", state=RUNNING, started_at=now, updated_at=now),
-                now,
-            )
-        if dismissed_at is not None:
-            # Grace expired: this is a new job reusing the id, not the old one
-            # arguing. Forget the dismissal so the record below is kept.
-            del _dismissed[job_id]
+        if job_id in _dismissed:
+            if body.get("state") == RUNNING:
+                # A fresh start reusing the id, not the dismissed job arguing:
+                # only an opening report states `running` outright. Forget the
+                # dismissal and let the record below be created.
+                del _dismissed[job_id]
+            else:
+                # A late tick from the run the user already closed. Answered as
+                # if it had been stored, so a reporter mid-loop does not start
+                # erroring — it simply has no row any more.
+                return _public(
+                    Job(id=job_id, title="", state=RUNNING, started_at=now, updated_at=now),
+                    now,
+                )
 
         job = _jobs.get(job_id)
         if job is None:
@@ -312,27 +315,35 @@ def _forget(job_id: str, now: float) -> None:
 
 
 def dismiss(job_id: str, *, now: float | None = None) -> bool:
-    """Drop a FINISHED record. Returns whether there was one to drop.
+    """Drop a finished — or stalled — record. Returns whether there was one.
 
-    Running jobs are refused: the only honest way to make a running row go away
-    is to stop the work (`request_cancel`), and a dismiss that hid a live
-    download would put the app back in the state this whole feature exists to
-    fix — multi-GB of traffic with nothing on screen saying so.
+    A job someone is actively reporting on is refused: the only honest way to
+    make that row go away is to stop the work (`request_cancel`), and a dismiss
+    that hid a live download would put the app back in the state this whole
+    feature exists to fix — multi-GB of traffic with nothing on screen saying so.
+
+    A STALLED job is dismissible, though, and that is not a softening of the
+    rule but the same rule applied: nobody is reporting on it, so the row is not
+    hiding anything the app could otherwise tell you — it is the app admitting
+    it has stopped knowing. The user closing that row usually knows exactly what
+    it was (they closed the page). And it is not a one-way door: a reporter that
+    comes back opens the row again with its next `fused.job()` handle.
     """
     now = time.time() if now is None else now
     with _lock:
         job = _jobs.get(job_id)
-        if job is None or job.state == RUNNING:
+        if job is None or (job.state == RUNNING and not is_stalled(job, now)):
             return False
         _forget(job_id, now)
         return True
 
 
 def clear_finished(*, now: float | None = None) -> int:
-    """Dismiss every finished record at once. Returns how many went."""
+    """Dismiss every finished (or stalled) record at once. Returns how many."""
     now = time.time() if now is None else now
     with _lock:
-        gone = [j.id for j in _jobs.values() if j.state != RUNNING]
+        gone = [j.id for j in _jobs.values()
+                if j.state != RUNNING or is_stalled(j, now)]
         for job_id in gone:
             _forget(job_id, now)
         return len(gone)
@@ -381,10 +392,6 @@ def _public(job: Job, now: float) -> dict:
 
 def _sweep(now: float) -> None:
     """Drop what has aged out, then enforce the cap. Caller holds the lock."""
-    for job_id, at in list(_dismissed.items()):
-        if (now - at) > DISMISS_GRACE_S:
-            del _dismissed[job_id]
-
     for job_id, job in list(_jobs.items()):
         if job.state == RUNNING:
             if (now - job.updated_at) > STALE_DROP_S:

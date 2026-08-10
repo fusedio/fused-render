@@ -10,7 +10,7 @@ Four routes, and the split between them is who is talking:
 
 The reporter's POST answers with the stored record, which is what makes cancel
 work without a second channel: the reporter learns `cancel_requested` in the
-reply to the tick it was going to send anyway (SPEC AC-4). A reporter that only
+reply to the tick it was going to send anyway (SPEC BG-4). A reporter that only
 ever posts and never reads the reply still works — it just cannot be cancelled
 from the manager.
 
@@ -70,7 +70,7 @@ def api_jobs_report(body: dict = Body(...), x_fused: str | None = Header(default
 
 @router.post("/api/jobs/clear")
 def api_jobs_clear(x_fused: str | None = Header(default=None)):
-    """Dismiss every finished row. Running work is left alone."""
+    """Dismiss every finished (or stalled) row. Live work is left alone."""
     guard = _require_fused(x_fused)
     if guard is not None:
         return guard
@@ -100,7 +100,7 @@ def api_jobs_cancel(job_id: str, x_fused: str | None = Header(default=None)):
 
 @router.post("/api/jobs/{job_id}/dismiss")
 def api_jobs_dismiss(job_id: str, x_fused: str | None = Header(default=None)):
-    """Close a finished row. A running one is refused (409) — cancel it instead."""
+    """Close a finished (or stalled) row. A live one is refused (409) — cancel it."""
     guard = _require_fused(x_fused)
     if guard is not None:
         return guard
@@ -110,8 +110,8 @@ def api_jobs_dismiss(job_id: str, x_fused: str | None = Header(default=None)):
         return _error(str(e))
     if not jobs_mod.dismiss(job_id):
         return JSONResponse(
-            {"error": f"{job_id} is not a finished job — cancel it instead of "
-                      "dismissing it, or it has already gone"},
+            {"error": f"{job_id} is still being reported on — cancel it instead "
+                      "of dismissing it, or it has already gone"},
             status_code=409,
         )
     return {"dismissed": job_id}
