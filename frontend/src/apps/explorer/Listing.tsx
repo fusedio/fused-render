@@ -25,7 +25,16 @@
 //   useRowDrag.ts          what a press picks up + who performs the drop
 //   shortcut-chord.ts       which chord means which action (pure)
 //   useListingShortcuts.ts file-op keyboard chords
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import {
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+  type ReactNode,
+} from "react";
+import { createPortal } from "react-dom";
 import { IS_SNAPSHOT, navigate, replaceSearch } from "@platform/lib/router";
 import { dirname, normDir } from "@apps/explorer/lib/fs-actions";
 import { acquireOverlay, releaseOverlay } from "@platform/lib/ui-overlay";
@@ -38,6 +47,9 @@ import { useClipboard } from "@apps/explorer/lib/fs-clipboard";
 import ContextMenu from "@platform/ui/ContextMenu";
 import { PromptDialog, ConfirmDialog } from "@apps/explorer/FsDialogs";
 import ListingPreviewPane from "@apps/explorer/ListingPreviewPane";
+import { PathOverflow } from "@apps/explorer/BarMenu";
+import { claimFolderChrome } from "@apps/explorer/listing/folder-chrome";
+import { searchSlot, subscribeSearchSlot } from "@apps/explorer/search-slot";
 import {
   FLIP_MAX_ROWS,
   SORT_KEYS,
@@ -67,10 +79,20 @@ import { useListingSelection } from "@apps/explorer/listing/useListingSelection"
 import { useFileOps } from "@apps/explorer/listing/useFileOps";
 import { useListingShortcuts } from "@apps/explorer/listing/useListingShortcuts";
 
+// The search row hangs in the crumb bar when there is one to hang in, and
+// stays put otherwise. Either way it is the SAME React element — the query,
+// the walk's live counts and `searchInputRef` are Listing's state, and a
+// portal moves the DOM without touching any of that (a keystroke that focuses
+// the box from the listing below still reaches it).
+function inSearchSlot(slot: HTMLElement | null, row: ReactNode): ReactNode {
+  return slot ? createPortal(row, slot) : row;
+}
+
 export default function Listing({
   fsPath,
   provisional = false,
   embedded = false,
+  barChrome = false,
   onSingleApp,
 }: {
   fsPath: string;
@@ -91,6 +113,14 @@ export default function Listing({
   // handlers — those belong to the host's Listing. Mouse interaction stays:
   // clicks select/navigate, right-click menus and dialogs work as usual.
   embedded?: boolean;
+  // `barChrome`: this Listing IS the explorer's folder view — the one under
+  // the crumb bar, whose layout zone it therefore claims (see
+  // listing/folder-chrome.ts). The splits go away and the path `···` renders
+  // in this listing's search row instead of at the far end of the bar. False
+  // for every other host: the app-builder and learn variants have no crumb bar
+  // to claim, and a panel pane's Listing sits under a pane bar that carries
+  // its own splits and its own `···`.
+  barChrome?: boolean;
   // Reports the path of this directory's lone top-level HTML file (an
   // "app"), or null when there isn't exactly one — the caller (Preview's
   // header) uses this to surface an "Open as app" button. Fires whenever the
@@ -219,19 +249,32 @@ export default function Listing({
 
   const base = fsPath.replace(/\/$/, "");
 
-  // "Up" navigation for the button beside the search box: hop to the parent
-  // folder. It does NOT seed the parent's `?sel=` with the folder you came
-  // from: navigate() starts every folder on a fresh query string (router.ts),
-  // and the parent lands on its first entry like any other folder open — the
-  // param restores a selection, it does not carry one across. Disabled at
-  // the filesystem / drive root, where dirname collapses to the folder itself.
-  const here = normDir(base);
-  const parentDir = dirname(here);
-  const atRoot = parentDir === here;
-  const goUp = () => {
-    if (atRoot) return;
-    navigate(parentDir, { isDir: true });
-  };
+  // Claim the crumb bar for as long as this folder view is mounted: the splits
+  // come off it, the path `···` renders in the search row below, and the bar
+  // itself portals into `crumbSlotRef` — the top of THIS column — so the
+  // preview pane beside it runs the full height of the window (see
+  // listing/folder-chrome.ts).
+  //
+  // A layout effect: the claim moves the bar, and a passive effect would paint
+  // one frame with it still spanning the window before it dropped into place.
+  // Refs are attached before layout effects run, so the slot is there.
+  const ownsBarChrome = barChrome && !embedded;
+  const crumbSlotRef = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    if (!ownsBarChrome) return;
+    return claimFolderChrome(crumbSlotRef.current);
+  }, [ownsBarChrome]);
+
+  // …and the search row goes UP into that same bar, at its right end — one
+  // header strip in this column, matching the pane's one across the divider
+  // (search-slot.ts). Non-null only once the bar has rendered its target,
+  // which is only ever over a folder that claimed the chrome; a host with no
+  // crumb bar (the app builder) keeps the row in place as its own first strip.
+  const barSearchSlot = useSyncExternalStore(subscribeSearchSlot, searchSlot, () => null);
+
+  // No "Up" BUTTON beside the search box any more: the crumb strip above is
+  // the same hop with a target the user can name, and the keyboard keeps its
+  // own (Mod+Up / bare Backspace — see listing/useListingShortcuts).
 
   // Tell the caller whether this folder's top level holds exactly one HTML
   // ("app") file. Keyed off the plain listing, not the search results — the
@@ -908,20 +951,35 @@ export default function Listing({
   }
 
   // --- search match count (inline in the search row) ------------------------
+  //
+  // Two strings per state: a TERSE one to show and the full sentence to say.
+  // The chip is pinned inside the input's right edge, so every character it
+  // spends is a character the query cannot use — and since the row moved up
+  // into the crumb bar (search-slot.ts) it is competing with the path as well.
+  // "1,204 matches · 45,110 scanned…" was most of a narrow box. The numbers are
+  // the whole message; "matches" and "scanned" are recoverable from context by
+  // anyone looking at a list of search results, and stay in the title and the
+  // aria-label for anyone who is not.
+  const compact = (n: number) =>
+    n.toLocaleString(undefined, { notation: "compact", maximumFractionDigits: 1 });
 
   let searchCount: string | null = null;
-  let searchCountTitle: string | undefined;
+  let searchCountFull: string | undefined;
   if (searching && validWalk.status === "streaming") {
     // Live progress while the walk streams: match count so far + how much of
-    // the tree has been scanned. Updates in place, no layout shift.
-    searchCount = `${hits.length.toLocaleString()} match${hits.length === 1 ? "" : "es"} · ${validWalk.count.toLocaleString()} scanned…`;
+    // the tree has been scanned. Updates in place, no layout shift. The scan
+    // total is the digit-hungry half and the one nobody reads precisely, so it
+    // is the half that goes compact ("45.1K").
+    searchCount = `${compact(hits.length)} · ${compact(validWalk.count)}…`;
+    searchCountFull = `${hits.length.toLocaleString()} match${hits.length === 1 ? "" : "es"} · ${validWalk.count.toLocaleString()} entries scanned so far`;
   } else if (searching && validWalk.status === "ok" && hits.length > 0) {
     // A truncated walk (server safety cap) means `hits` undercounts the real
     // tree. Signal that without new UI: a "+" on the number plus a tooltip.
     const suffix = validWalk.truncated ? "+" : "";
-    searchCount = `${hits.length.toLocaleString()}${suffix} match${hits.length === 1 ? "" : "es"}`;
+    searchCount = `${compact(hits.length)}${suffix}`;
+    searchCountFull = `${hits.length.toLocaleString()}${suffix} match${hits.length === 1 ? "" : "es"}`;
     if (validWalk.truncated)
-      searchCountTitle = `Search covers the first ${validWalk.total.toLocaleString()} entries of this folder tree`;
+      searchCountFull += ` — search covers the first ${validWalk.total.toLocaleString()} entries of this folder tree`;
   }
 
   // Is anything pinned inside the search input right now? Mirrors the three
@@ -936,32 +994,22 @@ export default function Listing({
     <div className="listing">
       <div className="listing-split" ref={splitRef}>
         <div className="listing-main">
+          {/* Where the crumb bar lands over a folder (the claim above). It sits
+              INSIDE the left column, as its whole header — the search row
+              portals up into it — so the bar ends at the divider and the pane
+              keeps the whole right-hand column from the top of the window
+              down. `display: contents`, so the bar is a flex item of
+              .listing-main exactly as it was of #main. */}
+          {ownsBarChrome && <div className="listing-crumb-slot" ref={crumbSlotRef} />}
           {/* Embedded (preview pane): no search row — the pane is a glance,
               and the host listing's search/toggle already own that chrome. */}
-          {!embedded && (
-            <div className="listing-search">
-              <button
-                type="button"
-                className="bar-ctl bar-ctl-icon"
-                title={atRoot ? "Already at the root" : "Up to parent folder"}
-                aria-label="Up to parent folder"
-                disabled={atRoot}
-                onClick={goUp}
-              >
-                <svg
-                  viewBox="0 0 24 24"
-                  width="16"
-                  height="16"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="2"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                >
-                  <line x1="12" y1="19" x2="12" y2="5" />
-                  <polyline points="5 12 12 5 19 12" />
-                </svg>
-              </button>
+          {!embedded && inSearchSlot(barSearchSlot,
+            /* `searching` (a non-empty query) is what tells the crumb bar to
+               stand the crumbs down and give the row its whole width — see
+               #breadcrumb:has(.listing-search.searching) in explorer.css.
+               Nothing to hand upward: the row is portaled INTO the bar, so a
+               class on the row is already inside the bar's subtree. */
+            <div className={"listing-search" + (searching ? " searching" : "")}>
               {/* The box wraps input + pinned chips so the pane toggle can sit to
             their right without disturbing the chips' inside-the-input pin.
             `has-pin` says a chip is actually pinned right now, so the input
@@ -973,7 +1021,12 @@ export default function Listing({
                   ref={searchInputRef}
                   type="search"
                   className="listing-search-input"
-                  placeholder="Start typing to search…"
+                  // Just "Search…": the row shares the crumb bar now, and the
+                  // resting box is deliberately small (it grows to the whole
+                  // strip on the first keystroke), so the placeholder has to
+                  // fit that box rather than set its width. "Start typing to
+                  // search" was instructions for a control that needs none.
+                  placeholder="Search…"
                   value={query}
                   onFocus={prefetchWalk}
                   onChange={(e) => setQuery(e.target.value)}
@@ -996,7 +1049,8 @@ export default function Listing({
                 {searchCount !== null && (
                   <span
                     className="listing-search-count"
-                    title={searchCountTitle}
+                    title={searchCountFull}
+                    aria-label={searchCountFull}
                   >
                     {searchCount}
                   </span>
@@ -1035,6 +1089,19 @@ export default function Listing({
                   a button to flip — and a control that only ever restated what
                   the layout already showed was one more thing in a row that is
                   meant to be the search box. */}
+              {/* The path `···` for the folder view (see the claim above).
+                  Same control, same two items — "Open in Finder" and "Copy
+                  path" — rendered here, at the end of the row that holds this
+                  folder's other control, and carried into the crumb bar with
+                  it: the row is what portals, so the `···` ends up back at the
+                  bar's right end without the bar having to own it. */}
+              {/* normDir, not the bare `base`: `base` has its trailing slash
+                  stripped, which at the filesystem root leaves "" (and "C:" at
+                  a Windows drive root). The crumb-bar copy of this control got
+                  the un-stripped fsPath, so at "/" the menu's two items used to
+                  copy an empty string and POST an empty reveal path. Same
+                  normalisation the drop target below uses. */}
+              {ownsBarChrome && <PathOverflow fsPath={normDir(base)} />}
             </div>
           )}
           <div

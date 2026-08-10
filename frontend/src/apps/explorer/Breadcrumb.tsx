@@ -3,6 +3,8 @@
 //   path    ★ bookmark button, then the crumbs (or the editable path field)
 //   mode    the `#topbar-mode-slot` portal target — Preview renders the view's
 //           conditional primary action and the shared mode control into it
+//   search  over a FOLDER only: the listing's search row portals in here, so
+//           its column has one header strip instead of two (search-slot.ts)
 //   layout  a hairline rule, then split-right / split-down / `···`
 //
 // The Finder and split glyphs used to live INSIDE the crumb strip, welded to
@@ -12,7 +14,8 @@
 //
 // Rendered by every view: path crumbs for listing/preview, a static label for
 // the layout modes (LM-11 / TM-9 — ★/update still operate on currentUrl()).
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
+import { createPortal } from "react-dom";
 import { requestCloneApp } from "@platform/cloud/cloneApp";
 import { navigate, navigateUrl, currentUrl, IS_EMBED } from "@platform/lib/router";
 import { basename } from "@platform/lib/format";
@@ -32,12 +35,19 @@ import { useUrlVersion, useBookmarksVersion, notifyBookmarksChanged } from "@pla
 import { urlScheme, isCloudScheme, fileUrlToPath } from "@platform/lib/path-url";
 import { resolveCloudUrl } from "@platform/lib/api";
 import { pushToast } from "@platform/lib/toast";
-import { copyToClipboard } from "@platform/lib/clipboard";
 import { encodePaneSegment, splitShellSearch } from "@platform/lib/layout-codec";
 import { panelUrl } from "@apps/explorer/Panel";
 import { SplitRightIcon, SplitDownIcon } from "@platform/ui/SplitIcons";
-import { OverflowMenu } from "@apps/explorer/BarMenu";
+import { PathOverflow } from "@apps/explorer/BarMenu";
 import { springDisarms } from "@apps/explorer/listing/drag-drop";
+import { cameFromSelParam } from "@apps/explorer/listing/selection";
+import {
+  folderChromeClaimed,
+  folderChromeSlot,
+  subscribeFolderChrome,
+} from "@apps/explorer/listing/folder-chrome";
+import { publishTopbarSlot, retractTopbarSlot } from "@apps/explorer/topbar-slot";
+import { publishSearchSlot, retractSearchSlot } from "@apps/explorer/search-slot";
 import { registerSpring, SPRING_ATTR } from "@apps/explorer/listing/row-drag";
 
 // How long a file drag has to hover a crumb before the listing follows it.
@@ -182,40 +192,39 @@ function StarIcon({ filled }: { filled: boolean }) {
   );
 }
 
-// Browsers block file:// navigation from http pages, so revealing in the OS
-// file manager goes through the server (POST /api/fs/reveal). X-Fused forces
-// a CORS preflight so a foreign page can't fire this blind (D3 guard).
-function revealInFileManager(path: string): void {
-  fetch("/api/fs/reveal", {
-    method: "POST",
-    headers: { "Content-Type": "application/json", "X-Fused": "1" },
-    body: JSON.stringify({ path }),
-  });
+// Portal target for the FOLDER view's search row, at the bar's right end.
+//
+// Rendered only while a folder holds the chrome claim: a file view's bar has
+// no search box, and an empty div would still eat the bar's `gap`. The listing
+// portals its own `.listing-search` in here — box, sort chip and the path
+// `···` — so the left column has ONE strip, matching the preview pane's one
+// strip across the divider (search-slot.ts).
+function FolderSearchSlot() {
+  const claimed = useSyncExternalStore(subscribeFolderChrome, folderChromeClaimed, () => false);
+  const ref = useRef<HTMLDivElement>(null);
+  // A layout effect, and the cleanup is identity-checked (node-slot.ts): the
+  // bar's own relocation into the listing column rebuilds this node, and the
+  // outgoing one is retracted after the incoming one has published.
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (el) publishSearchSlot(el);
+    return () => retractSearchSlot(el);
+  }, [claimed]);
+  if (!claimed) return null;
+  return <div className="crumb-search-slot" ref={ref} />;
 }
 
-const FILE_MANAGER = navigator.userAgent.includes("Windows") ? "File Explorer" : "Finder";
-
-// The bar's low-frequency one-shot actions. Both used to be (or wanted to be)
-// glyphs in the crumb strip; neither is worth a permanent slot beside the
-// splits, which is exactly what an overflow menu is for.
-function LayoutOverflow({ fsPath }: { fsPath: string }) {
-  const copyPath = async () => {
-    if (await copyToClipboard(fsPath)) pushToast({ msg: "Path copied", tone: "info" });
-    else pushToast({ msg: "Couldn't copy the path", tone: "error" });
-  };
-  return (
-    <OverflowMenu
-      items={[
-        { label: "Open in " + FILE_MANAGER, onClick: () => revealInFileManager(fsPath) },
-        { label: "Copy path", onClick: () => void copyPath() },
-      ]}
-    />
-  );
-}
-
-// Split entry buttons + the overflow: the bar's layout zone, in the same
-// position in every state so the hand learns where layout lives.
+// Split entry buttons + the path overflow: the bar's layout zone, in the same
+// position in every state so the hand learns where layout lives — EXCEPT over
+// a folder, where the listing underneath claims the zone and renders the `···`
+// at the end of the search row that has just moved into this bar
+// (listing/folder-chrome.ts says which state we are in; Listing.tsx renders
+// the other half). Nothing here for a folder at all: the splits are the pair
+// that make least sense over a view that already IS a split, and with them
+// gone the rule and the hairline would be a zone with nothing in it.
 function LayoutZone({ fsPath }: { fsPath: string }) {
+  const claimed = useSyncExternalStore(subscribeFolderChrome, folderChromeClaimed, () => false);
+  if (claimed) return null;
   return (
     <>
       <span className="bar-rule" aria-hidden="true" />
@@ -240,7 +249,7 @@ function LayoutZone({ fsPath }: { fsPath: string }) {
         >
           <SplitDownIcon />
         </button>
-        <LayoutOverflow fsPath={fsPath} />
+        <PathOverflow fsPath={fsPath} />
       </div>
     </>
   );
@@ -335,8 +344,16 @@ export function UpdateBookmarkButton() {
 // Portal target for the view's header actions (mode switcher, deploy, "Open as
 // app") — Preview renders into this via TopbarActions. Carries
 // .preview-actions so the existing switcher/button styling applies unchanged.
+// The node is published rather than looked up by id, because the bar relocates
+// under a folder view and the lookup would go stale (topbar-slot.ts).
 function TopbarActionsSlot() {
-  return <div id="topbar-mode-slot" className="crumb-actions preview-actions" />;
+  const ref = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (el) publishTopbarSlot(el);
+    return () => retractTopbarSlot(el);
+  }, []);
+  return <div ref={ref} id="topbar-mode-slot" className="crumb-actions preview-actions" />;
 }
 
 // Split entry (LM-10): two panes side by side (`dir` "row", `,` in the codec)
@@ -390,6 +407,33 @@ async function openUrl(url: string, scheme: string): Promise<void> {
     return;
   }
   pushToast({ msg: `Can't open ${scheme}:// URLs in the explorer`, tone: "error" });
+}
+
+// The crumb bar AND its box, in whichever column it belongs to.
+//
+// Normally that is shell level: `#breadcrumb` is a child of `#main`, above
+// `#content`, spanning the window. Over a FOLDER the listing publishes a slot
+// in its own left column (listing/folder-chrome.ts) and the whole bar portals
+// into it — so the bar ends at the split divider and the preview pane on the
+// right starts at the very top of the window, its own header the first thing
+// in the column. Nothing about the bar's markup or styling changes; only where
+// it hangs.
+//
+// A portal, not a prop, for the reason the claim store exists at all: whether
+// the content resolves to a listing is decided several levels below the bar,
+// after this component has rendered.
+export function BreadcrumbBar(props: {
+  fsPath: string;
+  home?: string;
+  renderedTitle?: string | null;
+}) {
+  const slot = useSyncExternalStore(subscribeFolderChrome, folderChromeSlot, () => null);
+  const bar = (
+    <div id="breadcrumb">
+      <Breadcrumb {...props} />
+    </div>
+  );
+  return slot ? createPortal(bar, slot) : bar;
 }
 
 export function Breadcrumb({
@@ -491,7 +535,12 @@ export function Breadcrumb({
         // `claude` view read as "nothing happened"). navigate() still carries
         // the sticky `preview` onto directory targets, so pane visibility
         // survives the hop. Breadcrumb targets are always dirs.
-        navigate(underHome ? home : "/", { isDir: true });
+        //
+        // `sel` lands the ancestor with the child we came out of highlighted
+        // and scrolled to — the file-manager rule, shared with the keyboard's
+        // go-up chord (listing/useListingShortcuts) through one pure decision.
+        const target = underHome ? (home as string) : "/";
+        navigate(target, { isDir: true, sel: cameFromSelParam(target, fsPath) });
       }}
     >
       {underHome ? "~" : "/"}
@@ -535,7 +584,9 @@ export function Breadcrumb({
           {...springProps(target)}
           onClick={(e) => {
             e.preventDefault();
-            navigate(target, { isDir: true }); // plain listing, no `_mode`
+            // Plain listing, no `_mode`; `sel` highlights the child we came
+            // out of (see the root crumb above).
+            navigate(target, { isDir: true, sel: cameFromSelParam(target, fsPath) });
           }}
         >
           {part}
@@ -586,6 +637,7 @@ export function Breadcrumb({
       )}
       <UpdateBookmarkButton />
       <TopbarActionsSlot />
+      <FolderSearchSlot />
       <LayoutZone fsPath={fsPath} />
     </>
   );

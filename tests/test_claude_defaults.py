@@ -115,9 +115,19 @@ def test_the_page_asks_and_ranks_detection_below_an_explicit_choice():
     html = open(os.path.join("fused_render", "templates", "claude",
                              "template.html"), encoding="utf-8").read()
     assert '{ action: "defaults", file: FILE }' in html
-    # explicit pane param > detected config > hardcoded fallback
-    assert 'fused.params.get("model") || detectedModel || DEFAULT_MODEL' in html
+    # explicit pane param > detected config > user preference > hardcoded
+    # fallback. The preference sits BELOW detection on purpose: what this
+    # project is actually worked in says more about this chat than a global
+    # setting does, and the preference is what fills the gap when there is
+    # nothing to detect.
+    assert (
+        'fused.params.get("model") || detectedModel || prefModel || DEFAULT_MODEL' in html
+    )
     assert 'fused.params.get("effort") || detectedEffort || DEFAULT_EFFORT' in html
     # detected values are validated against the selector's own lists
     assert "MODELS.includes(d.model)" in html
     assert "EFFORTS.includes(d.effort)" in html
+    # …and so is the preference, for the same reason: a name this build's
+    # selector doesn't have cannot be shown as selected.
+    assert 'fetch("/api/prefs")' in html
+    assert "MODELS.includes(m)" in html

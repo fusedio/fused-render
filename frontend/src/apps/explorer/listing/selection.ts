@@ -136,6 +136,33 @@ export function pathFromSelParam(base: string, raw: string | null): string | nul
   return base + "/" + raw;
 }
 
+// The `?sel=` value an UPWARD hop should seed: the child of `dest` that the
+// user is coming out of, or null when there is no such child.
+//
+// Every file manager does this — go up (crumb click, Mod+Up, Backspace) and
+// the folder you just left is the highlighted row, so the eye finds where it
+// was and a second Up carries on from there. The explorer's `?sel=` param
+// already IS "which row this folder opens on" (seeded at mount by
+// useListingSelection, scrolled into view by its effect), so the whole feature
+// is deciding the value — hence a pure function, and hence ONE of them for
+// both the crumbs (Breadcrumb.tsx) and the keyboard (useListingShortcuts).
+//
+// The answer is the IMMEDIATE child, not the remainder: a crumb three levels
+// up owns only its own rows, and `sub/deep/leaf` there would name a row that
+// folder does not render. (`selParam`, the write side, keeps whole relative
+// paths because a SEARCH hit really is a row of the folder it was found from.)
+//
+// `dest` and `from` are fs paths in the shell's canonical form; a trailing
+// slash on either is tolerated (the fs root arrives as "/" from the crumbs and
+// as "" from Listing's `base`, and a Windows drive root is "C:/").
+export function cameFromSelParam(dest: string, from: string): string | null {
+  const root = dest.replace(/\/+$/, "");
+  const rest = from.replace(/\/+$/, "");
+  if (!rest.startsWith(root + "/")) return null;
+  const seg = rest.slice(root.length + 1).split("/")[0];
+  return seg.length > 0 ? seg : null;
+}
+
 // What a press on a row does TO THE SELECTION — and nothing else, which is the
 // point.
 //

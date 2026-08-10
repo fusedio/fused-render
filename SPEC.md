@@ -1520,16 +1520,32 @@ never imports server).
 ### 20.1 Store & endpoints
 
 - **PF-1** `GET /api/prefs` → `{engine: {selected, effective, forced_by,
-  fused_available}, deploy: {enabled}, reader: {enabled}, calls: {…}}` — and no
+  fused_available}, deploy: {enabled}, reader: {enabled}, model: {default,
+  choices}, calls: {…}}` — and no
   `log` block (PF-5). `PUT /api/prefs`
   (X-Fused) applies a **partial** update — any of `engine`, `deploy_enabled`,
-  `reader_enabled`, `calls_enabled`, `calls_params` or `calls_retention_days`
-  present, so each control PUTs only its own field — and
+  `reader_enabled`, `default_model`, `calls_enabled`, `calls_params` or
+  `calls_retention_days` present, so each control PUTs only its own field — and
   returns the same shape. An unknown engine value, a non-boolean
   `deploy_enabled`, or a body naming no known preference → 400; the file merges
   (future prefs are new keys, not new files).
+- **PF-1b** `default_model` is the user's preferred Claude model as a **short
+  name** — `""` (unset), `fable`, `opus`, `sonnet` or `haiku`, the claude
+  template's own selector vocabulary; anything else → 400, and a hand-edited
+  unknown value in the file reads as unset. Two consumers rank it identically:
+  an **explicit** choice always wins, the preference is next, and each keeps its
+  own hardcoded fallback beneath it. For the fused.ai relay (`server/ai.py`)
+  that is a caller-supplied `model` > the pref > `claude-haiku-4-5-20251001`,
+  with the short→full-id mapping (`fable`→`claude-fable-5`,
+  `opus`→`claude-opus-5`, `sonnet`→`claude-sonnet-5`,
+  `haiku`→`claude-haiku-4-5`) living in that one module. For the claude chat
+  template it is the `model` pane param > the config detected from the
+  project's sessions/settings > the pref > `sonnet`; the template reads it with
+  a plain `GET /api/prefs`, like its other `/api/…` reads. Read per request, so
+  a change applies without a restart.
 - **PF-1a** The page renders its sections in this order: **Appearance**,
-  **Call log**, **Deploy to Fused account**, **Accessibility**, and last
+  **Default model**, **Call log**, **Deploy to Fused account**,
+  **Accessibility**, and last
   **Execution engine** — last because it is the setting a user is least likely
   to have come here to change (builtin suits almost everyone, and an env var
   pins it where it matters). There is **no Tour button**: the tour still runs
