@@ -7,6 +7,7 @@ import os
 import re
 import signal
 import sys
+import threading
 import time
 import uuid
 
@@ -25,6 +26,16 @@ BUILTIN_MOUNTS = {
     LEARN_MOUNT_NAME: ("learn.zip", "FUSED_RENDER_LEARN_ZIP"),
     SESSIONS_MOUNT_NAME: ("sessions.zip", "FUSED_RENDER_SESSIONS_ZIP"),
 }
+
+
+# Attach-owned readiness per builtin (see builtin_mount_ready); True only for a mount THIS run attached, since the frontend sticky-caches the first True it sees.
+_builtin_ready_lock = threading.Lock()
+_builtin_ready: dict[str, bool] = {name: False for name in BUILTIN_MOUNTS}
+
+
+def set_builtin_ready(name: str, ready: bool) -> None:
+    with _builtin_ready_lock:
+        _builtin_ready[name] = ready
 
 
 def builtin_zip_path(name: str) -> str | None:
@@ -179,33 +190,9 @@ def sessions_mount_ready() -> bool:
 
 
 def builtin_mount_ready(name: str) -> bool:
-    """True when a builtin mount is actually attached — both rcd and
-    the kernel agree the mountpoint is live — not merely when its record
-    exists in mounts.json.
-
-    The sidebar's Learn entry (Sidebar.tsx) uses this, surfaced through
-    /api/config, to decide whether to render at all.
-
-    BUGBOT (record-presence was not enough): ensure_learn_mount now
-    force-detaches and remounts the learn mountpoint on EVERY startup (see
-    its docstring) — including the common case where the record already
-    existed on disk from a prior run. A presence-only check would read
-    "ready" the instant that record is read off disk, well before
-    run_automount's attach_mount loop (which runs after ensure_learn_mount
-    returns, on the same background automount thread) has remounted it —
-    an early click would hit an empty mountpoint whose HTTP serve was just
-    stopped. Checking BOTH mounted_paths() (rcd's own bookkeeping) and
-    os.path.ismount() (the kernel mount table) is exactly attach_mount's own
-    signal for "there is nothing left to attach" (see its `os.path.ismount`
-    check), so this reads true only once that loop has actually succeeded."""
-    from fused_render.shell.mounts import list_mounts, mounted_paths
-    builtin = next(
-        (m for m in list_mounts() if m.get("builtin") == name), None
-    )
-    if builtin is None:
-        return False
-    mp = mountpoint(builtin)
-    return mp in mounted_paths() and _ismount(mp)
+    """I/O-free read of the attach-owned _builtin_ready flag (a live _ismount here blocked /api/config ~60s mid-attach on a Windows cold start)."""
+    with _builtin_ready_lock:
+        return _builtin_ready.get(name, False)
 
 
 def _force_detach_builtin_mount(builtin: dict, old_remote: str) -> None:
