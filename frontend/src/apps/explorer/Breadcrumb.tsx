@@ -455,6 +455,12 @@ export function Breadcrumb({
     if (el) barRef.current = el.parentElement;
   };
   const [editing, setEditing] = useState(false);
+  // Set by the click-away below for the rest of its gesture — see the bar's
+  // click handler, which must not treat that same click as "open the field".
+  const justClosed = useRef(false);
+  // Read by that always-on listener, which must not rebind on every toggle.
+  const editingRef = useRef(false);
+  editingRef.current = editing;
   const { springProps, armedTarget } = useSpringLoadedCrumbs();
 
   // Keep the tail of a long path in view on every path change (same as the
@@ -479,7 +485,13 @@ export function Breadcrumb({
     const bar = barRef.current;
     if (!bar) return;
     const onClick = (e: MouseEvent) => {
-      if (e.target === bar) setEditing(true);
+      if (e.target !== bar) return;
+      // The click that CLOSED the field is still travelling: pointerdown ran
+      // the click-away below, and this is the same gesture's click arriving on
+      // the background the field just vacated. Without this it would read as a
+      // fresh click on free space and reopen what the user just dismissed.
+      if (justClosed.current) return;
+      setEditing(true);
     };
     bar.addEventListener("click", onClick);
     return () => bar.removeEventListener("click", onClick);
@@ -494,18 +506,26 @@ export function Breadcrumb({
   // The `···` is the one exception: it belongs to the path, and its button
   // deliberately doesn't take focus (BarMenu.tsx), so its menu opens over an
   // open field rather than closing it out from under the pointer.
+  //
+  // Bound once for the bar's lifetime, not per edit session, because it owns
+  // `justClosed` on both edges: every gesture starts by clearing the flag, so
+  // it lives exactly from the pointerdown that closes the field to the next
+  // press — long enough to cover that gesture's own click (which arrives in a
+  // later task, so a timer can't span it), and no longer.
   useEffect(() => {
-    if (!editing) return;
     const onDown = (e: PointerEvent) => {
+      justClosed.current = false;
+      if (!editingRef.current) return;
       const t = e.target as HTMLElement | null;
       if (!t) return;
       if (t.classList?.contains("crumb-edit")) return;
       if (t.closest?.(".bar-overflow, .bar-menu-popup")) return;
+      justClosed.current = true;
       setEditing(false);
     };
     document.addEventListener("pointerdown", onDown, true);
     return () => document.removeEventListener("pointerdown", onDown, true);
-  }, [editing]);
+  }, []);
 
   // Ctrl/Cmd+L jumps into the editable path (like a browser's location bar).
   // Skip when focus is already in a text field so it never hijacks typing.
