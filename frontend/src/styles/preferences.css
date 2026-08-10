@@ -535,7 +535,7 @@
    edge shows, the ref design's "contents fan". */
 .fhb-card:hover .fhb-sheet-d1,
 .fhb-card:hover .fhb-sheet-d2 {
-  margin-bottom: -2px;
+  margin-bottom: -10px;
 }
 
 .fhb-sheet-icon {
