@@ -1343,21 +1343,18 @@ table.listing-table td.name {
   position: relative;
 }
 
-/* The row's DRAG HANDLE: its icon and its name, and nothing else in the row.
+/* The icon-and-name group inside a row's name cell. LAYOUT ONLY.
  *
- * Narrow on purpose. Rows span the full width of the listing, so a row that was
- * a drag source everywhere put several hundred pixels of "start moving this
- * file" under a pointer that is usually just picking rows — the size column,
- * the modified column, the gutter after a short name. Grabbing a file by its
- * name is how every file manager behaves and is the smallest target that still
- * reads as deliberate. A row that is ALREADY SELECTED is draggable all over
- * regardless (listing/drag-drop's pressStartsDrag).
+ * It used to be the row's drag handle, and carried `cursor: grab` to say so.
+ * That handle is gone: it was holding the pixels drag-to-select needs, so a
+ * drag begun across rows from a name moved that one file instead of selecting
+ * the rows it crossed. A drag now starts on an already-selected row and nowhere
+ * else (listing/drag-drop's pressStartsDrag), which is why `grab` moved to
+ * tr.row.selected below and this rule keeps only its geometry.
  *
  * inline-flex so it hugs its contents rather than filling the cell, and
  * min-width:0 so a long name still ellipsizes inside it (the .search-path
- * child's overflow rule needs a shrinkable parent). `grab` is what says the
- * handle is here — the row keeps `pointer` everywhere else, because everywhere
- * else still clicks. */
+ * child's overflow rule needs a shrinkable parent). */
 table.listing-table td.name .row-handle {
   display: inline-flex;
   align-items: center;
@@ -1367,6 +1364,12 @@ table.listing-table td.name .row-handle {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* The only surface a move-drag can begin on, so the only one that says `grab`.
+ * Unselected rows keep `pointer`: a press there selects, and a press that
+ * travels sweeps. */
+table.listing-table tr.row.selected {
   cursor: grab;
 }
 

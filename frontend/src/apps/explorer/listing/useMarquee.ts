@@ -26,7 +26,6 @@
 // without the region or the row bands going stale.
 import { useEffect, useRef } from "react";
 import { pressStartsDrag } from "@apps/explorer/listing/drag-drop";
-import { ROW_HANDLE_CLASS } from "@apps/explorer/listing/useRowDrag";
 import {
   autoScrollStep,
   marqueeBox,
@@ -65,10 +64,7 @@ function startsSweep(target: EventTarget | null): boolean {
   if (!el || typeof el.closest !== "function") return false;
   if (el.closest("thead, button, input, a")) return false;
   const row = el.closest("tr.row");
-  return !pressStartsDrag({
-    onHandle: !!el.closest("." + ROW_HANDLE_CLASS),
-    rowSelected: !!row?.classList.contains("selected"),
-  });
+  return !pressStartsDrag({ rowSelected: !!row?.classList.contains("selected") });
 }
 
 export function useMarquee({

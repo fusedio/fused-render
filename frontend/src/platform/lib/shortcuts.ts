@@ -44,7 +44,7 @@ export function shortcutGroups(): ShortcutGroup[] {
     { group: "Navigation", keys: ["PageUp"], label: "Move selection up a page" },
     { group: "Navigation", keys: ["PageDown"], label: "Move selection down a page" },
     { group: "Navigation", keys: [ENTER_LABEL], label: "Open selected" },
-    // The mouse half of the one click model (listing/selection rowClickAction):
+    // The mouse half of the one press model (listing/selection rowPressAction):
     // a single click only ever selects, so the sheet has to say what opens.
     { group: "Navigation", keys: ["Double-click"], label: "Open" },
     { group: "Navigation", keys: [MOD_LABEL, "↓"], label: "Open selected" },

@@ -93,39 +93,54 @@ export function springDisarms(leaving: string, armed: string | null): boolean {
 
 // --- where a drag may start from ---------------------------------------------
 //
-// Not everywhere on a row, because the listing has TWO press-and-move gestures
-// and this is the one rule that separates them. The drag handle is the part of
-// the row that IS the file — its icon and its name — plus the whole of any row
-// that is ALREADY SELECTED. `false` is not "nothing happens": everywhere else
-// SWEEPS, selecting the rows the pointer crosses (useMarquee reads this
-// function backwards to know where a sweep may start, so the two gestures
-// cannot claim the same pixel).
+// The listing has TWO press-and-move gestures over the same pixels, and this is
+// the one rule that separates them. It has exactly one input:
 //
-// Dragging a file into another folder is a destructive-ish, irreversible-ish
-// act (it moves it), and rows span the full width of the listing. With the
-// whole row live, the size column, the modified column and the empty gutter
-// after a short name are all several hundred pixels of "start moving this file"
-// sitting under a pointer that is usually just picking rows. Grabbing a file by
-// its name is both how every file manager behaves and the smallest target that
-// still reads as deliberate.
+//   ┌──────────────────────────────────┬──────────────────────────────┐
+//   │ press lands on…                  │ press-and-move does…         │
+//   ├──────────────────────────────────┼──────────────────────────────┤
+//   │ a row that is ALREADY SELECTED   │ MOVE-DRAG the selection      │
+//   │ any part of an unselected row    │ SWEEP                        │
+//   │ the background                   │ SWEEP                        │
+//   └──────────────────────────────────┴──────────────────────────────┘
 //
-// The selected-row case is the exception that makes multi-drag bearable: having
-// said which rows they mean, the user should not have to find one particular
-// row's name to move all five. Selection outranks hit region — the only case
-// where the two clauses could disagree.
+// `false` is not "nothing happens": everywhere else SWEEPS, selecting the rows
+// the pointer crosses. useMarquee reads this function BACKWARDS to know where a
+// sweep may start, which is why there is a function at all — one rule read two
+// ways can't disagree with itself, and two gestures can't claim one pixel.
 //
-// Either way a press that never travels the sweep's 4px slop is neither
-// gesture: it is the plain click that selects one row.
-export function pressStartsDrag(press: { onHandle: boolean; rowSelected: boolean }): boolean {
-  return press.onHandle || press.rowSelected;
+// This used to also make each row's icon-and-name a permanent drag handle, so
+// that a single unselected file could be moved in one gesture. That was wrong
+// in the way the user kept reporting: starting a drag across rows from a name
+// grabbed that one file and moved it instead of selecting the rows swept over.
+// Dragging to select is the far more common gesture and it needs the row's
+// whole width, so the drag source shrank to the one region where nothing
+// competes for the pixel — a row the user has already picked.
+//
+// The cost is real and worth stating: moving a single unselected file is now
+// TWO gestures, a click to select it and then a drag, where the handle made it
+// one. That is the price of drag-to-select working on rows at all, and it is
+// what select-then-drag has meant in every file manager — you can only drag
+// what you can see is coming with you.
+//
+// Either way, a press that never travels the sweep's 4px slop is neither
+// gesture: it is the press that selects one row (selection's rowPressAction).
+export function pressStartsDrag(press: { rowSelected: boolean }): boolean {
+  return press.rowSelected;
 }
 
 // What a press on `path` picks up. The standard file-manager rule: a row that
 // is part of the current selection drags the WHOLE selection, and a row outside
-// it drags only itself (the press is also a click, and a click selects — the
-// caller collapses the selection onto the row before the drag starts).
+// it drags only itself.
+//
+// Under pressStartsDrag above only the first branch can be reached from the
+// listing — a drag starts on a selected row or not at all. The second stays
+// because it is the right answer to the question, not because something asks
+// it today: it is what any future drag source would need, and a rule that
+// silently dragged the wrong rows would be worse than one clause of slack.
+//
 // `selected` arrives in rendered order, so a batch move processes rows
-// top-to-bottom however they were clicked.
+// top-to-bottom however they were picked.
 export function dragPathsFor(path: string, selected: readonly string[]): string[] {
   return selected.includes(path) ? [...selected] : [path];
 }

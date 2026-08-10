@@ -10,12 +10,12 @@
 // screen, only about the scroller's content space.
 //
 // The gesture is split from the row drag by WHERE THE PRESS LANDS, not by any
-// arbitration afterwards: the name/icon and any already-selected row start a
-// move-drag (the browser's own drag-and-drop, see drag-drop's pressStartsDrag),
-// everything else sweeps, and neither can turn into the other mid-gesture. A
-// press that never travels MARQUEE_DRAG_SLOP is neither — it is the click the
-// listing already had, and it must keep meaning select-this-row /
-// open-this-row.
+// arbitration afterwards: an already-selected row starts a move-drag (the
+// browser's own drag-and-drop, see drag-drop's pressStartsDrag) and EVERYTHING
+// else sweeps — any part of an unselected row, and the background. Neither can
+// turn into the other mid-gesture. A press that never travels
+// MARQUEE_DRAG_SLOP is neither: it is the press that selects one row
+// (selection's rowPressAction), and a double press still opens.
 //
 // Router-free and DOM-free for the same reason pane-math.ts is: these are the
 // only decisions the wiring makes, and a headless test can see them only if

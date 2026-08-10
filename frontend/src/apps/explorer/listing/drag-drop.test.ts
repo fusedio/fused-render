@@ -22,28 +22,33 @@ import {
 
 const file = (path: string) => ({ path, parentDir: path.slice(0, path.lastIndexOf("/")) });
 
-// Where a drag may start. The whole rule as one table: a row's name/icon is the
-// handle, a selected row is live all over, and the rest of a row starts nothing
-// — a press there is a click and only a click.
+// Where a drag may start. The whole rule, and it has one input: a press on an
+// already-selected row drags, and a press ANYWHERE else — any part of an
+// unselected row, the background — sweeps.
 describe("pressStartsDrag", () => {
-  const table: [string, { onHandle: boolean; rowSelected: boolean }, boolean][] = [
-    ["the name of an unselected row", { onHandle: true, rowSelected: false }, true],
-    ["the name of a selected row", { onHandle: true, rowSelected: true }, true],
-    ["the gutter of a selected row", { onHandle: false, rowSelected: true }, true],
-    ["the gutter of an unselected row", { onHandle: false, rowSelected: false }, false],
-  ];
+  test("a press on a selected row starts a move-drag", () => {
+    expect(pressStartsDrag({ rowSelected: true })).toBe(true);
+  });
 
-  for (const [where, press, want] of table) {
-    test(`pressing ${where} → ${want ? "drag" : "nothing"}`, () => {
-      expect(pressStartsDrag(press)).toBe(want);
-    });
-  }
+  test("a press on an unselected row starts no drag, wherever it lands", () => {
+    // Including the name and icon, which used to be a permanent drag handle.
+    // That handle is why a drag started across rows grabbed one file and moved
+    // it instead of selecting the rows it crossed: the same pixels cannot serve
+    // a native move-drag and a sweep, and drag-to-select is the commoner
+    // gesture by far. The cost is that moving a single unselected file is two
+    // gestures now — click it, then drag it.
+    expect(pressStartsDrag({ rowSelected: false })).toBe(false);
+  });
 
-  test("selection outranks hit region, never the other way round", () => {
-    // The only case the two clauses could disagree on: off the name, on a
-    // selected row. Selection wins — otherwise dragging a multi-row selection
-    // would mean hunting for one particular row's name cell inside it.
-    expect(pressStartsDrag({ onHandle: false, rowSelected: true })).toBe(true);
+  test("the rule is exactly the sweep rule inverted", () => {
+    // useMarquee calls this same function to find where a SWEEP may start, so
+    // the two gestures cannot both claim a pixel and cannot drift apart. If
+    // this ever needs a second input, that property is what to preserve.
+    for (const rowSelected of [true, false]) {
+      const drags = pressStartsDrag({ rowSelected });
+      expect(drags).toBe(!!rowSelected);
+      expect(!drags).toBe(!rowSelected);
+    }
   });
 });
 

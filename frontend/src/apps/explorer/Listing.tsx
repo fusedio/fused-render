@@ -52,12 +52,13 @@ import {
   measureScrollAnchor,
 } from "@apps/explorer/listing/bits";
 import { usePreviewPane } from "@apps/explorer/listing/pane";
+import { passedDragSlop } from "@apps/explorer/listing/marquee";
 import {
   autoSelectPath,
-  rowClickAction,
+  rowPressAction,
   selectionClaimed,
 } from "@apps/explorer/listing/selection";
-import { ROW_DRAG_HANDLE, useRowDrag } from "@apps/explorer/listing/useRowDrag";
+import { useRowDrag } from "@apps/explorer/listing/useRowDrag";
 import { useMarquee } from "@apps/explorer/listing/useMarquee";
 import { useDirListing } from "@apps/explorer/listing/useDirListing";
 import { useWalkSearch } from "@apps/explorer/listing/useWalkSearch";
@@ -310,7 +311,7 @@ export default function Listing({
 
   // `selectstart`, cancelled for the whole scroller. This is the half of the
   // text-selection suppression that used to be preventDefault-on-mousedown (see
-  // onRowMouseDown): it says "no selection begins or extends in here" without
+  // onRowPointerDown): it says "no selection begins or extends in here" without
   // cancelling a mousedown default that a draggable row needs. Registered
   // natively because React has no synthetic onSelectStart. Nothing inside the
   // scroller is meant to be selectable — the rows already carry
@@ -486,7 +487,6 @@ export default function Listing({
     base,
     selectedPaths: useMemo(() => selectedRows.map((r) => r.path), [selectedRows]),
     rowCtxByPath,
-    selectOnly,
     onMove: doMove,
   });
 
@@ -517,25 +517,60 @@ export default function Listing({
     globalKeys: !embedded,
   });
 
-  // Mouse selection on a row — SELECTION ONLY, never navigation:
-  //   • Shift+click  — select the contiguous range anchor..row (rendered order);
-  //   • Mod+click    — toggle this row in/out and re-anchor on it;
-  //   • plain click  — select this row alone.
-  // Which of the three a gesture means is listing/selection's rowClickAction,
-  // where the one-model rule is written down and tested.
-  // Native text selection is suppressed in onRowMouseDown, not here — see there.
-  const onRowClick = (e: React.MouseEvent, path: string, _row: RowCtx) => {
-    const action = rowClickAction({ mod: isMod(e), shift: e.shiftKey });
+  // Mouse selection on a row — SELECTION ONLY, never navigation, and decided
+  // on the PRESS:
+  //   • Shift+press  — select the contiguous range anchor..row (rendered order);
+  //   • Mod+press    — toggle this row in/out and re-anchor on it;
+  //   • plain press  — select this row alone;
+  //   • plain press already inside a MULTI-selection — nothing yet; see
+  //     onRowPointerUp.
+  // Which of the four a gesture means is listing/selection's rowPressAction,
+  // where the model and the reason it hangs off pointerdown are written down
+  // and tested. In short: rows are drag sources, a draggable element does not
+  // reliably deliver the `click` after the press, and every selection path in
+  // this listing used to hang off exactly that click.
+  //
+  // Left button only. The right button belongs to the context menu, which does
+  // its own selection handling (openRowMenu below), and the middle button is
+  // the browser's.
+  const pressRef = useRef<{ path: string; x: number; y: number } | null>(null);
+
+  const onRowPointerDown = (e: React.PointerEvent, path: string) => {
+    if (e.button !== 0) return;
+    const action = rowPressAction({
+      mod: isMod(e),
+      shift: e.shiftKey,
+      inMultiSelection: selectedSet.has(path) && sel.paths.length > 1,
+    });
+    // Remembered for the deferred case only, but recorded for every press so
+    // the release can measure how far the pointer travelled.
+    pressRef.current = action === "defer" ? { path, x: e.clientX, y: e.clientY } : null;
+    if (action === "defer") return;
     if (action === "select") {
       selectOnly(path);
       return;
     }
-    // preventDefault on the CLICK is safe (the drag decision was made long
-    // before), and the collapse catches a range the browser painted anyway.
-    e.preventDefault();
     collapseNativeSelection();
     if (action === "extend") extendTo(path);
     else toggleSelected(path);
+  };
+
+  // The deferred half: a plain press inside a multi-selection collapses onto
+  // the pressed row when the button comes up, and ONLY if the press stayed
+  // still. If it travelled, it was a drag of the whole selection (or a sweep)
+  // and the selection is not ours to change.
+  //
+  // The distance test reuses the sweep's own slop rather than introducing a
+  // second threshold — one number decides press-versus-gesture everywhere. A
+  // press that became a native drag usually never delivers a pointerup at all,
+  // so this mostly does not run in that case; the slop covers the rest,
+  // including a drag the user cancelled.
+  const onRowPointerUp = (e: React.PointerEvent, path: string) => {
+    const press = pressRef.current;
+    pressRef.current = null;
+    if (!press || press.path !== path) return;
+    if (passedDragSlop({ x: press.x, y: press.y }, { x: e.clientX, y: e.clientY })) return;
+    selectOnly(path);
   };
 
   // Double-click OPENS. Unconditionally: the same gesture in the same folder
@@ -549,7 +584,7 @@ export default function Listing({
     navigate(row.path, { isDir: row.isDir });
   };
 
-  // Kill the browser's own text selection for Shift/Mod+click.
+  // Kill the browser's own text selection for a Shift/Mod press.
   //
   // `user-select: none` on tr.row (shell.css) is necessary but NOT sufficient:
   // it makes the row's own text unselectable, yet a Shift+click still sets a
@@ -580,17 +615,12 @@ export default function Listing({
   //     synthetic event for it), which is the browser's own "a selection is
   //     about to begin/extend here" hook and cancels it without touching the
   //     mousedown;
-  //   • collapsing any existing range, here and again after the click has been
-  //     handled, so a range anchored OUTSIDE the listing has nothing to paint
-  //     from.
+  //   • collapsing any existing range when a modified press lands
+  //     (onRowPointerDown), so a range anchored OUTSIDE the listing has nothing
+  //     to paint from.
   const collapseNativeSelection = () => {
     const winSel = window.getSelection();
     if (winSel && !winSel.isCollapsed) winSel.removeAllRanges();
-  };
-
-  const onRowMouseDown = (e: React.MouseEvent) => {
-    if (!e.shiftKey && !isMod(e)) return;
-    collapseNativeSelection();
   };
 
   // Right-clicking INSIDE an existing multi-row selection keeps it and acts on
@@ -651,14 +681,8 @@ export default function Listing({
                   (cutSet.has(childPath) ? " cut" : "") +
                   (copiedSet.has(childPath) ? " copied" : "")
                 }
-                onClick={(e) =>
-                  onRowClick(e, childPath, {
-                    path: childPath,
-                    name: entry.rel.split("/").pop() ?? entry.rel,
-                    isDir: entry.is_dir,
-                    parentDir: dirname(childPath),
-                  })
-                }
+                onPointerDown={(e) => onRowPointerDown(e, childPath)}
+                onPointerUp={(e) => onRowPointerUp(e, childPath)}
                 onDoubleClick={() =>
                   onRowDoubleClick({
                     path: childPath,
@@ -667,7 +691,6 @@ export default function Listing({
                     parentDir: dirname(childPath),
                   })
                 }
-                onMouseDown={onRowMouseDown}
                 onContextMenu={(e) =>
                   openRowMenu(e, {
                     path: childPath,
@@ -678,10 +701,11 @@ export default function Listing({
                 }
               >
                 <td className="name">
-                  {/* Icon + name = the row's drag handle; the rest of the row
-                      starts no drag unless the row is already selected (see
-                      pressStartsDrag). */}
-                  <span {...ROW_DRAG_HANDLE}>
+                  {/* Layout only — the span hugs the icon+name so a long name
+                      ellipsizes inside it. It is NOT a drag source: a drag
+                      starts on an already-selected row and nowhere else
+                      (drag-drop's pressStartsDrag). */}
+                  <span className="row-handle">
                     <span className="icon">
                       {iconForEntry(
                         entry.rel.split("/").pop() ?? entry.rel,
@@ -777,14 +801,8 @@ export default function Listing({
             (cutSet.has(childPath) ? " cut" : "") +
             (copiedSet.has(childPath) ? " copied" : "")
           }
-          onClick={(e) =>
-            onRowClick(e, childPath, {
-              path: childPath,
-              name: entry.name,
-              isDir: entry.is_dir,
-              parentDir: base,
-            })
-          }
+          onPointerDown={(e) => onRowPointerDown(e, childPath)}
+          onPointerUp={(e) => onRowPointerUp(e, childPath)}
           onDoubleClick={() =>
             onRowDoubleClick({
               path: childPath,
@@ -793,7 +811,6 @@ export default function Listing({
               parentDir: base,
             })
           }
-          onMouseDown={onRowMouseDown}
           onContextMenu={(e) =>
             openRowMenu(e, {
               path: childPath,
@@ -804,9 +821,8 @@ export default function Listing({
           }
         >
           <td className="name">
-            {/* Icon + name = the row's drag handle; the rest of the row starts
-                no drag unless the row is already selected (pressStartsDrag). */}
-            <span {...ROW_DRAG_HANDLE}>
+            {/* Layout only — see the search-hit row above. Not a drag source. */}
+            <span className="row-handle">
               <span className="icon">
                 {iconForEntry(entry.name, entry.is_dir)}
               </span>

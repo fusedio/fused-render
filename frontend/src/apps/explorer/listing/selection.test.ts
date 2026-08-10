@@ -11,7 +11,7 @@ import {
   oneSelected,
   pathFromSelParam,
   rangeBetween,
-  rowClickAction,
+  rowPressAction,
   selParam,
   selectionClaimed,
 } from "./selection";
@@ -141,27 +141,60 @@ describe("rangeBetween", () => {
   });
 });
 
-// ONE click model for the whole explorer: single click selects, double click
-// opens. The pure half of it is which SELECTION a click means; the opening is
+// ONE press model for the whole explorer: a press selects, a double click
+// opens. The pure half of it is which SELECTION a press means; the opening is
 // the row's onDoubleClick and needs no decision at all.
-describe("rowClickAction", () => {
-  test("a plain click selects that row alone", () => {
-    expect(rowClickAction({ mod: false, shift: false })).toBe("select");
+//
+// Answered on POINTERDOWN rather than on click, because rows are drag sources
+// and a draggable element does not reliably deliver the click that follows the
+// press — the failure that killed Shift/Cmd-click once and plain presses on
+// part of a row later.
+describe("rowPressAction", () => {
+  const press = (mod: boolean, shift: boolean, inMultiSelection = false) =>
+    rowPressAction({ mod, shift, inMultiSelection });
+
+  test("a plain press selects that row alone", () => {
+    expect(press(false, false)).toBe("select");
   });
 
   test("Shift extends the range", () => {
-    expect(rowClickAction({ mod: false, shift: true })).toBe("extend");
+    expect(press(false, true)).toBe("extend");
   });
 
   test("Mod toggles the row in or out", () => {
-    expect(rowClickAction({ mod: true, shift: false })).toBe("toggle");
+    expect(press(true, false)).toBe("toggle");
   });
 
   test("Mod wins over Shift when both are held", () => {
     // Both modifiers down is ambiguous, and Finder resolves it the same way:
     // the toggle is the more precise gesture, and an accidental Shift held
     // while Mod-picking rows must not replace the picks with a range.
-    expect(rowClickAction({ mod: true, shift: true })).toBe("toggle");
+    expect(press(true, true)).toBe("toggle");
+  });
+
+  // --- the one press that cannot be answered on the press -------------------
+
+  test("a plain press INSIDE a multi-selection defers", () => {
+    // Collapsing here would make a multi-row drag impossible: every drag of a
+    // selection begins with a press on one of the rows in it, so answering
+    // "select" on the press would leave one row to drag, every time.
+    expect(press(false, false, true)).toBe("defer");
+  });
+
+  test("a press on the ONLY selected row does not defer", () => {
+    // `inMultiSelection` is about a selection of MANY. With one row selected,
+    // "select" already is the answer a deferred collapse would arrive at, and
+    // deferring would only make the highlight land later for no reason.
+    expect(press(false, false, false)).toBe("select");
+  });
+
+  test("a MODIFIED press inside a multi-selection is never deferred", () => {
+    // Shift/Mod are never the start of a plain drag of the selection, so they
+    // keep their immediate meaning even on a row that is part of one — which is
+    // also what keeps them independent of the click event.
+    expect(press(true, false, true)).toBe("toggle");
+    expect(press(false, true, true)).toBe("extend");
+    expect(press(true, true, true)).toBe("toggle");
   });
 });
 
@@ -221,21 +254,41 @@ describe("selParam / pathFromSelParam", () => {
 describe("the listing rows wire both halves of the model", () => {
   const src = readFileSync(join(import.meta.dir, "../Listing.tsx"), "utf8");
 
-  test("a single click never navigates", () => {
-    const click = src.slice(
-      src.indexOf("const onRowClick ="),
-      src.indexOf("const onRowDoubleClick ="),
+  test("a press selects and never navigates", () => {
+    const press = src.slice(
+      src.indexOf("const onRowPointerDown ="),
+      src.indexOf("const onRowPointerUp ="),
     );
-    expect(click).toContain("rowClickAction");
-    expect(click).not.toContain("navigate(");
+    expect(press).toContain("rowPressAction");
+    expect(press).not.toContain("navigate(");
   });
 
   test("a double click always opens, pane or no pane", () => {
     const dbl = src.slice(
       src.indexOf("const onRowDoubleClick ="),
-      src.indexOf("const onRowMouseDown ="),
+      src.indexOf("// Kill the browser's own text selection"),
     );
     expect(dbl).toContain("navigate(row.path");
     expect(dbl).not.toContain("pane.on");
+  });
+
+  // The failure this whole model exists to rule out: rows are drag sources, and
+  // a draggable element does not reliably deliver the click after the press. A
+  // selection path hung off `click` is one that can silently stop working.
+  //
+  // Checked over BOTH row shapes — the plain listing's and the search hits' —
+  // because they are written out separately and only one of them was ever
+  // wrong at a time. `onDoubleClick` is deliberately untouched: dblclick fires
+  // whether or not a click did.
+  test("neither row shape selects on a click event", () => {
+    expect(src).not.toContain("onRowClick");
+    const rows = src.split("data-flip-key={childPath}").slice(1);
+    expect(rows).toHaveLength(2);
+    for (const row of rows) {
+      const props = row.slice(0, row.indexOf("onContextMenu"));
+      expect(props).toContain("onPointerDown={(e) => onRowPointerDown(e, childPath)}");
+      expect(props).not.toContain("onClick=");
+      expect(props).not.toContain("onMouseDown=");
+    }
   });
 });

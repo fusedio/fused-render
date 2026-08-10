@@ -11,12 +11,12 @@
 //     is simply not calling it. That is also what paints the refused cursor, so
 //     an invalid target gets the right pointer for free — the class this hook
 //     adds is the visible half of the same verdict, not a second decision.
-//   • WHERE a drag may start is `draggable`, and it is set in two places from
-//     one rule (drag-drop's pressStartsDrag): the name cell's HANDLE is always
-//     a drag source, and the ROW itself is one only while it is SELECTED. A
-//     press on the dead space of an unselected row therefore starts nothing —
-//     it is a click and only a click. dragstart bubbles, so both routes land on
-//     the row's one handler below.
+//   • WHERE a drag may start is `draggable`, set in ONE place from drag-drop's
+//     pressStartsDrag: a row is a drag source exactly while it is SELECTED,
+//     and nowhere else. A press on any part of an unselected row selects it,
+//     and sweeps if it travels (useMarquee reads the same rule inverted). The
+//     name cell used to be a permanent handle as well; it was taking the
+//     pixels drag-to-select needs, and it is gone.
 //   • dragover fires continuously while the pointer moves, so the verdict has
 //     to be cheap and synchronous. It is: the dragged entries live in the
 //     module-level in-flight store (drag-drop.ts), not in the dataTransfer the
@@ -57,16 +57,6 @@ function makeDragImage(label: string, count: number): HTMLElement {
   return el;
 }
 
-// The drag handle inside a row's name cell: the icon and the name, wrapped in
-// an element that hugs them rather than filling the cell. A REAL element, not
-// an offsetX guess, so the browser's own drag source and the rule above agree
-// on exactly the same box by construction.
-export const ROW_HANDLE_CLASS = "row-handle";
-export const ROW_DRAG_HANDLE = {
-  className: ROW_HANDLE_CLASS,
-  draggable: pressStartsDrag({ onHandle: true, rowSelected: false }),
-} as const;
-
 export interface RowDragHandlers {
   draggable: boolean;
   onDragStart: (e: React.DragEvent) => void;
@@ -80,7 +70,6 @@ export function useRowDrag({
   base,
   selectedPaths,
   rowCtxByPath,
-  selectOnly,
   onMove,
 }: {
   // The listed folder, which is also the background target ("move these here").
@@ -89,7 +78,6 @@ export function useRowDrag({
   // carries all of it (dragPathsFor).
   selectedPaths: string[];
   rowCtxByPath: ReadonlyMap<string, RowCtx>;
-  selectOnly: (path: string) => void;
   onMove: (paths: string[], targetDir: string) => void;
 }) {
   // The target under the cursor right now, and whether it would accept the
@@ -111,11 +99,18 @@ export function useRowDrag({
   };
 
   const onDragStart = (e: React.DragEvent, row: RowCtx) => {
-    // A press on a row OUTSIDE the selection selects it first, then drags only
-    // it — the press is also a click, and a click selects (Finder/Explorer both
-    // do this, and doing anything else means dragging rows you can't see are
-    // coming with you).
-    if (!selectedPaths.includes(row.path)) selectOnly(row.path);
+    // The pressed row is ALREADY selected by the time a drag can start: the
+    // selection is decided on pointerdown now (Listing's onRowPointerDown), and
+    // the press that begins a drag is the same press. This used to call
+    // selectOnly here for a row outside the selection; that is the pointerdown
+    // handler's job and doing it twice would be two places deciding what a
+    // press selects.
+    //
+    // dragPathsFor still decides WHAT TRAVELS, which is the separate question:
+    // a row inside the selection carries all of it, a row outside carries only
+    // itself. Both readings of `selectedPaths` agree here — whether or not
+    // React has re-rendered between the press and the drag, an unselected row
+    // yields just itself and a selected one yields the selection.
     const paths = dragPathsFor(row.path, selectedPaths);
     startFsDrag(
       paths.map((p) => {
@@ -173,10 +168,9 @@ export function useRowDrag({
     onMove(paths, verdict.dir);
   };
 
-  // `selected` decides only whether the WHOLE row is a drag source; its name
-  // cell carries the handle either way (ROW_DRAG_HANDLE above).
+  // `selected` is the whole of whether this row is a drag source.
   const rowDrag = (row: RowCtx, selected: boolean): RowDragHandlers => ({
-    draggable: pressStartsDrag({ onHandle: false, rowSelected: selected }),
+    draggable: pressStartsDrag({ rowSelected: selected }),
     onDragStart: (e) => onDragStart(e, row),
     onDragOver: (e) => overTarget(e, { path: row.path, isDir: row.isDir }),
     onDragLeave: () => leaveTarget({ path: row.path, isDir: row.isDir }),

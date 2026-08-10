@@ -136,40 +136,56 @@ export function pathFromSelParam(base: string, raw: string | null): string | nul
   return base + "/" + raw;
 }
 
-// What a mouse click on a row does TO THE SELECTION — and nothing else, which
-// is the point.
+// What a press on a row does TO THE SELECTION — and nothing else, which is the
+// point.
 //
-// The explorer has ONE click model now: a single click selects, a double click
-// opens, on every row in every view mode. It used to have two, chosen by
-// whether the preview pane happened to be showing — pane off, a single click
-// selected AND opened; pane on, it only selected and the double click opened.
-// That was defensible while the pane was a thing the user switched on, and
-// stopped being so the moment the split became a measurement of the window
-// (listing/pane.ts): the same click in the same folder would open a file or
-// not depending on how wide the window was when you clicked it.
+// The explorer has ONE press model: a press selects, a double click opens, on
+// every row in every view mode. It used to have two, chosen by whether the
+// preview pane happened to be showing — pane off, a single click selected AND
+// opened; pane on, it only selected and the double click opened. That was
+// defensible while the pane was a thing the user switched on, and stopped being
+// so the moment the split became a measurement of the window (listing/pane.ts):
+// the same click in the same folder would open a file or not depending on how
+// wide the window was when you clicked it.
 //
-// So: this function answers only which SELECTION a click means. Opening has no
-// decision left to make — it is the row's onDoubleClick, unconditionally.
+// THIS IS DECIDED ON POINTERDOWN, not on click, and that is not a detail. Rows
+// are drag sources, and on a `draggable` element WebKit does not reliably
+// deliver the `click` that would have followed the press — which is how
+// Shift/Cmd-click went silently dead once, and how a plain click on parts of a
+// row could fail to select at all. Deciding on the press removes the entire
+// failure class rather than working around it, and it is what Finder and
+// Explorer do: the highlight lands while the button is still down. Opening is
+// untouched — `dblclick` fires independently of any of this.
 //
-// A press on a row can also become a DRAG (drag-drop.ts: dragging entries onto
-// a folder moves them), which is not a third click meaning but a different
-// gesture the browser separates for us — a click event only fires when the
-// press did not turn into a drag, so nothing here needs to know about it. What
-// the drag does need is the selection this produced: a press inside the
-// selection carries all of it, a press outside collapses onto that row first,
-// which is the same rule as the "select" case below.
+// The four answers:
 //
-// `mod` is the caller's isMod(e) verdict rather than the raw event, so the
-// rule stays pure and platform-free (isMod is exclusive per-platform by
-// design; see lib/platform). Mod outranks Shift when both are down: the toggle
-// is the more precise gesture, and a stray Shift while Mod-picking rows must
-// not replace the picks with a range.
-export type RowClickAction = "extend" | "toggle" | "select";
+//   toggle  Mod down: add/remove this row, re-anchoring on it.
+//   extend  Shift down: the range from the anchor to this row.
+//   select  the ordinary press: this row alone, immediately.
+//   defer   a plain press on a row that is ALREADY part of a MULTI-selection.
+//           The one case that cannot be answered on the press: collapsing to
+//           the pressed row there would make a multi-row drag impossible, since
+//           every drag begins with a press on one of the rows being dragged.
+//           So it waits for the release, and collapses only if the press never
+//           became a drag or a sweep. A press on a row that is the ONLY
+//           selected row needs no deferral — "select" is already what it is.
+//
+// `mod` is the caller's isMod(e) verdict rather than the raw event, so the rule
+// stays pure and platform-free (isMod is exclusive per-platform by design; see
+// lib/platform). Mod outranks Shift when both are down: the toggle is the more
+// precise gesture, and a stray Shift while Mod-picking rows must not replace
+// the picks with a range. Both outrank `inMultiSelection`, because a modified
+// press is never the start of a plain drag of the selection.
+export type RowPressAction = "extend" | "toggle" | "select" | "defer";
 
-export function rowClickAction(gesture: { mod: boolean; shift: boolean }): RowClickAction {
+export function rowPressAction(gesture: {
+  mod: boolean;
+  shift: boolean;
+  inMultiSelection: boolean;
+}): RowPressAction {
   if (gesture.mod) return "toggle";
   if (gesture.shift) return "extend";
-  return "select";
+  return gesture.inMultiSelection ? "defer" : "select";
 }
 
 // A contiguous range of rendered rows, inclusive, in row order. `rows` is the
