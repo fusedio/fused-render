@@ -4605,6 +4605,12 @@ async function stopRun() {
     // tail, and its bubble sits below the held ones — the held entries go back
     // to the front so drain order keeps matching both typed and screen order.
     queuedMsgs.unshift(...held.filter((q) => !q.dead));
+    // The mirror was deliberately NOT cleared at the splice above: the detach is
+    // provisional until the cancel lands, and a frame that died mid-cancel would
+    // otherwise come back to a live run with the queue erased. So the store
+    // still holds these; re-persisting is what folds in whatever was queued
+    // during the await and re-states the order they were just put back in.
+    persistQueue();
     if (activeWorking) activeWorking.setStopping(false);
     addError("Could not stop the run: " + err.message);
   }
@@ -4646,8 +4652,8 @@ function onEscape(e) {
 document.addEventListener("keydown", onEscape);
 
 // ── message queue: text typed while a run is live ──
-// In-memory only (a reload drops it — the composer is where durable drafts
-// live), text-only by design: annotations are folded in at SEND time, so whatever is pending when a queued message actually goes
+// Mirrored into sessionStorage (see QUEUE_STORE below) so a teardown does not
+// eat it, text-only by design: annotations are folded in at SEND time, so whatever is pending when a queued message actually goes
 // out rides that send — which is also the desirable reading for the app-state
 // snapshot (fresh state after the previous turn's edits, not a stale one from
 // queue time). Each entry renders as a dashed placeholder bubble in #queue —
@@ -4659,6 +4665,88 @@ document.addEventListener("keydown", onEscape);
 // time) because test_claude_stop_run.py extracts `runEnding` as "everything up
 // to `async function stopRun`" and runs it under node: anything between the
 // two that touches `document` breaks that extraction.
+// The queue's mirror. sessionStorage, not localStorage: the queue belongs to
+// this tab's trip through this conversation — a mode switch, a navigation, a
+// reload — and must not surface in a second window that happens to be looking
+// at the same file, nor outlive the tab. One record, because one frame is one
+// conversation at a time; a fresh conversation legitimately overwrites it.
+const QUEUE_STORE = "fused-render:claude-queue";
+
+// The record for a queue, or null when there is nothing worth keeping. Pure so
+// the identity rule is a tested decision rather than an accident of where the
+// setItem call happens to sit.
+//
+// BOTH ids go in, and the restore matches on EITHER (see queueRestore), because
+// they drift on purpose: `run` is set the moment a turn launches, while
+// `session_id` only lands when the first poll reports it — so a message parked
+// in that window knows only the run, and the boot that re-attaches to that run
+// knows both. Storing the pair is what lets the two views of the same
+// conversation recognise each other.
+function queueRecord(sessionId, runId, texts) {
+  if (!texts.length) return null;          // drained/unqueued to nothing
+  if (!sessionId && !runId) return null;   // nothing a later boot could match on
+  return { session: sessionId || "", run: runId || "", texts };
+}
+
+// The texts a stored record hands back to THIS boot — [] unless the record was
+// written for the conversation now booting. That check is the whole guard
+// against resurrection: a record from a finished or unrelated chat names ids
+// this page does not have, and a brand-new chat names no ids at all, so neither
+// can pull a previous conversation's words into the composer's place. Damage
+// (hand-edited storage, a half-written record, a shape from an older build) is
+// treated as absence rather than thrown: losing the queue is the bug we are
+// fixing, but a red overlay on boot would be a worse one.
+function queueRestore(raw, sessionId, runId) {
+  let rec;
+  try { rec = JSON.parse(raw || "null"); } catch (err) { return []; }
+  if (!rec || !Array.isArray(rec.texts)) return [];
+  const same = (rec.session && sessionId && rec.session === sessionId)
+            || (rec.run && runId && rec.run === runId);
+  if (!same) return [];
+  return rec.texts.filter((t) => typeof t === "string" && t);
+}
+
+// Write the CURRENT queue. Called from every place queuedMsgs changes — the
+// enqueue, the ×, the drain, the hand-back — because a mirror that is only
+// written on the way in re-sends messages that already went out, which is a
+// worse failure than the one this replaces. Cheap enough to do eagerly: the
+// queue is a handful of short strings.
+//
+// Returns whether the queue is safely stored, which is what the teardown hook
+// answers with. A refused write (quota, a locked-down profile) is a real
+// failure and says so; an empty queue is nothing to lose and says ok.
+function persistQueue() {
+  const texts = queuedMsgs.map((q) => q.text);
+  const rec = queueRecord(fused.params.get("session_id") || "",
+                          fused.params.get("run") || "", texts);
+  try {
+    if (rec) sessionStorage.setItem(QUEUE_STORE, JSON.stringify(rec));
+    else if (!texts.length) sessionStorage.removeItem(QUEUE_STORE);
+    else return false;  // queued text with no id to key it by — see queueRecord
+    return true;
+  } catch (err) {
+    console.warn("the message queue could not be saved:", err.message);
+    return false;
+  }
+}
+
+// Put a saved queue back on screen. Rebuilt through queueMessage, so restored
+// entries are indistinguishable from freshly parked ones — same bubble, same ×,
+// same array — and each append re-persists under the ids this boot has, which
+// is how a record written with only a run id acquires its session id.
+//
+// A record that does not match is DROPPED here rather than left alone: it can
+// never be adopted by anything (its conversation is over), and leaving it would
+// keep a dead chat's words one storage read away from a live one.
+function restoreQueue(sessionId, runId) {
+  let raw = null;
+  try { raw = sessionStorage.getItem(QUEUE_STORE); } catch (err) { return; }
+  if (!raw) return;
+  const texts = queueRestore(raw, sessionId, runId);
+  for (const t of texts) queueMessage(t);
+  if (!texts.length) { try { sessionStorage.removeItem(QUEUE_STORE); } catch (err) {} }
+}
+
 const queueEl = document.getElementById("queue");
 const queuedMsgs = [];  // [{ text, el }]
 
@@ -4682,6 +4770,7 @@ function queueMessage(text) {
     const i = queuedMsgs.indexOf(entry);
     if (i >= 0) queuedMsgs.splice(i, 1);
     entry.dead = 1;  // may be detached in stopRun's `held` right now — see below
+    persistQueue();
     d.remove();
     // Back into the composer, not the void — appended so a draft in progress
     // is never clobbered.
@@ -4694,6 +4783,7 @@ function queueMessage(text) {
   queueEl.appendChild(d);
   scrollBottom();
   queuedMsgs.push(entry);
+  persistQueue();
 }
 
 // Fire the next queued message once nothing is live. Called from the tails of
@@ -4704,6 +4794,11 @@ function queueMessage(text) {
 function drainQueue() {
   if (sending || activeRun || !queuedMsgs.length) return;
   const next = queuedMsgs.shift();
+  // Out of the store as it leaves the array, not after the send resolves: from
+  // here the text's fate is sendMessage's (a real user bubble, and on failure
+  // an error beside it), and a mirror still holding it would re-park a message
+  // the next boot can already see in the log.
+  persistQueue();
   next.el.remove();  // sendMessage adds the real user bubble
   sendMessage(next.text);
 }
@@ -4718,6 +4813,10 @@ function unqueueAll(entries) {
     box.value = box.value ? box.value.replace(/\s*$/, "\n\n") + q.text : q.text;
   }
   growBox();
+  // The entries are in the composer now and gone from the array, so the mirror
+  // has to let them go too — otherwise a reload would show them BOTH parked
+  // below the log and typed in the box, and send the copy nobody edited.
+  persistQueue();
 }
 
 // ── send one message: start detached claude, poll + stream ──
@@ -5603,9 +5702,28 @@ async function loadSnapshots() {
     // A bare `run` param (frame died before the first poll saw the session id)
     // still means an in-flight conversation — enter chat and re-attach.
     enterChat();
+    // BEFORE both awaits, and that ordering is the feature. resumeRun's tail
+    // calls drainQueue, so entries restored after it would sit below the log
+    // untouched until some later turn happened to end. Restoring first also
+    // means the bubbles are on screen for the whole of the history load and the
+    // re-attach probe, which is exactly what the user left behind — rather than
+    // appearing seconds later as if the page had thought better of it.
+    // Cheap and synchronous (a storage read and a few nodes), so it costs the
+    // re-attach nothing.
+    restoreQueue(session_id, run_id);
     if (session_id) await loadHistory(session_id);
     if (run_id) await resumeRun(run_id);
+    // The run this queue was parked behind may have finished while no frame was
+    // attached (`resumeRun` takes the done branch and never polls), and then
+    // nothing else will ever call drainQueue for it. Firing here sends what the
+    // live page would have sent the moment that turn ended; a no-op when the
+    // queue is empty or resumeRun already drained it.
+    drainQueue();
   } else {
+    // No conversation to belong to: this boot matches no record, and
+    // restoreQueue takes the chance to drop whatever a finished chat left in
+    // storage instead of leaving it there to be almost-matched later.
+    restoreQueue("", "");
     homebox.focus();
     await loadRecent();
     await mountSnapshots();
