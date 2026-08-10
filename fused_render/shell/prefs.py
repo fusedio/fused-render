@@ -10,11 +10,12 @@ desktop tray's "Open app logs" already covers that. Since the call store moved t
 ~/.fused-render/logs, a second "Logs" heading here read as the call log's
 settings rather than as a separate thing.
 
-Three preferences are persisted: **deploy_enabled** (whether the preview-header
+Four preferences are persisted: **deploy_enabled** (whether the preview-header
 Deploy affordance is shown — opt-in, default off; see ``deploy_enabled``),
 **reader_enabled** (whether the Reader listen-to-files accessibility mode is
-offered — opt-in, default off; see ``reader_enabled``), and the **execution
-engine** for /api/run:
+offered — opt-in, default off; see ``reader_enabled``), **default_model** (the
+preferred Claude model as a short name, unset by default; see
+``default_model``), and the **execution engine** for /api/run:
 
   * ``"fused"`` (default, D204) — the fused local compute backend (engine.py):
     a folder's ``pyproject.toml`` dependencies resolved into cached venvs,
@@ -55,6 +56,15 @@ router = APIRouter()
 
 VALID_ENGINES = ("builtin", "fused")
 VALID_CALLS_PARAMS = ("full", "keys", "off")
+# The default-model preference's value set. SHORT NAMES, not API model ids, and
+# `""` — unset — is a first-class member rather than an absence: it is what the
+# page's "Automatic" option writes, and it means "let each consumer keep its own
+# default" (see default_model). The names are the claude template's own selector
+# list (templates/claude/template.html MODELS) — the pref has to speak the same
+# vocabulary as the control it presets, and the CLI those names reach accepts
+# them as aliases. The relay (server/ai.py) wants a full API id instead, so the
+# short→id mapping lives THERE, in one place, next to the caller that needs it.
+VALID_DEFAULT_MODELS = ("", "fable", "opus", "sonnet", "haiku")
 DEFAULT_CALLS_RETENTION_DAYS = 14
 
 
@@ -113,6 +123,25 @@ def reader_enabled() -> bool:
     reads as off.
     """
     return read_prefs().get("reader_enabled") is True
+
+
+def default_model() -> str:
+    """The user's preferred Claude model, as a short name — `""` when unset.
+
+    One preference, two consumers, and neither is allowed to be the authority
+    on it: the fused.ai relay (server/ai.py, which maps the short name to the
+    full API id it hands the CLI) and the claude chat template (which uses it
+    to preselect its model chip). Both rank it the same way — an EXPLICIT
+    choice always wins, this is the next-best answer, and each keeps its own
+    hardcoded fallback beneath it — so the pref changes what happens when
+    nobody asked for a model, never what happens when somebody did.
+
+    An unknown value reads as unset, exactly like `selected_engine`'s: prefs.json
+    is a plain file a user may hand-edit, and the one thing that must not happen
+    is an arbitrary string reaching a subprocess argv.
+    """
+    value = read_prefs().get("default_model")
+    return value if value in VALID_DEFAULT_MODELS else ""
 
 
 def calls_enabled() -> bool:
@@ -210,6 +239,11 @@ def _prefs_response() -> dict:
         "deploy": {"enabled": deploy_enabled()},
         # Whether the Reader (listen-to-files) accessibility mode is offered (opt-in).
         "reader": {"enabled": reader_enabled()},
+        # The default Claude model, as a short name; "" = unset (each consumer
+        # keeps its own default). `choices` ships the value set with the value
+        # so the Preferences page renders the options the server will accept
+        # rather than a second copy of this list that can drift from it.
+        "model": {"default": default_model(), "choices": list(VALID_DEFAULT_MODELS)},
         # The app call log (calls.py): capture state, param redaction, retention.
         # `dir` lets the page reveal the store through the existing
         # /api/fs/reveal, exactly as `log.path` does.
@@ -326,6 +360,16 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
             return JSONResponse({"error": "'reader_enabled' must be a boolean"}, status_code=400)
         prefs["reader_enabled"] = value
         changed = True
+    if "default_model" in body:
+        value = body.get("default_model")
+        if value not in VALID_DEFAULT_MODELS:
+            return JSONResponse(
+                {"error": "'default_model' must be one of: "
+                          + ", ".join(repr(v) for v in VALID_DEFAULT_MODELS)},
+                status_code=400,
+            )
+        prefs["default_model"] = value
+        changed = True
     if "calls_enabled" in body:
         value = body.get("calls_enabled")
         if not isinstance(value, bool):
@@ -353,8 +397,9 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
     if not changed:
         return JSONResponse(
             {"error": "no known preference in request (expected 'engine', "
-                      "'deploy_enabled', 'reader_enabled', 'calls_enabled', "
-                      "'calls_params' and/or 'calls_retention_days')"},
+                      "'deploy_enabled', 'reader_enabled', 'default_model', "
+                      "'calls_enabled', 'calls_params' and/or "
+                      "'calls_retention_days')"},
             status_code=400,
         )
     storage.write_json(_path(), prefs)

@@ -1,6 +1,8 @@
 // Preferences page (SPEC §20) — the `/view/_prefs` sentinel route, entered
 // from the sidebar's bottom-left gear. Two tabs (D125):
-//   Render preferences — Appearance, Call log (capture/redaction/retention for
+//   Render preferences — Appearance, Default model (which Claude model the
+//     chat and fused.ai reach for when nothing else has said), Call log
+//     (capture/redaction/retention for
 //     fused_render/calls.py), Deploy to Fused account (the opt-in Deploy-button
 //     toggle), Accessibility, and last Execution engine. Always present; the
 //     default (clean URL). No Tour button — the tour still runs itself on a
@@ -22,6 +24,7 @@ import {
   putCallsEnabled,
   putCallsParamsMode,
   putCallsRetentionDays,
+  putDefaultModel,
   putDeployEnabled,
   putEnginePref,
   putReaderEnabled,
@@ -263,6 +266,62 @@ function AccessibilitySection({
   );
 }
 
+// Human labels for the short model names the server accepts. Keyed off the
+// server's `choices` list rather than hardcoding the options, so the page can
+// never offer a value a PUT would reject — an unknown name still renders (as
+// itself) instead of vanishing from a control the user has one of selected.
+const MODEL_LABELS: Record<string, string> = {
+  "": "Automatic",
+  fable: "Fable",
+  opus: "Opus",
+  sonnet: "Sonnet",
+  haiku: "Haiku (fastest)",
+};
+
+function ModelSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs) => void }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  return (
+    <section className="prefs-section">
+      <h2>Default model</h2>
+      <p className="deploy-muted">
+        Which Claude model this app reaches for when nothing else has said. It preselects the
+        chat's model chip and picks the model behind <code>fused.ai</code>. A model chosen in a
+        chat, or one a page passes to <code>fused.ai</code> itself, still wins — this only
+        answers when nobody asked. <b>Automatic</b> leaves each to its own default.
+      </p>
+      <div className="prefs-field">
+        <label>
+          Model{" "}
+          <select
+            value={prefs.model.default}
+            disabled={busy}
+            onChange={async (e) => {
+              const next = e.target.value as Prefs["model"]["default"];
+              setBusy(true);
+              setError(null);
+              try {
+                onChange(await putDefaultModel(next));
+              } catch (err) {
+                setError((err as Error).message);
+              } finally {
+                setBusy(false);
+              }
+            }}
+          >
+            {prefs.model.choices.map((m) => (
+              <option key={m} value={m}>
+                {MODEL_LABELS[m] ?? m}
+              </option>
+            ))}
+          </select>
+        </label>
+      </div>
+      {error && <ErrorBanner>{error}</ErrorBanner>}
+    </section>
+  );
+}
+
 // The retention window as the "Currently keeping ..." line says it, matching
 // the select's own option labels so the forced value reads like a choice.
 function describeRetention(days: number): string {
@@ -488,6 +547,7 @@ export default function Preferences() {
             {tab === "render" && (
               <>
                 <AppearanceSection />
+                <ModelSection prefs={prefs} onChange={setPrefs} />
                 <CallLogSection prefs={prefs} onChange={setPrefs} />
                 <DeploymentsSection
                   prefs={prefs}

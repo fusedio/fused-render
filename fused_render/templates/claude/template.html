@@ -3971,7 +3971,17 @@ const DEFAULT_EFFORT = "medium";
 // the last-resort fallback when nothing was detected.
 let detectedModel = "";
 let detectedEffort = "";
-const curModel = () => fused.params.get("model") || detectedModel || DEFAULT_MODEL;
+// The user's default-model preference (Preferences → Default model), a short
+// name from the same list as MODELS above — "" while unset or unread. It ranks
+// BELOW detection deliberately: detection is what this project is actually
+// being worked in, which is a stronger statement about this chat than a
+// global preference, and the preference is what fills the gap when there is
+// nothing to detect (a project Claude has never touched). Read straight off
+// GET /api/prefs like the other /api/… reads in this file — the pref is app
+// state, not a mount- or server-internal fact.
+let prefModel = "";
+const curModel = () =>
+  fused.params.get("model") || detectedModel || prefModel || DEFAULT_MODEL;
 const curEffort = () => fused.params.get("effort") || detectedEffort || DEFAULT_EFFORT;
 // The strictest mode is the default: more auto-approval is opted into, never
 // handed out by a missing param.
@@ -4019,6 +4029,16 @@ fused.runPython(AGENT, { action: "defaults", file: FILE }, { key: null }).then((
   if (d && d.model && MODELS.includes(d.model)) detectedModel = d.model;
   if (d && d.effort && EFFORTS.includes(d.effort)) detectedEffort = d.effort;
   if (detectedModel || detectedEffort) syncSelects();
+}).catch(() => {});
+
+// The default-model preference, on the same best-effort footing as detection:
+// it lands whenever it lands, and syncSelects() re-reads curModel() so
+// whichever of the two arrives second simply re-renders the same ranking.
+// Validated against MODELS for the same reason detection is — a name this
+// build's selector doesn't have can't be shown as selected.
+fetch("/api/prefs").then((r) => r.json()).then((p) => {
+  const m = p && p.model && p.model.default;
+  if (m && MODELS.includes(m)) { prefModel = m; syncSelects(); }
 }).catch(() => {});
 
 // The split param changes on drag too — applySplit on every change is cheap
