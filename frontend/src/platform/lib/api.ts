@@ -986,10 +986,20 @@ export interface Prefs {
   // Whether the Reader (listen-to-files) accessibility mode is offered (opt-in,
   // default off).
   reader: { enabled: boolean };
+  // The default Claude model, as one of the claude template's own short names
+  // — "" means unset, and each consumer keeps its own default (the fused.ai
+  // relay's haiku, the chat template's sonnet). `choices` is the server's own
+  // value set, shipped with the value so the page renders exactly what a PUT
+  // will accept rather than a second copy that can drift.
+  model: { default: DefaultModel; choices: DefaultModel[] };
   // The app call log (fused_render/calls.py): capture state, how much of a
   // run's params is kept, retention window, and where the store lives.
   calls: CallsPrefs;
 }
+
+// Short model names, matching shell/prefs.py's VALID_DEFAULT_MODELS. "" is the
+// unset member, not an absence — it is what the "Automatic" option writes.
+export type DefaultModel = "" | "fable" | "opus" | "sonnet" | "haiku";
 
 export type CallsParamsMode = "full" | "keys" | "off";
 
@@ -1031,6 +1041,10 @@ export function putDeployEnabled(enabled: boolean): Promise<Prefs> {
 
 export function putReaderEnabled(enabled: boolean): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { reader_enabled: enabled });
+}
+
+export function putDefaultModel(model: DefaultModel): Promise<Prefs> {
+  return putJson<Prefs>("/api/prefs", { default_model: model });
 }
 
 export function putCallsEnabled(enabled: boolean): Promise<Prefs> {
@@ -1795,9 +1809,15 @@ export function getClaudeSessionFolders(): Promise<{ folders: ClaudeSessionFolde
 
 // -- AI completion (POST /api/ai) ---------------------------------------------
 // The fused.ai relay: one non-streaming completion through the server's warm
-// Claude Code CLI instance (server/ai.py). Model defaults to haiku server-side;
-// the shell uses this for small utility completions (e.g. naming a new app
-// from its prompt on Home), not for anything conversational.
+// Claude Code CLI instance (server/ai.py). The shell uses this for small
+// utility completions (e.g. naming a new app from its prompt on Home), not for
+// anything conversational.
+//
+// No `model` is sent, deliberately: the server resolves one from the user's
+// default-model preference and falls back to haiku when that is unset. A model
+// named here would outrank the preference (that is the relay's precedence
+// rule), so every one of these call sites must keep NOT naming one for the
+// preference to mean anything.
 export function aiComplete(prompt: string, system_prompt?: string): Promise<string> {
   return postJson<{ ok: boolean; result: { text: string } }>("/api/ai", {
     prompt,

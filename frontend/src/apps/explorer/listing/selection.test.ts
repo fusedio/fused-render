@@ -10,6 +10,7 @@ import {
   firstEntryPath,
   oneSelected,
   pathFromSelParam,
+  cameFromSelParam,
   rangeBetween,
   rowPressAction,
   selParam,
@@ -244,6 +245,45 @@ describe("selParam / pathFromSelParam", () => {
   test("a dotfile is a normal name, not a traversal", () => {
     expect(pathFromSelParam("/d", ".gitignore")).toBe("/d/.gitignore");
     expect(pathFromSelParam("/d", "..hidden")).toBe("/d/..hidden");
+  });
+});
+
+describe("cameFromSelParam", () => {
+  test("an ancestor hop selects the child it came through", () => {
+    // The Finder rule: go up and the folder you left is highlighted.
+    expect(cameFromSelParam("/a/b", "/a/b/c")).toBe("c");
+    expect(cameFromSelParam("/a", "/a/b/c/d")).toBe("b");
+  });
+
+  test("the child, never the whole remainder", () => {
+    // A crumb several levels up still selects its OWN child — the only row it
+    // actually has — not the deep path the user came from.
+    expect(cameFromSelParam("/a", "/a/b/c")).toBe("b");
+  });
+
+  test("the fs root is an ancestor like any other", () => {
+    expect(cameFromSelParam("/", "/etc/hosts")).toBe("etc");
+    // Listing's `base` form: the trailing slash already stripped off.
+    expect(cameFromSelParam("", "/etc/hosts")).toBe("etc");
+  });
+
+  test("a windows drive root keeps its slash out of the name", () => {
+    expect(cameFromSelParam("C:/", "C:/Users/me")).toBe("Users");
+    expect(cameFromSelParam("C:/Users", "C:/Users/me")).toBe("me");
+  });
+
+  test("staying put selects nothing", () => {
+    expect(cameFromSelParam("/a/b", "/a/b")).toBeNull();
+    expect(cameFromSelParam("/a/b", "/a/b/")).toBeNull();
+  });
+
+  test("a target that is not an ancestor selects nothing", () => {
+    // A typed path, a bookmark, a sibling: there is no "came from" row there.
+    expect(cameFromSelParam("/x", "/a/b")).toBeNull();
+    // Prefix-of-the-string is not prefix-of-the-path.
+    expect(cameFromSelParam("/a/bb", "/a/bbb/c")).toBeNull();
+    // Downward is not an ancestor hop either.
+    expect(cameFromSelParam("/a/b/c", "/a/b")).toBeNull();
   });
 });
 

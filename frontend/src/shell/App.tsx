@@ -34,7 +34,7 @@ import { isMod } from "@platform/lib/platform";
 import { isOverlayOpen } from "@platform/lib/ui-overlay";
 import { getClipboard, setClipboard } from "@apps/explorer/lib/fs-clipboard";
 import { reconcileOsClipboard } from "@apps/explorer/lib/os-clipboard";
-import { Breadcrumb, StaticBreadcrumb } from "@apps/explorer/Breadcrumb";
+import { BreadcrumbBar, StaticBreadcrumb } from "@apps/explorer/Breadcrumb";
 import Listing from "@apps/explorer/Listing";
 import Preview from "@apps/explorer/Preview";
 import Panel from "@apps/explorer/Panel";
@@ -193,7 +193,14 @@ function LoadingScaffold({ fsPath, isDir, headerless }: { fsPath: string; isDir:
           // provisional: the hint could be stale (file, not dir). Suppress
           // Listing's hard "Failed to list" error while stat resolves — a 404
           // here just means the hint was wrong; stat will paint the file view.
-          <Listing fsPath={fsPath} provisional />
+          // `barChrome` on the scaffold too (same condition as `headerless`):
+          // whenever the nav hint already says "directory" this claims the
+          // bar's layout zone from the first paint, so the splits don't flash
+          // in and out across the scaffold→resolved swap. Only a hinted nav
+          // gets that — open a folder URL directly (or reload) and there is no
+          // `history.state` hint, so no Listing mounts here and the splits do
+          // still show for the length of the stat.
+          <Listing fsPath={fsPath} provisional barChrome={headerless} />
         ) : (
           <div className="preview-resolving">
             <span className="mode-icon-spinner" />
@@ -303,7 +310,7 @@ function StatView({
     // it then — a folder must always render something.
     const s = stat.stat;
     if (s.is_dir && s.templates.length === 0) {
-      content = <Listing fsPath={fsPath} />;
+      content = <Listing fsPath={fsPath} barChrome={variant === "explorer"} />;
     } else if (!ready) {
       // Brief; only for files opened with an empty query while the sidecar
       // read resolves. Directories and param/bookmark opens are ready
@@ -328,11 +335,12 @@ function StatView({
   return (
     <>
       {/* Only the explorer carries a breadcrumb bar — the app builder and
-          learn render their content directly (no path chrome). */}
+          learn render their content directly (no path chrome). BreadcrumbBar
+          owns the `#breadcrumb` box itself: over a folder it portals the whole
+          bar down into the listing's left column, so it can't be a wrapper
+          rendered here (Breadcrumb.tsx). */}
       {variant === "explorer" && (
-        <div id="breadcrumb">
-          <Breadcrumb fsPath={fsPath} home={home} renderedTitle={renderedTitle} />
-        </div>
+        <BreadcrumbBar fsPath={fsPath} home={home} renderedTitle={renderedTitle} />
       )}
       <div id="content">{content}</div>
     </>

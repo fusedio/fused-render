@@ -17,6 +17,7 @@ import { matchChord } from "@apps/explorer/listing/shortcut-chord";
 import { isOverlayOpen } from "@platform/lib/ui-overlay";
 import { dirname, normDir } from "@apps/explorer/lib/fs-actions";
 import { setClipboard, type Clipboard } from "@apps/explorer/lib/fs-clipboard";
+import { cameFromSelParam } from "@apps/explorer/listing/selection";
 import type { RowCtx } from "@apps/explorer/listing/types";
 import { targetDirOf } from "@apps/explorer/listing/row-utils";
 
@@ -97,7 +98,9 @@ export function useListingShortcuts({
       navigate(row.path, { isDir: row.isDir });
     } else if (action === "parent") {
       e.preventDefault();
-      if (parent !== here) navigate(parent, { isDir: true });
+      // Land on the folder we came out of, highlighted — the same rule the
+      // crumb strip follows (Breadcrumb.tsx), through the same pure decision.
+      if (parent !== here) navigate(parent, { isDir: true, sel: cameFromSelParam(parent, here) });
     } else if (action === "back" || action === "forward") {
       // The router only ever pushes, so this drives the browser history
       // directly — popstate is what the shell listens to anyway (useNavEpoch),
