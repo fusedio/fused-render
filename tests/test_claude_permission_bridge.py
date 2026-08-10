@@ -1064,9 +1064,14 @@ def _summarize(tool, tool_input):
     Extracted and executed rather than asserted about: what matters is the
     text a user actually reads before clicking Allow, and that is the output
     of this function, not the shape of its source.
+
+    The extraction window opens at `formatEditDiff` (the function immediately
+    above it in the template), not at `summarizePermission` itself: the Edit
+    case renders its `-`/`+` body through that helper now, because the
+    transcript's Edit chip shows the same diff and one formatter serves both.
     """
     html = open(os.path.join(TEMPLATE_DIR, "template.html"), encoding="utf-8").read()
-    start = html.index("function summarizePermission(")
+    start = html.index("function formatEditDiff(")
     fn = html[start:html.index("function buildPermCard(", start)]
     script = fn + "\nconsole.log(JSON.stringify(summarizePermission(%s, %s)));" % (
         json.dumps(tool), json.dumps(tool_input))

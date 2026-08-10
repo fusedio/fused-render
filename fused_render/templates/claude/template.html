@@ -32,6 +32,13 @@
     --pre-bg: #141519;
     --pre-fg: #d4d4d8;
     --link: #7aa8ff;
+    /* diff lines in Edit chips — own variables, not --ok/--error: those are
+       status colours on text, these are backgrounds a whole line sits on and
+       need to stay readable under --pre-fg in each theme. */
+    --diff-add-bg: rgba(108, 192, 122, .14);
+    --diff-add-fg: #8ed49a;
+    --diff-del-bg: rgba(242, 109, 109, .14);
+    --diff-del-fg: #f08d8d;
     --shadow: rgba(0, 0, 0, .4);
     --scrollbar: #3a3d45;
     --handle-hover: #4a4d57;
@@ -58,6 +65,10 @@
     --pre-bg: #f7f8f9;
     --pre-fg: #33363c;
     --link: #1c5fb8;
+    --diff-add-bg: rgba(46, 125, 50, .10);
+    --diff-add-fg: #1f6b25;
+    --diff-del-bg: rgba(198, 40, 40, .10);
+    --diff-del-fg: #a81f1f;
     --shadow: rgba(0, 0, 0, .10);
     --scrollbar: #cdd0d6;
     --handle-hover: #a8adb6;
@@ -778,6 +789,67 @@
   .perm .perm-status.allow { color: var(--ok); }
   .perm .perm-status.deny { color: var(--error); }
   .perm .perm-status.expired { color: var(--dim); }
+
+  /* ── the tool timeline (segments inside an assistant turn) ──
+     Deliberately quieter than a permission card: a card is a question and has
+     to be seen, a chip is a receipt for something that already happened, and a
+     transcript of forty loud cards is unreadable. Same border language, no
+     accent ring, no shadow. `white-space: normal` because .assistant .body is
+     pre-wrap for the streaming text and these are structured rows, not prose. */
+  .toolchip, .thinking { white-space: normal; margin: 6px 0; }
+  .toolchip {
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: color-mix(in srgb, var(--surface) 55%, transparent);
+    padding: 3px 10px 4px;
+    font-size: 13px;
+  }
+  /* One clipped line, always: the summary is a control, and a wrapped 40-line
+     command would make the row taller than the body it hides. Clipped on the
+     summary itself rather than on .chip-sub inside it — an inline-block child
+     with its own ellipsis still widens the row it sits in — and NOT via
+     `display: flex`, which would take the disclosure triangle with it. */
+  .toolchip > summary {
+    cursor: pointer;
+    color: var(--dim);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .toolchip > summary:hover { color: var(--fg); }
+  .toolchip .chip-status { display: inline-block; width: 1.1em; color: var(--dim); }
+  .toolchip .chip-status.ok { color: var(--ok); }
+  .toolchip .chip-status.error { color: var(--error); }
+  .toolchip .chip-status.running { animation: chipspin 1.1s linear infinite; }
+  @keyframes chipspin { to { transform: rotate(360deg); } }
+  @media (prefers-reduced-motion: reduce) {
+    .toolchip .chip-status.running { animation: none; }
+  }
+  .toolchip .chip-name { color: var(--accent); font-weight: 600; }
+  .toolchip .chip-sub { color: var(--dim); margin-left: 6px; }
+  .toolchip .chip-label {
+    color: var(--dim); font-size: 12px; margin-top: 6px; word-break: break-all;
+  }
+  .toolchip .chip-body pre { margin: 6px 0 2px; max-height: 260px; overflow: auto; }
+  /* Wrapped, not scrolled: a diff read sideways is not a diff. */
+  .toolchip pre.diff { white-space: pre-wrap; word-break: break-word; }
+  .diff-add { color: var(--diff-add-fg); background: var(--diff-add-bg); }
+  .diff-del { color: var(--diff-del-fg); background: var(--diff-del-bg); }
+  .toolchip .chip-todo { font-size: 12.5px; }
+  .toolchip .chip-todo.done { color: var(--dim); text-decoration: line-through; }
+  .toolchip .chip-img {
+    display: block; max-width: 100%; border-radius: 8px; margin-top: 6px;
+  }
+  .thinking > summary {
+    cursor: pointer; color: var(--faint); font-size: 12.5px; font-style: italic;
+  }
+  .thinking > summary:hover { color: var(--dim); }
+  .thinking .thinking-body {
+    color: var(--dim);
+    border-left: 2px solid var(--border-strong);
+    padding-left: 10px;
+    margin-top: 4px;
+  }
 
   /* ── composer (shared by home + chat) ── */
   .composer {
@@ -4420,6 +4492,24 @@ function addAssistant(text) {
   return d;
 }
 
+// One FINISHED assistant turn, from whatever the payload carries: its
+// `segments` when it has them — the authoritative transcript, tool chips and
+// all — and its flat `text` otherwise (an error path, or a transcript recorded
+// before segments existed). Never both: the text segments join back to exactly
+// that string, so rendering both would print the reply twice.
+//
+// Three callers — history restore and the two re-attach repair branches — all
+// rendering a turn nobody is streaming, which is why there is no typer here and
+// why every segment renders statically. Callers run attachCodeCopy themselves
+// (history does one pass over the whole log, the repair path one per turn).
+function addAssistantTurn(text, segments) {
+  const turn = addAssistant("");
+  const segs = Array.isArray(segments) ? segments : [];
+  if (segs.length) renderSegments(turn.lastChild, segs, {});
+  else turn.lastChild.innerHTML = renderMd(text || "");
+  return turn;
+}
+
 function addError(text) {
   const d = document.createElement("div");
   d.className = "turn error";
@@ -4460,6 +4550,20 @@ const WHOLE_TOOL_GRANTABLE = new Set([
   "Edit", "Write", "Read", "Glob", "Grep", "NotebookEdit",
 ]);
 
+// An Edit's `old_string`/`new_string` as one `-`/`+` marked block — the shape a
+// diff is read in. TWO call sites and therefore its own function: the approval
+// card (below) asks "shall I make this change", the transcript's Edit chip says
+// "this change was made", and the two showing the same edit differently would
+// be a bug that only ever surfaces as confusion. Non-strings are JSON-encoded
+// rather than coerced, same rule as `str` in summarizePermission: a stray
+// object must read as its contents, never as "[object Object]".
+function formatEditDiff(input) {
+  const inp = input && typeof input === "object" ? input : {};
+  const str = (v) => (typeof v === "string" ? v : v === undefined || v === null ? "" : JSON.stringify(v));
+  const mark = (v, ch) => str(v).split("\n").map((line) => ch + " " + line).join("\n");
+  return mark(inp.old_string, "-") + "\n" + mark(inp.new_string, "+");
+}
+
 // What the user is actually being asked to allow. Every field goes in through
 // textContent — tool input is model-authored text, never parsed as markup.
 // NOTHING here truncates: an Allow hands the tool its input verbatim, so a
@@ -4469,7 +4573,6 @@ const WHOLE_TOOL_GRANTABLE = new Set([
 function summarizePermission(tool, input) {
   const inp = input && typeof input === "object" ? input : {};
   const str = (v) => (typeof v === "string" ? v : v === undefined || v === null ? "" : JSON.stringify(v));
-  const mark = (v, ch) => str(v).split("\n").map((line) => ch + " " + line).join("\n");
 
   const used = [];
   const show = (k) => {
@@ -4489,8 +4592,13 @@ function summarizePermission(tool, input) {
     case "Edit": {
       const path = show("file_path");
       show("replace_all");  // rendered as the annotation below, so it is covered
+      // Marked as covered here, rendered by formatEditDiff — which reads the
+      // raw input, so `show`'s only job on these two is the bookkeeping that
+      // keeps them out of the leftover dump.
+      show("old_string");
+      show("new_string");
       return out(path + (inp.replace_all ? "  (every occurrence)" : ""),
-                 mark(show("old_string"), "-") + "\n" + mark(show("new_string"), "+"));
+                 formatEditDiff(inp));
     }
     case "Write":
       return out(show("file_path"), show("content"));
@@ -4843,6 +4951,12 @@ function attachCodeCopy(rootEl) {
 }
 
 // ── typewriter: polls fill `target`; a rAF loop drains it smoothly ──
+// `bodyEl` may be null — a typer built PARKED, with nothing to stream into
+// yet. That is what a segment transcript needs: the reply's element exists
+// before its first text segment does (the turn may open with a tool call), and
+// which element the prose lands in changes DURING the turn, as new segments
+// push the streaming tail along. See retarget() below; a parked typer draws
+// nothing, not even its cursor.
 function makeTyper(bodyEl) {
   let target = "";
   let shown = 0;
@@ -4851,10 +4965,11 @@ function makeTyper(bodyEl) {
   const cur = document.createElement("span");
   cur.className = "cursor";
   cur.textContent = "▋";
-  bodyEl.after(cur);
+  if (bodyEl) bodyEl.after(cur);
 
   function tick() {
     raf = null;
+    if (!bodyEl) return;  // parked mid-frame (retarget); nothing to draw into
     if (shown > target.length) {
       // Target got rewritten shorter (authoritative final text): without this
       // clamp nothing ever redraws and the frozen frame keeps stale text.
@@ -4874,10 +4989,15 @@ function makeTyper(bodyEl) {
   }
 
   return {
-    update(text) { target = text; if (!raf) raf = requestAnimationFrame(tick); },
-    finish(text) {
+    update(text) {
+      if (!bodyEl) return;  // parked: the tail of this reply is not prose
       target = text;
+      if (!raf) raf = requestAnimationFrame(tick);
+    },
+    finish(text) {
       finished = true;
+      if (!bodyEl) { cur.remove(); return Promise.resolve(); }
+      target = text;
       if (!raf) raf = requestAnimationFrame(tick);
       return new Promise((resolve) => {
         (function wait() {
@@ -4887,8 +5007,358 @@ function makeTyper(bodyEl) {
         })();
       });
     },
+    // Point the typer at a DIFFERENT element, or at nothing (`null`). Callers
+    // own the old element from here: whatever fraction of its text had been
+    // drawn stays drawn, so the caller must render it whole first (see
+    // renderSegments, which does exactly that before every retarget). The
+    // counters reset because they measure progress through the NEW element's
+    // text, and the pending frame is cancelled because it would otherwise draw
+    // the old text into the new element.
+    retarget(el) {
+      if (el === bodyEl) return;
+      if (raf) { cancelAnimationFrame(raf); raf = null; }
+      bodyEl = el;
+      target = "";
+      shown = 0;
+      if (el) el.after(cur); else cur.remove();
+    },
     abort() { if (raf) cancelAnimationFrame(raf); cur.remove(); },
   };
+}
+
+// ── the tool timeline: one reply's ordered transcript ─────────
+// agent.py's `_segments_from_rows` returns the turn as an ordered list of
+// text / thinking / tool segments (its docstring is the contract; read it
+// before changing anything here). This is the renderer for that list, and the
+// ONE rule that outranks every layout choice below: a tool's input and output
+// are raw bytes — a file's contents, a command's stdout, an MCP server's
+// answer — so they go in through textContent and nothing else, ever. Only
+// `text` and `thinking` segments are prose, and only they see renderMd.
+const TOOL_STATUS_GLYPH = { running: "◜", ok: "✓", error: "✗" };
+
+// Chips that open themselves. An Edit or a Write IS its diff: hiding it behind
+// a click means the one thing the user most needs to check — what changed in
+// their file — is the one thing they have to hunt for. Everything else (a
+// Read's contents, a Bash command's output) is context you look at when
+// something surprises you, so it stays folded.
+const TOOL_OPEN_BY_DEFAULT = new Set(["Edit", "Write"]);
+
+// Lines in a string, counting "" as zero (not one): an Edit that only adds
+// text has no removed lines, and "-1" would be a lie about the change.
+function segLineCount(v) {
+  return typeof v === "string" && v !== "" ? v.split("\n").length : 0;
+}
+
+// The one-liner beside the tool name in the chip's summary row. Per-tool,
+// because "what did this call DO" is a different question for every tool and a
+// generic answer (the first key of the input, say) is noise for all of them.
+// Always ONE line — this is the <summary> of a <details>, and a newline in it
+// breaks the row — and never the whole input: the chip's BODY is what shows
+// everything, and unlike an approval card (which must show every byte it is
+// asking permission for) this describes a call that already happened.
+function toolChipSummary(seg) {
+  const inp = seg && seg.input && typeof seg.input === "object" ? seg.input : {};
+  const str = (v) => (typeof v === "string" ? v : v === undefined || v === null ? "" : JSON.stringify(v));
+  // First line only, with an ellipsis when there was more — the clip has to be
+  // visible, or a heredoc reads as a one-line command.
+  const line1 = (v) => {
+    const s = str(v).split("\n");
+    return s[0] + (s.length > 1 ? " …" : "");
+  };
+  const pick = (...keys) => {
+    for (const k of keys) if (inp[k]) return line1(inp[k]);
+    return "";
+  };
+  const where = (v) => (str(v) ? "  in " + line1(v) : "");
+
+  switch (seg && seg.name) {
+    case "Bash":
+      return "$ " + line1(inp.command);
+    case "Read":
+    case "NotebookEdit":
+      return pick("file_path", "path", "notebook_path");
+    case "Glob":
+    case "Grep":
+      return line1(inp.pattern) + where(inp.path || inp.glob);
+    case "Edit": {
+      // +added -removed, so the SIZE of the change is legible unopened.
+      const counts = "  +" + segLineCount(inp.new_string)
+                     + " -" + segLineCount(inp.old_string);
+      return pick("file_path") + counts;
+    }
+    case "Write":
+      return pick("file_path") + "  +" + segLineCount(inp.content);
+    case "Task":
+      return pick("description", "subagent_type");
+    case "TodoWrite": {
+      const todos = Array.isArray(inp.todos) ? inp.todos : [];
+      const done = todos.filter((t) => t && t.status === "completed").length;
+      return done + "/" + todos.length + " done";
+    }
+    case "WebFetch":
+    case "WebSearch":
+      return pick("url", "query");
+  }
+  // Unknown tool — every MCP tool, and whatever the CLI grows next. The name
+  // is already in the summary row beside this, so there is nothing honest to
+  // add: the body shows the whole input instead.
+  return "";
+}
+
+// The chip's expanded body, rebuilt from the segment (never patched): a
+// segment's input never changes once it is on the wire, and its output arrives
+// once, so a full rebuild is both cheap and the only version that cannot go
+// out of sync with the segment.
+function fillToolChipBody(body, seg) {
+  const inp = seg.input && typeof seg.input === "object" ? seg.input : {};
+  const pre = (text, cls) => {
+    const p = document.createElement("pre");
+    if (cls) p.className = cls;
+    p.textContent = text;   // raw tool text: textContent, never innerHTML
+    body.appendChild(p);
+    return p;
+  };
+  const label = (text) => {
+    const d = document.createElement("div");
+    d.className = "chip-label";
+    d.textContent = text;
+    body.appendChild(d);
+  };
+  const used = [];
+
+  switch (seg.name) {
+    case "Edit": {
+      used.push("file_path", "old_string", "new_string", "replace_all");
+      if (inp.file_path) {
+        label(String(inp.file_path) + (inp.replace_all ? "  (every occurrence)" : ""));
+      }
+      // One span per line so the -/+ colouring is a CSS class, and real "\n"
+      // text nodes between them so the block still reads — and copies — as a
+      // diff rather than one run-together line.
+      const p = document.createElement("pre");
+      p.className = "diff";
+      formatEditDiff(inp).split("\n").forEach((line, i) => {
+        if (i) p.append("\n");
+        const s = document.createElement("span");
+        s.className = line.charAt(0) === "+" ? "diff-add"
+                      : line.charAt(0) === "-" ? "diff-del" : "";
+        s.textContent = line;
+        p.appendChild(s);
+      });
+      body.appendChild(p);
+      break;
+    }
+    case "Write":
+      used.push("file_path", "content");
+      if (inp.file_path) label(String(inp.file_path));
+      pre(typeof inp.content === "string" ? inp.content : "");
+      break;
+    case "Bash":
+      used.push("command", "description");
+      if (inp.description) label(String(inp.description));
+      pre(typeof inp.command === "string" ? inp.command : "");
+      break;
+    case "TodoWrite": {
+      used.push("todos");
+      const todos = Array.isArray(inp.todos) ? inp.todos : [];
+      todos.forEach((t) => {
+        const row = document.createElement("div");
+        row.className = "chip-todo";
+        const done = t && t.status === "completed";
+        if (done) row.classList.add("done");
+        row.textContent = (done ? "☑ " : "☐ ")
+                          + String((t && (t.content || t.activeForm)) || "");
+        body.appendChild(row);
+      });
+      break;
+    }
+    default:
+      // No renderer for this tool, so the input IS the body: pretty JSON of
+      // the whole thing. A chip that showed part of an unknown call would be a
+      // chip that misdescribed what ran.
+      used.push(...Object.keys(inp));
+      if (Object.keys(inp).length) pre(JSON.stringify(inp, null, 2));
+  }
+
+  // Anything the branch above did not render — same rule as the approval
+  // card's: a key that changes what the tool did (`run_in_background`,
+  // `timeout`, a flag added after this was written) must not be invisible
+  // because our renderer predates it.
+  const extra = leftoverInput(inp, used);
+  if (extra) pre(JSON.stringify(extra, null, 2));
+
+  // "" is an empty result and null is "no result yet" — two different facts,
+  // and only the first has anything to show.
+  if (typeof seg.output === "string" && seg.output !== "") {
+    pre(seg.output, "chip-out");
+  }
+  (Array.isArray(seg.images) ? seg.images : []).forEach((img) => {
+    // The media type lands in a `data:` URL, so it is validated rather than
+    // trusted: base64 payload, image/* type, nothing else. A rejected image is
+    // skipped, not coerced — inventing `image/png` for something that said it
+    // was text/html would be guessing about bytes we did not read.
+    const type = String((img && img.media_type) || "");
+    const data = String((img && img.data) || "");
+    if (!/^image\/[\w.+-]+$/.test(type) || !/^[A-Za-z0-9+/=\s]+$/.test(data)) return;
+    const el = document.createElement("img");
+    el.className = "chip-img";
+    el.src = "data:" + type + ";base64," + data.replace(/\s+/g, "");
+    el.alt = seg.name + " result image";
+    body.appendChild(el);
+  });
+}
+
+// One tool call. Returns a view handle rather than an element: the same call is
+// re-rendered on every 400 ms poll — first `running` with no output, later
+// `ok`/`error` with one — and it has to be the SAME <details> throughout, or a
+// chip the user opened would snap shut under them every tick.
+function buildToolChip(seg) {
+  const el = document.createElement("details");
+  el.className = "toolchip";
+  if (TOOL_OPEN_BY_DEFAULT.has(seg.name)) el.open = true;
+  const head = document.createElement("summary");
+  const glyph = document.createElement("span");
+  const name = document.createElement("span");
+  name.className = "chip-name";
+  name.textContent = String(seg.name || "tool");
+  const sub = document.createElement("span");
+  sub.className = "chip-sub";
+  head.append(glyph, name, sub);
+  const body = document.createElement("div");
+  body.className = "chip-body";
+  el.append(head, body);
+
+  // What the DOM currently says, as one string. Re-rendering an unchanged chip
+  // every 400 ms would drop scroll position inside a long output and fight the
+  // user's own selection; this is the cheap way to not.
+  //
+  // `input` is deliberately NOT in the key. It cannot change under a live chip
+  // — agent.py reads tool calls only from FINALIZED assistant rows, whose input
+  // is complete and deduped by tool id — and a Write's `content` is uncapped,
+  // so keying on it would re-stringify the whole file being written on every
+  // 400 ms poll for the rest of the turn. `output` is capped (4000 chars) and
+  // images contribute only their count, so what is left is cheap.
+  let shown = null;
+  function update(next) {
+    const key = JSON.stringify([next.status, next.output,
+                                (next.images || []).length]);
+    if (key === shown) return;
+    shown = key;
+    const status = String(next.status || "running");
+    glyph.className = "chip-status " + status;
+    glyph.textContent = TOOL_STATUS_GLYPH[status] || TOOL_STATUS_GLYPH.running;
+    sub.textContent = toolChipSummary(next);
+    body.replaceChildren();
+    fillToolChipBody(body, next);
+  }
+  update(seg);
+  return { kind: "tool", el, update };
+}
+
+// Thinking, folded. Collapsed and unlabelled by content on purpose: the point
+// of showing it at all is that it HAPPENED and is inspectable, and a reasoning
+// trace summarised in the summary line would be a second thing to read for
+// every one the user actually wanted to open.
+function buildThinkingView() {
+  const el = document.createElement("details");
+  el.className = "thinking";
+  const head = document.createElement("summary");
+  head.textContent = "Thought for a moment";
+  const body = document.createElement("div");
+  body.className = "thinking-body";
+  el.append(head, body);
+  return {
+    kind: "thinking", el, text: null,
+    render(t) { body.innerHTML = renderMd(t); },
+  };
+}
+
+// A run of prose. Its own element rather than markdown appended to the turn,
+// because the typer needs something to own: the streaming tail is one element
+// whose innerHTML is rewritten per frame, and the segments around it must not
+// be inside what gets rewritten.
+function buildTextView() {
+  const el = document.createElement("div");
+  el.className = "seg-text";
+  return {
+    kind: "text", el, text: null,
+    render(t) { el.innerHTML = renderMd(t); },
+  };
+}
+
+function buildSegmentView(seg) {
+  if (seg.kind === "tool") return buildToolChip(seg);
+  if (seg.kind === "thinking") return buildThinkingView();
+  return buildTextView();  // "text", and anything a newer agent.py invents
+}
+
+const segText = (seg) => (seg && typeof seg.text === "string" ? seg.text : "");
+// container element -> the views rendered into it, by segment index. A WeakMap
+// so a removed turn (an errored run drops its whole bubble) takes its state
+// with it.
+const segStates = new WeakMap();
+
+// Render `segments` into `container`, idempotently: called on EVERY poll with
+// the whole list, it builds each segment's view once at its index and
+// afterwards only updates in place. `opts.typer` streams the trailing text
+// segment (omit it for a finished turn — history restore — and everything
+// renders statically). Returns that trailing text, which is what the caller
+// hands typer.finish() when the run ends.
+function renderSegments(container, segments, opts) {
+  const typer = (opts && opts.typer) || null;
+  const list = Array.isArray(segments) ? segments : [];
+  let st = segStates.get(container);
+  if (!st) { st = { views: [], typed: -1 }; segStates.set(container, st); }
+  // ONLY a text segment at the very end of the list is still growing. One
+  // anywhere else is finished by definition — something came after it — and a
+  // typer aimed at it would re-animate settled prose on every poll.
+  const tail = list.length && list[list.length - 1].kind === "text"
+    ? list.length - 1 : -1;
+
+  // The reply grew PAST the segment the typer was streaming (a tool call, or
+  // more prose after one). That text is final now, and the typer may have
+  // drawn only part of it — so render it whole, give it its copy buttons, and
+  // let the typer go before the loop below points it anywhere new.
+  if (st.typed >= 0 && st.typed !== tail) {
+    const done = st.views[st.typed];
+    const seg = list[st.typed];
+    if (done && done.kind === "text") {
+      done.text = segText(seg);
+      done.render(done.text);
+      attachCodeCopy(done.el);
+    }
+    st.typed = -1;
+    if (typer) typer.retarget(null);
+  }
+
+  for (let i = 0; i < list.length; i++) {
+    const seg = list[i] || {};
+    let view = st.views[i];
+    if (!view || view.kind !== (seg.kind === "tool" || seg.kind === "thinking"
+                                ? seg.kind : "text")) {
+      // A settled index never changes kind (segments only grow, and same-kind
+      // neighbours merge in agent.py) — but rebuilding beats rendering a tool
+      // call into a prose element if that ever stops being true.
+      if (view) view.el.remove();
+      view = buildSegmentView(seg);
+      st.views[i] = view;
+      container.appendChild(view.el);
+    }
+    if (view.kind === "tool") { view.update(seg); continue; }
+    const text = segText(seg);
+    if (i === tail && typer) {
+      if (st.typed !== i) { typer.retarget(view.el); st.typed = i; }
+      view.text = text;   // the typer owns this element's DOM until it moves on
+      typer.update(text);
+      continue;
+    }
+    if (view.text !== text) { view.text = text; view.render(text); }
+  }
+
+  // Defensive: within one turn the list only grows, but a container reused for
+  // a shorter turn must not keep the old tail on screen.
+  st.views.splice(list.length).forEach((v) => v.el.remove());
+  return tail >= 0 ? segText(list[tail]) : null;
 }
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -5340,6 +5810,9 @@ async function pollLoop(run_id) {
   setRunningUi(true);
   let reply = null;
   let typer = null;
+  let segBody = null;    // the element the segment views are rendered into
+  let segMode = false;   // this turn returned segments, so they are the truth
+  let tailText = null;   // the trailing text segment, for typer.finish()
   try {
     while (true) {
       const data = await fused.runPython(AGENT, { action: "poll", run_id }, { key: null });
@@ -5352,13 +5825,33 @@ async function pollLoop(run_id) {
       // Not awaited: a snapshot must never hold up the streaming reply, and the
       // answered-set makes a second poll arriving mid-answer a no-op.
       if (data.app_state && data.app_state.length) answerAppState(data.app_state, run_id, w);
-      if (data.text) {
+      // `segments` is the authoritative transcript of the turn (text,
+      // thinking, tool calls, in order — see _segments_from_rows). `data.text`
+      // is the flat legacy field and is NOT rendered as well when segments
+      // exist: on a run that carried stream deltas the text segments join back
+      // to exactly that string, so rendering both prints the reply twice.
+      const segs = Array.isArray(data.segments) ? data.segments : [];
+      if (segs.length || data.text) {
         if (!reply) {
           reply = addAssistant("");
           log.insertBefore(reply, w.el);  // status line stays below the streaming reply
-          typer = makeTyper(reply.lastChild);
+          segBody = reply.lastChild;
+          // Parked when there are segments: renderSegments points the typer at
+          // the trailing text segment, which may not exist yet (a turn can open
+          // with a tool call) and changes as the turn grows.
+          typer = makeTyper(segs.length ? null : segBody);
         }
-        if (!data.done) typer.update(data.text);
+        if (segs.length) {
+          if (!segMode) {
+            // A first poll with text but no segments yet (no assistant row on
+            // disk) started this turn on the legacy path — take it back before
+            // the segments render, or the flat text stays behind them.
+            segMode = true;
+            typer.retarget(null);
+            segBody.replaceChildren();
+          }
+          tailText = renderSegments(segBody, segs, { typer });
+        } else if (!data.done) typer.update(data.text);
       }
       if (data.done) {
         fused.params.set("run", "");
@@ -5376,6 +5869,13 @@ async function pollLoop(run_id) {
         if (!end.keepText) {
           if (typer) typer.abort();
           if (reply) reply.remove();
+        } else if (segMode) {
+          // Drain the trailing prose (`null` when the turn ended on a tool
+          // call — finish() then just retires the cursor), then one
+          // highlight/copy pass over the whole finished transcript: the text
+          // segments, and every <pre> the tool chips added.
+          await typer.finish(tailText || "");
+          attachCodeCopy(reply);
         } else if (typer) {
           await typer.finish(data.text);
         } else if (data.text) {
@@ -5612,19 +6112,19 @@ async function resumeRun(run_id) {
         if (matches || !users.length) addError(probe.error);
         return;
       }
+      // `probe` is a poll payload, so it carries the turn's segments too — the
+      // repair has to render what pollLoop would have, or a run that finished
+      // while this frame was away loses its whole tool timeline until the next
+      // history restore puts it back.
       if (matches) {
         while (lastTurn.nextElementSibling) lastTurn.nextElementSibling.remove();
-        if (probe.text) {
-          const turn = addAssistant("");
-          turn.lastChild.innerHTML = renderMd(probe.text);
-          attachCodeCopy(turn);
+        if (probe.text || (probe.segments || []).length) {
+          attachCodeCopy(addAssistantTurn(probe.text, probe.segments));
         }
       } else if (!users.length && probeMsg) {
         addUser(probeMsg);
-        if (probe.text) {
-          const turn = addAssistant("");
-          turn.lastChild.innerHTML = renderMd(probe.text);
-          attachCodeCopy(turn);
+        if (probe.text || (probe.segments || []).length) {
+          attachCodeCopy(addAssistantTurn(probe.text, probe.segments));
         }
       }
       scrollBottom();
@@ -5739,8 +6239,13 @@ async function loadHistory(session_id) {
     const { turns } = await fused.runPython(AGENT, { action: "history", file: FILE, session_id }, { key: null });
     log.innerHTML = "";  // drop the skeleton now that real turns are ready
     for (const t of turns) {
+      // Assistant turns carry `segments`; USER turns have no such key at all,
+      // which addAssistantTurn's Array.isArray tolerates (a truthiness test on
+      // a missing key would too, but this says out loud that the key is
+      // optional). A restored turn renders through the same renderSegments the
+      // live stream uses — no typer, because nothing is arriving.
       if (t.role === "user") addUser(stripBlocks(t.text));
-      else addAssistant("").lastChild.innerHTML = renderMd(t.text);
+      else addAssistantTurn(t.text, t.segments);
     }
     attachCodeCopy(log);  // one pass over the whole restored transcript
     scrollBottom();

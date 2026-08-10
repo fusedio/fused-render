@@ -372,12 +372,13 @@ claude (headless)                    agent.py / browser
    not move; fork semantics deemed reasonable for copied files).
    Cross-*machine* transfer would need the transcript embedded in the
    sidecar — out of scope.
-6. **Only text turns — and approval cards — render.** A tool call that needs
-   permission now shows up as a card (tool name + a per-tool summary: the Bash
-   command, the Edit's `-`/`+` lines, the Write's content). An *allowed* one
-   still streams past invisibly behind the "Working…" spinner, and cards are
-   not in the transcript, so they vanish on a reload of a finished session.
-   Showing all tool activity inline is still the obvious next feature.
+6. **Only text turns — and approval cards — render.** — **SUPERSEDED by D244:**
+   the transcript now renders the turn's `segments` (a collapsible chip per tool
+   call, Edit/Write open on their diff; a folded thinking block; markdown
+   prose), for streaming, restored and re-attached turns alike, and `segments`
+   is authoritative wherever it is non-empty. Still true of the *cards*: an
+   approval card is not part of the transcript, so the card vanishes on a reload
+   — the call it authorised does not.
 7. **`claude` binary discovery:** `FUSED_RENDER_CLAUDE_BIN` (explicit
    override, mirroring `FUSED_RENDER_RCLONE_BIN`), then `shutil.which`, then
    the platform's install locations — `~/.local/bin`, `/opt/homebrew/bin`,
