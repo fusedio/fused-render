@@ -1,19 +1,15 @@
-// The rules a file drag obeys, with no DOM in sight: what a press on a row
-// picks up, which drops are allowed, and how the payload survives the trip
-// through the drag's own dataTransfer.
+// The rules a file drag obeys, with no DOM in sight: which gesture a press
+// begins, what it picks up, which drops are allowed, and what the ghost says.
 //
 // These are here rather than in an interaction test because a headless test
 // cannot see layout at all — it can see exactly this arithmetic, and every
 // wrong drop the wiring could make is a wrong answer from one of these.
 import { describe, expect, test } from "bun:test";
 import {
-  FS_DRAG_MIME,
-  carriesFsDrag,
   clearFsDrag,
-  decodeDragPaths,
+  dragGhostLabel,
   dragPathsFor,
   dropIsValid,
-  encodeDragPaths,
   fsDragInFlight,
   pressStartsDrag,
   springDisarms,
@@ -22,38 +18,96 @@ import {
 
 const file = (path: string) => ({ path, parentDir: path.slice(0, path.lastIndexOf("/")) });
 
-// Where a drag may start. The whole rule, and it has one input: a press on an
-// already-selected row drags, and a press ANYWHERE else — any part of an
-// unselected row, the background — sweeps.
+// Where a drag may start. The whole rule, and it has ONE input — and the input
+// is a SNAPSHOT: the selection as it stood BEFORE the press, never as it stands
+// once the press has had its effect.
 describe("pressStartsDrag", () => {
-  test("a press on a selected row starts a move-drag", () => {
-    expect(pressStartsDrag({ rowSelected: true })).toBe(true);
+  test("a press on an already-selected row starts a move-drag", () => {
+    expect(pressStartsDrag({ rowWasSelected: true })).toBe(true);
   });
 
   test("a press on an unselected row starts no drag, wherever it lands", () => {
     // Including the name and icon, which used to be a permanent drag handle.
     // That handle is why a drag started across rows grabbed one file and moved
     // it instead of selecting the rows it crossed: the same pixels cannot serve
-    // a native move-drag and a sweep, and drag-to-select is the commoner
-    // gesture by far. The cost is that moving a single unselected file is two
-    // gestures now — click it, then drag it.
-    expect(pressStartsDrag({ rowSelected: false })).toBe(false);
+    // a move-drag and a sweep, and drag-to-select is the commoner gesture by
+    // far. The cost is that moving a single unselected file is two gestures now
+    // — click it, then drag it.
+    expect(pressStartsDrag({ rowWasSelected: false })).toBe(false);
   });
 
   test("the rule is exactly the sweep rule inverted", () => {
     // useMarquee calls this same function to find where a SWEEP may start, so
     // the two gestures cannot both claim a pixel and cannot drift apart. If
     // this ever needs a second input, that property is what to preserve.
-    for (const rowSelected of [true, false]) {
-      const drags = pressStartsDrag({ rowSelected });
-      expect(drags).toBe(!!rowSelected);
-      expect(!drags).toBe(!rowSelected);
+    for (const rowWasSelected of [true, false]) {
+      const drags = pressStartsDrag({ rowWasSelected });
+      expect(drags).toBe(rowWasSelected);
+      expect(!drags).toBe(!rowWasSelected);
     }
   });
 });
 
-// Spring-loading is armed on dragenter and cancelled on dragleave, and the DOM
-// fires those in an order that makes the naive version cancel itself.
+// THE SNAPSHOT ARBITER, which is the part that has now cost three rounds.
+//
+// A press on an unselected row SELECTS it. So there are two readings of "is
+// this row selected?" available at any moment after the press — the one from
+// before it, and the one the press itself created — and they disagree for
+// exactly the case the bug lived in. These tests pin which one the rule is fed;
+// the caller (useMarquee, in the capture phase of pointerdown) is what makes
+// the value a snapshot, and this is what says why it must be.
+describe("the snapshot is what decides, not the live selection", () => {
+  // The gesture as the arbiter sees it: the row pressed, and the selection as
+  // it stood before the press.
+  const gesture = (path: string, selectionBefore: string[]) =>
+    pressStartsDrag({ rowWasSelected: selectionBefore.includes(path) });
+
+  test("pressing an UNSELECTED row sweeps, even though the press selects it", () => {
+    // The bug, stated as a test. Live, the row is selected a moment after the
+    // press and every reading from then on says "move-drag" — which is what a
+    // `draggable` attribute is, evaluated when the movement begins rather than
+    // when the button went down. From the snapshot the answer is SWEEP, and it
+    // stays SWEEP however long the gesture runs.
+    const before: string[] = [];
+    expect(gesture("/w/notes.md", before)).toBe(false);
+    const afterThePress = ["/w/notes.md"];
+    expect(pressStartsDrag({ rowWasSelected: afterThePress.includes("/w/notes.md") })).toBe(true);
+  });
+
+  test("pressing a row that WAS selected moves it", () => {
+    // Select-then-drag: the second press on the same row is the one that moves
+    // it, and this is the only way a move-drag ever begins.
+    expect(gesture("/w/notes.md", ["/w/notes.md"])).toBe(true);
+  });
+
+  test("a press inside a multi-selection moves the whole thing", () => {
+    // The press that begins a multi-row drag lands on one of the rows being
+    // dragged, and selection defers its collapse to the release for exactly
+    // this reason (selection's rowPressAction).
+    const before = ["/w/a.md", "/w/b.md", "/w/c.md"];
+    expect(gesture("/w/b.md", before)).toBe(true);
+    expect(dragPathsFor("/w/b.md", before)).toEqual(before);
+  });
+
+  test("pressing OUTSIDE a multi-selection sweeps and does not carry it off", () => {
+    // The other half of the same press: an unselected row is not part of what
+    // is selected, so the gesture is a sweep and the old selection is replaced
+    // rather than moved.
+    const before = ["/w/a.md", "/w/b.md"];
+    expect(gesture("/w/z.md", before)).toBe(false);
+  });
+
+  test("the background is never a drag, whatever is selected", () => {
+    // No row pressed at all: `rowWasSelected` is false by construction, so the
+    // background always sweeps — including with the whole folder selected.
+    expect(pressStartsDrag({ rowWasSelected: false })).toBe(false);
+  });
+});
+
+// Spring-loading is armed when the drag ENTERS a crumb and cancelled when it
+// LEAVES one, and those arrive in an order that makes the naive version cancel
+// itself. (They used to be the DOM's dragenter/dragleave; the pointer drag that
+// replaced them emits the same pair in the same order — row-drag.ts.)
 describe("springDisarms", () => {
   test("leaving the armed crumb cancels it", () => {
     expect(springDisarms("/w", "/w")).toBe(true);
@@ -191,29 +245,16 @@ describe("dropIsValid", () => {
   });
 });
 
-describe("the drag payload", () => {
-  test("round-trips through dataTransfer's string channel", () => {
-    const paths = ["/w/a b.md", "/w/π/c.md"];
-    expect(decodeDragPaths(encodeDragPaths(paths))).toEqual(paths);
+describe("the ghost's label", () => {
+  test("one entry is named", () => {
+    expect(dragGhostLabel(["notes.md"])).toBe("notes.md");
   });
 
-  test("junk on the wire decodes to nothing, never to a path", () => {
-    // dataTransfer carries whatever the source put there — including another
-    // app's payload under the same generic types.
-    expect(decodeDragPaths(null)).toEqual([]);
-    expect(decodeDragPaths("")).toEqual([]);
-    expect(decodeDragPaths("not json")).toEqual([]);
-    expect(decodeDragPaths('{"paths":"/w/a"}')).toEqual([]);
-    expect(decodeDragPaths("[1,2,3]")).toEqual([]);
-  });
-
-  test("carriesFsDrag reads the type list, which is all dragover is given", () => {
-    // getData() is blacked out during dragover for privacy, so the ONLY thing a
-    // drop target can ask mid-drag is whether our MIME is among the types.
-    expect(carriesFsDrag([FS_DRAG_MIME, "text/plain"])).toBe(true);
-    expect(carriesFsDrag(["text/plain"])).toBe(false);
-    expect(carriesFsDrag(["Files"])).toBe(false); // a drag in from the OS: not ours
-    expect(carriesFsDrag([])).toBe(false);
+  test("several are counted", () => {
+    // Naming one of five would show exactly one of the things being moved and
+    // give no hint that the other four are coming — which is what the browser's
+    // own drag image did (a snapshot of the one <tr> the press landed on).
+    expect(dragGhostLabel(["a.md", "b.md", "c.md"])).toBe("3 items");
   });
 });
 

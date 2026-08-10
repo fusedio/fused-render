@@ -184,7 +184,11 @@ export function useFileOps({
   // In-flight guard for the same reason paste has one: a second drop landing
   // mid-batch would rename sources the first is already moving.
   const moveInFlight = useRef(false);
-  const doMove = (paths: string[], targetDir: string) => {
+  // `announce` comes from the DROP TARGET, not from this view: a drop onto a
+  // sidebar bookmark lands somewhere the user cannot see, so that move says so
+  // (moveEntriesInto's toast). A drop onto a row or the listing background
+  // refreshes under the cursor, which is its own confirmation.
+  const doMove = (paths: string[], targetDir: string, opts?: { announce?: boolean }) => {
     if (!paths.length || moveInFlight.current) return;
     moveInFlight.current = true;
     void (async () => {
@@ -194,7 +198,9 @@ export function useFileOps({
         // here is the batch failing OUTSIDE that loop — planning it, or the
         // reporting itself. Rare, and precisely why it must not be swallowed:
         // an unexplained no-op is the worst outcome a drop can have.
-        const report = await moveEntriesInto(paths, targetDir);
+        const report = await moveEntriesInto(paths, targetDir, {
+          announce: opts?.announce ?? false,
+        });
         if (!report.moved.length) return;
         pendingSelectRef.current = report.moved[report.moved.length - 1];
         refetch();

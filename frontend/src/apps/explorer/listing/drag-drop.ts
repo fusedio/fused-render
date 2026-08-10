@@ -1,6 +1,6 @@
 // Dragging entries onto a folder to MOVE them: what a press picks up, where it
 // may land, and the module-level store that holds the drag while it is in
-// flight. Pure rules + one store, no DOM — the wiring is useRowDrag.ts.
+// flight. Pure rules + one store, no DOM — the wiring is row-drag.ts.
 //
 // MOVE ONLY. There is no copy modifier and no import of files dragged in from
 // the OS. Both are real features, and neither is this one: a modifier that
@@ -8,33 +8,30 @@
 // and an OS drop is an upload with its own progress, conflict and permission
 // story. A drag inside the explorer means "put these there", every time.
 //
-// The MECHANISM is the browser's own drag-and-drop (draggable rows +
-// dataTransfer), not a pointer-tracked ghost: it gives the move cursor and the
-// drop-refused cursor for free, it applies its own click-vs-drag threshold (so
-// single-click-select and double-click-open are untouched), and it survives the
-// listing REMOUNTING mid-drag, which the spring-loaded breadcrumb makes
-// routine.
+// The MECHANISM IS POINTER EVENTS, and it used to be the browser's own
+// drag-and-drop. HTML5 DnD gave a lot away for free — the move and no-drop
+// cursors, its own click-vs-drag threshold, survival across the listing
+// remounting mid-drag — and it cost the one thing this listing cannot give up:
+// WE DO NOT OWN THE MOMENT IT DECIDES. The browser reads `draggable` when the
+// movement actually begins, not when the button goes down, and a press on an
+// unselected row SELECTS that row on pointerdown. So by the time the browser
+// looked, the row it was standing on was selected, `draggable` had flipped to
+// true a re-render ago, and every press on an unselected row armed a move-drag
+// the sweep could never win. That is not fixable in `pressStartsDrag` — no
+// rule stated here can matter if it is consulted after the fact — so the
+// gesture is arbitrated at POINTERDOWN, once, from a snapshot (see below), and
+// the native API is out of the row drag entirely.
 //
-// What the mechanism does NOT give is the payload: `dataTransfer.getData` is
-// blacked out during dragover (a privacy rule — a page must not read a drag it
-// has not been given), and every drop target needs the dragged paths BEFORE
-// the release to decide whether to light up. Hence the in-flight store below;
-// the dataTransfer copy is what makes the drag start at all (Firefox) and what
-// `types` gating reads.
+// The in-flight store below outlives the Listing on purpose: spring-loading a
+// breadcrumb navigates with the drag still held, remounting the listing under
+// it, so the dragged entries cannot live in component state.
 //
 // Nothing is imported here, deliberately — the same testability constraint
 // pane-math.ts documents. lib/fs-actions (where dirname/normDir live) reaches
 // the API layer and from there the router, which reads `location` at MODULE
 // INIT, so importing it would make this file unloadable in a DOM-free bun
 // test. Callers already hold a RowCtx with its `parentDir` filled in; the one
-// place that doesn't (the sidebar) derives it with the real dirname and hands
-// a DragSource in.
-
-// The private MIME that marks a drag as ours. A drop target can ask for this
-// in `dataTransfer.types` mid-drag even though it cannot read the value, which
-// is exactly the gate every handler needs: our own drag, not a text selection
-// from another pane and not a file dragged in from the OS.
-export const FS_DRAG_MIME = "application/x-fused-fs-paths";
+// place that doesn't (the sidebar target) derives it with the real dirname.
 
 // One dragged entry: the path on the move and the folder it is leaving. The
 // parent is what makes "drop onto the folder it is already in" a no-op rather
@@ -69,14 +66,16 @@ export type DropVerdict = { ok: true; dir: string } | { ok: false; reason: DropR
 // "move" every row into the folder it is already in.
 const canon = (p: string): string => p.replace(/\/+$/, "");
 
-// Should a `dragleave` on `leaving` cancel the spring-loaded crumb that is
-// currently armed (Breadcrumb)? Only when the crumb being left IS the armed
-// one.
+// Should a leave of `leaving` cancel the spring-loaded crumb that is currently
+// armed (Breadcrumb)? Only when the crumb being left IS the armed one.
 //
 // Asking at all is the whole point. Cancelling unconditionally looks obviously
-// right and silently disables the feature, because of the order the DOM fires
-// drag events in: moving from one crumb to the next raises `dragenter` on the
-// NEW target BEFORE `dragleave` on the old one. So arming on enter and
+// right and silently disables the feature, because of the order enter/leave
+// arrive in: moving from one crumb to the next raises ENTER on the NEW target
+// BEFORE LEAVE on the old one. The DOM's drag events did that, and the pointer
+// drag that replaced them emits the pair in the same order for exactly this
+// reason (row-drag.ts) — a re-ordering there would silently re-break the
+// feature this guard exists to protect. So arming on enter and
 // disarming on any leave runs enter(docs) → arm docs → leave(/w) → disarm, and
 // kills the timer that was armed a moment earlier. Spring-loading then only
 // ever worked if the pointer entered the strip from outside and never crossed a
@@ -99,7 +98,7 @@ export function springDisarms(leaving: string, armed: string | null): boolean {
 //   ┌──────────────────────────────────┬──────────────────────────────┐
 //   │ press lands on…                  │ press-and-move does…         │
 //   ├──────────────────────────────────┼──────────────────────────────┤
-//   │ a row that is ALREADY SELECTED   │ MOVE-DRAG the selection      │
+//   │ a row that WAS ALREADY SELECTED  │ MOVE-DRAG the selection      │
 //   │ any part of an unselected row    │ SWEEP                        │
 //   │ the background                   │ SWEEP                        │
 //   └──────────────────────────────────┴──────────────────────────────┘
@@ -108,6 +107,17 @@ export function springDisarms(leaving: string, armed: string | null): boolean {
 // the pointer crosses. useMarquee reads this function BACKWARDS to know where a
 // sweep may start, which is why there is a function at all — one rule read two
 // ways can't disagree with itself, and two gestures can't claim one pixel.
+//
+// THE INPUT IS A SNAPSHOT, AND THAT IS THE WHOLE FIX. `rowWasSelected` is the
+// selection AS IT STOOD BEFORE THIS PRESS, not as it stands while the pointer
+// is moving. The press itself selects the row it lands on, so the live flag is
+// contaminated by the very gesture it is being asked about: read live, EVERY
+// press on an unselected row looks like a press on a selected one a moment
+// later, and every sweep across rows turns into a move-drag. That is precisely
+// what a `draggable` attribute is — a flag the browser reads later — and it is
+// why the native drag API had to go rather than be re-tuned. The snapshot is
+// taken once, in the capture phase of pointerdown, before any handler can
+// change the selection (useMarquee), and the answer never changes mid-gesture.
 //
 // This used to also make each row's icon-and-name a permanent drag handle, so
 // that a single unselected file could be moved in one gesture. That was wrong
@@ -125,8 +135,9 @@ export function springDisarms(leaving: string, armed: string | null): boolean {
 //
 // Either way, a press that never travels the sweep's 4px slop is neither
 // gesture: it is the press that selects one row (selection's rowPressAction).
-export function pressStartsDrag(press: { rowSelected: boolean }): boolean {
-  return press.rowSelected;
+// There is exactly ONE threshold for all three outcomes.
+export function pressStartsDrag(press: { rowWasSelected: boolean }): boolean {
+  return press.rowWasSelected;
 }
 
 // What a press on `path` picks up. The standard file-manager rule: a row that
@@ -175,34 +186,16 @@ export function dropIsValid(dragged: readonly DragSource[], target: DropTarget):
   return { ok: true, dir: target.path };
 }
 
-// --- the payload on the wire -------------------------------------------------
+// --- what the ghost says -----------------------------------------------------
 
-// The paths, as the string dataTransfer carries. JSON rather than newline-
-// joined text: a path may contain anything a filesystem allows, newlines
-// included.
-export function encodeDragPaths(paths: readonly string[]): string {
-  return JSON.stringify(paths);
-}
-
-// The reverse, and deliberately paranoid: dataTransfer holds whatever the drag
-// SOURCE put there, and a drag from another page or another app can arrive
-// under a type we asked for. Anything that isn't a list of strings decodes to
-// nothing at all rather than to a path we would then try to move.
-export function decodeDragPaths(raw: string | null): string[] {
-  if (!raw) return [];
-  try {
-    const parsed: unknown = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return [];
-    return parsed.every((p) => typeof p === "string") ? (parsed as string[]) : [];
-  } catch {
-    return [];
-  }
-}
-
-// Is this drag ours? The only question a dragover handler can ask about the
-// payload (see the module header on getData).
-export function carriesFsDrag(types: readonly string[]): boolean {
-  return types.includes(FS_DRAG_MIME);
+// The label on the ghost that follows the cursor. One entry is named; several
+// are counted, because naming one of five would show exactly one of the things
+// being moved and give no hint that the other four are coming.
+//
+// `basename` is not imported (see the module header on imports) — the caller
+// passes the display name it already has.
+export function dragGhostLabel(names: readonly string[]): string {
+  return names.length === 1 ? names[0] : `${names.length} items`;
 }
 
 // --- the in-flight drag ------------------------------------------------------

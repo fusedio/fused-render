@@ -11,21 +11,34 @@
 // also why this hook holds no React state at all: a sweep re-renders the table
 // when the SELECTION changes and not once per pointermove.
 //
-// GESTURE SPLIT. Which gesture a press begins is drag-drop's `pressStartsDrag`
-// — the same rule useRowDrag wires `draggable` from, read here so the sweep and
-// the drag source cannot drift apart. A row's NAME/ICON drags, an
-// already-SELECTED row drags anywhere, and everything else — the rest of a
-// row's width, and the background below the rows — sweeps.
+// THIS HOOK IS THE GESTURE ARBITER, and there is only one. Its pointerdown is
+// registered in the CAPTURE phase (Listing's onPointerDownCapture), which is
+// what makes the whole thing work: it runs BEFORE the row's own pointerdown,
+// so the selection it reads is the selection AS IT STOOD BEFORE THIS PRESS. It
+// takes that snapshot, asks drag-drop's `pressStartsDrag` once, and the answer
+// is final for the life of the gesture —
+//
+//   was the pressed row ALREADY selected?  → hand off a MOVE-DRAG (row-drag.ts)
+//   anything else                          → SWEEP from here
+//
+// The snapshot is the fix, not a nicety. A press on an unselected row SELECTS
+// it, so a rule that consults the LIVE selection any time after the press sees
+// a selected row and calls every sweep a move-drag. That is exactly what the
+// `draggable` attribute was — a flag the browser read when the movement began,
+// a re-render too late — and it is why the native drag API is out of the row
+// drag entirely (row-drag.ts's header).
 //
 // A press that never travels MARQUEE_DRAG_SLOP is neither gesture: it is the
-// plain click that selects one row. No arbitration afterwards and no timer, so
-// single-click-select and double-click-open are untouched.
+// plain click that selects one row. ONE threshold decides all three, so no
+// arbitration afterwards and no timer, and single-click-select and
+// double-click-open are untouched.
 //
 // COORDINATES are the scroller's CONTENT space (viewport offset + scrollTop),
 // not the viewport's. That is what lets the listing scroll under a live sweep
 // without the region or the row bands going stale.
 import { useEffect, useRef } from "react";
 import { pressStartsDrag } from "@apps/explorer/listing/drag-drop";
+import { DROP_PATH_ATTR } from "@apps/explorer/listing/row-drag";
 import {
   autoScrollStep,
   marqueeBox,
@@ -54,17 +67,18 @@ function measureBands(scroller: HTMLElement, paths: string[]): RowBand[] {
   });
 }
 
-// Does this press start a sweep? Anything a CONTROL owns is excluded first — a
-// column header sorts, a Load-more button clicks, neither is a surface you can
-// sweep from. What is left is the drag rule read backwards: a press that does
-// not start a DRAG starts a sweep, which is exactly one rule for both gestures
-// rather than two that can disagree.
-function startsSweep(target: EventTarget | null): boolean {
+// The row a press landed on, or null for the background — and `null` for a
+// press this listing must not claim at all. Anything a CONTROL owns is excluded
+// first: a column header sorts, a Load-more button clicks, neither is a surface
+// you can sweep or drag from.
+//
+// The row's path comes off the data attribute it already carries as a drop
+// target (row-drag.ts's DOM protocol), so there is one attribute and not two.
+function pressedRow(target: EventTarget | null): { row: HTMLElement | null } | null {
   const el = target as HTMLElement | null;
-  if (!el || typeof el.closest !== "function") return false;
-  if (el.closest("thead, button, input, a")) return false;
-  const row = el.closest("tr.row");
-  return !pressStartsDrag({ rowSelected: !!row?.classList.contains("selected") });
+  if (!el || typeof el.closest !== "function") return null;
+  if (el.closest("thead, button, input, a")) return null;
+  return { row: el.closest<HTMLElement>("tr.row") };
 }
 
 export function useMarquee({
@@ -72,6 +86,7 @@ export function useMarquee({
   navRows,
   selectedPaths,
   selectPaths,
+  startMoveDrag,
   enabled = true,
 }: {
   scrollRef: React.RefObject<HTMLDivElement>;
@@ -83,6 +98,14 @@ export function useMarquee({
   // value at DRAG START rather than the one they closed over.
   selectedPaths: string[];
   selectPaths: (paths: string[]) => void;
+  // Hand the press over as a MOVE-DRAG (useRowDrag). The arbiter decides; the
+  // drag is somebody else's to run.
+  startMoveDrag: (press: {
+    path: string;
+    pointerId: number;
+    clientX: number;
+    clientY: number;
+  }) => void;
   enabled?: boolean;
 }) {
   const rowsRef = useRef<string[]>([]);
@@ -91,6 +114,8 @@ export function useMarquee({
   selRef.current = selectedPaths;
   const selectRef = useRef(selectPaths);
   selectRef.current = selectPaths;
+  const dragRef = useRef(startMoveDrag);
+  dragRef.current = startMoveDrag;
 
   // Everything about the drag in flight. `active` is false until the press has
   // travelled far enough to be a drag at all (before that it is still a click).
@@ -142,17 +167,47 @@ export function useMarquee({
     // Left button only: the right button opens the background context menu, and
     // the middle one is the browser's.
     if (e.button !== 0) return;
-    if (!startsSweep(e.target)) return;
+    const pressed = pressedRow(e.target);
+    if (!pressed) return;
     const scroller = scrollRef.current;
     if (!scroller) return;
+    // THE SNAPSHOT. `selRef` holds the selection from the last RENDER, and this
+    // handler runs in the capture phase — before the row's own pointerdown has
+    // had a chance to select anything — so this is unambiguously the selection
+    // as it stood BEFORE this press. Reading it any later (a `draggable`
+    // attribute, a live `.selected` class, the DOM a re-render from now) is the
+    // whole of the bug this shape exists to remove.
+    //
+    // The background presses through the same rule with `rowWasSelected:
+    // false` — it has no row to have been selected — so the one function still
+    // answers for every pixel, read forwards for the drag and backwards for the
+    // sweep.
+    const path = pressed.row?.getAttribute(DROP_PATH_ATTR) ?? null;
+    if (path !== null && pressStartsDrag({ rowWasSelected: selRef.current.includes(path) })) {
+      dragRef.current({
+        path,
+        pointerId: e.pointerId,
+        clientX: e.clientX,
+        clientY: e.clientY,
+      });
+      return;
+    }
+    // From here down the press is a SWEEP.
+    //
     // NO preventDefault here, deliberately. Cancelling a pointerdown's default
-    // suppresses the compatibility mouse events that follow it, and a listing
-    // whose rows are drag sources has already been bitten once by exactly that
-    // (see Listing's onRowMouseDown: Shift/Cmd-click went silently dead when
-    // the click stopped arriving). The job it used to do here — stopping the
-    // browser painting a text range as the pointer sweeps — belongs to the
-    // scroller's `selectstart` handler, which says no to the selection without
-    // saying no to the event.
+    // suppresses the compatibility mouse events that follow it, and this listing
+    // has already been bitten once by exactly that (see Listing's
+    // collapseNativeSelection: Shift/Cmd-click went silently dead when the click
+    // stopped arriving). The job it used to do here — stopping the browser
+    // painting a text range as the pointer sweeps — belongs to the scroller's
+    // `selectstart` handler, which says no to the selection without saying no to
+    // the event.
+    //
+    // Capturing HERE and not for a move-drag is also why the deferred collapse
+    // of a multi-selection still works: capture retargets the pointerup away
+    // from the row, and the only presses that reach this line are presses on
+    // UNSELECTED rows and on the background — never the press inside a
+    // multi-selection whose release the collapse is waiting for.
     //
     // Capture keeps the sweep alive when the pointer leaves the scroller (over
     // the preview pane, off the window edge). It throws for a pointer id the
@@ -244,5 +299,7 @@ export function useMarquee({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [enabled]);
 
-  return { onPointerDown };
+  // Named for the phase it MUST be registered in: the snapshot above is only a
+  // snapshot because this runs before the row's own pointerdown.
+  return { onPointerDownCapture: onPointerDown };
 }

@@ -1271,9 +1271,9 @@ table.listing-table tr.row.copied > td:first-child {
  * would fight the first. Matches the sidebar's own .drag-into ring, which is
  * the same promise in the other panel.
  *
- * The REFUSED case is mostly the cursor's job — a dragover we never
- * preventDefault()'d already paints the browser's no-drop pointer — so this is
- * only the "which row said no" half, kept quiet on purpose. */
+ * The REFUSED case is quiet on purpose — it is the "which row said no" half of
+ * a verdict the cursor says first (see the drag cursors below, which the
+ * gesture now has to paint itself). */
 table.listing-table tr.row.drop-into > td {
   box-shadow: inset 0 2px 0 var(--accent), inset 0 -2px 0 var(--accent);
   background: var(--row-bg-active);
@@ -1293,19 +1293,46 @@ table.listing-table tr.row.drop-reject > td {
 /* The listing's background as a target: "move these into the folder I'm
    looking at". It only ever lights up when that would actually move something
    (dropping rows into the folder they already live in is a no-op — see
-   useRowDrag), so the ring is a promise, not a hover. */
+   drag-drop's dropIsValid), so the ring is a promise, not a hover. */
 .listing-scroll.drop-into {
   box-shadow: inset 0 0 0 2px var(--accent);
 }
 
-/* The ghost under the cursor during a drag (useRowDrag's makeDragImage). Built
-   off screen and snapshotted by the browser on dragstart, so it is never seen
-   in the page itself — position/opacity only keep it from flashing in the
-   corner on the frame it exists for. */
+/* THE DRAG CURSOR, which used to come free from the native drag's `dropEffect`
+   and now has to be painted like everything else about the gesture
+   (listing/row-drag.ts sets these two classes on <body> for its lifetime).
+   `* !important` because the cursor is otherwise decided by whatever the
+   pointer happens to be over — a row says `pointer`, a link says `pointer`, and
+   the answer during a drag is about the DROP, not about what is underneath.
+   The same class kills text selection across the whole page, which the native
+   drag also did for us. */
+body.fs-dragging,
+body.fs-dragging * {
+  cursor: grabbing !important;
+  user-select: none !important;
+}
+/* Refused: over a file, over a folder the entries already live in, over
+   nothing at all. Set from the SAME dropIsValid verdict that paints the
+   highlight, so the cursor and the row can never disagree. */
+body.fs-dragging.fs-drag-refused,
+body.fs-dragging.fs-drag-refused * {
+  cursor: no-drop !important;
+}
+
+/* The ghost under the cursor during a drag (listing/row-drag.ts). It used to be
+   built off screen for `setDragImage` to snapshot and thrown away a frame
+   later; there is no setDragImage any more, so this is a real element that
+   lives for the whole drag and is moved with `transform` on every pointermove.
+   `pointer-events: none` is load-bearing: the drop target is found with
+   elementFromPoint, and a ghost under the cursor would be the only thing it
+   ever found. */
 .fs-drag-image {
   position: fixed;
-  top: -1000px;
-  left: -1000px;
+  top: 0;
+  left: 0;
+  z-index: 9000;
+  pointer-events: none;
+  will-change: transform;
   display: flex;
   align-items: center;
   gap: 8px;

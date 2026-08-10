@@ -30,17 +30,8 @@ import {
   takeLastAddedBookmarkId,
 } from "@platform/lib/bookmarks";
 import { bookmarkSaveTarget } from "@platform/lib/bookmark-file";
-import { exportBookmarkFile, statPath } from "@platform/lib/api";
-import { pushToast } from "@platform/lib/toast";
-import { basename } from "@platform/lib/format";
-import { dirname, normDir } from "@apps/explorer/lib/fs-actions";
-import { moveEntriesInto } from "@apps/explorer/lib/fs-move";
-import {
-  carriesFsDrag,
-  clearFsDrag,
-  dropIsValid,
-  fsDragInFlight,
-} from "@apps/explorer/listing/drag-drop";
+import { exportBookmarkFile } from "@platform/lib/api";
+import { isRowDragActive } from "@apps/explorer/listing/row-drag";
 import IconPicker from "@platform/ui/IconPicker";
 import type { Bookmark, BookmarkFolder, BookmarkItem } from "@platform/lib/bookmarks";
 import {
@@ -207,10 +198,13 @@ interface BookmarkRowProps {
   onGlyphClick: (e: React.MouseEvent<HTMLSpanElement>) => void;
   registerRef: (el: HTMLDivElement | null) => void;
   dragProps: DragProps;
+  // The folder a FILE dragged out of the listing may land in — null for a
+  // bookmark that doesn't point at the filesystem at all.
+  fsDropPath?: string | null;
 }
 
 // Template for a bookmark row (top-level or, with child=true, inside a folder).
-function BookmarkRow({ b, child, parentId, active, dirty, missing, isRenaming, justSaved, namePositions, onNameClick, onSave, onRename, onDelete, onCommitRename, onCancelRename, onMouseEnter, onMouseLeave, onGlyphClick, registerRef, dragProps }: BookmarkRowProps) {
+function BookmarkRow({ b, child, parentId, active, dirty, missing, isRenaming, justSaved, namePositions, onNameClick, onSave, onRename, onDelete, onCommitRename, onCancelRename, onGlyphClick, onMouseEnter, onMouseLeave, registerRef, dragProps, fsDropPath }: BookmarkRowProps) {
   // Where "Save to disk" would write — shown on the button itself (title) so
   // the destination is visible before the click; null disables the button.
   const saveTarget = bookmarkSaveTarget(b);
@@ -222,6 +216,12 @@ function BookmarkRow({ b, child, parentId, active, dirty, missing, isRenaming, j
       className={"bookmark-row" + (child ? " child-row" : "") + (active ? " active" : "") + (missing ? " missing" : "")}
       data-id={b.id}
       data-parent={child ? parentId : undefined}
+      /* A drop target for entries dragged out of the listing. No
+         data-fs-drop-dir: only the server knows whether this path is a folder,
+         so the drag probes it (listing/row-drag.ts). announce, because the
+         destination is not on screen. */
+      data-fs-drop-path={fsDropPath ?? undefined}
+      data-fs-drop-announce={fsDropPath ? "1" : undefined}
       draggable="true"
       ref={registerRef}
       onMouseEnter={onMouseEnter}
@@ -529,8 +529,11 @@ export default function BookmarksSection() {
   };
 
   const onRowMouseEnter = (e: React.MouseEvent<HTMLDivElement>, b: Bookmark) => {
-    // No tooltip while renaming this row or while a drag is in progress.
-    if (draggedIdRef.current !== null) return;
+    // No tooltip while renaming this row or while a drag is in progress —
+    // either a bookmark being reordered or files being dragged over from the
+    // listing (a hover card over the row you are aiming at is the one thing it
+    // must not do).
+    if (draggedIdRef.current !== null || isRowDragActive()) return;
     if (renamingId === b.id) return;
     const rect = e.currentTarget.getBoundingClientRect();
     setHover({ bookmark: b, rect: { top: rect.top, right: rect.right } });
@@ -643,105 +646,26 @@ export default function BookmarksSection() {
   // --- files dragged in from the listing ---------------------------------------
   //
   // A bookmark that points at a folder is a drop target for entries dragged out
-  // of the listing (listing/drag-drop.ts) — the shortcut is where the user
-  // already thinks of that folder as living, so dragging onto it is the one
-  // gesture that moves something somewhere NOT on screen. The move itself is
-  // the shared one (lib/fs-move), announced with a toast for exactly that
-  // reason: the destination isn't visible, so the confirmation has to be.
+  // of the listing — the shortcut is where the user already thinks of that
+  // folder as living, so dragging onto it is the one gesture that moves
+  // something somewhere NOT on screen. That is also why it announces itself
+  // with a toast (`data-fs-drop-announce`): the destination isn't visible, so
+  // the confirmation has to be.
   //
-  // Whether the target is a directory can only be answered by the server, and
-  // dragover fires many times a second — so the answer is probed ONCE per path
-  // per session and cached. Until it lands the row is treated optimistically as
-  // a folder (the common case by far, and refusing a target we simply haven't
-  // asked about yet reads as broken); the probe repaints the row when it
-  // resolves, and the drop itself waits for the real answer before moving
-  // anything. Failure resolves as "not a folder" — a path we can't stat is not
-  // one we should be moving files into.
-  const fsKind = useRef<Map<string, boolean>>(new Map());
-  const fsKindPending = useRef<Set<string>>(new Set());
-  // The row a file drag is over RIGHT NOW, so a probe that resolves late can
-  // tell whether it still has anything to say. See paintFsDrop.
-  const fsHoverRow = useRef<string | null>(null);
-
-  // The verdict for a file drag over this bookmark. `undefined` kind = still
-  // probing, taken as a folder (see above).
-  const fsDropVerdict = (path: string) =>
-    dropIsValid(fsDragInFlight(), { path, isDir: fsKind.current.get(path) !== false });
-
-  // Repaint a row's drop affordance. Only ever for the row the pointer is on,
-  // and only while a drag is actually in flight — this runs from the stat
-  // probe's completion, which can easily outlive the hover it was started for.
+  // ALL of that now happens in listing/row-drag.ts, and this section is the
+  // three attributes below on the row. It used to be ~90 lines of dragover /
+  // dragleave / drop here — a stat probe with its own cache, its own late-
+  // repaint guard, its own highlight classes and its own copy of the drop
+  // verdict — because native DnD delivers its events to the element under the
+  // cursor and this was that element. The pointer drag hit-tests instead, so a
+  // target says WHAT IT IS and nothing more:
   //
-  // Painting unconditionally left rows stuck highlighted with nothing to clear
-  // them: dragleave had already removed the classes, and the late repaint put
-  // one back. Worse than a stray highlight, in fact — a probe that lands after
-  // the drag has ENDED sees an empty in-flight set, so dropIsValid answers
-  // "empty" and the row it repaints goes RED. Nothing removes it either: a file
-  // drag's dragend fires on the listing row that started it, never on a sidebar
-  // row, and React does not notice a className it did not write.
-  const paintFsDrop = (id: string, path: string) => {
-    if (fsHoverRow.current !== id || !fsDragInFlight().length) return;
-    const row = rowRefs.current.get(id);
-    if (!row) return;
-    const ok = fsDropVerdict(path).ok;
-    row.classList.toggle("drag-into", ok);
-    row.classList.toggle("drop-reject", !ok);
-  };
-
-  const probeFsKind = (id: string, path: string) => {
-    if (fsKind.current.has(path) || fsKindPending.current.has(path)) return;
-    fsKindPending.current.add(path);
-    statPath(path)
-      .then((s) => fsKind.current.set(path, s.is_dir))
-      .catch(() => fsKind.current.set(path, false))
-      .finally(() => {
-        fsKindPending.current.delete(path);
-        paintFsDrop(id, path);
-      });
-  };
-
-  const onRowFsDragOver = (e: React.DragEvent<HTMLDivElement>, id: string, path: string) => {
-    fsHoverRow.current = id;
-    probeFsKind(id, path);
-    const verdict = fsDropVerdict(path);
-    if (verdict.ok) {
-      e.preventDefault(); // the whole of "this drop is allowed"
-      e.dataTransfer.dropEffect = "move";
-    }
-    e.currentTarget.classList.toggle("drag-into", verdict.ok);
-    e.currentTarget.classList.toggle("drop-reject", !verdict.ok);
-  };
-
-  const onRowFsDrop = async (e: React.DragEvent<HTMLDivElement>, path: string) => {
-    e.preventDefault();
-    fsHoverRow.current = null;
-    e.currentTarget.classList.remove("drag-into", "drop-reject");
-    const paths = fsDragInFlight().map((d) => d.path);
-    // Consume the drag before the await: the stat below is a round trip, and a
-    // stale in-flight set would be visible to whatever the user does next.
-    clearFsDrag();
-    if (!paths.length) return;
-    if (!fsKind.current.has(path)) {
-      // Never probed (or the probe is still out): settle it now rather than
-      // moving files into something that may be a file.
-      const isDir = await statPath(path).then((s) => s.is_dir, () => false);
-      fsKind.current.set(path, isDir);
-    }
-    const verdict = dropIsValid(
-      paths.map((p) => ({ path: p, parentDir: normDir(dirname(p)) })),
-      { path, isDir: fsKind.current.get(path) === true },
-    );
-    if (!verdict.ok) {
-      // The only refusal a user can reach here without seeing it coming: the
-      // row looked like a folder while the probe was out and turned out not to
-      // be one. Everything else was already refused by the cursor.
-      if (verdict.reason === "not-a-folder") {
-        pushToast({ msg: `"${basename(path)}" isn't a folder — nothing was moved.`, tone: "error" });
-      }
-      return;
-    }
-    await moveEntriesInto(paths, verdict.dir, { announce: true });
-  };
+  //   data-fs-drop-path      the folder entries would move into
+  //   data-fs-drop-announce  it is off screen, so say so when the move lands
+  //   (no data-fs-drop-dir)  only the server knows whether this path is a
+  //                          folder — the drag probes it, optimistically
+  //                          treating it as one until the answer arrives, and
+  //                          waits for the real answer before moving anything.
 
   // --- drag & drop -------------------------------------------------------------
 
@@ -786,21 +710,27 @@ export default function BookmarksSection() {
 
   const clearDragClasses = () => {
     rowRefs.current.forEach((r) => {
-      r.classList.remove("dragging", "drag-above", "drag-below", "drag-into", "drop-reject");
+      r.classList.remove(
+        "dragging",
+        "drag-above",
+        "drag-below",
+        "drag-into",
+        "drop-into",
+        "drop-reject",
+      );
     });
   };
 
-  // End-of-drag cleanup for a drag this section did not START. A file drag
-  // begins on a LISTING row, so its `dragend` fires there and onRowDragEnd
-  // below never runs — a drag abandoned (Escape, a drop outside the window)
-  // while the pointer sat on a bookmark row would leave that row highlighted
-  // for good. Document-level, because the events we need are the ones that
-  // never reach us any other way.
+  // End-of-drag cleanup for a REORDER drag that ends somewhere this section
+  // never hears about (a drop outside the window). onRowDragEnd covers the
+  // ordinary cases; this is the backstop, and it is document-level because the
+  // events it needs are the ones that never reach us any other way.
+  //
+  // It no longer has to clean up after a FILE drag: that gesture is
+  // pointer-driven and clears its own highlight from whatever it painted, on
+  // every path out including Escape (listing/row-drag.ts).
   useEffect(() => {
-    const onEnd = () => {
-      fsHoverRow.current = null;
-      clearDragClasses();
-    };
+    const onEnd = () => clearDragClasses();
     document.addEventListener("dragend", onEnd);
     document.addEventListener("drop", onEnd);
     return () => {
@@ -825,20 +755,16 @@ export default function BookmarksSection() {
     e.dataTransfer.setData("text/plain", id); // Firefox needs data set to start a drag
   };
 
+  // Reordering the bookmark TREE. A file drag out of the listing is a different
+  // gesture entirely — it moves FILES INTO the folder a bookmark points at —
+  // and the two no longer need telling apart here: a file drag is pointer-
+  // driven and fires no drag events at all, so anything that reaches this
+  // handler is a bookmark being reordered.
   const onRowDragOver = (
     e: React.DragEvent<HTMLDivElement>,
     id: string,
-    rowIsFolder: boolean,
-    fsPath: string | null
+    rowIsFolder: boolean
   ) => {
-    // A file drag out of the listing is a different gesture entirely: it moves
-    // FILES INTO the folder this bookmark points at, rather than reordering the
-    // bookmark tree. It is checked first because the two are told apart by the
-    // payload, not by the row.
-    if (carriesFsDrag(e.dataTransfer.types)) {
-      if (fsPath !== null) onRowFsDragOver(e, id, fsPath);
-      return;
-    }
     if (draggedIdRef.current === null || draggedIdRef.current === id) return;
     const row = e.currentTarget;
     if (overOwnSubtree(id)) {
@@ -856,12 +782,6 @@ export default function BookmarksSection() {
   };
 
   const onRowDragLeave = (e: React.DragEvent<HTMLDivElement>) => {
-    // The pointer has left THIS row, so a probe still out for it has nothing
-    // left to paint. Guarded on the id because dragenter for the row being
-    // entered fires before dragleave for the one being left, so an unguarded
-    // clear here would wipe the hover that was just established.
-    const id = e.currentTarget.getAttribute("data-id");
-    if (id !== null && fsHoverRow.current === id) fsHoverRow.current = null;
     e.currentTarget.classList.remove("drag-above", "drag-below", "drag-into", "drop-reject");
   };
 
@@ -869,13 +789,8 @@ export default function BookmarksSection() {
     e: React.DragEvent<HTMLDivElement>,
     id: string,
     rowIsFolder: boolean,
-    rowIsChild: boolean,
-    fsPath: string | null
+    rowIsChild: boolean
   ) => {
-    if (carriesFsDrag(e.dataTransfer.types)) {
-      if (fsPath !== null) await onRowFsDrop(e, fsPath);
-      return;
-    }
     if (draggedIdRef.current === null || draggedIdRef.current === id) return;
     if (overOwnSubtree(id)) return; // moveItem's cycle guard is the backstop
     const draggedId = draggedIdRef.current;
@@ -932,19 +847,13 @@ export default function BookmarksSection() {
     clearDragClasses();
   };
 
-  // `fsPath` is the folder a FILE drag may land in for this row — null for a
-  // bookmark folder (a grouping in the tree, not a place on disk) and for any
-  // bookmark that doesn't point at the filesystem.
-  const dragProps = (
-    id: string,
-    rowIsFolder: boolean,
-    rowIsChild: boolean,
-    fsPath: string | null = null
-  ): DragProps => ({
+  // Reordering the tree only. Where a FILE drag may land is not a handler at
+  // all any more — it is `data-fs-drop-path` on the row (see BookmarkRow).
+  const dragProps = (id: string, rowIsFolder: boolean, rowIsChild: boolean): DragProps => ({
     onDragStart: (e) => onRowDragStart(e, id, rowIsFolder),
-    onDragOver: (e) => onRowDragOver(e, id, rowIsFolder, fsPath),
+    onDragOver: (e) => onRowDragOver(e, id, rowIsFolder),
     onDragLeave: onRowDragLeave,
-    onDrop: (e) => onRowDrop(e, id, rowIsFolder, rowIsChild, fsPath),
+    onDrop: (e) => onRowDrop(e, id, rowIsFolder, rowIsChild),
     onDragEnd: onRowDragEnd,
   });
 
@@ -1030,7 +939,8 @@ export default function BookmarksSection() {
           onMouseEnter={(e) => onRowMouseEnter(e, it)}
           onMouseLeave={hideTooltip}
           onGlyphClick={(e) => onBookmarkGlyphClick(e, it.id)}
-          dragProps={dragProps(it.id, false, child, bookmarkDropPath(it.url))}
+          dragProps={dragProps(it.id, false, child)}
+          fsDropPath={bookmarkDropPath(it.url)}
         />
       );
     });

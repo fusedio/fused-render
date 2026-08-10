@@ -20,8 +20,9 @@
 //   useFileOps.ts          file operations + context menus + dialogs
 //   drag-drop.ts           what a drag carries + which drops are legal (pure)
 //   marquee.ts             sweep-to-select geometry: region, hits, auto-scroll (pure)
-//   useMarquee.ts          the sweep's pointer drag + edge auto-scroll
-//   useRowDrag.ts          the drag/drop handlers rows + background hang off
+//   useMarquee.ts          the press ARBITER (sweep vs move) + the sweep itself
+//   row-drag.ts            the move-drag: pointer tracking, targets, the ghost
+//   useRowDrag.ts          what a press picks up + who performs the drop
 //   shortcut-chord.ts       which chord means which action (pure)
 //   useListingShortcuts.ts file-op keyboard chords
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
@@ -483,23 +484,32 @@ export default function Listing({
 
   // Drag-to-move. The selection is passed in RENDERED order (selectedRows), so
   // dragging a row that is part of it carries the whole thing top-to-bottom.
-  const { rowDrag, backgroundDrag, dropClass, backgroundActive } = useRowDrag({
-    base,
+  // Rows carry no drag handlers: they declare what they ACCEPT with the
+  // data-fs-drop-* attributes below, and the gesture itself is pointer-driven
+  // (listing/row-drag.ts).
+  const { startMoveDrag } = useRowDrag({
     selectedPaths: useMemo(() => selectedRows.map((r) => r.path), [selectedRows]),
     rowCtxByPath,
+    scrollRef,
     onMove: doMove,
   });
 
-  // Sweep-to-select from a row's dead space or the listing background. It writes
-  // through the ONE selection model that clicks and the keyboard use
-  // (selectPaths above) — no parallel store, no second `?sel=` writer — and it
-  // draws nothing: the rows lighting up as the pointer crosses them is the
-  // feedback, which is precisely what made the old rubber band redundant.
-  const { onPointerDown: onSweepPointerDown } = useMarquee({
+  // The listing's ONE press arbiter, in the capture phase (see the wiring on the
+  // scroller below). It decides sweep-versus-move from a snapshot of the
+  // selection taken before the press can change it, then either sweeps here or
+  // hands the move-drag over.
+  //
+  // The sweep writes through the ONE selection model that clicks and the
+  // keyboard use (selectPaths above) — no parallel store, no second `?sel=`
+  // writer — and it draws nothing: the rows lighting up as the pointer crosses
+  // them is the feedback, which is precisely what made the old rubber band
+  // redundant.
+  const { onPointerDownCapture: onListingPointerDownCapture } = useMarquee({
     scrollRef,
     navRows,
     selectedPaths: sel.paths,
     selectPaths,
+    startMoveDrag,
   });
 
   useListingShortcuts({
@@ -665,15 +675,17 @@ export default function Listing({
         <>
           {visibleHits.map(({ entry, positions }) => {
             const childPath = base + "/" + entry.rel;
-            const ctx = rowCtxByPath.get(childPath)!;
             return (
               <tr
                 key={entry.rel}
                 data-flip-key={childPath}
-                {...rowDrag(ctx, selectedSet.has(childPath))}
+                /* What this row ACCEPTS, for the pointer drag's hit test
+                   (listing/row-drag.ts). Not a drag SOURCE: where a drag may
+                   start is decided once, at pointerdown, by the arbiter. */
+                data-fs-drop-path={childPath}
+                data-fs-drop-dir={entry.is_dir ? "1" : "0"}
                 className={
                   "row" +
-                  dropClass(childPath) +
                   (selectedSet.has(childPath) ? " selected" : "") +
                   // Marker only (no styling of its own): the lead row is what
                   // the scroll-into-view effect tracks.
@@ -786,15 +798,16 @@ export default function Listing({
   } else {
     const rows = sortedEntries.map((entry) => {
       const childPath = base + "/" + entry.name;
-      const ctx = rowCtxByPath.get(childPath)!;
       return (
         <tr
           key={entry.name}
           data-flip-key={childPath}
-          {...rowDrag(ctx, selectedSet.has(childPath))}
+          /* See the search-hit row above: what this row ACCEPTS, never where a
+             drag may start. */
+          data-fs-drop-path={childPath}
+          data-fs-drop-dir={entry.is_dir ? "1" : "0"}
           className={
             (entry.ignored ? "row ignored" : "row") +
-            dropClass(childPath) +
             (newNames.has(entry.name) ? " row-new" : "") + // brief dir-watch tint
             (selectedSet.has(childPath) ? " selected" : "") +
             (childPath === selectedPath ? " lead" : "") + // scroll-into-view marker
@@ -1011,21 +1024,19 @@ export default function Listing({
             ref={scrollRef}
             /* Dimmed both when the deferred render lags a keystroke and while
              held (pre-refresh) results stand in for a re-running walk. */
-            className={
-              "listing-scroll" +
-              (isStale || showingHeld ? " listing-stale" : "") +
-              /* A drag hovering the background means "move these into THIS
-                 folder" — outlined as one target, since the folder has no row
-                 of its own to light up. Only ever set when that would actually
-                 move something (see useRowDrag's backgroundTarget). */
-              (backgroundActive ? " drop-into" : "")
-            }
-            {...backgroundDrag}
-            /* A press on a row's dead space or on the background below the rows
-               sweeps a selection; a press on the name/icon (or anywhere on an
-               already-selected row) drags instead, and a press that barely
+            className={"listing-scroll" + (isStale || showingHeld ? " listing-stale" : "")}
+            /* The background means THIS FOLDER: "move these here". It lights up
+               (.drop-into, painted by row-drag.ts) only when that would actually
+               move something — dropping rows into the folder they already live
+               in is a no-op, which dropIsValid already spells out. */
+            data-fs-drop-path={normDir(base)}
+            data-fs-drop-dir="1"
+            /* THE PRESS ARBITER, and the CAPTURE phase is load-bearing: it runs
+               before the row's own pointerdown, so the selection it snapshots is
+               the one from before this press. A press on an already-selected row
+               drags the selection; anywhere else sweeps; a press that barely
                moves is still the click it always was. */
-            onPointerDown={onSweepPointerDown}
+            onPointerDownCapture={onListingPointerDownCapture}
             /* No onClick here: clicking the empty area below the rows does
                NOT deselect. Finder's rule, and it cost more than it bought
                once the preview pane arrived — a stray click anywhere in the
