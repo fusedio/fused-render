@@ -362,10 +362,18 @@ def test_the_finalized_row_landing_after_message_stop_still_says_it_once(
     assert data["text"] == "Once."
 
 
-def test_a_transcript_without_stream_rows_still_yields_text_segments(agent, tmp_path):
-    """An older CLI (or the persisted transcript) carries no `stream_event`
-    rows at all, so the finalized blocks are the only text there is. `text`
-    keeps its own documented fallback — the `result` row — and is untouched."""
+def test_on_a_delta_less_run_text_is_a_subset_of_the_segments(agent, tmp_path):
+    """The documented asymmetry, pinned rather than "fixed".
+
+    With no `stream_event` rows (a CLI without `--include-partial-messages`) the
+    finalized blocks are the only text there is, so segments carry EVERY message
+    — while `text` takes its own long-standing fallback, the `result` row, which
+    holds the LAST assistant message only. So the two disagree here, in one
+    direction only: `text` is a strict subset, never a superset and never a
+    different turn. `text`'s byte identity is the harder constraint, so this is
+    the documented contract (`_segments_from_rows`' docstring states it) and the
+    reason anything rendering a turn renders segments when it has them.
+    """
     data = _poll_rows(agent, tmp_path, [
         {"type": "assistant", "message": {"content": [
             {"type": "text", "text": "one"}]}},
@@ -376,6 +384,29 @@ def test_a_transcript_without_stream_rows_still_yields_text_segments(agent, tmp_
     assert data["text"] == "two"  # the pre-existing fallback, unchanged
     assert [(s["kind"], s["text"]) for s in data["segments"]] == [
         ("text", "one\n\ntwo")]
+    assert data["text"] in data["segments"][0]["text"], (
+        "the flat field must stay a subset of the transcript, not a variant")
+
+
+def test_a_long_turn_still_returns_plain_strings_and_the_whole_text(agent):
+    """Segments accumulate their text as a parts LIST and join once, because
+    `+=` on a str re-copies the turn per delta on a path that re-runs every
+    400 ms. The list is an implementation detail, so this pins both halves of
+    the finalize step at a size where the old shape was measurably slow: the
+    schema still says `text: str`, and nothing was lost in the join.
+
+    The cost itself is not asserted — a wall-clock threshold under `-n auto` is
+    a flaky test, not a guarantee — but a leaked list is exactly what a botched
+    finalize looks like, and that is caught here.
+    """
+    rows = [_delta("thinking_delta", "t")] * 5000
+    rows += [_delta("text_delta", "x")] * 20000
+    segments = agent._segments_from_rows(rows)
+    assert [s["kind"] for s in segments] == ["thinking", "text"]
+    for seg in segments:
+        assert isinstance(seg["text"], str), "the parts list leaked into the payload"
+    assert segments[0]["text"] == "t" * 5000
+    assert segments[1]["text"] == "x" * 20000
 
 
 def test_a_half_written_last_line_is_skipped(agent, tmp_path):

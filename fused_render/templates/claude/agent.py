@@ -1688,6 +1688,17 @@ def _segments_from_rows(rows: list) -> list:
     rather than accumulating one segment per delta: the page renders a text
     segment as markdown, and markdown split across arbitrary delta boundaries
     is not the same document.
+
+    **For anything rendering this: segments are the authoritative transcript.**
+    Render them whenever the list is non-empty. `text` on the poll payload (and
+    on a history turn) is the flat LEGACY field: it is byte-identical to what it
+    was before segments existed, and the text segments join back into it exactly
+    — but only on a run that carried stream deltas. Where there are none (a CLI
+    without `--include-partial-messages`) `text` falls back to the `result` row,
+    which is the LAST assistant message only, so it can be a strict subset of
+    what the segments say. Rendering `text` when segments exist therefore shows
+    less than the turn contained; the reverse never happens. `text` stays the
+    right thing to show for the error paths, which produce no segments at all.
     """
     segments = []
     by_tool_id = {}     # tool_use id -> its segment, for the result to find
@@ -1703,16 +1714,30 @@ def _segments_from_rows(rows: list) -> list:
 
     def grow(kind, chunk, separator=""):
         """Append `chunk` to the trailing `kind` segment, opening one if the
-        tail is something else. `separator` goes INSIDE the segment it precedes
-        — even when that segment is brand new — so that joining the text
-        segments reproduces `_poll`'s `text` byte for byte. The two
-        accumulations are two copies of one rule, so a test asserts they agree
-        rather than a comment saying they should (D146)."""
+        tail is something else.
+
+        Parts in a LIST, joined once at the end — never `+=` on a str. This
+        whole function re-runs from scratch on every 400 ms poll, so growing a
+        string in place re-copies the accumulated segment per delta: quadratic
+        in the deltas of one turn, and measurably so (~46 ms a tick at 20k
+        deltas, ~0.7 s at 80k, against a flat few ms for parts+join). `_poll`'s
+        own `text_parts` exists for exactly this reason, and the finalize step
+        below is what keeps the list an implementation detail — the returned
+        segment carries a plain `text` string.
+
+        `separator` goes INSIDE the segment it precedes — even when that segment
+        is brand new — so that joining the text segments reproduces `_poll`'s
+        `text` byte for byte on a streamed run. The two accumulations are two
+        copies of one rule, so a test asserts they agree rather than a comment
+        saying they should (D146).
+        """
         seg = tail(kind)
         if seg is None:
-            seg = {"kind": kind, "text": ""}
+            seg = {"kind": kind, "text": []}
             segments.append(seg)
-        seg["text"] += separator + chunk
+        if separator:
+            seg["text"].append(separator)
+        seg["text"].append(chunk)
 
     def settle(seg, payload):
         seg["status"], seg["output"], seg["images"] = payload
@@ -1792,6 +1817,11 @@ def _segments_from_rows(rows: list) -> list:
                     settle(seg, payload)
                 elif tool_id:
                     orphans[tool_id] = payload
+    # Finalize: the parts lists collapse to the plain `text` string the schema
+    # promises. Tool segments have no `text` at all and are left alone.
+    for seg in segments:
+        if seg["kind"] != "tool":
+            seg["text"] = "".join(seg["text"])
     return segments
 
 
@@ -2008,10 +2038,19 @@ def _poll(run_id: str) -> dict:
     text = "".join(text_parts)
     if not text and done and result_text and not error:
         text = result_text
-    # `segments` is the SAME turn as `text`, structured: text still travels flat
-    # for everything that only wants the prose (the sidecar preview, a page that
-    # predates segments), and the two cannot disagree because the text segments
-    # join back into exactly this string.
+    # `segments` is the authoritative record of the turn; `text` is the flat
+    # legacy field, kept byte-identical to what it has always been for the
+    # callers that only want prose (and for the error paths, which have no
+    # segments to render).
+    #
+    # They agree EXACTLY — the text segments join back into this string — only
+    # while stream deltas are present, which is every run of a current CLI.
+    # On a delta-less run the fallback two blocks up makes `text` the `result`
+    # row, i.e. the LAST assistant message, while `segments` carry all of them:
+    # so `text` can be a strict SUBSET of the transcript, never a superset, and
+    # never a different turn. That is deliberate and pinned by a test — the
+    # alternative was widening `text` on the fallback path, and its byte
+    # identity is a harder constraint than this asymmetry is a cost.
     return {"text": text, "done": done, "session_id": new_session, "error": error,
             "tokens": tokens_done + tokens_current, "phase": phase,
             "message": meta.get("message", ""), "permissions": permissions,
