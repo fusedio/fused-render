@@ -77,6 +77,9 @@ def test_builtin_registry_parses_and_all_names_resolve():
 def test_builtin_html_default_is_render_sentinel():
     entries, error = server._templates_for("/x/page.html", False)
     assert error is None
+    # One timeline mode, and it is called `history`: the old standalone history
+    # view is gone and `versions` was renamed into its name, icon and slot
+    # (D243). No `git` either — that is folder-only now (GT-2).
     assert [e["mode"] for e in entries] == [
         "_render", "code", "claude", "history", "reader"]
     assert entries[0]["path"] is None and entries[0]["icon"] is None
