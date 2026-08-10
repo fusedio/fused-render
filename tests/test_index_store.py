@@ -311,6 +311,34 @@ def test_applied_ignore_sig_reads_the_pre_per_root_format(tmp_path):
     assert applied_ignore_sig(cfg) == "old-global-sig"
 
 
+def test_migrating_the_old_format_keeps_the_other_roots_stale(tmp_path):
+    """Stamping ONE root must not migrate the old global sig away from the
+    others. Dropping it made them report None, which the router's
+    `(sig or current) != current` staleness test reads as up-to-date — so a
+    rules edit never rescanned them and their slices stayed built under the
+    old rules forever."""
+    cfg = _cfg(tmp_path, ignore=["node_modules"])
+    os.makedirs(cfg.dir, exist_ok=True)
+    with open(cfg.applied_ignore_json, "w") as f:
+        json.dump({"sig": "old-global-sig", "patterns": []}, f)
+    save_applied_ignore(cfg, "/a")
+    assert applied_ignore_sig(cfg, "/a") == cfg.rules.sig()
+    # /b was never stamped individually, so the pre-migration sig is still the
+    # only thing known about it — and it differs from the current rules.
+    assert applied_ignore_sig(cfg, "/b") == "old-global-sig"
+    # ...until /b is stamped in its own right, which retires the fallback.
+    save_applied_ignore(cfg, "/b")
+    assert applied_ignore_sig(cfg, "/b") == cfg.rules.sig()
+
+
+def test_a_root_stamped_without_a_legacy_file_stays_unknown(tmp_path):
+    """No legacy sig to inherit: an unstamped root is genuinely unknown (an
+    index predating the feature), which is the safe-incrementally answer."""
+    cfg = _cfg(tmp_path, ignore=["node_modules"])
+    save_applied_ignore(cfg, "/a")
+    assert applied_ignore_sig(cfg, "/b") is None
+
+
 def test_compact_never_deletes_a_like_metachar_sibling(tmp_path):
     """`_` matches any char in LIKE: a scan of /x/proj_a must not silently
     drop /x/proj-a's rows — the `outside` predicate escapes LIKE metachars."""

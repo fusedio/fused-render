@@ -206,7 +206,12 @@ def applied_ignore_sig(cfg: IndexConfig, root: str = ""):
         # root it was written by and the safe answer for any other
         return data.get("sig")
     if root:
-        return roots.get(root)
+        # `legacy_sig` is that same pre-per-root global sig, carried through
+        # the migration for the roots it covered but that have not been
+        # stamped individually yet. Answering None for them would claim they
+        # were never built under any rules, and the router reads that as
+        # up-to-date — so a rules edit would skip their reconciling rescan.
+        return roots.get(root, data.get("legacy_sig"))
     if not roots:
         return None
     sigs = set(roots.values())
@@ -227,13 +232,21 @@ def save_applied_ignore(cfg: IndexConfig, root: str) -> None:
         except (OSError, ValueError):
             data = {}
         roots = data.get("roots")
+        legacy = data.get("legacy_sig")
         if not isinstance(roots, dict):
-            roots = {}
+            # Migrating the pre-per-root file. Its single global sig described
+            # EVERY root, so it has to survive as the fallback for the ones
+            # this stamp does not name — dropping it would leave them
+            # answering None, i.e. indistinguishable from up-to-date.
+            roots, legacy = {}, data.get("sig")
         roots[root] = cfg.rules.sig()
+        out = {"roots": roots, "patterns": list(cfg.ignore),
+               "updated": time.time()}
+        if legacy is not None:
+            out["legacy_sig"] = legacy
         tmp = cfg.applied_ignore_json + ".new"
         with open(tmp, "w") as f:
-            json.dump({"roots": roots, "patterns": list(cfg.ignore),
-                       "updated": time.time()}, f)
+            json.dump(out, f)
         os.replace(tmp, cfg.applied_ignore_json)
 
 
