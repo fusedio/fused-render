@@ -417,6 +417,33 @@ def test_angle_measure_draws_two_rays_from_the_vertex(server, browser):
     page.close()
 
 
+def test_area_double_click_finish_does_not_add_extra_vertices(server, browser):
+    # regression: the two clicks of the closing double-click must not become vertices
+    page, frame = _open_ready(browser, server["port"])
+    res = frame.evaluate(
+        """() => {
+            const canvas = document.querySelector('#cadHost canvas');
+            const r = canvas.getBoundingClientRect();
+            const os = document.getElementById('tgOsnap'); if (os.classList.contains('on')) os.click();
+            document.querySelector('.tbtn[data-tool="area"]').click();
+            const at = (x, y, type) => canvas.dispatchEvent(new PointerEvent(type, {bubbles:true,
+              cancelable:true, clientX:r.left+x, clientY:r.top+y, button:0, pointerId:1, isPrimary:true}));
+            const click = (x, y) => { at(x, y, 'pointermove'); at(x, y, 'pointerdown'); at(x, y, 'pointerup'); };
+            click(r.width*0.30, r.height*0.40);   // A
+            click(r.width*0.60, r.height*0.40);   // B
+            click(r.width*0.60, r.height*0.70);   // C
+            const dx = r.width*0.30, dy = r.height*0.70;   // close with a double-click at D
+            click(dx, dy); click(dx, dy);
+            canvas.dispatchEvent(new MouseEvent('dblclick',
+              {bubbles:true, cancelable:true, clientX:r.left+dx, clientY:r.top+dy}));
+            return { nodes: document.querySelectorAll('#overlay circle.ov-node').length,
+                     out: document.getElementById('measureOut').textContent };
+        }""")
+    assert "Area" in res["out"]
+    assert res["nodes"] == 3, f"area polygon should have 3 vertices, got {res['nodes']}"
+    page.close()
+
+
 def test_measure_label_has_backing_chip(server, browser):
     # the measurement value must sit on a chip so it stays legible over the drawing
     page, frame = _open_ready(browser, server["port"])

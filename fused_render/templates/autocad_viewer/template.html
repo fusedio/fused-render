@@ -736,7 +736,18 @@ window.addEventListener("keydown", (e) => {
   else if (e.key.toLowerCase() === "f") fit();
   else if (e.key.toLowerCase() === "m") setTool("distance");
 });
-host.addEventListener("dblclick", (e) => { if (tool === "area" && pts.length >= 3) { e.preventDefault(); finishMeasure(); } });
+host.addEventListener("dblclick", (e) => {
+  if (tool !== "area") return;
+  e.preventDefault();
+  // the two clicks that formed this double-click were each appended to pts at
+  // this spot — drop those trailing coincident points before closing.
+  const r = canvasRect(), dx = e.clientX - r.left, dy = e.clientY - r.top;
+  for (let i = 0; i < 2 && pts.length; i++) {
+    const c = modelToCanvas(pts[pts.length - 1].x, pts[pts.length - 1].y);
+    if (Math.hypot(c.x - dx, c.y - dy) < 8) pts.pop(); else break;
+  }
+  if (pts.length >= 3) finishMeasure();
+});
 window.addEventListener("resize", () => onViewChanged());
 
 boot();
