@@ -202,29 +202,32 @@ function FolderStack({ path }: { path: string }) {
           Each entry is ONE sheet — a title row whose card body slides down
           behind the sheet in front of it; the front sheet carries the
           preview inside itself (the ref design's titlebar-plus-page card,
-          not a bar floating over a separate panel). */}
-      {shown.map((e, i) => {
-        const depth = shown.length - 1 - i;
-        return (
-          <span key={e.name} className={`fhb-sheet fhb-sheet-d${depth}`}>
-            <span className="fhb-sheet-row">
-              <span className="fhb-sheet-icon">{iconForEntry(e.name, e.is_dir)}</span>
-              <span className="fhb-sheet-label">{e.name}</span>
-            </span>
-            {depth === 0 ? (
-              body
-            ) : (
-              // Back sheets carry their own page too: a strip of the entry's
-              // live view (a folder embeds as its listing) that stays tucked
-              // behind the sheet in front until the card's hover fan slides
-              // it out — a page edge with real content, not a blank lip.
-              <span className="fhb-sheet-peek">
-                <LivePreview src={embedUrlForFsPath(joinPath(path, e.name))} />
+          not a bar floating over a separate panel). The whole stack waits
+          for settled: painting an alphabetical stack mid-probe would let
+          the front sheet reorder under the user once subPeek names it. */}
+      {settled &&
+        shown.map((e, i) => {
+          const depth = shown.length - 1 - i;
+          return (
+            <span key={e.name} className={`fhb-sheet fhb-sheet-d${depth}`}>
+              <span className="fhb-sheet-row">
+                <span className="fhb-sheet-icon">{iconForEntry(e.name, e.is_dir)}</span>
+                <span className="fhb-sheet-label">{e.name}</span>
               </span>
-            )}
-          </span>
-        );
-      })}
+              {depth === 0 ? (
+                body
+              ) : (
+                // Back sheets carry their own page too: a strip of the entry's
+                // live view (a folder embeds as its listing) that stays tucked
+                // behind the sheet in front until the card's hover fan slides
+                // it out — a page edge with real content, not a blank lip.
+                <span className="fhb-sheet-peek">
+                  <LivePreview src={embedUrlForFsPath(joinPath(path, e.name))} />
+                </span>
+              )}
+            </span>
+          );
+        })}
       {shown.length === 0 && settled && <span className="fhb-note">Empty folder</span>}
     </span>
   );
