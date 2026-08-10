@@ -83,6 +83,35 @@ def _restore(raw, session, run):
                  % (json.dumps(raw), json.dumps(session), json.dumps(run)))
 
 
+def _owned(raw, session, run):
+    return _node("console.log(JSON.stringify(queueOwnedBy(%s, %s, %s)));"
+                 % (json.dumps(raw), json.dumps(session), json.dumps(run)))
+
+
+def _restore_call(raw, session, run):
+    """`restoreQueue` itself, over a stubbed store: what it puts back on screen
+    and — the part that matters — whether it DELETED the record."""
+    if not shutil.which("node"):
+        pytest.skip("node is needed to run the page's own queue-persistence decisions")
+    html = _html()
+    src = (_block(html, STORE_START, STORE_END) + "\n"
+           + _body(html, "function restoreQueue(") + "\n}\n")
+    harness = """
+const out = { queued: [], deleted: false };
+let stored = %s;
+const sessionStorage = {
+  getItem: () => stored,
+  removeItem: () => { stored = null; out.deleted = true; },
+};
+function queueMessage(t) { out.queued.push(t); }
+restoreQueue(%s, %s);
+console.log(JSON.stringify(out));
+""" % (json.dumps(raw), json.dumps(session), json.dumps(run))
+    proc = subprocess.run(["node", "-e", src + harness], capture_output=True, text=True)
+    assert proc.returncode == 0, proc.stderr
+    return json.loads(proc.stdout)
+
+
 # --------------------------------------------------------------- the record
 
 def test_a_queue_is_stored_with_both_ids_that_can_name_its_conversation():
@@ -226,10 +255,57 @@ def test_the_queue_is_restored_before_the_run_is_re_attached():
     assert boot.index("restoreQueue(") < boot.index("loadHistory(session_id)")
 
 
-def test_a_boot_with_no_conversation_sweeps_the_store():
-    """The landing page names no conversation, so it adopts nothing — and takes
-    the chance to drop the record rather than leaving it for the next chat to
-    fail to match."""
+def test_a_boot_with_no_conversation_leaves_the_store_completely_alone():
+    """The landing page names no conversation, so it owns no record — and must
+    not touch the store at all.
+
+    It used to sweep it, on the reasoning that a record this page cannot adopt
+    is a finished chat's leftovers. That held while a tab ran one of these pages
+    at a time. It no longer does: sessionStorage is per TAB, and the explorer's
+    preview pane mounts a fresh, id-less claude frame for any row previewed in
+    claude mode. So selecting a row in the listing deleted the queue a live
+    conversation elsewhere in the same tab had parked behind a running turn —
+    silently, and in exactly the situation the queue exists for."""
     boot = _html()[_html().index("// ── boot:"):]
     landing = boot[boot.index("} else {"):]
-    assert "restoreQueue(" in landing
+    assert "restoreQueue(" not in landing, \
+        "the landing branch touches a store it cannot own"
+
+
+# ------------------------------------------------------- whose record is it
+
+def test_a_page_owns_only_a_record_it_can_name():
+    raw = json.dumps({"session": "sess-1", "run": "run-1", "texts": ["a"]})
+    assert _owned(raw, "sess-1", "") is True
+    assert _owned(raw, "", "run-1") is True
+    assert _owned(raw, "sess-2", "run-2") is False
+    # The id-less boot — the preview pane's frame. It can name nothing, so it
+    # owns nothing, which is what keeps it from binning someone else's queue.
+    assert _owned(raw, "", "") is False
+    assert _owned("not json", "sess-1", "run-1") is False
+
+
+def test_an_id_less_boot_neither_restores_nor_deletes():
+    raw = json.dumps({"session": "sess-1", "run": "run-1", "texts": ["parked"]})
+    assert _restore_call(raw, "", "") == {"queued": [], "deleted": False}
+
+
+def test_another_conversations_record_is_left_where_it_is():
+    """Not ours to adopt AND not ours to bin. An unclaimed record is harmless —
+    it is keyed to ids no future boot will have, and sessionStorage dies with
+    the tab — whereas deleting one we merely failed to match is how a live
+    queue disappeared."""
+    raw = json.dumps({"session": "sess-1", "run": "run-1", "texts": ["parked"]})
+    assert _restore_call(raw, "sess-2", "run-2") == {"queued": [], "deleted": False}
+
+
+def test_our_own_record_comes_back():
+    raw = json.dumps({"session": "sess-1", "run": "run-1", "texts": ["a", "b"]})
+    assert _restore_call(raw, "sess-1", "run-1") == {"queued": ["a", "b"], "deleted": False}
+
+
+def test_our_own_empty_record_is_swept():
+    """The one deletion that is provably safe: the record matches this boot and
+    has nothing left in it."""
+    raw = json.dumps({"session": "sess-1", "run": "run-1", "texts": []})
+    assert _restore_call(raw, "sess-1", "run-1") == {"queued": [], "deleted": True}

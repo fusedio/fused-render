@@ -4696,8 +4696,11 @@ document.addEventListener("keydown", onEscape);
 // The queue's mirror. sessionStorage, not localStorage: the queue belongs to
 // this tab's trip through this conversation — a mode switch, a navigation, a
 // reload — and must not surface in a second window that happens to be looking
-// at the same file, nor outlive the tab. One record, because one frame is one
-// conversation at a time; a fresh conversation legitimately overwrites it.
+// at the same file, nor outlive the tab. One record — but NOT because one frame
+// is one conversation: a tab can hold several of these pages at once now (the
+// explorer's preview pane renders one for whatever row is selected, beside a
+// full-screen chat), and they share this key. So a page may only ever write or
+// delete the record it can prove is ITS OWN; see queueOwnedBy.
 const QUEUE_STORE = "fused-render:claude-queue";
 
 // The record for a queue, or null when there is nothing worth keeping. Pure so
@@ -4724,13 +4727,29 @@ function queueRecord(sessionId, runId, texts) {
 // (hand-edited storage, a half-written record, a shape from an older build) is
 // treated as absence rather than thrown: losing the queue is the bug we are
 // fixing, but a red overlay on boot would be a worse one.
+// Is the stored record THIS boot's own? The identity rule, on its own, because
+// two questions need it and they must not answer differently: what may be
+// restored, and — the dangerous one — what may be DELETED.
+//
+// A page that cannot match the record has no standing over it. sessionStorage is
+// per TAB, not per frame, and the preview pane means a second claude page is
+// mounted for any row that previews in claude mode: id-less, matching nothing,
+// and (before this) deleting on sight the queue that a live conversation in the
+// same tab had parked behind a running turn. Silently, and exactly in the
+// scenario the queue was built for.
+function queueOwnedBy(raw, sessionId, runId) {
+  let rec;
+  try { rec = JSON.parse(raw || "null"); } catch (err) { return false; }
+  if (!rec) return false;
+  return !!((rec.session && sessionId && rec.session === sessionId)
+         || (rec.run && runId && rec.run === runId));
+}
+
 function queueRestore(raw, sessionId, runId) {
   let rec;
   try { rec = JSON.parse(raw || "null"); } catch (err) { return []; }
   if (!rec || !Array.isArray(rec.texts)) return [];
-  const same = (rec.session && sessionId && rec.session === sessionId)
-            || (rec.run && runId && rec.run === runId);
-  if (!same) return [];
+  if (!queueOwnedBy(raw, sessionId, runId)) return [];
   return rec.texts.filter((t) => typeof t === "string" && t);
 }
 
@@ -4763,16 +4782,23 @@ function persistQueue() {
 // same array — and each append re-persists under the ids this boot has, which
 // is how a record written with only a run id acquires its session id.
 //
-// A record that does not match is DROPPED here rather than left alone: it can
-// never be adopted by anything (its conversation is over), and leaving it would
-// keep a dead chat's words one storage read away from a live one.
+// The record is dropped only when this boot OWNS it and it has nothing left in
+// it. It used to be dropped whenever it failed to match, on the reasoning that
+// a record this page cannot adopt is a dead chat's leftovers — which was true
+// while a tab held one of these pages. It no longer does: an id-less preview in
+// the pane matches nothing by construction, so "does not match me" became "is
+// almost certainly someone else's", and the sweep deleted live queues. A
+// record nobody claims is harmless — it is keyed to ids no future boot will
+// have, and sessionStorage dies with the tab.
 function restoreQueue(sessionId, runId) {
   let raw = null;
   try { raw = sessionStorage.getItem(QUEUE_STORE); } catch (err) { return; }
   if (!raw) return;
   const texts = queueRestore(raw, sessionId, runId);
   for (const t of texts) queueMessage(t);
-  if (!texts.length) { try { sessionStorage.removeItem(QUEUE_STORE); } catch (err) {} }
+  if (!texts.length && queueOwnedBy(raw, sessionId, runId)) {
+    try { sessionStorage.removeItem(QUEUE_STORE); } catch (err) {}
+  }
 }
 
 // The shell's remount-safety hook, same contract as the code template's editor
@@ -5760,10 +5786,12 @@ async function loadSnapshots() {
     // queue is empty or resumeRun already drained it.
     drainQueue();
   } else {
-    // No conversation to belong to: this boot matches no record, and
-    // restoreQueue takes the chance to drop whatever a finished chat left in
-    // storage instead of leaving it there to be almost-matched later.
-    restoreQueue("", "");
+    // No conversation to belong to, so nothing to restore — and nothing to
+    // clean up either. This boot owns no record by definition (it has no ids to
+    // match one with), and the tab's storage may well belong to a chat that is
+    // still running in another frame: the preview pane mounts one of these for
+    // any row previewed in claude mode. Touching the store from here is exactly
+    // how a live conversation's parked messages used to disappear.
     focusBox(homebox);
     await loadRecent();
     await mountSnapshots();
