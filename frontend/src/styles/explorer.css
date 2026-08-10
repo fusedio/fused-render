@@ -988,6 +988,18 @@ table.listing-table tr.skel-row:hover {
 .crumb-search-slot > .listing-search {
   flex: 0 1 auto;
   min-width: 0;
+  /* Pinned to the bar's right end, whatever else is or isn't in the row: the
+     mode slot hides itself when empty, and the split buttons are gone over a
+     folder, so "after the last thing" is not a fixed place. An auto margin is
+     — it eats the free width, so the box and the `···` sit against the right
+     edge in every state, which is where the hand goes looking for them (a
+     file view keeps its own `···` in that same corner).
+
+     It works because the crumbs stop growing here (see .crumbs below). That
+     costs the click-to-edit target some reach — the whitespace past the last
+     crumb was part of it, and now only the strip's own trailing padding is.
+     Ctrl+L and the crumbs themselves are unaffected. */
+  margin-left: auto;
   height: auto;
   padding: 0;
   border-bottom: none;
@@ -1030,6 +1042,7 @@ table.listing-table tr.skel-row:hover {
    stays one line at any width the split allows, which is what keeps it the
    same height as the pane header across the divider. */
 #breadcrumb:has(.crumb-search-slot) .crumbs {
+  flex-grow: 0;
   flex-shrink: 6;
   min-width: 120px;
 }
