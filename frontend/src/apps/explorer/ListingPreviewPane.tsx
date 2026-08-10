@@ -27,7 +27,7 @@ import {
   PANE_APP_MODE,
   activePaneMode,
   paneModeList,
-  paneOpenTarget,
+  paneOpenAction,
 } from "@apps/explorer/listing/pane-modes";
 
 // The selected row, as the pane needs it. Structurally a subset of Listing's
@@ -335,9 +335,20 @@ export default function ListingPreviewPane({
   const activeMode = activePaneMode(modeNames, modeOverride);
   const activeEntry = embeddable.find((e) => e.mode === activeMode) ?? null;
 
-  // The settled header: the shared strip, with the mode control and the
-  // open-full-screen button after the name, at the far end of the strip. Every
-  // OTHER state renders the bare strip instead — same chrome, nothing to
+  // What the strip's far end offers for this row — decided in
+  // listing/pane-modes (paneOpenAction), which documents why a plain folder
+  // gets nothing: expanding one means opening its listing, and its listing is
+  // what the left half of this very split already is.
+  const open = paneOpenAction(row, activeMode, app);
+  const openTarget = open.kind === "none" ? null : open.target;
+  const goToTarget = () => {
+    if (!openTarget) return;
+    navigate(openTarget.path, { isDir: openTarget.isDir, mode: openTarget.mode });
+  };
+
+  // The settled header: the shared strip, with the mode control and (for a row
+  // that has one) its open control after the name, at the far end of the strip.
+  // Every OTHER state renders the bare strip instead — same chrome, nothing to
   // switch or expand yet. (The self target has its own, picker-less one and
   // returns above.)
   const header = strip(
@@ -346,48 +357,58 @@ export default function ListingPreviewPane({
           to be four naked squares here, indistinguishable from the one-shot
           glyphs beside them. */}
       <ModeMenu entries={modes} active={activeMode ?? ""} onSelect={selectMode} />
-      {/* Open the previewed row full-screen — as a quiet icon, not the bordered
-          "Open" primary it used to be. Nothing in this strip is a primary: the
-          row's double-click and Enter already open it, so a bordered word was
-          the loudest thing in the pane's header for the one action the user
-          least needs pointed out. Two arrows to opposite corners is the
-          expand/full-screen glyph, which is also the truer description — the
-          preview is already open, this makes it the whole view. Plain
-          .bar-ctl-icon metrics, like every other glyph-only control in these
-          bars — it had a rule of its own for one release that only restated
-          them.
+      {/* Expand the previewed FILE full-screen — as a quiet icon, not the
+          bordered "Open" primary it used to be. Nothing in this strip is a
+          primary: the row's double-click and Enter already open it, so a
+          bordered word was the loudest thing in the pane's header for the one
+          action the user least needs pointed out. Two arrows to opposite
+          corners is the expand/full-screen glyph, which is also the truer
+          description — the preview is already open, this makes it the whole
+          view. Plain .bar-ctl-icon metrics, like every other glyph-only control
+          in these bars — it had a rule of its own for one release that only
+          restated them.
 
           It opens in the mode the pane is SHOWING (paneOpenTarget) — "make this
           the whole view" cannot be the one action that discards the template
           the user picked. The row's own double-click and Enter stay a plain
           open: those are "open this thing", not "open what I am looking at". */}
-      <button
-        type="button"
-        className="bar-ctl bar-ctl-icon"
-        title="Open"
-        aria-label="Open"
-        onClick={() => {
-          const open = paneOpenTarget(row, activeMode, app);
-          navigate(open.path, { isDir: open.isDir, mode: open.mode });
-        }}
-      >
-        <svg
-          viewBox="0 0 24 24"
-          width="16"
-          height="16"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth={2}
-          strokeLinecap="round"
-          strokeLinejoin="round"
-          aria-hidden="true"
+      {open.kind === "expand" && (
+        <button
+          type="button"
+          className="bar-ctl bar-ctl-icon"
+          title="Open"
+          aria-label="Open"
+          onClick={goToTarget}
         >
-          <path d="M15 3h6v6" />
-          <path d="M21 3l-7 7" />
-          <path d="M9 21H3v-6" />
-          <path d="M3 21l7-7" />
-        </svg>
-      </button>
+          <svg
+            viewBox="0 0 24 24"
+            width="16"
+            height="16"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth={2}
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-hidden="true"
+          >
+            <path d="M15 3h6v6" />
+            <path d="M21 3l-7 7" />
+            <path d="M9 21H3v-6" />
+            <path d="M3 21l7-7" />
+          </svg>
+        </button>
+      )}
+      {/* A folder that IS an app gets the folder's real primary in that slot
+          instead, and this one is LABELLED: the expand glyph reads as "bigger",
+          which is not what happens — the folder's page opens, and no icon says
+          that. Same words as the title bar's own button for the open folder
+          (Preview's openAsAppBtn), because it is the same action one level
+          down. */}
+      {open.kind === "app" && (
+        <button type="button" className="bar-ctl" title="Open as app" onClick={goToTarget}>
+          Open as app
+        </button>
+      )}
     </>
   );
 

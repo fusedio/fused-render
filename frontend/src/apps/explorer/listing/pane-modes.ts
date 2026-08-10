@@ -133,3 +133,44 @@ export function paneOpenTarget(
   }
   return { path: row.path, isDir: row.isDir, mode: activeMode };
 }
+
+// WHICH control the pane's header offers for the previewed row — the half
+// paneOpenTarget deliberately does not answer, because for a folder the honest
+// answer is "none of them".
+//
+//   file            → `expand`. "Make this preview the whole view", in the mode
+//                     the pane is showing (paneOpenTarget above).
+//   folder with an
+//   app of its own  → `app`. The folder's real primary: open the app. Not
+//                     conditioned on the mode the pane happens to be showing —
+//                     a folder switched to its embedded listing or to a chat is
+//                     still an app, and the button still means the app. The
+//                     target is the lone app PAGE, the same translation the
+//                     `_app` sentinel gets and the same thing Preview's own
+//                     "Open as app" falls back to.
+//   plain folder    → `none`. Expanding a folder means opening its listing —
+//                     and its listing is what the LEFT HALF of this very split
+//                     already is. The button offered to replace a two-pane view
+//                     of a folder with a one-pane view of the same folder,
+//                     which is not an action so much as a step backwards. Its
+//                     one honest use, "get into this folder", is what
+//                     double-click and Enter on the row already do.
+//
+// An `undefined` app (the folder's lone-app probe still in flight) counts as no
+// app. The pane holds a skeleton until the probe settles, so this is belt and
+// braces — but a button that appears and then changes meaning is exactly the
+// outcome worth ruling out.
+export type PaneOpenAction =
+  | { kind: "expand"; target: PaneOpenTarget }
+  | { kind: "app"; target: PaneOpenTarget }
+  | { kind: "none" };
+
+export function paneOpenAction(
+  row: { path: string; isDir: boolean },
+  activeMode: string | null,
+  app: { path: string } | null | undefined
+): PaneOpenAction {
+  if (!row.isDir) return { kind: "expand", target: paneOpenTarget(row, activeMode, app) };
+  if (!app) return { kind: "none" };
+  return { kind: "app", target: paneOpenTarget(row, PANE_APP_MODE, app) };
+}
