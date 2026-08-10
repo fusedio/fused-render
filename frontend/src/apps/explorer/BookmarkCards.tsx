@@ -217,13 +217,11 @@ function FolderStack({ path }: { path: string }) {
               {depth === 0 ? (
                 body
               ) : (
-                // Back sheets carry their own page too: a strip of the entry's
-                // live view (a folder embeds as its listing) that stays tucked
-                // behind the sheet in front until the card's hover fan slides
-                // it out — a page edge with real content, not a blank lip.
-                <span className="fhb-sheet-peek">
-                  <LivePreview src={embedUrlForFsPath(joinPath(path, e.name))} />
-                </span>
+                // Back sheets keep a blank page-body strip (revealed by the
+                // hover fan) but load NO iframe: one live preview per card —
+                // the front sheet's — is the whole embed budget; a strip per
+                // back sheet tripled the page loads a card grid spawns.
+                <span className="fhb-sheet-peek" />
               )}
             </span>
           );
