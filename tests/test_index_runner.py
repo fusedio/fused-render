@@ -46,8 +46,23 @@ def test_start_spawns_the_worker_as_a_module_not_a_file(tmp_path, spawned):
     argv, kwargs = spawned[0]
     assert argv[:3] == [sys.executable, "-m", "fused_render.index.worker"]
     assert argv[3] == os.path.join(cfg.runs_dir, started["run_id"])
-    # detached: the scan outlives the request that asked for it
-    assert kwargs.get("start_new_session") is True or "creationflags" in kwargs
+
+
+def test_start_spawns_without_forking_the_server(tmp_path, spawned):
+    """The spawn kwargs must keep CPython on posix_spawn. `start_new_session`
+    (or `preexec_fn`, or `close_fds=True`) forces fork()+exec, and a fork of
+    a server that has loaded pyproj/rasterio runs PROJ's pthread_atfork
+    handler and SIGSEGVs before Python starts: the startup scan works, every
+    later on-demand scan dies with an empty worker.log. Session detachment
+    lives in the worker's own main() (os.setsid) instead."""
+    runner.start(_cfg(tmp_path), str(tmp_path))
+    _, kwargs = spawned[0]
+    if os.name == "nt":
+        assert "creationflags" in kwargs
+    else:
+        assert "start_new_session" not in kwargs
+        assert "preexec_fn" not in kwargs
+        assert kwargs.get("close_fds") is False
 
 
 def test_start_writes_a_spec_the_worker_can_read(tmp_path, spawned):
@@ -182,6 +197,48 @@ def test_prune_runs_keeps_the_newest_and_deletes_the_rest(tmp_path):
     runner.prune_runs(cfg, keep=2)
     assert sorted(os.listdir(cfg.runs_dir)) == [
         "20260103-000000-x", "20260104-000000-x"]
+
+
+def test_a_dead_worker_stops_reporting_as_scanning(tmp_path):
+    """A worker that dies without a run_end (killed, OOM, spawn crash) just
+    stops appending — the log alone reads as `running` forever, which kept
+    /api/index/status saying `scanning: true` (UI: "indexing…", buttons
+    disabled) for a day. An unfinished run untouched for ABANDONED_RUN_S is
+    reported dead, with the reason in `error`."""
+    cfg = _cfg(tmp_path)
+    dead = _run_with_events(cfg, "20260101-000000-x", [{"type": "phase", "msg": "scanning"}])
+    old = time.time() - runner.ABANDONED_RUN_S - 60
+    for name in os.listdir(dead):
+        os.utime(os.path.join(dead, name), (old, old))
+    run = runner.list_runs(cfg)["runs"][0]
+    assert run["running"] is False
+    assert "died" in run["error"]
+    st = runner.status(cfg, "20260101-000000-x")["state"]
+    assert st["running"] is False
+
+
+def test_a_quiet_but_recent_run_still_reports_as_scanning(tmp_path):
+    cfg = _cfg(tmp_path)
+    _run_with_events(cfg, "20260101-000000-x", [{"type": "phase", "msg": "compacting"}])
+    run = runner.list_runs(cfg)["runs"][0]
+    assert run["running"] is True
+    assert run["error"] is None
+
+
+def test_a_spawn_crash_with_an_empty_log_reports_dead_not_scanning(tmp_path):
+    """The exact shape the fork/SIGSEGV bug left behind: spec.json + an empty
+    worker.log and nothing else."""
+    cfg = _cfg(tmp_path)
+    d = os.path.join(cfg.runs_dir, "20260101-000000-x")
+    os.makedirs(d)
+    with open(os.path.join(d, "spec.json"), "w") as f:
+        json.dump({"root": "/r", "full": False, "started": 0}, f)
+    open(os.path.join(d, "worker.log"), "w").close()
+    old = time.time() - runner.ABANDONED_RUN_S - 60
+    for name in os.listdir(d):
+        os.utime(os.path.join(d, name), (old, old))
+    run = runner.list_runs(cfg)["runs"][0]
+    assert run["running"] is False
 
 
 def test_prune_runs_reclaims_a_run_that_died_without_closing_its_log(tmp_path):

@@ -7,8 +7,9 @@ poll-friendly append-only log OpenIndex's page used, which drops in unchanged.
 
 The worker is spawned as `python -m fused_render.index.worker`, not
 `Popen([python, __file__])`: inside a py2app bundle there is no source file to
-point at. Detached (`start_new_session` / DETACHED_PROCESS) like every other
-long-running child in this app, so the scan outlives the request.
+point at. Detached so the scan outlives the request — via DETACHED_PROCESS on
+Windows, and via the worker's own `os.setsid()` on POSIX (see _detach_kwargs
+for why it must NOT be `start_new_session=True`).
 
 See specs/scan.md.
 """
@@ -34,13 +35,20 @@ def _mounts_dir() -> str:
 
 def _detach_kwargs() -> dict:
     """Popen kwargs that let the worker outlive the request and the page.
-    `start_new_session` is POSIX-only — Windows accepts it and silently
-    ignores it, so detaching there needs creation flags instead."""
+
+    On POSIX these MUST stay posix_spawn-compatible: no `start_new_session`,
+    no `preexec_fn`, and `close_fds=False`. Any of those forces CPython onto
+    fork()+exec, and a fork of a server process that has touched
+    pyproj/rasterio runs PROJ's pthread_atfork handler and dies with SIGSEGV
+    before Python starts — the startup scan works (nothing loaded yet) and
+    every later on-demand scan dies with an empty worker.log. Same discipline
+    as envinstall.py. The session detach (`os.setsid`) happens inside the
+    worker itself, after exec, where it is safe."""
     if os.name == "nt":
         return {"creationflags": (getattr(subprocess, "DETACHED_PROCESS", 0x8)
                                  | getattr(subprocess,
                                            "CREATE_NEW_PROCESS_GROUP", 0x200))}
-    return {"start_new_session": True}
+    return {"close_fds": False}
 
 
 def start(cfg: IndexConfig, root: str, full: bool = False) -> dict:
@@ -121,10 +129,28 @@ def derive_state(events) -> dict:
     return st
 
 
+def _with_liveness(state: dict, run_dir: str, now: float) -> dict:
+    """Cross-check a `running` log against the run directory's mtimes.
+
+    The log alone cannot distinguish "still walking" from "the worker died
+    without a run_end" (killed, OOM, spawn crash): both just stop appending.
+    A live worker touches its run dir at least every half second, so an
+    unfinished run untouched for ABANDONED_RUN_S is dead — report it as such,
+    or the status endpoint says `scanning` (and the UI says "indexing…", with
+    the scan buttons disabled) until the dir is eventually pruned."""
+    if state["running"] and _looks_abandoned(run_dir, now, ABANDONED_RUN_S):
+        state["running"] = False
+        state["error"] = state["error"] or (
+            "the scan worker died without finishing (no activity for "
+            f"{ABANDONED_RUN_S}s)")
+    return state
+
+
 def status(cfg: IndexConfig, run_id: str, since: int = 0) -> dict:
     run_dir = _run_dir(cfg, run_id)
     events, new, cursor = read_events(run_dir, int(since))
-    return {"state": derive_state(events), "events": new, "cursor": cursor}
+    state = _with_liveness(derive_state(events), run_dir, time.time())
+    return {"state": state, "events": new, "cursor": cursor}
 
 
 def cancel(cfg: IndexConfig, run_id: str) -> dict:
@@ -144,6 +170,7 @@ def _run_ids(cfg: IndexConfig):
 
 def list_runs(cfg: IndexConfig, limit: int = 20) -> dict:
     out = []
+    now = time.time()
     for rid in _run_ids(cfg)[:limit]:
         rd = os.path.join(cfg.runs_dir, rid)
         try:
@@ -153,14 +180,18 @@ def list_runs(cfg: IndexConfig, limit: int = 20) -> dict:
             spec = {}
         events, _, _ = read_events(rd)
         out.append({"run_id": rid, "root": spec.get("root"),
-                    **derive_state(events)})
+                    **_with_liveness(derive_state(events), rd, now)})
     return {"runs": out}
 
 
-# How long an unfinished run directory is left alone before it counts as
-# abandoned rather than live. A worker emits at least one event per half
-# second while it walks, so anything untouched for a day died without closing
-# its log (killed, machine slept off, power) and its shards are dead weight.
+# Two thresholds for an unfinished run directory, because the two mistakes
+# cost differently. A worker touches its run dir at least every half second
+# while it walks, but a big DuckDB compaction can go quiet for a while — so
+# REPORTING a run as dead waits a few minutes (wrongly saying "indexing…"
+# for minutes after a crash is annoying; wrongly saying a live scan died is
+# just a stale label until the next event lands). DELETING its directory
+# waits a day: pruning a live run's shards out from under it loses the scan.
+ABANDONED_RUN_S = 5 * 60
 STALE_RUN_S = 24 * 3600
 
 
@@ -176,20 +207,20 @@ def prune_runs(cfg: IndexConfig, keep: int = 20) -> int:
     for rid in _run_ids(cfg)[keep:]:
         rd = os.path.join(cfg.runs_dir, rid)
         events, _, _ = read_events(rd)
-        if derive_state(events)["running"] and not _looks_abandoned(rd, now):
+        if derive_state(events)["running"] and not _looks_abandoned(rd, now, STALE_RUN_S):
             continue
         shutil.rmtree(rd, ignore_errors=True)
         removed += 1
     return removed
 
 
-def _looks_abandoned(run_dir: str, now: float) -> bool:
+def _looks_abandoned(run_dir: str, now: float, threshold_s: float) -> bool:
     try:
         newest = max(os.stat(os.path.join(run_dir, n)).st_mtime
                      for n in os.listdir(run_dir) or ["."])
     except (OSError, ValueError):
         return True  # unreadable: nothing left to protect
-    return (now - newest) > STALE_RUN_S
+    return (now - newest) > threshold_s
 
 
 # ---------------------------------------------------------- scan bookkeeping
