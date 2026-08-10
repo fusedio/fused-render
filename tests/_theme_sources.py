@@ -66,7 +66,7 @@ EXEMPT_TEMPLATES = (
 # Views that ship their own in-view theme toggle and private storage key;
 # explicitly not migrated and not overridden. (log_studio was here until its
 # toggle was removed — it now uses the shared opt-in like any tier-1 view.)
-SELF_TOGGLING_TEMPLATES = ("excel", "tableau")
+SELF_TOGGLING_TEMPLATES = ("autocad_viewer", "excel", "tableau")
 
 # ---------------------------------------------------------------- shared assets
 # `templates/shared/*.js` is loaded BY templates with a plain
