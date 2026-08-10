@@ -248,15 +248,18 @@ def test_an_ordinary_folder_gets_no_left_pane_at_all():
     assert "if (src === null) { enterNoPane(); return; }" in code
 
 
-def test_the_dead_modechip_param_is_gone_from_its_consumer_too():
+def test_the_dead_framing_params_are_gone_from_their_consumers_too():
     """`?modechip=false` existed for exactly one caller — the chat template's
     folder pane — and that caller is deleted. A URL param with no producer is a
     branch in the shell that nothing can ever take, so `Preview.tsx` loses the
     read and the guard rather than keeping an untestable tolerance alive.
 
-    `preview=false` is NOT removed alongside it: the listing writes that one
-    itself when the user closes the pane (`listing/pane.ts`), so it still has a
-    producer and still means something.
+    `?preview=true|false` has since gone the same way, for the same reason and
+    one better: the pane's visibility is no longer a state at all. The listing
+    splits when its container is wide enough to be worth splitting
+    (`listing/pane-math.shouldShowPane`), so nothing writes the param, nothing
+    carries it across a folder hop, and nothing may read it — a stale one in an
+    old bookmark must not resurrect a toggle that does not exist.
     """
     with open(os.path.join("frontend", "src", "apps", "explorer", "Preview.tsx"),
               encoding="utf-8") as f:
@@ -266,9 +269,20 @@ def test_the_dead_modechip_param_is_gone_from_its_consumer_too():
     assert "modeChipOff" not in tsx
     # The chip itself survives for every other embed — only the opt-out is gone.
     assert "otherEntry" in tsx
-    with open(os.path.join("frontend", "src", "apps", "explorer", "listing",
-                           "pane.ts"), encoding="utf-8") as f:
-        assert "preview=false" in f.read(), "preview=false keeps its own producer"
+
+    # No producer and no consumer for `preview`, anywhere in the shell: not the
+    # pane hook that used to write it, not the router that used to carry it
+    # between folders, not the template that used to frame an embed with it.
+    for rel in (
+        ("frontend", "src", "apps", "explorer", "listing", "pane.ts"),
+        ("frontend", "src", "platform", "lib", "router.ts"),
+        ("fused_render", "templates", "versions", "template.html"),
+    ):
+        with open(os.path.join(*rel), encoding="utf-8") as f:
+            code = "\n".join(line for line in f.read().split("\n")
+                             if not line.lstrip().startswith("//"))
+        assert "preview=false" not in code, f"{rel[-1]} still speaks the dead param"
+        assert 'get("preview")' not in code, f"{rel[-1]} still reads the dead param"
 
 
 def test_the_no_pane_state_removes_the_column_the_divider_and_the_strip():
