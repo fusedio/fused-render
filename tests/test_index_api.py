@@ -228,8 +228,9 @@ def test_config_rejects_a_non_list(home, tmp_path):
 def test_default_scan_roots_are_the_users_home(home, tmp_path, monkeypatch):
     """Home, not the project root: a whole-home scan costs seconds with the
     default ignore rules and is what makes search useful everywhere."""
+    real_expanduser = os.path.expanduser
     monkeypatch.setattr(os.path, "expanduser", lambda p: str(tmp_path / "userhome")
-                        if p == "~" else os.path.expanduser(p))
+                        if p == "~" else real_expanduser(p))
     assert index_router.scan_roots(load_config(), start_dir=str(tmp_path)) == [
         str(tmp_path / "userhome")]
 

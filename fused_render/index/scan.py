@@ -44,12 +44,22 @@ def _dir_sig(entries):
     return h.hexdigest()
 
 
-def scan_dir_once(d, cache, rules, guard, devs=None):
+def scan_dir_once(d, cache, rules, guard, devs=None, root_dev=None):
     """Scan one directory. Returns (kind, payload, subdirs): kind "u"
     (unchanged; payload = cached file count), "s" (scanned; payload =
     (sig, file_rows, total_size, mtime_ns, n_subdirs)), or None on error. When
     `devs` is a set, the dir's device id is added to it (multi-volume
     detection).
+
+    `root_dev` confines the walk to the scan root's own filesystem. A mount —
+    rclone, iCloud, SMB, an external disk — is always its own device, so this
+    one comparison refuses every mount, including the ones no ignore rule or
+    guard has been told about. It costs nothing: the `stat` it reads is the
+    one this function already takes, and the check happens at the mount's own
+    directory rather than at its parent, so no extra stat per child either.
+    (`/Volumes`, `/proc` and friends are refused by name as well —
+    specs/scan.md §6 — but names only cover the mount points a list can
+    predict.)
 
     This is where every path in the index is born, so every `e.path` leaves
     here through norm() — the whole store, and all matching against it, is in
@@ -57,6 +67,8 @@ def scan_dir_once(d, cache, rules, guard, devs=None):
     try:
         dst = os.stat(d, follow_symlinks=False)
         d_mtime_ns = dst.st_mtime_ns
+        if root_dev is not None and dst.st_dev != root_dev:
+            return None, None, []
         if devs is not None:
             devs.add(dst.st_dev)
     except OSError:
@@ -131,6 +143,11 @@ def _child_init(run_dir, no_cache):
         sink=Sink(os.path.join(run_dir, "shards"), f"c{os.getpid()}", pa, pq,
                   cfg.shard_rows),
         devs=set(),
+        # The scan root's filesystem, decided ONCE by the parent and carried
+        # here: a child must not re-derive it (a stat of a root that has since
+        # become a mount point would hand this process a different answer than
+        # its siblings, and the whole point is that no process crosses).
+        root_dev=spec.get("root_dev"),
         cancel_flag=os.path.join(run_dir, "cancel"),
         progress=os.path.join(run_dir, f"progress-{os.getpid()}.json"),
     )
@@ -165,7 +182,7 @@ def _scan_subtree(subroot):
             _child_progress(stack[-1])
         d = stack.pop()
         kind, payload, subdirs = scan_dir_once(d, cache, rules, guard,
-                                               _CHILD["devs"])
+                                               _CHILD["devs"], _CHILD["root_dev"])
         stack.extend(subdirs)
         if kind:
             sink.add(d, kind, payload)
@@ -204,7 +221,8 @@ def _scan_dirs_threaded(dirs):
         try:
             if not cancelled[0]:
                 kind, payload, subdirs = scan_dir_once(d, cache, rules, guard,
-                                                       _CHILD["devs"])
+                                                       _CHILD["devs"],
+                                                       _CHILD["root_dev"])
                 for s in subdirs:
                     submit(s)
                 if kind:
@@ -259,6 +277,18 @@ def run_scan(run_dir: str) -> None:
     guard = MountGuard(mounts_dir=spec.get("mounts_dir"))
     rules = cfg.rules
     root = spec["root"]
+    # The filesystem the walk stays on (scan_dir_once). Decided here, before
+    # anything is scanned, and written back into the spec so every pool child
+    # confines itself to the same one.
+    root_dev = spec.get("root_dev")
+    if root_dev is None:
+        try:
+            root_dev = os.stat(root).st_dev
+        except OSError:
+            root_dev = None
+        spec["root_dev"] = root_dev
+        with open(os.path.join(run_dir, "spec.json"), "w") as f:
+            json.dump(spec, f)
     cancel_flag = os.path.join(run_dir, "cancel")
     shards_dir = os.path.join(run_dir, "shards")
     os.makedirs(shards_dir, exist_ok=True)
@@ -310,7 +340,7 @@ def run_scan(run_dir: str) -> None:
 
         if hint is not None:
             summary = _run_fsevents(cfg, rules, guard, root, hint, cache, sink,
-                                    ev, cancel_flag, devs, t0, pa, pq)
+                                    ev, cancel_flag, devs, t0, pa, pq, root_dev)
             if summary is not None and fs_id0 is not None and fs_uuid:
                 fsevents.save_state(cfg, root, fs_id0, fs_uuid, devs)
             if summary is not None:
@@ -328,7 +358,8 @@ def run_scan(run_dir: str) -> None:
                 cancelled = True
                 break
             d = frontier.popleft()
-            kind, payload, subdirs = scan_dir_once(d, cache, rules, guard, devs)
+            kind, payload, subdirs = scan_dir_once(d, cache, rules, guard, devs,
+                                                   root_dev)
             frontier.extend(subdirs)
             if kind:
                 sink.add(d, kind, payload)
@@ -353,7 +384,8 @@ def run_scan(run_dir: str) -> None:
                     cancelled = True
                     break
                 d = big.popleft()
-                kind, payload, subdirs = scan_dir_once(d, cache, rules, guard, devs)
+                kind, payload, subdirs = scan_dir_once(d, cache, rules, guard,
+                                                       devs, root_dev)
                 if kind:
                     sink.add(d, kind, payload)
                 for s2 in subdirs:
@@ -412,7 +444,7 @@ def run_scan(run_dir: str) -> None:
 
 
 def _run_fsevents(cfg, rules, guard, root, hint, cache, sink, ev, cancel_flag,
-                  devs, t0, pa, pq):
+                  devs, t0, pa, pq, root_dev=None):
     """The FSEvents fast path: visit ONLY the dirs the OS journal reports and
     account explicitly for everything it didn't (specs/scan-incremental.md §4).
     Returns the run summary, or None when the run was cancelled (the caller
@@ -436,7 +468,7 @@ def _run_fsevents(cfg, rules, guard, root, hint, cache, sink, ev, cancel_flag,
             continue
         scanned.add(d)
         kind, payload, subdirs = scan_dir_once(
-            d, {} if force else cache, rules, guard, devs)
+            d, {} if force else cache, rules, guard, devs, root_dev)
         if kind is None:
             deleted.append(d)   # unreadable/gone: drop cached subtree
             continue

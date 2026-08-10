@@ -52,6 +52,7 @@ import { autoSelectPath, selectionClaimed } from "@apps/explorer/listing/selecti
 import { useDirListing } from "@apps/explorer/listing/useDirListing";
 import { useWalkSearch } from "@apps/explorer/listing/useWalkSearch";
 import { useIndexStatus } from "@platform/lib/index-status";
+import { indexCaveat, withCaveat } from "@apps/explorer/listing/index-caveat";
 import { useListingSelection } from "@apps/explorer/listing/useListingSelection";
 import { useFileOps } from "@apps/explorer/listing/useFileOps";
 import { useListingShortcuts } from "@apps/explorer/listing/useListingShortcuts";
@@ -787,6 +788,9 @@ export default function Listing({
 
   let searchCount: string | null = null;
   let searchCountTitle: string | undefined;
+  // The chip's reserved width covers a match count; the scan caveat makes it
+  // longer, so the input reserves more while one is running.
+  let widePin = false;
   if (searching && validWalk.status === "streaming") {
     // Live progress while the walk streams: match count so far + how much of
     // the tree has been scanned. Updates in place, no layout shift.
@@ -800,21 +804,18 @@ export default function Listing({
       searchCountTitle = `Search covers the first ${validWalk.total.toLocaleString()} entries of this folder tree`;
   }
 
-  // --- index scan indicator -------------------------------------------------
-  // Polled only while the search box is in use, and only until the scan ends
-  // (see useIndexStatus). `has_index` is what splits the two cases: an index
-  // that already exists keeps answering while a rescan runs, so the user is
-  // told the results may lag; with no index yet, the walk is answering and the
-  // badge is pure progress.
-  let indexBadge: string | null = null;
-  let indexBadgeTitle: string | undefined;
-  if (searching && indexScan?.scanning) {
-    indexBadge = indexScan.has_index
-      ? "indexing…"
-      : `building index… ${indexScan.files.toLocaleString()} files`;
-    indexBadgeTitle = indexScan.has_index
-      ? "A scan is running. Results come from the last completed index, so a very recent change may be missing."
-      : "Building the file index for the first time. This folder is being searched live meanwhile.";
+  // --- index scan caveat ----------------------------------------------------
+  // Folded into the status chip rather than added beside it: the chip is
+  // absolutely pinned inside the input, so a second element in that row would
+  // have to compete with it for the same few pixels on a narrow pane. Both
+  // facts are about the same search, and one line says both. Which message
+  // appears is a claim about how far the results can be trusted, so it lives
+  // in a pure, tested helper (listing/index-caveat).
+  const caveat = searching ? indexCaveat(indexScan) : null;
+  if (caveat) {
+    searchCount = withCaveat(searchCount, caveat);
+    searchCountTitle = caveat.title;
+    widePin = true;
   }
 
   // Is anything pinned inside the search input right now? Mirrors the three
@@ -861,7 +862,13 @@ export default function Listing({
             reserves room for one only then — the reservation is wide, and
             idle it was dead space that clipped the placeholder in a narrow
             window. */}
-              <div className={"listing-search-box" + (hasPin ? " has-pin" : "")}>
+              <div
+                className={
+                  "listing-search-box" +
+                  (hasPin ? " has-pin" : "") +
+                  (widePin ? " wide-pin" : "")
+                }
+              >
                 <input
                   ref={searchInputRef}
                   type="search"
@@ -901,19 +908,6 @@ export default function Listing({
                   </span>
                 )}
               </div>
-              {/* A scan is running. Two different messages because they mean
-                  two different things to trust: with an index already built,
-                  these results ARE the index (its last completed generation)
-                  and may be slightly behind the disk; without one, the search
-                  is walking the tree live and the index is merely warming up.
-                  Either way the box keeps working — this is a caveat, not an
-                  error state. */}
-              {indexBadge && (
-                <span className="listing-index-badge" title={indexBadgeTitle}>
-                  <span className="listing-search-spinner inline" aria-hidden="true" />
-                  {indexBadge}
-                </span>
-              )}
               {/* Current result ordering, and the way back to relevance. Without it
             "no arrow anywhere" was the only signal that results were in fuzzy
             rank order, and a column sort had no explicit escape. */}
