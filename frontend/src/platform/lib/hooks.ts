@@ -167,6 +167,11 @@ const cachedReady: Record<BuiltinMountKey, boolean> = {
   sessions_mount_ready: false,
 };
 
+// Two keys, not three: the Claude Config app is no longer a mount. It became
+// native React over its own server bridge, so its gate is a one-shot
+// GET /api/claude-config/status (apps/claude_config useClaudeConfigAvailable) —
+// availability is a property of the installation and cannot flip mid-session,
+// which is the only thing the poll below exists for.
 type BuiltinMountKey = "learn_mount_ready" | "sessions_mount_ready";
 
 export function useLearnMountReady(initial: boolean): boolean {

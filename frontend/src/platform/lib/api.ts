@@ -16,6 +16,10 @@ export interface Config {
   learn_mount_ready: boolean;
   // Same gate for the builtin sessions mount (the Claude Sessions sub-app).
   sessions_mount_ready: boolean;
+  // No claude_config gate here any more: the Claude Config app stopped being a
+  // mounted html+py app and became native React over its own server bridge, so
+  // its availability is GET /api/claude-config/status (useClaudeConfigAvailable
+  // in apps/claude_config), not a mount record.
 }
 
 export interface FsEntry {
@@ -103,7 +107,12 @@ function httpError(data: { error?: string } | null, status: number): HttpError {
   return err;
 }
 
-async function getJson<T>(url: string, headers?: Record<string, string>): Promise<T> {
+// getJson/postJson are exported so a feature that keeps its own typed wrappers
+// in its own module (the Claude-config bridge, apps/claude_config/api.ts) speaks
+// this exact transport rather than a second hand-rolled fetch: same thrown
+// HttpError contract, and — the part that actually bites — the same X-Fused
+// write guard, without which those endpoints answer 403.
+export async function getJson<T>(url: string, headers?: Record<string, string>): Promise<T> {
   const res = await fetch(url, headers ? { headers } : undefined);
   const data = await res.json();
   if (!res.ok) throw httpError(data, res.status);
@@ -125,7 +134,7 @@ async function mutateJson<T>(method: "PUT" | "POST", url: string, body: unknown)
 }
 
 const putJson = <T>(url: string, body: unknown) => mutateJson<T>("PUT", url, body);
-const postJson = <T>(url: string, body: unknown) => mutateJson<T>("POST", url, body);
+export const postJson = <T>(url: string, body: unknown) => mutateJson<T>("POST", url, body);
 
 export function getConfig(): Promise<Config> {
   return getJson<Config>("/api/config");
