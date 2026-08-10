@@ -634,18 +634,55 @@
 
 /* Squeezed list: shed the modified column first, then size, leaving just the
    name at the narrowest. Header cells carry col-<key> classes to pair with
-   their td counterparts. */
+   their td counterparts.
+
+   A shed column is COLLAPSED, not removed. `display: none` on the header
+   looks like the obvious way and is the wrong one: the column survives
+   regardless — the status and sentinel rows span all three (colSpan={3} in
+   Listing.tsx) — and a display:none header contributes no width to
+   table-layout:fixed, which left NAME and the shed column BOTH width-less.
+   WebKit splits the remainder evenly between width-less columns, so NAME took
+   half and the hidden column kept the other half as blank space running to
+   the preview-pane divider (a 385px table rendering 144 + 96 + 0).
+
+   Keeping the header cell rendered at width:0 leaves exactly ONE width-less
+   column, and the whole remainder is NAME's by construction. Note what this
+   deliberately avoids: pinning NAME with `calc(100% - 96px)` reads correctly
+   and is silently DISCARDED by WKWebKit for table cells under fixed layout
+   (measured: the cell stays at the 144px split, while a plain `289px` or
+   `75%` applies). The engine ships in a WKWebView, so only px lengths on the
+   collapsed columns are relied on here.
+
+   The `thead` in these selectors is load-bearing: it outranks the
+   `table.listing-table th.col-size { width: 96px }` defaults further down
+   this file, which would otherwise win on source order. */
 @container (max-width: 460px) {
-  table.listing-table td.mtime,
-  table.listing-table th.col-mtime {
+  table.listing-table td.mtime {
     display: none;
+  }
+  table.listing-table thead th.col-mtime {
+    width: 0;
+    padding: 0;
+    border: 0;
+    box-shadow: none;
+    overflow: hidden;
+    /* The label and sort arrow still exist in the cell; fixed layout would
+       otherwise let them paint straight over MODIFIED's neighbour. */
+    font-size: 0;
   }
 }
 
 @container (max-width: 300px) {
-  table.listing-table td.size,
-  table.listing-table th.col-size {
+  table.listing-table td.size {
     display: none;
+  }
+  table.listing-table thead th.col-size {
+    width: 0;
+    padding: 0;
+    border: 0;
+    box-shadow: none;
+    overflow: hidden;
+    font-size: 0;
   }
 }
 
@@ -1176,6 +1213,14 @@ table.listing-table tr.skel-row:hover {
   pointer-events: none;
 }
 
+/* While a scan runs, the pinned chip also carries the "indexing…" caveat, so
+   it needs more room than a bare match count. Same slot, wider reservation —
+   a SECOND element in this row would have to fight the absolutely-pinned chip
+   for the same pixels on a narrow pane. */
+.listing-search .listing-search-box.has-pin.wide-pin .listing-search-input {
+  padding-right: 210px;
+}
+
 /* A streaming walk shows BOTH — the spinner and the live count — and they hung
    from the same offset, so the spinner sat on top of the digits. They stack
    instead: spinner outermost, count shifted in by its width plus a gap. The
@@ -1387,40 +1432,6 @@ table.listing-table tr.row.row-new > td {
    animation; the class is added for exactly FLIP_MS and then removed. */
 table.listing-table tr.row.flip-animating {
   transition: transform var(--dur-slow) var(--ease-out);
-}
-
-/* Current ordering of the search results, and the click that restores relevance
-   (views/Listing.tsx). Disabled = already in relevance order, i.e. a readout. */
-.listing-sort-chip {
-  flex: 0 0 auto;
-  font: inherit;
-  font-size: 11px;
-  line-height: 1;
-  padding: 4px 8px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: var(--bg-alt);
-  color: var(--fg-muted);
-  cursor: pointer;
-  white-space: nowrap;
-  transition:
-    color var(--dur-fast) var(--ease-out),
-    border-color var(--dur-fast) var(--ease-out);
-}
-
-.listing-sort-chip:disabled {
-  cursor: default;
-}
-
-/* Sorted is a QUIET readout, not a highlight: it says how the results are
-   ordered, which is nothing like "this is the view you are looking at". */
-.listing-sort-chip.sorted {
-  color: var(--fg-muted);
-  border-color: var(--border);
-}
-
-.listing-sort-chip:hover:not(:disabled) {
-  color: var(--fg);
 }
 
 table.listing-table td {

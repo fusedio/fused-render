@@ -87,6 +87,105 @@ export function autoSelectPath(
   return firstEntryPath(rows, byPath);
 }
 
+// The row a SEARCH should select, or null to leave the selection alone.
+//
+// Same intent as the folder auto-select above — land on something so the pane
+// has content and Enter has a target — but a different shape, because search
+// results are not a folder. A folder's rows settle once per navigation, so
+// that one is a single shot. Results re-rank on every keystroke, on every
+// stream flush and on every slice the scan publishes, so this is asked
+// repeatedly and has to answer three different situations:
+//
+//   * nobody has claimed the selection -> the top hit, and it FOLLOWS the
+//     ranking as it refines. Pinning row one of a ranking the user has since
+//     typed past would leave the pane on a result that is no longer the best
+//     answer, which is worse than not selecting at all.
+//   * the user moved the selection -> leave it. Auto-select fills a selection
+//     nobody chose; it never overrules one somebody did (`selectionClaimed`
+//     makes the same call for folders).
+//   * the user's row left the results -> the top hit again. There is nothing
+//     left to respect: the row is not on screen, so keeping the selection
+//     there previews a path the user cannot see.
+//
+// `userOwned` is the caller's to determine — it is a fact about what happened,
+// not about the rows (see Listing, which reads it as "the lead is not where
+// auto-select last put it"). Returning null for a path already selected keeps
+// the caller from writing state on every re-rank; each of those writes
+// remounts the preview iframe.
+export function searchAutoSelectPath(
+  rows: string[],
+  byPath: ReadonlyMap<string, unknown>,
+  sel: Selection,
+  userOwned: boolean,
+): string | null {
+  const first = firstEntryPath(rows, byPath);
+  if (first === null) return null; // nothing matched; nothing to select
+  if (userOwned) {
+    // Cleared on purpose (Escape) — the folder shot honours the same thing.
+    if (sel.lead === null) return null;
+    if (byPath.has(sel.lead) && rows.includes(sel.lead)) return null; // still here
+  }
+  return first === sel.lead ? null : first;
+}
+
+// Whose selection the search results are currently showing.
+//
+// This is the half that has to REMEMBER, and it lives here rather than in a
+// pair of refs inside Listing because it was wrong there and untestable there
+// — the record was reset on every query change, which reclassified the user's
+// own selection as the app's guess and let the next re-rank overwrite it.
+//
+// `autoPlaced` is the path this decision last wrote. Comparing the lead
+// against it is how a user gesture is detected without instrumenting every
+// click, arrow key and marquee path: if the lead is not where auto-select put
+// it, somebody else moved it.
+//
+// `userClaimed` then PERSISTS ACROSS QUERY CHANGES, which is the whole point.
+// A new query re-ranks the rows; it does not revoke the user's choice. So a
+// claimed selection survives every re-rank and every retyped query for as long
+// as its row is still among the results, and only a drop-out hands the
+// decision back. An auto-placed one, by contrast, is re-made against whatever
+// the new ranking put first — it was never more than a guess.
+export interface SearchSelectState {
+  autoPlaced: string | null;
+  userClaimed: boolean;
+}
+
+export const INITIAL_SEARCH_SELECT: SearchSelectState = {
+  autoPlaced: null,
+  userClaimed: false,
+};
+
+export function nextSearchSelection(
+  state: SearchSelectState,
+  rows: string[],
+  byPath: ReadonlyMap<string, unknown>,
+  sel: Selection,
+): { state: SearchSelectState; select: string | null } {
+  // A query change empties the results for a commit and the listing reconcile
+  // clears the selection with them. Neither is a user gesture, so the empty
+  // commit gets no judgment at all — deciding there read the reconcile's clear
+  // as Escape and permanently blocked auto-select after the first refine.
+  if (firstEntryPath(rows, byPath) === null) return { state, select: null };
+  // A lead that is not where this decision left it was moved by the user —
+  // including moved to nothing, which is Escape and is equally theirs. Only
+  // meaningful once something HAS been placed: before that, an empty selection
+  // is "the results just arrived", not "the user cleared it".
+  let claimed =
+    state.userClaimed || (state.autoPlaced !== null && sel.lead !== state.autoPlaced);
+  // A claim hangs on a row. With the lead empty that row is the one auto-select
+  // last wrote — and if it is no longer a result, the "clear" was the reconcile
+  // dropping a vanished path, not the user: the claim dies with its anchor.
+  const anchor = sel.lead ?? state.autoPlaced;
+  const anchorPresent = anchor !== null && byPath.has(anchor) && rows.includes(anchor);
+  if (claimed && sel.lead === null && !anchorPresent) claimed = false;
+  const select = searchAutoSelectPath(rows, byPath, sel, claimed);
+  if (select === null) return { state: { ...state, userClaimed: claimed }, select };
+  // Writing a selection makes it ours again: a claim only ever ends because
+  // the row it was on stopped being a result.
+  return { state: { autoPlaced: select, userClaimed: false }, select };
+}
+
 // Does something already own the selection? The one question the auto-select
 // effect asks before it spends its shot (FS-16): a non-empty selection at that
 // moment was put there by the user — a click in the provisional scaffold,

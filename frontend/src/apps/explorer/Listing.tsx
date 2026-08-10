@@ -47,6 +47,7 @@ import { useClipboard } from "@apps/explorer/lib/fs-clipboard";
 import ContextMenu from "@platform/ui/ContextMenu";
 import { PromptDialog, ConfirmDialog } from "@apps/explorer/FsDialogs";
 import ListingPreviewPane from "@apps/explorer/ListingPreviewPane";
+import { resultCountLabel } from "@apps/explorer/listing/result-cap";
 import { PathOverflow } from "@apps/explorer/BarMenu";
 import { claimFolderChrome } from "@apps/explorer/listing/folder-chrome";
 import { searchSlot, subscribeSearchSlot } from "@apps/explorer/search-slot";
@@ -67,7 +68,9 @@ import {
 import { usePreviewPane } from "@apps/explorer/listing/pane";
 import { passedDragSlop } from "@apps/explorer/listing/marquee";
 import {
+  INITIAL_SEARCH_SELECT,
   autoSelectPath,
+  nextSearchSelection,
   rowPressAction,
   selectionClaimed,
 } from "@apps/explorer/listing/selection";
@@ -75,6 +78,8 @@ import { useRowDrag } from "@apps/explorer/listing/useRowDrag";
 import { useMarquee } from "@apps/explorer/listing/useMarquee";
 import { useDirListing } from "@apps/explorer/listing/useDirListing";
 import { useWalkSearch } from "@apps/explorer/listing/useWalkSearch";
+import { useIndexStatus } from "@platform/lib/index-status";
+import { indexCaveat, withCaveat } from "@apps/explorer/listing/index-caveat";
 import { useListingSelection } from "@apps/explorer/listing/useListingSelection";
 import { useFileOps } from "@apps/explorer/listing/useFileOps";
 import { useListingShortcuts } from "@apps/explorer/listing/useListingShortcuts";
@@ -184,18 +189,21 @@ export default function Listing({
     setQuery,
     searching,
     isStale,
+    scanPending,
     validWalk,
     prefetchWalk,
     hits,
     displayHits,
     visibleHits,
     showingHeld,
-    hasMore,
-    sentinelRef,
+    cappedAway,
     searchSort,
-    setSearchSort,
     setSearchSortKey,
   } = useWalkSearch(fsPath, refresh, !embedded);
+
+  // Scan state for the search box's "indexing…" caveat. Gated on `searching`
+  // so an idle listing never polls.
+  const indexScan = useIndexStatus(searching);
 
   // An embedded Listing never opens its own pane (no nesting): the feature is
   // disabled at the hook, however wide the embedded listing gets. Otherwise
@@ -527,6 +535,37 @@ export default function Listing({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [embedded, provisional, searching, state.status, pane.on]);
 
+  // Search results land on their TOP HIT, so Enter and the pane act on the
+  // best match without the user having to reach for it first.
+  //
+  // Unlike the folder shot above this is NOT one-shot: a folder's rows settle
+  // once per navigation, results re-rank on every keystroke. The decision
+  // (searchAutoSelectPath) owns what to select; this owns only two things.
+  //
+  // WHEN to ask. Not while embedded (the pane's own `_listing` has no pane to
+  // fill) and not provisional, matching the folder shot. It does NOT wait for
+  // `pane.on`, which that one does: the folder case exists to fill the pane,
+  // whereas a selected top hit is worth having for Enter and the arrow keys
+  // whether or not the window is wide enough to preview it.
+  //
+  // Whose selection it is — and in particular that a user's choice OUTLIVES a
+  // query change — is `nextSearchSelection`'s to track, not this effect's. It
+  // lived here as a ref that got cleared per query, which quietly threw the
+  // user's selection away on the next keystroke; it is state with rules, so it
+  // belongs somewhere it can be tested.
+  const searchSelectRef = useRef(INITIAL_SEARCH_SELECT);
+  useEffect(() => {
+    if (embedded || provisional || !searching) return;
+    const { state, select } = nextSearchSelection(
+      searchSelectRef.current,
+      navRows,
+      rowCtxByPath,
+      sel,
+    );
+    searchSelectRef.current = state;
+    if (select !== null) selectOnly(select);
+  }, [embedded, provisional, searching, navRows, rowCtxByPath, sel, selectOnly]);
+
   // The selection as full rows, in rendered order (so a batch op processes rows
   // top-to-bottom regardless of the order they were clicked). Paths without a
   // rendered row — a search page not yet revealed, a row removed by a refetch
@@ -802,23 +841,48 @@ export default function Listing({
               </tr>
             );
           })}
-          {hasMore && (
-            <tr ref={sentinelRef}>
+          {cappedAway > 0 && (
+            /* No sentinel and no "load more": past the top hundred a fuzzy
+               rank stops being useful, so the answer is a better query. The
+               count in the search chip carries the real total. */
+            <tr>
               <td colSpan={3} className="status-message">
-                Scroll for more…
+                {cappedAway.toLocaleString()} more match
+                {cappedAway === 1 ? "" : "es"} not shown
               </td>
             </tr>
           )}
         </>
+      );
+    } else if (scanPending) {
+      // The corpus is in hand but this query has not been scored yet (the
+      // scan is debounced and sliced — listing/scan-job). An index-backed
+      // corpus makes the walk read "ok" instantly, so without this the empty
+      // result would render as a confident "No matches" for a moment on
+      // every keystroke.
+      body = (
+        <tr>
+          <td colSpan={3} className="status-message">
+            Searching…
+          </td>
+        </tr>
       );
     } else if (validWalk.status === "ok" || validWalk.status === "streaming") {
       // No matches. Say so honestly: distinguish "still looking" (stream
       // running) and "the walk didn't even cover everything" (truncated) —
       // the old UI showed a bare "No matches" even when the file existed
       // in a region the capped walk never reached.
+      // The entries-scanned count belongs to the live fallback WALK, and only
+      // that walk moves it. When the index serves the corpus there is no walk
+      // at all — the fetch is one request — so the number sat at 0 for the
+      // whole (sub-second) window and the row read "still searching (0 entries
+      // scanned)" every time. Show the progress only once there is progress to
+      // show; before that all we can honestly say is that we are looking.
       const message =
         validWalk.status === "streaming"
-          ? `No matches yet — still searching (${validWalk.count.toLocaleString()} entries scanned)`
+          ? validWalk.count > 0
+            ? `No matches yet — still searching (${validWalk.count.toLocaleString()} entries scanned)`
+            : "Searching…"
           : validWalk.truncated
             ? `No matches in the first ${validWalk.total.toLocaleString()} entries — this folder tree is too large to search fully`
             : "No matches";
@@ -965,6 +1029,9 @@ export default function Listing({
 
   let searchCount: string | null = null;
   let searchCountFull: string | undefined;
+  // The chip's reserved width covers a match count; the scan caveat makes it
+  // longer, so the input reserves more while one is running.
+  let widePin = false;
   if (searching && validWalk.status === "streaming") {
     // Live progress while the walk streams: match count so far + how much of
     // the tree has been scanned. Updates in place, no layout shift. The scan
@@ -975,11 +1042,33 @@ export default function Listing({
   } else if (searching && validWalk.status === "ok" && hits.length > 0) {
     // A truncated walk (server safety cap) means `hits` undercounts the real
     // tree. Signal that without new UI: a "+" on the number plus a tooltip.
+    // Terse form for the chip, full sentence for title/aria. Past the display
+    // cap the chip has to own up to it — "top 100 of 4.9K+" — because the
+    // rendered list stops at the cap while the count keeps reporting the whole
+    // ranking. The cap itself stays out of this file (result-cap.ts owns it):
+    // `cappedAway` says whether it bit, `visibleHits` says how many rows show.
     const suffix = validWalk.truncated ? "+" : "";
-    searchCount = `${compact(hits.length)}${suffix}`;
-    searchCountFull = `${hits.length.toLocaleString()}${suffix} match${hits.length === 1 ? "" : "es"}`;
+    searchCount =
+      cappedAway > 0
+        ? `top ${visibleHits.length} of ${compact(hits.length)}${suffix}`
+        : `${compact(hits.length)}${suffix}`;
+    searchCountFull = resultCountLabel(hits.length, validWalk.truncated);
     if (validWalk.truncated)
       searchCountFull += ` — search covers the first ${validWalk.total.toLocaleString()} entries of this folder tree`;
+  }
+
+  // --- index scan caveat ----------------------------------------------------
+  // Folded into the status chip rather than added beside it: the chip is
+  // absolutely pinned inside the input, so a second element in that row would
+  // have to compete with it for the same few pixels on a narrow pane. Both
+  // facts are about the same search, and one line says both. Which message
+  // appears is a claim about how far the results can be trusted, so it lives
+  // in a pure, tested helper (listing/index-caveat).
+  const caveat = searching ? indexCaveat(indexScan) : null;
+  if (caveat) {
+    searchCount = withCaveat(searchCount, caveat);
+    searchCountFull = caveat.title;
+    widePin = true;
   }
 
   // Is anything pinned inside the search input right now? Mirrors the three
@@ -1016,7 +1105,13 @@ export default function Listing({
             reserves room for one only then — the reservation is wide, and
             idle it was dead space that clipped the placeholder in a narrow
             window. */}
-              <div className={"listing-search-box" + (hasPin ? " has-pin" : "")}>
+              <div
+                className={
+                  "listing-search-box" +
+                  (hasPin ? " has-pin" : "") +
+                  (widePin ? " wide-pin" : "")
+                }
+              >
                 <input
                   ref={searchInputRef}
                   type="search"
@@ -1062,28 +1157,6 @@ export default function Listing({
                   </span>
                 )}
               </div>
-              {/* Current result ordering, and the way back to relevance. Without it
-            "no arrow anywhere" was the only signal that results were in fuzzy
-            rank order, and a column sort had no explicit escape. */}
-              {searching && (
-                <button
-                  type="button"
-                  className={
-                    "listing-sort-chip" + (searchSort ? " sorted" : "")
-                  }
-                  disabled={!searchSort}
-                  title={
-                    searchSort
-                      ? "Results are column-sorted — click for relevance order"
-                      : "Results are in relevance order (best match first)"
-                  }
-                  onClick={() => setSearchSort(null)}
-                >
-                  {searchSort
-                    ? `${SORT_KEYS[searchSort.sort].toLowerCase()} ${searchSort.order}`
-                    : "relevance"}
-                </button>
-              )}
               {/* No pane toggle here any more. The split is decided by the
                   container's width (listing/pane.ts), so there is no state for
                   a button to flip — and a control that only ever restated what

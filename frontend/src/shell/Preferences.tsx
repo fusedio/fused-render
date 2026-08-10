@@ -40,8 +40,9 @@ import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { SkeletonLines } from "@platform/ui/Skeleton";
 import { useThemePref } from "@platform/lib/theme";
 import { AccountPanel } from "@shell/Account";
+import { IndexingPanel } from "@shell/Indexing";
 
-type PrefsTab = "render" | "account";
+type PrefsTab = "render" | "indexing" | "account";
 
 // The one section on this page that is deliberately NOT server-backed. Every
 // other control here round-trips /api/prefs (shell/prefs.py); Appearance is
@@ -509,9 +510,11 @@ export default function Preferences() {
   // here directly on the account tab. Falls back to "render" whenever the
   // account tab wouldn't be offered (Deploy not enabled) rather than showing
   // a tab with no button pointing at it.
+  const requested = new URLSearchParams(location.search).get("tab");
   const requestedTab: PrefsTab =
-    new URLSearchParams(location.search).get("tab") === "account" ? "account" : "render";
-  const tab: PrefsTab = requestedTab === "account" && prefs?.deploy.enabled ? "account" : "render";
+    requested === "account" ? "account" : requested === "indexing" ? "indexing" : "render";
+  const tab: PrefsTab =
+    requestedTab === "account" && !prefs?.deploy.enabled ? "render" : requestedTab;
   const setTab = (next: PrefsTab) => {
     const params = new URLSearchParams(location.search);
     if (next === "render") params.delete("tab");
@@ -536,6 +539,17 @@ export default function Preferences() {
               onClick={() => setTab("render")}
             >
               Render preferences
+            </button>
+            {/* Indexing — the file index behind the explorer's search. Always
+                present: unlike the account tab it needs no opt-in, and a user
+                looking for "why is search finding/missing this" has nowhere
+                else to go. */}
+            <button
+              type="button"
+              className={"prefs-tab" + (tab === "indexing" ? " active" : "")}
+              onClick={() => setTab("indexing")}
+            >
+              Indexing
             </button>
             {prefs.deploy.enabled && (
               <button
@@ -566,6 +580,7 @@ export default function Preferences() {
                 <EngineSection prefs={prefs} onChange={setPrefs} />
               </>
             )}
+            {tab === "indexing" && <IndexingPanel />}
             {tab === "account" && prefs.deploy.enabled && <AccountPanel />}
           </div>
         </>

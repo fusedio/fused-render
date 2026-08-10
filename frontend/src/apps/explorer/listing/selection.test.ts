@@ -14,6 +14,9 @@ import {
   rangeBetween,
   rowPressAction,
   selParam,
+  INITIAL_SEARCH_SELECT,
+  nextSearchSelection,
+  searchAutoSelectPath,
   selectionClaimed,
 } from "./selection";
 
@@ -330,5 +333,188 @@ describe("the listing rows wire both halves of the model", () => {
       expect(props).not.toContain("onClick=");
       expect(props).not.toContain("onMouseDown=");
     }
+  });
+});
+
+describe("searchAutoSelectPath", () => {
+  const sel = (lead: string) => oneSelected(lead);
+
+  test("lands on the top hit when the results first arrive", () => {
+    const { paths, byPath } = rows([
+      ["hit1.ts", false],
+      ["hit2.ts", false],
+    ]);
+    expect(searchAutoSelectPath(paths, byPath, EMPTY_SELECTION, false)).toBe("/d/hit1.ts");
+  });
+
+  test("follows the ranking as the results refine under the same query", () => {
+    // Typing narrows the corpus and re-ranks it. An auto-placed selection is
+    // the app's own guess, so it moves to whatever is now the best match
+    // rather than pinning row one of a ranking nobody is looking at any more.
+    const { paths, byPath } = rows([
+      ["better.ts", false],
+      ["hit1.ts", false],
+    ]);
+    expect(searchAutoSelectPath(paths, byPath, sel("/d/hit1.ts"), false)).toBe("/d/better.ts");
+  });
+
+  test("does not re-select the row it already sits on", () => {
+    // Returning the same path anyway would be a state write per re-rank, and
+    // each one of those remounts the preview pane's iframe.
+    const { paths, byPath } = rows([
+      ["hit1.ts", false],
+      ["hit2.ts", false],
+    ]);
+    expect(searchAutoSelectPath(paths, byPath, sel("/d/hit1.ts"), false)).toBeNull();
+  });
+
+  test("respects a selection the USER moved, even as the ranking changes", () => {
+    // The analogue of the folder rule: auto-select fills a selection nobody
+    // claimed, it never overrules one somebody chose.
+    const { paths, byPath } = rows([
+      ["better.ts", false],
+      ["chosen.ts", false],
+    ]);
+    expect(searchAutoSelectPath(paths, byPath, sel("/d/chosen.ts"), true)).toBeNull();
+  });
+
+  test("takes the top hit back when the user's row leaves the results", () => {
+    // Nothing left to respect — the row they picked is not on screen, and
+    // holding the selection there leaves the pane previewing a vanished path.
+    const { paths, byPath } = rows([
+      ["better.ts", false],
+      ["other.ts", false],
+    ]);
+    expect(searchAutoSelectPath(paths, byPath, sel("/d/gone.ts"), true)).toBe("/d/better.ts");
+  });
+
+  test("selects nothing when the query matched nothing", () => {
+    expect(searchAutoSelectPath([], new Map(), EMPTY_SELECTION, false)).toBeNull();
+    // ...and does not clear a selection the user made either
+    expect(searchAutoSelectPath([], new Map(), sel("/d/chosen.ts"), true)).toBeNull();
+  });
+
+  test("skips a path with no rendered row", () => {
+    const byPath = new Map([["/d/b.ts", { isDir: false }]]);
+    expect(
+      searchAutoSelectPath(["/d/a.ts", "/d/b.ts"], byPath, EMPTY_SELECTION, false),
+    ).toBe("/d/b.ts");
+  });
+
+  test("leaves a selection the user deliberately cleared alone", () => {
+    // Same rule the folder shot follows: Escape means Escape.
+    const { paths, byPath } = rows([["a.ts", false]]);
+    expect(searchAutoSelectPath(paths, byPath, EMPTY_SELECTION, true)).toBeNull();
+  });
+});
+
+// Whose selection it is, tracked across re-ranks and query changes. This used
+// to live as a pair of refs in Listing, where it could not be tested — and it
+// was wrong there: the record was reset on every query change, which
+// reclassified the user's own selection as the app's guess and let auto-select
+// overwrite it.
+describe("nextSearchSelection", () => {
+  const rowset = (...names: string[]) => rows(names.map((n) => [n, false] as [string, boolean]));
+
+  test("fills an empty selection with the top hit and remembers it placed it", () => {
+    const { paths, byPath } = rowset("hit1.ts", "hit2.ts");
+    const out = nextSearchSelection(INITIAL_SEARCH_SELECT, paths, byPath, EMPTY_SELECTION);
+    expect(out.select).toBe("/d/hit1.ts");
+    expect(out.state).toEqual({ autoPlaced: "/d/hit1.ts", userClaimed: false });
+  });
+
+  test("follows the ranking while the selection is still its own guess", () => {
+    const { paths, byPath } = rowset("better.ts", "hit1.ts");
+    const state = { autoPlaced: "/d/hit1.ts", userClaimed: false };
+    const out = nextSearchSelection(state, paths, byPath, oneSelected("/d/hit1.ts"));
+    expect(out.select).toBe("/d/better.ts");
+  });
+
+  test("notices the user moving the selection and yields to it", () => {
+    const { paths, byPath } = rowset("better.ts", "chosen.ts");
+    // auto-select had placed better.ts; the lead is somewhere else now
+    const state = { autoPlaced: "/d/better.ts", userClaimed: false };
+    const out = nextSearchSelection(state, paths, byPath, oneSelected("/d/chosen.ts"));
+    expect(out.select).toBeNull();
+    expect(out.state.userClaimed).toBe(true);
+  });
+
+  test("a user's selection SURVIVES a query change while it is still a result", () => {
+    // The live repro: search "readme.md", arrow down to
+    // Downloads/collab-canvas-share/README.md, then retype the query as
+    // "collab-canvas". That path is still in the results, so it must stay
+    // selected — the new query re-ranks the rows, it does not revoke the
+    // user's choice.
+    const claimed = { autoPlaced: "/d/top.ts", userClaimed: true };
+    const first = rowset("README.md", "other.ts");
+    const held = nextSearchSelection(claimed, first.paths, first.byPath, oneSelected("/d/README.md"));
+    expect(held.select).toBeNull();
+    // ...now the query changes and the ranking is completely different
+    const after = rowset("collab-canvas-share.zip", "a.ts", "b.ts", "README.md");
+    const out = nextSearchSelection(held.state, after.paths, after.byPath, oneSelected("/d/README.md"));
+    expect(out.select).toBeNull(); // NOT the new top hit
+    expect(out.state.userClaimed).toBe(true);
+  });
+
+  test("an AUTO-placed selection does not survive a query change", () => {
+    // The other half of the same rule: the app's own guess is re-made against
+    // whatever the new query ranked first.
+    const state = { autoPlaced: "/d/hit1.ts", userClaimed: false };
+    const after = rowset("brandnew.ts", "hit1.ts");
+    const out = nextSearchSelection(state, after.paths, after.byPath, oneSelected("/d/hit1.ts"));
+    expect(out.select).toBe("/d/brandnew.ts");
+    expect(out.state).toEqual({ autoPlaced: "/d/brandnew.ts", userClaimed: false });
+  });
+
+  test("the top hit is taken back when the user's row drops out", () => {
+    const claimed = { autoPlaced: "/d/old.ts", userClaimed: true };
+    const { paths, byPath } = rowset("survivor.ts");
+    const out = nextSearchSelection(claimed, paths, byPath, oneSelected("/d/gone.ts"));
+    expect(out.select).toBe("/d/survivor.ts");
+    // ...and the claim is released, so the ranking is followed again after
+    expect(out.state).toEqual({ autoPlaced: "/d/survivor.ts", userClaimed: false });
+  });
+
+  test("clearing the selection is itself a claim, and stays cleared", () => {
+    const state = { autoPlaced: "/d/hit1.ts", userClaimed: false };
+    const { paths, byPath } = rowset("hit1.ts", "hit2.ts");
+    const out = nextSearchSelection(state, paths, byPath, EMPTY_SELECTION);
+    expect(out.select).toBeNull();
+    expect(out.state.userClaimed).toBe(true);
+  });
+
+  test("a user who moves back ONTO the auto-placed row still owns it", () => {
+    // The claim has to be remembered, not re-derived from "the lead is not
+    // where we put it" — arrow down and back up again and the lead is exactly
+    // where we put it, while the user has very deliberately parked there. Get
+    // this wrong and the selection silently resumes drifting with the ranking
+    // under someone who is holding it still.
+    const claimed = { autoPlaced: "/d/a.ts", userClaimed: true };
+    const { paths, byPath } = rowset("new-top.ts", "a.ts");
+    const out = nextSearchSelection(claimed, paths, byPath, oneSelected("/d/a.ts"));
+    expect(out.select).toBeNull();
+    expect(out.state.userClaimed).toBe(true);
+  });
+
+  test("the effect never resets its state per query", () => {
+    // The regression this whole module move fixes: Listing kept the record in
+    // a ref cleared by a `[q]` effect, so every keystroke told the next
+    // re-rank that the user's selection was the app's own guess — and it was
+    // duly overwritten with the new top hit. The state must be threaded, not
+    // reset; a query change is not a reason to forget who chose the row.
+    const src = readFileSync(join(import.meta.dir, "../Listing.tsx"), "utf8");
+    expect(src).toContain("nextSearchSelection(");
+    expect(src).not.toMatch(/searchSelectRef\.current\s*=\s*INITIAL_SEARCH_SELECT/);
+    // the ref is only ever assigned the state the decision hands back
+    const writes = src.match(/searchSelectRef\.current\s*=\s*[^;]+/g) ?? [];
+    expect(writes).toEqual(["searchSelectRef.current = state"]);
+  });
+
+  test("an empty selection before anything was placed is still filled", () => {
+    // Distinct from the case above: nothing has been auto-placed yet, so an
+    // empty selection is "results just arrived", not "the user cleared it".
+    const { paths, byPath } = rowset("hit1.ts");
+    const out = nextSearchSelection(INITIAL_SEARCH_SELECT, paths, byPath, EMPTY_SELECTION);
+    expect(out.select).toBe("/d/hit1.ts");
   });
 });

@@ -335,6 +335,26 @@ def _no_background_mount_threads(monkeypatch):
     monkeypatch.setattr(mounts, "start_health_monitor", lambda: None)
 
 
+@pytest.fixture(autouse=True)
+def _no_startup_index_scan(monkeypatch):
+    """`create_app` schedules a background scan of the user's HOME dir.
+
+    Same hazard as the mount threads above, one step worse: a test that runs
+    the lifespan (`with TestClient(create_app(...))`) would spawn a detached
+    worker that walks the developer's real home directory and writes an index
+    — outliving the test, and pointed at whatever FUSED_RENDER_HOME happened
+    to be current when the spawn landed.
+
+    The tests that are ABOUT the scheduler call `run_startup_scan()` directly
+    with their own config (tests/test_index_api.py)."""
+    from fused_render.server.routers import index as index_routes
+
+    async def _skip(start_dir=None):
+        return None
+
+    monkeypatch.setattr(index_routes, "startup_scan", _skip)
+
+
 @pytest.fixture(scope="session", autouse=True)
 def _no_real_rcd_spawn():
     """Make spawning a REAL rclone rcd from the suite impossible, loudly.
