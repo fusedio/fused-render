@@ -542,9 +542,11 @@
   /* Route fade (App.tsx): routes hard-remount per navigation, so there is no
      old-and-new overlap to cross-fade — a short fade-in on the content area
      alone makes the cut read as intentional. Shorter than --dur-med on purpose:
-     it must not delay reading the page. The sidebar and breadcrumb chrome sit
-     OUTSIDE this element and never flash. Replays because App keys this node on
-     the nav epoch (an iframe's param write doesn't bump it). */
+     it must not delay reading the page. The sidebar sits OUTSIDE this element
+     and never flashes; so does the crumb bar for a file view — over a FOLDER
+     the bar portals into the listing's left column and fades in with the
+     content it now belongs to. Replays because App keys this node on the nav
+     epoch (an iframe's param write doesn't bump it). */
   animation: content-in 110ms var(--ease-out);
 }
 
@@ -581,9 +583,18 @@
   min-width: 60px;
 }
 
-/* Left column of the split: search header pinned above the scrolling table.
-   With the pane on, the pane spans the template's full height while search
-   and the split toggle stay in this column. */
+/* Where the crumb bar hangs over a folder view (Breadcrumb.tsx BreadcrumbBar
+   portals into it, Listing.tsx renders it). `display: contents` so the wrapper
+   itself is invisible to the flex layout and `#breadcrumb` is a direct flex
+   item of .listing-main, sized and spaced exactly as it was under #main. */
+.listing-crumb-slot {
+  display: contents;
+}
+
+/* Left column of the split: crumb bar, then the search header, then the
+   scrolling table. The crumb bar is IN this column, which is the whole point —
+   the pane beside it starts at the top of the window and runs to the bottom,
+   with its own header as the topmost thing on that side. */
 .listing-main {
   flex: 1 1 auto;
   min-width: 0;

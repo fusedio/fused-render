@@ -3,7 +3,7 @@
 //   2. else                      -> fallback metadata card
 // No file-type checks live in the shell — html arrives through stat.templates
 // like everything else, via the "_render" sentinel (SPEC PT-12).
-import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import {
   getDeployStatus,
@@ -42,6 +42,7 @@ import {
   effectiveActive,
 } from "@platform/lib/mode-visibility";
 import { ModeMenu, OverflowMenu } from "@apps/explorer/BarMenu";
+import { subscribeTopbarSlot, topbarSlot } from "@apps/explorer/topbar-slot";
 import ContextMenu, { type MenuEntry, type MenuItem } from "@platform/ui/ContextMenu";
 import { MenuIcons } from "@platform/ui/MenuIcons";
 import { PromptDialog, ConfirmDialog, nameError } from "@apps/explorer/FsDialogs";
@@ -76,14 +77,13 @@ function Header({ fsPath, stat, children, afterName, onContextMenu }: HeaderProp
 
 // Explorer variant: the second header bar is gone (the name is redundant with
 // the breadcrumb), so the view's actions render into the breadcrumb bar's
-// `#topbar-mode-slot` (Breadcrumb.tsx) via a portal. The slot is a sibling
-// rendered in the same commit as the preview, so it exists by the time this
-// effect runs; keyed remounts on navigation re-find it.
+// `#topbar-mode-slot` (Breadcrumb.tsx) via a portal. The slot node comes from
+// a store rather than a getElementById at mount: over a folder the crumb bar
+// itself portals down into the listing's left column, which rebuilds the slot
+// — and a node captured once would be a detached div from then on
+// (topbar-slot.ts).
 function TopbarActions({ children }: { children: ReactNode }) {
-  const [slot, setSlot] = useState<HTMLElement | null>(null);
-  useEffect(() => {
-    setSlot(document.getElementById("topbar-mode-slot"));
-  }, []);
+  const slot = useSyncExternalStore(subscribeTopbarSlot, topbarSlot, () => null);
   return slot ? createPortal(children, slot) : null;
 }
 

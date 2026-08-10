@@ -230,14 +230,20 @@ export default function Listing({
 
   const base = fsPath.replace(/\/$/, "");
 
-  // Claim the crumb bar's layout zone for as long as this folder view is
-  // mounted: the splits come off the bar and the path `···` renders in the
-  // search row below (see listing/folder-chrome.ts for why the claim is
-  // counted and why it is a store rather than a prop).
+  // Claim the crumb bar for as long as this folder view is mounted: the splits
+  // come off it, the path `···` renders in the search row below, and the bar
+  // itself portals into `crumbSlotRef` — the top of THIS column — so the
+  // preview pane beside it runs the full height of the window (see
+  // listing/folder-chrome.ts).
+  //
+  // A layout effect: the claim moves the bar, and a passive effect would paint
+  // one frame with it still spanning the window before it dropped into place.
+  // Refs are attached before layout effects run, so the slot is there.
   const ownsBarChrome = barChrome && !embedded;
-  useEffect(() => {
+  const crumbSlotRef = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
     if (!ownsBarChrome) return;
-    return claimFolderChrome();
+    return claimFolderChrome(crumbSlotRef.current);
   }, [ownsBarChrome]);
 
   // No "Up" BUTTON beside the search box any more: the crumb strip above is
@@ -947,6 +953,12 @@ export default function Listing({
     <div className="listing">
       <div className="listing-split" ref={splitRef}>
         <div className="listing-main">
+          {/* Where the crumb bar lands over a folder (the claim above). It sits
+              INSIDE the left column, above the search row, so the bar ends at
+              the divider and the pane keeps the whole right-hand column from
+              the top of the window down. `display: contents`, so the bar is a
+              flex item of .listing-main exactly as it was of #main. */}
+          {ownsBarChrome && <div className="listing-crumb-slot" ref={crumbSlotRef} />}
           {/* Embedded (preview pane): no search row — the pane is a glance,
               and the host listing's search/toggle already own that chrome. */}
           {!embedded && (

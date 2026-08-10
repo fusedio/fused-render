@@ -34,7 +34,7 @@ import { isMod } from "@platform/lib/platform";
 import { isOverlayOpen } from "@platform/lib/ui-overlay";
 import { getClipboard, setClipboard } from "@apps/explorer/lib/fs-clipboard";
 import { reconcileOsClipboard } from "@apps/explorer/lib/os-clipboard";
-import { Breadcrumb, StaticBreadcrumb } from "@apps/explorer/Breadcrumb";
+import { BreadcrumbBar, StaticBreadcrumb } from "@apps/explorer/Breadcrumb";
 import Listing from "@apps/explorer/Listing";
 import Preview from "@apps/explorer/Preview";
 import Panel from "@apps/explorer/Panel";
@@ -335,11 +335,12 @@ function StatView({
   return (
     <>
       {/* Only the explorer carries a breadcrumb bar — the app builder and
-          learn render their content directly (no path chrome). */}
+          learn render their content directly (no path chrome). BreadcrumbBar
+          owns the `#breadcrumb` box itself: over a folder it portals the whole
+          bar down into the listing's left column, so it can't be a wrapper
+          rendered here (Breadcrumb.tsx). */}
       {variant === "explorer" && (
-        <div id="breadcrumb">
-          <Breadcrumb fsPath={fsPath} home={home} renderedTitle={renderedTitle} />
-        </div>
+        <BreadcrumbBar fsPath={fsPath} home={home} renderedTitle={renderedTitle} />
       )}
       <div id="content">{content}</div>
     </>

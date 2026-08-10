@@ -1,14 +1,19 @@
-// The bar-zone handover store. The counting is the whole of it, and the
-// counting is exactly what a boolean got wrong: React mounts the incoming view
-// before unmounting the outgoing one, so a folder→folder hop releases the old
-// claim AFTER the new one is made.
+// The crumb-bar handover store. The overlap handling is the whole of it, and
+// the overlap is exactly what a boolean got wrong: React can hold the incoming
+// view and the outgoing one at the same time, so a folder→folder hop may
+// release the old claim AFTER the new one is made.
 import { afterEach, describe, expect, test } from "bun:test";
 import {
   claimFolderChrome,
   folderChromeClaimed,
+  folderChromeSlot,
   resetFolderChrome,
   subscribeFolderChrome,
 } from "./folder-chrome";
+
+// The store only ever holds and compares the node, so a stand-in is enough
+// here — these tests run without a DOM.
+const node = (name: string) => ({ name }) as unknown as HTMLElement;
 
 afterEach(() => resetFolderChrome());
 
@@ -41,6 +46,40 @@ describe("folder chrome claims", () => {
     const other = claimFolderChrome();
     expect(folderChromeClaimed()).toBe(true);
     other();
+  });
+
+  test("no slot until something claims one — the bar stays at shell level", () => {
+    expect(folderChromeSlot()).toBe(null);
+    const release = claimFolderChrome();
+    expect(folderChromeSlot()).toBe(null);
+    release();
+  });
+
+  test("the claim carries the slot the bar portals into", () => {
+    const el = node("left-column");
+    const release = claimFolderChrome(el);
+    expect(folderChromeSlot()).toBe(el);
+    release();
+    expect(folderChromeSlot()).toBe(null);
+  });
+
+  test("during an overlap the NEWEST slot wins, in either commit order", () => {
+    // Incoming mounts first, outgoing then unmounts (folder→folder hop).
+    const outgoing = claimFolderChrome(node("outgoing"));
+    const incomingEl = node("incoming");
+    const incoming = claimFolderChrome(incomingEl);
+    outgoing();
+    expect(folderChromeSlot()).toBe(incomingEl);
+    incoming();
+
+    // Outgoing unmounts first, incoming then mounts (scaffold→resolved swap).
+    const goneEl = node("gone");
+    const gone = claimFolderChrome(goneEl);
+    gone();
+    const nextEl = node("next");
+    const next = claimFolderChrome(nextEl);
+    expect(folderChromeSlot()).toBe(nextEl);
+    next();
   });
 
   test("subscribers hear every change, and unsubscribe stops them", () => {

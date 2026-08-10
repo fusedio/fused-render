@@ -12,7 +12,8 @@
 //
 // Rendered by every view: path crumbs for listing/preview, a static label for
 // the layout modes (LM-11 / TM-9 — ★/update still operate on currentUrl()).
-import React, { useEffect, useRef, useState, useSyncExternalStore } from "react";
+import React, { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
+import { createPortal } from "react-dom";
 import { requestCloneApp } from "@platform/cloud/cloneApp";
 import { navigate, navigateUrl, currentUrl, IS_EMBED } from "@platform/lib/router";
 import { basename } from "@platform/lib/format";
@@ -40,8 +41,10 @@ import { springDisarms } from "@apps/explorer/listing/drag-drop";
 import { cameFromSelParam } from "@apps/explorer/listing/selection";
 import {
   folderChromeClaimed,
+  folderChromeSlot,
   subscribeFolderChrome,
 } from "@apps/explorer/listing/folder-chrome";
+import { publishTopbarSlot, retractTopbarSlot } from "@apps/explorer/topbar-slot";
 import { registerSpring, SPRING_ATTR } from "@apps/explorer/listing/row-drag";
 
 // How long a file drag has to hover a crumb before the listing follows it.
@@ -316,8 +319,16 @@ export function UpdateBookmarkButton() {
 // Portal target for the view's header actions (mode switcher, deploy, "Open as
 // app") — Preview renders into this via TopbarActions. Carries
 // .preview-actions so the existing switcher/button styling applies unchanged.
+// The node is published rather than looked up by id, because the bar relocates
+// under a folder view and the lookup would go stale (topbar-slot.ts).
 function TopbarActionsSlot() {
-  return <div id="topbar-mode-slot" className="crumb-actions preview-actions" />;
+  const ref = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (el) publishTopbarSlot(el);
+    return () => retractTopbarSlot(el);
+  }, []);
+  return <div ref={ref} id="topbar-mode-slot" className="crumb-actions preview-actions" />;
 }
 
 // Split entry (LM-10): two panes side by side (`dir` "row", `,` in the codec)
@@ -371,6 +382,33 @@ async function openUrl(url: string, scheme: string): Promise<void> {
     return;
   }
   pushToast({ msg: `Can't open ${scheme}:// URLs in the explorer`, tone: "error" });
+}
+
+// The crumb bar AND its box, in whichever column it belongs to.
+//
+// Normally that is shell level: `#breadcrumb` is a child of `#main`, above
+// `#content`, spanning the window. Over a FOLDER the listing publishes a slot
+// in its own left column (listing/folder-chrome.ts) and the whole bar portals
+// into it — so the bar ends at the split divider and the preview pane on the
+// right starts at the very top of the window, its own header the first thing
+// in the column. Nothing about the bar's markup or styling changes; only where
+// it hangs.
+//
+// A portal, not a prop, for the reason the claim store exists at all: whether
+// the content resolves to a listing is decided several levels below the bar,
+// after this component has rendered.
+export function BreadcrumbBar(props: {
+  fsPath: string;
+  home?: string;
+  renderedTitle?: string | null;
+}) {
+  const slot = useSyncExternalStore(subscribeFolderChrome, folderChromeSlot, () => null);
+  const bar = (
+    <div id="breadcrumb">
+      <Breadcrumb {...props} />
+    </div>
+  );
+  return slot ? createPortal(bar, slot) : bar;
 }
 
 export function Breadcrumb({
