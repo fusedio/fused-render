@@ -549,6 +549,28 @@
   flex: 1 1 auto;
   min-height: 0;
   overflow: auto;
+  /* Positioning context for the rubber-band rectangle below — which is what
+     makes the marquee's content coordinates (scroll offset included) the
+     coordinates it is laid out in, with no conversion on every frame. */
+  position: relative;
+}
+
+/* Rubber-band selection (listing/useMarquee). A translucent accent wash inside
+   a hairline of the same colour: it has to read over both plain and .selected
+   rows while the rows themselves stay legible underneath it, which a solid fill
+   or a heavier border does not. Never a drop target or a hover surface, so it
+   takes no pointer events — the pointer belongs to the drag that is painting
+   it. */
+.listing-marquee {
+  position: absolute;
+  /* Above the rows (positioned beats static) but BELOW the sticky header,
+     which holds z-index 1 — a band swept up to the top of a long listing must
+     pass under the column headings, not paint over them. */
+  z-index: 0;
+  pointer-events: none;
+  border: 1px solid var(--accent);
+  background: rgba(var(--accent-rgb), 0.12);
+  border-radius: 2px;
 }
 
 /* The list's floor: with the pane on, flexbox must refuse to shrink the table

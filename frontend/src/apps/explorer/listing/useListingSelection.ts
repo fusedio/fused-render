@@ -111,6 +111,12 @@ export function useListingSelection({
   // (see selParam). And only the LEAD: `sel.paths` changing without the lead
   // moving (a Shift-range growing, a Select All) writes nothing.
   //
+  // The debounce is also what keeps a RUBBER-BAND DRAG off the address bar: a
+  // sweep moves the lead on nearly every frame, and each move re-arms the timer
+  // rather than adding a write — so a marquee spends ONE replaceState, when it
+  // settles, however long the drag was. No separate "commit at the end" step is
+  // needed (and one would be a second place deciding when the URL is written).
+  //
   // This param has been here before and was removed for a real reason: it wrote
   // on EVERY arrow-key press, and browsers cap history.replaceState (~100 /
   // 30s). The cap is why the write is debounced now rather than immediate — the
@@ -180,6 +186,29 @@ export function useListingSelection({
       const paths = rangeBetween(navRowsRef.current, anchor, path);
       if (!paths.length) return prev;
       return { paths, anchor, lead: path };
+    });
+
+  // Set the selection to exactly these paths — the rubber-band marquee's
+  // mutator, and the only one that hands over a whole set at once (a sweep has
+  // no per-row gesture to build one from).
+  //
+  // Anchor and lead follow the swept RANGE rather than the pointer: the first
+  // path is where the range starts and the last is where it ends, so a Shift+
+  // arrow afterwards extends from the end of the sweep like it would from any
+  // other selection. The paths arrive in rendered order (marqueeHits), with an
+  // additive sweep's pre-existing selection in front of them.
+  //
+  // Identity-checked, because this runs on every pointermove of a drag: a sweep
+  // that crosses a row's interior produces the same set frame after frame, and
+  // re-setting it would re-render the table (and re-arm the `?sel=` debounce)
+  // for nothing.
+  const selectPaths = (paths: string[]) =>
+    setSel((prev) => {
+      if (!paths.length) return prev.paths.length ? EMPTY_SELECTION : prev;
+      if (prev.paths.length === paths.length && prev.paths.every((p, i) => p === paths[i])) {
+        return prev;
+      }
+      return { paths, anchor: paths[0], lead: paths[paths.length - 1] };
     });
 
   const selectAllRows = () =>
@@ -423,6 +452,7 @@ export function useListingSelection({
     selectedPath,
     selectedSet,
     selectOnly,
+    selectPaths,
     toggleSelected,
     extendTo,
     pendingSelectRef,

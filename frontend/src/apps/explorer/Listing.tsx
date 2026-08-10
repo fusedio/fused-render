@@ -20,6 +20,8 @@
 //   useFileOps.ts          file operations + context menus + dialogs
 //   drag-drop.ts           what a drag carries + which drops are legal (pure)
 //   useRowDrag.ts          the drag/drop handlers rows + background hang off
+//   marquee.ts             rubber-band geometry: box, hits, auto-scroll (pure)
+//   useMarquee.ts          the marquee's pointer drag + edge auto-scroll
 //   shortcut-chord.ts       which chord means which action (pure)
 //   useListingShortcuts.ts file-op keyboard chords
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
@@ -56,6 +58,7 @@ import {
   selectionClaimed,
 } from "@apps/explorer/listing/selection";
 import { useRowDrag } from "@apps/explorer/listing/useRowDrag";
+import { useMarquee } from "@apps/explorer/listing/useMarquee";
 import { useDirListing } from "@apps/explorer/listing/useDirListing";
 import { useWalkSearch } from "@apps/explorer/listing/useWalkSearch";
 import { useListingSelection } from "@apps/explorer/listing/useListingSelection";
@@ -261,6 +264,7 @@ export default function Listing({
     selectedPath,
     selectedSet,
     selectOnly,
+    selectPaths,
     toggleSelected,
     extendTo,
     pendingSelectRef,
@@ -469,6 +473,16 @@ export default function Listing({
     rowCtxByPath,
     selectOnly,
     onMove: doMove,
+  });
+
+  // Rubber-band selection from the listing's empty space. It shares the ONE
+  // selection model with clicks and the keyboard (selectPaths above) — there is
+  // no parallel store to keep in step and no second `?sel=` writer.
+  const { onPointerDown: onMarqueePointerDown, box: marquee } = useMarquee({
+    scrollRef,
+    navRows,
+    selectedPaths: sel.paths,
+    selectPaths,
   });
 
   useListingShortcuts({
@@ -936,6 +950,10 @@ export default function Listing({
               (backgroundActive ? " drop-into" : "")
             }
             {...backgroundDrag}
+            /* A press on the empty space below the rows starts a rubber band;
+               a press on a row starts a move-drag instead, and a press that
+               barely moves is still the click it always was (useMarquee). */
+            onPointerDown={onMarqueePointerDown}
             /* No onClick here: clicking the empty area below the rows does
                NOT deselect. Finder's rule, and it cost more than it bought
                once the preview pane arrived — a stray click anywhere in the
@@ -1010,6 +1028,21 @@ export default function Listing({
               </thead>
               <tbody>{body}</tbody>
             </table>
+            {/* The rubber band itself. Absolutely positioned inside the
+                scroller, so its CONTENT coordinates (useMarquee) are already
+                the coordinates it is laid out in and it scrolls with the rows
+                during an edge auto-scroll. */}
+            {marquee && (
+              <div
+                className="listing-marquee"
+                style={{
+                  left: marquee.left,
+                  top: marquee.top,
+                  width: marquee.right - marquee.left,
+                  height: marquee.bottom - marquee.top,
+                }}
+              />
+            )}
           </div>
         </div>
         {pane.on && (
