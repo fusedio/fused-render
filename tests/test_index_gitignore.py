@@ -104,6 +104,25 @@ def test_a_query_filtered_response_is_never_cached(tmp_path, monkeypatch):
     assert "proj/a.py" in [e["rel"] for e in full["entries"]]
 
 
+def test_a_truncated_response_is_never_cached(tmp_path, monkeypatch):
+    """A capped payload is a PREFIX of the corpus, not the corpus. Caching it
+    under the generation key would serve that prefix to the next full-corpus
+    request for the same generation — which reports `truncated` from its own
+    fresh payload, so it would claim a complete corpus while handing back the
+    short list."""
+    _fresh_cache(monkeypatch)
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    (proj / ".gitignore").write_text("*.log\n", encoding="utf-8")
+    capped = _out(str(tmp_path), ["proj/.gitignore", "proj/a.log"])
+    capped["truncated"] = True
+    filter_corpus(capped)
+    full = filter_corpus(_out(str(tmp_path), [
+        "proj/.gitignore", "proj/a.log", "proj/a.py"]))
+    assert "proj/a.py" in [e["rel"] for e in full["entries"]]
+    assert full["total"] == len(full["entries"])
+
+
 def test_nested_markers_defer_to_the_outermost(tmp_path, monkeypatch):
     """An inner .gitignore is cascaded by its ancestor's oracle; only the
     outermost marker gets an oracle, and BOTH levels' rules still apply."""

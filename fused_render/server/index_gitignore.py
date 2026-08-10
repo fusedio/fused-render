@@ -49,11 +49,17 @@ def filter_corpus(out: dict, cacheable: bool = True) -> dict:
     Only a covered response with entries is touched; `total` is recomputed
     and `truncated` preserved (the cap was applied to the unfiltered set, so
     "there was more" stays true). The caller passes `cacheable=False` for a
-    server-side-filtered query (`q`): its entry list is a subset, and the
-    cache holds only the whole-corpus answer the explorer asks for."""
+    server-side-filtered query (`q`) or a capped `limit`: either entry list is
+    a SUBSET, and the cache holds only the whole-corpus answer the explorer
+    asks for. A truncated payload is refused here on the same grounds, since
+    the cap can also come from MAX_CORPUS rather than the caller — the cache
+    is keyed on the generation alone, so a stored subset would be handed to
+    the next full request under a `truncated` flag taken from its own fresh
+    payload: a short list presented as the complete corpus."""
     root = out.get("root") or ""
     if not out.get("covered") or not out.get("entries") or not root:
         return out
+    cacheable = cacheable and not out.get("truncated")
     updated = out.get("updated")
     if cacheable:
         with _cache_lock:

@@ -235,6 +235,23 @@ def test_saving_the_config_answers_in_the_same_shape_as_reading_it(home, tmp_pat
     assert saved["configured_roots"] == read["configured_roots"] == []
 
 
+def test_a_limited_search_never_touches_the_corpus_cache(home, tmp_path, monkeypatch):
+    """The cache is keyed on (root, generation) only, so a small-limit request
+    would store its PREFIX of the corpus and the next full request for the
+    same generation would be served that prefix — while reporting `truncated`
+    from its own fresh payload, i.e. claiming the short list was complete.
+    Only a genuine whole-corpus request may take part."""
+    seen = []
+    monkeypatch.setattr(index_router, "filter_corpus",
+                        lambda out, cacheable=True: seen.append(cacheable) or out)
+    client = _client(tmp_path)
+    client.get(f"/api/index/search?root={tmp_path}&limit=5")
+    client.get(f"/api/index/search?root={tmp_path}")
+    client.get(f"/api/index/search?root={tmp_path}&limit={index_router.MAX_CORPUS}")
+    client.get(f"/api/index/search?root={tmp_path}&q=x")
+    assert seen == [False, True, True, False]
+
+
 def test_config_rejects_a_non_list(home, tmp_path):
     resp = _client(tmp_path).post("/api/index/config", json={"roots": "nope"},
                                   headers={"X-Fused": "1"})

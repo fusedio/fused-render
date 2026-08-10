@@ -223,7 +223,11 @@ def api_index_search(root: str = Query(default=""), q: str = Query(default=""),
     if not root.strip():
         return _error("'root' is required")
     out = index_search(load_config(), root, q=q, limit=limit)
-    out = filter_corpus(out, cacheable=not q.strip())
+    # Only a whole-corpus request may use the filter cache: it is keyed on the
+    # index generation alone, so a narrowed request (`q`, or a caller-supplied
+    # cap) would both be served the wrong list and store its own subset for
+    # everyone else on that generation.
+    out = filter_corpus(out, cacheable=not q.strip() and limit >= MAX_CORPUS)
     return {"ok": True, **out}
 
 
