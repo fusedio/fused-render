@@ -1625,7 +1625,7 @@ def test_a_worker_that_died_unreaped_is_not_reported_alive(tmp_path, monkeypatch
     assert envinstall._pid_alive(dead.pid) is False, "a zombie is not alive"
     prog = envinstall.progress(key)
     assert prog["done"] is True, "a dead worker must end the poll"
-    assert "unexpectedly" in prog["error"]
+    assert "without finishing" in prog["error"]
 
 
 @pytest.mark.skipif(os.name == "nt", reason="waitpid reaping is POSIX-only")
@@ -1671,7 +1671,7 @@ def test_a_dead_worker_is_reported_as_finished_not_pending(tmp_path, monkeypatch
                    "error": None, "pid": 2 ** 31 - 1, "ts": time.time()}, f)
     prog = envinstall.progress(key)
     assert prog["done"] is True
-    assert "unexpectedly" in prog["error"]
+    assert "without finishing" in prog["error"]
 
 
 @requires_fused
@@ -2990,8 +2990,10 @@ def test_a_crash_message_says_how_far_it_got_and_whether_the_log_is_empty(tmp_pa
     key = "abcdefabcdef0123"
     d = envinstall.progress_dir(key)
     os.makedirs(d, exist_ok=True)
+    # 2**31-1 is above every platform's pid_max, so it cannot collide with a
+    # live process and skip the crash path (the sibling tests' convention).
     record = {"stage": "install", "pct": 25, "detail": "resolving mlx-lm", "done": False,
-              "error": None, "pid": 999999, "ts": time.time()}
+              "error": None, "pid": 2 ** 31 - 1, "ts": time.time()}
     with open(os.path.join(d, "progress.json"), "w") as f:
         json.dump(record, f)
 
