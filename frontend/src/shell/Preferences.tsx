@@ -1,6 +1,8 @@
 // Preferences page (SPEC §20) — the `/view/_prefs` sentinel route, entered
 // from the sidebar's bottom-left gear. Two tabs (D125):
-//   Render preferences — Appearance, Call log (capture/redaction/retention for
+//   Render preferences — Appearance, Default model (which Claude model the
+//     chat and fused.ai reach for when nothing else has said), Call log
+//     (capture/redaction/retention for
 //     fused_render/calls.py), Deploy to Fused account (the opt-in Deploy-button
 //     toggle), Accessibility, and last Execution engine. Always present; the
 //     default (clean URL). No Tour button — the tour still runs itself on a
@@ -13,6 +15,10 @@
 //     its own `/view/_account` page, folded in once it stopped being a
 //     separate sidebar entry). Shown only once Deploy is enabled — that's
 //     the only reason this app cares about a Fused account.
+// Deliberately NOT a third tab: the Claude Config panel (apps/claude_config)
+// briefly sat here, and a settings page hosting a second settings app — with
+// its own section nav and scroll containers — inside one of its tabs never read
+// as one page. It has its own sidebar routes now (shell/ShellSidebar).
 // The active tab lives in the URL (`?tab=account`), same pattern as
 // Templates' bindings/library tabs.
 // Template bindings live in the dedicated /view/_templates view.
@@ -22,6 +28,7 @@ import {
   putCallsEnabled,
   putCallsParamsMode,
   putCallsRetentionDays,
+  putDefaultModel,
   putDeployEnabled,
   putEnginePref,
   putReaderEnabled,
@@ -33,8 +40,9 @@ import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { SkeletonLines } from "@platform/ui/Skeleton";
 import { useThemePref } from "@platform/lib/theme";
 import { AccountPanel } from "@shell/Account";
+import { IndexingPanel } from "@shell/Indexing";
 
-type PrefsTab = "render" | "account";
+type PrefsTab = "render" | "indexing" | "account";
 
 // The one section on this page that is deliberately NOT server-backed. Every
 // other control here round-trips /api/prefs (shell/prefs.py); Appearance is
@@ -263,6 +271,62 @@ function AccessibilitySection({
   );
 }
 
+// Human labels for the short model names the server accepts. Keyed off the
+// server's `choices` list rather than hardcoding the options, so the page can
+// never offer a value a PUT would reject — an unknown name still renders (as
+// itself) instead of vanishing from a control the user has one of selected.
+const MODEL_LABELS: Record<string, string> = {
+  "": "Automatic",
+  fable: "Fable",
+  opus: "Opus",
+  sonnet: "Sonnet",
+  haiku: "Haiku (fastest)",
+};
+
+function ModelSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs) => void }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  return (
+    <section className="prefs-section">
+      <h2>Default model</h2>
+      <p className="deploy-muted">
+        Which Claude model this app reaches for when nothing else has said. It preselects the
+        chat's model chip and picks the model behind <code>fused.ai</code>. A model chosen in a
+        chat, or one a page passes to <code>fused.ai</code> itself, still wins — this only
+        answers when nobody asked. <b>Automatic</b> leaves each to its own default.
+      </p>
+      <div className="prefs-field">
+        <label>
+          Model{" "}
+          <select
+            value={prefs.model.default}
+            disabled={busy}
+            onChange={async (e) => {
+              const next = e.target.value as Prefs["model"]["default"];
+              setBusy(true);
+              setError(null);
+              try {
+                onChange(await putDefaultModel(next));
+              } catch (err) {
+                setError((err as Error).message);
+              } finally {
+                setBusy(false);
+              }
+            }}
+          >
+            {prefs.model.choices.map((m) => (
+              <option key={m} value={m}>
+                {MODEL_LABELS[m] ?? m}
+              </option>
+            ))}
+          </select>
+        </label>
+      </div>
+      {error && <ErrorBanner>{error}</ErrorBanner>}
+    </section>
+  );
+}
+
 // The retention window as the "Currently keeping ..." line says it, matching
 // the select's own option labels so the forced value reads like a choice.
 function describeRetention(days: number): string {
@@ -446,9 +510,11 @@ export default function Preferences() {
   // here directly on the account tab. Falls back to "render" whenever the
   // account tab wouldn't be offered (Deploy not enabled) rather than showing
   // a tab with no button pointing at it.
+  const requested = new URLSearchParams(location.search).get("tab");
   const requestedTab: PrefsTab =
-    new URLSearchParams(location.search).get("tab") === "account" ? "account" : "render";
-  const tab: PrefsTab = requestedTab === "account" && prefs?.deploy.enabled ? "account" : "render";
+    requested === "account" ? "account" : requested === "indexing" ? "indexing" : "render";
+  const tab: PrefsTab =
+    requestedTab === "account" && !prefs?.deploy.enabled ? "render" : requestedTab;
   const setTab = (next: PrefsTab) => {
     const params = new URLSearchParams(location.search);
     if (next === "render") params.delete("tab");
@@ -474,6 +540,17 @@ export default function Preferences() {
             >
               Render preferences
             </button>
+            {/* Indexing — the file index behind the explorer's search. Always
+                present: unlike the account tab it needs no opt-in, and a user
+                looking for "why is search finding/missing this" has nowhere
+                else to go. */}
+            <button
+              type="button"
+              className={"prefs-tab" + (tab === "indexing" ? " active" : "")}
+              onClick={() => setTab("indexing")}
+            >
+              Indexing
+            </button>
             {prefs.deploy.enabled && (
               <button
                 type="button"
@@ -488,6 +565,7 @@ export default function Preferences() {
             {tab === "render" && (
               <>
                 <AppearanceSection />
+                <ModelSection prefs={prefs} onChange={setPrefs} />
                 <CallLogSection prefs={prefs} onChange={setPrefs} />
                 <DeploymentsSection
                   prefs={prefs}
@@ -502,6 +580,7 @@ export default function Preferences() {
                 <EngineSection prefs={prefs} onChange={setPrefs} />
               </>
             )}
+            {tab === "indexing" && <IndexingPanel />}
             {tab === "account" && prefs.deploy.enabled && <AccountPanel />}
           </div>
         </>

@@ -44,6 +44,9 @@ export function shortcutGroups(): ShortcutGroup[] {
     { group: "Navigation", keys: ["PageUp"], label: "Move selection up a page" },
     { group: "Navigation", keys: ["PageDown"], label: "Move selection down a page" },
     { group: "Navigation", keys: [ENTER_LABEL], label: "Open selected" },
+    // The mouse half of the one press model (listing/selection rowPressAction):
+    // a single click only ever selects, so the sheet has to say what opens.
+    { group: "Navigation", keys: ["Double-click"], label: "Open" },
     { group: "Navigation", keys: [MOD_LABEL, "↓"], label: "Open selected" },
     { group: "Navigation", keys: [MOD_LABEL, "↑"], label: "Go to parent folder" },
     { group: "Navigation", keys: [MOD_LABEL, "["], label: "Back in history" },
@@ -65,6 +68,7 @@ export function shortcutGroups(): ShortcutGroup[] {
     { group: "Selection", keys: [SHIFT_LABEL, "End"], label: "Extend selection to last item" },
     { group: "Selection", keys: [SHIFT_LABEL, "PageUp"], label: "Extend selection up a page" },
     { group: "Selection", keys: [SHIFT_LABEL, "PageDown"], label: "Extend selection down a page" },
+    { group: "Selection", keys: ["Click"], label: "Select" },
     { group: "Selection", keys: [SHIFT_LABEL, "Click"], label: "Select range" },
     { group: "Selection", keys: [MOD_LABEL, "Click"], label: "Add or remove from selection" },
     // Escape is ranked: App's capture-phase handler cancels a pending copy/cut

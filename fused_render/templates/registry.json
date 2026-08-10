@@ -4,27 +4,23 @@
     "structure",
     "h3",
     "claude",
-    "versions",
-    "git",
-    "history",
-    "geometry_editor"
+    "geometry_editor",
+    "history"
   ],
   ".csv": [
     "duckdb",
     "excel",
     "code",
     "claude",
-    "versions",
-    "git",
-    "reader"
+    "reader",
+    "history"
   ],
   ".tsv": [
     "duckdb",
     "code",
     "claude",
-    "versions",
-    "git",
-    "reader"
+    "reader",
+    "history"
   ],
   ".xlsx": [
     "xlsx",
@@ -40,7 +36,6 @@
     "slides"
   ],
   ".*.json": [
-    "history",
     "tree",
     "code"
   ],
@@ -49,23 +44,20 @@
     "code",
     "duckdb",
     "claude",
-    "versions",
-    "git",
-    "reader"
+    "reader",
+    "history"
   ],
   ".jsonl": [
     "code",
     "duckdb",
     "claude",
-    "versions",
-    "git",
-    "reader"
+    "reader",
+    "history"
   ],
   ".ipynb": [
     "notebook",
     "claude",
-    "versions",
-    "git"
+    "history"
   ],
   ".calls.jsonl": [
     "log_studio",
@@ -83,9 +75,8 @@
     "code",
     "duckdb",
     "claude",
-    "versions",
-    "git",
-    "reader"
+    "reader",
+    "history"
   ],
   ".csv.gz": [
     "duckdb",
@@ -133,80 +124,70 @@
     "tree",
     "code",
     "claude",
-    "versions",
-    "git",
-    "geometry_editor"
+    "geometry_editor",
+    "history"
   ],
   ".md": [
     "markdown",
     "code",
     "claude",
-    "versions",
-    "git",
-    "reader"
+    "reader",
+    "history"
   ],
   ".markdown": [
     "markdown",
     "code",
     "claude",
-    "versions",
-    "git",
-    "reader"
+    "reader",
+    "history"
   ],
   ".tex": [
     "latex",
     "code",
     "claude",
-    "versions",
-    "git",
-    "reader"
+    "reader",
+    "history"
   ],
   ".ltx": [
     "latex",
     "code",
     "claude",
-    "versions",
-    "git",
-    "reader"
+    "reader",
+    "history"
   ],
   ".latex": [
     "latex",
     "code",
     "claude",
-    "versions",
-    "git",
-    "reader"
+    "reader",
+    "history"
   ],
   ".svg": [
     "image",
     "code",
     "claude",
-    "versions",
-    "git"
+    "history"
   ],
   ".png": [
     "image",
     "photos",
     "pano",
     "claude",
-    "versions",
-    "git"
+    "history"
   ],
   ".jpg": [
     "image",
     "photos",
     "pano",
     "claude",
-    "versions",
-    "git"
+    "history"
   ],
   ".jpeg": [
     "image",
     "photos",
     "pano",
     "claude",
-    "versions",
-    "git"
+    "history"
   ],
   ".gif": [
     "image",
@@ -268,200 +249,171 @@
     "code",
     "api",
     "claude",
-    "versions",
-    "git",
-    "reader"
+    "reader",
+    "history"
   ],
   ".js": [
     "code",
     "claude",
-    "versions",
-    "git",
-    "reader"
+    "reader",
+    "history"
   ],
   ".ts": [
     "code",
     "claude",
-    "versions",
-    "git",
-    "reader"
+    "reader",
+    "history"
   ],
   ".tsx": [
     "code",
     "claude",
-    "versions",
-    "git",
-    "reader"
+    "reader",
+    "history"
   ],
   ".jsx": [
     "code",
     "claude",
-    "versions",
-    "git",
-    "reader"
+    "reader",
+    "history"
   ],
   ".cjs": [
     "code",
     "claude",
-    "versions",
-    "git",
-    "reader"
+    "reader",
+    "history"
   ],
   ".mjs": [
     "code",
     "claude",
-    "versions",
-    "git",
-    "reader"
+    "reader",
+    "history"
   ],
   ".cts": [
     "code",
     "claude",
-    "versions",
-    "git",
-    "reader"
+    "reader",
+    "history"
   ],
   ".mts": [
     "code",
     "claude",
-    "versions",
-    "git",
-    "reader"
+    "reader",
+    "history"
   ],
   ".sh": [
     "code",
     "claude",
-    "versions",
-    "git",
-    "reader"
+    "reader",
+    "history"
   ],
   ".zsh": [
     "code",
     "claude",
-    "versions",
-    "git",
-    "reader"
+    "reader",
+    "history"
   ],
   ".fish": [
     "code",
     "claude",
-    "versions",
-    "git",
-    "reader"
+    "reader",
+    "history"
   ],
   ".ps1": [
     "code",
     "claude",
-    "versions",
-    "git",
-    "reader"
+    "reader",
+    "history"
   ],
   ".csh": [
     "code",
     "claude",
-    "versions",
-    "git",
-    "reader"
+    "reader",
+    "history"
   ],
   ".zsh-theme": [
     "code",
     "claude",
-    "versions",
-    "git",
-    "reader"
+    "reader",
+    "history"
   ],
   ".vim": [
     "code",
     "claude",
-    "versions",
-    "git",
-    "reader"
+    "reader",
+    "history"
   ],
   ".yaml": [
     "code",
     "claude",
-    "versions",
-    "git",
-    "reader"
+    "reader",
+    "history"
   ],
   ".yml": [
     "code",
     "claude",
-    "versions",
-    "git",
-    "reader"
+    "reader",
+    "history"
   ],
   ".toml": [
     "canvas",
     "code",
     "claude",
-    "versions",
-    "git",
-    "reader"
+    "reader",
+    "history"
   ],
   ".ini": [
     "code",
     "claude",
-    "versions",
-    "git",
-    "reader"
+    "reader",
+    "history"
   ],
   ".cfg": [
     "code",
     "claude",
-    "versions",
-    "git",
-    "reader"
+    "reader",
+    "history"
   ],
   ".conf": [
     "code",
     "claude",
-    "versions",
-    "git",
-    "reader"
+    "reader",
+    "history"
   ],
   ".tf": [
     "code",
     "claude",
-    "versions",
-    "git",
-    "reader"
+    "reader",
+    "history"
   ],
   ".hcl": [
     "code",
     "claude",
-    "versions",
-    "git",
-    "reader"
+    "reader",
+    "history"
   ],
   ".css": [
     "code",
     "claude",
-    "versions",
-    "git",
-    "reader"
+    "reader",
+    "history"
   ],
   ".txt": [
     "code",
     "claude",
-    "versions",
-    "git",
-    "reader"
+    "reader",
+    "history"
   ],
   ".log": [
     "log_studio",
     "code",
     "claude",
-    "versions",
-    "git",
-    "reader"
+    "reader",
+    "history"
   ],
   ".html": [
     "_render",
     "code",
     "claude",
-    "versions",
-    "git",
     "reader",
     "history"
   ],
@@ -469,9 +421,8 @@
     "_render",
     "code",
     "claude",
-    "versions",
-    "git",
-    "reader"
+    "reader",
+    "history"
   ],
   ".tif": [
     "geotiff",
@@ -496,10 +447,10 @@
     "_listing",
     "app",
     "claude",
-    "versions",
     "git",
     "graph",
-    "zarr_aoi"
+    "zarr_aoi",
+    "history"
   ],
   ".zarr/": [
     "zarr_aoi",
@@ -579,6 +530,13 @@
     "usd",
     "code"
   ],
+  ".dxf": [
+    "autocad_viewer",
+    "code"
+  ],
+  ".dwg": [
+    "autocad_viewer"
+  ],
   ".zip": [
     "zip"
   ],
@@ -653,8 +611,7 @@
     "plist",
     "code",
     "claude",
-    "versions",
-    "git",
-    "reader"
+    "reader",
+    "history"
   ]
 }

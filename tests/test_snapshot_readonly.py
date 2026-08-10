@@ -4,19 +4,19 @@ mutation endpoint refuses it.
 WHY THE GUARD IS HERE AND NOT IN A TEMPLATE. A snapshot tree is `git archive`
 output: the materialised bytes of one commit, extracted so a preview can be
 framed. It is not a place a user's edit can mean anything — the real file is
-elsewhere, the commit is immutable, and `versions.py::_snapshot` REUSES an
+elsewhere, the commit is immutable, and `history.py::_snapshot` REUSES an
 extracted tree whenever `.fused-snapshot-complete` exists, so a write that lands
 there is served back as that revision's content from then on. The repro this
-closes: open `notes.md`, pick an old commit, and the `versions` template frames
+closes: open `notes.md`, pick an old commit, and the `history` template frames
 the snapshot through that file's own default view — which since this branch bound
-`versions` to file targets is `code` or `markdown`, both of which call
+`history` to file targets is `code` or `markdown`, both of which call
 `fused.writeFile`. Cmd+S SUCCEEDED, the real file was untouched, the edit was
 lost, and the "historical" revision was quietly rewritten.
 
 Fixing only the framing template would leave the path writable to everything else
 (the explorer's own file ops, an /api/fs/write from any view, a rename). The
 promise "this is history" has to be kept at the mutation boundary, which is the
-posture the rest of the repo already takes: `versions.py` refuses `revert` by
+posture the rest of the repo already takes: `history.py` refuses `revert` by
 target kind rather than trusting the gate to hide the button, and `mount_read_only`
 refuses a read-only mount in every handler rather than once.
 
@@ -39,7 +39,7 @@ from fused_render.shell import storage
 
 @pytest.fixture
 def snap(tmp_path, monkeypatch):
-    """A materialised snapshot tree, exactly as versions.py lays one out."""
+    """A materialised snapshot tree, exactly as history.py lays one out."""
     monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
     root = os.path.join(storage.home_dir(), "app-versions", "abc123def456",
                         "0" * 40)
@@ -116,7 +116,7 @@ def test_delete_inside_a_snapshot_is_refused(snap):
 
 def test_deleting_the_snapshot_root_itself_is_refused(snap):
     """Not just the files IN it: the tree is the record. (Garbage-collecting old
-    snapshots is versions.py's business, not an /api/fs/delete caller's.)"""
+    snapshots is history.py's business, not an /api/fs/delete caller's.)"""
     _refused(fs_mutate._fs_delete({"path": snap}, x_fused="1"))
     assert os.path.isdir(snap)
 

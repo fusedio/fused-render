@@ -1061,7 +1061,7 @@ def main(
 
     The `git` view is commit MANAGEMENT — staging, discarding, stashing,
     committing, branches, push/pull — and draws no History section; the log is
-    the `versions` mode's story, rendered there with a timeline this reader's
+    the `history` mode's story, rendered there with a timeline this reader's
     consumer never had. So the view opts out and the `git log` fork does not
     happen at all on an ordinary open.
 

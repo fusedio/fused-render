@@ -6,6 +6,8 @@
 //   "/explorer/view/<path>"  -> stat it: directory -> listing, file -> preview
 //   "/explorer/embed/<path>" -> chrome-free embed variant
 //   "/learn"                 -> learn content, chrome-free (variant "learn")
+//   "/claude-config"         -> Claude config panel (native, no mount)
+//   "/claude-md"             -> CLAUDE.md file explorer (the same app)
 //   "/preferences|/templates|/mounts" -> settings pages
 // Legacy pre-rename urls (/view/..., /embed/..., /view/_prefs-family) are
 // rewritten in place at boot by router.ts before any of this runs.
@@ -34,7 +36,7 @@ import { isMod } from "@platform/lib/platform";
 import { isOverlayOpen } from "@platform/lib/ui-overlay";
 import { getClipboard, setClipboard } from "@apps/explorer/lib/fs-clipboard";
 import { reconcileOsClipboard } from "@apps/explorer/lib/os-clipboard";
-import { Breadcrumb, StaticBreadcrumb } from "@apps/explorer/Breadcrumb";
+import { BreadcrumbBar, StaticBreadcrumb } from "@apps/explorer/Breadcrumb";
 import Listing from "@apps/explorer/Listing";
 import Preview from "@apps/explorer/Preview";
 import Panel from "@apps/explorer/Panel";
@@ -46,6 +48,7 @@ import Apps from "@apps/builder/Apps";
 import FilesHome from "@apps/explorer/FilesHome";
 import { learnEntryPath } from "@apps/learn";
 import { sessionsEntryPath } from "@apps/sessions";
+import { ClaudeConfig, ClaudeMdPage, useClaudeConfigAvailable } from "@apps/claude_config";
 import BookmarkOpen from "@apps/explorer/BookmarkOpen";
 
 type StatState =
@@ -193,7 +196,14 @@ function LoadingScaffold({ fsPath, isDir, headerless }: { fsPath: string; isDir:
           // provisional: the hint could be stale (file, not dir). Suppress
           // Listing's hard "Failed to list" error while stat resolves — a 404
           // here just means the hint was wrong; stat will paint the file view.
-          <Listing fsPath={fsPath} provisional />
+          // `barChrome` on the scaffold too (same condition as `headerless`):
+          // whenever the nav hint already says "directory" this claims the
+          // bar's layout zone from the first paint, so the splits don't flash
+          // in and out across the scaffold→resolved swap. Only a hinted nav
+          // gets that — open a folder URL directly (or reload) and there is no
+          // `history.state` hint, so no Listing mounts here and the splits do
+          // still show for the length of the stat.
+          <Listing fsPath={fsPath} provisional barChrome={headerless} />
         ) : (
           <div className="preview-resolving">
             <span className="mode-icon-spinner" />
@@ -217,7 +227,7 @@ function LoadingScaffold({ fsPath, isDir, headerless }: { fsPath: string; isDir:
 // modes (`git`, `graph`, `zarr_aoi`). It is a curation of this view,
 // not a divergence from the explorer — every mode listed here behaves in the
 // builder exactly as it does in the explorer for the same folder.
-const APP_MODES = ["app", "claude", "versions"];
+const APP_MODES = ["app", "claude", "history"];
 
 // Stat-backed views (listing/preview): breadcrumb + content under one hook
 // component so useStat only runs when the pathname is a real fs path, not a
@@ -303,7 +313,7 @@ function StatView({
     // it then — a folder must always render something.
     const s = stat.stat;
     if (s.is_dir && s.templates.length === 0) {
-      content = <Listing fsPath={fsPath} />;
+      content = <Listing fsPath={fsPath} barChrome={variant === "explorer"} />;
     } else if (!ready) {
       // Brief; only for files opened with an empty query while the sidecar
       // read resolves. Directories and param/bookmark opens are ready
@@ -328,11 +338,12 @@ function StatView({
   return (
     <>
       {/* Only the explorer carries a breadcrumb bar — the app builder and
-          learn render their content directly (no path chrome). */}
+          learn render their content directly (no path chrome). BreadcrumbBar
+          owns the `#breadcrumb` box itself: over a folder it portals the whole
+          bar down into the listing's left column, so it can't be a wrapper
+          rendered here (Breadcrumb.tsx). */}
       {variant === "explorer" && (
-        <div id="breadcrumb">
-          <Breadcrumb fsPath={fsPath} home={home} renderedTitle={renderedTitle} />
-        </div>
+        <BreadcrumbBar fsPath={fsPath} home={home} renderedTitle={renderedTitle} />
       )}
       <div id="content">{content}</div>
     </>
@@ -377,6 +388,45 @@ function SessionsView({ config, epoch }: { config: Config; epoch: number }) {
     );
   }
   return <StatView key={epoch + ":" + entry} fsPath={entry} epoch={epoch} home="" variant="learn" />;
+}
+
+// /claude-config: the native Claude Config panel. Chrome-free like
+// learn/sessions, but native React — no mount, no StatView; the availability
+// gate mirrors the sidebar entry's, so a direct URL hit while ~/.claude is
+// absent shows an honest empty state instead of a dead panel.
+function ClaudeConfigView() {
+  const available = useClaudeConfigAvailable();
+  return (
+    <div id="content">
+      <div className="cc-page">
+        {available ? (
+          <ClaudeConfig />
+        ) : (
+          <div className="preview-resolving">No Claude Code configuration found (~/.claude).</div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// /claude-md: the CLAUDE.md file explorer, the Claude Config app's second page
+// (apps/claude_config/ClaudeMdPage — it was a section of the panel above until
+// it grew into a page). Same chrome and same availability gate as
+// ClaudeConfigView: the discovery it does runs through the same bridge, so it
+// is available exactly when that is.
+function ClaudeMdView() {
+  const available = useClaudeConfigAvailable();
+  return (
+    <div id="content">
+      <div className="cc-page">
+        {available ? (
+          <ClaudeMdPage />
+        ) : (
+          <div className="preview-resolving">No Claude Code configuration found (~/.claude).</div>
+        )}
+      </div>
+    </div>
+  );
 }
 
 export default function App({ config }: { config: Config }) {
@@ -488,6 +538,8 @@ export default function App({ config }: { config: Config }) {
   const isExplorerHome = pathname === "/explorer";
   const isLearn = pathname === "/learn";
   const isSessions = pathname === "/sessions";
+  const isClaudeConfig = pathname === "/claude-config";
+  const isClaudeMd = pathname === "/claude-md";
   const isBookmark = pathname === "/explorer/view/_bookmark";
   // App-builder route: /apps/<tag>/<name> resolves to the app folder under
   // the workspace — a pure codec, no server lookup (router.fsPathFromAppRoute).
@@ -529,7 +581,7 @@ export default function App({ config }: { config: Config }) {
   // letting it fall through to the "Unrecognized URL" branch for a frame.
   const linkedResolving = linkedName !== null && linkedPath === null;
   const isSentinel =
-    isPanel || isTabs || isPrefs || isTemplates || isMounts || isApps || isExplorerHome || isLearn || isSessions || isBookmark;
+    isPanel || isTabs || isPrefs || isTemplates || isMounts || isApps || isExplorerHome || isLearn || isSessions || isClaudeConfig || isClaudeMd || isBookmark;
   const fsPath = isSentinel || appFsPath ? null : fsPathFromLocation();
   // Browsing to a `.bookmark` file in the explorer opens it like a Finder
   // double-click (SB-9): same component as the `_bookmark` sentinel, fed the
@@ -555,6 +607,10 @@ export default function App({ config }: { config: Config }) {
                     ? "Learn"
                     : isSessions
                       ? "Sessions"
+                      : isClaudeConfig
+                      ? "Claude Config"
+                      : isClaudeMd
+                      ? "CLAUDE.md Files"
                       : isBookmark || bookmarkFile
                       ? "Bookmark"
                       : fsPath || appFsPath
@@ -657,6 +713,12 @@ export default function App({ config }: { config: Config }) {
   } else if (isSessions) {
     // Claude Sessions inbox, same chrome-free treatment as learn.
     main = <SessionsView key={epoch} config={config} epoch={epoch} />;
+  } else if (isClaudeConfig) {
+    // Claude Config panel — native, no mount (see ClaudeConfigView).
+    main = <ClaudeConfigView key={epoch} />;
+  } else if (isClaudeMd) {
+    // CLAUDE.md file explorer — the same app's second page (see ClaudeMdView).
+    main = <ClaudeMdView key={epoch} />;
   } else if (appFsPath) {
     // App builder: the app folder rendered in one of APP_MODES, no breadcrumb
     // (StatView variant "app" carries its own #content).

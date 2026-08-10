@@ -41,6 +41,7 @@ from fused_render.server.common import (
     _forced_engine,
 )
 from fused_render.server.routers.apps import router as apps_router
+from fused_render.server.routers.claude_config import router as claude_config_router
 from fused_render.server.routers.claude_sessions import router as claude_sessions_router
 from fused_render.server.routers.clipboard import router as clipboard_router
 from fused_render.server.routers.config import router as config_router
@@ -48,6 +49,7 @@ from fused_render.server.routers.env import router as env_router
 from fused_render.server.routers.export import router as export_router
 from fused_render.server.fs_mutate import router as fs_mutate_router
 from fused_render.server.routers.fs_read import router as fs_read_router
+from fused_render.server.routers import index as index_routes
 from fused_render.server.routers.render import router as render_router
 from fused_render.server.routers.run import router as run_router
 from fused_render.server.routers.search import router as search_router
@@ -328,6 +330,11 @@ def create_app(start_dir: str) -> FastAPI:
     # Claude Code project folders for the Explorer homepage's "Claude
     # sessions" tab (routers/claude_sessions.py) — read-only, no auth guard.
     app.include_router(claude_sessions_router)
+    # Claude Code CONFIG editing for the Preferences page's "Claude config" tab
+    # (routers/claude_config.py): one dispatch POST over the
+    # fused_render/claude_config/ feature modules, plus a cheap availability
+    # probe. Its POSTs mutate, so they carry the D3 X-Fused guard.
+    app.include_router(claude_config_router)
     # GitHub deep links (SPEC §26, D110): GET /clone confirm page +
     # POST /api/clone sparse-clone into ~/Documents/Fused. deeplink.py never
     # imports server, so the include stays acyclic like shell/*.
@@ -378,5 +385,18 @@ def create_app(start_dir: str) -> FastAPI:
     # local-machine seam that lets a Copy here paste in Finder/Explorer and a
     # copy there paste here (SPEC §3).
     app.include_router(clipboard_router)
+    # The filesystem metadata index (fused_render/index/): scan control,
+    # status polling, stats/lookup, and the in-folder corpus the explorer's
+    # search reads. Engine-side there is no HTTP; this router is the adapter.
+    app.include_router(index_routes.router)
+
+    # Keep the index warm. The scan is a detached worker, so this hook only
+    # spawns it — it cannot delay serving — and it debounces on the last scan
+    # of each root, so a reload loop does not queue scan after scan. First boot
+    # takes seconds over a whole home; while it runs, the explorer's search
+    # falls back to the live walk with no error state (SPEC server-api.md §2).
+    @app.on_event("startup")
+    async def _startup_index_scan():
+        await index_routes.startup_scan(start_dir)
 
     return app

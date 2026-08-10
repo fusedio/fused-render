@@ -6,18 +6,42 @@
   flex-direction: column;
 }
 
+/* THE top-bar height, shared by every strip that can be the first row of a
+   column: the crumb bar, the listing's search row, and the preview pane's
+   header. Over a folder the crumb bar and the pane header are side by side
+   with only the divider between them, so a difference of even a pixel puts a
+   visible step in the line under them. One number, in one place, is the only
+   way that stays true — and the pane header keeps matching the search row in
+   the app-builder variant, which has no crumb bar and starts its columns with
+   those two instead.
+
+   An EXACT height, not a floor. A `min-height` still lets the taller content
+   win — the pane header holds a 28px mode chip and, with 10px of padding and
+   the 1px border under border-box, came out one pixel taller than the crumb
+   bar beside it, which holds only text. One pixel is exactly the step the eye
+   catches on a line that runs the width of the window.
+
+   The budget: 48px, minus the 1px bottom border, minus 8px of padding at each
+   end, leaves 31px of content box — enough for the tallest thing any of the
+   three holds (the search row's 30px input; the bars' 28px controls). Anything
+   taller than 31px needs this number raised, not a local override. */
+:root {
+  --topbar-h: 48px;
+  --topbar-pad-y: 8px;
+}
+
 #breadcrumb {
   flex: 0 0 auto;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 10px;
-  padding: 10px 16px;
+  padding: var(--topbar-pad-y) 16px;
   border-bottom: 1px solid var(--border);
   background: var(--bg-alt);
-  /* Pin to the tallest state (28px control + 10px×2 padding) so the bar can't
-     grow when the portaled mode control lands after stat resolves. */
-  min-height: 48px;
+  /* Exact, so the bar neither grows when the portaled mode control lands after
+     stat resolves nor drifts off the pane header beside it. */
+  height: var(--topbar-h);
   box-sizing: border-box;
 }
 
@@ -169,6 +193,26 @@
 
 #breadcrumb .path-crumb.last.shrink {
   min-width: 28ch;
+}
+
+/* A crumb a file drag is dwelling on: the listing is about to follow it
+   (Breadcrumb's spring loading). The pulse is the whole affordance — a dwell
+   with no feedback is indistinguishable from a stuck drag — and it deliberately
+   does NOT look like a drop target, because dropping on a crumb does nothing.
+   Motion is dropped for reduced-motion; the accent tint still marks the crumb. */
+.path-crumb.spring-armed {
+  color: var(--fg);
+  background: rgba(var(--accent-rgb), 0.16);
+  animation: crumb-spring 0.7s linear;
+}
+
+@keyframes crumb-spring {
+  from {
+    box-shadow: inset 0 0 0 0 rgba(var(--accent-rgb), 0.5);
+  }
+  to {
+    box-shadow: inset 0 -2px 0 0 var(--accent);
+  }
 }
 
 .path-crumb.last,
@@ -522,9 +566,11 @@
   /* Route fade (App.tsx): routes hard-remount per navigation, so there is no
      old-and-new overlap to cross-fade — a short fade-in on the content area
      alone makes the cut read as intentional. Shorter than --dur-med on purpose:
-     it must not delay reading the page. The sidebar and breadcrumb chrome sit
-     OUTSIDE this element and never flash. Replays because App keys this node on
-     the nav epoch (an iframe's param write doesn't bump it). */
+     it must not delay reading the page. The sidebar sits OUTSIDE this element
+     and never flashes; so does the crumb bar for a file view — over a FOLDER
+     the bar portals into the listing's left column and fades in with the
+     content it now belongs to. Replays because App keys this node on the nav
+     epoch (an iframe's param write doesn't bump it). */
   animation: content-in 110ms var(--ease-out);
 }
 
@@ -561,9 +607,19 @@
   min-width: 60px;
 }
 
-/* Left column of the split: search header pinned above the scrolling table.
-   With the pane on, the pane spans the template's full height while search
-   and the split toggle stay in this column. */
+/* Where the crumb bar hangs over a folder view (Breadcrumb.tsx BreadcrumbBar
+   portals into it, Listing.tsx renders it). `display: contents` so the wrapper
+   itself is invisible to the flex layout and `#breadcrumb` is a direct flex
+   item of .listing-main, sized and spaced exactly as it was under #main. */
+.listing-crumb-slot {
+  display: contents;
+}
+
+/* Left column of the split: the crumb bar (search box and `···` included —
+   see .crumb-search-slot), then the scrolling table, and nothing between them.
+   The crumb bar is IN this column, which is the whole point —
+   the pane beside it starts at the top of the window and runs to the bottom,
+   with its own header as the topmost thing on that side. */
 .listing-main {
   flex: 1 1 auto;
   min-width: 0;
@@ -578,18 +634,55 @@
 
 /* Squeezed list: shed the modified column first, then size, leaving just the
    name at the narrowest. Header cells carry col-<key> classes to pair with
-   their td counterparts. */
+   their td counterparts.
+
+   A shed column is COLLAPSED, not removed. `display: none` on the header
+   looks like the obvious way and is the wrong one: the column survives
+   regardless — the status and sentinel rows span all three (colSpan={3} in
+   Listing.tsx) — and a display:none header contributes no width to
+   table-layout:fixed, which left NAME and the shed column BOTH width-less.
+   WebKit splits the remainder evenly between width-less columns, so NAME took
+   half and the hidden column kept the other half as blank space running to
+   the preview-pane divider (a 385px table rendering 144 + 96 + 0).
+
+   Keeping the header cell rendered at width:0 leaves exactly ONE width-less
+   column, and the whole remainder is NAME's by construction. Note what this
+   deliberately avoids: pinning NAME with `calc(100% - 96px)` reads correctly
+   and is silently DISCARDED by WKWebKit for table cells under fixed layout
+   (measured: the cell stays at the 144px split, while a plain `289px` or
+   `75%` applies). The engine ships in a WKWebView, so only px lengths on the
+   collapsed columns are relied on here.
+
+   The `thead` in these selectors is load-bearing: it outranks the
+   `table.listing-table th.col-size { width: 96px }` defaults further down
+   this file, which would otherwise win on source order. */
 @container (max-width: 460px) {
-  table.listing-table td.mtime,
-  table.listing-table th.col-mtime {
+  table.listing-table td.mtime {
     display: none;
+  }
+  table.listing-table thead th.col-mtime {
+    width: 0;
+    padding: 0;
+    border: 0;
+    box-shadow: none;
+    overflow: hidden;
+    /* The label and sort arrow still exist in the cell; fixed layout would
+       otherwise let them paint straight over MODIFIED's neighbour. */
+    font-size: 0;
   }
 }
 
 @container (max-width: 300px) {
-  table.listing-table td.size,
-  table.listing-table th.col-size {
+  table.listing-table td.size {
     display: none;
+  }
+  table.listing-table thead th.col-size {
+    width: 0;
+    padding: 0;
+    border: 0;
+    box-shadow: none;
+    overflow: hidden;
+    font-size: 0;
   }
 }
 
@@ -636,6 +729,38 @@
   min-width: 220px;
   min-height: 0;
   display: flex;
+  /* Anchors the seam below. */
+  position: relative;
+}
+
+/* The seam between the two columns, and where it STOPS.
+
+   It used to be a `border-left` on .listing-pane, which ran the full height —
+   including across the header row, where it cut the two strips into two boxes.
+   They are the same height, the same background and the same hairline at the
+   bottom precisely so they read as one bar across the window; a rule down the
+   middle of that undid it. So the seam now starts where the content does.
+
+   On the SLOT rather than on .listing-pane, because the pane is the scroll
+   container: an absolutely-positioned line inside it is laid out against the
+   padding box and would scroll away with a tall preview. The slot does not
+   scroll, so the line stays put. `top` is the shared strip height — the same
+   token the three bars use, so the seam meets the header's own bottom hairline
+   at exactly the corner in every host (with a crumb bar or, in the app
+   builder, with the search row as the left column's first strip).
+
+   The DRAG target is untouched: .listing-divider is a separate 5px flex item
+   spanning the full height, transparent until hover, and it still is. Only the
+   painted line got shorter. */
+.listing-pane-slot::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: var(--topbar-h);
+  bottom: 0;
+  width: 1px;
+  background: var(--border);
+  pointer-events: none;
 }
 
 /* The pane itself: header bar + iframe / mini list / placeholder card. */
@@ -647,7 +772,8 @@
   flex-direction: column;
   overflow: auto;
   background: var(--bg-alt);
-  border-left: 1px solid var(--border);
+  /* The seam is painted by .listing-pane-slot::before, not by a border here:
+     it has to stop at the bottom of the header row. */
 }
 
 /* Fills whatever the pane has left — the whole pane for a file preview, the
@@ -707,58 +833,57 @@
   background: var(--bg-alt);
 }
 
-/* The pane's chrome strip, above whatever the pane is showing. It LEADS with
-   the collapse control — the pane's left edge is the seam it collapses toward,
-   so the close affordance sits on the boundary rather than in the far corner —
-   then a .bar-rule zone divider, then the row's identity (icon + name) and
-   whatever the settled preview adds at the other end (the mode control,
-   open-full-screen). The rule is what separates the one control that acts on
-   the PANE from everything that is about the previewed ROW; without it the
-   collapse glyph sat flush against the file icon and neither read as chrome. Present in EVERY pane state, including
-   the ones that have nothing else to put in it (a loading skeleton, an error,
-   the metadata card): while the pane is open this strip is the only thing
-   carrying a way to close it.
+/* The pane's chrome strip: the RIGHT COLUMN'S TOP BAR, since the pane now runs
+   the full height of the window with nothing above it. Directly across the
+   divider from the crumb bar (over a folder) or the search row (the
+   app-builder variant, which has no crumb bar) — one continuous strip split by
+   the divider — so it must match them exactly: same --topbar-h, same vertical
+   padding, same border, same background. Anything else puts a step in the line
+   under the two columns.
 
-   No gutter hang for the leading button (unlike .listing-search's Up control):
-   this strip pads 10px and the thing beside the button is the file icon, not a
-   column the glyph has to line up with.
+   Present in EVERY pane state, including the ones with nothing to put in it (a
+   loading skeleton, an error, the metadata card, no selection). It holds no
+   text of its own any more — the row's icon and name came out
+   (ListingPreviewPane.tsx) — so the explicit `height` is the ONLY thing
+   standing the bar up in those states. It is not a nicety; without it the
+   strip collapses to its border and the seam breaks.
 
-   It sits directly beside .listing-search — they are one visual row split by
-   the pane divider — so the two MUST agree on height, or the pane's bottom
-   border runs 7px above the listing's and the row reads as broken. The search
-   row's height is content-derived (8px padding + a 30px input); this pins to
-   the same number and centres whatever it holds. Keep the two in step. */
+   `justify-content: flex-end` for the same reason: the strip's contents are
+   the mode menu and the open-full-screen glyph, which belong at the far end
+   the way the crumb bar's own controls do. With the name gone there is no
+   leading item left to push them there.
+
+   Horizontal padding stays at the PANE's 10px gutter (the crumb bar keeps the
+   listing's 16px): each bar lines up with the column underneath it, and the
+   seam is the border, not the gutter. */
 .listing-pane .pane-header {
   flex: 0 0 auto;
   display: flex;
   align-items: center;
+  justify-content: flex-end;
   gap: 8px;
-  padding: 8px 10px;
-  min-height: 46px;
+  padding: var(--topbar-pad-y) 10px;
+  height: var(--topbar-h);
+  box-sizing: border-box;
   border-bottom: 1px solid var(--border);
   background: var(--bg-alt);
 }
 
-/* The strip spaces its children with `gap: 8px`, so the rule brings no margin
-   of its own — same reason #breadcrumb zeroes it, and the opposite of
-   .panel-bar, whose 2px gap needs the rule's own 10px. 8px either side of the
-   hairline against the strip's 10px end padding: the divider sits inside the
-   row's own gutters and cannot collide with them. */
-.listing-pane .pane-header .bar-rule {
-  margin: 0;
+/* Portal target for the open folder's "Open as app" (pane-action-slot.ts).
+   `display: contents` so the button is a flex item of the header itself and
+   picks up its gap and alignment, and `margin-right: auto` so it sits at the
+   header's LEFT end while the mode chip and the expand glyph stay packed
+   right: it belongs to the folder on the other side of the divider, not to the
+   row the rest of this bar is about.
+
+   :empty and it disappears — most folders have no lone page to open, and an
+   empty item would still spend one of the header's 8px gaps. */
+.listing-pane .pane-action-slot {
+  display: contents;
 }
 
-.listing-pane .pane-header-icon {
-  flex: 0 0 auto;
-  display: inline-flex;
-}
-
-.listing-pane .pane-header-name {
-  flex: 1 1 auto;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: var(--fg);
+.listing-pane .pane-action-slot > * {
+  margin-right: auto;
 }
 
 /* Folder preview fallback: the folder's own entries, read-only. Narrower
@@ -816,19 +941,6 @@ table.pane-mini-list td.status-message {
   padding: 14px 10px;
 }
 
-/* Row 2's two ends. Both are plain .bar-ctl now (explorer.css's shared
-   recipe); all that is left here is the pane toggle's negative right margin,
-   which pulls the labelled control out to the row's padding edge.
-
-   The toggle is now the OPEN half only — it renders while the pane is closed
-   and unmounts when it opens (the collapse control lives in the pane's own
-   header). So it has no pressed state to style, and the row's width simply
-   returns to the search box when the pane takes the space beside it; the box
-   is `flex: 1 1 auto`, so nothing else moves. */
-.listing-pane-toggle {
-  margin-right: -8px;
-}
-
 /* Skeleton loading state: shimmering bars shaped like the real listing rows
    (icon + name + size + mtime), plus a full-pane placeholder while a preview
    loads. Token-derived (--bg-alt/--border) so it reads as part of the UI. */
@@ -884,28 +996,177 @@ table.listing-table tr.skel-row:hover {
   animation: skel-shimmer 1.2s ease-in-out infinite;
 }
 
-/* Row 2, listing side. Its height is the reference the preview pane's header
-   pins itself to (.listing-pane .pane-header) — the two are one row. */
+/* Row 1 of the listing column in the hosts that have NO crumb bar (the app
+   builder), where this row is what the preview pane's header sits across the
+   divider from: same --topbar-h, so the seam under the two columns is one
+   line. Over a folder in the explorer the row is not a row at all — it portals
+   into the crumb bar and the rules further down strip this box off it. Its
+   30px input is the tallest thing in any of the strips, and is what sets the
+   shared height's content budget. */
 .listing-search {
   flex: 0 0 auto;
   display: flex;
   align-items: center;
   gap: 8px;
-  min-height: 46px;
-  padding: 8px 16px;
+  height: var(--topbar-h);
+  box-sizing: border-box;
+  padding: var(--topbar-pad-y) 16px;
   border-bottom: 1px solid var(--border);
   background: var(--bg);
 }
 
-/* Optical gutter alignment for the leading Up button. The row pads 16px like
-   the listing gutter below it, but a ghost icon button is a 28px square with a
-   16px glyph centred, so its ARROW started ~6px right of the gutter while the
-   NAME header and the row icons underneath start exactly on it — the row read
-   as over-indented. Hang the button back into the padding so the glyph, not
-   the box, lines up. The 28px hit area is unchanged, and this is scoped to
-   this row: the topbar's controls sit against a right edge and are fine. */
-.listing-search > .bar-ctl-icon:first-child {
-  margin-left: -6px;
+/* Optical gutter alignment for the trailing path `···` (the folder view's,
+   moved down out of the crumb bar). The row pads 16px like the listing gutter
+   below it, but a ghost icon button is a 28px square with a 16px glyph
+   centred, so its dots would stop ~6px short of the gutter the MODIFIED column
+   above them ends on. Hang the button into the padding so the glyph, not the
+   box, lines up; the 28px hit area is unchanged. */
+.listing-search > .bar-overflow:last-child {
+  margin-right: -6px;
+}
+
+/* ---- …and the same row once it has moved INTO the crumb bar --------------
+   Over a folder the left column had two full-height strips stacked (crumbs,
+   then search) against the preview pane's one across the divider, which read
+   as a mistake in the layout rather than as two things. The row portals into
+   the bar instead (search-slot.ts): crumbs at the left, the box and the `···`
+   at the right end, ONE strip per column.
+
+   `display: contents` on the target so the row itself is the bar's flex item,
+   and the row then gives up everything that made it a strip — its height, its
+   padding, its border and its background all belong to the bar now. */
+.crumb-search-slot {
+  display: contents;
+}
+
+.crumb-search-slot > .listing-search {
+  flex: 0 1 auto;
+  min-width: 0;
+  /* Pinned to the bar's right end, whatever else is or isn't in the row: the
+     mode slot hides itself when empty, and the split buttons are gone over a
+     folder, so "after the last thing" is not a fixed place. An auto margin is
+     — it eats the free width, so the box and the `···` sit against the right
+     edge in every state, which is where the hand goes looking for them (a
+     file view keeps its own `···` in that same corner).
+
+     It works because the crumbs stop growing here (see .crumbs below). That
+     costs the click-to-edit target some reach — the whitespace past the last
+     crumb was part of it, and now only the strip's own trailing padding is.
+     Ctrl+L and the crumbs themselves are unaffected. */
+  margin-left: auto;
+  /* And the row packs to its own right edge, so any leftover slack in it falls
+     on the crumb side rather than between the `···` and the corner. */
+  justify-content: flex-end;
+  height: auto;
+  padding: 0;
+  border-bottom: none;
+  background: none;
+}
+
+/* The gutter hang exists to line the dots up with the MODIFIED column below
+   them. In the bar the neighbour is the file view's own `···`, at the bar's
+   16px padding — same bar, same corner, so it must not sit 6px off it. */
+.crumb-search-slot > .listing-search > .bar-overflow:last-child {
+  margin-right: 0;
+}
+
+/* Crumbs and the search box now share one row, so the box needs a size of its
+   own — and at rest it is SMALL. An idle search box is a target to click, not
+   a field to read, and the bar's real subject is the path; a wide empty input
+   sitting in the middle of it was the loudest thing in the strip and the least
+   used. 150px is a little more than "Search…" needs, and it stops there: the
+   box does not grow, so the free width stays with the crumbs (whose trailing
+   whitespace is the click-to-edit target).
+
+   It is only at rest. The first keystroke hands the box the whole strip — see
+   the `.searching` rules below — so this width has to serve the empty state
+   and nothing else. */
+.crumb-search-slot .listing-search-box {
+  /* `width`, not a flex-basis. The row is sized by its content, and a flex
+     item's contribution to that is its MAX-content — for a bare `type=search`
+     input that is the UA's intrinsic ~166px, not the 150px basis it then lays
+     out at. The row came out 16px wider than what was in it, and the slack sat
+     at the end, holding the `···` that far off the right edge. A width is
+     intrinsic, so the row measures what it actually shows. */
+  flex: 0 1 auto;
+  width: 150px;
+  min-width: 96px;
+}
+
+/* Who yields when the bar runs short, and in what order.
+   The crumbs go first and by a long way (shrink 6 against the box's 1):
+   ellipsizing and then scrolling is what a path bar is built to do, and the
+   tail — the folder you are actually in — is pinned into view, so a narrow
+   crumb strip still says where you are. A squeezed input just looks broken.
+
+   But they stop at 120px rather than at zero, because a path bar scrolled down
+   to nothing is no longer a path bar. Past that point the search box takes
+   over and gives up its own width, down to 96px — still the full "Search…"
+   placeholder, just with no slack around it. Between the two floors the strip
+   stays one line at any width the split allows, which is what keeps it the
+   same height as the pane header across the divider. */
+#breadcrumb:has(.crumb-search-slot) .crumbs {
+  flex-grow: 0;
+  flex-shrink: 6;
+  min-width: 120px;
+}
+
+/* …and once there is a query, the crumbs get out of the way entirely.
+   Sharing the row is a compromise that only pays while both halves are in
+   use, and the moment someone types, the path is the half they are not
+   looking at — the results below no longer belong to it anyway. So the
+   crumbs stand down and the box takes the whole strip (max-width off), which
+   is the state where a long query most needs the room.
+
+   Reversible on a keystroke: clearing the query (or Esc) brings the path
+   straight back, so nothing is lost, only deferred. The ★ and the `···` stay
+   — they act on the folder, which has not changed. */
+#breadcrumb:has(.listing-search.searching) .crumbs {
+  display: none;
+}
+
+/* Both halves of that: the ROW has to grow (idle it is `0 1 auto`, sized to
+   its box) and so does the BOX (idle `0 1 200px`). Only then does the field
+   actually span the strip rather than sitting at its resting width with the
+   freed-up crumb width as dead space beside it. */
+#breadcrumb:has(.listing-search.searching) .listing-search {
+  flex: 1 1 auto;
+}
+
+#breadcrumb:has(.listing-search.searching) .listing-search-box {
+  flex: 1 1 auto;
+}
+
+/* Terse now ("1.2K · 45.1K…" rather than the full sentence — Listing.tsx keeps
+   that in the title and the aria-label), so the room reserved for it inside
+   the input comes back to the query: 116px sized the old sentence, 96px sizes
+   the widest thing left (the multi-selection readout, "1,234 selected") once
+   the chip stops hanging 26px off the edge. Still a reservation and not a
+   reflow — the chip is absolutely positioned, so a digit more or less never
+   moves the box. */
+.crumb-search-slot > .listing-search .listing-search-box.has-pin .listing-search-input {
+  padding-right: 96px;
+}
+
+/* The whole pin group moves in with it — the spinner too, or a streaming walk
+   would leave it hanging 16px out over the count. */
+.crumb-search-slot .listing-search-box {
+  --pin-right: 10px;
+}
+
+/* A pin costs 96px of the input, and the resting box is only 150px — which
+   would leave a few dozen pixels of field, clipping the placeholder and
+   anything typed. So a box with something pinned in it grows to keep its text
+   area: the reservation comes out of the bar's free width instead of out of
+   the query.
+
+   This is the MULTI-SELECTION readout in practice ("12 selected"). The other
+   pins ride a non-empty query, and that already takes the whole strip. Capped,
+   so a wide window does not turn a selection into a full-width search box; the
+   crumbs are scrollable and give up the difference. */
+.crumb-search-slot .listing-search-box.has-pin {
+  flex: 0 1 auto;
+  width: 260px;
 }
 
 /* Wraps the input plus its pinned chips (count / spinner), so the preview-pane
@@ -937,10 +1198,13 @@ table.listing-table tr.skel-row:hover {
   appearance: none;
 }
 
-/* Match count pinned inside the input's right edge (no layout shift). */
+/* Match count pinned inside the input's right edge (no layout shift).
+   `--pin-right` is where the pinned chips hang from, so the two hosts can move
+   the whole pin group without either chip being left behind (the crumb-bar row
+   pulls it in — see .crumb-search-slot). */
 .listing-search-count {
   position: absolute;
-  right: 26px;
+  right: var(--pin-right, 26px);
   top: 50%;
   transform: translateY(-50%);
   color: var(--fg-muted);
@@ -949,12 +1213,30 @@ table.listing-table tr.skel-row:hover {
   pointer-events: none;
 }
 
+/* While a scan runs, the pinned chip also carries the "indexing…" caveat, so
+   it needs more room than a bare match count. Same slot, wider reservation —
+   a SECOND element in this row would have to fight the absolutely-pinned chip
+   for the same pixels on a narrow pane. */
+.listing-search .listing-search-box.has-pin.wide-pin .listing-search-input {
+  padding-right: 210px;
+}
+
+/* A streaming walk shows BOTH — the spinner and the live count — and they hung
+   from the same offset, so the spinner sat on top of the digits. They stack
+   instead: spinner outermost, count shifted in by its width plus a gap. The
+   sibling combinator works because that is the DOM order (Listing.tsx renders
+   the spinner first), and it costs nothing in the settled state, where the
+   spinner is gone and the count keeps the pin to itself. */
+.listing-search-spinner + .listing-search-count {
+  right: calc(var(--pin-right, 26px) + 17px);
+}
+
 /* Small spinner shown while the recursive walk is still in flight, so a
    search on a huge folder doesn't look stalled while the input stays
    fully interactive. */
 .listing-search-spinner {
   position: absolute;
-  right: 26px;
+  right: var(--pin-right, 26px);
   top: 50%;
   width: 11px;
   height: 11px;
@@ -1152,40 +1434,6 @@ table.listing-table tr.row.flip-animating {
   transition: transform var(--dur-slow) var(--ease-out);
 }
 
-/* Current ordering of the search results, and the click that restores relevance
-   (views/Listing.tsx). Disabled = already in relevance order, i.e. a readout. */
-.listing-sort-chip {
-  flex: 0 0 auto;
-  font: inherit;
-  font-size: 11px;
-  line-height: 1;
-  padding: 4px 8px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: var(--bg-alt);
-  color: var(--fg-muted);
-  cursor: pointer;
-  white-space: nowrap;
-  transition:
-    color var(--dur-fast) var(--ease-out),
-    border-color var(--dur-fast) var(--ease-out);
-}
-
-.listing-sort-chip:disabled {
-  cursor: default;
-}
-
-/* Sorted is a QUIET readout, not a highlight: it says how the results are
-   ordered, which is nothing like "this is the view you are looking at". */
-.listing-sort-chip.sorted {
-  color: var(--fg-muted);
-  border-color: var(--border);
-}
-
-.listing-sort-chip:hover:not(:disabled) {
-  color: var(--fg);
-}
-
 table.listing-table td {
   padding: 9px 16px;
   border-bottom: 1px solid var(--border);
@@ -1265,6 +1513,104 @@ table.listing-table tr.row.copied > td:first-child {
   box-shadow: inset 3px 0 0 var(--fg-muted);
 }
 
+/* --- drag to move --------------------------------------------------------
+ *
+ * The folder row under a drag that may land there. An accent ring rather than
+ * a background wash: the row underneath may already be .selected (the dragged
+ * set often includes rows either side of the target), and a second background
+ * would fight the first. Matches the sidebar's own .drag-into ring, which is
+ * the same promise in the other panel.
+ *
+ * The REFUSED case is quiet on purpose — it is the "which row said no" half of
+ * a verdict the cursor says first (see the drag cursors below, which the
+ * gesture now has to paint itself). */
+table.listing-table tr.row.drop-into > td {
+  box-shadow: inset 0 2px 0 var(--accent), inset 0 -2px 0 var(--accent);
+  background: var(--row-bg-active);
+}
+table.listing-table tr.row.drop-into > td:first-child {
+  box-shadow: inset 2px 0 0 var(--accent), inset 0 2px 0 var(--accent),
+    inset 0 -2px 0 var(--accent);
+}
+table.listing-table tr.row.drop-into > td:last-child {
+  box-shadow: inset -2px 0 0 var(--accent), inset 0 2px 0 var(--accent),
+    inset 0 -2px 0 var(--accent);
+}
+table.listing-table tr.row.drop-reject > td {
+  background: rgba(var(--error-rgb), 0.1);
+}
+
+/* The listing's background as a target: "move these into the folder I'm
+   looking at". It only ever lights up when that would actually move something
+   (dropping rows into the folder they already live in is a no-op — see
+   drag-drop's dropIsValid), so the ring is a promise, not a hover. */
+.listing-scroll.drop-into {
+  box-shadow: inset 0 0 0 2px var(--accent);
+}
+
+/* THE DRAG CURSOR, which used to come free from the native drag's `dropEffect`
+   and now has to be painted like everything else about the gesture
+   (listing/row-drag.ts sets these two classes on <body> for its lifetime).
+   `* !important` because the cursor is otherwise decided by whatever the
+   pointer happens to be over — a row says `pointer`, a link says `pointer`, and
+   the answer during a drag is about the DROP, not about what is underneath.
+   The same class kills text selection across the whole page, which the native
+   drag also did for us. */
+body.fs-dragging,
+body.fs-dragging * {
+  cursor: grabbing !important;
+  user-select: none !important;
+}
+/* Refused: over a file, over a folder the entries already live in, over
+   nothing at all. Set from the SAME dropIsValid verdict that paints the
+   highlight, so the cursor and the row can never disagree. */
+body.fs-dragging.fs-drag-refused,
+body.fs-dragging.fs-drag-refused * {
+  cursor: no-drop !important;
+}
+
+/* The ghost under the cursor during a drag (listing/row-drag.ts). It used to be
+   built off screen for `setDragImage` to snapshot and thrown away a frame
+   later; there is no setDragImage any more, so this is a real element that
+   lives for the whole drag and is moved with `transform` on every pointermove.
+   `pointer-events: none` is load-bearing: the drop target is found with
+   elementFromPoint, and a ghost under the cursor would be the only thing it
+   ever found. */
+.fs-drag-image {
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: 9000;
+  pointer-events: none;
+  will-change: transform;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 260px;
+  padding: 5px 10px;
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  background: var(--bg-panel);
+  color: var(--fg);
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* How many entries are coming with the one named in the ghost. */
+.fs-drag-count {
+  flex: none;
+  min-width: 18px;
+  padding: 0 5px;
+  border-radius: 9px;
+  background: var(--accent);
+  color: var(--on-accent);
+  font-size: 11px;
+  font-weight: 600;
+  text-align: center;
+}
+
 table.listing-table td.name {
   display: flex;
   align-items: center;
@@ -1272,6 +1618,36 @@ table.listing-table td.name {
   font-size: 14px;
   /* Positioning context for .clip-mark below. */
   position: relative;
+}
+
+/* The icon-and-name group inside a row's name cell. LAYOUT ONLY.
+ *
+ * It used to be the row's drag handle, and carried `cursor: grab` to say so.
+ * That handle is gone: it was holding the pixels drag-to-select needs, so a
+ * drag begun across rows from a name moved that one file instead of selecting
+ * the rows it crossed. A drag now starts on an already-selected row and nowhere
+ * else (listing/drag-drop's pressStartsDrag), which is why `grab` moved to
+ * tr.row.selected below and this rule keeps only its geometry.
+ *
+ * inline-flex so it hugs its contents rather than filling the cell, and
+ * min-width:0 so a long name still ellipsizes inside it (the .search-path
+ * child's overflow rule needs a shrinkable parent). */
+table.listing-table td.name .row-handle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The only surface a move-drag can begin on, so the only one that says `grab`.
+ * Unselected rows keep `pointer`: a press there selects, and a press that
+ * travels sweeps. */
+table.listing-table tr.row.selected {
+  cursor: grab;
 }
 
 /* "Cut" / "Copied" badge in the name cell of a row on the in-app clipboard

@@ -42,6 +42,13 @@ export type SortOrder = "asc" | "desc";
 // ranked list always exists in memory for the count text.
 export const PAGE_SIZE = 250;
 
+// Search results rendered at most, however many matched. Ranking still runs
+// over the whole corpus; past the first hundred a fuzzy rank has stopped
+// telling the user anything they can act on, and the useful move is a better
+// query rather than more scrolling — so the list stops here and the counter
+// says how much it is not showing (listing/result-cap).
+export const SEARCH_RESULT_CAP = 100;
+
 // Above this many rendered rows the FLIP reorder animation is dropped. Measuring
 // every row's offsetTop on each commit is one forced layout, but the per-row
 // transform (a compositing layer each) is not free — on a listing this long the
@@ -69,6 +76,24 @@ export const URL_SYNC_MS = 200;
 // saturates the main thread and starves interaction. The first batch still
 // flushes immediately (lastFlush starts at 0), so first paint isn't delayed.
 export const STREAM_FLUSH_MS = 200;
+
+// How still the query must be before a BIG corpus is re-scored. The index
+// answers a covered folder instantly and whole (up to MAX_CORPUS entries), so
+// unlike a streamed walk there is no ramp-up: the first keystroke already has
+// the full corpus to scan, and every keystroke after it would re-scan the lot.
+// Only the scan waits — the input echoes `query` immediately, as always.
+export const SCAN_DEBOUNCE_MS = 150;
+
+// Corpora at or below this size skip the debounce entirely: the scan is a few
+// milliseconds, and the first keystroke of a fresh search has to feel instant.
+// It is also the append threshold, so a stream flush (a few thousand entries)
+// is always scored straight away.
+export const SCAN_IMMEDIATE_MAX = 20_000;
+
+// Entries scored per slice before yielding to the event loop. Small enough
+// that a slice fits comfortably in a frame on a slow machine, large enough
+// that the per-slice overhead stays noise.
+export const SCAN_SLICE = 20_000;
 
 export type ListingState =
   | { status: "loading" }
@@ -109,4 +134,8 @@ export interface SearchHit {
   positions: number[];
   score: number;
   longestRun: number;
+  // Path depth, precomputed at score time. The rank comparator runs n·log n
+  // times over a hit list that can be the whole corpus, so it must not derive
+  // anything per comparison (see search.ts).
+  depth: number;
 }

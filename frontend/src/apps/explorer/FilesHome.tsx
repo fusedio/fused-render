@@ -419,7 +419,7 @@ export default function FilesHome({ config }: { config: Config }) {
                 className={"fh-tab" + (tab === "sessions" ? " active" : "")}
                 onClick={() => setTab("sessions")}
               >
-                Claude sessions
+                Artifacts
               </button>
               <button
                 type="button"
@@ -489,7 +489,7 @@ export default function FilesHome({ config }: { config: Config }) {
                 <p className="fh-empty">Nothing opened yet. Files you view will show up here.</p>
               )
             ) : shownSessions === null ? (
-              <p className="fh-empty">Looking for Claude sessions…</p>
+              <p className="fh-empty">Looking for artifacts…</p>
             ) : sessionFolders && sessionFolders.length ? (
               <>
                 <div className="fhb-grid">

@@ -13,7 +13,7 @@
 // see its branch below. Wire-up state (pane visibility, width, the divider
 // drag) stays in Listing — this component only owns what the pane shows for a
 // given selection.
-import { useEffect, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { listDir, resolveConditions, statPath } from "@platform/lib/api";
 import type { TemplateEntry } from "@platform/lib/api";
 import { navigate, replaceSearch } from "@platform/lib/router";
@@ -22,12 +22,19 @@ import { isModeVisible } from "@platform/lib/mode-visibility";
 import { iconForEntry, isAppEntry } from "@platform/ui/FileIcons";
 import { KNOWN_SENTINEL_MODES, templateModeIcon } from "@apps/explorer/ModeSwitcher";
 import { ModeMenu } from "@apps/explorer/BarMenu";
+import { useAppButton } from "@apps/explorer/lib/app-button";
+import { withNoFocus } from "@apps/explorer/listing/frame-focus";
+import { usePaneFocusGuard } from "@apps/explorer/listing/usePaneFocusGuard";
+import {
+  publishPaneActionSlot,
+  retractPaneActionSlot,
+} from "@apps/explorer/pane-action-slot";
 import Listing from "@apps/explorer/Listing";
 import {
   PANE_APP_MODE,
   activePaneMode,
   paneModeList,
-  paneOpenTarget,
+  paneOpenAction,
 } from "@apps/explorer/listing/pane-modes";
 
 // The selected row, as the pane needs it. Structurally a subset of Listing's
@@ -93,20 +100,32 @@ interface PaneMode {
   icon: React.ReactNode;
 }
 
+// Portal target for the open folder's primary action (pane-action-slot.ts).
+// Publishing the live node rather than letting Preview find it by id: the pane
+// unmounts whenever the split narrows past its threshold, and a stale
+// reference would leave the button portaled into a detached div — invisible,
+// with nothing in the title bar either.
+//
+// Collapses when empty so the header's `gap` does not open a hole beside the
+// mode chip for the folders that have no app to open (.pane-action-slot:empty).
+function PaneActionSlot() {
+  const ref = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (el) publishPaneActionSlot(el);
+    return () => retractPaneActionSlot(el);
+  }, []);
+  return <div className="pane-action-slot" ref={ref} />;
+}
+
 export default function ListingPreviewPane({
   row,
   selCount,
-  onCollapse,
 }: {
   // The lead row when exactly one row is selected, else null.
   row: PaneTarget | null;
   // Total selected rows, for the multi-selection placeholder.
   selCount: number;
-  // Close the pane — the host's own toggle, rendered HERE while the pane is
-  // open (see the collapse control below). Required, not optional: every one
-  // of this component's states has to be able to draw it, because while the
-  // pane is up this is the only way to put it down.
-  onCollapse: () => void;
 }) {
   const [info, setInfo] = useState<InfoState>({ status: "loading" });
   // Lone-app probe result for a folder: undefined = still loading, null =
@@ -200,82 +219,54 @@ export default function ListingPreviewPane({
     };
   }, [path, isDir, self]);
 
-  // Collapse the pane. It lives HERE, not in the listing's search row, because
-  // collapsing is spatial — and for the same reason it is the FIRST thing in
-  // the strip: the pane's left edge is the seam between the list and the pane,
-  // the divider the user drags, and the edge this control sends the pane back
-  // to. A close affordance sits on the boundary the action happens at, not in
-  // the far corner opposite it. (Re-opening cannot live here — a closed pane
-  // hosts nothing — so that half stayed in the search row, and stayed
-  // labelled. See Listing's toggle.) The glyph still points INTO the right
-  // edge, which is where the pane goes, and stays deliberately unlike the
-  // expand button at the other end of the strip: that one opens the FILE, this
-  // one closes the PANE.
-  const collapseBtn = (
-    <button
-      type="button"
-      className="bar-ctl bar-ctl-icon"
-      title="Hide preview"
-      aria-label="Hide preview"
-      onClick={onCollapse}
-    >
-      <svg
-        viewBox="0 0 24 24"
-        width="16"
-        height="16"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.8"
-        strokeLinejoin="round"
-        strokeLinecap="round"
-        aria-hidden="true"
-      >
-        <rect x="3" y="4" width="18" height="16" rx="2" />
-        <line x1="14" y1="4" x2="14" y2="20" />
-        {/* Pushing the right panel out through its own edge. */}
-        <polyline points="17 9 20 12 17 15" />
-      </svg>
-    </button>
-  );
+  // The "Open as app" / "Add as app" button for a previewed FOLDER that holds a
+  // lone top-level page — label, click and destination decided in one shared
+  // place (lib/app-button), so this pane and the title bar's own button can
+  // never mean different things. Called before the early returns below, as a
+  // hook must be; a null folder switches the whole thing off and makes no
+  // request, which covers files, the self target and a multi-selection alike.
+  const appBtn = useAppButton(isDir && !self ? (path as string) : null, app?.path ?? null);
+
+  // Keep the keyboard on the listing when this preview mounts (the pane's focus
+  // contract — listing/frame-focus.ts). Also a hook, so also before the early
+  // returns; the branches it guards are the ones that render a frame.
+  const { rootRef, guardProps } = usePaneFocusGuard<HTMLDivElement>();
 
   // The pane's chrome strip, and EVERY state gets one — a loading skeleton, an
-  // error, the metadata card and the multi-selection placeholder all used to
-  // render bare, which was fine while the listing's search row carried the
-  // toggle and is not now: a pane with no strip would be a pane with no way to
-  // close it. It also keeps the strip's height agreeing with the search row
-  // beside it in every state rather than most of them (see .pane-header).
-  // `extra` is what the settled preview adds after the name, at the strip's
-  // far end: the mode menu and the open-full-screen button.
+  // error, the metadata card and the multi-selection placeholder alike. It is
+  // the TOP BAR of the right-hand column now that the pane runs the full height
+  // of the window, so it has to hold its height in every state or the seam it
+  // shares with the crumb bar on the left breaks (see .pane-header).
+  //
+  // It used to open with a COLLAPSE button, sitting on the seam it sent the
+  // pane back to. That went with the toggle: the split is now decided by the
+  // container's width (listing/pane.ts), so a closed pane would have had no
+  // way back short of resizing the window.
+  //
+  // It then carried the previewed row's ICON AND NAME. Those are gone too. The
+  // pane's subject is whichever row is selected, and that row is highlighted an
+  // inch to the left with its name in the same eyeline — restating it here put
+  // the loudest text in the strip on the one fact the layout already made
+  // obvious, and (unlike the crumb bar it now sits beside) it named a thing the
+  // bar's own controls do not act on.
+  //
+  // `extra` is what the settled preview puts in it: the mode menu and the
+  // open-full-screen button, at the strip's far end.
+  //
+  // It opens with the OPEN FOLDER's primary action, portaled down from
+  // Preview.tsx (pane-action-slot.ts) — see there for why it is not in the
+  // title bar. In `strip` itself, so it is present in every state: that button
+  // belongs to the folder on the left, not to whichever row the pane happens
+  // to be showing, and it must not blink out while a preview loads.
   const strip = (extra?: React.ReactNode) => (
     <div className="pane-header">
-      {collapseBtn}
-      {/* Zone divider, the same .bar-rule grammar the title bar and the panel
-          bar use (c27a32f5): everything LEFT of it acts on the pane, everything
-          right of it is the previewed row — its icon, its name, and the two
-          controls that act on IT (mode, open). Without it the collapse glyph
-          sat flush against the file icon and the two read as a pair of glyphs
-          with nothing saying which was chrome and which was the subject. A rule
-          rather than a border on the button, because the boundary is what
-          needed naming, not the button — and a permanently bordered control
-          would undo the two commits that just made these bars quieter.
-          Only with a subject to divide FROM: the no-selection strip is the
-          collapse control alone, and a hairline with nothing after it is a
-          divider dividing nothing. */}
-      {row && (
-        <>
-          <span className="bar-rule" aria-hidden="true" />
-          <span className="pane-header-icon">{iconForEntry(row.name, row.isDir)}</span>
-        </>
-      )}
-      <span className="pane-header-name" title={row?.name}>
-        {row?.name ?? ""}
-      </span>
+      <PaneActionSlot />
       {extra}
     </div>
   );
 
   // Placeholders need no fetch: nothing selected, or a multi-selection. No
-  // subject, so the strip carries nothing but the collapse control.
+  // subject, so the strip carries nothing but an empty name.
   if (!row) {
     return (
       <div className="listing-pane">
@@ -298,7 +289,7 @@ export default function ListingPreviewPane({
   // is where it now stays whether the pane is open or not (Preview.tsx).
   //
   // NO MODE MENU. The folder's peers under the `/` key are heavyweight opt-ins
-  // (the chat, git, versions), so the picker's only job here was to offer a
+  // (the chat, git, history), so the picker's only job here was to offer a
   // chat on the folder from a header that otherwise said "select something" —
   // a "Choose view" chip pointing at a view nobody came for. The folder's own
   // modes are still one click from the LEFT half (Preview's chip), and every
@@ -391,10 +382,20 @@ export default function ListingPreviewPane({
   const activeMode = activePaneMode(modeNames, modeOverride);
   const activeEntry = embeddable.find((e) => e.mode === activeMode) ?? null;
 
-  // The settled header: the shared strip, with the mode control and the
-  // open-full-screen button after the name, at the end opposite the collapse
-  // control. Every
-  // OTHER state renders the bare strip instead — same chrome, nothing to
+  // What the strip's far end offers for this row — decided in
+  // listing/pane-modes (paneOpenAction), which documents why a plain folder
+  // gets nothing: expanding one means opening its listing, and its listing is
+  // what the left half of this very split already is.
+  const open = paneOpenAction(row, activeMode);
+  const openTarget = open.kind === "none" ? null : open.target;
+  const goToTarget = () => {
+    if (!openTarget) return;
+    navigate(openTarget.path, { isDir: openTarget.isDir, mode: openTarget.mode });
+  };
+
+  // The settled header: the shared strip, with the mode control and (for a row
+  // that has one) its open control after the name, at the far end of the strip.
+  // Every OTHER state renders the bare strip instead — same chrome, nothing to
   // switch or expand yet. (The self target has its own, picker-less one and
   // returns above.)
   const header = strip(
@@ -403,57 +404,76 @@ export default function ListingPreviewPane({
           to be four naked squares here, indistinguishable from the one-shot
           glyphs beside them. */}
       <ModeMenu entries={modes} active={activeMode ?? ""} onSelect={selectMode} />
-      {/* Open the previewed row full-screen — as a quiet icon, not the bordered
-          "Open" primary it used to be. Nothing in this strip is a primary: the
-          row's double-click and Enter already open it, so a bordered word was
-          the loudest thing in the pane's header for the one action the user
-          least needs pointed out. Two arrows to opposite corners is the
-          expand/full-screen glyph, which is also the truer description — the
-          preview is already open, this makes it the whole view. Plain
-          .bar-ctl-icon metrics, like every other glyph-only control in these
-          bars — it had a rule of its own for one release that only restated
-          them.
+      {/* Expand the previewed FILE full-screen — as a quiet icon, not the
+          bordered "Open" primary it used to be. Nothing in this strip is a
+          primary: the row's double-click and Enter already open it, so a
+          bordered word was the loudest thing in the pane's header for the one
+          action the user least needs pointed out. Two arrows to opposite
+          corners is the expand/full-screen glyph, which is also the truer
+          description — the preview is already open, this makes it the whole
+          view. Plain .bar-ctl-icon metrics, like every other glyph-only control
+          in these bars — it had a rule of its own for one release that only
+          restated them.
 
           It opens in the mode the pane is SHOWING (paneOpenTarget) — "make this
           the whole view" cannot be the one action that discards the template
           the user picked. The row's own double-click and Enter stay a plain
           open: those are "open this thing", not "open what I am looking at". */}
-      <button
-        type="button"
-        className="bar-ctl bar-ctl-icon"
-        title="Open"
-        aria-label="Open"
-        onClick={() => {
-          const open = paneOpenTarget(row, activeMode, app);
-          navigate(open.path, { isDir: open.isDir, mode: open.mode });
-        }}
-      >
-        <svg
-          viewBox="0 0 24 24"
-          width="16"
-          height="16"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth={2}
-          strokeLinecap="round"
-          strokeLinejoin="round"
-          aria-hidden="true"
+      {open.kind === "expand" && (
+        <button
+          type="button"
+          className="bar-ctl bar-ctl-icon"
+          title="Open"
+          aria-label="Open"
+          onClick={goToTarget}
         >
-          <path d="M15 3h6v6" />
-          <path d="M21 3l-7 7" />
-          <path d="M9 21H3v-6" />
-          <path d="M3 21l7-7" />
-        </svg>
-      </button>
+          <svg
+            viewBox="0 0 24 24"
+            width="16"
+            height="16"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth={2}
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-hidden="true"
+          >
+            <path d="M15 3h6v6" />
+            <path d="M21 3l-7 7" />
+            <path d="M9 21H3v-6" />
+            <path d="M3 21l7-7" />
+          </svg>
+        </button>
+      )}
+      {/* A folder that IS an app gets the folder's real primary in that slot
+          instead, and this one is LABELLED: the expand glyph reads as "bigger",
+          which is not what happens — the folder's page opens, and no icon says
+          that. It is literally the title bar's own button for the open folder
+          (lib/app-button), because it is the same action one level down — down
+          to offering "Add as app" for a folder the registry doesn't know yet,
+          which the pane's older, listing-only version of this button could not
+          see and so could not offer. */}
+      {appBtn && (
+        <button type="button" className="bar-ctl" title={appBtn.label} onClick={appBtn.onClick}>
+          {appBtn.label}
+        </button>
+      )}
     </>
   );
 
   // The /render embed URL for a chosen template entry. "_render" renders the
   // file itself (PT-12); a template mode renders the template against _file.
+  //
+  // Every one of them carries `_nofocus=1`: a preview in the pane must not take
+  // the keyboard off the listing (listing/frame-focus.ts). It rides on the URL
+  // rather than being passed some other way for the same reason `_file` does —
+  // the page is a document, and its URL is the only thing it is handed.
   const srcFor = (t: TemplateEntry): string => {
-    if (t.mode === "_render") return `/render?path=${encodeURIComponent(row.path)}`;
+    if (t.mode === "_render") return withNoFocus(`/render?path=${encodeURIComponent(row.path)}`);
     const remote = info.remote ? "&_remote=1" : "";
-    return `/render?path=${encodeURIComponent(t.path as string)}&_file=${encodeURIComponent(row.path)}${remote}`;
+    return withNoFocus(
+      `/render?path=${encodeURIComponent(t.path as string)}&_file=${encodeURIComponent(row.path)}${remote}`
+    );
   };
 
   let body: React.ReactNode;
@@ -478,7 +498,7 @@ export default function ListingPreviewPane({
         <iframe
           key={APP_MODE}
           className="pane-frame"
-          src={`/render?path=${encodeURIComponent(app.path)}`}
+          src={withNoFocus(`/render?path=${encodeURIComponent(app.path)}`)}
           title={app.name}
         />
       </>
@@ -495,8 +515,7 @@ export default function ListingPreviewPane({
     );
   } else {
     // No embeddable template for a file: the bare strip (no mode to switch —
-    // this row offers none — but the pane still needs its collapse control)
-    // over a metadata card (icon, name, size, Open).
+    // this row offers none) over a metadata card (icon, name, size, Open).
     body = (
       <>
         {strip()}
@@ -518,5 +537,11 @@ export default function ListingPreviewPane({
     );
   }
 
-  return <div className="listing-pane">{body}</div>;
+  // The only branch that renders a frame, and so the only one the focus guard
+  // has anything to watch.
+  return (
+    <div className="listing-pane" ref={rootRef} {...guardProps}>
+      {body}
+    </div>
+  );
 }

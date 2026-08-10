@@ -30,6 +30,18 @@ _STATIC = Path(fused_render.__file__).parent / "static"
 RUNTIME = (_STATIC / "runtime.js").read_text(encoding="utf-8")
 
 
+@pytest.fixture(autouse=True)
+def _isolated_prefs(tmp_path, monkeypatch):
+    """Never read the developer's own prefs.json.
+
+    The relay now resolves an unspecified model through the default-model
+    preference, so a machine that has one set would flip the model out from
+    under every test that asserts the hardcoded default — a pass/fail that
+    depends on whose laptop is running it.
+    """
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "prefs-home"))
+
+
 def _relay(body):
     return asyncio.run(_server_ai._ai_relay(body))
 
@@ -389,6 +401,61 @@ def test_relay_set_model_is_sent_on_every_request(monkeypatch):
                      "model": _server_ai._AI_DEFAULT_MODEL,
                      "system_prompt": _server_ai._AI_DEFAULT_SYSTEM_PROMPT}
                for c in set_models)
+
+
+def _set_models(proc):
+    return [c for c in proc.controls if c["subtype"] == "set_model"]
+
+
+def test_relay_uses_the_default_model_pref_when_the_call_names_none(monkeypatch):
+    # The pref is a SHORT name (shell/prefs.py); the CLI wants an id, and the
+    # mapping lives here so the two consumers of the pref can't disagree on it.
+    monkeypatch.setattr(_server_ai, "default_model", lambda: "opus")
+    fake = _cli_ok(monkeypatch, turns=[_result_lines()])
+    _relay({"prompt": "one"})
+    proc, = fake.procs
+    assert _set_models(proc)[0]["model"] == _server_ai._AI_SHORT_MODEL_IDS["opus"]
+
+
+def test_relay_falls_back_to_the_hardcoded_default_while_the_pref_is_unset(monkeypatch):
+    monkeypatch.setattr(_server_ai, "default_model", lambda: "")
+    fake = _cli_ok(monkeypatch, turns=[_result_lines()])
+    _relay({"prompt": "one"})
+    proc, = fake.procs
+    assert _set_models(proc)[0]["model"] == _server_ai._AI_DEFAULT_MODEL
+
+
+def test_relay_an_explicit_model_outranks_the_pref(monkeypatch):
+    # The pref changes what happens when nobody asked for a model, never what
+    # happens when somebody did — a caller that names one still gets it.
+    monkeypatch.setattr(_server_ai, "default_model", lambda: "haiku")
+    fake = _cli_ok(monkeypatch, turns=[_result_lines()])
+    _relay({"prompt": "one", "model": "claude-opus-4-8"})
+    proc, = fake.procs
+    assert _set_models(proc)[0]["model"] == "claude-opus-4-8"
+
+
+def test_relay_ignores_a_pref_value_it_has_no_id_for(monkeypatch):
+    # Belt-and-braces against the two lists drifting apart: a short name the
+    # mapping doesn't know falls through to the hardcoded default rather than
+    # reaching argv as an unmapped string.
+    monkeypatch.setattr(_server_ai, "default_model", lambda: "nonesuch")
+    fake = _cli_ok(monkeypatch, turns=[_result_lines()])
+    _relay({"prompt": "one"})
+    proc, = fake.procs
+    assert _set_models(proc)[0]["model"] == _server_ai._AI_DEFAULT_MODEL
+
+
+def test_every_valid_pref_short_name_maps_to_an_id(monkeypatch):
+    # The pref's value set and the relay's mapping are two lists that must
+    # cover each other; "" is the unset member and deliberately has no id.
+    from fused_render.shell.prefs import VALID_DEFAULT_MODELS
+
+    assert set(_server_ai._AI_SHORT_MODEL_IDS) == set(VALID_DEFAULT_MODELS) - {""}
+    for model_id in _server_ai._AI_SHORT_MODEL_IDS.values():
+        # Every mapped id must clear the argv charset guard — this mapping is
+        # a source of argv values, so it is inside that security boundary.
+        assert _server_ai._AI_MODEL_RE.fullmatch(model_id)
 
 
 def test_relay_effort_maps_to_thinking_budget_and_flag(monkeypatch):

@@ -11,17 +11,31 @@
 //   sorting.ts             sort resolution + entry sorting
 //   search.ts              fuzzy scoring / ranking (pure)
 //   selection.ts           selection model + cross-remount stash (pure)
-//   pane.ts                preview-pane state (usePreviewPane)
+//   pane.ts                preview-pane split (usePreviewPane: width + drag)
 //   row-utils.ts           RowCtx batch helpers
 //   bits.tsx               skeleton rows, ClipMark, highlight, scroll anchor
 //   useDirListing.ts       /api/fs/list fetch, Load more, dir watch, new-row cue
 //   useWalkSearch.ts       streamed walk + scoring + throttles + result paging
 //   useListingSelection.ts selection state + keyboard nav + reconcile
 //   useFileOps.ts          file operations + context menus + dialogs
+//   drag-drop.ts           what a drag carries + which drops are legal (pure)
+//   marquee.ts             sweep-to-select geometry: region, hits, auto-scroll (pure)
+//   useMarquee.ts          the press ARBITER (sweep vs move) + the sweep itself
+//   row-drag.ts            the move-drag: pointer tracking, targets, the ghost
+//   useRowDrag.ts          what a press picks up + who performs the drop
 //   shortcut-chord.ts       which chord means which action (pure)
 //   useListingShortcuts.ts file-op keyboard chords
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { navigate, replaceSearch } from "@platform/lib/router";
+import {
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+  type ReactNode,
+} from "react";
+import { createPortal } from "react-dom";
+import { IS_SNAPSHOT, navigate, replaceSearch } from "@platform/lib/router";
 import { dirname, normDir } from "@apps/explorer/lib/fs-actions";
 import { acquireOverlay, releaseOverlay } from "@platform/lib/ui-overlay";
 import { isMod } from "@platform/lib/platform";
@@ -33,6 +47,10 @@ import { useClipboard } from "@apps/explorer/lib/fs-clipboard";
 import ContextMenu from "@platform/ui/ContextMenu";
 import { PromptDialog, ConfirmDialog } from "@apps/explorer/FsDialogs";
 import ListingPreviewPane from "@apps/explorer/ListingPreviewPane";
+import { resultCountLabel } from "@apps/explorer/listing/result-cap";
+import { PathOverflow } from "@apps/explorer/BarMenu";
+import { claimFolderChrome } from "@apps/explorer/listing/folder-chrome";
+import { searchSlot, subscribeSearchSlot } from "@apps/explorer/search-slot";
 import {
   FLIP_MAX_ROWS,
   SORT_KEYS,
@@ -47,18 +65,39 @@ import {
   renderHighlight,
   measureScrollAnchor,
 } from "@apps/explorer/listing/bits";
-import { usePreviewPane, reflectPaneInUrl } from "@apps/explorer/listing/pane";
-import { autoSelectPath, selectionClaimed } from "@apps/explorer/listing/selection";
+import { usePreviewPane } from "@apps/explorer/listing/pane";
+import { passedDragSlop } from "@apps/explorer/listing/marquee";
+import {
+  INITIAL_SEARCH_SELECT,
+  autoSelectPath,
+  nextSearchSelection,
+  rowPressAction,
+  selectionClaimed,
+} from "@apps/explorer/listing/selection";
+import { useRowDrag } from "@apps/explorer/listing/useRowDrag";
+import { useMarquee } from "@apps/explorer/listing/useMarquee";
 import { useDirListing } from "@apps/explorer/listing/useDirListing";
 import { useWalkSearch } from "@apps/explorer/listing/useWalkSearch";
+import { useIndexStatus } from "@platform/lib/index-status";
+import { indexCaveat, withCaveat } from "@apps/explorer/listing/index-caveat";
 import { useListingSelection } from "@apps/explorer/listing/useListingSelection";
 import { useFileOps } from "@apps/explorer/listing/useFileOps";
 import { useListingShortcuts } from "@apps/explorer/listing/useListingShortcuts";
+
+// The search row hangs in the crumb bar when there is one to hang in, and
+// stays put otherwise. Either way it is the SAME React element — the query,
+// the walk's live counts and `searchInputRef` are Listing's state, and a
+// portal moves the DOM without touching any of that (a keystroke that focuses
+// the box from the listing below still reaches it).
+function inSearchSlot(slot: HTMLElement | null, row: ReactNode): ReactNode {
+  return slot ? createPortal(row, slot) : row;
+}
 
 export default function Listing({
   fsPath,
   provisional = false,
   embedded = false,
+  barChrome = false,
   onSingleApp,
 }: {
   fsPath: string;
@@ -74,11 +113,19 @@ export default function Listing({
   provisional?: boolean;
   // `embedded`: this Listing renders INSIDE another view (the preview pane's
   // `_listing` mode), not as the shell's main view. It must not touch the
-  // address bar (no sort/q/preview URL reflection), never opens its own
+  // address bar (no sort/q/sel URL reflection), never opens its own
   // preview pane (no nesting), and registers no document-level keyboard
   // handlers — those belong to the host's Listing. Mouse interaction stays:
   // clicks select/navigate, right-click menus and dialogs work as usual.
   embedded?: boolean;
+  // `barChrome`: this Listing IS the explorer's folder view — the one under
+  // the crumb bar, whose layout zone it therefore claims (see
+  // listing/folder-chrome.ts). The splits go away and the path `···` renders
+  // in this listing's search row instead of at the far end of the bar. False
+  // for every other host: the app-builder and learn variants have no crumb bar
+  // to claim, and a panel pane's Listing sits under a pane bar that carries
+  // its own splits and its own `···`.
+  barChrome?: boolean;
   // Reports the path of this directory's lone top-level HTML file (an
   // "app"), or null when there isn't exactly one — the caller (Preview's
   // header) uses this to surface an "Open as app" button. Fires whenever the
@@ -112,13 +159,6 @@ export default function Listing({
     replaceSearch(location.pathname + "?" + params.toString());
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fsPath]);
-  // Same URL reflection for a pane restored from saved viewstate.
-  useEffect(() => {
-    if (embedded) return;
-    reflectPaneInUrl(fsPath);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [fsPath]);
-
   const setSort = (key: SortKey) => {
     const next: { sort: SortKey; order: SortOrder } = {
       sort: key,
@@ -149,24 +189,45 @@ export default function Listing({
     setQuery,
     searching,
     isStale,
+    scanPending,
     validWalk,
     prefetchWalk,
     hits,
     displayHits,
     visibleHits,
     showingHeld,
-    hasMore,
-    sentinelRef,
+    cappedAway,
     searchSort,
-    setSearchSort,
     setSearchSortKey,
   } = useWalkSearch(fsPath, refresh, !embedded);
 
+  // Scan state for the search box's "indexing…" caveat. Gated on `searching`
+  // so an idle listing never polls.
+  const indexScan = useIndexStatus(searching);
+
   // An embedded Listing never opens its own pane (no nesting): the feature is
-  // disabled at the hook, whatever the folder's saved viewstate says.
-  const { pane, splitRef, togglePane, onDividerPointerDown } = usePreviewPane(
+  // disabled at the hook, however wide the embedded listing gets. Otherwise
+  // `pane.on` is purely a measurement of the split container (see pane.ts).
+  //
+  // A FROZEN-TREE listing is the second no-nesting case, and `embedded` cannot
+  // see it: the browsable snapshot (`history`'s `browse` framing, PT-14) is a
+  // whole shell loaded at `/explorer/embed/<tree>?snapshot=1`, so its Listing
+  // is the page's OWN top-level one — `embedded=false` — inside the history
+  // view's preview column. That column is 70% of the window, which on any
+  // ordinary screen is comfortably past PANE_SPLIT_MIN_W (measured: 954px in a
+  // 1600px window), so the frozen listing grew a preview pane INSIDE a preview
+  // pane. `?preview=false` used to stop it and was dropped with the toggle it
+  // belonged to, on the reasoning that the width decides — true for a listing
+  // that owns its window, false for one handed a column by a framer.
+  //
+  // `snapshot=1` and not a second param of its own: the framing flag has
+  // exactly one producer, and that producer is a template framing this listing
+  // in its own column. A flag that could only ever be written beside another
+  // one is the "three places to agree about one bit" the pane's own history
+  // (pane.ts) is a warning about.
+  const { pane, splitRef, onDividerPointerDown } = usePreviewPane(
     fsPath,
-    !embedded
+    !embedded && !IS_SNAPSHOT
   );
 
   const clipboard = useClipboard();
@@ -196,18 +257,32 @@ export default function Listing({
 
   const base = fsPath.replace(/\/$/, "");
 
-  // "Up" navigation for the button beside the search box: hop to the parent
-  // folder. It used to also seed `?sel=<name>` there so the row you came from
-  // was highlighted; that param is gone (useListingSelection documents why), so
-  // the parent lands on its first entry like any other folder open. Disabled at
-  // the filesystem / drive root, where dirname collapses to the folder itself.
-  const here = normDir(base);
-  const parentDir = dirname(here);
-  const atRoot = parentDir === here;
-  const goUp = () => {
-    if (atRoot) return;
-    navigate(parentDir, { isDir: true });
-  };
+  // Claim the crumb bar for as long as this folder view is mounted: the splits
+  // come off it, the path `···` renders in the search row below, and the bar
+  // itself portals into `crumbSlotRef` — the top of THIS column — so the
+  // preview pane beside it runs the full height of the window (see
+  // listing/folder-chrome.ts).
+  //
+  // A layout effect: the claim moves the bar, and a passive effect would paint
+  // one frame with it still spanning the window before it dropped into place.
+  // Refs are attached before layout effects run, so the slot is there.
+  const ownsBarChrome = barChrome && !embedded;
+  const crumbSlotRef = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    if (!ownsBarChrome) return;
+    return claimFolderChrome(crumbSlotRef.current);
+  }, [ownsBarChrome]);
+
+  // …and the search row goes UP into that same bar, at its right end — one
+  // header strip in this column, matching the pane's one across the divider
+  // (search-slot.ts). Non-null only once the bar has rendered its target,
+  // which is only ever over a folder that claimed the chrome; a host with no
+  // crumb bar (the app builder) keeps the row in place as its own first strip.
+  const barSearchSlot = useSyncExternalStore(subscribeSearchSlot, searchSlot, () => null);
+
+  // No "Up" BUTTON beside the search box any more: the crumb strip above is
+  // the same hop with a target the user can name, and the keyboard keeps its
+  // own (Mod+Up / bare Backspace — see listing/useListingShortcuts).
 
   // Tell the caller whether this folder's top level holds exactly one HTML
   // ("app") file. Keyed off the plain listing, not the search results — the
@@ -259,6 +334,7 @@ export default function Listing({
     selectedPath,
     selectedSet,
     selectOnly,
+    selectPaths,
     toggleSelected,
     extendTo,
     pendingSelectRef,
@@ -278,6 +354,7 @@ export default function Listing({
     dialog,
     setDialog,
     doPaste,
+    doMove,
     doDuplicate,
     doTrash,
     startRename,
@@ -300,6 +377,21 @@ export default function Listing({
     acquireOverlay();
     return () => releaseOverlay();
   }, [menu, dialog]);
+
+  // `selectstart`, cancelled for the whole scroller. This is the half of the
+  // text-selection suppression that used to be preventDefault-on-mousedown (see
+  // onRowPointerDown): it says "no selection begins or extends in here" without
+  // cancelling a mousedown default that a draggable row needs. Registered
+  // natively because React has no synthetic onSelectStart. Nothing inside the
+  // scroller is meant to be selectable — the rows already carry
+  // `user-select: none` — so there is nothing to lose by refusing all of them.
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const onSelectStart = (e: Event) => e.preventDefault();
+    el.addEventListener("selectstart", onSelectStart);
+    return () => el.removeEventListener("selectstart", onSelectStart);
+  }, []);
 
   // FLIP the rows to their new slots whenever the rendered set changes: a column
   // sort, a dir-watch refresh of the plain listing, or a streaming search
@@ -396,9 +488,9 @@ export default function Listing({
   //
   // Three conditions hold the shot rather than spending it, because each can
   // still turn into a folder the user is looking at:
-  //   • the pane is OFF — nothing to preview into yet, and toggling it on later
-  //     should still land on the first entry (`pane.on` is a dependency for
-  //     exactly that);
+  //   • the pane is OFF — the container is too narrow to split, so there is
+  //     nothing to preview into yet; widening the window later should still
+  //     land on the first entry (`pane.on` is a dependency for exactly that);
   //   • search mode — the rendered rows are a query's answer, not the folder's,
   //     so clearing the query still lands on the folder's first entry;
   //   • the listing is not OK — `status !== "ok"` and not merely "still
@@ -443,6 +535,37 @@ export default function Listing({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [embedded, provisional, searching, state.status, pane.on]);
 
+  // Search results land on their TOP HIT, so Enter and the pane act on the
+  // best match without the user having to reach for it first.
+  //
+  // Unlike the folder shot above this is NOT one-shot: a folder's rows settle
+  // once per navigation, results re-rank on every keystroke. The decision
+  // (searchAutoSelectPath) owns what to select; this owns only two things.
+  //
+  // WHEN to ask. Not while embedded (the pane's own `_listing` has no pane to
+  // fill) and not provisional, matching the folder shot. It does NOT wait for
+  // `pane.on`, which that one does: the folder case exists to fill the pane,
+  // whereas a selected top hit is worth having for Enter and the arrow keys
+  // whether or not the window is wide enough to preview it.
+  //
+  // Whose selection it is — and in particular that a user's choice OUTLIVES a
+  // query change — is `nextSearchSelection`'s to track, not this effect's. It
+  // lived here as a ref that got cleared per query, which quietly threw the
+  // user's selection away on the next keystroke; it is state with rules, so it
+  // belongs somewhere it can be tested.
+  const searchSelectRef = useRef(INITIAL_SEARCH_SELECT);
+  useEffect(() => {
+    if (embedded || provisional || !searching) return;
+    const { state, select } = nextSearchSelection(
+      searchSelectRef.current,
+      navRows,
+      rowCtxByPath,
+      sel,
+    );
+    searchSelectRef.current = state;
+    if (select !== null) selectOnly(select);
+  }, [embedded, provisional, searching, navRows, rowCtxByPath, sel, selectOnly]);
+
   // The selection as full rows, in rendered order (so a batch op processes rows
   // top-to-bottom regardless of the order they were clicked). Paths without a
   // rendered row — a search page not yet revealed, a row removed by a refetch
@@ -457,6 +580,36 @@ export default function Listing({
   }, [sel.paths, navRows, rowCtxByPath]);
   // The lead row, for the single-entry operations (Rename, paste target).
   const leadRow = sel.lead ? rowCtxByPath.get(sel.lead) : undefined;
+
+  // Drag-to-move. The selection is passed in RENDERED order (selectedRows), so
+  // dragging a row that is part of it carries the whole thing top-to-bottom.
+  // Rows carry no drag handlers: they declare what they ACCEPT with the
+  // data-fs-drop-* attributes below, and the gesture itself is pointer-driven
+  // (listing/row-drag.ts).
+  const { startMoveDrag } = useRowDrag({
+    selectedPaths: useMemo(() => selectedRows.map((r) => r.path), [selectedRows]),
+    rowCtxByPath,
+    scrollRef,
+    onMove: doMove,
+  });
+
+  // The listing's ONE press arbiter, in the capture phase (see the wiring on the
+  // scroller below). It decides sweep-versus-move from a snapshot of the
+  // selection taken before the press can change it, then either sweeps here or
+  // hands the move-drag over.
+  //
+  // The sweep writes through the ONE selection model that clicks and the
+  // keyboard use (selectPaths above) — no parallel store, no second `?sel=`
+  // writer — and it draws nothing: the rows lighting up as the pointer crosses
+  // them is the feedback, which is precisely what made the old rubber band
+  // redundant.
+  const { onPointerDownCapture: onListingPointerDownCapture } = useMarquee({
+    scrollRef,
+    navRows,
+    selectedPaths: sel.paths,
+    selectPaths,
+    startMoveDrag,
+  });
 
   useListingShortcuts({
     base,
@@ -473,54 +626,108 @@ export default function Listing({
     globalKeys: !embedded,
   });
 
-  // Mouse selection on a row:
-  //   • Shift+click  — select the contiguous range anchor..row (rendered order);
-  //   • Mod+click    — toggle this row in/out and re-anchor on it;
-  //   • plain click  — depends on the preview pane. Pane OFF (the default):
-  //     select AND open, what a single click has always done in this explorer.
-  //     Pane ON: select only — the click's job is to drive the pane preview
-  //     (files and folders both), and double-click is what opens. Enter still
-  //     opens either way (the keyboard model doesn't change with the pane).
-  // No single/double-click delay timer: with the pane on, the first click of a
-  // double-click selects (harmless — the pane fetch is superseded/unmounted by
-  // the navigation the second click triggers).
-  // Native text selection is suppressed in onRowMouseDown, not here — see there.
-  const onRowClick = (e: React.MouseEvent, path: string, row: RowCtx) => {
-    if (e.shiftKey && !isMod(e)) {
-      e.preventDefault();
-      extendTo(path);
+  // Mouse selection on a row — SELECTION ONLY, never navigation, and decided
+  // on the PRESS:
+  //   • Shift+press  — select the contiguous range anchor..row (rendered order);
+  //   • Mod+press    — toggle this row in/out and re-anchor on it;
+  //   • plain press  — select this row alone;
+  //   • plain press already inside a MULTI-selection — nothing yet; see
+  //     onRowPointerUp.
+  // Which of the four a gesture means is listing/selection's rowPressAction,
+  // where the model and the reason it hangs off pointerdown are written down
+  // and tested. In short: rows are drag sources, a draggable element does not
+  // reliably deliver the `click` after the press, and every selection path in
+  // this listing used to hang off exactly that click.
+  //
+  // Left button only. The right button belongs to the context menu, which does
+  // its own selection handling (openRowMenu below), and the middle button is
+  // the browser's.
+  const pressRef = useRef<{ path: string; x: number; y: number } | null>(null);
+
+  const onRowPointerDown = (e: React.PointerEvent, path: string) => {
+    if (e.button !== 0) return;
+    const action = rowPressAction({
+      mod: isMod(e),
+      shift: e.shiftKey,
+      inMultiSelection: selectedSet.has(path) && sel.paths.length > 1,
+    });
+    // Remembered for the deferred case only, but recorded for every press so
+    // the release can measure how far the pointer travelled.
+    pressRef.current = action === "defer" ? { path, x: e.clientX, y: e.clientY } : null;
+    if (action === "defer") return;
+    if (action === "select") {
+      selectOnly(path);
       return;
     }
-    if (isMod(e)) {
-      e.preventDefault();
-      toggleSelected(path);
-      return;
-    }
+    collapseNativeSelection();
+    if (action === "extend") extendTo(path);
+    else toggleSelected(path);
+  };
+
+  // The deferred half: a plain press inside a multi-selection collapses onto
+  // the pressed row when the button comes up, and ONLY if the press stayed
+  // still. If it travelled, it was a drag of the whole selection (or a sweep)
+  // and the selection is not ours to change.
+  //
+  // The distance test reuses the sweep's own slop rather than introducing a
+  // second threshold — one number decides press-versus-gesture everywhere. A
+  // press that became a native drag usually never delivers a pointerup at all,
+  // so this mostly does not run in that case; the slop covers the rest,
+  // including a drag the user cancelled.
+  const onRowPointerUp = (e: React.PointerEvent, path: string) => {
+    const press = pressRef.current;
+    pressRef.current = null;
+    if (!press || press.path !== path) return;
+    if (passedDragSlop({ x: press.x, y: press.y }, { x: e.clientX, y: e.clientY })) return;
     selectOnly(path);
-    if (!pane.on) navigate(row.path, { isDir: row.isDir });
   };
 
-  // Double-click opens when the pane owns the single click. Pane off: the
-  // single click already navigated, so this is a no-op (navigation unmounts
-  // the listing before a second click can land anyway).
+  // Double-click OPENS. Unconditionally: the same gesture in the same folder
+  // has to mean the same thing whether or not the window happens to be wide
+  // enough for the preview pane (listing/selection documents the model). Enter
+  // opens the same target from the keyboard.
+  // No single/double-click delay timer: the first click of a double-click
+  // selects, which is harmless — any pane fetch it starts is superseded or
+  // unmounted by the navigation the second click triggers.
   const onRowDoubleClick = (row: RowCtx) => {
-    if (pane.on) navigate(row.path, { isDir: row.isDir });
+    navigate(row.path, { isDir: row.isDir });
   };
 
-  // Kill the browser's own text selection for Shift/Mod+click, on MOUSEDOWN —
-  // the only moment early enough. `user-select: none` on tr.row (shell.css) is
-  // necessary but NOT sufficient: it makes the row's own text unselectable, yet
-  // a Shift+click still sets a selection ENDPOINT, so the browser happily paints
-  // a range anchored at whatever selectable text was last clicked (a crumb, the
-  // search box, anything outside the table) straight across the listing. So:
-  // preventDefault stops a selection from being started or extended, and the
-  // removeAllRanges collapses one that already existed before the gesture.
-  // preventDefault on mousedown does not cancel the subsequent click, so
-  // onRowClick still runs; rows aren't focusable, so the suppressed focus
-  // side-effect costs nothing.
-  const onRowMouseDown = (e: React.MouseEvent) => {
-    if (!e.shiftKey && !isMod(e)) return;
-    e.preventDefault();
+  // Kill the browser's own text selection for a Shift/Mod press.
+  //
+  // `user-select: none` on tr.row (shell.css) is necessary but NOT sufficient:
+  // it makes the row's own text unselectable, yet a Shift+click still sets a
+  // selection ENDPOINT, so the browser happily paints a range anchored at
+  // whatever selectable text was last clicked (a crumb, the search box,
+  // anything outside the table) straight across the listing.
+  //
+  // This used to be `preventDefault()` on the MOUSEDOWN, which is the earliest
+  // moment and stops a range being started or extended at all. It stopped being
+  // safe when rows became DRAG SOURCES. Cancelling a mousedown's default on a
+  // draggable element is how a drag is cancelled, and on WebKit the `click`
+  // that would have followed does not arrive either — so Shift/Mod+click ran
+  // this handler and then nothing else, no range was extended, no row toggled,
+  // and multi-select was silently dead. A plain click never took this branch,
+  // which is exactly the shape the bug was reported in ("multi folder selection
+  // using mouse doesn't work anymore").
+  //
+  // The click-suppression half of that is reported behaviour, not something
+  // this codebase can demonstrate: synthesising a modified NATIVE click is
+  // outside what the available tooling can do. Which is the other reason the
+  // fix is shaped this way — it does not depend on the mechanism being what we
+  // think it is. Nothing here cancels a mousedown default any more, so whatever
+  // that default does to the click is no longer our business.
+  //
+  // So the suppression moved off the mousedown default and onto the two places
+  // that do not fight the drag:
+  //   • `selectstart` on the scroller (registered natively below — React has no
+  //     synthetic event for it), which is the browser's own "a selection is
+  //     about to begin/extend here" hook and cancels it without touching the
+  //     mousedown;
+  //   • collapsing any existing range when a modified press lands
+  //     (onRowPointerDown), so a range anchored OUTSIDE the listing has nothing
+  //     to paint from.
+  const collapseNativeSelection = () => {
     const winSel = window.getSelection();
     if (winSel && !winSel.isCollapsed) winSel.removeAllRanges();
   };
@@ -571,6 +778,11 @@ export default function Listing({
               <tr
                 key={entry.rel}
                 data-flip-key={childPath}
+                /* What this row ACCEPTS, for the pointer drag's hit test
+                   (listing/row-drag.ts). Not a drag SOURCE: where a drag may
+                   start is decided once, at pointerdown, by the arbiter. */
+                data-fs-drop-path={childPath}
+                data-fs-drop-dir={entry.is_dir ? "1" : "0"}
                 className={
                   "row" +
                   (selectedSet.has(childPath) ? " selected" : "") +
@@ -580,14 +792,8 @@ export default function Listing({
                   (cutSet.has(childPath) ? " cut" : "") +
                   (copiedSet.has(childPath) ? " copied" : "")
                 }
-                onClick={(e) =>
-                  onRowClick(e, childPath, {
-                    path: childPath,
-                    name: entry.rel.split("/").pop() ?? entry.rel,
-                    isDir: entry.is_dir,
-                    parentDir: dirname(childPath),
-                  })
-                }
+                onPointerDown={(e) => onRowPointerDown(e, childPath)}
+                onPointerUp={(e) => onRowPointerUp(e, childPath)}
                 onDoubleClick={() =>
                   onRowDoubleClick({
                     path: childPath,
@@ -596,7 +802,6 @@ export default function Listing({
                     parentDir: dirname(childPath),
                   })
                 }
-                onMouseDown={onRowMouseDown}
                 onContextMenu={(e) =>
                   openRowMenu(e, {
                     path: childPath,
@@ -607,14 +812,20 @@ export default function Listing({
                 }
               >
                 <td className="name">
-                  <span className="icon">
-                    {iconForEntry(
-                      entry.rel.split("/").pop() ?? entry.rel,
-                      entry.is_dir,
-                    )}
-                  </span>
-                  <span className="search-path">
-                    {renderHighlight(entry.rel, positions)}
+                  {/* Layout only — the span hugs the icon+name so a long name
+                      ellipsizes inside it. It is NOT a drag source: a drag
+                      starts on an already-selected row and nowhere else
+                      (drag-drop's pressStartsDrag). */}
+                  <span className="row-handle">
+                    <span className="icon">
+                      {iconForEntry(
+                        entry.rel.split("/").pop() ?? entry.rel,
+                        entry.is_dir,
+                      )}
+                    </span>
+                    <span className="search-path">
+                      {renderHighlight(entry.rel, positions)}
+                    </span>
                   </span>
                   <ClipMark
                     cut={cutSet.has(childPath)}
@@ -630,23 +841,48 @@ export default function Listing({
               </tr>
             );
           })}
-          {hasMore && (
-            <tr ref={sentinelRef}>
+          {cappedAway > 0 && (
+            /* No sentinel and no "load more": past the top hundred a fuzzy
+               rank stops being useful, so the answer is a better query. The
+               count in the search chip carries the real total. */
+            <tr>
               <td colSpan={3} className="status-message">
-                Scroll for more…
+                {cappedAway.toLocaleString()} more match
+                {cappedAway === 1 ? "" : "es"} not shown
               </td>
             </tr>
           )}
         </>
+      );
+    } else if (scanPending) {
+      // The corpus is in hand but this query has not been scored yet (the
+      // scan is debounced and sliced — listing/scan-job). An index-backed
+      // corpus makes the walk read "ok" instantly, so without this the empty
+      // result would render as a confident "No matches" for a moment on
+      // every keystroke.
+      body = (
+        <tr>
+          <td colSpan={3} className="status-message">
+            Searching…
+          </td>
+        </tr>
       );
     } else if (validWalk.status === "ok" || validWalk.status === "streaming") {
       // No matches. Say so honestly: distinguish "still looking" (stream
       // running) and "the walk didn't even cover everything" (truncated) —
       // the old UI showed a bare "No matches" even when the file existed
       // in a region the capped walk never reached.
+      // The entries-scanned count belongs to the live fallback WALK, and only
+      // that walk moves it. When the index serves the corpus there is no walk
+      // at all — the fetch is one request — so the number sat at 0 for the
+      // whole (sub-second) window and the row read "still searching (0 entries
+      // scanned)" every time. Show the progress only once there is progress to
+      // show; before that all we can honestly say is that we are looking.
       const message =
         validWalk.status === "streaming"
-          ? `No matches yet — still searching (${validWalk.count.toLocaleString()} entries scanned)`
+          ? validWalk.count > 0
+            ? `No matches yet — still searching (${validWalk.count.toLocaleString()} entries scanned)`
+            : "Searching…"
           : validWalk.truncated
             ? `No matches in the first ${validWalk.total.toLocaleString()} entries — this folder tree is too large to search fully`
             : "No matches";
@@ -690,6 +926,10 @@ export default function Listing({
         <tr
           key={entry.name}
           data-flip-key={childPath}
+          /* See the search-hit row above: what this row ACCEPTS, never where a
+             drag may start. */
+          data-fs-drop-path={childPath}
+          data-fs-drop-dir={entry.is_dir ? "1" : "0"}
           className={
             (entry.ignored ? "row ignored" : "row") +
             (newNames.has(entry.name) ? " row-new" : "") + // brief dir-watch tint
@@ -698,14 +938,8 @@ export default function Listing({
             (cutSet.has(childPath) ? " cut" : "") +
             (copiedSet.has(childPath) ? " copied" : "")
           }
-          onClick={(e) =>
-            onRowClick(e, childPath, {
-              path: childPath,
-              name: entry.name,
-              isDir: entry.is_dir,
-              parentDir: base,
-            })
-          }
+          onPointerDown={(e) => onRowPointerDown(e, childPath)}
+          onPointerUp={(e) => onRowPointerUp(e, childPath)}
           onDoubleClick={() =>
             onRowDoubleClick({
               path: childPath,
@@ -714,7 +948,6 @@ export default function Listing({
               parentDir: base,
             })
           }
-          onMouseDown={onRowMouseDown}
           onContextMenu={(e) =>
             openRowMenu(e, {
               path: childPath,
@@ -725,10 +958,13 @@ export default function Listing({
           }
         >
           <td className="name">
-            <span className="icon">
-              {iconForEntry(entry.name, entry.is_dir)}
+            {/* Layout only — see the search-hit row above. Not a drag source. */}
+            <span className="row-handle">
+              <span className="icon">
+                {iconForEntry(entry.name, entry.is_dir)}
+              </span>
+              {entry.name}
             </span>
-            {entry.name}
             <ClipMark
               cut={cutSet.has(childPath)}
               copied={copiedSet.has(childPath)}
@@ -779,20 +1015,60 @@ export default function Listing({
   }
 
   // --- search match count (inline in the search row) ------------------------
+  //
+  // Two strings per state: a TERSE one to show and the full sentence to say.
+  // The chip is pinned inside the input's right edge, so every character it
+  // spends is a character the query cannot use — and since the row moved up
+  // into the crumb bar (search-slot.ts) it is competing with the path as well.
+  // "1,204 matches · 45,110 scanned…" was most of a narrow box. The numbers are
+  // the whole message; "matches" and "scanned" are recoverable from context by
+  // anyone looking at a list of search results, and stay in the title and the
+  // aria-label for anyone who is not.
+  const compact = (n: number) =>
+    n.toLocaleString(undefined, { notation: "compact", maximumFractionDigits: 1 });
 
   let searchCount: string | null = null;
-  let searchCountTitle: string | undefined;
+  let searchCountFull: string | undefined;
+  // The chip's reserved width covers a match count; the scan caveat makes it
+  // longer, so the input reserves more while one is running.
+  let widePin = false;
   if (searching && validWalk.status === "streaming") {
     // Live progress while the walk streams: match count so far + how much of
-    // the tree has been scanned. Updates in place, no layout shift.
-    searchCount = `${hits.length.toLocaleString()} match${hits.length === 1 ? "" : "es"} · ${validWalk.count.toLocaleString()} scanned…`;
+    // the tree has been scanned. Updates in place, no layout shift. The scan
+    // total is the digit-hungry half and the one nobody reads precisely, so it
+    // is the half that goes compact ("45.1K").
+    searchCount = `${compact(hits.length)} · ${compact(validWalk.count)}…`;
+    searchCountFull = `${hits.length.toLocaleString()} match${hits.length === 1 ? "" : "es"} · ${validWalk.count.toLocaleString()} entries scanned so far`;
   } else if (searching && validWalk.status === "ok" && hits.length > 0) {
     // A truncated walk (server safety cap) means `hits` undercounts the real
     // tree. Signal that without new UI: a "+" on the number plus a tooltip.
+    // Terse form for the chip, full sentence for title/aria. Past the display
+    // cap the chip has to own up to it — "top 100 of 4.9K+" — because the
+    // rendered list stops at the cap while the count keeps reporting the whole
+    // ranking. The cap itself stays out of this file (result-cap.ts owns it):
+    // `cappedAway` says whether it bit, `visibleHits` says how many rows show.
     const suffix = validWalk.truncated ? "+" : "";
-    searchCount = `${hits.length.toLocaleString()}${suffix} match${hits.length === 1 ? "" : "es"}`;
+    searchCount =
+      cappedAway > 0
+        ? `top ${visibleHits.length} of ${compact(hits.length)}${suffix}`
+        : `${compact(hits.length)}${suffix}`;
+    searchCountFull = resultCountLabel(hits.length, validWalk.truncated);
     if (validWalk.truncated)
-      searchCountTitle = `Search covers the first ${validWalk.total.toLocaleString()} entries of this folder tree`;
+      searchCountFull += ` — search covers the first ${validWalk.total.toLocaleString()} entries of this folder tree`;
+  }
+
+  // --- index scan caveat ----------------------------------------------------
+  // Folded into the status chip rather than added beside it: the chip is
+  // absolutely pinned inside the input, so a second element in that row would
+  // have to compete with it for the same few pixels on a narrow pane. Both
+  // facts are about the same search, and one line says both. Which message
+  // appears is a claim about how far the results can be trusted, so it lives
+  // in a pure, tested helper (listing/index-caveat).
+  const caveat = searching ? indexCaveat(indexScan) : null;
+  if (caveat) {
+    searchCount = withCaveat(searchCount, caveat);
+    searchCountFull = caveat.title;
+    widePin = true;
   }
 
   // Is anything pinned inside the search input right now? Mirrors the three
@@ -807,44 +1083,45 @@ export default function Listing({
     <div className="listing">
       <div className="listing-split" ref={splitRef}>
         <div className="listing-main">
+          {/* Where the crumb bar lands over a folder (the claim above). It sits
+              INSIDE the left column, as its whole header — the search row
+              portals up into it — so the bar ends at the divider and the pane
+              keeps the whole right-hand column from the top of the window
+              down. `display: contents`, so the bar is a flex item of
+              .listing-main exactly as it was of #main. */}
+          {ownsBarChrome && <div className="listing-crumb-slot" ref={crumbSlotRef} />}
           {/* Embedded (preview pane): no search row — the pane is a glance,
               and the host listing's search/toggle already own that chrome. */}
-          {!embedded && (
-            <div className="listing-search">
-              <button
-                type="button"
-                className="bar-ctl bar-ctl-icon"
-                title={atRoot ? "Already at the root" : "Up to parent folder"}
-                aria-label="Up to parent folder"
-                disabled={atRoot}
-                onClick={goUp}
-              >
-                <svg
-                  viewBox="0 0 24 24"
-                  width="16"
-                  height="16"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="2"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                >
-                  <line x1="12" y1="19" x2="12" y2="5" />
-                  <polyline points="5 12 12 5 19 12" />
-                </svg>
-              </button>
+          {!embedded && inSearchSlot(barSearchSlot,
+            /* `searching` (a non-empty query) is what tells the crumb bar to
+               stand the crumbs down and give the row its whole width — see
+               #breadcrumb:has(.listing-search.searching) in explorer.css.
+               Nothing to hand upward: the row is portaled INTO the bar, so a
+               class on the row is already inside the bar's subtree. */
+            <div className={"listing-search" + (searching ? " searching" : "")}>
               {/* The box wraps input + pinned chips so the pane toggle can sit to
             their right without disturbing the chips' inside-the-input pin.
             `has-pin` says a chip is actually pinned right now, so the input
             reserves room for one only then — the reservation is wide, and
             idle it was dead space that clipped the placeholder in a narrow
             window. */}
-              <div className={"listing-search-box" + (hasPin ? " has-pin" : "")}>
+              <div
+                className={
+                  "listing-search-box" +
+                  (hasPin ? " has-pin" : "") +
+                  (widePin ? " wide-pin" : "")
+                }
+              >
                 <input
                   ref={searchInputRef}
                   type="search"
                   className="listing-search-input"
-                  placeholder="Start typing to search…"
+                  // Just "Search…": the row shares the crumb bar now, and the
+                  // resting box is deliberately small (it grows to the whole
+                  // strip on the first keystroke), so the placeholder has to
+                  // fit that box rather than set its width. "Start typing to
+                  // search" was instructions for a control that needs none.
+                  placeholder="Search…"
                   value={query}
                   onFocus={prefetchWalk}
                   onChange={(e) => setQuery(e.target.value)}
@@ -867,7 +1144,8 @@ export default function Listing({
                 {searchCount !== null && (
                   <span
                     className="listing-search-count"
-                    title={searchCountTitle}
+                    title={searchCountFull}
+                    aria-label={searchCountFull}
                   >
                     {searchCount}
                   </span>
@@ -879,75 +1157,43 @@ export default function Listing({
                   </span>
                 )}
               </div>
-              {/* Current result ordering, and the way back to relevance. Without it
-            "no arrow anywhere" was the only signal that results were in fuzzy
-            rank order, and a column sort had no explicit escape. */}
-              {searching && (
-                <button
-                  type="button"
-                  className={
-                    "listing-sort-chip" + (searchSort ? " sorted" : "")
-                  }
-                  disabled={!searchSort}
-                  title={
-                    searchSort
-                      ? "Results are column-sorted — click for relevance order"
-                      : "Results are in relevance order (best match first)"
-                  }
-                  onClick={() => setSearchSort(null)}
-                >
-                  {searchSort
-                    ? `${SORT_KEYS[searchSort.sort].toLowerCase()} ${searchSort.order}`
-                    : "relevance"}
-                </button>
-              )}
-              {/* Only while the pane is CLOSED — and then with its label. The
-                  collapse half of this toggle moved onto the pane itself
-                  (ListingPreviewPane's header), where the action is spatial
-                  and needs no words: the control sits on the thing it
-                  collapses, at the seam. Reopening cannot live there, because
-                  a closed pane has nowhere to host a control — so it comes
-                  back here, and it comes back LABELLED: an icon-only square in
-                  this corner would read as one more of the layout glyphs the
-                  title bar carries a few pixels above it, and "the pane is
-                  off" is exactly the state a user needs told rather than
-                  inferred. */}
-              {!embedded && !pane.on && (
-                <button
-                  type="button"
-                  className="bar-ctl listing-pane-toggle"
-                  title="Show preview"
-                  onClick={togglePane}
-                >
-                  {/* The pane glyph with its right column empty — the pane it
-                      would open, drawn as it currently is. It used to fill that
-                      column for the on state; the button no longer has one. */}
-                  <svg
-                    viewBox="0 0 24 24"
-                    width="16"
-                    height="16"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="1.8"
-                    strokeLinejoin="round"
-                    aria-hidden="true"
-                  >
-                    <rect x="3" y="4" width="18" height="16" rx="2" />
-                    <line x1="14" y1="4" x2="14" y2="20" />
-                  </svg>
-                  Preview
-                </button>
-              )}
+              {/* No pane toggle here any more. The split is decided by the
+                  container's width (listing/pane.ts), so there is no state for
+                  a button to flip — and a control that only ever restated what
+                  the layout already showed was one more thing in a row that is
+                  meant to be the search box. */}
+              {/* The path `···` for the folder view (see the claim above).
+                  Same control, same two items — "Open in Finder" and "Copy
+                  path" — rendered here, at the end of the row that holds this
+                  folder's other control, and carried into the crumb bar with
+                  it: the row is what portals, so the `···` ends up back at the
+                  bar's right end without the bar having to own it. */}
+              {/* normDir, not the bare `base`: `base` has its trailing slash
+                  stripped, which at the filesystem root leaves "" (and "C:" at
+                  a Windows drive root). The crumb-bar copy of this control got
+                  the un-stripped fsPath, so at "/" the menu's two items used to
+                  copy an empty string and POST an empty reveal path. Same
+                  normalisation the drop target below uses. */}
+              {ownsBarChrome && <PathOverflow fsPath={normDir(base)} />}
             </div>
           )}
           <div
             ref={scrollRef}
             /* Dimmed both when the deferred render lags a keystroke and while
              held (pre-refresh) results stand in for a re-running walk. */
-            className={
-              "listing-scroll" +
-              (isStale || showingHeld ? " listing-stale" : "")
-            }
+            className={"listing-scroll" + (isStale || showingHeld ? " listing-stale" : "")}
+            /* The background means THIS FOLDER: "move these here". It lights up
+               (.drop-into, painted by row-drag.ts) only when that would actually
+               move something — dropping rows into the folder they already live
+               in is a no-op, which dropIsValid already spells out. */
+            data-fs-drop-path={normDir(base)}
+            data-fs-drop-dir="1"
+            /* THE PRESS ARBITER, and the CAPTURE phase is load-bearing: it runs
+               before the row's own pointerdown, so the selection it snapshots is
+               the one from before this press. A press on an already-selected row
+               drags the selection; anywhere else sweeps; a press that barely
+               moves is still the click it always was. */
+            onPointerDownCapture={onListingPointerDownCapture}
             /* No onClick here: clicking the empty area below the rows does
                NOT deselect. Finder's rule, and it cost more than it bought
                once the preview pane arrived — a stray click anywhere in the
@@ -1034,11 +1280,12 @@ export default function Listing({
             />
             <div
               className="listing-pane-slot"
-              // A PERCENTAGE, not a pixel width: the split is stored as a
-              // fraction of this container (listing/pane.ts), so a window
-              // resize keeps the proportion the user dragged instead of
-              // leaving the pane at one window's arithmetic. The pixel floors
-              // are the slot's / the list's CSS min-widths.
+              // A PERCENTAGE, not a pixel width: the split is a fraction of
+              // this container (listing/pane.ts), so a window resize keeps the
+              // proportion the user dragged instead of leaving the pane at one
+              // window's arithmetic — and, until it IS dragged, steps between
+              // 30/50/70% as the container crosses the width breakpoints. The
+              // pixel floors are the slot's / the list's CSS min-widths.
               style={{ flexBasis: `${pane.frac * 100}%` }}
             >
               {/* Keyed on the previewed path: switching rows remounts the pane,
@@ -1069,7 +1316,6 @@ export default function Listing({
                       : null
                 }
                 selCount={sel.paths.length}
-                onCollapse={togglePane}
               />
             </div>
           </>

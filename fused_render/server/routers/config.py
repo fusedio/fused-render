@@ -98,6 +98,21 @@ def api_config(
             config["desktop_instance"]["token"] = instance[1]
     return config
 
+@router.get("/api/desktop/ready")
+def api_desktop_ready(
+    token: str | None = Header(default=None, alias="X-Fused-Desktop-Token"),
+):
+    # Readiness probe (desktop_probe.matching_server): echoes only the launch token, touching no mounts/rcd, so a slow cold-start subsystem can't make the supervisor kill a healthy server.
+    from fused_render.paths import desktop_instance
+
+    instance = desktop_instance()
+    if instance is None:
+        return {}
+    echo = {"id": instance[0]}
+    if token == instance[1]:
+        echo["token"] = instance[1]
+    return {"desktop_instance": echo}
+
 @router.post("/api/desktop/shutdown")
 def api_desktop_shutdown(
     request: Request,

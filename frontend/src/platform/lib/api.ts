@@ -1,4 +1,6 @@
 // Server API wrappers. Non-ok responses throw with the server's error message.
+import { noteFsMutation, noteIndexLifecycle } from "@platform/lib/index-freshness";
+
 export interface Config {
   start_dir: string;
   home: string;
@@ -16,6 +18,10 @@ export interface Config {
   learn_mount_ready: boolean;
   // Same gate for the builtin sessions mount (the Claude Sessions sub-app).
   sessions_mount_ready: boolean;
+  // No claude_config gate here any more: the Claude Config app stopped being a
+  // mounted html+py app and became native React over its own server bridge, so
+  // its availability is GET /api/claude-config/status (useClaudeConfigAvailable
+  // in apps/claude_config), not a mount record.
 }
 
 export interface FsEntry {
@@ -103,8 +109,18 @@ function httpError(data: { error?: string } | null, status: number): HttpError {
   return err;
 }
 
-async function getJson<T>(url: string, headers?: Record<string, string>): Promise<T> {
-  const res = await fetch(url, headers ? { headers } : undefined);
+// `signal` is what a folder change uses to abandon an in-flight index fetch,
+// the same way it abandons a walk stream.
+// getJson/postJson are exported so a feature that keeps its own typed wrappers
+// in its own module (the Claude-config bridge, apps/claude_config/api.ts) speaks
+// this exact transport rather than a second hand-rolled fetch: same thrown
+// HttpError contract, and — the part that actually bites — the same X-Fused
+// write guard, without which those endpoints answer 403.
+export async function getJson<T>(
+  url: string,
+  opts?: { headers?: Record<string, string>; signal?: AbortSignal },
+): Promise<T> {
+  const res = await fetch(url, opts);
   const data = await res.json();
   if (!res.ok) throw httpError(data, res.status);
   return data as T;
@@ -125,7 +141,7 @@ async function mutateJson<T>(method: "PUT" | "POST", url: string, body: unknown)
 }
 
 const putJson = <T>(url: string, body: unknown) => mutateJson<T>("PUT", url, body);
-const postJson = <T>(url: string, body: unknown) => mutateJson<T>("POST", url, body);
+export const postJson = <T>(url: string, body: unknown) => mutateJson<T>("POST", url, body);
 
 export function getConfig(): Promise<Config> {
   return getJson<Config>("/api/config");
@@ -231,6 +247,108 @@ export async function walkDirStream(
   if (buffer.trim()) consume(buffer);
   if (!end) throw new Error("walk stream ended without a terminal record");
   return end;
+}
+
+// GET /api/index/search — the in-folder corpus answered from the persistent
+// file index instead of a live walk. `entries` are WalkEntry-shaped on purpose
+// so the search pipeline is indifferent to which source produced them.
+//
+// `covered` (the index visited this exact folder) is the whole decision; a
+// miss is a normal 200 with covered:false, because "no index yet", "not
+// covered" and "a scan is running" all mean the same thing here — use the
+// live walk instead. `fresh` (younger than FRESH_MAX_AGE_S) is reported but
+// NOT a gate: see index-corpus.ts for why age alone does not disqualify a
+// corpus, and lib/index-freshness.ts for the case that does — a folder this
+// app itself changed since the last scan.
+export interface IndexSearchResult {
+  covered: boolean;
+  fresh: boolean;
+  root: string;
+  entries: WalkEntry[];
+  truncated: boolean;
+  total: number;
+  updated: number | null;
+  age_s: number | null;
+}
+
+export function indexSearch(
+  fsPath: string,
+  opts: { signal?: AbortSignal } = {},
+): Promise<IndexSearchResult> {
+  return getJson<IndexSearchResult>(
+    "/api/index/search?root=" + encodeURIComponent(fsPath),
+    { signal: opts.signal },
+  );
+}
+
+// GET /api/index/status with no run id — the state of the most recent scan,
+// which is what a page that just loaded can ask about (it has no run id, but
+// the startup scan may well be running).
+export interface IndexStatus {
+  // A scan is in flight. Independent of has_index: a rescan keeps serving the
+  // last completed generation, so this means "say indexing…", not "stop using
+  // the index".
+  scanning: boolean;
+  has_index: boolean;
+  files_indexed: number; // rows in the last COMPLETED index
+  last_completed_at: number | null;
+  running: boolean; // the polled run specifically (== scanning with no run_id)
+  run_id: string | null;
+  root: string | null;
+  phase: string;
+  dirs: number;
+  files: number; // this run's progress
+  error: string | null;
+}
+
+export function indexStatus(signal?: AbortSignal): Promise<IndexStatus> {
+  return getJson<IndexStatus>("/api/index/status", { signal });
+}
+
+// Preferences > Indexing. `roots` is what the scheduler scans (defaulted to
+// the home dir server-side); `ignore` is the prune list; `defaults` is what
+// "Restore defaults" restores to.
+export interface IndexConfig {
+  roots: string[];
+  configured_roots: string[];
+  ignore: string[];
+  defaults: string[];
+  location: string;
+  // Set by a write: the saved rules no longer match the ones the index was
+  // built under, so a reconciling scan was started (rescan_run_id).
+  needs_rescan?: boolean;
+  rescan_run_id?: string | null;
+}
+
+export function getIndexConfig(): Promise<IndexConfig> {
+  return getJson<IndexConfig>("/api/index/config");
+}
+
+export function putIndexConfig(body: {
+  roots?: string[];
+  ignore?: string[];
+}): Promise<IndexConfig> {
+  return mutateJson<IndexConfig>("POST", "/api/index/config", body);
+}
+
+// With no `root` this scans EVERY configured root, so the answer is a list.
+// `run_id`/`root` are the first run's, kept for callers that want just one.
+export function startIndexScan(opts: { root?: string; full?: boolean } = {}): Promise<{
+  run_id: string;
+  root: string;
+  runs: { run_id: string; root: string }[];
+}> {
+  return mutateJson("POST", "/api/index/scan", opts);
+}
+
+export function deleteIndex(): Promise<{ deleted: boolean }> {
+  // The corpus any open search fetched predates the delete; without this
+  // signal nothing refetches it — the filesystem didn't change, so no
+  // dir-watch refresh ever arrives (lib/index-freshness).
+  return mutateJson<{ deleted: boolean }>("POST", "/api/index/delete", {}).then((r) => {
+    noteIndexLifecycle();
+    return r;
+  });
 }
 
 // One hit from POST /api/search/files (the AI search's execution engine —
@@ -813,7 +931,9 @@ export function getAccountStatus(probe = false): Promise<AccountStatus> {
   // probe=1 EXECUTES server-side (spawns a `fused cloud orgs` control-plane
   // call), so unlike the plain status read it carries the D36 guard header.
   return probe
-    ? getJson<AccountStatus>("/api/account/status?probe=1", { "X-Fused": "1" })
+    ? getJson<AccountStatus>("/api/account/status?probe=1", {
+        headers: { "X-Fused": "1" },
+      })
     : getJson<AccountStatus>("/api/account/status");
 }
 
@@ -881,10 +1001,20 @@ export interface Prefs {
   // Whether the Reader (listen-to-files) accessibility mode is offered (opt-in,
   // default off).
   reader: { enabled: boolean };
+  // The default Claude model, as one of the claude template's own short names
+  // — "" means unset, and each consumer keeps its own default (the fused.ai
+  // relay's haiku, the chat template's sonnet). `choices` is the server's own
+  // value set, shipped with the value so the page renders exactly what a PUT
+  // will accept rather than a second copy that can drift.
+  model: { default: DefaultModel; choices: DefaultModel[] };
   // The app call log (fused_render/calls.py): capture state, how much of a
   // run's params is kept, retention window, and where the store lives.
   calls: CallsPrefs;
 }
+
+// Short model names, matching shell/prefs.py's VALID_DEFAULT_MODELS. "" is the
+// unset member, not an absence — it is what the "Automatic" option writes.
+export type DefaultModel = "" | "fable" | "opus" | "sonnet" | "haiku";
 
 export type CallsParamsMode = "full" | "keys" | "off";
 
@@ -928,6 +1058,10 @@ export function putReaderEnabled(enabled: boolean): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { reader_enabled: enabled });
 }
 
+export function putDefaultModel(model: DefaultModel): Promise<Prefs> {
+  return putJson<Prefs>("/api/prefs", { default_model: model });
+}
+
 export function putCallsEnabled(enabled: boolean): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { calls_enabled: enabled });
 }
@@ -952,17 +1086,32 @@ export function revealPath(fsPath: string): Promise<void> {
 // (missing src), 409 ("conflict" — destination exists, or a non-empty dir
 // deleted without recursive).
 
+// Every mutation below marks the paths it touched, so in-folder search stops
+// answering from the index snapshot for that folder and walks it live — there
+// is no filesystem watcher, so the corpus would otherwise keep offering the
+// old name and never the new one (lib/index-freshness). Recorded only on
+// SUCCESS: a refused mutation changed nothing, and pessimising a folder over
+// a 409 would drop it to the slow path for the rest of the session.
+function noteAfter<T>(paths: string | string[], p: Promise<T>): Promise<T> {
+  return p.then((out) => {
+    for (const path of Array.isArray(paths) ? paths : [paths]) {
+      if (path) noteFsMutation(path);
+    }
+    return out;
+  });
+}
+
 // Create (or overwrite) a plain file. Used for "New File…" with empty content;
 // the parent directory must already exist (the server does not mkdir -p).
 // With create=true the write refuses (409 "conflict") when the path already
 // exists, so "New File" can't silently clobber an existing file.
 export function writeFile(path: string, content = "", create = false): Promise<StatResult> {
-  return postJson<StatResult>("/api/fs/write", { path, content, create });
+  return noteAfter(path, postJson<StatResult>("/api/fs/write", { path, content, create }));
 }
 
 // Create a single directory (no mkdir -p — a missing parent is a 400).
 export function mkdir(path: string): Promise<StatResult> {
-  return postJson<StatResult>("/api/fs/mkdir", { path });
+  return noteAfter(path, postJson<StatResult>("/api/fs/mkdir", { path }));
 }
 
 // Remove a file or directory. A non-empty directory needs recursive=true (the
@@ -975,23 +1124,26 @@ export function deleteEntry(
   recursive = false,
   trash = false
 ): Promise<{ deleted: string; trashed?: boolean }> {
-  return postJson<{ deleted: string; trashed?: boolean }>("/api/fs/delete", {
+  return noteAfter(
     path,
-    recursive,
-    trash,
-  });
+    postJson<{ deleted: string; trashed?: boolean }>("/api/fs/delete", {
+      path,
+      recursive,
+      trash,
+    })
+  );
 }
 
 // Move/rename src -> dst (also the paste-of-a-cut move). An existing dst is a
 // 409 unless overwrite=true.
 export function renameEntry(src: string, dst: string, overwrite = false): Promise<StatResult> {
-  return postJson<StatResult>("/api/fs/rename", { src, dst, overwrite });
+  return noteAfter([src, dst], postJson<StatResult>("/api/fs/rename", { src, dst, overwrite }));
 }
 
 // Copy src -> dst (paste-of-a-copy, and Duplicate). Same 409-on-existing-dst
 // rule as rename; a directory copied into itself/a descendant is a 400.
 export function copyEntry(src: string, dst: string, overwrite = false): Promise<StatResult> {
-  return postJson<StatResult>("/api/fs/copy", { src, dst, overwrite });
+  return noteAfter(dst, postJson<StatResult>("/api/fs/copy", { src, dst, overwrite }));
 }
 
 // The archive formats /api/fs/compress accepts. Kept as a union so a typo
@@ -1007,7 +1159,7 @@ export function compressEntry(
   format: ArchiveFormat,
   dest: string
 ): Promise<StatResult> {
-  return postJson<StatResult>("/api/fs/compress", { path, format, dest });
+  return noteAfter(dest, postJson<StatResult>("/api/fs/compress", { path, format, dest }));
 }
 
 // Whether `path` is the work-tree ROOT of a git repository — the gate for the
@@ -1672,9 +1824,15 @@ export function getClaudeSessionFolders(): Promise<{ folders: ClaudeSessionFolde
 
 // -- AI completion (POST /api/ai) ---------------------------------------------
 // The fused.ai relay: one non-streaming completion through the server's warm
-// Claude Code CLI instance (server/ai.py). Model defaults to haiku server-side;
-// the shell uses this for small utility completions (e.g. naming a new app
-// from its prompt on Home), not for anything conversational.
+// Claude Code CLI instance (server/ai.py). The shell uses this for small
+// utility completions (e.g. naming a new app from its prompt on Home), not for
+// anything conversational.
+//
+// No `model` is sent, deliberately: the server resolves one from the user's
+// default-model preference and falls back to haiku when that is unset. A model
+// named here would outrank the preference (that is the relay's precedence
+// rule), so every one of these call sites must keep NOT naming one for the
+// preference to mean anything.
 export function aiComplete(prompt: string, system_prompt?: string): Promise<string> {
   return postJson<{ ok: boolean; result: { text: string } }>("/api/ai", {
     prompt,

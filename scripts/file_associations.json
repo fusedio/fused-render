@@ -86,6 +86,16 @@
       "standard_mime": null
     },
     {
+      "extension": ".dwg",
+      "icon": "file",
+      "standard_mime": null
+    },
+    {
+      "extension": ".dxf",
+      "icon": "file",
+      "standard_mime": null
+    },
+    {
       "extension": ".egg",
       "icon": "archive",
       "standard_mime": null

@@ -4,6 +4,7 @@ import stat as stat_mod
 import sys
 from types import SimpleNamespace
 
+from fused_render.index.ignore import SHARED_IGNORE_DIRS
 from fused_render.server.common import _error
 from fused_render.server.gitignore import _IgnoreOracle, _repo_toplevel
 
@@ -87,7 +88,11 @@ WALK_FLUSH_INTERVAL_S = 0.15
 # target/ and friends without hardcoding every ecosystem's junk dir. The
 # floor still matters outside repos (a stray node_modules in ~/Downloads)
 # and for .git itself, which git never reports as ignored.
-WALK_IGNORE_DIRS = {"node_modules", "__pycache__", "venv", ".venv", ".git", "site-packages"}
+# Defined once in index/ignore.py, because the index's default list has to
+# contain it: search is answered by this walk or by the index depending on
+# whether a scan has reached the folder, and a name pruned by one but kept by
+# the other flips results between two interchangeable sources.
+WALK_IGNORE_DIRS = set(SHARED_IGNORE_DIRS)
 # Cap on concurrently open check-ignore co-processes during one walk (a home
 # walk crosses dozens of repos; each oracle holds a git subprocess).
 WALK_MAX_ORACLES = 8

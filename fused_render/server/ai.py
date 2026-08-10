@@ -17,6 +17,7 @@ from fastapi.responses import (
 )
 
 from fused_render.server.common import _require_fused
+from fused_render.shell.prefs import default_model
 
 router = APIRouter()
 
@@ -59,6 +60,29 @@ router = APIRouter()
 # by default in stream-json mode). See _AiSession.configure.
 _AI_EFFORTS = ("low", "medium", "high", "xhigh")
 _AI_DEFAULT_MODEL = "claude-haiku-4-5-20251001"
+# The default-model PREFERENCE (shell/prefs.py) speaks short names, because its
+# other consumer — the claude chat template's model chip — does: one preference
+# cannot have two vocabularies. This relay hands its value to the CLI, which is
+# happier with a full id, so the short→id mapping lives here, at the one call
+# site that needs it, rather than in the pref (which would make the store know
+# about a model catalogue it has no other reason to track).
+#
+# Ids are unsuffixed aliases, not dated snapshots: a dated id pins a model
+# version the user did not choose, and "opus" in the picker meaning last
+# quarter's opus is a worse surprise than the alias moving. The hardcoded
+# `_AI_DEFAULT_MODEL` above keeps its date because it is a DIFFERENT promise —
+# the cheap, fast model this relay has always used for its small utility
+# completions when nobody has expressed a preference at all.
+#
+# Keys must cover VALID_DEFAULT_MODELS minus its "" (unset) member; the values
+# are argv, so they live inside `_AI_MODEL_RE`'s charset boundary. Both are
+# asserted in tests/test_server_ai.py.
+_AI_SHORT_MODEL_IDS = {
+    "fable": "claude-fable-5",
+    "opus": "claude-opus-5",
+    "sonnet": "claude-sonnet-5",
+    "haiku": "claude-haiku-4-5",
+}
 _AI_DEFAULT_SYSTEM_PROMPT = "You are a helpful assistant."
 _AI_TIMEOUT_S = 600.0
 # A reconfiguration step (/clear, set_model, effort) is local work; one that
@@ -643,7 +667,13 @@ async def _ai_relay(body: dict):
             "bad_request",
             "'model' must be a model id or alias (letters, digits, . _ -)",
             status=400)
-    model = model or _AI_DEFAULT_MODEL
+    # Precedence: the caller's explicit model, then the user's preference, then
+    # this relay's own default. Read per request (like the engine pref), so a
+    # change on the Preferences page applies to the next call with no restart.
+    # `default_model` is module-level so the mapping is the only thing between
+    # the pref and argv — an unmapped value falls through to the default rather
+    # than being passed along.
+    model = model or _AI_SHORT_MODEL_IDS.get(default_model()) or _AI_DEFAULT_MODEL
     effort = body.get("effort")
     if effort is not None and effort not in _AI_EFFORTS:
         return _ai_error(

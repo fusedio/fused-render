@@ -803,6 +803,30 @@
   cursor: default;
 }
 
+/* A row of sibling actions. The generic `.prefs-section button` rule pins each
+   button to flex-start, which stacks them vertically when a section has more
+   than one; this puts them side by side without touching that default. */
+.prefs-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+/* Free-text list editor (the index's skip rules). Monospace because every line
+   is a path or glob, where a mistaken space matters. */
+.prefs-textarea {
+  font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 12px;
+  line-height: 1.5;
+  padding: 8px 10px;
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  resize: vertical;
+}
+
 /* Safety net for unmigrated selects only — .field-control selects carry their
    own canonical skin + custom chevron. */
 .prefs-section select:not(.field-control) {

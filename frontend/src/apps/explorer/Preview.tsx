@@ -3,13 +3,10 @@
 //   2. else                      -> fallback metadata card
 // No file-type checks live in the shell — html arrives through stat.templates
 // like everything else, via the "_render" sentinel (SPEC PT-12).
-import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import {
-  getAppLinkStatus,
-  type AppLinkStatus,
   getDeployStatus,
-  linkApp,
   rawUrl,
   resolveConditions,
   renameEntry,
@@ -19,9 +16,8 @@ import {
 } from "@platform/lib/api";
 import type { Deployment, StatResult, TemplateEntry } from "@platform/lib/api";
 import { navigate, navigateUrl, urlForFsPath, replaceSearch } from "@platform/lib/router";
-import { appRouteUrl, APP_OPEN_MODE } from "@platform/lib/appEntry";
 import { formatSize, formatMtimeFull, basename } from "@platform/lib/format";
-import { useRefreshOnReturn, useUrlVersion } from "@platform/lib/hooks";
+import { useRefreshOnReturn } from "@platform/lib/hooks";
 import { useDeployEnabled } from "@platform/lib/prefs";
 import {
   dirname,
@@ -34,6 +30,7 @@ import {
   buildOpenWithItems,
   friendlyFsError,
 } from "@apps/explorer/lib/fs-actions";
+import { useAppButton } from "@apps/explorer/lib/app-button";
 import { acquireOverlay, releaseOverlay } from "@platform/lib/ui-overlay";
 import { setClipboard } from "@apps/explorer/lib/fs-clipboard";
 import { pushToast } from "@platform/lib/toast";
@@ -45,12 +42,14 @@ import {
   effectiveActive,
 } from "@platform/lib/mode-visibility";
 import { ModeMenu, OverflowMenu } from "@apps/explorer/BarMenu";
+import { subscribeTopbarSlot, topbarSlot } from "@apps/explorer/topbar-slot";
+import { subscribePaneActionSlot, paneActionSlot } from "@apps/explorer/pane-action-slot";
 import ContextMenu, { type MenuEntry, type MenuItem } from "@platform/ui/ContextMenu";
 import { MenuIcons } from "@platform/ui/MenuIcons";
 import { PromptDialog, ConfirmDialog, nameError } from "@apps/explorer/FsDialogs";
 import DeployModal from "@platform/cloud/DeployModal";
 import Listing from "@apps/explorer/Listing";
-import { paneIsOpen } from "@apps/explorer/listing/pane";
+import { useSplitIsWide } from "@apps/explorer/listing/pane";
 
 interface HeaderProps {
   fsPath: string;
@@ -79,15 +78,27 @@ function Header({ fsPath, stat, children, afterName, onContextMenu }: HeaderProp
 
 // Explorer variant: the second header bar is gone (the name is redundant with
 // the breadcrumb), so the view's actions render into the breadcrumb bar's
-// `#topbar-mode-slot` (Breadcrumb.tsx) via a portal. The slot is a sibling
-// rendered in the same commit as the preview, so it exists by the time this
-// effect runs; keyed remounts on navigation re-find it.
+// `#topbar-mode-slot` (Breadcrumb.tsx) via a portal. The slot node comes from
+// a store rather than a getElementById at mount: over a folder the crumb bar
+// itself portals down into the listing's left column, which rebuilds the slot
+// — and a node captured once would be a detached div from then on
+// (topbar-slot.ts).
 function TopbarActions({ children }: { children: ReactNode }) {
-  const [slot, setSlot] = useState<HTMLElement | null>(null);
-  useEffect(() => {
-    setSlot(document.getElementById("topbar-mode-slot"));
-  }, []);
+  const slot = useSyncExternalStore(subscribeTopbarSlot, topbarSlot, () => null);
   return slot ? createPortal(children, slot) : null;
+}
+
+// Where the open FOLDER's primary action goes. The preview pane's header when
+// there is one (pane-action-slot.ts): the title bar is crowded — crumbs,
+// search box, `···` — and a labelled pill among them squeezes the path down to
+// nothing, while the header across the divider has room to spare.
+//
+// Null when there is no pane. Below the split's width threshold it does not
+// render at all, and the button has to keep appearing SOMEWHERE — a narrow
+// window must not silently cost a folder its primary action — so the caller
+// falls back to the bar it came from.
+function usePaneActionSlot(): HTMLElement | null {
+  return useSyncExternalStore(subscribePaneActionSlot, paneActionSlot, () => null);
 }
 
 // One open modal for the preview file menu: a Rename prompt or a Delete confirm
@@ -448,21 +459,19 @@ function TemplatePreview({
     if (mode !== activeMode) setModeState(activeMode);
   }, [mode, activeMode]);
   const deployEnabled = useDeployEnabled();
-  // Re-render on URL changes (the pane toggle writes `preview` via
-  // replaceSearch, which fires fused:urlchange) so the switcher-hide below
-  // tracks the pane live.
-  useUrlVersion();
   // `_listing` sentinel (D81): the shell's built-in directory listing, mounted
   // in place of the preview iframe — no iframe, no `_file`. Every directory
   // renders through this same header + body chrome (even a plain folder's
   // single `_listing` mode), so the preview header is uniform across files and
   // dirs.
   const isListing = entry.mode === "_listing";
-  // Whether the listing's right preview pane is showing (default ON — see
-  // listing/pane.ts paneIsOpen). Gated on `isListing`: a FILE view's fsPath
-  // never carries pane viewstate (the pane belongs to directories) and
-  // `preview` never rides onto file URLs (router.ts navigate), so paneIsOpen
-  // would otherwise read the now-default-on value here.
+  // Whether the listing's right preview pane is showing. The pane has no
+  // on/off state to read any more (no toggle, no `preview` param, no saved
+  // key): it appears when the split container is wide enough, so the only way
+  // to answer the question is to ask the same measurement the listing asks —
+  // hence the same hook, pointed at THIS body, which is the box the listing's
+  // own split container fills. Gated on `isListing`: only a directory renders
+  // a listing, and only a listing has a pane.
   //
   // Used for the one thing the pane displaces: .preview-browse-chip, whose
   // corner is INSIDE the pane when there is one (see its comment below) — an
@@ -471,7 +480,9 @@ function TemplatePreview({
   // it is gone whether the pane is open or not; see headerActions. And the
   // folder's "Open as app" is not conditioned on the pane at all any more (see
   // openAsAppBtn).
-  const listingPaneOpen = isListing && paneIsOpen(fsPath);
+  const bodyRef = useRef<HTMLDivElement>(null);
+  const bodyIsWide = useSplitIsWide(bodyRef);
+  const listingPaneOpen = isListing && bodyIsWide;
   // Path of the directory's lone top-level HTML file, reported by Listing
   // (null when there isn't exactly one) — drives the "Open as app" button
   // between the directory name and the mode switcher.
@@ -714,68 +725,38 @@ function TemplatePreview({
     Promise.resolve(buildOpenWithItems(templates, (m) => void setMode(m)));
   const fileMenu = usePreviewFileMenu(fsPath, stat, loadOpenWith);
 
-  // How the listed folder relates to the app system, for the button below:
-  // "workspace"/"linked" folders open as an app, an "unlinked" one offers
-  // "Add as app" (registers it in the linked-apps registry — it then shows
-  // up on the Home grid under the "linked" tag). Fetched per folder, only when
-  // the single-HTML button would show at all; a fetch failure (older backend)
-  // falls back to "workspace" so the button degrades to plain "Open as app".
-  const [linkStatus, setLinkStatus] = useState<AppLinkStatus | null>(null);
-  useEffect(() => {
-    setLinkStatus(null);
-    if (!isListing || !singleAppPath) return;
-    let stale = false;
-    getAppLinkStatus(fsPath).then(
-      (s) => { if (!stale) setLinkStatus(s); },
-      () => { if (!stale) setLinkStatus({ status: "workspace", name: null }); }
-    );
-    return () => { stale = true; };
-  }, [isListing, singleAppPath, fsPath]);
+  // The folder's relationship to the app system, and the button that follows
+  // from it — label, click and destination alike (lib/app-button). The rule
+  // used to live here, inline, which is exactly why the preview PANE's version
+  // of this button was a different, weaker one: it could only ever say "Open as
+  // app", including for folders where that could not work. Both surfaces now
+  // render this one.
+  const appBtn = useAppButton(isListing ? fsPath : null, singleAppPath);
 
-  const convertToApp = async () => {
-    try {
-      const { app } = await linkApp(fsPath);
-      setLinkStatus({ status: "linked", name: app.name, tag: app.tag });
-      pushToast({ msg: `Linked as app “${app.name}” — it's on the Home grid now`, tone: "info" });
-    } catch (e) {
-      pushToast({ msg: (e as Error).message, tone: "error" });
-    }
-  };
-  // "Open as app" goes to the builder route (/apps/<tag>/<name>?_mode=app) —
-  // the same 1:1 app experience a Home card opens — whenever the status
-  // carries the identity; the fs-path fallback covers older backends and
-  // workspace folders that aren't exactly an app dir.
-  const openAsApp = () => {
-    if (linkStatus?.tag && linkStatus.name) {
-      navigateUrl(
-        appRouteUrl({ tag: linkStatus.tag, name: linkStatus.name }) +
-          "?_mode=" + APP_OPEN_MODE,
-        { isDir: true }
-      );
-    } else {
-      navigate(singleAppPath as string, { isDir: false });
-    }
-  };
-  const appBtnLabel = linkStatus?.status === "unlinked" ? "Add as app" : "Open as app";
-  const appBtnAction = linkStatus?.status === "unlinked" ? convertToApp : openAsApp;
-
-  // The folder's primary action, built once and rendered in exactly one place:
-  // the title bar, whenever the folder qualifies.
+  // The folder's primary action, built once and rendered in exactly one place
+  // — which of the two bars depends on whether there is a pane.
   //
-  // It spent a while riding down into the preview pane's header instead
-  // whenever the pane was open, on the theory that the pane's own row already
-  // had an empty primary slot for it. That slot belongs to the pane's SELF
-  // target (nothing selected) — and a qualifying folder is by definition
-  // non-empty (it holds a top-level HTML file), so FS-16's auto-select claims
-  // the selection the moment the folder opens. So the self row almost never
-  // shows, and the button had effectively disappeared from the default view of
-  // exactly the folders it exists for.
-  const openAsAppBtn =
-    isListing && singleAppPath && linkStatus ? (
-      <button type="button" className="open-as-app-btn" onClick={appBtnAction}>
-        {appBtnLabel}
-      </button>
-    ) : null;
+  // It spent a while riding down into the preview pane's header whenever the
+  // pane was open, on the theory that the pane's own row already had an empty
+  // primary slot for it. That slot belonged to the pane's SELF target (nothing
+  // selected) — and a qualifying folder is by definition non-empty (it holds a
+  // top-level HTML file), so FS-16's auto-select claims the selection the
+  // moment the folder opens. The self row almost never showed, and the button
+  // had effectively disappeared from the default view of exactly the folders it
+  // exists for. It moved to the title bar for that reason.
+  //
+  // It is back in the pane header, but on a different footing: the slot is in
+  // `strip` now, so it is there in EVERY pane state rather than one that is
+  // almost never reached. The title bar meanwhile stopped having room — the
+  // search row moved into it, and the pill was pushing the folder's own name
+  // out of the crumbs. The bar is still the fallback when the window is too
+  // narrow for a pane (paneActionSlot is null then).
+  const paneSlot = usePaneActionSlot();
+  const openAsAppBtn = appBtn ? (
+    <button type="button" className="open-as-app-btn" onClick={appBtn.onClick}>
+      {appBtn.label}
+    </button>
+  ) : null;
 
   const headerActions = (
     <>
@@ -816,7 +797,7 @@ function TemplatePreview({
           switches a folder INTO one of those modes from the explorer any more.
           The pane's menu writes `_panelMode` — what the PANE previews — not
           `_mode`, and the chip only ever offers the listing⇄counterpart pair.
-          So a folder's git/versions/graph views are entered by `?_mode=` (a
+          So a folder's git/history/graph views are entered by `?_mode=` (a
           URL, a bookmark, the file menu's Open With) and left by the chip. The
           user chose that over two switchers in one view: for a folder, the
           pane IS the explorer, and its peers are opt-in tools rather than ways
@@ -852,11 +833,16 @@ function TemplatePreview({
     </>
   );
 
+  // One or the other, never both.
+  const appBtnInPane = paneSlot ? openAsAppBtn : null;
+  const appBtnInBar = paneSlot ? null : openAsAppBtn;
+
   return (
     <>
+      {appBtnInPane && createPortal(appBtnInPane, paneSlot as HTMLElement)}
       {actionsInTopbar ? (
         <TopbarActions>
-          {openAsAppBtn}
+          {appBtnInBar}
           {headerActions}
         </TopbarActions>
       ) : (
@@ -865,13 +851,13 @@ function TemplatePreview({
             fsPath={fsPath}
             stat={stat}
             onContextMenu={fileMenu.onContextMenu}
-            afterName={openAsAppBtn}
+            afterName={appBtnInBar}
           >
             {headerActions}
           </Header>
         )
       )}
-      <div className="preview-body">
+      <div className="preview-body" ref={bodyRef}>
         {isPending(entry) ? (
           /* URL-requested a gated mode whose verdict is still in flight: hold
              the body until it lands (the iframe must not render a template on
@@ -883,6 +869,10 @@ function TemplatePreview({
         ) : isListing ? (
           <Listing
             fsPath={fsPath}
+            /* Same condition as the header's: `actionsInTopbar` IS "this view
+               is the explorer's, and the crumb bar is its bar" — so this
+               listing is the one that claims the bar's layout zone. */
+            barChrome={actionsInTopbar}
             onSingleApp={setSingleAppPath}
           />
         ) : (
@@ -917,7 +907,7 @@ function TemplatePreview({
             missing top-bar switcher left that state with no way back to the
             listing. Removed by owner call: floating over the template's own
             content it read as a stray tooltip rather than as chrome (a
-            full-width `versions` history wore it on its HISTORY header), and
+            full-width `history` view wore it on its HISTORY header), and
             the way back out of a mode you navigated into is the browser's Back
             button, which costs the view nothing to provide.
 
@@ -946,10 +936,18 @@ function TemplatePreview({
             listing, revealed only in embed — same pattern as
             preview-browse-chip. Opposite corner so the two can coexist (a
             directory can have both a browsable counterpart mode AND a lone
-            HTML file). */}
-        {isListing && singleAppPath && linkStatus && (
-          <button type="button" className="open-as-app-chip" onClick={appBtnAction}>
-            {appBtnLabel}
+            HTML file).
+
+            Not when there is a PANE, though: embed hides the two headers but
+            not the pane's strip, so the portaled button is on screen there and
+            the chip would be the same action twice, one of them lying on top
+            of the listing. Keyed on the slot rather than on `listingPaneOpen`
+            because the slot is the button's actual whereabouts — the two agree
+            almost always, and when they disagree it is the slot that is right.
+            .preview-browse-chip makes the same call one condition up. */}
+        {appBtn && !paneSlot && (
+          <button type="button" className="open-as-app-chip" onClick={appBtn.onClick}>
+            {appBtn.label}
           </button>
         )}
       </div>
