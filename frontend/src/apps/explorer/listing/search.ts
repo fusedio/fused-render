@@ -20,13 +20,31 @@ export function isHiddenRel(rel: string): boolean {
   return rel.startsWith(".") || rel.includes("/.");
 }
 
+// ONE collator for every comparison in this module.
+//
+// `rel.localeCompare(other, undefined, { sensitivity: "base" })` has to build
+// an ICU collator from the options bag on every single call, and the
+// comparator runs ~n·log n times: sorting a 200k-hit list (what a
+// one-character query over an index-backed corpus produces) spent 3.8 of its
+// 4.7 seconds inside localeCompare alone — the typing freeze. A hoisted
+// collator is the SAME collation at ~2% of the cost.
+const collator = new Intl.Collator(undefined, { sensitivity: "base" });
+const byRel = collator.compare;
+
+// Path depth, counted without allocating: `split("/")` in the comparator
+// built two throwaway arrays per comparison. Computed once per hit instead
+// (see SearchHit.depth), which is n rather than n·log n.
+function depthOf(rel: string): number {
+  let depth = 1;
+  for (let i = 0; i < rel.length; i++) if (rel.charCodeAt(i) === 47) depth++;
+  return depth;
+}
+
 export function rankCompare(a: SearchHit, b: SearchHit): number {
   if (b.longestRun !== a.longestRun) return b.longestRun - a.longestRun;
   if (b.score !== a.score) return b.score - a.score;
-  const ad = a.entry.rel.split("/").length;
-  const bd = b.entry.rel.split("/").length;
-  if (ad !== bd) return ad - bd;
-  return a.entry.rel.localeCompare(b.entry.rel, undefined, { sensitivity: "base" });
+  if (a.depth !== b.depth) return a.depth - b.depth;
+  return byRel(a.entry.rel, b.entry.rel);
 }
 
 // Score `entries[from..]` against the query (unsorted — callers sort with
@@ -56,7 +74,8 @@ export function scoreEntries(
     const name = entry.rel.slice(entry.rel.lastIndexOf("/") + 1).toLowerCase();
     if (name === q) score += 100;
     else if (name.startsWith(q)) score += 25;
-    hits.push({ entry, positions: m.positions, score, longestRun: m.longestRun });
+    hits.push({ entry, positions: m.positions, score, longestRun: m.longestRun,
+                depth: depthOf(entry.rel) });
   }
   return hits;
 }
@@ -65,8 +84,7 @@ export function scoreEntries(
 // searchSort — relevance — leaves the rankCompare order untouched upstream).
 export function sortHits(hits: SearchHit[], sort: SortKey, order: SortOrder): SearchHit[] {
   const flip = order === "desc" ? -1 : 1;
-  const byName = (a: SearchHit, b: SearchHit) =>
-    a.entry.rel.localeCompare(b.entry.rel, undefined, { sensitivity: "base" });
+  const byName = (a: SearchHit, b: SearchHit) => byRel(a.entry.rel, b.entry.rel);
   return [...hits].sort((a, b) => {
     let cmp: number;
     if (sort === "size") cmp = (a.entry.size ?? -1) - (b.entry.size ?? -1);

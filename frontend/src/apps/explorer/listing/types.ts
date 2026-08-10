@@ -109,4 +109,8 @@ export interface SearchHit {
   positions: number[];
   score: number;
   longestRun: number;
+  // Path depth, precomputed at score time. The rank comparator runs n·log n
+  // times over a hit list that can be the whole corpus, so it must not derive
+  // anything per comparison (see search.ts).
+  depth: number;
 }
