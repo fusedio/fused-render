@@ -11,11 +11,12 @@
 //     is simply not calling it. That is also what paints the refused cursor, so
 //     an invalid target gets the right pointer for free — the class this hook
 //     adds is the visible half of the same verdict, not a second decision.
-//   • the WHOLE ROW is `draggable`, so a drag starts from anywhere on it — the
-//     name, the size, the empty gutter. The browser's own click-vs-drag
-//     threshold is what keeps that from costing anything: a press that doesn't
-//     travel is still a click, so single-click-select and double-click-open
-//     work exactly as they did before rows were draggable at all.
+//   • WHERE a drag may start is `draggable`, and it is set in two places from
+//     one rule (drag-drop's pressStartsDrag): the name cell's HANDLE is always
+//     a drag source, and the ROW itself is one only while it is SELECTED. A
+//     press on the dead space of an unselected row therefore starts nothing —
+//     it is a click and only a click. dragstart bubbles, so both routes land on
+//     the row's one handler below.
 //   • dragover fires continuously while the pointer moves, so the verdict has
 //     to be cheap and synchronous. It is: the dragged entries live in the
 //     module-level in-flight store (drag-drop.ts), not in the dataTransfer the
@@ -25,6 +26,7 @@ import { dirname, normDir } from "@apps/explorer/lib/fs-actions";
 import { basename } from "@platform/lib/format";
 import {
   FS_DRAG_MIME,
+  pressStartsDrag,
   carriesFsDrag,
   clearFsDrag,
   dragPathsFor,
@@ -54,6 +56,16 @@ function makeDragImage(label: string, count: number): HTMLElement {
   document.body.appendChild(el);
   return el;
 }
+
+// The drag handle inside a row's name cell: the icon and the name, wrapped in
+// an element that hugs them rather than filling the cell. A REAL element, not
+// an offsetX guess, so the browser's own drag source and the rule above agree
+// on exactly the same box by construction.
+export const ROW_HANDLE_CLASS = "row-handle";
+export const ROW_DRAG_HANDLE = {
+  className: ROW_HANDLE_CLASS,
+  draggable: pressStartsDrag({ onHandle: true, rowSelected: false }),
+} as const;
 
 export interface RowDragHandlers {
   draggable: boolean;
@@ -161,8 +173,10 @@ export function useRowDrag({
     onMove(paths, verdict.dir);
   };
 
-  const rowDrag = (row: RowCtx): RowDragHandlers => ({
-    draggable: true,
+  // `selected` decides only whether the WHOLE row is a drag source; its name
+  // cell carries the handle either way (ROW_DRAG_HANDLE above).
+  const rowDrag = (row: RowCtx, selected: boolean): RowDragHandlers => ({
+    draggable: pressStartsDrag({ onHandle: false, rowSelected: selected }),
     onDragStart: (e) => onDragStart(e, row),
     onDragOver: (e) => overTarget(e, { path: row.path, isDir: row.isDir }),
     onDragLeave: () => leaveTarget({ path: row.path, isDir: row.isDir }),

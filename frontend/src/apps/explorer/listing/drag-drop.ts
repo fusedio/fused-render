@@ -91,6 +91,33 @@ export function springDisarms(leaving: string, armed: string | null): boolean {
   return armed !== null && armed === leaving;
 }
 
+// --- where a drag may start from ---------------------------------------------
+//
+// Not everywhere on a row. The drag handle is the part of the row that IS the
+// file — its icon and its name — plus the whole of any row that is ALREADY
+// SELECTED. A press anywhere else on a row starts nothing at all; it is just
+// the click the listing has always had.
+//
+// Dragging a file into another folder is a destructive-ish, irreversible-ish
+// act (it moves it), and rows span the full width of the listing. With the
+// whole row live, the size column, the modified column and the empty gutter
+// after a short name are all several hundred pixels of "start moving this file"
+// sitting under a pointer that is usually just picking rows. Grabbing a file by
+// its name is both how every file manager behaves and the smallest target that
+// still reads as deliberate.
+//
+// The selected-row case is the exception that makes multi-drag bearable: having
+// said which rows they mean, the user should not have to find one particular
+// row's name to move all five. Selection outranks hit region — the only case
+// where the two clauses could disagree.
+//
+// (This split first arrived to leave room for a rubber-band marquee, which has
+// since been removed as unwanted. It is kept because the reason above holds on
+// its own, not because of what it used to share the row with.)
+export function pressStartsDrag(press: { onHandle: boolean; rowSelected: boolean }): boolean {
+  return press.onHandle || press.rowSelected;
+}
+
 // What a press on `path` picks up. The standard file-manager rule: a row that
 // is part of the current selection drags the WHOLE selection, and a row outside
 // it drags only itself (the press is also a click, and a click selects — the

@@ -15,11 +15,37 @@ import {
   dropIsValid,
   encodeDragPaths,
   fsDragInFlight,
+  pressStartsDrag,
   springDisarms,
   startFsDrag,
 } from "./drag-drop";
 
 const file = (path: string) => ({ path, parentDir: path.slice(0, path.lastIndexOf("/")) });
+
+// Where a drag may start. The whole rule as one table: a row's name/icon is the
+// handle, a selected row is live all over, and the rest of a row starts nothing
+// — a press there is a click and only a click.
+describe("pressStartsDrag", () => {
+  const table: [string, { onHandle: boolean; rowSelected: boolean }, boolean][] = [
+    ["the name of an unselected row", { onHandle: true, rowSelected: false }, true],
+    ["the name of a selected row", { onHandle: true, rowSelected: true }, true],
+    ["the gutter of a selected row", { onHandle: false, rowSelected: true }, true],
+    ["the gutter of an unselected row", { onHandle: false, rowSelected: false }, false],
+  ];
+
+  for (const [where, press, want] of table) {
+    test(`pressing ${where} → ${want ? "drag" : "nothing"}`, () => {
+      expect(pressStartsDrag(press)).toBe(want);
+    });
+  }
+
+  test("selection outranks hit region, never the other way round", () => {
+    // The only case the two clauses could disagree on: off the name, on a
+    // selected row. Selection wins — otherwise dragging a multi-row selection
+    // would mean hunting for one particular row's name cell inside it.
+    expect(pressStartsDrag({ onHandle: false, rowSelected: true })).toBe(true);
+  });
+});
 
 // Spring-loading is armed on dragenter and cancelled on dragleave, and the DOM
 // fires those in an order that makes the naive version cancel itself.

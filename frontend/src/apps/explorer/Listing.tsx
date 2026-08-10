@@ -55,7 +55,7 @@ import {
   rowClickAction,
   selectionClaimed,
 } from "@apps/explorer/listing/selection";
-import { useRowDrag } from "@apps/explorer/listing/useRowDrag";
+import { ROW_DRAG_HANDLE, useRowDrag } from "@apps/explorer/listing/useRowDrag";
 import { useDirListing } from "@apps/explorer/listing/useDirListing";
 import { useWalkSearch } from "@apps/explorer/listing/useWalkSearch";
 import { useListingSelection } from "@apps/explorer/listing/useListingSelection";
@@ -580,7 +580,7 @@ export default function Listing({
               <tr
                 key={entry.rel}
                 data-flip-key={childPath}
-                {...rowDrag(ctx)}
+                {...rowDrag(ctx, selectedSet.has(childPath))}
                 className={
                   "row" +
                   dropClass(childPath) +
@@ -618,14 +618,19 @@ export default function Listing({
                 }
               >
                 <td className="name">
-                  <span className="icon">
-                    {iconForEntry(
-                      entry.rel.split("/").pop() ?? entry.rel,
-                      entry.is_dir,
-                    )}
-                  </span>
-                  <span className="search-path">
-                    {renderHighlight(entry.rel, positions)}
+                  {/* Icon + name = the row's drag handle; the rest of the row
+                      starts no drag unless the row is already selected (see
+                      pressStartsDrag). */}
+                  <span {...ROW_DRAG_HANDLE}>
+                    <span className="icon">
+                      {iconForEntry(
+                        entry.rel.split("/").pop() ?? entry.rel,
+                        entry.is_dir,
+                      )}
+                    </span>
+                    <span className="search-path">
+                      {renderHighlight(entry.rel, positions)}
+                    </span>
                   </span>
                   <ClipMark
                     cut={cutSet.has(childPath)}
@@ -702,7 +707,7 @@ export default function Listing({
         <tr
           key={entry.name}
           data-flip-key={childPath}
-          {...rowDrag(ctx)}
+          {...rowDrag(ctx, selectedSet.has(childPath))}
           className={
             (entry.ignored ? "row ignored" : "row") +
             dropClass(childPath) +
@@ -739,10 +744,14 @@ export default function Listing({
           }
         >
           <td className="name">
-            <span className="icon">
-              {iconForEntry(entry.name, entry.is_dir)}
+            {/* Icon + name = the row's drag handle; the rest of the row starts
+                no drag unless the row is already selected (pressStartsDrag). */}
+            <span {...ROW_DRAG_HANDLE}>
+              <span className="icon">
+                {iconForEntry(entry.name, entry.is_dir)}
+              </span>
+              {entry.name}
             </span>
-            {entry.name}
             <ClipMark
               cut={cutSet.has(childPath)}
               copied={copiedSet.has(childPath)}

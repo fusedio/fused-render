@@ -1343,6 +1343,33 @@ table.listing-table td.name {
   position: relative;
 }
 
+/* The row's DRAG HANDLE: its icon and its name, and nothing else in the row.
+ *
+ * Narrow on purpose. Rows span the full width of the listing, so a row that was
+ * a drag source everywhere put several hundred pixels of "start moving this
+ * file" under a pointer that is usually just picking rows — the size column,
+ * the modified column, the gutter after a short name. Grabbing a file by its
+ * name is how every file manager behaves and is the smallest target that still
+ * reads as deliberate. A row that is ALREADY SELECTED is draggable all over
+ * regardless (listing/drag-drop's pressStartsDrag).
+ *
+ * inline-flex so it hugs its contents rather than filling the cell, and
+ * min-width:0 so a long name still ellipsizes inside it (the .search-path
+ * child's overflow rule needs a shrinkable parent). `grab` is what says the
+ * handle is here — the row keeps `pointer` everywhere else, because everywhere
+ * else still clicks. */
+table.listing-table td.name .row-handle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: grab;
+}
+
 /* "Cut" / "Copied" badge in the name cell of a row on the in-app clipboard
    (Listing.tsx ClipMark). This and the row styling above are the ONLY pending-
    clipboard UI — no chrome-level chip — so the badge carries the Esc-to-cancel
