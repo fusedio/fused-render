@@ -89,7 +89,7 @@ export default function ShellSidebar({ config }: { config: Config }) {
       {learnMountReady && (
         <div className="sidebar-section sidebar-group">
           <div className="sidebar-heading">Learn</div>
-          <NavItem href="/learn" id="learn-link" label="App" icon={<LearnIcon />} />
+          <NavItem href="/learn" id="learn-link" label="Guide" icon={<LearnIcon />} />
         </div>
       )}
       {(sessionsMountReady || claudeConfigAvailable) && (
@@ -101,16 +101,16 @@ export default function ShellSidebar({ config }: { config: Config }) {
           {claudeConfigAvailable && (
             <>
               <NavItem
-                href="/claude-config"
-                id="claude-config-link"
-                label="Config"
-                icon={CLAUDE_CONFIG_ICON}
-              />
-              <NavItem
                 href="/claude-md"
                 id="claude-md-link"
                 label="MD Files"
                 icon={CLAUDE_MD_ICON}
+              />
+              <NavItem
+                href="/claude-config"
+                id="claude-config-link"
+                label="Config"
+                icon={CLAUDE_CONFIG_ICON}
               />
             </>
           )}

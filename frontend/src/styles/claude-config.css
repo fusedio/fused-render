@@ -327,16 +327,16 @@
 
 .cc-mdgrid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
-  gap: 10px;
+  grid-template-columns: repeat(auto-fill, minmax(400px, 1fr));
+  gap: 12px;
 }
 
 .cc-mdcard {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 8px;
   min-width: 0;
-  padding: 12px 14px;
+  padding: 16px 18px;
   background: var(--bg-alt);
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -374,18 +374,18 @@
 
 .cc-mdcard-snippet {
   margin: 0;
-  font-size: 11px;
-  line-height: 1.5;
+  font-size: 11.5px;
+  line-height: 1.55;
   color: var(--fg-muted);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   display: -webkit-box;
-  -webkit-line-clamp: 4;
+  -webkit-line-clamp: 6;
   -webkit-box-orient: vertical;
   overflow: hidden;
-  /* Fixed-height slot (4 clamped lines) so a short file doesn't shrink its
+  /* Fixed-height slot (6 clamped lines) so a short file doesn't shrink its
      card and stagger the grid rows. */
-  min-height: calc(11px * 1.5 * 4);
+  min-height: calc(11.5px * 1.55 * 6);
 }
 
 .cc-mdcard-foot {
