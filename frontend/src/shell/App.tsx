@@ -217,7 +217,7 @@ function LoadingScaffold({ fsPath, isDir, headerless }: { fsPath: string; isDir:
 // modes (`git`, `graph`, `zarr_aoi`). It is a curation of this view,
 // not a divergence from the explorer — every mode listed here behaves in the
 // builder exactly as it does in the explorer for the same folder.
-const APP_MODES = ["app", "claude", "versions"];
+const APP_MODES = ["app", "claude", "history"];
 
 // Stat-backed views (listing/preview): breadcrumb + content under one hook
 // component so useStat only runs when the pathname is a real fs path, not a

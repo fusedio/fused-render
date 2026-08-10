@@ -1,4 +1,4 @@
-"""Git backend for the `versions` template: history of a *fused app*, of a
+"""Git backend for the `history` template: history of a *fused app*, of a
 single *file*, or of an ordinary *directory* — anywhere git works.
 
 There are exactly three kinds of target, resolved once per call by
@@ -87,7 +87,7 @@ import tarfile
 # script's own directory first on sys.path, so rebuild __file__ from it. Under
 # the built-in executor __file__ is already set, so this is a no-op.
 if "__file__" not in globals():
-    __file__ = os.path.join(sys.path[0], "versions.py")
+    __file__ = os.path.join(sys.path[0], "history.py")
 
 _SHARED = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "shared")
 if _SHARED not in sys.path:
@@ -207,7 +207,7 @@ def _resolve_target(file: str):
       ("dir",  <the directory>,  ".",                     "")
           An ordinary directory inside any git work tree — the folder-side
           history view, and the one this module used to have no answer for at
-          all. `condition.py` was widened to offer `versions` on any path in a
+          all. `condition.py` was widened to offer `history` on any path in a
           work tree (the `git` mode is the WORKING TREE view now and draws no
           history), and this was left behind: the gate said yes and the log said
           "not inside a fused app folder". READ-ONLY like "file", and for the
@@ -251,7 +251,7 @@ def _resolve_target(file: str):
     # An EXISTING regular file, the same `isfile` the gate insists on rather than
     # `not isdir`. Without it a missing name inside a repository resolves to a
     # perfectly valid file target, and `log` answers with an empty-but-successful
-    # history — a view that says "no versions yet" about a file that does not
+    # history — a view that says "no history yet" about a file that does not
     # exist, which is a worse answer than the refusal this error vocabulary
     # already has a word for.
     if not os.path.isfile(path):
@@ -380,6 +380,13 @@ def _snapshot(target, sha: str):
     # instead of being orphaned by this change.
     key_src = app if kind == "app" else app + "\0" + pathspec
     key = hashlib.sha1(key_src.encode("utf-8", "surrogateescape")).hexdigest()[:12]
+    # `app-versions/` deliberately does NOT track the mode name (`history`).
+    # The directory is a materialisation CACHE, never a user-facing string: it
+    # is not shown, not typed and not linked to, so renaming it would buy no
+    # legibility and would strand every snapshot already extracted on disk
+    # under the old prefix — the next run would silently re-archive all of
+    # them. `server/mount.py`'s `app-versions` prefix check is the other half
+    # of this contract and stays spelled the same way. Do not "fix" it.
     snap = os.path.join(home_dir(), "app-versions", key, full)
     # The completion marker sits BESIDE the extracted tree, not inside it:
     # anything inside is content the snapshot's own listing shows, and a
@@ -490,12 +497,12 @@ def _snapshot(target, sha: str):
     #              directory listing.
     #
     # The rule is shared with the GATE deliberately, and that is not a tidiness
-    # argument — it is the same predicate `versions/condition.py` uses to decide
+    # argument — it is the same predicate `history/condition.py` uses to decide
     # a folder is worth offering this mode at all. Resolving the page for an app
     # and not for a directory made the gate and the view disagree about the very
-    # folders the gate had just admitted: they were offered `versions` BECAUSE
+    # folders the gate had just admitted: they were offered `history` BECAUSE
     # they have a page, and then previewed as a file listing of themselves.
-    # (Which is exactly how it was found — "the versions template does not
+    # (Which is exactly how it was found — "the history template does not
     # render the comfy.html file and instead shows me a file explorer".)
     #
     # Asked per COMMIT, of the extracted tree rather than of the live folder, so

@@ -171,6 +171,26 @@
   min-width: 28ch;
 }
 
+/* A crumb a file drag is dwelling on: the listing is about to follow it
+   (Breadcrumb's spring loading). The pulse is the whole affordance — a dwell
+   with no feedback is indistinguishable from a stuck drag — and it deliberately
+   does NOT look like a drop target, because dropping on a crumb does nothing.
+   Motion is dropped for reduced-motion; the accent tint still marks the crumb. */
+.path-crumb.spring-armed {
+  color: var(--fg);
+  background: rgba(var(--accent-rgb), 0.16);
+  animation: crumb-spring 0.7s linear;
+}
+
+@keyframes crumb-spring {
+  from {
+    box-shadow: inset 0 0 0 0 rgba(var(--accent-rgb), 0.5);
+  }
+  to {
+    box-shadow: inset 0 -2px 0 0 var(--accent);
+  }
+}
+
 .path-crumb.last,
 .panel-crumb.last,
 #breadcrumb .current {
@@ -739,15 +759,6 @@
   background: var(--bg-alt);
 }
 
-/* The strip spaces its children with `gap: 8px`, so the rule brings no margin
-   of its own — same reason #breadcrumb zeroes it, and the opposite of
-   .panel-bar, whose 2px gap needs the rule's own 10px. 8px either side of the
-   hairline against the strip's 10px end padding: the divider sits inside the
-   row's own gutters and cannot collide with them. */
-.listing-pane .pane-header .bar-rule {
-  margin: 0;
-}
-
 .listing-pane .pane-header-icon {
   flex: 0 0 auto;
   display: inline-flex;
@@ -814,19 +825,6 @@ table.pane-mini-list td.size {
 
 table.pane-mini-list td.status-message {
   padding: 14px 10px;
-}
-
-/* Row 2's two ends. Both are plain .bar-ctl now (explorer.css's shared
-   recipe); all that is left here is the pane toggle's negative right margin,
-   which pulls the labelled control out to the row's padding edge.
-
-   The toggle is now the OPEN half only — it renders while the pane is closed
-   and unmounts when it opens (the collapse control lives in the pane's own
-   header). So it has no pressed state to style, and the row's width simply
-   returns to the search box when the pane takes the space beside it; the box
-   is `flex: 1 1 auto`, so nothing else moves. */
-.listing-pane-toggle {
-  margin-right: -8px;
 }
 
 /* Skeleton loading state: shimmering bars shaped like the real listing rows
@@ -1265,6 +1263,104 @@ table.listing-table tr.row.copied > td:first-child {
   box-shadow: inset 3px 0 0 var(--fg-muted);
 }
 
+/* --- drag to move --------------------------------------------------------
+ *
+ * The folder row under a drag that may land there. An accent ring rather than
+ * a background wash: the row underneath may already be .selected (the dragged
+ * set often includes rows either side of the target), and a second background
+ * would fight the first. Matches the sidebar's own .drag-into ring, which is
+ * the same promise in the other panel.
+ *
+ * The REFUSED case is quiet on purpose — it is the "which row said no" half of
+ * a verdict the cursor says first (see the drag cursors below, which the
+ * gesture now has to paint itself). */
+table.listing-table tr.row.drop-into > td {
+  box-shadow: inset 0 2px 0 var(--accent), inset 0 -2px 0 var(--accent);
+  background: var(--row-bg-active);
+}
+table.listing-table tr.row.drop-into > td:first-child {
+  box-shadow: inset 2px 0 0 var(--accent), inset 0 2px 0 var(--accent),
+    inset 0 -2px 0 var(--accent);
+}
+table.listing-table tr.row.drop-into > td:last-child {
+  box-shadow: inset -2px 0 0 var(--accent), inset 0 2px 0 var(--accent),
+    inset 0 -2px 0 var(--accent);
+}
+table.listing-table tr.row.drop-reject > td {
+  background: rgba(var(--error-rgb), 0.1);
+}
+
+/* The listing's background as a target: "move these into the folder I'm
+   looking at". It only ever lights up when that would actually move something
+   (dropping rows into the folder they already live in is a no-op — see
+   drag-drop's dropIsValid), so the ring is a promise, not a hover. */
+.listing-scroll.drop-into {
+  box-shadow: inset 0 0 0 2px var(--accent);
+}
+
+/* THE DRAG CURSOR, which used to come free from the native drag's `dropEffect`
+   and now has to be painted like everything else about the gesture
+   (listing/row-drag.ts sets these two classes on <body> for its lifetime).
+   `* !important` because the cursor is otherwise decided by whatever the
+   pointer happens to be over — a row says `pointer`, a link says `pointer`, and
+   the answer during a drag is about the DROP, not about what is underneath.
+   The same class kills text selection across the whole page, which the native
+   drag also did for us. */
+body.fs-dragging,
+body.fs-dragging * {
+  cursor: grabbing !important;
+  user-select: none !important;
+}
+/* Refused: over a file, over a folder the entries already live in, over
+   nothing at all. Set from the SAME dropIsValid verdict that paints the
+   highlight, so the cursor and the row can never disagree. */
+body.fs-dragging.fs-drag-refused,
+body.fs-dragging.fs-drag-refused * {
+  cursor: no-drop !important;
+}
+
+/* The ghost under the cursor during a drag (listing/row-drag.ts). It used to be
+   built off screen for `setDragImage` to snapshot and thrown away a frame
+   later; there is no setDragImage any more, so this is a real element that
+   lives for the whole drag and is moved with `transform` on every pointermove.
+   `pointer-events: none` is load-bearing: the drop target is found with
+   elementFromPoint, and a ghost under the cursor would be the only thing it
+   ever found. */
+.fs-drag-image {
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: 9000;
+  pointer-events: none;
+  will-change: transform;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 260px;
+  padding: 5px 10px;
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  background: var(--bg-panel);
+  color: var(--fg);
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* How many entries are coming with the one named in the ghost. */
+.fs-drag-count {
+  flex: none;
+  min-width: 18px;
+  padding: 0 5px;
+  border-radius: 9px;
+  background: var(--accent);
+  color: var(--on-accent);
+  font-size: 11px;
+  font-weight: 600;
+  text-align: center;
+}
+
 table.listing-table td.name {
   display: flex;
   align-items: center;
@@ -1272,6 +1368,36 @@ table.listing-table td.name {
   font-size: 14px;
   /* Positioning context for .clip-mark below. */
   position: relative;
+}
+
+/* The icon-and-name group inside a row's name cell. LAYOUT ONLY.
+ *
+ * It used to be the row's drag handle, and carried `cursor: grab` to say so.
+ * That handle is gone: it was holding the pixels drag-to-select needs, so a
+ * drag begun across rows from a name moved that one file instead of selecting
+ * the rows it crossed. A drag now starts on an already-selected row and nowhere
+ * else (listing/drag-drop's pressStartsDrag), which is why `grab` moved to
+ * tr.row.selected below and this rule keeps only its geometry.
+ *
+ * inline-flex so it hugs its contents rather than filling the cell, and
+ * min-width:0 so a long name still ellipsizes inside it (the .search-path
+ * child's overflow rule needs a shrinkable parent). */
+table.listing-table td.name .row-handle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The only surface a move-drag can begin on, so the only one that says `grab`.
+ * Unselected rows keep `pointer`: a press there selects, and a press that
+ * travels sweeps. */
+table.listing-table tr.row.selected {
+  cursor: grab;
 }
 
 /* "Cut" / "Copied" badge in the name cell of a row on the in-app clipboard

@@ -13,7 +13,7 @@ resolves to None, and then the UI opens the plain folder listing.
 Several pages and no `index.html` used to resolve to None as "ambiguous". It is
 ambiguous, but None is not the better answer to it: every consumer of this rule
 dead-ended on such a folder — the `app` mode and the chat's pane drew "no entry
-page" over a folder plainly full of pages, and a `versions` snapshot of one
+page" over a folder plainly full of pages, and a `history` snapshot of one
 showed the same notice instead of the app at that commit. Picking the first page
 in name order is deterministic (`sorted`, the order the listing shows), it is
 the same page every consumer picks, and it is one click from any of the others

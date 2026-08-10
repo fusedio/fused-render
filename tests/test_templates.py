@@ -77,20 +77,20 @@ def test_builtin_registry_parses_and_all_names_resolve():
 def test_builtin_html_default_is_render_sentinel():
     entries, error = server._templates_for("/x/page.html", False)
     assert error is None
-    # No `history`: the standalone history view is de-linked from the registry
-    # for now — `versions` wears its name and icon (see mode-name.ts).
+    # One timeline mode, and it is called `history`: the old standalone history
+    # view is gone and `versions` was renamed into its name, icon and slot
+    # (D243). No `git` either — that is folder-only now (GT-2).
     assert [e["mode"] for e in entries] == [
-        "_render", "code", "claude", "versions", "git", "reader"]
+        "_render", "code", "claude", "history", "reader"]
     assert entries[0]["path"] is None and entries[0]["icon"] is None
     assert entries[1]["path"].endswith("code/template.html")
     assert entries[2]["path"].endswith("claude/template.html")
 
 
 def test_builtin_parquet_default_is_duckdb():
-    # No `history` here either — de-linked from every key it was bound to.
     entries, error = server._templates_for("/x/data.parquet", False)
     assert error is None
-    assert [e["mode"] for e in entries] == ["duckdb", "structure", "h3", "claude", "versions", "git",
+    assert [e["mode"] for e in entries] == ["duckdb", "structure", "h3", "claude", "history",
             "geometry_editor"]
     assert entries[0]["path"].endswith("duckdb/template.html")
 
@@ -108,12 +108,11 @@ def test_reader_is_the_last_mode_on_text_keys():
     # Reader trails every real view on representative text formats, and is never
     # the default (first entry stays the content view).
     cases = {
-        "/x/notes.md": ["markdown", "code", "claude", "versions", "git",
-                        "reader"],
-        "/x/data.csv": ["duckdb", "excel", "code", "claude", "versions", "git",
+        "/x/notes.md": ["markdown", "code", "claude", "history", "reader"],
+        "/x/data.csv": ["duckdb", "excel", "code", "claude", "history",
                         "reader"],
         "/x/paper.pdf": ["pdf", "pdf_studio", "reader"],
-        "/x/log.txt": ["code", "claude", "versions", "git", "reader"],
+        "/x/log.txt": ["code", "claude", "history", "reader"],
     }
     for path, expected in cases.items():
         got, error = modes(path)
@@ -159,37 +158,51 @@ def test_reader_absent_on_binary_visual_keys():
 # --------------------------------------------------------------- git mode (GT)
 #
 # `git` (SPEC §33) is the condition-gated WORKING TREE view — staging,
-# discarding, stashing, committing, branches, push/pull. It is bound wherever
-# `versions` is (the history half of the same repository) and is never a
-# default. It spent a while bound to the universal "/" directory key ALONE, on
-# the theory that a file's story was `versions`' — which left it unreachable in
-# practice, because the explorer gives a folder no mode switcher of its own and
-# the preview pane's acts on the selected ROW. See tests/test_git_scope.py for
-# the pair rule itself; this file pins what the resolver hands back.
+# discarding, stashing, committing, branches, push/pull. Every one of those is a
+# repository-level act, so it is a FOLDER-ONLY mode: bound to the universal "/"
+# directory key and to no file extension, and never a default. It spent a while
+# riding along on every key `history` was on, because a folder then had no mode
+# switcher of its own — the preview pane's surface acted on the selected ROW,
+# always a file. The pane peeks FOLDER rows now, so the ride is retired. Per-file
+# history stays `history`'s. See tests/test_git_scope.py for the rule itself;
+# this file pins what the resolver hands back.
 
 
-def test_git_is_offered_on_files_and_on_directories(): 
-    # Every authored-file key answers with it, and so does the directory key.
+def test_git_is_offered_on_directories_and_on_no_file_key():
+    # Not one authored-file key answers with it...
     for path in ["/x/mod.py", "/x/app.tsx", "/x/deploy.sh", "/x/site.css",
                  "/x/config.yaml", "/x/pyproject.toml", "/x/tsconfig.json",
                  "/x/main.tf", "/x/notes.md", "/x/paper.tex",
                  "/x/readme.txt", "/x/server.log", "/x/page.html"]:
         got, error = modes(path)
         assert error is None, path
-        assert "git" in got, path
+        assert "git" not in got, path
+    # ...and the directory key is where it lives instead.
     assert "git" in modes("/x/somedir", is_dir=True)[0]
 
 
-def test_git_follows_versions_immediately():
-    # The working tree and its history sit together in switcher order.
-    for path in ["/x/mod.py", "/x/notes.md", "/x/readme.txt", "/x/page.html"]:
-        got, _ = modes(path)
-        assert got.index("versions") + 1 == got.index("git"), path
+def test_history_survives_on_every_key_git_left():
+    # De-linking took `git` off the file keys and nothing else with it: the
+    # per-file question still has its answer.
+    for path in ["/x/mod.py", "/x/app.tsx", "/x/deploy.sh", "/x/site.css",
+                 "/x/config.yaml", "/x/pyproject.toml", "/x/tsconfig.json",
+                 "/x/main.tf", "/x/notes.md", "/x/paper.tex",
+                 "/x/readme.txt", "/x/server.log", "/x/page.html"]:
+        got, error = modes(path)
+        assert error is None, path
+        assert "history" in got, path
 
 
-def test_the_file_side_history_and_chat_are_versions_and_claude():
+def test_git_follows_history_immediately_on_the_directory_key():
+    # The one list that still holds both: the working tree and its history sit
+    # together in switcher order.
+    got, _ = modes("/x/somedir", is_dir=True)
+    assert got.index("history") + 1 == got.index("git")
+
+
+def test_the_file_side_history_and_chat_are_history_and_claude():
     # The other half of the same split: what `git` and `claude` stopped offering
-    # on a file, `versions` and `claude` now do — and in that order, chat
+    # on a file, `history` and `claude` now do — and in that order, chat
     # then history, on every key that has them.
     for path in ["/x/mod.py", "/x/app.tsx", "/x/deploy.sh", "/x/site.css",
                  "/x/config.yaml", "/x/pyproject.toml", "/x/tsconfig.json",
@@ -199,9 +212,9 @@ def test_the_file_side_history_and_chat_are_versions_and_claude():
         got, error = modes(path)
         assert error is None, path
         assert "claude" in got, path
-        assert "versions" in got, path
-        assert got.index("claude") + 1 == got.index("versions"), path
-        assert got[0] not in ("claude", "versions"), path  # never default
+        assert "history" in got, path
+        assert got.index("claude") + 1 == got.index("history"), path
+        assert got[0] not in ("claude", "history"), path  # never default
 
 
 def test_there_is_exactly_one_chat_mode_on_every_key():
@@ -245,7 +258,7 @@ def test_the_file_side_pair_sits_before_the_trailing_meta_mode():
     # left to right.
     for path in ["/x/mod.py", "/x/notes.md", "/x/readme.txt"]:
         got, _ = modes(path)
-        assert got.index("versions") < got.index("reader"), path
+        assert got.index("history") < got.index("reader"), path
 
 
 def test_the_file_side_pair_is_absent_from_media_and_binary_keys():
@@ -259,19 +272,19 @@ def test_the_file_side_pair_is_absent_from_media_and_binary_keys():
         assert error is None, path
         assert "git" not in got, path
         assert "claude" not in got, path
-        assert "versions" not in got, path
+        assert "history" not in got, path
 
 
 def test_gated_directory_peers_follow_the_listing():
     # `_listing` stays the default of the universal `/` key (D81); the gated
     # peers follow it in switcher order (left to right). `app` (the app itself,
     # full-bleed — what OPENING an app lands on) leads them, then the split
-    # build view, then `versions` ahead of `git` — for an app folder the version
+    # build view, then `history` ahead of `git` — for an app folder the version
     # timeline is what you want first, and the raw commit log sits one click
     # further (#361).
     got, error = modes("/x/somedir", is_dir=True)
     assert error is None
-    assert got == ["_listing", "app", "claude", "versions", "git", "graph", "zarr_aoi"]
+    assert got == ["_listing", "app", "claude", "history", "git", "graph", "zarr_aoi"]
 
 
 def test_git_ships_a_condition_gate_and_an_icon():
@@ -322,9 +335,9 @@ def test_unmapped_file_empty_and_plain_dir_lists():
     # `zarr_aoi` — for a plain folder, a dotted folder and the filesystem root
     # alike. Each gated mode is dropped unless its condition.py says otherwise;
     # see tests/test_graph_condition.py and the zarr_aoi tests below.
-    assert modes("/x/somedir", is_dir=True) == (["_listing", "app", "claude", "versions", "git", "graph", "zarr_aoi"], None)
-    assert modes("/x/my.data", is_dir=True) == (["_listing", "app", "claude", "versions", "git", "graph", "zarr_aoi"], None)
-    assert modes("/", is_dir=True) == (["_listing", "app", "claude", "versions", "git", "graph", "zarr_aoi"], None)
+    assert modes("/x/somedir", is_dir=True) == (["_listing", "app", "claude", "history", "git", "graph", "zarr_aoi"], None)
+    assert modes("/x/my.data", is_dir=True) == (["_listing", "app", "claude", "history", "git", "graph", "zarr_aoi"], None)
+    assert modes("/", is_dir=True) == (["_listing", "app", "claude", "history", "git", "graph", "zarr_aoi"], None)
 
 
 # --------------------------------------------- text sniff for unmapped files
@@ -763,7 +776,7 @@ def test_registry_drops_zarr_template_and_sentinel_keys():
     assert server._resolve_name("zarr")[0] is None
     # zarr_aoi is the .zarr/ default and a gated candidate on every directory
     assert registry[".zarr/"] == ["zarr_aoi", "_listing"]
-    assert registry["/"] == ["_listing", "app", "claude", "versions", "git", "graph", "zarr_aoi"]
+    assert registry["/"] == ["_listing", "app", "claude", "history", "git", "graph", "zarr_aoi"]
 
 
 def test_zarr_named_dir_gate_true_with_no_markers(tmp_path):
@@ -794,10 +807,10 @@ def test_plain_dir_with_store_marker_gates_true(tmp_path, marker):
     store = tmp_path / "data"
     store.mkdir()
     (store / marker).write_text("{}")
-    assert modes(str(store), is_dir=True) == (["_listing", "app", "claude", "versions", "git", "graph", "zarr_aoi"], None)
+    assert modes(str(store), is_dir=True) == (["_listing", "app", "claude", "history", "git", "graph", "zarr_aoi"], None)
     assert _zarr_condition_main()(str(store)) is True
     cond, err = conditions(str(store))
-    assert cond == {"app": False, "claude": True, "git": False, "versions": False, "graph": False, "zarr_aoi": True} and err is None
+    assert cond == {"app": False, "claude": True, "git": False, "history": False, "graph": False, "zarr_aoi": True} and err is None
 
 
 def test_v3_group_dir_offered(tmp_path):
@@ -806,10 +819,10 @@ def test_v3_group_dir_offered(tmp_path):
     store = tmp_path / "grp"
     store.mkdir()
     (store / "zarr.json").write_text('{"zarr_format": 3, "node_type": "group"}')
-    assert modes(str(store), is_dir=True) == (["_listing", "app", "claude", "versions", "git", "graph", "zarr_aoi"], None)
+    assert modes(str(store), is_dir=True) == (["_listing", "app", "claude", "history", "git", "graph", "zarr_aoi"], None)
     assert _zarr_condition_main()(str(store)) is True
     cond, err = conditions(str(store))
-    assert cond == {"app": False, "claude": True, "git": False, "versions": False, "graph": False, "zarr_aoi": True} and err is None
+    assert cond == {"app": False, "claude": True, "git": False, "history": False, "graph": False, "zarr_aoi": True} and err is None
 
 
 def test_bare_array_dir_not_offered(tmp_path):
@@ -822,7 +835,7 @@ def test_bare_array_dir_not_offered(tmp_path):
     (store / ".zarray").write_text("{}")
     assert _zarr_condition_main()(str(store)) is False
     cond, err = conditions(str(store))
-    assert cond == {"app": False, "claude": True, "git": False, "versions": False, "graph": False, "zarr_aoi": False} and err is None
+    assert cond == {"app": False, "claude": True, "git": False, "history": False, "graph": False, "zarr_aoi": False} and err is None
 
 
 def test_v3_bare_array_dir_not_offered(tmp_path):
@@ -834,7 +847,7 @@ def test_v3_bare_array_dir_not_offered(tmp_path):
     (store / "zarr.json").write_text('{"zarr_format": 3, "node_type": "array"}')
     assert _zarr_condition_main()(str(store)) is False
     cond, err = conditions(str(store))
-    assert cond == {"app": False, "claude": True, "git": False, "versions": False, "graph": False, "zarr_aoi": False} and err is None
+    assert cond == {"app": False, "claude": True, "git": False, "history": False, "graph": False, "zarr_aoi": False} and err is None
 
 
 def test_v3_zarr_json_without_node_type_not_offered(tmp_path):
@@ -857,16 +870,16 @@ def test_plain_dir_without_markers_gates_false(tmp_path):
     store = tmp_path / "plain"
     store.mkdir()
     (store / "readme.txt").write_text("hi")
-    assert modes(str(store), is_dir=True) == (["_listing", "app", "claude", "versions", "git", "graph", "zarr_aoi"], None)
+    assert modes(str(store), is_dir=True) == (["_listing", "app", "claude", "history", "git", "graph", "zarr_aoi"], None)
     assert _zarr_condition_main()(str(store)) is False
     cond, err = conditions(str(store))
-    assert cond == {"app": False, "claude": True, "git": False, "versions": False, "graph": False, "zarr_aoi": False} and err is None
+    assert cond == {"app": False, "claude": True, "git": False, "history": False, "graph": False, "zarr_aoi": False} and err is None
 
     entries, _ = server._templates_for(str(store), True)
     assert entries[0]["mode"] == "_listing" and "conditional" not in entries[0]
     assert entries[1]["mode"] == "app" and entries[1].get("conditional") is True
     assert entries[2]["mode"] == "claude" and entries[2].get("conditional") is True
-    assert entries[3]["mode"] == "versions" and entries[3].get("conditional") is True
+    assert entries[3]["mode"] == "history" and entries[3].get("conditional") is True
     assert entries[4]["mode"] == "git" and entries[4].get("conditional") is True
     assert entries[5]["mode"] == "graph" and entries[5].get("conditional") is True
     assert entries[6]["mode"] == "zarr_aoi" and entries[6].get("conditional") is True

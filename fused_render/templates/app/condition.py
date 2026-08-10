@@ -10,7 +10,7 @@ directory opens on.
 
 Same rule, deliberately identical to `claude/condition.py`: the two modes
 are two ways of looking at the same thing, so a folder must never offer one
-without the other. Unlike `versions` there is no `.git` requirement — using an
+without the other. Unlike `history` there is no `.git` requirement — using an
 app has nothing to do with whether its history is tracked.
 
 CRITICAL: this never lists or walks the directory (`os.listdir`, `os.scandir`,

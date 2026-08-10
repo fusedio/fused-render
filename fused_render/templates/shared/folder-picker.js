@@ -40,7 +40,7 @@
  * defined twice — once for dark, once under `:root[data-theme="light"]` — and
  * mapped there onto whichever palette the host template declares. Two
  * vocabularies are in use across the built-in templates (`--ink`/`--line`/
- * `--surface` in git/history/versions, `--fg`/`--border`/`--bg-alt` in the other
+ * `--surface` in git/history, `--fg`/`--border`/`--bg-alt` in the other
  * nineteen), which is why each mapping is a var() chain and why it lives in one
  * place instead of at every use site. Reaching for a host token directly — as
  * this file used to — is a colour that resolves in three views and silently

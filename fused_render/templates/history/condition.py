@@ -1,4 +1,4 @@
-"""Gate for the `versions` template — the HISTORY view.
+"""Gate for the `history` template — the HISTORY view.
 
 Two rules, and the difference between them is the whole of this module:
 
@@ -25,8 +25,8 @@ rather than one per surface.
 
 Two things this does NOT do, both deliberate:
 
-* **It does not narrow the module.** `versions.py::_resolve_target` still
-  answers for a plain folder, so a hand-written `?_mode=versions` URL on one
+* **It does not narrow the module.** `history.py::_resolve_target` still
+  answers for a plain folder, so a hand-written `?_mode=history` URL on one
   works and shows its history. The gate decides what is OFFERED; the module
   decides what is ANSWERED, and the second is the guarantee (MD-11). It has to
   keep answering anyway: an older revision of an html-bearing folder may predate
@@ -111,7 +111,7 @@ def main(path: str) -> bool:
             # The page test, through the SHARED rule rather than a private
             # `.html` scan, so the gate and the view that opens cannot disagree
             # about what counts as renderable (`app_entry` is what `app/app.py`,
-            # the chat's pane and `versions.py`'s own snapshot all resolve).
+            # the chat's pane and `history.py`'s own snapshot all resolve).
             # Local-only by construction — the mount refusal above already
             # returned.
             try:

@@ -325,7 +325,7 @@ body.embed .preview-header {
 }
 
 /* ── Frozen-tree framing (`?snapshot=1`, router.ts IS_SNAPSHOT) ─────────────
-   A materialised historical snapshot embedded by a view — `versions` extracts a
+   A materialised historical snapshot embedded by a view — `history` extracts a
    commit into ~/.fused-render/app-versions/<key>/<sha>/ and frames THAT
    directory, so the listing is a frozen copy rather than a live folder.
 
@@ -357,10 +357,10 @@ body.snapshot #breadcrumb {
    showing a non-listing mode: the explorer's folder views carry no top-bar
    mode control (PT-13b), and the chip was offered as the way back to the
    listing. Removed by owner call. Pinned absolutely over the iframe it landed
-   on whatever the template drew in its own top-right — a full-width `versions`
+   on whatever the template drew in its own top-right — a full-width `history`
    history wore it across the HISTORY header and the newest commit — so it read
    as a stray tooltip rather than as chrome, in the two folder modes people
-   actually open (`versions`, `claude`). The explorer's answer for that state is
+   actually open (`history`, `claude`). The explorer's answer for that state is
    the browser's Back button (PT-13b): the mode was reached by navigating, so
    the navigation is what undoes it.
 

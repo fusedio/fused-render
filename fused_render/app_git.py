@@ -21,7 +21,7 @@ with a `.git` of their own. A path anywhere else — including a user's real
 repository opened in the editor — is never committed to.
 
 Subprocess discipline: `git -C <dir>` (never `cwd=`) and `close_fds=False`,
-matching every other subprocess spawn in this codebase (agent.py, versions.py,
+matching every other subprocess spawn in this codebase (agent.py, history.py,
 executor.py, server/ai.py). The server process gets libproj resident
 (importing the fused engine pulls geopandas→pyproj, and prefs' availability
 probe does that in-process), and from then on a plain fork() runs PROJ's

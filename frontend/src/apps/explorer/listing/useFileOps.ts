@@ -34,6 +34,7 @@ import {
   friendlyFsError,
   claudeDeepLink,
 } from "@apps/explorer/lib/fs-actions";
+import { moveEntriesInto } from "@apps/explorer/lib/fs-move";
 import { basename } from "@platform/lib/format";
 import { isAppEntry } from "@platform/ui/FileIcons";
 import { getClipboard, setClipboard, type Clipboard } from "@apps/explorer/lib/fs-clipboard";
@@ -168,6 +169,58 @@ export function useFileOps({
     }, { verb: "paste", name: label }).finally(() => {
       pasteInFlight.current = false;
     });
+  };
+
+  // Drop-to-move: put `paths` into `targetDir`. The move itself is the shared
+  // one (lib/fs-move) — the same conflict resolution, descendant pruning and
+  // clipboard repointing a cut-and-paste gets, because a drag onto a folder IS
+  // a cut and paste with the target picked by the pointer. What is local to
+  // this view is only the aftermath: refresh the listing, and re-anchor onto
+  // the last thing written so the moved entries stay selected WHERE THEY ARE
+  // STILL VISIBLE (a search listing that spans the target folder, mostly —
+  // moving out of the folder you are looking at takes the rows off screen, and
+  // the reconcile's clamp then lands the selection on a surviving neighbour).
+  //
+  // In-flight guard for the same reason paste has one: a second drop landing
+  // mid-batch would rename sources the first is already moving.
+  const moveInFlight = useRef(false);
+  // `announce` comes from the DROP TARGET, not from this view: a drop onto a
+  // sidebar bookmark lands somewhere the user cannot see, so that move says so
+  // (moveEntriesInto's toast). A drop onto a row or the listing background
+  // refreshes under the cursor, which is its own confirmation.
+  const doMove = (paths: string[], targetDir: string, opts?: { announce?: boolean }) => {
+    if (!paths.length || moveInFlight.current) return;
+    moveInFlight.current = true;
+    void (async () => {
+      try {
+        // Per-entry failures are reported by moveEntriesInto itself (one toast
+        // wherever the drop landed) and come back in the report; what is caught
+        // here is the batch failing OUTSIDE that loop — planning it, or the
+        // reporting itself. Rare, and precisely why it must not be swallowed:
+        // an unexplained no-op is the worst outcome a drop can have.
+        const report = await moveEntriesInto(paths, targetDir, {
+          announce: opts?.announce ?? false,
+        });
+        if (!report.moved.length) return;
+        pendingSelectRef.current = report.moved[report.moved.length - 1];
+        refetch();
+      } catch (e) {
+        pushToast({
+          msg: friendlyFsError(e, {
+            verb: "move",
+            name: paths.length === 1 ? basename(paths[0]) : `${paths.length} items`,
+          }),
+          tone: "error",
+        });
+      } finally {
+        // FINALLY, not after the await: a rejection used to leave this latched
+        // at true, and with it latched every later drag-to-move in this listing
+        // returned at the guard above — the feature silently dead for the life
+        // of the view, with nothing said. Same shape as paste/duplicate's own
+        // .finally, which is what this had drifted from.
+        moveInFlight.current = false;
+      }
+    })();
   };
 
   // Duplicate into the same folder, picking the first free "… copy[/ n]" name
@@ -505,6 +558,7 @@ export function useFileOps({
     dialog,
     setDialog,
     doPaste,
+    doMove,
     doDuplicate,
     doTrash,
     startRename,
