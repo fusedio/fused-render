@@ -79,6 +79,30 @@ def test_prune_drops_a_partition_with_no_range():
     assert prune([{"min": None, "max": None}], "/a") == []
 
 
+def test_prune_is_case_insensitive_like_the_match_it_gates():
+    """The match is ILIKE, so the prune that gates it has to fold case too —
+    otherwise /users/... rules out every /Users/... partition byte-wise and
+    the anchored query returns nothing while the unanchored one finds it.
+    The folded bounds are their own aggregate: byte order and folded order
+    disagree, so lower(min) is NOT the folded minimum."""
+    parts = [{"min": "/Users/a", "max": "/Users/z",
+              "min_lower": "/users/a", "max_lower": "/users/z"}]
+    assert prune(parts, "/Users/me") == parts
+    assert prune(parts, "/users/me") == parts
+    assert prune(parts, "/USERS/me") == parts
+    assert prune(parts, "/etc/me") == []
+
+
+def test_prune_falls_back_to_the_byte_test_without_folded_bounds():
+    """A manifest written before the folded bounds keeps exactly the old
+    behaviour — the status quo for data already on disk, not a new hole.
+    Every compaction rewrites the manifest, so this heals on the next scan."""
+    parts = [{"min": "/Users/a", "max": "/Users/z"}]
+    assert prune(parts, "/Users/me") == parts
+    assert prune(parts, "/users/me") == []
+    assert prune(parts, "/zzz") == []
+
+
 # -- lookup --------------------------------------------------------------------
 
 def test_lookup_matches_a_substring_anywhere_in_the_path(tmp_path):
@@ -118,6 +142,15 @@ def test_lookup_prunes_partitions_an_anchored_query_cannot_hit(tmp_path):
     cfg = _index(tmp_path, "/r", ["/r/a.txt"])
     out = lookup(cfg, "/zzz")
     assert out["rows"] == [] and out["scanned_partitions"] == 0
+
+
+def test_lookup_finds_a_mixed_case_tree_from_a_lowercase_anchored_query(tmp_path):
+    """End to end: typing the path in the wrong case found nothing at all,
+    because pruning removed the only partition before ILIKE ever ran."""
+    cfg = _index(tmp_path, "/Users", ["/Users/Me/Alpha.txt"])
+    assert [r["path"] for r in lookup(cfg, "/users/me")["rows"]] == [
+        "/Users/Me/Alpha.txt"]
+    assert lookup(cfg, "/users/me")["scanned_partitions"] == 1
 
 
 def test_lookup_escapes_quotes_in_the_query(tmp_path):

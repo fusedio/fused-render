@@ -451,11 +451,16 @@ def _compact_locked(cfg: IndexConfig, root, shards_dir, pa, pq, emit=None):
                 f"COPY (SELECT * FROM merged LIMIT {cfg.part_rows} "
                 f"OFFSET {i * cfg.part_rows}) "
                 f"TO '{_sql(fp)}' (FORMAT PARQUET, ROW_GROUP_SIZE 65536)")
-            lo, hi, n = con.execute(
-                f"SELECT min(path), max(path), count(*) "
+            # The folded bounds are their own aggregate, not lower() of the
+            # byte-wise ones: the two orders disagree, so a partition can
+            # hold a folded-smaller path than its byte-wise minimum. Pruning
+            # for the ILIKE match needs the real folded range (query.prune).
+            lo, hi, lo_f, hi_f, n = con.execute(
+                f"SELECT min(path), max(path), "
+                f"min(lower(path)), max(lower(path)), count(*) "
                 f"FROM {parquet_src([fp])}").fetchone()
             parts.append({"file": os.path.basename(fp), "min": lo, "max": hi,
-                          "rows": n})
+                          "min_lower": lo_f, "max_lower": hi_f, "rows": n})
 
     # dirs.parquet: old rows outside root or unchanged inside it + new rows
     phase("writing signatures")

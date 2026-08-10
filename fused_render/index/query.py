@@ -56,14 +56,34 @@ def dirs_src(cfg: IndexConfig) -> str:
 
 
 def prune(parts, prefix):
-    """Partitions whose [min,max] path range can contain paths starting with
-    `prefix` (paths are globally sorted, so the range test is exact, not a
-    heuristic)."""
+    """Partitions whose path range can contain paths starting with `prefix`.
+
+    Folded, because the match this gates is ILIKE: comparing the prefix
+    byte-wise ruled out every /Users/... partition for a query typed
+    /users/..., so the anchored query found nothing while the unanchored one
+    found it. The folded bounds are a SEPARATE aggregate written at
+    compaction, not lower(min)/lower(max): byte order and case-folded order
+    disagree, so a partition can hold a folded-smaller path than its
+    byte-wise minimum.
+
+    A partition written before those bounds existed keeps the old byte-wise
+    test — the status quo for data already on disk, not a new hole. Every
+    compaction rewrites the manifest, so the first scan after an upgrade
+    gives every partition bounds."""
     if not prefix:
         return list(parts)
     hi = prefix + "￿"
-    return [p for p in parts
-            if p.get("min") is not None and p["max"] >= prefix and p["min"] <= hi]
+    lo_f, hi_f = prefix.lower(), hi.lower()
+    out = []
+    for p in parts:
+        if p.get("min") is None:
+            continue
+        if p["max"] >= prefix and p["min"] <= hi:
+            out.append(p)  # byte-exact hit, whatever the folded bounds say
+        elif p.get("min_lower") is not None and (
+                p["max_lower"] >= lo_f and p["min_lower"] <= hi_f):
+            out.append(p)
+    return out
 
 
 def pattern_for(q: str):
