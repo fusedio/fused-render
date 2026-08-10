@@ -9,8 +9,9 @@
 // on huge trees. The walk starts lazily on first focus (or a URL-seeded
 // query) and is cached until the dir watch fires.
 import { useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
-import { walkDirStream } from "@platform/lib/api";
+import { indexSearch, walkDirStream } from "@platform/lib/api";
 import type { WalkEntry } from "@platform/lib/api";
+import { indexCorpusFrom } from "@apps/explorer/listing/index-corpus";
 import { replaceSearch } from "@platform/lib/router";
 import { nextHeldHits, resolveDisplayedHits, type QueryTagged } from "@platform/lib/search-hold";
 import {
@@ -86,11 +87,19 @@ export function useWalkSearch(fsPath: string, refresh: number, urlSync = true) {
     }
   }, [query, validWalk.status, walkReq, refresh]);
 
-  // The streamed validWalk. One effect owns the whole fetch lifecycle: it runs
-  // when a walk generation is requested (walkReq) or a gesture bumps
-  // `retryNonce` after an error, and ABORTS the in-flight stream on cleanup
-  // — which also cancels the server-side walk (the generator is closed on
-  // disconnect). Batches push into one append-only array; see WalkState.
+  // The corpus. One effect owns the whole fetch lifecycle: it runs when a walk
+  // generation is requested (walkReq) or a gesture bumps `retryNonce` after an
+  // error, and ABORTS the in-flight work on cleanup — which also cancels the
+  // server-side walk (the generator is closed on disconnect). Batches push into
+  // one append-only array; see WalkState.
+  //
+  // Two sources, one shape. The persistent file index answers instantly and
+  // cross-session when it covers this folder and is fresh (see index-corpus);
+  // otherwise — no index yet, first-boot scan still running, folder outside the
+  // scanned roots, index gone stale, or the request simply failed — the live
+  // streamed walk runs exactly as it always did. The fallback is silent by
+  // design: none of those is an error the user can act on, and every one of
+  // them is normal in the seconds after a first launch.
   useEffect(() => {
     if (walkReq === null) return;
     const forRefresh = walkReq;
@@ -115,27 +124,52 @@ export function useWalkSearch(fsPath: string, refresh: number, urlSync = true) {
       setWalk({ status: "streaming", entries, count: entries.length, forRefresh });
     };
     setWalk({ status: "streaming", entries, count: 0, forRefresh });
-    walkDirStream(fsPath, {
-      hidden: true,
-      signal: ctrl.signal,
-      onBatch: (batch) => {
+    const liveWalk = () =>
+      walkDirStream(fsPath, {
+        hidden: true,
+        signal: ctrl.signal,
+        onBatch: (batch) => {
+          if (!alive) return;
+          for (const e of batch) pending.push(e);
+          const wait = STREAM_FLUSH_MS - (Date.now() - lastFlush);
+          if (wait <= 0) flush();
+          else if (flushTimer === null) flushTimer = setTimeout(() => alive && flush(), wait);
+        },
+      }).then(
+        (end) => {
+          if (!alive) return;
+          if (flushTimer !== null) clearTimeout(flushTimer);
+          for (const e of pending) entries.push(e);
+          setWalk({ status: "ok", entries, truncated: end.truncated, total: end.total, forRefresh });
+        },
+        (err: Error) => {
+          if (!alive || err.name === "AbortError") return;
+          if (flushTimer !== null) clearTimeout(flushTimer);
+          setWalk({ status: "error", message: err.message, forRefresh });
+        }
+      );
+    indexSearch(fsPath, { signal: ctrl.signal }).then(
+      (res) => {
         if (!alive) return;
-        for (const e of batch) pending.push(e);
-        const wait = STREAM_FLUSH_MS - (Date.now() - lastFlush);
-        if (wait <= 0) flush();
-        else if (flushTimer === null) flushTimer = setTimeout(() => alive && flush(), wait);
-      },
-    }).then(
-      (end) => {
-        if (!alive) return;
-        if (flushTimer !== null) clearTimeout(flushTimer);
-        for (const e of pending) entries.push(e);
-        setWalk({ status: "ok", entries, truncated: end.truncated, total: end.total, forRefresh });
+        const corpus = indexCorpusFrom(res);
+        if (!corpus) {
+          void liveWalk();
+          return;
+        }
+        for (const e of corpus.entries) entries.push(e);
+        setWalk({
+          status: "ok",
+          entries,
+          truncated: corpus.truncated,
+          total: entries.length,
+          forRefresh,
+        });
       },
       (err: Error) => {
+        // Includes the abort case: a cleanup aborts BOTH requests, and
+        // liveWalk would immediately abort too, so the guard covers it.
         if (!alive || err.name === "AbortError") return;
-        if (flushTimer !== null) clearTimeout(flushTimer);
-        setWalk({ status: "error", message: err.message, forRefresh });
+        void liveWalk();
       }
     );
     return () => {

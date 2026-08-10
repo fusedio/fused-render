@@ -77,6 +77,42 @@ AI-query feature must compile to a guarded, read-only view rather than reintrodu
 it. `tests/test_index_query.py` asserts the module has no `sql` attribute, so it cannot
 come back by accident.
 
+## 6. `search_under` — the explorer's in-folder corpus
+
+The explorer's in-folder search used to re-walk the tree live on every search
+session. `search_under(cfg, root, q, limit)` answers the same corpus from the index:
+entries in **exactly** the shape `/api/fs/walk` streams — `rel` (posix, relative to
+`root`), `is_dir`, `size`, `mtime` — so the client's fuzzy scoring, throttles and paging
+are indifferent to which source produced them. Files come from the partitions, folders
+from `dirs.parquet`; the corpus is capped at `MAX_CORPUS` (200 000), the same cap the
+walk uses, and flags `truncated` the same way.
+
+Two flags carry the decision:
+
+- **`covered`** — the scan visited *this exact directory* (a `dirs.parquet` row for
+  `root`), not merely some ancestor. A folder that was pruned, ignored, or left below a
+  cancelled run's frontier therefore reports honestly instead of answering with a
+  partial corpus.
+- **`fresh`** — the last compaction is within `FRESH_MAX_AGE_S` (1 h). There is no
+  watcher (`scan.md`), so this is the honest bound on how wrong the corpus can be. It
+  is a trade, not a fact about the data: long enough that the index is used during a
+  working session, short enough that a morning's edits don't answer an afternoon's
+  search.
+
+**A miss is never an error.** No index yet, a first-boot scan still running, a root
+outside the scanned roots, a stale index, a failed request — all of them return
+`{covered: false, entries: []}` with a 200, and the client falls back to the live walk
+silently. They are one condition from a search box's point of view, and none of them is
+something the user can act on.
+
+The pruning of §4 applies with the folder prefix, which is what makes an in-folder
+search read a slice of the index rather than all of it.
+
+`q` is an **optional** server-side substring filter. The explorer deliberately does not
+pass it: its client-side matching is subsequence-based, so pre-narrowing to substrings
+server-side would silently drop legitimate matches. It exists for a caller that only
+wants the hits.
+
 ## Non-goals
 
 - **Writing or repairing the index** — `scan.md` / `index-store.md`.

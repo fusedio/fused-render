@@ -233,6 +233,62 @@ export async function walkDirStream(
   return end;
 }
 
+// GET /api/index/search — the in-folder corpus answered from the persistent
+// file index instead of a live walk. `entries` are WalkEntry-shaped on purpose
+// so the search pipeline is indifferent to which source produced them.
+//
+// `covered` (the index visited this exact folder) and `fresh` (the index is
+// recent enough to answer with) are the whole decision; a miss is a normal
+// 200 with covered:false, because "no index yet", "not covered" and "a scan is
+// running" all mean the same thing here — use the live walk instead.
+export interface IndexSearchResult {
+  covered: boolean;
+  fresh: boolean;
+  root: string;
+  entries: WalkEntry[];
+  truncated: boolean;
+  total: number;
+  updated: number | null;
+  age_s: number | null;
+}
+
+// Abortable (unlike getJson): a folder change must be able to abandon an
+// in-flight corpus fetch the same way it abandons a walk stream.
+async function getJsonSignal<T>(url: string, signal?: AbortSignal): Promise<T> {
+  const res = await fetch(url, signal ? { signal } : undefined);
+  const data = await res.json();
+  if (!res.ok) throw httpError(data, res.status);
+  return data as T;
+}
+
+export function indexSearch(
+  fsPath: string,
+  opts: { signal?: AbortSignal } = {},
+): Promise<IndexSearchResult> {
+  return getJsonSignal<IndexSearchResult>(
+    "/api/index/search?root=" + encodeURIComponent(fsPath),
+    opts.signal,
+  );
+}
+
+// GET /api/index/status with no run id — the state of the most recent scan,
+// which is what a page that just loaded can ask about (it has no run id, but
+// the startup scan may well be running).
+export interface IndexStatus {
+  running: boolean;
+  indexed: boolean;
+  run_id: string | null;
+  root: string | null;
+  phase: string;
+  dirs: number;
+  files: number;
+  updated: number | null;
+}
+
+export function indexStatus(signal?: AbortSignal): Promise<IndexStatus> {
+  return getJsonSignal<IndexStatus>("/api/index/status", signal);
+}
+
 // One hit from POST /api/search/files (the AI search's execution engine —
 // Spotlight on macOS, a bounded home walk elsewhere). `path` is absolute.
 export interface SearchFileEntry {
