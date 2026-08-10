@@ -38,6 +38,7 @@ import { useClipboard } from "@apps/explorer/lib/fs-clipboard";
 import ContextMenu from "@platform/ui/ContextMenu";
 import { PromptDialog, ConfirmDialog } from "@apps/explorer/FsDialogs";
 import ListingPreviewPane from "@apps/explorer/ListingPreviewPane";
+import { resultCountLabel } from "@apps/explorer/listing/result-cap";
 import {
   FLIP_MAX_ROWS,
   SORT_KEYS,
@@ -163,8 +164,7 @@ export default function Listing({
     displayHits,
     visibleHits,
     showingHeld,
-    hasMore,
-    sentinelRef,
+    cappedAway,
     searchSort,
     setSearchSortKey,
   } = useWalkSearch(fsPath, refresh, !embedded);
@@ -765,10 +765,14 @@ export default function Listing({
               </tr>
             );
           })}
-          {hasMore && (
-            <tr ref={sentinelRef}>
+          {cappedAway > 0 && (
+            /* No sentinel and no "load more": past the top hundred a fuzzy
+               rank stops being useful, so the answer is a better query. The
+               count in the search chip carries the real total. */
+            <tr>
               <td colSpan={3} className="status-message">
-                Scroll for more…
+                {cappedAway.toLocaleString()} more match
+                {cappedAway === 1 ? "" : "es"} not shown — refine your search
               </td>
             </tr>
           )}
@@ -940,8 +944,7 @@ export default function Listing({
   } else if (searching && validWalk.status === "ok" && hits.length > 0) {
     // A truncated walk (server safety cap) means `hits` undercounts the real
     // tree. Signal that without new UI: a "+" on the number plus a tooltip.
-    const suffix = validWalk.truncated ? "+" : "";
-    searchCount = `${hits.length.toLocaleString()}${suffix} match${hits.length === 1 ? "" : "es"}`;
+    searchCount = resultCountLabel(hits.length, validWalk.truncated);
     if (validWalk.truncated)
       searchCountTitle = `Search covers the first ${validWalk.total.toLocaleString()} entries of this folder tree`;
   }

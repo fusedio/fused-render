@@ -1,6 +1,6 @@
 // The in-folder search: query state (URL-synced), the streamed recursive walk,
 // incremental fuzzy scoring, the render-side re-rank throttle, the
-// stale-while-revalidate hold across dir-watch refreshes, and result paging.
+// stale-while-revalidate hold across dir-watch refreshes, and the result cap.
 //
 // A non-empty query swaps the listing for flat, rank-ordered results over a
 // recursive walk of the folder. The walk STREAMS (NDJSON batches,
@@ -21,9 +21,9 @@ import { replaceSearch } from "@platform/lib/router";
 import { nextHeldHits, resolveDisplayedHits, type QueryTagged } from "@platform/lib/search-hold";
 import { startScanJob } from "@apps/explorer/listing/scan-job";
 import { shouldReconcile } from "@apps/explorer/listing/revalidate";
+import { capHits } from "@apps/explorer/listing/result-cap";
 import {
   IDLE_WALK,
-  PAGE_SIZE,
   RERANK_COMMIT_MS,
   SCAN_DEBOUNCE_MS,
   SCAN_IMMEDIATE_MAX,
@@ -62,9 +62,6 @@ export function useWalkSearch(fsPath: string, refresh: number, urlSync = true) {
   // NOT URL-synced (unlike the normal-mode sort) — it resets on every query
   // change, so persisting it would fight that reset.
   const [searchSort, setSearchSort] = useState<{ sort: SortKey; order: SortOrder } | null>(null);
-  // How many result rows are revealed; grows by PAGE_SIZE when the sentinel
-  // row scrolls into view, resets on every query change.
-  const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
 
   // The input echoes `query` (immediate) so keystrokes never wait on the
   // fuzzy-scoring/rendering work below. `deferredQuery` trails behind under
@@ -247,7 +244,6 @@ export function useWalkSearch(fsPath: string, refresh: number, urlSync = true) {
     // generation deferred during the previous query lands here for free.
     reconcile();
     setSearchSort(null); // a new query drops back to relevance order
-    setVisibleCount(PAGE_SIZE);
     // Editing the query is also a user gesture: if the last walk attempt
     // failed, give it another shot instead of leaving search dead forever.
     // (An idle walk needs no handling here — the auto-request effect fires
@@ -448,25 +444,15 @@ export function useWalkSearch(fsPath: string, refresh: number, urlSync = true) {
     walkUnsettled,
   );
 
-  const visibleHits = useMemo(() => displayHits.slice(0, visibleCount), [displayHits, visibleCount]);
+  // The rendered rows: the top of the ranking only (listing/result-cap). This
+  // is also what keyboard nav and auto-select walk, so they never address a
+  // row that is not on screen.
+  const visibleHits = useMemo(() => capHits(displayHits), [displayHits]);
 
-  // Reveal the next page when the sentinel row (rendered only while more rows
-  // exist) scrolls into view. rootMargin pre-triggers a bit before the bottom
-  // so the next page is usually mounted by the time the user reaches it.
-  const sentinelRef = useRef<HTMLTableRowElement | null>(null);
-  const hasMore = searching && displayHits.length > visibleCount;
-  useEffect(() => {
-    const el = sentinelRef.current;
-    if (!el || !hasMore) return;
-    const io = new IntersectionObserver(
-      (obsEntries) => {
-        if (obsEntries.some((e) => e.isIntersecting)) setVisibleCount((c) => c + PAGE_SIZE);
-      },
-      { root: el.closest(".listing-scroll"), rootMargin: "200px" }
-    );
-    io.observe(el);
-    return () => io.disconnect();
-  }, [hasMore, visibleCount]);
+  // How many ranked matches the cap is hiding — the counter reports the true
+  // total and tells the user to narrow the query (listing/result-cap). There
+  // is deliberately no "load more": scrolling further is the wrong answer.
+  const cappedAway = displayHits.length - visibleHits.length;
 
   return {
     query,
@@ -481,8 +467,7 @@ export function useWalkSearch(fsPath: string, refresh: number, urlSync = true) {
     displayHits,
     visibleHits,
     showingHeld,
-    hasMore,
-    sentinelRef,
+    cappedAway,
     searchSort,
     setSearchSort,
     setSearchSortKey,

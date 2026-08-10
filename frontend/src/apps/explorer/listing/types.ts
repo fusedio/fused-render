@@ -42,6 +42,13 @@ export type SortOrder = "asc" | "desc";
 // ranked list always exists in memory for the count text.
 export const PAGE_SIZE = 250;
 
+// Search results rendered at most, however many matched. Ranking still runs
+// over the whole corpus; past the first hundred a fuzzy rank has stopped
+// telling the user anything they can act on, and the useful move is a better
+// query rather than more scrolling — so the list stops here and the counter
+// says how much it is not showing (listing/result-cap).
+export const SEARCH_RESULT_CAP = 100;
+
 // Above this many rendered rows the FLIP reorder animation is dropped. Measuring
 // every row's offsetTop on each commit is one forced layout, but the per-row
 // transform (a compositing layer each) is not free — on a listing this long the
