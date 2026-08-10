@@ -1014,11 +1014,24 @@ table.listing-table tr.skel-row:hover {
    and nothing else. */
 .crumb-search-slot .listing-search-box {
   flex: 0 1 150px;
-  min-width: 110px;
+  min-width: 96px;
 }
 
+/* Who yields when the bar runs short, and in what order.
+   The crumbs go first and by a long way (shrink 6 against the box's 1):
+   ellipsizing and then scrolling is what a path bar is built to do, and the
+   tail — the folder you are actually in — is pinned into view, so a narrow
+   crumb strip still says where you are. A squeezed input just looks broken.
+
+   But they stop at 120px rather than at zero, because a path bar scrolled down
+   to nothing is no longer a path bar. Past that point the search box takes
+   over and gives up its own width, down to 96px — still the full "Search…"
+   placeholder, just with no slack around it. Between the two floors the strip
+   stays one line at any width the split allows, which is what keeps it the
+   same height as the pane header across the divider. */
 #breadcrumb:has(.crumb-search-slot) .crumbs {
   flex-shrink: 6;
+  min-width: 120px;
 }
 
 /* …and once there is a query, the crumbs get out of the way entirely.
