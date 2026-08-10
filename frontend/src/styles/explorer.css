@@ -1000,6 +1000,9 @@ table.listing-table tr.skel-row:hover {
      crumb was part of it, and now only the strip's own trailing padding is.
      Ctrl+L and the crumbs themselves are unaffected. */
   margin-left: auto;
+  /* And the row packs to its own right edge, so any leftover slack in it falls
+     on the crumb side rather than between the `···` and the corner. */
+  justify-content: flex-end;
   height: auto;
   padding: 0;
   border-bottom: none;
@@ -1025,7 +1028,14 @@ table.listing-table tr.skel-row:hover {
    the `.searching` rules below — so this width has to serve the empty state
    and nothing else. */
 .crumb-search-slot .listing-search-box {
-  flex: 0 1 150px;
+  /* `width`, not a flex-basis. The row is sized by its content, and a flex
+     item's contribution to that is its MAX-content — for a bare `type=search`
+     input that is the UA's intrinsic ~166px, not the 150px basis it then lays
+     out at. The row came out 16px wider than what was in it, and the slack sat
+     at the end, holding the `···` that far off the right edge. A width is
+     intrinsic, so the row measures what it actually shows. */
+  flex: 0 1 auto;
+  width: 150px;
   min-width: 96px;
 }
 
