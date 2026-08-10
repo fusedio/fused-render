@@ -1,16 +1,22 @@
-// The preview pane (right-hand split): per-folder visibility/width state and
-// the usePreviewPane hook that owns the toggle + divider drag.
+// The preview pane (right-hand split): the usePreviewPane hook that decides
+// whether the pane is there at all and owns the divider drag.
 //
-// Visibility follows the sort's model: an explicit `?preview` in the URL wins
-// (and rides along on directory navigation — see lib/router navigate, which
-// carries it so the pane is sticky between folders), otherwise this folder's
-// saved viewstate (keys `pane`/`panew` alongside `sort`/`order`). Width is
-// viewstate-only — one machine's split isn't something a shared link should
-// impose. Default ON — no `preview` param and no saved viewstate shows the
-// pane; closing it writes an explicit `pane=0` (viewstate) / `preview=false`
-// (URL) so the closed choice sticks. `pane` and `panew` are independent:
-// turning the pane off keeps a dragged width, so re-opening the folder
-// restores it.
+// VISIBILITY IS NOT A CHOICE ANY MORE. It used to be: a toggle button, a
+// `?preview=true|false` URL param that rode along on directory navigation, and
+// a `pane=0` viewstate key so a folder remembered being closed. Three places to
+// keep in agreement for one bit, and the bit was almost always a proxy for a
+// question the app can answer itself — "is there room for two panes here?".
+// So the pane now appears purely from the width of the split container
+// (pane-math's shouldShowPane), measured with a ResizeObserver. Measured, not
+// read off `window.innerWidth`: the same Listing renders full-window, inside a
+// chrome-free embed, and inside another view's split, and only the container
+// knows which.
+//
+// What SURVIVES from the old model is the width, and only the width: `panew`
+// (viewstate, per folder) still records a dragged split, because a proportion
+// the user chose is a real preference — unlike an on/off the layout can infer.
+// Width stays viewstate-only and off the URL: one machine's split isn't
+// something a shared link should impose.
 //
 // Width is a FRACTION of the split container (PANE_DEFAULT_FRAC when nothing
 // is saved), rendered as a percentage flex-basis — so the pane keeps its
@@ -19,106 +25,77 @@
 // paint, whatever the container turns out to be. The pixel floors survive as
 // CSS min-widths (.listing-pane-slot / .listing-main) and as the drag's clamp.
 // The arithmetic itself is pure and lives in listing/pane-math.ts.
-import { useRef, useState } from "react";
-import { replaceSearch } from "@platform/lib/router";
+import { useLayoutEffect, useRef, useState } from "react";
 import { getViewState, setViewState } from "@platform/lib/viewstate";
 import {
   PANE_DEFAULT_FRAC,
   dragPaneFrac,
   parsePaneFrac,
+  shouldShowPane,
 } from "@apps/explorer/listing/pane-math";
 
-// Dragging the divider within this many pixels of the container's right edge
-// closes the pane on release (the clamp holds the pane at its floor during the
-// drag, so the intent is read from the raw cursor position instead).
-const PANE_CLOSE_W = 110;
-
-// Shared by resolvePane and any other view (Preview.tsx's topbar-hiding
-// check) that needs to know whether the pane is showing for a path without
-// wanting its width too. `preview=true`/`preview=false` — the owner's literal
-// format (any other value reads as absent, falling back to the saved state).
-// No saved state means ON by default; only an explicit `pane=0` (a prior
-// close) turns it off.
-export function paneIsOpen(fsPath: string): boolean {
-  const urlPreview = new URLSearchParams(location.search).get("preview");
-  if (urlPreview !== null) return urlPreview === "true";
-  return new URLSearchParams(getViewState(fsPath)).get("pane") !== "0";
-}
-
-// `frac` is null when this folder has saved no width of its own (or saved a
-// legacy pixel one) — the caller opens at PANE_DEFAULT_FRAC and remembers that
-// the width was never chosen.
-function resolvePane(fsPath: string): { on: boolean; frac: number | null } {
-  const s = new URLSearchParams(getViewState(fsPath));
-  return { on: paneIsOpen(fsPath), frac: parsePaneFrac(s.get("panew")) };
-}
-
-// Merge the pane keys into this folder's saved state without touching a saved
-// sort (and vice versa — setSort merges the same way). A null fraction (still
-// at the default half) isn't persisted — only a dragged fraction is a choice
-// worth remembering. The two keys are INDEPENDENT: `panew` outlives a
-// toggle-off, so closing the pane and coming back to the folder re-opens at
-// the fraction that was dragged rather than at the default.
+// Merge the pane's width into this folder's saved state without touching a
+// saved sort (and vice versa — setSort merges the same way). A null fraction
+// (still at the default half) isn't persisted — only a dragged fraction is a
+// choice worth remembering.
 //
 // Three decimals is the whole of the precision a split is worth: it is a
 // tenth of a percent of the container, well under a pixel on any window, and
 // it keeps the saved string short and readable.
 //
-// `pane` only ever stores the OFF choice (`"0"`) — on is the default, so
-// nothing needs persisting for it; a stale `pane=1` from before the default
-// flipped is just as good as no key at all (resolvePane treats anything but
-// `"0"` as on).
-function savePaneState(fsPath: string, on: boolean, frac: number | null): void {
+// The old `pane` key (the OFF choice) is deleted on the way past rather than
+// left alone: folders saved one under the previous model, and a key nothing
+// reads is a key that will be misread later.
+function savePaneWidth(fsPath: string, frac: number | null): void {
   const s = new URLSearchParams(getViewState(fsPath));
-  if (on) s.delete("pane");
-  else s.set("pane", "0");
+  s.delete("pane");
   if (frac !== null) s.set("panew", String(Math.round(frac * 1000) / 1000));
   else s.delete("panew");
   const qs = s.toString();
   setViewState(fsPath, qs ? "?" + qs : "");
 }
 
+// Does the element this ref points at have room for the split? The one place
+// the measurement happens, shared by the listing (its split container) and by
+// Preview (the body the embed's browse chip pins into, which is the same box).
+//
+// useLayoutEffect, not useEffect: the first measurement lands BEFORE paint, so
+// a wide container never shows one frame of unsplit listing and then jumps.
+// The observed element is the container that is always rendered — never the
+// pane itself — so showing or hiding the pane cannot feed back into the
+// measurement and oscillate.
+export function useSplitIsWide(ref: React.RefObject<HTMLElement>): boolean {
+  const [wide, setWide] = useState(false);
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const read = () => setWide(shouldShowPane(el.getBoundingClientRect().width));
+    read();
+    const ro = new ResizeObserver(read);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [ref]);
+  return wide;
+}
+
 // `enabled=false` (an embedded Listing — the preview pane's own `_listing`
-// mode) turns the whole feature off at the source: the pane never resolves
-// from URL/viewstate, stays off, and the toggle is inert — no nesting.
+// mode) turns the whole feature off at the source: however wide that embedded
+// listing is, it never grows a pane of its own — no nesting.
 export function usePreviewPane(fsPath: string, enabled = true) {
-  // Visibility restores URL-first (resolvePane: `?preview=true` wins, then the
-  // folder's saved viewstate); the width fraction is viewstate-only. Toggling
-  // writes BOTH: the URL (replaceSearch, like setSort — on sets
-  // `preview=true`, off deletes it; navigate() then carries the param between
-  // folders, making the pane sticky) and the viewstate (so a folder re-opened
-  // from a clean URL remembers).
-  //
   // `sized` is provenance, not geometry: did the USER choose this fraction
   // (restored from `panew`, or dragged this session), or is it just
-  // PANE_DEFAULT_FRAC? Only a chosen fraction is persisted — otherwise a plain
-  // toggle would write the default into `panew` as though it had been dragged.
+  // PANE_DEFAULT_FRAC? Only a chosen fraction is persisted — otherwise the
+  // default would be written into `panew` as though it had been dragged.
   // It rides in state rather than a ref so every setPane updater can read it.
-  const [pane, setPane] = useState<{ on: boolean; frac: number; sized: boolean }>(() => {
-    const r = enabled ? resolvePane(fsPath) : { on: false, frac: null };
-    return { on: r.on, frac: r.frac ?? PANE_DEFAULT_FRAC, sized: r.frac !== null };
+  const [pane, setPane] = useState<{ frac: number; sized: boolean }>(() => {
+    const saved = enabled
+      ? parsePaneFrac(new URLSearchParams(getViewState(fsPath)).get("panew"))
+      : null;
+    return { frac: saved ?? PANE_DEFAULT_FRAC, sized: saved !== null };
   });
   const splitRef = useRef<HTMLDivElement>(null);
-
-  const togglePane = () => {
-    if (!enabled) return;
-    setPane((prev) => {
-      const next = { ...prev, on: !prev.on };
-      const params = new URLSearchParams(location.search);
-      if (next.on) params.set("preview", "true");
-      else {
-        // Explicit `false`, not a deleted param — on is the default now, so
-        // an absent param would reopen the pane on the next load/nav.
-        params.set("preview", "false");
-        // The pane's mode param has no pane to describe once it's closed.
-        params.delete("_panelMode");
-      }
-      const qs = params.toString();
-      replaceSearch(location.pathname + (qs ? "?" + qs : ""));
-      savePaneState(fsPath, next.on, next.sized ? next.frac : null);
-      return next;
-    });
-  };
+  const wide = useSplitIsWide(splitRef);
+  const on = enabled && wide;
 
   // The divider drag: pointer capture keeps the drag alive when the cursor
   // crosses into the pane's iframe (which would otherwise swallow mousemove).
@@ -129,19 +106,20 @@ export function usePreviewPane(fsPath: string, enabled = true) {
     divider.classList.add("dragging");
     // The pre-drag fraction and provenance, captured once: nothing else can
     // change them while this drag owns the pointer.
-    const startFrac = pane.frac;
     const startSized = pane.sized;
     let frac = pane.frac;
-    let raw = Infinity;
-    // TWO flags, because the drag can mean two different things and a single
-    // one conflated them. `moved` = the pointer moved at all, which is what the
-    // close-at-the-edge gesture reads — that gesture still works in a container
-    // too narrow to split, and is arguably the only useful thing to do there.
-    // `resized` = the drag also produced a real fraction, which is what
-    // PERSISTENCE reads: in a container narrower than both floors dragPaneFrac
-    // returns null (see there), and recording the pre-drag fraction as though
-    // the user had chosen it would write a number nobody picked.
-    let moved = false;
+    // Did the drag produce a real fraction? That is what PERSISTENCE reads: in
+    // a container narrower than both floors dragPaneFrac returns null (see
+    // there), and recording the pre-drag fraction as though the user had chosen
+    // it would write a number nobody picked.
+    //
+    // There used to be a second flag beside it, for the gesture that CLOSED the
+    // pane by dragging the divider into the right edge. That gesture is gone
+    // with the toggle: closing needs a way back, and with the split decided by
+    // width there is no reopen affordance to offer — a pane dragged shut would
+    // have stayed shut until the window was resized. The drag now just holds at
+    // the pane's floor, which is what the clamp already did all the way to the
+    // edge.
     let resized = false;
     const onMove = (ev: PointerEvent) => {
       const rect = splitRef.current?.getBoundingClientRect();
@@ -149,9 +127,7 @@ export function usePreviewPane(fsPath: string, enabled = true) {
       // The pane is the right side: its width is the distance from the cursor
       // to the container's right edge, run through the shared FS-12 clamps and
       // divided back into a fraction of the container (dragPaneFrac).
-      raw = rect.right - ev.clientX;
-      moved = true;
-      const next = dragPaneFrac(rect.width, raw);
+      const next = dragPaneFrac(rect.width, rect.right - ev.clientX);
       if (next === null) return;
       resized = true;
       frac = next;
@@ -162,45 +138,17 @@ export function usePreviewPane(fsPath: string, enabled = true) {
       divider.removeEventListener("pointermove", onMove);
       divider.removeEventListener("pointerup", onUp);
       divider.removeEventListener("pointercancel", onUp);
-      // Released with the cursor (nearly) at the right edge: close the pane,
-      // keeping the pre-drag fraction so re-opening restores it.
-      if (moved && raw < PANE_CLOSE_W) {
-        const params = new URLSearchParams(location.search);
-        // Explicit `false` — see togglePane: on is the default now.
-        params.set("preview", "false");
-        params.delete("_panelMode");
-        const qs = params.toString();
-        replaceSearch(location.pathname + (qs ? "?" + qs : ""));
-        setPane({ on: false, frac: startFrac, sized: startSized });
-        savePaneState(fsPath, false, startSized ? startFrac : null);
-        return;
-      }
       // Only a drag that actually RESIZED is a chosen fraction: a bare click on
       // the divider, or a drag in a container too narrow to express a split,
       // both leave the fraction unpersisted.
       const sized = startSized || resized;
       if (resized) setPane((prev) => (prev.sized ? prev : { ...prev, sized: true }));
-      savePaneState(fsPath, true, sized ? frac : null);
+      savePaneWidth(fsPath, sized ? frac : null);
     };
     divider.addEventListener("pointermove", onMove);
     divider.addEventListener("pointerup", onUp);
     divider.addEventListener("pointercancel", onUp);
   };
 
-  return { pane, splitRef, togglePane, onDividerPointerDown };
-}
-
-// Same URL reflection Listing does for a saved sort: a pane restored CLOSED
-// from saved viewstate (URL carried no `preview`) puts `preview=false` on the
-// address bar so refresh, bookmarks and onward navigation (which carries the
-// param) all see the shown state. Only ever ADDS the param — a URL without it
-// and a folder with no saved close (on is the default) keep the clean URL,
-// and an explicit `?preview=` value stays authoritative (resolvePane already
-// read it).
-export function reflectPaneInUrl(fsPath: string): void {
-  if (new URLSearchParams(location.search).get("preview") !== null) return; // URL is authoritative
-  if (new URLSearchParams(getViewState(fsPath)).get("pane") !== "0") return; // on is the default
-  const params = new URLSearchParams(location.search);
-  params.set("preview", "false");
-  replaceSearch(location.pathname + "?" + params.toString());
+  return { pane: { ...pane, on }, splitRef, onDividerPointerDown };
 }

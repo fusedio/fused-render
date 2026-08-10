@@ -5,7 +5,49 @@
 // router-free module (see pane-math.ts), so this file runs with no DOM and in
 // any order.
 import { describe, expect, test } from "bun:test";
-import { PANE_DEFAULT_FRAC, clampPaneWidth, dragPaneFrac, parsePaneFrac } from "./pane-math";
+import {
+  PANE_DEFAULT_FRAC,
+  PANE_SPLIT_MIN_W,
+  clampPaneWidth,
+  dragPaneFrac,
+  parsePaneFrac,
+  shouldShowPane,
+} from "./pane-math";
+
+// The split is no longer a toggle — it is a question about how much room the
+// listing container has. These are the only cases the DOM wiring can get
+// wrong, and they are all here rather than in a layout test, because a
+// headless test cannot see layout at all (it can only see this arithmetic).
+describe("shouldShowPane", () => {
+  test("a roomy container splits", () => {
+    expect(shouldShowPane(1440)).toBe(true);
+    expect(shouldShowPane(900)).toBe(true);
+  });
+
+  test("a cramped container keeps the listing whole", () => {
+    expect(shouldShowPane(699)).toBe(false);
+    expect(shouldShowPane(420)).toBe(false);
+    expect(shouldShowPane(0)).toBe(false);
+  });
+
+  test("the threshold itself splits — >=, not >", () => {
+    expect(shouldShowPane(PANE_SPLIT_MIN_W)).toBe(true);
+    expect(PANE_SPLIT_MIN_W).toBe(700);
+  });
+
+  test("an unmeasured container does not split", () => {
+    // A width of NaN is what an unattached / display:none element measures as
+    // in some engines; guessing "split" there would paint a pane and then rip
+    // it away on the first real measurement.
+    expect(shouldShowPane(Number.NaN)).toBe(false);
+  });
+
+  test("every container that splits can also express a drag", () => {
+    // The two thresholds must not disagree: a pane that shows but whose
+    // divider drag returns null (dragPaneFrac) would be undraggable.
+    expect(dragPaneFrac(PANE_SPLIT_MIN_W, 300)).not.toBeNull();
+  });
+});
 
 describe("clampPaneWidth", () => {
   test("passes a comfortable width through untouched", () => {

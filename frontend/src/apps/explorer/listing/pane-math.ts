@@ -18,6 +18,31 @@ const PANE_MIN_W = 220;
 const LIST_MIN_W = 60;
 export const PANE_DEFAULT_FRAC = 0.5;
 
+// The width at which the listing splits. Above it the pane is there; below it
+// the listing has the container to itself.
+//
+// Comfortably above the 280px both floors technically fit in (PANE_MIN_W +
+// LIST_MIN_W), because "can it be laid out" was never the question — "is a
+// half-width listing beside a half-width preview still worth reading" is. At
+// 700px both halves are around 350px: a listing that still shows a name and a
+// size, and a preview big enough to recognise what it is showing. Under it,
+// splitting produces two panes that are each too small to do their job, which
+// is why the pane used to need a toggle at all.
+export const PANE_SPLIT_MIN_W = 700;
+
+// Whether a container of this width shows the preview pane. The WHOLE of the
+// pane's on/off decision: there is no user toggle any more, no URL param and
+// no saved on/off state — the split is a property of the room available, so it
+// is right on a wide window, right in a narrow embed, and right the moment
+// either is resized, with nothing to restore and nothing to get stale.
+//
+// A NaN width (an unattached or display:none container) reads as "no" via the
+// comparison, which is the safe answer: painting a pane on a guess and tearing
+// it away on the first real measurement is the one visible failure here.
+export function shouldShowPane(containerW: number): boolean {
+  return containerW >= PANE_SPLIT_MIN_W;
+}
+
 // The one place the pixel clamps live, so the drag cannot disagree with the
 // CSS floors: the pane keeps at least PANE_MIN_W, and the list keeps at least
 // LIST_MIN_W (a sliver — the columns shed themselves via container queries as

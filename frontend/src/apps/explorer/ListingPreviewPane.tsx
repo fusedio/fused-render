@@ -96,17 +96,11 @@ interface PaneMode {
 export default function ListingPreviewPane({
   row,
   selCount,
-  onCollapse,
 }: {
   // The lead row when exactly one row is selected, else null.
   row: PaneTarget | null;
   // Total selected rows, for the multi-selection placeholder.
   selCount: number;
-  // Close the pane — the host's own toggle, rendered HERE while the pane is
-  // open (see the collapse control below). Required, not optional: every one
-  // of this component's states has to be able to draw it, because while the
-  // pane is up this is the only way to put it down.
-  onCollapse: () => void;
 }) {
   const [info, setInfo] = useState<InfoState>({ status: "loading" });
   // Lone-app probe result for a folder: undefined = still loading, null =
@@ -200,72 +194,22 @@ export default function ListingPreviewPane({
     };
   }, [path, isDir, self]);
 
-  // Collapse the pane. It lives HERE, not in the listing's search row, because
-  // collapsing is spatial — and for the same reason it is the FIRST thing in
-  // the strip: the pane's left edge is the seam between the list and the pane,
-  // the divider the user drags, and the edge this control sends the pane back
-  // to. A close affordance sits on the boundary the action happens at, not in
-  // the far corner opposite it. (Re-opening cannot live here — a closed pane
-  // hosts nothing — so that half stayed in the search row, and stayed
-  // labelled. See Listing's toggle.) The glyph still points INTO the right
-  // edge, which is where the pane goes, and stays deliberately unlike the
-  // expand button at the other end of the strip: that one opens the FILE, this
-  // one closes the PANE.
-  const collapseBtn = (
-    <button
-      type="button"
-      className="bar-ctl bar-ctl-icon"
-      title="Hide preview"
-      aria-label="Hide preview"
-      onClick={onCollapse}
-    >
-      <svg
-        viewBox="0 0 24 24"
-        width="16"
-        height="16"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.8"
-        strokeLinejoin="round"
-        strokeLinecap="round"
-        aria-hidden="true"
-      >
-        <rect x="3" y="4" width="18" height="16" rx="2" />
-        <line x1="14" y1="4" x2="14" y2="20" />
-        {/* Pushing the right panel out through its own edge. */}
-        <polyline points="17 9 20 12 17 15" />
-      </svg>
-    </button>
-  );
-
   // The pane's chrome strip, and EVERY state gets one — a loading skeleton, an
-  // error, the metadata card and the multi-selection placeholder all used to
-  // render bare, which was fine while the listing's search row carried the
-  // toggle and is not now: a pane with no strip would be a pane with no way to
-  // close it. It also keeps the strip's height agreeing with the search row
-  // beside it in every state rather than most of them (see .pane-header).
+  // error, the metadata card and the multi-selection placeholder alike. It
+  // keeps the strip's height agreeing with the search row beside it in every
+  // state rather than most of them (see .pane-header).
+  //
+  // It used to open with a COLLAPSE button, sitting on the seam it sent the
+  // pane back to. That went with the toggle: the split is now decided by the
+  // container's width (listing/pane.ts), so a closed pane would have had no
+  // way back short of resizing the window.
+  //
   // `extra` is what the settled preview adds after the name, at the strip's
   // far end: the mode menu and the open-full-screen button.
   const strip = (extra?: React.ReactNode) => (
     <div className="pane-header">
-      {collapseBtn}
-      {/* Zone divider, the same .bar-rule grammar the title bar and the panel
-          bar use (c27a32f5): everything LEFT of it acts on the pane, everything
-          right of it is the previewed row — its icon, its name, and the two
-          controls that act on IT (mode, open). Without it the collapse glyph
-          sat flush against the file icon and the two read as a pair of glyphs
-          with nothing saying which was chrome and which was the subject. A rule
-          rather than a border on the button, because the boundary is what
-          needed naming, not the button — and a permanently bordered control
-          would undo the two commits that just made these bars quieter.
-          Only with a subject to divide FROM: the no-selection strip is the
-          collapse control alone, and a hairline with nothing after it is a
-          divider dividing nothing. */}
       {row && (
-        <>
-          <span className="bar-rule" aria-hidden="true" />
-          <span className="pane-header-icon">{iconForEntry(row.name, row.isDir)}</span>
-        </>
+        <span className="pane-header-icon">{iconForEntry(row.name, row.isDir)}</span>
       )}
       <span className="pane-header-name" title={row?.name}>
         {row?.name ?? ""}
@@ -275,7 +219,7 @@ export default function ListingPreviewPane({
   );
 
   // Placeholders need no fetch: nothing selected, or a multi-selection. No
-  // subject, so the strip carries nothing but the collapse control.
+  // subject, so the strip carries nothing but an empty name.
   if (!row) {
     return (
       <div className="listing-pane">
@@ -392,8 +336,7 @@ export default function ListingPreviewPane({
   const activeEntry = embeddable.find((e) => e.mode === activeMode) ?? null;
 
   // The settled header: the shared strip, with the mode control and the
-  // open-full-screen button after the name, at the end opposite the collapse
-  // control. Every
+  // open-full-screen button after the name, at the far end of the strip. Every
   // OTHER state renders the bare strip instead — same chrome, nothing to
   // switch or expand yet. (The self target has its own, picker-less one and
   // returns above.)
@@ -495,8 +438,7 @@ export default function ListingPreviewPane({
     );
   } else {
     // No embeddable template for a file: the bare strip (no mode to switch —
-    // this row offers none — but the pane still needs its collapse control)
-    // over a metadata card (icon, name, size, Open).
+    // this row offers none) over a metadata card (icon, name, size, Open).
     body = (
       <>
         {strip()}

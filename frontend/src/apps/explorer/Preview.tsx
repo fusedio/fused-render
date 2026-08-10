@@ -21,7 +21,7 @@ import type { Deployment, StatResult, TemplateEntry } from "@platform/lib/api";
 import { navigate, navigateUrl, urlForFsPath, replaceSearch } from "@platform/lib/router";
 import { appRouteUrl, APP_OPEN_MODE } from "@platform/lib/appEntry";
 import { formatSize, formatMtimeFull, basename } from "@platform/lib/format";
-import { useRefreshOnReturn, useUrlVersion } from "@platform/lib/hooks";
+import { useRefreshOnReturn } from "@platform/lib/hooks";
 import { useDeployEnabled } from "@platform/lib/prefs";
 import {
   dirname,
@@ -50,7 +50,7 @@ import { MenuIcons } from "@platform/ui/MenuIcons";
 import { PromptDialog, ConfirmDialog, nameError } from "@apps/explorer/FsDialogs";
 import DeployModal from "@platform/cloud/DeployModal";
 import Listing from "@apps/explorer/Listing";
-import { paneIsOpen } from "@apps/explorer/listing/pane";
+import { useSplitIsWide } from "@apps/explorer/listing/pane";
 
 interface HeaderProps {
   fsPath: string;
@@ -448,21 +448,19 @@ function TemplatePreview({
     if (mode !== activeMode) setModeState(activeMode);
   }, [mode, activeMode]);
   const deployEnabled = useDeployEnabled();
-  // Re-render on URL changes (the pane toggle writes `preview` via
-  // replaceSearch, which fires fused:urlchange) so the switcher-hide below
-  // tracks the pane live.
-  useUrlVersion();
   // `_listing` sentinel (D81): the shell's built-in directory listing, mounted
   // in place of the preview iframe — no iframe, no `_file`. Every directory
   // renders through this same header + body chrome (even a plain folder's
   // single `_listing` mode), so the preview header is uniform across files and
   // dirs.
   const isListing = entry.mode === "_listing";
-  // Whether the listing's right preview pane is showing (default ON — see
-  // listing/pane.ts paneIsOpen). Gated on `isListing`: a FILE view's fsPath
-  // never carries pane viewstate (the pane belongs to directories) and
-  // `preview` never rides onto file URLs (router.ts navigate), so paneIsOpen
-  // would otherwise read the now-default-on value here.
+  // Whether the listing's right preview pane is showing. The pane has no
+  // on/off state to read any more (no toggle, no `preview` param, no saved
+  // key): it appears when the split container is wide enough, so the only way
+  // to answer the question is to ask the same measurement the listing asks —
+  // hence the same hook, pointed at THIS body, which is the box the listing's
+  // own split container fills. Gated on `isListing`: only a directory renders
+  // a listing, and only a listing has a pane.
   //
   // Used for the one thing the pane displaces: .preview-browse-chip, whose
   // corner is INSIDE the pane when there is one (see its comment below) — an
@@ -471,7 +469,9 @@ function TemplatePreview({
   // it is gone whether the pane is open or not; see headerActions. And the
   // folder's "Open as app" is not conditioned on the pane at all any more (see
   // openAsAppBtn).
-  const listingPaneOpen = isListing && paneIsOpen(fsPath);
+  const bodyRef = useRef<HTMLDivElement>(null);
+  const bodyIsWide = useSplitIsWide(bodyRef);
+  const listingPaneOpen = isListing && bodyIsWide;
   // Path of the directory's lone top-level HTML file, reported by Listing
   // (null when there isn't exactly one) — drives the "Open as app" button
   // between the directory name and the mode switcher.
@@ -871,7 +871,7 @@ function TemplatePreview({
           </Header>
         )
       )}
-      <div className="preview-body">
+      <div className="preview-body" ref={bodyRef}>
         {isPending(entry) ? (
           /* URL-requested a gated mode whose verdict is still in flight: hold
              the body until it lands (the iframe must not render a template on

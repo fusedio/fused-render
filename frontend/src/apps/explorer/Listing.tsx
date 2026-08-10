@@ -11,7 +11,7 @@
 //   sorting.ts             sort resolution + entry sorting
 //   search.ts              fuzzy scoring / ranking (pure)
 //   selection.ts           selection model + cross-remount stash (pure)
-//   pane.ts                preview-pane state (usePreviewPane)
+//   pane.ts                preview-pane split (usePreviewPane: width + drag)
 //   row-utils.ts           RowCtx batch helpers
 //   bits.tsx               skeleton rows, ClipMark, highlight, scroll anchor
 //   useDirListing.ts       /api/fs/list fetch, Load more, dir watch, new-row cue
@@ -47,7 +47,7 @@ import {
   renderHighlight,
   measureScrollAnchor,
 } from "@apps/explorer/listing/bits";
-import { usePreviewPane, reflectPaneInUrl } from "@apps/explorer/listing/pane";
+import { usePreviewPane } from "@apps/explorer/listing/pane";
 import { autoSelectPath, selectionClaimed } from "@apps/explorer/listing/selection";
 import { useDirListing } from "@apps/explorer/listing/useDirListing";
 import { useWalkSearch } from "@apps/explorer/listing/useWalkSearch";
@@ -74,7 +74,7 @@ export default function Listing({
   provisional?: boolean;
   // `embedded`: this Listing renders INSIDE another view (the preview pane's
   // `_listing` mode), not as the shell's main view. It must not touch the
-  // address bar (no sort/q/preview URL reflection), never opens its own
+  // address bar (no sort/q/sel URL reflection), never opens its own
   // preview pane (no nesting), and registers no document-level keyboard
   // handlers — those belong to the host's Listing. Mouse interaction stays:
   // clicks select/navigate, right-click menus and dialogs work as usual.
@@ -112,13 +112,6 @@ export default function Listing({
     replaceSearch(location.pathname + "?" + params.toString());
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fsPath]);
-  // Same URL reflection for a pane restored from saved viewstate.
-  useEffect(() => {
-    if (embedded) return;
-    reflectPaneInUrl(fsPath);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [fsPath]);
-
   const setSort = (key: SortKey) => {
     const next: { sort: SortKey; order: SortOrder } = {
       sort: key,
@@ -163,8 +156,9 @@ export default function Listing({
   } = useWalkSearch(fsPath, refresh, !embedded);
 
   // An embedded Listing never opens its own pane (no nesting): the feature is
-  // disabled at the hook, whatever the folder's saved viewstate says.
-  const { pane, splitRef, togglePane, onDividerPointerDown } = usePreviewPane(
+  // disabled at the hook, however wide the embedded listing gets. Otherwise
+  // `pane.on` is purely a measurement of the split container (see pane.ts).
+  const { pane, splitRef, onDividerPointerDown } = usePreviewPane(
     fsPath,
     !embedded
   );
@@ -396,9 +390,9 @@ export default function Listing({
   //
   // Three conditions hold the shot rather than spending it, because each can
   // still turn into a folder the user is looking at:
-  //   • the pane is OFF — nothing to preview into yet, and toggling it on later
-  //     should still land on the first entry (`pane.on` is a dependency for
-  //     exactly that);
+  //   • the pane is OFF — the container is too narrow to split, so there is
+  //     nothing to preview into yet; widening the window later should still
+  //     land on the first entry (`pane.on` is a dependency for exactly that);
   //   • search mode — the rendered rows are a query's answer, not the folder's,
   //     so clearing the query still lands on the folder's first entry;
   //   • the listing is not OK — `status !== "ok"` and not merely "still
@@ -901,43 +895,11 @@ export default function Listing({
                     : "relevance"}
                 </button>
               )}
-              {/* Only while the pane is CLOSED — and then with its label. The
-                  collapse half of this toggle moved onto the pane itself
-                  (ListingPreviewPane's header), where the action is spatial
-                  and needs no words: the control sits on the thing it
-                  collapses, at the seam. Reopening cannot live there, because
-                  a closed pane has nowhere to host a control — so it comes
-                  back here, and it comes back LABELLED: an icon-only square in
-                  this corner would read as one more of the layout glyphs the
-                  title bar carries a few pixels above it, and "the pane is
-                  off" is exactly the state a user needs told rather than
-                  inferred. */}
-              {!embedded && !pane.on && (
-                <button
-                  type="button"
-                  className="bar-ctl listing-pane-toggle"
-                  title="Show preview"
-                  onClick={togglePane}
-                >
-                  {/* The pane glyph with its right column empty — the pane it
-                      would open, drawn as it currently is. It used to fill that
-                      column for the on state; the button no longer has one. */}
-                  <svg
-                    viewBox="0 0 24 24"
-                    width="16"
-                    height="16"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="1.8"
-                    strokeLinejoin="round"
-                    aria-hidden="true"
-                  >
-                    <rect x="3" y="4" width="18" height="16" rx="2" />
-                    <line x1="14" y1="4" x2="14" y2="20" />
-                  </svg>
-                  Preview
-                </button>
-              )}
+              {/* No pane toggle here any more. The split is decided by the
+                  container's width (listing/pane.ts), so there is no state for
+                  a button to flip — and a control that only ever restated what
+                  the layout already showed was one more thing in a row that is
+                  meant to be the search box. */}
             </div>
           )}
           <div
@@ -1069,7 +1031,6 @@ export default function Listing({
                       : null
                 }
                 selCount={sel.paths.length}
-                onCollapse={togglePane}
               />
             </div>
           </>

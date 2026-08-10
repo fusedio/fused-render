@@ -67,9 +67,10 @@ export const IS_EMBED =
 // A param and not a prefix (a third `/explorer/frozen/` route) because this is
 // the SAME view of the same path — only its chrome differs — and the shell
 // already carries exactly this kind of framing flag on this exact surface:
-// `preview=false` (the listing's own pane) rides beside it, and `modechip=false`
-// was its predecessor until D237's only producer went away, with the SPEC noting
-// the opt-out "comes back with that caller". This is that caller.
+// `modechip=false` was its predecessor until D237's only producer went away,
+// with the SPEC noting the opt-out "comes back with that caller". This is that
+// caller. (`preview=false`, the listing's own pane, used to ride beside it too;
+// that one is gone — the split is a measurement now, not a flag.)
 //
 // Read ONCE at module init, like IS_EMBED: both prefixes are served by full page
 // loads, so the framing cannot change without one, and a value read per render
@@ -161,23 +162,22 @@ export function urlForFsPath(fsPath: string, search?: string): string {
 
 export function navigate(fsPath: string, opts?: { isDir?: boolean; mode?: string }): void {
   // Navigating between files/dirs drops old view params (fresh query string) —
-  // EXCEPT `preview` (the listing's preview-pane visibility), which is sticky
-  // across DIRECTORY navigation: the pane is workspace layout the user
-  // toggled, so moving between folders must not silently close (or open) it.
-  // Deliberately NOT carried onto file targets: `preview` is an unreserved
-  // name, and the runtime's ancestor-climb (runtime.js D72 globals) makes
-  // every shell-URL param readable from a template iframe — a file view
-  // always hosts one, so carrying it there would shadow a user template's own
-  // `preview` param. Going back (history) or re-entering a folder restores the
-  // pane from that entry's URL / the folder's viewstate instead.
+  // EXCEPT the pane's chosen mode (`_panelMode`), which is sticky across
+  // DIRECTORY navigation: a folder hop keeps previewing in the mode the user
+  // picked. Reserved (`_`-prefixed) name, so no template-param shadowing
+  // concern, and directory-only for the same reason its companion was: a file
+  // view hosts a template iframe whose ancestor-climb (runtime.js D72 globals)
+  // reads every shell-URL param.
+  //
+  // Its companion `preview` (the pane's on/off) is GONE, not merely unlisted:
+  // the split is decided by the container's width now (listing/pane.ts), so
+  // there is no visibility to carry between folders and nothing a stale param
+  // could contradict. The `?sel=` selection param is likewise not carried —
+  // a name from the folder you LEFT names nothing in the folder you arrive in
+  // (see useListingSelection).
   const current = new URLSearchParams(location.search);
-  const preview = current.get("preview");
   const parts: string[] = [];
-  if (opts?.isDir === true && preview !== null) {
-    parts.push("preview=" + encodeURIComponent(preview));
-    // The pane's chosen mode (`_panelMode`) travels with the pane itself: a
-    // folder hop with the pane open keeps previewing in the same mode.
-    // Reserved (`_`-prefixed) name, so no template-param shadowing concern.
+  if (opts?.isDir === true) {
     const panelMode = current.get("_panelMode");
     if (panelMode !== null) parts.push("_panelMode=" + encodeURIComponent(panelMode));
   }

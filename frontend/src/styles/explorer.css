@@ -739,15 +739,6 @@
   background: var(--bg-alt);
 }
 
-/* The strip spaces its children with `gap: 8px`, so the rule brings no margin
-   of its own — same reason #breadcrumb zeroes it, and the opposite of
-   .panel-bar, whose 2px gap needs the rule's own 10px. 8px either side of the
-   hairline against the strip's 10px end padding: the divider sits inside the
-   row's own gutters and cannot collide with them. */
-.listing-pane .pane-header .bar-rule {
-  margin: 0;
-}
-
 .listing-pane .pane-header-icon {
   flex: 0 0 auto;
   display: inline-flex;
@@ -814,19 +805,6 @@ table.pane-mini-list td.size {
 
 table.pane-mini-list td.status-message {
   padding: 14px 10px;
-}
-
-/* Row 2's two ends. Both are plain .bar-ctl now (explorer.css's shared
-   recipe); all that is left here is the pane toggle's negative right margin,
-   which pulls the labelled control out to the row's padding edge.
-
-   The toggle is now the OPEN half only — it renders while the pane is closed
-   and unmounts when it opens (the collapse control lives in the pane's own
-   header). So it has no pressed state to style, and the row's width simply
-   returns to the search box when the pane takes the space beside it; the box
-   is `flex: 1 1 auto`, so nothing else moves. */
-.listing-pane-toggle {
-  margin-right: -8px;
 }
 
 /* Skeleton loading state: shimmering bars shaped like the real listing rows
