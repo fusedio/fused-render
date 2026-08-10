@@ -1243,6 +1243,77 @@ table.listing-table tr.row.copied > td:first-child {
   box-shadow: inset 3px 0 0 var(--fg-muted);
 }
 
+/* --- drag to move --------------------------------------------------------
+ *
+ * The folder row under a drag that may land there. An accent ring rather than
+ * a background wash: the row underneath may already be .selected (the dragged
+ * set often includes rows either side of the target), and a second background
+ * would fight the first. Matches the sidebar's own .drag-into ring, which is
+ * the same promise in the other panel.
+ *
+ * The REFUSED case is mostly the cursor's job — a dragover we never
+ * preventDefault()'d already paints the browser's no-drop pointer — so this is
+ * only the "which row said no" half, kept quiet on purpose. */
+table.listing-table tr.row.drop-into > td {
+  box-shadow: inset 0 2px 0 var(--accent), inset 0 -2px 0 var(--accent);
+  background: var(--row-bg-active);
+}
+table.listing-table tr.row.drop-into > td:first-child {
+  box-shadow: inset 2px 0 0 var(--accent), inset 0 2px 0 var(--accent),
+    inset 0 -2px 0 var(--accent);
+}
+table.listing-table tr.row.drop-into > td:last-child {
+  box-shadow: inset -2px 0 0 var(--accent), inset 0 2px 0 var(--accent),
+    inset 0 -2px 0 var(--accent);
+}
+table.listing-table tr.row.drop-reject > td {
+  background: rgba(var(--error-rgb), 0.1);
+}
+
+/* The listing's background as a target: "move these into the folder I'm
+   looking at". It only ever lights up when that would actually move something
+   (dropping rows into the folder they already live in is a no-op — see
+   useRowDrag), so the ring is a promise, not a hover. */
+.listing-scroll.drop-into {
+  box-shadow: inset 0 0 0 2px var(--accent);
+}
+
+/* The ghost under the cursor during a drag (useRowDrag's makeDragImage). Built
+   off screen and snapshotted by the browser on dragstart, so it is never seen
+   in the page itself — position/opacity only keep it from flashing in the
+   corner on the frame it exists for. */
+.fs-drag-image {
+  position: fixed;
+  top: -1000px;
+  left: -1000px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 260px;
+  padding: 5px 10px;
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  background: var(--bg-panel);
+  color: var(--fg);
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* How many entries are coming with the one named in the ghost. */
+.fs-drag-count {
+  flex: none;
+  min-width: 18px;
+  padding: 0 5px;
+  border-radius: 9px;
+  background: var(--accent);
+  color: var(--on-accent);
+  font-size: 11px;
+  font-weight: 600;
+  text-align: center;
+}
+
 table.listing-table td.name {
   display: flex;
   align-items: center;

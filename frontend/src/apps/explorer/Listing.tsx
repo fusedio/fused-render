@@ -18,6 +18,8 @@
 //   useWalkSearch.ts       streamed walk + scoring + throttles + result paging
 //   useListingSelection.ts selection state + keyboard nav + reconcile
 //   useFileOps.ts          file operations + context menus + dialogs
+//   drag-drop.ts           what a drag carries + which drops are legal (pure)
+//   useRowDrag.ts          the drag/drop handlers rows + background hang off
 //   shortcut-chord.ts       which chord means which action (pure)
 //   useListingShortcuts.ts file-op keyboard chords
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
@@ -53,6 +55,7 @@ import {
   rowClickAction,
   selectionClaimed,
 } from "@apps/explorer/listing/selection";
+import { useRowDrag } from "@apps/explorer/listing/useRowDrag";
 import { useDirListing } from "@apps/explorer/listing/useDirListing";
 import { useWalkSearch } from "@apps/explorer/listing/useWalkSearch";
 import { useListingSelection } from "@apps/explorer/listing/useListingSelection";
@@ -277,6 +280,7 @@ export default function Listing({
     dialog,
     setDialog,
     doPaste,
+    doMove,
     doDuplicate,
     doTrash,
     startRename,
@@ -457,6 +461,16 @@ export default function Listing({
   // The lead row, for the single-entry operations (Rename, paste target).
   const leadRow = sel.lead ? rowCtxByPath.get(sel.lead) : undefined;
 
+  // Drag-to-move. The selection is passed in RENDERED order (selectedRows), so
+  // dragging a row that is part of it carries the whole thing top-to-bottom.
+  const { rowDrag, backgroundDrag, dropClass, backgroundActive } = useRowDrag({
+    base,
+    selectedPaths: useMemo(() => selectedRows.map((r) => r.path), [selectedRows]),
+    rowCtxByPath,
+    selectOnly,
+    onMove: doMove,
+  });
+
   useListingShortcuts({
     base,
     clipboard,
@@ -561,12 +575,15 @@ export default function Listing({
         <>
           {visibleHits.map(({ entry, positions }) => {
             const childPath = base + "/" + entry.rel;
+            const ctx = rowCtxByPath.get(childPath)!;
             return (
               <tr
                 key={entry.rel}
                 data-flip-key={childPath}
+                {...rowDrag(ctx)}
                 className={
                   "row" +
+                  dropClass(childPath) +
                   (selectedSet.has(childPath) ? " selected" : "") +
                   // Marker only (no styling of its own): the lead row is what
                   // the scroll-into-view effect tracks.
@@ -680,12 +697,15 @@ export default function Listing({
   } else {
     const rows = sortedEntries.map((entry) => {
       const childPath = base + "/" + entry.name;
+      const ctx = rowCtxByPath.get(childPath)!;
       return (
         <tr
           key={entry.name}
           data-flip-key={childPath}
+          {...rowDrag(ctx)}
           className={
             (entry.ignored ? "row ignored" : "row") +
+            dropClass(childPath) +
             (newNames.has(entry.name) ? " row-new" : "") + // brief dir-watch tint
             (selectedSet.has(childPath) ? " selected" : "") +
             (childPath === selectedPath ? " lead" : "") + // scroll-into-view marker
@@ -908,8 +928,14 @@ export default function Listing({
              held (pre-refresh) results stand in for a re-running walk. */
             className={
               "listing-scroll" +
-              (isStale || showingHeld ? " listing-stale" : "")
+              (isStale || showingHeld ? " listing-stale" : "") +
+              /* A drag hovering the background means "move these into THIS
+                 folder" — outlined as one target, since the folder has no row
+                 of its own to light up. Only ever set when that would actually
+                 move something (see useRowDrag's backgroundTarget). */
+              (backgroundActive ? " drop-into" : "")
             }
+            {...backgroundDrag}
             /* No onClick here: clicking the empty area below the rows does
                NOT deselect. Finder's rule, and it cost more than it bought
                once the preview pane arrived — a stray click anywhere in the

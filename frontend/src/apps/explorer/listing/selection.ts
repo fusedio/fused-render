@@ -149,6 +149,14 @@ export function pathFromSelParam(base: string, raw: string | null): string | nul
 // So: this function answers only which SELECTION a click means. Opening has no
 // decision left to make — it is the row's onDoubleClick, unconditionally.
 //
+// A press on a row can also become a DRAG (drag-drop.ts: dragging entries onto
+// a folder moves them), which is not a third click meaning but a different
+// gesture the browser separates for us — a click event only fires when the
+// press did not turn into a drag, so nothing here needs to know about it. What
+// the drag does need is the selection this produced: a press inside the
+// selection carries all of it, a press outside collapses onto that row first,
+// which is the same rule as the "select" case below.
+//
 // `mod` is the caller's isMod(e) verdict rather than the raw event, so the
 // rule stays pure and platform-free (isMod is exclusive per-platform by
 // design; see lib/platform). Mod outranks Shift when both are down: the toggle

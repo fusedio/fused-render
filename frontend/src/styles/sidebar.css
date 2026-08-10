@@ -386,6 +386,13 @@ body:has(.sidebar-resize-handle.resizing) {
   box-shadow: inset 0 0 0 2px var(--accent);
 }
 
+/* Files dragged out of the listing onto a bookmark that is NOT a folder (or
+   whose target we couldn't stat). The refused cursor is the browser's, from a
+   dragover we never preventDefault()'d — this only says which row said no. */
+.bookmark-row.drop-reject {
+  background: rgba(var(--error-rgb), 0.1);
+}
+
 /* Folder rows: folder icon (aligned with the bookmark stars) + semibold name
    + child-count pill pinned far right. Icon and name toggle the fold; the
    count pill swaps out for the rename/delete actions on hover. */

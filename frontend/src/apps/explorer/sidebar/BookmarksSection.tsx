@@ -30,7 +30,17 @@ import {
   takeLastAddedBookmarkId,
 } from "@platform/lib/bookmarks";
 import { bookmarkSaveTarget } from "@platform/lib/bookmark-file";
-import { exportBookmarkFile } from "@platform/lib/api";
+import { exportBookmarkFile, statPath } from "@platform/lib/api";
+import { pushToast } from "@platform/lib/toast";
+import { basename } from "@platform/lib/format";
+import { dirname, normDir } from "@apps/explorer/lib/fs-actions";
+import { moveEntriesInto } from "@apps/explorer/lib/fs-move";
+import {
+  carriesFsDrag,
+  clearFsDrag,
+  dropIsValid,
+  fsDragInFlight,
+} from "@apps/explorer/listing/drag-drop";
 import IconPicker from "@platform/ui/IconPicker";
 import type { Bookmark, BookmarkFolder, BookmarkItem } from "@platform/lib/bookmarks";
 import {
@@ -53,6 +63,18 @@ export function bookmarkFsPath(url: string): string {
   return prefix
     ? rootedFsPath(pathname.slice(prefix.length).split("/").map(decodeURIComponent).join("/"))
     : pathname;
+}
+
+// The folder a FILE DRAG may be dropped onto for this bookmark, or null when
+// the bookmark isn't a place on this filesystem at all. Only explorer view
+// urls qualify: bookmarkFsPath falls through to the raw pathname for anything
+// else (a "/mounts" page, a cloud url), and "moving files into /mounts" is not
+// a thing. Whether the path is a DIRECTORY is a question for the server — see
+// the kind probe in BookmarksSection.
+function bookmarkDropPath(url: string): string | null {
+  const pathname = url.split("?")[0];
+  const isView = [VIEW_PREFIX, "/view/"].some((p) => pathname.startsWith(p));
+  return isView ? bookmarkFsPath(url) : null;
 }
 
 function renderHighlight(text: string, positions: number[]) {
@@ -618,6 +640,92 @@ export default function BookmarksSection() {
     notifyBookmarksChanged();
   };
 
+  // --- files dragged in from the listing ---------------------------------------
+  //
+  // A bookmark that points at a folder is a drop target for entries dragged out
+  // of the listing (listing/drag-drop.ts) — the shortcut is where the user
+  // already thinks of that folder as living, so dragging onto it is the one
+  // gesture that moves something somewhere NOT on screen. The move itself is
+  // the shared one (lib/fs-move), announced with a toast for exactly that
+  // reason: the destination isn't visible, so the confirmation has to be.
+  //
+  // Whether the target is a directory can only be answered by the server, and
+  // dragover fires many times a second — so the answer is probed ONCE per path
+  // per session and cached. Until it lands the row is treated optimistically as
+  // a folder (the common case by far, and refusing a target we simply haven't
+  // asked about yet reads as broken); the probe repaints the row when it
+  // resolves, and the drop itself waits for the real answer before moving
+  // anything. Failure resolves as "not a folder" — a path we can't stat is not
+  // one we should be moving files into.
+  const fsKind = useRef<Map<string, boolean>>(new Map());
+  const fsKindPending = useRef<Set<string>>(new Set());
+
+  // The verdict for a file drag over this bookmark. `undefined` kind = still
+  // probing, taken as a folder (see above).
+  const fsDropVerdict = (path: string) =>
+    dropIsValid(fsDragInFlight(), { path, isDir: fsKind.current.get(path) !== false });
+
+  const paintFsDrop = (id: string, path: string) => {
+    const row = rowRefs.current.get(id);
+    if (!row) return;
+    const ok = fsDropVerdict(path).ok;
+    row.classList.toggle("drag-into", ok);
+    row.classList.toggle("drop-reject", !ok);
+  };
+
+  const probeFsKind = (id: string, path: string) => {
+    if (fsKind.current.has(path) || fsKindPending.current.has(path)) return;
+    fsKindPending.current.add(path);
+    statPath(path)
+      .then((s) => fsKind.current.set(path, s.is_dir))
+      .catch(() => fsKind.current.set(path, false))
+      .finally(() => {
+        fsKindPending.current.delete(path);
+        paintFsDrop(id, path);
+      });
+  };
+
+  const onRowFsDragOver = (e: React.DragEvent<HTMLDivElement>, id: string, path: string) => {
+    probeFsKind(id, path);
+    const verdict = fsDropVerdict(path);
+    if (verdict.ok) {
+      e.preventDefault(); // the whole of "this drop is allowed"
+      e.dataTransfer.dropEffect = "move";
+    }
+    e.currentTarget.classList.toggle("drag-into", verdict.ok);
+    e.currentTarget.classList.toggle("drop-reject", !verdict.ok);
+  };
+
+  const onRowFsDrop = async (e: React.DragEvent<HTMLDivElement>, path: string) => {
+    e.preventDefault();
+    e.currentTarget.classList.remove("drag-into", "drop-reject");
+    const paths = fsDragInFlight().map((d) => d.path);
+    // Consume the drag before the await: the stat below is a round trip, and a
+    // stale in-flight set would be visible to whatever the user does next.
+    clearFsDrag();
+    if (!paths.length) return;
+    if (!fsKind.current.has(path)) {
+      // Never probed (or the probe is still out): settle it now rather than
+      // moving files into something that may be a file.
+      const isDir = await statPath(path).then((s) => s.is_dir, () => false);
+      fsKind.current.set(path, isDir);
+    }
+    const verdict = dropIsValid(
+      paths.map((p) => ({ path: p, parentDir: normDir(dirname(p)) })),
+      { path, isDir: fsKind.current.get(path) === true },
+    );
+    if (!verdict.ok) {
+      // The only refusal a user can reach here without seeing it coming: the
+      // row looked like a folder while the probe was out and turned out not to
+      // be one. Everything else was already refused by the cursor.
+      if (verdict.reason === "not-a-folder") {
+        pushToast({ msg: `"${basename(path)}" isn't a folder — nothing was moved.`, tone: "error" });
+      }
+      return;
+    }
+    await moveEntriesInto(paths, verdict.dir, { announce: true });
+  };
+
   // --- drag & drop -------------------------------------------------------------
 
   // Compute the active drop zone for a row given the dragged item, or null
@@ -661,7 +769,7 @@ export default function BookmarksSection() {
 
   const clearDragClasses = () => {
     rowRefs.current.forEach((r) => {
-      r.classList.remove("dragging", "drag-above", "drag-below", "drag-into");
+      r.classList.remove("dragging", "drag-above", "drag-below", "drag-into", "drop-reject");
     });
   };
 
@@ -683,8 +791,17 @@ export default function BookmarksSection() {
   const onRowDragOver = (
     e: React.DragEvent<HTMLDivElement>,
     id: string,
-    rowIsFolder: boolean
+    rowIsFolder: boolean,
+    fsPath: string | null
   ) => {
+    // A file drag out of the listing is a different gesture entirely: it moves
+    // FILES INTO the folder this bookmark points at, rather than reordering the
+    // bookmark tree. It is checked first because the two are told apart by the
+    // payload, not by the row.
+    if (carriesFsDrag(e.dataTransfer.types)) {
+      if (fsPath !== null) onRowFsDragOver(e, id, fsPath);
+      return;
+    }
     if (draggedIdRef.current === null || draggedIdRef.current === id) return;
     const row = e.currentTarget;
     if (overOwnSubtree(id)) {
@@ -702,15 +819,20 @@ export default function BookmarksSection() {
   };
 
   const onRowDragLeave = (e: React.DragEvent<HTMLDivElement>) => {
-    e.currentTarget.classList.remove("drag-above", "drag-below", "drag-into");
+    e.currentTarget.classList.remove("drag-above", "drag-below", "drag-into", "drop-reject");
   };
 
   const onRowDrop = async (
     e: React.DragEvent<HTMLDivElement>,
     id: string,
     rowIsFolder: boolean,
-    rowIsChild: boolean
+    rowIsChild: boolean,
+    fsPath: string | null
   ) => {
+    if (carriesFsDrag(e.dataTransfer.types)) {
+      if (fsPath !== null) await onRowFsDrop(e, fsPath);
+      return;
+    }
     if (draggedIdRef.current === null || draggedIdRef.current === id) return;
     if (overOwnSubtree(id)) return; // moveItem's cycle guard is the backstop
     const draggedId = draggedIdRef.current;
@@ -767,11 +889,19 @@ export default function BookmarksSection() {
     clearDragClasses();
   };
 
-  const dragProps = (id: string, rowIsFolder: boolean, rowIsChild: boolean): DragProps => ({
+  // `fsPath` is the folder a FILE drag may land in for this row — null for a
+  // bookmark folder (a grouping in the tree, not a place on disk) and for any
+  // bookmark that doesn't point at the filesystem.
+  const dragProps = (
+    id: string,
+    rowIsFolder: boolean,
+    rowIsChild: boolean,
+    fsPath: string | null = null
+  ): DragProps => ({
     onDragStart: (e) => onRowDragStart(e, id, rowIsFolder),
-    onDragOver: (e) => onRowDragOver(e, id, rowIsFolder),
+    onDragOver: (e) => onRowDragOver(e, id, rowIsFolder, fsPath),
     onDragLeave: onRowDragLeave,
-    onDrop: (e) => onRowDrop(e, id, rowIsFolder, rowIsChild),
+    onDrop: (e) => onRowDrop(e, id, rowIsFolder, rowIsChild, fsPath),
     onDragEnd: onRowDragEnd,
   });
 
@@ -857,7 +987,7 @@ export default function BookmarksSection() {
           onMouseEnter={(e) => onRowMouseEnter(e, it)}
           onMouseLeave={hideTooltip}
           onGlyphClick={(e) => onBookmarkGlyphClick(e, it.id)}
-          dragProps={dragProps(it.id, false, child)}
+          dragProps={dragProps(it.id, false, child, bookmarkDropPath(it.url))}
         />
       );
     });
