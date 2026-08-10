@@ -10,11 +10,10 @@ import re
 
 from fused_render.server import templates as _server_templates
 
-# The two file extensions that bind `history` directly, so the view can be
-# opened ON them and `targetPath` is the file itself. (`.*.json` also binds
-# `history`, but there the view is on the SIDECAR and targetPath resolves back
-# to the target file — never to the sidecar, so the sidecar's own mode list is
-# not what the outbound links must satisfy.)
+# The two file extensions the history view's outbound links target. `history`
+# itself is de-linked from the registry for now, but the template still ships
+# and every row it wires up navigates to `targetPath` — a file of one of these
+# kinds — so its hardcoded `_mode=` links must still resolve against them.
 HISTORY_TARGET_FILES = ("/x/table.parquet", "/x/sine.html")
 
 
@@ -42,13 +41,15 @@ def hardcoded_nav_modes():
     return set(re.findall(r'"_mode=([a-z_]+)', history_template_text()))
 
 
-def test_sidecar_default_mode_is_history():
-    # `.html.json` (2 segments) beats the wildcard `.*.json` (also 2, but a
-    # literal beats `*` at equal length — CT-3), which beats bare `.json` (1).
+def test_sidecar_default_mode_is_tree():
+    # The standalone `history` mode is de-linked from the registry for now
+    # (the `versions` template wears its name and icon — see mode-name.ts),
+    # so a sidecar's own list falls back to tree-first. The wildcard `.*.json`
+    # still beats bare `.json` (2 segments vs 1 — CT-3).
     entries, error = _server_templates._templates_for("/x/sine.html.json", False)
     assert error is None
-    assert [e["mode"] for e in entries] == ["history", "tree", "code"]
-    assert entries[0]["path"].endswith("history/template.html")
+    assert [e["mode"] for e in entries] == ["tree", "code"]
+    assert entries[0]["path"].endswith("tree/template.html")
     assert entries[0]["icon"] is not None
 
 
@@ -58,10 +59,10 @@ def test_sidecar_wildcard_matches_any_extension():
     # doesn't make sense (comments belong on the target file, HV-8).
     entries, error = _server_templates._templates_for("/x/table.parquet.json", False)
     assert error is None
-    assert [e["mode"] for e in entries] == ["history", "tree", "code"]
+    assert [e["mode"] for e in entries] == ["tree", "code"]
 
 
-# .html and .parquet gaining "history" as their last mode is covered by
+# .html and .parquet no longer offering "history" is covered by
 # test_templates.py::test_builtin_html_default_is_render_sentinel and
 # test_builtin_parquet_default_is_duckdb, which already assert the full
 # resolved mode list for those keys.

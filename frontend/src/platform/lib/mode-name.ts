@@ -26,6 +26,11 @@ const NICE_NAMES: Record<string, string> = {
   // the registry, `?_mode=app`, APP_OPEN_MODE, and the "Open as app" /
   // "Add as app" buttons, which are about the app concept, not this view.
   app: "View",
+  // The `versions` template wears the History name (and the history template's
+  // clock icon) now that the standalone `history` mode is de-linked from the
+  // registry: one timeline surface, one name. The KEY stays `versions`
+  // (registry, `?_mode=versions`, bookmarks) — only the label changed.
+  versions: "History",
   duckdb: "DuckDB",
   geojson: "GeoJSON",
   json: "JSON",
