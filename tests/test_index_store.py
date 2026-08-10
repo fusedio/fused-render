@@ -283,3 +283,20 @@ def test_applied_ignore_sig_round_trips(tmp_path):
     save_applied_ignore(cfg)
     assert applied_ignore_sig(cfg) == cfg.rules.sig()
     assert json.load(open(cfg.applied_ignore_json))["patterns"] == ["node_modules"]
+
+
+def test_compact_never_deletes_a_like_metachar_sibling(tmp_path):
+    """`_` matches any char in LIKE: a scan of /x/proj_a must not silently
+    drop /x/proj-a's rows — the `outside` predicate escapes LIKE metachars."""
+    cfg = _cfg(tmp_path)
+    compact(cfg, "/x/proj-a", _shard(tmp_path, cfg, [
+        ("/x/proj-a", _scanned("s", [], 0, 1, 1)),
+        ("/x/proj-a/sub", _scanned("s", [_row("/x/proj-a/sub/keep.txt")], 10, 1, 0)),
+    ]), pa, pq)
+    compact(cfg, "/x/proj_a", _shard(tmp_path, cfg, [
+        ("/x/proj_a", _scanned("s", [_row("/x/proj_a/new.txt")], 10, 1, 0)),
+    ]), pa, pq)
+    part = os.path.join(cfg.files_dir, read_manifest(cfg)["partitions"][0]["file"])
+    paths = pq.read_table(part).column("path").to_pylist()
+    assert "/x/proj-a/sub/keep.txt" in paths
+    assert "/x/proj_a/new.txt" in paths

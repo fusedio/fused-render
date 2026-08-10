@@ -18,7 +18,7 @@ import re
 
 from fused_render.index.config import IndexConfig
 from fused_render.index.ignore import norm
-from fused_render.index.store import read_manifest
+from fused_render.index.store import like_literal, read_manifest
 
 _DRIVE = re.compile(r"^[A-Za-z]:/")
 
@@ -143,8 +143,9 @@ def stats(cfg: IndexConfig, root: str = "") -> dict:
     con = duckdb.connect()
     root = norm(os.path.expanduser(root.strip())) if root.strip() else ""
     root = (root or m.get("last_root") or "").rstrip("/") or "/"
-    pfx = (_q(root) + "/") if root != "/" else "/"
-    inside = f"(dir = '{_q(root)}' OR dir LIKE '{pfx}%')"
+    pfx = (like_literal(root) + "/") if root != "/" else "/"
+    inside = (f"(dir = '{_q(root)}' "
+              f"OR dir LIKE '{pfx}%' ESCAPE '\\')")
     n_rows, total_size, n_dirs = 0, 0, 0
     types = []
     if os.path.exists(cfg.dirs_parquet):
@@ -215,28 +216,39 @@ def search_under(cfg: IndexConfig, root: str, q: str = "", limit: int = MAX_CORP
     if not covered:
         return {**empty, "updated": updated, "age_s": age}
     prefix = (root + "/") if root != "/" else "/"
+    prefix_like = (like_literal(root) + "/") if root != "/" else "/"
     limit = max(0, min(int(limit), MAX_CORPUS))
     hit = prune(m["partitions"], prefix)
-    like = f" AND path ILIKE '%{_q(q.strip())}%'" if q and q.strip() else ""
+    qlit = like_literal(q.strip()) if q and q.strip() else ""
+    like = f" AND path ILIKE '%{qlit}%' ESCAPE '\\'" if qlit else ""
+    # Shallow entries first (fewer slashes), path order within a depth: when
+    # the cap bites on a >limit tree, the capped corpus keeps the same
+    # breadth-first character as the walk it replaces — plain ORDER BY path
+    # would starve everything after the first deep subtree.
+    depth = "(length(path) - length(replace(path, '/', '')))"
     entries, truncated = [], False
     if hit and limit:
         # One row past the cap, so "there was more" is known without a count.
         rows = con.execute(
             f"SELECT path, size, mtime FROM {_sources(cfg, hit)} "
-            f"WHERE path LIKE '{_q(prefix)}%'{like} "
-            f"ORDER BY path LIMIT {limit + 1}").fetchall()
+            f"WHERE path LIKE '{prefix_like}%' ESCAPE '\\'{like} "
+            f"ORDER BY {depth}, path LIMIT {limit + 1}").fetchall()
         for path, size, mtime in rows[:limit]:
             entries.append({"rel": path[len(prefix):], "is_dir": False,
                             "size": int(size) if size is not None else None,
                             "mtime": float(mtime) if mtime is not None else None})
         truncated = len(rows) > limit
-    if include_dirs and len(entries) < limit:
-        dlike = f" AND dir ILIKE '%{_q(q.strip())}%'" if q and q.strip() else ""
+    if include_dirs:
+        dlike = f" AND dir ILIKE '%{qlit}%' ESCAPE '\\'" if qlit else ""
+        # Even with no room left, one probe row decides `truncated`: file rows
+        # exactly filling the cap must not silently drop every directory while
+        # claiming the corpus is complete.
         room = limit - len(entries)
+        ddepth = "(length(dir) - length(replace(dir, '/', '')))"
         drows = con.execute(
             f"SELECT dir, mtime_ns FROM read_parquet('{_q(cfg.dirs_parquet)}') "
-            f"WHERE dir LIKE '{_q(prefix)}%'{dlike} "
-            f"ORDER BY dir LIMIT {room + 1}").fetchall()
+            f"WHERE dir LIKE '{prefix_like}%' ESCAPE '\\'{dlike} "
+            f"ORDER BY {ddepth}, dir LIMIT {room + 1}").fetchall()
         for d, mtime_ns in drows[:room]:
             entries.append({"rel": d[len(prefix):], "is_dir": True, "size": None,
                             "mtime": (mtime_ns / 1e9) if mtime_ns else None})

@@ -152,3 +152,32 @@ def test_search_route_on_a_missing_index_is_a_quiet_miss(home, tmp_path):
 def test_search_route_requires_a_root(home, tmp_path):
     resp = TestClient(create_app(start_dir=str(tmp_path))).get("/api/index/search")
     assert resp.status_code == 400
+
+
+def test_search_under_ignores_a_lookalike_underscore_sibling(tmp_path):
+    """`_` matches any char in LIKE: searching inside /x/my_dir must not list
+    files that actually live in /x/my-dir (the prefix is escaped)."""
+    cfg = _index(tmp_path, "/x/my_dir", ["/x/my_dir/real.txt"])
+    _index(tmp_path, "/x/my-dir", ["/x/my-dir/fake.txt"])  # same store
+    rels = [e["rel"] for e in search_under(cfg, "/x/my_dir")["entries"]]
+    assert "real.txt" in rels
+    assert "fake.txt" not in rels
+
+
+def test_dirs_are_not_silently_dropped_when_files_fill_the_cap(tmp_path):
+    """File rows exactly filling `limit` used to skip the dirs query entirely
+    and report truncated: false — a corpus claiming completeness while every
+    directory entry is missing."""
+    cfg = _index(tmp_path, "/r", ["/r/a.txt", "/r/b.txt"], dirs=["/r/sub"])
+    out = search_under(cfg, "/r", limit=2)
+    assert len(out["entries"]) == 2
+    assert out["truncated"] is True
+
+
+def test_a_capped_corpus_prefers_shallow_entries(tmp_path):
+    """The walk streams breadth-first, so its cap keeps shallow files; plain
+    ORDER BY path would fill the whole cap with the first deep subtree."""
+    cfg = _index(tmp_path, "/r",
+                 ["/r/deep/a/b/x1.txt", "/r/deep/a/b/x2.txt", "/r/top.txt"])
+    out = search_under(cfg, "/r", limit=1, include_dirs=False)
+    assert [e["rel"] for e in out["entries"]] == ["top.txt"]

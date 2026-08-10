@@ -22,6 +22,15 @@ def _sql(s: str) -> str:
     return s.replace("'", "''")
 
 
+def like_literal(s: str) -> str:
+    """`s` as a LITERAL inside a LIKE pattern: quotes doubled for the SQL
+    string, and LIKE's own metachars (`\\`, `%`, `_`) escaped so an `_` in a
+    folder name cannot match a lookalike sibling (`/x/proj_a` matching
+    `/x/proj-a`). The pattern MUST be used with `ESCAPE '\\'`."""
+    return (s.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+             .replace("'", "''"))
+
+
 def schemas(pa):
     """The single definition of both tables (specs/index-store.md §2)."""
     file_schema = pa.schema([
@@ -194,9 +203,9 @@ def compact(cfg: IndexConfig, root, shards_dir, pa, pq, emit=None):
     generation = int(old_manifest.get("generation") or 0) + 1
     con = duckdb.connect()
     rootp = root.rstrip("/") or "/"
-    root_esc = rootp.replace("'", "''")
-    prefix_esc = (root_esc + "/") if rootp != "/" else "/"
-    outside = f"(dir <> '{root_esc}' AND dir NOT LIKE '{prefix_esc}%')"
+    prefix_like = (like_literal(rootp) + "/") if rootp != "/" else "/"
+    outside = (f"(dir <> '{_sql(rootp)}' "
+               f"AND dir NOT LIKE '{prefix_like}%' ESCAPE '\\')")
 
     import glob as globmod
 

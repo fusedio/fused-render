@@ -162,3 +162,11 @@ def test_there_is_no_raw_sql_surface():
     anything the user's account can."""
     assert not hasattr(index_query, "sql")
     assert "sql" not in dir(index_query)
+
+
+def test_stats_does_not_count_a_lookalike_underscore_sibling(tmp_path):
+    """`_` matches any char in LIKE: stats for /x/my_dir must not include
+    /x/my-dir's rows (the subtree prefix is escaped)."""
+    _index(tmp_path, "/x/my_dir", ["/x/my_dir/real.txt"])
+    cfg = _index(tmp_path, "/x/my-dir", ["/x/my-dir/fake.txt"])
+    assert stats(cfg, root="/x/my_dir")["rows"] == 1
