@@ -60,15 +60,10 @@ def active_run(cfg: IndexConfig, root: str):
     now = time.time()
     for rid in _run_ids(cfg):
         rd = os.path.join(cfg.runs_dir, rid)
-        try:
-            with open(os.path.join(rd, "spec.json")) as f:
-                spec = json.load(f)
-        except (OSError, ValueError):
+        folded = _folded(rd)
+        if folded["root"] != root:
             continue
-        if spec.get("root") != root:
-            continue
-        events, _, _ = read_events(rd)
-        if _with_liveness(derive_state(events), rd, now)["running"]:
+        if _with_liveness(dict(folded), rd, now)["running"]:
             return {"run_id": rid, "root": root}
     return None
 
@@ -204,19 +199,47 @@ def _run_ids(cfg: IndexConfig):
         return []
 
 
+# Folded state per run dir, keyed on the event log's (size, mtime). The
+# status panel polls every 1.5s and each poll used to re-fold EVERY run's log
+# from line 0: quadratic in the live run's own length, plus ~19 finished logs
+# that can never change again. Liveness is deliberately NOT cached — it is a
+# function of `now`, so it is re-applied to a copy on every call.
+_STATE_CACHE: dict = {}
+
+
+def _folded(rd: str) -> dict:
+    """`{root, **state}` for one run dir, re-folding only when its log moves."""
+    try:
+        st = os.stat(os.path.join(rd, "events.jsonl"))
+        key = (st.st_size, st.st_mtime_ns)
+    except OSError:
+        key = None  # no log yet: cheap to re-read, and it is about to appear
+    hit = _STATE_CACHE.get(rd)
+    if hit is not None and hit[0] == key and key is not None:
+        return hit[1]
+    try:
+        with open(os.path.join(rd, "spec.json")) as f:
+            spec = json.load(f)
+    except (OSError, ValueError):
+        spec = {}
+    events, _, _ = read_events(rd)
+    folded = {"root": spec.get("root"), **derive_state(events)}
+    _STATE_CACHE[rd] = (key, folded)
+    return folded
+
+
 def list_runs(cfg: IndexConfig, limit: int = 20) -> dict:
     out = []
     now = time.time()
+    seen = set()
     for rid in _run_ids(cfg)[:limit]:
         rd = os.path.join(cfg.runs_dir, rid)
-        try:
-            with open(os.path.join(rd, "spec.json")) as f:
-                spec = json.load(f)
-        except (OSError, ValueError):
-            spec = {}
-        events, _, _ = read_events(rd)
-        out.append({"run_id": rid, "root": spec.get("root"),
-                    **_with_liveness(derive_state(events), rd, now)})
+        seen.add(rd)
+        folded = _folded(rd)
+        out.append({"run_id": rid, **_with_liveness(dict(folded), rd, now)})
+    # Pruned run dirs must not accumulate here for the life of the process.
+    for gone in [k for k in _STATE_CACHE if k not in seen]:
+        del _STATE_CACHE[gone]
     return {"runs": out}
 
 

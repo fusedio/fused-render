@@ -180,6 +180,53 @@ def _run_with_events(cfg, run_id, events):
     return d
 
 
+def test_list_runs_reparses_a_log_only_when_it_changes(tmp_path, monkeypatch):
+    """The panel polls status every 1.5s and each poll folded EVERY run's log
+    from line 0 — the live one hundreds of times over a scan (quadratic in
+    its own length), plus ~19 finished logs that can never change again."""
+    cfg = _cfg(tmp_path)
+    _run_with_events(cfg, "r1", [{"type": "progress", "files": 1}])
+    _run_with_events(cfg, "r2", [{"type": "progress", "files": 2},
+                                 {"type": "run_end", "summary": {}}])
+    calls = []
+    real = runner.read_events
+    monkeypatch.setattr(runner, "read_events",
+                        lambda rd, since=0: calls.append(rd) or real(rd, since))
+    first = runner.list_runs(cfg)["runs"]
+    assert len(calls) == 2
+    calls.clear()
+    again = runner.list_runs(cfg)["runs"]
+    assert calls == []  # nothing on disk moved
+    assert again == first
+
+
+def test_list_runs_sees_a_growing_log(tmp_path):
+    """The cache is keyed on the file, so a live run's progress still lands."""
+    cfg = _cfg(tmp_path)
+    d = _run_with_events(cfg, "r1", [{"type": "progress", "files": 1}])
+    assert runner.list_runs(cfg)["runs"][0]["files"] == 1
+    with open(os.path.join(d, "events.jsonl"), "a") as f:
+        f.write(json.dumps({"type": "progress", "files": 9}) + "\n")
+    os.utime(os.path.join(d, "events.jsonl"), (time.time() + 2, time.time() + 2))
+    assert runner.list_runs(cfg)["runs"][0]["files"] == 9
+
+
+def test_list_runs_reevaluates_liveness_of_a_cached_running_run(tmp_path):
+    """Liveness is a function of NOW, not of the log, so it must be applied
+    outside the cache: a cached `running` run that goes quiet must still be
+    reported dead once it crosses the abandoned threshold."""
+    cfg = _cfg(tmp_path)
+    d = _run_with_events(cfg, "r1", [{"type": "progress", "files": 1}])
+    assert runner.list_runs(cfg)["runs"][0]["running"] is True
+    dead = time.time() - runner.ABANDONED_RUN_S - 60
+    for name in os.listdir(d):
+        os.utime(os.path.join(d, name), (dead, dead))
+    os.utime(d, (dead, dead))
+    run = runner.list_runs(cfg)["runs"][0]
+    assert run["running"] is False
+    assert "died" in (run["error"] or "")
+
+
 def test_status_folds_the_log_into_a_flat_state(tmp_path):
     cfg = _cfg(tmp_path)
     _run_with_events(cfg, "r1", [
