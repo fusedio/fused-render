@@ -578,11 +578,26 @@
 
 /* Squeezed list: shed the modified column first, then size, leaving just the
    name at the narrowest. Header cells carry col-<key> classes to pair with
-   their td counterparts. */
+   their td counterparts.
+
+   Each step must ALSO pin the surviving name column's width, or the shed
+   column leaves a dead strip behind. Hiding the cells does not remove the
+   COLUMN: the status and sentinel rows span all three (colSpan={3} in
+   Listing.tsx), so the table stays three columns wide whatever the header
+   does. Under table-layout:fixed a display:none header contributes no width,
+   which leaves NAME and the shed column both width-less — and WebKit splits
+   the remainder between them. NAME took half and the hidden column held the
+   other half as blank space running to the preview-pane divider (a 385px
+   table rendering 144 + 96 + 0). Giving NAME the whole remainder explicitly
+   leaves the shed columns nothing to keep. */
 @container (max-width: 460px) {
   table.listing-table td.mtime,
   table.listing-table th.col-mtime {
     display: none;
+    width: 0;
+  }
+  table.listing-table th.col-name {
+    width: calc(100% - 96px); /* all of it but SIZE, which is still here */
   }
 }
 
@@ -590,6 +605,11 @@
   table.listing-table td.size,
   table.listing-table th.col-size {
     display: none;
+    width: 0;
+  }
+  /* Later than the rule above, so this wins once SIZE goes too. */
+  table.listing-table th.col-name {
+    width: 100%;
   }
 }
 
