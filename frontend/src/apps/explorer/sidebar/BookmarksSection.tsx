@@ -659,13 +659,28 @@ export default function BookmarksSection() {
   // one we should be moving files into.
   const fsKind = useRef<Map<string, boolean>>(new Map());
   const fsKindPending = useRef<Set<string>>(new Set());
+  // The row a file drag is over RIGHT NOW, so a probe that resolves late can
+  // tell whether it still has anything to say. See paintFsDrop.
+  const fsHoverRow = useRef<string | null>(null);
 
   // The verdict for a file drag over this bookmark. `undefined` kind = still
   // probing, taken as a folder (see above).
   const fsDropVerdict = (path: string) =>
     dropIsValid(fsDragInFlight(), { path, isDir: fsKind.current.get(path) !== false });
 
+  // Repaint a row's drop affordance. Only ever for the row the pointer is on,
+  // and only while a drag is actually in flight — this runs from the stat
+  // probe's completion, which can easily outlive the hover it was started for.
+  //
+  // Painting unconditionally left rows stuck highlighted with nothing to clear
+  // them: dragleave had already removed the classes, and the late repaint put
+  // one back. Worse than a stray highlight, in fact — a probe that lands after
+  // the drag has ENDED sees an empty in-flight set, so dropIsValid answers
+  // "empty" and the row it repaints goes RED. Nothing removes it either: a file
+  // drag's dragend fires on the listing row that started it, never on a sidebar
+  // row, and React does not notice a className it did not write.
   const paintFsDrop = (id: string, path: string) => {
+    if (fsHoverRow.current !== id || !fsDragInFlight().length) return;
     const row = rowRefs.current.get(id);
     if (!row) return;
     const ok = fsDropVerdict(path).ok;
@@ -686,6 +701,7 @@ export default function BookmarksSection() {
   };
 
   const onRowFsDragOver = (e: React.DragEvent<HTMLDivElement>, id: string, path: string) => {
+    fsHoverRow.current = id;
     probeFsKind(id, path);
     const verdict = fsDropVerdict(path);
     if (verdict.ok) {
@@ -698,6 +714,7 @@ export default function BookmarksSection() {
 
   const onRowFsDrop = async (e: React.DragEvent<HTMLDivElement>, path: string) => {
     e.preventDefault();
+    fsHoverRow.current = null;
     e.currentTarget.classList.remove("drag-into", "drop-reject");
     const paths = fsDragInFlight().map((d) => d.path);
     // Consume the drag before the await: the stat below is a round trip, and a
@@ -773,6 +790,26 @@ export default function BookmarksSection() {
     });
   };
 
+  // End-of-drag cleanup for a drag this section did not START. A file drag
+  // begins on a LISTING row, so its `dragend` fires there and onRowDragEnd
+  // below never runs — a drag abandoned (Escape, a drop outside the window)
+  // while the pointer sat on a bookmark row would leave that row highlighted
+  // for good. Document-level, because the events we need are the ones that
+  // never reach us any other way.
+  useEffect(() => {
+    const onEnd = () => {
+      fsHoverRow.current = null;
+      clearDragClasses();
+    };
+    document.addEventListener("dragend", onEnd);
+    document.addEventListener("drop", onEnd);
+    return () => {
+      document.removeEventListener("dragend", onEnd);
+      document.removeEventListener("drop", onEnd);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const onRowDragStart = (e: React.DragEvent<HTMLDivElement>, id: string, rowIsFolder: boolean) => {
     const row = e.currentTarget;
     // No drag while renaming — let the input keep native text selection.
@@ -819,6 +856,12 @@ export default function BookmarksSection() {
   };
 
   const onRowDragLeave = (e: React.DragEvent<HTMLDivElement>) => {
+    // The pointer has left THIS row, so a probe still out for it has nothing
+    // left to paint. Guarded on the id because dragenter for the row being
+    // entered fires before dragleave for the one being left, so an unguarded
+    // clear here would wipe the hover that was just established.
+    const id = e.currentTarget.getAttribute("data-id");
+    if (id !== null && fsHoverRow.current === id) fsHoverRow.current = null;
     e.currentTarget.classList.remove("drag-above", "drag-below", "drag-into", "drop-reject");
   };
 
