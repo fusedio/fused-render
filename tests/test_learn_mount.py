@@ -99,6 +99,32 @@ def test_idempotent(home, learn_zip):
     assert mounts_mod.list_mounts() == before
 
 
+def test_builtin_mount_ready_reads_cached_state_not_live_probe(home, learn_zip, monkeypatch):
+    # /api/config embeds learn_mount_ready; it must NEVER do a live rcd/WinFsp
+    # probe on the request path — a cold-start _ismount on the WinFsp mountpoint
+    # blocked /api/config ~60s (×2 builtins). Blow up if the live probe runs,
+    # and drive readiness purely off the health monitor's cached state.
+    mounts_mod.ensure_learn_mount()
+    mid = _learn_records()[0]["id"]
+
+    def _boom(*_a, **_k):
+        raise AssertionError("live mount probe must not run on the readiness path")
+
+    monkeypatch.setattr(mounts_mod, "mounted_paths", _boom)
+    monkeypatch.setattr(mounts_mod, "_health_episodes", {}, raising=False)
+
+    # Cold start: no health observation yet -> not ready (conservative), fast.
+    assert mounts_mod.learn_mount_ready() is False
+
+    # Health monitor has since observed the mount live.
+    mounts_mod._health_episodes[mid] = {"state": "mounted", "notified": False}
+    assert mounts_mod.learn_mount_ready() is True
+
+    # A later disconnect flips it back — still no live probe.
+    mounts_mod._health_episodes[mid] = {"state": "disconnected", "notified": True}
+    assert mounts_mod.learn_mount_ready() is False
+
+
 def test_updates_stale_remote(home, learn_zip, tmp_path, monkeypatch):
     mounts_mod.ensure_learn_mount()
     old_id = _learn_records()[0]["id"]
@@ -354,22 +380,23 @@ def test_force_detach_runs_outside_store_lock(home, learn_zip, monkeypatch):
 
 
 def test_learn_mount_ready_false_until_actually_mounted(home, learn_zip, monkeypatch):
-    # BUGBOT: record presence alone isn't "ready" — ensure_learn_mount
-    # force-detaches on every startup, so a record can exist while the
-    # mountpoint is momentarily empty (between the detach and the
-    # subsequent attach_mount in run_automount's loop).
+    # Record presence alone isn't "ready": until the health monitor has
+    # observed the mountpoint actually attached ("mounted"), this stays False —
+    # ensure_learn_mount force-detaches on every startup, so a record can exist
+    # while the mountpoint is momentarily empty between detach and re-attach.
     assert mounts_mod.learn_mount_ready() is False
     mounts_mod.ensure_learn_mount()
-    monkeypatch.setattr(mounts_mod, "mounted_paths", lambda: set())
-    monkeypatch.setattr(mounts_mod.os.path, "ismount", lambda p: False)
+    mid = _learn_records()[0]["id"]
+    monkeypatch.setattr(mounts_mod, "_health_episodes",
+                        {mid: {"state": "unmounted", "notified": False}}, raising=False)
     assert mounts_mod.learn_mount_ready() is False  # record exists, not attached
 
 
 def test_learn_mount_ready_true_once_actually_mounted(home, learn_zip, monkeypatch):
     mounts_mod.ensure_learn_mount()
-    mp = mounts_mod.mountpoint(_learn_records()[0])
-    monkeypatch.setattr(mounts_mod, "mounted_paths", lambda: {mp})
-    monkeypatch.setattr(mounts_mod.os.path, "ismount", lambda p: p == mp)
+    mid = _learn_records()[0]["id"]
+    monkeypatch.setattr(mounts_mod, "_health_episodes",
+                        {mid: {"state": "mounted", "notified": False}}, raising=False)
     assert mounts_mod.learn_mount_ready() is True
 
 
@@ -378,10 +405,11 @@ def test_learn_mount_ready_false_without_zip(home):
 
 
 def test_learn_mount_ready_false_for_user_mount_named_learn(home, monkeypatch):
-    mounts_mod.add_mount("learn", "s3remote:my-learn-bucket")
-    monkeypatch.setattr(mounts_mod, "mounted_paths",
-                        lambda: {mounts_mod.mountpoint({"name": "learn"})})
-    monkeypatch.setattr(mounts_mod.os.path, "ismount", lambda p: True)
+    # A user mount named "learn" has no builtin marker, so even a "mounted"
+    # health observation for it must not read as the builtin being ready.
+    user = mounts_mod.add_mount("learn", "s3remote:my-learn-bucket")
+    monkeypatch.setattr(mounts_mod, "_health_episodes",
+                        {user["id"]: {"state": "mounted", "notified": False}}, raising=False)
     assert mounts_mod.learn_mount_ready() is False
 
 

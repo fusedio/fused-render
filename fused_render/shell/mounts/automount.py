@@ -179,33 +179,35 @@ def sessions_mount_ready() -> bool:
 
 
 def builtin_mount_ready(name: str) -> bool:
-    """True when a builtin mount is actually attached — both rcd and
-    the kernel agree the mountpoint is live — not merely when its record
-    exists in mounts.json.
+    """True when the health monitor has observed a builtin mount actually
+    attached ("mounted") — not merely that its record exists in mounts.json.
 
     The sidebar's Learn entry (Sidebar.tsx) uses this, surfaced through
     /api/config, to decide whether to render at all.
 
-    BUGBOT (record-presence was not enough): ensure_learn_mount now
-    force-detaches and remounts the learn mountpoint on EVERY startup (see
-    its docstring) — including the common case where the record already
-    existed on disk from a prior run. A presence-only check would read
-    "ready" the instant that record is read off disk, well before
-    run_automount's attach_mount loop (which runs after ensure_learn_mount
-    returns, on the same background automount thread) has remounted it —
-    an early click would hit an empty mountpoint whose HTTP serve was just
-    stopped. Checking BOTH mounted_paths() (rcd's own bookkeeping) and
-    os.path.ismount() (the kernel mount table) is exactly attach_mount's own
-    signal for "there is nothing left to attach" (see its `os.path.ismount`
-    check), so this reads true only once that loop has actually succeeded."""
-    from fused_render.shell.mounts import list_mounts, mounted_paths
+    Reads the health monitor's CACHED per-mount state (_health_episodes, the
+    same I/O-free source /api/mounts/health serves) rather than probing rcd +
+    the kernel live. That live probe — `mp in mounted_paths()` plus
+    `_ismount(mp)` — is the reason this must not run on the request path: on
+    Windows, `_ismount()` (an os.path.ismount/os.lstat on the WinFsp reparse
+    point) BLOCKS for ~the rc timeout while run_automount is mid-attach of the
+    mountpoint, and /api/config embeds this for BOTH builtins, so a cold start
+    dragged /api/config to ~60s and the browser window couldn't paint. macOS
+    (nfsmount) and Linux (FUSE) attach fast enough to hide it; the cached read
+    fixes it on every platform. The health monitor pays the ismount cost on its
+    own background thread (poll_once, probe_io=False) and this just reads the
+    result, so it is still never eager — it reads False until a poll has
+    confirmed the mount is genuinely "mounted", which self-heals within one
+    poll interval of the attach completing (the concern the old live check and
+    its force-detach-every-startup BUGBOT were guarding against)."""
+    from fused_render.shell.mounts import _health_episodes, list_mounts
     builtin = next(
         (m for m in list_mounts() if m.get("builtin") == name), None
     )
     if builtin is None:
         return False
-    mp = mountpoint(builtin)
-    return mp in mounted_paths() and _ismount(mp)
+    episode = _health_episodes.get(builtin["id"])
+    return bool(episode) and episode.get("state") == "mounted"
 
 
 def _force_detach_builtin_mount(builtin: dict, old_remote: str) -> None:

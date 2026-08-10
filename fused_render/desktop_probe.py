@@ -12,11 +12,13 @@ when the echoed id + token match.
 `/api/desktop/ready` is a dedicated, dependency-free endpoint on purpose: the
 probe must reflect only "the HTTP server is up and is ours", never the health
 of an optional subsystem. It used to poll `/api/config`, whose
-`learn_mount_ready`/`sessions_mount_ready` fields do a live rcd/WinFsp check on
-every request; a slow cold-start mount attach then pushed each response past
-the 0.5s per-request timeout below for the whole readiness window, so the
-Windows supervisor declared "Python server did not become ready" and
-killed-and-retried a server that was in fact serving fine.
+`learn_mount_ready`/`sessions_mount_ready` fields then did a live rcd/WinFsp
+check on every request (since made cached — see `builtin_mount_ready`); a slow
+cold-start mount attach pushed each response past the 0.5s per-request timeout
+below for the whole readiness window, so the Windows supervisor declared
+"Python server did not become ready" and killed-and-retried a server that was
+in fact serving fine. A dedicated endpoint keeps readiness immune to that class
+of regression whatever `/api/config` grows to do.
 
 Shared by both backends: the Windows supervisor (out-of-process child server)
 and the macOS app (in-process server thread). urllib + json only, so it stays
