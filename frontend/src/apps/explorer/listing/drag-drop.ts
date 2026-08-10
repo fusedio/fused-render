@@ -9,11 +9,11 @@
 // story. A drag inside the explorer means "put these there", every time.
 //
 // The MECHANISM is the browser's own drag-and-drop (draggable rows +
-// dataTransfer), not a pointer-tracked ghost, for three reasons that all point
-// the same way: it gives the move cursor and the drop-refused cursor for free,
-// it survives the listing REMOUNTING mid-drag (which the spring-loaded
-// breadcrumb makes routine), and it leaves pointerdown on the background free
-// for the marquee (marquee.ts) with no gesture arbitration between them.
+// dataTransfer), not a pointer-tracked ghost: it gives the move cursor and the
+// drop-refused cursor for free, it applies its own click-vs-drag threshold (so
+// single-click-select and double-click-open are untouched), and it survives the
+// listing REMOUNTING mid-drag, which the spring-loaded breadcrumb makes
+// routine.
 //
 // What the mechanism does NOT give is the payload: `dataTransfer.getData` is
 // blacked out during dragover (a privacy rule — a page must not read a drag it
@@ -68,45 +68,6 @@ export type DropVerdict = { ok: true; dir: string } | { ok: false; reason: DropR
 // a comparison that can't see through that would let the background target
 // "move" every row into the folder it is already in.
 const canon = (p: string): string => p.replace(/\/+$/, "");
-
-// --- which gesture a press begins --------------------------------------------
-//
-// The listing has two press-and-move gestures — drag a row somewhere, or
-// rubber-band a group of rows — and they are told apart by WHERE THE PRESS
-// LANDS, decided once, here.
-//
-// It used to be "a press on a row drags, a press on the background marquees",
-// which is the obvious split and was the wrong one: rows span the full width of
-// the listing, so the only marquee surface left was the empty space BELOW the
-// last row. You could not rubber-band a group in the middle of a populated
-// list, which is the main thing the gesture is for.
-//
-// So the drag handle is narrowed to the part of the row that IS the file — its
-// icon and its name — and the rest of the row's width becomes marquee surface:
-//
-//   • on the name or icon → drag. Small and deliberate, and enough to keep
-//     "grab a file, drop it in a folder" a single motion for a row that isn't
-//     selected yet (dragPathsFor selects it on the way past).
-//   • anywhere on a row that is ALREADY SELECTED → drag. The user has already
-//     said which rows they mean; making them find one particular row's name to
-//     move all five would be fussy. Selection outranks hit region — this is the
-//     only case where the two rules could disagree.
-//   • anywhere else on a row, and the background below the rows → marquee.
-//
-// A press that never travels the marquee's 4px slop is neither: it is the click
-// the listing already had, and single-click-select / double-click-open are
-// untouched by any of this.
-export type PressGesture = "drag" | "marquee";
-
-export function pressGesture(press: {
-  onRow: boolean;
-  onName: boolean;
-  rowSelected: boolean;
-}): PressGesture {
-  if (!press.onRow) return "marquee";
-  if (press.rowSelected) return "drag";
-  return press.onName ? "drag" : "marquee";
-}
 
 // What a press on `path` picks up. The standard file-manager rule: a row that
 // is part of the current selection drags the WHOLE selection, and a row outside

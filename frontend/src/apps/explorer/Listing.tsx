@@ -20,8 +20,6 @@
 //   useFileOps.ts          file operations + context menus + dialogs
 //   drag-drop.ts           what a drag carries + which drops are legal (pure)
 //   useRowDrag.ts          the drag/drop handlers rows + background hang off
-//   marquee.ts             rubber-band geometry: box, hits, auto-scroll (pure)
-//   useMarquee.ts          the marquee's pointer drag + edge auto-scroll
 //   shortcut-chord.ts       which chord means which action (pure)
 //   useListingShortcuts.ts file-op keyboard chords
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
@@ -57,8 +55,7 @@ import {
   rowClickAction,
   selectionClaimed,
 } from "@apps/explorer/listing/selection";
-import { ROW_DRAG_HANDLE, useRowDrag } from "@apps/explorer/listing/useRowDrag";
-import { useMarquee } from "@apps/explorer/listing/useMarquee";
+import { useRowDrag } from "@apps/explorer/listing/useRowDrag";
 import { useDirListing } from "@apps/explorer/listing/useDirListing";
 import { useWalkSearch } from "@apps/explorer/listing/useWalkSearch";
 import { useListingSelection } from "@apps/explorer/listing/useListingSelection";
@@ -264,7 +261,6 @@ export default function Listing({
     selectedPath,
     selectedSet,
     selectOnly,
-    selectPaths,
     toggleSelected,
     extendTo,
     pendingSelectRef,
@@ -475,16 +471,6 @@ export default function Listing({
     onMove: doMove,
   });
 
-  // Rubber-band selection from the listing's empty space. It shares the ONE
-  // selection model with clicks and the keyboard (selectPaths above) — there is
-  // no parallel store to keep in step and no second `?sel=` writer.
-  const { onPointerDown: onMarqueePointerDown, box: marquee } = useMarquee({
-    scrollRef,
-    navRows,
-    selectedPaths: sel.paths,
-    selectPaths,
-  });
-
   useListingShortcuts({
     base,
     clipboard,
@@ -594,7 +580,7 @@ export default function Listing({
               <tr
                 key={entry.rel}
                 data-flip-key={childPath}
-                {...rowDrag(ctx, selectedSet.has(childPath))}
+                {...rowDrag(ctx)}
                 className={
                   "row" +
                   dropClass(childPath) +
@@ -632,18 +618,14 @@ export default function Listing({
                 }
               >
                 <td className="name">
-                  {/* Icon + name = the row's DRAG HANDLE (see pressGesture):
-                      the rest of the row's width is marquee surface. */}
-                  <span {...ROW_DRAG_HANDLE}>
-                    <span className="icon">
-                      {iconForEntry(
-                        entry.rel.split("/").pop() ?? entry.rel,
-                        entry.is_dir,
-                      )}
-                    </span>
-                    <span className="search-path">
-                      {renderHighlight(entry.rel, positions)}
-                    </span>
+                  <span className="icon">
+                    {iconForEntry(
+                      entry.rel.split("/").pop() ?? entry.rel,
+                      entry.is_dir,
+                    )}
+                  </span>
+                  <span className="search-path">
+                    {renderHighlight(entry.rel, positions)}
                   </span>
                   <ClipMark
                     cut={cutSet.has(childPath)}
@@ -720,7 +702,7 @@ export default function Listing({
         <tr
           key={entry.name}
           data-flip-key={childPath}
-          {...rowDrag(ctx, selectedSet.has(childPath))}
+          {...rowDrag(ctx)}
           className={
             (entry.ignored ? "row ignored" : "row") +
             dropClass(childPath) +
@@ -757,14 +739,10 @@ export default function Listing({
           }
         >
           <td className="name">
-            {/* Icon + name = the row's DRAG HANDLE (see pressGesture): the rest
-                of the row's width is marquee surface. */}
-            <span {...ROW_DRAG_HANDLE}>
-              <span className="icon">
-                {iconForEntry(entry.name, entry.is_dir)}
-              </span>
-              {entry.name}
+            <span className="icon">
+              {iconForEntry(entry.name, entry.is_dir)}
             </span>
+            {entry.name}
             <ClipMark
               cut={cutSet.has(childPath)}
               copied={copiedSet.has(childPath)}
@@ -958,10 +936,6 @@ export default function Listing({
               (backgroundActive ? " drop-into" : "")
             }
             {...backgroundDrag}
-            /* A press on the empty space below the rows starts a rubber band;
-               a press on a row starts a move-drag instead, and a press that
-               barely moves is still the click it always was (useMarquee). */
-            onPointerDown={onMarqueePointerDown}
             /* No onClick here: clicking the empty area below the rows does
                NOT deselect. Finder's rule, and it cost more than it bought
                once the preview pane arrived — a stray click anywhere in the
@@ -1036,21 +1010,6 @@ export default function Listing({
               </thead>
               <tbody>{body}</tbody>
             </table>
-            {/* The rubber band itself. Absolutely positioned inside the
-                scroller, so its CONTENT coordinates (useMarquee) are already
-                the coordinates it is laid out in and it scrolls with the rows
-                during an edge auto-scroll. */}
-            {marquee && (
-              <div
-                className="listing-marquee"
-                style={{
-                  left: marquee.left,
-                  top: marquee.top,
-                  width: marquee.right - marquee.left,
-                  height: marquee.bottom - marquee.top,
-                }}
-              />
-            )}
           </div>
         </div>
         {pane.on && (

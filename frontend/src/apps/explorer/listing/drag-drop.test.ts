@@ -15,48 +15,8 @@ import {
   dropIsValid,
   encodeDragPaths,
   fsDragInFlight,
-  pressGesture,
   startFsDrag,
 } from "./drag-drop";
-
-// Which of the two gestures a press begins. The whole feature is this table, so
-// it is written as one: rows are full width, so if every press on a row began a
-// drag, the only marquee surface in the listing would be the empty space BELOW
-// the last row — you could never rubber-band a group in the middle of a list,
-// which is the main thing the gesture is for.
-describe("pressGesture", () => {
-  const table: [
-    string,
-    { onRow: boolean; onName: boolean; rowSelected: boolean },
-    ReturnType<typeof pressGesture>,
-  ][] = [
-    // A row's NAME or ICON is the drag handle. Small, deliberate, and enough
-    // for "grab a file, drop it in a folder" to stay one motion.
-    ["the name of an unselected row", { onRow: true, onName: true, rowSelected: false }, "drag"],
-    ["the name of a selected row", { onRow: true, onName: true, rowSelected: true }, "drag"],
-    // A row already IN the selection drags anywhere: the user has said which
-    // rows they mean, and reaching for one name to move five is fussy.
-    ["anywhere on a selected row", { onRow: true, onName: false, rowSelected: true }, "drag"],
-    // The rest of an unselected row — the gutter, the space after the name, the
-    // size and modified columns — is marquee surface.
-    ["the gutter of an unselected row", { onRow: true, onName: false, rowSelected: false }, "marquee"],
-    // Below the last row, as before.
-    ["the empty background", { onRow: false, onName: false, rowSelected: false }, "marquee"],
-  ];
-
-  for (const [where, press, want] of table) {
-    test(`pressing ${where} → ${want}`, () => {
-      expect(pressGesture(press)).toBe(want);
-    });
-  }
-
-  test("selection outranks hit region, never the other way round", () => {
-    // The one place the two rules could disagree: off the name, on a selected
-    // row. Selection wins — otherwise dragging a multi-row selection would mean
-    // hunting for the name cell of one particular row in it.
-    expect(pressGesture({ onRow: true, onName: false, rowSelected: true })).toBe("drag");
-  });
-});
 
 const file = (path: string) => ({ path, parentDir: path.slice(0, path.lastIndexOf("/")) });
 
