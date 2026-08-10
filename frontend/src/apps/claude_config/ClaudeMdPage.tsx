@@ -5,39 +5,25 @@
 // the machine — and it was the only one needing a split preview pane, which
 // forced the panel into a three-column layout for one of eleven sections.
 //
-// What came with it, unchanged in behaviour:
+// What came with it, unchanged in behaviour: the split PREVIEW pane, which
+// renders beside the content column rather than inside it, so the path lives
+// here and the section is handed `preview`/`onPreview` exactly as before.
 //
-//   * the split PREVIEW pane, which renders beside the content column rather
-//     than inside it, so the path lives here and the section is handed
-//     `preview`/`onPreview` exactly as before;
-//   * the git BADGE. This page can dirty the config repo — deleting the global
-//     ~/.claude/CLAUDE.md goes through the claude_md module, which commits —
-//     so it keeps the same badge the panel has rather than reporting that
-//     through toasts alone and leaving the commit unreachable from here.
+// What did NOT come with it: the git BADGE. Only one action here can dirty
+// the config repo (deleting the global ~/.claude/CLAUDE.md — the claude_md
+// module commits that itself), and every other file listed lives outside
+// ~/.claude entirely, so a repo-drift badge mostly reported changes this page
+// had nothing to do with. The Config panel remains the place to see and
+// commit drift.
 //
-// No section nav: there is one section. The heading/caption pair is the panel's
-// (cc-heading + cc-caption, naming the files it edits) and the badge rides the
-// title row instead of a nav's bottom edge (.cc-page-head).
-import { useCallback, useState } from "react";
-import { PreviewPane, StatusBadge } from "./bits";
+// No section nav: there is one section. The heading/caption pair is the
+// panel's (cc-heading + cc-caption, naming the files it edits).
+import { useState } from "react";
+import { PreviewPane } from "./bits";
 import ClaudeMdSection from "./sections/ClaudeMdSection";
 
 export default function ClaudeMdPage() {
-  // The same two change signals the Config panel keeps, for the same reasons:
-  //
-  //   badgeEpoch   — the section wrote to disk, so the git badge is stale. The
-  //                  section already reloaded itself; remounting it from here
-  //                  would just double the fetch.
-  //   sectionEpoch — the badge itself committed, folding in drift the section
-  //                  can't have accounted for. Only this remounts the section.
-  const [badgeEpoch, setBadgeEpoch] = useState(0);
-  const [sectionEpoch, setSectionEpoch] = useState(0);
   const [preview, setPreview] = useState<string | null>(null);
-  const onChanged = useCallback(() => setBadgeEpoch((n) => n + 1), []);
-  const onCommitted = useCallback(() => {
-    setBadgeEpoch((n) => n + 1);
-    setSectionEpoch((n) => n + 1);
-  }, []);
 
   return (
     <div className="cc-root">
@@ -49,13 +35,8 @@ export default function ClaudeMdPage() {
               CLAUDE.md / CLAUDE.local.md across all projects
             </div>
           </div>
-          <StatusBadge epoch={badgeEpoch} onCommitted={onCommitted} />
         </div>
-        {/* Keyed on the commit epoch: a badge commit rewrites state the section
-            can't have predicted, so it remounts and rescans. */}
-        <div key={sectionEpoch} className="cc-section">
-          <ClaudeMdSection onChanged={onChanged} preview={preview} onPreview={setPreview} />
-        </div>
+        <ClaudeMdSection onChanged={() => {}} preview={preview} onPreview={setPreview} />
       </main>
       {preview && <PreviewPane path={preview} onClose={() => setPreview(null)} />}
     </div>
