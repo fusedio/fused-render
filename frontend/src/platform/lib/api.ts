@@ -103,8 +103,13 @@ function httpError(data: { error?: string } | null, status: number): HttpError {
   return err;
 }
 
-async function getJson<T>(url: string, headers?: Record<string, string>): Promise<T> {
-  const res = await fetch(url, headers ? { headers } : undefined);
+// `signal` is what a folder change uses to abandon an in-flight index fetch,
+// the same way it abandons a walk stream.
+async function getJson<T>(
+  url: string,
+  opts?: { headers?: Record<string, string>; signal?: AbortSignal },
+): Promise<T> {
+  const res = await fetch(url, opts);
   const data = await res.json();
   if (!res.ok) throw httpError(data, res.status);
   return data as T;
@@ -252,22 +257,13 @@ export interface IndexSearchResult {
   age_s: number | null;
 }
 
-// Abortable (unlike getJson): a folder change must be able to abandon an
-// in-flight corpus fetch the same way it abandons a walk stream.
-async function getJsonSignal<T>(url: string, signal?: AbortSignal): Promise<T> {
-  const res = await fetch(url, signal ? { signal } : undefined);
-  const data = await res.json();
-  if (!res.ok) throw httpError(data, res.status);
-  return data as T;
-}
-
 export function indexSearch(
   fsPath: string,
   opts: { signal?: AbortSignal } = {},
 ): Promise<IndexSearchResult> {
-  return getJsonSignal<IndexSearchResult>(
+  return getJson<IndexSearchResult>(
     "/api/index/search?root=" + encodeURIComponent(fsPath),
-    opts.signal,
+    { signal: opts.signal },
   );
 }
 
@@ -292,7 +288,7 @@ export interface IndexStatus {
 }
 
 export function indexStatus(signal?: AbortSignal): Promise<IndexStatus> {
-  return getJsonSignal<IndexStatus>("/api/index/status", signal);
+  return getJson<IndexStatus>("/api/index/status", { signal });
 }
 
 // Preferences > Indexing. `roots` is what the scheduler scans (defaulted to
@@ -912,7 +908,9 @@ export function getAccountStatus(probe = false): Promise<AccountStatus> {
   // probe=1 EXECUTES server-side (spawns a `fused cloud orgs` control-plane
   // call), so unlike the plain status read it carries the D36 guard header.
   return probe
-    ? getJson<AccountStatus>("/api/account/status?probe=1", { "X-Fused": "1" })
+    ? getJson<AccountStatus>("/api/account/status?probe=1", {
+        headers: { "X-Fused": "1" },
+      })
     : getJson<AccountStatus>("/api/account/status");
 }
 
