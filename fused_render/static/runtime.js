@@ -53,10 +53,8 @@
  * cross-origin ancestor) it falls back to reading/writing its own URL, treating
  * the `path` query key as reserved alongside any `_`-prefixed key.
  *
- * It also carries the appearance theme into view documents — as `data-theme`
- * for the ones that opt in, and as `color-scheme` (browser defaults only) for
- * the ones that don't — see the theme block at the top of the IIFE
- * (SPEC §30, D134).
+ * It also carries the appearance theme into OPTED-IN view documents — see the
+ * theme block at the top of the IIFE (SPEC §30, D134).
  */
 (function () {
   "use strict";
@@ -106,35 +104,9 @@
 
   function startTheme() {
     var root = document.documentElement;
-    if (!root) return;
-    // Two kinds of document, one resolved theme:
-    //
-    //   OPTED IN (`data-fused-theme`) — the attribute goes on, its own
-    //   `:root[data-theme="light"]` block does the rest. Its CSS owns every
-    //   colour it paints.
-    //
-    //   NOT OPTED IN — a user-authored view, or a built-in not yet converted.
-    //   Its CSS still stays entirely its own; what it gets is `color-scheme`,
-    //   which changes no author colour at all — it only tells the browser
-    //   which set of DEFAULTS to use. That matters because the shell paints
-    //   its frames on its own backdrop (styles/base.css), so a document that
-    //   sets no background of its own is transparent over a dark surface while
-    //   its unstyled text stays UA black. Canvas and default text colour are a
-    //   pair and have to flip together: with color-scheme set, the browser
-    //   supplies a dark canvas AND light text, and the page reads exactly as
-    //   it does standalone in a dark-mode browser. A page that DOES set its
-    //   own background is unaffected — author colours always win.
-    // `color-scheme` goes on EVERY document, opted in or not. It changes no
-    // author colour — it only picks which set of browser defaults applies —
-    // and it is the only thing that can paint the canvas correctly before the
-    // document's own stylesheet has been parsed, which is exactly the window
-    // the white flash lived in. (This script is parser-blocking at the top of
-    // <head>, so "before" here means before anything else in the document.)
-    var optedIn = root.hasAttribute("data-fused-theme");
+    if (!root || !root.hasAttribute("data-fused-theme")) return;
     var apply = function () {
-      var theme = resolvedTheme();
-      root.style.colorScheme = theme;
-      if (optedIn) root.setAttribute("data-theme", theme);
+      root.setAttribute("data-theme", resolvedTheme());
     };
     apply();
     // Another window changed the setting (a `clear()` reports key === null).
