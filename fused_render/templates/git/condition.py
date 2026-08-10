@@ -1,25 +1,33 @@
 """Gate for the `git` template (SPEC CT-12, §33 / GT-3).
 
-`main(path)` decides whether a path is inside a git work tree.
+`main(path)` decides whether a path is a DIRECTORY inside a git work tree.
 
-The answer is: anything inside one, file or directory alike. That is the WHOLE
-rule now, and it used to be two rules with a set of exclusions bolted on.
+The answer is: a directory inside one, and nothing else. `git` is a FOLDER-ONLY
+mode.
 
 `git` is the working-tree view — staging, discarding, stashing, committing,
-branches, push/pull. The commit LOG belongs to `versions`, which renders the
-same commits with a timeline this view never had. Because they answer different
-questions, they no longer need to take turns: this gate used to refuse a fused
-app folder ("versions handles app history") and its peer used to refuse every
-directory that was not one, each with a comment telling the reader to keep the
-two in step. Both refusals are gone, and the pair is simply offered together
-(the registry binds them together too).
+branches, push/pull. Every one of those is a REPOSITORY-level action, not
+something you do to one file: you do not stash a file, you stash a tree, and the
+working tree a file sits in is its FOLDER's working tree, not the file's. So the
+mode belongs to the folder and is offered there alone. Per-file history is a
+different question with a different answer already shipped — `versions` renders
+the commits that touched one path with a timeline this view never had — and that
+one is untouched here: it stays on every file key it had.
 
-The binding was the other half of the same mistake. `git` sat on the universal
-"/" DIRECTORY key alone, while the explorer gives a FOLDER no mode switcher of
-its own — the only mode surface a browsing user has is the preview pane's, and
-the pane acts on the SELECTED ROW, which is usually a file. Bound to no file
-extension, the view was effectively unreachable without hand-writing
-`?_mode=git`. It is now offered on every key `versions` is.
+The gate and the binding say the same thing twice, on purpose. The registry drops
+`git` from every file extension and keeps it on the universal "/" DIRECTORY key;
+this gate refuses anything that is not a directory. A hand-written `?_mode=git`
+on a file therefore renders nothing the user asked for, and the runtime modules
+still tolerate a file target rather than crash on one (MD-11: the gate is the UX,
+the module is the guarantee).
+
+The reason `git` was once bound to file keys is gone. It used to be that the
+explorer gave a FOLDER no mode switcher of its own — the only mode surface a
+browsing user had was the preview pane's, and the pane acted on the SELECTED ROW,
+which was always a file — so a mode bound to "/" alone was unreachable without
+hand-writing a URL, and riding along on file keys was the workaround. The preview
+pane now selects and previews FOLDER rows too (the folder peek), so a folder's
+mode switcher is reachable and the workaround can go.
 
 Two questions, in this order, because the first is a refusal rather than a
 preference:
@@ -38,9 +46,10 @@ preference:
    the same mechanism `graph/condition.py` uses — not a second copy. If that
    import fails we cannot tell, and "cannot tell" must read as "refuse".
 
-2. **Is there a directory to ask git FROM?** A directory asks about itself; a
-   file asks from its parent (handing git a file as `-C`/`cwd` is an ENOTDIR,
-   not an answer). Two `os.path.isdir` stats at most.
+2. **Is the path a directory?** If not, False — a file is never offered this
+   mode, so there is nothing to ask git about. (This also happens to be what
+   git's own CLI needs: handing it a file as `-C`/`cwd` is an ENOTDIR, not an
+   answer.) One `os.path.isdir` stat, never a listing.
 
    Then: **does git say this is inside a work tree?** `git rev-parse
    --is-inside-work-tree`, one bounded subprocess, and its literal `true` is the
@@ -138,14 +147,14 @@ def main(path: str) -> bool:
         # folder gets both and the two forks go away with the rules that needed
         # them.
 
-        # (2) The directory to ask git from: the path itself, or a file's parent.
-        # Two stats at most, never a listing.
-        if os.path.isdir(path):
-            cwd = path
-        else:
-            cwd = os.path.dirname(os.path.abspath(path))
-            if not os.path.isdir(cwd):
-                return False
+        # (2) Folder-only: a file is refused outright. This used to fall back to
+        # the file's PARENT directory, back when `git` was offered on file keys
+        # and the pane's mode surface only ever pointed at a file. It is not a
+        # fallback any more, it is the rule: the working tree is the folder's,
+        # so the folder is what gets asked. One stat, never a listing.
+        if not os.path.isdir(path):
+            return False
+        cwd = path
 
         # (3) git is the authority. `--is-inside-work-tree` is false for a bare
         # repo and inside `.git`, which is what we want; exit 128 ("not a git

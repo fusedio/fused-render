@@ -108,7 +108,7 @@ def _write_canvas(dir_path, name="canvas.toml", body=CANVAS_TOML):
 def test_canvas_toml_gets_canvas_mode_first(tmp_path):
     p = _write_canvas(tmp_path / "cv")
     m, error = modes(str(p))
-    assert m == ["canvas", "code", "claude", "versions", "git", "reader"]
+    assert m == ["canvas", "code", "claude", "versions", "reader"]
     assert error is None
     entries, _ = _server_templates._templates_for(str(p), False)
     assert entries[0]["path"].endswith("canvas/template.html")
@@ -134,7 +134,7 @@ def test_plain_toml_denied_canvas_mode(tmp_path):
     p.write_text("[tool.black]\nline-length = 88\n")
     m, error = modes(str(p))
     # stat still lists canvas (marked conditional, gate not run at stat time)
-    assert m == ["canvas", "code", "claude", "versions", "git", "reader"]
+    assert m == ["canvas", "code", "claude", "versions", "reader"]
     assert error is None
     allowed, err = canvas_verdict(str(p))
     assert allowed is False  # basename pre-check denies it

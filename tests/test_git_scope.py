@@ -10,15 +10,21 @@ in the two `condition.py` gates used to spend their complexity avoiding. So the
 git view no longer draws a History section, no longer selects a commit, and no
 longer asks the reader for the log at all.
 
-**Both gates are loose.** `git` was bound to the universal `/` directory key
-alone, and its gate additionally refused a fused app folder (that was
-`versions`' territory) — while the explorer, since #424, gives a FOLDER no mode
-switcher of its own: the only mode surface a browsing user has is the preview
-pane's, which acts on the SELECTED ROW. A selected row is usually a file, and
-`git` was bound to no file extension, so the view was effectively unreachable
-except by typing `?_mode=git`. Now both modes are offered on anything inside a
-work tree — every file key that carries `versions` carries `git` beside it, and
-neither gate excludes the other's targets.
+**`git` is FOLDER-ONLY.** Staging, discarding, stashing, committing, branches,
+push/pull are all repository-level acts — you do not stash a file, you stash a
+tree — and the working tree a file sits in is its FOLDER's. So `git` is offered
+on the universal `/` directory key and on no file extension at all, and its gate
+refuses anything that is not a directory. Per-file history is a different
+question with an answer that already ships: `versions`, unchanged, still on every
+file key it had.
+
+`git` did once ride along on file keys, and the reason is gone. The explorer used
+to give a FOLDER no mode switcher of its own — the only mode surface a browsing
+user had was the preview pane's, which acted on the SELECTED ROW, always a file —
+so a mode bound to `/` alone was unreachable without typing `?_mode=git`, and
+riding the file keys was the workaround. The preview pane now selects and
+previews FOLDER rows too (the folder peek), so a folder's mode switcher is
+reachable and the workaround is retired.
 """
 import importlib.util
 import json
@@ -73,25 +79,42 @@ def work_tree(tmp_path, monkeypatch):
 # ------------------------------------------------------------------ bindings
 
 
-def test_git_rides_with_versions_on_every_key(registry):
-    # The two are the working-tree view and the history view of the same repo,
-    # so they are offered together. This is what makes `git` reachable at all
-    # from the explorer, whose only mode surface is the preview pane's — and
-    # the pane acts on the selected ROW, which is usually a file.
-    missing = [
-        key for key, value in registry.items()
-        if isinstance(value, list) and "versions" in value and "git" not in value
-    ]
-    assert missing == []
+def test_git_is_offered_on_the_directory_key_alone(registry):
+    # The working tree is a property of the FOLDER, so the folder is where the
+    # mode lives: the universal "/" directory key, and nothing else. It used to
+    # ride along on every key `versions` was on, because a folder had no mode
+    # surface to reach it from; the preview pane peeks folders now, so it does
+    # not need the ride.
+    offered = [key for key, value in registry.items()
+               if isinstance(value, list) and "git" in value]
+    assert offered == ["/"]
 
 
-def test_git_is_never_offered_without_versions(registry):
-    # The converse, so the pair cannot drift apart from the other end.
-    orphans = [
-        key for key, value in registry.items()
-        if isinstance(value, list) and "git" in value and "versions" not in value
+def test_no_file_extension_offers_git(registry):
+    # The same rule from the other end, stated over the file keys, so a new
+    # extension cannot quietly reintroduce a per-file working-tree view.
+    file_keys = [key for key, value in registry.items()
+                 if isinstance(value, list) and key != "/" and "git" in value]
+    assert file_keys == []
+
+
+def test_versions_is_untouched_on_every_file_key(registry):
+    # De-linking is a change to `git` ONLY. Per-file history is `versions`' job
+    # and it keeps every key it had — which, before the split, was exactly the
+    # set `git` rode along on. Pinned literally: a silent drop here would look
+    # like "the split took versions with it".
+    assert sorted(key for key, value in registry.items()
+                  if isinstance(value, list) and "versions" in value
+                  and key != "/") == [
+        ".cfg", ".cjs", ".conf", ".csh", ".css", ".csv", ".cts", ".fish",
+        ".geojson", ".hcl", ".htm", ".html", ".ini", ".ipynb", ".jpeg", ".jpg",
+        ".js", ".json", ".jsonl", ".jsx", ".latex", ".log", ".ltx", ".markdown",
+        ".md", ".mjs", ".mts", ".ndjson", ".parquet", ".plist", ".png", ".ps1",
+        ".py", ".sh", ".svg", ".tex", ".tf", ".toml", ".ts", ".tsv", ".tsx",
+        ".txt", ".vim", ".yaml", ".yml", ".zsh", ".zsh-theme",
     ]
-    assert orphans == []
+    # And on the folder key too, where it sits beside `git`.
+    assert "versions" in registry["/"]
 
 
 def test_git_is_still_never_a_default(registry):
@@ -102,13 +125,27 @@ def test_git_is_still_never_a_default(registry):
     assert leads == []
 
 
-# --------------------------------------------------------------- loose gates
+# ------------------------------------------------------ folder-only vs. a file
 
 
-def test_both_gates_take_a_file_inside_any_work_tree(work_tree):
+def test_a_file_in_a_work_tree_is_git_s_no_and_versions_yes(work_tree):
+    # The whole change in one line. The file is inside a real work tree, so the
+    # old gate said True; the working tree it is inside belongs to its FOLDER,
+    # so the folder-only gate says False. The question a file DOES have an
+    # answer for — what happened to this file — is `versions`', and `versions`
+    # still says yes.
     target = str(work_tree / "pkg" / "mod.py")
-    assert _load("git").main(target) is True
+    assert _load("git").main(target) is False
     assert _load("versions").main(target) is True
+
+
+def test_git_refuses_a_file_even_at_the_repository_root(work_tree):
+    # Not a nesting rule: a file directly in the root of the work tree is still
+    # a file, so it is still refused.
+    (work_tree / "README.md").write_text("hi\n")
+    assert _load("git").main(str(work_tree / "README.md")) is False
+    # ...while the folder that holds it is exactly what the mode is for.
+    assert _load("git").main(str(work_tree)) is True
 
 
 def test_the_two_folder_gates_ask_different_questions(work_tree):
@@ -123,9 +160,9 @@ def test_the_two_folder_gates_ask_different_questions(work_tree):
     # switcher of every directory of every repository the user opens, whose
     # preview is a listing of a frozen tree.
     #
-    # The pair is still bound together in the registry (the tests above): what
-    # differs is which targets each GATE answers for, which is the mechanism
-    # that exists for exactly this.
+    # On the folder key the two are still offered side by side (the tests
+    # above): what differs is which targets each GATE answers for, which is the
+    # mechanism that exists for exactly this.
     for target in (str(work_tree), str(work_tree / "pkg")):
         assert _load("git").main(target) is True, target
         assert _load("versions").main(target) is False, target

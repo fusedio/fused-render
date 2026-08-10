@@ -1,8 +1,15 @@
 """The `git` template's condition.py gate (SPEC CT-12, §33 / GT-3).
 
-The gate runs on EVERY directory AND every source/config/prose file the user
-opens, so what matters as much as the verdict is what the gate is allowed to do
-to reach it. Three properties are tested directly:
+The gate runs on EVERY directory the user opens, so what matters as much as the
+verdict is what the gate is allowed to do to reach it. Four properties are
+tested directly:
+
+* **A file is False, always.** `git` is FOLDER-ONLY: staging, discarding,
+  stashing, committing, branches, push/pull are repository-level acts, and the
+  working tree a file sits in belongs to its folder. Per-file history is
+  `versions`' question, not this one. The registry says the same thing (`git`
+  rides the "/" directory key alone), and the gate says it again so a
+  hand-written `?_mode=git` on a file gets a no.
 
 * **It never enumerates.** `os.listdir`/`os.scandir`/`os.walk`/`glob` are made
   fatal for the whole detection suite, so a listing added later fails here
@@ -91,15 +98,19 @@ def test_a_subdirectory_with_no_dot_git_of_its_own_is_offered(gate, repo):
     assert gate(nested) is True
 
 
-def test_a_tracked_file_is_offered(gate, repo):
-    # File modes gate on the file itself; the cwd is its parent directory.
-    assert gate(os.path.join(repo, "pkg", "core.py")) is True
+def test_a_tracked_file_is_NOT_offered(gate, repo):
+    # Folder-only. The file is inside a work tree and the old gate said True by
+    # resolving to its parent directory; the working tree it is inside is that
+    # PARENT's, not the file's, and the acts this view offers (stage, discard,
+    # stash, commit, branch, push) are repository-level. What happened to this
+    # one file is `versions`' question, and `versions` still answers it.
+    assert gate(os.path.join(repo, "pkg", "core.py")) is False
 
 
-def test_an_untracked_file_inside_the_repo_is_offered(gate, repo):
-    # "In a repository" is the question, not "tracked" — the view has a useful
-    # answer for an untracked file too (it shows up as `??`).
-    assert gate(os.path.join(repo, "pkg", "fresh.txt")) is True
+def test_an_untracked_file_inside_the_repo_is_NOT_offered_either(gate, repo):
+    # Tracked or not makes no difference now that the answer turns on "is this a
+    # directory" before it ever reaches git.
+    assert gate(os.path.join(repo, "pkg", "fresh.txt")) is False
 
 
 def test_a_repository_with_no_commits_is_still_offered(gate, tmp_path):
@@ -281,8 +292,11 @@ def test_untracked_file_in_a_repo_that_git_cannot_read_fails_closed(gate, tmp_pa
     assert gate(str(parent / "child.py")) is False
 
 
-def test_a_file_in_a_repo_subdirectory_resolves_from_its_parent(gate, repo):
-    # Regression guard for the file case: passing the FILE as `cwd` to git is an
-    # ENOTDIR, so the gate must use its parent.
+def test_a_file_in_a_repo_subdirectory_is_refused_but_its_folder_is_not(gate, repo):
+    # The file case used to resolve to the parent so that git would not get the
+    # FILE as `cwd` (an ENOTDIR). Folder-only makes that a refusal instead — and
+    # the parent it used to borrow is itself a perfectly good target, which is
+    # the point: the mode is offered one level up, where the working tree is.
     write(repo, "pkg/deep/leaf.txt", "leaf\n")
-    assert gate(os.path.join(repo, "pkg", "deep", "leaf.txt")) is True
+    assert gate(os.path.join(repo, "pkg", "deep", "leaf.txt")) is False
+    assert gate(os.path.join(repo, "pkg", "deep")) is True

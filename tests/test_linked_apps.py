@@ -419,7 +419,10 @@ def test_git_gate_keeps_serving_ungitted_linked_folders(client, tmp_path, worksp
     nested.mkdir()
     (nested / "f.txt").write_text("x")
     _git_repo(nested)
-    assert _condition("git").main(str(nested / "f.txt")) is True
+    # ...but on the FOLDER, not on a file in it: `git` is folder-only now (the
+    # working tree belongs to the directory, and per-file history is `versions`).
+    assert _condition("git").main(str(nested / "f.txt")) is False
+    assert _condition("git").main(str(nested)) is True
 
 
 def test_versions_backend_scopes_to_the_linked_subtree(client, tmp_path):
