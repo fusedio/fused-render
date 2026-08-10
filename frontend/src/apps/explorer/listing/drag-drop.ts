@@ -69,6 +69,28 @@ export type DropVerdict = { ok: true; dir: string } | { ok: false; reason: DropR
 // "move" every row into the folder it is already in.
 const canon = (p: string): string => p.replace(/\/+$/, "");
 
+// Should a `dragleave` on `leaving` cancel the spring-loaded crumb that is
+// currently armed (Breadcrumb)? Only when the crumb being left IS the armed
+// one.
+//
+// Asking at all is the whole point. Cancelling unconditionally looks obviously
+// right and silently disables the feature, because of the order the DOM fires
+// drag events in: moving from one crumb to the next raises `dragenter` on the
+// NEW target BEFORE `dragleave` on the old one. So arming on enter and
+// disarming on any leave runs enter(docs) → arm docs → leave(/w) → disarm, and
+// kills the timer that was armed a moment earlier. Spring-loading then only
+// ever worked if the pointer entered the strip from outside and never crossed a
+// second crumb — which is not how anyone drags along a path.
+//
+// Comparing against the armed target is correct under EITHER ordering, which is
+// why it is the fix rather than a re-ordering of the handlers: if leave came
+// first the armed crumb would be the one being left and it would disarm, and if
+// enter comes first the armed crumb is already the new one and the stale leave
+// is ignored.
+export function springDisarms(leaving: string, armed: string | null): boolean {
+  return armed !== null && armed === leaving;
+}
+
 // What a press on `path` picks up. The standard file-manager rule: a row that
 // is part of the current selection drags the WHOLE selection, and a row outside
 // it drags only itself (the press is also a click, and a click selects — the

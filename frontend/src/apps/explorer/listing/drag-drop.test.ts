@@ -15,10 +15,31 @@ import {
   dropIsValid,
   encodeDragPaths,
   fsDragInFlight,
+  springDisarms,
   startFsDrag,
 } from "./drag-drop";
 
 const file = (path: string) => ({ path, parentDir: path.slice(0, path.lastIndexOf("/")) });
+
+// Spring-loading is armed on dragenter and cancelled on dragleave, and the DOM
+// fires those in an order that makes the naive version cancel itself.
+describe("springDisarms", () => {
+  test("leaving the armed crumb cancels it", () => {
+    expect(springDisarms("/w", "/w")).toBe(true);
+  });
+
+  test("leaving a DIFFERENT crumb does not", () => {
+    // The whole bug: dragging from /w to /w/docs fires enter(/w/docs) BEFORE
+    // leave(/w), so a leave handler that cancels unconditionally kills the
+    // timer that the enter just armed — and the feature never fires unless the
+    // pointer reaches a crumb without crossing another one first.
+    expect(springDisarms("/w", "/w/docs")).toBe(false);
+  });
+
+  test("nothing armed, nothing to cancel", () => {
+    expect(springDisarms("/w", null)).toBe(false);
+  });
+});
 
 describe("dragPathsFor", () => {
   test("dragging a row inside the selection drags the whole selection", () => {

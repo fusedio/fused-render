@@ -37,7 +37,7 @@ import { encodePaneSegment, splitShellSearch } from "@platform/lib/layout-codec"
 import { panelUrl } from "@apps/explorer/Panel";
 import { SplitRightIcon, SplitDownIcon } from "@platform/ui/SplitIcons";
 import { OverflowMenu } from "@apps/explorer/BarMenu";
-import { carriesFsDrag } from "@apps/explorer/listing/drag-drop";
+import { carriesFsDrag, springDisarms } from "@apps/explorer/listing/drag-drop";
 
 // How long a file drag has to hover a crumb before the listing follows it.
 // Spring-loading is the standard file-manager answer to "the folder I want to
@@ -104,7 +104,15 @@ function useSpringLoadedCrumbs() {
       };
       setArmedTarget(target);
     },
-    onDragLeave: disarm,
+    // Only the crumb that is actually armed may cancel it. Cancelling on any
+    // leave reads as obviously right and disables the whole feature: the DOM
+    // fires `dragenter` on the crumb being ENTERED before `dragleave` on the
+    // one being left, so dragging along the strip armed the new crumb and then
+    // immediately killed it (see springDisarms, where the ordering is written
+    // down and tested).
+    onDragLeave: () => {
+      if (springDisarms(target, armed.current?.target ?? null)) disarm();
+    },
   });
 
   return { springProps, armedTarget };
