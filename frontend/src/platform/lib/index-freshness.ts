@@ -27,6 +27,24 @@ const MAX_TRACKED = 256;
 // Parent folders of everything mutated this session, oldest first.
 let touched: string[] = [];
 
+// Monotonic count of mutations, and the listeners watching for them. The
+// search's revalidation deferral (listing/revalidate) reads this: a change the
+// USER just made is the one case that must repaint immediately, so it needs a
+// signal rather than having to poll `indexMayAnswer`.
+let mutations = 0;
+const listeners = new Set<() => void>();
+
+/** How many mutations this app has made this session. */
+export function fsMutationCount(): number {
+  return mutations;
+}
+
+/** Subscribe to in-app mutations. Returns an unsubscribe function. */
+export function subscribeFsMutations(fn: () => void): () => void {
+  listeners.add(fn);
+  return () => void listeners.delete(fn);
+}
+
 function norm(p: string): string {
   const s = String(p || "").replace(/\/+$/, "");
   return s || "/";
@@ -56,6 +74,8 @@ export function noteFsMutation(path: string): void {
     touched.push(entry);
   }
   if (touched.length > MAX_TRACKED) touched = touched.slice(-MAX_TRACKED);
+  mutations++;
+  for (const fn of listeners) fn();
 }
 
 /**
@@ -73,4 +93,5 @@ export function indexMayAnswer(folder: string): boolean {
 /** Tests only. */
 export function resetFsMutations(): void {
   touched = [];
+  mutations = 0;
 }

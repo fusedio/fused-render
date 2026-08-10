@@ -12,10 +12,15 @@ import { useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import { indexSearch, walkDirStream } from "@platform/lib/api";
 import type { WalkEntry } from "@platform/lib/api";
 import { indexCorpusFrom } from "@apps/explorer/listing/index-corpus";
-import { indexMayAnswer } from "@platform/lib/index-freshness";
+import {
+  fsMutationCount,
+  indexMayAnswer,
+  subscribeFsMutations,
+} from "@platform/lib/index-freshness";
 import { replaceSearch } from "@platform/lib/router";
 import { nextHeldHits, resolveDisplayedHits, type QueryTagged } from "@platform/lib/search-hold";
 import { startScanJob } from "@apps/explorer/listing/scan-job";
+import { shouldReconcile } from "@apps/explorer/listing/revalidate";
 import {
   IDLE_WALK,
   PAGE_SIZE,
@@ -73,12 +78,36 @@ export function useWalkSearch(fsPath: string, refresh: number, urlSync = true) {
   // the input can have settled while the chunked scan for it is still running.
   const deferredStale = query.trim() !== q;
 
+  // The generation the SEARCH is pinned to. Outside search it tracks `refresh`
+  // exactly; during one it lags deliberately, so background churn under the
+  // folder cannot dim the user's results mid-read (see listing/revalidate).
+  // Everything below keys on this, never on `refresh` itself.
+  const [pinned, setPinned] = useState(refresh);
+  // In-app mutations override the deferral — the user's own rename has to show.
+  const [mutations, setMutations] = useState(fsMutationCount);
+  const appliedMutations = useRef(mutations);
+  useEffect(() => subscribeFsMutations(() => setMutations(fsMutationCount())), []);
+
+  const reconcile = () => {
+    appliedMutations.current = fsMutationCount();
+    setMutations(appliedMutations.current);
+    setPinned(refresh);
+  };
+  useEffect(() => {
+    if (shouldReconcile({ refresh, pinned, searching, mutations,
+                          appliedMutations: appliedMutations.current })) {
+      reconcile();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- reconcile is
+    // recreated each render; the inputs it reads are all listed here.
+  }, [refresh, pinned, searching, mutations]);
+
   // Synchronous cache validity: a non-idle walk fetched for a previous
-  // refresh generation reads as idle, immediately on the render where
-  // `refresh` bumps — no effect ordering to wait on, and no render ever
-  // scores search results against the pre-refresh tree.
+  // generation reads as idle, immediately on the render where `pinned` moves —
+  // no effect ordering to wait on, and no render ever scores search results
+  // against the pre-refresh tree.
   const validWalk: WalkState =
-    walk.status === "idle" || walk.forRefresh === refresh ? walk : IDLE_WALK;
+    walk.status === "idle" || walk.forRefresh === pinned ? walk : IDLE_WALK;
 
   // Active search must always have a walk for the CURRENT tree. Covers a
   // URL-seeded query on mount racing ahead of focus, typing after an
@@ -89,10 +118,10 @@ export function useWalkSearch(fsPath: string, refresh: number, urlSync = true) {
   // gestures (focus / typing) below. The immediate `query` (not deferred)
   // drives this — the fetch should start on the first keystroke.
   useEffect(() => {
-    if (query.trim() !== "" && validWalk.status === "idle" && walkReq !== refresh) {
-      setWalkReq(refresh);
+    if (query.trim() !== "" && validWalk.status === "idle" && walkReq !== pinned) {
+      setWalkReq(pinned);
     }
-  }, [query, validWalk.status, walkReq, refresh]);
+  }, [query, validWalk.status, walkReq, pinned]);
 
   // The corpus. One effect owns the whole fetch lifecycle: it runs when a walk
   // generation is requested (walkReq) or a gesture bumps `retryNonce` after an
@@ -193,6 +222,8 @@ export function useWalkSearch(fsPath: string, refresh: number, urlSync = true) {
   // First focus starts the walk warming in the background; focus (like
   // typing below) is also the retry gesture when a previous stream failed.
   const prefetchWalk = () => {
+    // Focus is a boundary: adopt any generation deferred while searching.
+    reconcile();
     if (validWalk.status === "idle") setWalkReq(refresh);
     else if (validWalk.status === "error") {
       setWalkReq(refresh);
@@ -212,6 +243,9 @@ export function useWalkSearch(fsPath: string, refresh: number, urlSync = true) {
 
   const setQuery = (value: string) => {
     setQueryState(value);
+    // A query change is a boundary: the rows are being replaced anyway, so a
+    // generation deferred during the previous query lands here for free.
+    reconcile();
     setSearchSort(null); // a new query drops back to relevance order
     setVisibleCount(PAGE_SIZE);
     // Editing the query is also a user gesture: if the last walk attempt
