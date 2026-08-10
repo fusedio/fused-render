@@ -65,6 +65,10 @@ function ViewEditModal({
         return;
       }
       await writeFile(editing.path, draft);
+      // A save inside ~/.claude is config drift; fold it into the config
+      // repo's history right away (a no-op for files outside it), the same
+      // way delete self-commits — this page has no drift badge to catch it.
+      await cc.claudeMd.commit(editing.path);
       toastOk("Saved");
       onSaved();
     } catch (e) {

@@ -200,6 +200,30 @@ def test_claude_md_delete_removes_an_allowlisted_file(client, claude_dir, tmp_pa
     assert not doomed.exists()
 
 
+@pytest.mark.skipif(not git_available(), reason="needs git")
+def test_claude_md_commit_folds_an_edit_into_the_config_repo(client, claude_dir):
+    # The page saves content through /api/fs/write, then asks this action to
+    # commit the drift; the commit must land and name the file. First call
+    # bootstraps the repo (the file rides the seed commit); the EDIT after
+    # that is the case the action exists for.
+    target = claude_dir / "CLAUDE.md"
+    target.write_text("# original\n")
+    _post(client, "claude_md", action="commit", path=str(target))
+    target.write_text("# edited\n")
+    body = _post(client, "claude_md", action="commit", path=str(target)).json()
+    assert body["ok"] is True
+    assert body["committed"]  # a fresh sha — the edit is in history
+
+
+def test_claude_md_commit_is_a_noop_outside_the_config_repo(client, claude_dir, tmp_path):
+    outside = tmp_path / "elsewhere" / "CLAUDE.md"
+    outside.parent.mkdir()
+    outside.write_text("# project file\n")
+    body = _post(client, "claude_md", action="commit", path=str(outside)).json()
+    assert body["ok"] is True
+    assert body["committed"] is None
+
+
 # -- preferences: schema + prefs against a seeded settings.json --------------
 
 

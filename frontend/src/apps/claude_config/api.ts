@@ -220,6 +220,10 @@ export const claudeMd = {
   open: (path: string) => callModule<OkResult>("claude_md", { action: "open", path }),
   remove: (path: string) =>
     callModule<OkResult & { committed?: string | null }>("claude_md", { action: "delete", path }),
+  // Fold a just-saved edit into the config repo's history; a no-op for files
+  // outside ~/.claude (committed: null).
+  commit: (path: string) =>
+    callModule<OkResult & { committed?: string | null }>("claude_md", { action: "commit", path }),
 };
 
 // -- skills -------------------------------------------------------------------
