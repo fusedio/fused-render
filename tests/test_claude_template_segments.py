@@ -851,3 +851,358 @@ def test_diff_colours_are_theme_variables_defined_in_both_themes(source):
         rule = re.search(re.escape(cls) + r"\s*\{([^}]*)\}", style)
         assert rule, "no %s rule" % cls
         assert "var(--diff-" in rule.group(1)
+
+
+# --- the question card (AskUserQuestion) --------------------------------------
+# The one permission card that is not an approval: `buildPermCard` routes
+# tool_name AskUserQuestion to `buildQuestionCard`, whose controls send a chosen
+# option LABEL instead of a verdict (agent.py + permission_server validate it
+# against the parked request; tests/test_claude_permission_bridge.py pins that
+# half). These probes run the shipping builder over the stub DOM, because what
+# matters is the tree the user clicks: which controls exist, what they send, and
+# that every model-authored string went in through textContent.
+
+_CARD_CONSTS_START = "const WHOLE_TOOL_GRANTABLE = new Set(["
+_CARD_CONSTS_END = 'const ANSWERABLE_TOOL = "AskUserQuestion";'
+_CARD_START = "function permChoices(tool, label, liveMode) {"
+# buildQuestionCard's last two lines — unique to it (buildPermCard appends its
+# status with `el.append(actions, status)`), so the window closes on the whole
+# card region and an edit that moves the end is a test error, not a silent pass.
+_CARD_END = "  el.appendChild(status);\n  return { el, resolve };\n}"
+
+# What buildPermCard/buildQuestionCard reach for outside their own region. The
+# recorder is the point: `sent` is exactly the `decide` payload that would cross
+# into python, so a probe asserts on the wire rather than on the DOM's intent.
+_CARD_STUBS = r"""
+const AGENT = "agent.py";
+const DEFAULT_PERMISSION = "prompt";
+const PERMISSION_LABELS = {auto: "Claude decides", acceptEdits: "Auto-accept edits"};
+const sent = [];
+const extra = {};   // a probe's own mid-run observations, dumped with the tree
+let reply = {};
+const fused = {
+  params: {set() {}, get() { return ""; }},
+  runPython(agent, params) { sent.push(params); return Promise.resolve(reply); },
+};
+function syncSelects() {}
+// Live element helpers (dump() loses the handlers, so clicking needs the tree).
+function walk(el) {
+  const out = [el];
+  (el.children || []).forEach((k) => { if (k.nodeType === 1) out.push(...walk(k)); });
+  return out;
+}
+const byClass = (el, cls) => walk(el).filter(
+  (n) => (n.className || "").split(/\s+/).indexOf(cls) >= 0);
+const byTag = (el, tag) => walk(el).filter((n) => n.tagName === tag);
+const settle = () => new Promise((r) => setTimeout(r, 0));
+// dump() plus the form state these cards carry.
+function cdump(n) {
+  if (n.nodeType === 3) return {tag: "#text", text: n.nodeValue, children: []};
+  return {
+    tag: n.tagName.toLowerCase(), cls: n.className, text: n.textContent,
+    html: n.innerHTML, type: n.type === undefined ? null : n.type,
+    name: n.name === undefined ? null : n.name,
+    checked: !!n.checked, disabled: !!n.disabled,
+    children: n.children.map(cdump),
+  };
+}
+"""
+
+_ONE_QUESTION = {
+    "questions": [{
+        "question": "Alpha or Beta?",
+        "header": "Choice",
+        "options": [{"label": "Alpha", "description": "Pick Alpha"},
+                    {"label": "Beta", "description": "Pick Beta"}],
+        "multiSelect": False,
+    }],
+}
+_MULTI = {
+    "questions": [{
+        "question": "Which libraries?",
+        "header": "Libs",
+        "options": [{"label": "Alpha", "description": "a"},
+                    {"label": "Beta", "description": "b"},
+                    {"label": "Gamma", "description": "c"}],
+        "multiSelect": True,
+    }],
+}
+
+
+class _CardProbe:
+    """The shipping permission-card region, run over the stub DOM."""
+
+    def __init__(self, source, tmp_path):
+        self.consts = _block(source, _CARD_CONSTS_START, _CARD_CONSTS_END)
+        self.perm = _block(source, _PERM_START, _PERM_END)
+        self.cards = _block(source, _CARD_START, _CARD_END)
+        self._tmp_path = tmp_path
+
+    def build(self, tool_input, actions="", reply=None, perm=None):
+        """Build the card for one parked request, run `actions`, dump it."""
+        request = {"id": "req-1", "tool": "AskUserQuestion", "input": tool_input,
+                   "decision": "", "scope": "", "mode": "", "answers": {}}
+        request.update(perm or {})
+        # `before` is the card as built, `tree` the card after `actions` ran — a
+        # resolved card removes its own controls, so the structural assertions
+        # read the first and the outcome assertions the second.
+        body = """
+const p = %s;
+reply = %s;
+const card = buildPermCard(p, "run-1", "prompt");
+const before = cdump(card.el);
+(async () => {
+  %s
+  console.log(JSON.stringify({before, tree: cdump(card.el), sent, extra}));
+})();
+""" % (json.dumps(request), json.dumps(reply if reply is not None else {}), actions)
+        script = "\n".join([_DOM, _CARD_STUBS, self.consts, self.perm,
+                            self.cards, body])
+        return _node(script, self._tmp_path)
+
+
+@pytest.fixture()
+def card(source, tmp_path):
+    return _CardProbe(source, tmp_path)
+
+
+def _texts(tree, cls):
+    return [n["text"] for n in _by_class(tree, cls)]
+
+
+def test_a_question_card_renders_the_header_question_and_every_option(card):
+    got = card.build(_ONE_QUESTION)
+    tree = got["tree"]
+    assert "ask" in tree["cls"].split(), tree["cls"]
+    assert _texts(tree, "qhead") == ["Choice"]
+    assert _texts(tree, "qtext") == ["Alpha or Beta?"]
+    # One control per option, each showing the label AND its description — the
+    # label is the only thing that can be sent, so nothing about it is elided.
+    assert _texts(tree, "lbl") == ["Alpha", "Beta"]
+    assert _texts(tree, "desc") == ["Pick Alpha", "Pick Beta"]
+    assert len(_by_class(tree, "qopt")) == 2
+    # A single-choice question answers on click, so there is no submit step.
+    assert not _by_class(tree, "qsend")
+
+
+def test_every_string_on_a_question_card_goes_in_through_text_content(card):
+    """The question, the labels and the descriptions are model-authored, and this
+    card is read to decide an answer — so markup in any of them must render as
+    the characters it is, exactly like a tool input on an approval card."""
+    hostile = {"questions": [{
+        "question": "<img src=x onerror=alert(1)>Which?",
+        "header": "<b>hdr</b>",
+        "options": [
+            {"label": "<script>alert(1)</script>", "description": "<i>desc</i>"},
+            {"label": "plain", "description": ""},
+        ],
+        "multiSelect": False,
+    }]}
+    got = card.build(hostile)
+    nodes = _nodes(got["tree"])
+    assert all(not n.get("html") for n in nodes), (
+        "something on a question card was written as markup")
+    assert "<script>alert(1)</script>" in _texts(got["tree"], "lbl")
+    assert _texts(got["tree"], "qtext") == ["<img src=x onerror=alert(1)>Which?"]
+    assert _texts(got["tree"], "qhead") == ["<b>hdr</b>"]
+
+
+def test_clicking_an_option_sends_that_label_as_the_answer(card):
+    got = card.build(_ONE_QUESTION, actions="""
+  byClass(card.el, "qopt")[1].onclick();
+  await settle();
+""", reply={"decision": "allow", "answers": {"Alpha or Beta?": "Beta"}})
+    assert got["sent"] == [{
+        "action": "decide", "run_id": "run-1", "request_id": "req-1",
+        "scope": "once", "decision": "allow",
+        # A JSON string keyed by the exact question text, value = the label.
+        "answers": '{"Alpha or Beta?":"Beta"}',
+    }]
+    status = _by_class(got["tree"], "perm-status")[0]
+    assert status["text"] == "✓ You chose: Beta"
+    assert "allow" in status["cls"].split()
+    # The options are gone once it is answered — the card is a record now.
+    assert not _by_class(got["tree"], "qopt")
+    assert "resolved" in got["tree"]["cls"].split()
+
+
+def test_a_multi_select_question_submits_the_ticked_labels_joined(card):
+    """", "-joined, in the order the options were offered — that is the string
+    the CLI validates against its own option list (a bare JSON list downgrades
+    the tool_result to "follow what they actually say")."""
+    got = card.build(_MULTI, actions="""
+  const boxes = byTag(card.el, "INPUT");
+  boxes[2].checked = true;   // Gamma first, to prove the order is normalised
+  boxes[0].checked = true;   // Alpha
+  byClass(card.el, "qsend")[0].children[0].onclick();
+  await settle();
+""", reply={"decision": "allow", "answers": {"Which libraries?": "Alpha, Gamma"}})
+    assert [n["type"] for n in _nodes(got["before"]) if n["tag"] == "input"] \
+        == ["checkbox"] * 3
+    assert json.loads(got["sent"][0]["answers"]) == {
+        "Which libraries?": "Alpha, Gamma"}
+    assert _by_class(got["tree"], "perm-status")[0]["text"] == \
+        "✓ You chose: Alpha, Gamma"
+
+
+def test_a_multi_question_card_will_not_send_a_half_answer(card):
+    """One `answers` record covers every question, so the submit is refused
+    until each has a choice rather than sending a partial one and letting the
+    model read the gaps as "not answered"."""
+    two = {"questions": [_ONE_QUESTION["questions"][0], _MULTI["questions"][0]]}
+    got = card.build(two, actions="""
+  const submit = () => byClass(card.el, "qsend")[0].children[0].onclick();
+  const boxes = byTag(card.el, "INPUT");
+  boxes[0].checked = true;         // only the first question answered
+  submit();
+  await settle();
+  extra.halfway = {sent: sent.length,
+                   status: byClass(card.el, "perm-status")[0].textContent};
+  boxes[3].checked = true;         // Beta, on the second question
+  submit();
+  await settle();
+""", reply={"decision": "allow"})
+    assert got["extra"]["halfway"] == {
+        "sent": 0, "status": "Pick an answer for every question."}
+    assert json.loads(got["sent"][0]["answers"]) == {
+        "Alpha or Beta?": "Alpha", "Which libraries?": "Beta"}
+    # Two questions ⇒ radios for the single-choice one, checkboxes for the other,
+    # grouped per question so one question cannot steal another's selection.
+    inputs = [n for n in _nodes(got["before"]) if n["tag"] == "input"]
+    assert [n["type"] for n in inputs] == ["radio"] * 2 + ["checkbox"] * 3
+    assert len({n["name"] for n in inputs}) == 2
+
+
+def test_a_question_card_offers_neither_a_verdict_nor_a_mode_switch(card):
+    """No Allow, no Deny, no "allow all", no "let Claude decide from here".
+
+    An answerless allow reaches the model as "the user did not answer", and a
+    grant or a mode switch riding on a question would loosen approvals for every
+    later tool on the back of a click that said nothing about permissions.
+    """
+    got = card.build(_ONE_QUESTION, actions="""
+  byClass(card.el, "qopt")[0].onclick();
+  await settle();
+""", reply={"decision": "allow", "answers": {"Alpha or Beta?": "Alpha"}})
+    # `before`, not the resolved card: a resolved card has removed its controls,
+    # so reading that one would pass however many verdict buttons it had offered.
+    buttons = [n["text"] for n in _nodes(got["before"]) if n["tag"] == "button"]
+    assert buttons, "no controls at all — the probe is asserting about nothing"
+    for banned in ("Allow", "Deny", "Allow all", "let Claude decide"):
+        assert not any(banned in b for b in buttons), buttons
+    payload = got["sent"][0]
+    assert payload["scope"] == "once" and "mode" not in payload
+
+
+def test_the_card_shows_the_answer_that_won_the_latch_not_the_click(card):
+    """First writer wins on disk, so the card renders what agent.py reports —
+    the same rule the approval card follows for its verdict."""
+    got = card.build(_ONE_QUESTION, actions="""
+  byClass(card.el, "qopt")[1].onclick();   // clicked Beta
+  await settle();
+""", reply={"decision": "allow", "answers": {"Alpha or Beta?": "Alpha"}})
+    assert json.loads(got["sent"][0]["answers"]) == {"Alpha or Beta?": "Beta"}
+    assert _by_class(got["tree"], "perm-status")[0]["text"] == "✓ You chose: Alpha"
+
+
+def test_a_failed_send_brings_the_options_back(card):
+    """The tool call is still blocked, so an error must not leave a dead card."""
+    got = card.build(_ONE_QUESTION, actions="""
+  byClass(card.el, "qopt")[0].onclick();
+  await settle();
+""", reply={"error": "could not record that decision"})
+    assert len(_by_class(got["tree"], "qopt")) == 2
+    assert not any(n["disabled"] for n in _nodes(got["tree"])
+                   if n["tag"] in ("button", "input"))
+    status = _by_class(got["tree"], "perm-status")[0]
+    assert "could not record that decision" in status["text"]
+    assert "resolved" not in got["tree"]["cls"].split()
+
+
+@pytest.mark.parametrize("decision,answers,expected", [
+    ("allow", {"Alpha or Beta?": "Beta"}, "✓ You chose: Beta"),
+    ("allow", {}, "✓ Answered"),
+    ("expired", {}, "◦ Unanswered — the reply ended before you answered"),
+    ("deny", {}, "✗ Not answered"),
+])
+def test_a_re_attaching_frame_rebuilds_what_was_already_answered(
+        card, decision, answers, expected):
+    """poll replays the whole request list with the answer it recorded, so a
+    frame that arrived after the click (mode switch, reload) shows the choice
+    rather than a live card for a question that is already settled."""
+    got = card.build(_ONE_QUESTION, actions="""
+  card.resolve(p.decision, p.scope, p.mode, p.answers);
+""", perm={"decision": decision, "answers": answers})
+    assert _by_class(got["tree"], "perm-status")[0]["text"] == expected
+    assert not _by_class(got["tree"], "qopt")
+
+
+def test_a_question_text_named_proto_still_reaches_the_answer_record(card):
+    """`answers` is built with Object.fromEntries, not assignment — the same
+    prototype-setter trap the leftover dump fell into (D161). Assigning would
+    drop the key and the answer would go back empty."""
+    got = card.build({"questions": [{
+        "question": "__proto__",
+        "options": [{"label": "yes", "description": ""}],
+        "multiSelect": False,
+    }]}, actions="""
+  byClass(card.el, "qopt")[0].onclick();
+  await settle();
+""", reply={"decision": "allow", "answers": {"__proto__": "yes"}})
+    assert json.loads(got["sent"][0]["answers"]) == {"__proto__": "yes"}
+
+
+@pytest.mark.parametrize("tool_input", [
+    {},                                             # no questions at all
+    {"questions": []},
+    {"questions": [{"question": "Q?", "options": []}]},
+    {"questions": [{"question": "Q?"}]},
+    {"questions": [{"options": [{"label": "a"}]}]},  # no question text
+    # One good, one unusable: the record is validated as a whole, so this cannot
+    # be answered either — and rendering only the good half would hide that.
+    {"questions": [_ONE_QUESTION["questions"][0], {"question": "Q?"}]},
+    # Two questions with the SAME text — the quietest unanswerable payload, and
+    # the one that used to render live controls: `answers` is keyed by question
+    # text, so the submit would collapse the pair and the validator would reject a
+    # key it cannot attribute, latching a permanent deny on a card that had
+    # offered the user real-looking choices.
+    {"questions": [{"question": "Same?", "options": [{"label": "a"}]},
+                   {"question": "Same?", "options": [{"label": "b"}]}]},
+], ids=range(7))
+def test_an_unanswerable_question_shows_the_payload_and_only_dismisses(
+        card, tool_input):
+    got = card.build(tool_input, actions="""
+  byClass(card.el, "qsend")[0].children[0].onclick();
+  await settle();
+""", reply={"decision": "deny"})
+    # Nothing to click but Dismiss, and the raw input is on screen instead.
+    assert not _by_class(got["before"], "qopt")
+    assert [n["text"] for n in _nodes(got["before"])
+            if n["tag"] == "button"] == ["Dismiss"]
+    body = [n["text"] for n in _nodes(got["before"]) if n["tag"] == "pre"]
+    assert body and json.loads(body[0]) == tool_input
+    assert got["sent"] == [{"action": "decide", "run_id": "run-1",
+                            "request_id": "req-1", "scope": "once",
+                            "decision": "deny"}]
+    assert _by_class(got["tree"], "perm-status")[0]["text"] == "✗ Not answered"
+
+
+def test_only_askuserquestion_takes_the_question_branch(card):
+    """Every other tool keeps the approval card it always had."""
+    got = card.build({"command": "ls"}, perm={"tool": "Bash"})
+    assert "ask" not in got["tree"]["cls"].split()
+    buttons = [n["text"] for n in _nodes(got["tree"]) if n["tag"] == "button"]
+    assert "Allow" in buttons and "Deny" in buttons
+    assert not _by_class(got["tree"], "qopt")
+
+
+def test_an_extra_input_key_on_a_question_card_is_still_shown(card):
+    """The approval card's disclosure rule holds here too: `questions` is
+    rendered as the options, and anything else the CLI sent rides back out in
+    `updatedInput`, so it is printed rather than assumed unimportant."""
+    got = card.build(dict(_ONE_QUESTION, metadata={"source": "cli"}))
+    dumps = [n["text"] for n in _nodes(got["before"]) if n["tag"] == "pre"]
+    assert dumps and json.loads(dumps[0]) == {"metadata": {"source": "cli"}}
+    # …and a card with nothing extra grows no second block.
+    assert not [n for n in _nodes(card.build(_ONE_QUESTION)["before"])
+                if n["tag"] == "pre"]

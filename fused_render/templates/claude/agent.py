@@ -36,11 +36,13 @@ Actions:
   main(action="poll", run_id=...)
       -> {"text": ..., "done": bool, "session_id": ..., "error": ..., "tokens": N,
           "phase": ..., "message": <the run's first message, for re-attach>,
-          "permissions": [{"id", "tool", "input", "decision", "scope"}, ...],
+          "permissions": [{"id", "tool", "input", "decision", "scope",
+                           "answers"}, ...],
           "app_state": [{"id", "reason", "created_at"}, ...]  (unanswered only),
           "mode": <the mode this run is RUNNING in, not the picker's>}
   main(action="decide", run_id=..., request_id=..., decision="allow"|"deny",
-       scope="once"|"session")        -> {"decided": ..., "decision": ...}
+       scope="once"|"session", answers=<json string, AskUserQuestion only>)
+                                      -> {"decided": ..., "decision": ...}
   main(action="app_state", run_id=..., request_id=..., state=<json string>)
                                       -> {"answered": ...}
   main(action="sessions", file=...)   -> {"sessions": [...]}   (sidecar only)
@@ -243,6 +245,111 @@ DEFAULT_PERMISSION_MODE = "prompt"
 # here for the same reason it is absent from the picker — the goal is having
 # Claude evaluate the request, not having nobody evaluate it.
 SWITCHABLE_MODES = frozenset({"acceptEdits", "auto"})
+
+# The one tool whose card is not an approval: `AskUserQuestion` is the model
+# asking the USER something, so what goes back is an answer. `decide` carries it
+# as `answers` (a record keyed by the exact question text, value = the chosen
+# option's label, or the chosen labels joined with ", " for a multi-select) and
+# permission_server turns that into the `updatedInput` the CLI honours — see its
+# module docstring for the wire and how it was pinned.
+#
+# Deliberately NOT in WHOLE_TOOL_GRANTABLE and never carrying a `setMode`: a
+# question is one exchange, so "allow all of these in this reply" would mean
+# answering the next question without asking, and a mode switch riding on it
+# would loosen approvals for every later tool on the back of a click that said
+# nothing about permissions.
+ANSWERABLE_TOOL = "AskUserQuestion"
+
+
+def _multi_answer_ok(value: str, labels: list) -> bool:
+    """Is `value` the ", "-join of a non-empty run of `labels`, in option order?
+
+    Matched by CONSTRUCTION rather than by splitting on ", ", because a label may
+    itself contain ", " and splitting would either accept a label the request
+    never offered or reject one it did. Walked as the set of offsets into `value`
+    reachable after consuming some prefix of the options, so a question with many
+    options costs O(options x len(value)) rather than enumerating subsets.
+    """
+    reach = {0}
+    for label in labels:
+        nxt = set(reach)
+        for off in reach:
+            if not value.startswith(label, off):
+                continue
+            end = off + len(label)
+            if end == len(value):
+                return True          # consumed the whole answer, ending on a label
+            if value.startswith(", ", end):
+                nxt.add(end + 2)
+        reach = nxt
+    return False
+
+
+def _answers_from(questions, answers):
+    """The answer record that may be latched, or None — which means deny.
+
+    MUST stay identical to `_answers_from` in permission_server.py: this copy
+    validates the click before it is written down, that one validates before the
+    CLI is told about it, and a test runs both over one table (D146). Two copies
+    because that server is spawned standalone by the CLI and imports nothing of
+    ours.
+
+    Every value has to be a label the PARKED REQUEST itself offered for that
+    exact question, because the alternative failure is the model acting on a
+    choice the user never made. An omitted question is allowed (the CLI reads it
+    as unanswered, which is true); an invented one is not.
+    """
+    if not isinstance(questions, list) or not questions:
+        return None
+    if not isinstance(answers, dict) or not answers:
+        return None
+    asked = {}
+    for question in questions:
+        if not isinstance(question, dict):
+            return None
+        text = question.get("question")
+        options = question.get("options")
+        if not isinstance(text, str) or not text or not isinstance(options, list):
+            return None
+        labels = [opt["label"] for opt in options
+                  if isinstance(opt, dict) and isinstance(opt.get("label"), str)
+                  and opt["label"]]
+        # No usable option, or two questions an answer keyed by that text could
+        # equally belong to: nothing here can be answered unambiguously.
+        if not labels or text in asked:
+            return None
+        asked[text] = (labels, bool(question.get("multiSelect")))
+    out = {}
+    for text, value in answers.items():
+        if not isinstance(text, str) or text not in asked:
+            return None
+        if not isinstance(value, str) or not value:
+            return None
+        labels, multi = asked[text]
+        if not (_multi_answer_ok(value, labels) if multi else value in labels):
+            return None
+        out[text] = value
+    return out
+
+
+def _as_answers(answers: str):
+    """The `answers` param as an object. It arrives as a JSON STRING like every
+    other param (the URL/param binder is str-shaped), exactly as `app_state`
+    sends its snapshot. Anything unparseable is handed on as-is so
+    `_answers_from` rejects it — this function never decides anything."""
+    if isinstance(answers, dict):
+        return answers          # a direct caller (tests, the apps API)
+    try:
+        return json.loads(answers) if answers else None
+    except (TypeError, ValueError):
+        return None
+
+
+# What the model is told when an answer arrives that the parked question cannot
+# account for. Mirrors permission_server's BAD_ANSWER — this side writes it into
+# the decision file, that side is where it reaches the CLI.
+BAD_ANSWER = ("The answer could not be matched to the question that was asked, "
+              "so nothing was recorded. Ask again if you still need it.")
 
 
 def _claude_bin() -> str:
@@ -972,6 +1079,7 @@ def _permissions(run_dir: str) -> list:
         if not isinstance(req, dict) or _bad_id(str(req.get("id") or "")):
             continue
         res = _read_decision(perm_dir, req["id"])
+        answers = res.get("answers")
         out.append({
             "id": req["id"],
             "tool": str(req.get("tool") or ""),
@@ -980,6 +1088,10 @@ def _permissions(run_dir: str) -> list:
             "decision": str(res.get("decision") or ""),
             "scope": str(res.get("scope") or ""),
             "mode": str(res.get("mode") or ""),
+            # Only a question card has these, and it is the same reason the whole
+            # list is returned: a frame that re-attaches has to be able to
+            # rebuild a card it never saw, including what was chosen on it.
+            "answers": answers if isinstance(answers, dict) else {},
         })
     return out
 
@@ -994,16 +1106,21 @@ def _permissions(run_dir: str) -> list:
 DECISION_WRITE_WINDOW = 2.0
 
 
-def _request_tool(req_path: str) -> str:
-    """The tool a parked request is asking about, or "" if it can't be read —
-    which lands outside WHOLE_TOOL_GRANTABLE, so an unreadable request cannot
-    talk its way into a session-wide grant."""
+def _request_asks(req_path: str) -> tuple:
+    """(tool, input) for a parked request; ("", {}) if it can't be read.
+
+    An unreadable request therefore lands outside WHOLE_TOOL_GRANTABLE (so it
+    cannot talk its way into a session-wide grant) and outside ANSWERABLE_TOOL
+    (so no answer can be validated against questions nobody can see)."""
     try:
         with open(req_path, encoding="utf-8") as fh:
             req = json.load(fh)
     except (OSError, json.JSONDecodeError):
-        return ""
-    return str(req.get("tool") or "") if isinstance(req, dict) else ""
+        return "", {}
+    if not isinstance(req, dict):
+        return "", {}
+    body = req.get("input")
+    return str(req.get("tool") or ""), body if isinstance(body, dict) else {}
 
 
 def _read_decision(perm_dir: str, request_id: str, wait: float = 0.0) -> dict:
@@ -1062,7 +1179,7 @@ def _write_decision(perm_dir: str, request_id: str, payload: dict) -> bool:
 
 
 def _decide(run_id: str, request_id: str, decision: str, scope: str,
-            mode: str = "") -> dict:
+            mode: str = "", answers: str = "") -> dict:
     run_dir = os.path.join(RUNS, run_id)
     if _bad_id(run_id) or not os.path.isdir(run_dir):
         return {"error": "unknown run_id"}
@@ -1075,12 +1192,13 @@ def _decide(run_id: str, request_id: str, decision: str, scope: str,
     # Anything that is not an explicit allow is a deny: a mangled param must
     # fail closed, never grant.
     verdict = "allow" if decision == "allow" else "deny"
+    tool, asked = _request_asks(req_path)
     if _alive(run_dir):
         # Narrow, never widen: a session grant is only honoured for the tools
         # the card offers it for. Asking for one on a Bash request — which the
         # UI never does — downgrades to allow-once instead of installing a
         # session-wide Bash rule, and the caller is told which scope it got.
-        if scope == "session" and _request_tool(req_path) not in WHOLE_TOOL_GRANTABLE:
+        if scope == "session" and tool not in WHOLE_TOOL_GRANTABLE:
             scope = "once"
         payload = {"decision": verdict,
                    "scope": "session" if scope == "session" else "once"}
@@ -1088,8 +1206,23 @@ def _decide(run_id: str, request_id: str, decision: str, scope: str,
         # ever alongside an allow (a deny that also loosened the mode would be
         # incoherent), and only to a mode on the short switchable list — an
         # unrecognised one is dropped, never passed through to the CLI.
-        if verdict == "allow" and mode in SWITCHABLE_MODES:
+        # A question card is excluded by tool, not by trusting it not to ask:
+        # answering a question says nothing about how much to auto-approve.
+        if verdict == "allow" and mode in SWITCHABLE_MODES and tool != ANSWERABLE_TOOL:
             payload["mode"] = mode
+        if verdict == "allow" and tool == ANSWERABLE_TOOL:
+            # The answer IS the payload here, so a click that carries no valid
+            # one is recorded as a deny rather than as an allow the model would
+            # read as "the user did not answer the questions". Validated against
+            # the parked request's own questions, never against what was sent.
+            picked = _answers_from(asked.get("questions"), _as_answers(answers))
+            if picked is None:
+                payload = {"decision": "deny", "scope": "once",
+                           "message": BAD_ANSWER}
+            else:
+                payload["answers"] = picked
+        # Anywhere else `answers` is simply not a field: dropping it here is what
+        # keeps the page from adding keys to a tool input it does not own.
     else:
         # The run is over, so nothing will ever read this answer. Record the
         # expiry rather than the click: an Allow that was in flight when the
@@ -1106,10 +1239,14 @@ def _decide(run_id: str, request_id: str, decision: str, scope: str,
     res = _read_decision(perm_dir, request_id, wait=DECISION_WRITE_WINDOW)
     if not res.get("decision"):
         return {"error": "could not record that decision"}
+    landed = res.get("answers")
     return {"decided": request_id,
             "decision": str(res["decision"]),
             "scope": str(res.get("scope") or ""),
-            "mode": str(res.get("mode") or "")}
+            "mode": str(res.get("mode") or ""),
+            # What the card shows as chosen — the answer that WON the latch, so
+            # the losing half of a double-click renders the other one's choice.
+            "answers": landed if isinstance(landed, dict) else {}}
 
 
 def _live_mode(meta: dict, permissions: list) -> str:
@@ -1329,9 +1466,11 @@ def _start(file: str, message: str, session_id: str, model: str,
            f"mcp__{PERMISSION_SERVER}__{PERMISSION_TOOL}",
            # Naming a permission-prompt tool also un-gates AskUserQuestion and
            # ExitPlanMode, which the CLI otherwise disables in headless mode.
-           # This chat renders neither a question picker nor a plan dialog, so
-           # keep them off: the change is about tool approvals and nothing else.
-           "--disallowed-tools", "AskUserQuestion,ExitPlanMode",
+           # AskUserQuestion is now rendered — as a question card that answers it
+           # through the same bridge (ANSWERABLE_TOOL) — so it is live. There is
+           # no plan dialog yet, and a tool whose card cannot say the one thing
+           # the model is waiting for is worse than not having it.
+           "--disallowed-tools", "ExitPlanMode",
            # Up to two pre-allowances, and they are the only ones — everything
            # else still raises a card. Both are the same thing in different
            # clothes: looking at the app the user is looking at.
@@ -2613,7 +2752,8 @@ def main(action: str = "start", file: str = "", message: str = "",
          run_id: str = "", request_id: str = "", decision: str = "",
          scope: str = "once", permission_mode: str = "", mode: str = "",
          state: str = "", has_pane: str = "", enrich: str = "",
-         version_id: str = "", confirm_unique: str = "") -> dict:
+         version_id: str = "", confirm_unique: str = "",
+         answers: str = "") -> dict:
     if action == "start":
         if not file:
             return {"error": "missing target file (no _file param?)"}
@@ -2628,7 +2768,10 @@ def main(action: str = "start", file: str = "", message: str = "",
     if action == "poll":
         return _poll(run_id)
     if action == "decide":
-        return _decide(run_id, request_id, decision, scope, mode)
+        # `answers` arrives as a JSON string for the same reason `state` does
+        # below — params cross into python string-shaped — and is only read for
+        # an AskUserQuestion request (see _decide).
+        return _decide(run_id, request_id, decision, scope, mode, answers)
     if action == "app_state":
         # `state` arrives as a JSON string, not a nested object: params reach
         # main() through the URL/param binder (str-shaped), and the snapshot is

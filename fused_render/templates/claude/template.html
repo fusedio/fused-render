@@ -790,6 +790,63 @@
   .perm .perm-status.deny { color: var(--error); }
   .perm .perm-status.expired { color: var(--dim); }
 
+  /* ── question cards (AskUserQuestion) ──
+     The same bones as a permission card — one quiet box, one status line when it
+     resolves — but the accent is stronger and the options fill the width: this
+     one is not "may I", it is a question waiting for an answer, and the answer
+     is a choice rather than a verdict, so the options are the card's body
+     instead of a row of pill buttons under a payload. */
+  .perm.ask { border-color: color-mix(in srgb, var(--accent) 80%, transparent); }
+  .perm.ask.resolved { border-color: var(--border); }
+  .perm .qblock + .qblock { margin-top: 14px; }
+  .perm .qhead {
+    display: inline-block;
+    font-size: 10.5px;
+    font-weight: 600;
+    letter-spacing: .05em;
+    text-transform: uppercase;
+    color: var(--accent);
+    border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent);
+    background: color-mix(in srgb, var(--accent) 10%, transparent);
+    border-radius: 999px;
+    padding: 1px 8px;
+    margin-bottom: 6px;
+  }
+  .perm .qtext { font-size: 14px; line-height: 1.45; word-break: break-word; }
+  .perm .qopts { display: flex; flex-direction: column; gap: 6px; margin-top: 9px; }
+  /* Both shapes of an option: a click-to-answer button, and a tickable row for
+     multi-select / multi-question cards. Same box either way. */
+  .perm .qopt {
+    display: flex;
+    gap: 9px;
+    align-items: flex-start;
+    text-align: left;
+    width: 100%;
+    padding: 8px 12px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: transparent;
+    color: var(--fg);
+    font: inherit;
+    font-size: 13px;
+    cursor: pointer;
+  }
+  .perm .qopt:hover:not(:disabled) {
+    border-color: color-mix(in srgb, var(--accent) 60%, transparent);
+    background: var(--surface-2);
+  }
+  .perm .qopt .lbl { font-weight: 600; display: block; }
+  .perm .qopt .desc {
+    display: block;
+    margin-top: 2px;
+    color: var(--dim);
+    font-size: 12px;
+    line-height: 1.4;
+    word-break: break-word;
+  }
+  .perm .qopt input { margin: 3px 0 0; accent-color: var(--accent); flex-shrink: 0; }
+  .perm .qsend { margin-top: 12px; }
+
   /* ── the tool timeline (segments inside an assistant turn) ──
      Deliberately quieter than a permission card: a card is a question and has
      to be seen, a chip is a receipt for something that already happened, and a
@@ -4550,6 +4607,10 @@ const WHOLE_TOOL_GRANTABLE = new Set([
   "Edit", "Write", "Read", "Glob", "Grep", "NotebookEdit",
 ]);
 
+// The one tool whose card is not an approval at all — see buildQuestionCard.
+// Mirrors ANSWERABLE_TOOL in agent.py, which is where the answer is validated.
+const ANSWERABLE_TOOL = "AskUserQuestion";
+
 // An Edit's `old_string`/`new_string` as one `-`/`+` marked block — the shape a
 // diff is read in. TWO call sites and therefore its own function: the approval
 // card (below) asks "shall I make this change", the transcript's Edit chip says
@@ -4649,6 +4710,10 @@ function permChoices(tool, label, liveMode) {
 }
 
 function buildPermCard(p, run_id, liveMode) {
+  // A question is not a permission: there is nothing to allow, only something to
+  // answer. Same handle ({el, resolve}), so syncPermissions cannot tell them
+  // apart — the difference is entirely in what the card can send.
+  if (p.tool === ANSWERABLE_TOOL) return buildQuestionCard(p, run_id);
   const toolName = p.tool || "a tool";
   const label = toolName.length > 28 ? toolName.slice(0, 27) + "…" : toolName;
 
@@ -4750,6 +4815,234 @@ function buildPermCard(p, run_id, liveMode) {
   return { el, resolve };
 }
 
+// AskUserQuestion — the model asking the USER something, parked on the same
+// bridge as an approval because the CLI routes it through the prompt tool (it is
+// gated on `requiresUserInteraction`, so `auto` and `acceptEdits` do not
+// auto-approve it either). What goes back is a CHOICE, not a verdict:
+//
+//   * every control here sends `decide` with `answers`, a record keyed by the
+//     exact question text whose value is the chosen option's `label` (multiple
+//     labels joined with ", "). That is the shape the CLI honours — measured;
+//   * there is deliberately no plain Allow: an allow with no answers reaches the
+//     model as "The user did not answer the questions", i.e. a card the user
+//     answered and a model that learnt nothing. A deny carrying the text instead
+//     arrives as `is_error`, so that is not the channel either;
+//   * no "allow all in this reply" and no mode switch — a question is one
+//     exchange, and answering it says nothing about how much to auto-approve.
+//     agent.py enforces both by tool name rather than trusting this card.
+//
+// Every string on the card is model-authored (the question, the labels, the
+// descriptions) and goes in through textContent, whole: the option labels are the
+// only thing that can be sent, so an option the user cannot read properly is an
+// answer they did not mean to give.
+function buildQuestionCard(p, run_id) {
+  const input = p.input && typeof p.input === "object" ? p.input : {};
+  const raw = Array.isArray(input.questions) ? input.questions : [];
+  const optionsOf = (q) => (Array.isArray(q.options) ? q.options : []).filter(
+    (o) => o && typeof o === "object" && typeof o.label === "string" && o.label);
+  const usable = (q) => q && typeof q === "object" && typeof q.question === "string"
+                        && q.question && optionsOf(q).length > 0;
+  // ALL of them, or none: the answer record is validated as a whole on the way
+  // back, so one unreadable question means nothing can be sent — and a card that
+  // renders the readable half only would hide that.
+  const questions = raw.filter(usable);
+  // Two questions with the SAME text is the third way a payload is unanswerable,
+  // and the quietest: `answers` is keyed by question text, so fromEntries would
+  // collapse the pair (last one wins), the validator rejects a duplicate key it
+  // cannot attribute, and the request would latch a permanent deny — a card full
+  // of live controls that could only ever say no.
+  const answerable = questions.length > 0 && questions.length === raw.length
+    && new Set(questions.map((q) => q.question)).size === questions.length;
+  // One question, one choice → each option IS the button and a click answers it.
+  // Otherwise an answer is only complete once every question has one, so the
+  // options become tickable rows with a submit.
+  const oneShot = answerable && questions.length === 1 && !questions[0].multiSelect;
+
+  const el = document.createElement("div");
+  el.className = "turn perm ask";
+  const head = document.createElement("div");
+  head.className = "perm-head";
+  head.textContent = "Claude is asking you";
+  el.appendChild(head);
+
+  const status = document.createElement("div");
+  status.className = "perm-status";
+  const controls = [];   // removed once the card resolves
+  const widgets = [];    // disabled while an answer is in flight
+  const blocks = [];     // { question, picked() }
+
+  async function post(fields, optimistic) {
+    widgets.forEach((w) => { w.disabled = true; });
+    status.className = "perm-status";
+    status.textContent = "sending…";
+    try {
+      const res = await fused.runPython(AGENT, Object.assign({
+        action: "decide", run_id, request_id: p.id, scope: "once",
+      }, fields), { key: null });
+      if (res && res.error) throw new Error(res.error);
+      // agent.py answers with what landed on disk (first writer wins), so the
+      // losing half of a double-click shows the answer the tool actually got.
+      resolve((res && res.decision) || fields.decision, "", "",
+              (res && res.answers) || optimistic);
+    } catch (err) {
+      // The subprocess is still blocked, so the controls have to come back.
+      widgets.forEach((w) => { w.disabled = false; });
+      status.className = "perm-status deny";
+      status.textContent = "Could not send that: " + err.message;
+    }
+  }
+
+  // A JSON string, not a nested object: params cross into python string-shaped,
+  // the same way app_state sends its snapshot.
+  const send = (answers) => post(
+    { decision: "allow", answers: JSON.stringify(answers) }, answers);
+  const dismiss = () => post({ decision: "deny" }, null);
+
+  let shown = "";
+  function resolve(decision, scope, mode, answers) {
+    const chosen = answers && typeof answers === "object"
+      ? Object.keys(answers).map((k) => answers[k]).filter((v) => typeof v === "string")
+      : [];
+    const key = decision + "/" + chosen.join(" · ");
+    if (key === shown) return;
+    shown = key;
+    controls.forEach((c) => c.remove());
+    el.classList.add("resolved");
+    if (decision === "allow") {
+      status.className = "perm-status allow";
+      status.textContent = chosen.length
+        ? "✓ You chose: " + chosen.join(" · ")
+        : "✓ Answered";
+    } else if (decision === "expired") {
+      status.className = "perm-status expired";
+      status.textContent = "◦ Unanswered — the reply ended before you answered";
+    } else {
+      status.className = "perm-status deny";
+      status.textContent = "✗ Not answered";
+    }
+  }
+
+  // label (bold) over description (small), the body of every option either way.
+  function optionText(option) {
+    const wrap = document.createElement("span");
+    const lbl = document.createElement("span");
+    lbl.className = "lbl";
+    lbl.textContent = option.label;
+    wrap.appendChild(lbl);
+    if (typeof option.description === "string" && option.description) {
+      const desc = document.createElement("span");
+      desc.className = "desc";
+      desc.textContent = option.description;
+      wrap.appendChild(desc);
+    }
+    return wrap;
+  }
+
+  function submit() {
+    const pairs = [];
+    for (const block of blocks) {
+      const labels = block.picked();
+      if (!labels.length) {
+        status.className = "perm-status deny";
+        status.textContent = "Pick an answer for every question.";
+        return;
+      }
+      // One string per question — the chosen labels joined with ", ", which is
+      // what the CLI validates against the option list it sent.
+      pairs.push([block.question, labels.join(", ")]);
+    }
+    // fromEntries, not assignment: a question whose text is "__proto__" would
+    // vanish into the prototype setter, exactly as in leftoverInput (D161).
+    send(Object.fromEntries(pairs));
+  }
+
+  if (answerable) {
+    questions.forEach((q, i) => {
+      const block = document.createElement("div");
+      block.className = "qblock";
+      if (typeof q.header === "string" && q.header) {
+        const chip = document.createElement("div");
+        chip.className = "qhead";
+        chip.textContent = q.header;
+        block.appendChild(chip);
+      }
+      const text = document.createElement("div");
+      text.className = "qtext";
+      text.textContent = q.question;
+      block.appendChild(text);
+
+      const list = document.createElement("div");
+      list.className = "qopts";
+      const ticks = [];
+      optionsOf(q).forEach((option) => {
+        if (oneShot) {
+          const b = document.createElement("button");
+          b.type = "button";
+          b.className = "qopt";
+          b.appendChild(optionText(option));
+          b.onclick = () => send(Object.fromEntries([[q.question, option.label]]));
+          widgets.push(b);
+          list.appendChild(b);
+          return;
+        }
+        const row = document.createElement("label");
+        row.className = "qopt";
+        const box = document.createElement("input");
+        box.type = q.multiSelect ? "checkbox" : "radio";
+        box.name = "q-" + p.id + "-" + i;   // our own id, so it is a safe name
+        row.append(box, optionText(option));
+        widgets.push(box);
+        ticks.push({ box, label: option.label });
+        list.appendChild(row);
+      });
+      block.appendChild(list);
+      el.appendChild(block);
+      controls.push(list);
+      blocks.push({
+        question: q.question,
+        picked: () => ticks.filter((t) => t.box.checked).map((t) => t.label),
+      });
+    });
+    // Same rule as an approval card: no input key is invisible. `questions` is
+    // rendered above; anything else the CLI sent (`metadata`, or a field a later
+    // version adds) is printed verbatim rather than assumed unimportant — it
+    // rides back out in updatedInput either way.
+    const extra = leftoverInput(input, ["questions"]);
+    if (extra) {
+      const pre = document.createElement("pre");
+      pre.textContent = JSON.stringify(extra, null, 2);
+      el.appendChild(pre);
+    }
+  } else {
+    // Nothing here can be answered, so say that and show what arrived verbatim
+    // rather than offering controls that could only send an invalid answer.
+    const note = document.createElement("div");
+    note.className = "perm-sub";
+    note.textContent = "This question did not arrive in a shape this window can "
+                     + "answer — dismissing it lets the reply continue.";
+    const pre = document.createElement("pre");
+    pre.textContent = JSON.stringify(input, null, 2);
+    el.append(note, pre);
+  }
+
+  if (!oneShot) {
+    const bar = document.createElement("div");
+    bar.className = "perm-actions qsend";
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = answerable ? "primary" : "";
+    b.textContent = answerable ? "Send answer" : "Dismiss";
+    b.onclick = answerable ? submit : dismiss;
+    widgets.push(b);
+    bar.appendChild(b);
+    el.appendChild(bar);
+    controls.push(bar);
+  }
+
+  el.appendChild(status);
+  return { el, resolve };
+}
+
 // Put a permission card into the transcript AND make sure the transcript is what
 // the user is looking at.
 //
@@ -4807,7 +5100,10 @@ function syncPermissions(list, run_id, working, liveMode) {
     if (!card.el.isConnected) {
       showPermissionCard(card, working);
     }
-    if (p.decision) card.resolve(p.decision, p.scope, p.mode);
+    // `answers` is only ever set on a question card, and it is why poll carries
+    // it: a frame that re-attaches after the click has to be able to show what
+    // was chosen, not just that something was.
+    if (p.decision) card.resolve(p.decision, p.scope, p.mode, p.answers);
   }
 }
 

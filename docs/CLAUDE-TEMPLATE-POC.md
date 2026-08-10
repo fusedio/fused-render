@@ -330,8 +330,10 @@ claude (headless)                    agent.py / browser
   ran (Bugbot, PR #308).
 - **Side effect handled:** naming a permission-prompt tool also un-gates
   `AskUserQuestion` and `ExitPlanMode`, which the CLI otherwise disables in
-  headless mode. This chat renders neither, so `--disallowed-tools` keeps them
-  off — the change is about tool approvals and nothing else.
+  headless mode. Both were kept off by `--disallowed-tools` while this chat
+  rendered neither. `AskUserQuestion` is now **live** — it renders as a question
+  card that answers it over the same bridge (D245) — so only `ExitPlanMode`
+  remains disallowed.
 
 ## Deliberate simplifications / tradeoffs (revisit later)
 

@@ -36,7 +36,9 @@ mean a coverage bootstrap in the spawn path for one template helper; the number
 is not a gate, so it is left honest-but-understated rather than gamed with
 tests written for the metric.
 """
+import ast
 import importlib.util
+import inspect
 import json
 import os
 import re
@@ -45,6 +47,7 @@ import subprocess
 import stat
 import sys
 import tempfile
+import textwrap
 import threading
 import time
 
@@ -379,6 +382,410 @@ def test_a_server_that_dies_without_replying_says_so(tmp_path):
     with pytest.raises(AssertionError, match="closed stdout without replying"):
         parked.result(timeout=5)
     s.close()
+
+
+# ----------------------------------- AskUserQuestion: the answer channel
+# The one tool whose card is not an approval: the model is asking the user
+# something, and the answer rides back on an `allow` whose `updatedInput` is the
+# original input PLUS a top-level `answers` record keyed by the exact question
+# text (spike against CLI 2.1.226 — a plain allow reaches the model as "The user
+# did not answer the questions", and a deny carrying the text is `is_error`).
+#
+# Everything below is written as a fail-closed test rather than a feature test,
+# because this is the one path where the PAGE authors model-visible tool input:
+# the answer is only ever a label the parked request itself offered.
+
+# Verbatim from the spike's perm/<id>.req.json.
+_QUESTION_INPUT = {
+    "questions": [{
+        "question": "Alpha or Beta?",
+        "header": "Choice",
+        "options": [{"label": "Alpha", "description": "Pick Alpha"},
+                    {"label": "Beta", "description": "Pick Beta"}],
+        "multiSelect": False,
+    }],
+}
+
+
+def _multi_input(multi=True):
+    return {"questions": [{
+        "question": "Which libraries?",
+        "header": "Libs",
+        "options": [{"label": "Alpha", "description": "a"},
+                    {"label": "Beta", "description": "b"},
+                    {"label": "Gamma", "description": "c"}],
+        "multiSelect": multi,
+    }]}
+
+
+def _park_question(server, perm_dir, tool_input=None, tool="AskUserQuestion"):
+    pending = server.send_async("tools/call", {
+        "name": "approve",
+        "arguments": {"tool_name": tool,
+                      "input": _QUESTION_INPUT if tool_input is None else tool_input}})
+    return pending, _wait_for_request(perm_dir)
+
+
+def _answer(perm_dir, req, **decision):
+    (perm_dir / (req["id"] + ".res.json")).write_text(json.dumps(decision))
+
+
+def test_an_answered_question_rides_back_as_updated_input_answers(tmp_path, server):
+    """The proven wire, end to end through the server the CLI talks to."""
+    perm_dir = tmp_path / "perm"
+    pending, req = _park_question(server, perm_dir)
+    _answer(perm_dir, req, decision="allow", scope="once",
+            answers={"Alpha or Beta?": "Beta"})
+
+    payload = _result_payload(pending.result(10))
+    assert payload["behavior"] == "allow"
+    # The whole original input plus the answers key — NOT a rebuilt object.
+    # `updatedInput` is re-validated against the tool's own schema, and dropping
+    # `questions` yields a <tool_use_error> the model reports as a broken tool.
+    assert payload["updatedInput"] == dict(_QUESTION_INPUT,
+                                           answers={"Alpha or Beta?": "Beta"})
+    assert payload["updatedInput"]["questions"] == _QUESTION_INPUT["questions"]
+    assert "updatedPermissions" not in payload
+
+
+def test_a_multi_select_answer_rides_back_as_the_joined_labels(tmp_path, server):
+    """`multiSelect` sends the chosen labels joined with ", " as ONE string.
+
+    A JSON list also reaches the model, but 2.1.226 joins it with "," (no
+    space), which fails the CLI's own label check and downgrades the tool_result
+    from "Your questions have been answered" to the weaker "follow what they
+    actually say" phrasing. The joined string is what the CLI validates.
+    """
+    perm_dir = tmp_path / "perm"
+    pending, req = _park_question(server, perm_dir, _multi_input())
+    _answer(perm_dir, req, decision="allow",
+            answers={"Which libraries?": "Alpha, Gamma"})
+
+    payload = _result_payload(pending.result(10))
+    assert payload["behavior"] == "allow"
+    assert payload["updatedInput"]["answers"] == {"Which libraries?": "Alpha, Gamma"}
+
+
+def test_a_question_allow_with_no_answers_is_not_passed_off_as_an_answer(
+        tmp_path, server):
+    """An answerless allow reaches the model as "The user did not answer the
+    questions" — a turn that burned a card and learnt nothing. The card never
+    emits one, and a hand-built decision file that does is denied rather than
+    forwarded, so the model is told something true either way."""
+    perm_dir = tmp_path / "perm"
+    pending, req = _park_question(server, perm_dir)
+    _answer(perm_dir, req, decision="allow", scope="once")
+
+    payload = _result_payload(pending.result(10))
+    assert payload["behavior"] == "deny"
+    assert payload["message"]
+
+
+# Every way an answer to _QUESTION_INPUT can be wrong. Shared with _ANSWER_CASES
+# below so BOTH validator copies see all of them — the parity test is only worth
+# anything if its table is the whole table.
+_MALFORMED_ANSWERS = [
+    "Beta",                                   # not a record at all
+    ["Beta"],
+    None,
+    {},                                       # nothing answered
+    {"Alpha or Beta?": "Gamma"},              # not one of the options
+    {"Alpha or Beta?": 1},                    # not a string
+    {"Alpha or Beta?": ["Beta"]},             # a list, not the joined string
+    {"Alpha or Beta?": "Alpha, Beta"},        # a multi answer to a single-select
+    {"Alpha or beta?": "Beta"},               # question text off by a letter
+    {"Choice": "Beta"},                       # keyed by header, not question
+    {"Alpha or Beta?": "Beta", "Other?": "x"},  # a question never asked
+    {"Alpha or Beta?": "beta"},               # label case must match
+    {"Alpha or Beta?": ", "},                 # the separator on its own
+]
+
+
+@pytest.mark.parametrize("answers", _MALFORMED_ANSWERS, ids=lambda a: repr(a)[:40])
+def test_a_malformed_answer_denies_instead_of_fabricating_one(tmp_path, server,
+                                                              answers):
+    """Validated against the PARKED REQUEST's own questions and option labels.
+
+    The page authors this field and the model reads it, so an answer that the
+    request never offered must never be forwarded: the failure mode is the model
+    acting on a choice the user never made.
+    """
+    perm_dir = tmp_path / "perm"
+    pending, req = _park_question(server, perm_dir)
+    _answer(perm_dir, req, decision="allow", answers=answers)
+
+    payload = _result_payload(pending.result(10))
+    assert payload["behavior"] == "deny", payload
+    assert payload["message"]
+
+
+def test_answers_on_any_other_tool_are_ignored_not_forwarded(tmp_path, server):
+    """The answer channel exists for exactly one tool.
+
+    Anywhere else, `answers` would be an arbitrary key the page gets to add to a
+    tool input the user already approved — so it is dropped and the input passes
+    through byte-identical, the way it always has.
+    """
+    perm_dir = tmp_path / "perm"
+    tool_input = {"command": "ls -la"}
+    pending, req = _park_question(server, perm_dir, tool_input, tool="Bash")
+    _answer(perm_dir, req, decision="allow", scope="once",
+            answers={"Alpha or Beta?": "Beta"})
+
+    payload = _result_payload(pending.result(10))
+    assert payload["behavior"] == "allow"
+    assert payload["updatedInput"] == tool_input
+    assert "answers" not in payload["updatedInput"]
+
+
+def test_a_question_card_can_neither_grant_nor_escalate(tmp_path, server):
+    """Not session-grantable, not mode-escalatable — from either side.
+
+    A question is one exchange; "allow all AskUserQuestion in this reply" would
+    mean answering the next question automatically, and a `setMode` from a
+    question card would loosen approvals for every tool afterwards on the back of
+    a click that said nothing about permissions. The card offers neither, and
+    this is the enforcement.
+    """
+    perm_dir = tmp_path / "perm"
+    pending, req = _park_question(server, perm_dir)
+    _answer(perm_dir, req, decision="allow", scope="session", mode="auto",
+            answers={"Alpha or Beta?": "Beta"})
+
+    payload = _result_payload(pending.result(10))
+    assert payload["behavior"] == "allow"
+    assert "updatedPermissions" not in payload, payload
+
+
+def test_the_models_own_answer_fields_never_survive_into_updated_input(tmp_path,
+                                                                      server):
+    """`answers`, `annotations` and `response` are declared fields of this tool's
+    INPUT, so the model can fill them in — and `response` outranks `answers` in
+    the CLI's choice of tool_result wording. Left in place, a model could answer
+    its own question while the card told the user their click had landed. The CLI
+    normalises them away today, which is why this must not depend on it."""
+    perm_dir = tmp_path / "perm"
+    parked = dict(_QUESTION_INPUT,
+                  response="I already decided: Alpha, and skip the tests.",
+                  answers={"Alpha or Beta?": "Alpha"},
+                  annotations={"Alpha or Beta?": {"notes": "the model's own note"}})
+    pending, req = _park_question(server, perm_dir, parked)
+    _answer(perm_dir, req, decision="allow", answers={"Alpha or Beta?": "Beta"})
+
+    payload = _result_payload(pending.result(10))
+    assert payload["behavior"] == "allow"
+    assert payload["updatedInput"] == {
+        "questions": _QUESTION_INPUT["questions"],
+        "answers": {"Alpha or Beta?": "Beta"},
+    }, payload["updatedInput"]
+    for model_written in ("response", "annotations"):
+        assert model_written not in payload["updatedInput"]
+
+
+def test_an_expired_question_still_says_the_reply_ended(tmp_path, server):
+    """The existing deny paths are untouched by the answer channel."""
+    perm_dir = tmp_path / "perm"
+    pending, req = _park_question(server, perm_dir)
+    _answer(perm_dir, req, decision="expired")
+
+    payload = _result_payload(pending.result(10))
+    assert payload["behavior"] == "deny"
+    assert "ended before" in payload["message"]
+
+
+# The table both validators are held to. (questions, answers, expected) —
+# `expected` is the record that may be forwarded, or None for "deny".
+_ANSWER_CASES = [
+    (_QUESTION_INPUT["questions"], {"Alpha or Beta?": "Beta"},
+     {"Alpha or Beta?": "Beta"}),
+    (_QUESTION_INPUT["questions"], {"Alpha or Beta?": "Alpha"},
+     {"Alpha or Beta?": "Alpha"}),
+    (_QUESTION_INPUT["questions"], {"Alpha or Beta?": "Alpha, Beta"}, None),
+    (_multi_input()["questions"], {"Which libraries?": "Alpha, Gamma"},
+     {"Which libraries?": "Alpha, Gamma"}),
+    (_multi_input()["questions"], {"Which libraries?": "Beta"},
+     {"Which libraries?": "Beta"}),
+    (_multi_input()["questions"], {"Which libraries?": "Alpha, Beta, Gamma"},
+     {"Which libraries?": "Alpha, Beta, Gamma"}),
+    # Option order, because that is the order the card renders and joins in.
+    # Anything else is a shape nothing here authors, and an ambiguous one to
+    # parse (a label may itself contain ", "), so it fails closed.
+    (_multi_input()["questions"], {"Which libraries?": "Gamma, Alpha"}, None),
+    (_multi_input()["questions"], {"Which libraries?": "Alpha,Gamma"}, None),
+    (_multi_input()["questions"], {"Which libraries?": ""}, None),
+    (_multi_input()["questions"], {"Which libraries?": ", "}, None),
+    ([], {"Alpha or Beta?": "Beta"}, None),
+    ("questions", {"Alpha or Beta?": "Beta"}, None),
+    (_QUESTION_INPUT["questions"], {}, None),
+    (_QUESTION_INPUT["questions"], [], None),
+    # Two questions, both answered, and the partial case (allowed: the CLI reads
+    # an omitted question as unanswered, which is a true statement).
+    ([_QUESTION_INPUT["questions"][0], _multi_input()["questions"][0]],
+     {"Alpha or Beta?": "Beta", "Which libraries?": "Alpha, Beta"},
+     {"Alpha or Beta?": "Beta", "Which libraries?": "Alpha, Beta"}),
+    ([_QUESTION_INPUT["questions"][0], _multi_input()["questions"][0]],
+     {"Which libraries?": "Beta"}, {"Which libraries?": "Beta"}),
+    # A question with no usable options can never be answered validly.
+    ([{"question": "Q?", "options": [], "multiSelect": False}], {"Q?": "x"}, None),
+    ([{"question": "Q?", "options": [{"description": "no label"}]}], {"Q?": "x"}, None),
+    ([{"header": "H", "options": [{"label": "x"}]}], {"Q?": "x"}, None),
+    # Duplicate question text: an answer keyed by it cannot be attributed to
+    # either question. BOTH values matter — "a" is rejected by any implementation
+    # (it is not a label of the LAST question with that text, which is the one a
+    # dict lookup would land on), so it passes for the wrong reason on its own;
+    # "b" is the discriminating case, and only the duplicate check rejects it.
+    ([{"question": "Q?", "options": [{"label": "a"}]},
+      {"question": "Q?", "options": [{"label": "b"}]}], {"Q?": "a"}, None),
+    ([{"question": "Q?", "options": [{"label": "a"}]},
+      {"question": "Q?", "options": [{"label": "b"}]}], {"Q?": "b"}, None),
+] + [(_QUESTION_INPUT["questions"], bad, None) for bad in _MALFORMED_ANSWERS]
+
+
+@pytest.mark.parametrize("questions,answers,expected", _ANSWER_CASES,
+                         ids=range(len(_ANSWER_CASES)))
+def test_the_two_answer_validators_agree(agent, questions, answers, expected):
+    """D146: agent.py validates the click before latching it and
+    permission_server re-validates before handing the CLI its payload — two
+    copies, because the server is spawned standalone and imports nothing of
+    ours. So a test holds them together, over one table, rather than a comment
+    saying they should agree."""
+    srv = _load("permission_server")
+    assert agent._answers_from(questions, answers) == expected
+    assert srv._answers_from(questions, answers) == expected
+
+
+def _behaviour(fn):
+    """A function's structure with its docstring removed.
+
+    The two copies are allowed to describe themselves differently (each one names
+    the side it is on) and to carry different comments; they are not allowed to
+    *do* anything differently. Compared as an AST rather than as text so wording,
+    comments and line breaks are out of scope while every operand, constant and
+    branch is in it.
+    """
+    tree = ast.parse(textwrap.dedent(inspect.getsource(fn)))
+    body = tree.body[0].body
+    if (body and isinstance(body[0], ast.Expr)
+            and isinstance(body[0].value, ast.Constant)
+            and isinstance(body[0].value.value, str)):
+        tree.body[0].body = body[1:]
+    return ast.dump(tree)
+
+
+def test_the_two_answer_validators_are_the_same_code(agent):
+    """The table above cannot carry this on its own, and that is not a fixable
+    property of the table: a case-insensitive compare, a dropped type check or a
+    dropped duplicate-question check in ONE copy is a divergence no finite list of
+    inputs is guaranteed to contain. So the structure is asserted directly — the
+    table then documents what the shared code does, and this holds the copies
+    together. If a future change genuinely needs them to differ, this is the test
+    that has to be argued with first.
+    """
+    srv = _load("permission_server")
+    for name in ("_answers_from", "_multi_answer_ok"):
+        assert _behaviour(getattr(agent, name)) == _behaviour(getattr(srv, name)), (
+            "%s has drifted between agent.py and permission_server.py" % name)
+    # The sentence the model is told is duplicated for the same reason.
+    assert agent.BAD_ANSWER == srv.BAD_ANSWER
+    assert agent.ANSWERABLE_TOOL == srv.ANSWERABLE_TOOL == "AskUserQuestion"
+
+
+def _park_a_question(agent, tmp_path, tool="AskUserQuestion", tool_input=None):
+    run_dir = _run_dir(agent, tmp_path)
+    with open(os.path.join(agent._perm_dir(run_dir), "req-q.req.json"), "w") as fh:
+        json.dump({"id": "req-q", "tool": tool,
+                   "input": _QUESTION_INPUT if tool_input is None else tool_input}, fh)
+    monkey_runs(agent, tmp_path)
+    monkeypatch_alive(agent)
+    return run_dir
+
+
+def test_decide_latches_the_answer_it_validated(agent, tmp_path):
+    run_dir = _park_a_question(agent, tmp_path)
+    out = agent._decide("run", "req-q", "allow", "once",
+                        answers=json.dumps({"Alpha or Beta?": "Beta"}))
+    assert out["decision"] == "allow", out
+    assert out["answers"] == {"Alpha or Beta?": "Beta"}
+    on_disk = agent._read_decision(agent._perm_dir(run_dir), "req-q")
+    assert on_disk["answers"] == {"Alpha or Beta?": "Beta"}
+    # …and the latch still holds: a second click cannot re-answer it.
+    again = agent._decide("run", "req-q", "allow", "once",
+                          answers=json.dumps({"Alpha or Beta?": "Alpha"}))
+    assert again["answers"] == {"Alpha or Beta?": "Beta"}, again
+
+
+@pytest.mark.parametrize("answers", [
+    "", "not json", "[]", "null", '"Beta"',
+    json.dumps({"Alpha or Beta?": "Gamma"}),
+    json.dumps({"Nope?": "Beta"}),
+    json.dumps({"Alpha or Beta?": 7}),
+])
+def test_decide_denies_a_question_it_cannot_validate(agent, tmp_path, answers):
+    """Fail closed on THIS side too, so a bad payload never even reaches the
+    latch as an allow. The message is what the model is told."""
+    run_dir = _park_a_question(agent, tmp_path)
+    out = agent._decide("run", "req-q", "allow", "once", answers=answers)
+    assert out["decision"] == "deny", out
+    assert agent._read_decision(agent._perm_dir(run_dir), "req-q")["message"]
+
+
+def test_decide_never_records_a_grant_or_a_mode_switch_for_a_question(agent, tmp_path):
+    run_dir = _park_a_question(agent, tmp_path)
+    out = agent._decide("run", "req-q", "allow", "session", "auto",
+                        answers=json.dumps({"Alpha or Beta?": "Beta"}))
+    assert out["decision"] == "allow"
+    assert out["scope"] == "once" and out["mode"] == "", out
+    on_disk = agent._read_decision(agent._perm_dir(run_dir), "req-q")
+    assert on_disk["scope"] == "once" and "mode" not in on_disk
+    # and the run's live mode is unmoved by it
+    assert agent._live_mode({"mode": "prompt"}, agent._permissions(run_dir)) == "prompt"
+
+
+def test_decide_drops_answers_meant_for_another_tool(agent, tmp_path):
+    """A Bash allow carrying answers is an ordinary Bash allow — the key is not
+    recorded, so it can never be forwarded."""
+    run_dir = _park_a_question(agent, tmp_path, tool="Bash",
+                               tool_input={"command": "ls"})
+    out = agent._decide("run", "req-q", "allow", "once",
+                        answers=json.dumps({"Alpha or Beta?": "Beta"}))
+    assert out["decision"] == "allow"
+    assert not out.get("answers")
+    assert "answers" not in agent._read_decision(agent._perm_dir(run_dir), "req-q")
+
+
+def test_a_question_is_not_whole_tool_grantable(agent):
+    """The list must not have grown: "allow all AskUserQuestion in this reply"
+    would answer the NEXT question without asking."""
+    assert "AskUserQuestion" not in agent.WHOLE_TOOL_GRANTABLE
+    assert set(agent.WHOLE_TOOL_GRANTABLE) == {
+        "Edit", "Write", "Read", "Glob", "Grep", "NotebookEdit"}
+
+
+def test_poll_reports_the_answer_so_a_re_attaching_frame_can_show_it(agent, tmp_path):
+    """Same reason poll returns the whole request list: a frame that re-attaches
+    mid-turn (mode switch, reload) has to be able to rebuild a card it never saw
+    — including what the user chose on it."""
+    run_dir = _park_a_question(agent, tmp_path)
+    # An unanswered request reports no answers rather than a missing key.
+    assert agent._permissions(run_dir)[0]["answers"] == {}
+
+    agent._decide("run", "req-q", "allow", "once",
+                  answers=json.dumps({"Alpha or Beta?": "Beta"}))
+    perm = agent._permissions(run_dir)[0]
+    assert perm["tool"] == "AskUserQuestion"
+    assert perm["answers"] == {"Alpha or Beta?": "Beta"}
+
+
+def test_the_answers_param_reaches_decide_as_a_json_string(agent, tmp_path):
+    """Params cross into python string-shaped (the URL/param binder), so the
+    page sends the record as JSON exactly like `app_state` sends its snapshot."""
+    run_dir = _park_a_question(agent, tmp_path)
+    out = agent.main(action="decide", run_id="run", request_id="req-q",
+                     decision="allow", scope="once",
+                     answers=json.dumps({"Alpha or Beta?": "Alpha"}))
+    assert out["decision"] == "allow"
+    assert agent._read_decision(agent._perm_dir(run_dir), "req-q")["answers"] == {
+        "Alpha or Beta?": "Alpha"}
 
 
 # ------------------------------------------------------------ agent.py side
@@ -770,9 +1177,10 @@ def test_start_asks_the_cli_to_route_permissions_here(agent, tmp_path, monkeypat
     # acceptEdits was only ever there because headless claude could not be
     # asked; with a prompt tool wired up the default (ask) is answerable.
     assert "--permission-mode" not in cmd
-    # A prompt tool also un-gates these two in headless mode; this chat renders
-    # neither, so they stay off.
-    assert cmd[cmd.index("--disallowed-tools") + 1] == "AskUserQuestion,ExitPlanMode"
+    # A prompt tool un-gates AskUserQuestion and ExitPlanMode in headless mode.
+    # The question card renders the first one, so it is live; the plan dialog
+    # does not exist yet, so that one stays off.
+    assert cmd[cmd.index("--disallowed-tools") + 1] == "ExitPlanMode"
 
     config = json.loads(open(cmd[cmd.index("--mcp-config") + 1]).read())
     entry = config["mcpServers"][agent.PERMISSION_SERVER]
