@@ -22,6 +22,11 @@ export interface IndexCorpus {
 //
 // A truncated corpus is still used: it is the same cap the walk hits, and the
 // walk flags it the same way.
+//
+// The one staleness that is NOT a trade is handled by the caller, not here:
+// a folder this app changed since the last scan (lib/index-freshness) never
+// reaches this function — offering the pre-rename name back to the user who
+// just did the renaming is a bug, not an acceptable approximation.
 export function indexCorpusFrom(res: IndexSearchResult | null | undefined): IndexCorpus | null {
   if (!res || !res.covered) return null;
   if (!Array.isArray(res.entries)) return null;

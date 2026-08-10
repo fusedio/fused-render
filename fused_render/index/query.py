@@ -34,9 +34,17 @@ MAX_LIMIT = 5_000
 # swapping the corpus source cannot change how much the client holds.
 MAX_CORPUS = 200_000
 
-# How old the index may be and still answer an in-folder search. There is no
-# watcher (`scan.md`), so this is the honest bound on how wrong the corpus can
-# be: past it, the explorer falls back to the live walk. It is a trade, not a
+# The age past which `fresh` goes false on an in-folder search. INFORMATIONAL:
+# nothing refuses a corpus for being stale. `covered` is the whole gate, on
+# purpose (frontend index-corpus.ts) — a rescan keeps serving its last
+# completed generation and the search box says "indexing…" meanwhile, so an
+# instant mostly-right answer with a visible caveat beats re-walking the tree.
+# Changes made THROUGH the app are the exception and do drop the folder to a
+# live walk, since offering the pre-rename name back to the user who just
+# renamed it is not a trade (frontend lib/index-freshness.ts).
+#
+# There is no watcher (`scan.md`), so this is the honest bound on how wrong an
+# unflagged corpus can be. It is a trade, not a
 # fact about the data — long enough that the index is actually used during a
 # working session, short enough that a morning's edits don't answer an
 # afternoon's search.

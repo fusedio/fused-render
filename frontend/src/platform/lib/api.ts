@@ -1,4 +1,6 @@
 // Server API wrappers. Non-ok responses throw with the server's error message.
+import { noteFsMutation } from "@platform/lib/index-freshness";
+
 export interface Config {
   start_dir: string;
   home: string;
@@ -242,10 +244,13 @@ export async function walkDirStream(
 // file index instead of a live walk. `entries` are WalkEntry-shaped on purpose
 // so the search pipeline is indifferent to which source produced them.
 //
-// `covered` (the index visited this exact folder) and `fresh` (the index is
-// recent enough to answer with) are the whole decision; a miss is a normal
-// 200 with covered:false, because "no index yet", "not covered" and "a scan is
-// running" all mean the same thing here — use the live walk instead.
+// `covered` (the index visited this exact folder) is the whole decision; a
+// miss is a normal 200 with covered:false, because "no index yet", "not
+// covered" and "a scan is running" all mean the same thing here — use the
+// live walk instead. `fresh` (younger than FRESH_MAX_AGE_S) is reported but
+// NOT a gate: see index-corpus.ts for why age alone does not disqualify a
+// corpus, and lib/index-freshness.ts for the case that does — a folder this
+// app itself changed since the last scan.
 export interface IndexSearchResult {
   covered: boolean;
   fresh: boolean;
@@ -1052,17 +1057,32 @@ export function revealPath(fsPath: string): Promise<void> {
 // (missing src), 409 ("conflict" — destination exists, or a non-empty dir
 // deleted without recursive).
 
+// Every mutation below marks the paths it touched, so in-folder search stops
+// answering from the index snapshot for that folder and walks it live — there
+// is no filesystem watcher, so the corpus would otherwise keep offering the
+// old name and never the new one (lib/index-freshness). Recorded only on
+// SUCCESS: a refused mutation changed nothing, and pessimising a folder over
+// a 409 would drop it to the slow path for the rest of the session.
+function noteAfter<T>(paths: string | string[], p: Promise<T>): Promise<T> {
+  return p.then((out) => {
+    for (const path of Array.isArray(paths) ? paths : [paths]) {
+      if (path) noteFsMutation(path);
+    }
+    return out;
+  });
+}
+
 // Create (or overwrite) a plain file. Used for "New File…" with empty content;
 // the parent directory must already exist (the server does not mkdir -p).
 // With create=true the write refuses (409 "conflict") when the path already
 // exists, so "New File" can't silently clobber an existing file.
 export function writeFile(path: string, content = "", create = false): Promise<StatResult> {
-  return postJson<StatResult>("/api/fs/write", { path, content, create });
+  return noteAfter(path, postJson<StatResult>("/api/fs/write", { path, content, create }));
 }
 
 // Create a single directory (no mkdir -p — a missing parent is a 400).
 export function mkdir(path: string): Promise<StatResult> {
-  return postJson<StatResult>("/api/fs/mkdir", { path });
+  return noteAfter(path, postJson<StatResult>("/api/fs/mkdir", { path }));
 }
 
 // Remove a file or directory. A non-empty directory needs recursive=true (the
@@ -1075,23 +1095,26 @@ export function deleteEntry(
   recursive = false,
   trash = false
 ): Promise<{ deleted: string; trashed?: boolean }> {
-  return postJson<{ deleted: string; trashed?: boolean }>("/api/fs/delete", {
+  return noteAfter(
     path,
-    recursive,
-    trash,
-  });
+    postJson<{ deleted: string; trashed?: boolean }>("/api/fs/delete", {
+      path,
+      recursive,
+      trash,
+    })
+  );
 }
 
 // Move/rename src -> dst (also the paste-of-a-cut move). An existing dst is a
 // 409 unless overwrite=true.
 export function renameEntry(src: string, dst: string, overwrite = false): Promise<StatResult> {
-  return postJson<StatResult>("/api/fs/rename", { src, dst, overwrite });
+  return noteAfter([src, dst], postJson<StatResult>("/api/fs/rename", { src, dst, overwrite }));
 }
 
 // Copy src -> dst (paste-of-a-copy, and Duplicate). Same 409-on-existing-dst
 // rule as rename; a directory copied into itself/a descendant is a 400.
 export function copyEntry(src: string, dst: string, overwrite = false): Promise<StatResult> {
-  return postJson<StatResult>("/api/fs/copy", { src, dst, overwrite });
+  return noteAfter(dst, postJson<StatResult>("/api/fs/copy", { src, dst, overwrite }));
 }
 
 // The archive formats /api/fs/compress accepts. Kept as a union so a typo
@@ -1107,7 +1130,7 @@ export function compressEntry(
   format: ArchiveFormat,
   dest: string
 ): Promise<StatResult> {
-  return postJson<StatResult>("/api/fs/compress", { path, format, dest });
+  return noteAfter(dest, postJson<StatResult>("/api/fs/compress", { path, format, dest }));
 }
 
 // Whether `path` is the work-tree ROOT of a git repository — the gate for the

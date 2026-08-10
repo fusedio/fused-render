@@ -12,6 +12,7 @@ import { useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import { indexSearch, walkDirStream } from "@platform/lib/api";
 import type { WalkEntry } from "@platform/lib/api";
 import { indexCorpusFrom } from "@apps/explorer/listing/index-corpus";
+import { indexMayAnswer } from "@platform/lib/index-freshness";
 import { replaceSearch } from "@platform/lib/router";
 import { nextHeldHits, resolveDisplayedHits, type QueryTagged } from "@platform/lib/search-hold";
 import {
@@ -151,7 +152,11 @@ export function useWalkSearch(fsPath: string, refresh: number, urlSync = true) {
     indexSearch(fsPath, { signal: ctrl.signal }).then(
       (res) => {
         if (!alive) return;
-        const corpus = indexCorpusFrom(res);
+        // A folder this app has changed since the last scan is walked live:
+        // the corpus predates the change, so it would offer the old name and
+        // never the new one (lib/index-freshness). Out-of-band edits keep the
+        // documented trade — an instant, mostly-right answer.
+        const corpus = indexMayAnswer(fsPath) ? indexCorpusFrom(res) : null;
         if (!corpus) {
           void liveWalk();
           return;
