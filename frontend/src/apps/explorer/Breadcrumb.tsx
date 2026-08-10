@@ -463,6 +463,23 @@ export function Breadcrumb({
     if (el) el.scrollLeft = el.scrollWidth;
   }, [fsPath, editing]);
 
+  // The same click-to-edit, extended to the BAR's own free space — the gap
+  // between the crumbs and the folder-search box, which belongs to #breadcrumb
+  // rather than to the crumb strip (the strip stops growing once the search
+  // slot is mounted, explorer.css). Bound to the parent node here instead of
+  // being handed down from BreadcrumbBar so the edit state stays in one
+  // component; `e.target === bar` keeps it to the bar's own background, never
+  // a click that landed on one of its children.
+  useEffect(() => {
+    const bar = crumbsRef.current?.parentElement;
+    if (!bar) return;
+    const onClick = (e: MouseEvent) => {
+      if (e.target === bar) setEditing(true);
+    };
+    bar.addEventListener("click", onClick);
+    return () => bar.removeEventListener("click", onClick);
+  }, [editing]);
+
   // Ctrl/Cmd+L jumps into the editable path (like a browser's location bar).
   // Skip when focus is already in a text field so it never hijacks typing.
   // NOTE: Chrome/Firefox route Ctrl/Cmd+L to their own address bar before the
@@ -622,14 +639,18 @@ export function Breadcrumb({
           onBlur={() => setEditing(false)} // a stray click cancels rather than commits
         />
       ) : (
-        // A click on the strip itself (whitespace right of the crumbs), not on
-        // a crumb or the reveal button, switches to the editable path.
+        // Click-to-edit, like a browser's location bar. Anything in the strip
+        // that is not itself a control turns it editable: the whitespace right
+        // of the crumbs, the "/" separators, and the current folder's own
+        // (unlinked) crumb. Only the ancestor crumbs — real links, plus the
+        // bar's buttons — keep their own behaviour, which is why this tests
+        // for an enclosing control rather than for the strip itself.
         <div
           className="crumbs"
           ref={crumbsRef}
           onWheel={onWheel}
           onClick={(e) => {
-            if (e.target === e.currentTarget) setEditing(true);
+            if (!(e.target as HTMLElement).closest("a, button, input")) setEditing(true);
           }}
         >
           {pieces}
