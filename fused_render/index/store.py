@@ -10,11 +10,52 @@ pyarrow and duckdb are passed in / imported inside functions rather than at
 module top: this module is imported by the server (routers/index.py), and a
 `stats` call on a missing index should not pay a duckdb import.
 """
+import contextlib
 import json
 import os
 import time
 
 from fused_render.index.config import IndexConfig
+
+
+@contextlib.contextmanager
+def store_lock(cfg: IndexConfig):
+    """Mutual exclusion for store WRITERS (compactions, delete), blocking.
+
+    Two concurrent compactions — two configured roots scanned at startup, or a
+    config-save rescan racing the startup scan — would otherwise both read the
+    same manifest generation, write identically-named partition files, and
+    lose whichever manifest lands first (its rows are absent from the other's
+    merge). Everything from the manifest read to the manifest write must
+    happen inside this lock. Readers never take it: they follow the manifest,
+    and generations make that safe (see compact).
+
+    An OS lock (flock / msvcrt), not a lockfile-existence protocol: it is held
+    by an open fd, so a crashed worker releases it with its process instead of
+    wedging every future scan."""
+    os.makedirs(cfg.dir, exist_ok=True)
+    f = open(os.path.join(cfg.dir, ".store.lock"), "a")
+    try:
+        if os.name == "nt":
+            import msvcrt
+            f.seek(0)
+            msvcrt.locking(f.fileno(), msvcrt.LK_LOCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(f, fcntl.LOCK_EX)
+        yield
+    finally:
+        try:
+            if os.name == "nt":
+                import msvcrt
+                f.seek(0)
+                msvcrt.locking(f.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(f, fcntl.LOCK_UN)
+        except OSError:
+            pass
+        f.close()
 
 
 def _sql(s: str) -> str:
@@ -174,7 +215,8 @@ def partition_files(cfg: IndexConfig, manifest=None):
     return [os.path.join(cfg.files_dir, p["file"]) for p in m.get("partitions") or []]
 
 
-def compact(cfg: IndexConfig, root, shards_dir, pa, pq, emit=None):
+def compact(cfg: IndexConfig, root, shards_dir, pa, pq, emit=None,
+            cancel_flag=None):
     """Merge new shards with the existing index, keeping old rows for dirs
     outside `root` and for unchanged dirs inside it, sort by path, and write
     size-bounded partition files + manifest. Skips the rewrite entirely when
@@ -188,8 +230,25 @@ def compact(cfg: IndexConfig, root, shards_dir, pa, pq, emit=None):
     generation intact rather than an index that has been rmtree'd and not yet
     renamed (OpenIndex's "atomic-ish" swap, which this replaces).
 
+    The whole merge runs under `store_lock`, manifest read included, so a
+    concurrent compaction (another root, a config-save rescan) serializes
+    behind this one and merges on top of ITS output instead of on the stale
+    generation both of them read.
+
+    `cancel_flag` is re-checked after the lock is acquired: a Delete Index
+    pressed while this run was walking cancels the run and takes the lock, so
+    a compaction that was about to rebuild the store the user just emptied
+    aborts here (returns None) instead of quietly undoing the delete.
+
     `emit` is the worker's event writer (or None when compaction is driven
     directly, e.g. by a test)."""
+    with store_lock(cfg):
+        if cancel_flag is not None and os.path.exists(cancel_flag):
+            return None
+        return _compact_locked(cfg, root, shards_dir, pa, pq, emit)
+
+
+def _compact_locked(cfg: IndexConfig, root, shards_dir, pa, pq, emit=None):
     import duckdb
     import shutil
 
@@ -364,16 +423,22 @@ def delete_store(cfg: IndexConfig) -> None:
     against a scan whose output no longer exists.
 
     Missing files are not an error: "delete" on an empty store is a no-op that
-    succeeds, which is what makes the button safe to press twice."""
+    succeeds, which is what makes the button safe to press twice.
+
+    Runs under `store_lock`: a worker already inside its compaction finishes
+    first and THEN gets deleted, and one that was still walking finds its
+    cancel flag when it reaches the lock (see compact) — either way the store
+    stays deleted."""
     import shutil
 
-    shutil.rmtree(cfg.files_dir, ignore_errors=True)
-    for path in (cfg.dirs_parquet, cfg.partitions_json, cfg.fsevents_json,
-                 cfg.applied_ignore_json, cfg.scans_json):
-        try:
-            os.unlink(path)
-        except OSError:
-            pass
+    with store_lock(cfg):
+        shutil.rmtree(cfg.files_dir, ignore_errors=True)
+        for path in (cfg.dirs_parquet, cfg.partitions_json, cfg.fsevents_json,
+                     cfg.applied_ignore_json, cfg.scans_json):
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
 
 
 def _write_manifest(cfg: IndexConfig, meta: dict) -> None:

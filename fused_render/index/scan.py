@@ -437,7 +437,13 @@ def run_scan(run_dir: str) -> None:
                   summary={"dirs": totals["dirs"], "files": totals["files"]})
             return
 
-        summary = compact(cfg, root, shards_dir, pa, pq, emit=lambda **e: _emit(ev, **e))
+        summary = compact(cfg, root, shards_dir, pa, pq,
+                          emit=lambda **e: _emit(ev, **e),
+                          cancel_flag=cancel_flag)
+        if summary is None:  # cancelled at the store lock (delete raced us)
+            _emit(ev, type="run_end", msg="cancelled",
+                  summary={"dirs": totals["dirs"], "files": totals["files"]})
+            return
         summary.update(dirs=totals["dirs"], files=totals["files"],
                        reused_files=totals["reused"],
                        unchanged_dirs=totals["udirs"],
@@ -525,7 +531,11 @@ def _run_fsevents(cfg, rules, guard, root, hint, cache, sink, ev, cancel_flag,
               summary={"dirs": totals["dirs"], "files": totals["files"]})
         return None
     summary = compact(cfg, root, sink.shards_dir, pa, pq,
-                      emit=lambda **e: _emit(ev, **e))
+                      emit=lambda **e: _emit(ev, **e), cancel_flag=cancel_flag)
+    if summary is None:  # cancelled at the store lock (delete raced the scan)
+        _emit(ev, type="run_end", msg="cancelled",
+              summary={"dirs": totals["dirs"], "files": totals["files"]})
+        return None
     summary.update(dirs=totals["dirs"], files=totals["files"],
                    reused_files=totals["reused"],
                    unchanged_dirs=totals["udirs"], fsevents=True,

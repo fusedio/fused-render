@@ -300,3 +300,45 @@ def test_compact_never_deletes_a_like_metachar_sibling(tmp_path):
     paths = pq.read_table(part).column("path").to_pylist()
     assert "/x/proj-a/sub/keep.txt" in paths
     assert "/x/proj_a/new.txt" in paths
+
+
+def test_compact_serializes_behind_the_store_lock(tmp_path):
+    """Two concurrent compactions both read the same manifest generation,
+    write identically-named partitions, and the losing root's rows vanish
+    from whichever manifest lands last. Writers therefore serialize on
+    store_lock, manifest read included."""
+    import threading
+    import time as _time
+
+    from fused_render.index.store import store_lock
+
+    cfg = _cfg(tmp_path)
+    shards = _shard(tmp_path, cfg, [
+        ("/r", _scanned("s", [_row("/r/a.txt")], 10, 1, 0))])
+    finished = threading.Event()
+
+    def run():
+        compact(cfg, "/r", shards, pa, pq)
+        finished.set()
+
+    with store_lock(cfg):
+        t = threading.Thread(target=run)
+        t.start()
+        assert not finished.wait(0.4), "compact ran while the lock was held"
+    assert finished.wait(30), "compact never ran after the lock was released"
+    t.join()
+    assert read_manifest(cfg)["rows"] == 1
+
+
+def test_compact_aborts_at_the_lock_when_its_run_was_cancelled(tmp_path):
+    """Delete Index cancels the run and takes the lock; a compaction arriving
+    afterwards must abort instead of rebuilding the store the user just
+    emptied (its docstring promised this; only the walk used to check)."""
+    cfg = _cfg(tmp_path)
+    shards = _shard(tmp_path, cfg, [
+        ("/r", _scanned("s", [_row("/r/a.txt")], 10, 1, 0))])
+    flag = tmp_path / "cancel"
+    flag.write_text("", encoding="utf-8")
+    out = compact(cfg, "/r", shards, pa, pq, cancel_flag=str(flag))
+    assert out is None
+    assert read_manifest(cfg) is None
