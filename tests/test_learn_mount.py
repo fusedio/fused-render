@@ -29,12 +29,14 @@ def learn_zip(tmp_path, monkeypatch):
 
 @pytest.fixture(autouse=True)
 def _reset_builtin_ready():
-    # _builtin_ready is process-global; reset it so readiness set by one test
-    # never leaks into the next.
+    # _builtin_ready and the automount-completed gate are process-global; reset
+    # them so state set by one test never leaks into the next.
     import fused_render.shell.mounts.automount as _am
+    import fused_render.shell.mounts.health as _health
     with _am._builtin_ready_lock:
         for name in list(_am._builtin_ready):
             _am._builtin_ready[name] = False
+    _health._automount_completed.clear()
     yield
 
 
@@ -439,6 +441,36 @@ def test_run_automount_leaves_builtin_not_ready_on_attach_failure(home, learn_zi
     monkeypatch.setattr(mounts_mod, "mounted_paths", lambda: set())
 
     mounts_mod.run_automount()
+    assert mounts_mod.learn_mount_ready() is False
+
+
+def test_poll_once_self_heals_builtin_after_out_of_band_reconnect(home, learn_zip, monkeypatch):
+    # A builtin left False by run_automount's split-brain `continue` and then
+    # brought online by a manual Reconnect (which doesn't touch the flag) must
+    # still turn ready — the health monitor syncs it, once automount has run.
+    import fused_render.shell.mounts.health as health_mod
+    mounts_mod.ensure_learn_mount()
+    monkeypatch.setattr(mounts_mod, "mounted_paths", lambda: set())
+    monkeypatch.setattr(mounts_mod, "mount_state", lambda m, live, **k: "mounted")
+
+    health_mod._automount_completed.set()
+    assert mounts_mod.learn_mount_ready() is False  # not attached by automount
+    mounts_mod.poll_once()
+    assert mounts_mod.learn_mount_ready() is True    # health observed it live
+
+
+def test_poll_once_ignores_surviving_mount_before_automount(home, learn_zip, monkeypatch):
+    # The other side of the gate: before run_automount's startup force-detach,
+    # a mount that survived a previous run still reads "mounted" — poll_once must
+    # NOT let that reach _builtin_ready (the frontend sticky-caches the first
+    # True), or it reintroduces the stale-ready race.
+    import fused_render.shell.mounts.health as health_mod
+    mounts_mod.ensure_learn_mount()
+    monkeypatch.setattr(mounts_mod, "mounted_paths", lambda: set())
+    monkeypatch.setattr(mounts_mod, "mount_state", lambda m, live, **k: "mounted")
+
+    health_mod._automount_completed.clear()  # startup pass not done yet
+    mounts_mod.poll_once()
     assert mounts_mod.learn_mount_ready() is False
 
 
