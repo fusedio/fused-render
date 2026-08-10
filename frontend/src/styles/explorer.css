@@ -1160,40 +1160,6 @@ table.listing-table tr.row.flip-animating {
   transition: transform var(--dur-slow) var(--ease-out);
 }
 
-/* Current ordering of the search results, and the click that restores relevance
-   (views/Listing.tsx). Disabled = already in relevance order, i.e. a readout. */
-.listing-sort-chip {
-  flex: 0 0 auto;
-  font: inherit;
-  font-size: 11px;
-  line-height: 1;
-  padding: 4px 8px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: var(--bg-alt);
-  color: var(--fg-muted);
-  cursor: pointer;
-  white-space: nowrap;
-  transition:
-    color var(--dur-fast) var(--ease-out),
-    border-color var(--dur-fast) var(--ease-out);
-}
-
-.listing-sort-chip:disabled {
-  cursor: default;
-}
-
-/* Sorted is a QUIET readout, not a highlight: it says how the results are
-   ordered, which is nothing like "this is the view you are looking at". */
-.listing-sort-chip.sorted {
-  color: var(--fg-muted);
-  border-color: var(--border);
-}
-
-.listing-sort-chip:hover:not(:disabled) {
-  color: var(--fg);
-}
-
 table.listing-table td {
   padding: 9px 16px;
   border-bottom: 1px solid var(--border);

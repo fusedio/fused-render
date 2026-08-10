@@ -160,7 +160,6 @@ export default function Listing({
     hasMore,
     sentinelRef,
     searchSort,
-    setSearchSort,
     setSearchSortKey,
   } = useWalkSearch(fsPath, refresh, !embedded);
 
@@ -908,28 +907,6 @@ export default function Listing({
                   </span>
                 )}
               </div>
-              {/* Current result ordering, and the way back to relevance. Without it
-            "no arrow anywhere" was the only signal that results were in fuzzy
-            rank order, and a column sort had no explicit escape. */}
-              {searching && (
-                <button
-                  type="button"
-                  className={
-                    "listing-sort-chip" + (searchSort ? " sorted" : "")
-                  }
-                  disabled={!searchSort}
-                  title={
-                    searchSort
-                      ? "Results are column-sorted — click for relevance order"
-                      : "Results are in relevance order (best match first)"
-                  }
-                  onClick={() => setSearchSort(null)}
-                >
-                  {searchSort
-                    ? `${SORT_KEYS[searchSort.sort].toLowerCase()} ${searchSort.order}`
-                    : "relevance"}
-                </button>
-              )}
               {/* Only while the pane is CLOSED — and then with its label. The
                   collapse half of this toggle moved onto the pane itself
                   (ListingPreviewPane's header), where the action is spatial
