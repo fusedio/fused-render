@@ -65,11 +65,19 @@ function ViewEditModal({
         return;
       }
       await writeFile(editing.path, draft);
-      // A save inside ~/.claude is config drift; fold it into the config
-      // repo's history right away (a no-op for files outside it), the same
-      // way delete self-commits — this page has no drift badge to catch it.
-      await cc.claudeMd.commit(editing.path);
-      toastOk("Saved");
+      // The write landed — the save has succeeded whatever happens next, so
+      // the commit below must not throw us into the catch: the modal would
+      // stay open reading as unsaved, and a retry would trip the mtime guard
+      // against our own write.
+      try {
+        // A save inside ~/.claude is config drift; fold it into the config
+        // repo's history right away (a no-op for files outside it), the same
+        // way delete self-commits — this page has no drift badge to catch it.
+        await cc.claudeMd.commit(editing.path);
+        toastOk("Saved");
+      } catch {
+        toastErr("Saved, but committing to config history failed");
+      }
       onSaved();
     } catch (e) {
       toastErr((e as Error).message);
