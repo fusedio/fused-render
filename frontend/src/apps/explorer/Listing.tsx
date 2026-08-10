@@ -1029,7 +1029,13 @@ export default function Listing({
                   items — "Open in Finder" and "Copy path" — now at the end of
                   the row that already holds this folder's other control
                   instead of at the far end of the bar. */}
-              {ownsBarChrome && <PathOverflow fsPath={base} />}
+              {/* normDir, not the bare `base`: `base` has its trailing slash
+                  stripped, which at the filesystem root leaves "" (and "C:" at
+                  a Windows drive root). The crumb-bar copy of this control got
+                  the un-stripped fsPath, so at "/" the menu's two items used to
+                  copy an empty string and POST an empty reveal path. Same
+                  normalisation the drop target below uses. */}
+              {ownsBarChrome && <PathOverflow fsPath={normDir(base)} />}
             </div>
           )}
           <div
