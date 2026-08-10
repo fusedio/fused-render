@@ -194,9 +194,12 @@ function LoadingScaffold({ fsPath, isDir, headerless }: { fsPath: string; isDir:
           // Listing's hard "Failed to list" error while stat resolves — a 404
           // here just means the hint was wrong; stat will paint the file view.
           // `barChrome` on the scaffold too (same condition as `headerless`):
-          // the folder view's claim on the bar's layout zone must be live from
-          // the first paint, or the splits flash in and out across the
-          // scaffold→resolved swap.
+          // whenever the nav hint already says "directory" this claims the
+          // bar's layout zone from the first paint, so the splits don't flash
+          // in and out across the scaffold→resolved swap. Only a hinted nav
+          // gets that — open a folder URL directly (or reload) and there is no
+          // `history.state` hint, so no Listing mounts here and the splits do
+          // still show for the length of the stat.
           <Listing fsPath={fsPath} provisional barChrome={headerless} />
         ) : (
           <div className="preview-resolving">
