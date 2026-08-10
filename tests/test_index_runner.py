@@ -1,0 +1,232 @@
+"""The scan control plane: starting a detached run, polling its event log,
+cancelling it, and the last-scan bookkeeping the startup scheduler debounces
+on. See fused_render/index/specs/scan.md §1-§3.
+"""
+import json
+import os
+import subprocess
+import sys
+import time
+
+import pytest
+
+from fused_render.index import runner
+from fused_render.index.config import IndexConfig
+
+
+def _cfg(tmp_path):
+    return IndexConfig(dir=str(tmp_path / "ix"))
+
+
+class _FakePopen:
+    """Records the argv/kwargs a spawn would have used."""
+
+    calls: list = []
+
+    def __init__(self, argv, **kwargs):
+        _FakePopen.calls.append((argv, kwargs))
+        self.pid = 4242
+
+
+@pytest.fixture()
+def spawned(monkeypatch):
+    _FakePopen.calls = []
+    monkeypatch.setattr(runner.subprocess, "Popen", _FakePopen)
+    return _FakePopen.calls
+
+
+# -- start ---------------------------------------------------------------------
+
+def test_start_spawns_the_worker_as_a_module_not_a_file(tmp_path, spawned):
+    """`Popen([python, __file__])` has no meaning inside a py2app bundle —
+    the source file isn't there. The module entrypoint is importable
+    wherever the package is."""
+    cfg = _cfg(tmp_path)
+    started = runner.start(cfg, str(tmp_path))
+    argv, kwargs = spawned[0]
+    assert argv[:3] == [sys.executable, "-m", "fused_render.index.worker"]
+    assert argv[3] == os.path.join(cfg.runs_dir, started["run_id"])
+    # detached: the scan outlives the request that asked for it
+    assert kwargs.get("start_new_session") is True or "creationflags" in kwargs
+
+
+def test_start_writes_a_spec_the_worker_can_read(tmp_path, spawned):
+    cfg = _cfg(tmp_path)
+    cfg.ignore = ["node_modules"]
+    started = runner.start(cfg, str(tmp_path), full=True)
+    spec = json.load(open(os.path.join(cfg.runs_dir, started["run_id"], "spec.json")))
+    assert spec["root"] == str(tmp_path)
+    assert spec["full"] is True
+    # the config travels WITH the run: the detached worker must not re-derive
+    # the store location from an environment that may have moved
+    assert spec["config"]["dir"] == cfg.dir
+    assert spec["config"]["ignore"] == ["node_modules"]
+    assert spec["mounts_dir"]
+
+
+def test_start_expands_and_canonicalizes_the_root(tmp_path, spawned):
+    cfg = _cfg(tmp_path)
+    sub = tmp_path / "sub"
+    sub.mkdir()
+    started = runner.start(cfg, str(sub) + "/")
+    assert started["root"] == str(sub)
+
+
+def test_start_rejects_a_non_directory(tmp_path, spawned):
+    f = tmp_path / "f.txt"
+    f.write_text("x", encoding="utf-8")
+    with pytest.raises(ValueError):
+        runner.start(_cfg(tmp_path), str(f))
+    assert spawned == []
+
+
+def test_start_refuses_a_mount_backed_root(tmp_path, spawned, monkeypatch):
+    """Indexing a remote mount is out of scope AND unsafe: the crawl would be
+    kernel I/O on an rclone NFS path."""
+    mounts = tmp_path / "mounts"
+    (mounts / "m1").mkdir(parents=True)
+    monkeypatch.setattr(runner, "_mounts_dir", lambda: str(mounts))
+    with pytest.raises(ValueError, match="mount"):
+        runner.start(_cfg(tmp_path), str(mounts / "m1"))
+    assert spawned == []
+
+
+def test_start_records_the_scan_time_for_debouncing(tmp_path, spawned):
+    cfg = _cfg(tmp_path)
+    assert runner.last_scan(cfg, str(tmp_path)) is None
+    runner.start(cfg, str(tmp_path))
+    assert runner.last_scan(cfg, str(tmp_path)) > 0
+    assert runner.last_scan(cfg, str(tmp_path / "elsewhere")) is None
+
+
+# -- status / cancel / list ----------------------------------------------------
+
+def _run_with_events(cfg, run_id, events):
+    d = os.path.join(cfg.runs_dir, run_id)
+    os.makedirs(d, exist_ok=True)
+    with open(os.path.join(d, "spec.json"), "w") as f:
+        json.dump({"root": "/r", "full": False, "started": 0}, f)
+    with open(os.path.join(d, "events.jsonl"), "w") as f:
+        for e in events:
+            f.write(json.dumps(e) + "\n")
+    return d
+
+
+def test_status_folds_the_log_into_a_flat_state(tmp_path):
+    cfg = _cfg(tmp_path)
+    _run_with_events(cfg, "r1", [
+        {"type": "run_start", "msg": "/r"},
+        {"type": "phase", "msg": "scanning (incremental)"},
+        {"type": "progress", "dirs": 3, "files": 9, "reused": 2, "current": "/r/a"},
+        {"type": "run_end", "msg": "complete", "summary": {"rows": 9}},
+    ])
+    st = runner.status(cfg, "r1")["state"]
+    assert st["running"] is False
+    assert st["phase"] == "scanning (incremental)"
+    assert (st["dirs"], st["files"], st["reused"]) == (3, 9, 2)
+    assert st["summary"] == {"rows": 9}
+    assert st["cancelled"] is False
+
+
+def test_status_returns_only_events_after_the_cursor(tmp_path):
+    cfg = _cfg(tmp_path)
+    _run_with_events(cfg, "r1", [{"type": "phase", "msg": "a"},
+                                 {"type": "phase", "msg": "b"}])
+    out = runner.status(cfg, "r1", since=1)
+    assert [e["msg"] for e in out["events"]] == ["b"]
+    assert out["cursor"] == 2
+
+
+def test_status_tolerates_a_half_written_last_line(tmp_path):
+    cfg = _cfg(tmp_path)
+    d = _run_with_events(cfg, "r1", [{"type": "phase", "msg": "a"}])
+    with open(os.path.join(d, "events.jsonl"), "a") as f:
+        f.write('{"type": "progr')
+    assert [e["msg"] for e in runner.status(cfg, "r1")["events"]] == ["a"]
+
+
+def test_status_of_an_unknown_run_raises(tmp_path):
+    with pytest.raises(ValueError):
+        runner.status(_cfg(tmp_path), "nope")
+
+
+def test_cancel_writes_the_flag_file(tmp_path):
+    cfg = _cfg(tmp_path)
+    d = _run_with_events(cfg, "r1", [])
+    runner.cancel(cfg, "r1")
+    assert os.path.exists(os.path.join(d, "cancel"))
+
+
+def test_cancel_of_an_unknown_run_raises(tmp_path):
+    with pytest.raises(ValueError):
+        runner.cancel(_cfg(tmp_path), "nope")
+
+
+def test_list_runs_is_newest_first_with_state(tmp_path):
+    cfg = _cfg(tmp_path)
+    _run_with_events(cfg, "20260101-000000-aa", [{"type": "run_end", "msg": "complete"}])
+    _run_with_events(cfg, "20260102-000000-bb", [{"type": "phase", "msg": "scanning"}])
+    runs = runner.list_runs(cfg)["runs"]
+    assert [r["run_id"] for r in runs] == ["20260102-000000-bb", "20260101-000000-aa"]
+    assert runs[0]["running"] is True
+    assert runs[1]["running"] is False
+
+
+def test_prune_runs_keeps_the_newest_and_deletes_the_rest(tmp_path):
+    """OpenIndex never cleaned its run directories; here they live under the
+    index dir, so a shard-heavy abandoned run would grow the store forever."""
+    cfg = _cfg(tmp_path)
+    for i in range(5):
+        _run_with_events(cfg, f"2026010{i}-000000-x",
+                         [{"type": "run_end", "msg": "complete"}])
+    runner.prune_runs(cfg, keep=2)
+    assert sorted(os.listdir(cfg.runs_dir)) == [
+        "20260103-000000-x", "20260104-000000-x"]
+
+
+def test_prune_runs_reclaims_a_run_that_died_without_closing_its_log(tmp_path):
+    cfg = _cfg(tmp_path)
+    _run_with_events(cfg, "20260104-000000-x", [{"type": "run_end", "msg": "complete"}])
+    dead = _run_with_events(cfg, "20260101-000000-x", [{"type": "phase", "msg": "scanning"}])
+    old = time.time() - runner.STALE_RUN_S - 60
+    for name in os.listdir(dead):
+        os.utime(os.path.join(dead, name), (old, old))
+    runner.prune_runs(cfg, keep=1)
+    assert os.listdir(cfg.runs_dir) == ["20260104-000000-x"]
+
+
+def test_prune_runs_never_deletes_a_live_run(tmp_path):
+    cfg = _cfg(tmp_path)
+    for i in range(4):
+        _run_with_events(cfg, f"2026010{i}-000000-x",
+                         [{"type": "run_end", "msg": "complete"}])
+    _run_with_events(cfg, "20260100-000000-live", [{"type": "phase", "msg": "scanning"}])
+    runner.prune_runs(cfg, keep=1)
+    assert "20260100-000000-live" in os.listdir(cfg.runs_dir)
+
+
+# -- the module entrypoint, for real -------------------------------------------
+
+def test_the_worker_module_runs_a_scan_end_to_end(tmp_path):
+    """Spawn `python -m fused_render.index.worker` the way `start` does (but
+    synchronously) — the one test that proves the entrypoint exists and the
+    package is importable from a child."""
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "hello.txt").write_text("hi", encoding="utf-8")
+    cfg = _cfg(tmp_path)
+    run_dir = os.path.join(cfg.runs_dir, "manual")
+    os.makedirs(run_dir)
+    with open(os.path.join(run_dir, "spec.json"), "w") as f:
+        json.dump({"root": str(src), "full": False, "started": 0,
+                   "config": cfg.to_dict()}, f)
+    proc = subprocess.run(
+        [sys.executable, "-m", "fused_render.index.worker", run_dir],
+        capture_output=True, text=True, timeout=180,
+    )
+    assert proc.returncode == 0, proc.stderr
+    events = [json.loads(line) for line in
+              open(os.path.join(run_dir, "events.jsonl")) if line.strip()]
+    end = [e for e in events if e["type"] == "run_end"][-1]
+    assert end["msg"] == "complete", end.get("error")
+    assert end["summary"]["rows"] == 1
