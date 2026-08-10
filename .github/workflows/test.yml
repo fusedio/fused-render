@@ -27,7 +27,7 @@ jobs:
       macos_desktop: ${{ steps.filter.outputs.macos_desktop }}
       macos_packaging: ${{ steps.filter.outputs.macos_packaging }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dorny/paths-filter@v3
         id: filter
         with:
@@ -106,7 +106,7 @@ jobs:
     if: needs.detect-changes.outputs.app == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - uses: actions/setup-node@v4
         with:
@@ -157,14 +157,14 @@ jobs:
         python-version: ["3.10", "3.11", "3.12", "3.13"]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - uses: actions/download-artifact@v4
         with:
           name: shell-dist
           path: fused_render/static/shell-dist
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python-version }}
 
@@ -239,7 +239,7 @@ jobs:
     if: needs.detect-changes.outputs.app == 'true' && needs.frontend.result == 'success'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       # The suite starts the HTTP server (create_app), which serves the built
       # shell — same artifact dependency as test-python.
@@ -248,7 +248,7 @@ jobs:
           name: shell-dist
           path: fused_render/static/shell-dist
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           # 3.11 is the extra's floor (the wheel's marker) and the version the
           # matrix job already reports coverage from.
@@ -263,7 +263,7 @@ jobs:
       # The backend builds each script's venv with `uv venv` + `uv pip install`
       # when uv is on PATH (it falls back to `python -m venv` + pip otherwise,
       # which works but is markedly slower). Same action the desktop jobs use.
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@v9.0.0
 
       # tests/test_server_env_install.py runs the install loader's own JS under
       # node (the only way to assert which key gets polled and when the overlay
@@ -349,9 +349,9 @@ jobs:
     if: needs.detect-changes.outputs.app == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           # 3.12 is what all three desktop builds ship, so the markers this
           # resolves are the ones the bundle actually gets.
@@ -381,18 +381,18 @@ jobs:
     if: needs.detect-changes.outputs.app == 'true' && needs.frontend.result == 'success'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - uses: actions/download-artifact@v4
         with:
           name: shell-dist
           path: fused_render/static/shell-dist
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
 
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@v9.0.0
 
       # desktop-file-utils provides desktop-file-validate, which appimagetool
       # runs against the bundled .desktop file during the AppImage build smoke.
@@ -459,9 +459,9 @@ jobs:
     if: needs.detect-changes.outputs.windows_desktop == 'true'
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
 
@@ -487,7 +487,7 @@ jobs:
         shell: pwsh
         run: choco install innosetup --no-progress -y
 
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@v9.0.0
         if: needs.detect-changes.outputs.windows_packaging == 'true'
 
       - name: Build the Windows installer (smoke)
@@ -519,7 +519,7 @@ jobs:
     if: needs.detect-changes.outputs.macos_desktop == 'true' && needs.frontend.result == 'success'
     runs-on: macos-14
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - uses: actions/download-artifact@v4
         with:
@@ -531,9 +531,9 @@ jobs:
       # no other way to build a script venv there (D176). The Linux and Windows
       # build scripts already require uv on the host the same way; macOS runners
       # do not have it preinstalled, so the build fails loudly without this.
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@v9.0.0
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
 
