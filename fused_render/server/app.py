@@ -48,6 +48,7 @@ from fused_render.server.routers.env import router as env_router
 from fused_render.server.routers.export import router as export_router
 from fused_render.server.fs_mutate import router as fs_mutate_router
 from fused_render.server.routers.fs_read import router as fs_read_router
+from fused_render.server.routers import index as index_routes
 from fused_render.server.routers.render import router as render_router
 from fused_render.server.routers.run import router as run_router
 from fused_render.server.routers.search import router as search_router
@@ -378,5 +379,18 @@ def create_app(start_dir: str) -> FastAPI:
     # local-machine seam that lets a Copy here paste in Finder/Explorer and a
     # copy there paste here (SPEC §3).
     app.include_router(clipboard_router)
+    # The filesystem metadata index (fused_render/index/): scan control,
+    # status polling, stats/lookup, and the in-folder corpus the explorer's
+    # search reads. Engine-side there is no HTTP; this router is the adapter.
+    app.include_router(index_routes.router)
+
+    # Keep the index warm. The scan is a detached worker, so this hook only
+    # spawns it — it cannot delay serving — and it debounces on the last scan
+    # of each root, so a reload loop does not queue scan after scan. First boot
+    # takes seconds over a whole home; while it runs, the explorer's search
+    # falls back to the live walk with no error state (SPEC server-api.md §2).
+    @app.on_event("startup")
+    async def _startup_index_scan():
+        await index_routes.startup_scan(start_dir)
 
     return app
