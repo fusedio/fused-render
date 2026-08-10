@@ -115,10 +115,14 @@ global.DOMPurify = {{
   sanitize(dirty, opts) {{ _sanitizeCalls.push({{ dirty, opts }}); return dirty; }},
 }};
 const DOMPurify = global.DOMPurify;
-// No `document` shim: window.hljs stays undefined, so renderMd's own
-// `if (window.hljs)` guard skips the highlightElement/box branch — same
-// guard that keeps this safe in node as it is in a real (DOM-having)
-// browser. What these tests check (language-xxx classes, tables, link
+// No `document` shim needed: renderMd itself no longer touches
+// hljs/window at all (that moved to attachCodeCopy's finish/static-render
+// pass — see test_render_md_never_invokes_hljs_even_when_present below).
+// `window` is set here only because attachCodeCopy is textually part of
+// this extracted block (a function declaration — its body, which does
+// reference `window.hljs`, never runs unless called, and these tests never
+// call it) and because it's harmless, defensive insurance against that
+// changing. What these tests check (language-xxx classes, tables, link
 // targets, fence tolerance) comes from marked's own output, not hljs.
 global.window = {{}};
 {self._block}
@@ -207,19 +211,71 @@ def test_javascript_href_is_not_specially_encoded_by_the_link_renderer(node_prob
 
 def test_hljs_theme_padding_and_scroll_are_overridden_for_the_assistant_pre(
         source):
-    # BEHAVIOR-LEVEL (CSS, source-contract style — no DOM to lay out in
-    # node). vendor/hljs.css ships its own unmodified `pre code.hljs{
-    # padding:1em;overflow-x:auto}` (github/github-dark). Its <link> is
-    # appended after this inline <style> at runtime and would otherwise win
-    # the cascade over `.assistant pre code{padding:0}`, stacking an extra
-    # 1em of padding and nesting a second horizontal scrollbar inside this
-    # pre's own overflow-x:auto. Pin the override exists with both
-    # properties fixed, scoped to .hljs specifically (not all pre code).
+    # BEHAVIOR-LEVEL (CSS specificity, source-contract style — no DOM to lay
+    # out in node). vendor/hljs.css ships TWO same-purpose rules, and each
+    # needs its own same-or-higher-scope override or the doubled-padding +
+    # nested-scrollbar bug reproduces in that theme:
+    #   - dark/default (unscoped):                   pre code.hljs
+    #   - light (:root[data-theme="light"]-scoped):   ...  pre code.hljs
+    # A first-pass fix added only the dark-scope override (.assistant +
+    # .hljs — 2 class-likes), which beats the dark vendor rule's 1 but NOT
+    # the light vendor rule's 3 (:root + [data-theme="light"] + .hljs) — on
+    # light theme the vendor rule still won and the bug reproduced there
+    # even though dark/default was fixed. Pin that BOTH overrides exist now,
+    # each with the SAME properties fixed, and — the actual bug, not just
+    # rule presence — that each override's specificity (computed by hand for
+    # these exact, flat, combinator-free selectors: id count, then
+    # class-likes [class/attribute/:root], then type count) strictly beats
+    # its same-scope vendor counterpart. Specificity comparison is a pure
+    # count; this holds regardless of which stylesheet the browser
+    # loads/parses later, which is the whole point of fixing it this way
+    # rather than relying on source order.
+    with open(os.path.join(VENDOR_DIR, "hljs.css"), encoding="utf-8") as h:
+        vendor_css = h.read()
+    vendor_dark_sel = "pre code.hljs"
+    vendor_light_sel = ':root[data-theme="light"] pre code.hljs'
+    assert vendor_dark_sel + "{display:block;overflow-x:auto;padding:1em}" in vendor_css
+    assert vendor_light_sel + "{display:block;overflow-x:auto;padding:1em}" in vendor_css
+
     style = source[source.index("<style>"):source.index("</style>")]
-    rule = re.search(r"\.assistant pre code\.hljs\s*\{([^}]*)\}", style)
-    assert rule, "no .assistant pre code.hljs override rule found"
-    assert re.search(r"padding:\s*0\b", rule.group(1))
-    assert re.search(r"overflow-x:\s*visible\b", rule.group(1))
+    # Line-anchored: the dark rule's line starts directly with `.assistant`;
+    # the light rule's line starts with the `:root[data-theme="light"] `
+    # prefix before it — `^` (MULTILINE) tells them apart, a lookbehind on
+    # the character before the match would not (both are preceded by a
+    # plain space either way).
+    dark_rule = re.search(r"^\s*\.assistant pre code\.hljs\s*\{([^}]*)\}", style, re.M)
+    light_rule = re.search(
+        r'^\s*(:root\[data-theme="light"\]\s*\.assistant pre code\.hljs)\s*\{([^}]*)\}',
+        style, re.M)
+    assert dark_rule, "no dark/default .assistant pre code.hljs override found"
+    assert light_rule, 'no :root[data-theme="light"] .assistant pre code.hljs override found'
+    for decls in (dark_rule.group(1), light_rule.group(2)):
+        assert re.search(r"padding:\s*0\b", decls)
+        assert re.search(r"overflow-x:\s*visible\b", decls)
+    override_dark_sel = ".assistant pre code.hljs"
+    override_light_sel = light_rule.group(1)
+
+    def class_likes(sel):
+        # class-likes: .class, [attr=...], :root (this codebase's only
+        # zero-argument pseudo-class in play here) — each worth one, same as
+        # a real browser's specificity algorithm.
+        return (len(re.findall(r"\.[\w-]+", sel))
+                + len(re.findall(r"\[[^\]]+\]", sel))
+                + len(re.findall(r":root\b", sel)))
+
+    vendor_dark_classes = class_likes(vendor_dark_sel)      # .hljs -> 1
+    vendor_light_classes = class_likes(vendor_light_sel)    # :root + attr + .hljs -> 3
+    override_dark_classes = class_likes(override_dark_sel)      # .assistant + .hljs -> 2
+    override_light_classes = class_likes(override_light_sel)    # :root + attr + .assistant + .hljs -> 4
+    assert (vendor_dark_classes, vendor_light_classes) == (1, 3)
+    assert (override_dark_classes, override_light_classes) == (2, 4)
+    assert override_dark_classes > vendor_dark_classes, (
+        "dark-scope override no longer beats the dark vendor rule on specificity"
+    )
+    assert override_light_classes > vendor_light_classes, (
+        "light-scope override does not beat the light vendor rule on specificity "
+        "— this is finding 1 reproducing"
+    )
 
 
 def test_attach_code_copy_skips_languages_hljs_does_not_have(source, tmp_path):

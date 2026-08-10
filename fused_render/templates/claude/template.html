@@ -924,10 +924,19 @@
      (unmodified github/github-dark rules) — its <link> lands after this
      inline <style> at runtime and would otherwise win the cascade over the
      padding:0 above, stacking an extra 1em of padding AND nesting a second
-     horizontal scrollbar inside this pre's own overflow-x:auto. Two classes
-     here (.assistant + .hljs) beats the vendor rule's one (.hljs) on
-     specificity regardless of source order, so this is robust either way. */
+     horizontal scrollbar inside this pre's own overflow-x:auto. Needs two
+     overrides, not one: the dark/default vendor rule is bare `pre
+     code.hljs` (2 classes' worth of specificity: .assistant+.hljs beats
+     it), but the light-theme vendor rule is `:root[data-theme="light"] pre
+     code.hljs` — :root + [data-theme="light"] + .hljs is 3 classes' worth,
+     which the bare override below does NOT beat (2 < 3, so on light theme
+     the vendor rule still wins and the bug reproduces there). The second
+     rule matches that scope one class richer (:root[data-theme="light"] +
+     .assistant + .hljs = 4), so it provably outranks it on specificity
+     alone — no dependence on which stylesheet the browser loads/parses
+     later. */
   .assistant pre code.hljs { padding: 0; overflow-x: visible; }
+  :root[data-theme="light"] .assistant pre code.hljs { padding: 0; overflow-x: visible; }
   /* Copy button: hidden until the pre is hovered (or focused, keyboard-only
      users get no hover) — a permanently-visible button on every code block
      is noise the eye has to filter on every single message. */
