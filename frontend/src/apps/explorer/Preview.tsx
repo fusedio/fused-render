@@ -43,6 +43,7 @@ import {
 } from "@platform/lib/mode-visibility";
 import { ModeMenu, OverflowMenu } from "@apps/explorer/BarMenu";
 import { subscribeTopbarSlot, topbarSlot } from "@apps/explorer/topbar-slot";
+import { subscribePaneActionSlot, paneActionSlot } from "@apps/explorer/pane-action-slot";
 import ContextMenu, { type MenuEntry, type MenuItem } from "@platform/ui/ContextMenu";
 import { MenuIcons } from "@platform/ui/MenuIcons";
 import { PromptDialog, ConfirmDialog, nameError } from "@apps/explorer/FsDialogs";
@@ -85,6 +86,19 @@ function Header({ fsPath, stat, children, afterName, onContextMenu }: HeaderProp
 function TopbarActions({ children }: { children: ReactNode }) {
   const slot = useSyncExternalStore(subscribeTopbarSlot, topbarSlot, () => null);
   return slot ? createPortal(children, slot) : null;
+}
+
+// Where the open FOLDER's primary action goes. The preview pane's header when
+// there is one (pane-action-slot.ts): the title bar is crowded — crumbs,
+// search box, `···` — and a labelled pill among them squeezes the path down to
+// nothing, while the header across the divider has room to spare.
+//
+// Null when there is no pane. Below the split's width threshold it does not
+// render at all, and the button has to keep appearing SOMEWHERE — a narrow
+// window must not silently cost a folder its primary action — so the caller
+// falls back to the bar it came from.
+function usePaneActionSlot(): HTMLElement | null {
+  return useSyncExternalStore(subscribePaneActionSlot, paneActionSlot, () => null);
 }
 
 // One open modal for the preview file menu: a Rename prompt or a Delete confirm
@@ -719,17 +733,25 @@ function TemplatePreview({
   // render this one.
   const appBtn = useAppButton(isListing ? fsPath : null, singleAppPath);
 
-  // The folder's primary action, built once and rendered in exactly one place:
-  // the title bar, whenever the folder qualifies.
+  // The folder's primary action, built once and rendered in exactly one place
+  // — which of the two bars depends on whether there is a pane.
   //
-  // It spent a while riding down into the preview pane's header instead
-  // whenever the pane was open, on the theory that the pane's own row already
-  // had an empty primary slot for it. That slot belongs to the pane's SELF
-  // target (nothing selected) — and a qualifying folder is by definition
-  // non-empty (it holds a top-level HTML file), so FS-16's auto-select claims
-  // the selection the moment the folder opens. So the self row almost never
-  // shows, and the button had effectively disappeared from the default view of
-  // exactly the folders it exists for.
+  // It spent a while riding down into the preview pane's header whenever the
+  // pane was open, on the theory that the pane's own row already had an empty
+  // primary slot for it. That slot belonged to the pane's SELF target (nothing
+  // selected) — and a qualifying folder is by definition non-empty (it holds a
+  // top-level HTML file), so FS-16's auto-select claims the selection the
+  // moment the folder opens. The self row almost never showed, and the button
+  // had effectively disappeared from the default view of exactly the folders it
+  // exists for. It moved to the title bar for that reason.
+  //
+  // It is back in the pane header, but on a different footing: the slot is in
+  // `strip` now, so it is there in EVERY pane state rather than one that is
+  // almost never reached. The title bar meanwhile stopped having room — the
+  // search row moved into it, and the pill was pushing the folder's own name
+  // out of the crumbs. The bar is still the fallback when the window is too
+  // narrow for a pane (paneActionSlot is null then).
+  const paneSlot = usePaneActionSlot();
   const openAsAppBtn = appBtn ? (
     <button type="button" className="open-as-app-btn" onClick={appBtn.onClick}>
       {appBtn.label}
@@ -811,11 +833,16 @@ function TemplatePreview({
     </>
   );
 
+  // One or the other, never both.
+  const appBtnInPane = paneSlot ? openAsAppBtn : null;
+  const appBtnInBar = paneSlot ? null : openAsAppBtn;
+
   return (
     <>
+      {appBtnInPane && createPortal(appBtnInPane, paneSlot as HTMLElement)}
       {actionsInTopbar ? (
         <TopbarActions>
-          {openAsAppBtn}
+          {appBtnInBar}
           {headerActions}
         </TopbarActions>
       ) : (
@@ -824,7 +851,7 @@ function TemplatePreview({
             fsPath={fsPath}
             stat={stat}
             onContextMenu={fileMenu.onContextMenu}
-            afterName={openAsAppBtn}
+            afterName={appBtnInBar}
           >
             {headerActions}
           </Header>

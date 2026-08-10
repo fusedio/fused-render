@@ -832,6 +832,23 @@
   background: var(--bg-alt);
 }
 
+/* Portal target for the open folder's "Open as app" (pane-action-slot.ts).
+   `display: contents` so the button is a flex item of the header itself and
+   picks up its gap and alignment, and `margin-right: auto` so it sits at the
+   header's LEFT end while the mode chip and the expand glyph stay packed
+   right: it belongs to the folder on the other side of the divider, not to the
+   row the rest of this bar is about.
+
+   :empty and it disappears — most folders have no lone page to open, and an
+   empty item would still spend one of the header's 8px gaps. */
+.listing-pane .pane-action-slot {
+  display: contents;
+}
+
+.listing-pane .pane-action-slot > * {
+  margin-right: auto;
+}
+
 /* Folder preview fallback: the folder's own entries, read-only. Narrower
    padding than the main table since it lives in the smaller pane. */
 .listing-pane .pane-mini-scroll {

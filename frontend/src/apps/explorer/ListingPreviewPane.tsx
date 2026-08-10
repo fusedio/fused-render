@@ -13,7 +13,7 @@
 // see its branch below. Wire-up state (pane visibility, width, the divider
 // drag) stays in Listing — this component only owns what the pane shows for a
 // given selection.
-import { useEffect, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { listDir, resolveConditions, statPath } from "@platform/lib/api";
 import type { TemplateEntry } from "@platform/lib/api";
 import { navigate, replaceSearch } from "@platform/lib/router";
@@ -25,6 +25,10 @@ import { ModeMenu } from "@apps/explorer/BarMenu";
 import { useAppButton } from "@apps/explorer/lib/app-button";
 import { withNoFocus } from "@apps/explorer/listing/frame-focus";
 import { usePaneFocusGuard } from "@apps/explorer/listing/usePaneFocusGuard";
+import {
+  publishPaneActionSlot,
+  retractPaneActionSlot,
+} from "@apps/explorer/pane-action-slot";
 import Listing from "@apps/explorer/Listing";
 import {
   PANE_APP_MODE,
@@ -94,6 +98,24 @@ interface AppTarget {
 interface PaneMode {
   mode: string;
   icon: React.ReactNode;
+}
+
+// Portal target for the open folder's primary action (pane-action-slot.ts).
+// Publishing the live node rather than letting Preview find it by id: the pane
+// unmounts whenever the split narrows past its threshold, and a stale
+// reference would leave the button portaled into a detached div — invisible,
+// with nothing in the title bar either.
+//
+// Collapses when empty so the header's `gap` does not open a hole beside the
+// mode chip for the folders that have no app to open (.pane-action-slot:empty).
+function PaneActionSlot() {
+  const ref = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (el) publishPaneActionSlot(el);
+    return () => retractPaneActionSlot(el);
+  }, []);
+  return <div className="pane-action-slot" ref={ref} />;
 }
 
 export default function ListingPreviewPane({
@@ -230,8 +252,17 @@ export default function ListingPreviewPane({
   //
   // `extra` is what the settled preview puts in it: the mode menu and the
   // open-full-screen button, at the strip's far end.
+  //
+  // It opens with the OPEN FOLDER's primary action, portaled down from
+  // Preview.tsx (pane-action-slot.ts) — see there for why it is not in the
+  // title bar. In `strip` itself, so it is present in every state: that button
+  // belongs to the folder on the left, not to whichever row the pane happens
+  // to be showing, and it must not blink out while a preview loads.
   const strip = (extra?: React.ReactNode) => (
-    <div className="pane-header">{extra}</div>
+    <div className="pane-header">
+      <PaneActionSlot />
+      {extra}
+    </div>
   );
 
   // Placeholders need no fetch: nothing selected, or a multi-selection. No
