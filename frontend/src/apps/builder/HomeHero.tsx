@@ -6,8 +6,9 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { aiComplete, createApp } from "@platform/lib/api";
 import { APP_ROUTE_PREFIX, navigate, navigateUrl } from "@platform/lib/router";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
+import logoMarkDark from "@assets/logo-black-bg-transparent.png";
+import logoMarkLight from "@assets/logo-white-bg-transparent.png";
 import { TextArea } from "@platform/ui/field/fields";
-import { HeroBrand } from "@platform/ui/HeroBrand";
 
 // URL of an app folder's claude chat, attached to a specific live run.
 // `_mode` is the shell's template selector; `run` is a plain view param the
@@ -324,15 +325,17 @@ function HeroComposer({ onCreated }: { onCreated: () => void }) {
 export function HomeHero({ onCreated }: { onCreated: () => void }) {
   return (
     <header className="home-hero">
-      {/* Fused mark + "App" wordmark with the tagline on the same line. */}
-      <HeroBrand
-        name="App"
-        tagline={
-          <>
-            Build your next <span className="home-hero-accent">local app</span>
-          </>
-        }
-      />
+      {/* Fused mark + headline. The "App" wordmark that used to sit between
+          them is gone — the sidebar entry that got you here already names the
+          page — so the mark stands alone beside the tagline. Both theme
+          renders are in the DOM; CSS shows the one matching data-theme. */}
+      <h1 className="home-hero-brand">
+        <img className="home-hero-logo home-hero-logo-dark" src={logoMarkDark} alt="" aria-hidden="true" />
+        <img className="home-hero-logo home-hero-logo-light" src={logoMarkLight} alt="" aria-hidden="true" />
+        <span className="home-hero-tagline">
+          Build your next <span className="home-hero-accent">local app</span>
+        </span>
+      </h1>
       {/* The hero's only verb, prompt-first: describe the app right here
           and a named, scaffolded folder + claude session comes back. */}
       <HeroComposer onCreated={onCreated} />

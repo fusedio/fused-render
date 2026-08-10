@@ -214,14 +214,13 @@ function FolderSearchSlot() {
   return <div className="crumb-search-slot" ref={ref} />;
 }
 
-// Split entry buttons + the path overflow: the bar's layout zone, in the same
-// position in every state so the hand learns where layout lives — EXCEPT over
-// a folder, where the listing underneath claims the zone and renders the `···`
-// at the end of the search row that has just moved into this bar
-// (listing/folder-chrome.ts says which state we are in; Listing.tsx renders
-// the other half). Nothing here for a folder at all: the splits are the pair
-// that make least sense over a view that already IS a split, and with them
-// gone the rule and the hairline would be a zone with nothing in it.
+// Split entry buttons: the bar's layout zone, in the same position in every
+// state so the hand learns where layout lives. Nothing here for a folder at
+// all (listing/folder-chrome.ts says which state we are in): the splits are
+// the pair that make least sense over a view that already IS a split, and with
+// them gone the rule and the hairline would be a zone with nothing in it.
+// The path `···` used to end this zone; it now travels with the path itself
+// (see the crumb strip below), which is what it acts on.
 function LayoutZone({ fsPath }: { fsPath: string }) {
   const claimed = useSyncExternalStore(subscribeFolderChrome, folderChromeClaimed, () => false);
   if (claimed) return null;
@@ -249,7 +248,6 @@ function LayoutZone({ fsPath }: { fsPath: string }) {
         >
           <SplitDownIcon />
         </button>
-        <PathOverflow fsPath={fsPath} />
       </div>
     </>
   );
@@ -448,8 +446,21 @@ export function Breadcrumb({
   // Recents, for its sidebar row) so "My DB app" beats "index.html".
   renderedTitle?: string | null;
 }) {
-  const crumbsRef = useRef<HTMLDivElement>(null);
+  const crumbsRef = useRef<HTMLDivElement | null>(null);
+  // The bar around whichever of the two the strip is currently showing (crumbs
+  // or the edit field) — captured from the live one, so the free-space handler
+  // below stays bound across the swap instead of dropping out in edit mode.
+  const barRef = useRef<HTMLElement | null>(null);
+  const captureBar = (el: HTMLElement | null) => {
+    if (el) barRef.current = el.parentElement;
+  };
   const [editing, setEditing] = useState(false);
+  // Set by the click-away below for the rest of its gesture — see the bar's
+  // click handler, which must not treat that same click as "open the field".
+  const justClosed = useRef(false);
+  // Read by that always-on listener, which must not rebind on every toggle.
+  const editingRef = useRef(false);
+  editingRef.current = editing;
   const { springProps, armedTarget } = useSpringLoadedCrumbs();
 
   // Keep the tail of a long path in view on every path change (same as the
@@ -462,6 +473,59 @@ export function Breadcrumb({
     const el = crumbsRef.current;
     if (el) el.scrollLeft = el.scrollWidth;
   }, [fsPath, editing]);
+
+  // The same click-to-edit, extended to the BAR's own free space — the gap
+  // between the crumbs and the folder-search box, which belongs to #breadcrumb
+  // rather than to the crumb strip (the strip stops growing once the search
+  // slot is mounted, explorer.css). Bound to the parent node here instead of
+  // being handed down from BreadcrumbBar so the edit state stays in one
+  // component; `e.target === bar` keeps it to the bar's own background, never
+  // a click that landed on one of its children.
+  useEffect(() => {
+    const bar = barRef.current;
+    if (!bar) return;
+    const onClick = (e: MouseEvent) => {
+      if (e.target !== bar) return;
+      // The click that CLOSED the field is still travelling: pointerdown ran
+      // the click-away below, and this is the same gesture's click arriving on
+      // the background the field just vacated. Without this it would read as a
+      // fresh click on free space and reopen what the user just dismissed.
+      if (justClosed.current) return;
+      setEditing(true);
+    };
+    bar.addEventListener("click", onClick);
+    return () => bar.removeEventListener("click", onClick);
+  }, [editing]);
+
+  // Click-away, closing the path field. `onBlur` alone is not enough: whether
+  // a mouse-down on non-focusable chrome (the bar's own background, a gap in
+  // the search row) moves focus at all is browser-dependent, so the field could
+  // sit there open and focused-looking under a click that clearly landed
+  // outside it. A pointerdown listener answers the question directly.
+  //
+  // The `···` is the one exception: it belongs to the path, and its button
+  // deliberately doesn't take focus (BarMenu.tsx), so its menu opens over an
+  // open field rather than closing it out from under the pointer.
+  //
+  // Bound once for the bar's lifetime, not per edit session, because it owns
+  // `justClosed` on both edges: every gesture starts by clearing the flag, so
+  // it lives exactly from the pointerdown that closes the field to the next
+  // press — long enough to cover that gesture's own click (which arrives in a
+  // later task, so a timer can't span it), and no longer.
+  useEffect(() => {
+    const onDown = (e: PointerEvent) => {
+      justClosed.current = false;
+      if (!editingRef.current) return;
+      const t = e.target as HTMLElement | null;
+      if (!t) return;
+      if (t.classList?.contains("crumb-edit")) return;
+      if (t.closest?.(".bar-overflow, .bar-menu-popup")) return;
+      justClosed.current = true;
+      setEditing(false);
+    };
+    document.addEventListener("pointerdown", onDown, true);
+    return () => document.removeEventListener("pointerdown", onDown, true);
+  }, []);
 
   // Ctrl/Cmd+L jumps into the editable path (like a browser's location bar).
   // Skip when focus is already in a text field so it never hijacks typing.
@@ -601,6 +665,7 @@ export function Breadcrumb({
       {editing ? (
         <input
           className="crumb-edit"
+          ref={captureBar}
           defaultValue={displayPath}
           spellCheck={false}
           autoFocus
@@ -622,19 +687,33 @@ export function Breadcrumb({
           onBlur={() => setEditing(false)} // a stray click cancels rather than commits
         />
       ) : (
-        // A click on the strip itself (whitespace right of the crumbs), not on
-        // a crumb or the reveal button, switches to the editable path.
+        // Click-to-edit, like a browser's location bar. Anything in the strip
+        // that is not itself a control turns it editable: the whitespace right
+        // of the crumbs, the "/" separators, and the current folder's own
+        // (unlinked) crumb. Only the ancestor crumbs — real links, plus the
+        // bar's buttons — keep their own behaviour, which is why this tests
+        // for an enclosing control rather than for the strip itself.
         <div
           className="crumbs"
-          ref={crumbsRef}
+          ref={(el) => {
+            crumbsRef.current = el;
+            captureBar(el);
+          }}
           onWheel={onWheel}
           onClick={(e) => {
-            if (e.target === e.currentTarget) setEditing(true);
+            if (!(e.target as HTMLElement).closest("a, button, input")) setEditing(true);
           }}
         >
           {pieces}
         </div>
       )}
+      {/* The path `···` — "Open in Finder", "Copy path" — sits immediately
+          right of the name it acts on, in every view. It used to end the bar's
+          layout zone for a file and the search row for a folder: two homes,
+          both of them the bar's far right, neither of them next to the thing
+          being opened or copied. The crumb strip stops growing (explorer.css)
+          so this stays against the path rather than drifting to the edge. */}
+      <PathOverflow fsPath={fsPath} />
       <UpdateBookmarkButton />
       <TopbarActionsSlot />
       <FolderSearchSlot />

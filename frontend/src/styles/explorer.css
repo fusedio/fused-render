@@ -122,9 +122,32 @@
    The scrollbar is hidden (scrollbar-width + ::-webkit-scrollbar) so the
    wheel-scrollable strip carries no chrome; the tail is pinned into view from
    JS on every path change. */
+/* Shrink-to-fit, not grow-to-fill: the path `···` sits immediately after this
+   strip (Breadcrumb.tsx), and a strip that grew would push it to the bar's far
+   edge — away from the name it acts on. The leftover room becomes bar
+   background, which is click-to-edit like the strip itself. */
 #breadcrumb .crumbs {
-  flex: 1 1 auto;
+  flex: 0 1 auto;
   scrollbar-width: none;
+}
+
+/* The path `···`, direct child of the bar (the other `···` menus here are
+   nested in .bar-zone / .crumb-actions). It follows the path: gone with it
+   while a folder search is running (the strip is hidden then), and still there
+   in edit mode — the field is the path, and its actions stay reachable. */
+#breadcrumb > .bar-overflow {
+  flex: 0 0 auto;
+  /* The bar is `justify-content: space-between`, which used to have nothing to
+     distribute because the crumb strip grew into every spare pixel. Now that it
+     doesn't, this auto margin takes that role: it swallows the free space in
+     one place, so ★/path/`···` stay packed together on the left and the bar's
+     right-hand zones stay pinned right, instead of the gap being spread evenly
+     between every item in the row. */
+  margin-right: auto;
+}
+
+#breadcrumb:has(.listing-search.searching) > .bar-overflow {
+  display: none;
 }
 
 #breadcrumb .crumbs::-webkit-scrollbar {

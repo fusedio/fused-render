@@ -16,7 +16,6 @@ import { BookmarkPreviewCard, RecentPreviewCard, ClaudeSessionFolderCard } from 
 import { describeSpec, runAiSearch, type AiSearchResult } from "@apps/explorer/lib/ai-search";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { TextArea } from "@platform/ui/field/fields";
-import { HeroBrand } from "@platform/ui/HeroBrand";
 
 // How many cards the Bookmarks/Recents tab shows before "Show more" — flat
 // count, not a row multiple, so it's the same rule for either tab regardless
@@ -365,18 +364,11 @@ export default function FilesHome({ config }: { config: Config }) {
   return (
     <div className="files-home">
       <div className="files-home-inner">
-        {/* Same shape as the /apps HomeHero: brand row, headline, composer —
-            the hero's only verb is the search prompt, mirroring how /apps
-            leads with its build prompt. */}
+        {/* No brand row or headline: the search prompt is the whole hero —
+            the page title lives in the sidebar's Explorer entry, and a
+            "Find and preview your files" restatement above the box only
+            pushed the one thing you came to use further down. */}
         <header className="home-hero files-hero">
-          <HeroBrand
-            name="Explorer"
-            tagline={
-              <>
-                Find and preview <span className="home-hero-accent">your files</span>
-              </>
-            }
-          />
           <AiSearchComposer
             home={home}
             initialQuery={initialQuery}
@@ -396,22 +388,9 @@ export default function FilesHome({ config }: { config: Config }) {
           <SearchResults home={home} query={search.query} result={search.result} />
         ) : (
           <>
-          {/* Browse lives with the content, not the hero (the hero is the
-              search prompt now) — and like the grids it yields to results. */}
-          <section className="fh-section files-browse">
-              <button
-                type="button"
-                className="files-hero-cta"
-                onClick={() => navigate(home, { isDir: true })}
-              >
-                Browse files
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                  <path d="M5 12h14M13 6l6 6-6 6" />
-                </svg>
-              </button>
-          </section>
           <section className="fh-section">
-            <div className="fh-tabs" role="tablist">
+            <div className="fh-tabs">
+              <div className="fh-tablist" role="tablist">
               <button
                 type="button"
                 role="tab"
@@ -438,6 +417,20 @@ export default function FilesHome({ config }: { config: Config }) {
                 onClick={() => setTab("recents")}
               >
                 Recents
+              </button>
+              </div>
+              {/* Browse rides the tab strip's right edge — the one action in a
+                  row of filters, so it sits opposite them rather than above
+                  them. Like the grids, it yields to search results. */}
+              <button
+                type="button"
+                className="files-hero-cta"
+                onClick={() => navigate(home, { isDir: true })}
+              >
+                Browse files
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                  <path d="M5 12h14M13 6l6 6-6 6" />
+                </svg>
               </button>
             </div>
 
