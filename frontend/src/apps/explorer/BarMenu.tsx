@@ -289,6 +289,12 @@ export function OverflowMenu({ items, title = "More actions" }: { items: Overflo
         aria-expanded={pos !== null}
         aria-label={title}
         title={title}
+        // Don't take focus on mouse-down. In the crumb bar this menu sits
+        // beside a path field that closes on blur: stealing focus would close
+        // it, reflow the strip under the pointer, and the mouse-up would land
+        // somewhere else — the button would be unclickable for as long as the
+        // field is open. Keyboard focus is unaffected.
+        onMouseDown={(e) => e.preventDefault()}
         onClick={toggle}
       >
         <EllipsisIcon />

@@ -48,7 +48,6 @@ import ContextMenu from "@platform/ui/ContextMenu";
 import { PromptDialog, ConfirmDialog } from "@apps/explorer/FsDialogs";
 import ListingPreviewPane from "@apps/explorer/ListingPreviewPane";
 import { resultCountLabel } from "@apps/explorer/listing/result-cap";
-import { PathOverflow } from "@apps/explorer/BarMenu";
 import { claimFolderChrome } from "@apps/explorer/listing/folder-chrome";
 import { searchSlot, subscribeSearchSlot } from "@apps/explorer/search-slot";
 import {
@@ -1162,19 +1161,10 @@ export default function Listing({
                   a button to flip — and a control that only ever restated what
                   the layout already showed was one more thing in a row that is
                   meant to be the search box. */}
-              {/* The path `···` for the folder view (see the claim above).
-                  Same control, same two items — "Open in Finder" and "Copy
-                  path" — rendered here, at the end of the row that holds this
-                  folder's other control, and carried into the crumb bar with
-                  it: the row is what portals, so the `···` ends up back at the
-                  bar's right end without the bar having to own it. */}
-              {/* normDir, not the bare `base`: `base` has its trailing slash
-                  stripped, which at the filesystem root leaves "" (and "C:" at
-                  a Windows drive root). The crumb-bar copy of this control got
-                  the un-stripped fsPath, so at "/" the menu's two items used to
-                  copy an empty string and POST an empty reveal path. Same
-                  normalisation the drop target below uses. */}
-              {ownsBarChrome && <PathOverflow fsPath={normDir(base)} />}
+              {/* The path `···` is not here any more: it rides the crumb strip
+                  now (Breadcrumb.tsx), immediately right of the folder name it
+                  acts on, which is one home instead of this row's and the
+                  file view's. */}
             </div>
           )}
           <div
