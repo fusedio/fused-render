@@ -4,12 +4,22 @@
 // tested — a headless test cannot see a drag, so nothing that only the browser
 // can see is allowed to decide anything.
 //
-// GESTURE SPLIT. A press on a ROW starts a move-drag (the browser's own
-// drag-and-drop, useRowDrag), a press on EMPTY SPACE starts a marquee, and a
-// press that never travels MARQUEE_DRAG_SLOP is the click the listing already
-// had. The three are separated by where the press lands and how far it goes —
-// there is no arbitration afterwards, and in particular no timer, so single-
-// click-select and double-click-open are untouched.
+// GESTURE SPLIT. Which of the two press-and-move gestures a press begins is
+// drag-drop's `pressGesture` — the same rule useRowDrag wires `draggable` from,
+// read here so the hit test and the drag source cannot drift apart. In short: a
+// row's NAME/ICON drags, a SELECTED row drags anywhere, and the rest of a row —
+// its gutter, the space after the name, the size and modified columns — is
+// marquee surface, along with the background below the rows.
+//
+// The first version of this split marquees only on the background, which sounds
+// right and is not: rows span the full width, so the only marquee surface was
+// the empty space below the last row and there was no way to rubber-band a
+// group in the MIDDLE of a populated list.
+//
+// A press that never travels MARQUEE_DRAG_SLOP is neither gesture — it is the
+// click the listing already had. There is no arbitration afterwards and in
+// particular no timer, so single-click-select and double-click-open are
+// untouched.
 //
 // COORDINATES are the scroller's CONTENT space (viewport offset + scrollTop),
 // not the viewport's. That is what lets the listing scroll under a live drag
@@ -17,6 +27,8 @@
 // space an absolutely-positioned child of the scroller is laid out in, so the
 // painted rectangle needs no conversion at all.
 import { useEffect, useRef, useState } from "react";
+import { pressGesture } from "@apps/explorer/listing/drag-drop";
+import { ROW_HANDLE_CLASS } from "@apps/explorer/listing/useRowDrag";
 import {
   autoScrollStep,
   marqueeBox,
@@ -46,13 +58,22 @@ function measureBands(scroller: HTMLElement, paths: string[]): RowBand[] {
   });
 }
 
-// Is this press on the listing's BACKGROUND? Everything that is a control or a
-// row belongs to some other gesture: rows drag, headers sort, the Load-more
-// button clicks. Only a press that hits none of them is empty space.
-function onBackground(target: EventTarget | null): boolean {
+// Does this press start a marquee? The row-vs-background half is pressGesture's
+// (shared with the drag); everything a CONTROL owns is excluded first, because
+// a column header sorts and a Load-more button clicks — neither is a surface
+// you can sweep from.
+function startsMarquee(target: EventTarget | null): boolean {
   const el = target as HTMLElement | null;
   if (!el || typeof el.closest !== "function") return false;
-  return !el.closest("tr.row, thead, button, input, a");
+  if (el.closest("thead, button, input, a")) return false;
+  const row = el.closest("tr.row");
+  return (
+    pressGesture({
+      onRow: !!row,
+      onName: !!el.closest("." + ROW_HANDLE_CLASS),
+      rowSelected: !!row?.classList.contains("selected"),
+    }) === "marquee"
+  );
 }
 
 export function useMarquee({
@@ -137,14 +158,23 @@ export function useMarquee({
     // Left button only: the right button opens the background context menu, and
     // the middle one is the browser's.
     if (e.button !== 0) return;
-    if (!onBackground(e.target)) return;
+    if (!startsMarquee(e.target)) return;
     const scroller = scrollRef.current;
     if (!scroller) return;
     // Stops the browser painting a text selection across the listing as the
     // pointer sweeps (the rows' own user-select:none is not enough — a drag
     // that STARTS outside a row still sets an endpoint).
     e.preventDefault();
-    scroller.setPointerCapture(e.pointerId);
+    // Capture keeps the sweep alive when the pointer leaves the scroller (over
+    // the preview pane, off the window edge). It throws for a pointer id the
+    // browser has no active pointer for — which a synthetic event is — and the
+    // drag works without it, so a failure here must not take the gesture down
+    // with it.
+    try {
+      scroller.setPointerCapture(e.pointerId);
+    } catch {
+      /* no capture; the listeners below are on the scroller either way */
+    }
     drag.current = {
       pointerId: e.pointerId,
       origin: contentPoint(scroller, e.clientX, e.clientY),

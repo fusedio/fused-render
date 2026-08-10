@@ -57,7 +57,7 @@ import {
   rowClickAction,
   selectionClaimed,
 } from "@apps/explorer/listing/selection";
-import { useRowDrag } from "@apps/explorer/listing/useRowDrag";
+import { ROW_DRAG_HANDLE, useRowDrag } from "@apps/explorer/listing/useRowDrag";
 import { useMarquee } from "@apps/explorer/listing/useMarquee";
 import { useDirListing } from "@apps/explorer/listing/useDirListing";
 import { useWalkSearch } from "@apps/explorer/listing/useWalkSearch";
@@ -594,7 +594,7 @@ export default function Listing({
               <tr
                 key={entry.rel}
                 data-flip-key={childPath}
-                {...rowDrag(ctx)}
+                {...rowDrag(ctx, selectedSet.has(childPath))}
                 className={
                   "row" +
                   dropClass(childPath) +
@@ -632,14 +632,18 @@ export default function Listing({
                 }
               >
                 <td className="name">
-                  <span className="icon">
-                    {iconForEntry(
-                      entry.rel.split("/").pop() ?? entry.rel,
-                      entry.is_dir,
-                    )}
-                  </span>
-                  <span className="search-path">
-                    {renderHighlight(entry.rel, positions)}
+                  {/* Icon + name = the row's DRAG HANDLE (see pressGesture):
+                      the rest of the row's width is marquee surface. */}
+                  <span {...ROW_DRAG_HANDLE}>
+                    <span className="icon">
+                      {iconForEntry(
+                        entry.rel.split("/").pop() ?? entry.rel,
+                        entry.is_dir,
+                      )}
+                    </span>
+                    <span className="search-path">
+                      {renderHighlight(entry.rel, positions)}
+                    </span>
                   </span>
                   <ClipMark
                     cut={cutSet.has(childPath)}
@@ -716,7 +720,7 @@ export default function Listing({
         <tr
           key={entry.name}
           data-flip-key={childPath}
-          {...rowDrag(ctx)}
+          {...rowDrag(ctx, selectedSet.has(childPath))}
           className={
             (entry.ignored ? "row ignored" : "row") +
             dropClass(childPath) +
@@ -753,10 +757,14 @@ export default function Listing({
           }
         >
           <td className="name">
-            <span className="icon">
-              {iconForEntry(entry.name, entry.is_dir)}
+            {/* Icon + name = the row's DRAG HANDLE (see pressGesture): the rest
+                of the row's width is marquee surface. */}
+            <span {...ROW_DRAG_HANDLE}>
+              <span className="icon">
+                {iconForEntry(entry.name, entry.is_dir)}
+              </span>
+              {entry.name}
             </span>
-            {entry.name}
             <ClipMark
               cut={cutSet.has(childPath)}
               copied={copiedSet.has(childPath)}
@@ -1055,11 +1063,12 @@ export default function Listing({
             />
             <div
               className="listing-pane-slot"
-              // A PERCENTAGE, not a pixel width: the split is stored as a
-              // fraction of this container (listing/pane.ts), so a window
-              // resize keeps the proportion the user dragged instead of
-              // leaving the pane at one window's arithmetic. The pixel floors
-              // are the slot's / the list's CSS min-widths.
+              // A PERCENTAGE, not a pixel width: the split is a fraction of
+              // this container (listing/pane.ts), so a window resize keeps the
+              // proportion the user dragged instead of leaving the pane at one
+              // window's arithmetic — and, until it IS dragged, steps between
+              // 30/50/70% as the container crosses the width breakpoints. The
+              // pixel floors are the slot's / the list's CSS min-widths.
               style={{ flexBasis: `${pane.frac * 100}%` }}
             >
               {/* Keyed on the previewed path: switching rows remounts the pane,
