@@ -920,6 +920,14 @@
     line-height: 1.55;
   }
   .assistant pre code { background: transparent; color: var(--pre-fg); padding: 0; }
+  /* vendor/hljs.css ships its own `pre code.hljs{padding:1em;overflow-x:auto}`
+     (unmodified github/github-dark rules) — its <link> lands after this
+     inline <style> at runtime and would otherwise win the cascade over the
+     padding:0 above, stacking an extra 1em of padding AND nesting a second
+     horizontal scrollbar inside this pre's own overflow-x:auto. Two classes
+     here (.assistant + .hljs) beats the vendor rule's one (.hljs) on
+     specificity regardless of source order, so this is robust either way. */
+  .assistant pre code.hljs { padding: 0; overflow-x: visible; }
   /* Copy button: hidden until the pre is hovered (or focused, keyboard-only
      users get no hover) — a permanently-visible button on every code block
      is noise the eye has to filter on every single message. */
@@ -1622,10 +1630,19 @@ const loadScript = (rel) => new Promise((ok, bad) => {
 // same-origin files. Unlike tableau/usd this script isn't wrapped in its own
 // async boot IIFE to `await` this — that would mean restructuring the whole
 // file, out of scope here.
+//
+// A failed load must not fail SILENTLY: renderMd()'s own fallback (see
+// below) keeps a reply from going blank, but the user still needs to know
+// markdown is degraded — addError() is a plain function declaration,
+// hoisted, so it's callable here even though it's defined later in the file.
 (async () => {
-  await loadScript("vendor/marked.min.js");
-  await loadScript("vendor/purify.min.js");
-  await loadScript("vendor/highlight.min.js");
+  try {
+    await loadScript("vendor/marked.min.js");
+    await loadScript("vendor/purify.min.js");
+    await loadScript("vendor/highlight.min.js");
+  } catch (err) {
+    addError("Markdown libraries failed to load (" + err.message + ") — replies will show as plain text.");
+  }
 })();
 
 const log = document.getElementById("log");
@@ -4752,7 +4769,16 @@ function _mdSetup() {
       // vendor/marked.min.js; some marked docs show a token-object shape
       // that belongs to a later major version and silently no-ops here).
       link(href, title, text) {
-        const h = DOMPurify.sanitize(href || "");
+        // DOMPurify.sanitize() sanitizes HTML fragments, not URLs: fed a
+        // bare string like this href, it just re-serializes it (entity-
+        // encoding any `&` — double-encoding on top of the escape below)
+        // and does nothing to stop a `javascript:` scheme, which comes out
+        // the other side looking like ordinary, harmless text. The href's
+        // real security check is the document-level DOMPurify.sanitize()
+        // in _md below, which does enforce an allowed-URI check on href
+        // attributes. All that's needed here is keeping the raw href from
+        // breaking out of the `"..."` attribute it's interpolated into.
+        const h = (href || "").replace(/&/g, "&amp;").replace(/"/g, "&quot;");
         return `<a href="${h}" target="_blank" rel="noopener noreferrer">${text}</a>`;
       },
     },
@@ -4764,24 +4790,40 @@ function _mdSetup() {
   return _md;
 }
 function renderMd(text) {
+  // Vendor libs failed to load (see the loader's .catch below) or haven't
+  // resolved yet: a ReferenceError here would kill the typer's rAF drain
+  // mid-stream with `raf` already nulled out, so it never resumes and the
+  // reply is left permanently blank with nothing in the DOM to explain why.
+  // `typeof x === "undefined"` never throws even for an undeclared global —
+  // touching the bare identifier `marked`/`DOMPurify` directly would.
+  if (typeof marked === "undefined" || typeof DOMPurify === "undefined"
+      || typeof DOMPurify.sanitize !== "function") {
+    return "<pre>" + text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;") + "</pre>";
+  }
   // Mid-stream tolerance: an odd number of ``` means a fence is still open —
   // close it so marked doesn't swallow the tail as one giant unterminated
   // code block while the reply is still arriving.
   const fences = (text.match(/```/g) || []).length;
   if (fences % 2 === 1) text += "\n```";
-  let html = _mdSetup()(text);
-  if (window.hljs) {
-    const box = document.createElement("div");
-    box.innerHTML = html;
-    box.querySelectorAll("pre code").forEach((el) => { try { hljs.highlightElement(el); } catch {} });
-    html = box.innerHTML;
-  }
-  return html;
+  return _mdSetup()(text);
 }
-// Copy-to-clipboard on every rendered <pre> — wired into the typer's
-// finish() and the static (non-typed) renders that never run finish() at
-// all (history restore, resumed runs).
+// Copy-to-clipboard + syntax highlighting on every rendered <pre> — wired
+// into the typer's finish() and every static (non-typed) render, NEVER the
+// per-frame streaming path in makeTyper's tick(): hljs.highlightElement is
+// real DOM work repeated ~36 times per reply, and re-guessing a partial
+// fence's language on every frame flickers colors as more text arrives, so
+// it only runs once a reply's text is final.
 function attachCodeCopy(rootEl) {
+  rootEl.querySelectorAll("pre code").forEach((el) => {
+    if (!window.hljs || el.classList.contains("hljs")) return;  // idempotent
+    // Only registered languages: the hljs "common" bundle is missing
+    // plenty marked's `language-xxx` class routinely names (dockerfile,
+    // mermaid, hcl/terraform, powershell, elixir, scala, latex, …), and
+    // highlightElement console.warns once per call for anything it can't
+    // find — getLanguage is the documented way to check first.
+    const lang = (el.className.match(/language-(\S+)/) || [])[1];
+    if (lang && hljs.getLanguage(lang)) { try { hljs.highlightElement(el); } catch {} }
+  });
   rootEl.querySelectorAll("pre").forEach((pre) => {
     if (pre.querySelector(".copybtn")) return;
     const b = document.createElement("button");
@@ -5563,10 +5605,18 @@ async function resumeRun(run_id) {
       }
       if (matches) {
         while (lastTurn.nextElementSibling) lastTurn.nextElementSibling.remove();
-        if (probe.text) addAssistant("").lastChild.innerHTML = renderMd(probe.text);
+        if (probe.text) {
+          const turn = addAssistant("");
+          turn.lastChild.innerHTML = renderMd(probe.text);
+          attachCodeCopy(turn);
+        }
       } else if (!users.length && probeMsg) {
         addUser(probeMsg);
-        if (probe.text) addAssistant("").lastChild.innerHTML = renderMd(probe.text);
+        if (probe.text) {
+          const turn = addAssistant("");
+          turn.lastChild.innerHTML = renderMd(probe.text);
+          attachCodeCopy(turn);
+        }
       }
       scrollBottom();
       return;
@@ -5683,6 +5733,7 @@ async function loadHistory(session_id) {
       if (t.role === "user") addUser(stripBlocks(t.text));
       else addAssistant("").lastChild.innerHTML = renderMd(t.text);
     }
+    attachCodeCopy(log);  // one pass over the whole restored transcript
     scrollBottom();
   } catch (err) {
     log.innerHTML = "";
