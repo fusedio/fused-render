@@ -15,7 +15,9 @@
 // Shift-range built in the provisional Listing survives too.
 export interface Selection {
   // Selected row paths, in the order they entered the selection (a Shift-range
-  // enters in rendered row order). Empty = nothing selected.
+  // enters in rendered row order, and so does a sweep — an ADDITIVE sweep keeps
+  // the rows it started with in front of the ones it collects).
+  // Empty = nothing selected.
   paths: string[];
   // Where a Shift-range extends FROM: the last row selected by a plain or
   // Mod-click / plain arrow move. null when nothing has been selected yet.
@@ -64,12 +66,13 @@ export function firstEntryPath(
 // are conditions on WHEN to ask, not on the answer (see Listing). This owns the
 // decision.
 //
-// The decision takes NO reading of the current selection, and deliberately so.
-// It used to defer to a `?sel` URL param — a per-folder claim on the selection
-// mirrored into the address bar — and that param is gone: it wrote to the URL
-// on every arrow-key press, and what it bought (a shareable link to a
-// highlighted row) is not what folder URLs are for. With no claim to defer to,
-// the ANSWER is always the first entry (D240).
+// The decision takes NO reading of the URL, and deliberately so. It used to
+// defer to the `?sel` param itself, resolving "what does this folder open on"
+// in two places at once. It does not need to: a `?sel=` on the URL is SEEDED
+// INTO THE SELECTION at mount (useListingSelection), so by the time this is
+// asked the param has already become an ordinary claim on the selection and
+// the yield below covers it. With no second claim to weigh, the ANSWER here is
+// always the first entry (D240).
 //
 // That rationale was about the URL, never about the user: **auto-select fills
 // an EMPTY selection, it never replaces one.** A row the user clicked in the
@@ -87,11 +90,102 @@ export function autoSelectPath(
 // Does something already own the selection? The one question the auto-select
 // effect asks before it spends its shot (FS-16): a non-empty selection at that
 // moment was put there by the user — a click in the provisional scaffold,
-// carried over by recallSelection — or by the reconcile clamping onto a
-// surviving row, and either way it outranks "row one, because the folder just
-// opened". Anchor/lead are not consulted: `paths` is what is highlighted.
+// carried over by recallSelection; a `?sel=` on the URL they reloaded or were
+// sent — or by the reconcile clamping onto a surviving row, and any of those
+// outranks "row one, because the folder just opened". Anchor/lead are not consulted: `paths` is what is highlighted.
 export function selectionClaimed(sel: Selection): boolean {
   return sel.paths.length > 0;
+}
+
+// --- the `?sel=` URL param ---------------------------------------------------
+//
+// The primary (lead) selection, mirrored into the folder's URL, so a reload or
+// a shared link comes back to the same row with the same thing in the preview
+// pane. Relative to the folder, never absolute: `?sel=notes.md`, which is short
+// enough to read in the address bar and keeps the fs path out of a link that
+// already carries it in its pathname.
+//
+// One rule covers both view modes, because a search hit's row path is
+// `base + "/" + entry.rel` exactly like a plain row's is `base + "/" + name` —
+// so the param is always "the part after this folder", whether that is a name
+// or a relative path several levels down.
+//
+// A MULTI-selection does not round-trip: only the lead is written. The lead is
+// what the pane previews and what Enter opens, which is the whole of what a
+// restored link needs; a range is a working state, not a destination.
+
+// The param value for the current lead, or null when there is nothing to
+// write. Also null for a lead that isn't in this folder at all — which happens
+// for a beat mid-navigation, and writing it would put another folder's row on
+// this folder's URL.
+export function selParam(base: string, path: string | null): string | null {
+  if (path === null) return null;
+  const prefix = base + "/";
+  return path.startsWith(prefix) ? path.slice(prefix.length) : null;
+}
+
+// The reverse: the row path a `?sel=` value names in this folder, or null when
+// it names nothing usable. The value comes from a URL, so it is arbitrary
+// input — an absolute value, or one climbing out of the folder with `..`, must
+// not turn into a path the preview pane will stat. A leading dot is fine: only
+// a whole segment of exactly ".." is a climb, so `.gitignore` and `..hidden`
+// are ordinary names.
+export function pathFromSelParam(base: string, raw: string | null): string | null {
+  if (!raw || raw.startsWith("/")) return null;
+  if (raw.split("/").includes("..")) return null;
+  return base + "/" + raw;
+}
+
+// What a press on a row does TO THE SELECTION — and nothing else, which is the
+// point.
+//
+// The explorer has ONE press model: a press selects, a double click opens, on
+// every row in every view mode. It used to have two, chosen by whether the
+// preview pane happened to be showing — pane off, a single click selected AND
+// opened; pane on, it only selected and the double click opened. That was
+// defensible while the pane was a thing the user switched on, and stopped being
+// so the moment the split became a measurement of the window (listing/pane.ts):
+// the same click in the same folder would open a file or not depending on how
+// wide the window was when you clicked it.
+//
+// THIS IS DECIDED ON POINTERDOWN, not on click, and that is not a detail. Rows
+// are drag sources, and on a `draggable` element WebKit does not reliably
+// deliver the `click` that would have followed the press — which is how
+// Shift/Cmd-click went silently dead once, and how a plain click on parts of a
+// row could fail to select at all. Deciding on the press removes the entire
+// failure class rather than working around it, and it is what Finder and
+// Explorer do: the highlight lands while the button is still down. Opening is
+// untouched — `dblclick` fires independently of any of this.
+//
+// The four answers:
+//
+//   toggle  Mod down: add/remove this row, re-anchoring on it.
+//   extend  Shift down: the range from the anchor to this row.
+//   select  the ordinary press: this row alone, immediately.
+//   defer   a plain press on a row that is ALREADY part of a MULTI-selection.
+//           The one case that cannot be answered on the press: collapsing to
+//           the pressed row there would make a multi-row drag impossible, since
+//           every drag begins with a press on one of the rows being dragged.
+//           So it waits for the release, and collapses only if the press never
+//           became a drag or a sweep. A press on a row that is the ONLY
+//           selected row needs no deferral — "select" is already what it is.
+//
+// `mod` is the caller's isMod(e) verdict rather than the raw event, so the rule
+// stays pure and platform-free (isMod is exclusive per-platform by design; see
+// lib/platform). Mod outranks Shift when both are down: the toggle is the more
+// precise gesture, and a stray Shift while Mod-picking rows must not replace
+// the picks with a range. Both outrank `inMultiSelection`, because a modified
+// press is never the start of a plain drag of the selection.
+export type RowPressAction = "extend" | "toggle" | "select" | "defer";
+
+export function rowPressAction(gesture: {
+  mod: boolean;
+  shift: boolean;
+  inMultiSelection: boolean;
+}): RowPressAction {
+  if (gesture.mod) return "toggle";
+  if (gesture.shift) return "extend";
+  return gesture.inMultiSelection ? "defer" : "select";
 }
 
 // A contiguous range of rendered rows, inclusive, in row order. `rows` is the

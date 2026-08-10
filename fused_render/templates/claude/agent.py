@@ -58,6 +58,7 @@ Actions:
 import json
 import os
 import re
+import shlex
 import shutil
 import signal
 import stat
@@ -600,6 +601,55 @@ def _migrate_session(file: str, session_id: str) -> None:
             _save_sidecar(file, data)
         except OSError:
             pass
+
+
+def _terminal_command(file: str, session_id: str = "") -> dict:
+    """The shell command that continues (or starts) this target's session in a
+    real terminal, for the page's "in terminal" menu item to put on the
+    clipboard.
+
+    Same session, same ground: the cwd is `_workdir` (the key everything else
+    here uses) and the fused-render skills ride along via the same
+    `--plugin-dir` the spawned runs get, so a session moved to the terminal
+    keeps the skills it was using. Deliberately NOT carried over: the headless
+    plumbing (-p, stream-json, the permission bridge, --append-system-prompt)
+    — that machinery exists because a browser page cannot be a terminal, and
+    an interactive `claude` brings its own. With a session id the transcript
+    is migrated first (the same copy-on-resume a browser resume does), so
+    `--resume` finds it from the cwd the command cd's into.
+
+    The binary is spelled `claude` when PATH resolves it — a command the user
+    reads and reuses should say what they would type — and falls back to the
+    located absolute path only when it doesn't."""
+    if not file:
+        return {"error": "missing target file (no _file param?)"}
+    workdir = _workdir(file)
+    if shutil.which("claude"):
+        binary = "claude"
+    else:
+        try:
+            binary = _claude_bin()
+        except FileNotFoundError:
+            # Not installed anywhere we know. Still hand over the command the
+            # user WOULD run — pasted, it produces the shell's own "command
+            # not found", which names the actual problem.
+            binary = "claude"
+    argv = [binary, *_plugin_argv()]
+    if session_id:
+        if _bad_id(session_id):
+            return {"error": "malformed session id"}
+        _migrate_session(file, session_id)
+        argv += ["--resume", session_id]
+    if os.name == "nt":
+        # cmd.exe quoting: bare when safe, double-quoted otherwise. shlex is
+        # POSIX-only and its output misleads on Windows.
+        def quote(s):
+            return '"' + s + '"' if (" " in s or not s) else s
+        command = "cd /d {} && {}".format(quote(workdir),
+                                          " ".join(quote(a) for a in argv))
+    else:
+        command = "cd {} && {}".format(shlex.quote(workdir), shlex.join(argv))
+    return {"command": command, "cwd": workdir}
 
 
 # ------------------------------------------------------------- tool approvals
@@ -2302,6 +2352,8 @@ def main(action: str = "start", file: str = "", message: str = "",
         # Asked for by the page BEFORE it composes a message, because that is
         # when it has crops to upload — see SHOTS for why this is not a run dir.
         return _shots_dir()
+    if action == "terminal_command":
+        return _terminal_command(file, session_id)
     if action == "cancel":
         return _cancel(run_id)
     return {"error": f"unknown action: {action}"}

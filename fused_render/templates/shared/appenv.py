@@ -147,7 +147,7 @@ def is_linked_app_dir(path: str) -> bool:
 def linked_app_dir_for(path: str) -> str:
     """The registered linked-app folder containing `path` (the folder itself
     or anything below it), or "" when there is none. The linked-app analogue
-    of the workspace `<tag>/<name>` containment rule — what `versions` uses to
+    of the workspace `<tag>/<name>` containment rule — what `history` uses to
     find the repo a file belongs to. Pure path arithmetic, no I/O."""
     ap = os.path.abspath(path)
     for d in linked_app_dirs():

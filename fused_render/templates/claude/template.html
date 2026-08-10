@@ -135,6 +135,11 @@
   #annbtn {
     height: 26px;
     padding: 0;
+    /* The row's ONE auto margin, and the strip's right-hand anchor: everything
+       before it (#back) sits left, everything after it (the picker, the view
+       toggle) rides right with it. It was #viewbtn's, back when the switch led
+       the row — see #leftbar #leftmode for why a row gets exactly one. */
+    margin-left: auto;
     /* The elastic one. Its label is a mode name, and "Annot…" beside a visible
        accent track still reads — where half of "Back to chat" would not tell you
        it is the way back. See #viewbtn's flex-shrink. */
@@ -234,10 +239,10 @@
   #leftmode { position: relative; flex-shrink: 0; }
   /* THE RIGHT-HAND END of the pane's own bar. The bar exists to carry this one
      control, and a lone control hard against the left edge reads as a label for
-     the pane rather than as a switch on it — the same reason #viewbtn parks
+     the pane rather than as a switch on it — the same reason #annbtn parks
      itself at the end of the strip across the divider. Scoped to #leftbar: in
      the narrow layout the picker shares #anntools with the annotate switch and
-     the view toggle, where #viewbtn already owns the auto margin and a second
+     the view toggle, where #annbtn already owns the auto margin and a second
      one would split the free space between them and float the picker into the
      middle of the row. */
   #leftbar #leftmode { margin-left: auto; }
@@ -329,6 +334,62 @@
   .mode-opt:hover, .mode-opt:focus-visible { background: var(--surface-2); }
   .mode-opt[aria-selected="true"] { color: var(--accent); }
 
+  /* More options (⋮) beside the annotate switch: trigger drawn as quiet as
+     #annbtn and #leftmodebtn (borderless, muted ink), popup drawn exactly like
+     #leftmodepop — same box, same shadow — because to the user they are the
+     same kind of thing: a small menu hanging off the strip. */
+  #kebab { position: relative; flex-shrink: 0; }
+  #kebabbtn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 22px;
+    height: 26px;
+    padding: 0;
+    font: inherit;
+    font-size: 14px;
+    line-height: 1;
+    border: 0;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--dim);
+    cursor: pointer;
+    transition: color .12s, background .12s;
+  }
+  #kebabbtn:hover, #kebabbtn[aria-expanded="true"] { color: var(--fg); background: var(--surface); }
+  #kebabpop {
+    position: absolute;
+    top: calc(100% + 6px);
+    right: 0;
+    z-index: 30;
+    min-width: 196px;
+    padding: 4px;
+    background: var(--panel);
+    border: 1px solid var(--border-strong);
+    border-radius: 10px;
+    box-shadow: 0 6px 24px var(--shadow);
+  }
+  /* Same story as #leftmodepop: `position: absolute` outranks the UA's
+     `[hidden]` rule, so the hide needs a rule of its own. */
+  #kebabpop[hidden] { display: none; }
+  .kebab-opt {
+    display: block;
+    width: 100%;
+    padding: 7px 9px;
+    font: inherit;
+    font-size: 12px;
+    line-height: 1;
+    white-space: nowrap;
+    border: 0;
+    border-radius: 7px;
+    background: none;
+    color: var(--fg);
+    cursor: pointer;
+    text-align: left;
+  }
+  .kebab-opt:hover, .kebab-opt:focus-visible { background: var(--surface-2); }
+  .kebab-opt[disabled] { color: var(--dim); cursor: default; }
+
   /* "Annotate preview" ⇄ "Back to chat" toggle. Exists for the NARROW layout only
      (see the 800px block at the end of this stylesheet): while both columns are on
      screen there is nothing to toggle, so it is display:none here and the media
@@ -339,7 +400,6 @@
      because a truncated "Back to cha…" is the only way out of the preview. */
   #viewbtn {
     display: none;
-    margin-left: auto;
     flex-shrink: 0;
     height: 26px;
     padding: 0 8px;
@@ -468,6 +528,10 @@
     overflow: hidden;
   }
   #chat.home #topbar, #chat.home #logwrap, #chat.home #composer-chat { display: none; }
+  /* #back rides the #anntools strip (which BOTH views keep), so its home-view
+     hiding is its own rule — the landing page IS the chat list, and a "back to
+     where you already are" is a control for nothing. */
+  #chat.home #back { display: none; }
   #chat:not(.home) #home { display: none; }
 
   /* top bar */
@@ -1104,7 +1168,7 @@
 
      Below 800px the split becomes ONE view at a time with a toggle, the same
      idiom log_studio (780px), map (650), duckdb/sqlite (560) and bundle (640)
-     already use. `versions`, the other split-layout template, collapses LOWER
+     already use. `history`, the other split-layout template, collapses LOWER
      (640px): its non-preview column is a 200px commit spine, not a 440px chat,
      so its split stays useful in hosts this one cannot survive.
 
@@ -1191,6 +1255,12 @@
            acts on the preview. Hiding them would hide part of the message. */
     body.view-chat #annbtn,
     body.view-chat #leftmode { display: none; }
+    /* The rule above also removes the row's ONE auto margin (#annbtn owns it,
+       see the wide styles), which would let the view toggle fall in next to
+       #back at the LEFT edge. The toggle takes the margin over only while the
+       switch is off screen, so the strip keeps its shape — way back at one end,
+       way forward at the other — in both views. */
+    body.view-chat #viewbtn { margin-left: auto; }
     /* The pin overlay (#annpins, #annhl, #annpop) needs no rule of its own: all
        three are children of #left, so parking the column takes them with it —
        `visibility: hidden` inherits (none of them sets `visibility: visible`)
@@ -1221,6 +1291,11 @@
     body.view-preview #left { flex: 1; min-height: 0; }
     body.view-preview #chat { flex: 0 0 auto; }
     body.view-preview #chat > *:not(#anntools) { display: none; }
+    /* #back survived the collapse above only because it moved into #anntools.
+       It stays hidden HERE for the same reason the rest of the chat column is:
+       the chat list it returns to is off screen in this view, so the button
+       would navigate to something the layout cannot show. */
+    body.view-preview #back { display: none; }
 
     #viewbtn { display: flex; align-items: center; }
   }
@@ -1263,6 +1338,14 @@
          document only). One switch is enough: the comment pins over the app
          show while annotating and hide when the mode is off. -->
     <div id="anntools">
+      <!-- The way back to the chat list, at the strip's left end. It lived at
+           the right end of #topbar; it sits HERE so the strip reads
+           [← Chats … Annotate] on one line, with the topbar below carrying only
+           the session's identity. Hidden on the home view (there is no chat to
+           leave) and in the narrow preview view (the view it returns to is off
+           screen there) — both rules are in the stylesheet, where the topbar's
+           own home-view hiding already lives. -->
+      <button id="back" type="button" aria-label="Back to chats">← Chats</button>
       <!-- Kind-free wording, and rewritten by applyPaneNoun once stat says what
            the pane is: "the app" for an app folder, "the preview" for a file. It
            said "the app" unconditionally, so a screen-reader user on `notes.md`
@@ -1271,6 +1354,19 @@
       <button id="annbtn" type="button" aria-pressed="false" aria-label="Annotate the preview"
               title="Annotate the preview, then send the notes to Claude"><span
         class="lbl">Annotate</span><span class="track" aria-hidden="true"><span class="knob"></span></span></button>
+      <!-- More options (⋮), beside the annotate switch. One item today: hand
+           this session to a real terminal. The LABEL is decided at open time
+           (kebabOpen) because it names what the copied command will do —
+           "Continue in terminal" when a session id is on the URL, "New session
+           in terminal" from the landing page — and the id is a param that
+           changes without a reload. -->
+      <div id="kebab">
+        <button id="kebabbtn" type="button" aria-haspopup="menu" aria-expanded="false"
+                aria-label="More options" title="More options">⋮</button>
+        <div id="kebabpop" role="menu" aria-label="More options" hidden>
+          <button id="terminalopt" type="button" role="menuitem" class="kebab-opt"></button>
+        </div>
+      </div>
       <!-- Which view the LEFT pane frames. The popup ships EMPTY and the whole
            control `hidden`: the options are the target's own preview modes,
            which only the stat call in paneURL() knows, and there is no picker to
@@ -1305,7 +1401,6 @@
       <span class="tb-title">Claude</span>
       <span class="tb-file" id="banner-sub"></span>
       <span id="session" class="mono"></span>
-      <button id="back" type="button" aria-label="Back to chats">← Chats</button>
     </div>
     <div id="logwrap"><div id="log"></div><div id="queue"></div></div>
     <!-- `display: contents` is in the stylesheet, deliberately not here: an inline
@@ -1354,7 +1449,7 @@
                The markup ships the kind-free wording so the box is never empty
                and never wrong: "this project" was hardcoded here and lied about
                every file and every ordinary folder this mode is bound to. -->
-          <textarea id="homebox" rows="2" placeholder="Ask Claude…" autofocus spellcheck="false"
+          <textarea id="homebox" rows="2" placeholder="Ask Claude…" spellcheck="false"
                     data-gramm="false" data-gramm_editor="false" data-enable-grammarly="false"></textarea>
           <div class="composer-row">
             <select id="hmodel" class="pill model-sel" title="Model"></select>
@@ -1440,6 +1535,26 @@ const box = document.getElementById("box");
 const chatEl = document.getElementById("chat");
 const sessionEl = document.getElementById("session");
 const homebox = document.getElementById("homebox");
+
+// Focus a composer — unless this page is a PREVIEW IN THE EXPLORER'S PANE.
+//
+// The pane is a same-origin iframe, so an input that focuses itself here takes
+// document focus away from the shell, and the listing's arrow keys stand down
+// the moment focus leaves it: previewing a file stopped the user browsing file
+// to file from the keyboard. `window.__fusedNoAutofocus` is the shell's signal
+// (runtime.js, from `_nofocus=1` on this frame's URL) and it goes false the
+// instant the reader touches this page — so clicking into the pane, or opening
+// this chat full-screen, focuses exactly as it always did. A standalone page
+// never sees the flag at all.
+//
+// Every composer focus goes through this, not only the boot ones: after the
+// first gesture it is a plain .focus(), so there is nothing to gain from
+// keeping two spellings and one obvious way for the next boot-path focus to
+// re-break the pane.
+function focusBox(el) {
+  if (window.__fusedNoAutofocus) return;
+  el.focus();
+}
 
 // The target file arrives as the read-only _file param (template contract).
 const FILE = fused.params.get("_file") || "";
@@ -2116,16 +2231,27 @@ const leftSel = document.getElementById("leftmode");        // the whole control
 const leftBtn = document.getElementById("leftmodebtn");     // its trigger
 const leftPop = document.getElementById("leftmodepop");     // its listbox
 
-// The shell's `modeTitle` (ModeSwitcher.tsx), reimplemented in four lines: a
+// The shell's `modeTitle` (lib/mode-name.ts), reimplemented in four lines: a
 // template is a standalone document and cannot import the shell's TS. Worth the
 // duplication because the picker's labels must read the same as the explorer's
 // mode switcher does for the same file — "Rendered" for the `_render` sentinel,
 // and a capitalized folder name otherwise, since a folder name is chosen for the
-// filesystem, not for a label. (`_listing`/`_app` never appear in a FILE's
-// entries and the two chat modes are already filtered out, so they are not here.)
+// filesystem, not for a label. (`_listing` never appears in a FILE's entries and
+// the two chat modes are already filtered out, so they are not here.)
+//
+// `app`/`_app` are named for what the shell calls the surface, not for the
+// registry key: by the time this label is on screen the user is already inside
+// the app, so "App" says nothing — it is the app's own preview, as against its
+// history (History) or its build surface. The key stays `app` everywhere it is
+// not a display string. A label that disagreed with the mode switcher one strip
+// away would read as two different views.
 function paneModeLabel(mode) {
   if (mode === "_render") return "Rendered";
-  return ({ versions: "History", git: "Source Control" })[mode]
+  // No `history` row: the mode key IS the word, so the capitalize below
+  // already produces "History" — the same string the shell's humanizer gives
+  // it. It earned an explicit row only while the key was spelled `versions`.
+  return ({ git: "Source Control",
+            app: "Preview", _app: "Preview" })[mode]
     || mode.charAt(0).toUpperCase() + mode.slice(1);
 }
 
@@ -2274,8 +2400,8 @@ function placeLeftPicker() {
   // Looked up rather than closed over: `viewbtn` has a const of its own further
   // down (viewBtn), and a second `const` of the same name here would be a
   // redeclaration. In the shared strip the picker belongs BETWEEN the annotate
-  // switch and the view toggle — appending would put it after #viewbtn, whose
-  // `margin-left: auto` pins it to the row's right end.
+  // switch and the view toggle — appending would put it after #viewbtn, and the
+  // toggle must stay the row's last word (it is the way out of the preview).
   const host = wide ? leftBar : document.getElementById("anntools");
   if (leftSel.parentElement !== host) {
     host.insertBefore(leftSel, wide ? null : document.getElementById("viewbtn"));
@@ -2391,6 +2517,14 @@ function enterNoPane() {
   //    rendered a blank page. applyNarrowView returns early from here on, so
   //    nothing puts either class back.
   document.body.classList.remove("view-preview", "view-chat");
+  // 4. Rescue #back before its host goes: the button lives in #anntools (the
+  //    strip earns its place as the [← Chats … Annotate] row), but the way back
+  //    to the chat list must outlive the pane. The topbar takes it — the row
+  //    that held it before the strip existed, and the one piece of chat chrome
+  //    this teardown keeps.
+  const backBtn = document.getElementById("back");
+  const topBar = document.getElementById("topbar");
+  if (backBtn && topBar) topBar.appendChild(backBtn);
   for (const id of ["left", "divider", "anntools"]) {
     const el = document.getElementById(id);
     if (el) el.remove();
@@ -2870,19 +3004,34 @@ annFrame.addEventListener("load", () => {
   doc.addEventListener("mousedown", () => {
     if (annPop.style.display === "block") annCloseComposer();
   }, true);
-  doc.addEventListener("mousemove", (e) => {
-    if (!annOn) return;
-    const el = elementOf(e.target);
-    if (!el || el === doc.body || el === doc.documentElement) {
-      annHl.style.display = "none";
-      return;
-    }
+  // One placement path for both writers: the hover follow below and the click
+  // handler's re-anchor. The click MUST place, not trust the last hover — on
+  // the "move the popover" flow the ring was frozen on the PREVIOUS element
+  // for the whole trip over (see the composer guard in mousemove), so at
+  // click time it shows the box the user just left.
+  const annPlaceHl = (el) => {
     const r = annStageRect(el);
     annHl.style.display = "block";
     annHl.style.left = r.left + "px";
     annHl.style.top = r.top + "px";
     annHl.style.width = r.width + "px";
     annHl.style.height = r.height + "px";
+  };
+  doc.addEventListener("mousemove", (e) => {
+    if (!annOn) return;
+    // An open composer means the user CLICKED an element and is writing about
+    // it: the highlight is that element's, and a hover that drags it away
+    // makes the popover describe one box while the orange ring shows another.
+    // Frozen, not re-anchored — the composer doesn't follow scroll either, so
+    // the pair moves (and closes) together. Any close path (Esc, outside
+    // mousedown, save) lets this handler resume on the next move.
+    if (annPop.style.display === "block") return;
+    const el = elementOf(e.target);
+    if (!el || el === doc.body || el === doc.documentElement) {
+      annHl.style.display = "none";
+      return;
+    }
+    annPlaceHl(el);
   });
   // Capture phase, everything swallowed while annotating — buttons and links
   // included: annotate mode exists precisely to point at controls without
@@ -2907,6 +3056,10 @@ annFrame.addEventListener("load", () => {
     anchor.tag = el.tagName.toLowerCase();
     const t = (el.textContent || "").trim().replace(/\s+/g, " ");
     if (t) anchor.text = t.slice(0, 80);
+    // Re-anchor the ring to what was CLICKED before freezing on it: the hover
+    // follow stops while a composer is open, so on a click that moves the
+    // popover the last-painted ring belongs to the previous element.
+    annPlaceHl(el);
     annOpenComposer(e.clientX, e.clientY, anchor);
   }, true);
   // Scroll and mutation storms coalesce to one re-render per frame.
@@ -3996,13 +4149,75 @@ document.getElementById("back").onclick = () => {
   // without this the panel could never appear for the rest of that page's life.
   // This only reveals the collapsed heading; nothing is read until it is opened.
   mountSnapshots();
-  homebox.focus();
+  focusBox(homebox);
 };
 
 function enterChat() {
   chatEl.classList.remove("home");
-  box.focus();
+  focusBox(box);
 }
+
+// ── more options (⋮): hand the session to a real terminal ──────────────
+// One menu item that copies a paste-ready shell command: `claude --resume
+// <id>` from the target's workdir when a session is on the URL, a fresh
+// `claude` from the same ground when there isn't. The command comes from
+// agent.py (action "terminal_command") because only it knows the workdir
+// rule, the plugin dir and the copy-on-resume transcript move — the page
+// just puts the string on the clipboard.
+const kebabBtn = document.getElementById("kebabbtn");
+const kebabPop = document.getElementById("kebabpop");
+const terminalOpt = document.getElementById("terminalopt");
+function kebabClose() {
+  kebabPop.hidden = true;
+  kebabBtn.setAttribute("aria-expanded", "false");
+}
+function kebabOpen() {
+  // Named at open time: the session param changes without a reload (back
+  // button, first turn of a new chat), so a label written once would lie.
+  terminalOpt.textContent = fused.params.get("session_id")
+    ? "Continue in terminal" : "New session in terminal";
+  terminalOpt.disabled = false;
+  kebabPop.hidden = false;
+  kebabBtn.setAttribute("aria-expanded", "true");
+  terminalOpt.focus();
+}
+kebabBtn.addEventListener("click", () => {
+  if (kebabPop.hidden) kebabOpen(); else kebabClose();
+});
+// Same dismissal contract as the view picker: outside click or Escape. The
+// frame's own mousedown can't bubble here, but entering the frame means
+// leaving the menu, and the pane sits outside this subtree, so the document
+// listener covers it.
+document.addEventListener("mousedown", (e) => {
+  if (!kebabPop.hidden && !e.composedPath().includes(document.getElementById("kebab"))) {
+    kebabClose();
+  }
+});
+kebabPop.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") { e.stopPropagation(); kebabClose(); kebabBtn.focus(); }
+});
+terminalOpt.addEventListener("click", async () => {
+  const label = terminalOpt.textContent;
+  terminalOpt.disabled = true;
+  try {
+    const out = await fused.runPython(AGENT, {
+      action: "terminal_command",
+      file: FILE,
+      session_id: fused.params.get("session_id") || "",
+    }, { key: null });
+    if (out.error) throw new Error(out.error);
+    await navigator.clipboard.writeText(out.command);
+    // The copied state shows INSIDE the item, then the menu goes away on its
+    // own: the click's whole job was the clipboard, there is nothing further
+    // to do in an open menu.
+    terminalOpt.textContent = "Copied — paste in your terminal";
+    setTimeout(() => { kebabClose(); terminalOpt.textContent = label; }, 900);
+  } catch (err) {
+    terminalOpt.disabled = false;
+    terminalOpt.textContent = "Copy failed — " + (err && err.message || err);
+    setTimeout(() => { terminalOpt.textContent = label; }, 2500);
+  }
+});
 
 // ── log rendering ──
 function addUser(text) {
@@ -4605,6 +4820,12 @@ async function stopRun() {
     // tail, and its bubble sits below the held ones — the held entries go back
     // to the front so drain order keeps matching both typed and screen order.
     queuedMsgs.unshift(...held.filter((q) => !q.dead));
+    // The mirror was deliberately NOT cleared at the splice above: the detach is
+    // provisional until the cancel lands, and a frame that died mid-cancel would
+    // otherwise come back to a live run with the queue erased. So the store
+    // still holds these; re-persisting is what folds in whatever was queued
+    // during the await and re-states the order they were just put back in.
+    persistQueue();
     if (activeWorking) activeWorking.setStopping(false);
     addError("Could not stop the run: " + err.message);
   }
@@ -4646,8 +4867,8 @@ function onEscape(e) {
 document.addEventListener("keydown", onEscape);
 
 // ── message queue: text typed while a run is live ──
-// In-memory only (a reload drops it — the composer is where durable drafts
-// live), text-only by design: annotations are folded in at SEND time, so whatever is pending when a queued message actually goes
+// Mirrored into sessionStorage (see QUEUE_STORE below) so a teardown does not
+// eat it, text-only by design: annotations are folded in at SEND time, so whatever is pending when a queued message actually goes
 // out rides that send — which is also the desirable reading for the app-state
 // snapshot (fresh state after the previous turn's edits, not a stale one from
 // queue time). Each entry renders as a dashed placeholder bubble in #queue —
@@ -4659,6 +4880,150 @@ document.addEventListener("keydown", onEscape);
 // time) because test_claude_stop_run.py extracts `runEnding` as "everything up
 // to `async function stopRun`" and runs it under node: anything between the
 // two that touches `document` breaks that extraction.
+// The queue's mirror. sessionStorage, not localStorage: the queue belongs to
+// this tab's trip through this conversation — a mode switch, a navigation, a
+// reload — and must not surface in a second window that happens to be looking
+// at the same file, nor outlive the tab. One record — but NOT because one frame
+// is one conversation: a tab can hold several of these pages at once now (the
+// explorer's preview pane renders one for whatever row is selected, beside a
+// full-screen chat), and they share this key. So a page may only ever write or
+// delete the record it can prove is ITS OWN; see queueOwnedBy.
+const QUEUE_STORE = "fused-render:claude-queue";
+
+// The record for a queue, or null when there is nothing worth keeping. Pure so
+// the identity rule is a tested decision rather than an accident of where the
+// setItem call happens to sit.
+//
+// BOTH ids go in, and the restore matches on EITHER (see queueRestore), because
+// they drift on purpose: `run` is set the moment a turn launches, while
+// `session_id` only lands when the first poll reports it — so a message parked
+// in that window knows only the run, and the boot that re-attaches to that run
+// knows both. Storing the pair is what lets the two views of the same
+// conversation recognise each other.
+function queueRecord(sessionId, runId, texts) {
+  if (!texts.length) return null;          // drained/unqueued to nothing
+  if (!sessionId && !runId) return null;   // nothing a later boot could match on
+  return { session: sessionId || "", run: runId || "", texts };
+}
+
+// The texts a stored record hands back to THIS boot — [] unless the record was
+// written for the conversation now booting. That check is the whole guard
+// against resurrection: a record from a finished or unrelated chat names ids
+// this page does not have, and a brand-new chat names no ids at all, so neither
+// can pull a previous conversation's words into the composer's place. Damage
+// (hand-edited storage, a half-written record, a shape from an older build) is
+// treated as absence rather than thrown: losing the queue is the bug we are
+// fixing, but a red overlay on boot would be a worse one.
+// Is the stored record THIS boot's own? The identity rule, on its own, because
+// two questions need it and they must not answer differently: what may be
+// restored, and — the dangerous one — what may be DELETED.
+//
+// A page that cannot match the record has no standing over it. sessionStorage is
+// per TAB, not per frame, and the preview pane means a second claude page is
+// mounted for any row that previews in claude mode: id-less, matching nothing,
+// and (before this) deleting on sight the queue that a live conversation in the
+// same tab had parked behind a running turn. Silently, and exactly in the
+// scenario the queue was built for.
+function queueOwnedBy(raw, sessionId, runId) {
+  let rec;
+  try { rec = JSON.parse(raw || "null"); } catch (err) { return false; }
+  if (!rec) return false;
+  return !!((rec.session && sessionId && rec.session === sessionId)
+         || (rec.run && runId && rec.run === runId));
+}
+
+function queueRestore(raw, sessionId, runId) {
+  let rec;
+  try { rec = JSON.parse(raw || "null"); } catch (err) { return []; }
+  if (!rec || !Array.isArray(rec.texts)) return [];
+  if (!queueOwnedBy(raw, sessionId, runId)) return [];
+  return rec.texts.filter((t) => typeof t === "string" && t);
+}
+
+// Write the CURRENT queue. Called from every place queuedMsgs changes — the
+// enqueue, the ×, the drain, the hand-back — because a mirror that is only
+// written on the way in re-sends messages that already went out, which is a
+// worse failure than the one this replaces. Cheap enough to do eagerly: the
+// queue is a handful of short strings.
+//
+// Returns whether the queue is safely stored, which is what the teardown hook
+// answers with. A refused write (quota, a locked-down profile) is a real
+// failure and says so; an empty queue is nothing to lose and says ok.
+//
+// The DELETE is gated by queueOwnedBy, exactly as restoreQueue's is, and for
+// the same reason: an empty queue is not evidence the stored record is this
+// page's. The pane's claude frame has no ids and no queue, and it reaches here
+// on every mode switch — the shell awaits `__fusedFlushEdits` before it
+// remounts anything — so an ungated removeItem let selecting a row bin the
+// queue a live conversation elsewhere in the same tab had parked behind a
+// running turn. The identical bug the restore side already had; both sites now
+// ask the one question, which is why the rule is a function and not an inline
+// comparison.
+function persistQueue() {
+  const sessionId = fused.params.get("session_id") || "";
+  const runId = fused.params.get("run") || "";
+  const texts = queuedMsgs.map((q) => q.text);
+  const rec = queueRecord(sessionId, runId, texts);
+  try {
+    if (rec) sessionStorage.setItem(QUEUE_STORE, JSON.stringify(rec));
+    else if (!texts.length) {
+      // Nothing of ours to keep — so bin the record only if it IS ours. A
+      // record we cannot name is left alone: it dies with the tab anyway, and
+      // it may well be a running chat's.
+      const raw = sessionStorage.getItem(QUEUE_STORE);
+      if (raw && queueOwnedBy(raw, sessionId, runId)) sessionStorage.removeItem(QUEUE_STORE);
+    }
+    else return false;  // queued text with no id to key it by — see queueRecord
+    return true;
+  } catch (err) {
+    console.warn("the message queue could not be saved:", err.message);
+    // An EMPTY queue still says ok, whichever storage call threw. The hook's
+    // {ok:false} exists to stop a teardown eating the user's TEXT, and there is
+    // none here — the failed call was the removal of a record we no longer
+    // need. Refusing the mode switch over that would strand the reader in a
+    // pane to protect nothing. It read `return false` while the doc comment
+    // above said the opposite, which held only because nothing had made a
+    // locked-down store refuse a removal.
+    return !texts.length;
+  }
+}
+
+// Put a saved queue back on screen. Rebuilt through queueMessage, so restored
+// entries are indistinguishable from freshly parked ones — same bubble, same ×,
+// same array — and each append re-persists under the ids this boot has, which
+// is how a record written with only a run id acquires its session id.
+//
+// The record is dropped only when this boot OWNS it and it has nothing left in
+// it. It used to be dropped whenever it failed to match, on the reasoning that
+// a record this page cannot adopt is a dead chat's leftovers — which was true
+// while a tab held one of these pages. It no longer does: an id-less preview in
+// the pane matches nothing by construction, so "does not match me" became "is
+// almost certainly someone else's", and the sweep deleted live queues. A
+// record nobody claims is harmless — it is keyed to ids no future boot will
+// have, and sessionStorage dies with the tab.
+function restoreQueue(sessionId, runId) {
+  let raw = null;
+  try { raw = sessionStorage.getItem(QUEUE_STORE); } catch (err) { return; }
+  if (!raw) return;
+  const texts = queueRestore(raw, sessionId, runId);
+  for (const t of texts) queueMessage(t);
+  if (!texts.length && queueOwnedBy(raw, sessionId, runId)) {
+    try { sessionStorage.removeItem(QUEUE_STORE); } catch (err) {}
+  }
+}
+
+// The shell's remount-safety hook, same contract as the code template's editor
+// (Preview.tsx awaits it before switching modes, with a 10 s bound, and aborts
+// the switch on {ok:false}). The queue is written on every mutation already, so
+// this is a belt-and-braces re-save covering anything that changed the array
+// without going through those paths — and, more importantly, the one place that
+// can REFUSE to let the frame go when the queue genuinely cannot be stored.
+// Never {ok:false} merely because a queue exists: a user with messages parked
+// behind a run must still be able to change modes.
+window.__fusedFlushEdits = async () => {
+  return { ok: persistQueue() };
+};
+
 const queueEl = document.getElementById("queue");
 const queuedMsgs = [];  // [{ text, el }]
 
@@ -4682,18 +5047,20 @@ function queueMessage(text) {
     const i = queuedMsgs.indexOf(entry);
     if (i >= 0) queuedMsgs.splice(i, 1);
     entry.dead = 1;  // may be detached in stopRun's `held` right now — see below
+    persistQueue();
     d.remove();
     // Back into the composer, not the void — appended so a draft in progress
     // is never clobbered.
     box.value = box.value ? box.value.replace(/\s*$/, "\n\n") + text : text;
     growBox();
-    box.focus();
+    focusBox(box);
   };
   meta.append(lbl, x);
   d.append(b, meta);
   queueEl.appendChild(d);
   scrollBottom();
   queuedMsgs.push(entry);
+  persistQueue();
 }
 
 // Fire the next queued message once nothing is live. Called from the tails of
@@ -4704,6 +5071,11 @@ function queueMessage(text) {
 function drainQueue() {
   if (sending || activeRun || !queuedMsgs.length) return;
   const next = queuedMsgs.shift();
+  // Out of the store as it leaves the array, not after the send resolves: from
+  // here the text's fate is sendMessage's (a real user bubble, and on failure
+  // an error beside it), and a mirror still holding it would re-park a message
+  // the next boot can already see in the log.
+  persistQueue();
   next.el.remove();  // sendMessage adds the real user bubble
   sendMessage(next.text);
 }
@@ -4718,6 +5090,10 @@ function unqueueAll(entries) {
     box.value = box.value ? box.value.replace(/\s*$/, "\n\n") + q.text : q.text;
   }
   growBox();
+  // The entries are in the composer now and gone from the array, so the mirror
+  // has to let them go too — otherwise a reload would show them BOTH parked
+  // below the log and typed in the box, and send the copy nobody edited.
+  persistQueue();
 }
 
 // ── send one message: start detached claude, poll + stream ──
@@ -4966,7 +5342,7 @@ async function sendMessage(message) {
     sending = false;
   }
   scrollBottom();
-  box.focus();
+  focusBox(box);
   drainQueue();
 }
 
@@ -5029,7 +5405,7 @@ async function resumeRun(run_id) {
     console.warn("run re-attach failed:", err.message);
   } finally {
     sending = false;
-    box.focus();
+    focusBox(box);
   }
   drainQueue();
 }
@@ -5603,10 +5979,31 @@ async function loadSnapshots() {
     // A bare `run` param (frame died before the first poll saw the session id)
     // still means an in-flight conversation — enter chat and re-attach.
     enterChat();
+    // BEFORE both awaits, and that ordering is the feature. resumeRun's tail
+    // calls drainQueue, so entries restored after it would sit below the log
+    // untouched until some later turn happened to end. Restoring first also
+    // means the bubbles are on screen for the whole of the history load and the
+    // re-attach probe, which is exactly what the user left behind — rather than
+    // appearing seconds later as if the page had thought better of it.
+    // Cheap and synchronous (a storage read and a few nodes), so it costs the
+    // re-attach nothing.
+    restoreQueue(session_id, run_id);
     if (session_id) await loadHistory(session_id);
     if (run_id) await resumeRun(run_id);
+    // The run this queue was parked behind may have finished while no frame was
+    // attached (`resumeRun` takes the done branch and never polls), and then
+    // nothing else will ever call drainQueue for it. Firing here sends what the
+    // live page would have sent the moment that turn ended; a no-op when the
+    // queue is empty or resumeRun already drained it.
+    drainQueue();
   } else {
-    homebox.focus();
+    // No conversation to belong to, so nothing to restore — and nothing to
+    // clean up either. This boot owns no record by definition (it has no ids to
+    // match one with), and the tab's storage may well belong to a chat that is
+    // still running in another frame: the preview pane mounts one of these for
+    // any row previewed in claude mode. Touching the store from here is exactly
+    // how a live conversation's parked messages used to disappear.
+    focusBox(homebox);
     await loadRecent();
     await mountSnapshots();
   }

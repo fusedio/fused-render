@@ -37,6 +37,93 @@ import { encodePaneSegment, splitShellSearch } from "@platform/lib/layout-codec"
 import { panelUrl } from "@apps/explorer/Panel";
 import { SplitRightIcon, SplitDownIcon } from "@platform/ui/SplitIcons";
 import { OverflowMenu } from "@apps/explorer/BarMenu";
+import { springDisarms } from "@apps/explorer/listing/drag-drop";
+import { registerSpring, SPRING_ATTR } from "@apps/explorer/listing/row-drag";
+
+// How long a file drag has to hover a crumb before the listing follows it.
+// Spring-loading is the standard file-manager answer to "the folder I want to
+// drop into isn't on screen": hold over an ancestor and it opens, with the drag
+// still in your hand.
+//
+// 700ms is the dwell that separates "hovering here" from "passing over on the
+// way somewhere else" — a crumb strip is a dense row of small targets, and a
+// shorter dwell navigates out from under a drag that was only crossing it.
+const SPRING_LOAD_MS = 700;
+
+// A crumb is spring-loaded NAVIGATION, never a drop target. Dropping ON a path
+// segment would be a second, invisible way to move files — one that gives no
+// listing to see the result in and no way to change your mind about which of
+// several ancestors you meant. So a crumb carries `data-spring-target` and NOT
+// the `data-fs-drop-path` a target declares itself with: the drag keeps its
+// refused cursor over the strip, the listing navigates underneath, and the drop
+// happens in the folder like any other.
+//
+// Enter and leave used to be the DOM's own `dragenter`/`dragleave`. The row
+// drag is pointer-driven now (listing/row-drag.ts), so they arrive as calls
+// instead — in the same order, deliberately, because the disarm rule below is
+// written against that order.
+function useSpringLoadedCrumbs() {
+  // The crumb currently being dwelt on: its target path (for the armed
+  // highlight) and the timer that will navigate there.
+  const armed = useRef<{ target: string; timer: number } | null>(null);
+  const [armedTarget, setArmedTarget] = useState<string | null>(null);
+
+  const disarm = () => {
+    if (armed.current) clearTimeout(armed.current.timer);
+    armed.current = null;
+    setArmedTarget(null);
+  };
+
+  // Cancel on unmount — including the unmount the navigation ITSELF causes, so
+  // a fired timer can't leave a stale armed crumb behind in the new view — and
+  // on `end`, which is the one end-of-drag every path reaches (a drop in the
+  // listing, a release on nothing, a pointercancel, an Escape). A leave alone
+  // would miss the drag that ENDS while the cursor is still over the crumb,
+  // leaving a timer to navigate a second after the user let go.
+  useEffect(() => {
+    const off = registerSpring({
+      enter: (target) => {
+        if (armed.current?.target === target) return;
+        disarm();
+        armed.current = {
+          target,
+          timer: window.setTimeout(() => {
+            armed.current = null;
+            setArmedTarget(null);
+            // The drag survives this: it is owned by a module, not by the
+            // Listing the navigation is about to remount — which is exactly why
+            // both the gesture (row-drag.ts) and the dragged entries
+            // (drag-drop.ts) live outside the component tree.
+            navigate(target, { isDir: true });
+          }, SPRING_LOAD_MS),
+        };
+        setArmedTarget(target);
+      },
+      // Only the crumb that is actually armed may cancel it. Cancelling on any
+      // leave reads as obviously right and disables the whole feature: the
+      // crumb being ENTERED is entered before the one being left is left, so
+      // dragging along the strip armed the new crumb and then immediately
+      // killed it (see springDisarms, where the ordering is written down and
+      // tested).
+      leave: (target) => {
+        if (springDisarms(target, armed.current?.target ?? null)) disarm();
+      },
+      end: () => disarm(),
+    });
+    return () => {
+      off();
+      disarm();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // A crumb declares itself to the drag by attribute, so a crumb re-rendered
+  // mid-drag (which the spring-load's own navigation guarantees) is still the
+  // same target to a hit test that reads the DOM.
+  const springProps = (target: string) => ({ [SPRING_ATTR]: target });
+
+  return { springProps, armedTarget };
+}
 
 // "Update bookmark" visibility (D38). The check has side effects (a pathname
 // change or a deleted bookmark disarms permanently), so it runs in an effect,
@@ -319,6 +406,7 @@ export function Breadcrumb({
 }) {
   const crumbsRef = useRef<HTMLDivElement>(null);
   const [editing, setEditing] = useState(false);
+  const { springProps, armedTarget } = useSpringLoadedCrumbs();
 
   // Keep the tail of a long path in view on every path change (same as the
   // panel path bar, Panel.tsx). The strip hides its scrollbar (shell.css), so
@@ -385,11 +473,17 @@ export function Breadcrumb({
     // stat/error handling covers a bad path (see plan: no pre-validation).
     if (path) navigate(path);
   };
+  const rootTarget = underHome ? (home as string) : "/";
   const pieces: React.ReactNode[] = [
     <a
       key="root"
       href="#"
-      className={"path-crumb" + (parts.length === 0 ? " last" : "")}
+      className={
+        "path-crumb" +
+        (parts.length === 0 ? " last" : "") +
+        (armedTarget === rootTarget ? " spring-armed" : "")
+      }
+      {...springProps(rootTarget)}
       onClick={(e) => {
         e.preventDefault();
         // A top-bar hop always lands on the plain listing: `_mode` is dropped
@@ -436,8 +530,9 @@ export function Breadcrumb({
         <a
           key={target}
           href="#"
-          className={cls}
+          className={cls + (armedTarget === target ? " spring-armed" : "")}
           title={part}
+          {...springProps(target)}
           onClick={(e) => {
             e.preventDefault();
             navigate(target, { isDir: true }); // plain listing, no `_mode`

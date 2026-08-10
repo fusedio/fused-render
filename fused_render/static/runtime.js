@@ -125,6 +125,132 @@
 
   startTheme();
 
+  // --- The pane focus contract (`_nofocus=1`) -------------------------------
+  //
+  // A page rendered in the explorer's PREVIEW PANE must not take the keyboard.
+  // The pane is a same-origin iframe, so an `autofocus` attribute — or any
+  // el.focus() in a boot path — pulls document focus out of the shell, and the
+  // listing's arrow keys stand down the moment focus leaves it: opening a
+  // preview stopped you browsing file to file from the keyboard.
+  //
+  // This lives HERE, in the script injected into every rendered page, rather
+  // than in the one template that happened to surface the bug — that template
+  // was not special, and the next one with an input would have re-broken it.
+  // The shell marks the frame's URL and every page gets the behaviour for free:
+  //
+  //   • `autofocus` attributes are stripped as the document parses, before the
+  //     browser has finished parsing (and so before it applies the last one);
+  //   • el.focus() calls are DROPPED until the reader actually interacts with
+  //     the page — the whole boot path, however long its async tail, rather
+  //     than some guessed settle window;
+  //   • the first real user gesture in the document lifts both, permanently:
+  //     from then on focus() works exactly as written. Clicking into the pane
+  //     is a deliberate act and the page owns the keyboard after it.
+  //
+  // `window.__fusedNoAutofocus` is published for pages that would rather ask
+  // than be corrected (the claude template gates its own boot focus on it).
+  // Deliberately not on `window.fused`: that is the documented portable bridge
+  // mirrored by the hosted runtime, and this is local-shell plumbing — same
+  // reason `_fusedSidecarPath` is a bare global.
+  //
+  // The param name is mirrored in frontend/src/apps/explorer/listing/
+  // frame-focus.ts, which is where the contract is written down; the shell-side
+  // guard there is what covers frames this suppression cannot reach.
+  var NO_FOCUS_PARAM = "_nofocus";
+
+  function noFocusRequested(search) {
+    try {
+      return new URLSearchParams(String(search).replace(/^\?/, "")).get(NO_FOCUS_PARAM) === "1";
+    } catch (e) {
+      return false;
+    }
+  }
+
+  function startNoFocus() {
+    if (!noFocusRequested(location.search)) return;
+    window.__fusedNoAutofocus = true;
+
+    // Anything that manages to take focus anyway gives it straight back. This
+    // is the one that catches `autofocus`, which cannot be beaten by stripping
+    // the attribute: the browser queues the CANDIDATE when the element is
+    // inserted, so removing the attribute afterwards does not dequeue it.
+    // Capture, so it runs before the page's own focus handlers.
+    //
+    // The shell blurs the FRAME as well (its focus guard) — that is what
+    // actually returns the keyboard to the listing, since focus on an element
+    // in here leaves the embedder's activeElement on the iframe either way.
+    // This half is what stops the caret sitting in a composer the reader never
+    // put it in.
+    var bounceFocus = function (e) {
+      var el = e.target;
+      if (el && typeof el.blur === "function") el.blur();
+    };
+    document.addEventListener("focusin", bounceFocus, true);
+
+    // Strip `autofocus` from anything already parsed and anything that arrives
+    // while the document streams. Belt and braces beside the blur above — an
+    // attribute that never applies is one fewer focus flicker. The observer is
+    // disconnected at DOMContentLoaded: after that the attribute has no effect
+    // on its own, and the focus() suppression below covers a script that adds
+    // one and focuses.
+    var strip = function (root) {
+      var nodes = root.querySelectorAll ? root.querySelectorAll("[autofocus]") : [];
+      for (var i = 0; i < nodes.length; i++) nodes[i].removeAttribute("autofocus");
+    };
+    strip(document);
+    var observer = null;
+    try {
+      observer = new MutationObserver(function () {
+        strip(document);
+      });
+      observer.observe(document.documentElement, { childList: true, subtree: true });
+    } catch (e) {
+      /* no MutationObserver — the initial strip and the guard below still hold */
+    }
+
+    // Suppress programmatic focus until the reader touches the page. Patched on
+    // the prototype rather than per element because the point is to cover code
+    // that has not been written yet; restored — not left wrapped — on the first
+    // gesture, so nothing keeps paying for this once it stops applying.
+    var realFocus = HTMLElement.prototype.focus;
+    HTMLElement.prototype.focus = function () {
+      /* embedded in the preview pane, and the reader hasn't asked: ignore */
+    };
+    var released = false;
+    var release = function () {
+      if (released) return;
+      released = true;
+      HTMLElement.prototype.focus = realFocus;
+      window.__fusedNoAutofocus = false;
+      if (observer) observer.disconnect();
+      // Every part of the suppression lifts at once, this one included — a
+      // focusin bounce left installed would make the page permanently
+      // unfocusable for the reader who just clicked into it.
+      document.removeEventListener("focusin", bounceFocus, true);
+      document.removeEventListener("pointerdown", release, true);
+    };
+    // POINTER only, and deliberately not keydown: a key reaching an embedded
+    // preview means focus LEAKED into it, not that the reader aimed at it, and
+    // lifting the suppression there let the page take the keyboard for good on
+    // the very keystroke the shell was about to rescue. A reader who really is
+    // driving this page with the keyboard got here by Tab, and the shell lifts
+    // the suppression for that (window.__fusedReleaseNoFocus below).
+    document.addEventListener("pointerdown", release, true);
+    // The same release, reachable from the EMBEDDER. Some deliberate acts are
+    // invisible in here: a reader tabbing into the pane presses Tab in the
+    // SHELL's document, so this page never sees a keydown and would bounce the
+    // focus it was just deliberately given — the two halves of the contract
+    // contradicting each other. The shell calls this the moment it recognises
+    // such an act (see usePaneFocusGuard). An app-internal global, not part of
+    // `fused`, for the same reason `__fusedFlushEdits` is.
+    window.__fusedReleaseNoFocus = release;
+    document.addEventListener("DOMContentLoaded", function () {
+      if (observer) observer.disconnect();
+    });
+  }
+
+  startNoFocus();
+
   // Climb to the topmost same-origin ancestor (D46). Reading .location.href on
   // a cross-origin window throws, so a try/catch marks the boundary.
   function findTarget() {

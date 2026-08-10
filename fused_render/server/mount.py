@@ -51,8 +51,8 @@ def _invalidate_stat_cache(*paths: object) -> None:
 
 
 def _is_under_snapshot_root(path: str) -> bool:
-    """True when `path` sits under home_dir()/app-versions/ — the `versions`
-    template's materialised git snapshots (`versions.py::_snapshot`).
+    """True when `path` sits under home_dir()/app-versions/ — the `history`
+    template's materialised git snapshots (`history.py::_snapshot`).
 
     A snapshot tree is `git archive` output: the bytes of one commit, extracted so
     a preview can be framed against them. Nothing a user types there can mean
@@ -62,9 +62,9 @@ def _is_under_snapshot_root(path: str) -> bool:
     from then on. Machine-generated history that silently absorbs edits is worse
     than no history at all.
 
-    This became reachable when `versions` grew FILE targets: a file snapshot is
+    This became reachable when `history` grew FILE targets: a file snapshot is
     framed through the file's own default view, which for the extensions
-    `versions` is bound to is `code` or `markdown` — both of which call
+    `history` is bound to is `code` or `markdown` — both of which call
     `fused.writeFile`. An app snapshot always framed the app's entry PAGE, so it
     never offered a save.
 
@@ -78,6 +78,11 @@ def _is_under_snapshot_root(path: str) -> bool:
     the branch ref (fused_render._branch), and a frozen value would guard a
     directory the server is not using. Segment-compared, so a sibling named
     `app-versions-notes` is not caught by a string prefix.
+
+    The directory is spelled `app-versions` and the mode is called `history`;
+    that mismatch is deliberate. The path is a materialisation cache no user
+    ever sees or types, and renaming it would orphan every snapshot already on
+    disk (see the comment at `templates/history/history.py::_snapshot`).
     """
     from fused_render.shell import storage as shell_storage
 
@@ -100,7 +105,7 @@ def _writable(path: str) -> bool:
     # keeping shell ↛ server acyclic.
     from fused_render.shell.mounts import is_mount_backed, mount_read_only
 
-    # A `versions` snapshot is history, not a file: the mutation handlers refuse
+    # A `history` snapshot is history, not a file: the mutation handlers refuse
     # it outright, so saying otherwise here would put an editable editor in front
     # of a save that cannot land. Checked before the mount branch because the
     # snapshot root is always local.

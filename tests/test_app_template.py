@@ -59,7 +59,7 @@ def test_an_app_folder_is_offered(workspace, gate):
     app = workspace / "local" / "demo"
     app.mkdir(parents=True)
     assert gate(str(app)) is True
-    # Unlike `versions`, no git repo is required: using an app has nothing to do
+    # Unlike `history`, no git repo is required: using an app has nothing to do
     # with whether its history is being tracked.
     assert not (app / ".git").exists()
 

@@ -5,14 +5,14 @@ import { modeTitle } from "./mode-name";
 test("sentinel modes read as their shell names, not as underscore junk", () => {
   expect(modeTitle("_render")).toBe("Rendered");
   expect(modeTitle("_listing")).toBe("Listing");
-  expect(modeTitle("_app")).toBe("View");
+  expect(modeTitle("_app")).toBe("Preview");
 });
 
-test("the app's own view is called View, in both the pane and the app route", () => {
+test("the app's own view is called Preview, in both the pane and the app route", () => {
   // "App" told a user already inside the app nothing. The pane sentinel and
   // the registry mode are the same view from two surfaces, so they share the
   // label — a disagreement here reads as two different things.
-  expect(modeTitle("app")).toBe("View");
+  expect(modeTitle("app")).toBe("Preview");
   expect(modeTitle("_app")).toBe(modeTitle("app"));
 });
 
@@ -31,4 +31,13 @@ test("a multi-word key humanizes to sentence case, not Title_Case", () => {
 test("keys with a conventional casing keep it", () => {
   expect(modeTitle("duckdb")).toBe("DuckDB");
   expect(modeTitle("geojson")).toBe("GeoJSON");
+});
+
+test("the timeline mode is labelled History", () => {
+  // It reaches that label through the HUMANIZER, not through NICE_NAMES: the
+  // mode's key IS `history` since D243 renamed `versions` into the name (and
+  // the clock icon) of the standalone template it replaced. An explicit entry
+  // would be a second place to state the same string, and the one it replaced
+  // — `versions: "History"` — named a key that no longer exists.
+  expect(modeTitle("history")).toBe("History");
 });

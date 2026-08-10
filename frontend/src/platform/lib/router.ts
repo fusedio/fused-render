@@ -49,11 +49,11 @@ export const IS_EMBED =
   location.pathname === "/explorer/embed";
 
 // A FROZEN TREE, not a live folder: the framing a view uses when it embeds a
-// materialised historical snapshot (`versions`, which extracts a commit into
+// materialised historical snapshot (`history`, which extracts a commit into
 // ~/.fused-render/app-versions/<key>/<sha>/ and frames that directory).
 //
-// One flag for three symptoms of one cause, all of which are chrome that acts
-// on the listing AS A LIVE FOLDER and has no meaning over a frozen copy:
+// One flag, and three of its four consequences are chrome that acts on the
+// listing AS A LIVE FOLDER and has no meaning over a frozen copy:
 //
 //   * the breadcrumb, whose crumbs walk ABOVE the framed directory — straight
 //     into the snapshot cache's own internals (`~ / .fused-render / branches /
@@ -64,12 +64,22 @@ export const IS_EMBED =
 //     nonsense pointed at a frozen tree;
 //   * the "Open as app" chip, same argument.
 //
+// The fourth is about being FRAMED rather than about being frozen: the listing
+// does not open a preview pane of its own (Listing.tsx). A snapshot is embedded
+// in some view's column — the whole reason this flag exists — and a column wide
+// enough to read is also wide enough for the listing's own split, so the
+// browsable snapshot grew a second preview inside the first. It rides on this
+// flag because a "you are being framed" bit would have exactly one writer, the
+// same one, in exactly the same place.
+//
 // A param and not a prefix (a third `/explorer/frozen/` route) because this is
 // the SAME view of the same path — only its chrome differs — and the shell
 // already carries exactly this kind of framing flag on this exact surface:
-// `preview=false` (the listing's own pane) rides beside it, and `modechip=false`
-// was its predecessor until D237's only producer went away, with the SPEC noting
-// the opt-out "comes back with that caller". This is that caller.
+// `modechip=false` was its predecessor until D237's only producer went away,
+// with the SPEC noting the opt-out "comes back with that caller". This is that
+// caller. (`preview=false`, the listing's own pane, used to ride beside it too;
+// that one is gone as a PARAM — its job is the fourth consequence above, folded
+// into this flag rather than kept as a second one nobody could write alone.)
 //
 // Read ONCE at module init, like IS_EMBED: both prefixes are served by full page
 // loads, so the framing cannot change without one, and a value read per render
@@ -161,23 +171,35 @@ export function urlForFsPath(fsPath: string, search?: string): string {
 
 export function navigate(fsPath: string, opts?: { isDir?: boolean; mode?: string }): void {
   // Navigating between files/dirs drops old view params (fresh query string) —
-  // EXCEPT `preview` (the listing's preview-pane visibility), which is sticky
-  // across DIRECTORY navigation: the pane is workspace layout the user
-  // toggled, so moving between folders must not silently close (or open) it.
-  // Deliberately NOT carried onto file targets: `preview` is an unreserved
-  // name, and the runtime's ancestor-climb (runtime.js D72 globals) makes
-  // every shell-URL param readable from a template iframe — a file view
-  // always hosts one, so carrying it there would shadow a user template's own
-  // `preview` param. Going back (history) or re-entering a folder restores the
-  // pane from that entry's URL / the folder's viewstate instead.
+  // EXCEPT the pane's chosen mode (`_panelMode`), which is sticky across
+  // DIRECTORY navigation: a folder hop keeps previewing in the mode the user
+  // picked. Reserved (`_`-prefixed) name, so no template-param shadowing
+  // concern, and directory-only for the same reason its companion was: a file
+  // view hosts a template iframe whose ancestor-climb (runtime.js D72 globals)
+  // reads every shell-URL param.
+  //
+  // Its companion `preview` (the pane's on/off) is GONE, not merely unlisted:
+  // the split is decided by the container's width now (listing/pane.ts), so
+  // there is no visibility to carry between folders and nothing a stale param
+  // could contradict. The `?sel=` selection param is likewise not carried —
+  // a name from the folder you LEFT names nothing in the folder you arrive in
+  // (see useListingSelection).
+  //
+  // `snapshot=1` is the exception to the fresh-query-string rule, and it is a
+  // different KIND of param from the two below: it says what this PAGE is — a
+  // frozen tree framed in some view's column (see IS_SNAPSHOT) — not how the
+  // destination should be viewed. Every hop the framed listing makes is still
+  // inside that snapshot, so dropping it would make the url describe a page
+  // that does not exist. IS_SNAPSHOT is read once at boot, so the live session
+  // survives the drop; a RELOAD or a copied link is where it bites, bringing
+  // back the breadcrumb walking up into the snapshot cache's internals and the
+  // preview pane inside the preview pane. Carried on FILE hops as well as
+  // folder ones, unlike `_panelMode`: the framed listing opens files too, and
+  // the chrome the flag suppresses is the same chrome on a file view.
   const current = new URLSearchParams(location.search);
-  const preview = current.get("preview");
   const parts: string[] = [];
-  if (opts?.isDir === true && preview !== null) {
-    parts.push("preview=" + encodeURIComponent(preview));
-    // The pane's chosen mode (`_panelMode`) travels with the pane itself: a
-    // folder hop with the pane open keeps previewing in the same mode.
-    // Reserved (`_`-prefixed) name, so no template-param shadowing concern.
+  if (current.get("snapshot") === "1") parts.push("snapshot=1");
+  if (opts?.isDir === true) {
     const panelMode = current.get("_panelMode");
     if (panelMode !== null) parts.push("_panelMode=" + encodeURIComponent(panelMode));
   }

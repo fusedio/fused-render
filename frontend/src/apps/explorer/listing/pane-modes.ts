@@ -101,13 +101,16 @@ export function activePaneMode(modes: string[], modeOverride: string | null): st
 // param names a mode this selection does not offer, the pane has already fallen
 // back to its default, and the open has to match what is on screen.
 //
-// Three modes are not `_mode` values and are translated rather than passed on:
+// This answers for FILES. A folder never reaches it (see paneOpenAction), and
+// in particular the `_app` sentinel is not translated here any more. It used to
+// be, as "the folder's lone app FILE opens in its own default view" — a claim
+// that was true of the file and false of the intent: what the user wants is the
+// APP, and where an app opens is a question about the linked-app registry, not
+// about the previewed row. That decision now lives in lib/app-button, which is
+// the one rule this pane and the title bar share.
 //
-//   `_app`      — a pane-only sentinel; the server has never heard of it. What
-//                 the pane frames is the folder's lone app FILE, so that file
-//                 is what opens full-screen (in its own default view, which is
-//                 that app). With no app resolved there is nothing to translate
-//                 and the folder itself opens.
+// Two modes are not `_mode` values and are translated rather than passed on:
+//
 //   `_listing`  — a folder full-screen IS its listing; `_mode=_listing` would
 //                 be the destination's own default written out longhand, and
 //                 Preview strips it again the moment the user switches modes.
@@ -122,14 +125,41 @@ export interface PaneOpenTarget {
 
 export function paneOpenTarget(
   row: { path: string; isDir: boolean },
-  activeMode: string | null,
-  app: { path: string } | null | undefined
+  activeMode: string | null
 ): PaneOpenTarget {
-  if (activeMode === PANE_APP_MODE) {
-    return app ? { path: app.path, isDir: false } : { path: row.path, isDir: row.isDir };
-  }
-  if (activeMode === null || activeMode === "_listing") {
+  if (activeMode === null || activeMode === "_listing" || activeMode === PANE_APP_MODE) {
     return { path: row.path, isDir: row.isDir };
   }
   return { path: row.path, isDir: row.isDir, mode: activeMode };
+}
+
+// WHICH control the pane's header offers for the previewed row — the half
+// paneOpenTarget deliberately does not answer, because for a folder the honest
+// answer is "none of them".
+//
+//   file    → `expand`. "Make this preview the whole view", in the mode the
+//             pane is showing (paneOpenTarget above).
+//   folder  → `none`. Expanding a folder means opening its listing — and its
+//             listing is what the LEFT HALF of this very split already is. The
+//             button offered to replace a two-pane view of a folder with a
+//             one-pane view of the same folder, which is not an action so much
+//             as a step backwards. Its one honest use, "get into this folder",
+//             is what double-click and Enter on the row already do.
+//
+// A folder that IS AN APP gets a button too — but it is not this one and it is
+// not decided here. "Open as app" (or, for a folder the registry doesn't know
+// yet, "Add as app") depends on the linked-app status, which is a fetch about
+// the folder rather than a fact about the previewed row; it lives in
+// lib/app-button and the pane header renders it alongside whatever this
+// returns. That split is deliberate: this module answers from the row alone,
+// and the app question cannot be answered from the row alone — which is
+// precisely how the pane ended up with a weaker copy of the rule.
+export type PaneOpenAction = { kind: "expand"; target: PaneOpenTarget } | { kind: "none" };
+
+export function paneOpenAction(
+  row: { path: string; isDir: boolean },
+  activeMode: string | null
+): PaneOpenAction {
+  if (!row.isDir) return { kind: "expand", target: paneOpenTarget(row, activeMode) };
+  return { kind: "none" };
 }

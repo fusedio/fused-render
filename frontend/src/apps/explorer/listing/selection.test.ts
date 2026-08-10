@@ -9,7 +9,10 @@ import {
   autoSelectPath,
   firstEntryPath,
   oneSelected,
+  pathFromSelParam,
   rangeBetween,
+  rowPressAction,
+  selParam,
   selectionClaimed,
 } from "./selection";
 
@@ -135,5 +138,157 @@ describe("rangeBetween", () => {
   test("an anchor that is gone collapses onto the target", () => {
     expect(rangeBetween(["a", "b"], "gone", "b")).toEqual(["b"]);
     expect(rangeBetween(["a", "b"], "a", "gone")).toEqual([]);
+  });
+});
+
+// ONE press model for the whole explorer: a press selects, a double click
+// opens. The pure half of it is which SELECTION a press means; the opening is
+// the row's onDoubleClick and needs no decision at all.
+//
+// Answered on POINTERDOWN rather than on click, because rows are drag sources
+// and a draggable element does not reliably deliver the click that follows the
+// press — the failure that killed Shift/Cmd-click once and plain presses on
+// part of a row later.
+describe("rowPressAction", () => {
+  const press = (mod: boolean, shift: boolean, inMultiSelection = false) =>
+    rowPressAction({ mod, shift, inMultiSelection });
+
+  test("a plain press selects that row alone", () => {
+    expect(press(false, false)).toBe("select");
+  });
+
+  test("Shift extends the range", () => {
+    expect(press(false, true)).toBe("extend");
+  });
+
+  test("Mod toggles the row in or out", () => {
+    expect(press(true, false)).toBe("toggle");
+  });
+
+  test("Mod wins over Shift when both are held", () => {
+    // Both modifiers down is ambiguous, and Finder resolves it the same way:
+    // the toggle is the more precise gesture, and an accidental Shift held
+    // while Mod-picking rows must not replace the picks with a range.
+    expect(press(true, true)).toBe("toggle");
+  });
+
+  // --- the one press that cannot be answered on the press -------------------
+
+  test("a plain press INSIDE a multi-selection defers", () => {
+    // Collapsing here would make a multi-row drag impossible: every drag of a
+    // selection begins with a press on one of the rows in it, so answering
+    // "select" on the press would leave one row to drag, every time.
+    expect(press(false, false, true)).toBe("defer");
+  });
+
+  test("a press on the ONLY selected row does not defer", () => {
+    // `inMultiSelection` is about a selection of MANY. With one row selected,
+    // "select" already is the answer a deferred collapse would arrive at, and
+    // deferring would only make the highlight land later for no reason.
+    expect(press(false, false, false)).toBe("select");
+  });
+
+  test("a MODIFIED press inside a multi-selection is never deferred", () => {
+    // Shift/Mod are never the start of a plain drag of the selection, so they
+    // keep their immediate meaning even on a row that is part of one — which is
+    // also what keeps them independent of the click event.
+    expect(press(true, false, true)).toBe("toggle");
+    expect(press(false, true, true)).toBe("extend");
+    expect(press(true, true, true)).toBe("toggle");
+  });
+});
+
+// `?sel=` — the primary selection, in the URL, so a reload or a shared link
+// comes back to the same row with the same thing in the preview pane.
+describe("selParam / pathFromSelParam", () => {
+  test("a row of this folder is its name", () => {
+    expect(selParam("/d", "/d/notes.md")).toBe("notes.md");
+    expect(pathFromSelParam("/d", "notes.md")).toBe("/d/notes.md");
+  });
+
+  test("a search hit keeps its relative path", () => {
+    // Search rows are `base + "/" + entry.rel`, so the suffix is the whole
+    // relative path — one rule covers both view modes.
+    expect(selParam("/d", "/d/sub/deep/notes.md")).toBe("sub/deep/notes.md");
+    expect(pathFromSelParam("/d", "sub/deep/notes.md")).toBe("/d/sub/deep/notes.md");
+  });
+
+  test("nothing selected is no param at all", () => {
+    expect(selParam("/d", null)).toBeNull();
+  });
+
+  test("a path outside this folder is not this folder's selection", () => {
+    // Can happen for a beat mid-navigation, and writing it would put another
+    // folder's row on this folder's URL.
+    expect(selParam("/d", "/other/notes.md")).toBeNull();
+    expect(selParam("/d", "/dd/notes.md")).toBeNull();
+  });
+
+  test("the fs root round-trips", () => {
+    // Listing's `base` for "/" is the empty string (its trailing slash is
+    // stripped), so the join is still "" + "/" + name.
+    expect(selParam("", "/etc")).toBe("etc");
+    expect(pathFromSelParam("", "etc")).toBe("/etc");
+  });
+
+  test("a hostile or empty param resolves to nothing", () => {
+    // The param is a URL, i.e. attacker-supplied. An absolute value or one
+    // climbing out of the folder must not become a path the pane will stat.
+    expect(pathFromSelParam("/d", null)).toBeNull();
+    expect(pathFromSelParam("/d", "")).toBeNull();
+    expect(pathFromSelParam("/d", "/etc/passwd")).toBeNull();
+    expect(pathFromSelParam("/d", "../../etc/passwd")).toBeNull();
+    expect(pathFromSelParam("/d", "sub/../../etc")).toBeNull();
+  });
+
+  test("a dotfile is a normal name, not a traversal", () => {
+    expect(pathFromSelParam("/d", ".gitignore")).toBe("/d/.gitignore");
+    expect(pathFromSelParam("/d", "..hidden")).toBe("/d/..hidden");
+  });
+});
+
+// The unified model, pinned at the source: neither half may be conditioned on
+// the preview pane again. A single click used to OPEN when the pane was off
+// and merely SELECT when it was on — two click models in one view, decided by
+// a layout state the user no longer even controls (listing/pane.ts).
+describe("the listing rows wire both halves of the model", () => {
+  const src = readFileSync(join(import.meta.dir, "../Listing.tsx"), "utf8");
+
+  test("a press selects and never navigates", () => {
+    const press = src.slice(
+      src.indexOf("const onRowPointerDown ="),
+      src.indexOf("const onRowPointerUp ="),
+    );
+    expect(press).toContain("rowPressAction");
+    expect(press).not.toContain("navigate(");
+  });
+
+  test("a double click always opens, pane or no pane", () => {
+    const dbl = src.slice(
+      src.indexOf("const onRowDoubleClick ="),
+      src.indexOf("// Kill the browser's own text selection"),
+    );
+    expect(dbl).toContain("navigate(row.path");
+    expect(dbl).not.toContain("pane.on");
+  });
+
+  // The failure this whole model exists to rule out: rows are drag sources, and
+  // a draggable element does not reliably deliver the click after the press. A
+  // selection path hung off `click` is one that can silently stop working.
+  //
+  // Checked over BOTH row shapes — the plain listing's and the search hits' —
+  // because they are written out separately and only one of them was ever
+  // wrong at a time. `onDoubleClick` is deliberately untouched: dblclick fires
+  // whether or not a click did.
+  test("neither row shape selects on a click event", () => {
+    expect(src).not.toContain("onRowClick");
+    const rows = src.split("data-flip-key={childPath}").slice(1);
+    expect(rows).toHaveLength(2);
+    for (const row of rows) {
+      const props = row.slice(0, row.indexOf("onContextMenu"));
+      expect(props).toContain("onPointerDown={(e) => onRowPointerDown(e, childPath)}");
+      expect(props).not.toContain("onClick=");
+      expect(props).not.toContain("onMouseDown=");
+    }
   });
 });
