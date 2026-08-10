@@ -82,3 +82,19 @@ def test_default_ignore_covers_the_mounts_dir_under_the_current_home(monkeypatch
     assert r.is_ignored_tree(str(tmp_path / "home" / "mounts" / "s3" / "deep"))
     # branch-nested checkouts get their own mounts folder
     assert r.is_ignored(str(tmp_path / "home" / "branches" / "featureX" / "mounts"))
+
+
+def test_the_walk_and_the_index_share_one_ignore_floor():
+    """The two corpus sources must not disagree about what exists. Search is
+    answered by the live walk or by the index depending on whether a scan has
+    reached the folder, so a name pruned by one and kept by the other flips
+    results between two sources meant to be interchangeable — the same
+    inconsistency server/index_gitignore.py exists to prevent for gitignored
+    entries. One definition, imported by both."""
+    from fused_render.index.ignore import DEFAULT_IGNORE_NAMES, SHARED_IGNORE_DIRS
+    from fused_render.server.walk import WALK_IGNORE_DIRS
+
+    assert WALK_IGNORE_DIRS == set(SHARED_IGNORE_DIRS)
+    # the index may prune MORE (a background crawl of the whole home), but
+    # never less: everything the walk hides has to be hidden by the index too
+    assert set(WALK_IGNORE_DIRS) <= set(DEFAULT_IGNORE_NAMES)

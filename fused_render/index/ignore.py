@@ -58,11 +58,24 @@ SKIP_DIRS = {
 # because a false positive here is invisible: the file silently isn't in the
 # index and the search just comes back empty. Add them per machine if the
 # trade is worth it there (`target` in particular is large for Rust).
+# The floor BOTH corpus sources share (server/walk.py imports this as
+# WALK_IGNORE_DIRS). Search is answered by the live walk or by the index
+# depending on whether a scan has reached the folder, so a name pruned by one
+# and kept by the other makes results flip between two sources that are meant
+# to be interchangeable — the same inconsistency server/index_gitignore.py
+# exists to prevent for gitignored entries.
+SHARED_IGNORE_DIRS = (
+    "node_modules", ".venv", "venv", "__pycache__", ".git", "site-packages",
+)
+# The index prunes MORE than the floor, and may: a scan is a background crawl
+# of the whole home, where these caches are pure cost. The walk cannot use the
+# same list, because inside a repo it defers to the repo's own .gitignore
+# (which catches these and more) and outside one it must stay conservative.
 DEFAULT_IGNORE_NAMES = [
-    "node_modules", ".venv", "venv", "__pycache__", ".git", ".svn",
-    ".hg", ".mypy_cache", ".pytest_cache", ".ruff_cache", ".tox", ".gradle",
-    ".terraform", ".next", ".nuxt", ".parcel-cache", ".turbo", ".cache",
-    "site-packages", "Pods", ".Trash", "*.egg-info",
+    *SHARED_IGNORE_DIRS,
+    ".svn", ".hg", ".mypy_cache", ".pytest_cache", ".ruff_cache", ".tox",
+    ".gradle", ".terraform", ".next", ".nuxt", ".parcel-cache", ".turbo",
+    ".cache", "Pods", ".Trash", "*.egg-info",
 ]
 
 
