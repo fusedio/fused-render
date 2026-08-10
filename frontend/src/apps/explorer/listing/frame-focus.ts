@@ -63,3 +63,40 @@ export function noFocusRequested(search: string): boolean {
 export function shouldReclaimFocus(focusIsInFrame: boolean, userEngagedPane: boolean): boolean {
   return focusIsInFrame && !userEngagedPane;
 }
+
+// Is THIS Tab press the deliberate route into the pane — i.e. is the frame the
+// very next stop in the direction the user is tabbing?
+//
+// The question exists because the shell answers it for the frame, and the
+// answer is IRREVERSIBLE. A page under `_nofocus` suppresses focus by patching
+// `HTMLElement.prototype.focus` and bouncing `focusin`, and runtime.js's
+// `release` is one-shot and permanent: once the shell calls
+// `__fusedReleaseNoFocus`, that preview may take the keyboard whenever it likes
+// for as long as it is mounted. It has to be called BEFORE the focus moves —
+// the bounce fires the instant focus lands, so releasing afterwards has already
+// cost the user the tab stop they aimed at — which leaves the shell predicting
+// rather than observing, and the prediction has to be narrow. "Any Tab in the
+// shell" is not: Tab-cycling between the search box and a breadcrumb — nowhere
+// near the pane — retired the runtime's half of the contract for good, and a
+// template that focuses an input after a fetch then TOOK the keyboard and got
+// bounced by the outer guard, instead of never taking it.
+//
+// `stops` is the document's focusable elements in tab order, `active` what has
+// focus now. Not in the list (focus on <body>, the ordinary state after the
+// guard has reclaimed) means the Tab starts from the top or the bottom, which
+// is what the browser does with it.
+//
+// Positive `tabindex` is deliberately not modelled: it reorders the sequence
+// ahead of document order, and it appears nowhere in this shell. Being wrong
+// about it costs a release that does not happen — a tab stop lost once, which
+// a click fixes — where the failure this replaces was permanent.
+export function tabEntersFrame<T>(
+  stops: readonly T[],
+  active: T | null,
+  frame: T,
+  back: boolean,
+): boolean {
+  const i = active === null ? -1 : stops.indexOf(active);
+  if (i < 0) return (back ? stops[stops.length - 1] : stops[0]) === frame;
+  return stops[back ? i - 1 : i + 1] === frame;
+}

@@ -10,6 +10,7 @@ import {
   NO_FOCUS_PARAM,
   noFocusRequested,
   shouldReclaimFocus,
+  tabEntersFrame,
   withNoFocus,
 } from "./frame-focus";
 
@@ -67,5 +68,53 @@ describe("shouldReclaimFocus", () => {
   test("focus that isn't in the frame is not the guard's business", () => {
     expect(shouldReclaimFocus(false, false)).toBe(false);
     expect(shouldReclaimFocus(false, true)).toBe(false);
+  });
+});
+
+describe("tabEntersFrame", () => {
+  // A shell's tab order, in document order: breadcrumb, the listing's search
+  // box, then the pane — its header controls, then the frame itself.
+  const CRUMB = "crumb";
+  const SEARCH = "search";
+  const MODE = "pane-mode-button";
+  const FRAME = "frame";
+  const stops = [CRUMB, SEARCH, MODE, FRAME];
+
+  test("the Tab that is about to land in the frame releases it", () => {
+    expect(tabEntersFrame(stops, MODE, FRAME, false)).toBe(true);
+  });
+
+  test("Shift+Tab back into the frame counts too", () => {
+    // Something after the pane in the order — a footer control, the next pane.
+    expect(tabEntersFrame([...stops, "after"], "after", FRAME, true)).toBe(true);
+  });
+
+  test("tabbing around the shell's own chrome does NOT", () => {
+    // THE BUG. The release is one-shot and permanent (runtime.js), so a Tab
+    // from the breadcrumb to the search box used to retire the preview's focus
+    // suppression for good — nowhere near the pane, and the reader never asked
+    // for the preview to have the keyboard.
+    expect(tabEntersFrame(stops, CRUMB, FRAME, false)).toBe(false);
+    expect(tabEntersFrame(stops, SEARCH, FRAME, true)).toBe(false);
+    expect(tabEntersFrame(stops, SEARCH, FRAME, false)).toBe(false);
+  });
+
+  test("a Tab out of the frame is not a Tab into it", () => {
+    expect(tabEntersFrame(stops, FRAME, FRAME, false)).toBe(false);
+    expect(tabEntersFrame(stops, FRAME, FRAME, true)).toBe(false);
+  });
+
+  test("from nowhere (focus on <body>) Tab starts at the ends", () => {
+    // The ordinary state after the guard has reclaimed: it blurs to <body>.
+    expect(tabEntersFrame([FRAME, SEARCH], null, FRAME, false)).toBe(true);
+    expect(tabEntersFrame(stops, null, FRAME, false)).toBe(false);
+    expect(tabEntersFrame(stops, null, FRAME, true)).toBe(true);
+  });
+
+  test("a frame that is not a tab stop at all is never entered", () => {
+    // The pane is gone (a narrow window, a row switch mid-keypress): nothing to
+    // release, and nothing that could match the end-of-list cases above.
+    expect(tabEntersFrame([CRUMB, SEARCH], SEARCH, FRAME, false)).toBe(false);
+    expect(tabEntersFrame([], null, FRAME, false)).toBe(false);
   });
 });

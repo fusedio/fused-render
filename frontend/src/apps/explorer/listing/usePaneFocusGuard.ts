@@ -32,7 +32,7 @@
 // this hook remounts with the frame it guards and "has the user reached into
 // the pane" resets when the preview does.
 import { useEffect, useRef } from "react";
-import { shouldReclaimFocus } from "@apps/explorer/listing/frame-focus";
+import { shouldReclaimFocus, tabEntersFrame } from "@apps/explorer/listing/frame-focus";
 
 // How long after a Tab keypress a frame taking focus still counts as the user's
 // doing. Tab is deliberate, but it is aimed by the browser rather than by us —
@@ -47,6 +47,34 @@ const TAB_GRACE_MS = 300;
 // watched. Bounded and few, but they run out to a couple of seconds: a template
 // that fetches before it focuses does so well after `load`.
 const SETTLE_CHECKS_MS = [0, 60, 250, 800, 1600, 2600];
+
+// What Tab can land on in this document, in order — the input to
+// tabEntersFrame, which is where the decision is (this half is the DOM read it
+// cannot do). `tabIndex >= 0` is the real test and does most of the work: it is
+// already false for a disabled control, for `tabindex="-1"`, and for an anchor
+// without an href, so the selector only has to be generous. Elements with no
+// client rects are skipped as the browser skips them — that covers `display:
+// none` chrome, including the pane that is not there on a narrow window.
+//
+// Read fresh on the keypress rather than cached: it is one querySelectorAll per
+// Tab over a document of chrome, and any cache would be a second, staler
+// account of a DOM that changes with every preview.
+const FOCUSABLE = [
+  "a[href]",
+  "button",
+  "input",
+  "select",
+  "textarea",
+  "iframe",
+  "[tabindex]",
+  "[contenteditable=\"true\"]",
+].join(",");
+
+function tabStops(): HTMLElement[] {
+  return Array.from(document.querySelectorAll<HTMLElement>(FOCUSABLE)).filter(
+    (el) => el.tabIndex >= 0 && el.getClientRects().length > 0
+  );
+}
 
 export function usePaneFocusGuard<T extends HTMLElement>() {
   const rootRef = useRef<T | null>(null);
@@ -108,8 +136,7 @@ export function usePaneFocusGuard<T extends HTMLElement>() {
     // suppression, and its focusin bounce would throw away the focus the user
     // just aimed at it (runtime.js). Nothing happens for a page that never
     // installed the hook.
-    const releaseFrameSuppression = () => {
-      const frameEl = rootRef.current?.querySelector("iframe");
+    const releaseFrameSuppression = (frameEl: HTMLIFrameElement) => {
       try {
         (frameEl?.contentWindow as { __fusedReleaseNoFocus?: () => void } | null)
           ?.__fusedReleaseNoFocus?.();
@@ -126,11 +153,29 @@ export function usePaneFocusGuard<T extends HTMLElement>() {
     const onFocusIn = () => reclaim();
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key !== "Tab") return;
+      // The GRACE is a 300ms window and stays unconditional: it only lets the
+      // guard stand down for as long as a Tab could plausibly still be landing,
+      // and it heals itself.
       lastTabAt.current = Date.now();
+      // The RELEASE does not heal. runtime.js's `release` is one-shot and
+      // permanent, so this is only for the Tab that is actually about to enter
+      // the frame — see tabEntersFrame. It used to fire on every Tab anywhere
+      // in the shell, which meant cycling between the search box and a
+      // breadcrumb quietly retired the runtime's half of the focus contract for
+      // the mounted preview.
+      //
       // Before the focus moves, not after: the frame's bounce fires the instant
       // focus lands in it, so lifting the suppression afterwards would already
-      // have cost the user the tab stop they aimed at.
-      releaseFrameSuppression();
+      // have cost the user the tab stop they aimed at. That is what makes this
+      // a PREDICTION about where Tab is going rather than a report of where it
+      // went.
+      const frameEl = rootRef.current?.querySelector("iframe");
+      if (!frameEl) return;
+      const active = document.activeElement;
+      if (tabEntersFrame(tabStops(), active instanceof HTMLElement ? active : null,
+                         frameEl, e.shiftKey)) {
+        releaseFrameSuppression(frameEl);
+      }
     };
     window.addEventListener("focusin", onFocusIn);
     window.addEventListener("keydown", onKeyDown, true);
@@ -159,11 +204,23 @@ export function usePaneFocusGuard<T extends HTMLElement>() {
         // The frame element taking focus, straight from the element: `focusin`
         // on the window does not report it everywhere.
         frame.addEventListener("focus", reclaimSoon);
-        frame.addEventListener("load", () => {
+        // BOTH listeners are handed to `cleanups`, and the `load` one is not
+        // the afterthought it looks like. It is the one that can fire after the
+        // effect has been torn down — a slow preview whose frame is replaced by
+        // a fast row switch — and what it runs is `watchInside()` + `settle()`,
+        // which push six fresh timers into the already-drained `timers` array
+        // and fresh document listeners into the already-drained `cleanups`. Not
+        // one of them would ever be cleared, so the leak accrued once per
+        // preview switch, on the frames that load slowest.
+        const onLoad = () => {
           watchInside();
           settle();
+        };
+        frame.addEventListener("load", onLoad);
+        cleanups.push(() => {
+          frame.removeEventListener("focus", reclaimSoon);
+          frame.removeEventListener("load", onLoad);
         });
-        cleanups.push(() => frame.removeEventListener("focus", reclaimSoon));
       }
       let doc: Document | null = null;
       try {
