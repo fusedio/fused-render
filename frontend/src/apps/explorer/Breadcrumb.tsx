@@ -38,6 +38,7 @@ import { panelUrl } from "@apps/explorer/Panel";
 import { SplitRightIcon, SplitDownIcon } from "@platform/ui/SplitIcons";
 import { OverflowMenu } from "@apps/explorer/BarMenu";
 import { springDisarms } from "@apps/explorer/listing/drag-drop";
+import { cameFromSelParam } from "@apps/explorer/listing/selection";
 import { registerSpring, SPRING_ATTR } from "@apps/explorer/listing/row-drag";
 
 // How long a file drag has to hover a crumb before the listing follows it.
@@ -491,7 +492,12 @@ export function Breadcrumb({
         // `claude` view read as "nothing happened"). navigate() still carries
         // the sticky `preview` onto directory targets, so pane visibility
         // survives the hop. Breadcrumb targets are always dirs.
-        navigate(underHome ? home : "/", { isDir: true });
+        //
+        // `sel` lands the ancestor with the child we came out of highlighted
+        // and scrolled to — the file-manager rule, shared with the keyboard's
+        // go-up chord (listing/useListingShortcuts) through one pure decision.
+        const target = underHome ? (home as string) : "/";
+        navigate(target, { isDir: true, sel: cameFromSelParam(target, fsPath) });
       }}
     >
       {underHome ? "~" : "/"}
@@ -535,7 +541,9 @@ export function Breadcrumb({
           {...springProps(target)}
           onClick={(e) => {
             e.preventDefault();
-            navigate(target, { isDir: true }); // plain listing, no `_mode`
+            // Plain listing, no `_mode`; `sel` highlights the child we came
+            // out of (see the root crumb above).
+            navigate(target, { isDir: true, sel: cameFromSelParam(target, fsPath) });
           }}
         >
           {part}

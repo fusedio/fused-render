@@ -169,7 +169,10 @@ export function urlForFsPath(fsPath: string, search?: string): string {
   return PREFIX + encoded + (search || "");
 }
 
-export function navigate(fsPath: string, opts?: { isDir?: boolean; mode?: string }): void {
+export function navigate(
+  fsPath: string,
+  opts?: { isDir?: boolean; mode?: string; sel?: string | null },
+): void {
   // Navigating between files/dirs drops old view params (fresh query string) —
   // EXCEPT the pane's chosen mode (`_panelMode`), which is sticky across
   // DIRECTORY navigation: a folder hop keeps previewing in the mode the user
@@ -181,9 +184,12 @@ export function navigate(fsPath: string, opts?: { isDir?: boolean; mode?: string
   // Its companion `preview` (the pane's on/off) is GONE, not merely unlisted:
   // the split is decided by the container's width now (listing/pane.ts), so
   // there is no visibility to carry between folders and nothing a stale param
-  // could contradict. The `?sel=` selection param is likewise not carried —
+  // could contradict. The `?sel=` selection param is likewise not CARRIED —
   // a name from the folder you LEFT names nothing in the folder you arrive in
-  // (see useListingSelection).
+  // (see useListingSelection) — but a caller may SET one for the destination
+  // via `opts.sel`, which is how an upward hop lands with the folder you came
+  // out of highlighted (listing/selection.ts cameFromSelParam). Relative to
+  // the destination, exactly like the value the listing writes back.
   //
   // `snapshot=1` is the exception to the fresh-query-string rule, and it is a
   // different KIND of param from the two below: it says what this PAGE is — a
@@ -207,6 +213,7 @@ export function navigate(fsPath: string, opts?: { isDir?: boolean; mode?: string
   // cards open a project folder straight into the plain app view (appEntry's
   // APP_OPEN_MODE) instead of the folder's file listing.
   if (opts?.mode) parts.push("_mode=" + encodeURIComponent(opts.mode));
+  if (opts?.sel) parts.push("sel=" + encodeURIComponent(opts.sel));
   const search = parts.length ? "?" + parts.join("&") : "";
   // `opts.isDir` is a nav hint (the clicked listing row / breadcrumb already
   // knows whether the target is a directory): it rides in history.state so the
