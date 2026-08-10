@@ -282,7 +282,7 @@ def save_applied_ignore(cfg: IndexConfig, root: str) -> None:
             # answering None, i.e. indistinguishable from up-to-date.
             roots, legacy = {}, data.get("sig")
         roots[root] = cfg.rules.sig()
-        out = {"roots": roots, "patterns": list(cfg.ignore),
+        out = {"roots": roots, "patterns": list(cfg.rules.patterns),
                "updated": time.time()}
         if legacy is not None:
             out["legacy_sig"] = legacy

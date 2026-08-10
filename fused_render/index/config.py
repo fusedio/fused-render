@@ -42,6 +42,10 @@ class IndexConfig:
     `load_config()`; pass it explicitly to everything downstream."""
 
     dir: str = field(default_factory=index_dir)
+    # RAW lines, exactly as the user typed them — comments and blanks
+    # included. This is an authored document (the Preferences panel documents
+    # `#` comments), so it is stored verbatim and parsed at use time by
+    # `rules`; cleaning on the way in deleted the annotations on first save.
     ignore: list = field(default_factory=default_ignore)
     nproc: int = field(default_factory=default_nproc)
     shard_rows: int = SHARD_ROWS
@@ -52,17 +56,19 @@ class IndexConfig:
     roots: list = field(default_factory=list)
 
     def __post_init__(self):
-        self.ignore = clean_patterns(self.ignore)
         self._rules = None
 
     @property
     def rules(self) -> IgnoreRules:
         # Compiling the rules is not free, but the ignore list is editable at
-        # runtime (PUT /api/index/config) — so the cache is KEYED on the list
+        # runtime (POST /api/index/config) — so the cache is KEYED on the list
         # rather than invalidated by hand, and no caller can forget to reset it.
+        # Keyed on the RAW lines, which over-invalidates on a comment edit and
+        # never under-invalidates; the fingerprint below is the one that has to
+        # be exact, and it comes from the cleaned patterns.
         key = tuple(self.ignore)
         if self._rules is None or self._rules[0] != key:
-            self._rules = (key, IgnoreRules(self.ignore))
+            self._rules = (key, IgnoreRules(clean_patterns(self.ignore)))
         return self._rules[1]
 
     # --- store layout (specs/index-store.md §1) ---------------------------
@@ -134,7 +140,8 @@ def load_config(dir: str | None = None) -> IndexConfig:
     cfg = IndexConfig(dir=cfg_dir)
     ignore = raw.get("ignore")
     if isinstance(ignore, list):
-        cfg.ignore = clean_patterns(ignore)
+        # Verbatim: only the shape is enforced here, never the content.
+        cfg.ignore = [str(p) for p in ignore]
     roots = raw.get("roots")
     if isinstance(roots, list):
         cfg.roots = [str(r) for r in roots if isinstance(r, str) and r.strip()]

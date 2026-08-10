@@ -21,7 +21,7 @@ from fastapi import APIRouter, Body, Header, Query
 
 from fused_render.index import runner
 from fused_render.index.config import IndexConfig, load_config, save_config
-from fused_render.index.ignore import clean_patterns, default_ignore, norm
+from fused_render.index.ignore import default_ignore, norm
 from fused_render.index.query import MAX_CORPUS
 from fused_render.index.query import lookup as index_lookup
 from fused_render.index.query import search_under as index_search
@@ -280,7 +280,9 @@ def api_index_config_write(body: dict = Body(default={}),
             cfg.roots = [norm(os.path.abspath(os.path.expanduser(r.strip())))
                          for r in value if r.strip()]
         else:
-            cfg.ignore = clean_patterns(value)
+            # Verbatim — the textarea is a document the user authors, and the
+            # panel documents `#` comments. Parsing happens in cfg.rules.
+            cfg.ignore = [str(v) for v in value]
     saved = save_config(cfg)
     # Reconcile. The engine fingerprints the rules each root's slice of the
     # index was BUILT under (index/specs/scan-ignore.md §4): while they

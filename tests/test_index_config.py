@@ -49,12 +49,14 @@ def test_layout_paths_all_hang_off_the_configured_dir(tmp_path):
 
 def test_save_and_load_round_trips_ignore_and_roots(tmp_path):
     cfg = IndexConfig(dir=str(tmp_path / "ix"))
-    cfg.ignore = ["node_modules", "  ", "node_modules", "#c"]
+    raw = ["node_modules", "  ", "node_modules", "#c"]
+    cfg.ignore = list(raw)
     cfg.roots = [str(tmp_path / "proj")]
     saved = save_config(cfg)
-    assert saved.ignore == ["node_modules"]  # cleaned on the way in
+    assert saved.ignore == raw  # stored verbatim; parsed by cfg.rules
     assert saved.roots == [str(tmp_path / "proj")]
-    assert load_config(str(tmp_path / "ix")).ignore == ["node_modules"]
+    assert load_config(str(tmp_path / "ix")).ignore == raw
+    assert saved.rules.patterns == ["node_modules"]  # ...and cleaned in use
 
 
 def test_corrupt_config_falls_back_to_defaults(tmp_path):
@@ -89,6 +91,29 @@ def test_rules_recompile_when_the_ignore_list_is_mutated_in_place(tmp_path):
     assert not cfg.rules.is_ignored("/x/b")
     cfg.ignore.append("b")
     assert cfg.rules.is_ignored("/x/b")
+
+
+def test_the_ignore_list_keeps_comments_and_blanks_verbatim(tmp_path):
+    """The list is a user-authored document — the panel advertises `#`
+    comments — so the config stores the RAW lines and parses at use time.
+    Cleaning on the way in deleted the annotations on the first save."""
+    raw = ["# build junk", "node_modules", "", "  ", "# caches", ".venv"]
+    cfg = IndexConfig(dir=str(tmp_path / "ix"), ignore=list(raw))
+    assert cfg.ignore == raw
+    assert cfg.to_dict()["ignore"] == raw
+    # ...and the rules built from it see only the patterns
+    assert cfg.rules.patterns == ["node_modules", ".venv"]
+    assert cfg.rules.is_ignored("/x/node_modules")
+    assert not cfg.rules.is_ignored("/x/# build junk")
+
+
+def test_a_comment_only_edit_does_not_change_the_rules_fingerprint(tmp_path):
+    """The fingerprint drives the full-rescan decision, so it must come from
+    the PATTERNS. Annotating the list is not a rules change."""
+    a = IndexConfig(dir=str(tmp_path / "ix"), ignore=["node_modules"])
+    b = IndexConfig(dir=str(tmp_path / "ix"),
+                    ignore=["# deps", "node_modules", ""])
+    assert a.rules.sig() == b.rules.sig()
 
 
 def test_unchanged_rules_are_compiled_once(tmp_path):

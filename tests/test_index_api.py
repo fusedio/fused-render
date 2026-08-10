@@ -211,7 +211,7 @@ def test_config_round_trips_roots_and_ignore(home, tmp_path):
                        headers={"X-Fused": "1"})
     assert resp.status_code == 200
     assert resp.json()["roots"] == [str(tmp_path)]
-    assert resp.json()["ignore"] == ["node_modules"]
+    assert resp.json()["ignore"] == ["node_modules", ""]  # verbatim
     body = client.get("/api/index/config").json()
     assert body["roots"] == [str(tmp_path)]
     assert body["defaults"]  # the starting list is reported for a Reset button
@@ -293,6 +293,38 @@ def test_a_limited_search_never_touches_the_corpus_cache(home, tmp_path, monkeyp
     client.get(f"/api/index/search?root={tmp_path}&limit={index_router.MAX_CORPUS}")
     client.get(f"/api/index/search?root={tmp_path}&q=x")
     assert seen == [False, True, True, False]
+
+
+def test_saving_the_ignore_list_preserves_comments_and_blank_lines(home, tmp_path):
+    """The panel documents `#` comments and round-trips the textarea through
+    this response, so cleaning on save silently deleted the user's
+    annotations the first time they touched the field."""
+    raw = ["# dependency caches", "node_modules", "", ".venv"]
+    client = _client(tmp_path)
+    saved = client.post("/api/index/config", json={"ignore": raw},
+                        headers={"X-Fused": "1"}).json()
+    assert saved["ignore"] == raw
+    assert client.get("/api/index/config").json()["ignore"] == raw
+    # the rules the engine runs still see only the two patterns
+    assert load_config().rules.patterns == ["node_modules", ".venv"]
+
+
+def test_a_comment_only_edit_needs_no_rescan(home, tmp_path, monkeypatch):
+    started = []
+    monkeypatch.setattr(index_router.runner, "start",
+                        lambda cfg, root, full=False: started.append(root)
+                        or {"run_id": "r", "root": root})
+    client = _client(tmp_path)
+    client.post("/api/index/config", json={"ignore": ["node_modules"]},
+                headers={"X-Fused": "1"})
+    cfg = load_config()
+    index_router.save_applied_ignore(cfg, index_router.scan_roots(cfg)[0])
+    started.clear()
+    body = client.post("/api/index/config",
+                       json={"ignore": ["# deps", "node_modules", ""]},
+                       headers={"X-Fused": "1"}).json()
+    assert body["needs_rescan"] is False
+    assert started == []
 
 
 def test_config_rejects_a_non_list(home, tmp_path):
