@@ -2116,16 +2116,24 @@ const leftSel = document.getElementById("leftmode");        // the whole control
 const leftBtn = document.getElementById("leftmodebtn");     // its trigger
 const leftPop = document.getElementById("leftmodepop");     // its listbox
 
-// The shell's `modeTitle` (ModeSwitcher.tsx), reimplemented in four lines: a
+// The shell's `modeTitle` (lib/mode-name.ts), reimplemented in four lines: a
 // template is a standalone document and cannot import the shell's TS. Worth the
 // duplication because the picker's labels must read the same as the explorer's
 // mode switcher does for the same file — "Rendered" for the `_render` sentinel,
 // and a capitalized folder name otherwise, since a folder name is chosen for the
-// filesystem, not for a label. (`_listing`/`_app` never appear in a FILE's
-// entries and the two chat modes are already filtered out, so they are not here.)
+// filesystem, not for a label. (`_listing` never appears in a FILE's entries and
+// the two chat modes are already filtered out, so they are not here.)
+//
+// `app`/`_app` are named for what the shell calls the surface, not for the
+// registry key: by the time this label is on screen the user is already inside
+// the app, so "App" says nothing — it is the app's own preview, as against its
+// history (History) or its build surface. The key stays `app` everywhere it is
+// not a display string. A label that disagreed with the mode switcher one strip
+// away would read as two different views.
 function paneModeLabel(mode) {
   if (mode === "_render") return "Rendered";
-  return ({ versions: "History", git: "Source Control" })[mode]
+  return ({ versions: "History", git: "Source Control",
+            app: "Preview", _app: "Preview" })[mode]
     || mode.charAt(0).toUpperCase() + mode.slice(1);
 }
 
