@@ -18,6 +18,27 @@ import time
 from fused_render.index.config import IndexConfig
 
 
+# How often the Windows lock re-tries. Short enough to hand the lock over
+# promptly, long enough that a minutes-long compaction costs a trivial number
+# of syscalls to wait out.
+NT_LOCK_POLL_S = 0.05
+
+
+def _acquire_nt(msvcrt, fileno: int) -> None:
+    """Block until the byte is ours, polling the NON-blocking mode.
+
+    NOT msvcrt.LK_LOCK: that one retries for about ten seconds and then
+    raises, and this lock is held for the length of a whole DuckDB merge — so
+    a second root's compaction (or a Delete Index) would fail instead of
+    waiting. Polling LK_NBLCK with no deadline gives flock's semantics."""
+    while True:
+        try:
+            msvcrt.locking(fileno, msvcrt.LK_NBLCK, 1)
+            return
+        except OSError:
+            time.sleep(NT_LOCK_POLL_S)
+
+
 @contextlib.contextmanager
 def store_lock(cfg: IndexConfig):
     """Mutual exclusion for store WRITERS (compactions, delete), blocking.
@@ -39,7 +60,7 @@ def store_lock(cfg: IndexConfig):
         if os.name == "nt":
             import msvcrt
             f.seek(0)
-            msvcrt.locking(f.fileno(), msvcrt.LK_LOCK, 1)
+            _acquire_nt(msvcrt, f.fileno())
         else:
             import fcntl
             fcntl.flock(f, fcntl.LOCK_EX)
