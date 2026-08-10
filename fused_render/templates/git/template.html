@@ -240,7 +240,9 @@
      box inside a 20px button, and the leftover half-pixel landed on one side —
      measured 1px above the glyph and 2.6px below it, so every +/−/↩ in the
      lists rode visibly high. `line-height: 1` keeps the line box from carrying
-     its own uneven leading into that centring. */
+     its own uneven leading into that centring. (The revert button now carries an
+     SVG rather than a glyph, so it is centred as a box either way — the +/− ones
+     are still text and still need this.) */
   .btn.icon {
     width: 22px;
     height: 22px;
@@ -709,6 +711,7 @@ function icon(paths, size) {
   svg.setAttribute("stroke", "currentColor");
   svg.setAttribute("stroke-width", "1.6");
   svg.setAttribute("stroke-linecap", "round");
+  svg.setAttribute("stroke-linejoin", "round");
   svg.setAttribute("aria-hidden", "true");
   for (const d of paths) {
     const p = document.createElementNS("http://www.w3.org/2000/svg", "path");
@@ -720,6 +723,12 @@ function icon(paths, size) {
 
 const BRANCH_GLYPH = ["M6 6v12", "M18 9a9 9 0 0 1-9 9", "M6 6a2 2 0 1 0 0-4 2 2 0 0 0 0 4z",
                       "M18 9a2 2 0 1 0 0-4 2 2 0 0 0 0 4z", "M6 22a2 2 0 1 0 0-4 2 2 0 0 0 0 4z"];
+
+/* A counter-clockwise circular arrow — "roll this file back to where it was".
+   The `↩` glyph it replaces reads as "return"/"enter" (or as a reply arrow in
+   mail), which is the wrong promise for a control that destroys work; a full
+   restore-history loop says "revert" without needing the tooltip. */
+const REVERT_GLYPH = ["M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8", "M3 3v5h5"];
 
 function emptyState(title, message) {
   return el("div", { className: "empty" },
@@ -1243,11 +1252,11 @@ function changeLine(repo, change, selected, kind) {
       }));
       /* The section is in the KEY, not derived from the entry later. An `MM`
          file is in both lists and both rows would otherwise build the identical
-         `discard:<path>`, so the confirmation could not tell which ↩ was
+         `discard:<path>`, so the confirmation could not tell which revert was
          clicked — it re-derived "staged" from the entry, and the CHANGES row's
-         ↩, whose question says only "discard changes in <path>", quietly threw
-         away the staged version as well. */
-      acts.append(confirmable("discard:staged:" + path, "↩",
+         revert, whose question says only "discard changes in <path>", quietly
+         threw away the staged version as well. */
+      acts.append(confirmable("discard:staged:" + path, icon(REVERT_GLYPH, 14),
         "Unstage and discard " + path + "? Both the staged version and the "
         + "working-tree version go. This cannot be undone.",
         { className: "icon", label: "Unstage and discard " + path }));
@@ -1256,7 +1265,7 @@ function changeLine(repo, change, selected, kind) {
         className: "icon", label: "Stage " + path,
         onClick: () => run("stage:" + path, { op: "stage", paths: [path] }),
       }));
-      acts.append(confirmable("discard:worktree:" + path, "↩",
+      acts.append(confirmable("discard:worktree:" + path, icon(REVERT_GLYPH, 14),
         (change.untracked ? "Delete the untracked file " + path + "?"
                           : "Discard the unstaged changes in " + path
                             + "? Anything staged for it is kept.")
