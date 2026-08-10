@@ -1162,11 +1162,46 @@ def _recorded_progress(key: str) -> dict | None:
         if fresh is not None and fresh.get("done"):
             return fresh
         data["done"] = True
-        data["error"] = data.get("error") or (
-            "the installer exited unexpectedly — see worker.log in "
-            + progress_dir(key)
-        )
+        data["error"] = data.get("error") or _crash_diagnosis(key, data)
     return data
+
+
+def _crash_diagnosis(key: str, data: dict) -> str:
+    """What to tell the user about a worker that died without finishing.
+
+    The message this replaces said only "see worker.log", and that was a dead
+    end in the common case: the worker puts its diagnostics in the RECORD (uv's
+    stderr verbatim), so worker.log holds only raw child output — and a worker
+    that was KILLED never wrote any. Users followed the message to an empty
+    file and had nothing.
+
+    So the message says what is actually known. The record carries how far it
+    got, which is the useful half and was being thrown away by overwriting it
+    with a generic string. And the log is STAT'd rather than merely pointed at,
+    because "empty" is itself the diagnosis: a worker that failed writes to it,
+    a worker that was killed cannot, so an empty log narrows the cause to the
+    handful of things that kill a process outright.
+    """
+    directory = progress_dir(key)
+    try:
+        log_size = os.path.getsize(os.path.join(directory, "worker.log"))
+    except OSError:
+        log_size = -1  # missing entirely
+
+    stage = data.get("stage") or "unknown"
+    detail = str(data.get("detail") or "").strip()
+    head = f"the installer exited without finishing (last stage: {stage}"
+    head += f" — {detail})" if detail else ")"
+
+    if log_size > 0:
+        return f"{head} — see worker.log in {directory}"
+    return (
+        f"{head} — and worker.log in {directory} is "
+        + ("empty" if log_size == 0 else "missing")
+        + ", which means it was killed rather than failing: an out-of-memory kill "
+        "(a large `uv sync` on a machine under memory pressure), a cancel, the app "
+        "quitting, or the machine sleeping mid-install. Re-opening the page retries it."
+    )
 
 
 def progress(key: str) -> dict | None:
