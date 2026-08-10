@@ -114,15 +114,29 @@ def api_index_scan(body: dict = Body(default={}),
     if guard is not None:
         return guard
     cfg = load_config()
+    full = bool(body.get("full"))
     root = body.get("root") or ""
-    if not root:
-        roots = scan_roots(cfg)
-        root = roots[0] if roots else os.path.expanduser("~")
-    try:
-        started = runner.start(cfg, str(root), full=bool(body.get("full")))
-    except ValueError as e:
-        return _error(str(e))
-    return {"ok": True, **started}
+    if root:
+        try:
+            started = runner.start(cfg, str(root), full=full)
+        except ValueError as e:
+            return _error(str(e))
+        return {"ok": True, **started, "runs": [started]}
+    # No root means "the whole index", which is every configured root — the
+    # panel's Re-index and Full-scan buttons say exactly that. Scanning only
+    # the first left the others stale with nothing in the UI to show it.
+    # One dead root does not fail the rest, as in run_startup_scan: the config
+    # outlives the folders it names.
+    runs, last_error = [], None
+    for r in scan_roots(cfg):
+        try:
+            runs.append(runner.start(cfg, r, full=full))
+        except ValueError as e:
+            last_error = str(e)
+            logger.info("index: skipping %s (%s)", r, e)
+    if not runs:
+        return _error(last_error or "no scannable roots are configured")
+    return {"ok": True, **runs[0], "runs": runs}
 
 
 @router.post("/api/index/cancel")

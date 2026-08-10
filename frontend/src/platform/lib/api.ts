@@ -317,9 +317,12 @@ export function putIndexConfig(body: {
   return mutateJson<IndexConfig>("POST", "/api/index/config", body);
 }
 
+// With no `root` this scans EVERY configured root, so the answer is a list.
+// `run_id`/`root` are the first run's, kept for callers that want just one.
 export function startIndexScan(opts: { root?: string; full?: boolean } = {}): Promise<{
   run_id: string;
   root: string;
+  runs: { run_id: string; root: string }[];
 }> {
   return mutateJson("POST", "/api/index/scan", opts);
 }

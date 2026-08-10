@@ -343,6 +343,62 @@ def test_scan_with_no_root_uses_the_configured_one(home, tmp_path, monkeypatch):
     assert seen == [str(tmp_path)]
 
 
+def test_scan_with_no_root_covers_EVERY_root(home, tmp_path, monkeypatch):
+    """Re-index presents itself as rebuilding the index, so it has to mean all
+    of it: scanning only roots[0] left every other root stale with nothing in
+    the UI to say so."""
+    seen = []
+    monkeypatch.setattr(index_router.runner, "start",
+                        lambda cfg, root, full=False: seen.append((root, full))
+                        or {"run_id": "run-" + os.path.basename(root),
+                            "root": root})
+    a, b = tmp_path / "a", tmp_path / "b"
+    a.mkdir()
+    b.mkdir()
+    cfg = load_config()
+    cfg.roots = [str(a), str(b)]
+    index_router.save_config(cfg)
+    body = _client(tmp_path).post("/api/index/scan", json={"full": True},
+                                  headers={"X-Fused": "1"}).json()
+    assert seen == [(str(a), True), (str(b), True)]
+    assert [r["root"] for r in body["runs"]] == [str(a), str(b)]
+    # the single-run fields stay, for a caller that only knows about one
+    assert body["run_id"] == "run-a"
+    assert body["root"] == str(a)
+
+
+def test_scan_with_no_root_skips_roots_that_no_longer_exist(home, tmp_path, monkeypatch):
+    """The config outlives the folders it names — one dead root must not fail
+    the whole fan-out, exactly as the startup scheduler treats it."""
+    def fake_start(cfg, root, full=False):
+        if root.endswith("gone"):
+            raise ValueError("not a directory: " + root)
+        return {"run_id": "r", "root": root}
+
+    monkeypatch.setattr(index_router.runner, "start", fake_start)
+    live = tmp_path / "live"
+    live.mkdir()
+    cfg = load_config()
+    cfg.roots = [str(tmp_path / "gone"), str(live)]
+    index_router.save_config(cfg)
+    resp = _client(tmp_path).post("/api/index/scan", json={},
+                                  headers={"X-Fused": "1"})
+    assert resp.status_code == 200
+    assert [r["root"] for r in resp.json()["runs"]] == [str(live)]
+
+
+def test_scan_with_no_root_and_nothing_startable_is_an_error(home, tmp_path, monkeypatch):
+    monkeypatch.setattr(index_router.runner, "start",
+                        lambda cfg, root, full=False: (_ for _ in ()).throw(
+                            ValueError("not a directory: " + root)))
+    cfg = load_config()
+    cfg.roots = [str(tmp_path / "gone")]
+    index_router.save_config(cfg)
+    resp = _client(tmp_path).post("/api/index/scan", json={},
+                                  headers={"X-Fused": "1"})
+    assert resp.status_code == 400
+
+
 def test_delete_requires_the_fused_header(home, tmp_path):
     assert _client(tmp_path).post("/api/index/delete").status_code == 403
 
