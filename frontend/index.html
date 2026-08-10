@@ -48,8 +48,16 @@
        just stamped, so the placeholder can't flash the wrong appearance.
        Honours prefers-reduced-motion like everything in shell.css does. -->
   <style>
-    body { margin: 0; background: #131417; }
-    html[data-theme="light"] body { background: #ffffff; }
+    /* On <html>, not just <body>: the canvas takes its colour from the root
+       element until <body> is parsed, so a rule on body alone leaves the
+       browser's white base painting the first frames of every load — the
+       white flash a preview iframe showed on each navigation. `color-scheme`
+       is here for the same reason, one step earlier still: it is what the
+       browser's own default surfaces (and any document that never sets a
+       background) resolve against. */
+    html { color-scheme: dark; background: #131417; }
+    html[data-theme="light"] { color-scheme: light; background: #ffffff; }
+    body { margin: 0; background: inherit; }
     #boot {
       position: fixed;
       inset: 0;
