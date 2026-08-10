@@ -188,14 +188,32 @@ export function useFileOps({
     if (!paths.length || moveInFlight.current) return;
     moveInFlight.current = true;
     void (async () => {
-      // Errors are reported by moveEntriesInto itself (one toast wherever the
-      // drop landed), so there is nothing to catch here — only a partial batch
-      // to refresh, which is what `moved` is for.
-      const report = await moveEntriesInto(paths, targetDir);
-      moveInFlight.current = false;
-      if (!report.moved.length) return;
-      pendingSelectRef.current = report.moved[report.moved.length - 1];
-      refetch();
+      try {
+        // Per-entry failures are reported by moveEntriesInto itself (one toast
+        // wherever the drop landed) and come back in the report; what is caught
+        // here is the batch failing OUTSIDE that loop — planning it, or the
+        // reporting itself. Rare, and precisely why it must not be swallowed:
+        // an unexplained no-op is the worst outcome a drop can have.
+        const report = await moveEntriesInto(paths, targetDir);
+        if (!report.moved.length) return;
+        pendingSelectRef.current = report.moved[report.moved.length - 1];
+        refetch();
+      } catch (e) {
+        pushToast({
+          msg: friendlyFsError(e, {
+            verb: "move",
+            name: paths.length === 1 ? basename(paths[0]) : `${paths.length} items`,
+          }),
+          tone: "error",
+        });
+      } finally {
+        // FINALLY, not after the await: a rejection used to leave this latched
+        // at true, and with it latched every later drag-to-move in this listing
+        // returned at the guard above — the feature silently dead for the life
+        // of the view, with nothing said. Same shape as paste/duplicate's own
+        // .finally, which is what this had drifted from.
+        moveInFlight.current = false;
+      }
     })();
   };
 
