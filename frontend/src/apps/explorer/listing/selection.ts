@@ -120,10 +120,59 @@ export function searchAutoSelectPath(
 ): string | null {
   const first = firstEntryPath(rows, byPath);
   if (first === null) return null; // nothing matched; nothing to select
-  if (userOwned && sel.lead !== null && byPath.has(sel.lead) && rows.includes(sel.lead)) {
-    return null; // their row is still here — it stays
+  if (userOwned) {
+    // Cleared on purpose (Escape) — the folder shot honours the same thing.
+    if (sel.lead === null) return null;
+    if (byPath.has(sel.lead) && rows.includes(sel.lead)) return null; // still here
   }
   return first === sel.lead ? null : first;
+}
+
+// Whose selection the search results are currently showing.
+//
+// This is the half that has to REMEMBER, and it lives here rather than in a
+// pair of refs inside Listing because it was wrong there and untestable there
+// — the record was reset on every query change, which reclassified the user's
+// own selection as the app's guess and let the next re-rank overwrite it.
+//
+// `autoPlaced` is the path this decision last wrote. Comparing the lead
+// against it is how a user gesture is detected without instrumenting every
+// click, arrow key and marquee path: if the lead is not where auto-select put
+// it, somebody else moved it.
+//
+// `userClaimed` then PERSISTS ACROSS QUERY CHANGES, which is the whole point.
+// A new query re-ranks the rows; it does not revoke the user's choice. So a
+// claimed selection survives every re-rank and every retyped query for as long
+// as its row is still among the results, and only a drop-out hands the
+// decision back. An auto-placed one, by contrast, is re-made against whatever
+// the new ranking put first — it was never more than a guess.
+export interface SearchSelectState {
+  autoPlaced: string | null;
+  userClaimed: boolean;
+}
+
+export const INITIAL_SEARCH_SELECT: SearchSelectState = {
+  autoPlaced: null,
+  userClaimed: false,
+};
+
+export function nextSearchSelection(
+  state: SearchSelectState,
+  rows: string[],
+  byPath: ReadonlyMap<string, unknown>,
+  sel: Selection,
+): { state: SearchSelectState; select: string | null } {
+  // A lead that is not where this decision left it was moved by the user —
+  // including moved to nothing, which is Escape and is equally theirs. Only
+  // meaningful once something HAS been placed: before that, an empty selection
+  // is "the results just arrived", not "the user cleared it".
+  const claimed =
+    state.userClaimed || (state.autoPlaced !== null && sel.lead !== state.autoPlaced);
+  const select = searchAutoSelectPath(rows, byPath, sel, claimed);
+  if (select === null) return { state: { ...state, userClaimed: claimed }, select };
+  // Writing a selection makes it ours again: a claim only ever ends because
+  // the row it was on stopped being a result.
+  return { state: { autoPlaced: select, userClaimed: false }, select };
 }
 
 // Does something already own the selection? The one question the auto-select
