@@ -485,6 +485,28 @@ def test_open_panel_shows_recent_with_encoded_link(server, browser):
     page.close()
 
 
+def test_open_panel_escapes_names_and_encodes_links(server, browser):
+    # regression: a hostile filename must be shown as text, not injected as HTML,
+    # and its open link must be URL-encoded per segment
+    page, frame = _open_ready(browser, server["port"])
+    res = frame.evaluate(
+        r"""() => {
+            localStorage.setItem('fused-render:autocad_viewer:recent',
+              JSON.stringify([{path: 'C:/x/a"<b>&.dxf', name: 'a"<b>&.dxf'}]));
+            document.getElementById('openBtn').click();
+            const a = document.querySelector('#opRecent a.op-item');
+            return { text: a && a.querySelector('span').textContent,
+                     hasB: !!document.querySelector('#opRecent span b'),
+                     title: a && a.getAttribute('title'),
+                     href: a && a.getAttribute('href') };
+        }""")
+    assert res["hasB"] is False, "a name must be escaped, not injected as markup"
+    assert res["text"] == 'a"<b>&.dxf'
+    assert res["title"] == 'C:/x/a"<b>&.dxf'
+    assert res["href"].endswith("/explorer/view/C%3A/x/a%22%3Cb%3E%26.dxf")
+    page.close()
+
+
 def test_measure_label_has_backing_chip(server, browser):
     # the measurement value must sit on a chip so it stays legible over the drawing
     page, frame = _open_ready(browser, server["port"])

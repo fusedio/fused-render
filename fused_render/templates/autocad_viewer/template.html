@@ -785,14 +785,21 @@ function addRecent(path) {
     localStorage.setItem(RECENT_KEY, JSON.stringify(list.slice(0, 8)));
   } catch (e) { /* private mode / quota — recents are best-effort */ }
 }
-function dirOf(path) { return String(path || "").replace(/[\\/][^\\/]*$/, ""); }
+function esc(s) { return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])); }
+function dirOf(path) {
+  const d = String(path || "").replace(/[\\/][^\\/]*$/, "");
+  return /^[A-Za-z]:$/.test(d) ? d + "/" : d;   // a bare drive ("C:") is cwd-relative on Windows
+}
 function openHref(path) {
-  const segs = String(path).replace(/\\/g, "/").split("/").filter(Boolean).map(encodeURIComponent);
+  // mirror the shell codec (router.ts urlForFsPath): normalize ONLY drive-letter
+  // paths — a backslash is a legal POSIX filename char and must round-trip.
+  const norm = /^[A-Za-z]:[\\/]/.test(path) ? String(path).replace(/\\/g, "/") : String(path);
+  const segs = norm.replace(/^\/+/, "").split("/").filter(Boolean).map(encodeURIComponent);
   return "/explorer/view/" + segs.join("/");
 }
 function fmtSize(n) { return n >= 1e6 ? (n / 1e6).toFixed(1) + " MB" : n >= 1e3 ? Math.round(n / 1e3) + " KB" : n + " B"; }
 function itemHtml(name, path, size) {
-  return `<a class="op-item" target="_top" href="${openHref(path)}" title="${path}"><span>${name}</span>` +
+  return `<a class="op-item" target="_top" href="${openHref(path)}" title="${esc(path)}"><span>${esc(name)}</span>` +
     (size != null ? `<span class="op-sz">${fmtSize(size)}</span>` : "") + "</a>";
 }
 function renderRecent() {
@@ -810,10 +817,10 @@ async function listFolder(folder) {
   $("opFilesSec").hidden = false;
   box.innerHTML = '<div class="op-empty">Listing…</div>';
   let res;
-  try { res = await fused.runPython("./browse.py", { folder }); }
-  catch (err) { box.innerHTML = `<div class="op-empty">${(err && err.message) || err}</div>`; return; }
+  try { res = await fused.runPython("./browse.py", { folder, src: location.origin }); }
+  catch (err) { box.innerHTML = `<div class="op-empty">${esc((err && err.message) || err)}</div>`; return; }
   $("opFolderLabel").textContent = res.folder || folder;
-  if (res.error) { box.innerHTML = `<div class="op-empty">${res.error}</div>`; return; }
+  if (res.error) { box.innerHTML = `<div class="op-empty">${esc(res.error)}</div>`; return; }
   box.innerHTML = res.files.length
     ? res.files.map((f) => itemHtml(f.name, f.path, f.size)).join("")
     : '<div class="op-empty">No .dxf or .dwg files in this folder.</div>';
@@ -831,13 +838,20 @@ function toggleOpenPanel(show) {
 $("openBtn").addEventListener("click", (e) => { e.stopPropagation(); toggleOpenPanel(); });
 $("opList").addEventListener("click", () => listFolder($("opFolder").value));
 $("opFolder").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); listFolder($("opFolder").value); } });
+let pickerBusy = false;
 $("opBrowse").addEventListener("click", async () => {
   const start = dirOf(fused.params.get("_file")) || $("opFolder").value.trim() || "/";
   if (!window.fusedFolderPicker) { listFolder($("opFolder").value); return; }
-  const choice = await window.fusedFolderPicker.open({ start, title: "Choose a folder with drawings" });
-  if (choice && choice.path) { $("opFolder").value = choice.path; listFolder(choice.path); }
+  pickerBusy = true;
+  try {
+    const choice = await window.fusedFolderPicker.open({ start, title: "Choose a folder with drawings" });
+    if (choice && choice.path) { $("opFolder").value = choice.path; listFolder(choice.path); }
+  } finally { pickerBusy = false; }
 });
 document.addEventListener("click", (e) => {
+  // the folder picker mounts its own backdrop on <body>; those clicks are
+  // "outside" the panel but must not close it.
+  if (pickerBusy) return;
   const p = $("openPanel");
   if (!p.hidden && !p.contains(e.target) && !e.target.closest("#openBtn")) toggleOpenPanel(false);
 });
