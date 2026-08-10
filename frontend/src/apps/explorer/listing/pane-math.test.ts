@@ -7,8 +7,11 @@
 import { describe, expect, test } from "bun:test";
 import {
   PANE_DEFAULT_FRAC,
+  PANE_MID_W,
   PANE_SPLIT_MIN_W,
+  PANE_WIDE_W,
   clampPaneWidth,
+  defaultPaneFrac,
   dragPaneFrac,
   parsePaneFrac,
   shouldShowPane,
@@ -148,7 +151,64 @@ describe("parsePaneFrac", () => {
     expect(parsePaneFrac("-0.3")).toBeNull();
   });
 
-  test("the default is a half-and-half split", () => {
+  test("the middle breakpoint is a half-and-half split", () => {
     expect(PANE_DEFAULT_FRAC).toBe(0.5);
+  });
+});
+
+// The undragged split's three steps. Every case here is a width the DOM would
+// have to supply, which is exactly why the stepping is arithmetic and not a
+// media query: the pane follows its CONTAINER (an embed, another view's split),
+// and a media query only ever sees the window.
+describe("defaultPaneFrac", () => {
+  test("a just-split container gives the listing the room", () => {
+    expect(defaultPaneFrac(900)).toBe(0.3);
+    expect(defaultPaneFrac(PANE_MID_W - 1)).toBe(0.3);
+  });
+
+  test("a normal window splits in half", () => {
+    expect(defaultPaneFrac(PANE_MID_W)).toBe(0.5);
+    expect(defaultPaneFrac(1280)).toBe(0.5);
+    expect(defaultPaneFrac(PANE_WIDE_W - 1)).toBe(0.5);
+  });
+
+  test("a wide window gives the preview the room", () => {
+    expect(defaultPaneFrac(PANE_WIDE_W)).toBe(0.7);
+    expect(defaultPaneFrac(1920)).toBe(0.7);
+    expect(defaultPaneFrac(3440)).toBe(0.7);
+  });
+
+  test("never proposes a pane narrower than the floor CSS enforces", () => {
+    // 30% of the narrowest splitting container is 210px — under the 220px
+    // min-width. Left alone, the flex-basis and the min-width would disagree
+    // and the divider would sit where the fraction says it doesn't.
+    const w = PANE_SPLIT_MIN_W;
+    expect(defaultPaneFrac(w) * w).toBeGreaterThanOrEqual(220);
+    expect(defaultPaneFrac(w)).toBeGreaterThan(0.3);
+  });
+
+  test("every step leaves the listing more than its own floor", () => {
+    for (const w of [PANE_SPLIT_MIN_W, 999, PANE_MID_W, 1439, PANE_WIDE_W, 2560]) {
+      expect(w - defaultPaneFrac(w) * w).toBeGreaterThan(60);
+    }
+  });
+
+  test("an unmeasured container answers the middle step", () => {
+    // Nothing renders a pane at these widths (shouldShowPane says no); the
+    // fraction just must not be NaN or Infinity on the way there.
+    expect(defaultPaneFrac(0)).toBe(PANE_DEFAULT_FRAC);
+    expect(defaultPaneFrac(Number.NaN)).toBe(PANE_DEFAULT_FRAC);
+  });
+
+  test("the steps only ever go up with width", () => {
+    let prev = 0;
+    for (let w = PANE_SPLIT_MIN_W; w <= 2600; w += 1) {
+      const f = defaultPaneFrac(w);
+      // Monotonic in the fraction is not required inside the floored region
+      // (220/w falls as w grows), but the PANE'S PIXELS must never shrink as
+      // the container grows — that is the promise "more room, more preview".
+      expect(f * w).toBeGreaterThanOrEqual(prev - 0.001);
+      prev = f * w;
+    }
   });
 });

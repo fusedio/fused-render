@@ -18,17 +18,19 @@
 // Width stays viewstate-only and off the URL: one machine's split isn't
 // something a shared link should impose.
 //
-// Width is a FRACTION of the split container (PANE_DEFAULT_FRAC when nothing
-// is saved), rendered as a percentage flex-basis — so the pane keeps its
-// proportion when the window resizes, which a resolved pixel width never did.
-// Nothing needs measuring for that: a percentage is correct before the first
-// paint, whatever the container turns out to be. The pixel floors survive as
+// Width is a FRACTION of the split container, rendered as a percentage
+// flex-basis — so a dragged pane keeps its proportion when the window resizes,
+// which a resolved pixel width never did. UNDRAGGED, the fraction is not fixed
+// at all: it steps with the container's width (pane-math's defaultPaneFrac,
+// 30/50/70), so the same folder gives the preview a third of a small window and
+// most of a wide one without anyone touching the divider. The pixel floors
+// survive as
 // CSS min-widths (.listing-pane-slot / .listing-main) and as the drag's clamp.
 // The arithmetic itself is pure and lives in listing/pane-math.ts.
 import { useLayoutEffect, useRef, useState } from "react";
 import { getViewState, setViewState } from "@platform/lib/viewstate";
 import {
-  PANE_DEFAULT_FRAC,
+  defaultPaneFrac,
   dragPaneFrac,
   parsePaneFrac,
   shouldShowPane,
@@ -36,8 +38,8 @@ import {
 
 // Merge the pane's width into this folder's saved state without touching a
 // saved sort (and vice versa — setSort merges the same way). A null fraction
-// (still at the default half) isn't persisted — only a dragged fraction is a
-// choice worth remembering.
+// (the pane still following the window's breakpoints) isn't persisted — only a
+// dragged fraction is a choice worth remembering.
 //
 // Three decimals is the whole of the precision a split is worth: it is a
 // tenth of a percent of the container, well under a pixel on any window, and
@@ -64,38 +66,52 @@ function savePaneWidth(fsPath: string, frac: number | null): void {
 // The observed element is the container that is always rendered — never the
 // pane itself — so showing or hiding the pane cannot feed back into the
 // measurement and oscillate.
-export function useSplitIsWide(ref: React.RefObject<HTMLElement>): boolean {
-  const [wide, setWide] = useState(false);
+// The measured width of that container, 0 until the first measurement lands.
+// The pane needs the NUMBER and not just the verdict, because the undragged
+// split's fraction steps with the width too (pane-math's defaultPaneFrac) —
+// same observer, so the visibility and the proportion can never be reading two
+// different widths.
+export function useSplitWidth(ref: React.RefObject<HTMLElement>): number {
+  const [w, setW] = useState(0);
   useLayoutEffect(() => {
     const el = ref.current;
     if (!el) return;
-    const read = () => setWide(shouldShowPane(el.getBoundingClientRect().width));
+    const read = () => {
+      const next = el.getBoundingClientRect().width;
+      setW((prev) => (prev === next ? prev : next));
+    };
     read();
     const ro = new ResizeObserver(read);
     ro.observe(el);
     return () => ro.disconnect();
   }, [ref]);
-  return wide;
+  return w;
+}
+
+// The verdict alone, for the callers that only ask "is there room?" (Preview's
+// browse chip). Same measurement, one policy — pane-math's shouldShowPane.
+export function useSplitIsWide(ref: React.RefObject<HTMLElement>): boolean {
+  return shouldShowPane(useSplitWidth(ref));
 }
 
 // `enabled=false` (an embedded Listing — the preview pane's own `_listing`
 // mode) turns the whole feature off at the source: however wide that embedded
 // listing is, it never grows a pane of its own — no nesting.
 export function usePreviewPane(fsPath: string, enabled = true) {
-  // `sized` is provenance, not geometry: did the USER choose this fraction
-  // (restored from `panew`, or dragged this session), or is it just
-  // PANE_DEFAULT_FRAC? Only a chosen fraction is persisted — otherwise the
-  // default would be written into `panew` as though it had been dragged.
-  // It rides in state rather than a ref so every setPane updater can read it.
-  const [pane, setPane] = useState<{ frac: number; sized: boolean }>(() => {
-    const saved = enabled
-      ? parsePaneFrac(new URLSearchParams(getViewState(fsPath)).get("panew"))
-      : null;
-    return { frac: saved ?? PANE_DEFAULT_FRAC, sized: saved !== null };
-  });
+  // The fraction the USER chose — restored from `panew` or dragged this
+  // session. `null` is not a missing number but a real state, "no choice
+  // here": the pane then FOLLOWS THE WINDOW through defaultPaneFrac's
+  // breakpoints, and keeps following it as the window is resized. That is why
+  // the default is not seeded into state — held as a number it would freeze at
+  // whatever width the folder happened to open on, and (having become
+  // indistinguishable from a dragged one) would be persisted as a choice.
+  const [chosen, setChosen] = useState<number | null>(() =>
+    enabled ? parsePaneFrac(new URLSearchParams(getViewState(fsPath)).get("panew")) : null
+  );
   const splitRef = useRef<HTMLDivElement>(null);
-  const wide = useSplitIsWide(splitRef);
-  const on = enabled && wide;
+  const width = useSplitWidth(splitRef);
+  const on = enabled && shouldShowPane(width);
+  const frac = chosen ?? defaultPaneFrac(width);
 
   // The divider drag: pointer capture keeps the drag alive when the cursor
   // crosses into the pane's iframe (which would otherwise swallow mousemove).
@@ -104,10 +120,11 @@ export function usePreviewPane(fsPath: string, enabled = true) {
     const divider = e.currentTarget;
     divider.setPointerCapture(e.pointerId);
     divider.classList.add("dragging");
-    // The pre-drag fraction and provenance, captured once: nothing else can
-    // change them while this drag owns the pointer.
-    const startSized = pane.sized;
-    let frac = pane.frac;
+    // The pre-drag fraction, captured once: nothing else can change it while
+    // this drag owns the pointer. It is the RENDERED one, so a drag that starts
+    // from a width the breakpoints picked continues from where the divider
+    // actually is rather than jumping.
+    let dragged = frac;
     // Did the drag produce a real fraction? That is what PERSISTENCE reads: in
     // a container narrower than both floors dragPaneFrac returns null (see
     // there), and recording the pre-drag fraction as though the user had chosen
@@ -130,8 +147,10 @@ export function usePreviewPane(fsPath: string, enabled = true) {
       const next = dragPaneFrac(rect.width, rect.right - ev.clientX);
       if (next === null) return;
       resized = true;
-      frac = next;
-      setPane((prev) => (prev.frac === frac ? prev : { ...prev, frac }));
+      dragged = next;
+      // The first move is already a choice: from here the pane stops following
+      // the window's breakpoints and renders what the cursor says.
+      setChosen((prev) => (prev === next ? prev : next));
     };
     const onUp = () => {
       divider.classList.remove("dragging");
@@ -140,15 +159,14 @@ export function usePreviewPane(fsPath: string, enabled = true) {
       divider.removeEventListener("pointercancel", onUp);
       // Only a drag that actually RESIZED is a chosen fraction: a bare click on
       // the divider, or a drag in a container too narrow to express a split,
-      // both leave the fraction unpersisted.
-      const sized = startSized || resized;
-      if (resized) setPane((prev) => (prev.sized ? prev : { ...prev, sized: true }));
-      savePaneWidth(fsPath, sized ? frac : null);
+      // both leave the pane where it was — following the window if it was
+      // already following it, and keeping its saved width if it had one.
+      savePaneWidth(fsPath, resized ? dragged : chosen);
     };
     divider.addEventListener("pointermove", onMove);
     divider.addEventListener("pointerup", onUp);
     divider.addEventListener("pointercancel", onUp);
   };
 
-  return { pane: { ...pane, on }, splitRef, onDividerPointerDown };
+  return { pane: { frac, on }, splitRef, onDividerPointerDown };
 }

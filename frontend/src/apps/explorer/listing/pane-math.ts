@@ -18,6 +18,19 @@ const PANE_MIN_W = 220;
 const LIST_MIN_W = 60;
 export const PANE_DEFAULT_FRAC = 0.5;
 
+// The width breakpoints the UNDRAGGED split steps through: 30% of a container
+// that only just has room for two panes, 50% at a normal window, 70% once the
+// window is wide. A single 50% for every width was wrong at both ends — half of
+// 720px is a preview too narrow to read beside a listing that has had to shed
+// its columns for it, and half of a 1920px window is 960px of file names.
+//
+// STEPS, not a continuous ramp: the pane is a persistent piece of furniture, so
+// its width wants to be predictable and recognisable ("this is the wide
+// layout"), and a fraction that slides with every pixel of a window drag is
+// neither. The tiers are the standard laptop/desktop widths.
+export const PANE_MID_W = 1000;
+export const PANE_WIDE_W = 1440;
+
 // The width at which the listing splits. Above it the pane is there; below it
 // the listing has the container to itself.
 //
@@ -41,6 +54,25 @@ export const PANE_SPLIT_MIN_W = 700;
 // it away on the first real measurement is the one visible failure here.
 export function shouldShowPane(containerW: number): boolean {
   return containerW >= PANE_SPLIT_MIN_W;
+}
+
+// The fraction an UNDRAGGED pane takes in a container this wide (above), used
+// for rendering and never persisted — `panew` still records only a fraction the
+// user chose by dragging, so a folder never remembers a number the layout
+// picked for it, and one that has no saved width keeps following the window.
+//
+// Floored at the pane's own PANE_MIN_W: at the narrow end 30% is under the
+// 220px floor CSS enforces anyway (0.3 × 700 = 210), and a flex-basis the
+// min-width silently overrides is a layout that disagrees with its own
+// arithmetic — the divider would sit where the fraction says it doesn't.
+//
+// An unmeasured container (0, NaN — see shouldShowPane) has no tier to pick, so
+// it answers PANE_DEFAULT_FRAC. Nothing renders a pane at that width, and the
+// first real measurement arrives before paint (useLayoutEffect, pane.ts).
+export function defaultPaneFrac(containerW: number): number {
+  if (!(containerW > 0)) return PANE_DEFAULT_FRAC;
+  const step = containerW >= PANE_WIDE_W ? 0.7 : containerW >= PANE_MID_W ? PANE_DEFAULT_FRAC : 0.3;
+  return Math.max(step, PANE_MIN_W / containerW);
 }
 
 // The one place the pixel clamps live, so the drag cannot disagree with the
