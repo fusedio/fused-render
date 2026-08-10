@@ -258,7 +258,7 @@ export default function ListingPreviewPane({
   // is where it now stays whether the pane is open or not (Preview.tsx).
   //
   // NO MODE MENU. The folder's peers under the `/` key are heavyweight opt-ins
-  // (the chat, git, versions), so the picker's only job here was to offer a
+  // (the chat, git, history), so the picker's only job here was to offer a
   // chat on the folder from a header that otherwise said "select something" —
   // a "Choose view" chip pointing at a view nobody came for. The folder's own
   // modes are still one click from the LEFT half (Preview's chip), and every

@@ -11,7 +11,7 @@ import {
 
 // The universal `/` directory key as the built-in registry ships it (SPEC
 // PT-13): `_listing` first and unconditional, every peer condition.py-gated.
-function dirTemplates(modes: string[] = ["_listing", "app", "claude", "versions", "git", "graph"]): TemplateEntry[] {
+function dirTemplates(modes: string[] = ["_listing", "app", "claude", "history", "git", "graph"]): TemplateEntry[] {
   return modes.map((mode) => ({
     mode,
     path: mode === "_listing" ? null : `/t/${mode}/template.html`,
@@ -40,7 +40,7 @@ describe("paneModeList — the selected target", () => {
   test("a selected subfolder still defaults to the embedded listing", () => {
     const modes = paneModeList({
       templates: dirTemplates(),
-      conditions: verdicts(["claude", "git"], ["app", "versions", "graph"]),
+      conditions: verdicts(["claude", "git"], ["app", "history", "graph"]),
       isDir: true,
       hasApp: false,
     });

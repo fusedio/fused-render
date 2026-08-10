@@ -307,7 +307,7 @@ def test_recents_resolve_linked_tag_through_the_registry(client, tmp_path):
 #
 # The app/claude gates accept a linked folder through the
 # FUSED_RENDER_LINKED_APPS env var (exported on every registry write) — pure
-# env membership, no file reads. versions stays workspace-only on purpose:
+# env membership, no file reads. `history` stays workspace-only on purpose:
 # its backend writes git history with the Fused identity, and a linked folder
 # is the user's own repository.
 
@@ -378,9 +378,9 @@ def _git_repo(d):
     subprocess.run(["git", "-C", str(d), "init", "-q"], check=True)
 
 
-def test_versions_gate_accepts_git_backed_linked_folders(client, tmp_path):
+def test_history_gate_accepts_git_backed_linked_folders(client, tmp_path):
     d = _folder(tmp_path, "notes")
-    cond = _condition("versions")
+    cond = _condition("history")
     client.post("/api/apps/link", json={"path": str(d)}, headers=HDRS)
     assert cond.main(str(d)) is False  # linked but no repo: no history to show
     _git_repo(d)
@@ -388,7 +388,7 @@ def test_versions_gate_accepts_git_backed_linked_folders(client, tmp_path):
     assert cond.main(str(d / "index.html")) is True  # files inside too
 
 
-def test_versions_gate_finds_the_git_at_an_ancestor(client, tmp_path):
+def test_history_gate_finds_the_git_at_an_ancestor(client, tmp_path):
     """A linked folder is often a SUBFOLDER of the user's repository — the
     gate asks git (rev-parse ascent), like git/condition.py, instead of
     statting `.git` on the folder itself."""
@@ -398,10 +398,10 @@ def test_versions_gate_finds_the_git_at_an_ancestor(client, tmp_path):
     (d / "index.html").write_text("<html></html>")
     _git_repo(repo)
     client.post("/api/apps/link", json={"path": str(d)}, headers=HDRS)
-    assert _condition("versions").main(str(d)) is True
+    assert _condition("history").main(str(d)) is True
     # ...and `git` is offered there too. It used to step aside ("one story, one
     # mode") with a whole extra `rev-parse` fork on every stat to work out
-    # whether it should. `git` is the working tree and `versions` is the
+    # whether it should. `git` is the working tree and `history` is the
     # history, so both answer and the fork is gone.
     assert _condition("git").main(str(d)) is True
 
@@ -413,19 +413,19 @@ def test_git_gate_keeps_serving_ungitted_linked_folders(client, tmp_path, worksp
     client.post("/api/apps/link", json={"path": str(d)}, headers=HDRS)
     # linked but not git-backed: there is genuinely no repo, so no mode
     assert _condition("git").main(str(d)) is False
-    assert _condition("versions").main(str(d)) is False
+    assert _condition("history").main(str(d)) is False
     # a repo nested DEEPER than the linked folder: git serves it
     nested = d / "vendor"
     nested.mkdir()
     (nested / "f.txt").write_text("x")
     _git_repo(nested)
     # ...but on the FOLDER, not on a file in it: `git` is folder-only now (the
-    # working tree belongs to the directory, and per-file history is `versions`).
+    # working tree belongs to the directory, and per-file history is `history`).
     assert _condition("git").main(str(nested / "f.txt")) is False
     assert _condition("git").main(str(nested)) is True
 
 
-def test_versions_backend_scopes_to_the_linked_subtree(client, tmp_path):
+def test_history_backend_scopes_to_the_linked_subtree(client, tmp_path):
     """Linked app inside a larger repo: log lists only commits touching the
     app's folder, and a snapshot materialises the folder's subtree (its
     index.html at the top), not the whole repository."""
@@ -454,16 +454,16 @@ def test_versions_backend_scopes_to_the_linked_subtree(client, tmp_path):
 
     path = os.path.join(
         os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-        "fused_render", "templates", "versions", "versions.py",
+        "fused_render", "templates", "history", "history.py",
     )
-    spec = importlib.util.spec_from_file_location("test_linked_versions_sub", path)
-    versions = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(versions)
+    spec = importlib.util.spec_from_file_location("test_linked_history_sub", path)
+    history = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(history)
 
-    log = versions.main("log", str(d / "index.html"))
+    log = history.main("log", str(d / "index.html"))
     assert [c["subject"] for c in log["commits"]] == ["app commit"]
 
-    snap = versions.main("snapshot", str(d), log["commits"][0]["sha"])
+    snap = history.main("snapshot", str(d), log["commits"][0]["sha"])
     assert snap["entry"] and os.path.basename(snap["entry"]) == "main.html"
     with open(snap["entry"]) as f:
         assert f.read() == "<html>v1</html>"
@@ -471,7 +471,7 @@ def test_versions_backend_scopes_to_the_linked_subtree(client, tmp_path):
     assert not os.path.exists(os.path.join(snap["dir"], "other.txt"))
 
 
-def test_versions_backend_shows_history_but_refuses_revert_for_linked(
+def test_history_backend_shows_history_but_refuses_revert_for_linked(
     client, tmp_path
 ):
     """View-only history for a linked app: log/snapshot work, revert refuses —
@@ -491,22 +491,22 @@ def test_versions_backend_shows_history_but_refuses_revert_for_linked(
 
     path = os.path.join(
         os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-        "fused_render", "templates", "versions", "versions.py",
+        "fused_render", "templates", "history", "history.py",
     )
-    spec = importlib.util.spec_from_file_location("test_linked_versions", path)
-    versions = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(versions)
+    spec = importlib.util.spec_from_file_location("test_linked_history", path)
+    history = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(history)
 
-    log = versions.main("log", str(d / "index.html"))
+    log = history.main("log", str(d / "index.html"))
     assert [c["subject"] for c in log["commits"]] == ["user commit"]
     assert log["can_revert"] is False
 
     # snapshot works read-only: materialised under the shell home, repo untouched
-    snap = versions.main("snapshot", str(d / "index.html"), log["commits"][0]["sha"])
+    snap = history.main("snapshot", str(d / "index.html"), log["commits"][0]["sha"])
     assert snap.get("entry") and os.path.isfile(snap["entry"])
 
     sha = log["commits"][0]["sha"]
-    res = versions.main("revert", str(d / "index.html"), sha)
+    res = history.main("revert", str(d / "index.html"), sha)
     assert "revert is disabled for linked apps" in res["error"]
     # nothing was written: still exactly the user's one commit
     out = subprocess.run(

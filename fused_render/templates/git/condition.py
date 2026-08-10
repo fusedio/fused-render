@@ -10,7 +10,7 @@ branches, push/pull. Every one of those is a REPOSITORY-level action, not
 something you do to one file: you do not stash a file, you stash a tree, and the
 working tree a file sits in is its FOLDER's working tree, not the file's. So the
 mode belongs to the folder and is offered there alone. Per-file history is a
-different question with a different answer already shipped — `versions` renders
+different question with a different answer already shipped — `history` renders
 the commits that touched one path with a timeline this view never had — and that
 one is untouched here: it stays on every file key it had.
 
@@ -140,10 +140,10 @@ def main(path: str) -> bool:
 
         # NO peer exclusions here. This gate used to refuse a fused app folder,
         # and then a git-backed registered linked app, on the grounds that
-        # `versions` rendered the same history — one relpath + a `.git` stat for
+        # `history` rendered the same history — one relpath + a `.git` stat for
         # the first, a whole second `rev-parse` fork for the second, both of
         # them on every directory the user opened. `git` is the working tree and
-        # `versions` is the history; they answer different questions, so a
+        # `history` is the history; they answer different questions, so a
         # folder gets both and the two forks go away with the rules that needed
         # them.
 

@@ -40,7 +40,7 @@ def _is_under_sidecar_root(path: str) -> bool:
 
 
 def _snapshot_refusal(*paths: str | None):
-    """The 403 for any mutation whose WRITE side lands in a `versions` snapshot
+    """The 403 for any mutation whose WRITE side lands in a `history` snapshot
     tree (see mount._is_under_snapshot_root), or None.
 
     Reuses the `readonly` wire string rather than inventing one: runtime.js
@@ -103,7 +103,7 @@ def _fs_write(body: dict, x_fused: str | None):
         return _error("'path' must be an absolute filesystem path")
     if not isinstance(content, str):
         return _error("'content' must be a string")
-    # A `versions` snapshot is history, not a file (see _is_under_snapshot_root).
+    # A `history` snapshot is history, not a file (see _is_under_snapshot_root).
     # Refused here, ahead of every other check, because there is no shape of this
     # request that is allowed.
     snap = _snapshot_refusal(path)
@@ -668,7 +668,7 @@ def _fs_delete(body: dict, x_fused: str | None):
     if not path or not os.path.isabs(path):
         return _error("'path' must be an absolute filesystem path")
     # The snapshot tree IS the record, so this covers the root as well as the
-    # files in it. Reclaiming disk under app-versions/ is versions.py's business,
+    # files in it. Reclaiming disk under app-versions/ is history.py's business,
     # not an /api/fs/delete caller's.
     snap = _snapshot_refusal(path)
     if snap is not None:

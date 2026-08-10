@@ -11,9 +11,9 @@ view two different things a strip apart.
 So the agreement is pinned rather than commented: the label the template
 produces for `app` is read out of the shell's own table, not typed in here a
 second time — the next rename fails this test in the template that has to follow
-it. Keys the two surfaces disagree on ON PURPOSE (the template says "History"
-where the shell humanizes "versions") are not swept into this: agreeing about
-everything is not the claim, agreeing about `app` is.
+it. Keys the two surfaces disagree on ON PURPOSE (the template says "Source
+Control" where the shell humanizes `git` to "Git") are not swept into this:
+agreeing about everything is not the claim, agreeing about `app` is.
 """
 import json
 import os

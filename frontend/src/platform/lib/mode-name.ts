@@ -21,7 +21,7 @@ const SENTINEL_NAMES: Record<string, string> = {
 const NICE_NAMES: Record<string, string> = {
   // Not "App": by the time this label is on screen the user is already inside
   // the app, so naming the mode after the app says nothing — it is the app's
-  // own rendered preview, as opposed to its history (Versions) or its build
+  // own rendered preview, as opposed to its history (History) or its build
   // surface (Claude split). "Preview" also names it the way the rest of the
   // shell talks about this surface (the preview pane, the preview header).
   // The KEY stays `app` everywhere it is not a display string: the registry,

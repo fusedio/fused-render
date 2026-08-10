@@ -618,7 +618,7 @@
 /* ------------------------------------------------------------------ state
  * This view is COMMIT MANAGEMENT: what is staged, what changed, what is
  * untracked, what is stashed, plus the toolbar's branch/remote actions and the
- * commit box. It draws NO history — the commit log is the `versions` mode's
+ * commit box. It draws NO history — the commit log is the `history` mode's
  * view of the same repository, and the two are offered side by side on every
  * target inside a work tree, so a History section here was one story told
  * twice. The overview read opts out of the log entirely (`history: ""`), so
@@ -1623,7 +1623,7 @@ function render(data, stashes, diff) {
     ask && ask.where === "stashes" ? ask.node : null);
 
   /* No History section, and no "load more" paging behind it. The commit LOG is
-     the `versions` mode's view of this repository — it renders the same commits
+     the `history` mode's view of this repository — it renders the same commits
      with a timeline this one never had — and since both modes are now offered
      on every target inside a work tree, drawing it here too was one story told
      twice. What is left is the working tree: what is staged, what changed, what

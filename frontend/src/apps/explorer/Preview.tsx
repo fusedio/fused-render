@@ -775,7 +775,7 @@ function TemplatePreview({
           switches a folder INTO one of those modes from the explorer any more.
           The pane's menu writes `_panelMode` — what the PANE previews — not
           `_mode`, and the chip only ever offers the listing⇄counterpart pair.
-          So a folder's git/versions/graph views are entered by `?_mode=` (a
+          So a folder's git/history/graph views are entered by `?_mode=` (a
           URL, a bookmark, the file menu's Open With) and left by the chip. The
           user chose that over two switchers in one view: for a folder, the
           pane IS the explorer, and its peers are opt-in tools rather than ways
@@ -876,7 +876,7 @@ function TemplatePreview({
             missing top-bar switcher left that state with no way back to the
             listing. Removed by owner call: floating over the template's own
             content it read as a stray tooltip rather than as chrome (a
-            full-width `versions` history wore it on its HISTORY header), and
+            full-width `history` view wore it on its HISTORY header), and
             the way back out of a mode you navigated into is the browser's Back
             button, which costs the view nothing to provide.
 

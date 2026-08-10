@@ -4,17 +4,9 @@
 <meta charset="utf-8" />
 <title>History</title>
 <style>
-  /* Appearance (SPEC §30/AP-9, D134). The dark block below IS this view's
-     historical palette, value for value — every colour that used to be a
-     literal in a rule is now a token, because a literal is a colour light mode
-     cannot repaint. `data-theme` is written onto <html> by the injected
-     runtime, which acts only because this document opted in via
-     `data-fused-theme` on <html> (fused_render/static/runtime.js); dark stays
-     the CSS default for any document that never gets the attribute.
-
-     The two blocks must define the SAME token set (tests/test_theme.py), so
-     --spine-x — a geometry constant, not a colour — lives on `body` below
-     rather than being duplicated here with an identical value. */
+  /* Appearance (SPEC §30, D134). Dark block is the palette; light redefines
+     every token. `data-theme` is written onto <html> by the injected runtime
+     because this document opted in via `data-fused-theme` (runtime.js). */
   :root {
     color-scheme: dark;
     --bg: #131417;
@@ -25,1016 +17,667 @@
     --ink-2: #9aa0a6;
     --ink-3: #868d94;
     --accent: #E5FF44;
-    --accent-dim: #b8cc36;
-    --grid-dot: #1e2126;        /* the page's faint dot grid */
-    --line-strong: #3a3e46;     /* a pressed filter chip's border */
-    --line-hover: #454a53;
-    --on-accent: #131417;       /* glyph on an --accent fill */
-    --node-line: #4b5057;       /* the idle ring on a timeline dot */
-    --accent-glow: rgba(229, 255, 68, 0.35);
-    --skel-shine: #2f333c;
-    /* "continue where you left off" banner */
-    --cta-line: #3d421c;
-    --cta-line-hover: #5a6229;
-    --cta-bg-1: #1c1e12;
-    --cta-bg-2: #17190f;
-    /* warning card + its raw-payload <details> */
-    --warn-line: #5c4a1f;
-    --warn-bg: #1b1913;
-    --warn-fg: #e8d8ac;
-    --warn-icon: #d4a72c;
-    --pre-fg: #c8ccd2;
-    /* whole-page failure card */
-    --err-line: #5c2a2a;
-    --err-bg: #1b1315;
-    --err-fg: #f0c4c4;
+    --on-accent: #131417;
+    --sel-bg: #23261a;
+    --danger: #ff7a7a;
   }
-  /* The brand lime is invisible on white as a hairline and unreadable as text,
-     so light mode uses shell.css's same-hue deep olive — one token still
-     serving text, dot fill, focus ring and glow. */
   :root[data-theme="light"] {
     color-scheme: light;
     --bg: #ffffff;
-    --surface: #f4f5f7;
-    --surface-2: #eceef0;
-    --line: #d8dade;
+    --surface: #f6f7f8;
+    --surface-2: #eef0f2;
+    --line: #e0e2e6;
     --ink: #1f2023;
     --ink-2: #61656c;
-    --ink-3: #6f747c;
+    --ink-3: #7a7f87;
     --accent: #5f7300;
-    --accent-dim: #4e5f00;
-    --grid-dot: #e8eaed;
-    --line-strong: #c4c8ce;
-    --line-hover: #b4b9c0;
     --on-accent: #ffffff;
-    --node-line: #b4b9c0;
-    --accent-glow: rgba(95, 115, 0, 0.30);
-    --skel-shine: #dfe2e7;
-    --cta-line: #c8d18a;
-    --cta-line-hover: #a8b660;
-    --cta-bg-1: #f7faea;
-    --cta-bg-2: #f1f6dd;
-    --warn-line: #e0cd94;
-    --warn-bg: #fdf7e6;
-    --warn-fg: #6b5316;
-    --warn-icon: #9a7415;
-    --pre-fg: #3f434a;
-    --err-line: #e8b4b4;
-    --err-bg: #fdf0f0;
-    --err-fg: #8f2020;
+    --sel-bg: #f2f5e2;
+    --danger: #b3261e;
   }
   * { box-sizing: border-box; }
+  html, body { height: 100%; }
   body {
-    /* x of the timeline spine, shared by the real .day and the skeleton. */
-    --spine-x: 7px;
     margin: 0;
-    font-family: ui-monospace, Menlo, Consolas, monospace;
+    display: flex;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
     font-size: 13px;
-    line-height: 1.5;
     color: var(--ink);
     background: var(--bg);
-    /* faint dot grid — terminal graph paper, fades out below the header */
-    background-image: radial-gradient(circle, var(--grid-dot) 1px, transparent 1px);
-    background-size: 28px 28px;
   }
-  #root { max-width: 720px; margin: 0 auto; padding: 40px 24px 80px; }
 
-  /* ================= header ================= */
-  .head { margin-bottom: 12px; }
-  .head h1 {
-    margin: 0;
-    font-size: 32px;
-    font-weight: 700;
-    letter-spacing: -0.02em;
-    line-height: 1.15;
-    word-break: break-all;
-    text-wrap: balance;
-  }
-  .head h1 .ext { color: var(--ink-3); font-weight: 400; }
-  .head .sub {
-    margin-top: 6px;
-    color: var(--ink-3);
-    font-size: 12px;
-    word-break: break-all;
-  }
-  .pulse-line {
-    /* one-line vitals under the name: total events + span */
-    margin: 20px 0 0;
-    color: var(--ink-2);
-    font-size: 13px;
-  }
-  .pulse-line b { color: var(--ink); font-weight: 700; }
-
-  /* ================= filter chips ================= */
-  .chips { display: flex; flex-wrap: wrap; gap: 8px; margin: 16px 0 0; }
-  .chip {
-    display: inline-flex;
-    align-items: center;
-    gap: 7px;
-    padding: 6px 12px;
-    border: 1px solid var(--line);
-    border-radius: 999px;
-    background: transparent;
-    color: var(--ink-2);
-    font: inherit;
-    font-size: 12px;
-    cursor: pointer;
-    transition: border-color 150ms cubic-bezier(0.2, 0, 0, 1),
-                color 150ms cubic-bezier(0.2, 0, 0, 1),
-                background-color 150ms cubic-bezier(0.2, 0, 0, 1);
-  }
-  .chip .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--ink-3); transition: background-color 150ms; }
-  .chip[aria-pressed="true"] { color: var(--ink); border-color: var(--line-strong); background: var(--surface); }
-  .chip[aria-pressed="true"] .dot { background: var(--accent); }
-  .chip:hover { border-color: var(--line-hover); }
-  .chip:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-  .chip .n { color: var(--ink-3); }
-  .chip[aria-pressed="true"] .n { color: var(--ink-2); }
-
-  /* ================= continue banner (lastSession) ================= */
-  .continue {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    width: 100%;
-    margin: 28px 0 0;
-    padding: 14px 16px;
-    border: 1px solid var(--cta-line);
-    border-radius: 10px;
-    background: linear-gradient(180deg, var(--cta-bg-1), var(--cta-bg-2));
-    color: var(--ink);
-    font: inherit;
-    text-align: left;
-    cursor: pointer;
-    transition: border-color 150ms cubic-bezier(0.2, 0, 0, 1),
-                background-color 150ms cubic-bezier(0.2, 0, 0, 1);
-  }
-  .continue:hover, .continue:focus-visible { border-color: var(--cta-line-hover); }
-  .continue:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-  .continue .resume {
+  /* Right: the commit spine — deliberately low-detail (subject + when).
+     Width comes from the shared `split` URL param (main pane %, default 70)
+     via the drag divider — same view state as the claude template. */
+  #side {
+    min-width: 200px;
     flex: none;
-    width: 34px; height: 34px;
-    display: grid; place-items: center;
-    border-radius: 50%;
-    background: var(--accent);
-    color: var(--on-accent);
-    transition: transform 200ms cubic-bezier(0.2, 0, 0, 1);
-  }
-  .continue:hover .resume { transform: scale(1.08); }
-  .continue .c-body { min-width: 0; flex: 1; }
-  .continue .c-title { font-weight: 700; }
-  .continue .c-meta {
-    color: var(--ink-2); font-size: 12px;
-    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  }
-  .continue .c-meta .q { color: var(--accent-dim); }
-  .continue .go { flex: none; color: var(--accent); opacity: 0.7; transition: transform 200ms cubic-bezier(0.2, 0, 0, 1), opacity 200ms; }
-  .continue:hover .go { transform: translateX(3px); opacity: 1; }
-
-  /* ================= warnings ================= */
-  .warns { margin: 24px 0 0; display: grid; gap: 10px; }
-  .warn {
-    border: 1px solid var(--warn-line);
-    border-radius: 10px;
-    background: var(--warn-bg);
-    padding: 12px 14px;
-    color: var(--warn-fg);
-  }
-  .warn .msg { display: flex; align-items: baseline; gap: 8px; }
-  .warn .msg .icon { flex: none; color: var(--warn-icon); align-self: center; }
-  .warn details summary { cursor: pointer; color: var(--ink-2); font-size: 12px; margin-top: 4px; }
-  pre.raw {
-    margin: 8px 0 0;
-    padding: 10px;
-    background: var(--bg);
-    border: 1px solid var(--line);
-    border-radius: 6px;
-    white-space: pre-wrap;
-    word-break: break-word;
-    color: var(--pre-fg);
-    font-size: 12px;
-    max-height: 320px;
-    overflow: auto;
-  }
-  .error-page {
-    margin-top: 24px;
-    border: 1px solid var(--err-line);
-    border-radius: 10px;
-    background: var(--err-bg);
-    padding: 14px 16px;
-    color: var(--err-fg);
-  }
-
-  /* ================= timeline ================= */
-  .timeline { margin-top: 36px; position: relative; }
-  .day {
-    position: relative;
-    padding-left: 34px;
-  }
-  /* the spine: one continuous line per day group, threading the dots */
-  .day::before {
-    content: "";
-    position: absolute;
-    left: var(--spine-x);
-    top: 0;
-    bottom: 0;
-    width: 1px;
-    background: var(--line);
-  }
-  .day:last-child::before { bottom: 12px; }
-  .day-label {
-    position: sticky;
-    top: 0;
-    z-index: 2;
-    display: inline-block;
-    margin: 0 0 4px -34px;
-    padding: 4px 10px 4px 0;
-    background: var(--bg);
-    color: var(--ink-3);
-    font-size: 12px;
-    font-weight: 700;
-  }
-  .day-label .tick {
-    display: inline-grid;
-    place-items: center;
-    width: 15px;
-    margin-right: 12px;
-    color: var(--accent);
-  }
-
-  .ev {
-    position: relative;
+    order: 3;
     display: flex;
-    align-items: flex-start;
-    gap: 10px;
-    padding: 9px 10px 9px 12px;
-    margin: 0 0 2px -8px;
-    border-radius: 8px;
-  }
-  /* node dot on the spine: 10px box (7px dot + 1.5px ring), centered on the
-     spine's 7.5px axis. The .ev sits 26px right of the .day edge (34px pad,
-     -8px margin), so left = 7.5 - 5 - 26 = -23.5px; top centers the dot ring
-     on the single 19.5px title line inside 9px padding. */
-  .ev::before {
-    content: "";
-    position: absolute;
-    left: -23.5px;
-    top: 13.5px;
-    width: 7px;
-    height: 7px;
-    border-radius: 50%;
-    background: var(--bg);
-    border: 1.5px solid var(--node-line);
-    transition: border-color 150ms cubic-bezier(0.2, 0, 0, 1),
-                background-color 150ms cubic-bezier(0.2, 0, 0, 1),
-                box-shadow 150ms cubic-bezier(0.2, 0, 0, 1);
-  }
-  .ev.link { cursor: pointer; transition: background-color 150ms cubic-bezier(0.2, 0, 0, 1); }
-  .ev.link:hover { background: var(--surface); }
-  .ev.link:hover::before,
-  .ev.link:focus-visible::before {
-    border-color: var(--accent);
-    background: var(--accent);
-    box-shadow: 0 0 10px 1px var(--accent-glow);
-  }
-  .ev.link:focus-visible {
-    outline: 2px solid var(--accent);
-    outline-offset: -2px;
+    flex-direction: column;
     background: var(--surface);
   }
-  .ev.link:hover .go, .ev.link:focus-visible .go { opacity: 1; transform: translateX(0); }
-
-  .ev .icon {
+  #divider {
     flex: none;
-    width: 16px;
-    height: 19.5px;
-    display: grid;
-    place-items: center;
-    color: var(--ink-3);
+    order: 2;
+    width: 4px;
+    cursor: col-resize;
+    background: var(--line);
+    transition: background .15s;
   }
-  .ev .icon .star { font-size: 12px; line-height: 1; }
-  .ev .body { min-width: 0; flex: 1; }
-  .ev .title {
-    color: var(--ink);
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-  .ev .title .q { color: var(--accent-dim); }
-  .ev .title.wrap {
-    white-space: normal;
-    display: -webkit-box;
-    -webkit-line-clamp: 2;
-    -webkit-box-orient: vertical;
-    word-break: break-word;
-  }
-  .ev.resolved .title { color: var(--ink-2); }
-  .ev.deleted .title { color: var(--ink-2); text-decoration: line-through; }
-  /* fixed right column: the time sits in every row at the same x; on hover
-     of a clickable row the chevron takes its exact slot (no layout shift). */
-  .ev .right {
-    flex: none;
-    position: relative;
-    width: 64px;
-    height: 19.5px;
-  }
-  .ev .when {
-    position: absolute;
-    inset: 0;
-    text-align: right;
-    color: var(--ink-3);
-    font-size: 12px;
-    line-height: 19.5px;
-    font-variant-numeric: tabular-nums;
-    transition: opacity 150ms cubic-bezier(0.2, 0, 0, 1);
-  }
-  .ev .go {
-    position: absolute;
-    inset: 0;
+  #divider:hover, body.dragging #divider { background: var(--accent); }
+  body.dragging #frame { pointer-events: none; }
+  #side-head {
     display: flex;
     align-items: center;
-    justify-content: flex-end;
-    color: var(--accent);
-    opacity: 0;
-    transform: translateX(-4px);
-    transition: opacity 150ms cubic-bezier(0.2, 0, 0, 1), transform 150ms cubic-bezier(0.2, 0, 0, 1);
+    gap: 10px;
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--line);
+    color: var(--ink-2);
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    white-space: nowrap;
   }
-  .ev.link:hover .when, .ev.link:focus-visible .when { opacity: 0; }
+  #side-head .label { flex: 1; overflow: hidden; text-overflow: ellipsis; }
+  #revert {
+    flex: none;
+    padding: 4px 10px;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    background: var(--surface-2);
+    color: var(--ink);
+    font: inherit;
+    font-size: 11px;
+    text-transform: none;
+    letter-spacing: normal;
+    cursor: pointer;
+  }
+  #revert:hover:enabled { border-color: var(--accent); color: var(--accent); }
+  #revert:disabled { opacity: 0.45; cursor: default; }
+  #commits { flex: 1; overflow-y: auto; padding: 4px 0; }
+  .commit {
+    padding: 7px 12px;
+    cursor: pointer;
+    border-left: 2px solid transparent;
+  }
+  .commit:hover { background: var(--surface-2); }
+  .commit.selected {
+    background: var(--sel-bg);
+    border-left-color: var(--accent);
+  }
+  .commit .subject {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .commit .meta {
+    margin-top: 2px;
+    color: var(--ink-3);
+    font-size: 11px;
+    font-family: ui-monospace, Menlo, Consolas, monospace;
+  }
+  /* The pager. A timeline is append-only, so there are no page numbers and no
+     "back": one quiet row at the FOOT of the spine that grows the list in
+     place. It is styled as chrome (the #side-head vocabulary — small, upper,
+     tracked) rather than as a commit, so it never reads as a revision that can
+     be selected. */
+  .older {
+    padding: 8px 12px;
+    border-top: 1px solid var(--line);
+    color: var(--ink-2);
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    cursor: pointer;
+  }
+  .older:hover { color: var(--accent); }
+  .older.loading, .older.loading:hover { color: var(--ink-3); cursor: default; }
+  /* Same ink as #notice.error — a failed page is reported where it was asked
+     for, so the snapshot in the other half is left alone. */
+  .older-error { padding: 2px 12px 8px; color: var(--danger); font-size: 11px; }
+  .badge {
+    display: inline-block;
+    margin-left: 6px;
+    padding: 0 5px;
+    border-radius: 8px;
+    font-size: 10px;
+    background: var(--accent);
+    color: var(--on-accent);
+  }
 
-  /* entrance: rise once, staggered per event. Keyframe animation (not a
-     class-gated transition) so the default is never a blank page. */
-  @keyframes ev-in {
-    from { opacity: 0; transform: translateY(8px); }
-    to { opacity: 1; transform: translateY(0); }
-  }
-  .timeline .day, .continue, .pulse-line, .chips {
-    animation: ev-in 360ms cubic-bezier(0.16, 1, 0.3, 1) both;
-  }
-  .ev { animation: ev-in 360ms cubic-bezier(0.16, 1, 0.3, 1) both; }
-
-  /* ================= empty / hidden ================= */
-  #status { padding: 24px 0; color: var(--ink-2); max-width: 560px; }
-  #status .big { font-size: 16px; font-weight: 700; color: var(--ink); margin-bottom: 6px; }
-  .other { margin-top: 40px; }
-  .other summary { cursor: pointer; color: var(--ink-3); font-size: 12px; }
-  .all-hidden { margin-top: 28px; color: var(--ink-3); }
-
-  /* ================= skeleton (initial sidecar fetch) =================
-     Mirrors the real layout (.head, .pulse-line, .chips, .timeline .day/.ev)
-     so the page never flashes a blank "Loading…" swap — only the pixels
-     that are about to be replaced by real content shimmer. */
-  .skel-bar {
-    display: block;
-    border-radius: 4px;
-    background: linear-gradient(90deg, var(--surface-2) 25%, var(--skel-shine) 50%, var(--surface-2) 75%);
-    background-size: 200% 100%;
-    animation: skel-shimmer 1.3s ease-in-out infinite;
-  }
-  @keyframes skel-shimmer {
-    from { background-position: 200% 0; }
-    to { background-position: -200% 0; }
-  }
-  .skel-head { margin-bottom: 12px; }
-  .skel-title { height: 30px; width: 46%; border-radius: 6px; }
-  .skel-sub { height: 11px; width: 220px; max-width: 60%; margin-top: 12px; }
-  .skel-pulse { height: 13px; width: 260px; max-width: 60%; margin: 22px 0 0; }
-  .skel-chips { display: flex; gap: 8px; margin: 18px 0 0; }
-  .skel-chip { height: 27px; width: 84px; border-radius: 999px; }
-  .skel-chip:nth-child(2) { width: 112px; }
-  .skel-chip:nth-child(3) { width: 96px; }
-  .skel-timeline { margin-top: 36px; }
-  .skel-day { position: relative; padding-left: 34px; margin: 0 0 22px; }
-  .skel-day::before {
-    content: "";
+  /* Left: the target rendered at the selected revision — nothing else. */
+  #main { flex: 1; order: 1; display: flex; flex-direction: column; min-width: 0; }
+  #stage { flex: 1; position: relative; background: var(--bg); }
+  #frame {
     position: absolute;
-    left: var(--spine-x);
-    top: 2px;
-    bottom: -10px;
-    width: 1px;
-    background: var(--line);
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    border: 0;
   }
-  .skel-daylabel { height: 12px; width: 64px; margin: 0 0 14px -34px; }
-  .skel-row { display: flex; align-items: center; gap: 10px; padding: 9px 0; }
-  .skel-dot { flex: none; width: 7px; height: 7px; margin-left: 1px; border-radius: 50%; background: var(--line); }
-  .skel-line { height: 13px; }
-  .skel-time { flex: none; width: 64px; height: 11px; margin-left: auto; }
+  #notice {
+    position: absolute;
+    inset: 0;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+    text-align: center;
+    color: var(--ink-2);
+    background: var(--bg);
+  }
+  #notice.error { color: var(--danger); }
+  #notice.show { display: flex; }
 
-  @media (prefers-reduced-motion: reduce) {
-    * { animation: none !important; transition: none !important; }
-    .ev .go, .continue .go { transform: none; }
+  /* ── Narrow hosts (D235 fallout) ──────────────────────────────────────────
+     Since this mode is bound to 47 file extensions as well as `/`, it renders
+     in the explorer's listing preview pane (floor 220px, default width HALF
+     its split container), in freely dragged Panel panes and in /embed — not
+     just full-window. Two halves side by side stop being a layout there and
+     start being two unusable slivers.
+
+     The TEMPLATE goes responsive rather than the shell hiding split-layout
+     modes from narrow panes, because a pane's width is dynamic: the listing
+     pane is half its container, so on a wide window it fits the split fine and
+     a width filter would be wrong there. A filter would also make modes appear
+     and disappear mid divider-drag and could yank the ACTIVE mode out from
+     under the user, and it would need a per-template min-width field in
+     registry.json / the stat API that this codebase does not have (and that
+     user templates, §16, would never get for free). Plain media queries in the
+     template are the house idiom for exactly this: log_studio (780), map (650),
+     duckdb/sqlite (560), bundle (640).
+
+     Breakpoint arithmetic — the columns' minimum USEFUL widths, not the point
+     at which they merely stop overflowing. The original figure (560px, D236)
+     was derived from the hard floor: #side 200 + divider 4 + a 320px preview
+     = 524, rounded up. That floor was the wrong one to pick. The explorer's
+     listing preview pane defaults to HALF its split container (about 700px on a
+     1700px window), so at 560px the split engaged in a host far too narrow for
+     it: a 320px frame is a viewport the framed template has already collapsed
+     itself for, i.e. a preview of a preview's narrow layout. The useful sum:
+         #side min-width           200px  (the commit spine: hash + date + tag)
+       + #divider                    4px
+       + a usable preview frame     420px  (the phone-viewport family, the same
+                                            "a framed preview that is still a
+                                            page" figure `claude` uses for ITS
+                                            framed column)
+       = 624px floor → 640px, rounded up for a scrollbar (and landing on the
+         `bundle` family number). This is deliberately LOWER than `claude`'s
+         800px: claude's narrower column is a 420px preview but its OTHER
+         column is a 440px chat, while ours is a 200px commit spine — the
+         split here stays useful in hosts claude's cannot survive, so the two
+         templates no longer share a breakpoint.
+
+     Below it: ONE view at a time. #side-head stays put as the control strip
+     (it already carries Revert), so the toggle is reachable from both views,
+     and the list is the default — it is what makes this mode mean anything and
+     it is where a snapshot gets picked. */
+  #view-toggle {
+    flex: none;
+    display: none;  /* wide layout shows both halves — nothing to toggle */
+    padding: 4px 10px;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    background: var(--surface-2);
+    color: var(--ink-2);
+    font: inherit;
+    font-size: 11px;
+    text-transform: none;
+    letter-spacing: normal;
+    cursor: pointer;
   }
+  #view-toggle:hover { border-color: var(--accent); color: var(--accent); }
+  @media (max-width: 640px) {
+    /* Stack, so #side can be the full-width control strip + list. */
+    body { flex-direction: column; }
+    #divider { display: none; }  /* nothing left to resize */
+    /* `width: 100% !important` is the deliberate neutralisation of the INLINE
+       width applySplit()/the drag write onto #side: a media query cannot beat
+       an inline style, and `!important` can. Chosen over "skip the inline write
+       while narrow" because this keeps applySplit() unconditional and stateless
+       — crossing the breakpoint in EITHER direction needs no JS at all, since
+       the wide layout's inline width is still sitting there intact the moment
+       the query stops matching. Clearing the inline value instead would leave
+       the split param and the element's style as two sources of truth, and
+       would need a re-apply on the way back out (and would strand a stale width
+       if a drag ended while narrow). */
+    #side { order: 1; flex: 1; width: 100% !important; min-width: 0; }
+    #main { order: 2; display: none; }
+    #view-toggle { display: inline-block; }
+    /* The other view. Note the body class only ever bites inside this block, so
+       returning to the wide layout restores the split with no reset needed. */
+    body.narrow-preview #side { flex: none; }
+    body.narrow-preview #commits { display: none; }
+    body.narrow-preview #main { display: flex; }
+  }
+
 </style>
 </head>
 <body>
-  <div id="root">
-    <div class="skel-head">
-      <div class="skel-bar skel-title"></div>
-      <div class="skel-bar skel-sub"></div>
+  <div id="side">
+    <div id="side-head">
+      <span class="label">History</span>
+      <button id="view-toggle" title="Switch between the commit list and the snapshot">Preview</button>
+      <button id="revert" disabled title="Revert all files to the selected version">Revert</button>
     </div>
-    <div class="skel-bar skel-pulse"></div>
-    <div class="skel-chips">
-      <div class="skel-bar skel-chip"></div>
-      <div class="skel-bar skel-chip"></div>
-      <div class="skel-bar skel-chip"></div>
-    </div>
-    <div class="skel-timeline">
-      <div class="skel-day">
-        <div class="skel-bar skel-daylabel"></div>
-        <div class="skel-row"><span class="skel-dot"></span><span class="skel-bar skel-line" style="width:220px"></span><span class="skel-bar skel-time"></span></div>
-        <div class="skel-row"><span class="skel-dot"></span><span class="skel-bar skel-line" style="width:150px"></span><span class="skel-bar skel-time"></span></div>
-        <div class="skel-row"><span class="skel-dot"></span><span class="skel-bar skel-line" style="width:270px"></span><span class="skel-bar skel-time"></span></div>
-      </div>
-      <div class="skel-day">
-        <div class="skel-bar skel-daylabel" style="width:56px"></div>
-        <div class="skel-row"><span class="skel-dot"></span><span class="skel-bar skel-line" style="width:190px"></span><span class="skel-bar skel-time"></span></div>
-        <div class="skel-row"><span class="skel-dot"></span><span class="skel-bar skel-line" style="width:130px"></span><span class="skel-bar skel-time"></span></div>
-      </div>
+    <div id="commits"></div>
+  </div>
+  <div id="divider"></div>
+  <div id="main">
+    <div id="stage">
+      <iframe id="frame" title="Target at selected revision"></iframe>
+      <div id="notice"></div>
     </div>
   </div>
 
 <script>
-(async function () {
-  "use strict";
+// The target arrives as the read-only _file param (template contract), and the
+// backend decides which of two histories it names (D235): any path inside a
+// fused app resolves to the WHOLE app (so the view is identical everywhere
+// inside it, and `revert` is offered), while a file in the user's own repository
+// resolves to that one file's history, read-only — `can_revert: false` is how
+// the payload says which, and the only difference this view has to render.
+const FILE = fused.params.get("_file") || "";
 
-  // ======================================================================
-  // The sidecar (home_dir()/sidecar/<mapped path>.json, D83-reversal) is a
-  // SHARED store (SPEC §21/§24): the claude template owns `claudeSessions`,
-  // the bookmark mirror `bookmarkHistory`, session restore `lastSession`,
-  // annotate `comments`. This view is a READ-ONLY inspector over it — it
-  // never writes the file (HV-9), and all logic stays in this template
-  // (HV-1). Rendered as one merged timeline: the store is temporal, so time
-  // is the primary axis, not the writer.
-  // ======================================================================
+const commitsEl = document.getElementById("commits");
+const frameEl = document.getElementById("frame");
+const noticeEl = document.getElementById("notice");
+const revertBtn = document.getElementById("revert");
+const toggleBtn = document.getElementById("view-toggle");
 
-  // ---- schema (HV-4/HV-6): per-top-level-key, subset validator below.
-  // Required = only what the view renders; extra fields on entries are fine
-  // (writers grow their records additively — additive must not read as
-  // corruption). Units: bookmark created_at / comment createdAt are ms
-  // (JS Date.now); everything else seconds (time.time()).
-  const SCHEMA = {
-    claudeSessions: {
-      type: "array",
-      items: {
-        type: "object",
-        required: ["id"],
-        properties: {
-          id: { type: "string" },
-          preview: { type: "string" },
-          created_at: { type: "number" },
-          last_used: { type: "number" },
-          cwd: { type: "string" },
-        },
-      },
-    },
-    bookmarkHistory: {
-      type: "array",
-      items: {
-        type: "object",
-        required: ["id", "search"],
-        properties: {
-          id: { type: "string" },
-          search: { type: "string" },
-          name: { type: "string" },
-          icon: { type: "string" },
-          created_at: { type: "number" },
-          recorded_at: { type: "number" },
-          updated_at: { type: "number" },
-        },
-      },
-    },
-    lastSession: {
-      type: "object",
-      required: ["search"],
-      properties: {
-        search: { type: "string" },
-        updated_at: { type: "number" },
-      },
-    },
-    comments: {
-      type: "array",
-      items: {
-        type: "object",
-        required: ["id"],
-        properties: {
-          id: { type: "string" },
-          content: { type: "string" },
-          createdAt: { type: "number" },
-          resolved: { type: "boolean" },
-          // Set to 1 by annotate's Send to Claude handoff (§17). Declared so a
-          // hand-edited log gets the same type check as `resolved`; NOT surfaced
-          // as a timeline label, because Reopen clears it by removing the key
-          // and absence never deletes here — the stored flag can outlive the
-          // truth, and a label that lies is worse than no label.
-          sent: { type: "number" },
-          view: { type: "string" },
-          anchorPath: { type: "string" },
-          recorded_at: { type: "number" },
-          updated_at: { type: "number" },
-        },
-      },
-    },
-  };
+// ── narrow layout: one view at a time (see the @media block for the 640px
+// arithmetic and for why this lives in the template, not the shell) ──
+// The breakpoint is asked of matchMedia with the SAME query string as the CSS so
+// the two can't drift, and only to keep the button's label honest — the layout
+// itself is pure CSS, so a resize needs no JS to be correct.
+const NARROW = window.matchMedia("(max-width: 640px)");
+function showNarrow(view) {
+  // `narrow-preview` is inert above the breakpoint (every rule that reads it is
+  // inside the media block), so it is safe to leave set while the host is wide.
+  document.body.classList.toggle("narrow-preview", view === "preview");
+  toggleBtn.textContent = view === "preview" ? "History" : "Preview";
+}
+showNarrow("list");  // the list is the default: it is where a snapshot is picked
+toggleBtn.addEventListener("click", () => {
+  showNarrow(document.body.classList.contains("narrow-preview") ? "list" : "preview");
+});
+NARROW.addEventListener("change", () => {
+  // Coming back out of narrow, drop the one-view state so the next narrowing
+  // starts on the list again rather than on whatever was last looked at.
+  if (!NARROW.matches) showNarrow("list");
+});
 
-  // Subset JSON-Schema validator: `type` (object/array/string/number/boolean),
-  // `required`, `properties`, `items`. Returns the FIRST error as a human
-  // path + message, or null when valid.
-  function validate(value, schema, path) {
-    path = path || "";
-    const at = path || "value";
-    if (schema.type) {
-      const t = Array.isArray(value) ? "array" : value === null ? "null" : typeof value;
-      if (t !== schema.type) return at + ": expected " + schema.type + ", got " + t;
-    }
-    if (schema.type === "object") {
-      for (const k of schema.required || []) {
-        if (!(k in value)) return at + ": missing required field \"" + k + "\"";
-      }
-      for (const k of Object.keys(schema.properties || {})) {
-        if (k in value && value[k] !== undefined) {
-          const err = validate(value[k], schema.properties[k], path ? path + "." + k : k);
-          if (err) return err;
-        }
-      }
-    }
-    if (schema.type === "array" && schema.items) {
-      for (let i = 0; i < value.length; i++) {
-        const err = validate(value[i], schema.items, path + "[" + i + "]");
-        if (err) return err;
-      }
-    }
-    return null;
-  }
+// The spine is PAGED (history.py `PAGE_SIZE`): `commits` holds every page
+// fetched so far, newest first and contiguous from skip 0, which is what makes
+// `commits.length` the next page's `skip`. `more` is the backend's own answer
+// (it fetches one row past the page as a probe), so the page size lives in one
+// place and this half never has to know it.
+let commits = [];      // newest first, from history.py `log`
+let more = false;      // history continues past what is loaded
+let loadingMore = false;
+let moreError = "";
+// Bumped by every full reload (boot, revert). A page that lands after one is
+// answering a question about a list that no longer exists, so it is dropped.
+let logGen = 0;
+let selected = null;   // full sha
 
-  // ---- tiny html helpers -------------------------------------------------
-  function esc(s) {
-    return String(s)
-      .replace(/&/g, "&amp;").replace(/</g, "&lt;")
-      .replace(/>/g, "&gt;").replace(/"/g, "&quot;");
-  }
-  function el(html) {
-    const t = document.createElement("template");
-    t.innerHTML = html.trim();
-    return t.content.firstChild;
-  }
+function esc(s) {
+  return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
 
-  // Relative time. `unit` is per-field (HV-6): "s" or "ms" — never guessed.
-  function toMs(v, unit) {
-    if (typeof v !== "number" || !isFinite(v)) return null;
-    return unit === "ms" ? v : v * 1000;
-  }
-  function relTime(v, unit) {
-    const ms = toMs(v, unit);
-    if (ms === null) return "";
-    const d = Date.now() - ms;
-    if (d < 60000) return "just now";
-    const m = Math.floor(d / 60000);
-    if (m < 60) return m + "m ago";
-    const h = Math.floor(m / 60);
-    if (h < 24) return h + "h ago";
-    const days = Math.floor(h / 24);
-    if (days < 30) return days + "d ago";
-    return new Date(ms).toLocaleDateString();
-  }
-  function absTime(v, unit) {
-    const ms = toMs(v, unit);
-    return ms === null ? "" : new Date(ms).toLocaleString();
-  }
-  function clock(v, unit) {
-    const ms = toMs(v, unit);
-    if (ms === null) return "";
-    return new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-  }
-  function dayKey(ms) {
-    const d = new Date(ms);
-    return d.getFullYear() + "-" + d.getMonth() + "-" + d.getDate();
-  }
-  function dayLabel(ms) {
-    const now = new Date();
-    const today = dayKey(now.getTime());
-    const yesterday = dayKey(now.getTime() - 86400000);
-    const k = dayKey(ms);
-    if (k === today) return "Today";
-    if (k === yesterday) return "Yesterday";
-    const d = new Date(ms);
-    const opts = { month: "short", day: "numeric" };
-    if (d.getFullYear() !== now.getFullYear()) opts.year = "numeric";
-    return d.toLocaleDateString([], opts);
-  }
+function ago(ts) {
+  if (!ts) return "";
+  const s = Math.max(0, Date.now() / 1000 - ts);
+  if (s < 60) return "just now";
+  if (s < 3600) return Math.floor(s / 60) + "m ago";
+  if (s < 86400) return Math.floor(s / 3600) + "h ago";
+  if (s < 86400 * 30) return Math.floor(s / 86400) + "d ago";
+  return new Date(ts * 1000).toLocaleDateString();
+}
 
-  // ---- shell navigation (HV-7) -------------------------------------------
-  // Mirrors frontend/src/lib/router.ts urlForFsPath + navigate: /view/ with
-  // each path segment encoded, then pushState + "fused:navigate" on the top
-  // window so the shell re-routes without a full reload. Falls back to a
-  // plain location set if the top window is unreachable.
-  function urlForFsPath(fsPath, search) {
-    const norm = /^[A-Za-z]:[\\/]/.test(fsPath) ? fsPath.replace(/\\/g, "/") : fsPath;
-    const rest = norm.replace(/^\/+/, "");
-    const encoded = rest.split("/").filter(Boolean).map(encodeURIComponent).join("/");
-    return shellPrefix() + encoded + (search ? "?" + search : "");
-  }
-  function shellPrefix() {
-    // Stay inside the shell's active prefix (router.ts PREFIX): an /embed/
-    // session keeps routing under /embed/, never teleported to /view/.
-    try {
-      const p = window.top.location.pathname;
-      if (p.startsWith("/explorer/embed/") || p === "/explorer/embed") return "/explorer/embed/";
-    } catch (e) { /* cross-origin — assume the normal shell */ }
-    return "/explorer/view/";
-  }
-  function navigateShell(fsPath, search) {
-    const url = urlForFsPath(fsPath, search);
-    try {
-      const top = window.top;
-      void top.location.href; // throws when cross-origin
-      top.history.pushState(null, "", url);
-      top.dispatchEvent(new Event("fused:navigate"));
-      return;
-    } catch (e) { /* fall through */ }
-    try { window.top.location.href = url; } catch (e) { location.href = url; }
-  }
+function notice(msg, isError) {
+  frameEl.removeAttribute("src");
+  noticeEl.textContent = msg;
+  noticeEl.className = "show" + (isError ? " error" : "");
+}
 
-  // Type icons match what the user already knows: the claude/annotate MODE
-  // icons (templates/<name>/icon.svg) and the shell's ★ bookmark glyph —
-  // never a third vocabulary for the same concepts.
-  const ICONS = {
-    claude: '<svg viewBox="0 0 512 512" fill="currentColor" width="14" height="14"><path d="M100.4 340.5l100.7-56.5 1.7-4.9-1.7-2.7-4.9 0-16.8-1-57.5-1.6-49.9-2.1-48.3-2.6-12.2-2.6-11.4-15 1.2-7.5 10.2-6.9 14.7 1.3c18.9 1.3 45.9 3.1 81 5.6l35.2 2.1 52.2 5.4 8.3 0 1.2-3.4-2.8-2.1-2.2-2.1-50.3-34.1-54.4-36-28.5-20.7-15.4-10.5-7.8-9.8-3.4-21.5 14-15.4 18.8 1.3 4.8 1.3 19 14.7 40.7 31.5 53.1 39.1 7.8 6.5 3.1-2.2.4-1.6-3.5-5.8-28.9-52.2-30.8-53.1-13.7-22-3.6-13.2c-1.3-5.4-2.2-10-2.2-15.5l15.9-21.6 8.8-2.8 21.2 2.8 8.9 7.8 13.2 30.2 21.4 47.5 33.2 64.6 9.7 19.2 5.2 17.8 1.9 5.4 3.4 0 0-3.1 2.7-36.4 5-44.7 4.9-57.5 1.7-16.2 8-19.4 15.9-10.5 12.4 5.9 10.2 14.7-1.4 9.5-6.1 39.5-11.9 61.9-7.8 41.5 4.5 0 5.2-5.2 21-27.8 35.2-44.1 15.5-17.5 18.1-19.3 11.6-9.2 22 0 16.2 24.1-7.3 24.9-22.7 28.7-18.8 24.4-27 36.3-16.8 29 1.6 2.3 4-.4 60.9-13 32.9-5.9 39.3-6.7 17.8 8.3 1.9 8.4-7 17.2-42 10.4-49.2 9.8-73.3 17.3-.9.7 1 1.3 33 3.1 14.1.8 34.6 0 64.4 4.8 16.8 11.1 10.1 13.6-1.7 10.4-25.9 13.2c-15.5-3.7-54.4-12.9-116.6-27.7l-28-7-3.9 0 0 2.3 23.3 22.8 42.7 38.6 53.5 49.8 2.7 12.3-6.9 9.7-7.3-1-47-35.4-18.1-15.9-41.1-34.6-2.7 0 0 3.6 9.5 13.9 50 75.2 2.6 23-3.6 7.5-13 4.5-14.2-2.6-29.3-41.1-30.2-46.3-24.4-41.5-3 1.7-14.4 154.8-6.7 7.9-15.5 5.9-13-9.8-6.9-15.9 6.9-31.5 8.3-41.1 6.7-32.7 6.1-40.6 3.6-13.5-.2-.9-3 .4-30.6 42-46.5 62.9-36.8 39.4-8.8 3.5-15.3-7.9 1.4-14.1 8.5-12.6 50.9-64.8 30.7-40.2 19.8-23.2-.1-3.4-1.2 0-135.3 87.8-24.1 3.1-10.4-9.7 1.3-15.9 4.9-5.2 40.7-28-.1.1 0 .1z"/></svg>',
-    bookmark: '<span class="star">★</span>',
-    comment: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" width="15" height="15"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/><line x1="8" y1="8" x2="16" y2="8"/><line x1="8" y1="12" x2="13" y2="12"/></svg>',
-    chevron: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><path d="M9 6l6 6-6 6"/></svg>',
-    resume: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="15" height="15"><path d="M4 19v-7a5 5 0 0 1 5-5h11"/><path d="M16 3l4 4-4 4"/></svg>',
-    clock: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="13" height="13"><circle cx="12" cy="12" r="9"/><path d="M12 7.5V12l3 2"/></svg>',
-    warn: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" width="14" height="14"><path d="M12 3L2.5 20h19L12 3z"/><path d="M12 10v4"/><path d="M12 17.2v.1"/></svg>',
-  };
+function clearNotice() { noticeEl.className = ""; }
 
-  // ---- boot ----------------------------------------------------------------
-  const root = document.getElementById("root");
-  const file = fused.params.get("_file") || "";
-
-  // Role resolution (HV-3): the mode is reachable from both the target and
-  // the sidecar itself. Exact now (D83-reversal): a sidecar path is anything
-  // actually under the sidecar root (window._fusedTargetPathFromSidecarPath resolves
-  // it), rather than the old same-directory `<name>.<ext>.json` shape guess —
-  // sidecars no longer share a directory with anything, so the real
-  // filesystem location IS the test.
-  function bareErrorPage(message) {
-    // Used only before `header()` can be built at all (the role-resolution
-    // failure below) — no name/stem to show yet, so this skips straight to
-    // the same error-page markup fullPage()'s callers use.
-    root.innerHTML = "";
-    root.appendChild(el('<div class="error-page">' + esc(message) + "</div>"));
+// A full repaint, and deliberately so: appending a page changes the FOOT of the
+// list only, but the selected row, the `latest` badge and the pager row are all
+// derived state, and one function that redraws all of it from `commits` +
+// `selected` cannot leave them disagreeing. The one thing a repaint does lose is
+// the scroll offset, which is exactly what a "show older" click must keep — so
+// it is saved and restored around the write, and the new rows appear below the
+// user's viewport instead of under it.
+function renderList() {
+  const scroll = commitsEl.scrollTop;
+  let html = commits.map((c, i) =>
+    '<div class="commit' + (c.sha === selected ? " selected" : "") +
+    '" data-sha="' + c.sha + '">' +
+    '<div class="subject">' + esc(c.subject || "(no subject)") +
+    (i === 0 ? '<span class="badge">latest</span>' : "") + "</div>" +
+    '<div class="meta">' + c.sha.slice(0, 7) + " · " + ago(c.ts) + "</div>" +
+    "</div>").join("");
+  if (more) {
+    html += '<div class="older' + (loadingMore ? " loading" : "") + '">' +
+      (loadingMore ? "Loading…" : "Show older") + "</div>";
   }
+  // The row stays (so the failed page can simply be asked for again) and the
+  // reason sits under it.
+  if (moreError) html += '<div class="older-error">' + esc(moreError) + "</div>";
+  commitsEl.innerHTML = html;
+  commitsEl.scrollTop = scroll;
+}
 
-  let sidecarPath, targetPath;
+// The next page, appended. Nothing here touches `selected` or the frame: paging
+// grows the timeline, it does not move the preview.
+async function loadMore() {
+  if (loadingMore || !more) return;
+  loadingMore = true;
+  moreError = "";
+  renderList();
+  const gen = logGen;
   try {
-    // Both _fusedTargetPathFromSidecarPath and _fusedSidecarPath reject when
-    // sidecarRoot never resolved (a failed/pending /api/config fetch) — this
-    // used to reach neither catch below it and crash the whole boot with an
-    // unhandled rejection instead of the graceful states this view already
-    // has for a real sidecar-read failure (Bugbot).
-    const maybeTarget = await window._fusedTargetPathFromSidecarPath(file);
-    if (maybeTarget !== null) {
-      sidecarPath = file;
-      targetPath = maybeTarget;
+    const res = await fused.runPython("./history.py",
+      { action: "log", file: FILE, skip: commits.length }, { key: "log-more" });
+    if (gen !== logGen) return;  // a reload replaced the list under us
+    if (res.error) throw new Error(res.error);
+    // De-duped by sha rather than trusted blindly: a commit landing on HEAD
+    // between two pages shifts the window down by one, and a repeated row is
+    // the visible symptom. Cheap to drop, and it keeps `commits.length` an
+    // honest cursor for the page after this one.
+    const seen = new Set(commits.map(c => c.sha));
+    for (const c of (res.commits || [])) {
+      if (!seen.has(c.sha)) commits.push(c);
+    }
+    more = !!res.more;
+  } catch (err) {
+    moreError = "Could not load older versions: " + err.message;
+  } finally {
+    if (gen === logGen) {
+      loadingMore = false;
+      renderList();
+    }
+  }
+}
+
+// The iframe src that shows `path` the way the explorer would: its own default
+// view. Used for a FILE target's snapshot, where the materialised revision is a
+// `.py`/`.parquet`/`.md`, not a page (D235).
+//
+// The default is the first non-`conditional` entry — the same rule the shell's
+// own preview applies (Preview.tsx `defaultTemplate`) — asked of stat rather
+// than hardcoded per extension, so a rebinding (including a user override, §16)
+// is picked up here for free. `history` itself is conditional, so this can
+// never recurse into the view it is called from.
+async function frameSrcForFile(path) {
+  let st;
+  try {
+    st = await fetch("/api/fs/stat?path=" + encodeURIComponent(path)).then(r => r.json());
+  } catch (err) {
+    return "";
+  }
+  if (!st || st.error) return "";
+  const t = (st.templates || []).find(e => !e.conditional);
+  if (!t) return "";
+  // `_render` is a shell sentinel (PT-12), not a template folder: the file
+  // renders itself. Any other sentinel has no template to frame.
+  if (t.mode === "_render") return "/render?path=" + encodeURIComponent(path);
+  if (!t.path) return "";
+  return "/render?path=" + encodeURIComponent(t.path)
+    + "&_file=" + encodeURIComponent(path);
+}
+
+// The shell's chrome-free view of a DIRECTORY — its browsable listing with no
+// sidebar, breadcrumb or preview header (`body.embed`). Used to frame a
+// snapshot that is a tree rather than a document.
+//
+// The path→URL codec mirrors the shell's own (platform/lib/router.ts
+// `urlForFsPath`): strip the leading separator, encode each segment, join. A
+// template cannot import the shell's module, so this rule is duplicated here
+// rule — four lines, and the only part of the shell's routing a template needs
+// to know. The Windows normalisation is the same narrow one — ONLY a
+// drive-letter path has its backslashes rewritten, because on POSIX a backslash
+// is a legal filename character that must round-trip untouched.
+//
+// One framing param, the shell's own:
+//
+//   `snapshot=1`    — a FROZEN TREE, not a live folder. It suppresses the chrome
+//                     that would act on it as one: the breadcrumb (whose crumbs
+//                     walk up out of the snapshot and into the cache's own
+//                     internals) and the two corner chips (the mode chip offered
+//                     a Claude chat ON THE EXTRACTED COPY; "Open as app" would
+//                     run one). See router.ts IS_SNAPSHOT.
+//
+// It used to pass `preview=false` alongside, to stop the embedded listing
+// growing its own split pane inside this already-narrow column. That param is
+// gone: the shell decides the split from the listing container's measured
+// width (listing/pane-math shouldShowPane), so a column too narrow to read
+// two panes in simply does not get a second one, with nothing for the framer
+// to declare.
+function embedUrl(dirPath) {
+  const norm = /^[A-Za-z]:[\\/]/.test(dirPath) ? dirPath.replace(/\\/g, "/") : dirPath;
+  return "/explorer/embed/" + norm.split("/").filter(Boolean)
+    .map(encodeURIComponent).join("/") + "?snapshot=1";
+}
+
+async function select(sha) {
+  selected = sha;
+  // URL-synced so a reload (or a shared link) lands on the same revision.
+  fused.params.set("rev", sha.slice(0, 7));
+  renderList();
+  // `startsWith`, not equality: a deep link's `rev` is a 7-char prefix, and it
+  // is selected before any page has resolved it to a full sha (below).
+  const isLatest = commits.length && commits[0].sha.startsWith(sha);
+  revertBtn.disabled = isLatest;
+
+  notice("Preparing snapshot…");
+  try {
+    // Cancellation key per template, not per call: picking a new commit
+    // cancels the previous snapshot request instead of racing it.
+    const snap = await fused.runPython("./history.py",
+      { action: "snapshot", file: FILE, sha: sha }, { key: "snapshot" });
+    if (snap.error) return notice(snap.error, true);
+    if (sha !== selected) return; // stale — a newer selection already landed
+    // Three shapes of snapshot, and the payload names which one this is rather
+    // than the page inferring it from the target's kind — an app's entry page
+    // can arrive mid-history, so the shape differs per COMMIT, not per target.
+    //
+    //   `browse` — a TREE with no page to serve: any directory target, and an
+    //              app whose tree holds no html. Framed through the shell's own
+    //              chrome-free listing, so the user browses the folder as it
+    //              was. This used to be the dead end: a bare notice over a tree
+    //              full of files that were perfectly viewable.
+    //   `entry`  — a page /render can serve directly (an app's entry).
+    //   `file`   — the one file a FILE target materialised; framed through its
+    //              own default template unless it is itself a page, exactly the
+    //              way the explorer previews it live.
+    //
+    // `browse` is tested FIRST because it is the only one of the three that can
+    // never coexist with another: the backend sets it only when there is no
+    // entry.
+    let src = "";
+    if (snap.browse) {
+      src = embedUrl(snap.browse);
+    } else if (snap.entry) {
+      src = "/render?path=" + encodeURIComponent(snap.entry);
+    } else if (snap.file) {
+      src = await frameSrcForFile(snap.file);
+      if (sha !== selected) return; // the stat above is another await point
+      if (!src) return notice("No view for this file type — nothing to render.");
     } else {
-      targetPath = file;
-      sidecarPath = await window._fusedSidecarPath(file);
+      // Defensive: every snapshot payload carries one of the three above.
+      return notice("Nothing to show for this revision.");
     }
-  } catch (e) {
-    bareErrorPage("Could not resolve the sidecar location — " +
-      ((e && e.message) || "unknown error"));
-    return;
-  }
-  // targetPath can come back Windows-shaped (backslashes) from
-  // targetPathFromSidecarPath's reverse mapping, so split on either
-  // separator — a plain "/" split left the whole path as the "name" on
-  // Windows instead of just the file's basename (Bugbot).
-  const targetName = targetPath.split(/[\\/]/).pop() || targetPath;
-  const dotAt = targetName.lastIndexOf(".");
-  const nameStem = dotAt > 0 ? targetName.slice(0, dotAt) : targetName;
-  const nameExt = dotAt > 0 ? targetName.slice(dotAt) : "";
-
-  function header() {
-    return el(
-      '<div class="head"><h1>' + esc(nameStem) +
-      '<span class="ext">' + esc(nameExt) + "</span></h1>" +
-      '<div class="sub">' + esc(sidecarPath) + "</div></div>"
-    );
-  }
-
-  function fullPage(nodes) {
-    root.innerHTML = "";
-    root.appendChild(header());
-    for (const n of nodes) root.appendChild(n);
-  }
-
-  // Absent sidecar (HTTP 404) is the normal "no history yet" state; any other
-  // read failure (permissions, server error) is a real error and must not
-  // masquerade as an empty history.
-  let text = null;
-  try {
-    text = await fused.readFile(sidecarPath);
-  } catch (e) {
-    if (!/HTTP 404/.test(e && e.message || "")) {
-      fullPage([el(
-        '<div class="error-page">Could not read the sidecar — ' +
-        esc((e && e.message) || "unknown error") + "</div>"
-      )]);
-      return;
+    clearNotice();
+    frameEl.src = src;
+    // The snapshot resolved whatever was asked for into a FULL sha. Adopt it, so
+    // a revision deep-linked by prefix (and therefore not on the first page)
+    // highlights the moment paging reaches the row that holds it.
+    if (snap.sha && snap.sha !== selected) {
+      selected = snap.sha;
+      renderList();
     }
+  } catch (err) {
+    if (sha === selected) notice("Snapshot failed: " + err.message, true);
   }
+}
 
-  if (text === null || text === undefined) {
-    fullPage([el(
-      '<div id="status"><div class="big">No history yet</div>' +
-      "Nothing has been recorded for <b>" + esc(targetName) + "</b> — " +
-      "claude sessions, bookmarks and review comments will appear here as you work.</div>"
-    )]);
-    return;
-  }
-
-  let data;
-  try {
-    data = JSON.parse(text);
-  } catch (e) {
-    fullPage([el(
-      '<div class="error-page">The sidecar is not valid JSON — ' +
-      esc(e.message) + '.<pre class="raw">' + esc(text.slice(0, 20000)) + "</pre></div>"
-    )]);
-    return;
-  }
-  if (data === null || typeof data !== "object" || Array.isArray(data)) {
-    fullPage([el(
-      '<div class="error-page">Expected a JSON object at the top level, got ' +
-      esc(Array.isArray(data) ? "array" : data === null ? "null" : typeof data) +
-      '.<pre class="raw">' + esc(text.slice(0, 20000)) + "</pre></div>"
-    )]);
-    return;
-  }
-
-  // Validate each known key independently (HV-4): one corrupt key warns only
-  // its own card; the rest of the timeline renders normally.
-  const checked = {};
-  for (const key of Object.keys(SCHEMA)) {
-    if (!(key in data)) { checked[key] = { state: "absent" }; continue; }
-    const err = validate(data[key], SCHEMA[key], key);
-    checked[key] = err
-      ? { state: "invalid", error: err, raw: data[key] }
-      : { state: "ok", value: data[key] };
-  }
-
-  // ---- flatten valid keys into one event stream --------------------------
-  // Every event: { type, ms, node } — ms drives day-grouping + ordering.
-  const events = [];
-
-  if (checked.claudeSessions.state === "ok") {
-    for (const s of checked.claudeSessions.value) {
-      const ms = toMs(s.last_used, "s") || toMs(s.created_at, "s") || 0;
-      events.push({ type: "session", ms, data: s });
-    }
-  }
-  if (checked.bookmarkHistory.state === "ok") {
-    for (const b of checked.bookmarkHistory.value) {
-      const ms = toMs(b.updated_at, "s") || toMs(b.created_at, "ms") || 0;
-      events.push({ type: "bookmark", ms, data: b });
-    }
-  }
-  if (checked.comments.state === "ok") {
-    for (const c of checked.comments.value) {
-      const ms = toMs(c.createdAt, "ms") || toMs(c.recorded_at, "s") || 0;
-      events.push({ type: "comment", ms, data: c });
-    }
-  }
-  events.sort((a, b) => b.ms - a.ms);
-
-  const KIND = {
-    session: { label: "Claude session", icon: ICONS.claude },
-    bookmark: { label: "Bookmark", icon: ICONS.bookmark },
-    comment: { label: "Comment", icon: ICONS.comment },
-  };
-
-  // ---- event row builders -------------------------------------------------
-  // One-line rows: the icon says what it is (same glyphs as the mode
-  // switcher / sidebar), the title says which one, the fixed right column
-  // says when — every richer detail lives in the hover tooltip.
-  function baseRow(ev, clickable, titleAttr, extraClass) {
-    const cls = "ev" + (extraClass ? " " + extraClass : "") + (clickable ? " link" : "");
-    const row = el(
-      '<div class="' + cls + '"' +
-      (clickable ? ' role="button" tabindex="0"' : "") +
-      (titleAttr ? ' title="' + esc(titleAttr) + '"' : "") + ">" +
-      '<span class="icon">' + KIND[ev.type].icon + "</span>" +
-      '<span class="body"></span>' +
-      '<span class="right"><span class="when">' + esc(clock(ev.ms, "ms")) + "</span>" +
-      (clickable ? '<span class="go">' + ICONS.chevron + "</span>" : "") +
-      "</span></div>"
-    );
-    return { row, body: row.querySelector(".body") };
-  }
-
-  function wireClick(row, fn) {
-    row.addEventListener("click", fn);
-    row.addEventListener("keydown", (e) => {
-      if (e.key === "Enter" || e.key === " ") { e.preventDefault(); fn(); }
-    });
-  }
-
-  function renderEvent(ev) {
-    if (ev.type === "session") {
-      const s = ev.data;
-      const tip = "Claude session — click to resume\n" +
-        (s.created_at ? "started " + relTime(s.created_at, "s") + " · " : "") +
-        absTime(s.last_used, "s");
-      const { row, body } = baseRow(ev, true, tip);
-      body.innerHTML = '<div class="title">' + esc(s.preview || s.id) + "</div>";
-      // Resume into `claude`, the one chat template (D235). targetPath is
-      // always a FILE (see the role resolution above), and `claude` is bound to
-      // every file key this view can reach, so the mode always resolves —
-      // a mode a target does not offer would hit PT-9's forgiving unknown-mode
-      // fallback and land on the file's DEFAULT view with the session_id
-      // silently dropped, which is the one thing a "resume this session" row
-      // must never do. `claude` reads session_id from its own
-      // `fused.params.get("session_id")` resume path.
-      wireClick(row, () =>
-        navigateShell(targetPath, "_mode=claude&session_id=" + encodeURIComponent(s.id)));
-      return row;
-    }
-    if (ev.type === "bookmark") {
-      const b = ev.data;
-      const { row, body } = baseRow(ev, true,
-        "Bookmark — click to open\n" + absTime(b.updated_at, "s"));
-      body.innerHTML =
-        '<div class="title">' + (b.icon ? esc(b.icon) + " " : "") +
-        esc(b.name || targetName) +
-        (b.search ? ' <span class="q">?' + esc(b.search) + "</span>" : "") +
-        "</div>";
-      wireClick(row, () => navigateShell(targetPath, b.search || ""));
-      return row;
-    }
-    // comment — READ-ONLY, never a link. The old deep link was
-    // `_mode=annotate&comment=<id>` (HV-8), but D235 deregistered `annotate`
-    // from all 66 registry keys, so no target offers the mode: the URL falls
-    // through PT-9's forgiving unknown-mode fallback to the file's default
-    // view, and the comment id is dropped — a click that promises to focus one
-    // comment and instead silently opens something else is worse than no click.
-    // Rejected: retargeting at `claude` the way the session row above
-    // was. It cannot honour the request either — claude has no `comment`
-    // param at all (it reads _file/session_id/run/split/annotations/…), and its
-    // omission of the annotate comment handoff (claudeComments/claudeReturn) is
-    // deliberate and documented in its own header, not an oversight to route
-    // around from here. The comment TEXT is still worth showing, so the entry
-    // stays in the timeline as a plain, readable row.
-    // Resolved reads as settled (dimmed); a tombstoned entry (`deleted_at`)
-    // reads as deleted (dimmed + struck) — owner call 2026-07-10.
-    const c = ev.data;
-    const deleted = typeof c.deleted_at === "number";
-    const tip = "Comment" +
-      (c.resolved ? " · resolved" : "") +
-      (deleted ? " · deleted" : "") +
-      (c.view ? " · on " + c.view : "") + "\n" +
-      (absTime(c.createdAt, "ms") || absTime(c.recorded_at, "s"));
-    const cls = [c.resolved ? "resolved" : "", deleted ? "deleted" : ""].filter(Boolean).join(" ");
-    const { row, body } = baseRow(ev, false, tip, cls);
-    body.innerHTML = '<div class="title wrap">' + esc(c.content || "(no text)") + "</div>";
-    return row;
-  }
-
-  // ---- assemble page -------------------------------------------------------
-  const nodes = [];
-
-  // vitals line
-  if (events.length) {
-    const oldest = events[events.length - 1].ms;
-    nodes.push(el(
-      '<p class="pulse-line"><b>' + events.length + "</b> event" +
-      (events.length === 1 ? "" : "s") + " since <b>" + esc(dayLabel(oldest)) +
-      "</b> · last activity <b>" + esc(relTime(events[0].ms, "ms")) + "</b></p>"
-    ));
-  }
-
-  // filter chips — single-select: "All" or exactly one event type
-  let activeFilter = "all";
-  const counts = { session: 0, bookmark: 0, comment: 0 };
-  for (const ev of events) counts[ev.type]++;
-  if (events.length) {
-    const chipsEl = el('<div class="chips" role="group" aria-label="Filter event types"></div>');
-    const defs = [["all", "All", events.length]];
-    for (const t of ["session", "bookmark", "comment"]) {
-      if (counts[t]) defs.push([t, KIND[t].label + (counts[t] > 1 ? "s" : ""), counts[t]]);
-    }
-    const chips = new Map();
-    for (const [key, label, n] of defs) {
-      const chip = el(
-        '<button class="chip" type="button" aria-pressed="' +
-        (key === activeFilter ? "true" : "false") + '">' +
-        '<span class="dot"></span>' + esc(label) +
-        ' <span class="n">' + n + "</span></button>"
-      );
-      chip.addEventListener("click", () => {
-        if (activeFilter === key) return;
-        activeFilter = key;
-        for (const [k, c] of chips) c.setAttribute("aria-pressed", k === key ? "true" : "false");
-        renderTimeline();
-      });
-      chips.set(key, chip);
-      chipsEl.appendChild(chip);
-    }
-    nodes.push(chipsEl);
-  }
-
-  // continue banner (lastSession) — the one hero moment
-  {
-    const c = checked.lastSession;
-    if (c.state === "ok") {
-      const ls = c.value;
-      // meta shows the human read (which mode, how long ago); the raw query
-      // is a tooltip detail, not the headline — it reads as noise up front.
-      let mode = "render";
-      try { mode = new URLSearchParams(ls.search || "").get("_mode") || "render"; } catch (e) {}
-      const banner = el(
-        '<button class="continue" type="button" title="' +
-        esc(absTime(ls.updated_at, "s")) +
-        esc(ls.search ? "\n?" + ls.search : "") + '">' +
-        '<span class="resume">' + ICONS.resume + "</span>" +
-        '<span class="c-body"><div class="c-title">Continue where you left off</div>' +
-        '<div class="c-meta"><span class="q">' + esc(mode) + " view</span>" +
-        (ls.updated_at ? " · " + esc(relTime(ls.updated_at, "s")) : "") +
-        "</div></span>" +
-        '<span class="go">' + ICONS.chevron + "</span></button>"
-      );
-      banner.addEventListener("click", () => navigateShell(targetPath, ls.search || ""));
-      nodes.push(banner);
-    } else if (c.state === "invalid") {
-      // fall through to the warnings block below
-    }
-  }
-
-  // per-key corruption warnings (HV-4)
-  {
-    const warns = el('<div class="warns"></div>');
-    for (const key of Object.keys(SCHEMA)) {
-      const c = checked[key];
-      if (c.state !== "invalid") continue;
-      warns.appendChild(el(
-        '<div class="warn"><div class="msg"><span class="icon">' + ICONS.warn +
-        "</span><span><b>" + esc(key) + "</b> is corrupted — " + esc(c.error) +
-        '</span></div><details><summary>Show raw data</summary><pre class="raw">' +
-        esc(JSON.stringify(c.raw, null, 2)) + "</pre></details></div>"
-      ));
-    }
-    if (warns.children.length) nodes.push(warns);
-  }
-
-  // timeline (or the no-events line)
-  const timelineHost = el('<div class="timeline"></div>');
-  function renderTimeline() {
-    timelineHost.innerHTML = "";
-    const visible = activeFilter === "all"
-      ? events
-      : events.filter((ev) => ev.type === activeFilter);
-    if (!visible.length) {
-      timelineHost.appendChild(el(
-        '<div class="all-hidden">No events recorded yet — claude sessions, ' +
-        "bookmarks and review comments will land here.</div>"
-      ));
-      return;
-    }
-    let currentKey = null, dayEl = null, i = 0;
-    for (const ev of visible) {
-      const k = dayKey(ev.ms);
-      if (k !== currentKey) {
-        currentKey = k;
-        dayEl = el(
-          '<div class="day"><div class="day-label"><span class="tick">' +
-          ICONS.clock + "</span>" + esc(dayLabel(ev.ms)) + "</div></div>"
-        );
-        timelineHost.appendChild(dayEl);
+// The FIRST page, from scratch. Every caller (boot, and revert — whose new
+// commit is the newest, so the first page is where it is) wants the list reset,
+// not extended.
+async function loadLog(preferSha) {
+  logGen++;
+  loadingMore = false;
+  moreError = "";
+  // THE FENCE, and it has to be here — before the first await, in the same
+  // synchronous run as the `logGen` bump. `logGen` alone only fences pages
+  // already IN FLIGHT: a click that lands DURING the reload's await reads the
+  // NEW generation, so its own guard passes, while its `skip` was computed from
+  // the stale list — its page then appends onto the fresh first page, leaving a
+  // hole between them (after a revert: 20 fresh rows, then rows 40+, with 20–39
+  // unreachable and `more` overwritten by that page's flag). Dropping `more`
+  // takes the pager row out of the DOM for the whole reload, so there is nothing
+  // to click; and because JS runs this block to completion, a click either
+  // happened entirely BEFORE it (in flight, dropped by the generation check) or
+  // entirely after it (refused by `!more`). No third case.
+  more = false;
+  renderList();
+  const res = await fused.runPython("./history.py",
+    { action: "log", file: FILE, skip: 0 }, { key: "log" });
+  if (res.error) return notice(res.error, true);
+  // Linked apps are view-only history: history.py refuses `revert` for them
+  // (the repo is the user's own), so the button disappears rather than
+  // offering an action the backend will reject. Older payloads (no
+  // `can_revert` key) keep the button — workspace apps always could.
+  if (res.can_revert === false) revertBtn.style.display = "none";
+  commits = res.commits || [];
+  more = !!res.more;
+  commitsEl.scrollTop = 0;
+  if (!commits.length) return notice("No commits yet.");
+  // A `rev` deep link that is NOT on the first page is still honoured: the
+  // prefix is handed to select() as-is (the backend resolves it), so the link
+  // shows the revision it names rather than silently falling back to HEAD, and
+  // select() adopts the full sha so the row highlights once paging reaches it.
+  //
+  // Off-page, though, it is VERIFIED first, and that is not belt-and-braces —
+  // `rev` is URL state that outlives the target it was set for. In the
+  // explorer's preview pane the pane's params mirror onto the explorer's own
+  // URL, so selecting a DIFFERENT file in the listing reboots this template for
+  // the new target with the previous file's `rev` still present. Resolved as
+  // given, that commit is one the new file's history has never heard of, and the
+  // first thing the user sees after a click is "this revision has nothing under
+  // this folder" about a revision they never picked. So a rev that is not in
+  // THIS target's log is treated as stale and falls back to the newest commit,
+  // silently — the same forgiving posture the app takes for an unknown `_mode`
+  // (PT-9), and for the same reason: stale URL state is the ordinary case here,
+  // not an error to report. A rev that IS in the history, merely past page one,
+  // keeps the deep link exactly as before.
+  //
+  // No second params writer comes out of this: select() is still the only thing
+  // that writes `rev`, so the fallback re-points the param at the newest commit
+  // through the one funnel (and a pristine entry pushes at most the one history
+  // entry selecting a commit has always pushed).
+  let pick = commits[0].sha;
+  if (preferSha) {
+    const hit = commits.find(c => c.sha.startsWith(preferSha));
+    // Shape-checked before it is trusted off-page, so a junk param still falls
+    // back to HEAD the way it always did rather than opening on "unknown
+    // revision".
+    if (hit) pick = hit.sha;
+    else if (/^[0-9a-f]{7,40}$/.test(preferSha)) {
+      const gen = logGen;
+      let known = false;
+      try {
+        const probe = await fused.runPython("./history.py",
+          { action: "has_rev", file: FILE, sha: preferSha }, { key: "hasrev" });
+        known = !!(probe && probe.known);
+      } catch (err) {
+        // The probe is a REFINEMENT of the deep link, not a gate on the view:
+        // if it cannot be asked, keep the behaviour it refines rather than
+        // dropping the user's own link on a transport failure.
+        known = true;
       }
-      const row = renderEvent(ev);
-      row.style.animationDelay = Math.min(i * 30, 420) + "ms";
-      dayEl.appendChild(row);
-      i++;
+      // Another reload started while this was in flight — its own selection is
+      // the current one, and selecting here would fight it.
+      if (gen !== logGen) return;
+      if (known) pick = preferSha;
     }
   }
-  renderTimeline();
-  nodes.push(timelineHost);
+  await select(pick);
+}
 
-  // unknown keys (HV-5: not corruption)
-  {
-    const known = new Set(Object.keys(SCHEMA));
-    const other = {};
-    for (const k of Object.keys(data)) if (!known.has(k)) other[k] = data[k];
-    if (Object.keys(other).length) {
-      nodes.push(el(
-        '<details class="other"><summary>' + Object.keys(other).length +
-        ' other key' + (Object.keys(other).length === 1 ? "" : "s") +
-        ' from other writers</summary><pre class="raw">' +
-        esc(JSON.stringify(other, null, 2)) + "</pre></details>"
-      ));
+commitsEl.addEventListener("click", (e) => {
+  // The pager first: it is a sibling of the rows, not one of them, and it must
+  // NOT flip the narrow layout to the preview — asking for more history is a
+  // request to keep reading the list.
+  if (e.target.closest(".older")) return loadMore();
+  const row = e.target.closest(".commit");
+  if (!row) return;
+  // Picking a revision in the narrow layout is a request to SEE it, so reveal
+  // the preview. Deliberately here and not in select(): loadLog() auto-selects
+  // the newest commit on load, and doing this there would open on the preview
+  // and hide the timeline nobody has looked at yet. Re-clicking the already
+  // selected row still switches (no snapshot work needed — it is already framed).
+  if (NARROW.matches) showNarrow("preview");
+  if (row.dataset.sha !== selected) select(row.dataset.sha);
+});
+
+revertBtn.addEventListener("click", async () => {
+  const c = commits.find(x => x.sha === selected);
+  const label = selected.slice(0, 7) + (c ? " — " + c.subject : "");
+  if (!confirm("Revert all files to " + label +
+      "?\n\nHistory is kept: this adds a new commit on top.")) return;
+  revertBtn.disabled = true;
+  try {
+    const res = await fused.runPython("./history.py",
+      { action: "revert", file: FILE, sha: selected }, { key: "revert" });
+    if (res.error) {
+      revertBtn.disabled = false;
+      return notice(res.error, true);
     }
+    // Reload the list; the new "Reverted to …" commit is now the latest.
+    await loadLog();
+  } catch (err) {
+    notice("Revert failed: " + err.message, true);
+    revertBtn.disabled = false;
   }
+});
 
-  fullPage(nodes);
-})();
+// ── resizable divider; the split ratio (main pane %) is view state, so it
+// lives in the shared `split` param — same default (70) as claude. ──
+const sideEl = document.getElementById("side");
+const clampPct = (pct) => Math.min(80, Math.max(20, pct));
+function applySplit() {
+  sideEl.style.width = (100 - clampPct(parseFloat(fused.params.get("split") || "70"))) + "%";
+}
+applySplit();
+fused.params.onChange(applySplit);
+
+document.getElementById("divider").addEventListener("mousedown", (e) => {
+  e.preventDefault();
+  document.body.classList.add("dragging");
+  const move = (ev) => {
+    sideEl.style.width = (100 - clampPct((ev.clientX / window.innerWidth) * 100)) + "%";
+  };
+  const up = (ev) => {
+    document.body.classList.remove("dragging");
+    window.removeEventListener("mousemove", move);
+    window.removeEventListener("mouseup", up);
+    fused.params.set("split", clampPct((ev.clientX / window.innerWidth) * 100).toFixed(1));
+  };
+  window.addEventListener("mousemove", move);
+  window.addEventListener("mouseup", up);
+});
+
+if (!FILE) {
+  notice("No file selected (missing _file param).", true);
+} else {
+  loadLog(fused.params.get("rev") || "");
+}
 </script>
 </body>
 </html>

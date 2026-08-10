@@ -4,7 +4,7 @@ Two changes are pinned here, and they are the same change seen from two sides.
 
 **`git` is commit management, not history.** Staging, discarding, stashing,
 committing, branches, push/pull — the things you do to a working tree. The
-commit LOG is `versions`' story: it renders the same commits with a timeline
+commit LOG is `history`'s story: it renders the same commits with a timeline
 the git view never had, and two views of one story is what the peer exclusions
 in the two `condition.py` gates used to spend their complexity avoiding. So the
 git view no longer draws a History section, no longer selects a commit, and no
@@ -15,7 +15,7 @@ push/pull are all repository-level acts — you do not stash a file, you stash a
 tree — and the working tree a file sits in is its FOLDER's. So `git` is offered
 on the universal `/` directory key and on no file extension at all, and its gate
 refuses anything that is not a directory. Per-file history is a different
-question with an answer that already ships: `versions`, unchanged, still on every
+question with an answer that already ships: `history`, unchanged, still on every
 file key it had.
 
 `git` did once ride along on file keys, and the reason is gone. The explorer used
@@ -82,7 +82,7 @@ def work_tree(tmp_path, monkeypatch):
 def test_git_is_offered_on_the_directory_key_alone(registry):
     # The working tree is a property of the FOLDER, so the folder is where the
     # mode lives: the universal "/" directory key, and nothing else. It used to
-    # ride along on every key `versions` was on, because a folder had no mode
+    # ride along on every key `history` was on, because a folder had no mode
     # surface to reach it from; the preview pane peeks folders now, so it does
     # not need the ride.
     offered = [key for key, value in registry.items()
@@ -98,13 +98,13 @@ def test_no_file_extension_offers_git(registry):
     assert file_keys == []
 
 
-def test_versions_is_untouched_on_every_file_key(registry):
-    # De-linking is a change to `git` ONLY. Per-file history is `versions`' job
+def test_history_is_untouched_on_every_file_key(registry):
+    # De-linking is a change to `git` ONLY. Per-file history is `history`'s job
     # and it keeps every key it had — which, before the split, was exactly the
     # set `git` rode along on. Pinned literally: a silent drop here would look
-    # like "the split took versions with it".
+    # like "the split took history with it".
     assert sorted(key for key, value in registry.items()
-                  if isinstance(value, list) and "versions" in value
+                  if isinstance(value, list) and "history" in value
                   and key != "/") == [
         ".cfg", ".cjs", ".conf", ".csh", ".css", ".csv", ".cts", ".fish",
         ".geojson", ".hcl", ".htm", ".html", ".ini", ".ipynb", ".jpeg", ".jpg",
@@ -114,7 +114,7 @@ def test_versions_is_untouched_on_every_file_key(registry):
         ".txt", ".vim", ".yaml", ".yml", ".zsh", ".zsh-theme",
     ]
     # And on the folder key too, where it sits beside `git`.
-    assert "versions" in registry["/"]
+    assert "history" in registry["/"]
 
 
 def test_git_is_still_never_a_default(registry):
@@ -128,15 +128,15 @@ def test_git_is_still_never_a_default(registry):
 # ------------------------------------------------------ folder-only vs. a file
 
 
-def test_a_file_in_a_work_tree_is_git_s_no_and_versions_yes(work_tree):
+def test_a_file_in_a_work_tree_is_git_s_no_and_history_yes(work_tree):
     # The whole change in one line. The file is inside a real work tree, so the
     # old gate said True; the working tree it is inside belongs to its FOLDER,
     # so the folder-only gate says False. The question a file DOES have an
-    # answer for — what happened to this file — is `versions`', and `versions`
+    # answer for — what happened to this file — is `history`'s, and `history`
     # still says yes.
     target = str(work_tree / "pkg" / "mod.py")
     assert _load("git").main(target) is False
-    assert _load("versions").main(target) is True
+    assert _load("history").main(target) is True
 
 
 def test_git_refuses_a_file_even_at_the_repository_root(work_tree):
@@ -154,7 +154,7 @@ def test_the_two_folder_gates_ask_different_questions(work_tree):
     # `git` is the WORKING TREE of the repository a folder sits in, which every
     # folder in a work tree has — so it takes them all.
     #
-    # `versions` previews the target AS IT WAS, so it also asks whether there is
+    # `history` previews the target AS IT WAS, so it also asks whether there is
     # anything to preview: a folder qualifies when it has a top-level page, by
     # the shared entry rule. Without that half it put a history mode in the
     # switcher of every directory of every repository the user opens, whose
@@ -165,17 +165,17 @@ def test_the_two_folder_gates_ask_different_questions(work_tree):
     # mechanism that exists for exactly this.
     for target in (str(work_tree), str(work_tree / "pkg")):
         assert _load("git").main(target) is True, target
-        assert _load("versions").main(target) is False, target
+        assert _load("history").main(target) is False, target
 
     # ...and the moment such a folder has a page, both take it.
     (work_tree / "pkg" / "page.html").write_text("<html></html>")
     assert _load("git").main(str(work_tree / "pkg")) is True
-    assert _load("versions").main(str(work_tree / "pkg")) is True
+    assert _load("history").main(str(work_tree / "pkg")) is True
 
 
 def test_neither_gate_excludes_the_other_on_an_app_folder(tmp_path, monkeypatch):
     # The old exclusions were symmetric refusals — `git` stepped aside inside a
-    # fused app, `versions` stepped aside outside one — held in place by a
+    # fused app, `history` stepped aside outside one — held in place by a
     # comment in each file telling the reader to keep the two in step. Both are
     # gone: the modes answer different questions, so a folder gets both.
     workspace = tmp_path / "workspace"
@@ -188,7 +188,7 @@ def test_neither_gate_excludes_the_other_on_an_app_folder(tmp_path, monkeypatch)
     monkeypatch.delenv("FUSED_RENDER_LINKED_APPS", raising=False)
 
     assert _load("git").main(str(app)) is True
-    assert _load("versions").main(str(app)) is True
+    assert _load("history").main(str(app)) is True
 
 
 def test_a_path_outside_any_repository_is_refused_by_both(tmp_path, monkeypatch):
@@ -198,7 +198,7 @@ def test_a_path_outside_any_repository_is_refused_by_both(tmp_path, monkeypatch)
     plain.mkdir()
     (plain / "a.txt").write_text("hi")
     assert _load("git").main(str(plain)) is False
-    assert _load("versions").main(str(plain)) is False
+    assert _load("history").main(str(plain)) is False
 
 
 # ------------------------------------------------- the view drops the history

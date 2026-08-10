@@ -7,12 +7,17 @@
 // `platform/lib/mode-name.ts`'s business and are unit-tested there — nothing
 // here asserts a particular label.
 //
-// The bug that motivated the guard: a rename made `versions` read the same
-// string as `history` through the humanizer fallback, and `.parquet` and
-// `.html` each carry BOTH modes, so the Open With menu (`lib/fs-actions.ts`,
-// `label: modeTitle(t.mode)`) and every mode menu drew two identical entries
-// pointing at different templates. Dispatch keys on `mode`, so nothing broke —
-// the user simply could not tell which was which.
+// The bug that motivated the guard: `versions` and the old sidecar-timeline
+// `history` template both read "History", and `.parquet` and `.html` each
+// carried BOTH modes, so the Open With menu (`lib/fs-actions.ts`, `label:
+// modeTitle(t.mode)`) and every mode menu drew two identical entries pointing
+// at different templates. Dispatch keys on `mode`, so nothing broke — the user
+// simply could not tell which was which.
+//
+// That particular pair is gone rather than papered over: the sidecar template
+// was deleted and `versions` — the surviving one, the git commit spine — was
+// renamed to `history`, so there is now one mode wearing the word. The guard
+// stays because the collision it catches is structural, not about that pair.
 //
 // The guard is general on purpose: a collision is created by an edit SOMEWHERE
 // ELSE — adding a mode to a key, or naming a new template folder into a string

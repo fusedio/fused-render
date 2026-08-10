@@ -49,7 +49,7 @@ export const IS_EMBED =
   location.pathname === "/explorer/embed";
 
 // A FROZEN TREE, not a live folder: the framing a view uses when it embeds a
-// materialised historical snapshot (`versions`, which extracts a commit into
+// materialised historical snapshot (`history`, which extracts a commit into
 // ~/.fused-render/app-versions/<key>/<sha>/ and frames that directory).
 //
 // One flag for three symptoms of one cause, all of which are chrome that acts

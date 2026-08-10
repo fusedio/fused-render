@@ -276,7 +276,7 @@ def test_the_dead_framing_params_are_gone_from_their_consumers_too():
     for rel in (
         ("frontend", "src", "apps", "explorer", "listing", "pane.ts"),
         ("frontend", "src", "platform", "lib", "router.ts"),
-        ("fused_render", "templates", "versions", "template.html"),
+        ("fused_render", "templates", "history", "template.html"),
     ):
         with open(os.path.join(*rel), encoding="utf-8") as f:
             code = "\n".join(line for line in f.read().split("\n")
@@ -1124,8 +1124,8 @@ def test_the_registry_binds_the_split_view_to_files_and_keeps_the_directory_key(
     for key, names in registry.items():
         if key.endswith("/") or not isinstance(names, list):
             continue
-        if "claude" in names and "versions" in names:
-            assert names.index("claude") + 1 == names.index("versions"), key
+        if "claude" in names and "history" in names:
+            assert names.index("claude") + 1 == names.index("history"), key
 
 
 def test_the_gates_docstring_does_not_justify_itself_with_the_deleted_pane():

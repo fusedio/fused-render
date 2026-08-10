@@ -1104,7 +1104,7 @@
 
      Below 800px the split becomes ONE view at a time with a toggle, the same
      idiom log_studio (780px), map (650), duckdb/sqlite (560) and bundle (640)
-     already use. `versions`, the other split-layout template, collapses LOWER
+     already use. `history`, the other split-layout template, collapses LOWER
      (640px): its non-preview column is a 200px commit spine, not a 440px chat,
      so its split stays useful in hosts this one cannot survive.
 
@@ -2152,7 +2152,10 @@ const leftPop = document.getElementById("leftmodepop");     // its listbox
 // away would read as two different views.
 function paneModeLabel(mode) {
   if (mode === "_render") return "Rendered";
-  return ({ versions: "History", git: "Source Control",
+  // No `history` row: the mode key IS the word, so the capitalize below
+  // already produces "History" — the same string the shell's humanizer gives
+  // it. It earned an explicit row only while the key was spelled `versions`.
+  return ({ git: "Source Control",
             app: "Preview", _app: "Preview" })[mode]
     || mode.charAt(0).toUpperCase() + mode.slice(1);
 }
