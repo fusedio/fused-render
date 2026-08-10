@@ -80,8 +80,6 @@ def run_startup_scan(start_dir: str | None = None) -> None:
     now = time.time()
     for root in scan_roots(cfg, start_dir):
         try:
-            if not os.path.isdir(root):
-                continue
             last = runner.last_scan(cfg, root)
             if last is not None and (now - last) < SCAN_DEBOUNCE_S:
                 logger.info("index: %s was scanned %.0fs ago, skipping",
@@ -90,6 +88,13 @@ def run_startup_scan(start_dir: str | None = None) -> None:
             started = runner.start(cfg, root)
             logger.info("index: started background scan of %s (run %s)",
                         root, (started or {}).get("run_id"))
+        except ValueError as e:
+            # A root that no longer exists, or one that turned out to be
+            # mount-backed — skip it quietly; the config outlives the folders
+            # it names. runner.start makes this call, and it checks the mount
+            # guard BEFORE any kernel syscall, so a wedged mount cannot hang
+            # this loop (there is deliberately no os.path.isdir here).
+            logger.info("index: skipping %s (%s)", root, e)
         except Exception:  # noqa: BLE001 - one bad root must not stop the rest
             logger.exception("could not start the index scan of %s", root)
 

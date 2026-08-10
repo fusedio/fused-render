@@ -287,3 +287,20 @@ def test_the_worker_module_runs_a_scan_end_to_end(tmp_path):
     end = [e for e in events if e["type"] == "run_end"][-1]
     assert end["msg"] == "complete", end.get("error")
     assert end["summary"]["rows"] == 1
+
+
+def test_start_checks_the_mount_guard_before_touching_the_kernel(tmp_path, spawned, monkeypatch):
+    """The mount refusal must come from pure string work: an os.path.isdir on
+    a path under a wedged NFS mount blocks the request thread indefinitely,
+    so the guard has to fire before ANY kernel syscall on the root."""
+    mounts = tmp_path / "mounts"
+    (mounts / "m1").mkdir(parents=True)
+    monkeypatch.setattr(runner, "_mounts_dir", lambda: str(mounts))
+
+    def wedged_isdir(path):
+        raise AssertionError(f"kernel isdir on {path} before the mount guard")
+
+    monkeypatch.setattr(runner.os.path, "isdir", wedged_isdir)
+    with pytest.raises(ValueError, match="mount"):
+        runner.start(_cfg(tmp_path), str(mounts / "m1"))
+    assert spawned == []

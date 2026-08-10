@@ -54,12 +54,16 @@ def _detach_kwargs() -> dict:
 def start(cfg: IndexConfig, root: str, full: bool = False) -> dict:
     """Spawn a detached scan of `root`; returns `{run_id, root}` at once."""
     root = norm(os.path.abspath(os.path.expanduser((root or "~").strip())))
-    if not os.path.isdir(root):
-        raise ValueError(f"not a directory: {root}")
+    # The guard runs BEFORE any kernel syscall on the caller's path: it is
+    # pure string work against the mount records, while os.path.isdir on a
+    # path under a wedged NFS mount blocks the request thread indefinitely
+    # (this repo's documented mount-wedge class).
     if MountGuard(mounts_dir=_mounts_dir()).blocks_root(root):
         raise ValueError(
             f"{root} is mount-backed; indexing remote mounts is not supported "
             "(a kernel crawl of an rclone mount can wedge it)")
+    if not os.path.isdir(root):
+        raise ValueError(f"not a directory: {root}")
     run_id = time.strftime("%Y%m%d-%H%M%S") + "-" + os.urandom(3).hex()
     run_dir = os.path.join(cfg.runs_dir, run_id)
     os.makedirs(run_dir)

@@ -388,11 +388,23 @@ def test_startup_scan_never_raises(home, tmp_path, monkeypatch):
 
 
 def test_startup_scan_skips_a_root_that_is_gone(home, tmp_path, monkeypatch):
+    """A missing root is runner.start's ValueError (raised after its mount
+    guard) — the scheduler skips it quietly and still scans the remaining
+    roots. Deliberately NO os.path.isdir in the scheduler itself: a kernel
+    stat on a path under a wedged mount would hang the startup hook."""
     started = []
-    monkeypatch.setattr(index_router.runner, "start",
-                        lambda cfg, root, full=False: started.append(root))
+
+    def fake_start(cfg, root, full=False):
+        if not os.path.isdir(root):
+            raise ValueError(f"not a directory: {root}")
+        started.append(root)
+        return {"run_id": "r", "root": root}
+
+    monkeypatch.setattr(index_router.runner, "start", fake_start)
+    ok = tmp_path / "ok"
+    ok.mkdir()
     cfg = load_config()
-    cfg.roots = [str(tmp_path / "deleted")]
+    cfg.roots = [str(tmp_path / "deleted"), str(ok)]
     index_router.save_config(cfg)
     index_router.run_startup_scan(start_dir=str(tmp_path))
-    assert started == []
+    assert started == [str(ok)]
