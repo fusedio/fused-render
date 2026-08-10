@@ -57,9 +57,13 @@ class IndexConfig:
 
     @property
     def rules(self) -> IgnoreRules:
-        if self._rules is None:
-            self._rules = IgnoreRules(self.ignore)
-        return self._rules
+        # Compiling the rules is not free, but the ignore list is editable at
+        # runtime (PUT /api/index/config) — so the cache is KEYED on the list
+        # rather than invalidated by hand, and no caller can forget to reset it.
+        key = tuple(self.ignore)
+        if self._rules is None or self._rules[0] != key:
+            self._rules = (key, IgnoreRules(self.ignore))
+        return self._rules[1]
 
     # --- store layout (specs/index-store.md §1) ---------------------------
     @property
@@ -131,7 +135,6 @@ def load_config(dir: str | None = None) -> IndexConfig:
     ignore = raw.get("ignore")
     if isinstance(ignore, list):
         cfg.ignore = clean_patterns(ignore)
-        cfg._rules = None
     roots = raw.get("roots")
     if isinstance(roots, list):
         cfg.roots = [str(r) for r in roots if isinstance(r, str) and r.strip()]

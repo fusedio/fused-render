@@ -257,7 +257,6 @@ def api_index_config_write(body: dict = Body(default={}),
                          for r in value if r.strip()]
         else:
             cfg.ignore = clean_patterns(value)
-            cfg._rules = None
     saved = save_config(cfg)
     # Reconcile. The engine fingerprints the rules each root's slice of the
     # index was BUILT under (index/specs/scan-ignore.md §4): while they

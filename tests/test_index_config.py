@@ -76,9 +76,21 @@ def test_to_dict_from_dict_round_trip_carries_the_store_location(tmp_path):
 
 
 def test_rules_recompile_when_the_ignore_list_changes(tmp_path):
+    # No cache reset at the call site: assigning `ignore` is the whole edit.
     cfg = IndexConfig(dir=str(tmp_path / "ix"), ignore=["a"])
     assert cfg.rules.is_ignored("/x/a")
     cfg.ignore = ["b"]
-    cfg._rules = None
     assert not cfg.rules.is_ignored("/x/a")
     assert cfg.rules.is_ignored("/x/b")
+
+
+def test_rules_recompile_when_the_ignore_list_is_mutated_in_place(tmp_path):
+    cfg = IndexConfig(dir=str(tmp_path / "ix"), ignore=["a"])
+    assert not cfg.rules.is_ignored("/x/b")
+    cfg.ignore.append("b")
+    assert cfg.rules.is_ignored("/x/b")
+
+
+def test_unchanged_rules_are_compiled_once(tmp_path):
+    cfg = IndexConfig(dir=str(tmp_path / "ix"), ignore=["a"])
+    assert cfg.rules is cfg.rules
