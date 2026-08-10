@@ -823,7 +823,15 @@ def reconnect_mount(m: dict) -> str | None:
                 pass  # "mount not found" once the kernel mount is gone — fine
     if port is not None:
         _stop_serve_for(port, m["remote"])
-    return attach_mount(m)
+    err = attach_mount(m)
+    # A builtin repaired out-of-band (this is the manual Reconnect the
+    # run_automount split-brain `continue` defers to) must flip its readiness
+    # flag, or Learn/Sessions stay hidden despite a now-live mount. Only on a
+    # genuine success — a failed reconnect leaves it whatever it was.
+    if err is None and m.get("builtin"):
+        from .automount import set_builtin_ready
+        set_builtin_ready(m["builtin"], True)
+    return err
 
 
 PROBE_TIMEOUT = 3.0

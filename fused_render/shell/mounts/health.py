@@ -79,17 +79,6 @@ _health_thread: "threading.Thread | None" = None
 _health_started = threading.Lock()  # guards start_health_monitor idempotency
 
 
-# Set once run_automount has completed its first force-detach+remount pass this
-# process. Until then poll_once must NOT sync builtin readiness from observed
-# state: a mount that survived a previous run still shows "mounted" before the
-# force-detach tears it down, and letting that reach _builtin_ready would pin a
-# stale-ready Learn/Sessions the frontend sticky-caches. After the pass, syncing
-# is safe and desirable — it self-heals a builtin brought online out-of-band
-# (reconnect_mount, the mount endpoint), which run_automount's one-shot True
-# would otherwise leave stuck off.
-_automount_completed = threading.Event()
-
-
 _NEEDS_RECONNECT = ("disconnected", "stale")
 
 
@@ -140,13 +129,13 @@ def poll_once() -> None:
     for m in list_mounts():
         mid = m["id"]
         state = mount_state(m, live, probe_io=False)
-        # Keep builtin readiness in sync with the observed state — but only once
-        # run_automount has done its startup force-detach+remount, so a prior
-        # run's surviving mount can't flip it True before the detach (see
-        # _automount_completed). This is what self-heals a builtin that came
-        # online via reconnect_mount rather than run_automount's own attach.
-        if m.get("builtin") and _automount_completed.is_set():
-            set_builtin_ready(m["builtin"], state == "mounted")
+        # Clear builtin readiness when the mount is no longer live, so a later
+        # drop hides the sidebar entry. Never SET it True here: True is only ever
+        # a successful attach THIS run (run_automount / reconnect_mount), so a
+        # mount lingering from a failed force-detach or surviving a previous run
+        # can't read as ready off an ambiguous "mounted" observation.
+        if m.get("builtin") and state != "mounted":
+            set_builtin_ready(m["builtin"], False)
         ep = _health_episodes.setdefault(mid, {"state": None, "notified": False})
         prev = ep["state"]
         ep["state"] = state
@@ -277,10 +266,6 @@ def run_automount() -> None:
         # the two cases apart: a serves.json only exists once some earlier
         # run actually had something to serve.
         sync_serves()
-    # The startup force-detach+remount is done: from here poll_once may sync
-    # builtin readiness from observed state without risking a prior run's
-    # surviving mount reading as ready.
-    _automount_completed.set()
 
 
 def startup() -> None:

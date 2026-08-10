@@ -29,14 +29,12 @@ def learn_zip(tmp_path, monkeypatch):
 
 @pytest.fixture(autouse=True)
 def _reset_builtin_ready():
-    # _builtin_ready and the automount-completed gate are process-global; reset
-    # them so state set by one test never leaks into the next.
+    # _builtin_ready is process-global; reset it so readiness set by one test
+    # never leaks into the next.
     import fused_render.shell.mounts.automount as _am
-    import fused_render.shell.mounts.health as _health
     with _am._builtin_ready_lock:
         for name in list(_am._builtin_ready):
             _am._builtin_ready[name] = False
-    _health._automount_completed.clear()
     yield
 
 
@@ -444,34 +442,51 @@ def test_run_automount_leaves_builtin_not_ready_on_attach_failure(home, learn_zi
     assert mounts_mod.learn_mount_ready() is False
 
 
-def test_poll_once_self_heals_builtin_after_out_of_band_reconnect(home, learn_zip, monkeypatch):
-    # A builtin left False by run_automount's split-brain `continue` and then
-    # brought online by a manual Reconnect (which doesn't touch the flag) must
-    # still turn ready — the health monitor syncs it, once automount has run.
-    import fused_render.shell.mounts.health as health_mod
+def test_poll_once_never_marks_builtin_ready_from_observation(home, learn_zip, monkeypatch):
+    # poll_once must NEVER flip readiness True off an observed "mounted": a mount
+    # surviving a previous run (before the startup force-detach) or lingering
+    # from a failed force-detach both read "mounted" while serving stale/absent
+    # content, and the frontend sticky-caches the first True. True is only ever
+    # a successful attach this run.
     mounts_mod.ensure_learn_mount()
     monkeypatch.setattr(mounts_mod, "mounted_paths", lambda: set())
     monkeypatch.setattr(mounts_mod, "mount_state", lambda m, live, **k: "mounted")
-
-    health_mod._automount_completed.set()
-    assert mounts_mod.learn_mount_ready() is False  # not attached by automount
-    mounts_mod.poll_once()
-    assert mounts_mod.learn_mount_ready() is True    # health observed it live
-
-
-def test_poll_once_ignores_surviving_mount_before_automount(home, learn_zip, monkeypatch):
-    # The other side of the gate: before run_automount's startup force-detach,
-    # a mount that survived a previous run still reads "mounted" — poll_once must
-    # NOT let that reach _builtin_ready (the frontend sticky-caches the first
-    # True), or it reintroduces the stale-ready race.
-    import fused_render.shell.mounts.health as health_mod
-    mounts_mod.ensure_learn_mount()
-    monkeypatch.setattr(mounts_mod, "mounted_paths", lambda: set())
-    monkeypatch.setattr(mounts_mod, "mount_state", lambda m, live, **k: "mounted")
-
-    health_mod._automount_completed.clear()  # startup pass not done yet
     mounts_mod.poll_once()
     assert mounts_mod.learn_mount_ready() is False
+
+
+def test_poll_once_clears_builtin_ready_on_drop(home, learn_zip, monkeypatch):
+    # It does the opposite direction though: a builtin that was ready and later
+    # drops is cleared, so the sidebar entry hides.
+    mounts_mod.ensure_learn_mount()
+    mounts_mod.set_builtin_ready("learn", True)
+    monkeypatch.setattr(mounts_mod, "mounted_paths", lambda: set())
+    monkeypatch.setattr(mounts_mod, "mount_state", lambda m, live, **k: "disconnected")
+    mounts_mod.poll_once()
+    assert mounts_mod.learn_mount_ready() is False
+
+
+def test_reconnect_marks_builtin_ready_on_success(home, learn_zip, monkeypatch):
+    # The out-of-band repair path Bugbot flagged: run_automount's split-brain
+    # `continue` leaves a builtin False, and a manual Reconnect brings it online.
+    # reconnect_mount must flip the flag on success (and only on success).
+    import fused_render.shell.mounts.lifecycle as lifecycle_mod
+    mounts_mod.ensure_learn_mount()
+    m = _learn_records()[0]
+
+    # reconnect_mount lazily imports these from the package; _is_mounted and
+    # attach_mount are lifecycle module-level names.
+    monkeypatch.setattr(mounts_mod, "_winfsp_available", lambda: True)
+    monkeypatch.setattr(mounts_mod, "_live_rcd_port", lambda: None)
+    monkeypatch.setattr(lifecycle_mod, "_is_mounted", lambda mp: False)
+    monkeypatch.setattr(lifecycle_mod, "attach_mount", lambda mm: None)  # success
+    assert lifecycle_mod.reconnect_mount(m) is None
+    assert mounts_mod.learn_mount_ready() is True
+
+    mounts_mod.set_builtin_ready("learn", False)
+    monkeypatch.setattr(lifecycle_mod, "attach_mount", lambda mm: "still broken")
+    assert lifecycle_mod.reconnect_mount(m) == "still broken"
+    assert mounts_mod.learn_mount_ready() is False  # failed reconnect: unchanged
 
 
 def test_learn_mount_ready_false_for_user_mount_named_learn(home):

@@ -220,10 +220,12 @@ def builtin_mount_ready(name: str) -> bool:
     attach_mount has re-attached the mount this run, so True always means a
     mount that is live now. The frontend polls until it sees that True, so the
     seconds run_automount takes to attach cost only a briefly-absent sidebar
-    entry, never a wrong one. Once run_automount's startup pass is done the
-    health monitor (poll_once) keeps this flag in sync with the observed state,
-    so a builtin brought online out-of-band — a manual Reconnect after the
-    split-brain path, say — still turns ready without a restart."""
+    entry, never a wrong one. True is written only by an operation that
+    SUCCESSFULLY attached the mount this run — run_automount's own attach, or a
+    manual reconnect_mount after the split-brain `continue` — never inferred
+    from an observed "mounted" (a mount lingering from a failed force-detach
+    would read mounted while serving stale content). The health monitor only
+    ever CLEARS the flag, when a mount is observed no longer live."""
     with _builtin_ready_lock:
         return _builtin_ready.get(name, False)
 
