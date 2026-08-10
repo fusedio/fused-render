@@ -22,7 +22,7 @@ import { bookmarkFsPath } from "@apps/explorer/sidebar/BookmarksSection";
 // same pure-CSS trick as AppPreviewCard.
 const PREVIEW_SCALE = 0.25;
 
-// How many stack chips a folder card fans out (the rest stays behind the count).
+// How many stacked sheets a folder card fans out (the rest stays behind the count).
 const MAX_CHIPS = 3;
 
 // A view url (bookmark or recent) re-prefixed onto the chrome-free embed
@@ -121,11 +121,15 @@ function bestPeekFile(entries: FsEntry[]): FsEntry | null {
 // app) wins the probe outright.
 function FolderStack({ path }: { path: string }) {
   const [entries, setEntries] = useState<FsEntry[] | null>(null);
-  // Absolute fs path of a probed subfolder's best file — the fallback peek.
+  // A probed subfolder's best file — the fallback peek: the file's absolute
+  // fs path plus the name of the subfolder it came from (that subfolder
+  // becomes the front sheet, so the sheet's title owns the page it shows).
   // undefined = probe not settled yet, null = settled with nothing to peek;
   // the note body waits for settled so it doesn't flash a count and then
   // swap to a preview mid-probe.
-  const [subPeek, setSubPeek] = useState<string | null | undefined>(undefined);
+  const [subPeek, setSubPeek] = useState<{ path: string; dir: string } | null | undefined>(
+    undefined,
+  );
   useEffect(() => {
     let alive = true;
     setEntries(null);
@@ -144,7 +148,7 @@ function FolderStack({ path }: { path: string }) {
         setSubPeek(null); // a direct file child wins — no probe needed
         return;
       }
-      let best: { path: string; rank: number } | null = null;
+      let best: { path: string; rank: number; dir: string } | null = null;
       for (const d of teaser.filter((e) => e.is_dir).slice(0, APP_PROBE_LIMIT)) {
         const subPath = joinPath(path, d.name);
         let sub: FsEntry[];
@@ -157,10 +161,11 @@ function FolderStack({ path }: { path: string }) {
         const f = bestPeekFile(teaserEntries(sub));
         if (!f) continue;
         const rank = peekRank(f.name);
-        if (!best || rank < best.rank) best = { path: joinPath(subPath, f.name), rank };
+        if (!best || rank < best.rank)
+          best = { path: joinPath(subPath, f.name), rank, dir: d.name };
         if (rank === 0) break; // an html — nothing can outrank it
       }
-      setSubPeek(best ? best.path : null);
+      setSubPeek(best ? { path: best.path, dir: best.dir } : null);
     })();
     return () => {
       alive = false;
@@ -168,33 +173,62 @@ function FolderStack({ path }: { path: string }) {
   }, [path]);
 
   const teaser = teaserEntries(entries ?? []);
-  const shown = teaser.slice(0, MAX_CHIPS);
   const firstFile = bestPeekFile(teaser);
-  const peekPath = firstFile ? joinPath(path, firstFile.name) : (subPeek ?? null);
+  const peekPath = firstFile ? joinPath(path, firstFile.name) : (subPeek?.path ?? null);
   // Settled: listDir landed AND the subfolder probe reached a verdict.
   const settled = entries !== null && subPeek !== undefined;
+  // The front sheet must be the entry whose page it shows: the peeked file
+  // itself, or the probed subfolder the fallback peek came from — never an
+  // alphabetical bystander wearing another entry's preview.
+  const frontName = firstFile?.name ?? subPeek?.dir ?? null;
+  const front = frontName ? teaser.find((e) => e.name === frontName) : undefined;
+  let shown = teaser.slice(0, MAX_CHIPS);
+  if (front) {
+    shown = shown.filter((e) => e.name !== front.name).slice(0, MAX_CHIPS - 1);
+    shown.push(front);
+  }
+  // The front sheet's body, under its title row: the peeked view, or (once
+  // settled with nothing to peek) a count so the card isn't a void.
+  const body = peekPath ? (
+    <LivePreview src={embedUrlForFsPath(peekPath)} />
+  ) : settled ? (
+    <span className="fhb-sheet-note">
+      {`${teaser.length} item${teaser.length === 1 ? "" : "s"}`}
+    </span>
+  ) : null;
   return (
     <span className="fhb-stack">
-      {/* Back chip first: natural stacking keeps the front chip on top. */}
-      {shown.map((e, i) => (
-        <span key={e.name} className={`fhb-chip fhb-chip-d${shown.length - 1 - i}`}>
-          <span className="fhb-chip-icon">{iconForEntry(e.name, e.is_dir)}</span>
-          <span className="fhb-chip-label">{e.name}</span>
-        </span>
-      ))}
-      {peekPath ? (
-        <LivePreview src={embedUrlForFsPath(peekPath)} />
-      ) : (
-        settled && (
-          // Nothing to peek at — fill the stack's leftover space with a
-          // count so a subfolder-only (or empty) folder card isn't a void.
-          <span className="fhb-note">
-            {shown.length === 0
-              ? "Empty folder"
-              : `${teaser.length} item${teaser.length === 1 ? "" : "s"}`}
-          </span>
-        )
-      )}
+      {/* Back sheet first: natural stacking keeps the front sheet on top.
+          Each entry is ONE sheet — a title row whose card body slides down
+          behind the sheet in front of it; the front sheet carries the
+          preview inside itself (the ref design's titlebar-plus-page card,
+          not a bar floating over a separate panel). The whole stack waits
+          for settled: painting an alphabetical stack mid-probe would let
+          the front sheet reorder under the user once subPeek names it. */}
+      {settled &&
+        shown.map((e, i) => {
+          const depth = shown.length - 1 - i;
+          return (
+            <span key={e.name} className={`fhb-sheet fhb-sheet-d${depth}`}>
+              <span className="fhb-sheet-row">
+                <span className="fhb-sheet-icon">{iconForEntry(e.name, e.is_dir)}</span>
+                <span className="fhb-sheet-label">{e.name}</span>
+              </span>
+              {depth === 0 ? (
+                body
+              ) : (
+                // Back sheets carry their own page too: a strip of the entry's
+                // live view (a folder embeds as its listing) that stays tucked
+                // behind the sheet in front until the card's hover fan slides
+                // it out — a page edge with real content, not a blank lip.
+                <span className="fhb-sheet-peek">
+                  <LivePreview src={embedUrlForFsPath(joinPath(path, e.name))} />
+                </span>
+              )}
+            </span>
+          );
+        })}
+      {shown.length === 0 && settled && <span className="fhb-note">Empty folder</span>}
     </span>
   );
 }
