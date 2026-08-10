@@ -14,6 +14,7 @@ import {
   rangeBetween,
   rowPressAction,
   selParam,
+  searchAutoSelectPath,
   selectionClaimed,
 } from "./selection";
 
@@ -330,5 +331,71 @@ describe("the listing rows wire both halves of the model", () => {
       expect(props).not.toContain("onClick=");
       expect(props).not.toContain("onMouseDown=");
     }
+  });
+});
+
+describe("searchAutoSelectPath", () => {
+  const sel = (lead: string) => oneSelected(lead);
+
+  test("lands on the top hit when the results first arrive", () => {
+    const { paths, byPath } = rows([
+      ["hit1.ts", false],
+      ["hit2.ts", false],
+    ]);
+    expect(searchAutoSelectPath(paths, byPath, EMPTY_SELECTION, false)).toBe("/d/hit1.ts");
+  });
+
+  test("follows the ranking as the results refine under the same query", () => {
+    // Typing narrows the corpus and re-ranks it. An auto-placed selection is
+    // the app's own guess, so it moves to whatever is now the best match
+    // rather than pinning row one of a ranking nobody is looking at any more.
+    const { paths, byPath } = rows([
+      ["better.ts", false],
+      ["hit1.ts", false],
+    ]);
+    expect(searchAutoSelectPath(paths, byPath, sel("/d/hit1.ts"), false)).toBe("/d/better.ts");
+  });
+
+  test("does not re-select the row it already sits on", () => {
+    // Returning the same path anyway would be a state write per re-rank, and
+    // each one of those remounts the preview pane's iframe.
+    const { paths, byPath } = rows([
+      ["hit1.ts", false],
+      ["hit2.ts", false],
+    ]);
+    expect(searchAutoSelectPath(paths, byPath, sel("/d/hit1.ts"), false)).toBeNull();
+  });
+
+  test("respects a selection the USER moved, even as the ranking changes", () => {
+    // The analogue of the folder rule: auto-select fills a selection nobody
+    // claimed, it never overrules one somebody chose.
+    const { paths, byPath } = rows([
+      ["better.ts", false],
+      ["chosen.ts", false],
+    ]);
+    expect(searchAutoSelectPath(paths, byPath, sel("/d/chosen.ts"), true)).toBeNull();
+  });
+
+  test("takes the top hit back when the user's row leaves the results", () => {
+    // Nothing left to respect — the row they picked is not on screen, and
+    // holding the selection there leaves the pane previewing a vanished path.
+    const { paths, byPath } = rows([
+      ["better.ts", false],
+      ["other.ts", false],
+    ]);
+    expect(searchAutoSelectPath(paths, byPath, sel("/d/gone.ts"), true)).toBe("/d/better.ts");
+  });
+
+  test("selects nothing when the query matched nothing", () => {
+    expect(searchAutoSelectPath([], new Map(), EMPTY_SELECTION, false)).toBeNull();
+    // ...and does not clear a selection the user made either
+    expect(searchAutoSelectPath([], new Map(), sel("/d/chosen.ts"), true)).toBeNull();
+  });
+
+  test("skips a path with no rendered row", () => {
+    const byPath = new Map([["/d/b.ts", { isDir: false }]]);
+    expect(
+      searchAutoSelectPath(["/d/a.ts", "/d/b.ts"], byPath, EMPTY_SELECTION, false),
+    ).toBe("/d/b.ts");
   });
 });

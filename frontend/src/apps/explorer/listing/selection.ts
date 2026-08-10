@@ -87,6 +87,45 @@ export function autoSelectPath(
   return firstEntryPath(rows, byPath);
 }
 
+// The row a SEARCH should select, or null to leave the selection alone.
+//
+// Same intent as the folder auto-select above — land on something so the pane
+// has content and Enter has a target — but a different shape, because search
+// results are not a folder. A folder's rows settle once per navigation, so
+// that one is a single shot. Results re-rank on every keystroke, on every
+// stream flush and on every slice the scan publishes, so this is asked
+// repeatedly and has to answer three different situations:
+//
+//   * nobody has claimed the selection -> the top hit, and it FOLLOWS the
+//     ranking as it refines. Pinning row one of a ranking the user has since
+//     typed past would leave the pane on a result that is no longer the best
+//     answer, which is worse than not selecting at all.
+//   * the user moved the selection -> leave it. Auto-select fills a selection
+//     nobody chose; it never overrules one somebody did (`selectionClaimed`
+//     makes the same call for folders).
+//   * the user's row left the results -> the top hit again. There is nothing
+//     left to respect: the row is not on screen, so keeping the selection
+//     there previews a path the user cannot see.
+//
+// `userOwned` is the caller's to determine — it is a fact about what happened,
+// not about the rows (see Listing, which reads it as "the lead is not where
+// auto-select last put it"). Returning null for a path already selected keeps
+// the caller from writing state on every re-rank; each of those writes
+// remounts the preview iframe.
+export function searchAutoSelectPath(
+  rows: string[],
+  byPath: ReadonlyMap<string, unknown>,
+  sel: Selection,
+  userOwned: boolean,
+): string | null {
+  const first = firstEntryPath(rows, byPath);
+  if (first === null) return null; // nothing matched; nothing to select
+  if (userOwned && sel.lead !== null && byPath.has(sel.lead) && rows.includes(sel.lead)) {
+    return null; // their row is still here — it stays
+  }
+  return first === sel.lead ? null : first;
+}
+
 // Does something already own the selection? The one question the auto-select
 // effect asks before it spends its shot (FS-16): a non-empty selection at that
 // moment was put there by the user — a click in the provisional scaffold,

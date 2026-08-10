@@ -69,6 +69,7 @@ import { usePreviewPane } from "@apps/explorer/listing/pane";
 import { passedDragSlop } from "@apps/explorer/listing/marquee";
 import {
   autoSelectPath,
+  searchAutoSelectPath,
   rowPressAction,
   selectionClaimed,
 } from "@apps/explorer/listing/selection";
@@ -185,6 +186,7 @@ export default function Listing({
   const {
     query,
     setQuery,
+    q,
     searching,
     isStale,
     scanPending,
@@ -532,6 +534,37 @@ export default function Listing({
     // reads are current as of that commit.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [embedded, provisional, searching, state.status, pane.on]);
+
+  // Search results land on their TOP HIT, so Enter and the pane act on the
+  // best match without the user having to reach for it first.
+  //
+  // Unlike the folder shot above this is NOT one-shot: a folder's rows settle
+  // once per navigation, results re-rank on every keystroke. The decision
+  // (searchAutoSelectPath) owns what to select; this owns only two things.
+  //
+  // WHOSE selection it is. `autoPlacedRef` records the path this effect last
+  // wrote, so "the lead is somewhere else" means the user moved it — no need
+  // to instrument every click and arrow key to find that out. A query change
+  // clears the record: the previous query's answer is not a claim on this
+  // one's, so each new result set is auto-selected afresh.
+  //
+  // WHEN to ask. Not while embedded (the pane's own `_listing` has no pane to
+  // fill) and not provisional, matching the folder shot. It does NOT wait for
+  // `pane.on`, which that one does: the folder case exists to fill the pane,
+  // whereas a selected top hit is worth having for Enter and the arrow keys
+  // whether or not the window is wide enough to preview it.
+  const autoPlacedRef = useRef<string | null>(null);
+  useEffect(() => {
+    autoPlacedRef.current = null;
+  }, [q]);
+  useEffect(() => {
+    if (embedded || provisional || !searching) return;
+    const userOwned = autoPlacedRef.current !== null && sel.lead !== autoPlacedRef.current;
+    const next = searchAutoSelectPath(navRows, rowCtxByPath, sel, userOwned);
+    if (next === null) return;
+    autoPlacedRef.current = next;
+    selectOnly(next);
+  }, [embedded, provisional, searching, q, navRows, rowCtxByPath, sel, selectOnly]);
 
   // The selection as full rows, in rendered order (so a batch op processes rows
   // top-to-bottom regardless of the order they were clicked). Paths without a
