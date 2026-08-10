@@ -444,6 +444,47 @@ def test_area_double_click_finish_does_not_add_extra_vertices(server, browser):
     page.close()
 
 
+def test_open_panel_lists_folder_drawings(server, browser):
+    page, frame = _open_ready(browser, server["port"])
+    frame.locator("#openBtn").click()
+    assert _wait(lambda: frame.locator("#openPanel").is_visible())
+    folder = FIX.replace("\\", "/")
+    frame.evaluate(
+        """(folder) => {
+            document.getElementById('opFolder').value = folder;
+            document.getElementById('opList').click();
+        }""", folder)
+    items = _wait(lambda: frame.evaluate(
+        """() => {
+            const a = [...document.querySelectorAll('#opFiles a.op-item')];
+            return a.length ? a.map(x => ({name: x.querySelector('span').textContent,
+                href: x.getAttribute('href'), target: x.getAttribute('target')})) : null;
+        }""") or None, timeout=20)
+    names = {i["name"] for i in items}
+    assert "floorplan.dxf" in names and "fake.dwg" in names
+    assert not any(n.endswith(".json") for n in names)   # sidecars excluded
+    fp = next(i for i in items if i["name"] == "floorplan.dxf")
+    assert fp["target"] == "_top"                        # opens in the full app, not the iframe
+    assert "/explorer/view/" in fp["href"] and "floorplan.dxf" in fp["href"]
+    page.close()
+
+
+def test_open_panel_shows_recent_with_encoded_link(server, browser):
+    page, frame = _open_ready(browser, server["port"])
+    shown = frame.evaluate(
+        """() => {
+            localStorage.setItem('fused-render:autocad_viewer:recent',
+              JSON.stringify([{path:'C:/drawings/prev.dxf', name:'prev.dxf'}]));
+            document.getElementById('openBtn').click();
+            return [...document.querySelectorAll('#opRecent a.op-item')].map(x => ({
+              name: x.querySelector('span').textContent, href: x.getAttribute('href') }));
+        }""")
+    prev = next((i for i in shown if i["name"] == "prev.dxf"), None)
+    assert prev is not None, "seeded recent drawing should be listed"
+    assert prev["href"].endswith("/explorer/view/C%3A/drawings/prev.dxf")   # drive colon encoded
+    page.close()
+
+
 def test_measure_label_has_backing_chip(server, browser):
     # the measurement value must sit on a chip so it stays legible over the drawing
     page, frame = _open_ready(browser, server["port"])

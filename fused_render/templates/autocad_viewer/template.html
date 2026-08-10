@@ -179,13 +179,41 @@
   .ov-snap { fill: none; stroke: var(--good); stroke-width: 1.4; }
   .ov-lbl-bg { fill: color-mix(in srgb, var(--chrome-0) 90%, transparent); stroke: var(--line); stroke-width: 1; }
   .ov-txt { fill: var(--warn); font: 600 12px var(--mono); }
+
+  /* open panel */
+  .openpanel { position: fixed; top: 44px; left: 10px; z-index: 60; width: 340px; max-height: 72vh;
+    display: flex; flex-direction: column; background: var(--chrome-1); border: 1px solid var(--line);
+    border-radius: 8px; box-shadow: 0 12px 34px rgba(0,0,0,.4); overflow: hidden; }
+  .openpanel[hidden] { display: none; }
+  .op-head { padding: 9px 12px; font-size: 11px; font-weight: 600; letter-spacing: .5px;
+    text-transform: uppercase; color: var(--text-dim); border-bottom: 1px solid var(--line-soft); }
+  .op-row { display: flex; gap: 6px; padding: 8px 10px; align-items: center; }
+  .op-row input { flex: 1; min-width: 0; background: var(--chrome-0); border: 1px solid var(--line);
+    border-radius: var(--radius); padding: 5px 8px; color: var(--text); font: inherit; font-size: 12px; }
+  .op-btn { background: var(--chrome-3); border: 1px solid var(--line); border-radius: var(--radius);
+    color: var(--text); padding: 5px 10px; cursor: pointer; font: inherit; font-size: 12px; white-space: nowrap; }
+  .op-btn:hover { background: var(--accent-soft); border-color: color-mix(in srgb, var(--accent) 45%, transparent); }
+  .op-sec { border-top: 1px solid var(--line-soft); padding: 6px 6px 8px; overflow: auto; }
+  .op-sec[hidden] { display: none; }
+  .op-label { font-size: 10.5px; letter-spacing: .5px; text-transform: uppercase; color: var(--text-faint);
+    padding: 4px 8px; word-break: break-all; }
+  .op-list { display: flex; flex-direction: column; }
+  .op-item { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: var(--radius);
+    color: var(--text); text-decoration: none; font-size: 12.5px; white-space: nowrap; overflow: hidden; }
+  .op-item span:first-child { overflow: hidden; text-overflow: ellipsis; }
+  .op-item:hover { background: var(--chrome-2); }
+  .op-item .op-sz { margin-left: auto; color: var(--text-faint); font-size: 11px; font-variant-numeric: tabular-nums; }
+  .op-empty { padding: 6px 10px; color: var(--text-faint); font-size: 12px; }
 </style>
+<script src="/template-shared/folder-picker.js"></script>
 </head>
 <body>
 <div class="app" id="app">
   <div class="top">
     <div class="brand"><div class="mark">▤</div><span class="name">CAD&nbsp;Viewer</span></div>
     <div class="filechip"><span class="dot" id="fdot"></span><span class="fn" id="fname">—</span><span class="ver" id="fver"></span></div>
+    <div class="sep"></div>
+    <button class="tbtn" id="openBtn" title="Open a drawing"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg><span>Open</span></button>
     <div class="sep"></div>
     <button class="tbtn" id="fitBtn" title="Zoom Extents (F)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="8" y="8" width="8" height="8" rx="1"/><path d="M3 8V4a1 1 0 0 1 1-1h4M21 8V4a1 1 0 0 0-1-1h-4M3 16v4a1 1 0 0 0 1 1h4M21 16v4a1 1 0 0 1-1 1h-4"/></svg></button>
     <button class="tbtn" id="fsBtn" title="Full screen"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M8 3H5a2 2 0 0 0-2 2v3M16 3h3a2 2 0 0 1 2 2v3M8 21H5a2 2 0 0 1-2-2v-3M16 21h3a2 2 0 0 0 2-2v-3"/></svg></button>
@@ -197,6 +225,23 @@
     <button class="tbtn" id="leftToggle" title="Toggle Layers"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M12 3l9 5-9 5-9-5z"/><path d="M3 13l9 5 9-5M3 8v8M21 8v8"/></svg></button>
     <button class="tbtn" id="rightToggle" title="Toggle Properties"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M14 4v16"/></svg></button>
     <button class="tbtn" id="themeBtn" title="Toggle chrome theme"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2M5 5l1.5 1.5M17.5 17.5L19 19M19 5l-1.5 1.5M6.5 17.5L5 19"/></svg></button>
+  </div>
+
+  <div class="openpanel" id="openPanel" hidden>
+    <div class="op-head">Open drawing</div>
+    <div class="op-row">
+      <button class="op-btn" id="opBrowse">Browse folder…</button>
+      <input id="opFolder" placeholder="…or paste a folder path" spellcheck="false">
+      <button class="op-btn" id="opList">List</button>
+    </div>
+    <div class="op-sec" id="opFilesSec" hidden>
+      <div class="op-label" id="opFolderLabel"></div>
+      <div class="op-list" id="opFiles"></div>
+    </div>
+    <div class="op-sec" id="opRecentSec" hidden>
+      <div class="op-label">Recent</div>
+      <div class="op-list" id="opRecent"></div>
+    </div>
   </div>
 
   <aside class="dock left">
@@ -297,6 +342,7 @@ async function boot() {
   const short = file.split(/[\\/]/).pop();
   $("fname").textContent = short; $("fname").title = file;
   $("pFile").textContent = short;
+  addRecent(file);
 
   showState("info", "Reading drawing…", short, true);
   try {
@@ -727,8 +773,78 @@ document.addEventListener("fullscreenchange", () => {
   b.title = on ? "Exit full screen" : "Full screen";
 });
 
+// open panel: browse a folder for .dxf/.dwg files, or reopen a recent drawing
+const RECENT_KEY = "fused-render:autocad_viewer:recent";
+function readRecent() { try { return JSON.parse(localStorage.getItem(RECENT_KEY) || "[]"); } catch (e) { return []; } }
+function addRecent(path) {
+  if (!path) return;
+  try {
+    const name = path.split(/[\\/]/).pop();
+    const list = readRecent().filter((r) => r.path !== path);
+    list.unshift({ path, name });
+    localStorage.setItem(RECENT_KEY, JSON.stringify(list.slice(0, 8)));
+  } catch (e) { /* private mode / quota — recents are best-effort */ }
+}
+function dirOf(path) { return String(path || "").replace(/[\\/][^\\/]*$/, ""); }
+function openHref(path) {
+  const segs = String(path).replace(/\\/g, "/").split("/").filter(Boolean).map(encodeURIComponent);
+  return "/explorer/view/" + segs.join("/");
+}
+function fmtSize(n) { return n >= 1e6 ? (n / 1e6).toFixed(1) + " MB" : n >= 1e3 ? Math.round(n / 1e3) + " KB" : n + " B"; }
+function itemHtml(name, path, size) {
+  return `<a class="op-item" target="_top" href="${openHref(path)}" title="${path}"><span>${name}</span>` +
+    (size != null ? `<span class="op-sz">${fmtSize(size)}</span>` : "") + "</a>";
+}
+function renderRecent() {
+  const cur = fused.params.get("_file");
+  const list = readRecent().filter((r) => r.path !== cur);
+  $("opRecent").innerHTML = list.length
+    ? list.map((r) => itemHtml(r.name, r.path)).join("")
+    : '<div class="op-empty">No recent drawings.</div>';
+  $("opRecentSec").hidden = false;
+}
+async function listFolder(folder) {
+  folder = (folder || "").trim();
+  if (!folder) return;
+  const box = $("opFiles");
+  $("opFilesSec").hidden = false;
+  box.innerHTML = '<div class="op-empty">Listing…</div>';
+  let res;
+  try { res = await fused.runPython("./browse.py", { folder }); }
+  catch (err) { box.innerHTML = `<div class="op-empty">${(err && err.message) || err}</div>`; return; }
+  $("opFolderLabel").textContent = res.folder || folder;
+  if (res.error) { box.innerHTML = `<div class="op-empty">${res.error}</div>`; return; }
+  box.innerHTML = res.files.length
+    ? res.files.map((f) => itemHtml(f.name, f.path, f.size)).join("")
+    : '<div class="op-empty">No .dxf or .dwg files in this folder.</div>';
+}
+function toggleOpenPanel(show) {
+  const p = $("openPanel");
+  const vis = show === undefined ? p.hidden : show;
+  p.hidden = !vis;
+  $("openBtn").classList.toggle("active", vis);
+  if (vis) {
+    renderRecent();
+    if (!$("opFolder").value) $("opFolder").value = dirOf(fused.params.get("_file"));
+  }
+}
+$("openBtn").addEventListener("click", (e) => { e.stopPropagation(); toggleOpenPanel(); });
+$("opList").addEventListener("click", () => listFolder($("opFolder").value));
+$("opFolder").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); listFolder($("opFolder").value); } });
+$("opBrowse").addEventListener("click", async () => {
+  const start = dirOf(fused.params.get("_file")) || $("opFolder").value.trim() || "/";
+  if (!window.fusedFolderPicker) { listFolder($("opFolder").value); return; }
+  const choice = await window.fusedFolderPicker.open({ start, title: "Choose a folder with drawings" });
+  if (choice && choice.path) { $("opFolder").value = choice.path; listFolder(choice.path); }
+});
+document.addEventListener("click", (e) => {
+  const p = $("openPanel");
+  if (!p.hidden && !p.contains(e.target) && !e.target.closest("#openBtn")) toggleOpenPanel(false);
+});
+
 // keyboard
 window.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && !$("openPanel").hidden) { toggleOpenPanel(false); return; }
   const el = e.target;
   if (el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable)) return;
   if (e.key === "Escape") { if (tool) { pts = []; setTool(tool); } }
