@@ -114,6 +114,59 @@ def test_start_records_the_scan_time_for_debouncing(tmp_path, spawned):
     assert runner.last_scan(cfg, str(tmp_path / "elsewhere")) is None
 
 
+def test_start_joins_a_live_run_of_the_same_root(tmp_path, spawned):
+    """Two scans of one root are never wanted: they duplicate the whole walk,
+    race each other's reuse cache, and — because each worker stamps the ignore
+    sig from ITS OWN spec — let a pre-edit run finish last and stamp the OLD
+    rules over the post-edit run's, leaving the root stale forever. The store
+    lock keeps the two compactions from corrupting the manifest; it does
+    nothing about any of that. So the second start joins the first."""
+    cfg = _cfg(tmp_path)
+    first = runner.start(cfg, str(tmp_path))
+    again = runner.start(cfg, str(tmp_path))
+    assert again["run_id"] == first["run_id"]
+    assert again["already_running"] is True
+    assert len(spawned) == 1  # no second worker
+
+
+def test_start_scans_a_different_root_while_one_runs(tmp_path, spawned):
+    """The guard is per ROOT: configured roots scan concurrently by design."""
+    cfg = _cfg(tmp_path)
+    other = tmp_path / "other"
+    other.mkdir()
+    first = runner.start(cfg, str(tmp_path))
+    second = runner.start(cfg, str(other))
+    assert second["run_id"] != first["run_id"]
+    assert "already_running" not in second
+    assert len(spawned) == 2
+
+
+def test_start_ignores_a_finished_run_of_the_same_root(tmp_path, spawned):
+    cfg = _cfg(tmp_path)
+    first = runner.start(cfg, str(tmp_path))
+    with open(os.path.join(cfg.runs_dir, first["run_id"], "events.jsonl"),
+              "w") as f:
+        f.write(json.dumps({"type": "run_end", "summary": {}}) + "\n")
+    second = runner.start(cfg, str(tmp_path))
+    assert second["run_id"] != first["run_id"]
+    assert len(spawned) == 2
+
+
+def test_start_ignores_an_abandoned_run_of_the_same_root(tmp_path, spawned):
+    """Liveness is the heartbeat, not the mere presence of a run dir: a
+    killed worker leaves a `running` log behind, and treating that as live
+    would wedge every future scan of the root."""
+    cfg = _cfg(tmp_path)
+    first = runner.start(cfg, str(tmp_path))
+    rd = os.path.join(cfg.runs_dir, first["run_id"])
+    dead = time.time() - runner.ABANDONED_RUN_S - 60
+    for name in os.listdir(rd):
+        os.utime(os.path.join(rd, name), (dead, dead))
+    second = runner.start(cfg, str(tmp_path))
+    assert second["run_id"] != first["run_id"]
+    assert len(spawned) == 2
+
+
 # -- status / cancel / list ----------------------------------------------------
 
 def _run_with_events(cfg, run_id, events):

@@ -51,8 +51,37 @@ def _detach_kwargs() -> dict:
     return {"close_fds": False}
 
 
+def active_run(cfg: IndexConfig, root: str):
+    """The live run scanning exactly `root`, or None.
+
+    Liveness is the heartbeat _with_liveness applies, not the presence of a
+    run directory: a killed worker leaves a `running` log behind forever, and
+    reading that as live would wedge every future scan of the root."""
+    now = time.time()
+    for rid in _run_ids(cfg):
+        rd = os.path.join(cfg.runs_dir, rid)
+        try:
+            with open(os.path.join(rd, "spec.json")) as f:
+                spec = json.load(f)
+        except (OSError, ValueError):
+            continue
+        if spec.get("root") != root:
+            continue
+        events, _, _ = read_events(rd)
+        if _with_liveness(derive_state(events), rd, now)["running"]:
+            return {"run_id": rid, "root": root}
+    return None
+
+
 def start(cfg: IndexConfig, root: str, full: bool = False) -> dict:
-    """Spawn a detached scan of `root`; returns `{run_id, root}` at once."""
+    """Spawn a detached scan of `root`; returns `{run_id, root}` at once.
+
+    A root already being scanned JOINS that run instead of starting a second.
+    Overlapping scans of one root duplicate the entire walk, race each
+    other's reuse cache, and — since each worker stamps the applied-ignore sig
+    from its own spec — let a pre-edit run finish last and stamp the OLD rules
+    over the post-edit run's, leaving the root stale indefinitely. The store
+    lock serializes the two compactions; none of that is what it protects."""
     root = norm(os.path.abspath(os.path.expanduser((root or "~").strip())))
     # The guard runs BEFORE any kernel syscall on the caller's path: it is
     # pure string work against the mount records, while os.path.isdir on a
@@ -64,6 +93,9 @@ def start(cfg: IndexConfig, root: str, full: bool = False) -> dict:
             "(a kernel crawl of an rclone mount can wedge it)")
     if not os.path.isdir(root):
         raise ValueError(f"not a directory: {root}")
+    live = active_run(cfg, root)
+    if live is not None:
+        return {**live, "already_running": True}
     run_id = time.strftime("%Y%m%d-%H%M%S") + "-" + os.urandom(3).hex()
     run_dir = os.path.join(cfg.runs_dir, run_id)
     os.makedirs(run_dir)
