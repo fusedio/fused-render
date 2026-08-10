@@ -26,6 +26,12 @@ def shell_explorer(path: str = "", shell_path: str = Depends(get_shell_path)):
 
 @router.get("/learn")
 @router.get("/sessions")
+# The Claude Config app's two pages (frontend apps/claude_config): the settings
+# panel and the CLAUDE.md file explorer. Listed here for the same reason as the
+# rest — in-app navigation is client-side, but a bookmark or a refresh on one of
+# these URLs is a real GET the server has to answer with the shell.
+@router.get("/claude-config")
+@router.get("/claude-md")
 @router.get("/preferences")
 @router.get("/templates")
 @router.get("/mounts")

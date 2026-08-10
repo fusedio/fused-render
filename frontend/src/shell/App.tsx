@@ -6,6 +6,8 @@
 //   "/explorer/view/<path>"  -> stat it: directory -> listing, file -> preview
 //   "/explorer/embed/<path>" -> chrome-free embed variant
 //   "/learn"                 -> learn content, chrome-free (variant "learn")
+//   "/claude-config"         -> Claude config panel (native, no mount)
+//   "/claude-md"             -> CLAUDE.md file explorer (the same app)
 //   "/preferences|/templates|/mounts" -> settings pages
 // Legacy pre-rename urls (/view/..., /embed/..., /view/_prefs-family) are
 // rewritten in place at boot by router.ts before any of this runs.
@@ -46,6 +48,7 @@ import Apps from "@apps/builder/Apps";
 import FilesHome from "@apps/explorer/FilesHome";
 import { learnEntryPath } from "@apps/learn";
 import { sessionsEntryPath } from "@apps/sessions";
+import { ClaudeConfig, ClaudeMdPage, useClaudeConfigAvailable } from "@apps/claude_config";
 import BookmarkOpen from "@apps/explorer/BookmarkOpen";
 
 type StatState =
@@ -379,6 +382,45 @@ function SessionsView({ config, epoch }: { config: Config; epoch: number }) {
   return <StatView key={epoch + ":" + entry} fsPath={entry} epoch={epoch} home="" variant="learn" />;
 }
 
+// /claude-config: the native Claude Config panel. Chrome-free like
+// learn/sessions, but native React — no mount, no StatView; the availability
+// gate mirrors the sidebar entry's, so a direct URL hit while ~/.claude is
+// absent shows an honest empty state instead of a dead panel.
+function ClaudeConfigView() {
+  const available = useClaudeConfigAvailable();
+  return (
+    <div id="content">
+      <div className="cc-page">
+        {available ? (
+          <ClaudeConfig />
+        ) : (
+          <div className="preview-resolving">No Claude Code configuration found (~/.claude).</div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// /claude-md: the CLAUDE.md file explorer, the Claude Config app's second page
+// (apps/claude_config/ClaudeMdPage — it was a section of the panel above until
+// it grew into a page). Same chrome and same availability gate as
+// ClaudeConfigView: the discovery it does runs through the same bridge, so it
+// is available exactly when that is.
+function ClaudeMdView() {
+  const available = useClaudeConfigAvailable();
+  return (
+    <div id="content">
+      <div className="cc-page">
+        {available ? (
+          <ClaudeMdPage />
+        ) : (
+          <div className="preview-resolving">No Claude Code configuration found (~/.claude).</div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export default function App({ config }: { config: Config }) {
   const epoch = useNavEpoch();
 
@@ -488,6 +530,8 @@ export default function App({ config }: { config: Config }) {
   const isExplorerHome = pathname === "/explorer";
   const isLearn = pathname === "/learn";
   const isSessions = pathname === "/sessions";
+  const isClaudeConfig = pathname === "/claude-config";
+  const isClaudeMd = pathname === "/claude-md";
   const isBookmark = pathname === "/explorer/view/_bookmark";
   // App-builder route: /apps/<tag>/<name> resolves to the app folder under
   // the workspace — a pure codec, no server lookup (router.fsPathFromAppRoute).
@@ -529,7 +573,7 @@ export default function App({ config }: { config: Config }) {
   // letting it fall through to the "Unrecognized URL" branch for a frame.
   const linkedResolving = linkedName !== null && linkedPath === null;
   const isSentinel =
-    isPanel || isTabs || isPrefs || isTemplates || isMounts || isApps || isExplorerHome || isLearn || isSessions || isBookmark;
+    isPanel || isTabs || isPrefs || isTemplates || isMounts || isApps || isExplorerHome || isLearn || isSessions || isClaudeConfig || isClaudeMd || isBookmark;
   const fsPath = isSentinel || appFsPath ? null : fsPathFromLocation();
   // Browsing to a `.bookmark` file in the explorer opens it like a Finder
   // double-click (SB-9): same component as the `_bookmark` sentinel, fed the
@@ -555,6 +599,10 @@ export default function App({ config }: { config: Config }) {
                     ? "Learn"
                     : isSessions
                       ? "Sessions"
+                      : isClaudeConfig
+                      ? "Claude Config"
+                      : isClaudeMd
+                      ? "CLAUDE.md Files"
                       : isBookmark || bookmarkFile
                       ? "Bookmark"
                       : fsPath || appFsPath
@@ -657,6 +705,12 @@ export default function App({ config }: { config: Config }) {
   } else if (isSessions) {
     // Claude Sessions inbox, same chrome-free treatment as learn.
     main = <SessionsView key={epoch} config={config} epoch={epoch} />;
+  } else if (isClaudeConfig) {
+    // Claude Config panel — native, no mount (see ClaudeConfigView).
+    main = <ClaudeConfigView key={epoch} />;
+  } else if (isClaudeMd) {
+    // CLAUDE.md file explorer — the same app's second page (see ClaudeMdView).
+    main = <ClaudeMdView key={epoch} />;
   } else if (appFsPath) {
     // App builder: the app folder rendered in one of APP_MODES, no breadcrumb
     // (StatView variant "app" carries its own #content).
