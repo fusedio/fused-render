@@ -6,18 +6,42 @@
   flex-direction: column;
 }
 
+/* THE top-bar height, shared by every strip that can be the first row of a
+   column: the crumb bar, the listing's search row, and the preview pane's
+   header. Over a folder the crumb bar and the pane header are side by side
+   with only the divider between them, so a difference of even a pixel puts a
+   visible step in the line under them. One number, in one place, is the only
+   way that stays true — and the pane header keeps matching the search row in
+   the app-builder variant, which has no crumb bar and starts its columns with
+   those two instead.
+
+   An EXACT height, not a floor. A `min-height` still lets the taller content
+   win — the pane header holds a 28px mode chip and, with 10px of padding and
+   the 1px border under border-box, came out one pixel taller than the crumb
+   bar beside it, which holds only text. One pixel is exactly the step the eye
+   catches on a line that runs the width of the window.
+
+   The budget: 48px, minus the 1px bottom border, minus 8px of padding at each
+   end, leaves 31px of content box — enough for the tallest thing any of the
+   three holds (the search row's 30px input; the bars' 28px controls). Anything
+   taller than 31px needs this number raised, not a local override. */
+:root {
+  --topbar-h: 48px;
+  --topbar-pad-y: 8px;
+}
+
 #breadcrumb {
   flex: 0 0 auto;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 10px;
-  padding: 10px 16px;
+  padding: var(--topbar-pad-y) 16px;
   border-bottom: 1px solid var(--border);
   background: var(--bg-alt);
-  /* Pin to the tallest state (28px control + 10px×2 padding) so the bar can't
-     grow when the portaled mode control lands after stat resolves. */
-  min-height: 48px;
+  /* Exact, so the bar neither grows when the portaled mode control lands after
+     stat resolves nor drifts off the pane header beside it. */
+  height: var(--topbar-h);
   box-sizing: border-box;
 }
 
@@ -738,49 +762,40 @@
   background: var(--bg-alt);
 }
 
-/* The pane's chrome strip, above whatever the pane is showing. It LEADS with
-   the collapse control — the pane's left edge is the seam it collapses toward,
-   so the close affordance sits on the boundary rather than in the far corner —
-   then a .bar-rule zone divider, then the row's identity (icon + name) and
-   whatever the settled preview adds at the other end (the mode control,
-   open-full-screen). The rule is what separates the one control that acts on
-   the PANE from everything that is about the previewed ROW; without it the
-   collapse glyph sat flush against the file icon and neither read as chrome. Present in EVERY pane state, including
-   the ones that have nothing else to put in it (a loading skeleton, an error,
-   the metadata card): while the pane is open this strip is the only thing
-   carrying a way to close it.
+/* The pane's chrome strip: the RIGHT COLUMN'S TOP BAR, since the pane now runs
+   the full height of the window with nothing above it. Directly across the
+   divider from the crumb bar (over a folder) or the search row (the
+   app-builder variant, which has no crumb bar) — one continuous strip split by
+   the divider — so it must match them exactly: same --topbar-h, same vertical
+   padding, same border, same background. Anything else puts a step in the line
+   under the two columns.
 
-   No gutter hang for the leading button (unlike .listing-search's trailing
-   `···`): this strip pads 10px and the thing beside the button is the file
-   icon, not a column the glyph has to line up with.
+   Present in EVERY pane state, including the ones with nothing to put in it (a
+   loading skeleton, an error, the metadata card, no selection). It holds no
+   text of its own any more — the row's icon and name came out
+   (ListingPreviewPane.tsx) — so the explicit `height` is the ONLY thing
+   standing the bar up in those states. It is not a nicety; without it the
+   strip collapses to its border and the seam breaks.
 
-   It sits directly beside .listing-search — they are one visual row split by
-   the pane divider — so the two MUST agree on height, or the pane's bottom
-   border runs 7px above the listing's and the row reads as broken. The search
-   row's height is content-derived (8px padding + a 30px input); this pins to
-   the same number and centres whatever it holds. Keep the two in step. */
+   `justify-content: flex-end` for the same reason: the strip's contents are
+   the mode menu and the open-full-screen glyph, which belong at the far end
+   the way the crumb bar's own controls do. With the name gone there is no
+   leading item left to push them there.
+
+   Horizontal padding stays at the PANE's 10px gutter (the crumb bar keeps the
+   listing's 16px): each bar lines up with the column underneath it, and the
+   seam is the border, not the gutter. */
 .listing-pane .pane-header {
   flex: 0 0 auto;
   display: flex;
   align-items: center;
+  justify-content: flex-end;
   gap: 8px;
-  padding: 8px 10px;
-  min-height: 46px;
+  padding: var(--topbar-pad-y) 10px;
+  height: var(--topbar-h);
+  box-sizing: border-box;
   border-bottom: 1px solid var(--border);
   background: var(--bg-alt);
-}
-
-.listing-pane .pane-header-icon {
-  flex: 0 0 auto;
-  display: inline-flex;
-}
-
-.listing-pane .pane-header-name {
-  flex: 1 1 auto;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: var(--fg);
 }
 
 /* Folder preview fallback: the folder's own entries, read-only. Narrower
@@ -893,15 +908,21 @@ table.listing-table tr.skel-row:hover {
   animation: skel-shimmer 1.2s ease-in-out infinite;
 }
 
-/* Row 2, listing side. Its height is the reference the preview pane's header
-   pins itself to (.listing-pane .pane-header) — the two are one row. */
+/* Row 2 of the listing column, under the crumb bar — and row 1 in the hosts
+   that have no crumb bar (the app builder), where it is what the preview
+   pane's header sits across the divider from. Same --topbar-h as the other two
+   strips either way; only the background differs, because this row belongs to
+   the list below it rather than to the chrome above. Its 30px input is the
+   tallest thing in any of the three, and is what sets the shared height's
+   content budget. */
 .listing-search {
   flex: 0 0 auto;
   display: flex;
   align-items: center;
   gap: 8px;
-  min-height: 46px;
-  padding: 8px 16px;
+  height: var(--topbar-h);
+  box-sizing: border-box;
+  padding: var(--topbar-pad-y) 16px;
   border-bottom: 1px solid var(--border);
   background: var(--bg);
 }

@@ -211,27 +211,27 @@ export default function ListingPreviewPane({
   const { rootRef, guardProps } = usePaneFocusGuard<HTMLDivElement>();
 
   // The pane's chrome strip, and EVERY state gets one — a loading skeleton, an
-  // error, the metadata card and the multi-selection placeholder alike. It
-  // keeps the strip's height agreeing with the search row beside it in every
-  // state rather than most of them (see .pane-header).
+  // error, the metadata card and the multi-selection placeholder alike. It is
+  // the TOP BAR of the right-hand column now that the pane runs the full height
+  // of the window, so it has to hold its height in every state or the seam it
+  // shares with the crumb bar on the left breaks (see .pane-header).
   //
   // It used to open with a COLLAPSE button, sitting on the seam it sent the
   // pane back to. That went with the toggle: the split is now decided by the
   // container's width (listing/pane.ts), so a closed pane would have had no
   // way back short of resizing the window.
   //
-  // `extra` is what the settled preview adds after the name, at the strip's
-  // far end: the mode menu and the open-full-screen button.
+  // It then carried the previewed row's ICON AND NAME. Those are gone too. The
+  // pane's subject is whichever row is selected, and that row is highlighted an
+  // inch to the left with its name in the same eyeline — restating it here put
+  // the loudest text in the strip on the one fact the layout already made
+  // obvious, and (unlike the crumb bar it now sits beside) it named a thing the
+  // bar's own controls do not act on.
+  //
+  // `extra` is what the settled preview puts in it: the mode menu and the
+  // open-full-screen button, at the strip's far end.
   const strip = (extra?: React.ReactNode) => (
-    <div className="pane-header">
-      {row && (
-        <span className="pane-header-icon">{iconForEntry(row.name, row.isDir)}</span>
-      )}
-      <span className="pane-header-name" title={row?.name}>
-        {row?.name ?? ""}
-      </span>
-      {extra}
-    </div>
+    <div className="pane-header">{extra}</div>
   );
 
   // Placeholders need no fetch: nothing selected, or a multi-selection. No
