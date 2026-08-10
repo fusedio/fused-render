@@ -615,8 +615,9 @@
   display: contents;
 }
 
-/* Left column of the split: crumb bar, then the search header, then the
-   scrolling table. The crumb bar is IN this column, which is the whole point —
+/* Left column of the split: the crumb bar (search box and `···` included —
+   see .crumb-search-slot), then the scrolling table, and nothing between them.
+   The crumb bar is IN this column, which is the whole point —
    the pane beside it starts at the top of the window and runs to the bottom,
    with its own header as the topmost thing on that side. */
 .listing-main {
@@ -691,6 +692,38 @@
   min-width: 220px;
   min-height: 0;
   display: flex;
+  /* Anchors the seam below. */
+  position: relative;
+}
+
+/* The seam between the two columns, and where it STOPS.
+
+   It used to be a `border-left` on .listing-pane, which ran the full height —
+   including across the header row, where it cut the two strips into two boxes.
+   They are the same height, the same background and the same hairline at the
+   bottom precisely so they read as one bar across the window; a rule down the
+   middle of that undid it. So the seam now starts where the content does.
+
+   On the SLOT rather than on .listing-pane, because the pane is the scroll
+   container: an absolutely-positioned line inside it is laid out against the
+   padding box and would scroll away with a tall preview. The slot does not
+   scroll, so the line stays put. `top` is the shared strip height — the same
+   token the three bars use, so the seam meets the header's own bottom hairline
+   at exactly the corner in every host (with a crumb bar or, in the app
+   builder, with the search row as the left column's first strip).
+
+   The DRAG target is untouched: .listing-divider is a separate 5px flex item
+   spanning the full height, transparent until hover, and it still is. Only the
+   painted line got shorter. */
+.listing-pane-slot::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: var(--topbar-h);
+  bottom: 0;
+  width: 1px;
+  background: var(--border);
+  pointer-events: none;
 }
 
 /* The pane itself: header bar + iframe / mini list / placeholder card. */
@@ -702,7 +735,8 @@
   flex-direction: column;
   overflow: auto;
   background: var(--bg-alt);
-  border-left: 1px solid var(--border);
+  /* The seam is painted by .listing-pane-slot::before, not by a border here:
+     it has to stop at the bottom of the header row. */
 }
 
 /* Fills whatever the pane has left — the whole pane for a file preview, the
@@ -908,13 +942,13 @@ table.listing-table tr.skel-row:hover {
   animation: skel-shimmer 1.2s ease-in-out infinite;
 }
 
-/* Row 2 of the listing column, under the crumb bar — and row 1 in the hosts
-   that have no crumb bar (the app builder), where it is what the preview
-   pane's header sits across the divider from. Same --topbar-h as the other two
-   strips either way; only the background differs, because this row belongs to
-   the list below it rather than to the chrome above. Its 30px input is the
-   tallest thing in any of the three, and is what sets the shared height's
-   content budget. */
+/* Row 1 of the listing column in the hosts that have NO crumb bar (the app
+   builder), where this row is what the preview pane's header sits across the
+   divider from: same --topbar-h, so the seam under the two columns is one
+   line. Over a folder in the explorer the row is not a row at all — it portals
+   into the crumb bar and the rules further down strip this box off it. Its
+   30px input is the tallest thing in any of the strips, and is what sets the
+   shared height's content budget. */
 .listing-search {
   flex: 0 0 auto;
   display: flex;
@@ -935,6 +969,99 @@ table.listing-table tr.skel-row:hover {
    box, lines up; the 28px hit area is unchanged. */
 .listing-search > .bar-overflow:last-child {
   margin-right: -6px;
+}
+
+/* ---- …and the same row once it has moved INTO the crumb bar --------------
+   Over a folder the left column had two full-height strips stacked (crumbs,
+   then search) against the preview pane's one across the divider, which read
+   as a mistake in the layout rather than as two things. The row portals into
+   the bar instead (search-slot.ts): crumbs at the left, the box and the `···`
+   at the right end, ONE strip per column.
+
+   `display: contents` on the target so the row itself is the bar's flex item,
+   and the row then gives up everything that made it a strip — its height, its
+   padding, its border and its background all belong to the bar now. */
+.crumb-search-slot {
+  display: contents;
+}
+
+.crumb-search-slot > .listing-search {
+  flex: 0 1 auto;
+  min-width: 0;
+  height: auto;
+  padding: 0;
+  border-bottom: none;
+  background: none;
+}
+
+/* The gutter hang exists to line the dots up with the MODIFIED column below
+   them. In the bar the neighbour is the file view's own `···`, at the bar's
+   16px padding — same bar, same corner, so it must not sit 6px off it. */
+.crumb-search-slot > .listing-search > .bar-overflow:last-child {
+  margin-right: 0;
+}
+
+/* Crumbs and the search box now share one row, so the box needs a size of its
+   own. It GROWS — with the seam over the header gone (see .listing-pane-slot)
+   the strip reads as one wide bar, and the search box is the thing in it worth
+   making wide. 320px of basis, up to 460px so a maximised window does not hand
+   it half the screen, and never below 140px (about "Start typing…" plus a few
+   characters of what was typed).
+
+   The crumbs still grow too, so the whitespace right of the last crumb — the
+   click-to-edit target — does not vanish; they just yield the row's width
+   first when it runs short (the shrink weight below). Ellipsizing and then
+   scrolling is what a path bar is built to do (.path-crumb.shrink), whereas a
+   squeezed input is just broken. */
+.crumb-search-slot .listing-search-box {
+  flex: 1 1 320px;
+  max-width: 460px;
+  min-width: 140px;
+}
+
+#breadcrumb:has(.crumb-search-slot) .crumbs {
+  flex-shrink: 6;
+}
+
+/* …and once there is a query, the crumbs get out of the way entirely.
+   Sharing the row is a compromise that only pays while both halves are in
+   use, and the moment someone types, the path is the half they are not
+   looking at — the results below no longer belong to it anyway. So the
+   crumbs stand down and the box takes the whole strip (max-width off), which
+   is the state where a long query most needs the room.
+
+   Reversible on a keystroke: clearing the query (or Esc) brings the path
+   straight back, so nothing is lost, only deferred. The ★ and the `···` stay
+   — they act on the folder, which has not changed. */
+#breadcrumb:has(.listing-search.searching) .crumbs {
+  display: none;
+}
+
+/* Both halves of that: the ROW has to grow (idle it is `0 1 auto`, sized to
+   its box) and the box inside it has to be allowed past the resting cap. Only
+   then does the field actually span the strip rather than sitting at 460px
+   with the freed-up crumb width as dead space beside it. */
+#breadcrumb:has(.listing-search.searching) .listing-search {
+  flex: 1 1 auto;
+}
+
+#breadcrumb:has(.listing-search.searching) .listing-search-box {
+  max-width: none;
+}
+
+/* Terse now ("1.2K · 45.1K…" rather than the full sentence — Listing.tsx keeps
+   that in the title and the aria-label), so the room reserved for it inside
+   the input comes back to the query: 116px sized the old sentence, 96px sizes
+   the widest thing left (the multi-selection readout, "1,234 selected") once
+   the chip stops hanging 26px off the edge. Still a reservation and not a
+   reflow — the chip is absolutely positioned, so a digit more or less never
+   moves the box. */
+.crumb-search-slot > .listing-search .listing-search-box.has-pin .listing-search-input {
+  padding-right: 96px;
+}
+
+.crumb-search-slot .listing-search-count {
+  right: 10px;
 }
 
 /* Wraps the input plus its pinned chips (count / spinner), so the preview-pane

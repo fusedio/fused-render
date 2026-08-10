@@ -3,6 +3,8 @@
 //   path    ★ bookmark button, then the crumbs (or the editable path field)
 //   mode    the `#topbar-mode-slot` portal target — Preview renders the view's
 //           conditional primary action and the shared mode control into it
+//   search  over a FOLDER only: the listing's search row portals in here, so
+//           its column has one header strip instead of two (search-slot.ts)
 //   layout  a hairline rule, then split-right / split-down / `···`
 //
 // The Finder and split glyphs used to live INSIDE the crumb strip, welded to
@@ -45,6 +47,7 @@ import {
   subscribeFolderChrome,
 } from "@apps/explorer/listing/folder-chrome";
 import { publishTopbarSlot, retractTopbarSlot } from "@apps/explorer/topbar-slot";
+import { publishSearchSlot, retractSearchSlot } from "@apps/explorer/search-slot";
 import { registerSpring, SPRING_ATTR } from "@apps/explorer/listing/row-drag";
 
 // How long a file drag has to hover a crumb before the listing follows it.
@@ -189,14 +192,36 @@ function StarIcon({ filled }: { filled: boolean }) {
   );
 }
 
+// Portal target for the FOLDER view's search row, at the bar's right end.
+//
+// Rendered only while a folder holds the chrome claim: a file view's bar has
+// no search box, and an empty div would still eat the bar's `gap`. The listing
+// portals its own `.listing-search` in here — box, sort chip and the path
+// `···` — so the left column has ONE strip, matching the preview pane's one
+// strip across the divider (search-slot.ts).
+function FolderSearchSlot() {
+  const claimed = useSyncExternalStore(subscribeFolderChrome, folderChromeClaimed, () => false);
+  const ref = useRef<HTMLDivElement>(null);
+  // A layout effect, and the cleanup is identity-checked (node-slot.ts): the
+  // bar's own relocation into the listing column rebuilds this node, and the
+  // outgoing one is retracted after the incoming one has published.
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (el) publishSearchSlot(el);
+    return () => retractSearchSlot(el);
+  }, [claimed]);
+  if (!claimed) return null;
+  return <div className="crumb-search-slot" ref={ref} />;
+}
+
 // Split entry buttons + the path overflow: the bar's layout zone, in the same
 // position in every state so the hand learns where layout lives — EXCEPT over
 // a folder, where the listing underneath claims the zone and renders the `···`
-// in its own search row instead (listing/folder-chrome.ts says which state we
-// are in; Listing.tsx renders the other half). Nothing here for a folder at
-// all: the splits are the pair that make least sense over a view that already
-// IS a split, and with them gone the rule and the hairline would be a zone
-// with nothing in it.
+// at the end of the search row that has just moved into this bar
+// (listing/folder-chrome.ts says which state we are in; Listing.tsx renders
+// the other half). Nothing here for a folder at all: the splits are the pair
+// that make least sense over a view that already IS a split, and with them
+// gone the rule and the hairline would be a zone with nothing in it.
 function LayoutZone({ fsPath }: { fsPath: string }) {
   const claimed = useSyncExternalStore(subscribeFolderChrome, folderChromeClaimed, () => false);
   if (claimed) return null;
@@ -612,6 +637,7 @@ export function Breadcrumb({
       )}
       <UpdateBookmarkButton />
       <TopbarActionsSlot />
+      <FolderSearchSlot />
       <LayoutZone fsPath={fsPath} />
     </>
   );
