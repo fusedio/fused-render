@@ -36,10 +36,10 @@ import {
   shouldShowPane,
 } from "@apps/explorer/listing/pane-math";
 
-// Merge the pane's width into this folder's saved state without touching a
-// saved sort (and vice versa — setSort merges the same way). A null fraction
-// (the pane still following the window's breakpoints) isn't persisted — only a
-// dragged fraction is a choice worth remembering.
+// Merge a DRAGGED width into this folder's saved state without touching a
+// saved sort (and vice versa — setSort merges the same way). Only a drag ever
+// gets here: a pane still following the window's breakpoints has made no
+// choice, and writing one would freeze it at the width it happened to open on.
 //
 // Three decimals is the whole of the precision a split is worth: it is a
 // tenth of a percent of the container, well under a pixel on any window, and
@@ -47,12 +47,12 @@ import {
 //
 // The old `pane` key (the OFF choice) is deleted on the way past rather than
 // left alone: folders saved one under the previous model, and a key nothing
-// reads is a key that will be misread later.
-function savePaneWidth(fsPath: string, frac: number | null): void {
+// reads is a key that will be misread later. Only on a drag, now — nothing
+// reads it in the meantime, so there is no hurry to go looking for it.
+function savePaneWidth(fsPath: string, frac: number): void {
   const s = new URLSearchParams(getViewState(fsPath));
   s.delete("pane");
-  if (frac !== null) s.set("panew", String(Math.round(frac * 1000) / 1000));
-  else s.delete("panew");
+  s.set("panew", String(Math.round(frac * 1000) / 1000));
   const qs = s.toString();
   setViewState(fsPath, qs ? "?" + qs : "");
 }
@@ -157,11 +157,14 @@ export function usePreviewPane(fsPath: string, enabled = true) {
       divider.removeEventListener("pointermove", onMove);
       divider.removeEventListener("pointerup", onUp);
       divider.removeEventListener("pointercancel", onUp);
-      // Only a drag that actually RESIZED is a chosen fraction: a bare click on
-      // the divider, or a drag in a container too narrow to express a split,
-      // both leave the pane where it was — following the window if it was
-      // already following it, and keeping its saved width if it had one.
-      savePaneWidth(fsPath, resized ? dragged : chosen);
+      // Only a drag that actually RESIZED writes anything. A bare click on the
+      // divider, or a drag in a container too narrow to express a split (see
+      // dragPaneFrac), leaves the pane where it was — following the window if
+      // it was already following it, keeping its saved width if it had one —
+      // and a state nobody changed must not be rewritten: the write is a
+      // read-modify-write of the whole folder's viewstate, so a pointerdown
+      // that means nothing would still re-serialize it.
+      if (resized) savePaneWidth(fsPath, dragged);
     };
     divider.addEventListener("pointermove", onMove);
     divider.addEventListener("pointerup", onUp);
