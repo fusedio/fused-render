@@ -23,6 +23,8 @@ import { iconForEntry, isAppEntry } from "@platform/ui/FileIcons";
 import { KNOWN_SENTINEL_MODES, templateModeIcon } from "@apps/explorer/ModeSwitcher";
 import { ModeMenu } from "@apps/explorer/BarMenu";
 import { useAppButton } from "@apps/explorer/lib/app-button";
+import { withNoFocus } from "@apps/explorer/listing/frame-focus";
+import { usePaneFocusGuard } from "@apps/explorer/listing/usePaneFocusGuard";
 import Listing from "@apps/explorer/Listing";
 import {
   PANE_APP_MODE,
@@ -202,6 +204,11 @@ export default function ListingPreviewPane({
   // hook must be; a null folder switches the whole thing off and makes no
   // request, which covers files, the self target and a multi-selection alike.
   const appBtn = useAppButton(isDir && !self ? (path as string) : null, app?.path ?? null);
+
+  // Keep the keyboard on the listing when this preview mounts (the pane's focus
+  // contract — listing/frame-focus.ts). Also a hook, so also before the early
+  // returns; the branches it guards are the ones that render a frame.
+  const { rootRef, guardProps } = usePaneFocusGuard<HTMLDivElement>();
 
   // The pane's chrome strip, and EVERY state gets one — a loading skeleton, an
   // error, the metadata card and the multi-selection placeholder alike. It
@@ -425,10 +432,17 @@ export default function ListingPreviewPane({
 
   // The /render embed URL for a chosen template entry. "_render" renders the
   // file itself (PT-12); a template mode renders the template against _file.
+  //
+  // Every one of them carries `_nofocus=1`: a preview in the pane must not take
+  // the keyboard off the listing (listing/frame-focus.ts). It rides on the URL
+  // rather than being passed some other way for the same reason `_file` does —
+  // the page is a document, and its URL is the only thing it is handed.
   const srcFor = (t: TemplateEntry): string => {
-    if (t.mode === "_render") return `/render?path=${encodeURIComponent(row.path)}`;
+    if (t.mode === "_render") return withNoFocus(`/render?path=${encodeURIComponent(row.path)}`);
     const remote = info.remote ? "&_remote=1" : "";
-    return `/render?path=${encodeURIComponent(t.path as string)}&_file=${encodeURIComponent(row.path)}${remote}`;
+    return withNoFocus(
+      `/render?path=${encodeURIComponent(t.path as string)}&_file=${encodeURIComponent(row.path)}${remote}`
+    );
   };
 
   let body: React.ReactNode;
@@ -453,7 +467,7 @@ export default function ListingPreviewPane({
         <iframe
           key={APP_MODE}
           className="pane-frame"
-          src={`/render?path=${encodeURIComponent(app.path)}`}
+          src={withNoFocus(`/render?path=${encodeURIComponent(app.path)}`)}
           title={app.name}
         />
       </>
@@ -492,5 +506,11 @@ export default function ListingPreviewPane({
     );
   }
 
-  return <div className="listing-pane">{body}</div>;
+  // The only branch that renders a frame, and so the only one the focus guard
+  // has anything to watch.
+  return (
+    <div className="listing-pane" ref={rootRef} {...guardProps}>
+      {body}
+    </div>
+  );
 }

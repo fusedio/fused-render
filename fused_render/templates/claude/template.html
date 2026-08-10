@@ -1354,7 +1354,7 @@
                The markup ships the kind-free wording so the box is never empty
                and never wrong: "this project" was hardcoded here and lied about
                every file and every ordinary folder this mode is bound to. -->
-          <textarea id="homebox" rows="2" placeholder="Ask Claude…" autofocus spellcheck="false"
+          <textarea id="homebox" rows="2" placeholder="Ask Claude…" spellcheck="false"
                     data-gramm="false" data-gramm_editor="false" data-enable-grammarly="false"></textarea>
           <div class="composer-row">
             <select id="hmodel" class="pill model-sel" title="Model"></select>
@@ -1440,6 +1440,26 @@ const box = document.getElementById("box");
 const chatEl = document.getElementById("chat");
 const sessionEl = document.getElementById("session");
 const homebox = document.getElementById("homebox");
+
+// Focus a composer — unless this page is a PREVIEW IN THE EXPLORER'S PANE.
+//
+// The pane is a same-origin iframe, so an input that focuses itself here takes
+// document focus away from the shell, and the listing's arrow keys stand down
+// the moment focus leaves it: previewing a file stopped the user browsing file
+// to file from the keyboard. `window.__fusedNoAutofocus` is the shell's signal
+// (runtime.js, from `_nofocus=1` on this frame's URL) and it goes false the
+// instant the reader touches this page — so clicking into the pane, or opening
+// this chat full-screen, focuses exactly as it always did. A standalone page
+// never sees the flag at all.
+//
+// Every composer focus goes through this, not only the boot ones: after the
+// first gesture it is a plain .focus(), so there is nothing to gain from
+// keeping two spellings and one obvious way for the next boot-path focus to
+// re-break the pane.
+function focusBox(el) {
+  if (window.__fusedNoAutofocus) return;
+  el.focus();
+}
 
 // The target file arrives as the read-only _file param (template contract).
 const FILE = fused.params.get("_file") || "";
@@ -4004,12 +4024,12 @@ document.getElementById("back").onclick = () => {
   // without this the panel could never appear for the rest of that page's life.
   // This only reveals the collapsed heading; nothing is read until it is opened.
   mountSnapshots();
-  homebox.focus();
+  focusBox(homebox);
 };
 
 function enterChat() {
   chatEl.classList.remove("home");
-  box.focus();
+  focusBox(box);
 }
 
 // ── log rendering ──
@@ -4796,7 +4816,7 @@ function queueMessage(text) {
     // is never clobbered.
     box.value = box.value ? box.value.replace(/\s*$/, "\n\n") + text : text;
     growBox();
-    box.focus();
+    focusBox(box);
   };
   meta.append(lbl, x);
   d.append(b, meta);
@@ -5085,7 +5105,7 @@ async function sendMessage(message) {
     sending = false;
   }
   scrollBottom();
-  box.focus();
+  focusBox(box);
   drainQueue();
 }
 
@@ -5148,7 +5168,7 @@ async function resumeRun(run_id) {
     console.warn("run re-attach failed:", err.message);
   } finally {
     sending = false;
-    box.focus();
+    focusBox(box);
   }
   drainQueue();
 }
@@ -5744,7 +5764,7 @@ async function loadSnapshots() {
     // restoreQueue takes the chance to drop whatever a finished chat left in
     // storage instead of leaving it there to be almost-matched later.
     restoreQueue("", "");
-    homebox.focus();
+    focusBox(homebox);
     await loadRecent();
     await mountSnapshots();
   }
