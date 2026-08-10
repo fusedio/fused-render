@@ -171,6 +171,26 @@
   min-width: 28ch;
 }
 
+/* A crumb a file drag is dwelling on: the listing is about to follow it
+   (Breadcrumb's spring loading). The pulse is the whole affordance — a dwell
+   with no feedback is indistinguishable from a stuck drag — and it deliberately
+   does NOT look like a drop target, because dropping on a crumb does nothing.
+   Motion is dropped for reduced-motion; the accent tint still marks the crumb. */
+.path-crumb.spring-armed {
+  color: var(--fg);
+  background: rgba(var(--accent-rgb), 0.16);
+  animation: crumb-spring 0.7s linear;
+}
+
+@keyframes crumb-spring {
+  from {
+    box-shadow: inset 0 0 0 0 rgba(var(--accent-rgb), 0.5);
+  }
+  to {
+    box-shadow: inset 0 -2px 0 0 var(--accent);
+  }
+}
+
 .path-crumb.last,
 .panel-crumb.last,
 #breadcrumb .current {
