@@ -5,6 +5,7 @@ See fused_render/index/specs/scan.md and scan-incremental.md.
 """
 import json
 import os
+import time
 
 import pyarrow.parquet as pq
 import pytest
@@ -257,3 +258,60 @@ def test_a_failing_run_terminates_the_event_log(tmp_path):
     end = _summary(run_dir)
     assert end["msg"] == "failed"
     assert "compaction exploded" in end["error"]
+
+
+def test_threaded_scan_never_drops_entries_from_a_slow_worker(tmp_path, monkeypatch):
+    """Regression: `pending` was counted per-submit, so a fast worker could
+    hit 0 and latch `done` (never cleared) while later dirs were still
+    unsubmitted; a quiet 0.2s in the drain loop then closed the sink while a
+    slow worker was still producing, silently dropping its rows."""
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    from fused_render.index import scan as scan_mod
+
+    slow_started = threading.Event()
+
+    def fake_scan_dir_once(d, cache, rules, guard, devs, root_dev):
+        if d == "/fast":
+            return None, None, []  # finishes instantly, produces nothing
+        slow_started.set()
+        time.sleep(0.6)  # longer than the drain loop's 0.2s quiet window
+        return "s", ("sig", [(d + "/late.txt", d, "late.txt", "txt", 1, 1.0)],
+                     1, 1, 0), []
+
+    class InlineFirstPool:
+        """Runs the first submit inline (the fast worker beating the submit
+        loop, made deterministic); later submits go to real threads."""
+        def __init__(self):
+            self.real = ThreadPoolExecutor(max_workers=2)
+            self.first = True
+
+        def submit(self, fn, *a):
+            if self.first:
+                self.first = False
+                fn(*a)
+                return None
+            return self.real.submit(fn, *a)
+
+    got = []
+
+    class RecordingSink:
+        def add(self, d, kind, payload):
+            got.append(d)
+
+    monkeypatch.setattr(scan_mod, "scan_dir_once", fake_scan_dir_once)
+    monkeypatch.setattr(scan_mod, "_child_progress", lambda *a, **k: None)
+    monkeypatch.setitem(scan_mod._CHILD, "sink", RecordingSink())
+    monkeypatch.setitem(scan_mod._CHILD, "cache", {})
+    monkeypatch.setitem(scan_mod._CHILD, "pool", InlineFirstPool())
+    monkeypatch.setitem(scan_mod._CHILD, "rules", None)
+    monkeypatch.setitem(scan_mod._CHILD, "guard", None)
+    monkeypatch.setitem(scan_mod._CHILD, "devs", set())
+    monkeypatch.setitem(scan_mod._CHILD, "root_dev", None)
+    monkeypatch.setitem(scan_mod._CHILD, "cancel_flag",
+                        str(tmp_path / "cancel"))
+
+    scan_mod._scan_dirs_threaded(["/fast", "/slow"])
+    assert slow_started.is_set()
+    assert "/slow" in got

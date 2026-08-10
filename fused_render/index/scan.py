@@ -233,8 +233,18 @@ def _scan_dirs_threaded(dirs):
                 if pending[0] == 0:
                     done.set()
 
+    if not dirs:
+        return
+    # The whole initial list is counted BEFORE anything is submitted. Counting
+    # per-iteration let a fast worker finish dirs[0] while dirs[1] was still
+    # unsubmitted: pending hit 0, `done` latched (it is never cleared), and the
+    # drain loop's next quiet 0.2s — routine on the slow filesystems that
+    # select threaded mode — ended the loop while workers were still producing,
+    # silently dropping their entries from the index.
+    with lock:
+        pending[0] += len(dirs)
     for d in dirs:
-        submit(d)
+        ex.submit(work, d)
     i = 0
     while True:
         try:
