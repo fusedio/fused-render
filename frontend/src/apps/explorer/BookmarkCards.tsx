@@ -121,11 +121,15 @@ function bestPeekFile(entries: FsEntry[]): FsEntry | null {
 // app) wins the probe outright.
 function FolderStack({ path }: { path: string }) {
   const [entries, setEntries] = useState<FsEntry[] | null>(null);
-  // Absolute fs path of a probed subfolder's best file — the fallback peek.
+  // A probed subfolder's best file — the fallback peek: the file's absolute
+  // fs path plus the name of the subfolder it came from (that subfolder
+  // becomes the front sheet, so the sheet's title owns the page it shows).
   // undefined = probe not settled yet, null = settled with nothing to peek;
   // the note body waits for settled so it doesn't flash a count and then
   // swap to a preview mid-probe.
-  const [subPeek, setSubPeek] = useState<string | null | undefined>(undefined);
+  const [subPeek, setSubPeek] = useState<{ path: string; dir: string } | null | undefined>(
+    undefined,
+  );
   useEffect(() => {
     let alive = true;
     setEntries(null);
@@ -144,7 +148,7 @@ function FolderStack({ path }: { path: string }) {
         setSubPeek(null); // a direct file child wins — no probe needed
         return;
       }
-      let best: { path: string; rank: number } | null = null;
+      let best: { path: string; rank: number; dir: string } | null = null;
       for (const d of teaser.filter((e) => e.is_dir).slice(0, APP_PROBE_LIMIT)) {
         const subPath = joinPath(path, d.name);
         let sub: FsEntry[];
@@ -157,10 +161,11 @@ function FolderStack({ path }: { path: string }) {
         const f = bestPeekFile(teaserEntries(sub));
         if (!f) continue;
         const rank = peekRank(f.name);
-        if (!best || rank < best.rank) best = { path: joinPath(subPath, f.name), rank };
+        if (!best || rank < best.rank)
+          best = { path: joinPath(subPath, f.name), rank, dir: d.name };
         if (rank === 0) break; // an html — nothing can outrank it
       }
-      setSubPeek(best ? best.path : null);
+      setSubPeek(best ? { path: best.path, dir: best.dir } : null);
     })();
     return () => {
       alive = false;
@@ -168,11 +173,20 @@ function FolderStack({ path }: { path: string }) {
   }, [path]);
 
   const teaser = teaserEntries(entries ?? []);
-  const shown = teaser.slice(0, MAX_CHIPS);
   const firstFile = bestPeekFile(teaser);
-  const peekPath = firstFile ? joinPath(path, firstFile.name) : (subPeek ?? null);
+  const peekPath = firstFile ? joinPath(path, firstFile.name) : (subPeek?.path ?? null);
   // Settled: listDir landed AND the subfolder probe reached a verdict.
   const settled = entries !== null && subPeek !== undefined;
+  // The front sheet must be the entry whose page it shows: the peeked file
+  // itself, or the probed subfolder the fallback peek came from — never an
+  // alphabetical bystander wearing another entry's preview.
+  const frontName = firstFile?.name ?? subPeek?.dir ?? null;
+  const front = frontName ? teaser.find((e) => e.name === frontName) : undefined;
+  let shown = teaser.slice(0, MAX_CHIPS);
+  if (front) {
+    shown = shown.filter((e) => e.name !== front.name).slice(0, MAX_CHIPS - 1);
+    shown.push(front);
+  }
   // The front sheet's body, under its title row: the peeked view, or (once
   // settled with nothing to peek) a count so the card isn't a void.
   const body = peekPath ? (

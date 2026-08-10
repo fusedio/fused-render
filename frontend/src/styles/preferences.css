@@ -513,12 +513,14 @@
 
 /* In light theme the card lifts to plain white and the dark-theme "darker
    well, lighter sheets" collapses (--bg and --bg-panel are both white);
-   invert it — white card, grey well (--bg-alt), plain white sheets. */
+   invert it — white card, grey wells (--bg-alt, the file thumb included),
+   plain white sheets. */
 :root[data-theme="light"] .fhb-card {
   background: var(--bg);
 }
 
-:root[data-theme="light"] .fhb-stack {
+:root[data-theme="light"] .fhb-stack,
+:root[data-theme="light"] .fhb-thumb {
   background: var(--bg-alt);
 }
 
