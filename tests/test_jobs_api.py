@@ -269,6 +269,44 @@ def test_a_reporter_that_went_quiet_reads_as_stalled_then_disappears():
     assert jobs.list_jobs(now=1000.0 + jobs.STALE_AFTER_S + 3)[0]["stalled"] is False
 
 
+def test_a_reporter_posting_full_status_cannot_re_raise_a_row_it_aged_out_of():
+    """Ageing out is the same statement as a dismissal — this row is over — so
+    it needs the same protection from the same late tick.
+
+    A reporter with no `fused.job()` handle to remember it already finished (the
+    documented direct-HTTP path: a detached worker POSTing its whole status each
+    tick) would otherwise re-create the record the moment it aged out, and again
+    every FINISHED_TTL_S after that: a finished download blinking back onto the
+    screen every 30 seconds for as long as the worker kept posting.
+    """
+    jobs.upsert({"id": "w", "title": "Model", "state": "running"}, now=1000.0)
+    jobs.upsert({"id": "w", "title": "Model", "state": "done"}, now=1001.0)
+    aged = 1001.0 + jobs.FINISHED_TTL_S + 1
+    assert jobs.list_jobs(now=aged) == []
+
+    jobs.upsert({"id": "w", "title": "Model", "state": "done"}, now=aged + 0.1)
+    assert jobs.list_jobs(now=aged + 0.2) == []
+
+    # ...and the one case that SHOULD bring it back still does: a new run
+    # announcing itself.
+    jobs.upsert({"id": "w", "title": "Model", "state": "running"}, now=aged + 1)
+    assert [r["state"] for r in jobs.list_jobs(now=aged + 1)] == ["running"]
+
+
+def test_eviction_under_the_cap_does_not_silence_a_live_reporter():
+    """Unlike an age-out, eviction is capacity pressure — not a statement that
+    the work is over. Forgetting the id would silence its reporter for good,
+    since only an opening report reopens a forgotten one and a poll loop sends
+    deltas."""
+    for i in range(jobs.MAX_JOBS + 1):
+        jobs.upsert({"id": f"j{i}", "title": "x"}, now=1000.0 + i * 0.01)
+    at = 1000.0 + jobs.MAX_JOBS * 0.01
+    assert len(jobs.list_jobs(now=at)) == jobs.MAX_JOBS
+    # j0 was evicted; its next ordinary tick puts it back.
+    jobs.upsert({"id": "j0", "title": "x", "done": 5}, now=at)
+    assert "j0" in {r["id"] for r in jobs.list_jobs(now=at)}
+
+
 def test_a_dead_reporter_cannot_wedge_the_list_for_the_session():
     jobs.upsert({"id": "a", "title": "t"}, now=1000.0)
     assert jobs.list_jobs(now=1000.0 + jobs.STALE_DROP_S + 1) == []

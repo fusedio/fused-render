@@ -61,7 +61,11 @@ function saveCollapsed(collapsed: boolean): void {
 // to POLL_IDLE_MS later. It is only an optimisation: a reporter with no JS (a
 // Python worker) writes no ping, so the idle poll below is the floor that
 // guarantees the row shows up either way.
-function useJobs(): { jobs: Job[]; refresh: () => void } {
+function useJobs(): {
+  jobs: Job[];
+  refresh: () => void;
+  patch: (fn: (jobs: Job[]) => Job[]) => void;
+} {
   const [jobs, setJobs] = useState<Job[]>([]);
   // Read by the scheduler without re-arming it: the poll loop re-reads the
   // cadence after every response, so `jobs` must not be in its dependency list
@@ -69,11 +73,22 @@ function useJobs(): { jobs: Job[]; refresh: () => void } {
   const jobsRef = useRef<Job[]>(jobs);
   jobsRef.current = jobs;
   const pollRef = useRef<() => void>(() => {});
+  // Bumped by every mutation — a request the user made, or a read this hook
+  // asked for after one. A response issued BEFORE that describes the list as it
+  // was, so painting it flicks the row the user just dismissed back onto the
+  // screen. Lives in a ref rather than the effect closure because `patch`
+  // (outside the effect) has to invalidate an in-flight read as well.
+  const epochRef = useRef(0);
 
   useEffect(() => {
     let disposed = false;
     let timer: number | undefined;
     let inFlight = false;
+    // A read asked for while one was already in flight. Without this the
+    // request is simply dropped — and the request that gets dropped is almost
+    // always the one that matters, because every mutation (cancel / dismiss /
+    // clear) asks for a read the moment it lands.
+    let queued = false;
 
     const schedule = (ms: number) => {
       window.clearTimeout(timer);
@@ -88,13 +103,24 @@ function useJobs(): { jobs: Job[]; refresh: () => void } {
         schedule(pollInterval(jobsRef.current));
         return;
       }
-      if (inFlight) return;
+      if (inFlight) {
+        queued = true;
+        return;
+      }
       inFlight = true;
+      const at = epochRef.current;
       try {
         const snapshot = await fetchJobs();
         if (disposed) return;
-        setJobs(snapshot.jobs);
-        schedule(pollInterval(snapshot.jobs));
+        if (at === epochRef.current) {
+          setJobs(snapshot.jobs);
+          schedule(pollInterval(snapshot.jobs));
+        } else {
+          // Stale. Dropped rather than painted; `queued` is set (the mutation
+          // asked for a read while this one was in flight), so the fresh read
+          // is already on its way.
+          schedule(pollInterval(jobsRef.current));
+        }
       } catch {
         // The server being unreachable is the ServerStatusBanner's story to
         // tell, not this card's — keep the last list on screen and retry at the
@@ -102,11 +128,17 @@ function useJobs(): { jobs: Job[]; refresh: () => void } {
         if (!disposed) schedule(pollInterval(jobsRef.current));
       } finally {
         inFlight = false;
+        if (queued && !disposed) {
+          queued = false;
+          poll();
+        }
       }
     }
 
     pollRef.current = () => {
-      if (!disposed) poll();
+      if (disposed) return;
+      epochRef.current += 1;
+      poll();
     };
     poll();
 
@@ -127,7 +159,18 @@ function useJobs(): { jobs: Job[]; refresh: () => void } {
   }, []);
 
   const refresh = useCallback(() => pollRef.current(), []);
-  return { jobs, refresh };
+
+  // Apply a change the SERVER has already confirmed, without waiting for a read
+  // to tell us what we just did. A dismiss is a request that answered 200 — the
+  // row is gone — so leaving it on screen until the next poll lands makes the ✕
+  // feel broken, and on the idle cadence that wait is seconds. The poll still
+  // reconciles; this only removes the gap.
+  const patch = useCallback((fn: (jobs: Job[]) => Job[]) => {
+    epochRef.current += 1; // any read already in flight predates this
+    setJobs(fn);
+  }, []);
+
+  return { jobs, refresh, patch };
 }
 
 function Bar({ job }: { job: Job }) {
@@ -163,7 +206,15 @@ function Bar({ job }: { job: Job }) {
   );
 }
 
-function JobRow({ job, onChanged }: { job: Job; onChanged: () => void }) {
+function JobRow({
+  job,
+  onChanged,
+  onPatch,
+}: {
+  job: Job;
+  onChanged: () => void;
+  onPatch: (fn: (jobs: Job[]) => Job[]) => void;
+}) {
   const [busy, setBusy] = useState(false);
   const running = isRunning(job);
   const fraction = jobFraction(job);
@@ -184,10 +235,17 @@ function JobRow({ job, onChanged }: { job: Job; onChanged: () => void }) {
   const act = async () => {
     setBusy(true);
     try {
-      if (canCancel) await cancelJob(job.id);
-      else await dismissJob(job.id);
+      if (canCancel) {
+        await cancelJob(job.id);
+        // The row stays — the work has not stopped — but the label has to move
+        // to "Cancelling…" now, or the ✕ reads as having done nothing.
+        onPatch((js) => js.map((j) => (j.id === job.id ? { ...j, cancel_requested: true } : j)));
+      } else {
+        await dismissJob(job.id);
+        onPatch((js) => js.filter((j) => j.id !== job.id));
+      }
     } catch {
-      /* the row is about to be re-read from the server either way */
+      /* nothing applied locally — the refresh below is the source of truth */
     } finally {
       setBusy(false);
       onChanged();
@@ -223,7 +281,7 @@ function JobRow({ job, onChanged }: { job: Job; onChanged: () => void }) {
 }
 
 export default function DownloadManager() {
-  const { jobs, refresh } = useJobs();
+  const { jobs, refresh, patch } = useJobs();
   const [collapsed, setCollapsed] = useState(loadCollapsed);
 
   // Nothing to say — render nothing at all. The manager is a picture of what is
@@ -246,8 +304,11 @@ export default function DownloadManager() {
   const clear = async () => {
     try {
       await clearFinishedJobs();
+      // Mirrors the server's rule (jobs.py `clear_finished`): everything that
+      // is not still being reported on.
+      patch((js) => js.filter((j) => isRunning(j) && !j.stalled));
     } catch {
-      /* re-read below regardless */
+      /* nothing applied locally — the refresh below is the source of truth */
     }
     refresh();
   };
@@ -290,7 +351,7 @@ export default function DownloadManager() {
       ) : (
         <div className="dl-rows">
           {jobs.map((job) => (
-            <JobRow key={job.id} job={job} onChanged={refresh} />
+            <JobRow key={job.id} job={job} onChanged={refresh} onPatch={patch} />
           ))}
         </div>
       )}

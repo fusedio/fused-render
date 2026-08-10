@@ -91,6 +91,15 @@ test("a stalled row explains itself instead of showing a stale detail", () => {
   expect(jobStatusLine(job({ stalled: true, detail: "shard 3/8" }))).toContain("No longer reporting");
 });
 
+test("stalled outranks a pending cancel, and says both", () => {
+  // "Cancelling…" claims something is working on the request. If the reporter
+  // died before honoring it, that claim would stand for the whole ten-minute
+  // stale-drop window while nothing at all was happening.
+  const line = jobStatusLine(job({ stalled: true, cancel_requested: true }));
+  expect(line).toContain("Cancel requested");
+  expect(line).toContain("nothing is reporting");
+});
+
 // ------------------------------------------------------------------- summary
 
 test("the header counts what is running, not what is on the list", () => {

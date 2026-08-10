@@ -134,8 +134,16 @@ export function jobStatusLine(job: Job): string {
   if (job.state === "error") return job.message || "Failed";
   if (job.state === "cancelled") return job.detail || "Cancelled";
   if (job.state === "done") return job.detail || "Done";
+  // Stalled outranks a pending cancel, and says so explicitly when both hold.
+  // "Cancelling…" claims something is working on the request; if the reporter
+  // died before honoring it, that claim would stand for the whole ten-minute
+  // stale-drop window while nothing at all was happening.
+  if (job.stalled) {
+    return job.cancel_requested
+      ? "Cancel requested, but nothing is reporting any more — the page that started it was closed"
+      : "No longer reporting — the page that started it was closed";
+  }
   if (job.cancel_requested) return "Cancelling…";
-  if (job.stalled) return "No longer reporting — the page that started it was closed";
   return job.detail;
 }
 

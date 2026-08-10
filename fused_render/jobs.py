@@ -391,21 +391,38 @@ def _public(job: Job, now: float) -> dict:
 
 
 def _sweep(now: float) -> None:
-    """Drop what has aged out, then enforce the cap. Caller holds the lock."""
+    """Drop what has aged out, then enforce the cap. Caller holds the lock.
+
+    Ageing out goes through `_forget`, exactly like a user dismissing the row,
+    because it is the same statement — *this row is over* — and it needs the
+    same protection from the same late tick. A reporter that posts its FULL
+    status every tick (the documented direct-HTTP path: a detached worker with
+    no `fused.job()` handle to remember it already finished) would otherwise
+    re-create the record from scratch the moment it aged out, and keep doing so
+    every FINISHED_TTL_S for as long as it kept posting — a finished download
+    blinking back onto the screen every 30 seconds. Only a fresh opening report
+    reopens a forgotten id, which is the one case that should.
+    """
     for job_id, job in list(_jobs.items()):
         if job.state == RUNNING:
             if (now - job.updated_at) > STALE_DROP_S:
-                del _jobs[job_id]
+                _forget(job_id, now)
         elif job.state == "error":
             continue  # kept until dismissed — see FINISHED_TTL_S
         elif (now - (job.finished_at or job.updated_at)) > FINISHED_TTL_S:
-            del _jobs[job_id]
+            _forget(job_id, now)
 
     if len(_jobs) <= MAX_JOBS:
         return
     # Over the cap: finished rows go before running ones (the work they
     # describe is over), and within each group the least recently updated
     # first. A live download is the last thing evicted.
+    #
+    # NOT `_forget`, unlike the age-outs above: this is capacity pressure, not a
+    # statement that the work is over. The row evicted here may well be a live
+    # download whose reporter is mid-loop, and forgetting it would silence that
+    # reporter for good — the row could never come back, because its ticks are
+    # deltas and only an opening report reopens a forgotten id.
     order = sorted(
         _jobs.values(),
         key=lambda j: (j.state == RUNNING, j.updated_at),
