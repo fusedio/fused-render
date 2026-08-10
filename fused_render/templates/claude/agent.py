@@ -1578,12 +1578,229 @@ def _skill_calls(row: dict) -> list:
     return out
 
 
+#: Display cap on one tool's output inside a segment. NOT a permission surface:
+#: an approval card renders the tool's input untruncated and is the thing a
+#: decision is made on (D161), so trimming here only ever costs the user a
+#: re-read of something that already happened.
+SEGMENT_OUTPUT_CAP = 4000
+#: A base64 image bigger than this is dropped rather than shipped. The whole
+#: segment list is re-sent on EVERY poll (400 ms), so one 8 MB screenshot would
+#: be re-read, re-encoded and re-parsed a hundred-odd times a minute for the rest
+#: of the turn — and the page has nowhere useful to put it either.
+SEGMENT_IMAGE_CAP = 2 * 1024 * 1024
+
+
+def _cap_output(text: str) -> str:
+    """`text` trimmed to the display cap, saying how much it dropped.
+
+    The tail matters more than the cap: silently truncated output reads as a
+    tool that returned exactly that much, which is a lie a user cannot detect.
+    """
+    if len(text) <= SEGMENT_OUTPUT_CAP:
+        return text
+    return text[:SEGMENT_OUTPUT_CAP] + "… (+%d chars)" % (
+        len(text) - SEGMENT_OUTPUT_CAP)
+
+
+def _tool_result_payload(block: dict) -> tuple:
+    """(output, images) for one `tool_result` block.
+
+    `content` is a plain STRING for most tools and a list of typed blocks for
+    the ones that return images — BOTH shapes are on the wire, so both are read
+    here rather than at each call site. A block list that carries no text at all
+    yields "" and not None: None is reserved for "no result has arrived yet",
+    which is a different fact about the tool.
+
+    The oversize note is appended AFTER the cap, deliberately: it is the only
+    trace left of an image that was dropped, so it must not be the thing the
+    cap eats.
+    """
+    content = block.get("content")
+    if isinstance(content, str):
+        return _cap_output(content), []
+    parts, images, notes = [], [], []
+    for sub in content if isinstance(content, list) else []:
+        if not isinstance(sub, dict):
+            continue
+        if sub.get("type") == "text":
+            if isinstance(sub.get("text"), str):
+                parts.append(sub["text"])
+        elif sub.get("type") == "image":
+            source = sub.get("source") or {}
+            data = source.get("data")
+            # base64 only: a URL-sourced image is not something this page can
+            # render from the payload, and inventing a fetch for it would put a
+            # model-authored URL on the network.
+            if source.get("type") != "base64" or not isinstance(data, str):
+                continue
+            if len(data) > SEGMENT_IMAGE_CAP:
+                notes.append("[image dropped: %d bytes of base64 is over the "
+                             "%d byte cap]" % (len(data), SEGMENT_IMAGE_CAP))
+                continue
+            images.append({"media_type": str(source.get("media_type")
+                                             or "image/png"), "data": data})
+    out = _cap_output("\n".join(parts))
+    if notes:
+        out = "\n".join(([out] if out else []) + notes)
+    return out, images
+
+
+def _is_text_delta(row) -> bool:
+    """Whether `row` is one streamed chunk of assistant prose."""
+    if not isinstance(row, dict) or row.get("type") != "stream_event":
+        return False
+    ev = row.get("event") or {}
+    if ev.get("type") != "content_block_delta":
+        return False
+    return (ev.get("delta") or {}).get("type") == "text_delta"
+
+
+def _segments_from_rows(rows: list) -> list:
+    """The ordered transcript of a reply: text, thinking and tool segments.
+
+    ONE reader with TWO callers — `_poll` over the live `out.jsonl` and
+    `_history` over the persisted session transcript — because they render the
+    same conversation, and a second implementation would differ only by
+    drifting. The row shapes are near-identical (the API message nests under
+    `message` in both); what differs is that only `out.jsonl` carries
+    `stream_event` rows. So text arrives as deltas there and as finalized blocks
+    in the transcript, and both are read — but never both at once: an
+    `assistant` row repeats verbatim the text its deltas already delivered, so
+    the finalized blocks are read ONLY when this row set carries no text delta
+    at all (the persisted transcript, or a CLI too old for
+    `--include-partial-messages`). Decided over the whole list rather than
+    per-message on purpose: it makes the choice independent of where the
+    `assistant` row sits relative to its own `message_stop`, which is the
+    ordering a duplicate would otherwise hinge on.
+
+    Tool calls are read ONLY from finalized `assistant` rows. The streamed
+    `content_block_start` for the same call arrives with `input: {}` and its
+    arguments only as `input_json_delta` fragments (same reason as
+    `_skill_calls`), so the finalized row is both complete and what keeps one
+    call from being reported twice.
+
+    Ordering is file order, and a `tool_result` is joined to its `tool_use` by
+    `tool_use_id` rather than by position — parallel tools answer out of call
+    order routinely, and a result can even be flushed before the message that
+    asked for it, hence `orphans`.
+
+    Two segments of the same kind in a row MERGE (the tail grows in place)
+    rather than accumulating one segment per delta: the page renders a text
+    segment as markdown, and markdown split across arbitrary delta boundaries
+    is not the same document.
+    """
+    segments = []
+    by_tool_id = {}     # tool_use id -> its segment, for the result to find
+    stripped = set()    # tool_use ids of calls deliberately not shown
+    orphans = {}        # results that arrived before their tool_use row
+    streamed = any(_is_text_delta(row) for row in rows)
+    any_text = False    # mirrors _poll's `bool(text_parts)`
+    pending_sep = False
+    plumbing = "mcp__%s__%s" % (PERMISSION_SERVER, APP_STATE_TOOL)
+
+    def tail(kind):
+        return segments[-1] if segments and segments[-1]["kind"] == kind else None
+
+    def grow(kind, chunk, separator=""):
+        """Append `chunk` to the trailing `kind` segment, opening one if the
+        tail is something else. `separator` goes INSIDE the segment it precedes
+        — even when that segment is brand new — so that joining the text
+        segments reproduces `_poll`'s `text` byte for byte. The two
+        accumulations are two copies of one rule, so a test asserts they agree
+        rather than a comment saying they should (D146)."""
+        seg = tail(kind)
+        if seg is None:
+            seg = {"kind": kind, "text": ""}
+            segments.append(seg)
+        seg["text"] += separator + chunk
+
+    def settle(seg, payload):
+        seg["status"], seg["output"], seg["images"] = payload
+
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        # Synthetic rows and subagent rows are not this conversation — the same
+        # guard `_history` has always applied to turns.
+        if row.get("isMeta") or row.get("isSidechain"):
+            continue
+        t = row.get("type")
+        message = row.get("message")
+        content = message.get("content") if isinstance(message, dict) else None
+        if t == "stream_event":
+            ev = row.get("event") or {}
+            et = ev.get("type")
+            if et == "content_block_delta":
+                delta = ev.get("delta") or {}
+                if delta.get("type") == "text_delta":
+                    grow("text", str(delta.get("text", "")),
+                         "\n\n" if pending_sep else "")
+                    any_text, pending_sep = True, False
+                elif delta.get("type") == "thinking_delta":
+                    grow("thinking", str(delta.get("thinking", "")))
+            elif et == "message_stop":
+                # A tool-using turn is several assistant messages; without a
+                # break their texts concatenate mid-word ("orange.After").
+                pending_sep = any_text
+        elif t == "assistant" and isinstance(content, list):
+            # Text blocks first and joined the way `_history` joins them, so a
+            # restored turn's `text` and its segments say the same thing. Safe
+            # against block order because a real message is text-then-tools.
+            if not streamed:
+                whole = "\n".join(b.get("text", "") for b in content
+                                  if isinstance(b, dict) and b.get("type") == "text")
+                if whole.strip():
+                    grow("text", whole,
+                         "\n\n" if any_text and tail("text") is not None else "")
+                    any_text = True
+            for block in content:
+                if not isinstance(block, dict) or block.get("type") != "tool_use":
+                    continue
+                name = str(block.get("name") or "")
+                tool_id = str(block.get("id") or "")
+                if name == plumbing:
+                    # This template's own bridge asking the page what it is
+                    # showing. Nobody requested it and its answer is our JSON,
+                    # so it is not part of the conversation. ONLY this exact
+                    # name: every other MCP tool is a real call.
+                    if tool_id:
+                        stripped.add(tool_id)
+                    continue
+                if tool_id and tool_id in by_tool_id:
+                    continue  # the same finalized message written twice
+                tool_input = block.get("input")
+                seg = {"kind": "tool", "id": tool_id, "name": name,
+                       "input": tool_input if isinstance(tool_input, dict) else {},
+                       "status": "running", "output": None, "images": []}
+                segments.append(seg)
+                if tool_id:
+                    by_tool_id[tool_id] = seg
+                    if tool_id in orphans:
+                        settle(seg, orphans.pop(tool_id))
+        elif t == "user" and isinstance(content, list):
+            for block in content:
+                if not isinstance(block, dict) or block.get("type") != "tool_result":
+                    continue
+                tool_id = str(block.get("tool_use_id") or "")
+                if tool_id in stripped:
+                    continue
+                output, images = _tool_result_payload(block)
+                payload = ("error" if block.get("is_error") else "ok",
+                           output, images)
+                seg = by_tool_id.get(tool_id)
+                if seg is not None:
+                    settle(seg, payload)
+                elif tool_id:
+                    orphans[tool_id] = payload
+    return segments
+
+
 def _poll(run_id: str) -> dict:
     run_dir = os.path.join(RUNS, run_id)
     if _bad_id(run_id) or not os.path.isdir(run_dir):
         return {"text": "", "done": True, "session_id": "", "error": "unknown run_id",
                 "permissions": [], "app_state": [], "skills": [], "retry": None,
-                "retry_total": 0, "retry_status": 0}
+                "retry_total": 0, "retry_status": 0, "segments": []}
 
     text_parts = []
     result_text = None
@@ -1599,6 +1816,14 @@ def _poll(run_id: str) -> dict:
     retry_total = 0      # how many retries this run has seen at all
     retry_status = 0     # HTTP status of the last one (529 overloaded, 429 …)
     gave_up = None       # the retry still in flight when the run ended badly
+    # Every row this poll managed to parse, handed to `_segments_from_rows` once
+    # the loop is done. Collected rather than parsed a second time: the file is
+    # re-read from scratch on every 400 ms tick, so a second `json.loads` pass
+    # over the whole turn is the cost worth avoiding — this list only holds a
+    # second reference to objects the loop already built. A half-written last
+    # line never reaches it, for the same reason it never reaches anything else
+    # here: the `continue` below is above the append.
+    parsed = []
 
     try:
         lines = open(os.path.join(run_dir, "out.jsonl"), encoding="utf-8",
@@ -1611,6 +1836,7 @@ def _poll(run_id: str) -> dict:
             row = json.loads(line)
         except json.JSONDecodeError:
             continue  # half-written last line; next poll gets it
+        parsed.append(row)
         t = row.get("type")
         # Any of these means the request the retries were for went THROUGH.
         # Rows are in file order, so anything the model produced after an
@@ -1782,12 +2008,17 @@ def _poll(run_id: str) -> dict:
     text = "".join(text_parts)
     if not text and done and result_text and not error:
         text = result_text
+    # `segments` is the SAME turn as `text`, structured: text still travels flat
+    # for everything that only wants the prose (the sidecar preview, a page that
+    # predates segments), and the two cannot disagree because the text segments
+    # join back into exactly this string.
     return {"text": text, "done": done, "session_id": new_session, "error": error,
             "tokens": tokens_done + tokens_current, "phase": phase,
             "message": meta.get("message", ""), "permissions": permissions,
             "app_state": app_state, "mode": _live_mode(meta, permissions),
             "skills": skills, "retry": retry, "retry_total": retry_total,
-            "retry_status": retry_status}
+            "retry_status": retry_status,
+            "segments": _segments_from_rows(parsed)}
 
 
 # ------------------------------------------------------- sessions & history
@@ -2213,7 +2444,15 @@ def _history(file: str, session_id: str) -> dict:
     content, and a glob would render some other copy's conversation while
     resume continues this one's. Migrates first (same as `start`) so a moved
     file's saved session shows its turns immediately, without waiting for the
-    user to send a message."""
+    user to send a message.
+
+    Assistant turns carry `segments` as well as `text` — the same ordered
+    text/tool record `_poll` returns, through the same `_segments_from_rows`, so
+    a restored conversation shows the tool calls it made instead of only the
+    prose around them. User turns keep just `text`: there is nothing structured
+    about a typed message, and the app-state block is stripped from it BEFORE
+    anything else reads it (below), which is also why segments cannot become a
+    second route back for the block the user never saw."""
     if _bad_id(session_id):
         return {"turns": []}
     file = os.path.abspath(file)
@@ -2224,6 +2463,31 @@ def _history(file: str, session_id: str) -> dict:
         return {"turns": []}
 
     turns = []
+    stretch = []  # rows of the assistant reply being read, for its segments
+
+    def close_stretch():
+        """Attach the stretch's segments to the assistant turn they belong to.
+
+        Deferred to the END of the stretch because that is the first moment the
+        turn is certainly there: the text turn is opened by whichever assistant
+        row first carries prose, and a reply that only called tools opens no
+        turn at all until here — dropping its segments would lose the only
+        record that the work happened. Merged, never assigned, for the same
+        reason consecutive assistant rows merge their text: a user row that was
+        filtered out (a slash command, an app-state-only message) does not end
+        the reply, so a later stretch can land on the same turn.
+        """
+        if not stretch:
+            return
+        segments = _segments_from_rows(stretch)
+        del stretch[:]
+        if not segments:
+            return
+        if turns and turns[-1]["role"] == "assistant":
+            turns[-1]["segments"] = turns[-1].get("segments", []) + segments
+        else:
+            turns.append({"role": "assistant", "text": "", "segments": segments})
+
     for line in open(path, encoding="utf-8", errors="replace"):
         try:
             row = json.loads(line)
@@ -2246,8 +2510,15 @@ def _history(file: str, session_id: str) -> dict:
             # recognise is the whole reason it is stripped here.
             text = _strip_app_state(text)
             if text.strip() and not text.startswith(("<local-command", "<command-name")):
+                close_stretch()  # before the user turn, or the segments land on it
                 turns.append({"role": "user", "text": text})
+            else:
+                # Everything else on a `user` row belongs to the assistant's
+                # reply: tool_result blocks are what its tool segments are
+                # waiting for, and the synthetic rows are not a turn either way.
+                stretch.append(row)
         elif role == "assistant" and isinstance(content, list):
+            stretch.append(row)
             text = "\n".join(b.get("text", "") for b in content
                              if isinstance(b, dict) and b.get("type") == "text")
             if text.strip():
@@ -2257,6 +2528,7 @@ def _history(file: str, session_id: str) -> dict:
                     turns[-1]["text"] += "\n\n" + text
                 else:
                     turns.append({"role": "assistant", "text": text})
+    close_stretch()
     return {"turns": turns}
 
 
