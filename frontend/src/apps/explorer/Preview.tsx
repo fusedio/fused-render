@@ -842,6 +842,10 @@ function TemplatePreview({
         ) : isListing ? (
           <Listing
             fsPath={fsPath}
+            /* Same condition as the header's: `actionsInTopbar` IS "this view
+               is the explorer's, and the crumb bar is its bar" — so this
+               listing is the one that claims the bar's layout zone. */
+            barChrome={actionsInTopbar}
             onSingleApp={setSingleAppPath}
           />
         ) : (

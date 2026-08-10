@@ -739,9 +739,9 @@
    the metadata card): while the pane is open this strip is the only thing
    carrying a way to close it.
 
-   No gutter hang for the leading button (unlike .listing-search's Up control):
-   this strip pads 10px and the thing beside the button is the file icon, not a
-   column the glyph has to line up with.
+   No gutter hang for the leading button (unlike .listing-search's trailing
+   `···`): this strip pads 10px and the thing beside the button is the file
+   icon, not a column the glyph has to line up with.
 
    It sits directly beside .listing-search — they are one visual row split by
    the pane divider — so the two MUST agree on height, or the pane's bottom
@@ -895,15 +895,14 @@ table.listing-table tr.skel-row:hover {
   background: var(--bg);
 }
 
-/* Optical gutter alignment for the leading Up button. The row pads 16px like
-   the listing gutter below it, but a ghost icon button is a 28px square with a
-   16px glyph centred, so its ARROW started ~6px right of the gutter while the
-   NAME header and the row icons underneath start exactly on it — the row read
-   as over-indented. Hang the button back into the padding so the glyph, not
-   the box, lines up. The 28px hit area is unchanged, and this is scoped to
-   this row: the topbar's controls sit against a right edge and are fine. */
-.listing-search > .bar-ctl-icon:first-child {
-  margin-left: -6px;
+/* Optical gutter alignment for the trailing path `···` (the folder view's,
+   moved down out of the crumb bar). The row pads 16px like the listing gutter
+   below it, but a ghost icon button is a 28px square with a 16px glyph
+   centred, so its dots would stop ~6px short of the gutter the MODIFIED column
+   above them ends on. Hang the button into the padding so the glyph, not the
+   box, lines up; the 28px hit area is unchanged. */
+.listing-search > .bar-overflow:last-child {
+  margin-right: -6px;
 }
 
 /* Wraps the input plus its pinned chips (count / spinner), so the preview-pane

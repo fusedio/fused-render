@@ -38,6 +38,8 @@ import { useClipboard } from "@apps/explorer/lib/fs-clipboard";
 import ContextMenu from "@platform/ui/ContextMenu";
 import { PromptDialog, ConfirmDialog } from "@apps/explorer/FsDialogs";
 import ListingPreviewPane from "@apps/explorer/ListingPreviewPane";
+import { PathOverflow } from "@apps/explorer/BarMenu";
+import { claimFolderChrome } from "@apps/explorer/listing/folder-chrome";
 import {
   FLIP_MAX_ROWS,
   SORT_KEYS,
@@ -71,6 +73,7 @@ export default function Listing({
   fsPath,
   provisional = false,
   embedded = false,
+  barChrome = false,
   onSingleApp,
 }: {
   fsPath: string;
@@ -91,6 +94,14 @@ export default function Listing({
   // handlers — those belong to the host's Listing. Mouse interaction stays:
   // clicks select/navigate, right-click menus and dialogs work as usual.
   embedded?: boolean;
+  // `barChrome`: this Listing IS the explorer's folder view — the one under
+  // the crumb bar, whose layout zone it therefore claims (see
+  // listing/folder-chrome.ts). The splits go away and the path `···` renders
+  // in this listing's search row instead of at the far end of the bar. False
+  // for every other host: the app-builder and learn variants have no crumb bar
+  // to claim, and a panel pane's Listing sits under a pane bar that carries
+  // its own splits and its own `···`.
+  barChrome?: boolean;
   // Reports the path of this directory's lone top-level HTML file (an
   // "app"), or null when there isn't exactly one — the caller (Preview's
   // header) uses this to surface an "Open as app" button. Fires whenever the
@@ -218,6 +229,16 @@ export default function Listing({
   );
 
   const base = fsPath.replace(/\/$/, "");
+
+  // Claim the crumb bar's layout zone for as long as this folder view is
+  // mounted: the splits come off the bar and the path `···` renders in the
+  // search row below (see listing/folder-chrome.ts for why the claim is
+  // counted and why it is a store rather than a prop).
+  const ownsBarChrome = barChrome && !embedded;
+  useEffect(() => {
+    if (!ownsBarChrome) return;
+    return claimFolderChrome();
+  }, [ownsBarChrome]);
 
   // No "Up" BUTTON beside the search box any more: the crumb strip above is
   // the same hop with a target the user can name, and the keyboard keeps its
@@ -1003,6 +1024,12 @@ export default function Listing({
                   a button to flip — and a control that only ever restated what
                   the layout already showed was one more thing in a row that is
                   meant to be the search box. */}
+              {/* The path `···`, moved down out of the crumb bar for the
+                  folder view (see the claim above). Same control, same two
+                  items — "Open in Finder" and "Copy path" — now at the end of
+                  the row that already holds this folder's other control
+                  instead of at the far end of the bar. */}
+              {ownsBarChrome && <PathOverflow fsPath={base} />}
             </div>
           )}
           <div

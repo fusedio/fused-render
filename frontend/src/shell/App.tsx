@@ -193,7 +193,11 @@ function LoadingScaffold({ fsPath, isDir, headerless }: { fsPath: string; isDir:
           // provisional: the hint could be stale (file, not dir). Suppress
           // Listing's hard "Failed to list" error while stat resolves — a 404
           // here just means the hint was wrong; stat will paint the file view.
-          <Listing fsPath={fsPath} provisional />
+          // `barChrome` on the scaffold too (same condition as `headerless`):
+          // the folder view's claim on the bar's layout zone must be live from
+          // the first paint, or the splits flash in and out across the
+          // scaffold→resolved swap.
+          <Listing fsPath={fsPath} provisional barChrome={headerless} />
         ) : (
           <div className="preview-resolving">
             <span className="mode-icon-spinner" />
@@ -303,7 +307,7 @@ function StatView({
     // it then — a folder must always render something.
     const s = stat.stat;
     if (s.is_dir && s.templates.length === 0) {
-      content = <Listing fsPath={fsPath} />;
+      content = <Listing fsPath={fsPath} barChrome={variant === "explorer"} />;
     } else if (!ready) {
       // Brief; only for files opened with an empty query while the sidecar
       // read resolves. Directories and param/bookmark opens are ready

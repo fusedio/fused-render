@@ -24,6 +24,8 @@
 // fourth.
 import { useEffect, useRef, useState, type MouseEvent, type ReactNode } from "react";
 import { modeTitle } from "@platform/lib/mode-name";
+import { copyToClipboard } from "@platform/lib/clipboard";
+import { pushToast } from "@platform/lib/toast";
 
 // Keep the popup on screen: it is right-aligned to the trigger in spirit, but
 // clamping the LEFT edge is what actually matters near the window's edge.
@@ -237,6 +239,40 @@ export function ModeMenu({ entries, active, busy, onSelect }: ModeMenuProps) {
 export interface OverflowItem {
   label: string;
   onClick: () => void;
+}
+
+// The path `···`: the two low-frequency one-shots every view OF A PATH offers.
+// It lives here rather than in the bar that used to own it because it now has
+// two homes — the crumb bar's layout zone for a file/preview, and the
+// listing's own search row for a folder (Listing.tsx; the handover is
+// listing/folder-chrome.ts) — and one definition is what makes "the same
+// items, wherever it sits" true rather than merely intended.
+const FILE_MANAGER = navigator.userAgent.includes("Windows") ? "File Explorer" : "Finder";
+
+// Browsers block file:// navigation from http pages, so revealing in the OS
+// file manager goes through the server (POST /api/fs/reveal). X-Fused forces
+// a CORS preflight so a foreign page can't fire this blind (D3 guard).
+function revealInFileManager(path: string): void {
+  fetch("/api/fs/reveal", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-Fused": "1" },
+    body: JSON.stringify({ path }),
+  });
+}
+
+export function PathOverflow({ fsPath }: { fsPath: string }) {
+  const copyPath = async () => {
+    if (await copyToClipboard(fsPath)) pushToast({ msg: "Path copied", tone: "info" });
+    else pushToast({ msg: "Couldn't copy the path", tone: "error" });
+  };
+  return (
+    <OverflowMenu
+      items={[
+        { label: "Open in " + FILE_MANAGER, onClick: () => revealInFileManager(fsPath) },
+        { label: "Copy path", onClick: () => void copyPath() },
+      ]}
+    />
+  );
 }
 
 // `···` menu for the bars' layout zone. Renders nothing when it has no items,

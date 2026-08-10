@@ -12,7 +12,7 @@
 //
 // Rendered by every view: path crumbs for listing/preview, a static label for
 // the layout modes (LM-11 / TM-9 — ★/update still operate on currentUrl()).
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { requestCloneApp } from "@platform/cloud/cloneApp";
 import { navigate, navigateUrl, currentUrl, IS_EMBED } from "@platform/lib/router";
 import { basename } from "@platform/lib/format";
@@ -32,13 +32,16 @@ import { useUrlVersion, useBookmarksVersion, notifyBookmarksChanged } from "@pla
 import { urlScheme, isCloudScheme, fileUrlToPath } from "@platform/lib/path-url";
 import { resolveCloudUrl } from "@platform/lib/api";
 import { pushToast } from "@platform/lib/toast";
-import { copyToClipboard } from "@platform/lib/clipboard";
 import { encodePaneSegment, splitShellSearch } from "@platform/lib/layout-codec";
 import { panelUrl } from "@apps/explorer/Panel";
 import { SplitRightIcon, SplitDownIcon } from "@platform/ui/SplitIcons";
-import { OverflowMenu } from "@apps/explorer/BarMenu";
+import { PathOverflow } from "@apps/explorer/BarMenu";
 import { springDisarms } from "@apps/explorer/listing/drag-drop";
 import { cameFromSelParam } from "@apps/explorer/listing/selection";
+import {
+  folderChromeClaimed,
+  subscribeFolderChrome,
+} from "@apps/explorer/listing/folder-chrome";
 import { registerSpring, SPRING_ATTR } from "@apps/explorer/listing/row-drag";
 
 // How long a file drag has to hover a crumb before the listing follows it.
@@ -183,40 +186,17 @@ function StarIcon({ filled }: { filled: boolean }) {
   );
 }
 
-// Browsers block file:// navigation from http pages, so revealing in the OS
-// file manager goes through the server (POST /api/fs/reveal). X-Fused forces
-// a CORS preflight so a foreign page can't fire this blind (D3 guard).
-function revealInFileManager(path: string): void {
-  fetch("/api/fs/reveal", {
-    method: "POST",
-    headers: { "Content-Type": "application/json", "X-Fused": "1" },
-    body: JSON.stringify({ path }),
-  });
-}
-
-const FILE_MANAGER = navigator.userAgent.includes("Windows") ? "File Explorer" : "Finder";
-
-// The bar's low-frequency one-shot actions. Both used to be (or wanted to be)
-// glyphs in the crumb strip; neither is worth a permanent slot beside the
-// splits, which is exactly what an overflow menu is for.
-function LayoutOverflow({ fsPath }: { fsPath: string }) {
-  const copyPath = async () => {
-    if (await copyToClipboard(fsPath)) pushToast({ msg: "Path copied", tone: "info" });
-    else pushToast({ msg: "Couldn't copy the path", tone: "error" });
-  };
-  return (
-    <OverflowMenu
-      items={[
-        { label: "Open in " + FILE_MANAGER, onClick: () => revealInFileManager(fsPath) },
-        { label: "Copy path", onClick: () => void copyPath() },
-      ]}
-    />
-  );
-}
-
-// Split entry buttons + the overflow: the bar's layout zone, in the same
-// position in every state so the hand learns where layout lives.
+// Split entry buttons + the path overflow: the bar's layout zone, in the same
+// position in every state so the hand learns where layout lives — EXCEPT over
+// a folder, where the listing underneath claims the zone and renders the `···`
+// in its own search row instead (listing/folder-chrome.ts says which state we
+// are in; Listing.tsx renders the other half). Nothing here for a folder at
+// all: the splits are the pair that make least sense over a view that already
+// IS a split, and with them gone the rule and the hairline would be a zone
+// with nothing in it.
 function LayoutZone({ fsPath }: { fsPath: string }) {
+  const claimed = useSyncExternalStore(subscribeFolderChrome, folderChromeClaimed, () => false);
+  if (claimed) return null;
   return (
     <>
       <span className="bar-rule" aria-hidden="true" />
@@ -241,7 +221,7 @@ function LayoutZone({ fsPath }: { fsPath: string }) {
         >
           <SplitDownIcon />
         </button>
-        <LayoutOverflow fsPath={fsPath} />
+        <PathOverflow fsPath={fsPath} />
       </div>
     </>
   );
