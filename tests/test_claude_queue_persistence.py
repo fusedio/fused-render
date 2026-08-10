@@ -14,13 +14,18 @@ of the frame's own comings and goings) on every mutation, and restored on boot
 before the re-attach, so the restored entries drain through the ordinary
 `drainQueue` path.
 
-One decision is pinned here because it is what makes the feature safe rather
-than merely present:
+Two decisions are pinned here because they are what makes the feature safe
+rather than merely present:
 
 * **a record only ever comes back to the conversation it was written for.** It
   carries both ids the URL can name (`session_id`, `run`) and is adopted only
   when the booting page matches one of them — otherwise it is dropped, so a
   leftover record can never inject a previous chat's words into a new one.
+* **the flush hook refuses a mode switch only on a real failure to save.** The
+  shell awaits `window.__fusedFlushEdits()` before remounting and aborts on
+  `{ok: false}` (the same contract the code template's editor uses); "there is a
+  queue" is not a failure, "the queue could not be written" is.
+
 The decisions are pure functions in the page (`queueRecord`, `queueRestore`,
 `persistQueue`), extracted and executed under node — what matters is what comes
 back, not the shape of the source.
@@ -176,6 +181,17 @@ def test_a_failed_write_of_an_empty_queue_is_still_a_success():
     """Nothing to lose: refusing the mode switch here would strand the user in a
     pane for no reason."""
     assert _persist([], throws=True)["ok"] is True
+
+
+def test_the_flush_hook_answers_with_whether_the_queue_was_saved():
+    """The shell's contract (Preview.tsx): await `__fusedFlushEdits`, abort the
+    mode switch on {ok: false}. Same shape as the code template's editor hook."""
+    html = _html()
+    assert "window.__fusedFlushEdits" in html, "the chat exposes no teardown hook"
+    hook = html[html.index("window.__fusedFlushEdits"):]
+    hook = hook[:hook.index("};")]
+    assert "persistQueue()" in hook, "the hook does not actually save the queue"
+    assert "ok:" in hook or "ok :" in hook
 
 
 # ------------------------------------------------------------- the wiring

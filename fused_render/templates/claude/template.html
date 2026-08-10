@@ -4747,6 +4747,18 @@ function restoreQueue(sessionId, runId) {
   if (!texts.length) { try { sessionStorage.removeItem(QUEUE_STORE); } catch (err) {} }
 }
 
+// The shell's remount-safety hook, same contract as the code template's editor
+// (Preview.tsx awaits it before switching modes, with a 10 s bound, and aborts
+// the switch on {ok:false}). The queue is written on every mutation already, so
+// this is a belt-and-braces re-save covering anything that changed the array
+// without going through those paths — and, more importantly, the one place that
+// can REFUSE to let the frame go when the queue genuinely cannot be stored.
+// Never {ok:false} merely because a queue exists: a user with messages parked
+// behind a run must still be able to change modes.
+window.__fusedFlushEdits = async () => {
+  return { ok: persistQueue() };
+};
+
 const queueEl = document.getElementById("queue");
 const queuedMsgs = [];  // [{ text, el }]
 
