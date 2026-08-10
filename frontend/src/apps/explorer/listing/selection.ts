@@ -64,12 +64,13 @@ export function firstEntryPath(
 // are conditions on WHEN to ask, not on the answer (see Listing). This owns the
 // decision.
 //
-// The decision takes NO reading of the current selection, and deliberately so.
-// It used to defer to a `?sel` URL param — a per-folder claim on the selection
-// mirrored into the address bar — and that param is gone: it wrote to the URL
-// on every arrow-key press, and what it bought (a shareable link to a
-// highlighted row) is not what folder URLs are for. With no claim to defer to,
-// the ANSWER is always the first entry (D240).
+// The decision takes NO reading of the URL, and deliberately so. It used to
+// defer to the `?sel` param itself, resolving "what does this folder open on"
+// in two places at once. It does not need to: a `?sel=` on the URL is SEEDED
+// INTO THE SELECTION at mount (useListingSelection), so by the time this is
+// asked the param has already become an ordinary claim on the selection and
+// the yield below covers it. With no second claim to weigh, the ANSWER here is
+// always the first entry (D240).
 //
 // That rationale was about the URL, never about the user: **auto-select fills
 // an EMPTY selection, it never replaces one.** A row the user clicked in the
@@ -87,11 +88,50 @@ export function autoSelectPath(
 // Does something already own the selection? The one question the auto-select
 // effect asks before it spends its shot (FS-16): a non-empty selection at that
 // moment was put there by the user — a click in the provisional scaffold,
-// carried over by recallSelection — or by the reconcile clamping onto a
-// surviving row, and either way it outranks "row one, because the folder just
-// opened". Anchor/lead are not consulted: `paths` is what is highlighted.
+// carried over by recallSelection; a `?sel=` on the URL they reloaded or were
+// sent — or by the reconcile clamping onto a surviving row, and any of those
+// outranks "row one, because the folder just opened". Anchor/lead are not consulted: `paths` is what is highlighted.
 export function selectionClaimed(sel: Selection): boolean {
   return sel.paths.length > 0;
+}
+
+// --- the `?sel=` URL param ---------------------------------------------------
+//
+// The primary (lead) selection, mirrored into the folder's URL, so a reload or
+// a shared link comes back to the same row with the same thing in the preview
+// pane. Relative to the folder, never absolute: `?sel=notes.md`, which is short
+// enough to read in the address bar and keeps the fs path out of a link that
+// already carries it in its pathname.
+//
+// One rule covers both view modes, because a search hit's row path is
+// `base + "/" + entry.rel` exactly like a plain row's is `base + "/" + name` —
+// so the param is always "the part after this folder", whether that is a name
+// or a relative path several levels down.
+//
+// A MULTI-selection does not round-trip: only the lead is written. The lead is
+// what the pane previews and what Enter opens, which is the whole of what a
+// restored link needs; a range is a working state, not a destination.
+
+// The param value for the current lead, or null when there is nothing to
+// write. Also null for a lead that isn't in this folder at all — which happens
+// for a beat mid-navigation, and writing it would put another folder's row on
+// this folder's URL.
+export function selParam(base: string, path: string | null): string | null {
+  if (path === null) return null;
+  const prefix = base + "/";
+  return path.startsWith(prefix) ? path.slice(prefix.length) : null;
+}
+
+// The reverse: the row path a `?sel=` value names in this folder, or null when
+// it names nothing usable. The value comes from a URL, so it is arbitrary
+// input — an absolute value, or one climbing out of the folder with `..`, must
+// not turn into a path the preview pane will stat. A leading dot is fine: only
+// a whole segment of exactly ".." is a climb, so `.gitignore` and `..hidden`
+// are ordinary names.
+export function pathFromSelParam(base: string, raw: string | null): string | null {
+  if (!raw || raw.startsWith("/")) return null;
+  if (raw.split("/").includes("..")) return null;
+  return base + "/" + raw;
 }
 
 // What a mouse click on a row does TO THE SELECTION — and nothing else, which

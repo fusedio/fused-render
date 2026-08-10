@@ -2,7 +2,7 @@
 // selection model, the document-level arrow/Home/End/PageUp/Enter handler,
 // the post-mutation reconcile (re-anchor by path), and scroll-into-view.
 import { useEffect, useMemo, useRef, useState } from "react";
-import { navigate } from "@platform/lib/router";
+import { navigate, replaceSearch } from "@platform/lib/router";
 import { isMod } from "@platform/lib/platform";
 import { isOverlayOpen } from "@platform/lib/ui-overlay";
 import type { RowCtx } from "@apps/explorer/listing/types";
@@ -10,11 +10,24 @@ import {
   EMPTY_SELECTION,
   oneSelected,
   pageRows,
+  pathFromSelParam,
   rangeBetween,
   recallSelection,
   rememberSelection,
+  selParam,
   type Selection,
 } from "@apps/explorer/listing/selection";
+
+// How long the `?sel=` write waits for the selection to settle.
+//
+// The param is written with replaceSearch, and browsers rate-limit
+// history.replaceState (~100 calls / 30s — listing/types.ts documents the same
+// cap for the search param). Arrow-keying down a long folder is a burst of
+// selection changes with no reason to record any but the last, so the write
+// trails the movement: hold still for a beat and the URL catches up. Short
+// enough that a click's URL is current before the user could copy it, long
+// enough that a held arrow key spends one write per second, not thirty.
+const SEL_URL_DELAY_MS = 300;
 
 export function useListingSelection({
   fsPath,
@@ -42,14 +55,34 @@ export function useListingSelection({
   overlayOpenRef: React.MutableRefObject<boolean>;
   // False for an EMBEDDED Listing (the preview pane's `_listing` mode): the
   // document-level keyboard belongs to the host view's own Listing, so the
-  // embedded one keeps mouse selection but registers no global handlers.
+  // embedded one keeps mouse selection but registers no global handlers. It is
+  // also what keeps the embedded listing off the address bar — the URL belongs
+  // to the host view, so no `?sel=` is read or written for it.
   globalKeys?: boolean;
 }) {
+  // The folder the row paths hang off, in exactly the form Listing builds them
+  // with (`base + "/" + name`), so the `?sel=` codec and the rows agree.
+  const base = fsPath.replace(/\/$/, "");
   // The selected rows (see Selection): one for a plain click / arrow move, many
-  // for a Shift-range, Mod-click toggle or Select All. Seeded from the
-  // cross-remount store so a selection made in the pre-stat provisional Listing
-  // survives the swap to the resolved one (see recallSelection).
-  const [sel, setSel] = useState<Selection>(() => recallSelection(fsPath));
+  // for a Shift-range, Mod-click toggle or Select All.
+  //
+  // Two seeds, in this order:
+  //   • the cross-remount store, so a selection made in the pre-stat
+  //     provisional Listing survives the swap to the resolved one
+  //     (recallSelection) — it is the LIVE selection, and always outranks;
+  //   • otherwise `?sel=` from the URL, which is how a reload or a shared link
+  //     comes back to the row it was on, with the pane already showing it.
+  // A `?sel=` naming a row this folder no longer has just falls through to the
+  // reconcile effect's clamp, which lands on the nearest surviving row.
+  const [sel, setSel] = useState<Selection>(() => {
+    const recalled = recallSelection(fsPath);
+    if (recalled.paths.length || !globalKeys) return recalled;
+    const seeded = pathFromSelParam(
+      base,
+      new URLSearchParams(location.search).get("sel"),
+    );
+    return seeded ? oneSelected(seeded) : recalled;
+  });
   // The lead row — every place that used to read `selectedPath` (scroll-into-
   // view, reconcile, Enter/F2 targets) still works off this single path.
   const selectedPath = sel.lead;
@@ -70,19 +103,39 @@ export function useListingSelection({
     rememberSelection(fsPath, sel);
   }, [fsPath, sel]);
 
-  // The lead row is NOT mirrored into the URL. It used to be — `?sel=<path
-  // relative to this folder>`, seeded once after load and rewritten on every
-  // move — and the cost outweighed what it bought. Every arrow-key press was a
-  // history.replaceState (the listing's own types.ts documents the ~100
-  // writes / 30s browser cap that makes per-keystroke URL writes a real
-  // hazard), and the reward was a shareable link to a *highlighted row*, which
-  // is not what a folder URL is for. The selection now lives entirely in
-  // component state plus the cross-remount recall store above; a freshly
-  // opened folder lands on its first entry (autoSelectPath / D240) rather than
-  // on whatever a URL claimed.
+  // Mirror the LEAD into the URL as `?sel=`, the same way `sort`/`order` are
+  // mirrored: replaceSearch, so the address bar, a refresh and a copied link
+  // all agree with what is on screen without a history entry per row.
   //
-  // The other explorer params are untouched — `sort`/`order`, `q`,
-  // `preview`, `_panelMode`, `_mode` all still sync exactly as before.
+  // Only the lead — a multi-selection is a working state, not a destination
+  // (see selParam). And only the LEAD: `sel.paths` changing without the lead
+  // moving (a Shift-range growing, a Select All) writes nothing.
+  //
+  // This param has been here before and was removed for a real reason: it wrote
+  // on EVERY arrow-key press, and browsers cap history.replaceState (~100 /
+  // 30s). The cap is why the write is debounced now rather than immediate — the
+  // URL trails the selection by SEL_URL_DELAY_MS and a burst of movement spends
+  // one write, not thirty. What it buys back is what a preview pane makes worth
+  // having: a link, or a refresh, that comes back to the file you were looking
+  // at instead of to row one.
+  //
+  // The pending write is CANCELLED on unmount, never flushed. Unmount means the
+  // folder is being left, and navigate() has already put a fresh query string
+  // up — a late write would stamp the old folder's row onto the new folder's
+  // URL. Dropping it is also exactly right: the param is not carried across
+  // directory navigation at all (router.ts navigate).
+  useEffect(() => {
+    if (!globalKeys) return; // an embedded listing does not own the address bar
+    const timer = setTimeout(() => {
+      const params = new URLSearchParams(location.search);
+      const value = selParam(base, sel.lead);
+      if (value === null) params.delete("sel");
+      else params.set("sel", value);
+      const qs = params.toString();
+      replaceSearch(location.pathname + (qs ? "?" + qs : ""));
+    }, SEL_URL_DELAY_MS);
+    return () => clearTimeout(timer);
+  }, [base, sel.lead, globalKeys]);
 
   // A path the selection should jump to once it appears in the reloaded rows
   // (a rename/duplicate target — its row doesn't exist until the refetch lands).

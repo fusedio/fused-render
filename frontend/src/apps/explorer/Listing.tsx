@@ -195,9 +195,10 @@ export default function Listing({
   const base = fsPath.replace(/\/$/, "");
 
   // "Up" navigation for the button beside the search box: hop to the parent
-  // folder. It used to also seed `?sel=<name>` there so the row you came from
-  // was highlighted; that param is gone (useListingSelection documents why), so
-  // the parent lands on its first entry like any other folder open. Disabled at
+  // folder. It does NOT seed the parent's `?sel=` with the folder you came
+  // from: navigate() starts every folder on a fresh query string (router.ts),
+  // and the parent lands on its first entry like any other folder open — the
+  // param restores a selection, it does not carry one across. Disabled at
   // the filesystem / drive root, where dirname collapses to the folder itself.
   const here = normDir(base);
   const parentDir = dirname(here);

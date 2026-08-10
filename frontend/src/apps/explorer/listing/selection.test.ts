@@ -9,8 +9,10 @@ import {
   autoSelectPath,
   firstEntryPath,
   oneSelected,
+  pathFromSelParam,
   rangeBetween,
   rowClickAction,
+  selParam,
   selectionClaimed,
 } from "./selection";
 
@@ -160,6 +162,55 @@ describe("rowClickAction", () => {
     // the toggle is the more precise gesture, and an accidental Shift held
     // while Mod-picking rows must not replace the picks with a range.
     expect(rowClickAction({ mod: true, shift: true })).toBe("toggle");
+  });
+});
+
+// `?sel=` — the primary selection, in the URL, so a reload or a shared link
+// comes back to the same row with the same thing in the preview pane.
+describe("selParam / pathFromSelParam", () => {
+  test("a row of this folder is its name", () => {
+    expect(selParam("/d", "/d/notes.md")).toBe("notes.md");
+    expect(pathFromSelParam("/d", "notes.md")).toBe("/d/notes.md");
+  });
+
+  test("a search hit keeps its relative path", () => {
+    // Search rows are `base + "/" + entry.rel`, so the suffix is the whole
+    // relative path — one rule covers both view modes.
+    expect(selParam("/d", "/d/sub/deep/notes.md")).toBe("sub/deep/notes.md");
+    expect(pathFromSelParam("/d", "sub/deep/notes.md")).toBe("/d/sub/deep/notes.md");
+  });
+
+  test("nothing selected is no param at all", () => {
+    expect(selParam("/d", null)).toBeNull();
+  });
+
+  test("a path outside this folder is not this folder's selection", () => {
+    // Can happen for a beat mid-navigation, and writing it would put another
+    // folder's row on this folder's URL.
+    expect(selParam("/d", "/other/notes.md")).toBeNull();
+    expect(selParam("/d", "/dd/notes.md")).toBeNull();
+  });
+
+  test("the fs root round-trips", () => {
+    // Listing's `base` for "/" is the empty string (its trailing slash is
+    // stripped), so the join is still "" + "/" + name.
+    expect(selParam("", "/etc")).toBe("etc");
+    expect(pathFromSelParam("", "etc")).toBe("/etc");
+  });
+
+  test("a hostile or empty param resolves to nothing", () => {
+    // The param is a URL, i.e. attacker-supplied. An absolute value or one
+    // climbing out of the folder must not become a path the pane will stat.
+    expect(pathFromSelParam("/d", null)).toBeNull();
+    expect(pathFromSelParam("/d", "")).toBeNull();
+    expect(pathFromSelParam("/d", "/etc/passwd")).toBeNull();
+    expect(pathFromSelParam("/d", "../../etc/passwd")).toBeNull();
+    expect(pathFromSelParam("/d", "sub/../../etc")).toBeNull();
+  });
+
+  test("a dotfile is a normal name, not a traversal", () => {
+    expect(pathFromSelParam("/d", ".gitignore")).toBe("/d/.gitignore");
+    expect(pathFromSelParam("/d", "..hidden")).toBe("/d/..hidden");
   });
 });
 
