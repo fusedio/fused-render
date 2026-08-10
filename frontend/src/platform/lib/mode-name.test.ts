@@ -32,3 +32,9 @@ test("keys with a conventional casing keep it", () => {
   expect(modeTitle("duckdb")).toBe("DuckDB");
   expect(modeTitle("geojson")).toBe("GeoJSON");
 });
+
+test("the versions mode is labelled History", () => {
+  // The standalone history mode is de-linked from the registry; the versions
+  // template carries the History name (and clock icon) in its place.
+  expect(modeTitle("versions")).toBe("History");
+});

@@ -6,7 +6,6 @@
     "claude",
     "versions",
     "git",
-    "history",
     "geometry_editor"
   ],
   ".csv": [
@@ -40,7 +39,6 @@
     "slides"
   ],
   ".*.json": [
-    "history",
     "tree",
     "code"
   ],
@@ -462,8 +460,7 @@
     "claude",
     "versions",
     "git",
-    "reader",
-    "history"
+    "reader"
   ],
   ".htm": [
     "_render",

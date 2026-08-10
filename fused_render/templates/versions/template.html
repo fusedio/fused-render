@@ -2,7 +2,11 @@
 <html data-fused-theme="shell">
 <head>
 <meta charset="utf-8" />
-<title>Versions</title>
+<!-- "History", not "Versions": the mode wears the History name everywhere it
+     shows one (mode-name.ts NICE_NAMES, the claude template's paneModeLabel)
+     since the standalone history mode was de-linked, and the tab title must
+     not disagree with the row that opened it. The KEY stays `versions`. -->
+<title>History</title>
 <style>
   /* Appearance (SPEC §30, D134). Dark block is the palette; light redefines
      every token. `data-theme` is written onto <html> by the injected runtime

@@ -77,18 +77,20 @@ def test_builtin_registry_parses_and_all_names_resolve():
 def test_builtin_html_default_is_render_sentinel():
     entries, error = server._templates_for("/x/page.html", False)
     assert error is None
+    # No `history`: the standalone history view is de-linked from the registry
+    # for now — `versions` wears its name and icon (see mode-name.ts).
     assert [e["mode"] for e in entries] == [
-        "_render", "code", "claude", "versions", "git", "reader", "history"]
+        "_render", "code", "claude", "versions", "git", "reader"]
     assert entries[0]["path"] is None and entries[0]["icon"] is None
     assert entries[1]["path"].endswith("code/template.html")
     assert entries[2]["path"].endswith("claude/template.html")
 
 
 def test_builtin_parquet_default_is_duckdb():
-    # `history` (HV-2) is bound here too — not `.html`-only.
+    # No `history` here either — de-linked from every key it was bound to.
     entries, error = server._templates_for("/x/data.parquet", False)
     assert error is None
-    assert [e["mode"] for e in entries] == ["duckdb", "structure", "h3", "claude", "versions", "git", "history",
+    assert [e["mode"] for e in entries] == ["duckdb", "structure", "h3", "claude", "versions", "git",
             "geometry_editor"]
     assert entries[0]["path"].endswith("duckdb/template.html")
 
