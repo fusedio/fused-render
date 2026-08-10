@@ -22,7 +22,9 @@ from fastapi import APIRouter, Body, Header, Query
 from fused_render.index import runner
 from fused_render.index.config import IndexConfig, load_config, save_config
 from fused_render.index.ignore import clean_patterns, default_ignore
+from fused_render.index.query import MAX_CORPUS
 from fused_render.index.query import lookup as index_lookup
+from fused_render.index.query import search_under as index_search
 from fused_render.index.query import stats as index_stats
 from fused_render.index.store import read_manifest
 from fused_render.server.common import _error, _require_fused
@@ -179,6 +181,21 @@ def api_index_lookup(q: str = Query(default=""), limit: int = Query(default=100)
     return {"ok": True,
             **index_lookup(load_config(), q, limit=limit, offset=offset,
                            sort=sort)}
+
+
+@router.get("/api/index/search")
+def api_index_search(root: str = Query(default=""), q: str = Query(default=""),
+                     limit: int = Query(default=MAX_CORPUS)):
+    """The explorer's in-folder corpus, index-backed.
+
+    Same entry shape as /api/fs/walk, plus `covered`/`fresh` so the client can
+    decide whether to use it. A miss is `{covered: false, entries: []}` with a
+    200 — never an error: the explorer falls back to the live walk, and a red
+    search box during the first-boot scan would be a lie about a system that
+    is working exactly as designed."""
+    if not root.strip():
+        return _error("'root' is required")
+    return {"ok": True, **index_search(load_config(), root, q=q, limit=limit)}
 
 
 # --------------------------------------------------------------------- config

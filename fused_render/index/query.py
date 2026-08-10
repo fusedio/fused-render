@@ -30,6 +30,18 @@ SORTS = {
 # Rows a single lookup may return, whatever the caller asks for.
 MAX_LIMIT = 5_000
 
+# Entries an in-folder corpus may return — the same cap /api/fs/walk uses, so
+# swapping the corpus source cannot change how much the client holds.
+MAX_CORPUS = 200_000
+
+# How old the index may be and still answer an in-folder search. There is no
+# watcher (`scan.md`), so this is the honest bound on how wrong the corpus can
+# be: past it, the explorer falls back to the live walk. It is a trade, not a
+# fact about the data — long enough that the index is actually used during a
+# working session, short enough that a morning's edits don't answer an
+# afternoon's search.
+FRESH_MAX_AGE_S = 3600.0
+
 
 def _q(s: str) -> str:
     """A SQL string literal's contents (single quotes doubled)."""
@@ -155,3 +167,79 @@ def stats(cfg: IndexConfig, root: str = "") -> dict:
             "dirs": int(n_dirs), "total_size": int(total_size),
             "updated": m.get("updated"), "last_root": root,
             "partitions": m["partitions"], "types": types}
+
+
+def search_under(cfg: IndexConfig, root: str, q: str = "", limit: int = MAX_CORPUS,
+                 include_dirs: bool = True) -> dict:
+    """The explorer's in-folder corpus for `root`, from the index.
+
+    Returns entries in exactly the shape /api/fs/walk streams — `rel` (posix,
+    relative to `root`), `is_dir`, `size`, `mtime` — so the client's fuzzy
+    scoring, throttles and paging are untouched by where the corpus came from.
+
+    `covered` says the index has actually visited this root; `fresh` says the
+    last compaction is recent enough to answer with (FRESH_MAX_AGE_S). Both
+    are false for a never-built index, and the caller treats every false the
+    same way: fall back to the live walk, silently. "No index yet", "not
+    covered" and "a scan is running" are one condition to a search box.
+
+    `q` is an OPTIONAL server-side substring filter. The explorer does not use
+    it — it wants the whole corpus, so client-side fuzzy matching stays
+    subsequence-based rather than being pre-narrowed to substrings — but it
+    keeps the endpoint useful for a caller that only wants the hits.
+    """
+    root = norm(os.path.abspath(os.path.expanduser((root or "").strip()))).rstrip("/")
+    m = read_manifest(cfg)
+    empty = {"covered": False, "fresh": False, "updated": None, "age_s": None,
+             "root": root, "entries": [], "truncated": False, "total": 0,
+             "scanned_partitions": 0,
+             "of_partitions": len(((m or {}).get("partitions")) or [])}
+    if m is None or not root or not os.path.exists(cfg.dirs_parquet):
+        return empty
+    import time
+
+    import duckdb
+
+    updated = m.get("updated")
+    age = (time.time() - updated) if isinstance(updated, (int, float)) else None
+    fresh = age is not None and age <= FRESH_MAX_AGE_S
+    con = duckdb.connect()
+    # Coverage is "the scan visited this exact directory", which is what keeps
+    # a partial index honest: a root whose parent was scanned but which was
+    # itself pruned (ignored, or below a cancelled run's frontier) has no row.
+    covered = con.execute(
+        f"SELECT count(*) FROM read_parquet('{_q(cfg.dirs_parquet)}') "
+        f"WHERE dir = '{_q(root)}'").fetchone()[0] > 0
+    if not covered:
+        return {**empty, "updated": updated, "age_s": age}
+    prefix = (root + "/") if root != "/" else "/"
+    limit = max(0, min(int(limit), MAX_CORPUS))
+    hit = prune(m["partitions"], prefix)
+    like = f" AND path ILIKE '%{_q(q.strip())}%'" if q and q.strip() else ""
+    entries, truncated = [], False
+    if hit and limit:
+        # One row past the cap, so "there was more" is known without a count.
+        rows = con.execute(
+            f"SELECT path, size, mtime FROM {_sources(cfg, hit)} "
+            f"WHERE path LIKE '{_q(prefix)}%'{like} "
+            f"ORDER BY path LIMIT {limit + 1}").fetchall()
+        for path, size, mtime in rows[:limit]:
+            entries.append({"rel": path[len(prefix):], "is_dir": False,
+                            "size": int(size) if size is not None else None,
+                            "mtime": float(mtime) if mtime is not None else None})
+        truncated = len(rows) > limit
+    if include_dirs and len(entries) < limit:
+        dlike = f" AND dir ILIKE '%{_q(q.strip())}%'" if q and q.strip() else ""
+        room = limit - len(entries)
+        drows = con.execute(
+            f"SELECT dir, mtime_ns FROM read_parquet('{_q(cfg.dirs_parquet)}') "
+            f"WHERE dir LIKE '{_q(prefix)}%'{dlike} "
+            f"ORDER BY dir LIMIT {room + 1}").fetchall()
+        for d, mtime_ns in drows[:room]:
+            entries.append({"rel": d[len(prefix):], "is_dir": True, "size": None,
+                            "mtime": (mtime_ns / 1e9) if mtime_ns else None})
+        truncated = truncated or len(drows) > room
+    return {"covered": True, "fresh": fresh, "updated": updated, "age_s": age,
+            "root": root, "scanned_partitions": len(hit),
+            "of_partitions": len(m["partitions"]), "entries": entries,
+            "truncated": truncated, "total": len(entries)}
