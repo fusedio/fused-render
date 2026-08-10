@@ -30,7 +30,7 @@ jobs:
     outputs:
       tag: ${{ steps.resolve.outputs.tag }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0 # previous-tag lookup needs all tags
 
@@ -89,12 +89,12 @@ jobs:
       CDN_DOMAIN: d2ic19jpchjovp.cloudfront.net
       CLOUDFRONT_DISTRIBUTION_ID: E393B7TS7Y3EDS
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       # build_dmg.sh's own version check needs `str | None` syntax (py>=3.10);
       # macOS runners' default `python3` can resolve to an older CLT/system
       # python that chokes on this (hit locally with Xcode's bundled 3.9).
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
 
@@ -103,7 +103,7 @@ jobs:
       # no other way to build a script venv there (D176). The Linux and Windows
       # build scripts already require uv on the host the same way; macOS runners
       # do not have it preinstalled, so the build fails loudly without this.
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@v9.0.0
 
       - name: Import signing cert + notary credentials into ephemeral keychain
         env:
@@ -153,7 +153,7 @@ jobs:
         run: security delete-keychain "$KEYCHAIN_PATH" || true
 
       - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@v6
         with:
           role-to-assume: arn:aws:iam::926411091187:role/github_fused_render_role
           role-session-name: GithubFusedRenderRelease
@@ -229,7 +229,7 @@ jobs:
       CLOUDFRONT_DISTRIBUTION_ID: E393B7TS7Y3EDS
       WINDOWS_PREFIX: fused-render-windows
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       # Dropped from the windows-2025 runner image
       # (actions/runner-images#11644); the build script finds ISCC.exe where
@@ -238,14 +238,14 @@ jobs:
         shell: pwsh
         run: choco install innosetup --no-progress -y
 
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@v9.0.0
 
       - name: Build installer
         shell: pwsh
         run: .\scripts\build_windows_installer.ps1
 
       - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@v6
         with:
           role-to-assume: arn:aws:iam::926411091187:role/github_fused_render_role
           role-session-name: GithubFusedRenderReleaseWindows
@@ -305,13 +305,13 @@ jobs:
       CLOUDFRONT_DISTRIBUTION_ID: E393B7TS7Y3EDS
       LINUX_PREFIX: fused-render-linux
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
 
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@v9.0.0
 
       # desktop-file-utils provides desktop-file-validate, which appimagetool
       # runs against the bundled .desktop file — same prerequisite the CI smoke
@@ -326,7 +326,7 @@ jobs:
         run: bash scripts/build_linux_appimage.sh
 
       - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@v6
         with:
           role-to-assume: arn:aws:iam::926411091187:role/github_fused_render_role
           role-session-name: GithubFusedRenderReleaseLinux
@@ -380,14 +380,14 @@ jobs:
       CDN_DOMAIN: d2ic19jpchjovp.cloudfront.net
       CLOUDFRONT_DISTRIBUTION_ID: E393B7TS7Y3EDS
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
 
       - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@v6
         with:
           role-to-assume: arn:aws:iam::926411091187:role/github_fused_render_role
           role-session-name: GithubFusedRenderReleaseDownloadPage
