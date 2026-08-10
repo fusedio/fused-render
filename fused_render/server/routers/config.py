@@ -98,6 +98,30 @@ def api_config(
             config["desktop_instance"]["token"] = instance[1]
     return config
 
+@router.get("/api/desktop/ready")
+def api_desktop_ready(
+    token: str | None = Header(default=None, alias="X-Fused-Desktop-Token"),
+):
+    # The desktop startup probe (desktop_probe.matching_server) polls this to
+    # confirm the server answering the port is the instance it launched. It
+    # touches NOTHING but the launch token echo — no mounts, no rcd, no dir
+    # picker. Readiness means "the HTTP server is up and is ours", never "every
+    # optional subsystem is warm". The probe used to poll /api/config, whose
+    # learn_mount_ready/sessions_mount_ready do a live rcd/WinFsp check on every
+    # call; a slow cold-start mount attach then dragged each response past the
+    # probe's per-request timeout, so the supervisor declared the server "did
+    # not become ready" and killed-and-retried it. Same echo shape as
+    # /api/config so the probe reads desktop_instance either way.
+    from fused_render.paths import desktop_instance
+
+    instance = desktop_instance()
+    if instance is None:
+        return {}
+    echo = {"id": instance[0]}
+    if token == instance[1]:
+        echo["token"] = instance[1]
+    return {"desktop_instance": echo}
+
 @router.post("/api/desktop/shutdown")
 def api_desktop_shutdown(
     request: Request,

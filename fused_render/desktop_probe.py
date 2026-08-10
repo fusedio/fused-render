@@ -4,10 +4,19 @@ A desktop launch must confirm that the server answering on its port is *the
 one it started* — not an unrelated process that happened to hold the port
 (a stale dev server, another app). Each launch publishes a per-launch 256-bit
 token plus the desktop instance id into the child/in-process server's
-environment; the server echoes them from `/api/config` (see
-`fused_render.paths.desktop_instance` and the `/api/config` handler). This
-module polls that endpoint with the token header and reports ready only when
-the echoed id + token match.
+environment; the server echoes them from `/api/desktop/ready` (see
+`fused_render.paths.desktop_instance` and the `/api/desktop/ready` handler).
+This module polls that endpoint with the token header and reports ready only
+when the echoed id + token match.
+
+`/api/desktop/ready` is a dedicated, dependency-free endpoint on purpose: the
+probe must reflect only "the HTTP server is up and is ours", never the health
+of an optional subsystem. It used to poll `/api/config`, whose
+`learn_mount_ready`/`sessions_mount_ready` fields do a live rcd/WinFsp check on
+every request; a slow cold-start mount attach then pushed each response past
+the 0.5s per-request timeout below for the whole readiness window, so the
+Windows supervisor declared "Python server did not become ready" and
+killed-and-retried a server that was in fact serving fine.
 
 Shared by both backends: the Windows supervisor (out-of-process child server)
 and the macOS app (in-process server thread). urllib + json only, so it stays
@@ -28,12 +37,12 @@ DESKTOP_INSTANCE_ID = "desktop-v1"
 
 
 def matching_server(port: int, token: str, instance_id: str = DESKTOP_INSTANCE_ID) -> bool:
-    """True iff 127.0.0.1:<port>/api/config answers 200 and echoes our
+    """True iff 127.0.0.1:<port>/api/desktop/ready answers 200 and echoes our
     desktop instance id AND token. Any failure (refused, timeout, non-200,
     bad JSON, mismatched id/token) is a plain False — the caller keeps
     polling until its own deadline."""
     req = urllib.request.Request(
-        f"http://127.0.0.1:{port}/api/config",
+        f"http://127.0.0.1:{port}/api/desktop/ready",
         headers={"X-Fused-Desktop-Token": token},
     )
     try:

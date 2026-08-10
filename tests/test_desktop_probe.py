@@ -1,11 +1,18 @@
 """Token-verified desktop readiness probe (desktop_probe.py) and the server
-side it checks against (/api/config's desktop_instance echo).
+side it checks against (/api/desktop/ready's desktop_instance echo).
 
 The contract: a launch publishes its instance id + a per-launch token into the
-env, the server echoes them from /api/config, and the probe reports ready only
-when the echo matches — so a decoy server holding the port cannot satisfy
-startup. Pure stdlib + a real local uvicorn instance; no pywin32, so this runs
-on every platform.
+env, the server echoes them from /api/desktop/ready, and the probe reports
+ready only when the echo matches — so a decoy server holding the port cannot
+satisfy startup. Pure stdlib + a real local uvicorn instance; no pywin32, so
+this runs on every platform.
+
+/api/desktop/ready is deliberately dependency-free: readiness must not depend
+on any optional subsystem. The probe formerly polled /api/config, whose
+learn_mount_ready/sessions_mount_ready do a live rcd/WinFsp check per request,
+so a slow cold-start mount attach blew the readiness budget and the supervisor
+killed a healthy server ("Python server did not become ready"). The last test
+here pins that decoupling.
 """
 import contextlib
 import socket
@@ -76,6 +83,54 @@ def test_config_has_no_desktop_instance_without_env(tmp_path, monkeypatch):
     monkeypatch.delenv("FUSED_RENDER_DESKTOP_INSTANCE_TOKEN", raising=False)
     client = TestClient(create_app(start_dir=str(tmp_path)))
     assert "desktop_instance" not in client.get("/api/config").json()
+
+
+# ---- server-side /api/desktop/ready echo (what the probe actually polls) ----
+
+
+def test_ready_echoes_token_when_header_matches(tmp_path, desktop_env):
+    client = TestClient(create_app(start_dir=str(tmp_path)))
+    body = client.get("/api/desktop/ready", headers={"X-Fused-Desktop-Token": desktop_env}).json()
+    assert body["desktop_instance"] == {
+        "id": desktop_probe.DESKTOP_INSTANCE_ID,
+        "token": desktop_env,
+    }
+
+
+def test_ready_hides_token_when_header_absent_or_wrong(tmp_path, desktop_env):
+    client = TestClient(create_app(start_dir=str(tmp_path)))
+    assert client.get("/api/desktop/ready").json()["desktop_instance"] == {
+        "id": desktop_probe.DESKTOP_INSTANCE_ID
+    }
+    body = client.get("/api/desktop/ready", headers={"X-Fused-Desktop-Token": "wrong"}).json()
+    assert body["desktop_instance"] == {"id": desktop_probe.DESKTOP_INSTANCE_ID}
+
+
+def test_ready_has_no_desktop_instance_without_env(tmp_path, monkeypatch):
+    monkeypatch.delenv("FUSED_RENDER_DESKTOP_INSTANCE_ID", raising=False)
+    monkeypatch.delenv("FUSED_RENDER_DESKTOP_INSTANCE_TOKEN", raising=False)
+    client = TestClient(create_app(start_dir=str(tmp_path)))
+    assert "desktop_instance" not in client.get("/api/desktop/ready").json()
+
+
+def test_readiness_is_independent_of_mount_health(tmp_path, desktop_env, monkeypatch):
+    # The regression this whole endpoint exists for: a broken/slow mount
+    # subsystem (rcd down, WinFsp remount mid-flight) must not gate readiness.
+    # mounted_paths is the live rcd call learn_mount_ready/sessions_mount_ready
+    # make on the /api/config path; make it explode and confirm the probe's
+    # endpoint is unaffected while /api/config itself is dragged down by it.
+    import fused_render.shell.mounts as shell_mounts
+
+    def boom(*_a, **_k):
+        raise RuntimeError("rcd is down / mount wedged")
+
+    monkeypatch.setattr(shell_mounts, "mounted_paths", boom)
+    client = TestClient(create_app(start_dir=str(tmp_path)))
+    body = client.get("/api/desktop/ready", headers={"X-Fused-Desktop-Token": desktop_env}).json()
+    assert body["desktop_instance"] == {
+        "id": desktop_probe.DESKTOP_INSTANCE_ID,
+        "token": desktop_env,
+    }
 
 
 # ---- the probe against a real local port -----------------------------------
