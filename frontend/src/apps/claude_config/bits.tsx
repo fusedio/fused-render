@@ -1,10 +1,9 @@
 // Shared pieces of the Claude-config app: the row/card/pill vocabulary its
 // sections are built from, the three-state toggle, the change-preview modal,
 // the load-once-with-reload hook every section uses, and the two bits of page
-// chrome (git badge, split preview pane) that BOTH pages now mount — the
-// Config panel (ClaudeConfig.tsx) and the standalone CLAUDE.md page
-// (ClaudeMdPage.tsx). They lived in ClaudeConfig.tsx while it was the only
-// page; they moved here rather than being duplicated or imported across pages.
+// chrome the panel mounts (git badge, and the split preview pane the MD Files
+// section needs). They lived in ClaudeConfig.tsx; they sit here so a section
+// and the panel can both reach them without importing across pages.
 //
 // Nothing here re-invents something the shell already ships. Toasts are
 // @platform/lib/toast (the app-root NotificationHost surface — the original

@@ -1,5 +1,10 @@
-/* Signed-in dot on the sidebar's Fused-account entry — same green as the
-   preview header's deploy dot. The footer icon span anchors it. */
+/* Signed-in dot on the sidebar's Preferences entry — same green as the preview
+   header's deploy dot. The nav row's icon span anchors it: without a positioned
+   ancestor the absolutely-placed dot resolves against the viewport, lands at
+   its right edge and overflows the page by its own `right: -3px` — which costs
+   a horizontal scrollbar, and with it 15px of 100vh, which costs a second,
+   vertical one on every page. */
+.sidebar-settings .icon,
 .sidebar-footer .icon {
   position: relative;
 }

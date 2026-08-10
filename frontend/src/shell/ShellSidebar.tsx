@@ -1,5 +1,5 @@
 // The SHELL's own sidebar — the app-switcher. The sub-app list on top, grouped
-// under uppercase category headings (FUSED / LEARN / CLAUDE) so the Claude
+// under uppercase category headings (FUSED / CLAUDE / GUIDE) so the Claude
 // entries read as one family instead of three unrelated rows in a flat list of
 // six; settings list (Templates / Mounts / Preferences) pinned to the bottom.
 // Composes the shared SidebarFrame chassis like every sub-app sidebar does
@@ -7,15 +7,26 @@
 // recents — those live with their owners.
 //
 // A heading never renders alone: every group whose items are all gated off is
-// dropped whole, so LEARN disappears with its one entry and CLAUDE survives on
-// either of its two gates.
+// dropped whole, so GUIDE disappears with its one entry and CLAUDE survives on
+// either of its two gates. (Artifacts rides those gates rather than carrying a
+// third: it reads /api/claude-sessions, which is always there, and a CLAUDE
+// group holding only it would be a heading for one machine-wide list.)
 import { SidebarFrame, NavItem } from "@platform/ui/sidebar/SidebarFrame";
-import { FolderIcon, LearnIcon } from "@platform/ui/FileIcons";
+import { LearnIcon } from "@platform/ui/FileIcons";
 import type { Config } from "@platform/lib/api";
 import { useUrlVersion, useLearnMountReady, useSessionsMountReady } from "@platform/lib/hooks";
 import { useAccountLoggedIn } from "@platform/lib/account";
 import { useDeployEnabled } from "@platform/lib/prefs";
 import { useClaudeConfigAvailable } from "@apps/claude_config";
+
+// Magnifier — the Explorer's front door is its search prompt (FilesHome's
+// hero), so the entry reads as "find things" rather than "a folder".
+const EXPLORER_ICON = (
+  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <circle cx="11" cy="11" r="7" />
+    <line x1="16.5" y1="16.5" x2="21" y2="21" />
+  </svg>
+);
 
 const APPS_ICON = (
   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -49,13 +60,12 @@ const SESSIONS_ICON = (
   </svg>
 );
 
-// Lined document — the MD Files page lists every CLAUDE.md on the machine.
-const CLAUDE_MD_ICON = (
+// Stacked layers — the Artifacts page lists the project folders Claude Code
+// has left sessions in (the explorer homepage's Artifacts tab, as a page).
+const ARTIFACTS_ICON = (
   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
-    <polyline points="14 2 14 8 20 8" />
-    <line x1="8" y1="13" x2="16" y2="13" />
-    <line x1="8" y1="17" x2="16" y2="17" />
+    <polygon points="12 2 22 8.5 12 15 2 8.5 12 2" />
+    <polyline points="2 15.5 12 22 22 15.5" />
   </svg>
 );
 
@@ -83,37 +93,35 @@ export default function ShellSidebar({ config }: { config: Config }) {
           label above rows" exists in the sidebar rather than two. */}
       <div className="sidebar-section sidebar-group">
         <div className="sidebar-heading">Fused</div>
-        <NavItem href="/explorer" id="explorer-link" label="Explorer" icon={<FolderIcon />} />
-        <NavItem href="/apps" id="apps-link" label="App" icon={APPS_ICON} />
+        <NavItem href="/explorer" id="explorer-link" label="Explorer" icon={EXPLORER_ICON} />
+        <NavItem href="/apps" id="apps-link" label="Build App" icon={APPS_ICON} />
       </div>
-      {learnMountReady && (
-        <div className="sidebar-section sidebar-group">
-          <div className="sidebar-heading">Learn</div>
-          <NavItem href="/learn" id="learn-link" label="Guide" icon={<LearnIcon />} />
-        </div>
-      )}
       {(sessionsMountReady || claudeConfigAvailable) && (
         <div className="sidebar-section sidebar-group">
           <div className="sidebar-heading">Claude</div>
           {sessionsMountReady && (
             <NavItem href="/sessions" id="sessions-link" label="Inbox" icon={SESSIONS_ICON} />
           )}
+          <NavItem
+            href="/claude-artifacts"
+            id="claude-artifacts-link"
+            label="Artifacts"
+            icon={ARTIFACTS_ICON}
+          />
           {claudeConfigAvailable && (
-            <>
-              <NavItem
-                href="/claude-md"
-                id="claude-md-link"
-                label="MD Files"
-                icon={CLAUDE_MD_ICON}
-              />
-              <NavItem
-                href="/claude-config"
-                id="claude-config-link"
-                label="Config"
-                icon={CLAUDE_CONFIG_ICON}
-              />
-            </>
+            <NavItem
+              href="/claude-config"
+              id="claude-config-link"
+              label="Config"
+              icon={CLAUDE_CONFIG_ICON}
+            />
           )}
+        </div>
+      )}
+      {learnMountReady && (
+        <div className="sidebar-section sidebar-group">
+          <div className="sidebar-heading">Guide</div>
+          <NavItem href="/learn" id="learn-link" label="App Basics" icon={<LearnIcon />} />
         </div>
       )}
       {/* Settings — pinned to the bottom edge (margin-top: auto), the same

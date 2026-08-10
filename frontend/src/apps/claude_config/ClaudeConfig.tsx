@@ -12,12 +12,14 @@
 //   * the git BADGE lives here, because every section can dirty the repo and
 //     they all report back through one `onChanged`.
 //
-// The CLAUDE.md explorer used to be an eleventh section here, and the split
-// preview pane it needs lived here with it. Both moved out to their own page
-// (./ClaudeMdPage, the sidebar's "MD Files" entry) — it is a file browser over
-// the whole machine, not a setting in ~/.claude, and it was the one section
-// that made this panel a three-column layout. A stale `?cctab=claudemd`
-// bookmark therefore lands on the default section (isSectionId rejects it).
+// The CLAUDE.md explorer ("MD Files", `?cctab=claudemd`) is a section here.
+// It briefly had a page of its own; it is back because the sidebar's CLAUDE
+// group reads better with one Config entry than with two peers. It is the one
+// section that needs a split PREVIEW pane, which is why this panel lays out as
+// three columns (nav / content / preview) — the pane renders beside the content
+// column, so the preview path lives in this file and the section is handed
+// `preview`/`onPreview`. Every other section leaves the third column empty.
+// A stale `/claude-md` URL redirects here (shell/App.tsx).
 //
 // A note on remounting: the shell renders this page keyed on the nav epoch, so
 // any navigation — including this panel's own `?cctab=` writes — remounts it.
@@ -26,7 +28,8 @@
 // app re-rendered.
 import { useCallback, useState } from "react";
 import { navigateUrl } from "@platform/lib/router";
-import { StatusBadge } from "./bits";
+import { PreviewPane, StatusBadge } from "./bits";
+import ClaudeMdSection from "./sections/ClaudeMdSection";
 import HistorySection from "./sections/HistorySection";
 import MarketplacesSection from "./sections/MarketplacesSection";
 import McpSection from "./sections/McpSection";
@@ -44,6 +47,11 @@ const SECTIONS = [
   { id: "preferences", label: "Preferences", file: "settings.json" },
   { id: "plugins", label: "Plugins", file: "settings.json → enabledPlugins" },
   { id: "marketplaces", label: "Marketplaces", file: "settings.json → extraKnownMarketplaces" },
+  {
+    id: "claudemd",
+    label: "MD Files",
+    file: "CLAUDE.md / CLAUDE.local.md across all projects",
+  },
   { id: "memory", label: "Memory", file: "projects/*/memory/ (read-only viewer)" },
   { id: "skills", label: "Skills", file: "skills/*/SKILL.md (read-only viewer)" },
   { id: "statusline", label: "Statusline", file: "settings.json → statusLine (read-only viewer)" },
@@ -76,6 +84,10 @@ export default function ClaudeConfig() {
   //                  Memory loses its "uncommitted" markers). Only this remounts
   //                  the section.
   const [badgeEpoch, setBadgeEpoch] = useState(0);
+  // The MD Files section's split preview pane — a third column beside the
+  // content column, so its path lives here rather than in the section.
+  // Cleared on a section change: nothing else renders a pane.
+  const [preview, setPreview] = useState<string | null>(null);
   const [sectionEpoch, setSectionEpoch] = useState(0);
   const onChanged = useCallback(() => setBadgeEpoch((n) => n + 1), []);
   const onCommitted = useCallback(() => {
@@ -105,6 +117,10 @@ export default function ClaudeConfig() {
         return <PluginsSection onChanged={onChanged} />;
       case "marketplaces":
         return <MarketplacesSection onChanged={onChanged} />;
+      case "claudemd":
+        return (
+          <ClaudeMdSection onChanged={onChanged} preview={preview} onPreview={setPreview} />
+        );
       case "memory":
         return <MemorySection onChanged={onChanged} />;
       case "skills":
@@ -149,6 +165,9 @@ export default function ClaudeConfig() {
           {body()}
         </div>
       </main>
+      {active === "claudemd" && preview && (
+        <PreviewPane path={preview} onClose={() => setPreview(null)} />
+      )}
     </div>
   );
 }

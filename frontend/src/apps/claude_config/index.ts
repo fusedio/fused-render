@@ -7,21 +7,19 @@
 // html app carried its own Claude-branded dark theme and ignored the app's
 // Light/Dark setting entirely.
 //
-// The shell gives it two sidebar routes under one CLAUDE heading, both gated on
+// The shell gives it one sidebar route under the CLAUDE heading, gated on
 // `useClaudeConfigAvailable` (shell/ShellSidebar.tsx, dispatched in
-// shell/App.tsx): `/claude-config` for the settings panel and `/claude-md` for
-// the CLAUDE.md file explorer, which is a browser over every project on the
-// machine rather than a setting in ~/.claude and so is not a section of the
-// panel. It briefly also hung off the Preferences page as a tab; a settings
-// page with a second settings app nested inside one of its tabs was one surface
-// too many.
+// shell/App.tsx): `/claude-config`, the settings panel, whose "MD Files"
+// section is the CLAUDE.md explorer (`?cctab=claudemd`; the old `/claude-md`
+// page redirects there). It briefly also hung off the Preferences page as a
+// tab; a settings page with a second settings app nested inside one of its tabs
+// was one surface too many.
 // Mutable state (settings.json, the git history, MCP registrations) is written
 // by the server-side modules to ~/.claude — this app owns none of it.
 import { useEffect, useState } from "react";
 import { getStatus } from "./api";
 
 export { default as ClaudeConfig } from "./ClaudeConfig";
-export { default as ClaudeMdPage } from "./ClaudeMdPage";
 
 // Module-level cache of a CONFIRMED answer, shared by every mount of the hook.
 // The shell remounts every route on each navigation (App.tsx keys them on the

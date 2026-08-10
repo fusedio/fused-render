@@ -17,7 +17,8 @@
 @import "./styles/shortcuts.css";
 @import "./styles/account.css";
 @import "./styles/preferences.css";
-/* Next to preferences.css: the Claude config app (/claude-config, /claude-md)
+/* Next to preferences.css: the Claude config app (/claude-config, and the
+   /claude-artifacts page that borrows its page chrome)
    is a settings surface of the same family, and its rules layer over the
    .btn / .field-control vocabulary imported above. */
 @import "./styles/claude-config.css";

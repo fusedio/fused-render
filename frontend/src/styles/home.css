@@ -50,25 +50,22 @@
   position: relative;
 }
 
-/* Fused mark + "Fused App" name, one centered row above the title. The PNG
-   bakes generous padding into the canvas, so the rendered height runs larger
-   than the visible mark. */
+/* Fused mark + headline, one centered row above the composer (the "App"
+   wordmark between them is gone). The PNG bakes generous padding into the
+   canvas, so the rendered height runs larger than the visible mark. */
 .home-hero-brand {
   display: flex;
   align-items: center;
   justify-content: center;
   flex-wrap: wrap;
-  /* Row gap keeps a wrapped tagline off the logo row; the 18px column gap is
-     the name-to-tagline spacing (logo and name are one tight .home-hero-brand-mark
-     group, so it stays centered when the tagline wraps). */
-  gap: 4px 18px;
+  /* Row gap keeps a wrapped tagline off the logo row; the column gap is the
+     mark-to-tagline spacing — tightened from the 18px the wordmark needed, so
+     the mark reads as attached to the headline rather than adrift left of it.
+     Small because the PNG's own baked-in canvas padding is doing most of the
+     spacing already. */
+  gap: 4px 2px;
   margin: 0 0 18px;
   text-align: center;
-}
-
-.home-hero-brand-mark {
-  display: inline-flex;
-  align-items: center;
 }
 
 .home-hero-logo {
@@ -87,14 +84,8 @@
   display: block;
 }
 
-.home-hero-brand-name {
-  font-size: 22px;
-  font-weight: 700;
-  letter-spacing: -0.02em;
-}
-
-/* Tagline shares the brand line at the name's size; it reads secondary
-   through weight and the muted grey alone. */
+/* The headline itself now that the wordmark is gone: title-sized, muted, with
+   the accent span carrying the only colour. */
 .home-hero-tagline {
   font-size: 22px;
   font-weight: 500;
