@@ -1,5 +1,5 @@
 // Server API wrappers. Non-ok responses throw with the server's error message.
-import { noteFsMutation } from "@platform/lib/index-freshness";
+import { noteFsMutation, noteIndexLifecycle } from "@platform/lib/index-freshness";
 
 export interface Config {
   start_dir: string;
@@ -342,7 +342,13 @@ export function startIndexScan(opts: { root?: string; full?: boolean } = {}): Pr
 }
 
 export function deleteIndex(): Promise<{ deleted: boolean }> {
-  return mutateJson("POST", "/api/index/delete", {});
+  // The corpus any open search fetched predates the delete; without this
+  // signal nothing refetches it — the filesystem didn't change, so no
+  // dir-watch refresh ever arrives (lib/index-freshness).
+  return mutateJson<{ deleted: boolean }>("POST", "/api/index/delete", {}).then((r) => {
+    noteIndexLifecycle();
+    return r;
+  });
 }
 
 // One hit from POST /api/search/files (the AI search's execution engine —

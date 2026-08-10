@@ -14,8 +14,10 @@ import type { WalkEntry } from "@platform/lib/api";
 import { indexCorpusFrom } from "@apps/explorer/listing/index-corpus";
 import {
   fsMutationCount,
+  indexLifecycleCount,
   indexMayAnswer,
   subscribeFsMutations,
+  subscribeIndexLifecycle,
 } from "@platform/lib/index-freshness";
 import { replaceSearch } from "@platform/lib/router";
 import { nextHeldHits, resolveDisplayedHits, type QueryTagged } from "@platform/lib/search-hold";
@@ -75,11 +77,23 @@ export function useWalkSearch(fsPath: string, refresh: number, urlSync = true) {
   // the input can have settled while the chunked scan for it is still running.
   const deferredStale = query.trim() !== q;
 
-  // The generation the SEARCH is pinned to. Outside search it tracks `refresh`
+  // The index being deleted or a scan completing invalidates the fetched
+  // corpus the same way a dir-watch bump does, and needs its own signal: the
+  // filesystem didn't change, so no watch refresh will ever re-key the fetch
+  // (lib/index-freshness). Composed into `gen` so it rides the SAME deferral —
+  // adopted at the boundaries while a search is on screen, immediately
+  // otherwise — rather than swapping results mid-read.
+  const [lifecycle, setLifecycle] = useState(indexLifecycleCount);
+  useEffect(() => subscribeIndexLifecycle(() => setLifecycle(indexLifecycleCount())), []);
+  // The generation this hook answers for: dir-watch refreshes plus index
+  // lifecycle events, one monotonic counter.
+  const gen = refresh + lifecycle;
+
+  // The generation the SEARCH is pinned to. Outside search it tracks `gen`
   // exactly; during one it lags deliberately, so background churn under the
   // folder cannot dim the user's results mid-read (see listing/revalidate).
-  // Everything below keys on this, never on `refresh` itself.
-  const [pinned, setPinned] = useState(refresh);
+  // Everything below keys on this, never on `gen` itself.
+  const [pinned, setPinned] = useState(gen);
   // In-app mutations override the deferral — the user's own rename has to show.
   const [mutations, setMutations] = useState(fsMutationCount);
   const appliedMutations = useRef(mutations);
@@ -88,16 +102,16 @@ export function useWalkSearch(fsPath: string, refresh: number, urlSync = true) {
   const reconcile = () => {
     appliedMutations.current = fsMutationCount();
     setMutations(appliedMutations.current);
-    setPinned(refresh);
+    setPinned(gen);
   };
   useEffect(() => {
-    if (shouldReconcile({ refresh, pinned, searching, mutations,
+    if (shouldReconcile({ refresh: gen, pinned, searching, mutations,
                           appliedMutations: appliedMutations.current })) {
       reconcile();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- reconcile is
     // recreated each render; the inputs it reads are all listed here.
-  }, [refresh, pinned, searching, mutations]);
+  }, [gen, pinned, searching, mutations]);
 
   // Synchronous cache validity: a non-idle walk fetched for a previous
   // generation reads as idle, immediately on the render where `pinned` moves —
@@ -181,6 +195,19 @@ export function useWalkSearch(fsPath: string, refresh: number, urlSync = true) {
           setWalk({ status: "error", message: err.message, forRefresh });
         }
       );
+    // A folder this app has already marked dirty is decided before any
+    // request: the walk is what will answer anyway, so waiting out the index
+    // round-trip (plus its gitignore filter) only delays the first results.
+    // The same check repeats at resolution time below for the race where the
+    // mutation lands while the fetch is in flight.
+    if (!indexMayAnswer(fsPath)) {
+      void liveWalk();
+      return () => {
+        alive = false;
+        if (flushTimer !== null) clearTimeout(flushTimer);
+        ctrl.abort();
+      };
+    }
     indexSearch(fsPath, { signal: ctrl.signal }).then(
       (res) => {
         if (!alive) return;
@@ -256,9 +283,9 @@ export function useWalkSearch(fsPath: string, refresh: number, urlSync = true) {
     // (An idle walk needs no handling here — the auto-request effect fires
     // as soon as the non-empty query state lands.)
     if (validWalk.status === "error") {
-      // `refresh`, not `pinned`: the reconcile above is setting pinned to it,
+      // `gen`, not `pinned`: the reconcile above is setting pinned to it,
       // and that state has not landed yet inside this handler.
-      setWalkReq(refresh);
+      setWalkReq(gen);
       setRetryNonce((n) => n + 1);
     }
     if (!urlSync) return;

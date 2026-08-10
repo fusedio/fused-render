@@ -45,6 +45,31 @@ export function subscribeFsMutations(fn: () => void): () => void {
   return () => void listeners.delete(fn);
 }
 
+// The index's own lifecycle: deleted from Preferences, or a scan completing.
+// Distinct from `mutations` because it carries no dirty folder — a rebuilt
+// index is MORE trustworthy, not less — but the fetched corpus predates it
+// either way, so search must refetch. Without this signal nothing moves the
+// fetch key: the filesystem didn't change, so no dir-watch refresh ever comes.
+let lifecycle = 0;
+const lifecycleListeners = new Set<() => void>();
+
+/** How many times the index itself was deleted/rebuilt this session. */
+export function indexLifecycleCount(): number {
+  return lifecycle;
+}
+
+/** Subscribe to index lifecycle events. Returns an unsubscribe function. */
+export function subscribeIndexLifecycle(fn: () => void): () => void {
+  lifecycleListeners.add(fn);
+  return () => void lifecycleListeners.delete(fn);
+}
+
+/** Record that the index was deleted or a scan finished. */
+export function noteIndexLifecycle(): void {
+  lifecycle++;
+  for (const fn of lifecycleListeners) fn();
+}
+
 function norm(p: string): string {
   const s = String(p || "").replace(/\/+$/, "");
   return s || "/";
@@ -94,4 +119,5 @@ export function indexMayAnswer(folder: string): boolean {
 export function resetFsMutations(): void {
   touched = [];
   mutations = 0;
+  lifecycle = 0;
 }

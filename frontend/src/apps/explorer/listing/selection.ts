@@ -162,12 +162,23 @@ export function nextSearchSelection(
   byPath: ReadonlyMap<string, unknown>,
   sel: Selection,
 ): { state: SearchSelectState; select: string | null } {
+  // A query change empties the results for a commit and the listing reconcile
+  // clears the selection with them. Neither is a user gesture, so the empty
+  // commit gets no judgment at all — deciding there read the reconcile's clear
+  // as Escape and permanently blocked auto-select after the first refine.
+  if (firstEntryPath(rows, byPath) === null) return { state, select: null };
   // A lead that is not where this decision left it was moved by the user —
   // including moved to nothing, which is Escape and is equally theirs. Only
   // meaningful once something HAS been placed: before that, an empty selection
   // is "the results just arrived", not "the user cleared it".
-  const claimed =
+  let claimed =
     state.userClaimed || (state.autoPlaced !== null && sel.lead !== state.autoPlaced);
+  // A claim hangs on a row. With the lead empty that row is the one auto-select
+  // last wrote — and if it is no longer a result, the "clear" was the reconcile
+  // dropping a vanished path, not the user: the claim dies with its anchor.
+  const anchor = sel.lead ?? state.autoPlaced;
+  const anchorPresent = anchor !== null && byPath.has(anchor) && rows.includes(anchor);
+  if (claimed && sel.lead === null && !anchorPresent) claimed = false;
   const select = searchAutoSelectPath(rows, byPath, sel, claimed);
   if (select === null) return { state: { ...state, userClaimed: claimed }, select };
   // Writing a selection makes it ours again: a claim only ever ends because

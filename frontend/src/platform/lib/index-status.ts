@@ -14,6 +14,21 @@
 import { useEffect, useState } from "react";
 import { indexStatus } from "@platform/lib/api";
 import type { IndexStatus } from "@platform/lib/api";
+import { noteIndexLifecycle } from "@platform/lib/index-freshness";
+
+// A completed scan means every corpus fetched before it is a generation
+// behind, and nothing else says so — the filesystem didn't change, so no
+// dir-watch refresh arrives. The poller is the one place completion is
+// observed. Module-level so concurrent pollers dedupe: the first to see the
+// new completion stamp signals, the rest see an unchanged value.
+let lastCompleted: number | null | undefined;
+function noteScanProgress(s: IndexStatus): void {
+  const done = s.last_completed_at ?? null;
+  if (lastCompleted !== undefined && done !== null && done !== lastCompleted) {
+    noteIndexLifecycle();
+  }
+  lastCompleted = done;
+}
 
 export const INDEX_POLL_MS = 1500;
 export const INDEX_IDLE_POLL_MS = 10000;
@@ -31,6 +46,7 @@ export function useIndexStatus(active: boolean, nonce = 0): IndexStatus | null {
       indexStatus(ctrl.signal).then(
         (s) => {
           if (!alive) return;
+          noteScanProgress(s);
           setStatus(s);
           timer = setTimeout(tick, s.scanning ? INDEX_POLL_MS : INDEX_IDLE_POLL_MS);
         },
