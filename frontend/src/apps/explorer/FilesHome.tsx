@@ -21,7 +21,8 @@ import { HeroBrand } from "@platform/ui/HeroBrand";
 // How many cards the Bookmarks/Recents tab shows before "Show more" — flat
 // count, not a row multiple, so it's the same rule for either tab regardless
 // of how many columns the grid happens to lay out at the current width.
-const MAX_CARDS = 6;
+// 9 fills a 3×3 grid at the layout's usual three columns.
+const MAX_CARDS = 9;
 
 type LaunchTab = "bookmarks" | "recents" | "sessions";
 
