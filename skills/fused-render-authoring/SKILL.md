@@ -433,6 +433,39 @@ job.finish("Downloaded");        // or job.fail(err) / job.cancelled()
 - **Cancel is a request you honor**, not something the shell can do — it has no idea which process is doing the work. The ✕ sets a flag; your poll loop notices it and stops the worker, then reports `job.cancelled()`. If you cannot stop the work, leave `cancellable` off and no ✕ is offered.
 - **Omit `total` while you don't know it.** A job with no total draws a travelling "indeterminate" bar, which is the honest picture; a total of `0` is treated the same way rather than painted as complete.
 - **Report the finish.** Without a terminal call the row goes "stalled" after 30 s and says the page that started it was closed — accurate if that is what happened, misleading if the work just ended. Report `finish`/`fail`/`cancelled` on every exit path of your poll loop.
+- **Report from the WORKER, not only the page — this is the one that bites.** The shell replaces your page's frame on every navigation, so a page-only reporter freezes the row at its last number and the manager declares it stalled ~30s later while the download carries on. Your detached worker outlives the page, so let it report too. It cannot `import fused_render` (it runs in its own venv), but the endpoint is plain JSON on the origin every spawned child inherits:
+
+  ```python
+  import json, os, urllib.error, urllib.request
+
+  class JobReport:
+      """Best-effort. Never raises: reporting must not break the work."""
+      def __init__(self, job_id, title):
+          self.url = (os.environ.get("FUSED_RENDER_ORIGIN") or "").rstrip("/") + "/api/jobs"
+          self.id, self.enabled, self.cancel_requested = job_id, self.url.startswith("http"), False
+          if self.enabled:
+              self.post(title=title, kind="download", state="running", cancellable=True)
+
+      def post(self, **fields):
+          if not self.enabled:
+              return None
+          fields["id"] = self.id
+          req = urllib.request.Request(self.url, data=json.dumps(fields).encode(),
+                                       headers={"Content-Type": "application/json", "X-Fused": "1"})
+          try:
+              with urllib.request.urlopen(req, timeout=3) as r:
+                  record = json.loads(r.read().decode())
+          except (urllib.error.URLError, OSError, ValueError):
+              return None
+          if isinstance(record, dict) and record.get("cancel_requested"):
+              self.cancel_requested = True   # the manager's ✕ — act on it here
+          return record
+  ```
+
+  Use the **same job id** on both sides (derive it from something both know — the job directory name, the model id) so the two reporters share ONE row instead of opening two for the same work. Keep the page reporting as well: it is the only thing alive during `uv run`'s first-run environment build, before your worker executes a line. Rate-limit the worker's posts to ~1/s — a download callback fires per chunk.
+
+  **The worker is also the only thing that can honor a cancel once the page is gone.** `cancel_requested` comes back in the reply to the tick you were already sending; check it in your progress callback and stop. If your long step is an opaque subprocess (`uv sync`), run a small daemon thread that posts a heartbeat, reads the flag, and kills the child — otherwise the ✕ does nothing for the minutes that matter most.
+
 - **One job per user-meaningful operation**, not per file: aggregate a multi-file download into one row (sum the bytes) and put the current filename in `detail`.
 - Reuse a **stable `id`** (`fused.job({id: "flux:" + jobId, ...})`) when a page can be reloaded mid-work — the reopened page re-attaches to the existing row instead of opening a second one.
 - Exports fine: `fused.job` is a no-op on a hosted page (there is no manager there), so unlike `fused.ai` it does not block export.
@@ -457,4 +490,5 @@ Escape hatch: because fused-render runs your own trusted code on your own machin
 - Forgetting `fused.ai` has no stale-cancel → a double-click fires two concurrent calls; disable the button while one is in flight.
 - Calling `fused.ai` on a page meant for export → the exporter rejects it (SPEC RH-11); gate on `fused.env === "local"`.
 - Starting long work with `fused.job` and never calling `finish`/`fail`/`cancelled` → the row sits there and goes "stalled" after 30 s, telling the user the page was closed when really the job just ended. Report a terminal state on every exit path of the poll loop.
+- Reporting progress ONLY from the page → the row freezes and goes "stalled" the moment the user opens another file, because the shell tears your frame down. Anything that outlives the page must report from the worker (see "Long-running work" above).
 - Reporting "I wrote the files, try it" as if it were verification → after the page has been opened, `fused-render calls --page <page>` says whether it actually ran (see "Verifying your work" above). Zero records means the page's JS died before it reached Python — a different bug from a failing `main()`, and they look identical without the log.
