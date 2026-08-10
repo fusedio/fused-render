@@ -1111,8 +1111,25 @@ table.listing-table tr.skel-row:hover {
   padding-right: 96px;
 }
 
-.crumb-search-slot .listing-search-count {
-  right: 10px;
+/* The whole pin group moves in with it — the spinner too, or a streaming walk
+   would leave it hanging 16px out over the count. */
+.crumb-search-slot .listing-search-box {
+  --pin-right: 10px;
+}
+
+/* A pin costs 96px of the input, and the resting box is only 150px — which
+   would leave a few dozen pixels of field, clipping the placeholder and
+   anything typed. So a box with something pinned in it grows to keep its text
+   area: the reservation comes out of the bar's free width instead of out of
+   the query.
+
+   This is the MULTI-SELECTION readout in practice ("12 selected"). The other
+   pins ride a non-empty query, and that already takes the whole strip. Capped,
+   so a wide window does not turn a selection into a full-width search box; the
+   crumbs are scrollable and give up the difference. */
+.crumb-search-slot .listing-search-box.has-pin {
+  flex: 0 1 auto;
+  width: 260px;
 }
 
 /* Wraps the input plus its pinned chips (count / spinner), so the preview-pane
@@ -1144,10 +1161,13 @@ table.listing-table tr.skel-row:hover {
   appearance: none;
 }
 
-/* Match count pinned inside the input's right edge (no layout shift). */
+/* Match count pinned inside the input's right edge (no layout shift).
+   `--pin-right` is where the pinned chips hang from, so the two hosts can move
+   the whole pin group without either chip being left behind (the crumb-bar row
+   pulls it in — see .crumb-search-slot). */
 .listing-search-count {
   position: absolute;
-  right: 26px;
+  right: var(--pin-right, 26px);
   top: 50%;
   transform: translateY(-50%);
   color: var(--fg-muted);
@@ -1156,12 +1176,22 @@ table.listing-table tr.skel-row:hover {
   pointer-events: none;
 }
 
+/* A streaming walk shows BOTH — the spinner and the live count — and they hung
+   from the same offset, so the spinner sat on top of the digits. They stack
+   instead: spinner outermost, count shifted in by its width plus a gap. The
+   sibling combinator works because that is the DOM order (Listing.tsx renders
+   the spinner first), and it costs nothing in the settled state, where the
+   spinner is gone and the count keeps the pin to itself. */
+.listing-search-spinner + .listing-search-count {
+  right: calc(var(--pin-right, 26px) + 17px);
+}
+
 /* Small spinner shown while the recursive walk is still in flight, so a
    search on a huge folder doesn't look stalled while the input stays
    fully interactive. */
 .listing-search-spinner {
   position: absolute;
-  right: 26px;
+  right: var(--pin-right, 26px);
   top: 50%;
   width: 11px;
   height: 11px;

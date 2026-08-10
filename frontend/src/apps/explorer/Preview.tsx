@@ -936,8 +936,16 @@ function TemplatePreview({
             listing, revealed only in embed — same pattern as
             preview-browse-chip. Opposite corner so the two can coexist (a
             directory can have both a browsable counterpart mode AND a lone
-            HTML file). */}
-        {appBtn && (
+            HTML file).
+
+            Not when there is a PANE, though: embed hides the two headers but
+            not the pane's strip, so the portaled button is on screen there and
+            the chip would be the same action twice, one of them lying on top
+            of the listing. Keyed on the slot rather than on `listingPaneOpen`
+            because the slot is the button's actual whereabouts — the two agree
+            almost always, and when they disagree it is the slot that is right.
+            .preview-browse-chip makes the same call one condition up. */}
+        {appBtn && !paneSlot && (
           <button type="button" className="open-as-app-chip" onClick={appBtn.onClick}>
             {appBtn.label}
           </button>
