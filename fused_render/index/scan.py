@@ -1,0 +1,491 @@
+"""The scan: one-directory scanning, work distribution across processes, and
+the run body the detached worker executes.
+
+Ported from OpenIndex's `runner.py` (`_scan_dir_once`, `_scan_subtree`,
+`_scan_dirs_threaded`, `_worker`). Two changes beyond de-globalization:
+
+  * every prune decision also consults a `MountGuard`, so the crawler cannot
+    descend into an rclone mount even if the ignore list is emptied — a kernel
+    scandir/stat there can wedge the mount permanently;
+  * the run's configuration travels in `spec.json` rather than being
+    re-derived from module state in each pool child.
+
+See specs/scan.md and specs/scan-incremental.md.
+"""
+import hashlib
+import json
+import os
+import time
+
+from fused_render.index import fsevents
+from fused_render.index.config import IndexConfig
+from fused_render.index.ignore import SKIP_DIRS, IgnoreRules, MountGuard, norm
+from fused_render.index.store import (
+    Sink,
+    applied_ignore_sig,
+    compact,
+    load_dir_cache,
+    save_applied_ignore,
+)
+
+
+def keep_subdirs(subdirs, rules: IgnoreRules, guard: MountGuard):
+    """The subdirectories a walk may descend into: not a hardcoded skip, not
+    ignored, and not mount-backed."""
+    return [s for s in subdirs
+            if s not in SKIP_DIRS and not rules.is_ignored(s)
+            and not guard.blocks(s)]
+
+
+def _dir_sig(entries):
+    h = hashlib.sha1()
+    for name, size, mtime_ns in sorted(entries):
+        h.update(f"{name}|{size}|{mtime_ns}\n".encode("utf-8", "replace"))
+    return h.hexdigest()
+
+
+def scan_dir_once(d, cache, rules, guard, devs=None):
+    """Scan one directory. Returns (kind, payload, subdirs): kind "u"
+    (unchanged; payload = cached file count), "s" (scanned; payload =
+    (sig, file_rows, total_size, mtime_ns, n_subdirs)), or None on error. When
+    `devs` is a set, the dir's device id is added to it (multi-volume
+    detection).
+
+    This is where every path in the index is born, so every `e.path` leaves
+    here through norm() — the whole store, and all matching against it, is in
+    canonical form (specs/platform.md §1)."""
+    try:
+        dst = os.stat(d, follow_symlinks=False)
+        d_mtime_ns = dst.st_mtime_ns
+        if devs is not None:
+            devs.add(dst.st_dev)
+    except OSError:
+        return None, None, []
+    cached = cache.get(d)
+    subdirs = []
+    # cached[2] == -1 means a pre-upgrade row with unknown subdir count:
+    # rescan it once so the count backfills (it stays valid after that —
+    # adding/removing a subdir always bumps the parent's mtime)
+    if cached is not None and d_mtime_ns == cached[0] and cached[2] >= 0:
+        if cached[2] == 0:
+            return "u", cached[1] or 0, []   # unchanged leaf: stat only
+        # Unchanged dir: recurse into subdirs but keep its cached
+        # file rows — no per-file stat, no rewrite.
+        try:
+            with os.scandir(d) as it:
+                for e in it:
+                    try:
+                        if not e.is_symlink() and e.is_dir(follow_symlinks=False):
+                            subdirs.append(norm(e.path))
+                    except OSError:
+                        continue
+        except OSError:
+            return None, None, []
+        return "u", cached[1] or 0, keep_subdirs(subdirs, rules, guard)
+    sig_entries, frows, dtotal = [], [], 0
+    try:
+        with os.scandir(d) as it:
+            for e in it:
+                try:
+                    if e.is_symlink():
+                        continue
+                    if e.is_dir(follow_symlinks=False):
+                        subdirs.append(norm(e.path))
+                        sig_entries.append((e.name + "/", 0, 0))
+                    elif e.is_file(follow_symlinks=False):
+                        st = e.stat(follow_symlinks=False)
+                        _, ext = os.path.splitext(e.name)
+                        frows.append((norm(e.path), d, e.name,
+                                      ext.lower().lstrip("."),
+                                      st.st_size, st.st_mtime))
+                        sig_entries.append((e.name, st.st_size, st.st_mtime_ns))
+                        dtotal += st.st_size
+                except OSError:
+                    continue
+    except OSError:
+        return None, None, []
+    subdirs = keep_subdirs(subdirs, rules, guard)
+    return "s", (_dir_sig(sig_entries), frows, dtotal, d_mtime_ns,
+                 len(subdirs)), subdirs
+
+
+# --------------------------------------------------------------- pool children
+
+_CHILD = {}
+
+
+def _child_init(run_dir, no_cache):
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+    from concurrent.futures import ThreadPoolExecutor
+    with open(os.path.join(run_dir, "spec.json")) as f:
+        spec = json.load(f)
+    cfg = IndexConfig.from_dict(spec.get("config") or {})
+    guard = MountGuard(mounts_dir=spec.get("mounts_dir"))
+    cache = {} if no_cache else load_dir_cache(cfg, spec["root"], pq)
+    _CHILD.update(
+        pool=ThreadPoolExecutor(max_workers=16),
+        cache=cache,
+        rules=cfg.rules,
+        guard=guard,
+        sink=Sink(os.path.join(run_dir, "shards"), f"c{os.getpid()}", pa, pq,
+                  cfg.shard_rows),
+        devs=set(),
+        cancel_flag=os.path.join(run_dir, "cancel"),
+        progress=os.path.join(run_dir, f"progress-{os.getpid()}.json"),
+    )
+
+
+def _child_progress(current=""):
+    s = _CHILD["sink"]
+    tmp = _CHILD["progress"] + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump({"dirs": s.dirs, "files": s.files, "reused": s.reused,
+                   "udirs": s.udirs, "devs": sorted(_CHILD["devs"]),
+                   "current": current}, f)
+    os.replace(tmp, _CHILD["progress"])
+
+
+def _scan_subtree(subroot):
+    """Scan one subtree inside a pool worker. Walks single-threaded (fastest
+    when metadata is warm), but if dirs start blocking — sandbox containers,
+    dataless iCloud dirs — hands the rest of the subtree to a thread pool,
+    where the blocked syscalls overlap (they release the GIL while waiting)."""
+    sink, cache = _CHILD["sink"], _CHILD["cache"]
+    rules, guard = _CHILD["rules"], _CHILD["guard"]
+    stack = [subroot]
+    i = 0
+    t_win = time.time()
+    while stack:
+        i += 1
+        if i % 500 == 0:
+            if os.path.exists(_CHILD["cancel_flag"]):
+                stack = []
+                break
+            _child_progress(stack[-1])
+        d = stack.pop()
+        kind, payload, subdirs = scan_dir_once(d, cache, rules, guard,
+                                               _CHILD["devs"])
+        stack.extend(subdirs)
+        if kind:
+            sink.add(d, kind, payload)
+        # rolling window: >10ms/dir over the last 100 dirs means the OS is
+        # stalling on them (warm metadata is ~0.06ms/dir) — overlap the
+        # waits on the thread pool
+        if i % 100 == 0:
+            now = time.time()
+            if stack and now - t_win > 1.0:
+                _scan_dirs_threaded(stack)
+                break
+            t_win = now
+    sink.close()
+    _child_progress()
+
+
+def _scan_dirs_threaded(dirs):
+    """Finish a latency-bound work list on the child's thread pool; only
+    this (the child's main) thread touches the sink."""
+    import queue
+    import threading
+    sink, cache, ex = _CHILD["sink"], _CHILD["cache"], _CHILD["pool"]
+    rules, guard = _CHILD["rules"], _CHILD["guard"]
+    out_q = queue.Queue()
+    pending = [0]
+    lock = threading.Lock()
+    done = threading.Event()
+    cancelled = [False]
+
+    def submit(d):
+        with lock:
+            pending[0] += 1
+        ex.submit(work, d)
+
+    def work(d):
+        try:
+            if not cancelled[0]:
+                kind, payload, subdirs = scan_dir_once(d, cache, rules, guard,
+                                                       _CHILD["devs"])
+                for s in subdirs:
+                    submit(s)
+                if kind:
+                    out_q.put((d, kind, payload))
+        finally:
+            with lock:
+                pending[0] -= 1
+                if pending[0] == 0:
+                    done.set()
+
+    for d in dirs:
+        submit(d)
+    i = 0
+    while True:
+        try:
+            item = out_q.get(timeout=0.2)
+        except queue.Empty:
+            if done.is_set():
+                break
+            continue
+        sink.add(*item)
+        i += 1
+        if i % 200 == 0:
+            if os.path.exists(_CHILD["cancel_flag"]):
+                cancelled[0] = True
+            _child_progress(item[0])
+    while not out_q.empty():
+        sink.add(*out_q.get())
+
+
+# ------------------------------------------------------------------- the run
+
+def _emit(f, **ev):
+    ev["ts"] = round(time.time(), 3)
+    f.write(json.dumps(ev) + "\n")
+    f.flush()
+
+
+def run_scan(run_dir: str) -> None:
+    """Execute the run described by `<run_dir>/spec.json`, reporting progress
+    into `<run_dir>/events.jsonl`. Never raises: a crash is reported as a
+    terminal `run_end` event with the traceback, because the only consumer is
+    a poller that would otherwise wait forever."""
+    import glob as globmod
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+    from collections import deque
+
+    with open(os.path.join(run_dir, "spec.json")) as f:
+        spec = json.load(f)
+    cfg = IndexConfig.from_dict(spec.get("config") or {})
+    guard = MountGuard(mounts_dir=spec.get("mounts_dir"))
+    rules = cfg.rules
+    root = spec["root"]
+    cancel_flag = os.path.join(run_dir, "cancel")
+    shards_dir = os.path.join(run_dir, "shards")
+    os.makedirs(shards_dir, exist_ok=True)
+    t0 = time.time()
+
+    ev = open(os.path.join(run_dir, "events.jsonl"), "a")
+    _emit(ev, type="run_start", msg=root)
+
+    try:
+        # A changed ignore list invalidates the cache: cached dirs carry subdir
+        # counts computed under the old rules, so an incremental scan would keep
+        # skipping folders that are no longer ignored.
+        applied = applied_ignore_sig(cfg)
+        rules_changed = applied is not None and applied != rules.sig()
+        cache = ({} if (spec.get("full") or rules_changed)
+                 else load_dir_cache(cfg, root, pq))
+        incremental = bool(cache)
+        if rules_changed:
+            _emit(ev, type="phase", msg="ignore rules changed - full rescan")
+
+        # Journal position captured BEFORE scanning: events during the scan get
+        # replayed (harmlessly re-checked) next time instead of being missed.
+        fs_id0 = fsevents.current_id()
+        fs_uuid = fsevents.device_uuid(root) if fs_id0 is not None else None
+        hint = fsevents.hint(cfg, root) if incremental else None
+        _emit(ev, type="phase", msg=(
+            "scanning (fsevents journal)" if hint is not None
+            else "scanning (incremental)" if incremental else "scanning (full)"))
+
+        devs = set()
+
+        def child_totals():
+            agg = {"dirs": 0, "files": 0, "reused": 0, "udirs": 0, "current": ""}
+            for p in globmod.glob(os.path.join(run_dir, "progress-*.json")):
+                try:
+                    with open(p) as fh:
+                        j = json.load(fh)
+                except Exception:
+                    continue
+                for k in ("dirs", "files", "reused", "udirs"):
+                    agg[k] += j.get(k, 0)
+                devs.update(j.get("devs") or [])
+                if j.get("current"):
+                    agg["current"] = j["current"]
+            return agg
+
+        sink = Sink(shards_dir, "p", pa, pq, cfg.shard_rows)
+        cancelled = False
+
+        if hint is not None:
+            summary = _run_fsevents(cfg, rules, guard, root, hint, cache, sink,
+                                    ev, cancel_flag, devs, t0, pa, pq)
+            if summary is not None and fs_id0 is not None and fs_uuid:
+                fsevents.save_state(cfg, root, fs_id0, fs_uuid, devs)
+            if summary is not None:
+                save_applied_ignore(cfg)
+                _emit(ev, type="run_end", msg="complete", summary=summary)
+            return
+
+        # Walk the top of the tree in-process (breadth-first) until there
+        # are enough subtree roots to keep cfg.nproc worker processes busy,
+        # then fan the subtrees out to a process pool — the GIL caps a
+        # single process at ~15k dirs/s no matter how many threads.
+        frontier = deque([root])
+        while frontier and len(frontier) < cfg.nproc * 24:
+            if sink.dirs % 200 == 0 and os.path.exists(cancel_flag):
+                cancelled = True
+                break
+            d = frontier.popleft()
+            kind, payload, subdirs = scan_dir_once(d, cache, rules, guard, devs)
+            frontier.extend(subdirs)
+            if kind:
+                sink.add(d, kind, payload)
+
+        if cache and frontier:
+            # Split subtrees the cache says are huge, so one giant folder
+            # (e.g. ~/Library) can't serialize the pool at the tail.
+            import bisect
+            keys = sorted(cache)
+
+            def subtree_n(d):
+                p = d.rstrip("/") + "/"
+                return (bisect.bisect_left(keys, p[:-1] + "0")
+                        - bisect.bisect_left(keys, p))
+
+            big = deque(d for d in frontier if subtree_n(d) > cfg.split_dirs)
+            frontier = deque(d for d in frontier if subtree_n(d) <= cfg.split_dirs)
+            guard_count = 0
+            while big and guard_count < 20_000 and not cancelled:
+                guard_count += 1
+                if guard_count % 200 == 0 and os.path.exists(cancel_flag):
+                    cancelled = True
+                    break
+                d = big.popleft()
+                kind, payload, subdirs = scan_dir_once(d, cache, rules, guard, devs)
+                if kind:
+                    sink.add(d, kind, payload)
+                for s2 in subdirs:
+                    (big if subtree_n(s2) > cfg.split_dirs
+                     else frontier).append(s2)
+        sink.close()
+        totals = {"dirs": sink.dirs, "files": sink.files,
+                  "reused": sink.reused, "udirs": sink.udirs}
+
+        if frontier and not cancelled:
+            import multiprocessing as mp
+            # "spawn", never fork: a forked child re-runs PROJ's SQLite atfork
+            # handler and dies with SIGSEGV (the pyramid-worker crash class).
+            ctx = mp.get_context("spawn")
+            pool = ctx.Pool(cfg.nproc, initializer=_child_init,
+                            initargs=(run_dir, not incremental))
+            res = pool.map_async(_scan_subtree, sorted(frontier), chunksize=1)
+            while not res.ready():
+                res.wait(0.5)
+                c = child_totals()
+                _emit(ev, type="progress",
+                      dirs=totals["dirs"] + c["dirs"],
+                      files=totals["files"] + c["files"],
+                      reused=totals["reused"] + c["reused"],
+                      current=c["current"])
+            pool.close()
+            pool.join()
+            res.get()  # surface any child exception
+            c = child_totals()
+            for k in ("dirs", "files", "reused", "udirs"):
+                totals[k] += c[k]
+
+        cancelled = cancelled or os.path.exists(cancel_flag)
+        _emit(ev, type="progress", dirs=totals["dirs"], files=totals["files"],
+              reused=totals["reused"], current="")
+
+        if cancelled:
+            _emit(ev, type="run_end", msg="cancelled",
+                  summary={"dirs": totals["dirs"], "files": totals["files"]})
+            return
+
+        summary = compact(cfg, root, shards_dir, pa, pq, emit=lambda **e: _emit(ev, **e))
+        summary.update(dirs=totals["dirs"], files=totals["files"],
+                       reused_files=totals["reused"],
+                       unchanged_dirs=totals["udirs"],
+                       seconds=round(time.time() - t0, 1))
+        if fs_id0 is not None and fs_uuid:
+            fsevents.save_state(cfg, root, fs_id0, fs_uuid, devs)
+        save_applied_ignore(cfg)
+        _emit(ev, type="run_end", msg="complete", summary=summary)
+    except Exception:
+        import traceback
+        _emit(ev, type="run_end", msg="failed", error=traceback.format_exc())
+    finally:
+        ev.close()
+
+
+def _run_fsevents(cfg, rules, guard, root, hint, cache, sink, ev, cancel_flag,
+                  devs, t0, pa, pq):
+    """The FSEvents fast path: visit ONLY the dirs the OS journal reports and
+    account explicitly for everything it didn't (specs/scan-incremental.md §4).
+    Returns the run summary, or None when the run was cancelled (the caller
+    has already emitted nothing; this emits the terminal event itself)."""
+    forced, subtrees = hint
+    devs.update(fsevents.load_states(cfg).get(root, {}).get("devs") or [])
+    children = {}
+    for c in cache:
+        if c != root:
+            children.setdefault(os.path.dirname(c), []).append(c)
+    deleted, scanned = [], set()
+    stack = [(s, False) for s in subtrees] + [(f, True) for f in forced]
+    cancelled = False
+    last_beat = t0
+    while stack:
+        if os.path.exists(cancel_flag):
+            cancelled = True
+            break
+        d, force = stack.pop()
+        if d in scanned or rules.is_ignored_tree(d) or guard.blocks(d):
+            continue
+        scanned.add(d)
+        kind, payload, subdirs = scan_dir_once(
+            d, {} if force else cache, rules, guard, devs)
+        if kind is None:
+            deleted.append(d)   # unreadable/gone: drop cached subtree
+            continue
+        sink.add(d, kind, payload)
+        actual = set(subdirs)
+        for c in children.get(d, ()):
+            if c not in actual:
+                deleted.append(c)
+        for s2 in subdirs:
+            if not force:
+                stack.append((s2, False))
+            elif s2 not in cache:
+                stack.append((s2, True))   # new subtree
+        now = time.time()
+        if now - last_beat >= 0.5:
+            last_beat = now
+            _emit(ev, type="progress", dirs=sink.dirs, files=sink.files,
+                  reused=sink.reused, current=d)
+    # keep every cached dir that wasn't visited or deleted
+    if not cancelled:
+        import bisect
+        keys = sorted(cache)
+        dead = set()
+        for p in sorted(set(deleted)):
+            i = bisect.bisect_left(keys, p)
+            while i < len(keys) and (keys[i] == p or keys[i].startswith(p + "/")):
+                dead.add(keys[i])
+                i += 1
+        for c in cache:
+            if c in scanned or c in dead:
+                continue
+            sink.keep.append(c)
+            sink.dirs += 1
+            sink.udirs += 1
+            sink.reused += cache[c][1] or 0
+    sink.close()
+    totals = {"dirs": sink.dirs, "files": sink.files,
+              "reused": sink.reused, "udirs": sink.udirs}
+    cancelled = cancelled or os.path.exists(cancel_flag)
+    _emit(ev, type="progress", dirs=totals["dirs"], files=totals["files"],
+          reused=totals["reused"], current="")
+    if cancelled:
+        _emit(ev, type="run_end", msg="cancelled",
+              summary={"dirs": totals["dirs"], "files": totals["files"]})
+        return None
+    summary = compact(cfg, root, sink.shards_dir, pa, pq,
+                      emit=lambda **e: _emit(ev, **e))
+    summary.update(dirs=totals["dirs"], files=totals["files"],
+                   reused_files=totals["reused"],
+                   unchanged_dirs=totals["udirs"], fsevents=True,
+                   seconds=round(time.time() - t0, 1))
+    return summary
