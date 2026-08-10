@@ -334,7 +334,7 @@
 .fhb-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-  gap: 14px;
+  gap: 16px;
 }
 
 .fhb-card {
@@ -345,7 +345,12 @@
   text-decoration: none;
   background: var(--bg-alt);
   border: 1px solid var(--border);
-  border-radius: 12px;
+  border-radius: 16px;
+  /* The card carries the padding and the body well brings its own radius, so
+     the body reads as an inset floating panel (the ref design) rather than a
+     full-bleed border-top split. */
+  padding: 6px;
+  box-shadow: 0 1px 2px var(--shadow-sm);
   overflow: hidden;
   transition:
     border-color 0.15s ease,
@@ -354,17 +359,31 @@
 }
 
 .fhb-card:hover {
-  border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
-  box-shadow: 0 6px 22px var(--shadow-sm);
+  border-color: color-mix(in srgb, var(--fg) 16%, var(--border));
+  box-shadow: 0 8px 24px var(--shadow-sm);
   transform: translateY(-2px);
 }
 
 .fhb-card-head {
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 12px 14px;
+  gap: 10px;
+  padding: 7px 8px 11px;
   min-width: 0;
+}
+
+/* Header pieces sized up inside the preview cards only — the flat launcher
+   rows keep the shared .fh-card-* base look. */
+.fhb-card .fh-card-icon {
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  border: 1px solid color-mix(in srgb, var(--fg) 7%, transparent);
+}
+
+.fhb-card .fh-card-name {
+  font-size: 14px;
+  font-weight: 650;
 }
 
 .fhb-card-head .bookmark-missing-badge {
@@ -378,7 +397,8 @@
   display: block;
   aspect-ratio: 16 / 10;
   background: var(--bg);
-  border-top: 1px solid var(--border);
+  border: 1px solid var(--border);
+  border-radius: 10px;
   overflow: hidden;
 }
 
@@ -405,107 +425,159 @@
   inset: 0;
 }
 
-/* Folder body: inset panel holding the fanned chip stack. Chips overlap
-   upward (front chip on top via z-index by depth) and spread apart while the
-   card is hovered — the ref design's "contents fan". */
+/* Folder body: inset well holding the sheet stack. Every entry is one SHEET
+   — a rounded card whose title row is all that shows, its body sliding down
+   behind the sheet in front of it (extra bottom padding pulled back by the
+   same negative margin). The front sheet is the full card: title row plus
+   the preview inside the same rounded unit — the ref design's stacked pages,
+   not bars floating over a separate panel. */
 .fhb-stack {
   position: relative;
   display: flex;
   flex-direction: column;
-  align-items: center;
+  align-items: stretch;
   aspect-ratio: 16 / 10;
-  padding: 12px 12px 0;
-  /* The base --bg (a step darker than the card's --bg-alt) so the chips —
+  padding: 10px 10px 0;
+  /* The base --bg (a step darker than the card's --bg-alt) so the sheets —
      lifted toward --fg below — read clearly against the well they sit in. */
   background: var(--bg);
-  border-top: 1px solid var(--border);
+  border-radius: 10px;
   overflow: hidden;
 }
 
-.fhb-chip {
+.fhb-sheet {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  flex: 0 0 auto;
+  font-size: 12.5px;
+  /* Lifted a step above --bg-panel so the sheets separate from the stack's
+     --bg well; separation is carried by shadow, the hairline only stops
+     same-value surfaces from fusing. */
+  background: color-mix(in srgb, var(--fg) 7%, var(--bg-panel));
+  border: 1px solid color-mix(in srgb, var(--fg) 8%, var(--bg-panel));
+  border-radius: 12px;
+  box-shadow: 0 1px 2px var(--shadow-sm), 0 4px 12px var(--shadow-sm);
+  transition: margin 0.18s ease;
+}
+
+.fhb-sheet-row {
   display: flex;
   align-items: center;
   gap: 8px;
   min-width: 0;
-  flex: 0 0 auto;
-  padding: 6px 10px;
-  font-size: 12px;
-  /* Lifted a step above --bg-panel so the chips separate from the stack's
-     --bg well. */
-  background: color-mix(in srgb, var(--fg) 6%, var(--bg-panel));
-  border: 1px solid color-mix(in srgb, var(--fg) 14%, var(--border));
-  border-radius: 9px;
-  box-shadow: 0 1px 3px var(--shadow-sm);
-  transition: margin 0.18s ease;
+  padding: 8px 12px;
 }
 
-/* Depth fan: the front chip (d0) is full width; each step back is narrower
-   and tucked under the one in front of it. */
-.fhb-chip-d0 {
-  width: 100%;
+/* Depth cascade: the front sheet (d0) is full width and holds the body; each
+   step back is inset further from the left (a touch from the right), with
+   its card body tucked behind the sheet in front — extra bottom padding
+   pulled back under the next sheet by the matching negative margin, so what
+   peeks out reads as a page edge, not a closed pill. */
+.fhb-sheet-d0 {
+  flex: 1 1 auto;
+  min-height: 0;
   z-index: 3;
+  border-bottom: none;
+  border-radius: 12px 12px 0 0;
+  overflow: hidden;
 }
 
-.fhb-chip-d1 {
-  width: 90%;
-  margin-bottom: -7px;
+.fhb-sheet-d1 {
+  margin: 0 4px -20px 20px;
   z-index: 2;
 }
 
-.fhb-chip-d2 {
-  width: 80%;
-  margin-bottom: -7px;
+.fhb-sheet-d2 {
+  margin: 0 8px -20px 40px;
   z-index: 1;
 }
 
-/* In light theme --bg and --bg-panel are both white, so the dark-theme
-   "darker well, lighter chips" collapses; invert it — grey well (--bg-alt),
-   plain white chips. */
+/* Back sheets are open pages, not closed pills: square bottom corners and no
+   bottom hairline, so the edge the hover fan reveals reads as a page
+   continuing down behind the sheet in front — never a pill's bottom radius. */
+.fhb-sheet-d1,
+.fhb-sheet-d2 {
+  border-bottom: none;
+  border-radius: 12px 12px 0 0;
+}
+
+/* The back sheet's page body: a strip of the entry's live view, exactly as
+   tall as the overlap that hides it, so at rest only the title row shows. */
+.fhb-sheet-peek {
+  position: relative;
+  flex: 0 0 auto;
+  height: 20px;
+  overflow: hidden;
+}
+
+/* In light theme the card lifts to plain white and the dark-theme "darker
+   well, lighter sheets" collapses (--bg and --bg-panel are both white);
+   invert it — white card, grey well (--bg-alt), plain white sheets. */
+:root[data-theme="light"] .fhb-card {
+  background: var(--bg);
+}
+
 :root[data-theme="light"] .fhb-stack {
   background: var(--bg-alt);
 }
 
-:root[data-theme="light"] .fhb-chip {
+:root[data-theme="light"] .fhb-sheet {
   background: var(--bg);
+  border-color: color-mix(in srgb, var(--fg) 6%, var(--bg-alt));
 }
 
-.fhb-card:hover .fhb-chip-d1,
-.fhb-card:hover .fhb-chip-d2 {
-  margin-bottom: 2px;
+/* Hovering the card slides the back sheets out a little — more of each page
+   edge shows, the ref design's "contents fan". */
+.fhb-card:hover .fhb-sheet-d1,
+.fhb-card:hover .fhb-sheet-d2 {
+  margin-bottom: -2px;
 }
 
-.fhb-chip-icon {
+.fhb-sheet-icon {
   flex: 0 0 auto;
   display: flex;
   align-items: center;
   color: var(--fg-muted);
 }
 
-.fhb-chip-icon svg {
-  width: 13px;
-  height: 13px;
+.fhb-sheet-icon svg {
+  width: 14px;
+  height: 14px;
 }
 
-.fhb-chip-label {
+.fhb-sheet-label {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-/* The first file child's view peeking out underneath the front chip. */
-.fhb-stack .fhb-preview {
+/* The peeked view INSIDE the front sheet, right under its title row — one
+   card, no seam; the sheet's overflow clip rounds the top corners and the
+   well's bottom edge cuts it off. (Front sheet only — a back sheet's strip
+   keeps the base absolute-fill .fhb-preview inside its .fhb-sheet-peek.) */
+.fhb-sheet-d0 .fhb-preview {
   position: relative;
   inset: auto;
   flex: 1 1 auto;
-  width: calc(100% - 8px);
-  margin-top: -3px;
+  width: 100%;
   min-height: 60px;
   background: var(--bg-panel);
-  border: 1px solid var(--border);
-  border-bottom: none;
-  border-radius: 9px 9px 0 0;
   z-index: 0;
+}
+
+/* The front sheet's no-preview body: the folder's item count where the
+   peeked view would be. */
+.fhb-sheet-note {
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 60px;
+  padding: 12px;
+  font-size: 12px;
+  color: var(--fg-muted);
 }
 
 /* Placeholder body: missing target, stat in flight, or an empty folder. */
@@ -518,7 +590,7 @@
   font-size: 12px;
   color: var(--fg-muted);
   background: rgba(var(--tint), 0.04);
-  border-top: 1px solid var(--border);
+  border-radius: 10px;
   text-align: center;
 }
 
