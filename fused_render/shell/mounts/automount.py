@@ -28,10 +28,7 @@ BUILTIN_MOUNTS = {
 }
 
 
-# Whether each builtin is attached right now, tracked across the automount
-# lifecycle (see builtin_mount_ready). True only for a mount THIS run attached,
-# never one that survived a previous run — the frontend sticky-caches the first
-# True it sees (platform/lib/hooks.ts), so a stale True would pin a dead entry.
+# Attach-owned readiness per builtin (see builtin_mount_ready); True only for a mount THIS run attached, since the frontend sticky-caches the first True it sees.
 _builtin_ready_lock = threading.Lock()
 _builtin_ready: dict[str, bool] = {name: False for name in BUILTIN_MOUNTS}
 
@@ -193,11 +190,7 @@ def sessions_mount_ready() -> bool:
 
 
 def builtin_mount_ready(name: str) -> bool:
-    """True once run_automount has attached this builtin this run — an I/O-free
-    read of the attach-owned _builtin_ready flag (surfaced via /api/config for
-    the sidebar's Learn entry). Not a live probe: an _ismount on the WinFsp
-    mountpoint blocks ~the rc timeout mid-attach, which dragged /api/config to
-    ~60s on a Windows cold start."""
+    """I/O-free read of the attach-owned _builtin_ready flag (a live _ismount here blocked /api/config ~60s mid-attach on a Windows cold start)."""
     with _builtin_ready_lock:
         return _builtin_ready.get(name, False)
 

@@ -102,10 +102,7 @@ def api_config(
 def api_desktop_ready(
     token: str | None = Header(default=None, alias="X-Fused-Desktop-Token"),
 ):
-    # Readiness probe (desktop_probe.matching_server): echoes only the launch
-    # token — no mounts, rcd, or dir picker — so a slow cold-start subsystem
-    # can't make the supervisor kill a healthy server. Same echo shape as
-    # /api/config so the probe reads desktop_instance.
+    # Readiness probe (desktop_probe.matching_server): echoes only the launch token, touching no mounts/rcd, so a slow cold-start subsystem can't make the supervisor kill a healthy server.
     from fused_render.paths import desktop_instance
 
     instance = desktop_instance()

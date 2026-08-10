@@ -824,8 +824,7 @@ def reconnect_mount(m: dict) -> str | None:
     if port is not None:
         _stop_serve_for(port, m["remote"])
     err = attach_mount(m)
-    # A manual reconnect that repairs a builtin (the split-brain path automount
-    # defers to) must flip its readiness flag — only on success.
+    # A manual reconnect that repairs a builtin must flip its readiness flag — only on success.
     if err is None and m.get("builtin"):
         from .automount import set_builtin_ready
         set_builtin_ready(m["builtin"], True)

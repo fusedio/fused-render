@@ -29,8 +29,7 @@ def learn_zip(tmp_path, monkeypatch):
 
 @pytest.fixture(autouse=True)
 def _reset_builtin_ready():
-    # _builtin_ready is process-global; reset it so readiness set by one test
-    # never leaks into the next.
+    # _builtin_ready is process-global; reset it so readiness doesn't leak between tests.
     import fused_render.shell.mounts.automount as _am
     with _am._builtin_ready_lock:
         for name in list(_am._builtin_ready):
@@ -111,10 +110,7 @@ def test_idempotent(home, learn_zip):
 
 
 def test_builtin_mount_ready_reads_flag_not_live_probe(home, learn_zip, monkeypatch):
-    # /api/config embeds learn_mount_ready; it must NEVER do a live rcd/WinFsp
-    # probe on the request path — a cold-start _ismount on the WinFsp mountpoint
-    # blocked /api/config ~60s (×2 builtins). Blow up if the live probe runs,
-    # and drive readiness purely off the lifecycle-tracked flag.
+    # learn_mount_ready must never do a live mount probe (a cold-start _ismount blocked /api/config ~60s); blow up if it does and drive readiness off the flag.
     mounts_mod.ensure_learn_mount()
 
     def _boom(*_a, **_k):
@@ -122,8 +118,7 @@ def test_builtin_mount_ready_reads_flag_not_live_probe(home, learn_zip, monkeypa
 
     monkeypatch.setattr(mounts_mod, "mounted_paths", _boom)
 
-    # Before automount attaches it this run -> not ready (conservative), fast.
-    assert mounts_mod.learn_mount_ready() is False
+    assert mounts_mod.learn_mount_ready() is False  # not attached this run yet
 
     mounts_mod.set_builtin_ready("learn", True)
     assert mounts_mod.learn_mount_ready() is True
@@ -387,9 +382,7 @@ def test_force_detach_runs_outside_store_lock(home, learn_zip, monkeypatch):
 
 
 def test_learn_mount_ready_false_until_actually_mounted(home, learn_zip):
-    # Record presence alone isn't "ready": until run_automount attaches it this
-    # run, the flag stays False — ensure_learn_mount force-detaches on every
-    # startup, so a record can exist while the mountpoint is momentarily empty.
+    # Record presence alone isn't "ready" — the flag stays False until run_automount attaches it this run.
     assert mounts_mod.learn_mount_ready() is False
     mounts_mod.ensure_learn_mount()
     assert mounts_mod.learn_mount_ready() is False  # record exists, not attached
@@ -406,17 +399,13 @@ def test_learn_mount_ready_false_without_zip(home):
 
 
 def test_run_automount_marks_builtin_ready_only_after_attach(home, learn_zip, monkeypatch):
-    # The stale-mount race Bugbot flagged: a mount that survived a previous run
-    # must not read as ready during the force-detach+remount window. Seed a
-    # stale True, then run_automount must clear it and only re-set True once its
-    # own attach_mount succeeds (the frontend sticky-caches the first True).
+    # A stale True from a previous run must be cleared before the remount and re-set only after this run's attach succeeds.
     import fused_render.shell.mounts.health as health_mod
 
     mounts_mod.set_builtin_ready("learn", True)  # stale, from a "previous run"
     seen_during_attach = []
 
     def fake_attach(m):
-        # At the moment automount is (re)attaching, readiness must read False.
         seen_during_attach.append(mounts_mod.learn_mount_ready())
         return None  # success
 
@@ -443,11 +432,7 @@ def test_run_automount_leaves_builtin_not_ready_on_attach_failure(home, learn_zi
 
 
 def test_poll_once_never_marks_builtin_ready_from_observation(home, learn_zip, monkeypatch):
-    # poll_once must NEVER flip readiness True off an observed "mounted": a mount
-    # surviving a previous run (before the startup force-detach) or lingering
-    # from a failed force-detach both read "mounted" while serving stale/absent
-    # content, and the frontend sticky-caches the first True. True is only ever
-    # a successful attach this run.
+    # poll_once must never set readiness True off an observed "mounted" (a lingering/prior-run mount reads mounted while stale); True is only ever a real attach this run.
     mounts_mod.ensure_learn_mount()
     monkeypatch.setattr(mounts_mod, "mounted_paths", lambda: set())
     monkeypatch.setattr(mounts_mod, "mount_state", lambda m, live, **k: "mounted")
@@ -456,9 +441,7 @@ def test_poll_once_never_marks_builtin_ready_from_observation(home, learn_zip, m
 
 
 def test_poll_once_leaves_ready_flag_untouched(home, learn_zip, monkeypatch):
-    # The health monitor must not disturb a readiness set by a real attach: a
-    # transient post-attach snapshot can read not-mounted, and clearing off that
-    # would strand the flag (nothing restores it). Readiness is attach-owned.
+    # The health monitor must not clear a readiness set by a real attach off a transient not-mounted snapshot (nothing would restore it).
     mounts_mod.ensure_learn_mount()
     mounts_mod.set_builtin_ready("learn", True)
     monkeypatch.setattr(mounts_mod, "mounted_paths", lambda: set())
@@ -468,15 +451,11 @@ def test_poll_once_leaves_ready_flag_untouched(home, learn_zip, monkeypatch):
 
 
 def test_reconnect_marks_builtin_ready_on_success(home, learn_zip, monkeypatch):
-    # The out-of-band repair path Bugbot flagged: run_automount's split-brain
-    # `continue` leaves a builtin False, and a manual Reconnect brings it online.
-    # reconnect_mount must flip the flag on success (and only on success).
+    # A manual Reconnect (the out-of-band repair automount defers to) must flip the flag on success, and only on success.
     import fused_render.shell.mounts.lifecycle as lifecycle_mod
     mounts_mod.ensure_learn_mount()
     m = _learn_records()[0]
 
-    # reconnect_mount lazily imports these from the package; _is_mounted and
-    # attach_mount are lifecycle module-level names.
     monkeypatch.setattr(mounts_mod, "_winfsp_available", lambda: True)
     monkeypatch.setattr(mounts_mod, "_live_rcd_port", lambda: None)
     monkeypatch.setattr(lifecycle_mod, "_is_mounted", lambda mp: False)
@@ -491,8 +470,7 @@ def test_reconnect_marks_builtin_ready_on_success(home, learn_zip, monkeypatch):
 
 
 def test_learn_mount_ready_false_for_user_mount_named_learn(home):
-    # A user mount named "learn" has no builtin marker; run_automount only sets
-    # the builtin flag for records marked builtin, so it never reads as ready.
+    # A user mount named "learn" has no builtin marker, so the flag is never set for it.
     mounts_mod.add_mount("learn", "s3remote:my-learn-bucket")
     mounts_mod.set_builtin_ready("learn", False)
     assert mounts_mod.learn_mount_ready() is False

@@ -9,10 +9,7 @@ environment; the server echoes them from `/api/desktop/ready` (see
 This module polls that endpoint with the token header and reports ready only
 when the echoed id + token match.
 
-`/api/desktop/ready` is dedicated and dependency-free on purpose: it reflects
-only "the HTTP server is up and is ours". The probe used to poll `/api/config`,
-whose live mount-readiness check pushed cold-start responses past the timeout
-below and made the Windows supervisor kill a healthy server.
+`/api/desktop/ready` is dependency-free on purpose: it once polled `/api/config`, whose live mount check timed out on Windows cold start and made the supervisor kill a healthy server.
 
 Shared by both backends: the Windows supervisor (out-of-process child server)
 and the macOS app (in-process server thread). urllib + json only, so it stays

@@ -7,12 +7,7 @@ ready only when the echo matches — so a decoy server holding the port cannot
 satisfy startup. Pure stdlib + a real local uvicorn instance; no pywin32, so
 this runs on every platform.
 
-/api/desktop/ready is deliberately dependency-free: readiness must not depend
-on any optional subsystem. The probe formerly polled /api/config, whose
-learn_mount_ready/sessions_mount_ready do a live rcd/WinFsp check per request,
-so a slow cold-start mount attach blew the readiness budget and the supervisor
-killed a healthy server ("Python server did not become ready"). The last test
-here pins that decoupling.
+/api/desktop/ready is deliberately dependency-free (the probe formerly polled /api/config, whose live mount check blew the readiness budget on Windows cold start); the last test here pins that decoupling.
 """
 import contextlib
 import socket
@@ -114,11 +109,7 @@ def test_ready_has_no_desktop_instance_without_env(tmp_path, monkeypatch):
 
 
 def test_readiness_is_independent_of_mount_health(tmp_path, desktop_env, monkeypatch):
-    # The regression this whole endpoint exists for: a broken/slow mount
-    # subsystem (rcd down, WinFsp remount mid-flight) must not gate readiness.
-    # mounted_paths is the live rcd call learn_mount_ready/sessions_mount_ready
-    # make on the /api/config path; make it explode and confirm the probe's
-    # endpoint is unaffected while /api/config itself is dragged down by it.
+    # A broken mount subsystem must not gate readiness: make the live rcd call /api/config depends on explode, and confirm /api/desktop/ready is unaffected.
     import fused_render.shell.mounts as shell_mounts
 
     def boom(*_a, **_k):
