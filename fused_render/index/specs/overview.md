@@ -15,8 +15,9 @@ that app's specs, updated to the ported reality.
   cancel it, resume watching after a reload, reclaim old run dirs (`scan.md`).
 - **Incremental reuse** — skip directories that haven't changed, using per-directory
   mtime signatures and (on macOS) the FSEvents journal (`scan-incremental.md`).
-- **Ignore list + mount guard** — folders never walked and never indexed, and the
-  structural refusal of mount-backed paths (`scan-ignore.md`).
+- **Ignore list + mount guard** — folders never walked and never indexed, the
+  structural refusal of every fused-render home, and the same-filesystem rule that
+  refuses every mount nobody named (`scan-ignore.md`, `scan.md §6`).
 - **Index store** — on-disk layout, parquet schemas, the partition manifest, and
   compaction (`index-store.md`).
 - **Query** — index totals by extension, path lookup with partition pruning, and the
@@ -46,8 +47,9 @@ The route never blocks on a scan: a full home scan takes minutes, so `start` ret
 | Store location | `~/.fused-render/cache/OpenIndex*`, relocatable via a location file | `storage.home_dir()/index` — FUSED_RENDER_HOME + branch nesting; no relocation action |
 | Worker spawn | `Popen([python, __file__, "--worker", run_dir])` | `python -m fused_render.index.worker <run_dir>` (survives py2app bundling) |
 | Run dirs | system temp dir, never cleaned | `<index>/runs`, pruned (`scan.md §2`) |
-| Mount safety | an ignore-list entry | the entry **plus** a structural `MountGuard` (`scan-ignore.md §7`) |
+| Mount safety | an ignore-list entry | the entry, a structural `MountGuard` over every fused-render home, and a walk confined to the scan root's filesystem (`scan-ignore.md §7`, `scan.md §6`) |
 | `sql` action | arbitrary duckdb from the page | removed (`query.md §5`) |
+| Compaction swap | `rmtree` + `rename` of the files dir (unreadable mid-swap) | generation-numbered partitions, manifest swapped last (`index-store.md §4`) |
 | Ignore storage | its own JSON beside the index | `<index>/config.json`, with the scan roots (`server-api.md §3`) |
 
 ## Conventions

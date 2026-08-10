@@ -103,7 +103,20 @@ every 200 dirs, pool children every 500 dirs, the FSEvents path every iteration.
 cancel the worker stops walking, emits `run_end` with `msg: "cancelled"`, and
 **skips compaction entirely**, so a cancelled run leaves the existing index untouched.
 
-## 6. Hardcoded skips
+## 6. Hardcoded skips and the filesystem boundary
+
+**The walk never leaves the scan root's filesystem.** `run_scan` stats the root once,
+writes its `st_dev` into `spec.json`, and every process compares each directory's device
+against it (`scan_dir_once`'s `root_dev`); a mismatch is skipped, not indexed, not
+descended. A mount — rclone, iCloud, SMB, an external disk — is always its own device,
+so this single comparison refuses every mount, including the ones no name list can
+predict. It costs nothing: the `stat` it reads is the one that function already takes,
+and the check happens at the mount's own directory rather than at its parent, so there
+is no extra stat per child either. `devs` therefore stays single-valued, which also
+keeps the FSEvents fast path eligible (`scan-incremental.md §3`).
+
+The named skips remain, because they are cheaper still and cover synthetic trees that
+are not separate devices:
 
 Independent of the user ignore list (`scan-ignore.md`), `SKIP_DIRS` is never descended
 into. These are correctness/safety skips — devices, synthetic filesystems, and mount

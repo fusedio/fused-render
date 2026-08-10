@@ -112,20 +112,39 @@ naming a directory nobody uses would silently leave the real mounts dir walkable
 
 ## 7. The mount guard
 
-`MountGuard` refuses every path under the mounts dir, independently of §6. It exists
-because the ignore list is user-editable and the failure mode is not "some junk gets
-indexed": a kernel `scandir`/`stat` on an rclone NFS mount path can **wedge the mount
-permanently** — a single READDIR on a flat million-key S3 prefix has killed mounts in
-production — and a background crawler nobody is watching is more dangerous than an
-interactive walk, not less.
+`MountGuard` refuses mount paths independently of §6. It exists because the ignore list
+is user-editable and the failure mode is not "some junk gets indexed": a kernel
+`scandir`/`stat` on an rclone NFS mount path can **wedge the mount permanently** — a
+single READDIR on a flat million-key S3 prefix has killed mounts in production — and a
+background crawler nobody is watching is more dangerous than an interactive walk.
 
-- **In the walk** (`blocks`) the decision is a pure string comparison against the
-  mounts dir resolved once per process. No syscall per directory, which matters at
-  millions of them; sound because the walk never follows symlinks, so a mount path is
-  only ever reached by real descent in canonical form.
+**It blocks every fused-render home, whole.** Not just the active home's `mounts`
+subdirectory:
+
+- **Every home** (`default_home_dirs`): the default `~/.fused-render` *and* whatever
+  FUSED_RENDER_HOME points at. A dev server, a test run or a branch checkout redirects
+  the home — and then a scan of the user's home directory walks into the *other* home's
+  mounts, which the active config knows nothing about. That is not hypothetical: it is
+  what a live home scan did, hanging ten scan processes on S3 listings with nothing
+  indexed.
+- **The whole tree**, not the mounts subdir: a home holds one mounts dir per branch
+  checkout, plus caches, sidecars and the index itself. None of it is content anyone
+  searches for, and naming the tree covers a mounts dir the guard was never told about.
+
+Two entry points:
+
+- **In the walk** (`blocks`) the decision is a pure string comparison against roots
+  resolved once per process. No syscall per directory, which matters at millions of
+  them; sound because the walk never follows symlinks, so a guarded path is only ever
+  reached by real descent in canonical form.
 - **At the root** (`blocks_root`) the check defers to `mounts.is_mount_backed`, which
   pays a `realpath` — a scan root arrives from a user and CAN be a symlink into the
   mounts dir. `runner.start` refuses such a root outright.
+
+**The general case is `scan.md §6`'s same-filesystem rule**, which needs no names at
+all: a mount is its own device, so a walk confined to the scan root's filesystem
+refuses every mount — iCloud, SMB, an external disk — including any this guard has
+never heard of. The guard remains because it is specific, cheap, and names the hazard.
 
 Indexing remote mounts later is possible — routed through the rclone rc listing API,
 opt-in per mount — but it is its own project, not a relaxation of this rule.

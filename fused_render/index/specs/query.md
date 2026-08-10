@@ -87,17 +87,27 @@ are indifferent to which source produced them. Files come from the partitions, f
 from `dirs.parquet`; the corpus is capped at `MAX_CORPUS` (200 000), the same cap the
 walk uses, and flags `truncated` the same way.
 
-Two flags carry the decision:
+Two flags travel with it:
 
 - **`covered`** — the scan visited *this exact directory* (a `dirs.parquet` row for
   `root`), not merely some ancestor. A folder that was pruned, ignored, or left below a
   cancelled run's frontier therefore reports honestly instead of answering with a
-  partial corpus.
-- **`fresh`** — the last compaction is within `FRESH_MAX_AGE_S` (1 h). There is no
-  watcher (`scan.md`), so this is the honest bound on how wrong the corpus can be. It
-  is a trade, not a fact about the data: long enough that the index is used during a
-  working session, short enough that a morning's edits don't answer an afternoon's
-  search.
+  partial corpus. **This is the gate**: covered means the index answers, uncovered means
+  the live walk does.
+- **`fresh`** — the last compaction is within `FRESH_MAX_AGE_S` (1 h). Reported, not
+  enforced. Age does not decide anything because the index is rescanned at every
+  startup, a rescan keeps serving its last completed generation
+  (`index-store.md §4`), and the search box says "indexing…" while one runs. An
+  instant, mostly-right answer under a visible caveat beats re-walking the tree; a
+  folder the index never reached has no answer at all, and that is what falls back.
+
+The client's decision table (`apps/explorer/listing/index-corpus.ts`):
+
+| has index | scanning | search reads | indicator |
+|---|---|---|---|
+| no | — | the live walk | "building index… N files" (optional) |
+| yes | yes | the index (last completed generation) | "indexing…" — required |
+| yes | no | the index | none |
 
 **A miss is never an error.** No index yet, a first-boot scan still running, a root
 outside the scanned roots, a stale index, a failed request — all of them return

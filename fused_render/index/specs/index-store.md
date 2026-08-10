@@ -14,7 +14,7 @@ nesting come for free, and no test can write into a real home.
 
 | Path | Contents |
 |---|---|
-| `<index>/files/part-NNNNN.parquet` | file rows, globally sorted by path |
+| `<index>/files/part-<gen>-NNNNN.parquet` | file rows, globally sorted by path; one generation per compaction (§4) |
 | `<index>/dirs.parquet` | one row per directory: signature + reuse metadata |
 | `<index>/partitions.json` | manifest: row count, per-partition path ranges |
 | `<index>/fsevents.json` | per-root journal position (`scan-incremental.md §3`) |
@@ -88,21 +88,32 @@ dropped from the index — which is how deletions and newly-ignored folders leav
 3. **Merge** — `old rows WHERE outside OR kept` `UNION ALL` new shard rows, deduped by
    `QUALIFY row_number() OVER (PARTITION BY path ORDER BY mtime DESC) = 1`, then
    `ORDER BY path`.
-4. **Partition** — `cfg.part_rows` (500 000) rows per `part-NNNNN.parquet`, row group
-   size 65 536, recording each partition's `min`/`max` path and row count.
+4. **Partition** — `cfg.part_rows` (500 000) rows per
+   `part-<generation>-NNNNN.parquet`, row group size 65 536, recording each partition's
+   `min`/`max` path and row count. The generation is the previous manifest's plus one.
 5. **Directory table** — `old WHERE outside OR kept` `UNION ALL` new dir rows, deduped
    by `dir` keeping the highest `mtime_ns`, sorted by `dir`.
-6. **Swap** — `files.new` replaces `files` by `rmtree` + `rename`; `dirs.parquet.new`
-   and `partitions.json.new` land via `os.replace`; shards are deleted.
+6. **Swap** — `dirs.parquet.new` and `partitions.json.new` land via `os.replace`, the
+   manifest **last**; shards are deleted; then partitions older than the previous
+   generation are reclaimed.
 
-Two consequences worth knowing:
+Three consequences worth knowing:
 
 - **Multi-root indexes work.** The `outside` clause preserves rows for trees other than
   the current root, so scanning `~/Documents` after `~/code` keeps both — while
   `stats` reports only the last root (`query.md §2`).
-- **The swap is atomic-ish, not atomic.** `files` is removed and renamed as two steps,
-  so a crash in that window can leave the index missing. Each individual file swap is
-  atomic.
+- **The index stays readable throughout a rescan.** New partitions are written *beside*
+  the live ones under a fresh generation number, and the manifest — which is what
+  readers follow — is swapped atomically at the end. A query landing mid-compaction
+  answers from the last completed generation; a crash leaves that generation intact.
+  (OpenIndex `rmtree`d the files dir and renamed the new one in, so a query in that
+  window found the partitions its manifest named already deleted.) This is what makes
+  "keep serving the index while a rescan runs" a fact rather than a hope.
+- **Readers must use the manifest, never a glob.** `partition_files` /
+  `query._sources` read exactly what the manifest names. A `files/*.parquet` glob would
+  see a half-written generation and would also keep counting the previous one, which is
+  deliberately left on disk one compaction longer for a reader that loaded the manifest
+  microseconds before the swap.
 
 ## Non-goals
 
@@ -112,9 +123,11 @@ Two consequences worth knowing:
 
 ## Open questions
 
-- The `files` directory swap is not crash-atomic (§4).
 - `partitions.json` records `last_root` only, so an index holding several roots has no
   record of the others.
+- Two generations of partitions can exist at once, so a large index transiently costs
+  up to twice its size on disk (§4). Reclaiming the older one sooner would need a
+  reader lease, which is more machinery than the disk is worth.
 
 ## See also
 
