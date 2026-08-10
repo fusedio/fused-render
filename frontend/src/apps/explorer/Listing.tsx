@@ -1021,7 +1021,12 @@ export default function Listing({
                   ref={searchInputRef}
                   type="search"
                   className="listing-search-input"
-                  placeholder="Start typing to search…"
+                  // Just "Search…": the row shares the crumb bar now, and the
+                  // resting box is deliberately small (it grows to the whole
+                  // strip on the first keystroke), so the placeholder has to
+                  // fit that box rather than set its width. "Start typing to
+                  // search" was instructions for a control that needs none.
+                  placeholder="Search…"
                   value={query}
                   onFocus={prefetchWalk}
                   onChange={(e) => setQuery(e.target.value)}

@@ -1002,21 +1002,19 @@ table.listing-table tr.skel-row:hover {
 }
 
 /* Crumbs and the search box now share one row, so the box needs a size of its
-   own. It GROWS — with the seam over the header gone (see .listing-pane-slot)
-   the strip reads as one wide bar, and the search box is the thing in it worth
-   making wide. 320px of basis, up to 460px so a maximised window does not hand
-   it half the screen, and never below 140px (about "Start typing…" plus a few
-   characters of what was typed).
+   own — and at rest it is SMALL. An idle search box is a target to click, not
+   a field to read, and the bar's real subject is the path; a wide empty input
+   sitting in the middle of it was the loudest thing in the strip and the least
+   used. 150px is a little more than "Search…" needs, and it stops there: the
+   box does not grow, so the free width stays with the crumbs (whose trailing
+   whitespace is the click-to-edit target).
 
-   The crumbs still grow too, so the whitespace right of the last crumb — the
-   click-to-edit target — does not vanish; they just yield the row's width
-   first when it runs short (the shrink weight below). Ellipsizing and then
-   scrolling is what a path bar is built to do (.path-crumb.shrink), whereas a
-   squeezed input is just broken. */
+   It is only at rest. The first keystroke hands the box the whole strip — see
+   the `.searching` rules below — so this width has to serve the empty state
+   and nothing else. */
 .crumb-search-slot .listing-search-box {
-  flex: 1 1 320px;
-  max-width: 460px;
-  min-width: 140px;
+  flex: 0 1 150px;
+  min-width: 110px;
 }
 
 #breadcrumb:has(.crumb-search-slot) .crumbs {
@@ -1038,15 +1036,15 @@ table.listing-table tr.skel-row:hover {
 }
 
 /* Both halves of that: the ROW has to grow (idle it is `0 1 auto`, sized to
-   its box) and the box inside it has to be allowed past the resting cap. Only
-   then does the field actually span the strip rather than sitting at 460px
-   with the freed-up crumb width as dead space beside it. */
+   its box) and so does the BOX (idle `0 1 200px`). Only then does the field
+   actually span the strip rather than sitting at its resting width with the
+   freed-up crumb width as dead space beside it. */
 #breadcrumb:has(.listing-search.searching) .listing-search {
   flex: 1 1 auto;
 }
 
 #breadcrumb:has(.listing-search.searching) .listing-search-box {
-  max-width: none;
+  flex: 1 1 auto;
 }
 
 /* Terse now ("1.2K · 45.1K…" rather than the full sentence — Listing.tsx keeps
