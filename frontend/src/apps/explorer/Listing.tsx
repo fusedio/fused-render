@@ -219,19 +219,9 @@ export default function Listing({
 
   const base = fsPath.replace(/\/$/, "");
 
-  // "Up" navigation for the button beside the search box: hop to the parent
-  // folder. It does NOT seed the parent's `?sel=` with the folder you came
-  // from: navigate() starts every folder on a fresh query string (router.ts),
-  // and the parent lands on its first entry like any other folder open — the
-  // param restores a selection, it does not carry one across. Disabled at
-  // the filesystem / drive root, where dirname collapses to the folder itself.
-  const here = normDir(base);
-  const parentDir = dirname(here);
-  const atRoot = parentDir === here;
-  const goUp = () => {
-    if (atRoot) return;
-    navigate(parentDir, { isDir: true });
-  };
+  // No "Up" BUTTON beside the search box any more: the crumb strip above is
+  // the same hop with a target the user can name, and the keyboard keeps its
+  // own (Mod+Up / bare Backspace — see listing/useListingShortcuts).
 
   // Tell the caller whether this folder's top level holds exactly one HTML
   // ("app") file. Keyed off the plain listing, not the search results — the
@@ -940,28 +930,6 @@ export default function Listing({
               and the host listing's search/toggle already own that chrome. */}
           {!embedded && (
             <div className="listing-search">
-              <button
-                type="button"
-                className="bar-ctl bar-ctl-icon"
-                title={atRoot ? "Already at the root" : "Up to parent folder"}
-                aria-label="Up to parent folder"
-                disabled={atRoot}
-                onClick={goUp}
-              >
-                <svg
-                  viewBox="0 0 24 24"
-                  width="16"
-                  height="16"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="2"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                >
-                  <line x1="12" y1="19" x2="12" y2="5" />
-                  <polyline points="5 12 12 5 19 12" />
-                </svg>
-              </button>
               {/* The box wraps input + pinned chips so the pane toggle can sit to
             their right without disturbing the chips' inside-the-input pin.
             `has-pin` says a chip is actually pinned right now, so the input
