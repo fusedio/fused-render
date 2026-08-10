@@ -35,6 +35,19 @@ def _index(tmp_path, root, files, dirs=()):
     return cfg
 
 
+@pytest.mark.parametrize("awkward", ["Dave's stuff", "brack[et]s"])
+def test_reading_the_index_survives_a_store_path_with_metachars(tmp_path, awkward):
+    """The reader interpolates dirs.parquet into SQL too, so it has the same
+    exposure the compaction had: an apostrophe closes the literal and a `[`
+    turns the path into a glob that matches nothing."""
+    home = tmp_path / awkward
+    home.mkdir()
+    cfg = _index(home, "/r", ["/r/alpha.txt"])
+    out = search_under(cfg, "/r")
+    assert out["covered"] is True
+    assert [e["rel"] for e in out["entries"]] == ["alpha.txt"]
+
+
 def test_search_under_returns_walk_shaped_entries(tmp_path):
     cfg = _index(tmp_path, "/r", ["/r/alpha.txt", "/r/sub/beta.md"],
                  dirs=["/r/sub"])

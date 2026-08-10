@@ -144,6 +144,28 @@ def test_compact_writes_sorted_partitions_and_a_manifest(tmp_path):
     assert not os.path.isdir(shards)
 
 
+@pytest.mark.parametrize("awkward", ["Dave's stuff", "brack[et]s", "star*dir"])
+def test_compact_survives_a_store_path_with_sql_or_glob_metachars(tmp_path, awkward):
+    """The store dir is the USER's path (FUSED_RENDER_HOME under their home),
+    so it can hold anything a filename can. An apostrophe closed the SQL
+    literal and made every compaction a syntax error — the index could never
+    build at all. A '[' silently matched no files, because DuckDB's glob has
+    no escape (verified on 1.5.5): the fix is to list the shard files
+    explicitly rather than hand DuckDB a pattern built from a real path."""
+    home = tmp_path / awkward
+    home.mkdir()
+    cfg = _cfg(home)
+    shards = _shard(home, cfg, [
+        ("/r", _scanned("s", [_row("/r/a.txt"), _row("/r/b.txt")], 20, 1, 0))])
+    summary = compact(cfg, "/r", shards, pa, pq)
+    assert summary["rows"] == 2
+    part = os.path.join(cfg.files_dir, read_manifest(cfg)["partitions"][0]["file"])
+    assert pq.read_table(part).column("path").to_pylist() == ["/r/a.txt", "/r/b.txt"]
+    # a second compaction reads the first one's partitions back
+    assert compact(cfg, "/r", _shard(home, cfg, [
+        ("/r", _scanned("s2", [_row("/r/a.txt")], 10, 2, 0))]), pa, pq)["rows"] == 1
+
+
 def test_compact_dedupes_by_path_keeping_the_newest_mtime(tmp_path):
     cfg = _cfg(tmp_path)
     compact(cfg, "/r", _shard(tmp_path, cfg, [

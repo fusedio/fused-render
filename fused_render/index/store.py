@@ -84,6 +84,27 @@ def _sql(s: str) -> str:
     return s.replace("'", "''")
 
 
+def shard_files(shards_dir: str, pattern: str) -> list:
+    """Shard files matching `pattern`, listed rather than globbed downstream.
+
+    `glob.escape` on the DIRECTORY half only: the pattern's own `*` has to
+    stay a wildcard, while the store path is the user's and may contain the
+    very metacharacters the pattern language uses."""
+    import glob as globmod
+    return sorted(globmod.glob(os.path.join(globmod.escape(shards_dir), pattern)))
+
+
+def parquet_src(paths):
+    """`read_parquet` over an EXPLICIT file list, or None for no files.
+
+    Never a glob string built from a real path: DuckDB's glob has no escape
+    (checked on 1.5.5 — a `[` in the directory silently matches nothing), and
+    an unescaped path would also close the SQL literal on an apostrophe."""
+    if not paths:
+        return None
+    return "read_parquet([" + ",".join(f"'{_sql(p)}'" for p in paths) + "])"
+
+
 def like_literal(s: str) -> str:
     """`s` as a LITERAL inside a LIKE pattern: quotes doubled for the SQL
     string, and LIKE's own metachars (`\\`, `%`, `_`) escaped so an `_` in a
@@ -335,52 +356,62 @@ def _compact_locked(cfg: IndexConfig, root, shards_dir, pa, pq, emit=None):
     outside = (f"(dir <> '{_sql(rootp)}' "
                f"AND dir NOT LIKE '{prefix_like}%' ESCAPE '\\')")
 
-    import glob as globmod
-
-    tmp_new_dirs = os.path.join(shards_dir, "_dirs-*.parquet")
-    tmp_keep = os.path.join(shards_dir, "_keep-*.parquet")
-    has_shards = bool(globmod.glob(os.path.join(shards_dir, "shard-*.parquet")))
+    # Every path below reaches SQL through parquet_src/_sql, never as a raw
+    # f-string: the store lives under the user's home, so a quote or a glob
+    # metacharacter in it is ordinary, not exotic.
+    tmp_new_dirs = parquet_src(shard_files(shards_dir, "_dirs-*.parquet"))
+    tmp_keep = parquet_src(shard_files(shards_dir, "_keep-*.parquet"))
+    shard_src = parquet_src(shard_files(shards_dir, "shard-*.parquet"))
+    has_shards = shard_src is not None
     old_files = [p for p in partition_files(cfg, old_manifest) if os.path.exists(p)]
     has_old = bool(old_files)
-    old_src = ("read_parquet([" + ",".join(f"'{_sql(p)}'" for p in old_files) + "])"
-               if has_old else None)
+    old_src = parquet_src(old_files)
+    dirs_src = parquet_src([dirs_parquet] if os.path.exists(dirs_parquet) else [])
 
-    n_new_dirs = con.execute(
-        f"SELECT count(*) FROM read_parquet('{tmp_new_dirs}')").fetchone()[0]
-    kept = f"dir IN (SELECT dir FROM read_parquet('{tmp_keep}'))"
+    n_new_dirs = (con.execute(
+        f"SELECT count(*) FROM {tmp_new_dirs}").fetchone()[0]
+        if tmp_new_dirs else 0)
+    # A closed Sink always writes a _keep table, but an empty shards dir (no
+    # Sink ran) leaves nothing to match: keep nothing rather than fail.
+    kept = (f"dir IN (SELECT dir FROM {tmp_keep})" if tmp_keep else "false")
 
     # dirs diff counts vs the previous index
     changed, added, removed = 0, 0, 0
     old_dirs_src = None
-    if os.path.exists(dirs_parquet):
+    if dirs_src and tmp_new_dirs:
         cols = pq.read_schema(dirs_parquet).names
         mt = "mtime_ns" if "mtime_ns" in cols else "CAST(0 AS BIGINT) AS mtime_ns"
         ns = ("n_subdirs" if "n_subdirs" in cols
               else "CAST(-1 AS INTEGER) AS n_subdirs")
         old_dirs_src = (f"SELECT dir, sig, n_files, total_size, {mt}, {ns} "
-                        f"FROM read_parquet('{dirs_parquet}')")
+                        f"FROM {dirs_src}")
         old_in = f"SELECT dir, sig FROM ({old_dirs_src}) WHERE NOT {outside}"
         changed = con.execute(
-            f"SELECT count(*) FROM ({old_in}) o JOIN read_parquet('{tmp_new_dirs}') n "
+            f"SELECT count(*) FROM ({old_in}) o JOIN {tmp_new_dirs} n "
             f"USING (dir) WHERE o.sig <> n.sig").fetchone()[0]
         added = con.execute(
-            f"SELECT count(*) FROM read_parquet('{tmp_new_dirs}') n "
+            f"SELECT count(*) FROM {tmp_new_dirs} n "
             f"WHERE n.dir NOT IN (SELECT dir FROM ({old_in}) o)").fetchone()[0]
         removed = con.execute(
             f"SELECT count(*) FROM ({old_in}) o "
-            f"WHERE o.dir NOT IN (SELECT dir FROM read_parquet('{tmp_new_dirs}')) "
+            f"WHERE o.dir NOT IN (SELECT dir FROM {tmp_new_dirs}) "
             f"AND NOT o.{kept}").fetchone()[0]
     else:
         added = n_new_dirs
 
     def root_totals(src):
-        """files / folders / bytes under the scan root, from the index."""
+        """files / folders / bytes under the scan root, from the index.
+
+        dirs.parquet is re-resolved per call rather than reused from above:
+        this runs both before and after the file is replaced."""
         rf, rs = (con.execute(
             f"SELECT count(*), coalesce(sum(size),0) FROM {src} "
             f"WHERE NOT {outside}").fetchone() if src else (0, 0))
+        dirs_now = parquet_src(
+            [dirs_parquet] if os.path.exists(dirs_parquet) else [])
         rd = con.execute(
-            f"SELECT count(*) FROM read_parquet('{dirs_parquet}') "
-            f"WHERE NOT {outside}").fetchone()[0]
+            f"SELECT count(*) FROM {dirs_now} "
+            f"WHERE NOT {outside}").fetchone()[0] if dirs_now else 0
         return {"root_files": int(rf), "root_size": int(rs),
                 "root_dirs": int(rd)}
 
@@ -402,7 +433,7 @@ def _compact_locked(cfg: IndexConfig, root, shards_dir, pa, pq, emit=None):
     if has_old:
         srcs.append(f"SELECT * FROM {old_src} WHERE {outside} OR {kept}")
     if has_shards:
-        srcs.append(f"SELECT * FROM read_parquet('{shards_dir}/shard-*.parquet')")
+        srcs.append(f"SELECT * FROM {shard_src}")
     src = " UNION ALL ".join(srcs) or None
 
     parts = []
@@ -419,32 +450,40 @@ def _compact_locked(cfg: IndexConfig, root, shards_dir, pa, pq, emit=None):
             con.execute(
                 f"COPY (SELECT * FROM merged LIMIT {cfg.part_rows} "
                 f"OFFSET {i * cfg.part_rows}) "
-                f"TO '{fp}' (FORMAT PARQUET, ROW_GROUP_SIZE 65536)")
+                f"TO '{_sql(fp)}' (FORMAT PARQUET, ROW_GROUP_SIZE 65536)")
             lo, hi, n = con.execute(
                 f"SELECT min(path), max(path), count(*) "
-                f"FROM read_parquet('{fp}')").fetchone()
+                f"FROM {parquet_src([fp])}").fetchone()
             parts.append({"file": os.path.basename(fp), "min": lo, "max": hi,
                           "rows": n})
 
     # dirs.parquet: old rows outside root or unchanged inside it + new rows
     phase("writing signatures")
-    if old_dirs_src:
+    dirs_out = _sql(dirs_parquet + ".new")
+    if old_dirs_src and tmp_new_dirs:
         con.execute(
             f"COPY (SELECT * FROM ({old_dirs_src}) WHERE {outside} OR {kept} "
-            f"UNION ALL SELECT * FROM read_parquet('{tmp_new_dirs}') "
+            f"UNION ALL SELECT * FROM {tmp_new_dirs} "
             f"QUALIFY row_number() OVER (PARTITION BY dir ORDER BY mtime_ns DESC) = 1 "
             f"ORDER BY dir) "
-            f"TO '{dirs_parquet}.new' (FORMAT PARQUET)")
-    else:
+            f"TO '{dirs_out}' (FORMAT PARQUET)")
+    elif tmp_new_dirs:
         con.execute(
-            f"COPY (SELECT * FROM read_parquet('{tmp_new_dirs}') ORDER BY dir) "
-            f"TO '{dirs_parquet}.new' (FORMAT PARQUET)")
+            f"COPY (SELECT * FROM {tmp_new_dirs} ORDER BY dir) "
+            f"TO '{dirs_out}' (FORMAT PARQUET)")
+    elif old_dirs_src:
+        con.execute(
+            f"COPY (SELECT * FROM ({old_dirs_src}) WHERE {outside} OR {kept} "
+            f"ORDER BY dir) TO '{dirs_out}' (FORMAT PARQUET)")
 
     # The swap. Both replacements are atomic, and the manifest goes LAST: until
     # that line lands, every reader is answering from the previous generation,
     # whose files are all still on disk (specs/index-store.md §4).
     os.makedirs(cfg.dir, exist_ok=True)
-    os.replace(dirs_parquet + ".new", dirs_parquet)
+    # Absent only when there was neither a dirs shard nor a previous
+    # dirs.parquet to carry forward — nothing to swap in.
+    if os.path.exists(dirs_parquet + ".new"):
+        os.replace(dirs_parquet + ".new", dirs_parquet)
     _write_manifest(cfg, {"updated": time.time(), "last_root": root,
                           "rows": total_rows, "partitions": parts,
                           "generation": generation})

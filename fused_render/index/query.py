@@ -18,7 +18,7 @@ import re
 
 from fused_render.index.config import IndexConfig
 from fused_render.index.ignore import norm
-from fused_render.index.store import like_literal, read_manifest
+from fused_render.index.store import like_literal, parquet_src, read_manifest
 
 _DRIVE = re.compile(r"^[A-Za-z]:/")
 
@@ -46,6 +46,13 @@ FRESH_MAX_AGE_S = 3600.0
 def _q(s: str) -> str:
     """A SQL string literal's contents (single quotes doubled)."""
     return s.replace("'", "''")
+
+
+def dirs_src(cfg: IndexConfig) -> str:
+    """dirs.parquet as an explicit one-file list, never a glob string — the
+    store path is the user's, and DuckDB's glob has no escape for a `[` in
+    it (store.parquet_src)."""
+    return parquet_src([cfg.dirs_parquet])
 
 
 def prune(parts, prefix):
@@ -150,7 +157,7 @@ def stats(cfg: IndexConfig, root: str = "") -> dict:
     types = []
     if os.path.exists(cfg.dirs_parquet):
         n_dirs = con.execute(
-            f"SELECT count(*) FROM read_parquet('{_q(cfg.dirs_parquet)}') "
+            f"SELECT count(*) FROM {dirs_src(cfg)} "
             f"WHERE {inside}").fetchone()[0]
     if m.get("partitions"):
         by_ext = con.execute(
@@ -211,7 +218,7 @@ def search_under(cfg: IndexConfig, root: str, q: str = "", limit: int = MAX_CORP
     # a partial index honest: a root whose parent was scanned but which was
     # itself pruned (ignored, or below a cancelled run's frontier) has no row.
     covered = con.execute(
-        f"SELECT count(*) FROM read_parquet('{_q(cfg.dirs_parquet)}') "
+        f"SELECT count(*) FROM {dirs_src(cfg)} "
         f"WHERE dir = '{_q(root)}'").fetchone()[0] > 0
     if not covered:
         return {**empty, "updated": updated, "age_s": age}
@@ -246,7 +253,7 @@ def search_under(cfg: IndexConfig, root: str, q: str = "", limit: int = MAX_CORP
         room = limit - len(entries)
         ddepth = "(length(dir) - length(replace(dir, '/', '')))"
         drows = con.execute(
-            f"SELECT dir, mtime_ns FROM read_parquet('{_q(cfg.dirs_parquet)}') "
+            f"SELECT dir, mtime_ns FROM {dirs_src(cfg)} "
             f"WHERE dir LIKE '{prefix_like}%' ESCAPE '\\'{dlike} "
             f"ORDER BY {ddepth}, dir LIMIT {room + 1}").fetchall()
         for d, mtime_ns in drows[:room]:
