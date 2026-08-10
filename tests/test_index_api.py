@@ -185,7 +185,7 @@ def test_saving_a_changed_ignore_list_reconciles_the_index(home, tmp_path, monke
                         or {"run_id": "r", "root": root})
     cfg = load_config()
     # pretend an index exists, built under the current rules
-    index_router.save_applied_ignore(cfg)
+    index_router.save_applied_ignore(cfg, index_router.scan_roots(cfg)[0])
     body = _client(tmp_path).post(
         "/api/index/config", json={"ignore": ["node_modules", "target"]},
         headers={"X-Fused": "1"}).json()
@@ -199,7 +199,7 @@ def test_saving_an_unchanged_ignore_list_starts_nothing(home, tmp_path, monkeypa
     monkeypatch.setattr(index_router.runner, "start",
                         lambda cfg, root, full=False: started.append(root))
     cfg = load_config()
-    index_router.save_applied_ignore(cfg)
+    index_router.save_applied_ignore(cfg, index_router.scan_roots(cfg)[0])
     body = _client(tmp_path).post("/api/index/config",
                                   json={"ignore": list(cfg.ignore)},
                                   headers={"X-Fused": "1"}).json()
@@ -408,3 +408,32 @@ def test_startup_scan_skips_a_root_that_is_gone(home, tmp_path, monkeypatch):
     index_router.save_config(cfg)
     index_router.run_startup_scan(start_dir=str(tmp_path))
     assert started == [str(ok)]
+
+
+def test_a_rules_edit_rescans_every_stale_root_not_just_the_first(home, tmp_path, monkeypatch):
+    """The reconciling rescan used to go to roots[0] only; the first root's
+    scan then stamped the (global) fingerprint and every other root looked
+    reconciled forever — re-included folders stayed permanently missing from
+    their slices. Every root whose per-root sig differs gets its own scan."""
+    started = []
+
+    def fake_start(cfg, root, full=False):
+        started.append(root)
+        return {"run_id": f"r{len(started)}", "root": root}
+
+    monkeypatch.setattr(index_router.runner, "start", fake_start)
+    a = tmp_path / "a"
+    b = tmp_path / "b"
+    a.mkdir()
+    b.mkdir()
+    cfg = load_config()
+    cfg.roots = [str(a), str(b)]
+    index_router.save_config(cfg)
+    index_router.save_applied_ignore(cfg, str(a))
+    index_router.save_applied_ignore(cfg, str(b))
+    body = _client(tmp_path).post(
+        "/api/index/config", json={"ignore": ["node_modules", "target"]},
+        headers={"X-Fused": "1"}).json()
+    assert body["needs_rescan"] is True
+    assert started == [str(a), str(b)]
+    assert body["rescan_run_ids"] == ["r1", "r2"]

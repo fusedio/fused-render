@@ -247,27 +247,31 @@ def api_index_config_write(body: dict = Body(default={}),
             cfg.ignore = cleaned
             cfg._rules = None
     saved = save_config(cfg)
-    # Reconcile. The engine fingerprints the rules an index was BUILT under
-    # (index/specs/scan-ignore.md §4): while they differ, the store still holds
-    # rows for folders the user just excluded and is still missing the ones
-    # they just re-included. The next scan is what fixes that — it sees the
-    # mismatch, discards the reuse cache and rebuilds — so a save starts one
-    # rather than leaving the index disagreeing with the rules until a reboot.
-    # Nothing to reconcile before a first scan: an absent fingerprint means
-    # there is no index, and the startup scheduler will use the new rules.
-    applied = applied_ignore_sig(saved)
-    needs_rescan = applied is not None and applied != saved.rules.sig()
-    rescan_run_id = None
-    if needs_rescan:
+    # Reconcile. The engine fingerprints the rules each root's slice of the
+    # index was BUILT under (index/specs/scan-ignore.md §4): while they
+    # differ, the store still holds rows for folders the user just excluded
+    # and is still missing the ones they just re-included. The next scan is
+    # what fixes that — it sees the mismatch, discards the reuse cache and
+    # rebuilds — so a save starts one PER STALE ROOT rather than only the
+    # first: each root reconciles on its own scan, and a root left out here
+    # would look reconciled forever once its own sig was stamped. A root with
+    # no fingerprint yet has no index slice to reconcile; the startup
+    # scheduler scans it under the new rules anyway.
+    sig = saved.rules.sig()
+    stale = [r for r in scan_roots(saved)
+             if (applied_ignore_sig(saved, r) or sig) != sig]
+    rescan_run_ids = []
+    for root in stale:
         try:
-            roots = scan_roots(saved)
-            started = runner.start(saved, roots[0]) if roots else None
-            rescan_run_id = (started or {}).get("run_id")
+            started = runner.start(saved, root)
+            rescan_run_ids.append((started or {}).get("run_id"))
         except (ValueError, OSError):
-            logger.exception("could not start the post-edit index rescan")
+            logger.exception("could not start the post-edit rescan of %s", root)
     return {"ok": True, "roots": saved.roots, "ignore": saved.ignore,
             "defaults": default_ignore(), "location": saved.dir,
-            "needs_rescan": needs_rescan, "rescan_run_id": rescan_run_id}
+            "needs_rescan": bool(stale),
+            "rescan_run_id": rescan_run_ids[0] if rescan_run_ids else None,
+            "rescan_run_ids": rescan_run_ids}
 
 
 @router.post("/api/index/delete")

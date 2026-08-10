@@ -279,10 +279,36 @@ def test_compact_reads_the_previous_index_through_the_manifest(tmp_path):
 
 def test_applied_ignore_sig_round_trips(tmp_path):
     cfg = _cfg(tmp_path, ignore=["node_modules"])
-    assert applied_ignore_sig(cfg) is None  # nothing built yet
-    save_applied_ignore(cfg)
-    assert applied_ignore_sig(cfg) == cfg.rules.sig()
+    assert applied_ignore_sig(cfg, "/r") is None  # nothing built yet
+    save_applied_ignore(cfg, "/r")
+    assert applied_ignore_sig(cfg, "/r") == cfg.rules.sig()
     assert json.load(open(cfg.applied_ignore_json))["patterns"] == ["node_modules"]
+
+
+def test_applied_ignore_sig_is_per_root(tmp_path):
+    """A single global sig was stamped by whichever root full-rescanned
+    first, after which every other root's scan looked already-reconciled and
+    kept its stale cache — re-included folders stayed permanently missing.
+    Each root now records the rules ITS slice was built under."""
+    old = _cfg(tmp_path, ignore=["node_modules"])
+    save_applied_ignore(old, "/a")
+    new = _cfg(tmp_path, ignore=["node_modules", "target"])
+    save_applied_ignore(new, "/b")
+    assert applied_ignore_sig(new, "/a") == old.rules.sig()  # /a still stale
+    assert applied_ignore_sig(new, "/b") == new.rules.sig()
+    # the rootless form answers "does ANY root differ?" for needs_rescan
+    assert applied_ignore_sig(new) != new.rules.sig()
+    save_applied_ignore(new, "/a")
+    assert applied_ignore_sig(new) == new.rules.sig()
+
+
+def test_applied_ignore_sig_reads_the_pre_per_root_format(tmp_path):
+    cfg = _cfg(tmp_path, ignore=["node_modules"])
+    os.makedirs(cfg.dir, exist_ok=True)
+    with open(cfg.applied_ignore_json, "w") as f:
+        json.dump({"sig": "old-global-sig", "patterns": []}, f)
+    assert applied_ignore_sig(cfg, "/anything") == "old-global-sig"
+    assert applied_ignore_sig(cfg) == "old-global-sig"
 
 
 def test_compact_never_deletes_a_like_metachar_sibling(tmp_path):

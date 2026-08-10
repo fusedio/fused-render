@@ -181,25 +181,60 @@ def read_manifest(cfg: IndexConfig):
         return None
 
 
-def applied_ignore_sig(cfg: IndexConfig):
-    """The ignore fingerprint the CURRENT index was built with (None if
-    unknown — an index predating the feature, which is safe incrementally)."""
+def applied_ignore_sig(cfg: IndexConfig, root: str = ""):
+    """The ignore fingerprint `root`'s slice of the index was built with
+    (None if unknown — an index predating the feature, safe incrementally).
+
+    PER ROOT, because each root reconciles a rules change on its own scan: a
+    single global sig was stamped by whichever root full-rescanned first,
+    after which every other root's next scan looked already-reconciled and
+    ran incrementally against a cache built under the old rules — a parent
+    whose only child was ignored is cached as a leaf (n_subdirs == 0), so a
+    re-included tree under it stayed permanently missing.
+
+    Without `root` this answers whether ANY recorded root differs from the
+    current rules (the router's needs_rescan bit): the current sig if all
+    recorded roots match, else the first differing sig."""
     try:
         with open(cfg.applied_ignore_json) as f:
-            return json.load(f).get("sig")
+            data = json.load(f)
     except (OSError, ValueError):
         return None
+    roots = data.get("roots")
+    if not isinstance(roots, dict):
+        # pre-per-root file: one global sig, which is exact for the single
+        # root it was written by and the safe answer for any other
+        return data.get("sig")
+    if root:
+        return roots.get(root)
+    if not roots:
+        return None
+    sigs = set(roots.values())
+    current = cfg.rules.sig()
+    return current if sigs == {current} else next(
+        s for s in roots.values() if s != current)
 
 
-def save_applied_ignore(cfg: IndexConfig) -> None:
-    """Record the rules this index was built under. Written only after a
-    SUCCESSFUL compaction — a crashed run must not claim its rules applied."""
-    os.makedirs(cfg.dir, exist_ok=True)
-    tmp = cfg.applied_ignore_json + ".new"
-    with open(tmp, "w") as f:
-        json.dump({"sig": cfg.rules.sig(), "patterns": list(cfg.ignore),
-                   "updated": time.time()}, f)
-    os.replace(tmp, cfg.applied_ignore_json)
+def save_applied_ignore(cfg: IndexConfig, root: str) -> None:
+    """Record the rules `root`'s slice of the index was built under. Written
+    only after a SUCCESSFUL compaction — a crashed run must not claim its
+    rules applied. Read-modify-write under the store lock: two roots' workers
+    finishing together must not drop each other's entry."""
+    with store_lock(cfg):
+        try:
+            with open(cfg.applied_ignore_json) as f:
+                data = json.load(f)
+        except (OSError, ValueError):
+            data = {}
+        roots = data.get("roots")
+        if not isinstance(roots, dict):
+            roots = {}
+        roots[root] = cfg.rules.sig()
+        tmp = cfg.applied_ignore_json + ".new"
+        with open(tmp, "w") as f:
+            json.dump({"roots": roots, "patterns": list(cfg.ignore),
+                       "updated": time.time()}, f)
+        os.replace(tmp, cfg.applied_ignore_json)
 
 
 def partition_files(cfg: IndexConfig, manifest=None):

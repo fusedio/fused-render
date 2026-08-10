@@ -311,7 +311,7 @@ def run_scan(run_dir: str) -> None:
         # A changed ignore list invalidates the cache: cached dirs carry subdir
         # counts computed under the old rules, so an incremental scan would keep
         # skipping folders that are no longer ignored.
-        applied = applied_ignore_sig(cfg)
+        applied = applied_ignore_sig(cfg, root)
         rules_changed = applied is not None and applied != rules.sig()
         cache = ({} if (spec.get("full") or rules_changed)
                  else load_dir_cache(cfg, root, pq))
@@ -354,7 +354,7 @@ def run_scan(run_dir: str) -> None:
             if summary is not None and fs_id0 is not None and fs_uuid:
                 fsevents.save_state(cfg, root, fs_id0, fs_uuid, devs)
             if summary is not None:
-                save_applied_ignore(cfg)
+                save_applied_ignore(cfg, root)
                 _emit(ev, type="run_end", msg="complete", summary=summary)
             return
 
@@ -450,7 +450,7 @@ def run_scan(run_dir: str) -> None:
                        seconds=round(time.time() - t0, 1))
         if fs_id0 is not None and fs_uuid:
             fsevents.save_state(cfg, root, fs_id0, fs_uuid, devs)
-        save_applied_ignore(cfg)
+        save_applied_ignore(cfg, root)
         _emit(ev, type="run_end", msg="complete", summary=summary)
     except Exception:
         import traceback
