@@ -1,6 +1,6 @@
 // The single notification surface: one fixed, bottom-right column holding
-// every transient toast (lib/toast) with the server-health card pinned at its
-// foot. Mounted once by App.
+// every transient toast (lib/toast), the download manager, and the
+// server-health card pinned at its foot. Mounted once by App.
 //
 // It replaced three competing surfaces — a bottom-centre global toast stack, a
 // per-pane toast each of Listing and Preview positioned and expired itself,
@@ -14,11 +14,20 @@
 // them: it is the one entry that outlives any toast, so it must not shuffle as
 // toasts come and go. Styling is .notif-host in shell.css.
 //
+// The column is ordered by LIFETIME, which is why the download manager (SPEC
+// §36) sits between the toasts and the server card: a toast is seconds, a
+// background job is minutes, the server card outlives the session. Anything
+// long-lived must be below anything short-lived, or a job's rows would shift
+// under the pointer every time an unrelated "Path copied" arrived and expired.
+//
 // Panes keep their attribution for free: in panel/tab mode each pane is its
 // own document, so a pane's toast renders in THAT pane's bottom-right corner,
-// not the window's. Only the top-level document shows the server card (an
-// embed would otherwise render one per pane, all saying the same thing).
+// not the window's. Only the top-level document shows the server card and the
+// download manager (an embed would otherwise render one per pane, all saying
+// the same thing — and the job list is global, so every copy would be
+// identical).
 import Toast from "@platform/ui/Toast";
+import DownloadManager from "@platform/ui/DownloadManager";
 import ServerStatusBanner from "@platform/ui/ServerStatusBanner";
 import { dismissToast, useToasts } from "@platform/lib/toast";
 import { IS_EMBED } from "@platform/lib/router";
@@ -42,6 +51,7 @@ export default function NotificationHost() {
           />
         </div>
       ))}
+      {!IS_EMBED && <DownloadManager />}
       {!IS_EMBED && <ServerStatusBanner />}
     </div>
   );

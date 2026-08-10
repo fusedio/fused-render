@@ -57,11 +57,13 @@ fused-render/
 │   │       ├── render.py       # /render
 │   │       ├── run.py          # /api/run
 │   │       ├── env.py          # script-venv install loader: /api/env/install|progress|cancel (PY-18/D173)
+│   │       ├── jobs.py         # background-job registry: /api/jobs report|list|cancel|dismiss|clear (SPEC §36/D244)
 │   │       └── export.py       # /api/export
 │   ├── executor.py             # runner: in-process for first-party helpers, subprocess for user code (D72)
 │   ├── _child.py               # worker-process entry (subprocess path)
 │   ├── _binding.py             # param coercion shared by both execution paths
 │   ├── logs.py                 # rotating app log for 500 / right-click-open diagnostics (D68)
+│   ├── jobs.py                 # the background-job registry itself (in-memory, swept) — the download manager's model
 │   ├── static/
 │   │   ├── shell-dist/         # Vite build of frontend/ (gitignored, D54; built by dev / packaging hook)
 │   │   └── runtime.js          # injected into every rendered HTML (plain JS, NOT part of the React app)
@@ -169,6 +171,17 @@ Request:
 {"ok": false, "error": {"type": "ZeroDivisionError", "message": "…", "traceback": "…"}, "stdout": "…"}
 ```
 Endpoint is sync `def` → FastAPI runs it in its threadpool → concurrent runPython calls work (RH-4).
+
+### `/api/jobs` — background jobs (SPEC §36, D244)
+
+`GET /api/jobs` → `{jobs, now}` (unguarded read). `POST /api/jobs` upserts one
+record from a reporter (X-Fused; applies only the keys present, so a progress
+tick cannot blank the title, and answers with the stored record — which is how
+the reporter learns `cancel_requested`). `POST /api/jobs/{id}/cancel` flags a
+running job; `POST /api/jobs/{id}/dismiss` closes a finished one (409 on a
+running one); `POST /api/jobs/clear` closes all finished. State lives in
+`fused_render/jobs.py`, in memory. `/api/jobs` is in `calls.SKIP_PREFIXES` — a
+tick is bookkeeping about a call, not a call.
 
 ### `GET /static/*`
 StaticFiles mount for shell + runtime. Templates dir is NOT statically mounted — templates are served through `/render` like any HTML file.

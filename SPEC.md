@@ -5115,3 +5115,106 @@ wanting "what has this file been through" wants §33.
     kernel stat on a wedged mount hangs the worker; `condition.py` already keeps
     the whole chat template off those paths, and `_snap_target` is the module's
     own guarantee of the same answer (cannot tell → refuse, CT-12).
+
+---
+
+## 36. Activity — Background Jobs & the Download Manager (D244)
+
+Goal: work that outlives the call that started it — a model download, a
+checkpoint pull, a generation that runs for minutes — is visible from anywhere
+in the app, not only from the page that started it.
+
+Before this, every page that started such work drew its own progress bar inside
+itself. The shell tears a page's frame down on every navigation, so browsing to
+another file while an 8GB model downloaded left multi-GB of traffic happening
+with nothing on screen to say so, no way to tell it from a hang, and no way to
+stop it short of quitting the app.
+
+- **AC-1** A **background-job registry** (`fused_render/jobs.py`) holds one
+  record per long-running operation: `{id, title, detail, kind, state, done,
+  total, unit, message, page, cancellable, cancel_requested, started_at,
+  updated_at, finished_at}`. **In memory** — the records describe work
+  happening in THIS app session, and the durable record of what a page did is
+  the call log (§31), not this.
+- **AC-2** **The server holds it, not the page**, because the reporter and the
+  viewer are different documents: a rendered page lives in a same-origin iframe
+  the shell replaces on every navigation, and may not even be in the same
+  browser tab as the shell chrome. The record therefore outlives the document
+  that reports it, and the same registry answers a detached Python worker
+  POSTing to `/api/jobs` directly.
+- **AC-3** **Reporting bridge** (`static/runtime.js`): `fused.job(spec)` returns
+  a handle — `update(fields)`, `finish(detail)`, `fail(message)`, `cancelled()`,
+  plus the read-only `cancelRequested` / `state`. Reporting is **decoration**:
+  every method is fire-and-forget, no rejection escapes, and a page whose
+  reports all fail still does its work. Reports are **serialized** per handle —
+  they are deltas, so two in flight can land out of order and walk a bar
+  backwards. A **rejected** report (bad id, missing title) warns once to the
+  console: silence would leave an author with a page that works and a manager
+  that never shows it.
+- **AC-4** **Cancel is a REQUEST, not a kill.** The server does not know what
+  the work is or which process is doing it, so `POST /api/jobs/{id}/cancel` only
+  sets `cancel_requested`; the reporting page reads it back in the reply to the
+  progress tick it was going to send anyway, and stops the way it knows how. The
+  row stays "running / Cancelling…" until the work actually stops — a row that
+  flipped to "cancelled" while the download carried on underneath would be a lie
+  the UI told to look responsive. A job that never declared itself
+  `cancellable` shows no ✕ at all rather than a dead one.
+- **AC-5** **Stalled, not frozen.** A `running` record with no update for
+  `STALE_AFTER_S` (30s) is reported `stalled: true` — computed on read, so a
+  late tick un-stalls it with no timer involved. The UI dims the row and says
+  *"No longer reporting — the page that started it was closed"*, which is the
+  truth: the reporter is gone, the work very likely is not. It is dropped
+  entirely after `STALE_DROP_S` (10 min) so a dead reporter cannot wedge the
+  list for the session.
+- **AC-6** **Retention.** A finished record stays `FINISHED_TTL_S` (30s) — long
+  enough to be noticed by someone who was not watching the corner, short enough
+  that the manager stays a picture of *now*. An **error is exempt** and stays
+  until dismissed (the persistent-error toast's rule, §3). `MAX_JOBS` (64) caps
+  the list; over the cap, finished rows are evicted before running ones and
+  least-recently-updated first, so a live download is the last thing to go.
+- **AC-7** **Dismiss is for finished rows only** (409 otherwise) — the only
+  honest way to make a running row go away is to stop the work, and a dismiss
+  that hid a live download would restore exactly the state this feature exists
+  to fix. A dismissed id is remembered (bounded), so a poll loop that ticks once
+  more after its job ended cannot resurrect the row the user just closed.
+- **AC-8** **API** (`server/routers/jobs.py`): `GET /api/jobs` (unguarded read,
+  answering `{jobs, now}` — ages are measured against the SERVER's clock, since
+  a throttled tab's `Date.now()` disagrees enough to show a job finishing in the
+  future); `POST /api/jobs` (upsert, applying only the keys present, so a tick
+  carrying `done` cannot blank the title); `POST /api/jobs/{id}/cancel`;
+  `POST /api/jobs/{id}/dismiss`; `POST /api/jobs/clear`. Writes carry the
+  `X-Fused` guard (D36). Attribution comes from the `X-Fused-Page` header, the
+  same rule the call log uses.
+- **AC-9** **Progress ticks are not call-log records** — `/api/jobs` joins
+  `/api/calls` in `calls.SKIP_PREFIXES`. A four-minute download reporting at
+  1.5s is ~160 records describing nothing that happened, and they would spend
+  the rate budget the calls they annotate need.
+- **AC-10** **The download manager** (`platform/ui/DownloadManager.tsx`) renders
+  the list as one card in the shared bottom-right notification stack (§3),
+  between the toasts and the server card — the column is ordered by lifetime
+  (seconds / minutes / the session), so nothing long-lived shifts under the
+  pointer when a short-lived neighbour expires. Top-level document only
+  (`!IS_EMBED`): the list is global, so a copy per pane would say the same thing
+  N times. Hidden entirely when there are no records.
+- **AC-11** **Indeterminate is a first-class state.** A running job with no
+  `total` (or a `total` of 0 — a size not learned yet) draws a travelling fill,
+  never a bar parked at an invented percentage: parking is what makes live work
+  read as frozen (the install loader's D213 lesson). Under
+  `prefers-reduced-motion` the sweep is replaced by a dimmed full-width bar
+  rather than left as a stub the blanket rule stopped mid-travel.
+- **AC-12** **Overall progress averages the running jobs**, it does not sum
+  their bytes: a sum lets one 8GB download swallow a 40MB one, so the header bar
+  would sit still while a whole other job ran start to finish. Any running job
+  with no numbers makes the overall bar indeterminate rather than optimistic.
+- **AC-13** **Poll cadence** is 1s while anything runs, 5s otherwise, and paused
+  while the document is hidden. A same-origin `localStorage` ping
+  (`fused-render:jobs-ping`, written by the runtime on every report and heard
+  through the `storage` event — the mechanism the appearance theme already
+  converges through) makes a new job appear instantly. The ping is an
+  optimisation only: a Python worker reporting straight to the API runs no JS
+  and writes none, so the idle poll is the floor that guarantees its row shows
+  up either way.
+- **AC-14** **Portable.** `fused.job` is a no-op stub in the hosted runtime (the
+  `fused` wheel's copy of the bridge) rather than an export-blocking call like
+  `fused.ai` (RH-11): progress reporting is decoration, and a page that reports
+  it should still deploy — it simply has no manager to report to.

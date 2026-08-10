@@ -17,5 +17,16 @@
     animation: none !important;
     opacity: 0.6;
   }
+
+  /* The download manager's indeterminate bar. Without this the blanket rule
+     above runs its sweep once, in 0.01ms, and leaves a 30% stub parked at the
+     end of the track — which reads as a determinate bar stuck at 30%, the
+     exact misreading the sweep exists to prevent. Pinned to the full width
+     instead: "alive, length unknown", stated statically. */
+  .dl-bar-fill.is-indeterminate {
+    animation: none !important;
+    width: 100%;
+    opacity: 0.5;
+  }
 }
 
