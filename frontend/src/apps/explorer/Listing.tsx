@@ -304,6 +304,21 @@ export default function Listing({
     return () => releaseOverlay();
   }, [menu, dialog]);
 
+  // `selectstart`, cancelled for the whole scroller. This is the half of the
+  // text-selection suppression that used to be preventDefault-on-mousedown (see
+  // onRowMouseDown): it says "no selection begins or extends in here" without
+  // cancelling a mousedown default that a draggable row needs. Registered
+  // natively because React has no synthetic onSelectStart. Nothing inside the
+  // scroller is meant to be selectable — the rows already carry
+  // `user-select: none` — so there is nothing to lose by refusing all of them.
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const onSelectStart = (e: Event) => e.preventDefault();
+    el.addEventListener("selectstart", onSelectStart);
+    return () => el.removeEventListener("selectstart", onSelectStart);
+  }, []);
+
   // FLIP the rows to their new slots whenever the rendered set changes: a column
   // sort, a dir-watch refresh of the plain listing, or a streaming search
   // re-rank (which B4 throttles, so the glide has time to read). navRows is the
@@ -499,7 +514,10 @@ export default function Listing({
       selectOnly(path);
       return;
     }
+    // preventDefault on the CLICK is safe (the drag decision was made long
+    // before), and the collapse catches a range the browser painted anyway.
     e.preventDefault();
+    collapseNativeSelection();
     if (action === "extend") extendTo(path);
     else toggleSelected(path);
   };
@@ -515,22 +533,48 @@ export default function Listing({
     navigate(row.path, { isDir: row.isDir });
   };
 
-  // Kill the browser's own text selection for Shift/Mod+click, on MOUSEDOWN —
-  // the only moment early enough. `user-select: none` on tr.row (shell.css) is
-  // necessary but NOT sufficient: it makes the row's own text unselectable, yet
-  // a Shift+click still sets a selection ENDPOINT, so the browser happily paints
-  // a range anchored at whatever selectable text was last clicked (a crumb, the
-  // search box, anything outside the table) straight across the listing. So:
-  // preventDefault stops a selection from being started or extended, and the
-  // removeAllRanges collapses one that already existed before the gesture.
-  // preventDefault on mousedown does not cancel the subsequent click, so
-  // onRowClick still runs; rows aren't focusable, so the suppressed focus
-  // side-effect costs nothing.
-  const onRowMouseDown = (e: React.MouseEvent) => {
-    if (!e.shiftKey && !isMod(e)) return;
-    e.preventDefault();
+  // Kill the browser's own text selection for Shift/Mod+click.
+  //
+  // `user-select: none` on tr.row (shell.css) is necessary but NOT sufficient:
+  // it makes the row's own text unselectable, yet a Shift+click still sets a
+  // selection ENDPOINT, so the browser happily paints a range anchored at
+  // whatever selectable text was last clicked (a crumb, the search box,
+  // anything outside the table) straight across the listing.
+  //
+  // This used to be `preventDefault()` on the MOUSEDOWN, which is the earliest
+  // moment and stops a range being started or extended at all. It stopped being
+  // safe when rows became DRAG SOURCES. Cancelling a mousedown's default on a
+  // draggable element is how a drag is cancelled, and on WebKit the `click`
+  // that would have followed does not arrive either — so Shift/Mod+click ran
+  // this handler and then nothing else, no range was extended, no row toggled,
+  // and multi-select was silently dead. A plain click never took this branch,
+  // which is exactly the shape the bug was reported in ("multi folder selection
+  // using mouse doesn't work anymore").
+  //
+  // The click-suppression half of that is reported behaviour, not something
+  // this codebase can demonstrate: synthesising a modified NATIVE click is
+  // outside what the available tooling can do. Which is the other reason the
+  // fix is shaped this way — it does not depend on the mechanism being what we
+  // think it is. Nothing here cancels a mousedown default any more, so whatever
+  // that default does to the click is no longer our business.
+  //
+  // So the suppression moved off the mousedown default and onto the two places
+  // that do not fight the drag:
+  //   • `selectstart` on the scroller (registered natively below — React has no
+  //     synthetic event for it), which is the browser's own "a selection is
+  //     about to begin/extend here" hook and cancels it without touching the
+  //     mousedown;
+  //   • collapsing any existing range, here and again after the click has been
+  //     handled, so a range anchored OUTSIDE the listing has nothing to paint
+  //     from.
+  const collapseNativeSelection = () => {
     const winSel = window.getSelection();
     if (winSel && !winSel.isCollapsed) winSel.removeAllRanges();
+  };
+
+  const onRowMouseDown = (e: React.MouseEvent) => {
+    if (!e.shiftKey && !isMod(e)) return;
+    collapseNativeSelection();
   };
 
   // Right-clicking INSIDE an existing multi-row selection keeps it and acts on
