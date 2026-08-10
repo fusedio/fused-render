@@ -102,17 +102,10 @@ def api_config(
 def api_desktop_ready(
     token: str | None = Header(default=None, alias="X-Fused-Desktop-Token"),
 ):
-    # The desktop startup probe (desktop_probe.matching_server) polls this to
-    # confirm the server answering the port is the instance it launched. It
-    # touches NOTHING but the launch token echo — no mounts, no rcd, no dir
-    # picker. Readiness means "the HTTP server is up and is ours", never "every
-    # optional subsystem is warm". The probe used to poll /api/config, whose
-    # learn_mount_ready/sessions_mount_ready then did a live rcd/WinFsp check on
-    # every call (since made cached); a slow cold-start mount attach dragged
-    # each response past the probe's per-request timeout, so the supervisor
-    # declared the server "did not become ready" and killed-and-retried it. A
-    # dedicated endpoint keeps readiness immune whatever /api/config grows to
-    # do. Same echo shape as /api/config so the probe reads desktop_instance.
+    # Readiness probe (desktop_probe.matching_server): echoes only the launch
+    # token — no mounts, rcd, or dir picker — so a slow cold-start subsystem
+    # can't make the supervisor kill a healthy server. Same echo shape as
+    # /api/config so the probe reads desktop_instance.
     from fused_render.paths import desktop_instance
 
     instance = desktop_instance()

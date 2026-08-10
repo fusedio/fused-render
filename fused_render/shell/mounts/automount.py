@@ -28,14 +28,10 @@ BUILTIN_MOUNTS = {
 }
 
 
-# Whether each builtin mount is attached RIGHT NOW, tracked across the automount
-# lifecycle rather than probed live on the request path (builtin_mount_ready).
-# run_automount is the sole writer: it clears every builtin to False before its
-# force-detach+remount pass, then flips one True the moment its own attach_mount
-# succeeds. The invariant that matters: this is True only for a mount THIS run
-# attached — never one that merely survived from a previous run — because the
-# frontend sticky-caches the first True it sees (platform/lib/hooks.ts), so a
-# stale True would pin Learn/Sessions over an empty mountpoint for the session.
+# Whether each builtin is attached right now, tracked across the automount
+# lifecycle (see builtin_mount_ready). True only for a mount THIS run attached,
+# never one that survived a previous run — the frontend sticky-caches the first
+# True it sees (platform/lib/hooks.ts), so a stale True would pin a dead entry.
 _builtin_ready_lock = threading.Lock()
 _builtin_ready: dict[str, bool] = {name: False for name in BUILTIN_MOUNTS}
 
@@ -197,37 +193,11 @@ def sessions_mount_ready() -> bool:
 
 
 def builtin_mount_ready(name: str) -> bool:
-    """True when run_automount has attached this builtin THIS run — an I/O-free
-    read of the lifecycle-tracked _builtin_ready flag, never a live probe.
-
-    The sidebar's Learn entry (Sidebar.tsx) uses this, surfaced through
-    /api/config, to decide whether to render at all.
-
-    Why not a live probe: the old check was `mp in mounted_paths()` plus
-    `_ismount(mp)`, and on Windows `_ismount()` (os.path.ismount/os.lstat on the
-    WinFsp reparse point) BLOCKS for ~the rc timeout while run_automount is
-    mid-attach of the mountpoint. /api/config embeds this for BOTH builtins, so
-    a cold start dragged /api/config to ~60s and the browser window couldn't
-    paint. macOS (nfsmount) and Linux (FUSE) attach fast enough to hide it; the
-    flag read fixes it on every platform.
-
-    Why not the health monitor's cached state: that cache can hold "mounted"
-    from a mount a PREVIOUS run left behind, before ensure_builtin_mount
-    force-detaches it on startup — and since the frontend sticky-caches the
-    first True (platform/lib/hooks.ts), a single stale True pins Learn over an
-    empty mountpoint for the whole session. run_automount instead drops the flag
-    to False before its force-detach and only sets it True once its own
-    attach_mount has re-attached the mount this run, so True always means a
-    mount that is live now. The frontend polls until it sees that True, so the
-    seconds run_automount takes to attach cost only a briefly-absent sidebar
-    entry, never a wrong one. True is written only by an operation that
-    SUCCESSFULLY attached the mount this run — run_automount's own attach, or a
-    manual reconnect_mount after the split-brain `continue` — and reset to False
-    by run_automount at the start of each pass. It is never inferred from an
-    observed "mounted": a mount lingering from a failed force-detach reads
-    mounted while serving stale content, and a transient post-attach snapshot
-    can read not-mounted, so the health monitor deliberately leaves this flag
-    alone."""
+    """True once run_automount has attached this builtin this run — an I/O-free
+    read of the attach-owned _builtin_ready flag (surfaced via /api/config for
+    the sidebar's Learn entry). Not a live probe: an _ismount on the WinFsp
+    mountpoint blocks ~the rc timeout mid-attach, which dragged /api/config to
+    ~60s on a Windows cold start."""
     with _builtin_ready_lock:
         return _builtin_ready.get(name, False)
 

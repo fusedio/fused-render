@@ -214,11 +214,8 @@ def run_automount() -> None:
     # fresh install has zero user mounts, and skipping the attach loop below
     # would otherwise skip the builtins' very first mount too.
     from fused_render.shell.mounts import list_mounts, mounted_paths
-    # Drop builtin readiness before the force-detach+remount below: a mount that
-    # survived from a previous run must not read as ready during the empty
-    # window between detach and re-attach (builtin_mount_ready). Re-set True
-    # per builtin only once its own attach_mount succeeds, so True always means
-    # a mount THIS run attached.
+    # Clear builtin readiness before the force-detach+remount below; each is
+    # re-set True only once its own attach_mount succeeds this run.
     for name in BUILTIN_MOUNTS:
         set_builtin_ready(name, False)
     ensure_builtin_mounts()

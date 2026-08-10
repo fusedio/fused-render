@@ -824,10 +824,8 @@ def reconnect_mount(m: dict) -> str | None:
     if port is not None:
         _stop_serve_for(port, m["remote"])
     err = attach_mount(m)
-    # A builtin repaired out-of-band (this is the manual Reconnect the
-    # run_automount split-brain `continue` defers to) must flip its readiness
-    # flag, or Learn/Sessions stay hidden despite a now-live mount. Only on a
-    # genuine success — a failed reconnect leaves it whatever it was.
+    # A manual reconnect that repairs a builtin (the split-brain path automount
+    # defers to) must flip its readiness flag — only on success.
     if err is None and m.get("builtin"):
         from .automount import set_builtin_ready
         set_builtin_ready(m["builtin"], True)
