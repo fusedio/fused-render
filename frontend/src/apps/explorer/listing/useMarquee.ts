@@ -51,8 +51,9 @@ import {
 
 // Row geometry for the whole listing, measured ONCE per drag from one rendered
 // row (see rowBands on why the model beats a per-row DOM read). Returns [] when
-// there is nothing rendered to measure, which makes the sweep a no-op rather
-// than a selection of everything.
+// there is nothing rendered to measure, which `marqueeHits` reads as "leave the
+// selection alone" — a genuine no-op, rather than a selection of everything or
+// (as it was) a clearing of what the user had.
 function measureBands(scroller: HTMLElement, paths: string[]): RowBand[] {
   const row = scroller.querySelector<HTMLElement>("table.listing-table tr.row");
   if (!row) return [];
@@ -255,7 +256,11 @@ export function useMarquee({
       const d = drag.current;
       if (!d || !d.active) return stopScrollLoop();
       const r = scroller.getBoundingClientRect();
-      const step = autoScrollStep(d.clientY, { top: r.top, bottom: r.bottom });
+      // Both coordinates, and the whole rect: the pointer being off to the SIDE
+      // of the listing stops the scroll, which is the sweep's half of a rule
+      // that used to be written out only at the row drag's call site (see
+      // autoScrollStep).
+      const step = autoScrollStep({ x: d.clientX, y: d.clientY }, r);
       if (step === 0) return stopScrollLoop();
       const before = scroller.scrollTop;
       scroller.scrollTop += step;

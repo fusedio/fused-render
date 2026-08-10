@@ -96,6 +96,17 @@ export function marqueeHits(
   bands: readonly RowBand[],
   { additive, base }: { additive: boolean; base: readonly string[] },
 ): string[] {
+  // NO BANDS AT ALL is not "the sweep hit nothing", it is "this listing could
+  // not be measured" — no rendered row to take geometry from (useMarquee's
+  // measureBands), or a row that measured zero-height (rowBands below). Both
+  // modules promised the caller would then leave the selection alone, and both
+  // were describing code that did the opposite: `[]` fell through to the
+  // non-additive return, so `selectPaths([])` collapsed a real selection to
+  // nothing on a drag that could never have selected anything.
+  //
+  // Answered here rather than at the wiring because this is where the two
+  // producers of `[]` meet, and the promise is in both their comments.
+  if (!bands.length) return [...base];
   const swept = bands.filter((b) => overlaps(box, b)).map((b) => b.path);
   if (!additive) return swept;
   const held = new Set(base);
@@ -119,7 +130,8 @@ export function rowBands(
   const { firstTop, height, left, right } = metrics;
   // A zero/unmeasurable row height would stack every row on one band, and a
   // one-pixel drag would select the whole folder. Nothing measured, nothing
-  // selected: the caller falls back to leaving the selection alone.
+  // selected — and `marqueeHits` reads the empty result as exactly that, so the
+  // selection is left alone rather than cleared.
   if (!(height > 0)) return [];
   return paths.map((path, i) => ({
     path,
@@ -131,19 +143,35 @@ export function rowBands(
 }
 
 // How fast the listing scrolls while the pointer sits near (or past) an edge
-// during a marquee drag, in pixels per animation frame. Positive scrolls down.
+// during a drag, in pixels per animation frame. Positive scrolls down. Shared
+// by the sweep and the row drag, so both feel the same at the edges.
+//
+// The point and the view are in VIEWPORT coordinates — the pointer's client
+// position against the scroller's `getBoundingClientRect()` — unlike the row
+// bands above, which are content-space. Scrolling is the one decision here that
+// is about where the pointer is ON SCREEN.
 //
 // Proportional inside the edge zone so a sweep that just brushes the edge
 // creeps and one pressed into it moves, and CAPPED at the edge rather than
 // growing with the overshoot: the pointer leaves the scroller entirely on any
 // long sweep, and a step that kept scaling would make the listing fly past
 // whatever the user was reaching for.
+//
+// THE HORIZONTAL BOUNDS ARE PART OF THE RULE, not the caller's to remember.
+// Both gestures pointer-capture, so the pointer keeps steering this loop after
+// it has left the listing — parked over the preview pane or the sidebar, and
+// incidentally within 28px of the top or bottom edge, the listing scrolled on
+// and the sweep kept selecting rows the pointer was nowhere near. The row drag
+// had the guard inline at its call site and the sweep did not; two copies of one
+// rule is how the second one goes missing, so it lives here, where a third
+// caller cannot forget it.
 const EDGE_ZONE = 28;
 const EDGE_MAX_STEP = 18;
-export function autoScrollStep(y: number, view: { top: number; bottom: number }): number {
-  const intoBottom = y - (view.bottom - EDGE_ZONE);
+export function autoScrollStep(at: Point, view: Box): number {
+  if (at.x < view.left || at.x > view.right) return 0;
+  const intoBottom = at.y - (view.bottom - EDGE_ZONE);
   if (intoBottom > 0) return Math.min(1, intoBottom / EDGE_ZONE) * EDGE_MAX_STEP;
-  const intoTop = view.top + EDGE_ZONE - y;
+  const intoTop = view.top + EDGE_ZONE - at.y;
   if (intoTop > 0) return -Math.min(1, intoTop / EDGE_ZONE) * EDGE_MAX_STEP;
   return 0;
 }

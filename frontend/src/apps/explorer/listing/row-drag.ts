@@ -341,9 +341,10 @@ function scrollLoop(): void {
     return;
   }
   const r = scroller.getBoundingClientRect();
-  const step = d.clientX >= r.left && d.clientX <= r.right
-    ? autoScrollStep(d.clientY, { top: r.top, bottom: r.bottom })
-    : 0;
+  // The horizontal bounds test that used to be written out here is inside
+  // autoScrollStep now, where the sweep gets it too — it had been copied to one
+  // of the two callers and forgotten at the other.
+  const step = autoScrollStep({ x: d.clientX, y: d.clientY }, r);
   if (step === 0) {
     d.raf = 0;
     return;
