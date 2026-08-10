@@ -184,8 +184,21 @@ export function navigate(fsPath: string, opts?: { isDir?: boolean; mode?: string
   // could contradict. The `?sel=` selection param is likewise not carried —
   // a name from the folder you LEFT names nothing in the folder you arrive in
   // (see useListingSelection).
+  //
+  // `snapshot=1` is the exception to the fresh-query-string rule, and it is a
+  // different KIND of param from the two below: it says what this PAGE is — a
+  // frozen tree framed in some view's column (see IS_SNAPSHOT) — not how the
+  // destination should be viewed. Every hop the framed listing makes is still
+  // inside that snapshot, so dropping it would make the url describe a page
+  // that does not exist. IS_SNAPSHOT is read once at boot, so the live session
+  // survives the drop; a RELOAD or a copied link is where it bites, bringing
+  // back the breadcrumb walking up into the snapshot cache's internals and the
+  // preview pane inside the preview pane. Carried on FILE hops as well as
+  // folder ones, unlike `_panelMode`: the framed listing opens files too, and
+  // the chrome the flag suppresses is the same chrome on a file view.
   const current = new URLSearchParams(location.search);
   const parts: string[] = [];
+  if (current.get("snapshot") === "1") parts.push("snapshot=1");
   if (opts?.isDir === true) {
     const panelMode = current.get("_panelMode");
     if (panelMode !== null) parts.push("_panelMode=" + encodeURIComponent(panelMode));
