@@ -1118,14 +1118,16 @@ def test_the_registry_binds_the_split_view_to_files_and_keeps_the_directory_key(
     # mode needed a display name of its own.
     assert registry["/"].count("claude") == 1
 
-    # Chat then history, adjacent, on every FILE key that has them. The `/` key
-    # is excluded deliberately: its order is the directory story (`_listing`,
-    # then the app modes, then the chat and the two history views).
+    # Chat before history on every FILE key that has them — no longer adjacent:
+    # `history` trails every list it is bound to
+    # (test_templates.py::test_history_is_the_last_mode_wherever_bound). The
+    # `/` key is excluded deliberately: its order is the directory story
+    # (`_listing`, then the app modes, then the chat and the history views).
     for key, names in registry.items():
         if key.endswith("/") or not isinstance(names, list):
             continue
         if "claude" in names and "history" in names:
-            assert names.index("claude") + 1 == names.index("history"), key
+            assert names.index("claude") < names.index("history"), key
 
 
 def test_the_gates_docstring_does_not_justify_itself_with_the_deleted_pane():
