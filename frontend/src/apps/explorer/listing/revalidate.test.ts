@@ -3,6 +3,8 @@
 // the user is reading — so it is decided in one pure place rather than being an
 // emergent property of effect ordering.
 import { beforeEach, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { shouldReconcile, type RevalidateInput } from "@apps/explorer/listing/revalidate";
 import {
   fsMutationCount,
@@ -61,6 +63,45 @@ test("a mutation recorded BEFORE the bump still forces the adoption", () => {
   expect(shouldReconcile(input({ refresh: 4, pinned: 4, mutations: 1 }))).toBe(false);
   // ...and when the bump lands it is taken immediately rather than deferred.
   expect(shouldReconcile(input({ refresh: 5, pinned: 4, mutations: 1 }))).toBe(true);
+});
+
+test("an index generation swap mid-search is deferred like any other churn", () => {
+  // Observed live: a startup scan finished, the index swapped generations, and
+  // the results were replaced mid-read — the match total moved, the top hit
+  // changed, and the walk placeholder flashed. A completed scan reaches this
+  // hook only as watch churn (the worker writes under the home dir), so it has
+  // to defer exactly like a touch/rm does, however many generations it jumped.
+  for (const refresh of [5, 12, 400]) {
+    expect(shouldReconcile(input({ refresh, pinned: 4 }))).toBe(false);
+  }
+});
+
+test("no amount of accumulated churn ever reconciles itself", () => {
+  // There is no threshold at which deferral gives up: only a boundary or an
+  // in-app mutation adopts a generation. A scan that bumps the watch a hundred
+  // times must leave the results exactly as still as one bump does.
+  let pinned = 1;
+  for (let refresh = 2; refresh < 100; refresh++) {
+    expect(shouldReconcile(input({ refresh, pinned }))).toBe(false);
+  }
+  expect(pinned).toBe(1);
+});
+
+test("focus is not a boundary — the hook must not reconcile on it", () => {
+  // Source guard, because this cannot be seen from the pure rule: focus is
+  // ambient (the pane focus guard, a split remount at a width threshold, and
+  // WebKit restoring focus after a repaint all fire it), so prefetchWalk
+  // adopting the pending generation swapped results out from under the reader.
+  // It must also request `pinned`, never `refresh`, or it smuggles a newer
+  // generation past the deferral.
+  const hook = readFileSync(join(import.meta.dir, "useWalkSearch.ts"), "utf8");
+  const body = hook.slice(
+    hook.indexOf("const prefetchWalk = () =>"),
+    hook.indexOf("// Debounced URL mirror"),
+  );
+  expect(body).not.toContain("reconcile()");
+  expect(body).not.toContain("setWalkReq(refresh)");
+  expect(body).toContain("setWalkReq(pinned)");
 });
 
 // -- the mutation signal itself ------------------------------------------------

@@ -216,14 +216,21 @@ export function useWalkSearch(fsPath: string, refresh: number, urlSync = true) {
     };
   }, [fsPath, walkReq, retryNonce]);
 
-  // First focus starts the walk warming in the background; focus (like
-  // typing below) is also the retry gesture when a previous stream failed.
+  // First focus starts the walk warming in the background; focus (like typing
+  // below) is also the retry gesture when a previous stream failed.
+  //
+  // Focus is deliberately NOT a revalidation boundary. It reads like one — the
+  // user is "coming back to" the search — but it is ambient: the pane focus
+  // guard, a split remount at a width threshold, and WebKit restoring focus
+  // after a repaint all fire it with no gesture behind them. Treating it as a
+  // boundary adopted whatever churn had accumulated and swapped the results
+  // out from under someone who was reading them, which is the exact thing the
+  // deferral exists to prevent. Requests are tagged `pinned`, never `refresh`,
+  // so warming a walk here cannot smuggle a newer generation in either.
   const prefetchWalk = () => {
-    // Focus is a boundary: adopt any generation deferred while searching.
-    reconcile();
-    if (validWalk.status === "idle") setWalkReq(refresh);
+    if (validWalk.status === "idle") setWalkReq(pinned);
     else if (validWalk.status === "error") {
-      setWalkReq(refresh);
+      setWalkReq(pinned);
       setRetryNonce((n) => n + 1);
     }
   };
@@ -249,6 +256,8 @@ export function useWalkSearch(fsPath: string, refresh: number, urlSync = true) {
     // (An idle walk needs no handling here — the auto-request effect fires
     // as soon as the non-empty query state lands.)
     if (validWalk.status === "error") {
+      // `refresh`, not `pinned`: the reconcile above is setting pinned to it,
+      // and that state has not landed yet inside this handler.
       setWalkReq(refresh);
       setRetryNonce((n) => n + 1);
     }
@@ -294,7 +303,13 @@ export function useWalkSearch(fsPath: string, refresh: number, urlSync = true) {
   // The scan's published output, tagged with the query it was computed for.
   // That tag is the whole reason this is not re-derived at render time: see
   // lib/search-hold, and scan-job's header.
-  const [scanned, setScanned] = useState<QueryTagged<SearchHit>>(() => ({ q: "", items: [] }));
+  // `done` distinguishes "this is the whole answer for q" from "this is what
+  // the scan has found so far". Without it an intermediate slice — or the
+  // empty publish for a folder with no corpus — read as a settled result, and
+  // a zero-hit moment mid-scan rendered a confident "No matches".
+  const [scanned, setScanned] = useState<QueryTagged<SearchHit> & { done: boolean }>(
+    () => ({ q: "", items: [], done: true }),
+  );
 
   const showHidden = queryWantsHidden(q);
   const corpus =
@@ -312,7 +327,14 @@ export function useWalkSearch(fsPath: string, refresh: number, urlSync = true) {
   // and is cancelled here the moment the query, hidden-intent or corpus moves.
   useEffect(() => {
     if (corpus === null) {
-      setScanned((prev) => (prev.q === q && prev.items.length === 0 ? prev : { q, items: [] }));
+      // No corpus to scan (the walk is idle, streaming its first batch, or
+      // errored). No scan is in flight, so this IS the final answer for q —
+      // what is outstanding is the walk, which validWalk reports on its own.
+      setScanned((prev) =>
+        prev.q === q && prev.items.length === 0 && prev.done
+          ? prev
+          : { q, items: [], done: true },
+      );
       return;
     }
     const cache = scoreCache.current;
@@ -340,7 +362,7 @@ export function useWalkSearch(fsPath: string, refresh: number, urlSync = true) {
         now: Date.now,
         setTimer: (fn, ms) => window.setTimeout(fn, ms),
         clearTimer: (id) => window.clearTimeout(id),
-        onPublish: (result) => setScanned(result),
+        onPublish: (result, done) => setScanned({ ...result, done }),
         onProgress: (n) => {
           live.scored = n;
         },
@@ -361,7 +383,9 @@ export function useWalkSearch(fsPath: string, refresh: number, urlSync = true) {
   // True while the scan for the current query has not published yet — the
   // spinner and the dimmed-rows treatment key off this, so it has to mean
   // "an answer is still coming", not merely "the deferred value lags".
-  const scanPending = searching && scanned.q !== q;
+  // Pending until a FINAL publish for the current query lands. Cleared by the
+  // tag alone, an intermediate slice would end the "Searching…" state early.
+  const scanPending = searching && (scanned.q !== q || !scanned.done);
   const isStale = deferredStale || scanPending;
 
   // --- Streaming re-rank throttle (B4) --------------------------------------

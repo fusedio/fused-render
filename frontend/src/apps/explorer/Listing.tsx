@@ -772,7 +772,7 @@ export default function Listing({
             <tr>
               <td colSpan={3} className="status-message">
                 {cappedAway.toLocaleString()} more match
-                {cappedAway === 1 ? "" : "es"} not shown — refine your search
+                {cappedAway === 1 ? "" : "es"} not shown
               </td>
             </tr>
           )}
@@ -796,9 +796,17 @@ export default function Listing({
       // running) and "the walk didn't even cover everything" (truncated) —
       // the old UI showed a bare "No matches" even when the file existed
       // in a region the capped walk never reached.
+      // The entries-scanned count belongs to the live fallback WALK, and only
+      // that walk moves it. When the index serves the corpus there is no walk
+      // at all — the fetch is one request — so the number sat at 0 for the
+      // whole (sub-second) window and the row read "still searching (0 entries
+      // scanned)" every time. Show the progress only once there is progress to
+      // show; before that all we can honestly say is that we are looking.
       const message =
         validWalk.status === "streaming"
-          ? `No matches yet — still searching (${validWalk.count.toLocaleString()} entries scanned)`
+          ? validWalk.count > 0
+            ? `No matches yet — still searching (${validWalk.count.toLocaleString()} entries scanned)`
+            : "Searching…"
           : validWalk.truncated
             ? `No matches in the first ${validWalk.total.toLocaleString()} entries — this folder tree is too large to search fully`
             : "No matches";

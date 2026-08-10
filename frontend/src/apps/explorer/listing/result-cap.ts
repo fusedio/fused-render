@@ -3,9 +3,11 @@
 // Scoring and ranking still run over the ENTIRE corpus — this caps the list,
 // not the search. Past the first hundred a fuzzy rank has stopped saying
 // anything the user can act on, and the useful move is a better query rather
-// than more scrolling, so the tail is not rendered and the counter says why.
-// That is also why there is no "load more": offering one would answer the
-// wrong question.
+// than more scrolling, so the tail is not rendered and the counter says how
+// much it is not showing. That is also why there is no "load more": offering
+// one would answer the wrong question. The counter states the fact and stops
+// there — telling the user to "refine your search" is instruction, not
+// information, and they can see the number for themselves.
 //
 // The count stays TRUE. Reporting the capped number would be a lie about the
 // folder, and the whole point of the message is to tell the user how much they
@@ -31,5 +33,5 @@ export function resultCountLabel(total: number, walkTruncated: boolean): string 
   if (total <= SEARCH_RESULT_CAP) {
     return `${n}${suffix} match${total === 1 ? "" : "es"}`;
   }
-  return `Showing top ${SEARCH_RESULT_CAP} of ${n}${suffix} — refine your search`;
+  return `Showing top ${SEARCH_RESULT_CAP} of ${n}${suffix}`;
 }

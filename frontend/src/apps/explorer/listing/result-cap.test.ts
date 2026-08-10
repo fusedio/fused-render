@@ -48,9 +48,9 @@ test("a long result list renders only the top of the RANKING", () => {
 
 test("the counter reports the TRUE total, not the capped one", () => {
   // Undercounting would be a lie about the folder; the cap is about the list.
-  expect(resultCountLabel(4880, false)).toBe(
-    "Showing top 100 of 4,880 — refine your search",
-  );
+  // No "refine your search": the number is the information, the instruction
+  // was noise.
+  expect(resultCountLabel(4880, false)).toBe("Showing top 100 of 4,880");
 });
 
 test("an uncapped result set keeps the plain count", () => {
@@ -63,9 +63,7 @@ test("the walk-truncated marker survives the cap", () => {
   // A capped walk means the count itself undercounts the tree; that "+" has
   // to stay visible whether or not the LIST is also capped.
   expect(resultCountLabel(42, true)).toBe("42+ matches");
-  expect(resultCountLabel(4880, true)).toBe(
-    "Showing top 100 of 4,880+ — refine your search",
-  );
+  expect(resultCountLabel(4880, true)).toBe("Showing top 100 of 4,880+");
 });
 
 test("the cap is confined to the SEARCH path", () => {
@@ -85,5 +83,5 @@ test("the cap is confined to the SEARCH path", () => {
 test("exactly at the cap is not reported as capped", () => {
   // Nothing is hidden, so there is nothing to refine.
   expect(capHits(hits(SEARCH_RESULT_CAP))).toHaveLength(SEARCH_RESULT_CAP);
-  expect(resultCountLabel(SEARCH_RESULT_CAP, false)).not.toContain("refine");
+  expect(resultCountLabel(SEARCH_RESULT_CAP, false)).toBe("100 matches");
 });

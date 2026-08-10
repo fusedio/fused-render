@@ -3,6 +3,8 @@
 // ran SYNCHRONOUSLY — the freeze was never a wrong answer, it was a right
 // answer computed all at once.
 import { expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import type { WalkEntry } from "@platform/lib/api";
 import type { QueryTagged } from "@platform/lib/search-hold";
 import type { SearchHit } from "@apps/explorer/listing/types";
@@ -174,6 +176,30 @@ test("intermediate publishes are throttled to commitMs", () => {
   expect(h.published[0].done).toBe(false);
   h.tick(); // slice 3 — inside the window again
   expect(h.published).toHaveLength(1);
+});
+
+test("finding nothing yet is not the same as being finished", () => {
+  // The two signals are independent, and conflating them is how a scan still
+  // running rendered a confident "No matches": a slice that matched nothing
+  // publishes an empty list, and only `done` says whether more is coming.
+  const h = harness({ score: () => [] });
+  startScanJob(spec({ entries: corpus(100_000), sliceSize: 20_000, commitMs: 0 }), h.deps);
+  h.tick(); // first slice: nothing matched, four slices still to go
+  expect(h.published).toHaveLength(1);
+  expect(h.published[0].result.items).toEqual([]);
+  expect(h.published[0].done).toBe(false);
+  h.drain();
+  expect(last(h.published).done).toBe(true);
+  expect(last(h.published).result.items).toEqual([]);
+});
+
+test("the consumer clears its pending state only on a FINAL publish", () => {
+  // Source guard: the flag exists on the publish, and dropping it on the way
+  // into state is exactly the regression (the hook used to record only
+  // {q, items}, so any publish read as settled).
+  const hook = readFileSync(join(import.meta.dir, "useWalkSearch.ts"), "utf8");
+  expect(hook).toMatch(/onPublish:\s*\(result,\s*done\)\s*=>\s*setScanned\(\{\s*\.\.\.result,\s*done\s*\}\)/);
+  expect(hook).toMatch(/scanPending\s*=\s*searching\s*&&\s*\(scanned\.q\s*!==\s*q\s*\|\|\s*!scanned\.done\)/);
 });
 
 test("progress is reported per slice so a cancelled scan can resume", () => {
