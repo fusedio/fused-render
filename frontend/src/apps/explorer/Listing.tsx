@@ -151,6 +151,7 @@ export default function Listing({
     setQuery,
     searching,
     isStale,
+    scanPending,
     validWalk,
     prefetchWalk,
     hits,
@@ -643,6 +644,19 @@ export default function Listing({
             </tr>
           )}
         </>
+      );
+    } else if (scanPending) {
+      // The corpus is in hand but this query has not been scored yet (the
+      // scan is debounced and sliced — listing/scan-job). An index-backed
+      // corpus makes the walk read "ok" instantly, so without this the empty
+      // result would render as a confident "No matches" for a moment on
+      // every keystroke.
+      body = (
+        <tr>
+          <td colSpan={3} className="status-message">
+            Searching…
+          </td>
+        </tr>
       );
     } else if (validWalk.status === "ok" || validWalk.status === "streaming") {
       // No matches. Say so honestly: distinguish "still looking" (stream

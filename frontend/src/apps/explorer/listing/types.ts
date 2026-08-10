@@ -70,6 +70,24 @@ export const URL_SYNC_MS = 200;
 // flushes immediately (lastFlush starts at 0), so first paint isn't delayed.
 export const STREAM_FLUSH_MS = 200;
 
+// How still the query must be before a BIG corpus is re-scored. The index
+// answers a covered folder instantly and whole (up to MAX_CORPUS entries), so
+// unlike a streamed walk there is no ramp-up: the first keystroke already has
+// the full corpus to scan, and every keystroke after it would re-scan the lot.
+// Only the scan waits — the input echoes `query` immediately, as always.
+export const SCAN_DEBOUNCE_MS = 150;
+
+// Corpora at or below this size skip the debounce entirely: the scan is a few
+// milliseconds, and the first keystroke of a fresh search has to feel instant.
+// It is also the append threshold, so a stream flush (a few thousand entries)
+// is always scored straight away.
+export const SCAN_IMMEDIATE_MAX = 20_000;
+
+// Entries scored per slice before yielding to the event loop. Small enough
+// that a slice fits comfortably in a frame on a slow machine, large enough
+// that the per-slice overhead stays noise.
+export const SCAN_SLICE = 20_000;
+
 export type ListingState =
   | { status: "loading" }
   // `truncated`: the directory has more entries than the server cap, so this

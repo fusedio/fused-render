@@ -57,15 +57,20 @@ export function rankCompare(a: SearchHit, b: SearchHit): number {
 // "DownloadStage", whose extra camel-hump bonus otherwise wins), and a name
 // starting with the query beats an interior hit. Char-level heuristics can't
 // express "this IS the thing you typed", so it's layered here, not in fuzzy.ts.
+// `to` bounds one SLICE of a chunked scan (default: to the end). Scoring the
+// whole corpus in one call blocks the main thread for as long as it takes;
+// the caller walks it in slices and yields between them (listing/scan-job).
 export function scoreEntries(
   query: string,
   entries: WalkEntry[],
   from: number,
   showHidden: boolean,
+  to: number = entries.length,
 ): SearchHit[] {
   const q = query.toLowerCase();
   const hits: SearchHit[] = [];
-  for (let i = from; i < entries.length; i++) {
+  const end = Math.min(to, entries.length);
+  for (let i = from; i < end; i++) {
     const entry = entries[i];
     if (!showHidden && isHiddenRel(entry.rel)) continue;
     const m = fuzzyMatch(query, entry.rel);
