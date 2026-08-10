@@ -1,0 +1,272 @@
+[
+  {
+    "key": "model",
+    "label": "Model",
+    "group": "Model & reasoning",
+    "control": "select",
+    "options": [
+      "default",
+      "opus",
+      "opus[1m]",
+      "sonnet",
+      "sonnet[1m]",
+      "haiku"
+    ],
+    "doc": "Override the default model to use for Claude Code.",
+    "default": null,
+    "minVersion": null
+  },
+  {
+    "key": "effortLevel",
+    "label": "Effort level",
+    "group": "Model & reasoning",
+    "control": "select",
+    "options": [
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max"
+    ],
+    "doc": "Persist the effort level across sessions.",
+    "default": null,
+    "minVersion": null
+  },
+  {
+    "key": "alwaysThinkingEnabled",
+    "label": "Always extended thinking",
+    "group": "Model & reasoning",
+    "control": "toggle",
+    "doc": "Enable extended thinking by default for all sessions.",
+    "default": null,
+    "minVersion": null
+  },
+  {
+    "key": "showThinkingSummaries",
+    "label": "Show thinking summaries",
+    "group": "Model & reasoning",
+    "control": "toggle",
+    "doc": "Show extended thinking summaries in interactive sessions.",
+    "default": false,
+    "minVersion": null
+  },
+  {
+    "key": "theme",
+    "label": "Theme",
+    "group": "Appearance & editor",
+    "control": "select",
+    "options": [
+      "auto",
+      "light",
+      "dark"
+    ],
+    "doc": "Color theme for the interface: \"auto\", \"dark\", \"light\", \"dark-daltonized\", \"light-daltonized\", \"dark-ansi\", \"light-ansi\", or a custom theme reference such as \"custom:<slug>\" or \"custom:<plugin-name>:<slug>\".",
+    "default": "dark",
+    "minVersion": "2.1.119"
+  },
+  {
+    "key": "editorMode",
+    "label": "Editor mode",
+    "group": "Appearance & editor",
+    "control": "select",
+    "options": [
+      "normal",
+      "vim"
+    ],
+    "doc": "Key binding mode for the input prompt: \"normal\" or \"vim\".",
+    "default": "normal",
+    "minVersion": null
+  },
+  {
+    "key": "outputStyle",
+    "label": "Output style",
+    "group": "Appearance & editor",
+    "control": "text",
+    "doc": "Configure an output style to adjust the system prompt.",
+    "default": null,
+    "minVersion": null
+  },
+  {
+    "key": "defaultView",
+    "label": "Default view",
+    "group": "Appearance & editor",
+    "control": "select",
+    "options": [
+      "default",
+      "transcript",
+      "chat"
+    ],
+    "doc": "Default transcript view when a session opens.",
+    "default": "default",
+    "minVersion": null
+  },
+  {
+    "key": "prefersReducedMotion",
+    "label": "Reduce motion",
+    "group": "Appearance & editor",
+    "control": "toggle",
+    "doc": "Reduce or disable UI animations (spinners, shimmer, flash effects) for accessibility",
+    "default": null,
+    "minVersion": null
+  },
+  {
+    "key": "spinnerTipsEnabled",
+    "label": "Show tips",
+    "group": "Display",
+    "control": "toggle",
+    "doc": "Show tips in the spinner while Claude is working.",
+    "default": true,
+    "minVersion": null
+  },
+  {
+    "key": "showTurnDuration",
+    "label": "Show turn duration",
+    "group": "Display",
+    "control": "toggle",
+    "doc": "Show turn duration messages after responses, e.g.",
+    "default": true,
+    "minVersion": null
+  },
+  {
+    "key": "terminalProgressBarEnabled",
+    "label": "Terminal progress bar",
+    "group": "Display",
+    "control": "toggle",
+    "doc": "Show the terminal progress bar in supported terminals: ConEmu, Ghostty 1.2.0+, and iTerm2 3.6.6+.",
+    "default": true,
+    "minVersion": null
+  },
+  {
+    "key": "permissions.defaultMode",
+    "label": "Default permission mode",
+    "group": "Permissions",
+    "control": "select",
+    "options": [
+      "default",
+      "auto",
+      "acceptEdits",
+      "plan",
+      "bypassPermissions"
+    ],
+    "docKey": "defaultMode",
+    "doc": "Default permission mode when opening Claude Code.",
+    "default": null,
+    "minVersion": "2.1.200"
+  },
+  {
+    "key": "enableAllProjectMcpServers",
+    "label": "Auto-approve project MCP servers",
+    "group": "Permissions",
+    "control": "toggle",
+    "doc": "Automatically approve all MCP servers defined in project .mcp.json files.",
+    "default": null,
+    "minVersion": "2.1.196"
+  },
+  {
+    "key": "preferredNotifChannel",
+    "label": "Notification channel",
+    "group": "Notifications",
+    "control": "select",
+    "options": [
+      "auto",
+      "terminal",
+      "ghostty",
+      "iterm2",
+      "none"
+    ],
+    "doc": "Method for task-complete and permission-prompt notifications: \"auto\", \"terminal_bell\", \"iterm2\", \"iterm2_with_bell\", \"kitty\", \"ghostty\", or \"notifications_disabled\".",
+    "default": "auto",
+    "minVersion": null
+  },
+  {
+    "key": "inputNeededNotifEnabled",
+    "label": "Notify when input needed",
+    "group": "Notifications",
+    "control": "toggle",
+    "doc": "When Remote Control is connected, send a push notification to your phone when a permission prompt or question is waiting for your input.",
+    "default": false,
+    "minVersion": "2.1.119"
+  },
+  {
+    "key": "agentPushNotifEnabled",
+    "label": "Agent push notifications",
+    "group": "Notifications",
+    "control": "toggle",
+    "doc": "When Remote Control is connected, allow Claude to send proactive push notifications to your phone, for example when a long task finishes.",
+    "default": false,
+    "minVersion": "2.1.119"
+  },
+  {
+    "key": "autoCompactEnabled",
+    "label": "Auto-compact context",
+    "group": "Session behavior",
+    "control": "toggle",
+    "doc": "Automatically compact the conversation when context approaches the limit.",
+    "default": true,
+    "minVersion": "2.1.119"
+  },
+  {
+    "key": "autoMemoryEnabled",
+    "label": "Auto-memory",
+    "group": "Session behavior",
+    "control": "toggle",
+    "doc": "Enable auto memory.",
+    "default": true,
+    "minVersion": null
+  },
+  {
+    "key": "fileCheckpointingEnabled",
+    "label": "File checkpointing",
+    "group": "Session behavior",
+    "control": "toggle",
+    "doc": "Snapshot files before each edit so /rewind can restore them.",
+    "default": true,
+    "minVersion": "2.1.119"
+  },
+  {
+    "key": "awaySummaryEnabled",
+    "label": "Session recap",
+    "group": "Session behavior",
+    "control": "toggle",
+    "doc": "Show a one-line session recap when you return to the terminal after a few minutes away.",
+    "default": null,
+    "minVersion": null
+  },
+  {
+    "key": "todoFeatureEnabled",
+    "label": "Todo panel",
+    "group": "Session behavior",
+    "control": "toggle",
+    "doc": "Enable the todo / task-tracking panel.",
+    "default": null,
+    "minVersion": null
+  },
+  {
+    "key": "enableArtifact",
+    "label": "Artifacts",
+    "group": "Features",
+    "control": "toggle",
+    "unsetLabel": "managed / org default",
+    "doc": "Enable or disable the Artifact tool for this user.",
+    "default": null,
+    "minVersion": "2.1.196"
+  },
+  {
+    "key": "cleanupPeriodDays",
+    "label": "Cleanup period (days)",
+    "group": "Maintenance",
+    "control": "number",
+    "doc": "Claude Code deletes session files and other application data older than this period at startup.",
+    "default": 30,
+    "minVersion": "2.1.203"
+  },
+  {
+    "key": "skipWorkflowUsageWarning",
+    "label": "Skip workflow usage warning",
+    "group": "Maintenance",
+    "control": "toggle",
+    "doc": "Suppress the multi-agent workflow cost warning.",
+    "default": false,
+    "minVersion": null
+  }
+]

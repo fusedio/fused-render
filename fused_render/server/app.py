@@ -41,6 +41,7 @@ from fused_render.server.common import (
     _forced_engine,
 )
 from fused_render.server.routers.apps import router as apps_router
+from fused_render.server.routers.claude_config import router as claude_config_router
 from fused_render.server.routers.claude_sessions import router as claude_sessions_router
 from fused_render.server.routers.clipboard import router as clipboard_router
 from fused_render.server.routers.config import router as config_router
@@ -329,6 +330,11 @@ def create_app(start_dir: str) -> FastAPI:
     # Claude Code project folders for the Explorer homepage's "Claude
     # sessions" tab (routers/claude_sessions.py) — read-only, no auth guard.
     app.include_router(claude_sessions_router)
+    # Claude Code CONFIG editing for the Preferences page's "Claude config" tab
+    # (routers/claude_config.py): one dispatch POST over the
+    # fused_render/claude_config/ feature modules, plus a cheap availability
+    # probe. Its POSTs mutate, so they carry the D3 X-Fused guard.
+    app.include_router(claude_config_router)
     # GitHub deep links (SPEC §26, D110): GET /clone confirm page +
     # POST /api/clone sparse-clone into ~/Documents/Fused. deeplink.py never
     # imports server, so the include stays acyclic like shell/*.

@@ -220,6 +220,15 @@ body:has(.sidebar-resize-handle.resizing) {
   padding: 8px;
 }
 
+/* Consecutive heading groups in the shell's app-switcher (shell/ShellSidebar):
+   the group above already ends in its own 8px padding, so drop the next one's —
+   the heading's own top padding is the separation. Scoped to this class rather
+   than `.sidebar-section + .sidebar-section` so the explorer's bookmark/recents
+   stack (which sets its own spacing) is untouched. */
+.sidebar-group + .sidebar-group {
+  padding-top: 0;
+}
+
 .sidebar-item {
   display: flex;
   align-items: center;
