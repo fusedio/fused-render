@@ -27,6 +27,17 @@ def learn_zip(tmp_path, monkeypatch):
     return zp
 
 
+@pytest.fixture(autouse=True)
+def _reset_builtin_ready():
+    # _builtin_ready is process-global; reset it so readiness set by one test
+    # never leaks into the next.
+    import fused_render.shell.mounts.automount as _am
+    with _am._builtin_ready_lock:
+        for name in list(_am._builtin_ready):
+            _am._builtin_ready[name] = False
+    yield
+
+
 def _learn_records():
     return [m for m in mounts_mod.list_mounts()
             if m.get("builtin") == mounts_mod.LEARN_MOUNT_NAME]
@@ -99,29 +110,25 @@ def test_idempotent(home, learn_zip):
     assert mounts_mod.list_mounts() == before
 
 
-def test_builtin_mount_ready_reads_cached_state_not_live_probe(home, learn_zip, monkeypatch):
+def test_builtin_mount_ready_reads_flag_not_live_probe(home, learn_zip, monkeypatch):
     # /api/config embeds learn_mount_ready; it must NEVER do a live rcd/WinFsp
     # probe on the request path — a cold-start _ismount on the WinFsp mountpoint
     # blocked /api/config ~60s (×2 builtins). Blow up if the live probe runs,
-    # and drive readiness purely off the health monitor's cached state.
+    # and drive readiness purely off the lifecycle-tracked flag.
     mounts_mod.ensure_learn_mount()
-    mid = _learn_records()[0]["id"]
 
     def _boom(*_a, **_k):
         raise AssertionError("live mount probe must not run on the readiness path")
 
     monkeypatch.setattr(mounts_mod, "mounted_paths", _boom)
-    monkeypatch.setattr(mounts_mod, "_health_episodes", {}, raising=False)
 
-    # Cold start: no health observation yet -> not ready (conservative), fast.
+    # Before automount attaches it this run -> not ready (conservative), fast.
     assert mounts_mod.learn_mount_ready() is False
 
-    # Health monitor has since observed the mount live.
-    mounts_mod._health_episodes[mid] = {"state": "mounted", "notified": False}
+    mounts_mod.set_builtin_ready("learn", True)
     assert mounts_mod.learn_mount_ready() is True
 
-    # A later disconnect flips it back — still no live probe.
-    mounts_mod._health_episodes[mid] = {"state": "disconnected", "notified": True}
+    mounts_mod.set_builtin_ready("learn", False)
     assert mounts_mod.learn_mount_ready() is False
 
 
@@ -379,24 +386,18 @@ def test_force_detach_runs_outside_store_lock(home, learn_zip, monkeypatch):
 # -- learn_mount_ready --------------------------------------------------------
 
 
-def test_learn_mount_ready_false_until_actually_mounted(home, learn_zip, monkeypatch):
-    # Record presence alone isn't "ready": until the health monitor has
-    # observed the mountpoint actually attached ("mounted"), this stays False —
-    # ensure_learn_mount force-detaches on every startup, so a record can exist
-    # while the mountpoint is momentarily empty between detach and re-attach.
+def test_learn_mount_ready_false_until_actually_mounted(home, learn_zip):
+    # Record presence alone isn't "ready": until run_automount attaches it this
+    # run, the flag stays False — ensure_learn_mount force-detaches on every
+    # startup, so a record can exist while the mountpoint is momentarily empty.
     assert mounts_mod.learn_mount_ready() is False
     mounts_mod.ensure_learn_mount()
-    mid = _learn_records()[0]["id"]
-    monkeypatch.setattr(mounts_mod, "_health_episodes",
-                        {mid: {"state": "unmounted", "notified": False}}, raising=False)
     assert mounts_mod.learn_mount_ready() is False  # record exists, not attached
 
 
-def test_learn_mount_ready_true_once_actually_mounted(home, learn_zip, monkeypatch):
+def test_learn_mount_ready_true_once_attached_this_run(home, learn_zip):
     mounts_mod.ensure_learn_mount()
-    mid = _learn_records()[0]["id"]
-    monkeypatch.setattr(mounts_mod, "_health_episodes",
-                        {mid: {"state": "mounted", "notified": False}}, raising=False)
+    mounts_mod.set_builtin_ready("learn", True)  # what run_automount does on a successful attach
     assert mounts_mod.learn_mount_ready() is True
 
 
@@ -404,12 +405,48 @@ def test_learn_mount_ready_false_without_zip(home):
     assert mounts_mod.learn_mount_ready() is False
 
 
-def test_learn_mount_ready_false_for_user_mount_named_learn(home, monkeypatch):
-    # A user mount named "learn" has no builtin marker, so even a "mounted"
-    # health observation for it must not read as the builtin being ready.
-    user = mounts_mod.add_mount("learn", "s3remote:my-learn-bucket")
-    monkeypatch.setattr(mounts_mod, "_health_episodes",
-                        {user["id"]: {"state": "mounted", "notified": False}}, raising=False)
+def test_run_automount_marks_builtin_ready_only_after_attach(home, learn_zip, monkeypatch):
+    # The stale-mount race Bugbot flagged: a mount that survived a previous run
+    # must not read as ready during the force-detach+remount window. Seed a
+    # stale True, then run_automount must clear it and only re-set True once its
+    # own attach_mount succeeds (the frontend sticky-caches the first True).
+    import fused_render.shell.mounts.health as health_mod
+
+    mounts_mod.set_builtin_ready("learn", True)  # stale, from a "previous run"
+    seen_during_attach = []
+
+    def fake_attach(m):
+        # At the moment automount is (re)attaching, readiness must read False.
+        seen_during_attach.append(mounts_mod.learn_mount_ready())
+        return None  # success
+
+    monkeypatch.setattr(health_mod, "attach_mount", fake_attach)
+    monkeypatch.setattr(health_mod, "sync_serves", lambda: None)
+    monkeypatch.setattr(mounts_mod, "mounted_paths", lambda: set())
+
+    mounts_mod.run_automount()
+
+    assert seen_during_attach == [False]              # cleared before the attach
+    assert mounts_mod.learn_mount_ready() is True      # set only after it succeeded
+
+
+def test_run_automount_leaves_builtin_not_ready_on_attach_failure(home, learn_zip, monkeypatch):
+    import fused_render.shell.mounts.health as health_mod
+
+    mounts_mod.set_builtin_ready("learn", True)  # stale
+    monkeypatch.setattr(health_mod, "attach_mount", lambda m: "mount failed")
+    monkeypatch.setattr(health_mod, "sync_serves", lambda: None)
+    monkeypatch.setattr(mounts_mod, "mounted_paths", lambda: set())
+
+    mounts_mod.run_automount()
+    assert mounts_mod.learn_mount_ready() is False
+
+
+def test_learn_mount_ready_false_for_user_mount_named_learn(home):
+    # A user mount named "learn" has no builtin marker; run_automount only sets
+    # the builtin flag for records marked builtin, so it never reads as ready.
+    mounts_mod.add_mount("learn", "s3remote:my-learn-bucket")
+    mounts_mod.set_builtin_ready("learn", False)
     assert mounts_mod.learn_mount_ready() is False
 
 

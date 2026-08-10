@@ -359,6 +359,7 @@ from .automount import (
     learn_mount_ready,
     learn_zip_path,
     sessions_mount_ready,
+    set_builtin_ready,
 )
 from .health import (
     HEALTH_POLL_INTERVAL,

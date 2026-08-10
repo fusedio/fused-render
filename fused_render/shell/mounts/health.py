@@ -11,7 +11,7 @@ import threading
 import time
 
 from .access import serves_path
-from .automount import ensure_builtin_mounts
+from .automount import BUILTIN_MOUNTS, ensure_builtin_mounts, set_builtin_ready
 from .lifecycle import attach_mount, sync_serves
 from .rcd import _copytruncate_rcd_log, _rcd_lock
 from .store import _ismount, mountpoint
@@ -214,6 +214,13 @@ def run_automount() -> None:
     # fresh install has zero user mounts, and skipping the attach loop below
     # would otherwise skip the builtins' very first mount too.
     from fused_render.shell.mounts import list_mounts, mounted_paths
+    # Drop builtin readiness before the force-detach+remount below: a mount that
+    # survived from a previous run must not read as ready during the empty
+    # window between detach and re-attach (builtin_mount_ready). Re-set True
+    # per builtin only once its own attach_mount succeeds, so True always means
+    # a mount THIS run attached.
+    for name in BUILTIN_MOUNTS:
+        set_builtin_ready(name, False)
     ensure_builtin_mounts()
     mounts = list_mounts()
     if mounts:
@@ -233,6 +240,8 @@ def run_automount() -> None:
             err = attach_mount(m)
             if err:
                 logger.warning("automount of %r failed: %s", m["name"], err)
+            elif m.get("builtin"):
+                set_builtin_ready(m["builtin"], True)
         # Mounts that survived a server restart skip attach_mount above, so
         # their HTTP serves (lost with any rcd restart) get re-ensured here.
         sync_serves()

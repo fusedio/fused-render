@@ -7,6 +7,7 @@ import os
 import re
 import signal
 import sys
+import threading
 import time
 import uuid
 
@@ -25,6 +26,23 @@ BUILTIN_MOUNTS = {
     LEARN_MOUNT_NAME: ("learn.zip", "FUSED_RENDER_LEARN_ZIP"),
     SESSIONS_MOUNT_NAME: ("sessions.zip", "FUSED_RENDER_SESSIONS_ZIP"),
 }
+
+
+# Whether each builtin mount is attached RIGHT NOW, tracked across the automount
+# lifecycle rather than probed live on the request path (builtin_mount_ready).
+# run_automount is the sole writer: it clears every builtin to False before its
+# force-detach+remount pass, then flips one True the moment its own attach_mount
+# succeeds. The invariant that matters: this is True only for a mount THIS run
+# attached — never one that merely survived from a previous run — because the
+# frontend sticky-caches the first True it sees (platform/lib/hooks.ts), so a
+# stale True would pin Learn/Sessions over an empty mountpoint for the session.
+_builtin_ready_lock = threading.Lock()
+_builtin_ready: dict[str, bool] = {name: False for name in BUILTIN_MOUNTS}
+
+
+def set_builtin_ready(name: str, ready: bool) -> None:
+    with _builtin_ready_lock:
+        _builtin_ready[name] = ready
 
 
 def builtin_zip_path(name: str) -> str | None:
@@ -179,35 +197,32 @@ def sessions_mount_ready() -> bool:
 
 
 def builtin_mount_ready(name: str) -> bool:
-    """True when the health monitor has observed a builtin mount actually
-    attached ("mounted") — not merely that its record exists in mounts.json.
+    """True when run_automount has attached this builtin THIS run — an I/O-free
+    read of the lifecycle-tracked _builtin_ready flag, never a live probe.
 
     The sidebar's Learn entry (Sidebar.tsx) uses this, surfaced through
     /api/config, to decide whether to render at all.
 
-    Reads the health monitor's CACHED per-mount state (_health_episodes, the
-    same I/O-free source /api/mounts/health serves) rather than probing rcd +
-    the kernel live. That live probe — `mp in mounted_paths()` plus
-    `_ismount(mp)` — is the reason this must not run on the request path: on
-    Windows, `_ismount()` (an os.path.ismount/os.lstat on the WinFsp reparse
-    point) BLOCKS for ~the rc timeout while run_automount is mid-attach of the
-    mountpoint, and /api/config embeds this for BOTH builtins, so a cold start
-    dragged /api/config to ~60s and the browser window couldn't paint. macOS
-    (nfsmount) and Linux (FUSE) attach fast enough to hide it; the cached read
-    fixes it on every platform. The health monitor pays the ismount cost on its
-    own background thread (poll_once, probe_io=False) and this just reads the
-    result, so it is still never eager — it reads False until a poll has
-    confirmed the mount is genuinely "mounted", which self-heals within one
-    poll interval of the attach completing (the concern the old live check and
-    its force-detach-every-startup BUGBOT were guarding against)."""
-    from fused_render.shell.mounts import _health_episodes, list_mounts
-    builtin = next(
-        (m for m in list_mounts() if m.get("builtin") == name), None
-    )
-    if builtin is None:
-        return False
-    episode = _health_episodes.get(builtin["id"])
-    return bool(episode) and episode.get("state") == "mounted"
+    Why not a live probe: the old check was `mp in mounted_paths()` plus
+    `_ismount(mp)`, and on Windows `_ismount()` (os.path.ismount/os.lstat on the
+    WinFsp reparse point) BLOCKS for ~the rc timeout while run_automount is
+    mid-attach of the mountpoint. /api/config embeds this for BOTH builtins, so
+    a cold start dragged /api/config to ~60s and the browser window couldn't
+    paint. macOS (nfsmount) and Linux (FUSE) attach fast enough to hide it; the
+    flag read fixes it on every platform.
+
+    Why not the health monitor's cached state: that cache can hold "mounted"
+    from a mount a PREVIOUS run left behind, before ensure_builtin_mount
+    force-detaches it on startup — and since the frontend sticky-caches the
+    first True (platform/lib/hooks.ts), a single stale True pins Learn over an
+    empty mountpoint for the whole session. run_automount instead drops the flag
+    to False before its force-detach and only sets it True once its own
+    attach_mount has re-attached the mount this run, so True always means a
+    mount that is live now. The frontend polls until it sees that True, so the
+    seconds run_automount takes to attach cost only a briefly-absent sidebar
+    entry, never a wrong one."""
+    with _builtin_ready_lock:
+        return _builtin_ready.get(name, False)
 
 
 def _force_detach_builtin_mount(builtin: dict, old_remote: str) -> None:
