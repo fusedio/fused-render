@@ -16,7 +16,9 @@ production too (conditions by server._run_condition, the backend by /api/run),
 so nothing here goes through a package import.
 """
 import importlib.util
+import json
 import os
+import shutil
 import subprocess
 
 import pytest
@@ -35,6 +37,20 @@ def _html():
     template tests in this suite make."""
     with open(os.path.join(TEMPLATE_DIR, "template.html"), encoding="utf-8") as f:
         return f.read()
+
+
+def _embed_url(dir_path):
+    """The URL the template's own `embedUrl` builds for a browsable snapshot."""
+    if not shutil.which("node"):
+        pytest.skip("node is needed to run the template's own URL codec")
+    src = _html()
+    a = src.index("function embedUrl(")
+    fn = src[a:src.index("\n}\n", a) + 2]
+    out = subprocess.run(
+        ["node", "-e", fn + "\nconsole.log(embedUrl(%s));" % json.dumps(dir_path)],
+        capture_output=True, text=True)
+    assert out.returncode == 0, out.stderr
+    return out.stdout.strip()
 
 
 def _load(name):
@@ -1065,13 +1081,48 @@ def test_a_directory_snapshot_is_framed_as_a_browsable_tree():
     src = _html()
     assert "snap.browse" in src
     assert "/explorer/embed/" in src
-    # ...with the listing's OWN split pane suppressed (it is already inside a
-    # preview column, and two previews deep is neither of them readable), and
-    # under the frozen-tree framing, which drops the chrome that would act on a
-    # snapshot as a live folder — the breadcrumb walking up into the cache's
+    # ...under the frozen-tree framing, which drops the chrome that would act on
+    # a snapshot as a live folder — the breadcrumb walking up into the cache's
     # internals, and the chips offering a chat on the extracted copy.
-    assert "preview=false" in src
-    assert "snapshot=1" in src
+    #
+    # Asserted against the URL the template's own `embedUrl` BUILDS, not against
+    # the file's text. The text assertion this replaces (`"preview=false" in
+    # src`) was satisfied by a comment that said the param had been REMOVED, so
+    # it pinned nothing at all: it passed both before and after the framing lost
+    # the flag that stopped the nested pane.
+    assert _embed_url("/a/b") == "/explorer/embed/a/b?snapshot=1"
+    # And nothing drops the preview column any more: the split is the one
+    # layout, for all three kinds.
+    assert "enterNoPreview" not in src
+    assert "no-preview" not in src
+
+
+def test_the_framed_snapshot_listing_may_not_open_a_pane_of_its_own():
+    """The other half of the framing, and it lives in the shell.
+
+    The embed is a whole shell (`/explorer/embed` → App → Preview `_listing` →
+    Listing), so the framed listing is that page's OWN top-level one —
+    `embedded=false`, which is the flag that otherwise stops a listing nesting a
+    pane. The split is decided by the container's measured width, and this
+    column is 70% of the window: ~954px on a 1600px screen, well past the 700px
+    `PANE_SPLIT_MIN_W`. So a browsable snapshot opened a preview pane INSIDE the
+    history view's preview pane until the frozen-tree flag took that decision
+    over.
+
+    Read out of the shell's source, in the manner of
+    test_claude_pane_mode_label.py: the template writes the flag, the shell
+    honours it, and this suite owns the pair — the template's own tests cannot
+    see the consequence, and a rule with a producer in one language and a
+    consumer in another is exactly the kind that gets half-removed."""
+    listing = os.path.join(
+        os.path.dirname(TEMPLATE_DIR), "..", "..", "frontend", "src", "apps",
+        "explorer", "Listing.tsx")
+    with open(os.path.normpath(listing), encoding="utf-8") as f:
+        src = f.read()
+    call = src[src.index("usePreviewPane("):]
+    call = call[:call.index(");") + 2]
+    assert "IS_SNAPSHOT" in call, \
+        "the shell no longer refuses a pane under the frozen-tree framing"
     # And nothing drops the preview column any more: the split is the one
     # layout, for all three kinds.
     assert "enterNoPreview" not in src

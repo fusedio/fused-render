@@ -52,8 +52,8 @@ export const IS_EMBED =
 // materialised historical snapshot (`history`, which extracts a commit into
 // ~/.fused-render/app-versions/<key>/<sha>/ and frames that directory).
 //
-// One flag for three symptoms of one cause, all of which are chrome that acts
-// on the listing AS A LIVE FOLDER and has no meaning over a frozen copy:
+// One flag, and three of its four consequences are chrome that acts on the
+// listing AS A LIVE FOLDER and has no meaning over a frozen copy:
 //
 //   * the breadcrumb, whose crumbs walk ABOVE the framed directory — straight
 //     into the snapshot cache's own internals (`~ / .fused-render / branches /
@@ -64,13 +64,22 @@ export const IS_EMBED =
 //     nonsense pointed at a frozen tree;
 //   * the "Open as app" chip, same argument.
 //
+// The fourth is about being FRAMED rather than about being frozen: the listing
+// does not open a preview pane of its own (Listing.tsx). A snapshot is embedded
+// in some view's column — the whole reason this flag exists — and a column wide
+// enough to read is also wide enough for the listing's own split, so the
+// browsable snapshot grew a second preview inside the first. It rides on this
+// flag because a "you are being framed" bit would have exactly one writer, the
+// same one, in exactly the same place.
+//
 // A param and not a prefix (a third `/explorer/frozen/` route) because this is
 // the SAME view of the same path — only its chrome differs — and the shell
 // already carries exactly this kind of framing flag on this exact surface:
 // `modechip=false` was its predecessor until D237's only producer went away,
 // with the SPEC noting the opt-out "comes back with that caller". This is that
 // caller. (`preview=false`, the listing's own pane, used to ride beside it too;
-// that one is gone — the split is a measurement now, not a flag.)
+// that one is gone as a PARAM — its job is the fourth consequence above, folded
+// into this flag rather than kept as a second one nobody could write alone.)
 //
 // Read ONCE at module init, like IS_EMBED: both prefixes are served by full page
 // loads, so the framing cannot change without one, and a value read per render

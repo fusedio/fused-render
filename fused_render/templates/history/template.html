@@ -450,14 +450,20 @@ async function frameSrcForFile(path) {
 //                     walk up out of the snapshot and into the cache's own
 //                     internals) and the two corner chips (the mode chip offered
 //                     a Claude chat ON THE EXTRACTED COPY; "Open as app" would
-//                     run one). See router.ts IS_SNAPSHOT.
+//                     run one). It ALSO stops the framed listing opening a
+//                     preview pane of its own. See router.ts IS_SNAPSHOT.
 //
-// It used to pass `preview=false` alongside, to stop the embedded listing
-// growing its own split pane inside this already-narrow column. That param is
-// gone: the shell decides the split from the listing container's measured
-// width (listing/pane-math shouldShowPane), so a column too narrow to read
-// two panes in simply does not get a second one, with nothing for the framer
-// to declare.
+// The pane part used to be a second param, `preview=false`. It was dropped when
+// the shell started deciding the split from the listing container's measured
+// width (listing/pane-math shouldShowPane) — on the reasoning that a column too
+// narrow for two panes simply does not get a second one, leaving the framer
+// nothing to declare. That reasoning has the column the wrong way round. This
+// one is 70% of the window (the `split` default above), which is 954px on a
+// 1600px screen and nearly 1400 on a large one — far past the 700px at which
+// the listing splits. So the frozen tree grew a preview inside this preview,
+// which is exactly what the dropped param was there to prevent. The rule is
+// back, folded into the framing flag this URL already carries rather than
+// re-added beside it: one producer, one bit.
 function embedUrl(dirPath) {
   const norm = /^[A-Za-z]:[\\/]/.test(dirPath) ? dirPath.replace(/\\/g, "/") : dirPath;
   return "/explorer/embed/" + norm.split("/").filter(Boolean)

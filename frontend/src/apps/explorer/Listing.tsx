@@ -26,7 +26,7 @@
 //   shortcut-chord.ts       which chord means which action (pure)
 //   useListingShortcuts.ts file-op keyboard chords
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { navigate, replaceSearch } from "@platform/lib/router";
+import { IS_SNAPSHOT, navigate, replaceSearch } from "@platform/lib/router";
 import { dirname, normDir } from "@apps/explorer/lib/fs-actions";
 import { acquireOverlay, releaseOverlay } from "@platform/lib/ui-overlay";
 import { isMod } from "@platform/lib/platform";
@@ -170,9 +170,26 @@ export default function Listing({
   // An embedded Listing never opens its own pane (no nesting): the feature is
   // disabled at the hook, however wide the embedded listing gets. Otherwise
   // `pane.on` is purely a measurement of the split container (see pane.ts).
+  //
+  // A FROZEN-TREE listing is the second no-nesting case, and `embedded` cannot
+  // see it: the browsable snapshot (`history`'s `browse` framing, PT-14) is a
+  // whole shell loaded at `/explorer/embed/<tree>?snapshot=1`, so its Listing
+  // is the page's OWN top-level one — `embedded=false` — inside the history
+  // view's preview column. That column is 70% of the window, which on any
+  // ordinary screen is comfortably past PANE_SPLIT_MIN_W (measured: 954px in a
+  // 1600px window), so the frozen listing grew a preview pane INSIDE a preview
+  // pane. `?preview=false` used to stop it and was dropped with the toggle it
+  // belonged to, on the reasoning that the width decides — true for a listing
+  // that owns its window, false for one handed a column by a framer.
+  //
+  // `snapshot=1` and not a second param of its own: the framing flag has
+  // exactly one producer, and that producer is a template framing this listing
+  // in its own column. A flag that could only ever be written beside another
+  // one is the "three places to agree about one bit" the pane's own history
+  // (pane.ts) is a warning about.
   const { pane, splitRef, onDividerPointerDown } = usePreviewPane(
     fsPath,
-    !embedded
+    !embedded && !IS_SNAPSHOT
   );
 
   const clipboard = useClipboard();
