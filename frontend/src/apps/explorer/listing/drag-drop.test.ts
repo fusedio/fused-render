@@ -12,6 +12,7 @@ import {
   dropIsValid,
   fsDragInFlight,
   pressStartsDrag,
+  refusalNeedsToast,
   springDisarms,
   startFsDrag,
 } from "./drag-drop";
@@ -242,6 +243,32 @@ describe("dropIsValid", () => {
       ok: false,
       reason: "self",
     });
+  });
+});
+
+// A refusal the target ALREADY declared needs no words: the row that says
+// data-fs-drop-dir="0" wore the no-drop cursor and the reject highlight for the
+// whole hover, so a release on it is a gesture the user already saw refused.
+// The toast is for the one refusal nobody could see coming — a target whose
+// kind was unknown while the pointer was over it (a sidebar bookmark, probed
+// optimistically as a folder) turning out to be a file at the release.
+describe("refusalNeedsToast", () => {
+  test("a target that declared itself a non-folder ends quietly", () => {
+    expect(refusalNeedsToast("not-a-folder", true)).toBe(false);
+  });
+
+  test("an undeclared target that turns out to be a file has to say so", () => {
+    expect(refusalNeedsToast("not-a-folder", false)).toBe(true);
+  });
+
+  test("every other refusal is silent, declared or not", () => {
+    // self / descendant / already-there / empty all painted the reject
+    // highlight from the same dropIsValid the release re-asks, so the user saw
+    // them refused before letting go.
+    for (const reason of ["self", "descendant", "already-there", "empty"] as const) {
+      expect(refusalNeedsToast(reason, false)).toBe(false);
+      expect(refusalNeedsToast(reason, true)).toBe(false);
+    }
   });
 });
 

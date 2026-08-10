@@ -59,6 +59,7 @@ import {
   dragGhostLabel,
   dropIsValid,
   fsDragInFlight,
+  refusalNeedsToast,
   startFsDrag,
   type DragSource,
   type DropTarget,
@@ -437,7 +438,11 @@ async function completeDrop(
   originMover: ListingMover | undefined,
 ): Promise<void> {
   let target = spot.target;
-  if (!spot.el.hasAttribute(DROP_DIR_ATTR)) {
+  // Did the target itself say what it was? That is what decides whether a
+  // refusal needs words (refusalNeedsToast) — a row that declared "0" already
+  // wore the no-drop cursor and the reject highlight the whole hover.
+  const declaredKind = spot.el.hasAttribute(DROP_DIR_ATTR);
+  if (!declaredKind) {
     if (!kindCache.has(target.path)) {
       // Never probed, or the probe is still out: settle it now rather than
       // moving files into something that may be a file.
@@ -452,9 +457,11 @@ async function completeDrop(
   const verdict = dropIsValid(dragged, target);
   if (!verdict.ok) {
     // The only refusal a user can reach without seeing it coming: the target
-    // looked like a folder while the probe was out and turned out not to be
-    // one. Everything else was refused by the cursor before the release.
-    if (verdict.reason === "not-a-folder") {
+    // never declared its kind, looked like a folder while the probe was out,
+    // and turned out not to be one. Everything else — including a listing row
+    // that declared itself a file — was refused by the cursor before the
+    // release, and saying so again is saying it twice.
+    if (refusalNeedsToast(verdict.reason, declaredKind)) {
       pushToast({
         msg: `"${basename(target.path)}" isn't a folder — nothing was moved.`,
         tone: "error",

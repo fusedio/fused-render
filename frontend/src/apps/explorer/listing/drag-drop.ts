@@ -186,6 +186,28 @@ export function dropIsValid(dragged: readonly DragSource[], target: DropTarget):
   return { ok: true, dir: target.path };
 }
 
+// Does a refusal owe the user WORDS, or was it already said by the cursor?
+//
+// Every refusal above is painted before the release — the no-drop cursor and
+// the reject highlight come from this same verdict on every pointermove — with
+// exactly one exception: a target that could not say what it was while the
+// pointer was over it. Only the sidebar's bookmarks are in that position (the
+// server has to answer for them), so they are treated optimistically as folders
+// and probed; a release there can flip from "folder" to "file" at the last
+// instant, and that is the one refusal a user can reach without seeing it come.
+//
+// `targetDeclaredKind` is that distinction, and it is the target's OWN
+// declaration (row-drag's data-fs-drop-dir) rather than the answer: a listing
+// row that declared "0" spent the whole hover wearing the reject highlight, so
+// a toast on release would be telling the user something the row already told
+// them — one refused drop, said twice.
+export function refusalNeedsToast(
+  reason: DropRejection,
+  targetDeclaredKind: boolean,
+): boolean {
+  return reason === "not-a-folder" && !targetDeclaredKind;
+}
+
 // --- what the ghost says -----------------------------------------------------
 
 // The label on the ghost that follows the cursor. One entry is named; several
