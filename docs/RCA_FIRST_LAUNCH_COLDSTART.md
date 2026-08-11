@@ -109,3 +109,18 @@ INFO fused_render.engine: engine warm-up: fused backend ready (3.0s)    # every 
 - `tests/test_server_engine.py`: `/api/config` returns without importing the
   backend on the request thread (the cold import is monkeypatched to fail; the
   request still succeeds).
+
+## Verification (measured)
+
+Ran the freshly-staged payload (my code, bytecode-cold) as a real server and hit
+`/api/config` repeatedly while the engine warmed in the background:
+
+| Metric | Before (real first-launch log) | After (staged server) |
+|---|---|---|
+| first `/api/config` | 90,938 ms (blocked) | 0.57 s worst, ~0.02 s typical |
+| UI usable | ~2 min frozen | immediately (server ready 6.4 s) |
+| engine warm-up | (implicit, on request thread) | logged: `engine warm-up: fused backend ready (3.8s)`, in the background |
+| engine field | fused | fused (resolved via the cheap check) |
+
+`3.8s` is this machine's Defender-warm cost; a truly Defender-cold fresh install
+pays more, but now in the background — the UI no longer waits on it.
