@@ -213,6 +213,13 @@ views are named from the **manifest**, never from a glob of the files dir, becau
 compaction leaves the previous generation's partitions on disk for readers still holding
 the old manifest (`index-store.md §4`) and a glob would count both generations.
 
+It also inherits §6's lesson the hard way: two views under ONE ordered budget starve one
+of them. There it was files served before folders; there it was a folder losing a shared
+recency cap to the files inside it, which match the same name term and are newer. Any
+reader of both views owes them **separate budgets or an order that cannot starve either
+kind** — folders in that engine get a reserved share of the result cap and are ordered
+shallowest-first, since a dirs row's `mtime_ns` may be 0 (unknown) and would sort last.
+
 The schema is what decides which spec fields a search can offer at all: the files table
 carries `mtime` and **no birth time**, so there is no creation-date filter anywhere in
 the feature — the endpoint refuses one rather than answering it with modification time.
