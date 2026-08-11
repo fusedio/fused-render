@@ -339,6 +339,10 @@
      #leftmodepop — same box, same shadow — because to the user they are the
      same kind of thing: a small menu hanging off the strip. */
   #kebab { position: relative; flex-shrink: 0; }
+  /* The no-pane strip (an ordinary folder, D239): #annbtn — the row's usual
+     auto-margin owner — is out of the document, so the kebab, the one control
+     the teardown keeps, anchors the right-hand end itself. */
+  body.nopane #kebab { margin-left: auto; }
   #kebabbtn {
     display: flex;
     align-items: center;
@@ -1256,11 +1260,24 @@
     body.view-chat #annbtn,
     body.view-chat #leftmode { display: none; }
     /* The rule above also removes the row's ONE auto margin (#annbtn owns it,
-       see the wide styles), which would let the view toggle fall in next to
-       #back at the LEFT edge. The toggle takes the margin over only while the
-       switch is off screen, so the strip keeps its shape — way back at one end,
-       way forward at the other — in both views. */
+       see the wide styles), which would let everything after it fall in next
+       to #back at the LEFT edge. The view toggle takes the margin over while
+       the switch is off screen, and the kebab is pushed to the row's LAST
+       seat (see the #kebab order rule below): navigation reads left, actions
+       read right, ⋮ closes the row — the same order every other view keeps. */
     body.view-chat #viewbtn { margin-left: auto; }
+    /* THE STRIP'S GRAMMAR, in both narrow views: the way OUT of the view sits
+       at the left edge, the controls that act on it sit right, and the kebab
+       is always the row's last word — the one seat it holds in every layout,
+       wide, narrow and no-pane alike, so it can never teleport across the row
+       when the layout flips (it used to sit hard left in the chat view: the
+       breakpoint crossing moved it end to end, and its right-anchored popup,
+       suddenly against the viewport's left edge, clipped to a blank sliver).
+       Flex `order` rather than moving DOM nodes: #back and #viewbtn ship in
+       the position the WIDE layout wants, and these two rules are the whole
+       narrow rearrangement. */
+    #kebab { order: 10; }
+    body.view-preview #viewbtn { order: -1; }
     /* The pin overlay (#annpins, #annhl, #annpop) needs no rule of its own: all
        three are children of #left, so parking the column takes them with it —
        `visibility: hidden` inherits (none of them sets `visibility: visible`)
@@ -1289,7 +1306,13 @@
        from the stylesheet (see the #inputbox rule), and
        tests/test_claude_narrow.py fails on any inline `display` in the column. */
     body.view-preview #left { flex: 1; min-height: 0; }
-    body.view-preview #chat { flex: 0 0 auto; }
+    /* `overflow: visible`, overriding the column's base `hidden`: here #chat
+       IS the strip — a 43px box — and the kebab's popup hangs below it, over
+       the preview. The base clip (sane for a full-height transcript column)
+       cut that popup to a 3px sliver and left the menu painting under the
+       frame. Safe to lift exactly here because every other child of #chat is
+       display:none'd by the rule below — there is nothing else to spill. */
+    body.view-preview #chat { flex: 0 0 auto; overflow: visible; }
     body.view-preview #chat > *:not(#anntools) { display: none; }
     /* #back survived the collapse above only because it moved into #anntools.
        It stays hidden HERE for the same reason the rest of the chat column is:
@@ -2476,14 +2499,17 @@ function applyLeftMode() {
 // Removed rather than hidden, because there is no state in which any of it is
 // wanted again: the target's kind does not change mid-session (a folder that
 // grows an index.html gets its pane on the next open, which is where the
-// predicate is read). Three subtrees go:
+// predicate is read). Two subtrees go whole:
 //   * #left — the frame, the pins, the highlight and the note popover;
 //   * #divider — no two columns, no ratio to drag;
-//   * #anntools — the annotate switch, the view toggle, and the `leftmode`
-//     picker when the narrow layout is what put it there (in the split layout
-//     the picker sits in #leftbar and goes with #left above). It is a child of
-//     #chat, so it survives removing #left, and would otherwise sit there as an
-//     empty bordered row of controls for a pane that is not there.
+// and #anntools is SLIMMED, not removed: every control in it that acts on the
+// pane goes — the annotate switch, the view toggle, and the `leftmode` picker
+// when the narrow layout is what put it there (in the split layout the picker
+// sits in #leftbar and goes with #left above) — but the kebab STAYS, because
+// its one item ("New session in terminal") acts on the TARGET, and a folder
+// with no preview is still a thing to open a terminal session on. The strip is
+// a child of #chat, so it survives removing #left; with the kebab in it, it is
+// no longer the empty bordered row that used to justify taking it too.
 //
 // What this deliberately does NOT do is tidy the URL. `split`, `paneview`,
 // `leftmode`, `annmode` and `annotations` left by an old bookmark are IGNORED,
@@ -2517,15 +2543,13 @@ function enterNoPane() {
   //    rendered a blank page. applyNarrowView returns early from here on, so
   //    nothing puts either class back.
   document.body.classList.remove("view-preview", "view-chat");
-  // 4. Rescue #back before its host goes: the button lives in #anntools (the
-  //    strip earns its place as the [← Chats … Annotate] row), but the way back
-  //    to the chat list must outlive the pane. The topbar takes it — the row
-  //    that held it before the strip existed, and the one piece of chat chrome
-  //    this teardown keeps.
-  const backBtn = document.getElementById("back");
-  const topBar = document.getElementById("topbar");
-  if (backBtn && topBar) topBar.appendChild(backBtn);
-  for (const id of ["left", "divider", "anntools"]) {
+  // 4. Slim the strip to the two controls that outlive the pane: #back (the
+  //    way back to the chat list; the home view hides it by CSS, same as ever)
+  //    and the kebab. The `nopane` class hands the kebab the row's auto margin
+  //    — #annbtn, the usual owner, is about to leave the document — so the ⋮
+  //    keeps the right-hand seat it has in every other layout.
+  document.body.classList.add("nopane");
+  for (const id of ["annbtn", "leftmode", "viewbtn", "left", "divider"]) {
     const el = document.getElementById(id);
     if (el) el.remove();
   }
@@ -3096,6 +3120,10 @@ const viewBtn = document.getElementById("viewbtn");
 // (params.onChange fires for every param, `split` and `model` included). null
 // until the first call: boot is not a flip.
 let narrowShown = null;
+// The breakpoint crossing's transient view default ("preview" after a live
+// wide→narrow crossing, else null): consulted only while `paneview` is absent,
+// never persisted — see the NARROW_MQ change handler for why it is not a param.
+let narrowCrossView = null;
 function applyNarrowView() {
   // No pane, no two views to be one of: the toggle and its strip are out of the
   // document (enterNoPane) and `paneview` describes a collapse this target never
@@ -3106,7 +3134,9 @@ function applyNarrowView() {
   // Default CHAT: an unset param reads as the chat, so a narrow pane opens on
   // the conversation — the reason the mode exists — and the preview is one click
   // away. Pane-local like `split`, so a reload keeps the view the user was on.
-  const preview = fused.params.get("paneview") === "preview";
+  // `narrowCrossView` sits between the param and that default: a live crossing
+  // keeps the preview on screen without spending a history entry on a resize.
+  const preview = (fused.params.get("paneview") || narrowCrossView || "chat") === "preview";
   document.body.classList.toggle("view-preview", preview);
   document.body.classList.toggle("view-chat", !preview);
   // The button names its DESTINATION, and names what the destination is FOR: the
@@ -3178,8 +3208,12 @@ function applyNarrowView() {
 }
 viewBtn.addEventListener("click", () => {
   // Writes the param only — applyNarrowView runs from params.onChange, the same
-  // one-way flow `split` and `leftmode` use.
-  fused.params.set("paneview", fused.params.get("paneview") === "preview" ? "chat" : "preview");
+  // one-way flow `split` and `leftmode` use. The opposite of the view ON SCREEN
+  // (narrowShown), not of the raw param: after a breakpoint crossing the preview
+  // can be showing on `narrowCrossView` with the param still absent, and reading
+  // the param there would write "preview" over a visible preview — a toggle
+  // whose first click does nothing.
+  fused.params.set("paneview", narrowShown ? "chat" : "preview");
 });
 applyNarrowView();
 // Crossing the breakpoint, in EITHER direction, without a reload. Two things
@@ -3196,6 +3230,19 @@ applyNarrowView();
 // pins — so doing it first means that measurement is taken against the layout
 // that is actually going to be on screen.
 NARROW_MQ.addEventListener("change", () => {
+  // Crossing DOWN with `paneview` unset: both halves were on screen, and the
+  // narrow default (chat — the right call for a FRESH narrow open, see
+  // applyNarrowView) would here hide the preview the user was just looking
+  // at, mid-resize, with no click. Remember "preview" so the collapse keeps
+  // the half that would otherwise vanish. A VARIABLE, deliberately not a
+  // `fused.params.set` — a resize is not a navigation, and the bridge's
+  // first-change-push would mint a history entry for it, so Back from a
+  // pristine visit would clear the param and jump the layout to chat
+  // (Bugbot, PR #447). The toggle still writes the param, and a param, once
+  // present, wins over this default in both directions — see applyNarrowView.
+  if (NARROW_MQ.matches && !noPane && !fused.params.get("paneview")) {
+    narrowCrossView = "preview";
+  }
   placeLeftPicker();
   applySplit();
   applyNarrowView();
@@ -4199,7 +4246,12 @@ function kebabOpen() {
   terminalOpt.disabled = false;
   kebabPop.hidden = false;
   kebabBtn.setAttribute("aria-expanded", "true");
-  terminalOpt.focus();
+  // preventScroll, and it is load-bearing: the popup hangs BELOW the strip,
+  // and in the narrow Preview view the strip is all of #chat — a plain focus
+  // asks the browser to bring the item into #chat's 43px box, which cannot
+  // hold it, so #chat scrolled to its limit and took every strip control off
+  // screen: an open menu floating under an empty white row.
+  terminalOpt.focus({ preventScroll: true });
 }
 kebabBtn.addEventListener("click", () => {
   if (kebabPop.hidden) kebabOpen(); else kebabClose();
@@ -4517,11 +4569,16 @@ function buildPermCard(p, run_id, liveMode) {
 //
 // Writes the param rather than calling applyNarrowView, the same one-way flow
 // #viewbtn uses. No-op in the wide layout (nothing is hidden) and for the no-pane
-// target (`paneview` describes a collapse it never does).
+// target (`paneview` describes a collapse it never does). The Preview test is
+// `narrowShown` — the view ON SCREEN — not the raw param: after a breakpoint
+// crossing the preview shows on `narrowCrossView` with the param still absent,
+// and the raw read left the card in the collapsed #log, a hard block with no
+// visible way to answer it (Bugbot, PR #447). Same reason #viewbtn toggles off
+// narrowShown.
 function showPermissionCard(card, working) {
   if (working && working.el && working.el.isConnected) log.insertBefore(card.el, working.el);
   else log.appendChild(card.el);
-  if (!noPane && NARROW_MQ.matches && fused.params.get("paneview") === "preview") {
+  if (!noPane && NARROW_MQ.matches && narrowShown) {
     fused.params.set("paneview", "chat");
   }
   scrollBottom();
