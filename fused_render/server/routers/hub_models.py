@@ -53,11 +53,15 @@ from urllib.parse import urlencode, urlsplit
 import httpx
 from fastapi import APIRouter
 
+from fused_render._view_url_codec import canonical_fs_path
 from fused_render.server.common import _error
 from fused_render.server.routers.ai_models import (
     _FRIENDLIER_TAGS,
     _TASK_HELP,
-    _listing,
+    _entry_is_dir,
+    _revisions,
+    _scan_repo,
+    hub_cache_dir,
 )
 
 router = APIRouter()
@@ -208,44 +212,62 @@ def _params(safetensors) -> int | None:
     return None
 
 
-def _local_index() -> dict[str, dict]:
-    """What this machine already has, keyed by repo id (`org/name`).
+def _cached_dirs() -> dict[str, str]:
+    """Repo id (`org/name`) -> cache folder name, for MODEL repos.
 
-    Reuses the AI Models listing rather than re-walking the cache, so the two
-    tabs can never disagree about what is downloaded — and so a query costs one
-    scan, not two.
+    One `scandir` of the cache root and nothing else — no `stat`, no walk, no
+    reading of anyone's metadata. This runs on every search (HS-5: what is on
+    this disk is never served stale), so it has to cost about nothing on a cache
+    holding hundreds of repos.
     """
-    index = {}
-    for repo in _listing().get("repos", []):
-        if repo.get("kind") == "model" and repo.get("id"):
-            index[repo["id"]] = repo
-    return index
+    dirs = {}
+    try:
+        entries = list(os.scandir(hub_cache_dir()))
+    except OSError:
+        return dirs
+    for entry in entries:
+        if not entry.name.startswith("models--"):
+            continue  # datasets/spaces/.locks — this search is models only
+        if not _entry_is_dir(entry):
+            continue
+        dirs["/".join(entry.name.split("--")[1:])] = entry.name
+    return dirs
 
 
-def _local_state(repo: dict | None) -> dict:
-    """How a Hub result stands on this disk.
+def _local_state(cache_dir: str, dirname: str | None) -> dict:
+    """How ONE Hub result stands on this disk.
+
+    Measuring is per RESULT, not per cached repo: a page shows at most a couple
+    of dozen rows, and of those only the ones actually present cost a walk. The
+    AI Models listing would answer this too, but it also reads every repo's
+    model card, config and safetensors headers to say what each model is FOR —
+    work no row here needs, and work a debounced keystroke must not pay for
+    across an entire cache.
 
     `partial` is a real state, not a rounding of `downloaded`: an interrupted
     pull leaves a repo folder holding blobs and no materialised snapshot, and
     calling that "downloaded" would send someone to a model that cannot load.
-    A repo with at least one snapshot has a revision something can actually
-    open, which is the line this draws.
+    A repo with at least one snapshot has a revision something can open, which
+    is the line this draws.
     """
-    if repo is None:
+    if dirname is None:
         return {"state": "none"}
+    repo_dir = os.path.join(cache_dir, dirname)
+    scan = _scan_repo(repo_dir)
     return {
-        "state": "downloaded" if repo.get("revisions") else "partial",
-        "size": repo.get("size"),
-        "files": repo.get("files"),
-        "lastUsed": repo.get("lastUsed"),
-        # The path the card links to, and the cache folder name a delete would
-        # name — both already canonical in the listing, so neither is rebuilt.
-        "path": repo.get("path"),
-        "dir": repo.get("dir"),
+        "state": "downloaded" if _revisions(repo_dir) else "partial",
+        "size": scan.size,
+        "files": scan.files,
+        # Newest atime — "last read", the same measure the cached tab shows.
+        "lastUsed": scan.atime or None,
+        # Canonicalized like every other fs path the frontend gets, so it can go
+        # straight to navigate(path, {isDir: true}).
+        "path": canonical_fs_path(repo_dir),
+        "dir": dirname,
     }
 
 
-def _model_row(raw: dict, local: dict[str, dict]) -> dict | None:
+def _model_row(raw: dict, cache_dir: str, dirs: dict[str, str]) -> dict | None:
     """One Hub result, joined to the local cache. None for anything without an
     id — a row the page could not act on is a row it should not be given."""
     model_id = raw.get("id") or raw.get("modelId")
@@ -273,7 +295,7 @@ def _model_row(raw: dict, local: dict[str, dict]) -> dict | None:
         "tags": [t for t in tags if isinstance(t, str)][:12] if isinstance(tags, list) else [],
         "params": _params(safetensors),
         "estimatedSize": _estimated_bytes(safetensors),
-        "local": _local_state(local.get(model_id)),
+        "local": _local_state(cache_dir, dirs.get(model_id)),
         "url": f"{hub_endpoint()}/{model_id}",
     }
 
@@ -372,9 +394,14 @@ def api_hub_search(q: str = "", task: str = "", sort: str = "downloads", limit: 
     # The JOIN is deliberately outside the cache: the Hub's answer is stable for
     # the TTL, but what is on this disk changes the moment someone deletes a
     # model, and a stale "downloaded" badge would send them to a folder that is
-    # no longer there.
-    local = _local_index()
-    models = [row for row in (_model_row(r, local) for r in payload["raw"] if isinstance(r, dict))
+    # no longer there. It can afford to run every time because it is scoped to
+    # the rows being returned — one scandir of the cache root, then a measure of
+    # only the handful of repos that turned out to be present.
+    cache_dir = hub_cache_dir()
+    dirs = _cached_dirs()
+    models = [row
+              for row in (_model_row(r, cache_dir, dirs)
+                          for r in payload["raw"] if isinstance(r, dict))
               if row is not None]
     return {
         "models": models,

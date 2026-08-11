@@ -5532,7 +5532,11 @@ three weeks ago, and would cost nothing to open.
   **not downloaded**. `partial` is a real state and not a rounding of the other
   two: an interrupted pull leaves a repo folder holding blobs and no
   materialised snapshot, and calling that "downloaded" sends someone to a model
-  that cannot load. The line is "has at least one snapshot".
+  that cannot load. The line is "has at least one snapshot" — and the page holds
+  the same line, so only a **downloaded** result opens its model card. A partial
+  one links to the Hub like an absent one does, because there is no revision for
+  the card to describe and linking there would hand someone the very failure the
+  distinction exists to prevent.
 - **HS-3** **The server fetches; the page never does.** One place holds the
   token, bounds the timeout, caches, and can be audited for what this app sends
   to a third party. The **host is fixed** — only the query string varies, so no
@@ -5550,11 +5554,17 @@ three weeks ago, and would cost nothing to open.
   because search-as-you-type would otherwise put one request per keystroke on a
   public API. **Errors are never cached:** the network comes back, and the next
   keystroke has to be allowed to find out.
-- **HS-5** **The local half of a result is never served stale.** The Hub's
-  answer holds for the TTL; what is on this disk does not. The join runs on
-  every request, outside the cache — a model deleted a second ago must stop
-  claiming to be downloaded, or its card links to a folder that is no longer
-  there.
+- **HS-5** **The local half of a result is never served stale, and is scoped to
+  the results.** The Hub's answer holds for the TTL; what is on this disk does
+  not, so the join runs on every request, outside the cache — a model deleted a
+  second ago must stop claiming to be downloaded, or its card links to a folder
+  that is no longer there. It can afford that because it costs what the RESULTS
+  cost rather than what the cache costs: one `scandir` of the cache root to map
+  ids to folder names, then a measure of only the handful of rows that turned
+  out to be present. The §37 listing would answer this too, but it also reads
+  every repo's model card, config and safetensors headers to say what each model
+  is FOR — work no row here needs, and work a debounced keystroke must not pay
+  for across a cache of hundreds of repos.
 - **HS-6** **Sizes are recovered, and say so.** `safetensors.parameters` is a
   dtype → count map, so bytes come from summing `count * bits / 8` — the same
   arithmetic and the same `≈` the model card uses on local files (HF-17), so one

@@ -49,7 +49,11 @@ function count(n: number | null): string | null {
 
 function HubCard({ model }: { model: HubModel }) {
   const local = model.local;
-  const here = local.state !== "none";
+  // Only a COMPLETE download opens locally. "partial" means blobs with no
+  // materialised snapshot, so there is no revision for the model card to
+  // describe — linking there would hand someone a view that cannot load, which
+  // is the same mistake as calling the state "downloaded" in the first place.
+  const here = local.state === "downloaded";
   const downloads = count(model.downloads);
   const likes = count(model.likes);
   // The Hub sends an ISO timestamp; timeAgo works in epoch seconds. An

@@ -109,6 +109,37 @@ def test_a_half_pulled_repo_is_partial_not_downloaded(client, hub_cache, monkeyp
     assert models[0]["local"]["state"] == "partial"
 
 
+def test_the_join_costs_what_the_results_cost_not_what_the_cache_costs(
+    client, hub_cache, monkeypatch
+):
+    """A search must not pay for the whole cache's metadata.
+
+    The AI Models listing answers "is this downloaded" too — and also reads
+    every repo's model card, config.json and safetensors headers to say what
+    each model is FOR. None of that reaches a Hub row, and a debounced keystroke
+    cannot pay for it across a cache of hundreds of repos. So the join
+    enumerates names once and measures only the repos that actually appear in
+    the results.
+    """
+    for i in range(5):
+        _cached_repo(hub_cache, f"models--org--m{i}")
+    monkeypatch.setattr(
+        ai_models_mod, "_repo_meta",
+        lambda *a, **k: pytest.fail("the join read a repo's model metadata"))
+    measured = []
+    real_scan = ai_models_mod._scan_repo
+    monkeypatch.setattr(
+        hub, "_scan_repo", lambda root: (measured.append(root), real_scan(root))[1])
+    monkeypatch.setattr(httpx, "get", _reply([{"id": "org/m2"}, {"id": "org/absent"}]))
+
+    models = client.get("/api/ai-models/hub/search").json()["models"]
+    assert {m["id"]: m["local"]["state"] for m in models} == {
+        "org/m2": "downloaded", "org/absent": "none"}
+    # One repo was in the results and present; the other four were never touched,
+    # and the absent one cost nothing at all.
+    assert [os.path.basename(p) for p in measured] == ["models--org--m2"]
+
+
 def test_the_local_half_is_never_served_stale(client, hub_cache, monkeypatch):
     # The Hub's answer is cached for a window; what is on this disk is not. A
     # model deleted a second ago must stop claiming to be downloaded, or the

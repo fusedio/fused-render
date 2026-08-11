@@ -223,7 +223,7 @@ repo when it was the last revision.
 page has a sentence to show. Each model is `{id, task, taskHelp, pipelineTag,
 library, downloads, likes, updated, gated, private, tags, params, estimatedSize,
 local, url}`, where `local` is `{state: "downloaded"|"partial"|"none", size,
-files, lastUsed, path, dir}` from the same `_listing()` the cached tab uses.
+files, lastUsed, path, dir}`.
 `GET /api/ai-models/hub/tasks` → the offered filters as `{tag, label, help}`.
 Both are unguarded reads — this module searches and never downloads, so there is
 no mutation to guard.
@@ -235,7 +235,11 @@ token (`HF_TOKEN`/`HUGGING_FACE_HUB_TOKEN`/`$HF_HOME/token`) is sent and never
 returned. Answers are memoised for a short TTL — search-as-you-type would
 otherwise be one request per keystroke — but **errors are not cached** and the
 **local join runs on every request**, outside the cache, so a model deleted a
-second ago stops claiming to be downloaded. Sizes are recovered from
+second ago stops claiming to be downloaded. That join is scoped to the rows
+being returned: one `scandir` of the cache root for id→folder, then `_scan_repo`
++ `_revisions` for only the results actually present. It deliberately does NOT
+go through `_listing()`, which additionally reads every repo's card, config and
+safetensors headers — metadata no Hub row uses. Sizes are recovered from
 `safetensors.parameters` (`count * bits / 8`) with the same table `inspect_model`
 uses locally; no metadata means no size rather than a guess. Sync `def`: one
 bounded outbound call plus a cache walk, so it belongs in the threadpool.
