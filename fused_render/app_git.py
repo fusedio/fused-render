@@ -4,7 +4,7 @@ Every app scaffolded by POST /api/apps/new ships with a git repo and a single
 boilerplate commit; after that, each completed Claude turn lands as its own
 small commit (templates/claude/agent.py mirrors the commit helper here, since
 templates must not import fused_render, D166). Manual edits made through the
-editor's /api/fs endpoints are NOT committed (D247) — the user's own commits
+editor's /api/fs endpoints are NOT committed (D245) — the user's own commits
 and Claude's turns are the whole history.
 
 Everything here is BEST-EFFORT: git may be missing, the folder may not be a
