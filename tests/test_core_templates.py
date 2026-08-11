@@ -60,6 +60,10 @@ def test_editing_a_packaged_template_restages_without_a_version_bump(staged):
     (staged.package / "csv" / "template.html").write_text(
         '<html data-fused-theme>light + dark</html>', encoding="utf-8"
     )
+    # A packaged-template edit only ever happens across two app launches; the
+    # digest memo is per process, so drop it to model the second launch (within
+    # one real process the packaged bytes cannot change under a running server).
+    core_templates._reset_expected_marker_cache()
     ensure_core_templates()
     assert staged.served() == '<html data-fused-theme>light + dark</html>'
 
@@ -91,6 +95,24 @@ def test_an_unchanged_tree_does_not_recopy(staged, monkeypatch):
     monkeypatch.setattr(core_templates.shutil, "copytree", boom)
     monkeypatch.setattr(core_templates.shutil, "rmtree", boom)
     assert ensure_core_templates() == staged.core
+
+
+def test_the_packaged_tree_is_hashed_once_per_process(staged, monkeypatch):
+    """The two module-level ensure_core_templates() calls — server/templates.py:16
+    and executor.py:41, both fired by a single `import fused_render.server` — must
+    hash the packaged tree ONCE between them, not twice. The tree can't change
+    under a running process, so the second full-tree sha256 was pure waste (~180ms)
+    on every launch. `staged` gives this test its own fresh fake package path, so
+    the first ensure always misses the memo and the assertion is exactly one pass.
+    """
+    hashed = []
+    real = core_templates._tree_digest
+    monkeypatch.setattr(core_templates, "_tree_digest",
+                        lambda root: hashed.append(root) or real(root))
+
+    ensure_core_templates()  # server/templates.py:16
+    ensure_core_templates()  # executor.py:41
+    assert hashed == [str(staged.package)], hashed
 
 
 def test_the_tree_digest_is_stable_and_order_independent(tmp_path):

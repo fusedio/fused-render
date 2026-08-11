@@ -99,9 +99,38 @@ def _tree_digest(root: str) -> str:
     return h.hexdigest()
 
 
+# The packaged tree can't change under a running process, so its sha256 — the one
+# expensive part of the gate — is computed at most ONCE per process and reused.
+# ensure_core_templates() runs at import time from BOTH server.templates and
+# executor during a single `import fused_render.server`; without this memo each
+# paid a full, independent hash of the identical ~15.6MB tree. Keyed on
+# PACKAGE_TEMPLATES_DIR so it is self-correcting rather than needing a reset: the
+# suite repoints that constant at a fresh fake tree per test, so a prior test's
+# digest is never reused, and production — one stable path — keeps one entry. The
+# gate stays honest: ensure_core_templates still reads and compares the on-disk
+# marker every call, so a stale STAGED copy is caught exactly as before. Only a
+# test that edits the packaged tree in place (modelling a second app launch — the
+# one time those bytes change) drops the memo via _reset_expected_marker_cache().
+_EXPECTED_MARKER_MEMO: tuple[str, str] | None = None
+
+
+def _reset_expected_marker_cache() -> None:
+    """Drop the process-lifetime digest memo (tests only — see _expected_marker)."""
+    global _EXPECTED_MARKER_MEMO
+    _EXPECTED_MARKER_MEMO = None
+
+
 def _expected_marker() -> str:
-    """The marker a correctly staged copy of the current package would hold."""
-    return f"{__version__} {_tree_digest(PACKAGE_TEMPLATES_DIR)}"
+    """The marker a correctly staged copy of the current package would hold:
+    `<app version> <sha256 of the packaged tree>`. Memoized per process on
+    PACKAGE_TEMPLATES_DIR — the tree is immutable within a process and both
+    import-time callers would otherwise hash all of it independently."""
+    global _EXPECTED_MARKER_MEMO
+    if _EXPECTED_MARKER_MEMO is not None and _EXPECTED_MARKER_MEMO[0] == PACKAGE_TEMPLATES_DIR:
+        return _EXPECTED_MARKER_MEMO[1]
+    marker = f"{__version__} {_tree_digest(PACKAGE_TEMPLATES_DIR)}"
+    _EXPECTED_MARKER_MEMO = (PACKAGE_TEMPLATES_DIR, marker)
+    return marker
 
 
 def ensure_core_templates() -> str:
