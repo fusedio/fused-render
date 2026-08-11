@@ -1,8 +1,10 @@
 """Reading the index: the lookup pattern grammar, partition pruning, and
 stats. See fused_render/index/specs/query.md.
 
-The raw `sql` action OpenIndex exposed is deliberately absent — arbitrary
-duckdb from a client is an arbitrary read/write surface behind an HTTP route.
+The raw `sql` action OpenIndex exposed is deliberately absent from THIS module —
+arbitrary duckdb from a client is an arbitrary read/write surface. The confined
+one lives in `guarded_query.py` (tests/test_index_guarded_query.py), which is
+why the assertion below is about `query.py` specifically.
 """
 import os
 
@@ -192,7 +194,8 @@ def test_stats_on_an_empty_index(tmp_path):
 def test_there_is_no_raw_sql_surface():
     """The `sql` action was fine inside a trusted local page and is not fine
     behind an HTTP route: duckdb with unrestricted SQL reads and writes
-    anything the user's account can."""
+    anything the user's account can. The guarded replacement is a separate
+    module on purpose, so this assertion keeps meaning what it meant."""
     assert not hasattr(index_query, "sql")
     assert "sql" not in dir(index_query)
 

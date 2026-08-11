@@ -20,6 +20,8 @@ unguarded like every other read endpoint and none of them can write.
 | `GET /api/index/stats?root=` | — | totals + per-extension breakdown (`query.md §2`) |
 | `GET /api/index/lookup?q=&limit=&offset=&sort=` | — | path lookup (`query.md §3`) |
 | `GET /api/index/search?root=&q=&limit=` | — | the explorer's in-folder corpus (`query.md §6`) |
+| `POST /api/index/query` `{sql, limit?}` | X-Fused | run ONE read-only statement over `files`/`dirs`; `{columns, rows, truncated}` (`query.md §5`) |
+| `POST /api/index/ask` `{prompt, limit?}` | X-Fused | compile a question to SQL through the AI relay, run it under the same guard, echo the `sql` (`query.md §5`) |
 | `GET /api/index/config` · `POST /api/index/config` | X-Fused on write | scan roots + ignore list (§3) |
 | `POST /api/index/delete` | X-Fused | drop the whole store (§5) |
 
@@ -28,7 +30,13 @@ de-globalizing the engine bought: an ignore-list edit applies to the next scan w
 restart, and a test's redirected home is honoured by the same process that served the
 previous test.
 
-**There is no route that runs SQL against the index** — see `query.md §5`.
+`query` and `ask` are the two routes that are **guarded despite being reads**. They
+write nothing, but they execute a statement the caller (or a model) wrote, and that is
+not something a foreign page should be able to fire blind — so they are POST-only and
+carry the header. Both map every refusal to a 400 with the message verbatim, including
+duckdb's own ("no such column" is the caller's typo, not a server fault), and `ask`
+returns the compiled `sql` even when the guard refuses it. What makes them safe is
+`query.md §5`, not the header.
 
 ## 2. Status, and the first-boot window
 
@@ -128,7 +136,8 @@ developer's real home. The scheduler's own tests call `run_startup_scan()` direc
   manual scan, and a change deeper than the folder being viewed does not move its
   mtime — an ambient watcher remains a later project.
 - **Indexing remote mounts** — refused structurally (`scan-ignore.md §7`).
-- **AI/SQL access to the index** — `query.md §5`.
+- **Deciding what SQL is safe** — the guard is `query.md §5`; these routes only adapt it
+  to HTTP.
 
 ## See also
 

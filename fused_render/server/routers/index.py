@@ -10,18 +10,26 @@ Mutating routes carry the usual X-Fused guard. Reads are unguarded like the
 other read endpoints — a foreign page cannot read our responses anyway — and
 none of them can write.
 
-There is deliberately no route that runs SQL against the index (`index/specs/
-query.md §5`).
+User SQL against the index goes through POST /api/index/query, which executes it
+in a confined read-only DuckDB session (`index/guarded_query.py`,
+`index/specs/query.md §5`), and POST /api/index/ask, which compiles a question
+into one of those statements through the existing AI relay. Both are POST and
+X-Fused-guarded despite being reads: they execute a caller-shaped statement, so
+neither should be reachable from a crafted link.
 """
 import asyncio
+import json
 import logging
 import os
+import re
 import threading
 
 from fastapi import APIRouter, Body, Header, Query
+from fastapi.responses import JSONResponse
 
 from fused_render.index import freshness, runner
 from fused_render.index.config import IndexConfig, load_config, save_config
+from fused_render.index.guarded_query import MAX_LIMIT, run_guarded
 from fused_render.index.ignore import default_ignore, norm
 from fused_render.index.query import MAX_CORPUS
 from fused_render.index.query import lookup as index_lookup
@@ -33,6 +41,7 @@ from fused_render.index.store import (
     read_manifest,
     save_applied_ignore,
 )
+from fused_render.server import ai as _server_ai
 from fused_render.server.common import _error, _require_fused
 from fused_render.server.index_gitignore import filter_corpus
 
@@ -293,6 +302,135 @@ def api_index_search(root: str = Query(default=""), q: str = Query(default=""),
     # everyone else on that generation.
     out = filter_corpus(out, cacheable=not q.strip() and limit >= MAX_CORPUS)
     return {"ok": True, **out}
+
+
+# ------------------------------------------------------------------ user SQL
+
+# Rows a query answers with when the caller names no limit. Small: this fills a
+# table in a preferences panel, and MAX_LIMIT is there for a caller that means
+# it.
+DEFAULT_QUERY_LIMIT = 200
+
+
+def _guarded(cfg: IndexConfig, sql: str, limit) -> dict | object:
+    """`run_guarded` with both failure modes mapped to a 400.
+
+    duckdb's own exceptions are 400s too, not 500s: "no such column" is the
+    caller's mistake, and the panel shows the message verbatim so a typo is
+    self-explanatory. Only the message travels — no traceback."""
+    try:
+        n = int(limit) if limit is not None else DEFAULT_QUERY_LIMIT
+    except (TypeError, ValueError):
+        return _error("'limit' must be a number")
+    try:
+        return run_guarded(cfg, sql, limit=min(max(n, 0), MAX_LIMIT))
+    except ValueError as e:
+        return _error(str(e))
+    except Exception as e:  # noqa: BLE001 - duckdb's exception tree, flattened
+        return _error(f"{type(e).__name__}: {e}")
+
+
+@router.post("/api/index/query")
+def api_index_query(body: dict = Body(default={}),
+                    x_fused: str | None = Header(default=None)):
+    """Run one read-only statement against `files` / `dirs`.
+
+    Guarded like the mutating routes even though it writes nothing: it executes
+    a statement the caller wrote, which is not something a foreign page should
+    be able to fire blind."""
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    sql = body.get("sql")
+    if not isinstance(sql, str) or not sql.strip():
+        return _error("'sql' must be a non-empty string")
+    out = _guarded(load_config(), sql, body.get("limit"))
+    if not isinstance(out, dict):
+        return out
+    return {"ok": True, **out}
+
+
+# What the model needs to write a valid statement, and nothing more: the two
+# schemas, the units, and the shape of an acceptable answer. Kept here rather
+# than derived from store.schemas because it is prose for a reader, not a
+# contract — a column list is only half of what makes `size` mean bytes.
+_ASK_SYSTEM_PROMPT = """\
+You translate a question about a filesystem index into ONE DuckDB SQL statement.
+
+Two views are available and nothing else:
+
+  files(path VARCHAR, dir VARCHAR, name VARCHAR, ext VARCHAR, size BIGINT,
+        mtime DOUBLE, depth INTEGER)
+  dirs(dir VARCHAR, sig VARCHAR, n_files INTEGER, total_size BIGINT,
+       mtime_ns BIGINT, n_subdirs INTEGER, depth INTEGER)
+
+- `path` and `dir` are absolute, POSIX-separated. `name` is the basename.
+- `ext` is lowercase and has no leading dot; it is '' for a file with no
+  extension.
+- `size` is bytes. `mtime` is epoch SECONDS (a float); `dirs.mtime_ns` is epoch
+  NANOSECONDS, and 0 there means unknown.
+- `depth` is the absolute count of '/' in the path.
+
+Rules: answer with ONE statement, a SELECT (a WITH is fine). No INSERT, UPDATE,
+DELETE, CREATE, COPY, ATTACH, SET or PRAGMA — they are refused. Do not read any
+file or table other than these two views. Give the columns readable aliases, and
+add an ORDER BY and a LIMIT when the question implies a top-N.
+
+Reply with the SQL and nothing else: no prose, no explanation, no code fence.\
+"""
+
+_FENCE = re.compile(r"```[a-zA-Z]*\s*(.*?)```", re.S)
+
+
+def _sql_from_answer(text: str) -> str:
+    """The SQL out of a model's reply.
+
+    Asked for bare SQL, models still fence it and still add a sentence either
+    side often enough that stripping is cheaper than a retry. The FIRST fenced
+    block wins; with no fence the whole reply is the statement."""
+    m = _FENCE.search(text or "")
+    return (m.group(1) if m else (text or "")).strip()
+
+
+@router.post("/api/index/ask")
+async def api_index_ask(body: dict = Body(default={}),
+                        x_fused: str | None = Header(default=None)):
+    """A question in English, answered from the index.
+
+    The compiled SQL is returned WHATEVER happens to it — including when the
+    guard refuses it — because a wrong answer with the statement visible is
+    debuggable and a bare error is not.
+
+    Nothing here trusts the model: its statement goes through exactly the same
+    guard a hand-typed one does (`index/guarded_query.py`). The prompt asking
+    for a SELECT is a hint, not the boundary."""
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    prompt = body.get("prompt")
+    if not isinstance(prompt, str) or not prompt.strip():
+        return _error("'prompt' must be a non-empty string")
+    # The relay owns the claude hop, the model preference, the timeout and the
+    # typed error envelope; a failure passes straight through it unchanged
+    # rather than being re-described here.
+    resp = await _server_ai._ai_relay({"prompt": prompt.strip(),
+                                       "system_prompt": _ASK_SYSTEM_PROMPT,
+                                       "stream": False})
+    try:
+        answered = json.loads(bytes(resp.body))
+    except ValueError:
+        return _error("the AI relay returned an unreadable response", status=502)
+    if not answered.get("ok"):
+        return resp
+    sql = _sql_from_answer((answered.get("result") or {}).get("text") or "")
+    if not sql:
+        return _error("the model answered with no SQL", status=502)
+    out = _guarded(load_config(), sql, body.get("limit"))
+    if not isinstance(out, dict):
+        # Same 400, plus the statement that earned it.
+        return JSONResponse({**json.loads(bytes(out.body)), "sql": sql},
+                            status_code=out.status_code)
+    return {"ok": True, "sql": sql, **out}
 
 
 # --------------------------------------------------------------------- config

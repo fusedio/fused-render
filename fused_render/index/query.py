@@ -1,11 +1,11 @@
 """Reading the index — strictly read-only, and strictly parameterized.
 
-Ported from OpenIndex's `query.py` MINUS its `sql` action. Inside a local
-trusted page, handing duckdb a user's statement was consistent with runPython
-executing arbitrary local Python anyway; behind an HTTP route it is an
-arbitrary read/write surface with no allowlist and no read-only flag, so it is
-gone rather than guarded. What remains — `stats` and `lookup` — builds SQL only
-from escaped literals, an int-cast limit/offset and a fixed sort allowlist.
+Ported from OpenIndex's `query.py` MINUS its `sql` action, which was an
+arbitrary read/write surface with no allowlist and no read-only flag. User SQL
+lives in `guarded_query.py` instead, where the confinement is the whole point of
+the module (specs/query.md §5); nothing here takes a caller's statement.
+`stats` and `lookup` build SQL only from escaped literals, an int-cast
+limit/offset and a fixed sort allowlist.
 
 duckdb is imported inside each function, not at module top: this module is
 imported by the server's router, and a call against a missing index should not
