@@ -1,5 +1,7 @@
 // Server API wrappers. Non-ok responses throw with the server's error message.
 import { noteFsMutation, noteIndexLifecycle } from "@platform/lib/index-freshness";
+import { outcomeFrom } from "@platform/lib/index-query";
+import type { IndexQueryOutcome } from "@platform/lib/index-query";
 
 export interface Config {
   start_dir: string;
@@ -339,6 +341,49 @@ export function startIndexScan(opts: { root?: string; full?: boolean } = {}): Pr
   runs: { run_id: string; root: string }[];
 }> {
   return mutateJson("POST", "/api/index/scan", opts);
+}
+
+// POST /api/index/query and /api/index/ask — read-only SQL over the index, and
+// the same thing from a question in English (index/specs/query.md §5).
+//
+// NOT through mutateJson, for two reasons: it throws on a non-2xx, and a
+// refused `ask` returns a 400 whose body carries the compiled `sql` the user
+// needs to see — throwing would drop it. And deliberately NOT through
+// noteAfter/noteFsMutation: a query changes nothing, so marking a folder dirty
+// would drop it to a live walk for the rest of the session for no reason.
+// The X-Fused header is still required (both routes execute a caller-shaped
+// statement, so both are guarded).
+export async function runIndexQuery(
+  body: { sql: string; limit?: number },
+): Promise<IndexQueryOutcome> {
+  return indexQueryPost("/api/index/query", body);
+}
+
+export async function askIndex(
+  body: { prompt: string; limit?: number },
+): Promise<IndexQueryOutcome> {
+  return indexQueryPost("/api/index/ask", body);
+}
+
+async function indexQueryPost(url: string, body: unknown): Promise<IndexQueryOutcome> {
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Fused": "1" },
+      body: JSON.stringify(body),
+    });
+  } catch (e) {
+    return { ok: false, sql: null, error: (e as Error).message };
+  }
+  let data: unknown = null;
+  try {
+    data = await res.json();
+  } catch {
+    // outcomeFrom turns a null body into `HTTP <status>`, which is the honest
+    // message when the server did not answer JSON at all.
+  }
+  return outcomeFrom(res.status, data);
 }
 
 export function deleteIndex(): Promise<{ deleted: boolean }> {
