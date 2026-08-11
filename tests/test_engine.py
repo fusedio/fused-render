@@ -47,6 +47,71 @@ def _fresh_interpreter_probe():
     engine.reset_app_interpreter_cache()
 
 
+@pytest.fixture(autouse=True)
+def _fresh_availability_cache():
+    """warm()'s cached availability is process-global; clear it per test."""
+    engine._available_cached = None
+    yield
+    engine._available_cached = None
+
+
+# --- engine warm-up + non-blocking availability (PY cold-start) --------------
+#
+# The first /api/config resolves the engine, which imports the fused backend. On
+# a fresh install that cold import is ~a minute (bytecode compile + the OS
+# scanning every native module on first load); it must NEVER run on the request
+# thread. warm() pays it once in a startup thread; available_nonblocking() reads
+# the result (or a cheap importability check) and never triggers the import.
+
+
+def test_available_nonblocking_never_triggers_the_cold_import(monkeypatch):
+    def _boom():
+        raise AssertionError("the cold engine import must not run on the request path")
+
+    monkeypatch.setattr(engine, "available", _boom)
+    # Whatever it answers, it is computed WITHOUT the cold import (cache /
+    # sys.modules / find_spec) — _boom must never fire.
+    assert isinstance(engine.available_nonblocking(), bool)
+
+
+def test_available_nonblocking_reads_find_spec_not_the_import(monkeypatch):
+    monkeypatch.setattr(engine, "available",
+                        lambda: (_ for _ in ()).throw(AssertionError("no cold import")))
+    monkeypatch.delitem(sys.modules,
+                        "fused.agent_core.backends.local.python_compute", raising=False)
+    monkeypatch.setattr(engine.importlib.util, "find_spec", lambda _n: object())
+    assert engine.available_nonblocking() is True
+    monkeypatch.setattr(engine.importlib.util, "find_spec", lambda _n: None)
+    assert engine.available_nonblocking() is False
+
+
+def test_warm_caches_a_positive_and_short_circuits(monkeypatch):
+    monkeypatch.setattr(engine, "available", lambda: True)
+    engine.warm()
+    assert engine._available_cached is True
+
+    def _no_find_spec(_name):
+        raise AssertionError("cached result must be used, not a fresh probe")
+
+    monkeypatch.setattr(engine.importlib.util, "find_spec", _no_find_spec)
+    assert engine.available_nonblocking() is True
+
+
+def test_warm_does_not_cache_a_negative(monkeypatch):
+    # A negative stays uncached so a mid-session `fused` install is still seen
+    # live (fused_engine_available's original per-call contract).
+    monkeypatch.setattr(engine, "available", lambda: False)
+    engine.warm()
+    assert engine._available_cached is None
+
+
+def test_warm_logs_the_duration(monkeypatch, caplog):
+    monkeypatch.setattr(engine, "available", lambda: True)
+    with caplog.at_level("INFO", logger="fused_render.engine"):
+        engine.warm()
+    assert "engine warm-up" in caplog.text
+
+
 # --- the folder rule (SPEC PY-16) --------------------------------------------
 
 # Reading a `pyproject.toml` needs `tomllib` (3.11+ stdlib) or the `tomli`

@@ -207,6 +207,20 @@ def create_app(start_dir: str) -> FastAPI:
     async def _startup_prewarm_ai():
         prewarm_ai()
 
+    # Warm the fused compute engine off the request path (PY cold-start). The
+    # first /api/config resolves the engine, importing the fused backend; on a
+    # fresh install that import pays a one-time cold cost (bytecode-compile the
+    # dependency tree + the OS scanning every native module on first load) that,
+    # left lazy, freezes the shell for ~a minute on first launch. A daemon thread
+    # pays it in the background while effective_engine reports a cheap
+    # provisional answer, so the UI is responsive immediately.
+    @app.on_event("startup")
+    async def _startup_warm_engine():
+        from fused_render import engine
+
+        if os.environ.get("FUSED_RENDER_ENGINE", "").strip().lower() != "builtin":
+            engine.warm_in_background()
+
     # User-level skill sync (D185): install/refresh the canonical fused-render
     # skills in Claude Code's skills dir. Since D216 this is for sessions
     # fused-render did NOT launch — the user's own `claude` in their app folder

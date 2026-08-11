@@ -181,14 +181,17 @@ def calls_retention_days() -> int:
 def fused_engine_available() -> bool:
     """Whether the fused local compute backend is importable right now.
 
-    Probed per call (not cached): /api/deploy/install can land the package
-    mid-session, and the page should reflect that without a restart.
+    Read on the request path (/api/config resolves the engine every call), so it
+    must not trigger the cold backend import itself — engine.warm() does that
+    once in a startup thread and caches it; this reads that (or a cheap
+    importability check) live, so /api/deploy/install still flips it mid-session
+    without a restart.
     """
     try:
         from fused_render import engine as _engine
     except ImportError:
         return False
-    return _engine.available()
+    return _engine.available_nonblocking()
 
 
 def effective_engine() -> str:
