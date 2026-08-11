@@ -285,7 +285,7 @@ def test_the_dead_framing_params_are_gone_from_their_consumers_too():
         assert 'get("preview")' not in code, f"{rel[-1]} still reads the dead param"
 
 
-def test_the_no_pane_state_removes_the_column_the_divider_and_the_strip():
+def test_the_no_pane_state_removes_the_column_the_divider_and_the_pane_controls():
     """The no-pane case is a DESIGNED state, not a missing element — and the
     difference is load-bearing.
 
@@ -300,17 +300,23 @@ def test_the_no_pane_state_removes_the_column_the_divider_and_the_strip():
     script has finished: every declaration is initialised before anything is
     taken away.
 
-    Three things go, and each one is chrome that acts on the pane: `#left` (the
-    frame, the pins, the highlight, the popover), `#divider` (no ratio to drag)
-    and `#anntools` (the annotate switch, the `leftmode` picker and the view
-    toggle all live in that strip, which is a child of `#chat` and would
-    otherwise stay behind as an empty bordered row).
+    What goes is exactly the chrome that acts on the pane: `#left` (the frame,
+    the pins, the highlight, the popover), `#divider` (no ratio to drag), and —
+    out of the `#anntools` strip — the annotate switch, the `leftmode` picker
+    and the view toggle. The strip itself STAYS, because the kebab stays: its
+    "New session in terminal" acts on the TARGET, not on the pane, and a folder
+    with no preview is still a thing to hand to a terminal. The `nopane` body
+    class is the styling half of that survival — it hands the kebab the row's
+    auto margin, whose usual owner (#annbtn) just left the document.
     """
     code = _pane_code()
     i = code.index("function enterNoPane()")
     body = code[i:code.index("\n}", i)]
-    assert 'for (const id of ["left", "divider", "anntools"]) {' in body
+    assert 'for (const id of ["annbtn", "leftmode", "viewbtn", "left", "divider"]) {' in body
     assert "if (el) el.remove();" in body
+    assert '"anntools"' not in body, "the strip survives — the kebab lives there"
+    assert 'document.body.classList.add("nopane");' in body
+    assert "body.nopane #kebab { margin-left: auto; }" in _pane_source()
 
 
 def test_the_no_pane_state_undoes_what_boot_did_from_a_stale_param():

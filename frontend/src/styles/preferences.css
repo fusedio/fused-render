@@ -448,7 +448,9 @@
   flex-direction: column;
   min-width: 0;
   flex: 0 0 auto;
-  font-size: 12.5px;
+  /* A step below .fh-card-path (11.5px) — the sheet labels must read smaller
+     than the card's own path line. */
+  font-size: 10px;
   /* Lifted a step above --bg-panel so the sheets separate from the stack's
      --bg well; separation is carried by shadow, the hairline only stops
      same-value surfaces from fusing. */
@@ -481,13 +483,20 @@
 }
 
 .fhb-sheet-d1 {
-  margin: 0 10px -17px;
+  margin: 0 10px -20px;
   z-index: 2;
 }
 
 .fhb-sheet-d2 {
-  margin: 0 20px -17px;
+  margin: 0 20px -20px;
   z-index: 1;
+}
+
+/* Back-sheet title rows sit tighter than the front sheet's — at rest the
+   stack should read as slim page edges, not a column of full-height bars. */
+.fhb-sheet-d1 .fhb-sheet-row,
+.fhb-sheet-d2 .fhb-sheet-row {
+  padding: 4px 11px;
 }
 
 /* Back sheets are open pages, not closed pills: square bottom corners and no
@@ -500,14 +509,15 @@
 }
 
 /* The back sheet's page body: a blank strip a step off the sheet's own fill,
-   3px of which stays visible at rest (peek height minus the -17px overlap) —
-   the sliver of page edge that keeps stacked rows readable as separate
-   sheets; the hover fan slides the rest out. */
+   fully tucked away at rest (peek height equals the -20px overlap) — the
+   hover fan slides a 4px page edge out. */
 .fhb-sheet-peek {
   position: relative;
   flex: 0 0 auto;
   height: 20px;
-  background: rgba(var(--tint), 0.03);
+  /* A clear step lighter than the sheet's own fill so the page body reads
+     apart from the title row when the hover fan reveals it. */
+  background: color-mix(in srgb, var(--fg) 24%, var(--bg-panel));
   overflow: hidden;
 }
 
@@ -529,11 +539,15 @@
   border-color: color-mix(in srgb, var(--fg) 6%, var(--bg-alt));
 }
 
+:root[data-theme="light"] .fhb-sheet-peek {
+  background: color-mix(in srgb, var(--fg) 14%, var(--bg));
+}
+
 /* Hovering the card slides the back sheets out a little — more of each page
    edge shows, the ref design's "contents fan". */
 .fhb-card:hover .fhb-sheet-d1,
 .fhb-card:hover .fhb-sheet-d2 {
-  margin-bottom: -10px;
+  margin-bottom: -16px;
 }
 
 .fhb-sheet-icon {

@@ -15,8 +15,8 @@ export default function ExplorerSidebar({ config }: { config: Config }) {
       <div className="sidebar-section">
         <NavItem href="/explorer" id="explorer-home-link" label="Home" icon={HOME_ICON} />
       </div>
-      <BookmarksSection />
       <RecentsSection />
+      <BookmarksSection />
     </SidebarFrame>
   );
 }
