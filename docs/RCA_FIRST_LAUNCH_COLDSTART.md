@@ -150,8 +150,13 @@ supervisor kills and retries the child ~2–3× (`supervisor.log`: repeated
 serve within the budget — ~64 s total. Second launch: 9.6 s (all cached).
 
 This is the same on-access AV scan, in the base startup rather than the engine
-import; precompiled pyc and the engine warm-up don't touch it. Removing it needs
-either an install-dir Defender exclusion (declined — security tradeoff) or a
-supervisor that doesn't kill a slow-but-progressing child on the first-ever
-launch (a longer/one-shot readiness budget keyed off a first-run marker). Left
-as a follow-up.
+import; precompiled pyc and the engine warm-up don't touch it.
+
+**Fix: warm-import at install time.** `installer.iss` now runs
+`python -I -m fused_render._warm` as a `[Run]` step (after the payload is
+activated, before the first launch): it imports `fused_render.server.app` and
+`fused`, so the OS pays that one-time on-access scan of the native extensions
+**during the installer's progress bar** rather than on the first launch. No AV
+exclusion (rejected — a silent, per-user weakening of real-time protection) and
+no elevation. The install runs longer by roughly the scan cost; the first launch
+is correspondingly warm.

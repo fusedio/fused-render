@@ -84,6 +84,11 @@ Name: "{group}\Uninstall FusedRender"; Filename: "{uninstallexe}"
 #include BundleDir + "\registry.iss"
 
 [Run]
+; Warm-import the bundled native extensions now, so the OS on-access scan of
+; them is paid during install instead of freezing the first launch (see
+; fused_render/_warm.py). runhidden + waituntilterminated: it must finish before
+; the payload is first launched below.
+Filename: "{app}\payload\python\python.exe"; Parameters: "-I -m fused_render._warm"; StatusMsg: "Preparing FusedRender for first launch (one-time)…"; Flags: runhidden waituntilterminated
 Filename: "{app}\payload\{#ExeName}"; WorkingDir: "{localappdata}"; Description: "Launch FusedRender"; Flags: nowait postinstall skipifsilent
 
 [UninstallDelete]
