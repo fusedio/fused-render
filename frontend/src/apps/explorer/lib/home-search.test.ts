@@ -6,6 +6,7 @@ import {
   homeCountNote,
   homeHitsFrom,
   pathShortcut,
+  redirectsToSearch,
   stepHighlight,
 } from "./home-search";
 import type { IndexSearchResult, WalkEntry } from "@platform/lib/api";
@@ -86,10 +87,12 @@ describe("homeHitsFrom", () => {
 describe("homeCountNote", () => {
   it("states the true total and owns up to the display cap", () => {
     expect(homeCountNote(1, false)).toBe("1 match");
-    expect(homeCountNote(7, false)).toBe("7 matches");
+    expect(homeCountNote(HOME_RESULT_CAP, false)).toBe(`${HOME_RESULT_CAP} matches`);
     expect(homeCountNote(HOME_RESULT_CAP + 60, false)).toBe(
-      `Showing top ${HOME_RESULT_CAP} of 100`,
+      `Showing top ${HOME_RESULT_CAP} of ${HOME_RESULT_CAP + 60}`,
     );
+    // Four figures read as a number, not a digit run.
+    expect(homeCountNote(4690, false)).toBe(`Showing top ${HOME_RESULT_CAP} of 4,690`);
     // A truncated corpus is a second, independent "there was more than this".
     expect(homeCountNote(3, true)).toBe("3+ matches");
   });
@@ -134,5 +137,53 @@ describe("keyboard rows", () => {
     // A highlight past the end of a shrinking list clamps to the AI row rather
     // than addressing a row that is no longer on screen.
     expect(activeRow(9, 3)).toBe(3);
+  });
+});
+
+describe("redirectsToSearch", () => {
+  const key = (over: Partial<Parameters<typeof redirectsToSearch>[0]> = {}) => ({
+    key: "a",
+    ctrlKey: false,
+    altKey: false,
+    metaKey: false,
+    tagName: "DIV",
+    isContentEditable: false,
+    isSearchInput: false,
+    ...over,
+  });
+
+  it("claims a printable keystroke aimed at the page", () => {
+    expect(redirectsToSearch(key())).toBe(true);
+    expect(redirectsToSearch(key({ key: "7" }))).toBe(true);
+    expect(redirectsToSearch(key({ key: "~" }))).toBe(true);
+    expect(redirectsToSearch(key({ key: "/" }))).toBe(true);
+    // Shift is part of typing, not a command.
+    expect(redirectsToSearch(key({ key: "A" }))).toBe(true);
+    // Correcting a query has to reach the box too.
+    expect(redirectsToSearch(key({ key: "Backspace" }))).toBe(true);
+  });
+
+  it("leaves shortcuts alone", () => {
+    expect(redirectsToSearch(key({ ctrlKey: true }))).toBe(false);
+    expect(redirectsToSearch(key({ metaKey: true }))).toBe(false);
+    expect(redirectsToSearch(key({ altKey: true }))).toBe(false);
+  });
+
+  it("leaves navigation and other non-printable keys alone", () => {
+    for (const k of ["Enter", "Escape", "Tab", "ArrowDown", "ArrowUp", "F5", "Shift"])
+      expect(redirectsToSearch(key({ key: k }))).toBe(false);
+  });
+
+  it("never steals from another field", () => {
+    expect(redirectsToSearch(key({ tagName: "INPUT" }))).toBe(false);
+    expect(redirectsToSearch(key({ tagName: "TEXTAREA" }))).toBe(false);
+    expect(redirectsToSearch(key({ tagName: "SELECT" }))).toBe(false);
+    expect(redirectsToSearch(key({ isContentEditable: true }))).toBe(false);
+  });
+
+  it("is a no-op when the search box already has the caret", () => {
+    // Not merely redundant: focusing on every keystroke would reset the caret
+    // to the end, so editing the middle of a query would be impossible.
+    expect(redirectsToSearch(key({ tagName: "INPUT", isSearchInput: true }))).toBe(false);
   });
 });

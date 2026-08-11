@@ -27,6 +27,7 @@ import {
   homeHitsFrom,
   isAiRow,
   pathShortcut,
+  redirectsToSearch,
   stepHighlight,
   type CorpusState,
   type HomeHit,
@@ -323,6 +324,38 @@ function FilesSearch({
   const hits = useMemo(() => homeHitsFrom(ranked, home), [ranked, home]);
   const scanning = active && (scanned.q !== q || !scanned.done);
 
+  // -- the box is where typing goes ------------------------------------------
+  //
+  // This page exists to be typed into, so the caret starts here and STAYS
+  // reachable: a stray click on the background, or arriving with the hands
+  // already moving, must not cost a click on the input to recover. Any printable
+  // keystroke aimed at nothing else focuses the box and lands in it.
+  const inputEl = useRef<HTMLInputElement | null>(null);
+  useEffect(() => {
+    inputEl.current?.focus();
+  }, []);
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const el = e.target as HTMLElement | null;
+      const claim = redirectsToSearch({
+        key: e.key,
+        ctrlKey: e.ctrlKey,
+        altKey: e.altKey,
+        metaKey: e.metaKey,
+        tagName: el?.tagName,
+        isContentEditable: el?.isContentEditable === true,
+        isSearchInput: el === inputEl.current,
+      });
+      // Focus, then let the event through UNHANDLED: the browser delivers this
+      // same keystroke to the newly focused input, so the character is neither
+      // dropped nor inserted twice (preventDefault + appending by hand would
+      // fight the controlled value and lose the caret).
+      if (claim) inputEl.current?.focus();
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, []);
+
   // -- AI search -------------------------------------------------------------
   const aiCtl = useRef<AbortController | null>(null);
   useEffect(() => () => aiCtl.current?.abort(), []);
@@ -419,6 +452,7 @@ function FilesSearch({
           <MagnifierIcon />
         </span>
         <input
+          ref={inputEl}
           type="search"
           className="files-search-input"
           placeholder="Search your files — or paste a path like ~/Downloads"

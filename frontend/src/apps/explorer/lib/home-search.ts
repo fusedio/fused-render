@@ -108,6 +108,50 @@ export function corpusFrom(res: IndexSearchResult): CorpusState {
   return { status: "ok", entries: corpus.entries, truncated: corpus.truncated };
 }
 
+// -- typing anywhere is typing here ------------------------------------------
+
+/** The parts of a keydown that decide whether the search box should claim it. */
+export interface KeyIntent {
+  key: string;
+  ctrlKey: boolean;
+  altKey: boolean;
+  metaKey: boolean;
+  /** `tagName` of the event target, uppercase as the DOM reports it. */
+  tagName: string | undefined;
+  isContentEditable: boolean;
+  /** The target IS the search box — it already has the caret. */
+  isSearchInput: boolean;
+}
+
+/**
+ * Whether a keystroke aimed at the page should be redirected into the box.
+ *
+ * This page's whole purpose is to be typed into, so a printable key that no
+ * other field wants belongs in the search bar — nobody should have to click a
+ * search box on a search page. The exclusions are what keep that from being
+ * theft:
+ *
+ *  * a ctrl/alt/meta chord is a COMMAND, not typing, and swallowing focus from
+ *    one would break every app shortcut on the page. Shift is not in that list:
+ *    a capital letter is typing.
+ *  * another input/textarea/select/contenteditable owns its own keystrokes.
+ *  * the box already having the caret has to be a no-op, not a redundant
+ *    focus(): re-focusing collapses the selection to the end, which would make
+ *    editing the middle of a query impossible.
+ *
+ * `key.length === 1` is the printable test that doesn't enumerate alphabets (it
+ * admits every letter, digit, and symbol in any script while rejecting the named
+ * keys — "Enter", "Tab", "ArrowUp", "F5"). Backspace is admitted on top of it so
+ * a correction reaches the box rather than the browser's back gesture.
+ */
+export function redirectsToSearch(e: KeyIntent): boolean {
+  if (e.ctrlKey || e.altKey || e.metaKey) return false;
+  if (e.key.length !== 1 && e.key !== "Backspace") return false;
+  if (e.isSearchInput) return false;
+  if (e.isContentEditable) return false;
+  return e.tagName !== "INPUT" && e.tagName !== "TEXTAREA" && e.tagName !== "SELECT";
+}
+
 // -- the row model the keyboard walks ----------------------------------------
 //
 // The rendered list is `fileCount` file rows followed by exactly ONE action row
