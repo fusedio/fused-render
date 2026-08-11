@@ -248,6 +248,11 @@ _FRIENDLIER_TAGS = {
     "feature-extraction": "embeddings",
     "sentence-similarity": "sentence embeddings",
     "text2text-generation": "text-to-text generation",
+    # Hyphens-to-spaces turns this one into the unparseable "image text to
+    # text". It means a vision-language model: an image AND a prompt in, text
+    # out, so the "+" is doing the work the hyphens could not.
+    "image-text-to-text": "image + text to text",
+    "any-to-any": "any input to any output",
 }
 
 # transformers architecture suffix -> task. Ordered: the first match wins, so
@@ -273,6 +278,43 @@ _ARCH_TASKS = (
 _AUDIO_MODEL_TYPES = {"whisper", "speech_to_text", "speecht5", "seamless_m4t"}
 
 
+# Storage width of each safetensors dtype, for the quantized case below. Only
+# the INTEGER types matter: a float tensor stores one value per element, while
+# an integer tensor in a quantized checkpoint stores several packed into each
+# word.
+_DTYPE_BITS = {
+    "U8": 8, "I8": 8, "F8_E4M3": 8, "F8_E5M2": 8,
+    "U16": 16, "I16": 16, "F16": 16, "BF16": 16,
+    "U32": 32, "I32": 32, "F32": 32,
+    "U64": 64, "I64": 64, "F64": 64,
+}
+_PACKED_DTYPES = {"U8", "I8", "U16", "I16", "U32", "I32", "U64", "I64"}
+
+
+def _quantization(config: dict) -> int | None:
+    """The declared weight width in bits, or None when the checkpoint is not
+    quantized.
+
+    Read from what the checkpoint SAYS about itself — MLX writes
+    `quantization: {group_size, bits}`, transformers writes
+    `quantization_config: {bits | load_in_4bit | load_in_8bit, …}` — never
+    guessed from a filename. `mlx-community/…-4bit` is a naming convention, and
+    a number this page prints must not rest on one.
+    """
+    for key in ("quantization", "quantization_config"):
+        block = config.get(key)
+        if not isinstance(block, dict):
+            continue
+        bits = block.get("bits") or block.get("w_bit") or block.get("weight_bits")
+        if isinstance(bits, int) and 0 < bits < 32:
+            return bits
+        if block.get("load_in_4bit"):
+            return 4
+        if block.get("load_in_8bit"):
+            return 8
+    return None
+
+
 @dataclass
 class _RepoMeta:
     """What a repo is for and how big the model is — read from the default
@@ -281,6 +323,12 @@ class _RepoMeta:
     task: str | None = None
     task_source: str | None = None
     params: int | None = None
+    # True when `params` was recovered from packed weights (see
+    # _safetensors_params) rather than read off unpacked shapes — the UI marks
+    # it, because the arithmetic rests on the checkpoint's declared bit width.
+    params_estimated: bool = False
+    # "4-bit", "8-bit" — what the checkpoint declares about its weights.
+    quantization: str | None = None
     library: str | None = None
 
 
@@ -392,32 +440,42 @@ def _weight_files(snapshot_dir: str) -> list[str]:
     return found
 
 
-def _safetensors_params(path: str) -> int:
-    """Parameter count from a safetensors file's header — shapes only, no weights.
+def _safetensors_params(path: str, quantized_bits: int | None = None) -> tuple[int, bool]:
+    """Parameters in one safetensors file, and whether any of them were unpacked.
 
     The format opens with a little-endian u64 header length and that many bytes
-    of JSON describing every tensor, so the count is exact and costs one small
-    read rather than the multi-GB file. (`.bin` pickles and `.gguf` carry no
-    equivalent cheap header, so a repo holding only those reports no count
-    instead of a guess.)
+    of JSON describing every tensor, so the count costs one small read rather
+    than the multi-GB file. (`.bin` pickles and `.gguf` carry no equivalent
+    cheap header, so a repo holding only those reports no count instead of a
+    guess.)
+
+    **A quantized checkpoint does not store one parameter per element.** A
+    4-bit MLX or GPTQ checkpoint bit-packs eight weights into each `U32`, so
+    summing shapes counts storage slots — a 12B model reports ~2B, which is not
+    a small error but a different number entirely. When the config declares a
+    bit width, each element of an INTEGER tensor is therefore expanded by how
+    many weights that word holds (`storage bits / declared bits`), and the
+    result is flagged as recovered rather than measured. Float tensors — scales,
+    biases, anything left unquantized — are counted as they are.
     """
     head = _read_preserving_atime(path, 8)
     if head is None or len(head) < 8:
-        return 0
+        return 0, False
     length = int.from_bytes(head, "little")
     # A sane header is kilobytes to a few MB; anything else is not safetensors.
     if not 0 < length <= 64 * 1024 * 1024:
-        return 0
+        return 0, False
     raw = _read_preserving_atime(path, 8 + length)
     if raw is None or len(raw) < 8 + length:
-        return 0
+        return 0, False
     try:
         header = json.loads(raw[8:])
     except ValueError:
-        return 0
+        return 0, False
     if not isinstance(header, dict):
-        return 0
+        return 0, False
     total = 0
+    unpacked = False
     for name, info in header.items():
         if name == "__metadata__" or not isinstance(info, dict):
             continue
@@ -430,8 +488,14 @@ def _safetensors_params(path: str) -> int:
                 count = 0
                 break
             count *= dim
+        dtype = info.get("dtype")
+        if quantized_bits and isinstance(dtype, str) and dtype.upper() in _PACKED_DTYPES:
+            per_word = _DTYPE_BITS.get(dtype.upper(), 0) // quantized_bits
+            if per_word > 1:
+                count *= per_word
+                unpacked = True
         total += count
-    return total
+    return total, unpacked
 
 
 # Metadata is read once per snapshot directory and remembered: a snapshot's
@@ -492,8 +556,11 @@ def _repo_meta(repo_dir: str) -> _RepoMeta:
         meta.task, meta.task_source = "embeddings", "its sentence-transformers config"
         library = library or "sentence-transformers"
 
-    if meta.task is None and "config.json" in names:
-        config = _read_json(os.path.join(snapshot, "config.json")) or {}
+    # Read once, whatever the task turned out to be: the architecture is only
+    # one of the things config.json answers, and the weight width is needed even
+    # for a repo whose card already named its task.
+    config = _read_json(os.path.join(snapshot, "config.json")) or {} if "config.json" in names else {}
+    if meta.task is None and config:
         task = _architecture_task(config)
         if task:
             meta.task, meta.task_source = task, "the architecture in config.json"
@@ -502,14 +569,22 @@ def _repo_meta(repo_dir: str) -> _RepoMeta:
         meta.task, meta.task_source = "text generation", "a GGUF weights file"
         library = library or "gguf"
 
+    quantized_bits = _quantization(config)
+    if quantized_bits:
+        meta.quantization = f"{quantized_bits}-bit"
+
     # Summed across every component of the revision (see _weight_files): for a
     # pipeline that is transformer + text encoders + VAE, i.e. the parameters
     # this repo actually holds, rather than a curated idea of which component
     # counts as "the model".
     total = 0
+    estimated = False
     for path in _weight_files(snapshot):
-        total += _safetensors_params(path)
+        count, unpacked = _safetensors_params(path, quantized_bits)
+        total += count
+        estimated = estimated or unpacked
     meta.params = total or None
+    meta.params_estimated = estimated
     meta.library = library
 
     _META_CACHE[snapshot] = (stamp, meta)
@@ -617,6 +692,11 @@ def _repo(cache_dir: str, dirname: str, kind: str) -> dict:
         # Parameter count, exact, from the safetensors headers. None when the
         # weights are in a format with no cheap header to read.
         "params": meta.params,
+        # True when the count was recovered from packed weights rather than read
+        # off unpacked shapes — the card marks it with a "≈".
+        "paramsEstimated": meta.params_estimated,
+        # What the checkpoint declares about its weight width ("4-bit").
+        "quantization": meta.quantization,
         "revisions": _revisions(repo_dir),
         "refs": _ref_names(repo_dir),
     }

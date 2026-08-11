@@ -1901,9 +1901,15 @@ export interface AiModelRepo {
    *  architecture is our reading of one, and the UI distinguishes them. */
   taskSource: string | null;
   library: string | null;
-  /** Exact parameter count from the safetensors headers; null when the weights
-   *  are in a format with no cheap header to read (.bin, .gguf). */
+  /** Parameter count from the safetensors headers; null when the weights are in
+   *  a format with no cheap header to read (.bin, .gguf). */
   params: number | null;
+  /** True when `params` was recovered from PACKED weights — a 4-bit checkpoint
+   *  stores eight weights per word, so the count rests on the declared bit
+   *  width rather than on unpacked shapes, and the card marks it "≈". */
+  paramsEstimated: boolean;
+  /** What the checkpoint declares about its weight width ("4-bit"), or null. */
+  quantization: string | null;
   revisions: number;
   refs: string[];
 }

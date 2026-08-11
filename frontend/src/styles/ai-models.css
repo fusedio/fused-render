@@ -95,6 +95,15 @@
   font-variant-numeric: tabular-nums;
 }
 
+/* The stored weight width — the difference between a 7GB download and a 24GB
+   one of the same model, so it reads as a property, not an aside. */
+.am-card-quant {
+  padding: 1px 6px;
+  font-size: 11px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+
 .am-card-library::before {
   /* A separator that belongs to the optional item, so the line has no dangling
      middot when the library is unknown. */

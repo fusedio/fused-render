@@ -102,6 +102,11 @@ once that cache exists; the first download from the Hub creates it.
   from the architecture in `config.json` (hover the label to see which), and the
   parameter count from the safetensors headers. A repo whose download brought
   neither says nothing rather than guessing.
+- **Quantized models say so, and their size is marked "≈".** A 4-bit checkpoint
+  packs eight weights into each stored word, so the card shows the width
+  ("4-bit") and reports the parameter count unpacked from it — approximate by
+  nature, hence the ≈, and read from what the checkpoint declares rather than
+  from a name like `…-4bit`.
 - **"Added" is when this machine got the model, not when it was released.** The
   release date lives on the Hub, and this page only ever reads your disk.
 - **The sizes are real disk usage.** Inside the cache each revision's files are

@@ -5361,7 +5361,11 @@ is for, and the cache states it nowhere:
   `_class_name`; a sentence-transformers marker; the `architectures` head in
   `config.json` (…`ForCausalLM` → text generation, …`ForImageClassification` →
   image classification, with `model_type` separating whisper's
-  …`ForConditionalGeneration` from t5's); a `.gguf` weights file. **Every answer
+  …`ForConditionalGeneration` from t5's); a `.gguf` weights file. Tags render by
+  turning hyphens into spaces, which needs no table to stay current — except
+  where that produces something unreadable: `image-text-to-text` becomes
+  "image + text to text" (an image AND a prompt in, text out) rather than the
+  unparseable "image text to text". **Every answer
   carries where it came from**, and the card shows that on hover: a
   `pipeline_tag` is a fact and an architecture is a reading of one, and a UI
   that rendered them identically would be overclaiming. A repo with none of that
@@ -5381,6 +5385,18 @@ is for, and the cache states it nowhere:
   precision variant skipped when its plain counterpart is present
   (`…fp16.safetensors` beside `….safetensors` is the same tensors twice) and a
   blob counted once however many names link to it.
+- **HF-17a** **A quantized checkpoint stores several weights per element**, so
+  summing shapes counts storage slots rather than parameters: a 4-bit MLX or
+  GPTQ checkpoint packs eight weights into each `U32`, and a 12B model reported
+  2.4B — not a small error but a different number. When `config.json` declares a
+  width (`quantization.bits`, `quantization_config.bits`/`w_bit`/`load_in_4bit`),
+  integer tensors are expanded by how many weights their word holds and the
+  count is shown with a **≈**: it is recovered from the declared width, not read
+  off unpacked shapes, and the card must not present the two identically. The
+  width is read from the checkpoint, never from the repo name —
+  `mlx-community/…-4bit` is a naming convention, and no number this page prints
+  may rest on one. The declared width is also shown in its own right ("4-bit"):
+  it is the difference between a 7GB download and a 24GB one of the same model.
 - **HF-18** **The date shown is `added`, not "released".** The Hub's release
   date is not on this disk and this page never goes to the network, so what it
   states is the oldest file in the repo — when this machine first got it. The

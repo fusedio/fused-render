@@ -262,8 +262,24 @@ function RepoCard({
             </span>
           )}
           {repo.params !== null && (
-            <span className="am-card-params" title={`${repo.params.toLocaleString()} parameters`}>
+            <span
+              className="am-card-params"
+              title={
+                repo.paramsEstimated
+                  ? `≈${repo.params.toLocaleString()} parameters — unpacked from ${repo.quantization} weights, so it rests on the width the checkpoint declares`
+                  : `${repo.params.toLocaleString()} parameters`
+              }
+            >
+              {/* The "≈" is doing real work: for a packed checkpoint the count
+                  is recovered arithmetic, not a measurement of unpacked
+                  shapes. */}
+              {repo.paramsEstimated ? "≈" : ""}
               {formatParams(repo.params)} params
+            </span>
+          )}
+          {repo.quantization && (
+            <span className="am-card-quant" title="Weights are stored at this width">
+              {repo.quantization}
             </span>
           )}
           {repo.library && <span className="am-card-library">{repo.library}</span>}

@@ -802,3 +802,81 @@ def test_the_same_blob_under_two_names_counts_once(client, hub):
     os.symlink(repo / "blobs" / "shared", snap / "model.safetensors")
     os.symlink(repo / "blobs" / "shared", snap / "consolidated.safetensors")
     assert _repo_row(client, "org/m")["params"] == 64 * 64
+
+
+# -- quantized checkpoints -------------------------------------------------------
+# A 4-bit checkpoint bit-packs eight weights into each U32, so summing shapes
+# counts storage slots: mlx-community/gemma-3-12b-it-4bit reported 2.4B for a
+# 12B model. That is not a small error but a different number.
+
+
+def _quantized_safetensors(shapes_by_dtype):
+    header = {}
+    for dtype, shapes in shapes_by_dtype.items():
+        for name, shape in shapes.items():
+            header[name] = {"dtype": dtype, "shape": list(shape), "data_offsets": [0, 0]}
+    header["__metadata__"] = {"format": "mlx"}
+    blob = json.dumps(header).encode()
+    return len(blob).to_bytes(8, "little") + blob
+
+
+@requires_symlinks
+def test_a_4bit_checkpoint_reports_weights_not_storage_slots(client, hub):
+    repo = _repo(hub, "models--mlx-community--m-4bit", blobs={"w": 10},
+                 snapshots={"c1": {"x": "w"}}, refs={"main": "c1"})
+    # MLX's own shape: packed weights in U32, scales/biases in F16 beside them.
+    _snapshot_file(repo, "c1", "config.json",
+                   json.dumps({"architectures": ["Gemma3ForCausalLM"], "model_type": "gemma3",
+                               "quantization": {"group_size": 64, "bits": 4}}))
+    _snapshot_file(repo, "c1", "model.safetensors", _quantized_safetensors({
+        "U32": {"layers.0.weight": (4096, 512)},   # 512 words × 8 weights = 4096 per row
+        "F16": {"layers.0.scales": (4096, 64)},
+    }))
+    row = _repo_row(client, "org" if False else "mlx-community/m-4bit")
+    # 4096*512 storage slots × 8 weights each, plus the unpacked scales.
+    assert row["params"] == 4096 * 512 * 8 + 4096 * 64
+    assert row["paramsEstimated"] is True
+    assert row["quantization"] == "4-bit"
+
+
+@requires_symlinks
+def test_an_unquantized_checkpoint_is_not_marked_estimated(client, hub):
+    repo = _repo(hub, "models--org--m", blobs={"w": 10}, snapshots={"c1": {"x": "w"}}, refs={"main": "c1"})
+    _snapshot_file(repo, "c1", "config.json", json.dumps({"architectures": ["LlamaForCausalLM"]}))
+    _snapshot_file(repo, "c1", "model.safetensors", _safetensors({"a": (4096, 4096)}))
+    row = _repo_row(client, "org/m")
+    assert row["params"] == 4096 * 4096
+    assert row["paramsEstimated"] is False
+    assert row["quantization"] is None
+
+
+@requires_symlinks
+@pytest.mark.parametrize(
+    "config_block,expected_bits",
+    [
+        ({"quantization": {"bits": 8}}, "8-bit"),
+        ({"quantization_config": {"bits": 4, "quant_method": "gptq"}}, "4-bit"),
+        ({"quantization_config": {"load_in_4bit": True, "quant_method": "bitsandbytes"}}, "4-bit"),
+        ({"quantization_config": {"load_in_8bit": True}}, "8-bit"),
+        ({"quantization_config": {"w_bit": 4, "quant_method": "awq"}}, "4-bit"),
+    ],
+)
+def test_the_declared_width_is_read_not_the_repo_name(client, hub, config_block, expected_bits):
+    # `mlx-community/…-4bit` is a naming convention; a number this page prints
+    # must rest on what the checkpoint says about itself, not on its name.
+    repo = _repo(hub, "models--org--plain-name", blobs={"w": 10}, snapshots={"c1": {"x": "w"}},
+                 refs={"main": "c1"})
+    _snapshot_file(repo, "c1", "config.json", json.dumps({"architectures": ["LlamaForCausalLM"], **config_block}))
+    assert _repo_row(client, "org/plain-name")["quantization"] == expected_bits
+
+
+@requires_symlinks
+def test_quantization_is_read_even_when_the_card_named_the_task(client, hub):
+    # The gemma case: the task came from the model card, so a config read that
+    # only happened when the task was still unknown would miss the bit width.
+    repo = _repo(hub, "models--org--vlm", blobs={"w": 10}, snapshots={"c1": {"x": "w"}}, refs={"main": "c1"})
+    _snapshot_file(repo, "c1", "README.md", "---\npipeline_tag: image-text-to-text\n---\n")
+    _snapshot_file(repo, "c1", "config.json", json.dumps({"quantization": {"bits": 4}}))
+    row = _repo_row(client, "org/vlm")
+    assert row["task"] == "image + text to text"  # not the unreadable "image text to text"
+    assert row["quantization"] == "4-bit"
