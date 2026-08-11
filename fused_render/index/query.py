@@ -122,7 +122,7 @@ def pattern_for(q: str):
     return pat, prune_prefix
 
 
-def _sources(cfg: IndexConfig, parts) -> str:
+def files_src(cfg: IndexConfig, parts) -> str:
     """A duckdb source over exactly the partitions the MANIFEST names.
 
     Never a `files/*.parquet` glob: a compaction writes the next generation
@@ -172,7 +172,7 @@ def lookup(cfg: IndexConfig, query: str = "", limit: int = 100, offset: int = 0,
     order = SORTS.get(sort, SORTS["mtime"])
     limit = max(0, min(int(limit), MAX_LIMIT))
     offset = max(0, int(offset))
-    src = _sources(cfg, hit)
+    src = files_src(cfg, hit)
     con = duckdb.connect()
     total = con.execute(f"SELECT count(*) FROM {src} {where}").fetchone()[0]
     rows = con.execute(
@@ -212,7 +212,7 @@ def stats(cfg: IndexConfig, root: str = "") -> dict:
         by_ext = con.execute(
             f"SELECT coalesce(nullif(ext, ''), 'no ext') e, count(*) n, "
             f"coalesce(sum(size), 0) s "
-            f"FROM {_sources(cfg, m['partitions'])} "
+            f"FROM {files_src(cfg, m['partitions'])} "
             f"WHERE {inside} "
             f"GROUP BY 1 ORDER BY s DESC").fetchall()
         n_rows = sum(r[1] for r in by_ext)
@@ -312,7 +312,7 @@ def search_under(cfg: IndexConfig, root: str, q: str = "", limit: int = MAX_CORP
     # folders in it at all is strictly worse.
     branches = []
     if hit:
-        fsrc = _sources(cfg, hit)
+        fsrc = files_src(cfg, hit)
         like = f" AND path ILIKE '%{qlit}%' ESCAPE '\\'" if qlit else ""
         branches.append(
             f"SELECT path, size, mtime, false AS is_dir, "

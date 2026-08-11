@@ -198,6 +198,22 @@ pass it: its client-side matching is subsequence-based, so pre-narrowing to subs
 server-side would silently drop legitimate matches. It exists for a caller that only
 wants the hits.
 
+## 7. The source helpers are public — `files_src` / `dirs_src`
+
+`files_src(cfg, partitions)` and `dirs_src(cfg)` are the only sanctioned way to name the
+two views in SQL, and they are public because a **second reader** now uses them: the AI
+file search's index engine (`server/routers/search.py`, `POST /api/search/files`), which
+compiles its validated filter spec into one query over these views and returns rows
+without statting anything. Its own filters, refusals and fallbacks belong to that module
+— what belongs here is the invariant every reader must obey: the views are named from the
+**manifest**, never from a glob of the files dir, because a compaction leaves the
+previous generation's partitions on disk for readers still holding the old manifest
+(`index-store.md §4`) and a glob would count both generations.
+
+The schema is what decides which spec fields an index query can honour: the files table
+carries `mtime` and **no birth time**, so a creation-date filter is not answerable here
+and its caller has to hand the query to an engine that stats.
+
 ## Non-goals
 
 - **Writing or repairing the index** — `scan.md` / `index-store.md`.

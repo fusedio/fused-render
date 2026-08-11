@@ -2,11 +2,18 @@
 
 The AI search on the explorer homepage translates a natural-language query
 into a small filter spec CLIENT-side (one /api/ai call); this endpoint is the
-execution half. On macOS it queries Spotlight (`mdfind`) — the only engine
-with a whole-disk index, so "video downloaded today" can find ~/Downloads
-without walking the filesystem. Elsewhere it falls back to the bounded
-home-dir walk (_walk_bfs), which is honest about its narrower coverage via
-`engine` in the response.
+execution half. Three engines answer it, in order, each labeled through
+`engine` in the response:
+
+  * `index` — the app's own DuckDB/parquet index (fused_render/index). It holds
+    the same facts the spec filters on (name, ext, size, mtime), so the whole
+    spec becomes ONE SQL query and NOTHING is statted: no filesystem touch at
+    all, which also means no kernel syscall can be aimed at a wedged mount.
+  * `spotlight` — `mdfind` on macOS. Still the only whole-DISK engine, so it
+    covers what the index does not (the index scans the configured roots,
+    home by default) and answers anything the index declines.
+  * `walk` — the bounded home-dir walk (_walk_bfs), the last resort and the
+    only engine off macOS.
 
 SECURITY: the spec arrives from the client but ORIGINATES from a model, so
 every field is re-validated here as if hostile. The mdfind query string is
@@ -14,9 +21,12 @@ assembled only from validated values — extensions/kind against closed
 charsets, numbers coerced, and name terms stripped of the two characters
 (backslash, double-quote) that could break out of an mdfind string literal.
 mdfind runs argv-style (no shell), and an empty spec is rejected rather than
-becoming a match-everything query.
+becoming a match-everything query. The index engine's SQL is assembled the same
+way: numbers are cast in Python, name terms go through `like_literal`, and the
+extension allowlist is re-checked at the point of interpolation.
 """
 
+import logging
 import os
 import re
 import subprocess
@@ -28,10 +38,14 @@ from fastapi import APIRouter, Body
 from fastapi.concurrency import run_in_threadpool
 
 from fused_render._view_url_codec import canonical_fs_path
+from fused_render.index.config import load_config
+from fused_render.index.query import dirs_src, files_src
+from fused_render.index.store import like_literal, read_manifest
 from fused_render.server.common import _error
 from fused_render.server.gitignore import _IgnoreOracle
 from fused_render.server.walk import _WALK_TRUNCATED, _walk_bfs, WALK_IGNORE_DIRS
 
+logger = logging.getLogger(__name__)
 router = APIRouter()
 
 # Result and runtime bounds. Spotlight can return tens of thousands of paths
@@ -200,7 +214,9 @@ def _stat_entry(path):
 # the same standards the walk enforces during traversal: WALK_IGNORE_DIRS
 # segments and dot-segments never surface (matching /api/fs/walk's default).
 def _junk_path(path: str) -> bool:
-    for seg in path.split(os.sep):
+    # Both separators: Spotlight hands back native paths, the index posix ones
+    # (index/ignore.norm), and one screening standard has to cover both.
+    for seg in re.split(r"[/\\]", path):
         if seg in WALK_IGNORE_DIRS:
             return True
         if seg.startswith(".") and seg not in (".", ".."):
@@ -254,6 +270,191 @@ def _drop_gitignored(entries):
         finally:
             oracle.close()
     return [e for i, e in enumerate(entries) if i not in dropped]
+
+
+# ------------------------------------------------------------ index engine
+
+# Spec fields that NARROW a query. `kind` is deliberately absent: "folders"
+# still matches half the disk, so it is not enough on its own (the same rule
+# _mdfind_query enforces by refusing a kind-only query).
+_NARROWING_KEYS = (
+    "modified_within_days", "modified_after", "modified_before",
+    "created_after", "created_before", "min_size_bytes", "max_size_bytes",
+)
+
+
+def _has_narrowing(spec) -> bool:
+    return bool(spec["name_terms"] or spec["extensions"]) or any(
+        spec[k] is not None for k in _NARROWING_KEYS)
+
+
+def _dir_narrowing(spec) -> bool:
+    """Whether anything in the spec narrows DIRECTORIES.
+
+    Extension and size are file facts a dirs row cannot answer, so an
+    extensions-only spec ("find my mp4s") narrows the files view and nothing
+    else — and a dirs branch with no predicate left would return every folder
+    in the index, spending the result cap on rows that answer nothing. The
+    walk engine lets those dirs past too (_match_walk_entry), but it only ever
+    yields what it happens to reach; here it would be the whole index."""
+    return bool(spec["name_terms"]) or any(
+        spec[k] is not None for k in
+        ("modified_within_days", "modified_after", "modified_before"))
+
+
+def _index_where(spec, *, path_expr, name_expr, mtime_expr, now_s,
+                 ext_expr=None, size_expr=None) -> str:
+    """The WHERE clause for one index view. `ext_expr`/`size_expr` are None for
+    the dirs view: extension and size are FILE facts, and _match_walk_entry
+    already lets a directory hit past both (the dirs table has no size column
+    at all).
+
+    Every value reaching SQL here is either a number cast in Python or a
+    name term escaped with `like_literal` (quotes doubled, LIKE metachars
+    escaped) — the model-originated half of the spec never lands in the
+    statement raw. See the module docstring's SECURITY note."""
+    # Dot segments never surface (parity with _junk_path and the walk). Applied
+    # in SQL as well as in _junk_path so the result cap is not spent on rows
+    # from ~/.cache that would be dropped a moment later; _junk_path stays the
+    # single standard, this is only a budget prefilter.
+    pieces = [f"{path_expr} NOT LIKE '%/.%'"]
+    if spec["name_terms"]:
+        # Substring, case-insensitive, OR'd across terms — mirroring mdfind's
+        # `kMDItemFSName = "*term*"cd`. Recall matters more than precision:
+        # the client ranks these hits fuzzily anyway.
+        pieces.append("(" + " OR ".join(
+            f"{name_expr} ILIKE '%{like_literal(t)}%' ESCAPE '\\'"
+            for t in spec["name_terms"]) + ")")
+    if ext_expr is not None and spec["extensions"]:
+        # clean_ext restricts these to [a-z0-9]{1,12}; re-checked here so the
+        # literal is provably quote-free however this spec was built.
+        exts = [e for e in spec["extensions"] if set(e) <= _EXT_ALLOWED]
+        if exts:
+            pieces.append(f"lower({ext_expr}) IN ("
+                          + ",".join(f"'{e}'" for e in exts) + ")")
+    if spec["modified_within_days"] is not None:
+        cutoff = now_s - spec["modified_within_days"] * 86400
+        pieces.append(f"{mtime_expr} >= {float(cutoff)!r}")
+    # The same local-day bounds the other two engines use: inclusive on both
+    # ends, so `before 2026-08-05` runs to the midnight AFTER the 5th.
+    if spec["modified_after"] is not None:
+        pieces.append(f"{mtime_expr} >= "
+                      f"{_day_bound_epoch(spec['modified_after'], False)!r}")
+    if spec["modified_before"] is not None:
+        pieces.append(f"{mtime_expr} < "
+                      f"{_day_bound_epoch(spec['modified_before'], True)!r}")
+    if size_expr is not None:
+        if spec["min_size_bytes"] is not None:
+            pieces.append(f"{size_expr} >= {int(spec['min_size_bytes'])}")
+        if spec["max_size_bytes"] is not None:
+            pieces.append(f"{size_expr} <= {int(spec['max_size_bytes'])}")
+    return " AND ".join(pieces)
+
+
+def _index_rows(cfg, manifest, spec, limit):
+    """The spec as ONE query over the index views, newest first, or None when
+    the index holds no view this `kind` could be answered from.
+
+    Both views are read through the MANIFEST (query.files_src / dirs_src),
+    never a glob of the files dir: a compaction leaves the previous
+    generation's partitions on disk for readers still holding the old manifest
+    (index-store.md §4), so a glob would return every row twice."""
+    import duckdb
+
+    now_s = time.time()
+    branches = []
+    parts = manifest.get("partitions") or []
+    if spec["kind"] in ("file", "any") and parts:
+        fsrc = files_src(cfg, parts)
+        branches.append(
+            f"SELECT path, size, mtime, false AS is_dir FROM {fsrc} WHERE "
+            + _index_where(spec, path_expr="path", name_expr="name",
+                           mtime_expr="mtime", ext_expr="ext",
+                           size_expr="size", now_s=now_s))
+    if (spec["kind"] in ("dir", "any") and _dir_narrowing(spec)
+            and os.path.exists(cfg.dirs_parquet)):
+        dsrc = dirs_src(cfg)
+        # A dirs row carries no name column, so the final path component is the
+        # name; mtime_ns of 0 means "unknown" and becomes NULL, which fails
+        # every mtime comparison — the same verdict _match_walk_entry gives a
+        # walk entry with no mtime.
+        dmtime = "nullif(mtime_ns, 0) / 1e9"
+        branches.append(
+            f"SELECT dir AS path, CAST(NULL AS BIGINT) AS size, "
+            f"{dmtime} AS mtime, true AS is_dir FROM {dsrc} WHERE "
+            + _index_where(spec, path_expr="dir",
+                           name_expr="regexp_extract(dir, '[^/]*$')",
+                           mtime_expr=dmtime, now_s=now_s))
+    if not branches:
+        return None
+    # One row past the cap, so "there was more" is known without a count.
+    # Newest first: the client re-ranks every hit anyway, so ordering only
+    # decides WHICH rows survive the cap, and recency is the best sample.
+    return duckdb.connect().execute(
+        " UNION ALL ".join(branches)
+        + f" ORDER BY mtime DESC LIMIT {int(limit)}").fetchall()
+
+
+def _search_index(spec, cfg=None):
+    """The spec executed against the SQL index, or None when the index cannot
+    (or should not) answer it and the query belongs to Spotlight/the walk.
+
+    Rows are returned straight from parquet — deliberately NOT re-statted the
+    way Spotlight hits are. That is the point of this engine: zero filesystem
+    syscalls, so a search can never touch (or wedge) a mount. The cost is that
+    a file deleted since the last scan can still appear, which is the same
+    staleness the index-backed in-folder search already accepts.
+
+    Declines (returns None) when:
+      * there is no index yet, or the query errors (a corrupt/half-deleted
+        store must degrade to another engine, not to a 502);
+      * the spec carries created_after/created_before — the files table has
+        `mtime` and no birth time (index/store.schemas), and quietly dropping
+        the filter would answer a different question than the user asked;
+      * the spec asks only for directories but narrows nothing a dirs row can
+        answer (see _dir_narrowing);
+      * nothing matched. The index covers the CONFIGURED ROOTS (home by
+        default) while Spotlight covers the whole disk, so an empty result is
+        "ask the wider engine", not "no such file". A local miss costs one
+        extra mdfind; not doing this would make a query for something outside
+        home simply fail.
+
+    Freshness is deliberately NOT a gate: a scan in flight keeps serving its
+    last completed generation, exactly as query.FRESH_MAX_AGE_S is
+    informational for the in-folder corpus.
+    """
+    if not _has_narrowing(spec):
+        raise ValueError("spec has no narrowing constraints")
+    if spec["created_after"] is not None or spec["created_before"] is not None:
+        return None
+    cfg = load_config() if cfg is None else cfg
+    manifest = read_manifest(cfg)
+    if manifest is None:
+        return None
+    cap = SEARCH_MAX_RESULTS
+    try:
+        rows = _index_rows(cfg, manifest, spec, cap + 1)
+    except Exception:  # noqa: BLE001 - any index failure is a fallback, not a 502
+        logger.exception("index search failed; falling back to another engine")
+        return None
+    if rows is None:
+        return None
+    truncated = len(rows) > cap
+    entries = [
+        {"path": path, "is_dir": bool(is_dir),
+         "size": None if is_dir or size is None else int(size),
+         "mtime": None if mtime is None else float(mtime)}
+        for path, size, mtime, is_dir in rows[:cap]
+        if not _junk_path(path)
+    ]
+    # The index knows nothing about git (its ignore rules are name patterns),
+    # so gitignored hits are screened here — the same oracle the walk and
+    # Spotlight use, and the same reason server/index_gitignore.py filters the
+    # in-folder corpus: two interchangeable sources must not disagree.
+    entries = _drop_gitignored(entries)
+    if not entries:
+        return None
+    return {"entries": entries, "truncated": truncated, "engine": "index"}
 
 
 def _search_mdfind(spec):
@@ -398,18 +599,22 @@ async def api_search_files(body: dict = Body(...)):
         spec = _parse_spec(body)
     except ValueError as e:
         return _error(str(e))
-    # Both engines block (subprocess / disk walk); keep the event loop free.
-    # A Spotlight failure (crash, timeout, missing mdfind) degrades to the
-    # home-walk engine rather than a 502 — narrower coverage, labeled via
-    # `engine`, beats a dead search box.
+    # Every engine blocks (duckdb / subprocess / disk walk); keep the event loop
+    # free. The index answers first when it can; anything it declines (no index,
+    # a created_* filter, zero hits — see _search_index) falls through to
+    # Spotlight, and a Spotlight failure (crash, timeout, missing mdfind)
+    # degrades to the home walk rather than a 502 — narrower coverage, labeled
+    # via `engine`, beats a dead search box.
     try:
-        if sys.platform == "darwin":
-            try:
-                result = await run_in_threadpool(_search_mdfind, spec)
-            except RuntimeError:
+        result = await run_in_threadpool(_search_index, spec)
+        if result is None:
+            if sys.platform == "darwin":
+                try:
+                    result = await run_in_threadpool(_search_mdfind, spec)
+                except RuntimeError:
+                    result = await run_in_threadpool(_search_walk_home, spec)
+            else:
                 result = await run_in_threadpool(_search_walk_home, spec)
-        else:
-            result = await run_in_threadpool(_search_walk_home, spec)
     except ValueError as e:
         return _error(str(e))
     except RuntimeError as e:

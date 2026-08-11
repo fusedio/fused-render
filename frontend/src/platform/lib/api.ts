@@ -396,8 +396,9 @@ export function deleteIndex(): Promise<{ deleted: boolean }> {
   });
 }
 
-// One hit from POST /api/search/files (the AI search's execution engine —
-// Spotlight on macOS, a bounded home walk elsewhere). `path` is absolute.
+// One hit from POST /api/search/files (the AI search's execution engine — the
+// app's SQL index first, then Spotlight on macOS, then a bounded home walk).
+// `path` is absolute.
 export interface SearchFileEntry {
   path: string;
   is_dir: boolean;
@@ -408,12 +409,14 @@ export interface SearchFileEntry {
 export interface SearchFilesResult {
   entries: SearchFileEntry[];
   truncated: boolean;
-  engine: string; // "spotlight" | "walk"
+  engine: string; // "index" | "spotlight" | "walk" — which engine answered
 }
 
 // System-wide file search from a filter spec (see apps/explorer/lib/ai-search).
 // Takes a signal because a new search must be able to abandon the previous
-// engine run mid-flight (Spotlight on a broad query can take seconds).
+// engine run mid-flight (Spotlight on a broad query can take seconds; the
+// index engine answers in one SQL query, but it is not always the one that
+// runs — see the server's search.py for the fallback order).
 export async function searchFiles(
   spec: unknown,
   signal?: AbortSignal,

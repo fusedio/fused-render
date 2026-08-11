@@ -1,7 +1,8 @@
 // AI-assisted file search (pattern "query understanding"): one haiku call
 // through /api/ai translates a natural-language query into a strict, tiny
-// filter spec; the spec then runs SYSTEM-WIDE through /api/search/files
-// (Spotlight on macOS, a bounded home walk elsewhere), and the hits are
+// filter spec; the spec then runs SYSTEM-WIDE through /api/search/files (the
+// app's own SQL index first, then Spotlight on macOS for anything the index
+// cannot answer or does not cover, then a bounded home walk), and the hits are
 // ranked client-side with the shared fuzzy matcher. The model never sees the
 // filesystem and never returns anything executable — its output is data,
 // validated field by field on BOTH sides of the wire (here at the parse
@@ -41,7 +42,7 @@ export interface AiSearchResult {
   hits: AiSearchHit[];
   truncated: boolean; // the engine hit its result cap
   usedFallback: boolean; // the model reply was unusable; plain term search ran
-  engine: string; // "spotlight" | "walk" — the server says which ran
+  engine: string; // "index" | "spotlight" | "walk" — the server says which ran
   spec: AiSearchSpec;
 }
 
@@ -215,7 +216,8 @@ export function hasEngineNarrowing(spec: AiSearchSpec): boolean {
 // tie-break (and the whole order when the spec has no name terms). The
 // engine already applied the HARD filters (ext/kind/date/size); name terms
 // are re-scored here because Spotlight matched them with a dumb *term* glob
-// and can't rank, and the walk fallback didn't match them at all.
+// (as does the index engine, with a case-insensitive substring) and neither
+// can rank, and the walk fallback didn't match them at all.
 export function rankHits(
   entries: SearchFileEntry[],
   spec: AiSearchSpec,
