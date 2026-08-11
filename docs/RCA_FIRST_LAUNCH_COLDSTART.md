@@ -179,7 +179,18 @@ So a warm launch is ~5–7 s, and the ~2 s app-graph import is the floor — it 
 inherent to a FastAPI app of this size and can't be removed without lazily
 loading routers (out of scope; high risk for route registration). The
 backgrounded `fused` import (2.8 s) does **not** block readiness and, measured,
-does **not** slow the main-thread import via GIL contention.
+does **not** slow the main-thread import via GIL contention. Notably **no
+pandas / numpy / duckdb / pyarrow / rasterio is in the server import graph** —
+the cost is the fastapi/pydantic/starlette framework floor (~0.6 s) plus
+`fused_render`'s own route modules, not heavy data libraries.
+
+One deferrable slice was found but **left for a focused follow-up** (it touches
+the content-gate in `core_templates.py`): `ensure_core_templates()` sha256-hashes
+the whole 15.6 MB packaged templates tree, and it is called at module import from
+**both** `server/templates.py` and `executor.py` — two full-tree hashes per
+launch (~165–200 ms each), the second pure waste. It can't be memoized naively
+(the gate's tests mutate the tree and re-hash within one process, and executor's
+result feeds the module-level in-process allowlist), so it needs its own change.
 
 ### The occasional *much* longer launch (the "sometimes ~2 min")
 
