@@ -21,6 +21,7 @@ function hits(n: number): SearchHit[] {
       // descending score, so index order IS rank order
       score: n - i,
       longestRun: 1,
+      tier: 1,
       depth: 1,
     });
   }

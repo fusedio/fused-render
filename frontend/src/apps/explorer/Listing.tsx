@@ -53,6 +53,7 @@ import { searchSlot, subscribeSearchSlot } from "@apps/explorer/search-slot";
 import {
   FLIP_MAX_ROWS,
   SORT_KEYS,
+  columnCount,
   type RowCtx,
   type SortKey,
   type SortOrder,
@@ -196,8 +197,6 @@ export default function Listing({
     visibleHits,
     showingHeld,
     cappedAway,
-    searchSort,
-    setSearchSortKey,
   } = useWalkSearch(fsPath, refresh, !embedded);
 
   // Scan state for the search box's "indexing…" caveat. Gated on `searching`
@@ -757,11 +756,14 @@ export default function Listing({
   // the preview pane, where NAME/SIZE/MODIFIED sat above one line of text).
   // Set by the empty branch below, read by the <thead> render.
   let emptyDir = false;
+  // Every row that spans the table, in the mode it is being rendered for
+  // (listing/types columnCount): three columns normally, one while searching.
+  const cols = columnCount(searching);
   if (searching) {
     if (validWalk.status === "error") {
       body = (
         <tr>
-          <td colSpan={3} className="status-message error">
+          <td colSpan={cols} className="status-message error">
             Search failed: {validWalk.message}
           </td>
         </tr>
@@ -831,12 +833,9 @@ export default function Listing({
                     copied={copiedSet.has(childPath)}
                   />
                 </td>
-                <td className="size">
-                  {entry.is_dir ? "" : formatSize(entry.size)}
-                </td>
-                <td className="mtime" title={formatMtimeFull(entry.mtime)}>
-                  {formatMtime(entry.mtime)}
-                </td>
+                {/* No size/modified cells: a hit's cell holds a whole rel
+                    path, and the two fixed-width columns were spending a
+                    third of the table on values nobody searches by. */}
               </tr>
             );
           })}
@@ -845,7 +844,7 @@ export default function Listing({
                rank stops being useful, so the answer is a better query. The
                count in the search chip carries the real total. */
             <tr>
-              <td colSpan={3} className="status-message">
+              <td colSpan={cols} className="status-message">
                 {cappedAway.toLocaleString()} more match
                 {cappedAway === 1 ? "" : "es"} not shown
               </td>
@@ -861,7 +860,7 @@ export default function Listing({
       // every keystroke.
       body = (
         <tr>
-          <td colSpan={3} className="status-message">
+          <td colSpan={cols} className="status-message">
             Searching…
           </td>
         </tr>
@@ -887,7 +886,7 @@ export default function Listing({
             : "No matches";
       body = (
         <tr>
-          <td colSpan={3} className="status-message">
+          <td colSpan={cols} className="status-message">
             {message}
           </td>
         </tr>
@@ -895,7 +894,7 @@ export default function Listing({
     } else {
       body = (
         <tr>
-          <td colSpan={3} className="status-message">
+          <td colSpan={cols} className="status-message">
             Searching…
           </td>
         </tr>
@@ -913,7 +912,7 @@ export default function Listing({
       skeletonRows(8)
     ) : (
       <tr>
-        <td colSpan={3} className="status-message error">
+        <td colSpan={cols} className="status-message error">
           Failed to list {fsPath}: {state.message}
         </td>
       </tr>
@@ -982,7 +981,7 @@ export default function Listing({
     // page; otherwise it just states the listing is partial.
     const banner = state.truncated ? (
       <tr key="__truncated__" className="listing-truncated">
-        <td colSpan={3} className="status-message">
+        <td colSpan={cols} className="status-message">
           Showing first {sortedEntries.length} entries — directory listing is
           partial.
           {state.cursor && (
@@ -1001,7 +1000,7 @@ export default function Listing({
     emptyDir = !rows.length && !banner;
     body = emptyDir ? (
       <tr>
-        <td colSpan={3} className="status-message">
+        <td colSpan={cols} className="status-message">
           Empty directory
         </td>
       </tr>
@@ -1198,41 +1197,17 @@ export default function Listing({
                   `emptyDir`. */}
               <thead className={emptyDir ? "listing-head-empty" : undefined}>
                 <tr>
-                  {(Object.entries(SORT_KEYS) as [SortKey, string][]).map(
-                    ([key, label]) =>
-                      searching ? (
-                        // While searching, headers sort the results; no active arrow
-                        // means relevance (fuzzy-rank) order.
-                        <th
-                          key={key}
-                          className={
-                            `sortable col-${key}` +
-                            (searchSort?.sort === key ? " sorted" : "")
-                          }
-                          title={
-                            searchSort?.sort === key &&
-                            searchSort.order === "desc"
-                              ? `Back to relevance order`
-                              : `Sort results by ${label.toLowerCase()}`
-                          }
-                          onClick={() => setSearchSortKey(key)}
-                        >
-                          {label}
-                          {/* One glyph that ROTATES for desc (see .sort-arrow):
-                          swapping ▲ for ▼ replaced the element, so the change
-                          could only ever pop. */}
-                          {searchSort?.sort === key && (
-                            <span
-                              className={
-                                "sort-arrow" +
-                                (searchSort.order === "desc" ? " desc" : "")
-                              }
-                            >
-                              ▲
-                            </span>
-                          )}
-                        </th>
-                      ) : (
+                  {searching ? (
+                    // One column, and NOT a sort control. Results are in
+                    // relevance (fuzzy-rank) order, full stop: the hit set is
+                    // capped and, while the walk streams, partial — ordering
+                    // that by name or date presents it as an answer it isn't,
+                    // and the search box already says the coverage is
+                    // approximate (listing/index-caveat).
+                    <th className="col-name">Path</th>
+                  ) : (
+                    (Object.entries(SORT_KEYS) as [SortKey, string][]).map(
+                      ([key, label]) => (
                         <th
                           key={key}
                           className={
@@ -1242,6 +1217,9 @@ export default function Listing({
                           onClick={() => setSort(key)}
                         >
                           {label}
+                          {/* One glyph that ROTATES for desc (see .sort-arrow):
+                          swapping ▲ for ▼ replaced the element, so the change
+                          could only ever pop. */}
                           {key === sort && (
                             <span
                               className={
@@ -1253,6 +1231,7 @@ export default function Listing({
                           )}
                         </th>
                       ),
+                    )
                   )}
                 </tr>
               </thead>

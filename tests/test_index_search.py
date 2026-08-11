@@ -13,7 +13,7 @@ from fastapi.testclient import TestClient
 
 from fused_render.index.config import IndexConfig, load_config
 from fused_render.index.query import search_under
-from fused_render.index.store import Sink, compact
+from fused_render.index.store import Sink, compact, partition_files
 from fused_render.server import create_app
 
 
@@ -89,6 +89,39 @@ def test_search_under_reports_no_coverage_for_an_unindexed_root(tmp_path):
     out = search_under(cfg, "/elsewhere")
     assert out["covered"] is False
     assert out["entries"] == []
+
+
+def test_searching_inside_a_package_falls_back_to_the_walk(tmp_path):
+    """The scan records a .app as ONE opaque row and never lists it, so its dirs
+    row says "this is a leaf", not "we know what is inside". Answering `covered`
+    for it would report an empty corpus as complete; the live walk, which does
+    list a leaf it was pointed at, has the real answer."""
+    cfg = _index(tmp_path, "/r", ["/r/a.txt"], dirs=["/r/Cool.app"])
+    out = search_under(cfg, "/r/Cool.app")
+    assert out["covered"] is False
+    assert out["entries"] == []
+    # the package itself is still an entry of its PARENT's corpus
+    assert "Cool.app" in [e["rel"] for e in search_under(cfg, "/r")["entries"]]
+
+
+def test_searching_BELOW_a_package_root_also_falls_back_to_the_walk(tmp_path):
+    """Testing only the root's final component was not enough. An index written
+    before the leaf rule holds real dirs rows for paths INSIDE a package, and
+    those rows do describe a scanned directory — so the coverage query says yes
+    and the index answers from whatever partial set of package rows happens to
+    be on disk, while the folder one level up is answered by the live walk. Two
+    sources meant to be interchangeable then disagree, which is the whole reason
+    LEAF_DIR_SUFFIXES is shared between them.
+
+    The rows here are exactly what such an index looks like: the package's inner
+    directories present and populated."""
+    cfg = _index(tmp_path, "/r",
+                 ["/r/a.txt", "/r/Cool.app/Contents/Info.plist"],
+                 dirs=["/r/Cool.app", "/r/Cool.app/Contents"])
+    for root in ("/r/Cool.app", "/r/Cool.app/Contents"):
+        out = search_under(cfg, root)
+        assert out["covered"] is False, f"{root} answered from the index"
+        assert out["entries"] == []
 
 
 def test_search_under_reports_no_coverage_on_an_empty_index(tmp_path):
@@ -196,19 +229,68 @@ def test_search_under_ignores_a_lookalike_underscore_sibling(tmp_path):
 
 
 def test_dirs_are_not_silently_dropped_when_files_fill_the_cap(tmp_path):
-    """File rows exactly filling `limit` used to skip the dirs query entirely
-    and report truncated: false — a corpus claiming completeness while every
-    directory entry is missing."""
-    cfg = _index(tmp_path, "/r", ["/r/a.txt", "/r/b.txt"], dirs=["/r/sub"])
+    """Directories used to get only the budget the FILES branch left over, so
+    on any truncated corpus (`room == 0`) folder search was dead, not degraded.
+    Both kinds of entry compete in ONE depth-ordered query now, so a shallow
+    directory survives a cap that deep files would otherwise have filled."""
+    cfg = _index(tmp_path, "/r",
+                 [f"/r/deep/a/b/x{i}.txt" for i in range(5)],
+                 dirs=["/r/sub", "/r/deep", "/r/deep/a", "/r/deep/a/b"])
     out = search_under(cfg, "/r", limit=2)
-    assert len(out["entries"]) == 2
+    assert "sub" in [e["rel"] for e in out["entries"]]
     assert out["truncated"] is True
 
 
+def test_a_matching_folder_survives_a_cap_full_of_matching_files(tmp_path):
+    """The reported symptom: a query naming a folder returned 100 files from
+    inside it and not the folder itself."""
+    cfg = _index(tmp_path, "/r",
+                 [f"/r/target-thing/f{i}.txt" for i in range(5)],
+                 dirs=["/r/target-thing"])
+    out = search_under(cfg, "/r", q="target-thing", limit=2)
+    assert "target-thing" in [e["rel"] for e in out["entries"]]
+
+
 def test_a_capped_corpus_prefers_shallow_entries(tmp_path):
-    """The walk streams breadth-first, so its cap keeps shallow files; plain
+    """The walk streams breadth-first, so its cap keeps shallow entries; plain
     ORDER BY path would fill the whole cap with the first deep subtree."""
     cfg = _index(tmp_path, "/r",
-                 ["/r/deep/a/b/x1.txt", "/r/deep/a/b/x2.txt", "/r/top.txt"])
-    out = search_under(cfg, "/r", limit=1, include_dirs=False)
-    assert [e["rel"] for e in out["entries"]] == ["top.txt"]
+                 ["/r/deep/a/b/x1.txt", "/r/deep/a/b/x2.txt", "/r/top.txt"],
+                 dirs=["/r/deep", "/r/deep/a", "/r/deep/a/b"])
+    out = search_under(cfg, "/r", limit=2)
+    assert sorted(e["rel"] for e in out["entries"]) == ["deep", "top.txt"]
+
+
+def test_the_corpus_is_ordered_by_the_stored_depth_column(tmp_path):
+    """Depth is a materialised int32, not a slash-counting expression: every
+    query opens a fresh in-memory duckdb over parquet, so there is no catalog
+    to hold a generated column (see store.schemas)."""
+    cfg = _index(tmp_path, "/r", ["/r/a/b/deep.txt", "/r/top.txt"],
+                 dirs=["/r/a", "/r/a/b"])
+    t = pq.read_table(partition_files(cfg)[0])
+    assert dict(zip(t.column("path").to_pylist(),
+                    t.column("depth").to_pylist())) == {
+        "/r/a/b/deep.txt": 4, "/r/top.txt": 2}
+    d = pq.read_table(cfg.dirs_parquet)
+    assert dict(zip(d.column("dir").to_pylist(),
+                    d.column("depth").to_pylist())) == {
+        "/r": 1, "/r/a": 2, "/r/a/b": 3}
+
+
+def _drop_depth(cfg):
+    """Rewrite the index as a pre-`depth` one would have been written."""
+    for fp in partition_files(cfg) + [cfg.dirs_parquet]:
+        t = pq.read_table(fp)
+        pq.write_table(t.drop([c for c in ["depth"] if c in t.column_names]), fp)
+
+
+def test_an_index_written_without_a_depth_column_still_reads(tmp_path):
+    """Additive schema evolution: an index on disk from before `depth` existed
+    falls back to the slash-count expression rather than hard-failing (the same
+    defensive read load_dir_cache and the compaction already do)."""
+    cfg = _index(tmp_path, "/r", ["/r/a/b/deep.txt", "/r/top.txt"],
+                 dirs=["/r/a", "/r/a/b"])
+    _drop_depth(cfg)
+    out = search_under(cfg, "/r", limit=2)
+    assert out["covered"] is True
+    assert sorted(e["rel"] for e in out["entries"]) == ["a", "top.txt"]

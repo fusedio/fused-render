@@ -850,3 +850,79 @@
   padding: 7px 10px;
 }
 
+/* ---- the index Query panel (shell/Indexing.tsx) ------------------------- */
+
+/* A statement is wider than a skip rule and wrapping one mid-identifier is
+   unreadable, so this box does not wrap — it scrolls, like an editor. */
+.index-query-input {
+  width: 100%;
+  box-sizing: border-box;
+  white-space: pre;
+  overflow-wrap: normal;
+  overflow-x: auto;
+}
+
+/* The SQL a question compiled to. Shown above the results so the user can see
+   what actually ran, and read-only text rather than a second editable box —
+   editing it means putting it in the box above and re-running. */
+.index-query-sql {
+  margin: 10px 0 0;
+  padding: 8px 10px;
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  border-left: 2px solid var(--accent);
+  border-radius: 6px;
+  font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 12px;
+  line-height: 1.5;
+  /* A compiled statement can be one long line; it scrolls rather than reflowing
+     the panel, which is the same trade the input above makes. */
+  overflow-x: auto;
+  white-space: pre;
+}
+
+/* The result table scrolls INSIDE this box, in both axes: the column set is
+   whatever the query selected, so neither its width nor its height can be
+   predicted, and letting it size the panel would push the rest of Preferences
+   sideways. */
+.index-query-results {
+  margin-top: 10px;
+  max-height: 420px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.index-query-results table {
+  border-collapse: collapse;
+  /* Not 100%: a wide result should overflow into the scroll above rather than
+     squeezing every column to fit. */
+  width: max-content;
+  min-width: 100%;
+  font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 12px;
+}
+
+.index-query-results th,
+.index-query-results td {
+  padding: 4px 10px;
+  text-align: left;
+  white-space: nowrap;
+  border-bottom: 1px solid var(--border);
+}
+
+.index-query-results th {
+  /* Sticky, so the column names survive scrolling a few hundred rows. The
+     background is opaque on purpose — rows scroll underneath it. */
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--bg-alt);
+  color: var(--fg-muted);
+  font-weight: 600;
+}
+
+.index-query-results tr:last-child td {
+  border-bottom: none;
+}
+

@@ -1,9 +1,11 @@
 // AI-assisted file search (pattern "query understanding"): one haiku call
 // through /api/ai translates a natural-language query into a strict, tiny
-// filter spec; the spec then runs SYSTEM-WIDE through /api/search/files
-// (Spotlight on macOS, a bounded home walk elsewhere), and the hits are
-// ranked client-side with the shared fuzzy matcher. The model never sees the
-// filesystem and never returns anything executable — its output is data,
+// filter spec; the spec then runs through /api/search/files, which executes it
+// as one SQL query against the app's own file index (the only engine — it covers
+// the indexed roots, home by default, and reports a missing index as an error
+// rather than as an empty disk), and the hits are ranked client-side with the
+// shared fuzzy matcher. The model never sees the filesystem and never returns
+// anything executable — its output is data,
 // validated field by field on BOTH sides of the wire (here at the parse
 // boundary, and again in the server's _parse_spec), and a garbage reply
 // degrades to a plain term search on the user's own words.
@@ -19,12 +21,12 @@ export interface AiSearchSpec {
   // extension-filtered; a dir hit passes regardless.
   extensions: string[];
   kind: "file" | "dir" | "any";
-  // Inclusive YYYY-MM-DD date ranges; either end may be open (null).
-  // Modified = last content change; created = filesystem birth time.
+  // Inclusive YYYY-MM-DD range over the last content change; either end may be
+  // open (null). There is no creation-date filter: the index records mtime and
+  // no birth time, so the server refuses one outright rather than silently
+  // answering a different question (see search.py).
   modified_after: string | null;
   modified_before: string | null;
-  created_after: string | null;
-  created_before: string | null;
   min_size_bytes: number | null;
   max_size_bytes: number | null;
   // Directory-name hints ("in my photos folder", "downloaded" → downloads) —
@@ -41,7 +43,6 @@ export interface AiSearchResult {
   hits: AiSearchHit[];
   truncated: boolean; // the engine hit its result cap
   usedFallback: boolean; // the model reply was unusable; plain term search ran
-  engine: string; // "spotlight" | "walk" — the server says which ran
   spec: AiSearchSpec;
 }
 
@@ -60,8 +61,6 @@ export function aiSearchSystemPrompt(): string {
     ' "kind": "file" | "dir" | "any",\n' +
     ' "modified_after": "YYYY-MM-DD" or null,\n' +
     ' "modified_before": "YYYY-MM-DD" or null,\n' +
-    ' "created_after": "YYYY-MM-DD" or null,\n' +
-    ' "created_before": "YYYY-MM-DD" or null,\n' +
     ' "min_size_bytes": number or null,\n' +
     ' "max_size_bytes": number or null,\n' +
     ' "path_hints": [folder-name words the query implies, empty if none]}\n' +
@@ -78,10 +77,9 @@ export function aiSearchSystemPrompt(): string {
     "leave an end null when the query only bounds one side. today→" +
     "modified_after today; yesterday→after yesterday, before yesterday; " +
     "'in June'→after 06-01, before 06-30; last week / recently→after " +
-    "(today-7d); 'before March'→modified_before 02-28 only. Phrases about " +
-    "when a file was made/added/downloaded ('created', 'made', 'saved', " +
-    "'downloaded') use the created_* fields instead; when unsure, use " +
-    "modified_*.\n" +
+    "(today-7d); 'before March'→modified_before 02-28 only. There is no " +
+    "creation-date field, so phrases about when a file was made, added, saved " +
+    "or downloaded use the modified_* range too.\n" +
     "- Sizes: big/large→min_size_bytes 10000000; huge→100000000; " +
     "small/tiny→max_size_bytes 100000.\n" +
     "- 'folder'/'directory'→kind \"dir\".\n" +
@@ -129,8 +127,6 @@ export function parseAiSearchSpec(text: string): AiSearchSpec | null {
     kind,
     modified_after: dateStr(o.modified_after),
     modified_before: dateStr(o.modified_before),
-    created_after: dateStr(o.created_after),
-    created_before: dateStr(o.created_before),
     min_size_bytes: posNum(o.min_size_bytes),
     max_size_bytes: posNum(o.max_size_bytes),
     path_hints: strings(o.path_hints).slice(0, 4),
@@ -146,8 +142,6 @@ export function fallbackSpec(query: string): AiSearchSpec {
     kind: "any",
     modified_after: null,
     modified_before: null,
-    created_after: null,
-    created_before: null,
     min_size_bytes: null,
     max_size_bytes: null,
     path_hints: [],
@@ -170,8 +164,6 @@ export function describeSpec(spec: AiSearchSpec): string {
   if (spec.kind !== "any") parts.push(spec.kind === "dir" ? "folders" : "files");
   if (spec.modified_after !== null || spec.modified_before !== null)
     parts.push(`modified ${fmtRange(spec.modified_after, spec.modified_before)}`);
-  if (spec.created_after !== null || spec.created_before !== null)
-    parts.push(`created ${fmtRange(spec.created_after, spec.created_before)}`);
   if (spec.min_size_bytes !== null) parts.push(`≥${fmtBytes(spec.min_size_bytes)}`);
   if (spec.max_size_bytes !== null) parts.push(`≤${fmtBytes(spec.max_size_bytes)}`);
   if (spec.path_hints.length) parts.push("near " + spec.path_hints.join(", "));
@@ -194,8 +186,6 @@ export function hasNonNameFilters(spec: AiSearchSpec): boolean {
     spec.extensions.length > 0 ||
     spec.modified_after !== null ||
     spec.modified_before !== null ||
-    spec.created_after !== null ||
-    spec.created_before !== null ||
     spec.min_size_bytes !== null ||
     spec.max_size_bytes !== null
   );
@@ -214,8 +204,8 @@ export function hasEngineNarrowing(spec: AiSearchSpec): boolean {
 // Rank the engine's hits: fuzzy name-term score + path-hint boost, recency
 // tie-break (and the whole order when the spec has no name terms). The
 // engine already applied the HARD filters (ext/kind/date/size); name terms
-// are re-scored here because Spotlight matched them with a dumb *term* glob
-// and can't rank, and the walk fallback didn't match them at all.
+// are re-scored here because the engine matches them with a dumb
+// case-insensitive substring (SQL ILIKE) and cannot rank.
 export function rankHits(
   entries: SearchFileEntry[],
   spec: AiSearchSpec,
@@ -251,9 +241,13 @@ export function rankHits(
   return hits.slice(0, MAX_HITS);
 }
 
-// The engine treats name terms as a hard glob, so a spec that ALSO carries
-// real filters retries without the terms when the first pass comes up empty
-// — same rationale as the soft-term ranking above.
+// Name terms are a hard WHERE in the engine too (an OR of ILIKE substrings), so
+// a spec that ALSO carries real filters retries without them when the first pass
+// comes up empty — same rationale as the soft-term ranking above: "video
+// downloaded today" has its extension and date pinned, and IMG_1234.mov must not
+// be lost to a filename that never says "video". The retry therefore still earns
+// its keep against the index engine, and now costs one more SQL query rather
+// than one more Spotlight run.
 async function queryEngine(spec: AiSearchSpec, signal?: AbortSignal) {
   const first = await searchFiles(spec, signal);
   if (first.entries.length || !spec.name_terms.length || !hasNonNameFilters(spec))
@@ -261,7 +255,7 @@ async function queryEngine(spec: AiSearchSpec, signal?: AbortSignal) {
   return searchFiles({ ...spec, name_terms: [] }, signal);
 }
 
-// The full pipeline: model → spec → system-wide engine → rank.
+// The full pipeline: model → spec → the index engine → rank.
 export async function runAiSearch(
   home: string,
   query: string,
@@ -288,7 +282,6 @@ export async function runAiSearch(
     hits: rankHits(res.entries, spec, home),
     truncated: res.truncated,
     usedFallback,
-    engine: res.engine,
     spec,
   };
 }

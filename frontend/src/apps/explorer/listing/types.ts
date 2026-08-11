@@ -35,6 +35,16 @@ export const SORT_KEYS = { name: "Name", size: "Size", mtime: "Modified" };
 export type SortKey = keyof typeof SORT_KEYS;
 export type SortOrder = "asc" | "desc";
 
+// Columns the listing table renders. Search mode shows the matched PATH alone:
+// a hit's row is already a full rel path, and it needs every pixel the table
+// has. Status, banner and sentinel rows span the table, so their colSpan must
+// follow the mode — a hardcoded 3 under a one-column head declares two columns
+// nothing else mentions, and table-layout:fixed hands them width (the dead
+// strip in listing/column-shedding).
+export function columnCount(searching: boolean): number {
+  return searching ? 1 : 3;
+}
+
 // Search-result rows rendered per "page". Fuzzy-scoring can match thousands
 // of entries in a large tree; mounting them all as <tr>s at once is what jams
 // the main thread (scoring itself is comparatively cheap). Scrolling to the
@@ -134,6 +144,11 @@ export interface SearchHit {
   positions: number[];
   score: number;
   longestRun: number;
+  // 1 = the query is a substring of this entry's own NAME, 2 = the name matched
+  // only fuzzily, 3 = only ancestor directories matched. Lower wins. Ranked
+  // above `score` because scoring runs over the whole rel path, so a matching
+  // ancestor directory donates its score to every descendant (see search.ts).
+  tier: 1 | 2 | 3;
   // Path depth, precomputed at score time. The rank comparator runs n·log n
   // times over a hit list that can be the whole corpus, so it must not derive
   // anything per comparison (see search.ts).

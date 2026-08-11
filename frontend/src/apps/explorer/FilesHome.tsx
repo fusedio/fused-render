@@ -30,7 +30,7 @@ type LaunchTab = "bookmarks" | "recents" | "sessions";
 type SearchPhase = "idle" | "searching";
 
 // The hero's search box, styled after the /apps hero composer: one line of
-// natural language in, one haiku call to interpret it, one bounded walk to
+// natural language in, one haiku call to interpret it, one indexed SQL query to
 // answer it (see lib/ai-search.ts). While a result is showing, the homepage's
 // bookmark/recent grids yield to the result grid; Clear (or emptying the box)
 // brings them back.
@@ -210,7 +210,6 @@ function SearchResults({
           : summary
             ? `Understood as: ${summary}`
             : "No filters — showing closest matches."}
-        {result.engine === "walk" && " · Searched your home folder."}
         {result.truncated && " · Broad query: showing the first slice of matches."}
       </p>
       {result.hits.length ? (

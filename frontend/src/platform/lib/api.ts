@@ -1,5 +1,7 @@
 // Server API wrappers. Non-ok responses throw with the server's error message.
 import { noteFsMutation, noteIndexLifecycle } from "@platform/lib/index-freshness";
+import { outcomeFrom } from "@platform/lib/index-query";
+import type { IndexQueryOutcome } from "@platform/lib/index-query";
 
 export interface Config {
   start_dir: string;
@@ -341,6 +343,49 @@ export function startIndexScan(opts: { root?: string; full?: boolean } = {}): Pr
   return mutateJson("POST", "/api/index/scan", opts);
 }
 
+// POST /api/index/query and /api/index/ask — read-only SQL over the index, and
+// the same thing from a question in English (index/specs/query.md §5).
+//
+// NOT through mutateJson, for two reasons: it throws on a non-2xx, and a
+// refused `ask` returns a 400 whose body carries the compiled `sql` the user
+// needs to see — throwing would drop it. And deliberately NOT through
+// noteAfter/noteFsMutation: a query changes nothing, so marking a folder dirty
+// would drop it to a live walk for the rest of the session for no reason.
+// The X-Fused header is still required (both routes execute a caller-shaped
+// statement, so both are guarded).
+export async function runIndexQuery(
+  body: { sql: string; limit?: number },
+): Promise<IndexQueryOutcome> {
+  return indexQueryPost("/api/index/query", body);
+}
+
+export async function askIndex(
+  body: { prompt: string; limit?: number },
+): Promise<IndexQueryOutcome> {
+  return indexQueryPost("/api/index/ask", body);
+}
+
+async function indexQueryPost(url: string, body: unknown): Promise<IndexQueryOutcome> {
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Fused": "1" },
+      body: JSON.stringify(body),
+    });
+  } catch (e) {
+    return { ok: false, sql: null, error: (e as Error).message };
+  }
+  let data: unknown = null;
+  try {
+    data = await res.json();
+  } catch {
+    // outcomeFrom turns a null body into `HTTP <status>`, which is the honest
+    // message when the server did not answer JSON at all.
+  }
+  return outcomeFrom(res.status, data);
+}
+
 export function deleteIndex(): Promise<{ deleted: boolean }> {
   // The corpus any open search fetched predates the delete; without this
   // signal nothing refetches it — the filesystem didn't change, so no
@@ -351,8 +396,8 @@ export function deleteIndex(): Promise<{ deleted: boolean }> {
   });
 }
 
-// One hit from POST /api/search/files (the AI search's execution engine —
-// Spotlight on macOS, a bounded home walk elsewhere). `path` is absolute.
+// One hit from POST /api/search/files (the AI search's execution engine — one
+// SQL query against the app's file index, the only engine). `path` is absolute.
 export interface SearchFileEntry {
   path: string;
   is_dir: boolean;
@@ -363,12 +408,17 @@ export interface SearchFileEntry {
 export interface SearchFilesResult {
   entries: SearchFileEntry[];
   truncated: boolean;
-  engine: string; // "spotlight" | "walk"
+  // Always "index" now that the index is the only engine; kept in the response
+  // for older clients and because "what answered this" is the first support
+  // question about a surprising result.
+  engine: string;
 }
 
-// System-wide file search from a filter spec (see apps/explorer/lib/ai-search).
-// Takes a signal because a new search must be able to abandon the previous
-// engine run mid-flight (Spotlight on a broad query can take seconds).
+// File search from a filter spec (see apps/explorer/lib/ai-search), scoped to
+// whatever the index has scanned — home by default. Takes a signal because a new
+// search must be able to abandon the previous one mid-flight. A missing or
+// unreadable index is an ERROR here (503/502), never an empty result: see the
+// server's search.py.
 export async function searchFiles(
   spec: unknown,
   signal?: AbortSignal,

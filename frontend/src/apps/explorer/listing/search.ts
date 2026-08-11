@@ -1,7 +1,7 @@
 // Fuzzy scoring and ranking for the in-folder search (over the streamed walk).
 import type { WalkEntry } from "@platform/lib/api";
 import { fuzzyMatch } from "@platform/lib/fuzzy";
-import type { SearchHit, SortKey, SortOrder } from "@apps/explorer/listing/types";
+import type { SearchHit } from "@apps/explorer/listing/types";
 
 // A dot-leading query segment is explicit intent to SEE hidden entries.
 // The walk itself always includes hidden entries (one dataset — the server
@@ -40,8 +40,33 @@ function depthOf(rel: string): number {
   return depth;
 }
 
+// How much of the match landed on the entry's OWN name: 1 = the query is a
+// substring of the name, 2 = the name matched only fuzzily, 3 = only ancestor
+// directories matched. Derived from what the matcher already returned plus the
+// lowercased name scoreEntries already slices for its exact/prefix bonuses —
+// calling fuzzyMatch a second time (against the name alone) would double the
+// cost of the hot path, and the 150k-hit budget in search.test.ts does not have
+// room for that.
+function nameTier(name: string, nameStart: number, q: string,
+                  positions: number[]): 1 | 2 | 3 {
+  if (name.includes(q)) return 1;
+  // Every matched char sits before the name: the hit is entirely in ancestors.
+  if (positions.length && positions[positions.length - 1] < nameStart) return 3;
+  return 2;
+}
+
 export function rankCompare(a: SearchHit, b: SearchHit): number {
   if (b.longestRun !== a.longestRun) return b.longestRun - a.longestRun;
+  // Above `score`, because scoring runs over the whole rel path and a matching
+  // ancestor directory therefore donates its score to every descendant: query
+  // "render" scored render/a/b/c/d/e/f/deep-thing.bin at 26 and myrender.ts at
+  // 21, and `depth` below is only reachable on an exact score tie.
+  //
+  // BELOW `longestRun`, which is what already guarantees substring-over-fuzzy:
+  // fuzzyMatch's substring branch sets longestRun = q.length (the maximum the
+  // subsequence branch can never reach), so mycfgfile.txt beats c/f/g/notes.txt
+  // before the tier is consulted. That invariant must survive any change here.
+  if (a.tier !== b.tier) return a.tier - b.tier;
   if (b.score !== a.score) return b.score - a.score;
   if (a.depth !== b.depth) return a.depth - b.depth;
   return byRel(a.entry.rel, b.entry.rel);
@@ -76,26 +101,13 @@ export function scoreEntries(
     const m = fuzzyMatch(query, entry.rel);
     if (!m) continue;
     let score = m.score;
-    const name = entry.rel.slice(entry.rel.lastIndexOf("/") + 1).toLowerCase();
+    const nameStart = entry.rel.lastIndexOf("/") + 1;
+    const name = entry.rel.slice(nameStart).toLowerCase();
     if (name === q) score += 100;
     else if (name.startsWith(q)) score += 25;
     hits.push({ entry, positions: m.positions, score, longestRun: m.longestRun,
+                tier: nameTier(name, nameStart, q, m.positions),
                 depth: depthOf(entry.rel) });
   }
   return hits;
-}
-
-// Column-sort a ranked result set (the search headers' asc/desc modes; null
-// searchSort — relevance — leaves the rankCompare order untouched upstream).
-export function sortHits(hits: SearchHit[], sort: SortKey, order: SortOrder): SearchHit[] {
-  const flip = order === "desc" ? -1 : 1;
-  const byName = (a: SearchHit, b: SearchHit) => byRel(a.entry.rel, b.entry.rel);
-  return [...hits].sort((a, b) => {
-    let cmp: number;
-    if (sort === "size") cmp = (a.entry.size ?? -1) - (b.entry.size ?? -1);
-    else if (sort === "mtime") cmp = (a.entry.mtime ?? 0) - (b.entry.mtime ?? 0);
-    else cmp = byName(a, b);
-    if (cmp === 0) cmp = byName(a, b);
-    return cmp * flip;
-  });
 }

@@ -66,6 +66,49 @@ Filtering the cache is what makes newly-ignored folders **self-purging**: an ign
 directory is absent from the cache, so it is never added to the keep list, so
 compaction drops its file rows (`index-store.md §4`). No full rescan is needed.
 
+### Package leaves
+
+`LEAF_DIR_SUFFIXES` (`.app`, `.framework`, `.bundle`, `.photoslibrary`) is a
+*fourth*, differently-shaped rule, and not an ignore pattern: a package is
+**recorded and not descended**, where an ignored directory is neither. It is one
+`dirs.parquet` row with no file rows, produced by `scan_dir_once` returning before
+it lists the directory — so it costs the stat it had already taken and no scandir,
+whatever the package holds.
+
+Both halves matter, and each fixes parity in the opposite direction from the other.
+`/api/fs/walk` emits `Foo.app` as a single leaf entry (`WALK_LEAF_DIR_SUFFIXES`,
+derived from this constant), so:
+
+- **descending** it filled the index with `Foo.app/Contents/...` paths the walk
+  never emits — thousands of rows per Electron app, spending a 200 000-row corpus
+  budget on entries nobody searches for and, because ranking scores the whole
+  relative path, out-ranking real hits;
+- **skipping** it would drop the package from the corpus entirely, and the walk
+  does list it.
+
+`is_leaf_dir` tests the path's own final component, which is all a descent needs:
+a walk that refuses to list `Foo.app` never reaches anything below it. Two callers
+are *handed* a path rather than descending to it, and use `is_inside_leaf_dir`
+(any ancestor is a package) instead:
+
+- the **FSEvents fast path** (`scan-incremental.md §1`) visits whatever directories
+  the OS journal names, and what the journal names inside a package is always a
+  descendant — an app update writes `Foo.app/Contents/Resources`, Photos writes
+  `Foo.photoslibrary/database`, never the package itself. A final-component test
+  passes those straight through, so package internals entered the index by this
+  path even though the walk-driven path excluded them, and the keep list then
+  carried the rows forward on every later run.
+- **`query.search_under`'s coverage test**: a package's dirs row means "this is a
+  leaf", not "we know what is inside", so a search rooted at a package reports
+  `covered: false` and falls back to the live walk — which does list a leaf it was
+  pointed at. The same has to hold one level down, because an index written before
+  this rule holds real dirs rows *inside* packages; answering
+  `Foo.app/Contents` from that partial set while `Foo.app` goes to the walk is the
+  two-interchangeable-sources-disagree bug again.
+
+Neither test purges rows an older index already has: they stop packages entering.
+Migration for an index that already descended packages is a full rescan.
+
 ## 4. Rules-changed fingerprint
 
 Removing a pattern cannot be handled incrementally: cached `n_subdirs` values were

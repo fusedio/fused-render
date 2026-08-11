@@ -19,7 +19,14 @@ import time
 
 from fused_render.index import fsevents
 from fused_render.index.config import IndexConfig
-from fused_render.index.ignore import SKIP_DIRS, IgnoreRules, MountGuard, norm
+from fused_render.index.ignore import (
+    SKIP_DIRS,
+    IgnoreRules,
+    MountGuard,
+    is_inside_leaf_dir,
+    is_leaf_dir,
+    norm,
+)
 from fused_render.index.store import (
     Sink,
     applied_ignore_sig,
@@ -73,6 +80,14 @@ def scan_dir_once(d, cache, rules, guard, devs=None, root_dev=None):
             devs.add(dst.st_dev)
     except OSError:
         return None, None, []
+    if is_leaf_dir(d):
+        # A macOS package: RECORDED as one dirs row (this return), never listed.
+        # The walk emits `Foo.app` itself as a single leaf entry and nothing
+        # inside it, so the index has to do both halves — dropping the package
+        # from its parent's descent list instead would leave no dirs row for it
+        # at all, and break the same parity in the other direction. Costs the
+        # stat above and no scandir, whatever the package holds.
+        return "s", (_dir_sig([]), [], 0, d_mtime_ns, 0), []
     cached = cache.get(d)
     subdirs = []
     # cached[2] == -1 means a pre-upgrade row with unknown subdir count:
@@ -480,7 +495,18 @@ def _run_fsevents(cfg, rules, guard, root, hint, cache, sink, ev, cancel_flag,
             cancelled = True
             break
         d, force = stack.pop()
-        if d in scanned or rules.is_ignored_tree(d) or guard.blocks(d):
+        # is_inside_leaf_dir, and not the is_leaf_dir test scan_dir_once makes:
+        # this loop does not descend to `d`, the journal hands it over, and what
+        # the journal names inside a package is always a descendant (an app
+        # update writes Foo.app/Contents/Resources, Photos writes
+        # Foo.photoslibrary/database) — never the package itself. A
+        # final-component test therefore lets every package internal in through
+        # this path while the walk-driven one drops them, and the tail loop
+        # below then carries those rows forward on every later run. The
+        # package's own dirs row is unaffected: it is is_leaf_dir's, made when
+        # the journal or the walk names the package.
+        if (d in scanned or rules.is_ignored_tree(d) or guard.blocks(d)
+                or is_inside_leaf_dir(d)):
             continue
         scanned.add(d)
         kind, payload, subdirs = scan_dir_once(

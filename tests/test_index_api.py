@@ -13,6 +13,9 @@ from fused_render.index import runner
 from fused_render.index.config import IndexConfig, load_config
 from fused_render.server import create_app
 from fused_render.server.routers import index as index_router
+from fused_render.server.routers.index import (
+    note_folder_opened as _real_note_folder_opened,
+)
 
 
 class _FakePopen:
@@ -665,3 +668,260 @@ def test_a_rules_edit_rescans_every_stale_root_not_just_the_first(home, tmp_path
     assert body["needs_rescan"] is True
     assert started == [str(a), str(b)]
     assert body["rescan_run_ids"] == ["r1", "r2"]
+
+
+# -- open-folder freshness -----------------------------------------------------
+
+def test_listing_a_folder_notes_it_for_the_freshness_check(home, tmp_path,
+                                                           monkeypatch):
+    """The hook is on /api/fs/list because that is what "opened a folder"
+    actually is; the check itself must never run on the request thread."""
+    seen = []
+    monkeypatch.setattr(index_router, "note_folder_opened",
+                        lambda p: seen.append(p) or True)
+    src = _tree(tmp_path)
+    resp = _client(tmp_path).get("/api/fs/list", params={"path": str(src)})
+    assert resp.status_code == 200
+    assert seen == [str(src)]
+
+
+def test_the_freshness_check_runs_at_most_one_at_a_time(home, tmp_path,
+                                                        monkeypatch):
+    """A folder being watched re-lists on every mtime tick, so the hook fires
+    far more often than a check costs. Overlapping checks would each open
+    duckdb over dirs.parquet for nothing."""
+    threads = []
+    monkeypatch.setattr(index_router.threading, "Thread",
+                        lambda **kw: threads.append(kw) or _FakeThread())
+    # The REAL function, bound at import: conftest's _no_startup_index_scan
+    # replaces the module attribute for every test, so that this hook cannot
+    # spawn a home scan from a suite that merely lists a directory.
+    assert _real_note_folder_opened(str(tmp_path)) is True
+    assert _real_note_folder_opened(str(tmp_path)) is False
+    assert len(threads) == 1
+    # The slot frees once the check finishes, so the next open is checked again.
+    threads[0]["target"](*threads[0]["args"])
+    assert _real_note_folder_opened(str(tmp_path)) is True
+
+
+class _FakeThread:
+    def start(self):
+        pass
+
+
+def test_a_stale_open_folder_gets_its_configured_root_rescanned(
+        home, tmp_path, monkeypatch):
+    """The glue end to end, synchronously: the persisted config supplies the
+    roots and the check fires the ordinary incremental scan of the enclosing
+    one."""
+    started = []
+    monkeypatch.setattr(index_router.runner, "start",
+                        lambda cfg, root, full=False: started.append(root)
+                        or {"run_id": "r1", "root": root})
+    src = _tree(tmp_path)
+    cfg = load_config()
+    cfg.roots = [str(src)]
+    index_router.save_config(cfg)
+    sub = src / "sub"
+    # An index that recorded `sub` long before its current mtime.
+    _write_dirs_index(load_config(), {str(src): 1, str(sub): 1})
+    monkeypatch.setattr(index_router.freshness, "QUIET_S", 0.0)
+    index_router._run_freshness_check(str(sub))
+    assert started == [str(src)]
+
+
+# -- guarded SQL ---------------------------------------------------------------
+
+def _indexed_client(tmp_path, dirs=None):
+    """A client whose index holds one real dirs row, so SQL has something to
+    read."""
+    cfg = load_config()
+    _write_dirs_index(cfg, dirs or {str(tmp_path): 1})
+    return _client(tmp_path)
+
+
+@pytest.mark.parametrize("path,body", [
+    ("/api/index/query", {"sql": "SELECT 1"}),
+    ("/api/index/ask", {"prompt": "how many files"}),
+])
+def test_the_query_routes_require_the_fused_header(home, tmp_path, path, body):
+    """Read-only, but they execute a caller-shaped statement — so they are
+    POST-only and guarded, unlike GET /search."""
+    resp = _client(tmp_path).post(path, json=body)
+    assert resp.status_code == 403
+
+
+def test_query_answers_a_select_over_the_index(home, tmp_path):
+    client = _indexed_client(tmp_path)
+    body = client.post("/api/index/query",
+                       json={"sql": "SELECT count(*) AS n FROM dirs"},
+                       headers={"X-Fused": "1"}).json()
+    assert body["ok"] is True
+    assert body["columns"] == ["n"]
+    assert body["rows"] == [[1]]
+    assert body["truncated"] is False
+
+
+def test_query_rejects_a_mutation_with_a_400(home, tmp_path):
+    resp = _indexed_client(tmp_path).post(
+        "/api/index/query", json={"sql": "DELETE FROM files"},
+        headers={"X-Fused": "1"})
+    assert resp.status_code == 400
+    assert "read-only" in resp.json()["error"]
+
+
+def test_query_rejects_a_missing_or_non_string_sql(home, tmp_path):
+    client = _indexed_client(tmp_path)
+    for body in ({}, {"sql": 5}, {"sql": "   "}):
+        resp = client.post("/api/index/query", json=body,
+                           headers={"X-Fused": "1"})
+        assert resp.status_code == 400
+
+
+def test_query_enforces_the_row_cap_server_side(home, tmp_path):
+    """The client's `limit` is a request, not an instruction."""
+    client = _indexed_client(tmp_path)
+    body = client.post("/api/index/query",
+                       json={"sql": "SELECT * FROM range(50) t(i)",
+                             "limit": 10 ** 9},
+                       headers={"X-Fused": "1"}).json()
+    assert len(body["rows"]) == 50  # answered, and under the server cap
+    body = client.post("/api/index/query",
+                       json={"sql": "SELECT * FROM range(50) t(i)",
+                             "limit": 3},
+                       headers={"X-Fused": "1"}).json()
+    assert len(body["rows"]) == 3
+    assert body["truncated"] is True
+
+
+def test_a_duckdb_runtime_error_is_a_400_not_a_500(home, tmp_path):
+    resp = _indexed_client(tmp_path).post(
+        "/api/index/query", json={"sql": "SELECT nope FROM dirs"},
+        headers={"X-Fused": "1"})
+    assert resp.status_code == 400
+    assert "nope" in resp.json()["error"]
+
+
+# -- natural language ----------------------------------------------------------
+
+def _fake_relay(answer, seen=None):
+    """Stands in for server.ai._ai_relay: one non-streaming completion."""
+    from fastapi.responses import JSONResponse
+
+    async def relay(body):
+        if seen is not None:
+            seen.append(body)
+        return JSONResponse({"ok": True, "result": {"text": answer,
+                                                    "model": "m", "usage": {}}})
+
+    return relay
+
+
+def test_ask_runs_the_sql_the_model_returned_and_echoes_it(home, tmp_path,
+                                                           monkeypatch):
+    seen = []
+    monkeypatch.setattr(index_router._server_ai, "_ai_relay",
+                        _fake_relay("```sql\nSELECT count(*) AS n FROM dirs;\n```",
+                                    seen))
+    body = _indexed_client(tmp_path).post(
+        "/api/index/ask", json={"prompt": "how many folders"},
+        headers={"X-Fused": "1"}).json()
+    assert body["ok"] is True
+    assert body["sql"] == "SELECT count(*) AS n FROM dirs;"
+    assert body["rows"] == [[1]]
+    # The schemas have to reach the model, or it cannot write a valid statement.
+    assert "files" in seen[0]["system_prompt"]
+    assert "mtime_ns" in seen[0]["system_prompt"]
+    assert seen[0]["stream"] is False
+
+
+def test_ask_does_not_execute_a_mutation_the_model_wrote(home, tmp_path,
+                                                        monkeypatch):
+    """The guard is the boundary, not the prompt: a model that answers with a
+    DELETE is refused by the same gate a user's DELETE hits."""
+    monkeypatch.setattr(index_router._server_ai, "_ai_relay",
+                        _fake_relay("DELETE FROM files"))
+    resp = _indexed_client(tmp_path).post(
+        "/api/index/ask", json={"prompt": "delete everything"},
+        headers={"X-Fused": "1"})
+    assert resp.status_code == 400
+    assert "read-only" in resp.json()["error"]
+    # The SQL is echoed even when refused, so the user can see what was tried.
+    assert resp.json()["sql"] == "DELETE FROM files"
+
+
+def test_ask_passes_an_ai_failure_through_unchanged(home, tmp_path, monkeypatch):
+    from fastapi.responses import JSONResponse
+
+    async def broken(_body):
+        return JSONResponse({"ok": False, "error": {"type": "ai_unavailable",
+                                                    "message": "no claude"}},
+                            status_code=502)
+
+    monkeypatch.setattr(index_router._server_ai, "_ai_relay", broken)
+    resp = _indexed_client(tmp_path).post(
+        "/api/index/ask", json={"prompt": "anything"},
+        headers={"X-Fused": "1"})
+    assert resp.status_code == 502
+    assert resp.json()["error"]["type"] == "ai_unavailable"
+
+
+def test_ask_runs_the_guarded_query_off_the_event_loop(home, tmp_path, monkeypatch):
+    """`ask` is an async handler, so anything it calls directly runs ON the
+    event loop — and the guarded query is duckdb plus disk, bounded only by
+    TIMEOUT_S (10s). Blocking there freezes every other request in the server,
+    including the scan-status polling the same panel is doing. `query` next
+    door is safe only because it is a plain `def` handler, which FastAPI runs
+    in a threadpool; this one has to ask for that explicitly."""
+    import asyncio
+
+    seen = {}
+    real = index_router.run_guarded
+
+    def spy(*a, **kw):
+        try:
+            asyncio.get_running_loop()
+            seen["on_loop"] = True
+        except RuntimeError:
+            seen["on_loop"] = False
+        return real(*a, **kw)
+
+    monkeypatch.setattr(index_router, "run_guarded", spy)
+    monkeypatch.setattr(index_router._server_ai, "_ai_relay",
+                        _fake_relay("SELECT count(*) AS n FROM dirs"))
+    body = _indexed_client(tmp_path).post(
+        "/api/index/ask", json={"prompt": "how many folders"},
+        headers={"X-Fused": "1"}).json()
+    assert body["ok"] is True
+    assert seen["on_loop"] is False
+
+
+def test_ask_rejects_an_empty_prompt(home, tmp_path):
+    resp = _indexed_client(tmp_path).post(
+        "/api/index/ask", json={"prompt": "  "}, headers={"X-Fused": "1"})
+    assert resp.status_code == 400
+
+
+@pytest.mark.parametrize("answer,expected", [
+    ("```sql\nSELECT 1\n```", "SELECT 1"),
+    ("```\nSELECT 1\n```", "SELECT 1"),
+    ("SELECT 1", "SELECT 1"),
+    ("Here you go:\n```sql\nSELECT 1\n```\nHope that helps.", "SELECT 1"),
+])
+def test_the_models_fencing_is_stripped(answer, expected):
+    assert index_router._sql_from_answer(answer) == expected
+
+
+def _write_dirs_index(cfg, dirs):
+    """A minimal real index whose dirs.parquet holds {dir: mtime_ns}."""
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    from fused_render.index.store import Sink, compact
+    shards = os.path.join(cfg.dir, "shards")
+    os.makedirs(shards, exist_ok=True)
+    sink = Sink(shards, "t", pa, pq, cfg.shard_rows)
+    for d, mtime_ns in dirs.items():
+        sink.add(d, "s", ("sig", [], 0, mtime_ns, 0))
+    sink.close()
+    compact(cfg, next(iter(dirs)), shards, pa, pq)

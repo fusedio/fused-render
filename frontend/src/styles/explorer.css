@@ -661,8 +661,8 @@
 
    A shed column is COLLAPSED, not removed. `display: none` on the header
    looks like the obvious way and is the wrong one: the column survives
-   regardless — the status and sentinel rows span all three (colSpan={3} in
-   Listing.tsx) — and a display:none header contributes no width to
+   regardless — the status and sentinel rows span the whole table (columnCount
+   in listing/types) — and a display:none header contributes no width to
    table-layout:fixed, which left NAME and the shed column BOTH width-less.
    WebKit splits the remainder evenly between width-less columns, so NAME took
    half and the hidden column kept the other half as blank space running to
@@ -1142,9 +1142,29 @@ table.listing-table tr.skel-row:hover {
    is the state where a long query most needs the room.
 
    Reversible on a keystroke: clearing the query (or Esc) brings the path
-   straight back, so nothing is lost, only deferred. The ★ and the `···` stay
-   — they act on the folder, which has not changed. */
+   straight back, so nothing is lost, only deferred. */
 #breadcrumb:has(.listing-search.searching) .crumbs {
+  display: none;
+}
+
+/* …and so does the ★, for the same reason the path did. It acts on the folder,
+   which has not changed — but it was the last thing holding the field off the
+   left edge, and a search box that spans the whole bar is what someone typing a
+   query is asking for. Bookmarking is still one keystroke away (Esc).
+
+   `display: none`, not visibility/opacity: the star's box is 24px plus the
+   deliberate -11px right margin above, and hiding it while keeping the box would
+   leave the field starting 13px in from a gap. A flex item removed this way
+   takes its `gap` share with it, so there is nothing left behind. (This is the
+   opposite of the table-column case in listing/column-shedding.test.ts, where
+   the shed element had to stay rendered — a table column under
+   `table-layout: fixed` outlives its hidden header.)
+
+   Hidden, never unmounted: React keeps the button mounted, so an armed bookmark
+   is not disarmed by a keystroke (see useUpdateButton in Breadcrumb.tsx).
+   Scoped under #breadcrumb because panel mode renders one star per pane from the
+   same component. */
+#breadcrumb:has(.listing-search.searching) .bookmark-star-btn {
   display: none;
 }
 
@@ -1391,8 +1411,14 @@ table.listing-table th {
      it, leaving a 1px bleed gap — paint the divider as an inset shadow so it
      rides with the header instead. */
   box-shadow: inset 0 -1px 0 var(--border);
-  cursor: pointer;
   user-select: none;
+}
+
+/* Only a header that sorts something gets the affordance. Search mode's single
+   PATH header does not sort (relevance order only — Listing.tsx's thead), and
+   a pointer cursor over it promised a click that does nothing. */
+table.listing-table th.sortable {
+  cursor: pointer;
 }
 
 table.listing-table th.sortable:hover {

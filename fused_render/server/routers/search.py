@@ -1,61 +1,100 @@
 """POST /api/search/files — system-wide file search from a validated filter spec.
 
-The AI search on the explorer homepage translates a natural-language query
-into a small filter spec CLIENT-side (one /api/ai call); this endpoint is the
-execution half. On macOS it queries Spotlight (`mdfind`) — the only engine
-with a whole-disk index, so "video downloaded today" can find ~/Downloads
-without walking the filesystem. Elsewhere it falls back to the bounded
-home-dir walk (_walk_bfs), which is honest about its narrower coverage via
-`engine` in the response.
+The AI search on the explorer homepage translates a natural-language query into
+a small filter spec CLIENT-side (one /api/ai call); this endpoint is the
+execution half, and the app's own DuckDB/parquet index (`fused_render/index`) is
+the ONE engine that answers it. The index holds every fact the spec filters on —
+name, ext, size, mtime — so the whole spec becomes one SQL query over the `files`
+and `dirs` views and rows come back straight from parquet: no `stat`, no walk, no
+subprocess, and therefore no syscall a wedged mount could swallow.
 
-SECURITY: the spec arrives from the client but ORIGINATES from a model, so
-every field is re-validated here as if hostile. The mdfind query string is
-assembled only from validated values — extensions/kind against closed
-charsets, numbers coerced, and name terms stripped of the two characters
-(backslash, double-quote) that could break out of an mdfind string literal.
-mdfind runs argv-style (no shell), and an empty spec is rejected rather than
-becoming a match-everything query.
+There is deliberately NO fallback. Spotlight (`mdfind`) and the bounded home walk
+both used to sit behind this endpoint, and both are gone: two engines that answer
+the same query differently make the search box's results depend on which one ran,
+and the walk in particular re-statted the filesystem on every keystroke-driven
+query. The consequences are owned rather than papered over:
+
+  * the index covers the CONFIGURED ROOTS (home by default), so this search is
+    no longer whole-disk. A path outside the roots is not findable here.
+  * a query that finds nothing returns an empty result — an honest miss, not a
+    cue to consult something wider.
+  * no index yet, or an index that cannot be read, is an ERROR (503 / 502) with
+    a message a search box can show. Reporting it as "no matches" would blame
+    the user's files for the app's state.
+  * `created_after` / `created_before` are REFUSED: the index stores `mtime` and
+    no birth time, and no engine is left that could stat for one. Only a stale
+    client can still send them; quietly searching by modification date instead
+    would answer a different question than the one asked.
+
+Freshness is deliberately not a gate — a scan in flight keeps serving its last
+completed generation, exactly as `query.FRESH_MAX_AGE_S` is informational for the
+explorer's in-folder corpus.
+
+SECURITY: the spec arrives from the client but ORIGINATES from a model, so every
+field is re-validated here as if hostile, and the SQL is assembled only from
+validated values — numbers cast in Python, name terms escaped with
+`like_literal`, extensions re-checked against a closed charset at the point of
+interpolation. An empty spec is rejected rather than becoming a
+match-everything query.
 """
 
+import logging
 import os
 import re
-import subprocess
-import sys
 import time
 from datetime import date, datetime, timedelta
 
 from fastapi import APIRouter, Body
 from fastapi.concurrency import run_in_threadpool
 
-from fused_render._view_url_codec import canonical_fs_path
+from fused_render.index.config import load_config
+from fused_render.index.query import dirs_src, files_src
+from fused_render.index.store import depth_expr, like_literal, read_manifest
 from fused_render.server.common import _error
 from fused_render.server.gitignore import _IgnoreOracle
-from fused_render.server.walk import _WALK_TRUNCATED, _walk_bfs, WALK_IGNORE_DIRS
+from fused_render.server.walk import WALK_IGNORE_DIRS
 
+logger = logging.getLogger(__name__)
 router = APIRouter()
 
-# Result and runtime bounds. Spotlight can return tens of thousands of paths
-# for a broad query; the client shows ~60, so 400 leaves plenty of ranking
-# headroom without stat()ing the world.
+# Rows a search may return. A broad query can match tens of thousands of index
+# rows; the client shows ~60, so 400 leaves plenty of ranking headroom.
 SEARCH_MAX_RESULTS = 400
-SEARCH_MDFIND_TIMEOUT_S = 15.0
-# Fallback walk caps: the home dir is bigger than a workspace, so the walk
-# uses the same entry cap as /api/fs/walk but a shallower depth — deep hits
-# are unlikely search targets and shallow-first coverage matters more.
-SEARCH_WALK_MAX_ENTRIES = 200_000
-SEARCH_WALK_MAX_DEPTH = 12
+# Of that cap, the share DIRECTORY hits may claim. Folders are queried on their
+# own budget rather than competing with files for one ordered cap: a folder and
+# the files inside it match the same name term, the files are almost always the
+# newer rows, and under a shared recency budget a folder with more than `cap`
+# recent files in it could never surface — "where is my reports folder" answered
+# with the reports and never the folder. That is the files-starve-folders failure
+# query.search_under fixed for the in-folder corpus, in a different disguise.
+# The named cost: on a query matching both kinds heavily, up to this many file
+# rows give way to folders. Unused folder budget goes back to files — and this is
+# a rule for SHARING the cap, not a ceiling on folders, so a search with no files
+# in it (kind "dir", or an index with no file partitions yet) gets the whole cap.
+SEARCH_DIRS_RESERVE = 100
+# Pages a branch may read while filling its budget. Gitignored rows can only be
+# recognised OUTSIDE SQL, so a page that screens down to nothing has to be
+# followed by another or a gitignored build directory answers the whole query;
+# each extra page costs one duckdb query plus its check-ignore batch, and the
+# common case (few ignored hits) is one page. A bound rather than "until the cap
+# is full" because a query can match more ignored rows than any budget.
+SEARCH_MAX_PAGES = 5
 
 _EXT_ALLOWED = set("abcdefghijklmnopqrstuvwxyz0123456789")
 
-# Date-range spec fields: (key, mdfind attribute, is_range_end). Modified uses
-# the fs content-change date, created the fs creation date (birthtime).
-_DATE_FIELDS = (
-    ("modified_after", "kMDItemFSContentChangeDate", False),
-    ("modified_before", "kMDItemFSContentChangeDate", True),
-    ("created_after", "kMDItemFSCreationDate", False),
-    ("created_before", "kMDItemFSCreationDate", True),
-)
+# Date-range spec fields: (key, is_range_end). Modified only — see the module
+# docstring on created_*.
+_DATE_FIELDS = (("modified_after", False), ("modified_before", True))
+# Creation-date fields a stale client may still send. Named so they can be
+# refused explicitly instead of ignored.
+_REFUSED_DATE_FIELDS = ("created_after", "created_before")
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+class IndexUnavailable(RuntimeError):
+    """There is no index to search — no manifest, or nothing in it this spec
+    could be matched against. Distinct from a query FAILURE so the endpoint can
+    say "not ready yet" (503) rather than "broken" (502)."""
 
 
 def _day_bound_epoch(date_str: str, end: bool) -> float:
@@ -68,14 +107,13 @@ def _day_bound_epoch(date_str: str, end: bool) -> float:
     return datetime(d.year, d.month, d.day).astimezone().timestamp()
 
 
-def _time_iso(epoch: float) -> str:
-    """The mdfind $time.iso(...) literal for an epoch, in local offset form
-    (probed: mdfind accepts 2026-08-05T00:00:00+05:30)."""
-    return datetime.fromtimestamp(epoch).astimezone().isoformat()
-
-
 def _parse_spec(body: dict):
-    """Coerce the request body into a clean spec dict, or an error string."""
+    """Coerce the request body into a clean spec dict, or raise ValueError.
+
+    Fields the engine does not implement are IGNORED (`path_hints` is
+    client-side ranking only), with one exception: the creation-date fields are
+    refused outright, because dropping a date filter silently would answer a
+    different question than the caller asked."""
 
     def strings(key, limit, clean):
         raw = body.get(key)
@@ -100,8 +138,9 @@ def _parse_spec(body: dict):
             raise ValueError(f"'{key}' must be a positive number or null")
         return float(v)
 
-    # An mdfind string literal is "..."; only backslash and the quote itself
-    # can escape it, so stripping those two makes any term safe to embed.
+    # Backslash and double-quote are stripped rather than escaped: neither is
+    # meaningful to a substring match on a file name, and removing them keeps
+    # every term trivially safe to embed in whatever the engine builds.
     def clean_term(v):
         return v.replace("\\", "").replace('"', "").strip()
 
@@ -121,6 +160,11 @@ def _parse_spec(body: dict):
             raise ValueError(f"'{key}' is not a real date")
         return v
 
+    for key in _REFUSED_DATE_FIELDS:
+        if body.get(key) is not None:
+            raise ValueError(
+                f"'{key}' is not supported: the file index records modification "
+                f"time only. Use 'modified_after'/'modified_before'.")
     kind = body.get("kind", "any")
     if kind not in ("file", "dir", "any"):
         raise ValueError("'kind' must be 'file', 'dir', or 'any'")
@@ -134,73 +178,20 @@ def _parse_spec(body: dict):
         "min_size_bytes": pos_num("min_size_bytes"),
         "max_size_bytes": pos_num("max_size_bytes"),
     }
-    for key, _attr, _end in _DATE_FIELDS:
+    for key, _end in _DATE_FIELDS:
         spec[key] = date_str(key)
     return spec
 
 
-def _mdfind_query(spec) -> str | None:
-    """The Spotlight query for a spec, or None when the spec has no
-    constraints at all (a match-everything query is never intended)."""
-    pieces = []
-    if spec["name_terms"]:
-        # cd = case- and diacritic-insensitive. OR across terms: the model
-        # lists synonyms, and requiring all of them would over-filter.
-        terms = " || ".join(
-            f'kMDItemFSName = "*{t}*"cd' for t in spec["name_terms"]
-        )
-        pieces.append(f"({terms})")
-    if spec["extensions"]:
-        exts = " || ".join(
-            f'kMDItemFSName = "*.{e}"cd' for e in spec["extensions"]
-        )
-        pieces.append(f"({exts})")
-    if spec["kind"] == "dir":
-        pieces.append('kMDItemContentType == "public.folder"')
-    elif spec["kind"] == "file":
-        pieces.append('kMDItemContentType != "public.folder"')
-    if spec["modified_within_days"] is not None:
-        secs = int(spec["modified_within_days"] * 86400)
-        pieces.append(f"kMDItemFSContentChangeDate >= $time.now(-{secs})")
-    for key, attr, end in _DATE_FIELDS:
-        if spec[key] is not None:
-            epoch = _day_bound_epoch(spec[key], end)
-            op = "<" if end else ">="
-            pieces.append(f"{attr} {op} $time.iso({_time_iso(epoch)})")
-    if spec["min_size_bytes"] is not None:
-        pieces.append(f"kMDItemFSSize >= {int(spec['min_size_bytes'])}")
-    if spec["max_size_bytes"] is not None:
-        pieces.append(f"kMDItemFSSize <= {int(spec['max_size_bytes'])}")
-    # A kind-only query ("folders") still matches half the disk; require at
-    # least one NARROWING constraint beyond kind.
-    narrowing = [p for p in pieces if not p.startswith("kMDItemContentType")]
-    if not narrowing:
-        return None
-    return " && ".join(pieces)
-
-
-def _stat_entry(path):
-    """The response entry for one hit, or None when it can't be statted
-    (Spotlight's index can be ahead of the filesystem)."""
-    try:
-        st = os.stat(path)
-    except OSError:
-        return None
-    is_dir = os.path.isdir(path)
-    return {
-        "path": path,
-        "is_dir": is_dir,
-        "size": None if is_dir else st.st_size,
-        "mtime": st.st_mtime,
-    }
-
-
-# Path segments that mark a hit as machine-managed junk or hidden data.
-# Spotlight has no gitignore/hidden notion, so its hits are re-screened with
-# the same standards the walk enforces during traversal: WALK_IGNORE_DIRS
-# segments and dot-segments never surface (matching /api/fs/walk's default).
+# Path segments that mark a hit as machine-managed junk or hidden data. The
+# index's own ignore rules are a user-editable name list that says nothing about
+# hidden files, so hits are screened with the same standards the explorer's walk
+# enforces during traversal: WALK_IGNORE_DIRS segments and dot-segments never
+# surface (matching /api/fs/walk's default).
 def _junk_path(path: str) -> bool:
-    for seg in path.split(os.sep):
+    # Both separators: the index stores posix paths (index/ignore.norm) whatever
+    # the platform, and one screening standard has to cover both spellings.
+    for seg in re.split(r"[/\\]", path):
         if seg in WALK_IGNORE_DIRS:
             return True
         if seg.startswith(".") and seg not in (".", ".."):
@@ -256,140 +247,244 @@ def _drop_gitignored(entries):
     return [e for i, e in enumerate(entries) if i not in dropped]
 
 
-def _search_mdfind(spec):
-    query = _mdfind_query(spec)
-    if query is None:
-        raise ValueError("spec has no narrowing constraints")
-    # mdfind has been seen to die with SIGSEGV depending on the launch
-    # context; a signal death (negative returncode) gets one retry before
-    # the caller falls back to the walk engine.
-    for attempt in (1, 2):
-        try:
-            proc = subprocess.run(
-                ["mdfind", "-0", query],
-                capture_output=True,
-                timeout=SEARCH_MDFIND_TIMEOUT_S,
-            )
-        except subprocess.TimeoutExpired:
-            raise RuntimeError("Spotlight search timed out")
-        except FileNotFoundError:
-            raise RuntimeError("mdfind not available")
-        if proc.returncode >= 0 or attempt == 2:
-            break
-    if proc.returncode != 0:
-        err = proc.stderr.decode("utf-8", "replace").strip()
-        raise RuntimeError(f"mdfind failed: {err or proc.returncode}")
-    paths = [p for p in proc.stdout.decode("utf-8", "replace").split("\0") if p]
-    kept = [p for p in paths if not _junk_path(p)]
-    truncated = len(kept) > SEARCH_MAX_RESULTS
-    entries = []
-    for p in kept[:SEARCH_MAX_RESULTS]:
-        e = _stat_entry(p)
-        if e is not None:
-            entries.append(e)
-    entries = _drop_gitignored(entries)
-    return {"entries": entries, "truncated": truncated, "engine": "spotlight"}
+# ------------------------------------------------------------ the index engine
+
+# Spec fields that NARROW a query. `kind` is deliberately absent: "folders"
+# still matches half the disk, so it is not enough on its own.
+_NARROWING_KEYS = (
+    "modified_within_days", "modified_after", "modified_before",
+    "min_size_bytes", "max_size_bytes",
+)
 
 
-def _match_walk_entry(entry, spec, now_s):
-    """The fallback walk applies the spec's HARD filters server-side; name
-    terms stay client-side (the client ranks fuzzily either way)."""
-    if spec["kind"] == "file" and entry["is_dir"]:
-        return False
-    if spec["kind"] == "dir" and not entry["is_dir"]:
-        return False
-    if not entry["is_dir"] and spec["extensions"]:
-        ext = entry["rel"].rsplit(".", 1)
-        if len(ext) != 2 or ext[1].lower() not in spec["extensions"]:
-            return False
+def _has_narrowing(spec) -> bool:
+    return bool(spec["name_terms"] or spec["extensions"]) or any(
+        spec[k] is not None for k in _NARROWING_KEYS)
+
+
+def _dir_narrowing(spec) -> bool:
+    """Whether anything in the spec narrows DIRECTORIES.
+
+    Extension and size are file facts a dirs row cannot answer, so an
+    extensions-only spec ("find my mp4s") narrows the files view and nothing
+    else — and a dirs branch with no predicate left would return every folder in
+    the index, spending the result cap on rows that answer nothing."""
+    return bool(spec["name_terms"]) or any(
+        spec[k] is not None for k in
+        ("modified_within_days", "modified_after", "modified_before"))
+
+
+def _index_where(spec, *, path_expr, name_expr, mtime_expr, now_s,
+                 ext_expr=None, size_expr=None) -> str:
+    """The WHERE clause for one index view. `ext_expr`/`size_expr` are None for
+    the dirs view: extension and size are FILE facts, and the dirs table has no
+    size column at all.
+
+    Every value reaching SQL here is either a number cast in Python or a name
+    term escaped with `like_literal` (quotes doubled, LIKE metachars escaped) —
+    the model-originated half of the spec never lands in the statement raw. See
+    the module docstring's SECURITY note."""
+    # Dot segments never surface (parity with _junk_path and the explorer's
+    # walk). Applied in SQL as well as in _junk_path so the result cap is not
+    # spent on rows from ~/.cache that would be dropped a moment later;
+    # _junk_path stays the single standard, this is only a budget prefilter.
+    pieces = [f"{path_expr} NOT LIKE '%/.%'"]
+    if spec["name_terms"]:
+        # Substring, case-insensitive, OR'd across terms: the model lists
+        # synonyms, and requiring all of them would over-filter. Recall matters
+        # more than precision — the client re-ranks these hits fuzzily.
+        pieces.append("(" + " OR ".join(
+            f"{name_expr} ILIKE '%{like_literal(t)}%' ESCAPE '\\'"
+            for t in spec["name_terms"]) + ")")
+    if ext_expr is not None and spec["extensions"]:
+        # clean_ext restricts these to [a-z0-9]{1,12}; re-checked here so the
+        # literal is provably quote-free however this spec was built.
+        exts = [e for e in spec["extensions"] if set(e) <= _EXT_ALLOWED]
+        if exts:
+            pieces.append(f"lower({ext_expr}) IN ("
+                          + ",".join(f"'{e}'" for e in exts) + ")")
     if spec["modified_within_days"] is not None:
         cutoff = now_s - spec["modified_within_days"] * 86400
-        if entry["mtime"] is None or entry["mtime"] < cutoff:
-            return False
+        pieces.append(f"{mtime_expr} >= {float(cutoff)!r}")
+    # Local-day bounds, inclusive on both ends: `before 2026-08-05` runs to the
+    # midnight AFTER the 5th.
     if spec["modified_after"] is not None:
-        if entry["mtime"] is None or entry["mtime"] < _day_bound_epoch(spec["modified_after"], False):
-            return False
+        pieces.append(f"{mtime_expr} >= "
+                      f"{_day_bound_epoch(spec['modified_after'], False)!r}")
     if spec["modified_before"] is not None:
-        if entry["mtime"] is None or entry["mtime"] >= _day_bound_epoch(spec["modified_before"], True):
-            return False
-    if not entry["is_dir"]:
-        size = entry["size"] or 0
-        if spec["min_size_bytes"] is not None and size < spec["min_size_bytes"]:
-            return False
-        if spec["max_size_bytes"] is not None and size > spec["max_size_bytes"]:
-            return False
-    return True
+        pieces.append(f"{mtime_expr} < "
+                      f"{_day_bound_epoch(spec['modified_before'], True)!r}")
+    if size_expr is not None:
+        if spec["min_size_bytes"] is not None:
+            pieces.append(f"{size_expr} >= {int(spec['min_size_bytes'])}")
+        if spec["max_size_bytes"] is not None:
+            pieces.append(f"{size_expr} <= {int(spec['max_size_bytes'])}")
+    return " AND ".join(pieces)
 
 
-def _created_epoch(path: str) -> float | None:
-    """Best-effort creation time: st_birthtime where the OS has one (macOS,
-    some BSDs), st_ctime on Windows (creation there), else None."""
-    try:
-        st = os.stat(path)
-    except OSError:
-        return None
-    birth = getattr(st, "st_birthtime", None)
-    if birth is not None:
-        return birth
-    return st.st_ctime if sys.platform == "win32" else None
+def _files_query(cfg, parts, spec, now_s) -> str:
+    """The files view, newest first. Ordering only decides WHICH rows survive
+    the budget (the client re-ranks every hit), and recency is the best sample
+    of a file corpus. `path` breaks ties so paging is deterministic."""
+    return (
+        f"SELECT path, size, mtime, false AS is_dir FROM {files_src(cfg, parts)} "
+        f"WHERE " + _index_where(spec, path_expr="path", name_expr="name",
+                                 mtime_expr="mtime", ext_expr="ext",
+                                 size_expr="size", now_s=now_s)
+        + " ORDER BY mtime DESC, path")
 
 
-def _match_created_range(path: str, spec) -> bool:
-    """Created-range check for the walk engine (walk entries carry no
-    creation time, so it costs a stat — only paid when the spec asks). On a
-    platform with no creation time the filter is skipped rather than
-    silently emptying every search."""
-    if spec["created_after"] is None and spec["created_before"] is None:
-        return True
-    created = _created_epoch(path)
-    if created is None:
-        return True
-    if spec["created_after"] is not None:
-        if created < _day_bound_epoch(spec["created_after"], False):
-            return False
-    if spec["created_before"] is not None:
-        if created >= _day_bound_epoch(spec["created_before"], True):
-            return False
-    return True
+def _dirs_query(cfg, spec, now_s) -> str:
+    """The dirs view, SHALLOWEST first.
+
+    Not by mtime, unlike files: a dirs row's mtime_ns can be 0 ("unknown" — a
+    row written before the column existed, or a directory whose stat failed),
+    which reads as NULL and sorts last under `mtime DESC`, so a recency order
+    dropped exactly those folders first. Shallow-first is immune to that, is
+    deterministic, and keeps the breadth-first character search_under's corpus
+    has — a folder near the top of the tree is the likelier answer to "where is
+    my X folder". `depth` is computed from the path rather than read from the
+    column so an index written before that column still orders correctly.
+
+    A dirs row carries no name column, so the final path component is the name.
+    """
+    dmtime = "nullif(mtime_ns, 0) / 1e9"
+    return (
+        f"SELECT dir AS path, CAST(NULL AS BIGINT) AS size, {dmtime} AS mtime, "
+        f"true AS is_dir FROM {dirs_src(cfg)} "
+        f"WHERE " + _index_where(spec, path_expr="dir",
+                                 name_expr="regexp_extract(dir, '[^/]*$')",
+                                 mtime_expr=dmtime, now_s=now_s)
+        + f" ORDER BY {depth_expr('dir')}, dir")
 
 
-def _search_walk_home(spec):
-    home = os.path.expanduser("~")
-    now_s = time.time()
-    entries = []
-    truncated = False
-    walker = _walk_bfs(
-        home,
-        False,
-        max_entries=SEARCH_WALK_MAX_ENTRIES,
-        max_depth=SEARCH_WALK_MAX_DEPTH,
-    )
-    for entry in walker:
-        if entry is _WALK_TRUNCATED:
-            truncated = True
-            continue
-        if not _match_walk_entry(entry, spec, now_s):
-            continue
-        abs_path = os.path.join(home, entry["rel"].replace("/", os.sep))
-        if not _match_created_range(abs_path, spec):
-            continue
-        entries.append(
-            {
-                # Canonicalized (forward slashes) for the response: the
-                # client strips `home` with a "/" join and its path helpers
-                # are forward-slash-only, matching every other fs path the
-                # runtime hands them. `abs_path` above stays native for the
-                # stat call.
-                "path": canonical_fs_path(abs_path),
-                "is_dir": entry["is_dir"],
-                "size": entry["size"],
-                "mtime": entry["mtime"],
-            }
-        )
-        if len(entries) >= SEARCH_MAX_RESULTS:
-            truncated = True
+def _row_entry(row) -> dict:
+    path, size, mtime, is_dir = row
+    return {"path": path, "is_dir": bool(is_dir),
+            "size": None if is_dir or size is None else int(size),
+            "mtime": None if mtime is None else float(mtime)}
+
+
+def _screen(rows) -> list:
+    """Response entries for `rows`, minus the hits no search may surface.
+
+    The index's own ignore rules are a user-editable name list; git is a server
+    concern (server/index_gitignore.py makes the same move for the in-folder
+    corpus, for the same reason: a gitignored build directory's 100k generated
+    files must not flood a search)."""
+    return _drop_gitignored([_row_entry(r) for r in rows if not _junk_path(r[0])])
+
+
+def _collect(con, sql, budget: int):
+    """Up to `budget` screened entries for one branch, plus whether the branch
+    had more rows than it was allowed to contribute.
+
+    Paged, because the cap is a budget for hits the user can SEE and screening
+    happens outside SQL: taking `budget` rows once and screening afterwards let
+    a page of gitignored rows answer the query with an empty list while real
+    matches sat one row past the cap. Each page asks for exactly the shortfall
+    plus one probe row, so the common case is a single query."""
+    kept: list = []
+    offset = 0
+    more = False
+    for _page in range(SEARCH_MAX_PAGES):
+        want = budget - len(kept)
+        if want <= 0:
             break
-    return {"entries": entries, "truncated": truncated, "engine": "walk"}
+        rows = con.execute(
+            f"{sql} LIMIT {want + 1} OFFSET {offset}").fetchall()
+        more = len(rows) > want
+        page = rows[:want]
+        offset += len(page)
+        kept.extend(_screen(page))
+        if not more:
+            break
+    return kept[:budget], more
+
+
+def _index_entries(cfg, spec, cap, *, parts=None, dirs=False):
+    """Screened entries for the spec, and whether anything was left behind.
+
+    Each view is its own query with its own budget — see SEARCH_DIRS_RESERVE for
+    why folders are not made to compete with files for one ordered cap. Both are
+    named through the MANIFEST (query.files_src / dirs_src), never a glob of the
+    files dir: a compaction leaves the previous generation's partitions on disk
+    for readers still holding the old manifest (index-store.md §4), so a glob
+    would return every row twice."""
+    import duckdb
+
+    now_s = time.time()
+    con = duckdb.connect()
+    # The reserve is a rule for SHARING the cap, so it only applies while both
+    # branches are live. A folder-only search — `kind: "dir"`, or an index whose
+    # file partitions are not there yet — has nothing competing with it and gets
+    # the whole cap, the same deal files get.
+    dirs_budget = min(SEARCH_DIRS_RESERVE, cap) if parts else cap
+    dir_entries, dirs_more = (
+        _collect(con, _dirs_query(cfg, spec, now_s), dirs_budget)
+        if dirs else ([], False))
+    # Files ask for the WHOLE cap and give back whatever the folders took, so an
+    # unused folder reserve costs nothing.
+    file_entries, files_more = (
+        _collect(con, _files_query(cfg, parts, spec, now_s), cap)
+        if parts else ([], False))
+    room = cap - len(dir_entries)
+    entries = dir_entries + file_entries[:room]
+    truncated = dirs_more or files_more or len(file_entries) > room
+    return entries, truncated
+
+
+def _search_index(spec, cfg=None):
+    """The spec executed against the SQL index — the only engine.
+
+    Rows are returned straight from parquet, deliberately NOT re-statted: that
+    is the point of this engine (zero filesystem syscalls, so a search can never
+    touch a mount). The cost is that a file deleted since the last scan can
+    still appear, the same staleness the index-backed in-folder search accepts.
+
+    Raises, rather than quietly answering something narrower:
+      * `ValueError` — the spec narrows nothing (a match-everything query is
+        never intended), or it asks only for directories while narrowing only
+        file facts (see _dir_narrowing).
+      * `IndexUnavailable` — no manifest, or no view this `kind` could be
+        answered from. "Not ready", not "no matches".
+      * `RuntimeError` — the index is there but could not be read.
+    """
+    if not _has_narrowing(spec):
+        raise ValueError("spec has no narrowing constraints")
+    cfg = load_config() if cfg is None else cfg
+    manifest = read_manifest(cfg)
+    if manifest is None:
+        raise IndexUnavailable(
+            "the file index has not been built yet — search works once the "
+            "first scan finishes")
+    parts = (manifest.get("partitions") or []) if spec["kind"] != "dir" else []
+    dirs = spec["kind"] in ("dir", "any") and os.path.exists(cfg.dirs_parquet)
+    if dirs and not _dir_narrowing(spec):
+        # kind "any" simply drops the dirs half; a folder-only search with
+        # nothing a folder can be matched by has no answer to give, and there is
+        # no wider engine to pass it to.
+        if spec["kind"] == "dir":
+            raise ValueError(
+                "searching for folders needs a name or a date — extension and "
+                "size only narrow files")
+        dirs = False
+    if not parts and not dirs:
+        raise IndexUnavailable(
+            "the file index holds nothing this search could match yet — it may "
+            "still be scanning")
+    try:
+        entries, truncated = _index_entries(
+            cfg, spec, SEARCH_MAX_RESULTS, parts=parts, dirs=dirs)
+    except Exception as e:  # noqa: BLE001 - duckdb's exception tree, flattened
+        logger.exception("the index search query failed")
+        raise RuntimeError(
+            f"the file index could not be searched: {type(e).__name__}") from e
+    return {"entries": entries, "truncated": truncated,
+            # Constant now that the index is the only engine. Kept in the
+            # response because old clients read it, and because a support
+            # question about a surprising result starts with "what answered it".
+            "engine": "index"}
 
 
 @router.post("/api/search/files")
@@ -398,20 +493,15 @@ async def api_search_files(body: dict = Body(...)):
         spec = _parse_spec(body)
     except ValueError as e:
         return _error(str(e))
-    # Both engines block (subprocess / disk walk); keep the event loop free.
-    # A Spotlight failure (crash, timeout, missing mdfind) degrades to the
-    # home-walk engine rather than a 502 — narrower coverage, labeled via
-    # `engine`, beats a dead search box.
+    # duckdb blocks, so it runs off the event loop. Every failure is REPORTED:
+    # there is no second engine to degrade to, and a search box that says
+    # "no matches" when the index is missing would be lying about the disk.
     try:
-        if sys.platform == "darwin":
-            try:
-                result = await run_in_threadpool(_search_mdfind, spec)
-            except RuntimeError:
-                result = await run_in_threadpool(_search_walk_home, spec)
-        else:
-            result = await run_in_threadpool(_search_walk_home, spec)
+        result = await run_in_threadpool(_search_index, spec)
     except ValueError as e:
         return _error(str(e))
+    except IndexUnavailable as e:
+        return _error(str(e), status=503)
     except RuntimeError as e:
         return _error(str(e), status=502)
     return {"ok": True, **result}

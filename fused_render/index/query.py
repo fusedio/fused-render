@@ -1,11 +1,11 @@
 """Reading the index — strictly read-only, and strictly parameterized.
 
-Ported from OpenIndex's `query.py` MINUS its `sql` action. Inside a local
-trusted page, handing duckdb a user's statement was consistent with runPython
-executing arbitrary local Python anyway; behind an HTTP route it is an
-arbitrary read/write surface with no allowlist and no read-only flag, so it is
-gone rather than guarded. What remains — `stats` and `lookup` — builds SQL only
-from escaped literals, an int-cast limit/offset and a fixed sort allowlist.
+Ported from OpenIndex's `query.py` MINUS its `sql` action, which was an
+arbitrary read/write surface with no allowlist and no read-only flag. User SQL
+lives in `guarded_query.py` instead, where the confinement is the whole point of
+the module (specs/query.md §5); nothing here takes a caller's statement.
+`stats` and `lookup` build SQL only from escaped literals, an int-cast
+limit/offset and a fixed sort allowlist.
 
 duckdb is imported inside each function, not at module top: this module is
 imported by the server's router, and a call against a missing index should not
@@ -17,8 +17,13 @@ import os
 import re
 
 from fused_render.index.config import IndexConfig
-from fused_render.index.ignore import norm
-from fused_render.index.store import like_literal, parquet_src, read_manifest
+from fused_render.index.ignore import is_inside_leaf_dir, is_leaf_dir, norm
+from fused_render.index.store import (
+    depth_expr,
+    like_literal,
+    parquet_src,
+    read_manifest,
+)
 
 _DRIVE = re.compile(r"^[A-Za-z]:/")
 
@@ -43,8 +48,10 @@ MAX_CORPUS = 200_000
 # live walk, since offering the pre-rename name back to the user who just
 # renamed it is not a trade (frontend lib/index-freshness.ts).
 #
-# There is no watcher (`scan.md`), so this is the honest bound on how wrong an
-# unflagged corpus can be. It is a trade, not a
+# There is no watcher (`scan.md`) — opening a folder whose own mtime is ahead of
+# the index rescans its root (`scan-incremental.md §5`), but a change deeper than
+# the folder being viewed does not move that mtime — so this is still the honest
+# bound on how wrong an unflagged corpus can be. It is a trade, not a
 # fact about the data — long enough that the index is actually used during a
 # working session, short enough that a morning's edits don't answer an
 # afternoon's search.
@@ -115,7 +122,7 @@ def pattern_for(q: str):
     return pat, prune_prefix
 
 
-def _sources(cfg: IndexConfig, parts) -> str:
+def files_src(cfg: IndexConfig, parts) -> str:
     """A duckdb source over exactly the partitions the MANIFEST names.
 
     Never a `files/*.parquet` glob: a compaction writes the next generation
@@ -125,6 +132,20 @@ def _sources(cfg: IndexConfig, parts) -> str:
     manifest."""
     files = [_q(os.path.join(cfg.files_dir, p["file"])) for p in parts]
     return "read_parquet([" + ",".join(f"'{f}'" for f in files) + "])"
+
+
+def _depth_col(con, src: str, path_col: str) -> str:
+    """`depth` when the parquet behind `src` carries it, else the slash-count
+    expression over `path_col`.
+
+    DESCRIBE reads footers only, so this costs no rows. Deciding per SOURCE
+    rather than per file is exact: every partition a manifest names was written
+    by one compaction, so a generation's schema is uniform (and DuckDB would
+    refuse a mixed-schema read_parquet list anyway). An index predating the
+    column keeps answering; migrating it is a full rescan."""
+    cols = {r[0] for r in con.execute(
+        f"DESCRIBE SELECT * FROM {src} LIMIT 0").fetchall()}
+    return "depth" if "depth" in cols else depth_expr(path_col)
 
 
 def lookup(cfg: IndexConfig, query: str = "", limit: int = 100, offset: int = 0,
@@ -151,7 +172,7 @@ def lookup(cfg: IndexConfig, query: str = "", limit: int = 100, offset: int = 0,
     order = SORTS.get(sort, SORTS["mtime"])
     limit = max(0, min(int(limit), MAX_LIMIT))
     offset = max(0, int(offset))
-    src = _sources(cfg, hit)
+    src = files_src(cfg, hit)
     con = duckdb.connect()
     total = con.execute(f"SELECT count(*) FROM {src} {where}").fetchone()[0]
     rows = con.execute(
@@ -191,7 +212,7 @@ def stats(cfg: IndexConfig, root: str = "") -> dict:
         by_ext = con.execute(
             f"SELECT coalesce(nullif(ext, ''), 'no ext') e, count(*) n, "
             f"coalesce(sum(size), 0) s "
-            f"FROM {_sources(cfg, m['partitions'])} "
+            f"FROM {files_src(cfg, m['partitions'])} "
             f"WHERE {inside} "
             f"GROUP BY 1 ORDER BY s DESC").fetchall()
         n_rows = sum(r[1] for r in by_ext)
@@ -249,7 +270,21 @@ def search_under(cfg: IndexConfig, root: str, q: str = "", limit: int = MAX_CORP
     # Coverage is "the scan visited this exact directory", which is what keeps
     # a partial index honest: a root whose parent was scanned but which was
     # itself pruned (ignored, or below a cancelled run's frontier) has no row.
-    covered = con.execute(
+    #
+    # A package directory is the exception: the scan records it as ONE opaque
+    # row and never lists it (scan.scan_dir_once), so its dirs row means "this
+    # is a leaf", not "we know what is inside". The explorer can still navigate
+    # into a .app, and the live walk answers that (it only refuses to descend
+    # leaf CHILDREN, not a leaf it was pointed at) — so hand it over, exactly as
+    # for any other uncovered folder, instead of reporting an empty corpus as
+    # complete.
+    # The test is is_inside_leaf_dir as well, not just the root's own final
+    # component: any index written before the leaf rule still holds real dirs
+    # rows for paths INSIDE a package, and answering `/x/Foo.app/Contents` from
+    # that partial set while `/x/Foo.app` one level up goes to the walk is the
+    # two-interchangeable-sources-disagree bug in miniature.
+    inside_pkg = is_leaf_dir(root) or is_inside_leaf_dir(root)
+    covered = not inside_pkg and con.execute(
         f"SELECT count(*) FROM {dirs_src(cfg)} "
         f"WHERE dir = '{_q(root)}'").fetchone()[0] > 0
     if not covered:
@@ -259,39 +294,49 @@ def search_under(cfg: IndexConfig, root: str, q: str = "", limit: int = MAX_CORP
     limit = max(0, min(int(limit), MAX_CORPUS))
     hit = prune(m["partitions"], prefix)
     qlit = like_literal(q.strip()) if q and q.strip() else ""
-    like = f" AND path ILIKE '%{qlit}%' ESCAPE '\\'" if qlit else ""
-    # Shallow entries first (fewer slashes), path order within a depth: when
+    # Files and directories compete in ONE depth-ordered query, not two.
+    #
+    # Two queries meant the files branch was served first and directories got
+    # only `limit - len(files)` rows — so on any tree big enough to truncate the
+    # corpus, `room` was 0 and folder search was DEAD, not degraded: a query
+    # naming a folder returned the files inside it and never the folder. The
+    # live walk never had this bug because BFS interleaves both kinds.
+    #
+    # Shallow entries first (smaller `depth`), path order within a depth: when
     # the cap bites on a >limit tree, the capped corpus keeps the same
     # breadth-first character as the walk it replaces — plain ORDER BY path
     # would starve everything after the first deep subtree.
-    depth = "(length(path) - length(replace(path, '/', '')))"
+    #
+    # The trade: directories now spend part of the budget files used to have,
+    # so a very large tree carries slightly fewer files. A corpus with no
+    # folders in it at all is strictly worse.
+    branches = []
+    if hit:
+        fsrc = files_src(cfg, hit)
+        like = f" AND path ILIKE '%{qlit}%' ESCAPE '\\'" if qlit else ""
+        branches.append(
+            f"SELECT path, size, mtime, false AS is_dir, "
+            f"{_depth_col(con, fsrc, 'path')} AS depth FROM {fsrc} "
+            f"WHERE path LIKE '{prefix_like}%' ESCAPE '\\'{like}")
+    if include_dirs:
+        dsrc = dirs_src(cfg)
+        dlike = f" AND dir ILIKE '%{qlit}%' ESCAPE '\\'" if qlit else ""
+        branches.append(
+            f"SELECT dir AS path, CAST(NULL AS BIGINT) AS size, "
+            f"nullif(mtime_ns, 0) / 1e9 AS mtime, true AS is_dir, "
+            f"{_depth_col(con, dsrc, 'dir')} AS depth FROM {dsrc} "
+            f"WHERE dir LIKE '{prefix_like}%' ESCAPE '\\'{dlike}")
     entries, truncated = [], False
-    if hit and limit:
+    if branches:
         # One row past the cap, so "there was more" is known without a count.
         rows = con.execute(
-            f"SELECT path, size, mtime FROM {_sources(cfg, hit)} "
-            f"WHERE path LIKE '{prefix_like}%' ESCAPE '\\'{like} "
-            f"ORDER BY {depth}, path LIMIT {limit + 1}").fetchall()
-        for path, size, mtime in rows[:limit]:
-            entries.append({"rel": path[len(prefix):], "is_dir": False,
+            " UNION ALL ".join(branches)
+            + f" ORDER BY depth, path LIMIT {limit + 1}").fetchall()
+        for path, size, mtime, is_dir, _depth in rows[:limit]:
+            entries.append({"rel": path[len(prefix):], "is_dir": bool(is_dir),
                             "size": int(size) if size is not None else None,
                             "mtime": float(mtime) if mtime is not None else None})
         truncated = len(rows) > limit
-    if include_dirs:
-        dlike = f" AND dir ILIKE '%{qlit}%' ESCAPE '\\'" if qlit else ""
-        # Even with no room left, one probe row decides `truncated`: file rows
-        # exactly filling the cap must not silently drop every directory while
-        # claiming the corpus is complete.
-        room = limit - len(entries)
-        ddepth = "(length(dir) - length(replace(dir, '/', '')))"
-        drows = con.execute(
-            f"SELECT dir, mtime_ns FROM {dirs_src(cfg)} "
-            f"WHERE dir LIKE '{prefix_like}%' ESCAPE '\\'{dlike} "
-            f"ORDER BY {ddepth}, dir LIMIT {room + 1}").fetchall()
-        for d, mtime_ns in drows[:room]:
-            entries.append({"rel": d[len(prefix):], "is_dir": True, "size": None,
-                            "mtime": (mtime_ns / 1e9) if mtime_ns else None})
-        truncated = truncated or len(drows) > room
     return {"covered": True, "fresh": fresh, "updated": updated, "age_s": age,
             "root": root, "scanned_partitions": len(hit),
             "of_partitions": len(m["partitions"]), "entries": entries,

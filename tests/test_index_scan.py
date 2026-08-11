@@ -13,7 +13,11 @@ import pytest
 from fused_render.index.config import IndexConfig
 from fused_render.index.ignore import IgnoreRules, MountGuard
 from fused_render.index.scan import keep_subdirs, run_scan, scan_dir_once
-from fused_render.index.store import load_dir_cache, read_manifest
+from fused_render.index.store import (
+    load_dir_cache,
+    partition_files,
+    read_manifest,
+)
 
 
 def _cfg(tmp_path, **over):
@@ -129,6 +133,32 @@ def test_unreadable_directory_is_skipped_not_fatal(tmp_path):
     assert (kind, payload, subs) == (None, None, [])
 
 
+def _package(root):
+    app = root / "Cool.app"
+    (app / "Contents").mkdir(parents=True)
+    (app / "Contents" / "Info.plist").write_text("x", encoding="utf-8")
+    return app
+
+
+def test_a_package_directory_is_recorded_but_not_descended(tmp_path):
+    """The walk treats macOS packages as opaque leaves — one entry, no contents
+    (WALK_LEAF_DIR_SUFFIXES) — and the scan had no counterpart, so the index was
+    full of Cool.app/Contents/... paths the walk would never emit.
+
+    Dropping the package from the descent list is not the fix on its own: a
+    dirs.parquet row exists only for a SCANNED directory, so the package would
+    vanish from the corpus entirely and break parity the other way. It is
+    recorded, with no file rows, and not listed."""
+    app = _package(tmp_path)
+    rules, guard = IgnoreRules([]), _guard(tmp_path)
+    assert scan_dir_once(str(tmp_path), {}, rules, guard)[2] == [str(app)]
+    kind, payload, subs = scan_dir_once(str(app), {}, rules, guard)
+    assert kind == "s"           # recorded: one dirs row
+    assert payload[1] == []      # no file rows from inside the package
+    assert payload[4] == 0
+    assert subs == []            # and nothing below it is queued
+
+
 def test_keep_subdirs_drops_skip_dirs_ignored_and_mount_paths(tmp_path):
     guard = MountGuard(mounts_dir=str(tmp_path / "mounts"))
     subs = [str(tmp_path / "ok"), str(tmp_path / "mounts" / "s3"),
@@ -172,6 +202,73 @@ def test_a_run_indexes_the_tree_and_skips_ignored_folders(tmp_path):
     part = os.path.join(cfg.files_dir, read_manifest(cfg)["partitions"][0]["file"])
     names = pq.read_table(part).column("path").to_pylist()
     assert names == [str(src / "a.txt"), str(src / "sub" / "b.md")]
+
+
+def test_a_run_and_the_walk_agree_about_a_package_directory(tmp_path):
+    """Corpus/walk parity: the two sources are meant to be interchangeable, so
+    the package appears in both as exactly one leaf entry."""
+    from fused_render.index.query import search_under
+    from fused_render.server.walk import _walk_bfs
+
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "a.txt").write_text("a", encoding="utf-8")
+    app = _package(src)
+    cfg = _cfg(tmp_path)
+    run_dir = _run(cfg, str(src))
+    assert _summary(run_dir)["msg"] == "complete", _summary(run_dir).get("error")
+
+    dirs = pq.read_table(cfg.dirs_parquet).column("dir").to_pylist()
+    assert str(app) in dirs
+    assert not any(d.startswith(str(app) + "/") for d in dirs)
+    part = os.path.join(cfg.files_dir, read_manifest(cfg)["partitions"][0]["file"])
+    assert pq.read_table(part).column("path").to_pylist() == [str(src / "a.txt")]
+
+    corpus = {e["rel"] for e in search_under(cfg, str(src))["entries"]}
+    walked = {e["rel"] for e in _walk_bfs(str(src), True) if isinstance(e, dict)}
+    assert corpus == walked == {"a.txt", "Cool.app"}
+
+
+def test_the_fsevents_path_does_not_walk_into_a_package(tmp_path, monkeypatch):
+    """The leaf rule has to hold on BOTH scan paths, and the journal one does not
+    arrive by descent: it visits whatever directories the OS names, and what the
+    OS names inside a package is always a descendant (an app update writes
+    Cool.app/Contents/..., Photos writes Foo.photoslibrary/database) — never the
+    package itself. A final-component test therefore passes those straight
+    through and re-fills the index with the very rows the walk-driven path
+    excludes. They are not self-correcting either: _run_fsevents keeps every
+    cached dir it did not visit, so once present they survive every later run.
+
+    The hint here is exactly what the journal reports after something writes
+    inside the package."""
+    from fused_render.index import fsevents
+
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "a.txt").write_text("a", encoding="utf-8")
+    app = _package(src)
+    cfg = _cfg(tmp_path)
+    assert _summary(_run(cfg, str(src)))["msg"] == "complete"
+
+    # Second run takes the journal fast path, with the package's INNER dir
+    # reported as changed.
+    monkeypatch.setattr(
+        fsevents, "hint",
+        lambda _cfg, _root: ([], [str(app / "Contents")]))
+    run_dir = _run(cfg, str(src), run_name="run2")
+    assert _summary(run_dir)["msg"] == "complete", _summary(run_dir).get("error")
+    # the run really took the journal path — otherwise this proves nothing
+    assert any(e.get("msg", "").startswith("scanning (fsevents")
+               for e in _events(run_dir))
+
+    dirs = pq.read_table(cfg.dirs_parquet).column("dir").to_pylist()
+    assert str(app) in dirs                                    # still recorded
+    assert not any(d.startswith(str(app) + "/") for d in dirs)  # nothing below
+    paths = []
+    for part in partition_files(cfg):
+        paths += pq.read_table(part).column("path").to_pylist()
+    assert not any(p.startswith(str(app) + "/") for p in paths), \
+        "package internals entered the index through the fsevents path"
 
 
 def test_a_second_run_carries_unchanged_directories_forward(tmp_path):

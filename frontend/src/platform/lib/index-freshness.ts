@@ -4,8 +4,11 @@
 // There is no filesystem watcher (index/specs/scan.md), so the index is a
 // snapshot: rename a file and the corpus keeps offering the old name and
 // cannot offer the new one until the next scan. For out-of-band edits that
-// is the documented trade — the index is rebuilt at startup and a scan says
-// "indexing…" while it runs. For edits the explorer itself just made it is
+// is the documented trade — the index is rebuilt at startup, opening a folder
+// whose own mtime is ahead of the index rescans its root in the background
+// (index/specs/scan-incremental.md §5), and a scan says "indexing…" while it
+// runs. None of that is instant, and a change deeper than the folder being
+// viewed does not move its mtime at all. For edits the explorer itself just made it is
 // not a trade, it is a visible lie: the user renamed the file in this window
 // and search still can't find it.
 //

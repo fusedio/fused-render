@@ -42,6 +42,7 @@ second answer to "where is my data".
 | `ext` | string | lowercased, leading `.` stripped; `""` when none |
 | `size` | int64 | bytes |
 | `mtime` | float64 | epoch seconds |
+| `depth` | int32 | slashes in `path` (absolute, not relative to any root) — the corpus sort key (`query.md §6`) |
 
 **`dirs`** — one row per directory:
 
@@ -53,10 +54,22 @@ second answer to "where is my data".
 | `total_size` | int64 | bytes of those files |
 | `mtime_ns` | int64 | reuse decision input |
 | `n_subdirs` | int32 | post-prune count; `-1` = pre-upgrade unknown |
+| `depth` | int32 | slashes in `dir`; present on both tables because `search_under` UNIONs them |
+
+`name`, `ext`, `dir` and `depth` are all denormalised out of `path`. That is sound
+only because rows are never mutated in place — a scan writes a row once, and a
+compaction copies whole partitions and swaps the manifest — so no update path can
+leave a derived column disagreeing with its source. `depth` is *stored* rather than
+derived at read time because every query opens a fresh in-memory DuckDB over
+`read_parquet` (`query.md`): there is no persistent catalog to hold a generated
+column and parquet has no computed-column concept. It measures 92 ms vs 148 ms on
+300k rows at the real `LIMIT 200_001`, for +0.10% on disk.
 
 Readers tolerate older files: `load_dir_cache` treats a `dirs.parquet` without
 `mtime_ns` as no cache at all, and `compact` synthesizes missing `mtime_ns` /
-`n_subdirs` columns so an old index can still be merged forward.
+`n_subdirs` / `depth` columns so an old index can still be merged forward.
+`search_under` falls back to the slash-count expression for a partition set
+written before `depth` existed. Migration is a full rescan.
 
 ## 3. Shards (worker output)
 
