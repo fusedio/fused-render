@@ -7,23 +7,24 @@ import { useEffect, useRef, useState } from "react";
 import { navigate, replaceSearch, urlForFsPath } from "@platform/lib/router";
 import { basename, formatMtime, formatMtimeFull, formatSize } from "@platform/lib/format";
 import { iconForEntry } from "@platform/ui/FileIcons";
-import type { Config, ClaudeSessionFolder } from "@platform/lib/api";
-import { getClaudeSessionFolders, statPath } from "@platform/lib/api";
+import type { Config, ClaudeSessionFolder, GitRepos } from "@platform/lib/api";
+import { getClaudeSessionFolders, getGitRepos, statPath } from "@platform/lib/api";
 import { allBookmarks, hydrateBookmarks, loadBookmarks } from "@platform/lib/bookmarks";
 import { useBookmarksVersion, useUrlVersion } from "@platform/lib/hooks";
 import { hydrateRecents, loadRecents, recentFsPath, useRecentsVersion } from "@apps/explorer/lib/recents";
-import { BookmarkPreviewCard, RecentPreviewCard, ClaudeSessionFolderCard } from "@apps/explorer/BookmarkCards";
+import { BookmarkPreviewCard, RecentPreviewCard, FolderPreviewCard } from "@apps/explorer/BookmarkCards";
 import { describeSpec, runAiSearch, type AiSearchResult } from "@apps/explorer/lib/ai-search";
+import { emptyReposMessage } from "@apps/explorer/lib/repos";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { TextArea } from "@platform/ui/field/fields";
 
-// How many cards the Bookmarks/Recents tab shows before "Show more" — flat
-// count, not a row multiple, so it's the same rule for either tab regardless
-// of how many columns the grid happens to lay out at the current width.
+// How many cards a tab shows before "Show more" — flat count, not a row
+// multiple, so it's the same rule for every tab regardless of how many columns
+// the grid happens to lay out at the current width.
 // 9 fills a 3×3 grid at the layout's usual three columns.
 const MAX_CARDS = 9;
 
-type LaunchTab = "bookmarks" | "recents" | "sessions";
+type LaunchTab = "bookmarks" | "recents" | "sessions" | "repos";
 
 // -- AI search (the files-home composer) --------------------------------------
 
@@ -308,6 +309,7 @@ export default function FilesHome({ config }: { config: Config }) {
   const [expandedBookmarks, setExpandedBookmarks] = useState(false);
   const [expandedRecents, setExpandedRecents] = useState(false);
   const [expandedSessions, setExpandedSessions] = useState(false);
+  const [expandedRepos, setExpandedRepos] = useState(false);
   // Folders flattened: the homepage is a launcher, and a bookmark buried two
   // folders deep is still one the user cared enough to save. Saved-list order.
   const bookmarks = loadBookmarks().length ? allBookmarks() : [];
@@ -333,6 +335,26 @@ export default function FilesHome({ config }: { config: Config }) {
   }, []);
   const shownSessions =
     sessionFolders && (expandedSessions ? sessionFolders : sessionFolders.slice(0, MAX_CARDS));
+  // Git repos, same deal as the session folders: one cheap GET on mount whatever
+  // tab is showing. The whole response is kept, not just the list — the tab has
+  // to tell "no repos on this machine" apart from "the first index scan hasn't
+  // finished", and only `indexed`/`scanning` carry that. A failed request lands
+  // on a null response, which the tab renders as its own message rather than as
+  // an empty repo list.
+  const [repos, setRepos] = useState<GitRepos | null>(null);
+  const [reposFailed, setReposFailed] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    getGitRepos().then(
+      (r) => alive && setRepos(r),
+      () => alive && setReposFailed(true),
+    );
+    return () => {
+      alive = false;
+    };
+  }, []);
+  const repoList = repos?.repos ?? [];
+  const shownRepos = expandedRepos ? repoList : repoList.slice(0, MAX_CARDS);
   // With no ?tab= in the URL, land on Claude sessions — the leading tab.
   // Bookmark/recent caches still hydrate on mount (effect below) so the other
   // tabs are ready when clicked. An explicit ?tab= always wins.
@@ -342,7 +364,10 @@ export default function FilesHome({ config }: { config: Config }) {
     void hydrateRecents();
   }, []);
   const tab: LaunchTab =
-    tabParam === "recents" || tabParam === "sessions" || tabParam === "bookmarks"
+    tabParam === "recents" ||
+    tabParam === "sessions" ||
+    tabParam === "bookmarks" ||
+    tabParam === "repos"
       ? tabParam
       : "sessions";
   // A committed AI search result takes over the page body (bookmarks/recents
@@ -417,6 +442,15 @@ export default function FilesHome({ config }: { config: Config }) {
               >
                 Recents
               </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={tab === "repos"}
+                className={"fh-tab" + (tab === "repos" ? " active" : "")}
+                onClick={() => setTab("repos")}
+              >
+                Repos
+              </button>
               </div>
               {/* Browse rides the tab strip's right edge — the one action in a
                   row of filters, so it sits opposite them rather than above
@@ -480,13 +514,39 @@ export default function FilesHome({ config }: { config: Config }) {
               ) : (
                 <p className="fh-empty">Nothing opened yet. Files you view will show up here.</p>
               )
+            ) : tab === "repos" ? (
+              reposFailed ? (
+                <p className="fh-empty">Couldn't read the list of repos.</p>
+              ) : repos === null ? (
+                <p className="fh-empty">Looking for repos…</p>
+              ) : repoList.length ? (
+                <>
+                  <div className="fhb-grid">
+                    {shownRepos.map((r) => (
+                      <FolderPreviewCard key={r.path} path={r.path} />
+                    ))}
+                  </div>
+                  {repoList.length > MAX_CARDS && (
+                    <ShowMoreButton
+                      expanded={expandedRepos}
+                      onClick={() => setExpandedRepos((v) => !v)}
+                    />
+                  )}
+                </>
+              ) : (
+                // The repo list is derived from the file index, so an empty list
+                // means two different things and the tab must not conflate them:
+                // "you have no repos" is an answer, "we haven't finished looking"
+                // is not.
+                <p className="fh-empty">{emptyReposMessage(repos)}</p>
+              )
             ) : shownSessions === null ? (
               <p className="fh-empty">Looking for artifacts…</p>
             ) : sessionFolders && sessionFolders.length ? (
               <>
                 <div className="fhb-grid">
                   {shownSessions.map((f) => (
-                    <ClaudeSessionFolderCard key={f.path} path={f.path} />
+                    <FolderPreviewCard key={f.path} path={f.path} />
                   ))}
                 </div>
                 {sessionFolders.length > MAX_CARDS && (

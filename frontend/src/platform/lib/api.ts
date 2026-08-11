@@ -1872,6 +1872,29 @@ export function getClaudeSessionFolders(): Promise<{ folders: ClaudeSessionFolde
   return getJson<{ folders: ClaudeSessionFolder[] }>("/api/claude-sessions");
 }
 
+// -- Git repos (GET /api/git-repos) -------------------------------------------
+// Git repositories on this machine, for the Explorer homepage's "Repos" tab.
+// One entry per repo root, in path order; `path` is ready to pass straight to
+// navigate(path, {isDir:true}).
+//
+// `indexed` is the state the tab has to distinguish: the list is derived from
+// the file index, so a machine whose first scan has not finished yet is NOT the
+// same as a machine with no repos, and `scanning` says whether one is in flight.
+// Both come from the same vocabulary /api/index/status uses.
+export interface GitRepo {
+  path: string;
+}
+
+export interface GitRepos {
+  indexed: boolean;
+  scanning: boolean;
+  repos: GitRepo[];
+}
+
+export function getGitRepos(): Promise<GitRepos> {
+  return getJson<GitRepos>("/api/git-repos");
+}
+
 // -- AI completion (POST /api/ai) ---------------------------------------------
 // The fused.ai relay: one non-streaming completion through the server's warm
 // Claude Code CLI instance (server/ai.py). The shell uses this for small
