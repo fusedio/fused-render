@@ -261,6 +261,13 @@ _FRIENDLIER_TAGS = {
     "automatic-speech-recognition": "speech recognition",
     "zero-shot-image-classification": "zero-shot image classification",
     "zero-shot-classification": "zero-shot text classification",
+    # Same reason as the two above: a diffusers video/audio pipeline read from
+    # its `_class_name` already says "video generation" / "audio generation",
+    # so the Hub tags for the same thing are folded onto those labels rather
+    # than sprouting a second spelling with its own (missing) glossary entry.
+    "text-to-video": "video generation",
+    "image-to-video": "video generation",
+    "text-to-audio": "audio generation",
 }
 
 # transformers architecture suffix -> task. Ordered: the first match wins, so
@@ -358,6 +365,8 @@ _TASK_HELP = {
     "image segmentation": "Marks which pixels belong to which object.",
     "object detection": "Finds objects in an image and boxes them.",
     "depth estimation": "Estimates how far away each part of an image is.",
+    "image to image": "Turns one picture into another — upscaling, restyling, inpainting.",
+    "audio classification": "Sorts a sound into categories — which language, which speaker, what noise.",
     "any input to any output": "Handles several kinds of input and output — text, images, audio — in one model.",
 }
 

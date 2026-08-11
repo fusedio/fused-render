@@ -40,7 +40,6 @@ TIER_ONE_TEMPLATES = (
     "log_studio",
     "markdown",
     "model_card",
-    "model_tokenizer",
     "notebook",
     "plist",
     "sqlite",

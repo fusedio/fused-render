@@ -11,11 +11,13 @@ Two shapes count:
    `snapshots/`. A name check plus one `isdir`, no reads at all.
 2. **A model folder proper** — a snapshot directory, or a checkout someone
    cloned themselves. Recognised by its marker files: `model_index.json` (a
-   diffusers pipeline) or `config_sentence_transformers.json` decide it
-   outright, and `config.json` decides it only after a BOUNDED read confirming
-   it is a model config rather than some other program's settings file. That
-   read restores the file's atime, because a gate must not be the thing that
-   marks a model as recently used (MV-5).
+   diffusers pipeline), `config_sentence_transformers.json` or `tokenizer.json`
+   decide it outright, and `config.json` decides it only after a BOUNDED read
+   confirming it is a model config rather than some other program's settings
+   file. That read restores the file's atime, because a gate must not be the
+   thing that marks a model as recently used (MV-5) — and it probes with
+   `isfile` before it stats, so a folder WITHOUT a `config.json` costs the same
+   cheap, listing-answerable probe it always did.
 
 That last read is the whole reason this gate is accurate: `config.json` is one
 of the most common filenames there is, and a folder of application settings is
@@ -28,8 +30,11 @@ import os
 
 _KIND_PREFIXES = ("models--", "datasets--", "spaces--")
 
-# Decisive on their own: nothing else writes these filenames.
-_MARKERS = ("model_index.json", "config_sentence_transformers.json")
+# Decisive on their own: nothing else writes these filenames. `tokenizer.json`
+# earns its place here because the view now tokenizes too (MV-2), so a folder
+# holding only a tokenizer — the shape a tokenizer-only repo has — is a folder
+# this view has something to say about.
+_MARKERS = ("model_index.json", "config_sentence_transformers.json", "tokenizer.json")
 
 # Keys that make a config.json a MODEL config rather than any other JSON.
 _MODEL_CONFIG_KEYS = ("architectures", "model_type", "_class_name", "quantization")
@@ -46,10 +51,18 @@ def _is_cache_repo(path: str) -> bool:
 
 def _has_model_config(path: str) -> bool:
     config = os.path.join(path, "config.json")
+    # `isfile` FIRST, and the stat only after it says yes. The two are not
+    # interchangeable over a mount: isfile/isdir/exists can be answered from the
+    # listing the endpoint already has, and stat cannot — so probing with stat
+    # would make every non-model folder pay a remote round trip for a name the
+    # listing had already proven absent. The stat exists only to capture the
+    # atime, which is worth paying on the folders that ARE models.
+    if not os.path.isfile(config):
+        return False
     try:
         before = os.stat(config)
     except OSError:
-        return False  # absent, or not something we can stat
+        return False  # vanished between the probe and the stat
     try:
         with open(config, "rb") as handle:
             raw = handle.read(_CONFIG_READ_LIMIT)

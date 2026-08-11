@@ -1,12 +1,13 @@
-"""The model_card and model_tokenizer templates (SPEC §38).
+"""The model_card template (SPEC §38) — the card and its tokenizer section.
 
-Both are bound to the universal `/` registry key, so their `condition.py` runs
-on EVERY directory the user opens — which makes the gates the part worth
-testing hardest. A gate that is too eager offers a model view on someone's
-source tree; one that is too slow taxes every folder open, including folders on
-remote mounts.
+It is bound to the universal `/` registry key, so its `condition.py` runs on
+EVERY directory the user opens — which makes the gate the part worth testing
+hardest. A gate that is too eager offers a model view on someone's source tree;
+one that is too slow taxes every folder open, including folders on remote
+mounts, where the difference between a probe the listing can answer and one it
+cannot is a remote round trip.
 
-The readers are tested against synthetic model folders rather than real
+The two scripts are tested against synthetic model folders rather than real
 downloads: a safetensors file is nothing but its header for these purposes, so
 a "12B model" here is a JSON header claiming 12B worth of shapes.
 """
@@ -46,13 +47,8 @@ def inspector():
 
 
 @pytest.fixture(scope="module")
-def tokenizer_condition():
-    return _load("model_tokenizer", "condition")
-
-
-@pytest.fixture(scope="module")
 def tokenizer_reader():
-    return _load("model_tokenizer", "tokenize_text")
+    return _load("model_card", "tokenize_text")
 
 
 def _safetensors(tensors):
@@ -138,17 +134,19 @@ def test_the_card_gate_never_lists_the_directory(card_condition, tmp_path, monke
     assert card_condition.main(str(folder)) is True
 
 
-def test_the_tokenizer_gate_wants_a_loadable_tokenizer(tokenizer_condition, tmp_path):
+def test_a_folder_holding_only_a_tokenizer_is_still_a_model(card_condition, tmp_path):
+    # The card tokenizes now, so a tokenizer-only repo — a real shape on the Hub
+    # — is a folder this view has something to say about.
     modern = tmp_path / "modern"
     modern.mkdir()
     _write(modern, "tokenizer.json", "{}")
-    assert tokenizer_condition.main(str(modern)) is True
+    assert card_condition.main(str(modern)) is True
     # The older vocab.txt/merges.txt pair needs the model class that owns it, so
-    # a playground here could not tokenize — not offering beats offering broken.
+    # nothing here could tokenize it — not offering beats offering broken.
     legacy = tmp_path / "legacy"
     legacy.mkdir()
     _write(legacy, "vocab.txt", "hello\nworld\n")
-    assert tokenizer_condition.main(str(legacy)) is False
+    assert card_condition.main(str(legacy)) is False
 
 
 def _cache_repo(tmp_path, name="models--org--m", commit="c0ffee", tokenizer="{}", ref="main"):
@@ -164,89 +162,17 @@ def _cache_repo(tmp_path, name="models--org--m", commit="c0ffee", tokenizer="{}"
     return repo
 
 
-def test_the_tokenizer_gate_finds_a_cache_repos_tokenizer(tokenizer_condition, tmp_path):
-    # The entry path that matters: AI Models navigates to the REPO folder, whose
-    # tokenizer.json is one level down under snapshots/<commit>. A gate that only
-    # checked the folder itself never offered this view from the page built to
-    # open models.
-    repo = _cache_repo(tmp_path)
-    assert tokenizer_condition.main(str(repo)) is True
-    # …and the revision is the one `refs/main` names, since that is what a load
-    # would get.
-    assert tokenizer_condition.tokenizer_path(str(repo)) == str(
-        repo / "snapshots" / "c0ffee" / "tokenizer.json")
-
-
-def test_a_cache_repo_with_no_tokenizer_is_not_offered(tokenizer_condition, tmp_path):
-    repo = _cache_repo(tmp_path, tokenizer=None)
-    assert tokenizer_condition.main(str(repo)) is False
-    # A repo whose refs/main is missing cannot be resolved without listing, which
-    # a gate may not do — so it fails closed rather than guessing a revision.
-    unref = _cache_repo(tmp_path, name="models--org--n", ref=None)
-    assert tokenizer_condition.main(str(unref)) is False
-
-
-@pytest.mark.parametrize("ref", ["../../../etc", "a/b", "..", ""])
-def test_a_ref_that_is_not_a_commit_is_refused(tokenizer_condition, tmp_path, ref):
-    # A ref holds a bare sha. Anything with a separator is not one and must never
-    # be joined onto a path.
-    repo = _cache_repo(tmp_path)
-    (repo / "refs" / "main").write_text(ref)
-    assert tokenizer_condition.tokenizer_path(str(repo)) is None
-
-
-def test_the_tokenizer_gate_and_reader_never_disagree(tokenizer_condition, tokenizer_reader,
-                                                      tmp_path):
-    # The gate and the reader each carry their own copy of this rule, because a
-    # template is scripts the engine runs and they cannot share a module. A gate
-    # that offers a view the reader then cannot serve is the one failure this
-    # pair can have, so pin them to the same answer.
-    plain = tmp_path / "plain"
-    plain.mkdir()
-    direct = tmp_path / "snap"
-    _write(direct, "tokenizer.json", "{}")
-    cases = [
-        plain,
-        direct,
-        _cache_repo(tmp_path, name="models--a--good"),
-        _cache_repo(tmp_path, name="models--a--empty", tokenizer=None),
-        _cache_repo(tmp_path, name="models--a--unref", ref=None),
-        _cache_repo(tmp_path, name="models--a--otherref", ref="refs-pr--3"),
-    ]
-    for folder in cases:
-        gate = tokenizer_condition.tokenizer_path(str(folder))
-        reader = tokenizer_reader.tokenizer_path(str(folder))
-        assert gate == reader, folder
-        assert tokenizer_condition.main(str(folder)) is (gate is not None), folder
-
-
-def test_the_tokenizer_gate_never_lists_the_directory(tokenizer_condition, tmp_path, monkeypatch):
-    # Same rule as the card's gate: it runs on every folder open, and over a
-    # mount a gate may not enumerate at all.
-    repo = _cache_repo(tmp_path)
-    for banned in ("listdir", "scandir", "walk"):
-        monkeypatch.setattr(
-            tokenizer_condition.os, banned,
-            lambda *a, **k: pytest.fail(f"the gate called os.{banned}"),
-        )
-    assert tokenizer_condition.main(str(repo)) is True
-
-
-def test_neither_gate_counts_as_using_the_model(card_condition, tokenizer_condition, tmp_path):
-    # MV-5, on the gates as well as the readers: these run on every folder the
-    # user opens, so a gate is the LAST thing that should mark a model as
-    # recently used and protect it from the next prune.
+def test_the_gate_does_not_count_as_using_the_model(card_condition, tmp_path):
+    # MV-5, on the gate as well as the reader: it runs on every folder the user
+    # opens, so it is the LAST thing that should mark a model as recently used
+    # and protect it from the next prune.
     folder = tmp_path / "m"
     _write(folder, "config.json", json.dumps({"model_type": "llama"}))
-    repo = _cache_repo(tmp_path)
+    config = folder / "config.json"
     old = 1_000_000
-    touched = [folder / "config.json", repo / "refs" / "main"]
-    for path in touched:
-        os.utime(path, (old, old))
+    os.utime(config, (old, old))
     assert card_condition.main(str(folder)) is True
-    assert tokenizer_condition.main(str(repo)) is True
-    for path in touched:
-        assert os.stat(path).st_atime == old, path
+    assert os.stat(config).st_atime == old
 
 
 # -- the inspector ---------------------------------------------------------------
@@ -352,7 +278,7 @@ def test_tokenizer_facts_need_no_library(tokenizer_reader, tmp_path):
     folder.mkdir()
     _write(folder, "tokenizer.json",
            _tokenizer_json({"a": 0, "b": 1, "c": 2}, merges=["a b"], specials=["<eos>"]))
-    out = tokenizer_reader.main(str(folder), "")
+    out = tokenizer_reader.main(str(folder), "", facts=True)
     assert out["facts"]["vocabSize"] == 3
     assert out["facts"]["kind"] == "BPE"
     assert out["facts"]["merges"] == 1
@@ -366,7 +292,7 @@ def test_a_missing_library_is_reported_not_raised(tokenizer_reader, tmp_path, mo
     folder.mkdir()
     _write(folder, "tokenizer.json", _tokenizer_json({"a": 0}))
     monkeypatch.setattr(tokenizer_reader, "_load", lambda path: None)
-    out = tokenizer_reader.main(str(folder), "hello")
+    out = tokenizer_reader.main(str(folder), "hello", facts=True)
     assert out["available"] is False
     assert out["tokens"] == []
     assert out["facts"]["vocabSize"] == 1  # …and the facts still came through
@@ -378,39 +304,63 @@ def test_a_folder_without_a_tokenizer_says_so(tokenizer_reader, tmp_path):
     assert "error" in tokenizer_reader.main(str(folder), "hi")
 
 
-def test_the_reader_tokenizes_a_cache_repo_through_its_main_revision(tokenizer_reader, tmp_path):
-    # The page opens the REPO folder, so the reader has to resolve the same
-    # snapshot the gate did — otherwise the mode is offered and then errors.
+def test_the_card_resolves_the_revision_and_the_encoder_is_handed_it(inspector, tokenizer_reader,
+                                                                    tmp_path):
+    # ONE owner for the cache layout. The page opens the REPO folder; the card
+    # works out which revision refs/main names and reports `root`, and the
+    # encoder is given that answer rather than resolving it again from a second
+    # copy of the rule that could drift from the first.
     repo = _cache_repo(tmp_path, tokenizer=_tokenizer_json({"a": 0, "b": 1}))
-    out = tokenizer_reader.main(str(repo), "")
+    card = inspector.main(str(repo))
+    assert card["hasTokenizer"] is True
+    assert card["root"].endswith("snapshots/c0ffee")
+    out = tokenizer_reader.main(card["root"], "", facts=True)
     assert "error" not in out
     assert out["facts"]["vocabSize"] == 2
+
+
+def test_a_model_without_a_tokenizer_gets_no_section(inspector, tmp_path):
+    repo = _cache_repo(tmp_path, tokenizer=None)
+    assert inspector.main(str(repo))["hasTokenizer"] is False
 
 
 def test_the_facts_are_read_once_not_on_every_keystroke(tokenizer_reader, tmp_path):
     # tokenizer.json is routinely tens of MB, and nothing survives between calls
     # (each is a fresh subprocess, PY-6). What keeps typing responsive is that
-    # the page asks for the description ONCE and leaves it out afterwards.
+    # the page asks for the description on its FIRST call and never again.
     folder = tmp_path / "m"
     folder.mkdir()
     _write(folder, "tokenizer.json", _tokenizer_json({"a": 0}))
-    assert "facts" in tokenizer_reader.main(str(folder), "", facts=True)
-    keystroke = tokenizer_reader.main(str(folder), "hi", facts=False)
+    assert "facts" in tokenizer_reader.main(str(folder), "hi", facts=True)
+    keystroke = tokenizer_reader.main(str(folder), "hi")
     assert "facts" not in keystroke  # the whole-file parse is skipped entirely
 
 
+def test_a_facts_only_call_never_loads_the_tokenizer(tokenizer_reader, tmp_path, monkeypatch):
+    # With no text there is nothing to encode, so there is nothing to load. The
+    # library's own loader reads the same tens of MB the facts parse just read;
+    # paying for it and throwing the result away is the cost this split exists
+    # to avoid.
+    folder = tmp_path / "m"
+    folder.mkdir()
+    _write(folder, "tokenizer.json", _tokenizer_json({"a": 0}))
+    monkeypatch.setattr(
+        tokenizer_reader, "_load",
+        lambda path: pytest.fail("a facts-only call loaded the tokenizer"))
+    out = tokenizer_reader.main(str(folder), "", facts=True)
+    assert out["facts"]["vocabSize"] == 1 and out["tokens"] == []
+
+
 def test_tokenizing_does_not_count_as_using_the_model(tokenizer_reader, tmp_path):
-    # MV-5 again: the facts parse, the ref read, and the library's own load all
-    # read cache files, so all three put the atime back.
+    # MV-5 again: the facts parse and the library's own load both read the file,
+    # so both put the atime back.
     repo = _cache_repo(tmp_path, tokenizer=_tokenizer_json({"a": 0}))
-    tokenizer = repo / "snapshots" / "c0ffee" / "tokenizer.json"
-    ref = repo / "refs" / "main"
+    root = repo / "snapshots" / "c0ffee"
+    tokenizer = root / "tokenizer.json"
     old = 1_000_000
-    for path in (tokenizer, ref):
-        os.utime(path, (old, old))
-    tokenizer_reader.main(str(repo), "hello", facts=True)
-    for path in (tokenizer, ref):
-        assert os.stat(path).st_atime == old, path
+    os.utime(tokenizer, (old, old))
+    tokenizer_reader.main(str(root), "hello", facts=True)
+    assert os.stat(tokenizer).st_atime == old
 
 
 def test_encoding_reports_pieces_ids_and_offsets(tokenizer_reader, tmp_path):
@@ -463,7 +413,7 @@ def test_a_tokenizer_the_library_refuses_is_explained(tokenizer_reader, tmp_path
         "model": {"type": "BPE", "vocab": {"x": 0}, "merges": ["a b"]},  # merge names no real token
         "added_tokens": [],
     }))
-    out = tokenizer_reader.main(str(folder), "hello")
+    out = tokenizer_reader.main(str(folder), "hello", facts=True)
     assert out["available"] is False
     assert out["loadError"]
     assert out["facts"]["vocabSize"] == 1

@@ -136,12 +136,12 @@ once that cache exists; the first download from the Hub creates it.
   card, the configuration worth reading (layers, heads, context length,
   vocabulary), a weights table and its largest tensors. It opens instantly even
   on a 40GB checkpoint — nothing is loaded, it is all read from the metadata and
-  the safetensors headers. The mode switcher in the header also offers a
-  **tokenizer** playground for any model with a `tokenizer.json`: type text and
-  see how that model splits it, with counts and chars-per-token. (Live encoding
-  there needs the `tokenizers` library, which the template installs itself under
-  the fused engine; the tokenizer's vocabulary and special tokens show either
-  way.) The plain folder listing is still one click away in the same switcher.
+  the safetensors headers. If the model has a `tokenizer.json`, the same page
+  ends with a **tokenizer** box: type text and see how that model splits it,
+  with counts and chars-per-token. (Live encoding needs the `tokenizers`
+  library, which the template installs itself under the fused engine; the
+  tokenizer's vocabulary and special tokens show either way.) The plain folder
+  listing is still one click away in the mode switcher.
 - **It looks where `huggingface_hub` looks** — `HF_HUB_CACHE`,
   `HUGGINGFACE_HUB_CACHE`, `$HF_HOME/hub`, `$XDG_CACHE_HOME/huggingface/hub`,
   then `~/.cache/huggingface/hub` — so a shared model disk pinned with `HF_HOME`
@@ -149,6 +149,26 @@ once that cache exists; the first download from the Hub creates it.
 - **Scanning happens when you open the page** and when you press Refresh. It
   walks every file in the cache, so it is deliberately not re-run each time you
   switch back to the window.
+- **The Discover tab searches the Hub for models you don't have.** Type a name,
+  filter by task, sort by downloads, likes, recently updated or newest. Each
+  result says whether it is **already on this machine** (with what it costs on
+  disk and when you last read it), **partly downloaded** — an interrupted pull —
+  or not here at all, with an estimated size so you know what fetching it would
+  cost before you decide. A result you already have opens its model card; one
+  you don't opens its page on the Hub in a new tab.
+  - **Nothing is sent anywhere until you open that tab**, and the caption says
+    which host is being asked. Typing is batched into one request, and repeating
+    a search inside a minute or so reuses the answer rather than asking again.
+  - **It only reads.** There is no download button here — fetching a model is
+    still `hf download`, a `transformers` import, or whatever pulled the ones
+    you already have. What this gives you is the decision, not the transfer.
+  - **Sizes are estimates and marked "≈"**, computed from the parameter counts
+    the Hub publishes for the weights. Other files in the repo aren't counted,
+    and a repo the Hub has no such metadata for shows no size rather than a
+    guess.
+  - If you have an `HF_TOKEN` (or have logged in with the Hugging Face CLI), it
+    is used — that is what makes gated and private repos searchable, and it
+    raises the rate limit.
 
 ## Preferences
 

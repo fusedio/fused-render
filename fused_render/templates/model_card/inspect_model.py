@@ -298,6 +298,11 @@ def main(path):
             "quantization": f"{bits}-bit" if bits else None,
             "notable": notable,
         },
+        # The tokenizer section keys off this, and off `root` above: resolving
+        # which revision to describe happens HERE, once, and `tokenize_text.py`
+        # is handed the answer rather than working it out again from its own
+        # copy of the cache layout.
+        "hasTokenizer": os.path.isfile(os.path.join(root, "tokenizer.json")),
         "params": {"total": total_params or None, "estimated": estimated},
         "weights": per_file,
         "largest": largest[:12],

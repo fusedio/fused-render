@@ -5420,11 +5420,11 @@ is for, and the cache states it nowhere:
 
 ---
 
-## 38. Model Views — Opening a Cached Model (D252)
+## 38. The Model View — Opening a Cached Model (D252, D254)
 
 Goal: a cached model is a folder full of opaque names — `model-00001-of-00004.safetensors`,
-`config.json`, a 40MB `tokenizer.json` — and opening it showed exactly that. Two
-templates make the folder answer for itself, and both read only: nothing here
+`config.json`, a 40MB `tokenizer.json` — and opening it showed exactly that. One
+template makes the folder answer for itself, and it reads only: nothing here
 loads weights, imports a framework, or touches the network.
 
 - **MV-1** **`model_card` — what this model IS.** Name (decoded from the cache
@@ -5436,37 +5436,45 @@ loads weights, imports a framework, or touches the network.
   parameter counts come from the **safetensors headers** rather than the weights
   (SPEC HF-17's rule, and its quantization arithmetic with it — a 4-bit
   checkpoint's count is unpacked from its declared width and marked `≈`).
-- **MV-2** **`model_tokenizer` — how it splits text.** A textarea, a token
-  count, chars-per-token, and the text painted token by token. Two halves that
-  fail separately, deliberately: the **facts** (vocabulary size, model kind,
-  merges, special tokens) are read from `tokenizer.json` itself and always work;
-  **encoding** needs the `tokenizers` library, which the folder declares in its
-  own `pyproject.toml` (PY-16) and which therefore arrives only under the fused
-  engine. A missing library is a state the page explains, not an error — and so
-  is a `tokenizer.json` this build of the library refuses, which keeps its facts
-  and says why it could not load. Tokens are highlighted by **offsets into the
+- **MV-2** **A tokenizer section on the same page — how it splits text.** A
+  textarea, a token count, chars-per-token, and the text painted token by token,
+  below the card rather than beside it in a second mode (D254): they describe one
+  model, and one page beats two. Two halves that fail separately, deliberately:
+  the **facts** (vocabulary size, model kind, merges, special tokens) are read
+  from `tokenizer.json` itself and always work; **encoding** needs the
+  `tokenizers` library, which the template declares in its own `pyproject.toml`
+  (PY-16) and which therefore arrives only under the fused engine. A missing
+  library is a state the page explains, not an error — and so is a
+  `tokenizer.json` this build of the library refuses, which keeps its facts and
+  says why it could not load. Tokens are highlighted by **offsets into the
   original text**, never by the decoded piece: every BPE tokenizer rewrites
   whitespace (`Ġ`, `▁`), and showing that instead of what was typed makes the
-  highlighting unreadable.
-- **MV-3** **Both are gated, and the gates run on every folder you open** —
-  they are bound to the universal `/` registry key beside `zarr_aoi`, the
-  existing view for one kind of directory content. So they obey that gate's
-  discipline: no listing, no walking, constant-time probes, cheapest first. The
-  card's gate accepts a cache repo folder (a name check plus one `isdir`) or a
-  model folder proper, and for the `config.json` case it makes ONE bounded read
-  to confirm the file is a model config — `config.json` is among the most common
-  filenames there is, and a folder of application settings must not sprout a
-  model view. The tokenizer's gate asks one question in the two shapes MV-6
-  names — `tokenizer.json` in the folder itself, or a cache repo's through
-  `refs/main` — and the older `vocab.txt`+`merges.txt` pair is deliberately not
-  offered, since loading those needs the model class that owns them and a
-  playground that cannot tokenize is worse than none.
-- **MV-4** **The AI Models cards open the card view by name.** A gated template
-  can never be a folder's default mode (CT-12), so a model folder still lists
-  like any other folder for anyone who browses to it — but from the AI Models
-  page the repo IS a model, so its card navigates with `_mode=model_card`. The
-  switcher then offers both model views beside the folder's own modes.
-- **MV-5** **Looking at a model is not using it.** Every read in both templates
+  highlighting unreadable. The section is **inert until someone types** — the
+  card stays instant because parsing a 40MB vocabulary is work it refuses to do
+  before anyone has asked to tokenize anything. The older `vocab.txt`+`merges.txt`
+  pair is deliberately not served: loading those needs the model class that owns
+  them, and a playground that cannot tokenize is worse than none.
+- **MV-3** **The view is gated, and the gate runs on every folder you open** —
+  it is bound to the universal `/` registry key beside `zarr_aoi`, the existing
+  view for one kind of directory content. So it obeys that gate's discipline: no
+  listing, no walking, constant-time probes, cheapest first. It accepts a cache
+  repo folder (a name check plus one `isdir`), a folder carrying a decisive
+  marker (`model_index.json`, `config_sentence_transformers.json`, or
+  `tokenizer.json` — a tokenizer-only repo is a real shape and the view now has
+  something to say about it), or a `config.json` — and that last case only after
+  ONE bounded read confirming the file is a model config, since `config.json` is
+  among the most common filenames there is and a folder of application settings
+  must not sprout a model view. That read is reached through `isfile` **before**
+  `os.stat`, and the order is load-bearing: over a mount `isfile`/`isdir`/`exists`
+  can be answered from the listing the endpoint already took while `stat` cannot,
+  so probing with `stat` would make every ordinary folder pay a remote round trip
+  for a name already known to be absent.
+- **MV-4** **The AI Models cards open the view by name.** A gated template can
+  never be a folder's default mode (CT-12), so a model folder still lists like
+  any other folder for anyone who browses to it — but from the AI Models page the
+  repo IS a model, so its card navigates with `_mode=model_card`. The switcher
+  then offers that mode beside the folder's own.
+- **MV-5** **Looking at a model is not using it.** Every read in the template
   restores the file's atime, for the same reason the AI Models page does
   (HF-15): "last read" is what pruning by age is built on, and inspecting a
   model must not quietly protect it from the next prune. **Including the
@@ -5477,28 +5485,98 @@ loads weights, imports a framework, or touches the network.
   mount has no atime worth preserving, and a kernel SETATTR there is exactly the
   class of call the shim exists to keep gates from making.
 - **MV-6** **The folder the AI Models page opens is a cache REPO, so both model
-  templates resolve through it.** A repo folder (`models--org--name`) holds no
-  model files itself — they live under `snapshots/<commit>/` — so "does this
-  folder have a `tokenizer.json`?" is one question with two shapes: the folder
-  itself (a snapshot, or someone's own checkout), or the revision **`refs/main`**
-  names, which is the one a load would get and the same revision `model_card`
-  describes (MV-1). A gate that only checked the folder itself would never offer
-  the tokenizer view from the page built to open models. Resolution costs one
-  bounded read of a 40-byte ref and never a listing (MV-3's discipline holds), so
-  a repo with no `refs/main` fails closed rather than guessing a revision, and a
-  ref carrying a path separator is refused outright rather than joined onto a
-  path. The gate and the reader each carry their own copy of this rule — a
-  template is scripts the engine runs, not a package, and they cannot share a
-  module (PY-15/D166) — so the tests pin the two to the same answer: a gate that
-  offers a view the reader cannot then serve is the one failure this pair has.
+  the layout has exactly ONE owner.** A repo folder (`models--org--name`) holds
+  no model files itself — they live under `snapshots/<commit>/`, at the revision
+  **`refs/main`** names, which is the one a load would get. `inspect_model.py`
+  resolves that once when the card is drawn and reports it as `root`; the page
+  hands `root` straight to `tokenize_text.py`, which therefore resolves nothing
+  and reads one file in one folder. That hand-off is the point: a template is
+  scripts the engine runs, not a package, so two scripts cannot share a module
+  (PY-15/D166) — and a second copy of the cache layout is a second thing to drift
+  from the first. Passing the answer instead of re-deriving it removes the drift
+  rather than testing for it.
 - **MV-7** **Nothing survives between calls, so the playground is built not to
   need it.** Each `runPython` is a fresh subprocess (PY-6); a tokenizer held in a
   module-level dict is dead code that reads as an optimisation. What keeps typing
-  responsive instead: the **facts are fetched once**, on page load and on their
-  own request channel (`opts.key`, RH-9 — the default channel is the `.py` path,
-  so a keystroke would otherwise supersede the in-flight facts call and it would
-  never arrive), and every keystroke after that asks for encoding only, skipping
-  the whole-file parse of a `tokenizer.json` that is routinely tens of MB. The
-  per-call cost that remains is the library's own load, which is Rust and
-  measured in tens of milliseconds; holding one tokenizer open across keystrokes
-  would need a resident process, which is a different design from a script.
+  responsive instead: the **facts are requested on the section's FIRST call and
+  never again**, so every keystroke after it skips the whole-file parse of a
+  `tokenizer.json` that is routinely tens of MB. Facts and encoding travel on that
+  one call rather than two, because loading the file to encode and parsing it for
+  facts are one visit to one file — and a facts-only call (no text yet) never
+  loads at all, since there is nothing to encode and the load would be paid for
+  and thrown away. The per-call cost that remains is the library's own load, which
+  is Rust and measured in tens of milliseconds; holding one tokenizer open across
+  keystrokes would need a resident process, which is a different design from a
+  script.
+
+---
+
+## 39. Discover — Searching the Hub From the AI Models Page (D255)
+
+Goal: §37 answers "what did I already download". This answers the other half —
+"what is out there" — and the two are only worth anything **together**, because
+the Hub does not know your disk and a browser tab open on huggingface.co cannot
+tell you that the model you are reading about is already cached, was last read
+three weeks ago, and would cost nothing to open.
+
+- **HS-1** **Read-only, and the absence of a download button is the design.**
+  Search, filter, sort, and see what each result would cost — nothing here
+  writes to the cache or fetches a weight. Downloading gigabytes onto someone's
+  disk is a separate decision with a separate cost (free space, a progress
+  surface, a resumable transfer, a half-written cache to clean up) and is
+  deliberately not part of this. Every route is a GET, so none carries the D3
+  `X-Fused` guard: there is nothing to guard.
+- **HS-2** **The join is the feature.** Every result is cross-referenced against
+  the local scan before it is returned, so a card says **downloaded** (with what
+  it costs on disk and when it was last read), **partly downloaded**, or
+  **not downloaded**. `partial` is a real state and not a rounding of the other
+  two: an interrupted pull leaves a repo folder holding blobs and no
+  materialised snapshot, and calling that "downloaded" sends someone to a model
+  that cannot load. The line is "has at least one snapshot".
+- **HS-3** **The server fetches; the page never does.** One place holds the
+  token, bounds the timeout, caches, and can be audited for what this app sends
+  to a third party. The **host is fixed** — only the query string varies, so no
+  request can point this at another server — with `HF_ENDPOINT` (the standard
+  mirror override `huggingface_hub` honours) the one exception, and it is still
+  checked to be an http(s) URL before it is used. The query is **encoded**, never
+  concatenated: a search for `a&b=c` is a search, not a second parameter. The
+  sort is a **fixed set** of names, so a client can never pass a raw field
+  through to the Hub.
+- **HS-4** **Nothing reaches the network until Discover is opened.** The app is
+  a local file explorer; a page that quietly queried a third party on mount
+  would be a surprise. Selecting the tab is the consent, the caption names the
+  host being asked, and the query is debounced — a burst of typing is one
+  request — with identical queries inside a short TTL answered from memory,
+  because search-as-you-type would otherwise put one request per keystroke on a
+  public API. **Errors are never cached:** the network comes back, and the next
+  keystroke has to be allowed to find out.
+- **HS-5** **The local half of a result is never served stale.** The Hub's
+  answer holds for the TTL; what is on this disk does not. The join runs on
+  every request, outside the cache — a model deleted a second ago must stop
+  claiming to be downloaded, or its card links to a folder that is no longer
+  there.
+- **HS-6** **Sizes are recovered, and say so.** `safetensors.parameters` is a
+  dtype → count map, so bytes come from summing `count * bits / 8` — the same
+  arithmetic and the same `≈` the model card uses on local files (HF-17), so one
+  model cannot be 16GB on one tab and 8GB on the other. A repo with no
+  safetensors metadata reports **no size** rather than a guessed one: a number
+  someone plans a 16GB download around must not be invented. `gated` is surfaced
+  before anyone tries, because "accept the licence on the Hub first" is worth
+  knowing in advance rather than as a 403.
+- **HS-7** **One vocabulary across both tabs.** A result's task label and its
+  hover sentence come from the same glossary the cached cards use (HF-18), so
+  "image + text to text" means the same thing wherever it appears. The task
+  FILTERS, though, are the Hub's own `pipeline_tag` values, listed explicitly in
+  the module that talks to the Hub — deriving them by reversing the glossary is
+  the tempting version and it is wrong, because several labels there ("image
+  generation", "video generation") are this app's reading of a diffusers
+  `_class_name` rather than tags anyone publishes under, and a filter built from
+  one would quietly return nothing. Every offered filter resolves to a label the
+  glossary explains, and a test pins that.
+- **HS-8** **A far side that is unhappy is a sentence, not a 500.** Unreachable,
+  rate-limiting, refusing without a token, answering with HTML — each produces a
+  200 carrying an empty result and an explanation the page can show, because the
+  request this server received was fine and the distinction matters to whoever
+  is looking at it. Every field of a result is optional: the Hub returns what it
+  returns, an older deployment may refuse an `expand[]` field entirely, and a
+  missing field is one a card leaves out rather than an exception.

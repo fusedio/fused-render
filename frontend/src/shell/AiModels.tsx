@@ -20,6 +20,7 @@
 // Only what those classes have no answer for is local (styles/ai-models.css):
 // the size figure, the revision drawer, and the prune dialog's list.
 import { useEffect, useState } from "react";
+import AiModelsDiscover from "./AiModelsDiscover";
 import {
   deleteAiModels,
   getAiModelRevisions,
@@ -460,6 +461,11 @@ function PruneModal({
 }
 
 export default function AiModels() {
+  // Cached is the default, and Discover is the only thing on this page that
+  // touches the network — so nothing is sent to a third party until someone
+  // asks for it. The tab is not mounted until selected, which is also what
+  // keeps the query from firing on page load.
+  const [tab, setTab] = useState<"cached" | "discover">("cached");
   const [load, setLoad] = useState<Load>({ status: "loading" });
   // Bumped by Refresh to re-run the scan in place. Scanning is a disk walk over
   // every blob, so it happens on mount and on an explicit Refresh — never on a
@@ -535,13 +541,36 @@ export default function AiModels() {
           <div>
             <h2 className="cc-heading">AI Models</h2>
             <div className="cc-caption cc-mono">
-              {data
-                ? `${data.cacheDir}${repos.length ? ` · ${repos.length} cached · ${formatSize(data.totalSize)}` : ""}`
-                : "Hugging Face cache"}
+              {tab === "discover"
+                ? "Models on the Hugging Face Hub"
+                : data
+                  ? `${data.cacheDir}${repos.length ? ` · ${repos.length} cached · ${formatSize(data.totalSize)}` : ""}`
+                  : "Hugging Face cache"}
             </div>
           </div>
           <div className="am-head-actions">
-            {repos.length > 0 && (
+            <div className="am-tabs" role="tablist" aria-label="AI models">
+              <button
+                type="button"
+                role="tab"
+                aria-selected={tab === "cached"}
+                className={"am-tab" + (tab === "cached" ? " active" : "")}
+                onClick={() => setTab("cached")}
+              >
+                Cached
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={tab === "discover"}
+                className={"am-tab" + (tab === "discover" ? " active" : "")}
+                onClick={() => setTab("discover")}
+                title="Search the Hugging Face Hub for models you don't have yet"
+              >
+                Discover
+              </button>
+            </div>
+            {tab === "cached" && repos.length > 0 && (
               <button
                 type="button"
                 className="btn btn-secondary"
@@ -551,26 +580,32 @@ export default function AiModels() {
                 Prune…
               </button>
             )}
-            <button
-              type="button"
-              className="btn"
-              onClick={() => setReloadKey((k) => k + 1)}
-              disabled={load.status === "loading"}
-            >
-              {load.status === "loading" ? "Scanning…" : "Refresh"}
-            </button>
+            {tab === "cached" && (
+              <button
+                type="button"
+                className="btn"
+                onClick={() => setReloadKey((k) => k + 1)}
+                disabled={load.status === "loading"}
+              >
+                {load.status === "loading" ? "Scanning…" : "Refresh"}
+              </button>
+            )}
           </div>
         </div>
-        {load.status === "error" && <ErrorBanner>{load.message}</ErrorBanner>}
-        {failures.length > 0 && (
+        {tab === "discover" && <AiModelsDiscover />}
+        {tab === "cached" && load.status === "error" && <ErrorBanner>{load.message}</ErrorBanner>}
+        {tab === "cached" && failures.length > 0 && (
           <ErrorBanner>
             {failures.map((f) => (
               <div key={f}>{f}</div>
             ))}
           </ErrorBanner>
         )}
-        {load.status === "loading" && <p className="cc-empty">Reading the Hugging Face cache…</p>}
-        {data &&
+        {tab === "cached" && load.status === "loading" && (
+          <p className="cc-empty">Reading the Hugging Face cache…</p>
+        )}
+        {tab === "cached" &&
+          data &&
           (repos.length ? (
             <div className="cc-mdgrid am-grid">
               {repos.map((r) => (

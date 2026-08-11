@@ -18,6 +18,10 @@
     --accent: #E5FF44;
     --error: #ff6b6b;
     --bar: #3a6ee8;
+    --tok-1: #2b3a52;
+    --tok-2: #2f4636;
+    --tok-3: #46372f;
+    --tok-4: #3d2f46;
   }
   :root[data-theme="light"] {
     color-scheme: light;
@@ -29,6 +33,10 @@
     --accent: #5f7300;
     --error: #c62828;
     --bar: #2b5fd9;
+    --tok-1: #dbe6f7;
+    --tok-2: #dcefdd;
+    --tok-3: #f6e6d5;
+    --tok-4: #ece0f5;
   }
   * { box-sizing: border-box; }
   body {
@@ -83,6 +91,49 @@
   .err { color: var(--error); }
   .scroll { max-height: 320px; overflow: auto; border: 1px solid var(--border); border-radius: 8px; }
   .scroll table td:first-child, .scroll table th:first-child { padding-left: 12px; }
+
+  /* Tokenizer section. The token chips cycle through --tok-1..4 so neighbouring
+     pieces stay distinguishable without colour carrying any meaning. */
+  textarea {
+    width: 100%;
+    min-height: 84px;
+    padding: 10px 12px;
+    font: inherit;
+    color: var(--fg);
+    background: var(--bg-alt);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    resize: vertical;
+  }
+  textarea:focus-visible { outline: 2px solid var(--accent); outline-offset: -1px; }
+  #tokens {
+    margin-top: 10px;
+    padding: 12px;
+    background: var(--bg-alt);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    line-height: 2.1;
+    overflow-wrap: anywhere;
+    white-space: pre-wrap;
+  }
+  .tok { padding: 2px 3px; border-radius: 3px; }
+  .tok:nth-child(4n+1) { background: var(--tok-1); }
+  .tok:nth-child(4n+2) { background: var(--tok-2); }
+  .tok:nth-child(4n+3) { background: var(--tok-3); }
+  .tok:nth-child(4n+4) { background: var(--tok-4); }
+  .tokfacts { margin-top: 10px; }
+  .tokfacts .pill { text-transform: none; letter-spacing: 0; margin: 0 4px 4px 0; }
+  .note {
+    padding: 10px 12px;
+    margin-top: 10px;
+    font-size: 12px;
+    color: var(--fg-muted);
+    background: var(--bg-alt);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    max-width: 70ch;
+  }
+  code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 </style>
 </head>
 <body>
@@ -188,6 +239,14 @@ function render(d) {
           <td class="muted">${r.current ? "described above" : ""}</td>`)}
       </table></section>` : ""}
 
+    ${d.hasTokenizer ? `<section><h2>Tokenizer</h2>
+      <textarea id="tokinput" spellcheck="false"
+        placeholder="Type or paste text to see how this model splits it…"></textarea>
+      <div class="facts" id="tokcounts" style="margin:10px 0 0"></div>
+      <div id="toknotice"></div>
+      <div id="tokens" class="mono"><span class="muted">Nothing to tokenize yet.</span></div>
+      <div class="tokfacts" id="tokfacts"></div></section>` : ""}
+
     <section><h2>Files${d.fileCount > d.files.length ? ` (largest ${d.files.length} of ${d.fileCount})` : ""}</h2>
       <div class="scroll"><table>
         ${rows(d.files, (f) => `
@@ -195,6 +254,107 @@ function render(d) {
           <td class="num">${bytes(f.size)}</td>`)}
       </table></div></section>
   `;
+
+  if (d.hasTokenizer) wireTokenizer(d.root);
+}
+
+// ---------------------------------------------------------------- tokenizer
+//
+// The section is inert until someone types. That is what keeps the card
+// instant: `tokenizer.json` is routinely tens of MB, so parsing it for the
+// facts is work this view refuses to do on open, when nobody has asked to
+// tokenize anything yet.
+function wireTokenizer(root) {
+  const input = document.getElementById("tokinput");
+  // The text lives in a param, so a tokenization is a shareable, reloadable URL
+  // like every other view's state — the same rule the rest of the app follows.
+  input.value = fused.params.get("text") || "";
+
+  let facts = null;
+
+  async function run() {
+    const text = input.value;
+    let data;
+    try {
+      // The FIRST call asks for the facts as well, and every call after it does
+      // not. Loading the file to encode and parsing it for facts are one visit
+      // to one file: asking for them separately would read a 40MB vocabulary
+      // twice to answer one keystroke.
+      data = await fused.runPython(
+        "./tokenize_text.py", { path: root, text, facts: facts === null });
+    } catch (err) {
+      document.getElementById("toknotice").innerHTML =
+        `<div class="note err">${esc(err && err.message || err)}</div>`;
+      return;
+    }
+    if (data.error) {
+      document.getElementById("toknotice").innerHTML = `<div class="note err">${esc(data.error)}</div>`;
+      return;
+    }
+    if (data.facts) { facts = data.facts; renderTokFacts(facts); }
+    const f = facts || {};
+
+    const counts = [];
+    if (text) counts.push(["Tokens", data.available ? String(data.count) : "—"]);
+    counts.push(["Characters", String(text.length)]);
+    if (data.available && data.count && text.length) {
+      counts.push(["Chars / token", (text.length / data.count).toFixed(1)]);
+    }
+    if (f.vocabSize) counts.push(["Vocabulary", f.vocabSize.toLocaleString()]);
+    document.getElementById("tokcounts").innerHTML = counts.map(([k, v]) => `
+      <div class="fact"><div class="k">${esc(k)}</div><div class="v">${esc(v)}</div></div>`).join("");
+
+    document.getElementById("toknotice").innerHTML = data.available ? "" : data.loadError ? `
+      <div class="note err">This <code>tokenizer.json</code> could not be loaded:
+      ${esc(data.loadError)}<br />The facts below are read from the file directly and are
+      unaffected.</div>` : `
+      <div class="note">Live tokenizing needs the <code>tokenizers</code> library, which this
+      template declares in its <code>pyproject.toml</code> — it is installed on first use by
+      the <b>fused</b> execution engine. The built-in runner has no way to add it, so switch
+      the engine in Preferences to encode text here. Everything else on this page, the
+      tokenizer's own description included, is read from the files directly and needs nothing
+      installed.</div>`;
+
+    document.getElementById("tokens").innerHTML = data.tokens.length
+      ? data.tokens.map((t) => {
+          // Show the ORIGINAL slice via offsets, not the decoded piece: every
+          // BPE tokenizer rewrites whitespace (Ġ, ▁), and showing that instead
+          // of what was typed makes the highlighting impossible to follow.
+          const slice = text.slice(t.start, t.end) || t.piece;
+          return `<span class="tok" title="${esc(t.piece)} · id ${t.id}">${esc(slice)}</span>`;
+        }).join("")
+      : `<span class="muted">${text && data.available ? "No tokens." : "Nothing to tokenize yet."}</span>`;
+  }
+
+  function renderTokFacts(f) {
+    const factRows = [
+      ["Kind", f.kind],
+      ["Vocabulary", f.vocabSize ? f.vocabSize.toLocaleString() : null],
+      ["Merges", f.merges ? f.merges.toLocaleString() : null],
+      ["Truncation", f.truncation ? "configured" : null],
+      ["Padding", f.padding ? "configured" : null],
+    ].filter(([, v]) => v);
+    document.getElementById("tokfacts").innerHTML =
+      factRows.map(([k, v]) => `<span class="pill">${esc(k)}: ${esc(v)}</span>`).join("") +
+      ((f.specialTokens || []).length
+        ? `<div style="margin-top:6px">${f.specialTokens.map((t) =>
+            `<span class="pill mono">${esc(t)}</span>`).join("")}</div>`
+        : "");
+  }
+
+  // Debounced, because each keystroke is a fresh subprocess that loads the
+  // tokenizer again — a script cannot hold one open between calls. A superseded
+  // call is dropped by the runtime's latest-wins channel, so only the last edit
+  // in a burst is ever encoded.
+  let timer = null;
+  input.addEventListener("input", () => {
+    clearTimeout(timer);
+    timer = setTimeout(() => {
+      fused.params.set("text", input.value.slice(0, 2000));
+      run();
+    }, 350);
+  });
+  if (input.value) run();
 }
 
 async function load() {

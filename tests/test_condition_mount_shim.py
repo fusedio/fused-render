@@ -234,13 +234,27 @@ def test_utime_on_a_mount_is_dropped_not_routed(monkeypatch, guard_kernel, tmp_p
     # SETATTR is exactly the call this shim exists to prevent, so it is dropped.
     # The gate still returns its verdict; the guard proves the kernel was spared.
     import stat as _s
-    _mount(monkeypatch, {STORE: "dir", "*": "missing"},
+    _mount(monkeypatch, {STORE: "dir", STORE + "/config.json": "file", "*": "missing"},
            read_bytes=json.dumps({"model_type": "llama"}).encode())
     monkeypatch.setattr(
         mounts_mod, "rc_stat_result",
         lambda p, **k: os.stat_result((_s.S_IFREG | 0o644, 0, 0, 1, 0, 0, 0, 0, 0.0, 0.0)))
     card = os.path.join(_server_templates.TEMPLATES_DIR, "model_card", "condition.py")
     assert _server_templates._run_condition(card, STORE) == (True, None)
+
+
+def test_gate_does_not_stat_a_config_the_listing_already_answered(monkeypatch, guard_kernel):
+    # `isfile`/`isdir`/`exists` can be served from the seed — the listing the
+    # endpoint already took — while `stat` always costs a remote round trip. So
+    # the model gate must PROBE for config.json before it stats it: a folder
+    # without one is the common case on any mount, and it must not pay for a
+    # name the listing has already proven absent.
+    _mount(monkeypatch, {STORE: "dir", "*": "missing"})
+    monkeypatch.setattr(
+        mounts_mod, "rc_stat_result",
+        lambda p, **k: pytest.fail(f"the gate stat'd {p} without probing first"))
+    card = os.path.join(_server_templates.TEMPLATES_DIR, "model_card", "condition.py")
+    assert _server_templates._run_condition(card, STORE) == (False, None)
 
 
 def test_utime_on_a_local_path_still_restores_the_atime(guard_kernel, tmp_path):

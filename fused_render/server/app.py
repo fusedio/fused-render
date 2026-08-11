@@ -52,6 +52,7 @@ from fused_render.server.routers.git_repos import router as git_repos_router
 from fused_render.server.routers import index as index_routes
 from fused_render.server.routers.jobs import router as jobs_router
 from fused_render.server.routers.ai_models import router as ai_models_router
+from fused_render.server.routers.hub_models import router as hub_models_router
 from fused_render.server.routers.render import router as render_router
 from fused_render.server.routers.run import router as run_router
 from fused_render.server.routers.search import router as search_router
@@ -335,6 +336,12 @@ def create_app(start_dir: str) -> FastAPI:
     # its one destructive POST (delete a repo/revision) carries the D3 X-Fused
     # guard. It never downloads anything.
     app.include_router(ai_models_router)
+    # The other half of that page: what the Hugging Face Hub HAS, joined to what
+    # this disk already holds (routers/hub_models.py). Read-only — it searches
+    # and never downloads — so no guard, and it is the only outbound request
+    # this feature makes. A separate module because "what is on my disk" and
+    # "what is on the network" fail differently and share nothing but the join.
+    app.include_router(hub_models_router)
     # Claude Code CONFIG editing for the Preferences page's "Claude config" tab
     # (routers/claude_config.py): one dispatch POST over the
     # fused_render/claude_config/ feature modules, plus a cheap availability

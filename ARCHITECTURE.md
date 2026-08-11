@@ -215,6 +215,31 @@ revision delete removes the snapshot, the blobs no other revision references
 (resolved through their links), the refs pointing at that commit, and the whole
 repo when it was the last revision.
 
+### `/api/ai-models/hub/*` — Hub search, joined to the cache (SPEC §39, D255)
+
+`GET /api/ai-models/hub/search?q=&task=&sort=&limit=` →
+`{models, query, endpoint, authenticated}` or, when the far side is unhappy,
+`{models: [], error}` with a 200 — the request this server got was fine and the
+page has a sentence to show. Each model is `{id, task, taskHelp, pipelineTag,
+library, downloads, likes, updated, gated, private, tags, params, estimatedSize,
+local, url}`, where `local` is `{state: "downloaded"|"partial"|"none", size,
+files, lastUsed, path, dir}` from the same `_listing()` the cached tab uses.
+`GET /api/ai-models/hub/tasks` → the offered filters as `{tag, label, help}`.
+Both are unguarded reads — this module searches and never downloads, so there is
+no mutation to guard.
+
+`hub_models.py` is the only outbound request this feature makes. The host is
+fixed (`HF_ENDPOINT` honoured but validated as http(s)), the query string is
+`urlencode`d, the sort is a fixed map so no raw field reaches the Hub, and the
+token (`HF_TOKEN`/`HUGGING_FACE_HUB_TOKEN`/`$HF_HOME/token`) is sent and never
+returned. Answers are memoised for a short TTL — search-as-you-type would
+otherwise be one request per keystroke — but **errors are not cached** and the
+**local join runs on every request**, outside the cache, so a model deleted a
+second ago stops claiming to be downloaded. Sizes are recovered from
+`safetensors.parameters` (`count * bits / 8`) with the same table `inspect_model`
+uses locally; no metadata means no size rather than a guess. Sync `def`: one
+bounded outbound call plus a cache walk, so it belongs in the threadpool.
+
 ### `GET /static/*`
 StaticFiles mount for shell + runtime. Templates dir is NOT statically mounted — templates are served through `/render` like any HTML file.
 

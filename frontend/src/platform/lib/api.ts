@@ -1987,6 +1987,82 @@ export function deleteAiModels(
   return postJson<AiModelsDeleteResult>("/api/ai-models/delete", { targets });
 }
 
+// -- Hub search (GET /api/ai-models/hub/*) ------------------------------------
+// The other half of the AI models page: what the Hugging Face Hub HAS, with
+// every result already told apart from what this disk holds (`local`). The
+// server makes the outbound request — this module never talks to
+// huggingface.co — so one place holds the token, the timeout and the cache.
+//
+// Read-only by design: there is no download call here, and adding one would be
+// a different decision with a different cost.
+export interface HubModelLocal {
+  /** "downloaded" has a materialised snapshot; "partial" is an interrupted pull. */
+  state: "downloaded" | "partial" | "none";
+  size?: number;
+  files?: number;
+  lastUsed?: number | null;
+  /** Ready for navigate(path, {isDir:true}) — absent unless it is here. */
+  path?: string;
+  dir?: string;
+}
+
+export interface HubModel {
+  id: string;
+  /** Friendly task label — the SAME vocabulary the cached cards use. */
+  task: string | null;
+  taskHelp: string | null;
+  pipelineTag: string | null;
+  library: string | null;
+  downloads: number | null;
+  likes: number | null;
+  updated: string | null;
+  /** The licence must be accepted on the Hub before a download would work. */
+  gated: boolean;
+  private: boolean;
+  tags: string[];
+  params: number | null;
+  /** Bytes recovered from the dtype map — an estimate, and shown with "≈". */
+  estimatedSize: number | null;
+  local: HubModelLocal;
+  url: string;
+}
+
+export interface HubSearchResult {
+  models: HubModel[];
+  query: { q: string; task: string; sort: string; limit: number };
+  /** Present INSTEAD of results when the Hub could not be reached or refused. */
+  error?: string;
+  endpoint?: string;
+  authenticated?: boolean;
+}
+
+export type HubSort = "downloads" | "likes" | "updated" | "created";
+
+export function searchHubModels(opts: {
+  q?: string;
+  task?: string;
+  sort?: HubSort;
+  limit?: number;
+}): Promise<HubSearchResult> {
+  const params = new URLSearchParams();
+  if (opts.q) params.set("q", opts.q);
+  if (opts.task) params.set("task", opts.task);
+  if (opts.sort) params.set("sort", opts.sort);
+  if (opts.limit) params.set("limit", String(opts.limit));
+  return getJson<HubSearchResult>("/api/ai-models/hub/search?" + params.toString());
+}
+
+export interface HubTask {
+  /** The Hub's own pipeline tag — what the filter actually sends. */
+  tag: string;
+  label: string;
+  help: string | null;
+}
+
+export function getHubTasks(): Promise<{ tasks: HubTask[] }> {
+  return getJson<{ tasks: HubTask[] }>("/api/ai-models/hub/tasks");
+}
+
 // -- Git repos (GET /api/git-repos) -------------------------------------------
 // Git repositories on this machine, for the Explorer homepage's "Repos" tab.
 // One entry per repo root, in path order; `path` is ready to pass straight to
