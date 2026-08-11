@@ -20,6 +20,8 @@ import { useAccountLoggedIn } from "@platform/lib/account";
 import { useDeployEnabled } from "@platform/lib/prefs";
 import { useClaudeConfigAvailable } from "@apps/claude_config";
 import { useAiModelsAvailable } from "@shell/AiModels";
+import { useAiRuntime } from "@shell/aiRuntime";
+import { formatSize } from "@platform/lib/format";
 
 // Magnifier — the Explorer's front door is its search prompt (FilesHome's
 // hero), so the entry reads as "find things" rather than "a folder".
@@ -103,6 +105,12 @@ export default function ShellSidebar({ config }: { config: Config }) {
   // Claude probe this one can flip mid-session (the first download creates the
   // dir), which is why its "no" is only cached briefly (see the hook).
   const localModelsAvailable = useAiModelsAvailable();
+  // A model resident in memory is the one piece of app state that costs
+  // something while you are not looking at it — gigabytes, until you unload it.
+  // So it gets the same treatment as being signed in: a dot on its own entry,
+  // naming what is loaded on hover.
+  const aiRuntime = useAiRuntime();
+  const residentModels = aiRuntime.loaded.filter((m) => m.state === "ready");
 
   return (
     <SidebarFrame title="Render" version={config.version}>
@@ -170,7 +178,25 @@ export default function ShellSidebar({ config }: { config: Config }) {
         {/* Next to Mounts: both answer "what storage does this machine have
             attached", one remote and one the Hub filled in locally. */}
         {localModelsAvailable && (
-          <NavItem href="/ai-models" id="ai-models-link" label="AI Models" icon={AI_MODELS_ICON} />
+          <NavItem
+            href="/ai-models"
+            id="ai-models-link"
+            label="AI Models"
+            icon={AI_MODELS_ICON}
+            extra={
+              residentModels.length ? (
+                <span
+                  className="account-signedin-dot"
+                  title={
+                    `In memory: ${residentModels.map((m) => m.model).join(", ")}` +
+                    (aiRuntime.totalResidentBytes
+                      ? ` — ${formatSize(aiRuntime.totalResidentBytes)}`
+                      : "")
+                  }
+                />
+              ) : undefined
+            }
+          />
         )}
         <NavItem
           href="/preferences"

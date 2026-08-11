@@ -155,7 +155,11 @@ def test_resolution_skips_a_runner_that_cannot_run(monkeypatch):
     monkeypatch.setattr(registry.platform, "system", lambda: "Linux")
     monkeypatch.setattr(registry.platform, "machine", lambda: "x86_64")
     assert registry.for_capability(registry.TEXT_GENERATION) is None
-    assert registry.for_capability(registry.IMAGE_GENERATION) is not None
+    # …and the same runner resolves on the platform it was built for.
+    monkeypatch.setattr(registry.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(registry.platform, "machine", lambda: "arm64")
+    resolved = registry.for_capability(registry.TEXT_GENERATION)
+    assert resolved is not None and resolved.code == "mlx-text"
 
 
 def test_every_suggested_model_names_a_capability_with_a_runner():
@@ -270,6 +274,46 @@ def test_a_page_cannot_post_to_a_server_owned_id(client):
     assert "reserved" in response.json()["error"]
 
 
+def test_a_worker_can_report_to_its_own_reserved_row(client, fake_runner):
+    """The other side of the reserved prefix, and the reason it needs a key.
+
+    The worker is the process doing the downloading, so it is the only thing
+    that knows the byte counts — but its row is under `sys:`, which pages may
+    not write. Without a way to tell a worker from a page, every progress tick
+    from a multi-GB download is silently rejected and the bar never moves.
+    """
+    supervisor.load("org/reports", registry.TEXT_GENERATION)
+    worker = _wait_ready("org/reports")
+    row_id = supervisor.job_id_for("org/reports")
+
+    response = client.post(
+        "/api/jobs",
+        json={"id": row_id, "title": "org/reports", "done": 5, "total": 10},
+        headers={"X-Fused": "1", "X-Fused-Worker": worker.token},
+    )
+    assert response.status_code == 200
+    assert response.json()["done"] == 5
+
+    # …and only an EXACT live token opens it. Not a prefix, not any truthy string.
+    for bogus in ("", "nope", worker.token[:-1], worker.token + "x"):
+        refused = client.post(
+            "/api/jobs", json={"id": row_id, "title": "x"},
+            headers={"X-Fused": "1", "X-Fused-Worker": bogus})
+        assert refused.status_code == 400, bogus
+
+
+def test_a_stopped_workers_token_stops_working(client, fake_runner):
+    # The token is only good while the worker it belongs to is alive.
+    supervisor.load("org/expires", registry.TEXT_GENERATION)
+    worker = _wait_ready("org/expires")
+    token = worker.token
+    supervisor.unload("org/expires")
+    refused = client.post(
+        "/api/jobs", json={"id": supervisor.job_id_for("org/expires"), "title": "x"},
+        headers={"X-Fused": "1", "X-Fused-Worker": token})
+    assert refused.status_code == 400
+
+
 def test_a_page_owned_job_still_works(client):
     response = client.post("/api/jobs", json={"id": "my-page-job", "title": "mine"},
                            headers={"X-Fused": "1"})
@@ -293,6 +337,36 @@ def test_download_only_never_becomes_resident(fake_runner):
 
 
 # -- the endpoints --------------------------------------------------------------
+
+
+def test_a_runner_whose_folder_is_missing_is_not_advertised(tmp_path, monkeypatch):
+    """Advertising a capability is a claim; the folder existing is what makes it
+    true. A registry that lists a runner it has not built yet hands the user a
+    Download button that fails at spawn while the API calls the capability
+    ready — which is how the image runner looked between its registration and
+    its worker being written."""
+    ghost = registry.Runner(
+        code="ghost", capability=registry.IMAGE_GENERATION,
+        folder=str(tmp_path / "not-written-yet"), label="Ghost",
+    )
+    monkeypatch.setattr(registry, "_RUNNERS", (ghost,))
+    status = ghost.available()
+    assert status.ok is False and "not built yet" in status.reason
+    assert registry.for_capability(registry.IMAGE_GENERATION) is None
+
+
+def test_the_worker_stderr_never_goes_to_an_undrained_pipe():
+    """A pipe nobody reads holds ~64KB and then BLOCKS the child's next write.
+
+    Workers log while they download (hf and torch both do, at length), and the
+    supervisor only reads stderr after exit — so a pipe would wedge the load
+    mid-flight while the process still looked alive, and the read that would
+    have revealed it never happens. Pinned as source, because reproducing a
+    64KB-buffer deadlock in a test is slower than the bug is subtle.
+    """
+    source = open(supervisor.__file__, encoding="utf-8").read()
+    assert "stderr=subprocess.PIPE" not in source
+    assert 'stderr=open(log, "w")' in source
 
 
 def test_the_runtime_endpoint_reports_runners_and_nothing_loaded(client):

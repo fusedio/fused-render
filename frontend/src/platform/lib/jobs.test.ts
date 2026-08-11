@@ -27,6 +27,7 @@ function job(over: Partial<Job> = {}): Job {
     unit: "bytes",
     message: "",
     page: "/tmp/index.html",
+    owner: "page",
     cancellable: true,
     cancel_requested: false,
     started_at: 1000,

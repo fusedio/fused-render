@@ -13,6 +13,10 @@ import { getJson, postJson } from "@platform/lib/api";
 
 export type JobState = "running" | "done" | "error" | "cancelled";
 export type JobKind = "download" | "task";
+// Who is running the work, which decides what ✕ can do (SPEC BG-4). "page" —
+// only the page knows what stopping means, so cancel is a request it honours.
+// "server" — this app owns the process and really stops it.
+export type JobOwner = "page" | "server";
 
 export interface Job {
   id: string;
@@ -26,6 +30,7 @@ export interface Job {
   unit: string; // "bytes" | "" — decides how done/total are formatted
   message: string; // the error text, when state is "error"
   page: string; // the .html that raised it (attribution)
+  owner: JobOwner;
   cancellable: boolean;
   cancel_requested: boolean;
   started_at: number;

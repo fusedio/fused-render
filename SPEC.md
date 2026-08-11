@@ -5556,9 +5556,14 @@ the Hub does not know your disk and a browser tab open on huggingface.co cannot
 tell you that the model you are reading about is already cached, was last read
 three weeks ago, and would cost nothing to open.
 
-- **HS-1** **Read-only, and the absence of a download button is the design.**
-  Search, filter, sort, and see what each result would cost — nothing here
-  writes to the cache or fetches a weight. Downloading gigabytes onto someone's
+- **HS-1** **AMENDED (D258): downloading is offered, and the reasoning is
+  unchanged.** The original rule was that a download needs a progress surface, a
+  cancel and an answer for a half-finished pull — none of which existed, so the
+  button did not either. Local inference (§40) built exactly that, so Discover
+  now downloads through it. What still holds: search, filter and sort tell you
+  what a result would COST before the click, and this module still never writes
+  to the cache itself — it asks the runner's worker to, and the job registry
+  shows it. Downloading gigabytes onto someone's
   disk is a separate decision with a separate cost (free space, a progress
   surface, a resumable transfer, a half-written cache to clean up) and is
   deliberately not part of this. Every route is a GET, so none carries the D3
@@ -5691,6 +5696,27 @@ an AI Models page that could say what was on disk but not what was *running*.
   carries for the same reason: a stale pid in the server's group once shut down a
   test session) and `CTRL_BREAK` + `taskkill /T /F` on Windows, which has no
   `killpg` at all.
+- **AI-7a** **The AI Models page shows what is RUNNING, not only what is on
+  disk.** A cached card carries a live state row — downloading (with bytes, from
+  the job row, because that is the only place byte counts exist), loading (text
+  and a pulse, **no bar**: weights going into memory is one opaque step and an
+  invented percentage reads as frozen), loaded (with its resident memory), or
+  failed (with the reason). **Load / Unload** is a word rather than a glyph and
+  is always visible: it is the one control on the page that spends MEMORY rather
+  than disk, and it is not offered at all for a capability no runner here serves
+  — a button that always fails is worse than no button. A **dot on the sidebar
+  entry** whenever anything is resident, naming it on hover: gigabytes held by
+  something you have forgotten about is exactly what an indicator is for, and it
+  is the same treatment being signed in already gets (AC-1).
+- **AI-7b** **Discover suggests, and the suggestions know what you have.** A
+  short curated list per capability — moved out of the apps that used to carry
+  it privately — with size, the reason you would pick each one, and a **✓** on
+  the ones already downloaded. It shows only when the search box is empty,
+  because it answers "what should I even get", which is the question you have
+  *before* you know what to type. A capability this machine cannot serve is
+  still listed, with its reason. **Downloading is offered here** (D258,
+  superseding HS-1's read-only posture): the job-backed machinery HS-1 named as
+  the prerequisite now exists, so the ✕ in the manager really stops a pull.
 - **AI-8** **The worker measures its own memory.** Only the process holding the
   weights can; on Apple Silicon the GPU pool IS system memory, so RSS is one
   honest number rather than two that need reconciling. What the supervisor knows

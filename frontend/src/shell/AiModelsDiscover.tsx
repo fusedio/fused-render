@@ -9,9 +9,11 @@
 // checkpoints nothing on screen mentions, so "≈16 GB" belongs next to a model's
 // name before anyone decides to fetch it, not after.
 //
-// **Read-only.** There is no download button, and its absence is deliberate:
-// pulling gigabytes onto someone's disk is a different decision with a
-// different cost, and it is not made here.
+// **Downloading now lives here** (SPEC §40, D258). The read-only posture this
+// tab shipped with was not squeamishness — it was that a download needs a
+// progress surface, a cancel, and somewhere to put a half-finished pull, and
+// none of that existed yet. It does now: the app runs the download, the manager
+// shows it, and the ✕ really stops it.
 //
 // **Nothing reaches the network until this tab is open.** The app is a local
 // file explorer; a page that quietly queried a third party on mount would be a
@@ -19,12 +21,16 @@
 // being asked, and the query is debounced so a burst of typing is one request.
 import { useEffect, useRef, useState } from "react";
 import {
+  downloadAiModel,
+  getAiCatalog,
   getHubTasks,
   searchHubModels,
+  type AiCatalogCapability,
   type HubModel,
   type HubSort,
   type HubTask,
 } from "@platform/lib/api";
+import { refreshAiRuntime } from "./aiRuntime";
 import { formatSize, formatParams, timeAgo } from "@platform/lib/format";
 import { navigate, urlForFsPath } from "@platform/lib/router";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
@@ -177,11 +183,104 @@ function sizeTitle(model: HubModel): string | undefined {
   );
 }
 
+// The curated shortlist, per capability, with what this machine can serve.
+//
+// These lists used to live inside the apps that used them — three MLX models in
+// local_chat, one FLUX model hard-coded in the image worker — which put the
+// curation where nobody browsing for a model would ever see it.
+function Suggested({
+  catalog,
+  onDownloaded,
+}: {
+  catalog: AiCatalogCapability[];
+  onDownloaded: () => void;
+}) {
+  const [pending, setPending] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  if (!catalog.length) return null;
+
+  const start = async (model: string, capability: string) => {
+    setError(null);
+    setPending(model);
+    try {
+      await downloadAiModel(model, capability);
+      // The row appears in the download manager; the page just stops waiting.
+      refreshAiRuntime();
+      onDownloaded();
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setPending(null);
+    }
+  };
+
+  return (
+    <section className="am-suggested">
+      <h3 className="am-suggested-head">Suggested</h3>
+      {error && <ErrorBanner>{error}</ErrorBanner>}
+      {catalog.map((group) => (
+        <div key={group.capability} className="am-suggested-group">
+          <div className="am-suggested-cap">
+            {group.capability.replace(/-/g, " ")}
+            {/* Shown even when it cannot run here, with the reason: hiding a
+                capability leaves someone hunting for a feature that never was. */}
+            {!group.available && (
+              <span className="am-suggested-why" title={group.reason ?? undefined}>
+                unavailable — {group.reason}
+              </span>
+            )}
+          </div>
+          <div className="cc-mdgrid am-grid">
+            {group.models.map((m) => (
+              <div key={m.id} className="cc-mdcard am-card am-suggestcard">
+                <div className="cc-mdcard-head">
+                  <a
+                    className="cc-mdcard-name am-card-name"
+                    href={`https://huggingface.co/${m.id}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    title={`Open ${m.id} on the Hub`}
+                  >
+                    {m.label}
+                  </a>
+                  {m.have && (
+                    <span className="am-suggest-have" title={`${m.id} is already on this machine`}>
+                      ✓ downloaded
+                    </span>
+                  )}
+                  <span className="am-card-size">{m.size_gb} GB</span>
+                </div>
+                <div className="am-suggest-note">{m.note}</div>
+                <div className="cc-mdcard-foot">
+                  <span className="cc-mdcard-meta cc-mono">{m.id}</span>
+                  {!m.have && group.available && (
+                    <button
+                      type="button"
+                      className="am-card-power"
+                      disabled={pending === m.id}
+                      onClick={() => start(m.id, group.capability)}
+                      title={`Download ${m.id} (~${m.size_gb} GB)`}
+                    >
+                      {pending === m.id ? "Starting…" : "Download"}
+                    </button>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      ))}
+    </section>
+  );
+}
+
 export default function AiModelsDiscover() {
   const [query, setQuery] = useState("");
   const [task, setTask] = useState("");
   const [sort, setSort] = useState<HubSort>("downloads");
   const [tasks, setTasks] = useState<HubTask[]>([]);
+  const [catalog, setCatalog] = useState<AiCatalogCapability[]>([]);
+  const [catalogKey, setCatalogKey] = useState(0);
   const [models, setModels] = useState<HubModel[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -200,6 +299,27 @@ export default function AiModelsDiscover() {
       () => setTasks([]),
     );
   }, []);
+
+  useEffect(() => {
+    // The catalog is the curation; whether each entry is already on disk is the
+    // cache's answer, so the two are joined here rather than on the server —
+    // the same rule the search results follow (HS-5).
+    Promise.all([getAiCatalog(), searchHubModels({ limit: 1 })]).then(
+      async ([cat]) => {
+        const local = await fetch("/api/ai-models")
+          .then((r) => r.json())
+          .catch(() => ({ repos: [] }));
+        const have = new Set<string>((local.repos ?? []).map((r: { id: string }) => r.id));
+        setCatalog(
+          cat.capabilities.map((group) => ({
+            ...group,
+            models: group.models.map((m) => ({ ...m, have: have.has(m.id) })),
+          })),
+        );
+      },
+      () => setCatalog([]),
+    );
+  }, [catalogKey]);
 
   useEffect(() => {
     if (timer.current) window.clearTimeout(timer.current);
@@ -235,9 +355,15 @@ export default function AiModelsDiscover() {
   }, [settled]);
 
   const host = endpoint ? endpoint.replace(/^https?:\/\//, "") : "huggingface.co";
+  const reload = () => setCatalogKey((k) => k + 1);
 
   return (
     <>
+      {/* Suggested first, and only with no query: a curated handful is the
+          answer to "what should I even get", which is the question someone has
+          BEFORE they know what to type. Once they type, they have a better one. */}
+      {!settled.q && !settled.task && <Suggested catalog={catalog} onDownloaded={reload} />}
+
       <div className="am-hub-controls">
         <input
           className="am-hub-search"

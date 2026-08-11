@@ -21,6 +21,7 @@
 // the size figure, the Explore link, the revision drawer, and the tab strip.
 import { useEffect, useState } from "react";
 import AiModelsDiscover from "./AiModelsDiscover";
+import { publishAiRuntime, refreshAiRuntime, useAiRuntime } from "./aiRuntime";
 import {
   deleteAiModels,
   getAiModelRevisions,
@@ -29,8 +30,12 @@ import {
   type AiModelDeleteTarget,
   type AiModelRepo,
   type AiModelRevision,
+  loadAiModel,
+  unloadAiModel,
+  type AiLoadedModel,
   type AiModelsResult,
 } from "@platform/lib/api";
+import { fetchJobs, type Job } from "@platform/lib/jobs";
 import { formatSize, formatMtimeFull, formatParams, timeAgo } from "@platform/lib/format";
 import { navigate, urlForFsPath } from "@platform/lib/router";
 import { pushToast } from "@platform/lib/toast";
@@ -189,18 +194,84 @@ function Revisions({
   );
 }
 
+// The live state of one model: what it is doing, and what it is costing.
+//
+// Four states worth distinguishing, and the distinctions are the point:
+// downloading (bytes, from the job row — the only place byte counts exist),
+// loading (no percentage, because weights going into memory is one opaque step
+// and an invented bar reads as frozen), ready (with its resident memory), and
+// error (with what went wrong, because "it failed" sends people nowhere).
+function RuntimeChip({ loaded, job }: { loaded?: AiLoadedModel; job?: Job }) {
+  if (loaded?.state === "ready") {
+    return (
+      <div className="am-card-runtime am-card-runtime-ready">
+        <span className="am-runtime-dot" />
+        Loaded
+        {loaded.residentBytes ? (
+          <span
+            className="am-runtime-mem"
+            title={
+              "Resident memory of the model's process. Not the model's size: it " +
+              "counts shared pages too and moves while it generates."
+            }
+          >
+            {formatSize(loaded.residentBytes)} in memory
+          </span>
+        ) : null}
+      </div>
+    );
+  }
+  if (loaded?.state === "error") {
+    return (
+      <div className="am-card-runtime am-card-runtime-error" title={loaded.error ?? undefined}>
+        Failed to load{loaded.error ? ` — ${loaded.error}` : ""}
+      </div>
+    );
+  }
+  const detail = loaded?.detail || job?.detail || "Preparing…";
+  const pct =
+    job && job.total && job.done !== null ? Math.min(100, (job.done / job.total) * 100) : null;
+  return (
+    <div className="am-card-runtime">
+      <span className="am-runtime-dot am-runtime-dot-busy" />
+      {detail}
+      {pct !== null && (
+        <span className="am-runtime-bar">
+          <span className="am-runtime-bar-fill" style={{ width: `${pct}%` }} />
+        </span>
+      )}
+    </div>
+  );
+}
+
 function RepoCard({
   repo,
   expanded,
+  loaded,
+  job,
+  busy,
+  canLoad,
   onToggle,
   onDeleteRepo,
   onDeleteRevision,
+  onLoad,
+  onUnload,
 }: {
   repo: AiModelRepo;
   expanded: boolean;
+  /** The resident worker for this repo, when it is one. */
+  loaded: AiLoadedModel | undefined;
+  /** Its download-manager row, while a bring-up is running. */
+  job: Job | undefined;
+  busy: boolean;
+  /** False when no runner here serves this kind of model — the control is then
+   *  not offered at all, rather than offered and always failing. */
+  canLoad: boolean;
   onToggle: () => void;
   onDeleteRepo: () => void;
   onDeleteRevision: (revision: AiModelRevision) => void;
+  onLoad: () => void;
+  onUnload: () => void;
 }) {
   const when = timeAgo(repo.lastUsed ?? repo.mtime);
   // "added", not "released": the Hub's release date isn't on this disk (see the
@@ -289,6 +360,10 @@ function RepoCard({
           {repo.library && <span className="am-card-library">{repo.library}</span>}
         </div>
       )}
+      {/* What this model is doing RIGHT NOW, as opposed to what it is. Absent
+          when the answer is "sitting on disk", which is what every card would
+          otherwise say — a row of identical chips carries no information. */}
+      {(loaded || job) && <RuntimeChip loaded={loaded} job={job} />}
       <div className="cc-mdcard-foot">
         <span className="cc-mdcard-meta">
           {repo.files} {repo.files === 1 ? "file" : "files"}
@@ -298,6 +373,31 @@ function RepoCard({
           {added ? ` · added ${added}` : ""}
         </span>
         <span className="cc-mdcard-actions">
+          {/* Load / Unload — the one control on this page that costs MEMORY
+              rather than disk. Only offered for a capability this machine can
+              actually serve: on a Windows box the text runner is unavailable,
+              and a button that always fails is worse than no button. */}
+          {!canLoad ? null : loaded ? (
+            <button
+              type="button"
+              className="am-card-power am-card-power-on"
+              disabled={busy}
+              title={`Unload ${repo.id} and give its memory back`}
+              onClick={onUnload}
+            >
+              Unload
+            </button>
+          ) : (
+            <button
+              type="button"
+              className="am-card-power"
+              disabled={busy || !!job}
+              title={`Load ${repo.id} into memory so it can answer`}
+              onClick={onLoad}
+            >
+              {job ? "Loading…" : "Load"}
+            </button>
+          )}
           {/* The local door: the model card view (SPEC §38), read from this
               folder's own files. A real <a href> so middle-click and copy-link
               work, with left-click intercepted for client-side navigation like
@@ -305,9 +405,10 @@ function RepoCard({
               everywhere else, because a gated template can never be a default
               mode (CT-12) — so this asks for the mode by name. */}
           <a
-            className="am-card-explore"
+            className="cc-iconbtn am-card-explore"
             href={urlForFsPath(repo.path, "?_mode=model_card")}
             title={`Explore ${repo.id} here — ${repo.path}`}
+            aria-label={`Explore ${repo.id}`}
             onClick={(e) => {
               if (
                 e.defaultPrevented ||
@@ -322,7 +423,23 @@ function RepoCard({
               navigate(repo.path, { isDir: true, mode: "model_card" });
             }}
           >
-            Explore
+            {/* An arrow into a box: "open this here", the same weight and box as
+                the ✕ next to it rather than a word competing with it. */}
+            <svg
+              width="14"
+              height="14"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden="true"
+            >
+              <path d="M15 3h6v6" />
+              <path d="M10 14 21 3" />
+              <path d="M21 14v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5" />
+            </svg>
           </a>
           {/* Only offered where it means something: with a single revision,
               deleting "the revision" and deleting the repo are the same act,
@@ -393,6 +510,13 @@ export default function AiModels() {
   const [expanded, setExpanded] = useState<string | null>(null);
   const [pending, setPending] = useState<Pending | null>(null);
   const [busy, setBusy] = useState(false);
+  // What is resident, and the download-manager rows for anything mid-bring-up.
+  // The runtime is polled by a shared subscriber (the sidebar dot reads the same
+  // one); the job rows are read here because only this page joins them onto
+  // cards, and only while something is actually running.
+  const runtime = useAiRuntime();
+  const [jobs, setJobs] = useState<Job[]>([]);
+  const [runtimeError, setRuntimeError] = useState<string | null>(null);
   // Per-target refusals from the last delete (a symlinked repo, a row that was
   // already gone). A banner rather than a toast: it names things the user asked
   // for and did not get.
@@ -428,8 +552,55 @@ export default function AiModels() {
     // delete answers with the fresh listing itself, so nothing re-triggers it.
   }, []);
 
+  const anyBusy = runtime.loaded.some((m) => m.state !== "ready" && m.state !== "error");
+  useEffect(() => {
+    if (tab !== "cached") return;
+    // Only while a bring-up is live: the manager already polls these for its own
+    // list, and a second poller on an idle machine is two requests a second for
+    // an empty array.
+    if (!anyBusy) {
+      setJobs([]);
+      return;
+    }
+    let alive = true;
+    const tick = () => fetchJobs().then((s) => alive && setJobs(s.jobs), () => {});
+    void tick();
+    const timer = window.setInterval(tick, 1000);
+    return () => {
+      alive = false;
+      window.clearInterval(timer);
+    };
+  }, [tab, anyBusy]);
+
   const data = load.status === "ok" ? load.data : null;
   const repos = data?.repos ?? [];
+  const loadedById = new Map(runtime.loaded.map((m) => [m.model, m]));
+  const jobById = new Map(jobs.map((j) => [j.id, j]));
+  // A capability with no runner here cannot be loaded, so the button is not
+  // offered — see the reason on the Discover tab instead of a control that
+  // always fails.
+  const canLoadText = runtime.runners.some(
+    (r) => r.capability === "text-generation" && r.available,
+  );
+
+  const runLoad = async (repo: AiModelRepo) => {
+    setRuntimeError(null);
+    try {
+      await loadAiModel(repo.id);
+      refreshAiRuntime();
+    } catch (e) {
+      setRuntimeError((e as Error).message);
+    }
+  };
+
+  const runUnload = async (repo: AiModelRepo) => {
+    setRuntimeError(null);
+    try {
+      publishAiRuntime(await unloadAiModel(repo.id));
+    } catch (e) {
+      setRuntimeError((e as Error).message);
+    }
+  };
 
   const runDelete = async (targets: AiModelDeleteTarget[], label: string) => {
     setBusy(true);
@@ -496,6 +667,7 @@ export default function AiModels() {
         </div>
         {tab === "discover" && <AiModelsDiscover />}
         {tab === "cached" && load.status === "error" && <ErrorBanner>{load.message}</ErrorBanner>}
+        {tab === "cached" && runtimeError && <ErrorBanner>{runtimeError}</ErrorBanner>}
         {tab === "cached" && failures.length > 0 && (
           <ErrorBanner>
             {failures.map((f) => (
@@ -515,9 +687,15 @@ export default function AiModels() {
                   key={r.path}
                   repo={r}
                   expanded={expanded === r.dir}
+                  loaded={loadedById.get(r.id)}
+                  job={jobById.get(`sys:ai-model:${r.id.replace("/", "--")}`)}
+                  busy={busy}
+                  canLoad={canLoadText}
                   onToggle={() => setExpanded(expanded === r.dir ? null : r.dir)}
                   onDeleteRepo={() => setPending({ kind: "repo", repo: r })}
                   onDeleteRevision={(revision) => setPending({ kind: "revision", repo: r, revision })}
+                  onLoad={() => runLoad(r)}
+                  onUnload={() => runUnload(r)}
                 />
               ))}
             </div>

@@ -47,23 +47,37 @@ def api_jobs_list():
 
 @router.post("/api/jobs")
 def api_jobs_report(body: dict = Body(...), x_fused: str | None = Header(default=None),
-                    x_fused_page: str | None = Header(default=None)):
+                    x_fused_page: str | None = Header(default=None),
+                    x_fused_worker: str | None = Header(default=None)):
     """One progress report. Creates the record on the first tick, updates it after.
 
     The page is taken from the X-Fused-Page header rather than the body: it is
     the attribution header every runtime call already carries (calls.py), so a
     report is attributed by the same rule as the call log and a reporter cannot
     accidentally claim a different page by typing one into its body.
+
+    **A model worker reports here too** (SPEC §40) — it is the process doing the
+    downloading, so it is the only one that knows the byte counts. Its rows live
+    under the reserved `sys:` prefix that pages may not write, so the endpoint
+    has to tell a worker from a page: `X-Fused-Worker` carries the token this
+    server generated and passed into that worker's environment, and only an
+    exact match against a LIVE worker's token unlocks the prefix. Not a secret
+    shared with anything else, and gone the moment the worker stops.
     """
     guard = _require_fused(x_fused)
     if guard is not None:
         return guard
+    # Imported at call time: `jobs.py` must not import anything under `ai/`, and
+    # the supervisor holds the only list of live tokens.
+    from fused_render.ai import supervisor
+
+    is_worker = supervisor.is_worker_token(x_fused_worker or "")
     # runtime.js sends the path encodeURIComponent'd, like every other
     # X-Fused-* path header; unquote is the identity for a raw ASCII path, so a
     # curl or a test that sends one plain is unaffected.
     page = unquote(x_fused_page) if x_fused_page else ""
     try:
-        return jobs_mod.upsert(body, page=page)
+        return jobs_mod.upsert(body, page=page, server=is_worker)
     except jobs_mod.JobError as e:
         return _error(str(e))
 

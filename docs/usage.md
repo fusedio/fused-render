@@ -160,6 +160,17 @@ once that cache exists; the first download from the Hub creates it.
   to the window — and there is no Refresh button, because knowing when that walk
   is worth paying for is not something you should have to judge. Deleting
   something re-reads the cache on its own.
+- **You can load a model into memory from here.** Each cached model has a
+  **Load** button; while it is resident the card says so with the memory it is
+  holding, and **Unload** gives that back. Only one model per kind stays loaded
+  — loading a second chat model unloads the first, because two 8GB models on a
+  16GB machine is a swap storm — and a dot appears on the AI Models entry in the
+  sidebar whenever anything is in memory, so gigabytes are never held by
+  something you have forgotten about. Hover the dot to see what.
+  - Loading a model that is not downloaded yet fetches it first; the progress is
+    the same download-manager row.
+  - Text generation currently needs Apple Silicon (it runs on MLX). On other
+    machines the button is not offered and the Discover tab says why.
 - **The Discover tab searches the Hub for models you don't have.** Type a name,
   filter by task, sort by downloads, likes, recently updated or newest. Each
   result says whether it is **already on this machine** (with what it costs on
@@ -170,9 +181,14 @@ once that cache exists; the first download from the Hub creates it.
   - **Nothing is sent anywhere until you open that tab**, and the caption says
     which host is being asked. Typing is batched into one request, and repeating
     a search inside a minute or so reuses the answer rather than asking again.
-  - **It only reads.** There is no download button here — fetching a model is
-    still `hf download`, a `transformers` import, or whatever pulled the ones
-    you already have. What this gives you is the decision, not the transfer.
+  - **Download happens here now.** Suggested models and search results carry a
+    **Download** button; the transfer shows up in the download manager at the
+    bottom-right like any other long job, and its ✕ really stops it.
+  - **Suggested** is a short curated list per capability — chat models, image
+    models — with what each costs and why you would pick it, and a ✓ on the ones
+    you already have. It only shows when the search box is empty: it is the
+    answer to "what should I even get", which is the question you have before
+    you know what to type.
   - **Sizes are estimates and marked "≈"**, computed from the parameter counts
     the Hub publishes for the weights. Other files in the repo aren't counted,
     and a repo the Hub has no such metadata for shows no size rather than a

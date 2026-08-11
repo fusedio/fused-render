@@ -2063,6 +2063,89 @@ export function getHubTasks(): Promise<{ tasks: HubTask[] }> {
   return getJson<{ tasks: HubTask[] }>("/api/ai-models/hub/tasks");
 }
 
+// -- Local inference (GET/POST /api/ai/runtime, /api/ai/catalog) ---------------
+// What this machine is HOLDING IN MEMORY, as opposed to what it has on disk
+// (the AI models endpoints above). A model here is a resident process with a
+// cost, so the page can show that cost and give the memory back.
+//
+// load/download answer with a jobId rather than a finished model: a cold load is
+// a multi-GB download, and it is watched through the download manager.
+export interface AiRunner {
+  code: string;
+  capability: string;
+  label: string;
+  available: boolean;
+  /** Why not, in words — "needs Apple Silicon…". Null when it is available. */
+  reason: string | null;
+}
+
+export interface AiLoadedModel {
+  model: string;
+  capability: string;
+  runner: string;
+  /** venv | starting | downloading | loading | ready | error */
+  state: string;
+  detail: string | null;
+  error: string | null;
+  /** RSS of the worker process. Not the model's size — see SPEC AI-8. */
+  residentBytes: number | null;
+  loadedAt: number | null;
+  startedAt: number;
+  /** The download-manager row for this model's bring-up. */
+  jobId: string;
+}
+
+export interface AiRuntime {
+  runners: AiRunner[];
+  loaded: AiLoadedModel[];
+  totalResidentBytes: number | null;
+}
+
+export function getAiRuntime(): Promise<AiRuntime> {
+  return getJson<AiRuntime>("/api/ai/runtime");
+}
+
+export interface AiCatalogModel {
+  id: string;
+  label: string;
+  size_gb: number;
+  note: string;
+  /** Joined in by the page against the local cache — the server's catalog is
+   *  the curation only, and what is on this disk is the cache's question. */
+  have?: boolean;
+}
+
+export interface AiCatalogCapability {
+  capability: string;
+  runner: string | null;
+  available: boolean;
+  reason: string | null;
+  default: string | null;
+  models: AiCatalogModel[];
+}
+
+export function getAiCatalog(): Promise<{ capabilities: AiCatalogCapability[] }> {
+  return getJson<{ capabilities: AiCatalogCapability[] }>("/api/ai/catalog");
+}
+
+export interface AiLoadStarted {
+  jobId: string;
+  model: string;
+  state: string;
+}
+
+export function loadAiModel(model: string, capability?: string): Promise<AiLoadStarted> {
+  return postJson<AiLoadStarted>("/api/ai/runtime/load", { model, capability });
+}
+
+export function downloadAiModel(model: string, capability?: string): Promise<AiLoadStarted> {
+  return postJson<AiLoadStarted>("/api/ai/runtime/download", { model, capability });
+}
+
+export function unloadAiModel(model: string): Promise<AiRuntime & { stopped: boolean }> {
+  return postJson<AiRuntime & { stopped: boolean }>("/api/ai/runtime/unload", { model });
+}
+
 // -- Git repos (GET /api/git-repos) -------------------------------------------
 // Git repositories on this machine, for the Explorer homepage's "Repos" tab.
 // One entry per repo root, in path order; `path` is ready to pass straight to

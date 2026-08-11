@@ -52,34 +52,24 @@
   white-space: nowrap;
 }
 
-/* "Explore" is the local door — the model card view — next to the delete
-   controls. A link, not a button: it navigates, and middle-click and copy-link
-   have to keep working. Sized to sit level with the icon buttons beside it. */
+/* "Explore" is the local door — the model card view — and it wears .cc-iconbtn
+   like the ✕ beside it, so the card's actions read as one row of controls
+   rather than a word and some buttons. Still an <a>, because it navigates and
+   middle-click and copy-link have to keep working; this only restores the
+   dimensions and the hover the class expects on a <button>. */
 .am-card-explore {
-  padding: 2px 8px;
-  font-size: 12px;
-  color: var(--fg-muted);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: inherit;
   text-decoration: none;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  white-space: nowrap;
-}
-
-.am-card-explore:hover {
-  color: var(--fg);
-  background: var(--bg-alt);
-}
-
-.am-card-explore:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 1px;
 }
 
 /* The DESTRUCTIVE actions are quiet until the card is hovered or one of them is
    focused: a grid of ✕ buttons reads as a page about deleting, and this one is
    about looking. "Explore" is exempt — it is the card's other destination, and
    an affordance you have to hover to discover is one most people never find. */
-.am-card .cc-mdcard-actions .cc-iconbtn {
+.am-card .cc-mdcard-actions .cc-iconbtn:not(.am-card-explore) {
   opacity: 0;
 }
 
@@ -311,4 +301,166 @@
 
 .am-hub-gated {
   color: var(--fg-muted);
+}
+
+/* -- what a model is doing right now (SPEC §40) ------------------------------
+   The runtime row sits between what a model IS and the meta line, because it is
+   the answer to a different question — not "what did I download" but "what is
+   this costing me at this moment". Absent when the answer is "nothing", so a
+   grid of cards is not a grid of identical chips. */
+.am-card-runtime {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+
+.am-runtime-dot {
+  flex: 0 0 auto;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+/* Busy pulses; ready does not. A model mid-download and a model sitting in
+   memory are different enough that the eye should not have to read the text to
+   tell them apart. */
+.am-runtime-dot-busy {
+  background: var(--fg-muted);
+  animation: am-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes am-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.25; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .am-runtime-dot-busy { animation: none; }
+}
+
+.am-card-runtime-ready { color: var(--fg); }
+.am-card-runtime-error { color: var(--error); }
+
+.am-runtime-mem {
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+  color: var(--fg-muted);
+}
+
+/* Bytes only: a download knows its total, so it gets a real bar. Loading
+   weights into memory does NOT, and an invented percentage there is what makes
+   live work read as frozen — so that state shows text and a pulse, no bar. */
+.am-runtime-bar {
+  flex: 1 1 auto;
+  min-width: 40px;
+  height: 3px;
+  border-radius: 2px;
+  background: var(--border);
+  overflow: hidden;
+}
+
+.am-runtime-bar-fill {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+  transition: width 200ms linear;
+}
+
+/* Load / Unload. A word, not an icon: this is the one control on the page that
+   spends MEMORY rather than disk, and an unlabelled glyph for "put 8GB of
+   weights in RAM" is a guess the user should not have to make. Always visible
+   for the same reason. */
+.am-card-power {
+  flex: 0 0 auto;
+  padding: 3px 9px;
+  font: inherit;
+  font-size: 12px;
+  color: var(--fg-muted);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.am-card-power:hover:not(:disabled) {
+  color: var(--fg);
+  background: var(--bg-alt);
+}
+
+.am-card-power:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.am-card-power-on {
+  color: var(--fg);
+  border-color: var(--accent);
+}
+
+.am-card-power:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* -- Suggested (the curated shortlist, SPEC §40) ------------------------------
+   Above the search box and only when nothing is typed: a handful someone has
+   chosen is the answer to "what should I even get", which is the question you
+   have before you know what to search for. */
+.am-suggested {
+  margin: 0 0 18px;
+}
+
+.am-suggested-head {
+  margin: 0 0 8px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--fg-muted);
+}
+
+.am-suggested-group + .am-suggested-group {
+  margin-top: 14px;
+}
+
+.am-suggested-cap {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 6px;
+  font-size: 12px;
+  color: var(--fg);
+}
+
+.am-suggested-cap::first-letter {
+  text-transform: uppercase;
+}
+
+/* Why a capability cannot run here. Shown, never hidden — a missing feature
+   with no explanation is a bug report. */
+.am-suggested-why {
+  font-size: 11px;
+  color: var(--fg-muted);
+}
+
+.am-suggest-note {
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+
+/* The checkmark is the whole reason this list is here rather than in a doc:
+   "you already have this one" is what turns a shortlist into a decision. */
+.am-suggest-have {
+  padding: 1px 7px;
+  font-size: 11px;
+  border-radius: 999px;
+  color: var(--bg);
+  background: var(--accent);
+  white-space: nowrap;
 }

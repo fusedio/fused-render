@@ -785,7 +785,14 @@ async def _ai_relay(body: dict):
     # a stream flag is a stream flag wherever the tokens come from — and
     # everything below this line is the Claude CLI's own path.
     if _is_local_model(model):
-        return _local_relay(model, prompt, system_prompt, bool(stream), body)
+        # In a THREAD. `_local_relay` is blocking I/O to a worker process: it
+        # waits for the first token before it can answer, and the non-streaming
+        # path waits for the whole completion. On a local model that is seconds
+        # to minutes, and on the event loop it is the whole server frozen for
+        # that long. (The StreamingResponse it returns is fine — Starlette
+        # iterates a sync generator in a threadpool of its own.)
+        return await asyncio.to_thread(
+            _local_relay, model, prompt, system_prompt, bool(stream), body)
 
     if not _claude_bin():
         return _ai_error(

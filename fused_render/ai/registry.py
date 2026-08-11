@@ -74,6 +74,17 @@ class Runner:
     _available: Callable[[], Availability] = field(repr=False, default=lambda: Availability(True))
 
     def available(self) -> Availability:
+        """Can this runner run here — platform AND presence.
+
+        The presence half is not paranoia about a broken install: a runner is
+        registered before its folder is written (the image runner was listed
+        with its worker still unbuilt), and a registry that advertises a
+        capability whose folder is missing hands the user a Download button that
+        fails at spawn while the API reports the capability ready. Advertising
+        is a claim; this is the check that makes it true.
+        """
+        if not os.path.isfile(self.worker):
+            return Availability(False, f"the {self.label} runner is not built yet")
         return self._available()
 
     @property

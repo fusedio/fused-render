@@ -130,6 +130,26 @@ class Worker:
 _lock = threading.RLock()
 #: capability -> the one Worker resident for it.
 _workers: dict[str, Worker] = {}
+#: Every token handed to a live worker. A worker reports its own download
+#: progress to `/api/jobs` under a `sys:` id, which pages are forbidden from
+#: writing — so the endpoint has to be able to tell a worker from a page, and
+#: this is how: the token the supervisor generated and passed in the child's
+#: environment, presented back in a header. Tokens are dropped the moment the
+#: worker they belong to stops.
+_worker_tokens: set[str] = set()
+
+
+def is_worker_token(token: str) -> bool:
+    """Is this the token of a worker THIS supervisor started?
+
+    The one thing standing between "a model reports its download" and "any page
+    can forge a completed download", so it is an exact membership test against
+    live tokens — never a prefix, never a truthiness check on a string.
+    """
+    if not token:
+        return False
+    with _lock:
+        return token in _worker_tokens
 
 
 # ----------------------------------------------------------------- worker HTTP
@@ -265,6 +285,8 @@ def _terminate(worker: Worker) -> None:
             _worker_request(worker, "/quit", body={}, timeout=2.0).close()
         except (OSError, ValueError):
             pass
+    with _lock:
+        _worker_tokens.discard(worker.token)
     _kill_tree(worker)
     # Reap, so the child does not linger as a zombie in the process table —
     # which `_alive` would then have to keep answering questions about.
@@ -291,12 +313,35 @@ def _child_env(token: str) -> dict:
     return env
 
 
-def _status_path(capability: str) -> str:
+def _worker_dir() -> str:
     from fused_render.shell.storage import home_dir
 
     directory = os.path.join(home_dir(), "ai", "workers")
     os.makedirs(directory, exist_ok=True)
-    return os.path.join(directory, capability.replace("/", "-") + ".json")
+    return directory
+
+
+def _status_path(capability: str) -> str:
+    return os.path.join(_worker_dir(), capability.replace("/", "-") + ".json")
+
+
+def _log_path(capability: str) -> str:
+    """Where a worker's stderr goes.
+
+    A FILE, never `subprocess.PIPE`. A pipe nobody drains holds ~64KB before the
+    child BLOCKS on its next write — so a worker that logs while downloading
+    (hf and torch both do, at length) would wedge mid-load while still looking
+    alive, and the pipe only gets read after exit, which by then never comes.
+    """
+    return os.path.join(_worker_dir(), capability.replace("/", "-") + ".log")
+
+
+def _tail(path: str, limit: int = 2000) -> str:
+    try:
+        with open(path, errors="replace") as handle:
+            return handle.read()[-limit:]
+    except OSError:
+        return ""
 
 
 def _spawn(runner: registry.Runner, worker: Worker, python: str) -> None:
@@ -314,11 +359,12 @@ def _spawn(runner: registry.Runner, worker: Worker, python: str) -> None:
         pass
 
     job = job_id_for(worker.model)
+    log = _log_path(worker.capability)
     proc = subprocess.Popen(
         [python, runner.worker, "--model", worker.model, "--status", status, "--job", job],
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
-        stderr=subprocess.PIPE,
+        stderr=open(log, "w"),
         cwd=runner.folder,
         env=_child_env(worker.token),
         close_fds=True,
@@ -332,11 +378,7 @@ def _spawn(runner: registry.Runner, worker: Worker, python: str) -> None:
         if worker.stopping:
             raise SupervisorError("cancelled")
         if proc.poll() is not None:
-            stderr = ""
-            try:
-                stderr = (proc.stderr.read() or b"").decode(errors="replace")[-2000:]
-            except (OSError, ValueError):
-                pass
+            stderr = _tail(log)
             raise SupervisorError(
                 f"the worker exited before it started (code {proc.returncode})"
                 + (f"\n{stderr}" if stderr.strip() else "")
@@ -466,15 +508,21 @@ def _fetch_only(runner: registry.Runner, model: str, job: str) -> None:
     files even ARE differs by backend — a GGUF single file for the image runner,
     a full snapshot for MLX.
     """
+    # A token even though it serves nothing: the download-only worker still
+    # REPORTS, and reporting is what the token authenticates.
     stub = Worker(model=model, capability=runner.capability, runner_code=runner.code,
-                  token="")
+                  token=secrets.token_urlsafe(24))
+    with _lock:
+        _worker_tokens.add(stub.token)
     try:
         python = _ensure_venv(runner, stub, job)
         _report(job, detail="Fetching weights…")
+        log = _log_path(runner.capability + "-download")
         proc = subprocess.Popen(
             [python, runner.worker, "--model", model, "--job", job, "--download-only"],
-            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
-            cwd=runner.folder, env=_child_env(""), close_fds=True, **SPAWN_KWARGS,
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=open(log, "w"),
+            cwd=runner.folder, env=_child_env(stub.token), close_fds=True,
+            **SPAWN_KWARGS,
         )
         stub.pid = proc.pid
         stub.proc = proc
@@ -485,17 +533,16 @@ def _fetch_only(runner: registry.Runner, model: str, job: str) -> None:
                 return
             time.sleep(0.5)
         if proc.returncode != 0:
-            stderr = ""
-            try:
-                stderr = (proc.stderr.read() or b"").decode(errors="replace")[-2000:]
-            except (OSError, ValueError):
-                pass
+            stderr = _tail(log)
             raise SupervisorError(stderr.strip() or f"the download exited {proc.returncode}")
         _report(job, state="done", detail="Downloaded")
     except SupervisorError as e:
         message = str(e)
         _report(job, state="cancelled" if message == "cancelled" else "error",
                 message=None if message == "cancelled" else message)
+    finally:
+        with _lock:
+            _worker_tokens.discard(stub.token)
 
 
 def load(model: str, capability: str, *, weights_only: bool = False) -> dict:
@@ -542,6 +589,7 @@ def load(model: str, capability: str, *, weights_only: bool = False) -> dict:
         worker = Worker(model=model, capability=capability, runner_code=runner.code,
                         token=secrets.token_urlsafe(24))
         _workers[capability] = worker
+        _worker_tokens.add(worker.token)
 
     _report(job, title=model, state="running", kind="download", cancellable=True,
             detail="Preparing…", done=None, total=None)
