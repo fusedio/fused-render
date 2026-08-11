@@ -1,7 +1,7 @@
 // One drawing of "this model is busy", shared by both tabs of /ai-models.
 //
 // It exists because the two tabs ask the same question from opposite sides: the
-// Cached tab shows a repo it already has coming into memory, and Discover shows
+// Local tab shows a repo it already has coming into memory, and Discover shows
 // a repo it does not have arriving on disk. Same job row, same bytes, same bar —
 // and when they were drawn separately, one of them said "Downloaded" while the
 // other was still counting.

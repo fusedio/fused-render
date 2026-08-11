@@ -14,6 +14,36 @@
   align-items: start;
 }
 
+/* The two destinations named in the page's captions: the cache directory this
+   machine fills (Local) and the host this page queries (Discover). One rule,
+   because they are the same idea on either tab — the caption states WHERE, and
+   where should be reachable rather than copied out by hand.
+
+   Underlined only on hover: each sits in a line of plain facts ("8 cached ·
+   43 GB total", "Search results are read-only…") and a permanently underlined
+   run of text would read as the whole caption being a link rather than as one
+   word in it being one. The path wraps, because a hub path under a long
+   username is longer than the page head. */
+.am-cache-dir,
+.am-hub-host {
+  color: inherit;
+  text-decoration: none;
+  overflow-wrap: anywhere;
+}
+
+.am-cache-dir:hover,
+.am-hub-host:hover {
+  color: var(--fg);
+  text-decoration: underline;
+}
+
+.am-cache-dir:focus-visible,
+.am-hub-host:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 3px;
+}
+
 .am-head-actions {
   display: flex;
   flex: 0 0 auto;
@@ -180,7 +210,7 @@
   opacity: 1;
 }
 
-/* -- Cached / Discover, and the Discover tab itself -------------------------
+/* -- Local / Discover, and the Discover tab itself --------------------------
    Cards on both tabs are the same .cc-mdcard/.am-card — one model should not
    look like two different things depending on which tab found it — so what
    lives here is the tab strip, the query controls, and the two badges that only

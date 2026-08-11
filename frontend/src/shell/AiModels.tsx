@@ -19,7 +19,7 @@
 // non-explorer pages read as one surface rather than each inventing a list.
 // Only what those classes have no answer for is local (styles/ai-models.css):
 // the size figure, the Explore link, the revision drawer, and the tab strip.
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import AiModelsDiscover from "./AiModelsDiscover";
 import { ModelProgress } from "./AiProgress";
 import { isBusy, publishAiRuntime, refreshAiRuntime, useAiRuntime } from "./aiRuntime";
@@ -36,9 +36,10 @@ import {
   type AiLoadedModel,
   type AiModelsResult,
 } from "@platform/lib/api";
+import { useNavEpoch } from "@platform/lib/hooks";
 import { fetchJobs, type Job } from "@platform/lib/jobs";
 import { formatSize, formatMtimeFull, formatParams, timeAgo } from "@platform/lib/format";
-import { navigate, urlForFsPath } from "@platform/lib/router";
+import { navigate, navigateUrl, urlForFsPath } from "@platform/lib/router";
 import { pushToast } from "@platform/lib/toast";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { Modal } from "@platform/ui/modal/Modal";
@@ -96,6 +97,21 @@ type Load =
   | { status: "loading" }
   | { status: "ok"; data: AiModelsResult }
   | { status: "error"; message: string };
+
+// "Local", not "Cached": what the tab shows is the models this machine HAS, and
+// "cached" describes the mechanism (a Hugging Face cache directory) rather than
+// the thing. Discover is the other half of the same question — what it could
+// have — and "local vs discover" is the pair that reads.
+export type AiModelsTab = "local" | "discover";
+
+/** The tab the URL asks for. An unknown value falls back to the default
+ *  silently, the same forgiving posture the shell takes for an unknown `_mode`
+ *  (PT-9): a stale link should open the page, not an error. */
+function tabFromUrl(): AiModelsTab {
+  return new URLSearchParams(location.search).get("tab") === "discover"
+    ? "discover"
+    : "local";
+}
 
 // What the confirmation is about. Every destructive action becomes one of these
 // first — there is no path from a click straight to a delete.
@@ -513,11 +529,29 @@ function RepoCard({
 }
 
 export default function AiModels() {
-  // Cached is the default, and Discover is the only thing on this page that
+  // Local is the default, and Discover is the only thing on this page that
   // touches the network — so nothing is sent to a third party until someone
   // asks for it. The tab is not mounted until selected, which is also what
   // keeps the query from firing on page load.
-  const [tab, setTab] = useState<"cached" | "discover">("cached");
+  //
+  // **The tab lives in the URL, not in state** (`?tab=discover`), the pattern
+  // Preferences already uses for its own tabs: it makes the choice
+  // bookmarkable and — the reason it is worth doing here — it puts the toggle
+  // on the BACK BUTTON, which is where a user reaches for "put it back how it
+  // was". `useNavEpoch` is the subscription: it counts pushState and popstate
+  // alike, so a back out of Discover re-reads the URL and lands on Local.
+  const navEpoch = useNavEpoch();
+  const tab = useMemo(tabFromUrl, [navEpoch]);
+  const setTab = (next: AiModelsTab) => {
+    if (next === tab) return;
+    const params = new URLSearchParams(location.search);
+    // The default is the ABSENCE of the param, so /ai-models stays the URL for
+    // the page rather than becoming a redirect to /ai-models?tab=local.
+    if (next === "local") params.delete("tab");
+    else params.set("tab", next);
+    const search = params.toString();
+    navigateUrl(location.pathname + (search ? "?" + search : ""));
+  };
   const [load, setLoad] = useState<Load>({ status: "loading" });
   const [expanded, setExpanded] = useState<string | null>(null);
   const [pending, setPending] = useState<Pending | null>(null);
@@ -581,7 +615,7 @@ export default function AiModels() {
   const anyBusy = isBusy(runtime);
   useEffect(() => {
     // Both tabs now: a Download started from Discover is a job row Discover
-    // draws on its own cards, and gating the poll on the cached tab left those
+    // draws on its own cards, and gating the poll on the Local tab left those
     // cards frozen on "Starting…".
     // Only while something is live: the manager already polls these for its own
     // list, and a second poller on an idle machine is two requests a second for
@@ -716,11 +750,44 @@ export default function AiModels() {
           <div>
             <h2 className="cc-heading">AI Models</h2>
             <div className="cc-caption cc-mono">
-              {tab === "discover"
-                ? "Models on the Hugging Face Hub"
-                : data
-                  ? `${data.cacheDir}${repos.length ? ` · ${repos.length} cached · ${formatSize(data.totalSize)}` : ""}`
-                  : "Hugging Face cache"}
+              {tab === "discover" ? (
+                "Models on the Hugging Face Hub"
+              ) : data ? (
+                <>
+                  {/* The path is a DESTINATION, not a label. It is the one
+                      place on this page that answers "where has all this
+                      actually gone", and the app is a file explorer — leaving
+                      it as text asks the user to copy it into the thing they
+                      are already looking at. A real <a href> so middle-click
+                      and copy-link work, with left-click intercepted for
+                      client-side navigation like every other in-app link. */}
+                  <a
+                    className="am-cache-dir"
+                    href={urlForFsPath(data.cacheDir)}
+                    title={`Open ${data.cacheDir} in the explorer`}
+                    onClick={(e) => {
+                      if (
+                        e.defaultPrevented ||
+                        e.button !== 0 ||
+                        e.metaKey ||
+                        e.ctrlKey ||
+                        e.shiftKey ||
+                        e.altKey
+                      )
+                        return;
+                      e.preventDefault();
+                      navigate(data.cacheDir, { isDir: true });
+                    }}
+                  >
+                    {data.cacheDir}
+                  </a>
+                  {repos.length
+                    ? ` · ${repos.length} cached · ${formatSize(data.totalSize)} total`
+                    : ""}
+                </>
+              ) : (
+                "Hugging Face cache"
+              )}
             </div>
           </div>
           <div className="am-head-actions">
@@ -728,11 +795,12 @@ export default function AiModels() {
               <button
                 type="button"
                 role="tab"
-                aria-selected={tab === "cached"}
-                className={"am-tab" + (tab === "cached" ? " active" : "")}
-                onClick={() => setTab("cached")}
+                aria-selected={tab === "local"}
+                className={"am-tab" + (tab === "local" ? " active" : "")}
+                onClick={() => setTab("local")}
+                title="Models already on this machine"
               >
-                Cached
+                Local
               </button>
               <button
                 type="button"
@@ -759,19 +827,19 @@ export default function AiModels() {
             jobByModel={jobByModel}
           />
         )}
-        {tab === "cached" && load.status === "error" && <ErrorBanner>{load.message}</ErrorBanner>}
-        {tab === "cached" && runtimeError && <ErrorBanner>{runtimeError}</ErrorBanner>}
-        {tab === "cached" && failures.length > 0 && (
+        {tab === "local" && load.status === "error" && <ErrorBanner>{load.message}</ErrorBanner>}
+        {tab === "local" && runtimeError && <ErrorBanner>{runtimeError}</ErrorBanner>}
+        {tab === "local" && failures.length > 0 && (
           <ErrorBanner>
             {failures.map((f) => (
               <div key={f}>{f}</div>
             ))}
           </ErrorBanner>
         )}
-        {tab === "cached" && load.status === "loading" && (
+        {tab === "local" && load.status === "loading" && (
           <p className="cc-empty">Reading the Hugging Face cache…</p>
         )}
-        {tab === "cached" &&
+        {tab === "local" &&
           data &&
           (repos.length ? (
             <div className="cc-mdgrid am-grid">

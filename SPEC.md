@@ -5757,6 +5757,23 @@ an AI Models page that could say what was on disk but not what was *running*.
   entry** whenever anything is resident, naming it on hover: gigabytes held by
   something you have forgotten about is exactly what an indicator is for, and it
   is the same treatment being signed in already gets (AC-1).
+- **AI-7c** **The tab is URL state, and the cache path and the Hub host are
+  links.** The two tabs are **Local** and **Discover** — "cached" names the
+  mechanism (a Hugging Face cache directory) where "local" names the thing, and
+  local-vs-discover is the pair that reads. Which one is showing lives in the
+  URL (`?tab=discover`, the default omitted), the shape Preferences already
+  uses: bookmarkable, and — the reason it is worth doing on a page with two
+  tabs — **on the back button**, which is where a user reaches for "put it
+  back". The page therefore **must not be remounted by its own toggle**: it is
+  the one shell route not keyed on the navigation epoch, because remounting to
+  change a page's own view state would re-walk every blob in the cache and
+  discard whatever was typed into Discover's search. An unrecognised `tab=`
+  value falls back to the default silently (PT-9's posture for `_mode`).
+  Each tab's caption names a DESTINATION and makes it reachable: the cache
+  directory opens in the explorer, the Hub host opens in a new tab. This is a
+  file explorer — leaving the path as text asks the user to copy it into the
+  very thing they are looking at — and the host is the one place the app
+  discloses who it queries, which is worth being able to go and check.
 - **AI-7b** **Discover suggests, and the suggestions know what you have.** A
   short curated list per capability — moved out of the apps that used to carry
   it privately — with size, the reason you would pick each one, and a **✓** on

@@ -132,7 +132,7 @@ function HubCard({ model }: { model: HubModel }) {
           {here && local.path && (
             <a
               className="am-card-explore"
-              // The same URL the cached tab's Explore builds — a raw "#" + path
+              // The same URL the Local tab's Explore builds — a raw "#" + path
               // drops the mode, so a middle-click would land on the folder
               // listing rather than the model card.
               href={urlForFsPath(local.path, "?_mode=model_card")}
@@ -346,7 +346,7 @@ export default function AiModelsDiscover({
   const timer = useRef<number | null>(null);
 
   useEffect(() => {
-    // The filter list is small, static and shared with the cached tab's
+    // The filter list is small, static and shared with the Local tab's
     // vocabulary. A failure here is not worth a banner — the search still
     // works, it just has no task menu.
     getHubTasks().then(
@@ -400,7 +400,13 @@ export default function AiModelsDiscover({
     };
   }, [settled]);
 
-  const host = endpoint ? endpoint.replace(/^https?:\/\//, "") : "huggingface.co";
+  // The host this page is asking, named and reachable. The server reports the
+  // endpoint it actually used (HF_ENDPOINT, validated http(s) there), so a
+  // machine pointed at a mirror says the mirror's name and links to the mirror
+  // — the caption exists to disclose who is being asked, and a name that went
+  // somewhere else would defeat it.
+  const hostUrl = endpoint || "https://huggingface.co";
+  const host = hostUrl.replace(/^https?:\/\//, "");
 
   return (
     <>
@@ -456,7 +462,17 @@ export default function AiModelsDiscover({
       {/* Said plainly, once: this tab is the one place in the app that asks a
           third party a question. */}
       <p className="cc-caption am-hub-note">
-        Searching {host}. Search results are read-only; the suggestions above can be downloaded.
+        Searching{" "}
+        <a
+          className="am-hub-host"
+          href={hostUrl}
+          target="_blank"
+          rel="noopener noreferrer"
+          title={`Open ${host} in a new tab`}
+        >
+          {host}
+        </a>
+        . Search results are read-only; the suggestions above can be downloaded.
       </p>
 
       {error && <ErrorBanner>{error}</ErrorBanner>}

@@ -1170,7 +1170,7 @@ def test_a_vision_language_model_is_still_loadable_as_a_chat_model(client, hub):
 def test_every_suggested_model_could_be_loaded_by_the_page():
     """The catalog and the card must not disagree about the same model.
 
-    Discover recommending a model that the Cached tab then refuses to load is
+    Discover recommending a model that the Local tab then refuses to load is
     the app contradicting itself, and it is what a user actually hit.
     """
     from fused_render.ai import catalog

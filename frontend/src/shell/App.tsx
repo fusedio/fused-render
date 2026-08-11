@@ -708,10 +708,19 @@ export default function App({ config }: { config: Config }) {
     // AI Models — the Hugging Face cache inventory, in the same cc-* page
     // chrome as Artifacts. Reachable by URL even where the sidebar hides its
     // entry (no cache dir yet); the page states that case itself.
+    //
+    // **Not keyed on `epoch`, unlike every branch around it.** The only
+    // same-route navigation this page has is its own Local/Discover toggle,
+    // which lives in the URL (`?tab=`) so the back button can undo it — and
+    // remounting a page to change its own view state would re-walk every blob
+    // in the Hugging Face cache and throw away whatever was typed into
+    // Discover's search. The page subscribes to the URL itself instead.
+    // Arriving from any other route still mounts it fresh: the branches differ
+    // in their children, so React replaces the subtree regardless.
     main = (
-      <div id="content" key={epoch}>
+      <div id="content">
         <div className="cc-page">
-          <AiModels key={epoch} />
+          <AiModels />
         </div>
       </div>
     );

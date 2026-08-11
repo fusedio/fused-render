@@ -151,6 +151,8 @@ once that cache exists; the first download from the Hub creates it.
   library, which the template installs itself under the fused engine; the
   tokenizer's vocabulary and special tokens show either way.) The plain folder
   listing is still one click away in the mode switcher.
+- **The cache path under the heading is a link** — click it to open that folder
+  in the explorer, rather than copying it out by hand.
 - **It looks where `huggingface_hub` looks** — `HF_HUB_CACHE`,
   `HUGGINGFACE_HUB_CACHE`, `$HF_HOME/hub`, `$XDG_CACHE_HOME/huggingface/hub`,
   then `~/.cache/huggingface/hub` — so a shared model disk pinned with `HF_HOME`
@@ -178,6 +180,10 @@ once that cache exists; the first download from the Hub creates it.
     loaded for its text, and its picture-reading half simply goes unused.
   - Text generation currently needs Apple Silicon (it runs on MLX). On other
     machines the button is not offered and the Discover tab says why.
+- **Two tabs: Local and Discover.** Local is what this machine has; Discover is
+  what the Hub has. Which one is showing is part of the address (`?tab=discover`),
+  so you can bookmark or share a link to either — and the **back button** returns
+  you to the tab you came from rather than leaving the page.
 - **The Discover tab searches the Hub for models you don't have.** Type a name,
   filter by task, sort by downloads, likes, recently updated or newest. Each
   result says whether it is **already on this machine** (with what it costs on
@@ -185,8 +191,9 @@ once that cache exists; the first download from the Hub creates it.
   or not here at all, with an estimated size so you know what fetching it would
   cost before you decide. A result you already have opens its model card; one
   you don't opens its page on the Hub in a new tab.
-  - **Nothing is sent anywhere until you open that tab**, and the caption says
-    which host is being asked. Typing is batched into one request, and repeating
+  - **Nothing is sent anywhere until you open that tab**, and the caption names
+    the host being asked — and links to it, so you can go and look.  If
+    `HF_ENDPOINT` points this machine at a mirror, that is the name you see. Typing is batched into one request, and repeating
     a search inside a minute or so reuses the answer rather than asking again.
   - **Download happens here now.** The suggestions below carry a **Download**
     button; the transfer shows up in the download manager at the bottom-right
