@@ -897,8 +897,12 @@ def test_the_narrow_layout_keeps_the_view_toggle_reachable_from_both_views():
     assert "body.view-preview #chat > *:not(#anntools) { display: none; }" in block
     assert "#viewbtn { display: flex" in block
     # Default Chat: an unset param is the conversation, the reason the mode
-    # exists, with the preview one click away.
-    assert 'fused.params.get("paneview") === "preview"' in _pane_source()
+    # exists, with the preview one click away — with one carve-out between the
+    # param and the default: a live wide→narrow crossing keeps the preview via
+    # the transient `narrowCrossView` (a variable, not a param write — a resize
+    # is not a navigation and must not mint a history entry).
+    assert ('(fused.params.get("paneview") || narrowCrossView || "chat") === "preview"'
+            in _pane_source())
 
 
 def test_no_control_for_the_hidden_half_is_reachable_in_the_chat_only_view():
