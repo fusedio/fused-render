@@ -13,6 +13,9 @@ from fused_render.index import runner
 from fused_render.index.config import IndexConfig, load_config
 from fused_render.server import create_app
 from fused_render.server.routers import index as index_router
+from fused_render.server.routers.index import (
+    note_folder_opened as _real_note_folder_opened,
+)
 
 
 class _FakePopen:
@@ -690,12 +693,15 @@ def test_the_freshness_check_runs_at_most_one_at_a_time(home, tmp_path,
     threads = []
     monkeypatch.setattr(index_router.threading, "Thread",
                         lambda **kw: threads.append(kw) or _FakeThread())
-    assert index_router.note_folder_opened(str(tmp_path)) is True
-    assert index_router.note_folder_opened(str(tmp_path)) is False
+    # The REAL function, bound at import: conftest's _no_startup_index_scan
+    # replaces the module attribute for every test, so that this hook cannot
+    # spawn a home scan from a suite that merely lists a directory.
+    assert _real_note_folder_opened(str(tmp_path)) is True
+    assert _real_note_folder_opened(str(tmp_path)) is False
     assert len(threads) == 1
     # The slot frees once the check finishes, so the next open is checked again.
     threads[0]["target"](*threads[0]["args"])
-    assert index_router.note_folder_opened(str(tmp_path)) is True
+    assert _real_note_folder_opened(str(tmp_path)) is True
 
 
 class _FakeThread:

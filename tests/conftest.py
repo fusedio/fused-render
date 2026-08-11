@@ -353,6 +353,17 @@ def _no_startup_index_scan(monkeypatch):
         return None
 
     monkeypatch.setattr(index_routes, "startup_scan", _skip)
+    # Same hazard by a second door: GET /api/fs/list notes the folder for the
+    # index freshness check (scan-incremental.md §5), which runs on a background
+    # thread and can call runner.start. A test listing any path under the
+    # developer's real home would therefore spawn a detached whole-home scan —
+    # a leaked thread that outlives the test and reads whatever
+    # FUSED_RENDER_HOME has moved on to, exactly as above.
+    #
+    # The tests that are ABOUT the check call `_run_freshness_check` /
+    # `freshness.note_folder_opened` directly with their own config
+    # (tests/test_index_api.py, tests/test_index_freshness.py).
+    monkeypatch.setattr(index_routes, "note_folder_opened", lambda path: False)
 
 
 @pytest.fixture(scope="session", autouse=True)
