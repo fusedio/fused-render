@@ -181,15 +181,53 @@ export function stepHighlight(
 }
 
 /**
- * The row Enter activates: the explicit highlight, clamped into the list.
+ * Whether the instant results are a FINISHED answer for the current query.
  *
- * With no highlight there is only one sensible default, and it is the zero-hit
- * case: the AI row is then the only content on screen, so it is pre-selected
- * and Enter runs it. With file hits showing, Enter waits for a choice — firing
- * an AI search because someone pressed Enter out of habit would spend a model
- * call on results they were already reading.
+ * `fileCount === 0` alone cannot tell "not scored yet" from "nothing matches",
+ * and the difference is a paid model call: while the corpus loads or the 120ms
+ * debounce runs, a query with plenty of instant matches shows zero of them.
+ * `cold` and `error` are settled too — no ranking is ever coming for those, so
+ * the AI row really is the only content left.
  */
-export function activeRow(highlight: number | null, fileCount: number): number | null {
-  if (highlight === null) return fileCount === 0 ? 0 : null;
+export function rankingSettled(status: CorpusState["status"], scanning: boolean): boolean {
+  if (status === "idle" || status === "loading") return false;
+  return !scanning;
+}
+
+/**
+ * The row the highlight is ON: the explicit choice, clamped into the list.
+ *
+ * With no highlight there is one default, and it is the settled zero-hit case:
+ * the AI row is then the only content on screen, so it is pre-selected. That
+ * pre-selection is gated on `settled` because it ARMS Enter — offering it while
+ * the scan is still running spends a model call on a query that was about to
+ * answer itself. With file hits showing there is no highlight until the user
+ * picks one; `submitRow` is what Enter consults.
+ */
+export function activeRow(
+  highlight: number | null,
+  fileCount: number,
+  settled: boolean,
+): number | null {
+  if (highlight === null) return fileCount === 0 && settled ? 0 : null;
   return Math.min(highlight, fileCount);
+}
+
+/**
+ * The row Enter commits, which is not always the highlighted one.
+ *
+ * With hits on screen and no arrow-key choice, Enter opens the TOP hit. It used
+ * to resolve to null and do nothing at all — a silent no-op, in the one box in
+ * this app where Enter is the obvious gesture. It still never falls through to
+ * the AI row that way: reaching a paid action takes either zero settled hits or
+ * an explicit highlight.
+ */
+export function submitRow(
+  highlight: number | null,
+  fileCount: number,
+  settled: boolean,
+): number | null {
+  const row = activeRow(highlight, fileCount, settled);
+  if (row !== null) return row;
+  return fileCount > 0 ? 0 : null;
 }

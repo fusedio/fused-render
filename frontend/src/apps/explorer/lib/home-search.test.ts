@@ -6,8 +6,10 @@ import {
   homeCountNote,
   homeHitsFrom,
   pathShortcut,
+  rankingSettled,
   redirectsToSearch,
   stepHighlight,
+  submitRow,
 } from "./home-search";
 import type { IndexSearchResult, WalkEntry } from "@platform/lib/api";
 import type { SearchHit } from "@apps/explorer/listing/types";
@@ -131,12 +133,56 @@ describe("keyboard rows", () => {
   });
 
   it("pre-selects the AI row on zero matches, and nothing otherwise", () => {
-    expect(activeRow(null, 0)).toBe(0); // the AI row is the only content
-    expect(activeRow(null, 5)).toBeNull(); // Enter does nothing yet
-    expect(activeRow(2, 5)).toBe(2);
+    expect(activeRow(null, 0, true)).toBe(0); // the AI row is the only content
+    expect(activeRow(null, 5, true)).toBeNull(); // no highlight to render
+    expect(activeRow(2, 5, true)).toBe(2);
     // A highlight past the end of a shrinking list clamps to the AI row rather
     // than addressing a row that is no longer on screen.
-    expect(activeRow(9, 3)).toBe(3);
+    expect(activeRow(9, 3, true)).toBe(3);
+  });
+
+  it("does not pre-select the AI row until ranking has settled on zero", () => {
+    // "Nothing scored yet" and "zero matches" look identical as a count, and
+    // pre-selecting on the first made Enter during the corpus load or the
+    // 120ms debounce spend a model call on a query with instant matches.
+    expect(activeRow(null, 0, false)).toBeNull();
+    // An explicit arrow-key choice is the user's, settled or not.
+    expect(activeRow(1, 0, false)).toBe(0);
+  });
+});
+
+describe("submitRow", () => {
+  it("opens the top hit when Enter is pressed with no highlight", () => {
+    // Previously a silent no-op: every other search box in the app commits on
+    // Enter, and the top hit is what the list is offering.
+    expect(submitRow(null, 5, true)).toBe(0);
+  });
+
+  it("runs the AI row only once ranking has settled on zero hits", () => {
+    expect(submitRow(null, 0, true)).toBe(0); // fileCount 0 → the AI row
+    // Mid-scan: nothing to commit yet, and the AI row must not be armed.
+    expect(submitRow(null, 0, false)).toBeNull();
+  });
+
+  it("honours an explicit highlight, including the AI row", () => {
+    expect(submitRow(2, 5, true)).toBe(2);
+    expect(submitRow(5, 5, true)).toBe(5);
+  });
+});
+
+describe("rankingSettled", () => {
+  it("is false while the corpus or the scan is still in flight", () => {
+    expect(rankingSettled("idle", false)).toBe(false);
+    expect(rankingSettled("loading", false)).toBe(false);
+    expect(rankingSettled("ok", true)).toBe(false);
+  });
+
+  it("is true once a scan finishes, and for a corpus that will never come", () => {
+    expect(rankingSettled("ok", false)).toBe(true);
+    // Nothing further is coming for these, and the AI row is the only content
+    // left — so Enter must reach it.
+    expect(rankingSettled("cold", false)).toBe(true);
+    expect(rankingSettled("error", false)).toBe(true);
   });
 });
 

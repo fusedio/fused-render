@@ -167,12 +167,11 @@ function stubApi(opts: {
   aiText?: string;
   aiStatus?: number;
   entries?: SearchFileEntry[];
-}): string[] & { sent: AiSearchSpec[] } {
-  const calls = [] as unknown as string[] & { sent: AiSearchSpec[] };
-  calls.sent = [];
+}): { urls: string[]; sent: AiSearchSpec[] } {
+  const calls = { urls: [] as string[], sent: [] as AiSearchSpec[] };
   globalThis.fetch = mock(async (url: string | URL | Request, init?: RequestInit) => {
     const u = String(url);
-    calls.push(u);
+    calls.urls.push(u);
     if (u === "/api/search/files" && typeof init?.body === "string")
       calls.sent.push(JSON.parse(init.body) as AiSearchSpec);
     if (u === "/api/ai") {
@@ -194,7 +193,7 @@ describe("runAiSearch", () => {
       entries: [entry("data/weather.csv")],
     });
     const res = await runAiSearch(HOME, "weather spreadsheet");
-    expect(calls).toEqual(["/api/ai", "/api/search/files"]);
+    expect(calls.urls).toEqual(["/api/ai", "/api/search/files"]);
     expect(res.hits.map((h) => h.path)).toEqual([`${HOME}/data/weather.csv`]);
     expect(res.spec.name_terms).toEqual(["weather"]);
   });
@@ -208,7 +207,7 @@ describe("runAiSearch", () => {
       entries: [],
     });
     const res = await runAiSearch(HOME, "weather spreadsheet");
-    expect(calls.filter((c) => c === "/api/search/files")).toHaveLength(1);
+    expect(calls.urls.filter((c) => c === "/api/search/files")).toHaveLength(1);
     expect(res.hits).toEqual([]);
   });
 
@@ -217,7 +216,7 @@ describe("runAiSearch", () => {
     await expect(runAiSearch(HOME, "weather")).rejects.toThrow(/could not/i);
     // Nothing was sent to the engine: a keyword search on the user's own words
     // would be a different question answered silently.
-    expect(calls).toEqual(["/api/ai"]);
+    expect(calls.urls).toEqual(["/api/ai"]);
   });
 
   it("reports a spec that narrows nothing the engine understands", async () => {
@@ -225,7 +224,7 @@ describe("runAiSearch", () => {
     // half the disk — the endpoint would refuse it a round trip later.
     const calls = stubApi({ aiText: JSON.stringify({ kind: "dir" }) });
     await expect(runAiSearch(HOME, "show me folders")).rejects.toThrow(/narrow/i);
-    expect(calls).toEqual(["/api/ai"]);
+    expect(calls.urls).toEqual(["/api/ai"]);
   });
 
   it("answers a path-hints-only query — a place IS something to narrow by", async () => {
@@ -236,7 +235,7 @@ describe("runAiSearch", () => {
       entries: [entry("Downloads/a.csv")],
     });
     const res = await runAiSearch(HOME, "stuff in downloads");
-    expect(calls).toEqual(["/api/ai", "/api/search/files"]);
+    expect(calls.urls).toEqual(["/api/ai", "/api/search/files"]);
     expect(calls.sent[0].path_hints).toEqual(["downloads"]);
     expect(res.hits.map((h) => h.path)).toEqual([`${HOME}/Downloads/a.csv`]);
   });
@@ -279,7 +278,7 @@ describe("runAiSearch name-term softening", () => {
     const res = await runAiSearch(HOME, "videos I downloaded last week");
     // One model call, one engine query — the deleted name-stripped retry is
     // not back; the softening happens BEFORE the single request.
-    expect(calls).toEqual(["/api/ai", "/api/search/files"]);
+    expect(calls.urls).toEqual(["/api/ai", "/api/search/files"]);
     expect(calls.sent[0].name_terms).toEqual([]);
     // The unnamed video survives, and the named one still ranks first.
     expect(res.hits.map((h) => h.path)).toEqual([

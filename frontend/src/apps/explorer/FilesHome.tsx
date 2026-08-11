@@ -12,8 +12,9 @@ import { getClaudeSessionFolders, indexSearch, statPath } from "@platform/lib/ap
 import { allBookmarks, hydrateBookmarks, loadBookmarks } from "@platform/lib/bookmarks";
 import { useBookmarksVersion, useUrlVersion } from "@platform/lib/hooks";
 import {
+  fsMutationCount,
   indexLifecycleCount,
-  indexMayAnswer,
+  subscribeFsMutations,
   subscribeIndexLifecycle,
 } from "@platform/lib/index-freshness";
 import { hydrateRecents, loadRecents, recentFsPath, useRecentsVersion } from "@apps/explorer/lib/recents";
@@ -27,8 +28,10 @@ import {
   homeHitsFrom,
   isAiRow,
   pathShortcut,
+  rankingSettled,
   redirectsToSearch,
   stepHighlight,
+  submitRow,
   type CorpusState,
   type HomeHit,
 } from "@apps/explorer/lib/home-search";
@@ -145,19 +148,22 @@ function FileRow({
 // The last row: an ACTION, not a hit. Deliberately unlike the file rows above
 // it (accent glyph, no path, no size) because activating it costs a model call
 // and a wait, and because on a zero-hit query it is the only thing on screen.
+//
+// Deliberately NOT hoverable, unlike the file rows: setting the highlight on
+// mousemove meant nudging the pointer across the list armed Enter to spend a
+// model call. A pointer merely crossing a row must not arm a paid action —
+// reaching this one takes an arrow key or a click.
 function AiActionRow({
   query,
   active,
   running,
   id,
-  onHover,
   onRun,
 }: {
   query: string;
   active: boolean;
   running: boolean;
   id: string;
-  onHover: () => void;
   onRun: () => void;
 }) {
   return (
@@ -166,7 +172,6 @@ function AiActionRow({
         type="button"
         className={"fh-result fh-ai-row" + (active ? " is-active" : "")}
         disabled={running}
-        onMouseMove={onHover}
         onClick={onRun}
       >
         <span className="fh-result-icon fh-ai-glyph" aria-hidden="true">
@@ -249,6 +254,21 @@ function FilesSearch({
   // lib/index-freshness.
   const [lifecycle, setLifecycle] = useState(indexLifecycleCount);
   useEffect(() => subscribeIndexLifecycle(() => setLifecycle(indexLifecycleCount())), []);
+  // An in-app rename/delete moves paths the fetched corpus already holds, so
+  // search would find the old name and the click would 404. It is a REFETCH
+  // trigger, not a gate: `indexMayAnswer(home)` used to disable instant search
+  // outright, and since `touched` is session-scoped and home is an ancestor of
+  // every mutation, one rename anywhere pinned this page to "still building"
+  // for the rest of the session — while the index was in fact built. The home
+  // page has no live walk to fall back on, so switching search OFF is the worst
+  // available outcome: a corpus one rename stale beats no corpus at all.
+  // (useWalkSearch keeps the gate because it HAS a live walk to prefer.)
+  const [mutations, setMutations] = useState(fsMutationCount);
+  useEffect(() => subscribeFsMutations(() => setMutations(fsMutationCount())), []);
+  // Bumped by a real gesture (typing) to re-run a failed fetch. Without it a
+  // `setCorpus({status:"error"})` was terminal: none of the other deps is
+  // something a user can move, so search stayed dead until a reload.
+  const [retryNonce, setRetryNonce] = useState(0);
   // Requested on the first keystroke and never unrequested: dropping the
   // corpus when the box is cleared would re-fetch it on the next letter typed.
   const [wanted, setWanted] = useState(active);
@@ -257,13 +277,6 @@ function FilesSearch({
   }, [active]);
   useEffect(() => {
     if (!wanted) return;
-    // A folder this app changed since the last scan is not the index's to
-    // answer for; the home page has no live walk to fall back on, so it says
-    // so rather than serving pre-change paths.
-    if (!indexMayAnswer(home)) {
-      setCorpus({ status: "cold" });
-      return;
-    }
     const ctl = new AbortController();
     setCorpus((prev) => (prev.status === "ok" ? prev : { status: "loading" }));
     indexSearch(home, { signal: ctl.signal }).then(
@@ -276,7 +289,7 @@ function FilesSearch({
       },
     );
     return () => ctl.abort();
-  }, [home, wanted, lifecycle]);
+  }, [home, wanted, lifecycle, mutations, retryNonce]);
 
   // -- ranking ---------------------------------------------------------------
   // The same sliced, cancellable scan the in-folder search runs: a covered home
@@ -368,6 +381,12 @@ function FilesSearch({
   };
   const runAi = (target: string) => {
     if (!target) return;
+    // Re-entry guard, the keyboard's half of the `disabled` that already
+    // protects the mouse path: Enter on the AI row while a search is in flight
+    // aborted and re-issued it, so three impatient presses were three billed
+    // model calls. Editing the query is the way to change what is running (it
+    // resets the phase), so a running search is never for a stale query.
+    if (ai.status === "running") return;
     aiCtl.current?.abort();
     const ctl = new AbortController();
     aiCtl.current = ctl;
@@ -400,6 +419,9 @@ function FilesSearch({
   const edit = (value: string) => {
     setQuery(value);
     setHighlight(null);
+    // Typing is a user gesture, so it is also the retry for a failed corpus
+    // fetch — the same way useWalkSearch re-arms its stream from setQuery.
+    if (corpus.status === "error") setRetryNonce((n) => n + 1);
     // Editing the query is how the user gets back from AI results to instant
     // ones, so it drops the AI phase — and the ?q= that a committed search set.
     if (ai.status !== "off") {
@@ -419,7 +441,11 @@ function FilesSearch({
   }, []);
 
   const showingAi = ai.status === "done" && ai.query === q;
-  const current = activeRow(highlight, hits.length);
+  // Whether the instant list is a finished answer. Gates the AI row's
+  // pre-selection, so Enter during the corpus load or the scan debounce cannot
+  // spend a model call on a query that was about to answer itself.
+  const settled = rankingSettled(corpus.status, scanning);
+  const current = activeRow(highlight, hits.length, settled);
 
   const openRow = (row: number) => {
     if (isAiRow(row, hits.length)) runAi(q);
@@ -427,8 +453,8 @@ function FilesSearch({
   };
 
   // Enter with no row chosen: a query that is really an ADDRESS goes straight
-  // there (a pasted ~/Downloads is not a search), and a query with no index
-  // matches runs the AI search, because that row is the only content.
+  // there (a pasted ~/Downloads is not a search); otherwise it commits the top
+  // hit, or — only once ranking has settled on nothing — the AI row.
   const submit = async () => {
     if (highlight === null) {
       const target = pathShortcut(q, home);
@@ -442,7 +468,8 @@ function FilesSearch({
         }
       }
     }
-    if (current !== null) openRow(current);
+    const row = submitRow(highlight, hits.length, settled);
+    if (row !== null) openRow(row);
   };
 
   return (
@@ -530,7 +557,6 @@ function FilesSearch({
               active={current === hits.length}
               running={ai.status === "running"}
               id={"fh-row-" + hits.length}
-              onHover={() => setHighlight(hits.length)}
               onRun={() => runAi(q)}
             />
           </ul>
