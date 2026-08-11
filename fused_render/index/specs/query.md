@@ -204,15 +204,18 @@ wants the hits.
 two views in SQL, and they are public because a **second reader** now uses them: the AI
 file search's index engine (`server/routers/search.py`, `POST /api/search/files`), which
 compiles its validated filter spec into one query over these views and returns rows
-without statting anything. Its own filters, refusals and fallbacks belong to that module
-— what belongs here is the invariant every reader must obey: the views are named from the
-**manifest**, never from a glob of the files dir, because a compaction leaves the
-previous generation's partitions on disk for readers still holding the old manifest
-(`index-store.md §4`) and a glob would count both generations.
+without statting anything. It is that endpoint's **only** engine — Spotlight and the
+bounded home walk that used to sit behind it are gone — so the index's coverage is now
+the search's coverage: the configured roots, home by default, and a missing index is
+reported to the user as an error instead of as an empty disk. Those filters and refusals
+belong to that module; what belongs here is the invariant every reader must obey: the
+views are named from the **manifest**, never from a glob of the files dir, because a
+compaction leaves the previous generation's partitions on disk for readers still holding
+the old manifest (`index-store.md §4`) and a glob would count both generations.
 
-The schema is what decides which spec fields an index query can honour: the files table
-carries `mtime` and **no birth time**, so a creation-date filter is not answerable here
-and its caller has to hand the query to an engine that stats.
+The schema is what decides which spec fields a search can offer at all: the files table
+carries `mtime` and **no birth time**, so there is no creation-date filter anywhere in
+the feature — the endpoint refuses one rather than answering it with modification time.
 
 ## Non-goals
 

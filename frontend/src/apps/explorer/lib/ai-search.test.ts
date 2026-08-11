@@ -24,7 +24,6 @@ describe("parseAiSearchSpec", () => {
         kind: "file",
         modified_after: "2026-08-01",
         modified_before: "2026-08-05",
-        created_after: "2026-07-01",
         min_size_bytes: null,
         max_size_bytes: null,
         path_hints: ["data"],
@@ -35,8 +34,6 @@ describe("parseAiSearchSpec", () => {
     expect(spec!.kind).toBe("file");
     expect(spec!.modified_after).toBe("2026-08-01");
     expect(spec!.modified_before).toBe("2026-08-05");
-    expect(spec!.created_after).toBe("2026-07-01");
-    expect(spec!.created_before).toBeNull();
   });
 
   it("peels code fences the model adds despite instructions", () => {
@@ -58,7 +55,6 @@ describe("parseAiSearchSpec", () => {
         kind: "everything",
         modified_after: "last week", // not a date
         modified_before: "2026-02-31", // shape of a date, not a real one
-        created_after: 20260801,
         min_size_bytes: "big",
       }),
     );
@@ -67,7 +63,6 @@ describe("parseAiSearchSpec", () => {
     expect(spec!.kind).toBe("any");
     expect(spec!.modified_after).toBeNull();
     expect(spec!.modified_before).toBeNull();
-    expect(spec!.created_after).toBeNull();
     expect(spec!.min_size_bytes).toBeNull();
   });
 });
@@ -77,7 +72,7 @@ describe("hasNonNameFilters", () => {
     expect(hasNonNameFilters(fallbackSpec("weather"))).toBe(false);
     expect(hasNonNameFilters({ ...fallbackSpec(""), extensions: ["mov"] })).toBe(true);
     expect(hasNonNameFilters({ ...fallbackSpec(""), modified_after: "2026-08-04" })).toBe(true);
-    expect(hasNonNameFilters({ ...fallbackSpec(""), created_before: "2026-08-04" })).toBe(true);
+    expect(hasNonNameFilters({ ...fallbackSpec(""), max_size_bytes: 100 })).toBe(true);
   });
 });
 

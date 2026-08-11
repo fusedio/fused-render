@@ -396,9 +396,8 @@ export function deleteIndex(): Promise<{ deleted: boolean }> {
   });
 }
 
-// One hit from POST /api/search/files (the AI search's execution engine — the
-// app's SQL index first, then Spotlight on macOS, then a bounded home walk).
-// `path` is absolute.
+// One hit from POST /api/search/files (the AI search's execution engine — one
+// SQL query against the app's file index, the only engine). `path` is absolute.
 export interface SearchFileEntry {
   path: string;
   is_dir: boolean;
@@ -409,14 +408,17 @@ export interface SearchFileEntry {
 export interface SearchFilesResult {
   entries: SearchFileEntry[];
   truncated: boolean;
-  engine: string; // "index" | "spotlight" | "walk" — which engine answered
+  // Always "index" now that the index is the only engine; kept in the response
+  // for older clients and because "what answered this" is the first support
+  // question about a surprising result.
+  engine: string;
 }
 
-// System-wide file search from a filter spec (see apps/explorer/lib/ai-search).
-// Takes a signal because a new search must be able to abandon the previous
-// engine run mid-flight (Spotlight on a broad query can take seconds; the
-// index engine answers in one SQL query, but it is not always the one that
-// runs — see the server's search.py for the fallback order).
+// File search from a filter spec (see apps/explorer/lib/ai-search), scoped to
+// whatever the index has scanned — home by default. Takes a signal because a new
+// search must be able to abandon the previous one mid-flight. A missing or
+// unreadable index is an ERROR here (503/502), never an empty result: see the
+// server's search.py.
 export async function searchFiles(
   spec: unknown,
   signal?: AbortSignal,

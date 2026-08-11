@@ -1,11 +1,12 @@
-"""/api/search/files answered from the SQL index, with the old engines behind it.
+"""/api/search/files, answered from the SQL index — the only engine.
 
-The AI search's filter spec used to execute against Spotlight (or a home walk).
-The index holds the same facts in parquet — name, ext, size, mtime — so the spec
-translates into ONE SQL query with no filesystem touch at all. These tests pin
-the translation (dates inclusive both ends, kind routing, ext/size only on
-files), the truncation flag, and every condition that must hand the query back
-to Spotlight instead of answering wrongly.
+The AI search's filter spec used to execute against Spotlight (or a bounded home
+walk). The index holds the same facts in parquet — name, ext, size, mtime — so
+the spec translates into ONE SQL query with no filesystem touch at all, and both
+of the old engines are gone. These tests pin the translation (dates inclusive
+both ends, kind routing, ext/size only on files), the truncation flag, and the
+contract when the index cannot answer: an honest empty result for a miss, and a
+plain error — never a silently narrower answer — when there is no index to read.
 """
 import os
 
@@ -18,7 +19,11 @@ from fused_render.index.config import IndexConfig
 from fused_render.index.store import Sink, compact
 from fused_render.server import create_app
 from fused_render.server.routers import search as search_mod
-from fused_render.server.routers.search import _day_bound_epoch, _search_index
+from fused_render.server.routers.search import (
+    IndexUnavailable,
+    _day_bound_epoch,
+    _search_index,
+)
 
 
 def spec(**over):
@@ -29,8 +34,6 @@ def spec(**over):
         "modified_within_days": None,
         "modified_after": None,
         "modified_before": None,
-        "created_after": None,
-        "created_before": None,
         "min_size_bytes": None,
         "max_size_bytes": None,
     }
@@ -111,8 +114,9 @@ def test_index_engine_kind_routes_which_views_are_queried(tmp_path):
 
 
 def test_index_engine_matches_name_terms_against_the_name_not_the_path(tmp_path):
-    """mdfind matches kMDItemFSName, so a term that only appears in an ANCESTOR
-    directory is not a file hit — the two engines must agree on that."""
+    """Terms match the NAME column: a term that only appears in an ancestor
+    directory is a hit on that directory, not on the files inside it (the
+    client scores the whole relative path afterwards)."""
     cfg = _index(tmp_path, "/r", [("/r/report/data.csv", 10, 100.0)],
                  dirs=["/r/report"])
     assert _paths(_search_index(spec(name_terms=["report"]), cfg)) == ["/r/report"]
@@ -125,13 +129,15 @@ def test_index_engine_skips_the_dirs_view_when_nothing_narrows_a_directory(tmp_p
     cfg = _index(tmp_path, "/r", [("/r/clip.mp4", 10, 100.0)],
                  dirs=["/r/movies"])
     assert _paths(_search_index(spec(extensions=["mp4"]), cfg)) == ["/r/clip.mp4"]
-    # dir-only, with nothing a dirs row can answer: handed to the next engine
-    assert _search_index(spec(extensions=["mp4"], kind="dir"), cfg) is None
+    # dir-only, with nothing a dirs row can answer: refused, not answered with
+    # every folder there is — there is no wider engine to hand it to.
+    with pytest.raises(ValueError, match="folder"):
+        _search_index(spec(extensions=["mp4"], kind="dir"), cfg)
 
 
 def test_index_engine_lets_dirs_past_extension_and_size_filters(tmp_path):
-    """_match_walk_entry's rule: extension and size are FILE facts, so a dir
-    hit passes them (the index has no size for a directory at all)."""
+    """Extension and size are FILE facts, so a dir hit passes them (the index
+    has no size for a directory at all)."""
     cfg = _index(tmp_path, "/r", [], dirs=["/r/reports"])
     out = _search_index(
         spec(name_terms=["report"], extensions=["csv"], min_size_bytes=10_000), cfg)
@@ -148,8 +154,7 @@ def test_index_engine_size_bounds_apply_to_files(tmp_path):
 
 def test_index_engine_date_ranges_are_inclusive_local_days(tmp_path):
     """`modified_after: 06-01` includes everything from that local midnight and
-    `modified_before: 06-30` includes all of the 30th — the same bounds
-    _day_bound_epoch gives the other two engines."""
+    `modified_before: 06-30` includes all of the 30th."""
     first = _day_bound_epoch("2026-06-01", False)
     last_end = _day_bound_epoch("2026-06-30", True)
     cfg = _index(tmp_path, "/r", [
@@ -232,28 +237,23 @@ def test_index_engine_drops_gitignored_hits(tmp_path):
     assert _paths(out) == [f"{root}/keep.mov"]
 
 
-# -- when the index hands the query back --------------------------------------
+# -- when the index cannot answer ---------------------------------------------
 
-def test_index_engine_declines_a_never_built_index(tmp_path):
+def test_a_never_built_index_is_an_error_not_an_empty_disk(tmp_path):
+    """With no engine behind it, "no index" cannot be reported as "no matches":
+    the box has to say the index is not ready, not imply the file is not there.
+    The client shows the message it gets, so the failure is visible."""
     cfg = IndexConfig(dir=str(tmp_path / "empty"))
-    assert _search_index(spec(name_terms=["x"]), cfg) is None
+    with pytest.raises(IndexUnavailable):
+        _search_index(spec(name_terms=["x"]), cfg)
 
 
-def test_index_engine_declines_a_created_range(tmp_path):
-    """The files table has mtime and no birth time, so a created_* filter can
-    only be honored by an engine that stats — silently ignoring it would answer
-    a different question than the user asked."""
+def test_a_zero_hit_query_is_an_honest_empty_result(tmp_path):
+    """A miss is a miss. There is no wider engine to consult, so an empty
+    result set is the answer — reported as one, with `engine` still set."""
     cfg = _index(tmp_path, "/r", [("/r/a.txt", 10, 100.0)])
-    assert _search_index(spec(name_terms=["a"], created_after="2026-06-01"), cfg) is None
-    assert _search_index(spec(name_terms=["a"], created_before="2026-06-01"), cfg) is None
-
-
-def test_index_engine_declines_a_zero_hit_query(tmp_path):
-    """The index covers the configured roots (home by default); Spotlight
-    covers the whole disk. So no hits means "ask the wider engine", not "no
-    such file"."""
-    cfg = _index(tmp_path, "/r", [("/r/a.txt", 10, 100.0)])
-    assert _search_index(spec(name_terms=["nothing-like-this"]), cfg) is None
+    out = _search_index(spec(name_terms=["nothing-like-this"]), cfg)
+    assert out == {"entries": [], "truncated": False, "engine": "index"}
 
 
 def test_index_engine_refuses_a_spec_with_no_narrowing_constraint(tmp_path):
@@ -264,13 +264,15 @@ def test_index_engine_refuses_a_spec_with_no_narrowing_constraint(tmp_path):
         _search_index(spec(kind="dir"), cfg)
 
 
-def test_index_engine_declines_when_the_query_errors(tmp_path, monkeypatch):
-    """A corrupt or half-deleted store must degrade to Spotlight, not 502."""
+def test_a_query_failure_is_reported_not_swallowed(tmp_path):
+    """A corrupt or half-deleted store used to degrade to Spotlight; with
+    nothing to degrade to, it has to surface."""
     cfg = _index(tmp_path, "/r", [("/r/a.txt", 10, 100.0)])
     for name in os.listdir(cfg.files_dir):
         with open(os.path.join(cfg.files_dir, name), "wb") as f:
             f.write(b"not parquet")
-    assert _search_index(spec(name_terms=["a"]), cfg) is None
+    with pytest.raises(RuntimeError):
+        _search_index(spec(name_terms=["a"]), cfg)
 
 
 # -- the endpoint --------------------------------------------------------------
@@ -280,16 +282,13 @@ def client(tmp_path):
     return TestClient(create_app(start_dir=str(tmp_path)))
 
 
-def test_endpoint_answers_from_the_index_without_touching_spotlight(
-        client, tmp_path, monkeypatch):
+def test_the_endpoint_has_no_engine_but_the_index(client, tmp_path, monkeypatch):
+    """Spotlight and the home walk are gone, not merely deprioritized."""
+    for gone in ("_search_mdfind", "_search_walk_home", "_mdfind_query",
+                 "_match_walk_entry", "_stat_entry"):
+        assert not hasattr(search_mod, gone), gone
     cfg = _index(tmp_path, "/r", [("/r/quarterly.csv", 10, 100.0)])
     monkeypatch.setattr(search_mod, "load_config", lambda: cfg)
-
-    def boom(spec):
-        raise AssertionError("the index answered; no engine below it should run")
-
-    monkeypatch.setattr(search_mod, "_search_mdfind", boom)
-    monkeypatch.setattr(search_mod, "_search_walk_home", boom)
     res = client.post("/api/search/files", json={"name_terms": ["quarterly"]})
     assert res.status_code == 200
     body = res.json()
@@ -297,15 +296,28 @@ def test_endpoint_answers_from_the_index_without_touching_spotlight(
     assert [e["path"] for e in body["entries"]] == ["/r/quarterly.csv"]
 
 
-def test_endpoint_falls_back_when_there_is_no_index(client, tmp_path, monkeypatch):
+def test_the_endpoint_reports_a_missing_index_as_a_503(client, tmp_path, monkeypatch):
     cfg = IndexConfig(dir=str(tmp_path / "empty"))
     monkeypatch.setattr(search_mod, "load_config", lambda: cfg)
-    monkeypatch.setattr(
-        search_mod, "_search_mdfind",
-        lambda spec: {"entries": [], "truncated": False, "engine": "spotlight"})
-    monkeypatch.setattr(
-        search_mod, "_search_walk_home",
-        lambda spec: {"entries": [], "truncated": False, "engine": "walk"})
     res = client.post("/api/search/files", json={"name_terms": ["quarterly"]})
+    assert res.status_code == 503
+    # A message a search box can show verbatim, not a traceback.
+    assert "index" in res.json()["error"]
+
+
+def test_the_endpoint_returns_an_empty_ok_for_a_miss(client, tmp_path, monkeypatch):
+    cfg = _index(tmp_path, "/r", [("/r/a.txt", 10, 100.0)])
+    monkeypatch.setattr(search_mod, "load_config", lambda: cfg)
+    res = client.post("/api/search/files", json={"name_terms": ["zzzz"]})
     assert res.status_code == 200
-    assert res.json()["engine"] in ("spotlight", "walk")
+    assert res.json() == {"ok": True, "entries": [], "truncated": False,
+                          "engine": "index"}
+
+
+def test_the_endpoint_rejects_a_creation_date_filter(client, tmp_path, monkeypatch):
+    cfg = _index(tmp_path, "/r", [("/r/a.txt", 10, 100.0)])
+    monkeypatch.setattr(search_mod, "load_config", lambda: cfg)
+    res = client.post("/api/search/files",
+                      json={"name_terms": ["a"], "created_after": "2026-06-01"})
+    assert res.status_code == 400
+    assert "created" in res.json()["error"]
