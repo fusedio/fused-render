@@ -253,6 +253,14 @@ _FRIENDLIER_TAGS = {
     # out, so the "+" is doing the work the hyphens could not.
     "image-text-to-text": "image + text to text",
     "any-to-any": "any input to any output",
+    # These two exist to make the CARD path and the ARCHITECTURE path agree on
+    # one spelling. Left alone, a whisper model read from its card said
+    # "automatic speech recognition" while the same model read from its config
+    # said "speech recognition" — one concept, two labels, and the glossary
+    # (keyed by label) only had a sentence for one of them.
+    "automatic-speech-recognition": "speech recognition",
+    "zero-shot-image-classification": "zero-shot image classification",
+    "zero-shot-classification": "zero-shot text classification",
 }
 
 # transformers architecture suffix -> task. Ordered: the first match wins, so
@@ -346,6 +354,7 @@ _TASK_HELP = {
     "speech recognition": "Transcribes speech in audio into text.",
     "image classification": "Says what an image is a picture of, from a fixed set of labels.",
     "zero-shot image classification": "Says what an image shows, against labels you supply at the time rather than a fixed set.",
+    "zero-shot text classification": "Sorts text into categories you supply at the time rather than a fixed set.",
     "image segmentation": "Marks which pixels belong to which object.",
     "object detection": "Finds objects in an image and boxes them.",
     "depth estimation": "Estimates how far away each part of an image is.",

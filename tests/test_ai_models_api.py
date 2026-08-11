@@ -1092,3 +1092,41 @@ def test_an_unknown_tag_still_shows_its_label_and_source(client, hub):
     assert row["task"] == "graph ml"
     assert row["taskSource"] == "the model card's pipeline_tag"
     assert row["taskHelp"] is None
+
+
+def test_every_label_this_module_can_produce_is_explained():
+    """The glossary is keyed by LABEL so one table serves both evidence paths —
+    which only works while the paths agree on the label.
+
+    They drifted once: a whisper model read from its card said "automatic
+    speech recognition" and the same model read from its config said "speech
+    recognition", so the card path — the preferred one — fell through the
+    glossary. This pins the invariant instead of the two instances: every label
+    the module's OWN tables can produce has a sentence. (Passthrough tags from
+    the Hub's open vocabulary are deliberately not covered; those degrade to
+    label + source.)
+    """
+    produced = set(ai_models_mod._FRIENDLIER_TAGS.values())
+    produced |= {task for _, task in ai_models_mod._ARCH_TASKS}
+    produced |= {ai_models_mod._diffusers_task(name)
+                 for name in ("StableDiffusionPipeline", "StableVideoDiffusionPipeline", "MusicGenPipeline")}
+    produced |= {"embeddings", "text generation"}  # the sentence-transformers and GGUF branches
+    missing = sorted(label for label in produced if label not in ai_models_mod._TASK_HELP)
+    assert not missing, f"labels with no explanation: {missing}"
+
+
+@requires_symlinks
+def test_both_evidence_paths_agree_on_the_label(client, hub):
+    # Same model, same concept: whichever evidence answers, the card reads the
+    # same and the hover explains it.
+    card = _repo(hub, "models--org--from-card", blobs={"w": 10}, snapshots={"c1": {"m": "w"}}, refs={"main": "c1"})
+    _snapshot_file(card, "c1", "README.md", "---\npipeline_tag: automatic-speech-recognition\n---\n")
+    config = _repo(hub, "models--org--from-config", blobs={"w": 10}, snapshots={"c1": {"m": "w"}}, refs={"main": "c1"})
+    _snapshot_file(config, "c1", "config.json",
+                   json.dumps({"architectures": ["WhisperForConditionalGeneration"], "model_type": "whisper"}))
+    from_card, from_config = _repo_row(client, "org/from-card"), _repo_row(client, "org/from-config")
+    assert from_card["task"] == from_config["task"] == "speech recognition"
+    assert from_card["taskHelp"] == from_config["taskHelp"]
+    # …while still reporting which evidence answered.
+    assert from_card["taskSource"] == "the model card's pipeline_tag"
+    assert from_config["taskSource"] == "the architecture in config.json"
