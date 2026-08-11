@@ -67,15 +67,29 @@ describe("navigate carries the frozen-tree framing", () => {
     expect(url).toBe("/explorer/view/w/snap/a.md?snapshot=1");
   });
 
-  test("it rides alongside the sticky pane mode and an explicit mode", () => {
-    const url = pushedFrom("?snapshot=1&_panelMode=code&sort=size", () =>
+  test("it rides alongside the sticky pane state and an explicit mode", () => {
+    const url = pushedFrom("?snapshot=1&_side=git&sort=size", () =>
       navigate("/w/snap/docs", { isDir: true, mode: "claude" }),
     );
     expect(url).toContain("snapshot=1");
-    expect(url).toContain("_panelMode=code");
+    expect(url).toContain("_side=git");
     expect(url).toContain("_mode=claude");
     // Ordinary view params are still dropped by a hop.
     expect(url).not.toContain("sort=size");
+  });
+
+  // `_side` is the PANE's state, and the pane only exists over a folder — so a
+  // folder hop carries it and opening a file does not. The file view has a `_side`
+  // of its own (Preview's companion sidebar) whose absent value means CLOSED, and
+  // handing it the folder's `off`/`preview` would be handing it a mode it has no
+  // entry for; each surface seeds its own from its own URL.
+  test("the sticky pane state is folder-only", () => {
+    expect(pushedFrom("?_side=git", () => navigate("/w/docs", { isDir: true }))).toBe(
+      "/explorer/view/w/docs?_side=git",
+    );
+    expect(pushedFrom("?_side=git", () => navigate("/w/a.md", { isDir: false }))).toBe(
+      "/explorer/view/w/a.md",
+    );
   });
 
   test("an ordinary page invents no flag", () => {

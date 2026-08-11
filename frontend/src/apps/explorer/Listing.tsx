@@ -12,6 +12,7 @@
 //   search.ts              fuzzy scoring / ranking (pure)
 //   selection.ts           selection model + cross-remount stash (pure)
 //   pane.ts                preview-pane split (usePreviewPane: width + drag)
+//   pane-side.ts           the pane's three modes + the `_side` param (pure)
 //   row-utils.ts           RowCtx batch helpers
 //   bits.tsx               skeleton rows, ClipMark, highlight, scroll anchor
 //   useDirListing.ts       /api/fs/list fetch, Load more, dir watch, new-row cue
@@ -65,6 +66,18 @@ import {
   measureScrollAnchor,
 } from "@apps/explorer/listing/bits";
 import { usePreviewPane } from "@apps/explorer/listing/pane";
+import {
+  activePaneSide,
+  paneKey,
+  paneSideList,
+  paneSideParam,
+  parsePaneSide,
+  type PaneSide,
+  type PaneSideState,
+} from "@apps/explorer/listing/pane-side";
+import { useDirMode } from "@apps/explorer/lib/dir-mode";
+import { SideToggleButton, paneSideIcon } from "@apps/explorer/SideChrome";
+import { modeTitle } from "@platform/lib/mode-name";
 import { passedDragSlop } from "@apps/explorer/listing/marquee";
 import {
   INITIAL_SEARCH_SELECT,
@@ -224,10 +237,68 @@ export default function Listing({
   // in its own column. A flag that could only ever be written beside another
   // one is the "three places to agree about one bit" the pane's own history
   // (pane.ts) is a warning about.
-  const { pane, splitRef, onDividerPointerDown } = usePreviewPane(
-    fsPath,
-    !embedded && !IS_SNAPSHOT
+  const paneEnabled = !embedded && !IS_SNAPSHOT;
+  const { pane, splitRef, onDividerPointerDown } = usePreviewPane(fsPath, paneEnabled);
+
+  // --- the pane's THREE modes, and whether it is open at all ------------------
+  // `pane.on` above is the LAYOUT's answer ("is there room for two columns?",
+  // pane.ts) and is not a choice. This is the user's, on top of it: which of the
+  // pane's three modes it is showing, or that they have shut it — recorded as
+  // `_side` on the folder URL, whose semantics (and why an ABSENT one means OPEN
+  // here while it means CLOSED on a file view) are written down in
+  // listing/pane-side.ts.
+  //
+  // The mode is kept here and not in the pane because the pane is keyed on the
+  // previewed row and remounts as the selection moves, while a chosen mode must
+  // not; and because the reopening half of the affordance has to render while
+  // the pane does not exist at all (see the search row below).
+  const [sideState, setSideState] = useState<PaneSideState>(() =>
+    parsePaneSide(paneEnabled ? new URLSearchParams(location.search).get("_side") : null)
   );
+  // Both companions' entries come from the OPEN FOLDER, resolved through the
+  // ordinary stat + condition machinery (lib/dir-mode — which caches per
+  // directory, so this is one probe for the folder rather than one per selection).
+  // `git` because a working tree belongs to the folder; `claude` because the
+  // pane's chat is the FOLDER VIEW's companion, aimed at whichever row is
+  // selected, so which chat template to use is a question about the folder too.
+  //
+  // A folder outside a repository loses the Git pill, and one on a mount loses
+  // both (each gate refuses a mount-backed path) — at which point the pill hides
+  // itself, "one mode is not a choice", and the pane is what it always was.
+  const folderClaude = useDirMode(paneEnabled ? fsPath : null, "claude");
+  const folderGit = useDirMode(paneEnabled ? fsPath : null, "git");
+  // While the probe is in flight the entries are PLACEHOLDERS with no template
+  // path (lib/dir-mode), which would build a `path=null` iframe URL — so a
+  // pending companion is simply not offered yet. Unlike the file sidebar there is
+  // nothing to protect by listing it early: the folder's `_side` is never
+  // reconciled away (pane-side's activePaneSide leaves an unavailable request in
+  // the URL on purpose), so a `?_side=git` deep link survives the wait and lands
+  // the moment the verdict does.
+  const sideEntries = {
+    claude: folderClaude.pending ? null : folderClaude.entry,
+    git: folderGit.pending ? null : folderGit.entry,
+  };
+  const paneSide = activePaneSide(paneSideList(sideEntries), sideState.mode);
+  const paneOpen = pane.on && sideState.open;
+  // One writer for both halves of the state, and it writes the URL only where the
+  // listing owns one: an embedded pane (the preview pane's own `_listing` mode) is
+  // URL-silent by contract, and it never has a pane of its own anyway.
+  const setSide = (next: PaneSideState) => {
+    setSideState(next);
+    if (!paneEnabled) return;
+    const params = new URLSearchParams(location.search);
+    const v = paneSideParam(next);
+    if (v === null) params.delete("_side");
+    else params.set("_side", v);
+    const qs = params.toString();
+    replaceSearch(location.pathname + (qs ? "?" + qs : ""));
+  };
+  // Reopening keeps the mode the pane was shut on, so closing and reopening is
+  // not a reset. Session-only — see paneSideParam on why the URL records only
+  // "shut".
+  const openSide = () => setSide({ open: true, mode: sideState.mode });
+  const closeSide = () => setSide({ open: false, mode: sideState.mode });
+  const selectSide = (mode: PaneSide) => setSide({ open: true, mode });
 
   const clipboard = useClipboard();
 
@@ -1156,11 +1227,30 @@ export default function Listing({
                   </span>
                 )}
               </div>
-              {/* No pane toggle here any more. The split is decided by the
-                  container's width (listing/pane.ts), so there is no state for
-                  a button to flip — and a control that only ever restated what
-                  the layout already showed was one more thing in a row that is
-                  meant to be the search box. */}
+              {/* THE PANE'S OPENER, and the second half of one affordance: the
+                  closing chevron is a control ON the pane's own header, at the
+                  seam it collapses toward (SideChrome, where the split is written
+                  down), so this button is on screen only while the pane is SHUT.
+
+                  It is not the old pane toggle coming back. That one was an
+                  on/off for a bit the layout could answer itself, and it went
+                  when the split became purely a measurement of the container's
+                  width (listing/pane.ts) — `pane.on` below is still that
+                  measurement, and this button does not exist when it says no. It
+                  is a mode control: it says WHICH of the pane's three would
+                  return, wearing that mode's own icon, which is a thing the
+                  layout cannot answer.
+
+                  Here rather than in the crumb bar because over a folder THIS ROW
+                  is the bar (it portals into it — search-slot.ts), and this is the
+                  folder's own chrome, beside the folder's own search box. */}
+              {pane.on && !sideState.open && (
+                <SideToggleButton
+                  what={modeTitle(paneSide)}
+                  icon={paneSideIcon(paneSide, sideEntries)}
+                  onClick={openSide}
+                />
+              )}
               {/* The path `···` is not here any more: it rides the crumb strip
                   now (Breadcrumb.tsx), immediately right of the folder name it
                   acts on, which is one home instead of this row's and the
@@ -1260,7 +1350,7 @@ export default function Listing({
             </table>
           </div>
         </div>
-        {pane.on && (
+        {paneOpen && (
           <>
             <div
               className="listing-divider"
@@ -1278,19 +1368,22 @@ export default function Listing({
               // pixel floors are the slot's / the list's CSS min-widths.
               style={{ flexBasis: `${pane.frac * 100}%` }}
             >
-              {/* Keyed on the previewed path: switching rows remounts the pane,
-                  so a stale iframe never lingers a frame while the new row's
-                  stat/list resolves. Nothing selected → the pane previews THIS
-                  folder itself (self: its template or lone app — never its
-                  listing, which is already on the left). */}
+              {/* Keyed on WHAT THE PANE IS ABOUT (pane-side's paneKey), which is
+                  the previewed row for two of the three modes and the FOLDER for
+                  Git — see there. Keying on the row is what stops a stale iframe
+                  lingering a frame while the new row's stat/list resolves; keying
+                  Git on the folder instead is what stops arrow-keying down the
+                  listing reloading a `git status` per keystroke.
+                  Nothing selected → the pane previews THIS folder itself (self:
+                  its template or lone app — never its listing, which is already on
+                  the left). */}
               <ListingPreviewPane
-                key={
-                  sel.paths.length === 1 && leadRow
-                    ? leadRow.path
-                    : sel.paths.length === 0
-                      ? "self:" + fsPath
-                      : "none"
-                }
+                key={paneKey(
+                  paneSide,
+                  fsPath,
+                  sel.paths.length === 1 && leadRow ? leadRow.path : null,
+                  sel.paths.length
+                )}
                 row={
                   sel.paths.length === 1 && leadRow
                     ? leadRow
@@ -1306,6 +1399,11 @@ export default function Listing({
                       : null
                 }
                 selCount={sel.paths.length}
+                folder={fsPath}
+                side={paneSide}
+                sideEntries={sideEntries}
+                onSelectSide={selectSide}
+                onClose={closeSide}
               />
             </div>
           </>

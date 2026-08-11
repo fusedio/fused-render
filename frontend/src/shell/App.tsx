@@ -40,6 +40,7 @@ import { reconcileOsClipboard } from "@apps/explorer/lib/os-clipboard";
 import { BreadcrumbBar, StaticBreadcrumb } from "@apps/explorer/Breadcrumb";
 import Listing from "@apps/explorer/Listing";
 import Preview from "@apps/explorer/Preview";
+import { PreviewSideSlot } from "@apps/explorer/PreviewSidebar";
 import Panel from "@apps/explorer/Panel";
 import Tabs from "@apps/explorer/Tabs";
 import Preferences from "@shell/Preferences";
@@ -337,18 +338,36 @@ function StatView({
       );
     }
   }
+  // The PAGE-LEVEL split: this view's own column on the left — its bar and its
+  // content, one above the other — and, when a file preview opens one, the
+  // sidebar's column on the right (Preview's `_side`, apps/explorer/
+  // PreviewSidebar). The wrapper is unconditional so opening the sidebar cannot
+  // restructure the tree above `#content` and remount the view.
+  //
+  // The bar is INSIDE the left column, which is the whole point: it ends at the
+  // divider instead of spanning the window over both columns, so the sidebar's
+  // own header row is the top of the window on its side rather than a bar-height
+  // below the left one. Same shape as the listing and its preview pane over a
+  // folder (.listing-split / .listing-main), for the same reason.
+  //
+  // The slot stands empty on every route that has no sidebar — every folder, the
+  // app builder, learn, embed panes — and `display: contents` on an empty
+  // element costs the layout nothing (explorer.css).
   return (
-    <>
-      {/* Only the explorer carries a breadcrumb bar — the app builder and
-          learn render their content directly (no path chrome). BreadcrumbBar
-          owns the `#breadcrumb` box itself: over a folder it portals the whole
-          bar down into the listing's left column, so it can't be a wrapper
-          rendered here (Breadcrumb.tsx). */}
-      {variant === "explorer" && (
-        <BreadcrumbBar fsPath={fsPath} home={home} renderedTitle={renderedTitle} />
-      )}
-      <div id="content">{content}</div>
-    </>
+    <div className="stat-split">
+      <div className="stat-main">
+        {/* Only the explorer carries a breadcrumb bar — the app builder and
+            learn render their content directly (no path chrome). BreadcrumbBar
+            owns the `#breadcrumb` box itself: over a folder it portals the whole
+            bar down into the listing's left column, so it can't be a wrapper
+            rendered here (Breadcrumb.tsx). */}
+        {variant === "explorer" && (
+          <BreadcrumbBar fsPath={fsPath} home={home} renderedTitle={renderedTitle} />
+        )}
+        <div id="content">{content}</div>
+      </div>
+      <PreviewSideSlot />
+    </div>
   );
 }
 

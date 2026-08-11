@@ -26,6 +26,8 @@ import { useEffect, useRef, useState, type MouseEvent, type ReactNode } from "re
 import { modeTitle } from "@platform/lib/mode-name";
 import { copyToClipboard } from "@platform/lib/clipboard";
 import { pushToast } from "@platform/lib/toast";
+import { MenuIcons } from "@platform/ui/MenuIcons";
+import { SplitDownIcon, SplitRightIcon } from "@platform/ui/SplitIcons";
 
 // Keep the popup on screen: it is right-aligned to the trigger in spirit, but
 // clamping the LEFT edge is what actually matters near the window's edge.
@@ -132,12 +134,20 @@ function CheckIcon() {
   );
 }
 
+// VERTICAL `⋮`, not the horizontal `···` it was — in every bar that carries this
+// menu, because there is one glyph for one meaning. It earns the rotation in the
+// place it is most used: the crumb strip, immediately after the path's last
+// segment (both the title bar's PathOverflow and the panel pane bars sit there),
+// where a horizontal triplet reads as a continuation of the path — three more
+// dots in a row of `/`-joined segments, i.e. "the path goes on". Turned upright
+// it reads as a control, and it is the same "more, about this thing" affordance
+// every file manager puts beside a row.
 function EllipsisIcon() {
   return (
     <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor" aria-hidden="true">
-      <circle cx="5" cy="12" r="1.7" />
+      <circle cx="12" cy="5" r="1.7" />
       <circle cx="12" cy="12" r="1.7" />
-      <circle cx="19" cy="12" r="1.7" />
+      <circle cx="12" cy="19" r="1.7" />
     </svg>
   );
 }
@@ -239,7 +249,16 @@ export function ModeMenu({ entries, active, busy, onSelect }: ModeMenuProps) {
 export interface OverflowItem {
   label: string;
   onClick: () => void;
+  // Optional leading glyph, in the same 16px slot the mode rows use
+  // (.bar-menu-item-icon). A menu is all-or-nothing about icons in practice —
+  // one iconless row among icon'd ones reads as a broken row — so a caller
+  // either gives every item one or none.
+  icon?: ReactNode;
 }
+
+// A menu may group its items. Same shape as ContextMenu's entry list, so the
+// two menus describe a separator the same way.
+export type OverflowEntry = OverflowItem | "separator";
 
 // The path `···`: the two low-frequency one-shots every view OF A PATH offers.
 // It lives here rather than in the bar that used to own it because it now has
@@ -260,24 +279,46 @@ function revealInFileManager(path: string): void {
   });
 }
 
-export function PathOverflow({ fsPath }: { fsPath: string }) {
+// `onSplit` (a FILE preview only — see Breadcrumb) adds the two split-entry
+// items. They used to be a pair of naked glyphs in the bar's own layout zone,
+// behind a hairline, at the far right of the window. Two problems with that: the
+// zone existed for those two buttons and nothing else, so a rule and a group
+// were carrying one action each; and "open this view split" is about the PATH,
+// which is what this menu is about and what it now sits next to. As menu rows
+// they also finally get names — "Split right" is not something the filled-half
+// rectangle glyph ever said out loud.
+export function PathOverflow({
+  fsPath,
+  onSplit,
+}: {
+  fsPath: string;
+  onSplit?: (dir: "row" | "col") => void;
+}) {
   const copyPath = async () => {
     if (await copyToClipboard(fsPath)) pushToast({ msg: "Path copied", tone: "info" });
     else pushToast({ msg: "Couldn't copy the path", tone: "error" });
   };
-  return (
-    <OverflowMenu
-      items={[
-        { label: "Open in " + FILE_MANAGER, onClick: () => revealInFileManager(fsPath) },
-        { label: "Copy path", onClick: () => void copyPath() },
-      ]}
-    />
-  );
+  const items: OverflowEntry[] = [
+    {
+      label: "Open in " + FILE_MANAGER,
+      icon: MenuIcons.reveal,
+      onClick: () => revealInFileManager(fsPath),
+    },
+    { label: "Copy path", icon: MenuIcons.copyPath, onClick: () => void copyPath() },
+  ];
+  if (onSplit) {
+    items.push(
+      "separator",
+      { label: "Split right", icon: <SplitRightIcon size={16} />, onClick: () => onSplit("row") },
+      { label: "Split down", icon: <SplitDownIcon size={16} />, onClick: () => onSplit("col") }
+    );
+  }
+  return <OverflowMenu items={items} />;
 }
 
-// `···` menu for the bars' layout zone. Renders nothing when it has no items,
-// so a caller can pass a conditional list without guarding the control itself.
-export function OverflowMenu({ items, title = "More actions" }: { items: OverflowItem[]; title?: string }) {
+// `⋮` menu for the bars. Renders nothing when it has no items, so a caller can
+// pass a conditional list without guarding the control itself.
+export function OverflowMenu({ items, title = "More actions" }: { items: OverflowEntry[]; title?: string }) {
   const { pos, rootRef, toggle, close } = useMenuAnchor("right");
   if (items.length === 0) return null;
   return (
@@ -306,20 +347,25 @@ export function OverflowMenu({ items, title = "More actions" }: { items: Overflo
           aria-label={title}
           style={{ top: pos.top, left: pos.left, right: pos.right }}
         >
-          {items.map((item) => (
-            <button
-              key={item.label}
-              type="button"
-              role="menuitem"
-              className="bar-menu-item"
-              onClick={() => {
-                close();
-                item.onClick();
-              }}
-            >
-              <span className="bar-menu-item-label">{item.label}</span>
-            </button>
-          ))}
+          {items.map((item, i) =>
+            item === "separator" ? (
+              <div key={"sep" + i} className="bar-menu-sep" role="separator" />
+            ) : (
+              <button
+                key={item.label}
+                type="button"
+                role="menuitem"
+                className="bar-menu-item"
+                onClick={() => {
+                  close();
+                  item.onClick();
+                }}
+              >
+                {item.icon && <span className="bar-menu-item-icon">{item.icon}</span>}
+                <span className="bar-menu-item-label">{item.label}</span>
+              </button>
+            )
+          )}
         </div>
       )}
     </div>

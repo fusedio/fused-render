@@ -18,6 +18,7 @@ so nothing here goes through a package import.
 import importlib.util
 import json
 import os
+import re
 import shutil
 import subprocess
 
@@ -1113,16 +1114,29 @@ def test_the_framed_snapshot_listing_may_not_open_a_pane_of_its_own():
     test_claude_pane_mode_label.py: the template writes the flag, the shell
     honours it, and this suite owns the pair — the template's own tests cannot
     see the consequence, and a rule with a producer in one language and a
-    consumer in another is exactly the kind that gets half-removed."""
+    consumer in another is exactly the kind that gets half-removed.
+
+    The flag reaches `usePreviewPane` through a NAMED const rather than inline,
+    because the same "may this folder have a pane at all?" answer now gates three
+    more things beside the split (the pane's `_side` URL state and the two
+    companion-mode probes, both of which an embedded or framed listing must also
+    skip). So this follows one hop: the const is what carries the rule, and the
+    call is what consumes it. Asserting both is the point — a rename that keeps
+    the const and stops passing it would leave the rule true and unenforced."""
     listing = os.path.join(
         os.path.dirname(TEMPLATE_DIR), "..", "..", "frontend", "src", "apps",
         "explorer", "Listing.tsx")
     with open(os.path.normpath(listing), encoding="utf-8") as f:
         src = f.read()
+    gate = re.search(r"const\s+(\w+)\s*=\s*([^;]*IS_SNAPSHOT[^;]*);", src)
+    assert gate, \
+        "the shell no longer refuses a pane under the frozen-tree framing"
+    assert "embedded" in gate.group(2), \
+        "the pane gate stopped refusing an EMBEDDED listing as well"
     call = src[src.index("usePreviewPane("):]
     call = call[:call.index(");") + 2]
-    assert "IS_SNAPSHOT" in call, \
-        "the shell no longer refuses a pane under the frozen-tree framing"
+    assert gate.group(1) in call, \
+        "the frozen-tree gate is no longer what decides the pane's split"
     # And nothing drops the preview column any more: the split is the one
     # layout, for all three kinds.
     assert "enterNoPreview" not in src
