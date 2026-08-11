@@ -14,7 +14,12 @@ import { useBookmarksVersion, useUrlVersion } from "@platform/lib/hooks";
 import { hydrateRecents, loadRecents, recentFsPath, useRecentsVersion } from "@apps/explorer/lib/recents";
 import { BookmarkPreviewCard, RecentPreviewCard, FolderPreviewCard } from "@apps/explorer/BookmarkCards";
 import { describeSpec, runAiSearch, type AiSearchResult } from "@apps/explorer/lib/ai-search";
-import { reposMessage, reposStaleNote, reposView } from "@apps/explorer/lib/repos";
+import {
+  reposMessage,
+  reposNeedsIndexPoll,
+  reposStaleNote,
+  reposView,
+} from "@apps/explorer/lib/repos";
 import { useIndexStatus } from "@platform/lib/index-status";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { TextArea } from "@platform/ui/field/fields";
@@ -353,9 +358,14 @@ export default function FilesHome({ config }: { config: Config }) {
   //
   // So the existing index poller drives the refetch (useIndexStatus, shared with
   // the listing's search indicator) rather than a poll of our own: it already
-  // knows both scan rates. Gated on `!indexed`, so a page whose answer is already
-  // good polls nothing at all.
-  const indexScan = useIndexStatus(repos !== null && !repos.indexed);
+  // knows both scan rates.
+  //
+  // It runs until the answer is FINAL, not merely present (reposNeedsIndexPoll).
+  // Gating on `!indexed` stopped the poll the instant a stale-but-served list
+  // arrived — which froze `indexKey` below, so the cards and their "Reindexing"
+  // note stayed on screen forever, even after the scan that would have cleared
+  // them finished.
+  const indexScan = useIndexStatus(reposNeedsIndexPoll(repos));
   // Refetch whenever the index's OBSERVABLE STATE changes — not when a scan
   // "completes". Completion was the previous trigger and it was subtly wrong:
   // `last_completed_at` is read off the manifest, and a cancelled, failed or
@@ -372,23 +382,46 @@ export default function FilesHome({ config }: { config: Config }) {
   const indexKey = indexScan
     ? `${indexScan.scanning}|${indexScan.last_completed_at ?? ""}`
     : null;
+  // The key the response we are HOLDING was fetched under. `undefined` means
+  // nothing has been fetched yet, which no real key can equal.
+  const [fetchedKey, setFetchedKey] = useState<string | null | undefined>(undefined);
   useEffect(() => {
     let alive = true;
+    const key = indexKey;
     getGitRepos().then(
       (r) => {
         if (!alive) return;
         setReposFailed(false);
         setRepos(r);
+        setFetchedKey(key);
       },
-      () => alive && setReposFailed(true),
+      () => {
+        if (!alive) return;
+        setReposFailed(true);
+        // Stamped on failure too, or `refreshPending` would stay true forever and
+        // the tab would claim something is coming when nothing is.
+        setFetchedKey(key);
+      },
     );
     return () => {
       alive = false;
     };
   }, [indexKey]);
-  // One total function over both sources, so no impossible in-between state can be
-  // rendered (see lib/repos.ts on why this is enumerated rather than derived).
-  const reposTab = reposView(repos, reposFailed, indexScan?.scanning ?? null);
+  // DERIVED, not stored in an effect. The instant `indexKey` changes, this is
+  // already true in the very same render — which is the whole point: a
+  // `setRefreshPending(true)` in an effect lands one frame late, and that one frame
+  // is precisely the scan-end flicker (the tab showing "go rebuild it" between the
+  // poll going idle and the new list arriving). Triggered is not arrived, so the
+  // view has to be able to see the gap rather than be told about it afterwards.
+  const refreshPending = fetchedKey !== indexKey;
+  // One total function over all four inputs, so no impossible in-between state can
+  // be rendered — see the state table in lib/repos.ts.
+  const reposTab = reposView({
+    response: repos,
+    failed: reposFailed,
+    liveScanning: indexScan?.scanning ?? null,
+    refreshPending,
+  });
   const repoList = reposTab.kind === "ready" ? reposTab.repos : [];
   const shownRepos = expandedRepos ? repoList : repoList.slice(0, MAX_CARDS);
   // With no ?tab= in the URL, land on Claude sessions — the leading tab.
