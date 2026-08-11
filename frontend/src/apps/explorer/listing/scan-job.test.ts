@@ -21,7 +21,7 @@ function corpus(n: number): WalkEntry[] {
 }
 
 function hit(entry: WalkEntry): SearchHit {
-  return { entry, positions: [], score: 1, longestRun: 1, depth: 1 };
+  return { entry, positions: [], score: 1, longestRun: 1, tier: 1, depth: 1 };
 }
 
 /** A fake event loop: nothing runs until the test drains it. */

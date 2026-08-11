@@ -134,6 +134,11 @@ export interface SearchHit {
   positions: number[];
   score: number;
   longestRun: number;
+  // 1 = the query is a substring of this entry's own NAME, 2 = the name matched
+  // only fuzzily, 3 = only ancestor directories matched. Lower wins. Ranked
+  // above `score` because scoring runs over the whole rel path, so a matching
+  // ancestor directory donates its score to every descendant (see search.ts).
+  tier: 1 | 2 | 3;
   // Path depth, precomputed at score time. The rank comparator runs n·log n
   // times over a hit list that can be the whole corpus, so it must not derive
   // anything per comparison (see search.ts).
