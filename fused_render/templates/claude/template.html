@@ -847,6 +847,46 @@
   .perm .qopt input { margin: 3px 0 0; accent-color: var(--accent); flex-shrink: 0; }
   .perm .qsend { margin-top: 12px; }
 
+  /* ── plan cards (ExitPlanMode) ──
+     Same bones again, with one difference that is the whole point: the body is
+     rendered MARKDOWN, not a monospace payload — a plan is prose Claude wrote to
+     be read — so it gets a reply's type and line height, and only its code
+     blocks fall back to the `.perm pre` box above. Scrolls at a bounded height:
+     a long plan must not push its own two buttons off the screen. */
+  .perm.plan { border-color: color-mix(in srgb, var(--accent) 80%, transparent); }
+  .perm.plan.resolved { border-color: var(--border); }
+  .perm .plan-body {
+    font-size: 13.5px;
+    line-height: 1.5;
+    margin-top: 8px;
+    max-height: 420px;
+    overflow: auto;
+    word-break: break-word;
+  }
+  .perm .plan-body > :first-child { margin-top: 0; }
+  .perm .plan-body > :last-child { margin-bottom: 0; }
+  .perm .plan-note {
+    display: block;
+    box-sizing: border-box;
+    width: 100%;
+    margin-top: 10px;
+    padding: 6px 9px;
+    font: inherit;
+    font-size: 12.5px;
+    color: var(--fg);
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    resize: vertical;
+  }
+  .perm .plan-note:focus {
+    outline: none;
+    border-color: color-mix(in srgb, var(--accent) 60%, transparent);
+  }
+  /* "Sent back for revision" is not a refusal — it is the other half of a
+     conversation, so it does not read in the deny red. */
+  .perm.plan .perm-status.deny { color: var(--dim); }
+
   /* ── the tool timeline (segments inside an assistant turn) ──
      Deliberately quieter than a permission card: a card is a question and has
      to be seen, a chip is a receipt for something that already happened, and a
@@ -4320,9 +4360,11 @@ const EFFORTS = ["", "low", "medium", "high", "xhigh", "max"];
 // How much Claude may do without stopping for a card. Values are agent.py's
 // PERMISSION_MODES keys; the labels say what the user gets. `auto` is a
 // broader opt-in, NOT a blanket one — Claude Code's own classifier judges each
-// request and still escalates what it won't vouch for.
-const PERMISSION_MODES = ["prompt", "acceptEdits", "auto"];
+// request and still escalates what it won't vouch for. `plan` is the other end:
+// nothing is touched at all until a plan card is approved, so it leads the list.
+const PERMISSION_MODES = ["plan", "prompt", "acceptEdits", "auto"];
 const PERMISSION_LABELS = {
+  plan: "plan first",
   prompt: "ask every time",
   acceptEdits: "auto-accept edits",
   auto: "Claude decides",
@@ -4607,8 +4649,20 @@ const WHOLE_TOOL_GRANTABLE = new Set([
   "Edit", "Write", "Read", "Glob", "Grep", "NotebookEdit",
 ]);
 
-// The one tool whose card is not an approval at all — see buildQuestionCard.
-// Mirrors ANSWERABLE_TOOL in agent.py, which is where the answer is validated.
+// Modes a card may switch the RUNNING session to. Mirrors SWITCHABLE_MODES in
+// agent.py (which drops anything else before it is latched) and in
+// permission_server.py (which re-validates before the CLI is told); a test holds
+// all four copies together. Read here by the plan card, which sends the picker's
+// current mode as the one the session should LAND in once the plan is approved —
+// so it has to know which of them the bridge will actually honour, and
+// `bypassPermissions` is absent from this list for the same reason it is absent
+// from the picker.
+const SWITCHABLE_MODES = new Set(["acceptEdits", "auto"]);
+
+// The two tools whose cards are not approvals — see buildQuestionCard (an answer,
+// not a verdict) and buildPlanCard (a plan to approve or send back). Both mirror
+// agent.py's constants, which are where the special handling is enforced.
+const PLAN_TOOL = "ExitPlanMode";
 const ANSWERABLE_TOOL = "AskUserQuestion";
 
 // An Edit's `old_string`/`new_string` as one `-`/`+` marked block — the shape a
@@ -4711,9 +4765,11 @@ function permChoices(tool, label, liveMode) {
 
 function buildPermCard(p, run_id, liveMode) {
   // A question is not a permission: there is nothing to allow, only something to
-  // answer. Same handle ({el, resolve}), so syncPermissions cannot tell them
+  // answer. A plan is a third thing again — one to approve or send back. Same
+  // handle ({el, resolve}) for all three, so syncPermissions cannot tell them
   // apart — the difference is entirely in what the card can send.
   if (p.tool === ANSWERABLE_TOOL) return buildQuestionCard(p, run_id);
+  if (p.tool === PLAN_TOOL) return buildPlanCard(p, run_id);
   const toolName = p.tool || "a tool";
   const label = toolName.length > 28 ? toolName.slice(0, 27) + "…" : toolName;
 
@@ -5040,6 +5096,138 @@ function buildQuestionCard(p, run_id) {
   }
 
   el.appendChild(status);
+  return { el, resolve };
+}
+
+// ExitPlanMode — the model asking to stop planning and start doing the work. Not
+// an ordinary approval either: what is parked is a PLAN, and the two answers are
+// "go ahead" and "keep planning".
+//
+//   * Approve plan sends a plain `allow`. Nothing else is needed to get moving —
+//     the CLI leaves plan mode itself when it sees one (spiked against 2.1.226:
+//     it emits `system/status permissionMode:"default"` and the tool_result reads
+//     "User has approved your plan…"). A `mode` rides along ONLY when the picker
+//     already sits on a looser mode, which is then the mode the session should
+//     land in; it goes through the same validated channel as the approval card's
+//     escalation, so anything off SWITCHABLE_MODES (bypassPermissions included)
+//     is dropped by agent.py rather than reaching the CLI;
+//   * Keep planning sends a `deny` plus the optional note the user typed. The
+//     SENTENCE the model reads is composed by agent.py — the note is the only
+//     part this card contributes, it travels as a param, and it is never written
+//     back into the page or into any tool input;
+//   * there is no "allow all in this reply": there is one plan, and a session
+//     grant would pre-approve the next one unseen (agent.py enforces it too —
+//     ExitPlanMode is not in WHOLE_TOOL_GRANTABLE).
+//
+// The plan is the ONE payload on any card that is rendered as markdown, because
+// it is the one that genuinely IS markdown — a tool input is bytes off a disk and
+// goes in through textContent, whereas a plan is prose the model wrote for the
+// user to read. It therefore goes through `renderMd` (marked + DOMPurify, the
+// same funnel every reply uses) and nothing else on the card touches innerHTML.
+function buildPlanCard(p, run_id) {
+  const input = p.input && typeof p.input === "object" ? p.input : {};
+  const plan = typeof input.plan === "string" && input.plan ? input.plan : "";
+
+  const el = document.createElement("div");
+  el.className = "turn perm plan";
+  const head = document.createElement("div");
+  head.className = "perm-head";
+  head.textContent = "Claude has a plan";
+  el.appendChild(head);
+
+  if (plan) {
+    const body = document.createElement("div");
+    body.className = "plan-body";
+    body.innerHTML = renderMd(plan);
+    el.appendChild(body);
+    attachCodeCopy(body);   // a plan quotes code; the copy buttons come with it
+  }
+  // The same disclosure rule as every other card: no input key is invisible.
+  // `plan` is the body above when it is usable; when it is not, it falls into
+  // this dump with everything else, so the card never implies a plan was read.
+  const extra = leftoverInput(input, plan ? ["plan"] : []);
+  if (extra) {
+    const pre = document.createElement("pre");
+    pre.textContent = JSON.stringify(extra, null, 2);
+    el.appendChild(pre);
+  }
+
+  const note = document.createElement("textarea");
+  note.className = "plan-note";
+  note.rows = 2;
+  note.placeholder = "Optional: what to change (sent with “Keep planning”)";
+  const actions = document.createElement("div");
+  actions.className = "perm-actions";
+  const status = document.createElement("div");
+  status.className = "perm-status";
+  const widgets = [note];
+
+  let shown = "";
+  function resolve(decision) {
+    if (decision === shown) return;
+    shown = decision;
+    note.remove();
+    actions.remove();
+    el.classList.add("resolved");
+    if (decision === "allow") {
+      status.className = "perm-status allow";
+      status.textContent = "✓ Plan approved";
+    } else if (decision === "expired") {
+      status.className = "perm-status expired";
+      status.textContent = "◦ Unanswered — the reply ended before you decided";
+    } else {
+      // Not a refusal — the other half of a conversation, so it does not read
+      // in the deny red (see .perm.plan .perm-status.deny).
+      status.className = "perm-status deny";
+      status.textContent = "◦ Sent back for revision";
+    }
+  }
+
+  async function send(decision, mode, text) {
+    widgets.forEach((w) => { w.disabled = true; });
+    status.className = "perm-status";
+    status.textContent = "sending…";
+    try {
+      const res = await fused.runPython(AGENT, {
+        action: "decide", run_id, request_id: p.id, decision, scope: "once",
+        mode: mode || "", note: text || "",
+      }, { key: null });
+      if (res && res.error) throw new Error(res.error);
+      // A mode switch outlives this run: carry it into the next spawn too.
+      if (res && res.mode) { fused.params.set("permission", res.mode); syncSelects(); }
+      // agent.py answers with what landed on disk (first writer wins), so a
+      // double-click renders the verdict the tool actually got.
+      resolve((res && res.decision) || decision);
+    } catch (err) {
+      // The subprocess is still blocked, so the buttons have to come back.
+      widgets.forEach((w) => { w.disabled = false; });
+      status.className = "perm-status deny";
+      status.textContent = "Could not send that: " + err.message;
+    }
+  }
+
+  // Where the session should land once planning is over: the picker's CURRENT
+  // choice, and only when the bridge will honour it. Sitting on "plan first" or
+  // "ask every time" sends nothing at all — the plain allow already leaves plan
+  // mode, and tightening mid-turn is the picker's job, not a card's.
+  const landing = () => {
+    const picked = fused.params.get("permission") || "";
+    return SWITCHABLE_MODES.has(picked) ? picked : "";
+  };
+
+  [["Approve plan", "primary", () => send("allow", landing(), "")],
+   ["Keep planning", "", () => send("deny", "", note.value)],
+  ].forEach(([text, cls, onclick]) => {
+    const b = document.createElement("button");
+    b.type = "button";
+    if (cls) b.className = cls;
+    b.textContent = text;
+    b.onclick = onclick;
+    widgets.push(b);
+    actions.appendChild(b);
+  });
+
+  el.append(note, actions, status);
   return { el, resolve };
 }
 

@@ -865,10 +865,11 @@ def test_diff_colours_are_theme_variables_defined_in_both_themes(source):
 _CARD_CONSTS_START = "const WHOLE_TOOL_GRANTABLE = new Set(["
 _CARD_CONSTS_END = 'const ANSWERABLE_TOOL = "AskUserQuestion";'
 _CARD_START = "function permChoices(tool, label, liveMode) {"
-# buildQuestionCard's last two lines — unique to it (buildPermCard appends its
-# status with `el.append(actions, status)`), so the window closes on the whole
-# card region and an edit that moves the end is a test error, not a silent pass.
-_CARD_END = "  el.appendChild(status);\n  return { el, resolve };\n}"
+# buildPlanCard's last two lines — the LAST builder in the region, and unique to
+# it (the other two append their status differently), so the window closes on the
+# whole card region and an edit that moves the end is a test error, not a silent
+# pass.
+_CARD_END = "  el.append(note, actions, status);\n  return { el, resolve };\n}"
 
 # What buildPermCard/buildQuestionCard reach for outside their own region. The
 # recorder is the point: `sent` is exactly the `decide` payload that would cross
@@ -880,11 +881,26 @@ const PERMISSION_LABELS = {auto: "Claude decides", acceptEdits: "Auto-accept edi
 const sent = [];
 const extra = {};   // a probe's own mid-run observations, dumped with the tree
 let reply = {};
+// The picker's params, keyed: the plan card reads `permission` to decide which
+// mode (if any) the approved session should land in, so a probe has to be able
+// to sit the picker somewhere.
+const paneParams = {};
+const paramWrites = [];
 const fused = {
-  params: {set() {}, get() { return ""; }},
+  params: {
+    set(k, v) { paneParams[k] = v; paramWrites.push([k, v]); },
+    get(k) { return paneParams[k] || ""; },
+  },
   runPython(agent, params) { sent.push(params); return Promise.resolve(reply); },
 };
 function syncSelects() {}
+// Task 1's markdown funnel, stubbed the way _STUBS stubs it: the `<md>` wrapper
+// is what makes "this text went through renderMd" visible in the dump, which is
+// the whole assertion for the plan card's body.
+const mdCalls = [];
+const renderMd = (t) => { mdCalls.push(t); return "<md>" + t + "</md>"; };
+const attachCalls = [];
+const attachCodeCopy = (el) => { attachCalls.push(el.className); };
 // Live element helpers (dump() loses the handlers, so clicking needs the tree).
 function walk(el) {
   const out = [el];
@@ -938,9 +954,10 @@ class _CardProbe:
         self.cards = _block(source, _CARD_START, _CARD_END)
         self._tmp_path = tmp_path
 
-    def build(self, tool_input, actions="", reply=None, perm=None):
+    def build(self, tool_input, actions="", reply=None, perm=None, params=None,
+              tool="AskUserQuestion"):
         """Build the card for one parked request, run `actions`, dump it."""
-        request = {"id": "req-1", "tool": "AskUserQuestion", "input": tool_input,
+        request = {"id": "req-1", "tool": tool, "input": tool_input,
                    "decision": "", "scope": "", "mode": "", "answers": {}}
         request.update(perm or {})
         # `before` is the card as built, `tree` the card after `actions` ran — a
@@ -949,13 +966,16 @@ class _CardProbe:
         body = """
 const p = %s;
 reply = %s;
+Object.assign(paneParams, %s);
 const card = buildPermCard(p, "run-1", "prompt");
 const before = cdump(card.el);
 (async () => {
   %s
-  console.log(JSON.stringify({before, tree: cdump(card.el), sent, extra}));
+  console.log(JSON.stringify({before, tree: cdump(card.el), sent, extra,
+                              mdCalls, attachCalls, paramWrites}));
 })();
-""" % (json.dumps(request), json.dumps(reply if reply is not None else {}), actions)
+""" % (json.dumps(request), json.dumps(reply if reply is not None else {}),
+       json.dumps(params or {}), actions)
         script = "\n".join([_DOM, _CARD_STUBS, self.consts, self.perm,
                             self.cards, body])
         return _node(script, self._tmp_path)
@@ -1206,3 +1226,224 @@ def test_an_extra_input_key_on_a_question_card_is_still_shown(card):
     # …and a card with nothing extra grows no second block.
     assert not [n for n in _nodes(card.build(_ONE_QUESTION)["before"])
                 if n["tag"] == "pre"]
+
+
+# --- the plan card (ExitPlanMode) ---------------------------------------------
+# The other card that is not an ordinary approval: what is parked is a PLAN, in
+# markdown, and the two answers are "go ahead" and "keep planning". Two things
+# make it different from every other card and both are asserted below:
+#
+#   * `input.plan` IS markdown, so it is the one payload on any card that goes
+#     through `renderMd` (stubbed here as `<md>…</md>`) rather than textContent —
+#     which is safe only because that funnel is marked + DOMPurify, and only
+#     because nothing else on the card takes that door;
+#   * the "Keep planning" note is free text the USER typed, and it must reach the
+#     `decide` payload as a plain param — never the DOM, never tool input.
+_PLAN = {"plan": "## Plan\n\n1. Read `condition.py`\n2. Split the parser\n"}
+
+
+def _plan_card(card, **kw):
+    kw.setdefault("tool", "ExitPlanMode")
+    return card.build(kw.pop("plan_input", _PLAN), **kw)
+
+
+def _buttons(tree):
+    return [n["text"] for n in _nodes(tree) if n["tag"] == "button"]
+
+
+def test_a_plan_card_renders_the_plan_as_markdown_and_nothing_else(card):
+    got = _plan_card(card)
+    tree = got["tree"]
+    assert "plan" in tree["cls"].split(), tree["cls"]
+    assert _texts(tree, "perm-head") == ["Claude has a plan"]
+    # The plan reached renderMd verbatim, and the card's markdown body is exactly
+    # what came back out of it — no second door into innerHTML.
+    assert got["mdCalls"] == [_PLAN["plan"]]
+    body = _by_class(tree, "plan-body")
+    assert len(body) == 1
+    assert body[0]["html"] == "<md>" + _PLAN["plan"] + "</md>"
+    assert [n for n in _nodes(tree) if n.get("html")] == body
+    # Code fences in a plan get the same copy buttons a reply's do.
+    assert got["attachCalls"] == ["plan-body"]
+
+
+def test_a_hostile_plan_is_inert_because_it_goes_through_the_funnel(card):
+    """The plan is model-authored and may quote a file, an issue title or a
+    payload it found on the web — so the card's safety is entirely that the ONLY
+    route to markup is `renderMd` (marked + DOMPurify, pinned by
+    test_claude_template_markdown.py). This asserts the routing: nothing about
+    the plan is written to the DOM except what that funnel returned."""
+    nasty = "<img src=x onerror=alert(1)>\n\n<script>alert(1)</script>\n"
+    got = _plan_card(card, plan_input={"plan": nasty})
+    assert got["mdCalls"] == [nasty]
+    marked_up = [n for n in _nodes(got["tree"]) if n.get("html")]
+    assert len(marked_up) == 1 and "plan-body" in marked_up[0]["cls"]
+    assert marked_up[0]["html"] == "<md>" + nasty + "</md>"
+    # …and no node took it as text either, which would be the other bug: a plan
+    # rendered twice, once escaped and once not.
+    assert nasty not in "".join(n.get("text") or "" for n in _nodes(got["tree"])
+                               if "plan-body" not in (n.get("cls") or ""))
+
+
+def test_a_plan_card_offers_exactly_approve_and_keep_planning(card):
+    """No Allow, no Deny, and above all no "allow all": there is one plan, and a
+    session-wide grant for ExitPlanMode would approve the NEXT one unseen."""
+    got = _plan_card(card)
+    assert _buttons(got["before"]) == ["Approve plan", "Keep planning"]
+    for banned in ("Allow", "Deny", "let Claude decide"):
+        assert not any(banned in b for b in _buttons(got["before"]))
+    # One note field, and it is a textarea (free text, not an option list).
+    assert [n["tag"] for n in _nodes(got["before"]) if n["tag"] == "textarea"] \
+        == ["textarea"]
+
+
+def test_approving_a_plan_sends_a_plain_allow(card):
+    """The spike's finding, from the page's side: the CLI leaves plan mode on the
+    allow alone, so an approval that changes nothing else sends no mode."""
+    got = _plan_card(card, actions="""
+  byClass(card.el, "perm-actions")[0].children[0].onclick();
+  await settle();
+""", reply={"decision": "allow"})
+    assert got["sent"] == [{
+        "action": "decide", "run_id": "run-1", "request_id": "req-1",
+        "decision": "allow", "scope": "once", "mode": "", "note": "",
+    }]
+    status = _by_class(got["tree"], "perm-status")[0]
+    assert status["text"] == "✓ Plan approved"
+    assert "allow" in status["cls"].split()
+    assert "resolved" in got["tree"]["cls"].split()
+    assert not _buttons(got["tree"]) and not [
+        n for n in _nodes(got["tree"]) if n["tag"] == "textarea"]
+
+
+@pytest.mark.parametrize("picked,mode", [
+    ("acceptEdits", "acceptEdits"),   # the picker sits looser: land there
+    ("auto", "auto"),
+    ("plan", ""),                     # …and where it does not, send nothing
+    ("prompt", ""),                   # tightening mid-turn is the picker's job
+    ("", ""),
+    ("bypassPermissions", ""),        # unreachable from a card, by the same gate
+    ("nonsense", ""),
+])
+def test_the_landing_mode_is_the_pickers_only_when_it_is_switchable(
+        card, picked, mode):
+    got = _plan_card(card, params={"permission": picked}, actions="""
+  byClass(card.el, "perm-actions")[0].children[0].onclick();
+  await settle();
+""", reply={"decision": "allow", "mode": mode})
+    assert got["sent"][0]["mode"] == mode, got["sent"]
+
+
+def test_keeping_planning_denies_and_carries_the_users_note(card):
+    """The note is the only free text on the card. It rides the `decide` payload
+    as a param — agent.py composes the message the model reads — and it is never
+    put back into the page."""
+    got = _plan_card(card, actions="""
+  byTag(card.el, "TEXTAREA")[0].value = "smaller steps, and leave the tests";
+  byClass(card.el, "perm-actions")[0].children[1].onclick();
+  await settle();
+""", reply={"decision": "deny"})
+    assert got["sent"] == [{
+        "action": "decide", "run_id": "run-1", "request_id": "req-1",
+        "decision": "deny", "scope": "once", "mode": "",
+        "note": "smaller steps, and leave the tests",
+    }]
+    status = _by_class(got["tree"], "perm-status")[0]
+    assert status["text"] == "◦ Sent back for revision"
+    assert "resolved" in got["tree"]["cls"].split()
+
+
+def test_keeping_planning_with_no_note_still_sends_the_deny(card):
+    got = _plan_card(card, actions="""
+  byClass(card.el, "perm-actions")[0].children[1].onclick();
+  await settle();
+""", reply={"decision": "deny"})
+    assert got["sent"][0]["decision"] == "deny"
+    assert got["sent"][0]["note"] == ""
+
+
+def test_a_hostile_note_is_a_string_in_the_payload_and_nothing_more(card):
+    """It is the user's own text, so it is not sanitised — it is CONFINED: the
+    only place it goes is the `note` param, and the card never renders it."""
+    got = _plan_card(card, actions="""
+  byTag(card.el, "TEXTAREA")[0].value = "<img src=x onerror=alert(1)>";
+  byClass(card.el, "perm-actions")[0].children[1].onclick();
+  await settle();
+""", reply={"decision": "deny"})
+    assert got["sent"][0]["note"] == "<img src=x onerror=alert(1)>"
+    assert got["mdCalls"] == [_PLAN["plan"]], "the note reached the markdown funnel"
+    assert not any("onerror" in (n.get("html") or "") + (n.get("text") or "")
+                   for n in _nodes(got["tree"]))
+
+
+def test_a_failed_send_brings_the_plan_buttons_back(card):
+    """The subprocess is still blocked on this card, so an error must not leave
+    a plan nobody can answer."""
+    got = _plan_card(card, actions="""
+  byClass(card.el, "perm-actions")[0].children[0].onclick();
+  await settle();
+""", reply={"error": "could not record that decision"})
+    assert _buttons(got["tree"]) == ["Approve plan", "Keep planning"]
+    assert not any(n["disabled"] for n in _nodes(got["tree"])
+                   if n["tag"] in ("button", "textarea"))
+    assert "could not record that decision" in \
+        _by_class(got["tree"], "perm-status")[0]["text"]
+    assert "resolved" not in got["tree"]["cls"].split()
+
+
+@pytest.mark.parametrize("decision,expected", [
+    ("allow", "✓ Plan approved"),
+    ("deny", "◦ Sent back for revision"),
+    ("expired", "◦ Unanswered — the reply ended before you decided"),
+])
+def test_a_re_attaching_frame_rebuilds_a_plan_that_was_already_answered(
+        card, decision, expected):
+    got = _plan_card(card, perm={"decision": decision}, actions="""
+  card.resolve(p.decision, p.scope, p.mode, p.answers);
+""")
+    assert _by_class(got["tree"], "perm-status")[0]["text"] == expected
+    assert not _buttons(got["tree"])
+
+
+def test_a_plan_card_shows_the_verdict_that_won_the_latch(card):
+    """Same rule as every other card: what is rendered is what agent.py read
+    back off disk, not what was clicked."""
+    got = _plan_card(card, actions="""
+  byClass(card.el, "perm-actions")[0].children[0].onclick();   // Approve
+  await settle();
+""", reply={"decision": "deny"})
+    assert got["sent"][0]["decision"] == "allow"
+    assert _by_class(got["tree"], "perm-status")[0]["text"] == \
+        "◦ Sent back for revision"
+
+
+def test_a_plan_request_with_no_plan_shows_what_did_arrive(card):
+    """Nothing about the card is a claim that a plan was read: an ExitPlanMode
+    with no usable `plan` prints its whole input verbatim (textContent) instead
+    of an empty markdown body, and still offers both answers — the subprocess is
+    blocked either way."""
+    got = _plan_card(card, plan_input={"note": "no plan key at all"})
+    assert not _by_class(got["before"], "plan-body")
+    assert got["mdCalls"] == []
+    dumps = [n["text"] for n in _nodes(got["before"]) if n["tag"] == "pre"]
+    assert dumps and json.loads(dumps[0]) == {"note": "no plan key at all"}
+    assert _buttons(got["before"]) == ["Approve plan", "Keep planning"]
+
+
+def test_an_extra_input_key_on_a_plan_card_is_still_shown(card):
+    """Disclosure rule, unchanged: `plan` is the body, anything else the CLI sent
+    is printed rather than assumed unimportant."""
+    got = _plan_card(card, plan_input=dict(_PLAN, metadata={"source": "cli"}))
+    dumps = [n["text"] for n in _nodes(got["before"]) if n["tag"] == "pre"]
+    assert dumps and json.loads(dumps[0]) == {"metadata": {"source": "cli"}}
+    assert not [n for n in _nodes(_plan_card(card)["before"]) if n["tag"] == "pre"]
+
+
+def test_only_exitplanmode_takes_the_plan_branch(card):
+    """A question card is not a plan card and an approval card is neither."""
+    for tool, tool_input in (("AskUserQuestion", _ONE_QUESTION),
+                             ("Bash", {"command": "ls"})):
+        tree = card.build(tool_input, tool=tool)["tree"]
+        assert "plan" not in tree["cls"].split(), tool
+        assert not _by_class(tree, "plan-body")
+        assert "Approve plan" not in _buttons(tree)

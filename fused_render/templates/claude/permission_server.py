@@ -55,6 +55,16 @@ under `permission_denials`. `updatedInput` is re-validated against the tool's
 schema, so it must be the parked input PLUS the key — dropping `questions` is a
 `<tool_use_error>`, not a silent no-op.
 
+ONE more tool needs nothing here, and that is worth writing down because it looks
+like it should: `ExitPlanMode` (the model asking to stop planning) rides the
+ORDINARY paths. Spiked against 2.1.226: a plain `allow` is enough — the CLI leaves
+plan mode itself when it sees one (it emits `system/status
+permissionMode:"default"`, the tool_result reads "User has approved your plan…"),
+so the plan passes back through `updatedInput` byte-identical like any other
+input, and "keep planning" is an ordinary `deny` whose `message` agent.py
+composes. Whatever the page sends as an ANSWER is still refused for it, by the
+`ANSWERABLE_TOOL` gate below: only a question can carry `answers`.
+
 The JSON-RPC framing is newline-delimited JSON on stdin/stdout (MCP stdio).
 stdout carries protocol only — diagnostics go to stderr.
 """

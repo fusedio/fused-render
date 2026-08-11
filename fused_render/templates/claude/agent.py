@@ -41,7 +41,8 @@ Actions:
           "app_state": [{"id", "reason", "created_at"}, ...]  (unanswered only),
           "mode": <the mode this run is RUNNING in, not the picker's>}
   main(action="decide", run_id=..., request_id=..., decision="allow"|"deny",
-       scope="once"|"session", answers=<json string, AskUserQuestion only>)
+       scope="once"|"session", answers=<json string, AskUserQuestion only>,
+       note=<free text, ExitPlanMode deny only>)
                                       -> {"decided": ..., "decision": ...}
   main(action="app_state", run_id=..., request_id=..., state=<json string>)
                                       -> {"answered": ...}
@@ -230,12 +231,15 @@ WHOLE_TOOL_GRANTABLE = frozenset({
 # decides how much is auto-approved before it is consulted, and whatever is
 # left still has to be answerable or it goes back to being a silent refusal.
 #
+#   plan        nothing is touched at all: claude researches, then calls
+#               ExitPlanMode with a plan for the user to approve (the plan card)
 #   prompt      the CLI default — a card for anything not already allowed
 #   acceptEdits file edits go through; Bash/web/everything else still cards
 #   auto        the CLI's own classifier auto-approves what it judges safe,
 #               and escalates the rest to a card (it is a broader opt-in, NOT
 #               a blanket one — bypassPermissions is deliberately not offered)
-PERMISSION_MODES = {"prompt": None, "acceptEdits": "acceptEdits", "auto": "auto"}
+PERMISSION_MODES = {"plan": "plan", "prompt": None,
+                    "acceptEdits": "acceptEdits", "auto": "auto"}
 DEFAULT_PERMISSION_MODE = "prompt"
 
 # Modes a card may switch the RUNNING session to, via a `setMode` permission
@@ -259,6 +263,46 @@ SWITCHABLE_MODES = frozenset({"acceptEdits", "auto"})
 # would loosen approvals for every later tool on the back of a click that said
 # nothing about permissions.
 ANSWERABLE_TOOL = "AskUserQuestion"
+
+# The other tool whose card is not an ordinary approval: `ExitPlanMode` is the
+# model asking to stop planning and start doing, and what is parked with it is a
+# PLAN (`input.plan`, markdown) rather than a call to vet. The verdict is still an
+# ordinary one — spiked against CLI 2.1.226: a plain `{"decision": "allow"}` is
+# enough, because the CLI leaves plan mode itself when it sees one (it emits
+# `system/status permissionMode:"default"` and the tool_result reads "User has
+# approved your plan…"). What is special is only the DENY: "keep planning" has to
+# tell the model to revise rather than to give up, and that sentence is composed
+# here (see `_keep_planning`) rather than by whatever called `decide`.
+#
+# Deliberately NOT in WHOLE_TOOL_GRANTABLE: there is one plan, so "allow all
+# ExitPlanMode in this reply" is either a grant for nothing or a pre-approval of
+# the NEXT plan, unseen. A `setMode` MAY ride along on the allow, unlike a
+# question card's — it is the mode the session lands in once planning is over,
+# which is a statement about permissions — and it goes through the same
+# SWITCHABLE_MODES gate as every other card's.
+PLAN_TOOL = "ExitPlanMode"
+
+# What "keep planning" tells the model. Page-independent on purpose: the deny
+# message is the only thing the model reads off this card, and the page's half of
+# it is a NOTE appended below, never the instruction itself.
+KEEP_PLANNING = "Revise the plan — the user wants changes."
+# How much of that note is carried. The user typed it, so it is not sanitised —
+# it is BOUNDED: a pasted file must not become the deny message, and the control
+# characters that are not whitespace have no business in a JSON string the CLI
+# hands the model.
+NOTE_LIMIT = 2000
+
+
+def _keep_planning(note: str) -> str:
+    """The deny message for a plan sent back for revision, plus the user's note.
+
+    Newlines and tabs survive (a note is allowed to be two lines); anything below
+    them is dropped, and the whole thing is capped. Never markup and never tool
+    input — this string only ever becomes the `message` of a deny."""
+    text = "".join(ch for ch in str(note or "")
+                   if ch in "\n\t" or ch >= " ")
+    text = text.strip()[:NOTE_LIMIT].strip()
+    return KEEP_PLANNING + (" The user's note: " + text if text else "")
 
 
 def _multi_answer_ok(value: str, labels: list) -> bool:
@@ -1179,7 +1223,7 @@ def _write_decision(perm_dir: str, request_id: str, payload: dict) -> bool:
 
 
 def _decide(run_id: str, request_id: str, decision: str, scope: str,
-            mode: str = "", answers: str = "") -> dict:
+            mode: str = "", answers: str = "", note: str = "") -> dict:
     run_dir = os.path.join(RUNS, run_id)
     if _bad_id(run_id) or not os.path.isdir(run_dir):
         return {"error": "unknown run_id"}
@@ -1210,6 +1254,13 @@ def _decide(run_id: str, request_id: str, decision: str, scope: str,
         # answering a question says nothing about how much to auto-approve.
         if verdict == "allow" and mode in SWITCHABLE_MODES and tool != ANSWERABLE_TOOL:
             payload["mode"] = mode
+        if verdict == "deny" and tool == PLAN_TOOL:
+            # "Keep planning": the one deny that carries a message of its own, so
+            # the model revises the plan instead of reading a refusal and giving
+            # up. The SENTENCE is ours (`_keep_planning`) and only the user's
+            # optional note comes from the caller — and only for this tool, so a
+            # `note` on anything else cannot rewrite another card's deny.
+            payload["message"] = _keep_planning(note)
         if verdict == "allow" and tool == ANSWERABLE_TOOL:
             # The answer IS the payload here, so a click that carries no valid
             # one is recorded as a deny rather than as an allow the model would
@@ -1466,11 +1517,11 @@ def _start(file: str, message: str, session_id: str, model: str,
            f"mcp__{PERMISSION_SERVER}__{PERMISSION_TOOL}",
            # Naming a permission-prompt tool also un-gates AskUserQuestion and
            # ExitPlanMode, which the CLI otherwise disables in headless mode.
-           # AskUserQuestion is now rendered — as a question card that answers it
-           # through the same bridge (ANSWERABLE_TOOL) — so it is live. There is
-           # no plan dialog yet, and a tool whose card cannot say the one thing
-           # the model is waiting for is worse than not having it.
-           "--disallowed-tools", "ExitPlanMode",
+           # Both are now RENDERED — a question card (ANSWERABLE_TOOL) and a plan
+           # card (PLAN_TOOL), each of which can say the thing the model is
+           # waiting for — so nothing is disallowed and the flag is gone
+           # altogether rather than passed with an empty value, which the CLI
+           # would read as a tool whose name is the empty string.
            # Up to two pre-allowances, and they are the only ones — everything
            # else still raises a card. Both are the same thing in different
            # clothes: looking at the app the user is looking at.
@@ -2753,7 +2804,7 @@ def main(action: str = "start", file: str = "", message: str = "",
          scope: str = "once", permission_mode: str = "", mode: str = "",
          state: str = "", has_pane: str = "", enrich: str = "",
          version_id: str = "", confirm_unique: str = "",
-         answers: str = "") -> dict:
+         answers: str = "", note: str = "") -> dict:
     if action == "start":
         if not file:
             return {"error": "missing target file (no _file param?)"}
@@ -2770,8 +2821,10 @@ def main(action: str = "start", file: str = "", message: str = "",
     if action == "decide":
         # `answers` arrives as a JSON string for the same reason `state` does
         # below — params cross into python string-shaped — and is only read for
-        # an AskUserQuestion request (see _decide).
-        return _decide(run_id, request_id, decision, scope, mode, answers)
+        # an AskUserQuestion request (see _decide). `note` is the plan card's
+        # equivalent: free text the user typed next to "keep planning", read only
+        # for an ExitPlanMode deny and only ever as part of its message.
+        return _decide(run_id, request_id, decision, scope, mode, answers, note)
     if action == "app_state":
         # `state` arrives as a JSON string, not a nested object: params reach
         # main() through the URL/param binder (str-shaped), and the snapshot is
