@@ -1881,6 +1881,14 @@ export function getClaudeSessionFolders(): Promise<{ folders: ClaudeSessionFolde
 // the file index, so a machine whose first scan has not finished yet is NOT the
 // same as a machine with no repos, and `scanning` says whether one is in flight.
 // Both come from the same vocabulary /api/index/status uses.
+//
+// `stale` means "this list may be out of date, reindexing" — a scan is running, or
+// the index was built under older rules. It is NOT an error and NOT a reason to
+// hide the list: an index is always slightly behind the filesystem, so a stale
+// answer is the normal one. The server serves rows whenever it has them and only
+// reports `indexed: false` when it genuinely cannot answer, in which case `reason`
+// says which way ("no-index": nothing has ever been built; "outdated": the index
+// predates repo detection, so its zero rows are not an answer).
 export interface GitRepo {
   path: string;
 }
@@ -1888,6 +1896,8 @@ export interface GitRepo {
 export interface GitRepos {
   indexed: boolean;
   scanning: boolean;
+  stale: boolean;
+  reason?: "no-index" | "outdated" | null;
   repos: GitRepo[];
 }
 

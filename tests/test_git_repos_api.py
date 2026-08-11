@@ -183,15 +183,15 @@ def test_a_manifest_with_no_dirs_parquet_is_not_indexed(home, tmp_path, client):
     assert client.get("/api/git-repos").json()["indexed"] is False
 
 
-def test_an_index_built_under_OLD_ignore_rules_is_not_indexed(home, tmp_path,
-                                                              client):
+def test_an_index_built_under_OLD_rules_with_NO_rows_is_not_indexed(home, tmp_path,
+                                                                    client):
     """THE migration case, and the one way this endpoint could ship a silent lie.
 
     `.git` moving out of the ignore list and into the leaf rules changed
     IgnoreRules.sig(), which forces a full rescan — but an index already on disk
     has no `.git` rows until that rescan lands. Answering `indexed: true` with an
     empty list would tell the user, with total confidence, that they have no
-    repositories."""
+    repositories. Zero rows under OLD rules is missing data, not an answer."""
     repo = tmp_path / "repo"
     # A real index (rows, manifest) whose applied signature is a stale one.
     cfg = _write_dirs_index([str(tmp_path), str(repo)], applied=False)
@@ -199,31 +199,106 @@ def test_an_index_built_under_OLD_ignore_rules_is_not_indexed(home, tmp_path,
         json.dump({"roots": {"/": "a-signature-from-before-the-leaf-rule"}}, f)
     body = client.get("/api/git-repos").json()
     assert body["indexed"] is False
+    assert body["reason"] == "outdated"
     assert body["repos"] == []
 
 
-def test_an_index_with_no_applied_signature_at_all_is_not_indexed(home, tmp_path,
-                                                                  client):
-    """None means "predates the applied-ignore file", which cannot be assumed to
-    have been built under the current rules either."""
+# -- a stale index still answers -----------------------------------------------
+
+def test_a_stale_index_WITH_rows_serves_them_marked_stale(home, tmp_path, client):
+    """The principle: a stale index is still a useful index. Rows that can answer
+    the question are served even though the rules signature is a generation behind
+    — refusing would hide a list that is almost certainly right, and an index is
+    ALWAYS somewhat behind the filesystem."""
+    repo = tmp_path / "repo"
+    cfg = _write_dirs_index([str(repo), _git(repo)], applied=False)
+    with open(cfg.applied_ignore_json, "w") as f:
+        json.dump({"roots": {"/": "an-older-signature"}}, f)
+    body = client.get("/api/git-repos").json()
+    assert body["indexed"] is True
+    assert body["stale"] is True
+    assert [r["path"] for r in body["repos"]] == [str(repo)]
+
+
+def test_a_fresh_index_with_no_repos_is_a_real_empty_answer(home, tmp_path, client):
+    """The other side of the same coin: the rule DID run and found nothing, so the
+    empty list is an answer and must not be dressed up as "still building"."""
+    _write_dirs_index([str(tmp_path), str(tmp_path / "plain")])
+    body = client.get("/api/git-repos").json()
+    assert body["indexed"] is True
+    assert body["stale"] is False
+    assert body["repos"] == []
+
+
+def test_rows_screened_down_to_zero_is_still_a_real_answer(home, tmp_path, client):
+    """The zero-row test is on RAW rows, before screening. A machine whose every
+    repo sits inside a dotted directory screens to an empty list — but the rule ran,
+    so that is an answer, not a migration. Getting this backwards would report
+    "outdated" forever on such a machine."""
+    hidden = tmp_path / ".oh-my-zsh"
+    cfg = _write_dirs_index([_git(hidden)], applied=False)
+    with open(cfg.applied_ignore_json, "w") as f:
+        json.dump({"roots": {"/": "an-older-signature"}}, f)
+    body = client.get("/api/git-repos").json()
+    assert body["indexed"] is True   # rows existed; screening emptied them
+    assert body["repos"] == []
+
+
+def test_a_scan_in_flight_over_a_usable_index_serves_it_marked_stale(
+        home, tmp_path, client, monkeypatch):
+    """A rescan keeps serving the last completed generation (index-store.md §4),
+    so a scan in flight is a `stale` note on a live list, never a reason to hide
+    it."""
+    from fused_render.server.routers import git_repos as mod
+
+    repo = tmp_path / "repo"
+    _write_dirs_index([str(repo), _git(repo)])
+    monkeypatch.setattr(mod, "_scanning", lambda cfg: True)
+    body = client.get("/api/git-repos").json()
+    assert body["indexed"] is True
+    assert body["scanning"] is True
+    assert body["stale"] is True
+    assert [r["path"] for r in body["repos"]] == [str(repo)]
+
+
+def test_no_index_at_all_says_so_distinctly(home, tmp_path, client):
+    body = client.get("/api/git-repos").json()
+    assert body["indexed"] is False
+    assert body["reason"] == "no-index"
+    assert body["stale"] is False
+
+
+def test_an_index_with_no_applied_signature_reads_stale_but_still_answers(
+        home, tmp_path, client):
+    """None means "predates the applied-ignore file", so the rows cannot be assumed
+    current — but they exist, and rows beat signatures. Served, marked stale."""
     repo = tmp_path / "repo"
     _write_dirs_index([str(tmp_path), str(repo), _git(repo)], applied=False)
-    assert client.get("/api/git-repos").json()["indexed"] is False
+    body = client.get("/api/git-repos").json()
+    assert body["indexed"] is True
+    assert body["stale"] is True
+    assert [r["path"] for r in body["repos"]] == [str(repo)]
 
 
-def test_a_partially_rescanned_multi_root_index_is_not_indexed(home, tmp_path,
-                                                               client):
-    """Two configured roots, only one rescanned under the current rules: every
-    repo under the other is still missing, so the honest answer is "not ready"."""
+def test_a_partially_rescanned_multi_root_index_serves_what_it_has(home, tmp_path,
+                                                                  client):
+    """Two configured roots, only one reconciled under the current rules. The repos
+    under the reconciled root are real and get served; `stale` says the picture is
+    incomplete. Hiding them would be the "refuse to answer while behind" mistake —
+    an index is essentially always behind on at least one root."""
     a, b = tmp_path / "a", tmp_path / "b"
     repo = a / "repo"
     _set_roots([a, b])
     cfg = _write_dirs_index([str(repo), _git(repo)], applied=False)
     save_applied_ignore(cfg, str(a))   # only /a reconciled
-    assert client.get("/api/git-repos").json()["indexed"] is False
+    body = client.get("/api/git-repos").json()
+    assert body["indexed"] is True
+    assert body["stale"] is True
+    assert [r["path"] for r in body["repos"]] == [str(repo)]
     save_applied_ignore(cfg, str(b))
     body = client.get("/api/git-repos").json()
     assert body["indexed"] is True
+    assert body["stale"] is False      # every root now reconciled
     assert [r["path"] for r in body["repos"]] == [str(repo)]
 
 
@@ -267,8 +342,13 @@ def test_a_legacy_sig_root_is_stale_even_once_another_root_is_stamped(
     `{"roots": {a: current}, "legacy_sig": old}` — and the ROOTLESS
     applied_ignore_sig() reads only the `roots` values, so it answers "everything
     matches" while root `b` is still described by nothing but the stale legacy sig
-    and still holds no `.git` rows. Checking each root individually is what sees
-    it: the per-root form falls back to `legacy_sig` for `b`."""
+    and is unreconciled. Checking each root individually is what sees it: the
+    per-root form falls back to `legacy_sig` for `b`.
+
+    The CONSEQUENCE moved — a mismatch now marks the answer `stale` instead of
+    withholding it — but the detection must not: `stale: false` here would promise a
+    complete picture of a machine half of which was never scanned under these
+    rules."""
     from fused_render.index.store import applied_ignore_sig
 
     a, b = tmp_path / "a", tmp_path / "b"
@@ -282,8 +362,10 @@ def test_a_legacy_sig_root_is_stale_even_once_another_root_is_stamped(
 
     # the rootless form is exactly as misleading as reported...
     assert applied_ignore_sig(cfg) == cfg.rules.sig()
-    # ...and the endpoint must not be fooled by it
-    assert client.get("/api/git-repos").json()["indexed"] is False
+    # ...and the endpoint must not be fooled into claiming freshness
+    body = client.get("/api/git-repos").json()
+    assert body["stale"] is True
+    assert [r["path"] for r in body["repos"]] == [str(repo)]
 
 
 def test_an_unreadable_index_is_a_502_not_not_indexed(home, tmp_path, client):

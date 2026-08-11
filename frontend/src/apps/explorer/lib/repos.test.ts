@@ -1,11 +1,17 @@
 import { describe, expect, it } from "bun:test";
-import { reposMessage, reposView, type ReposView } from "@apps/explorer/lib/repos";
+import {
+  reposMessage,
+  reposStaleNote,
+  reposView,
+  type ReposView,
+} from "@apps/explorer/lib/repos";
 import type { GitRepos } from "@platform/lib/api";
 
 const msg = (v: ReposView) => reposMessage(v);
 const res = (over: Partial<GitRepos> = {}): GitRepos => ({
   indexed: false,
   scanning: false,
+  stale: false,
   repos: [],
   ...over,
 });
@@ -24,15 +30,17 @@ describe("reposView", () => {
 
   it("an indexed answer is ready, empty list included", () => {
     const v = reposView(res({ indexed: true }), false, null);
-    expect(v).toEqual({ kind: "ready", repos: [] });
+    expect(v).toEqual({ kind: "ready", repos: [], stale: false });
     expect(msg(v)).toMatch(/No git repositories/);
   });
 
-  it("keeps serving a real answer while a RESCAN runs", () => {
+  it("keeps serving a real answer while a RESCAN runs, marked stale", () => {
     // A rescan over a usable index keeps serving the last completed generation
-    // (index-store.md §4), so scanning must not downgrade an answer to "wait".
+    // (index-store.md §4), so scanning must not downgrade an answer to "wait" —
+    // it becomes a note on a live list.
     const v = reposView(res({ indexed: true, repos: [{ path: "/a" }] }), false, true);
-    expect(v).toEqual({ kind: "ready", repos: [{ path: "/a" }] });
+    expect(v).toEqual({ kind: "ready", repos: [{ path: "/a" }], stale: true });
+    expect(reposStaleNote(v)).toMatch(/may be out of date/i);
   });
 
   it("the live poll outranks the response's older scanning flag", () => {
@@ -45,6 +53,59 @@ describe("reposView", () => {
   });
 });
 
+// The design rule: a stale index is still a useful index. Never hide a list we
+// hold; annotate it.
+describe("stale results are shown, not withheld", () => {
+  const repos = [{ path: "/a" }, { path: "/b" }];
+
+  it("renders every card when the server says stale", () => {
+    const v = reposView(res({ indexed: true, stale: true, repos }), false, false);
+    expect(v).toEqual({ kind: "ready", repos, stale: true });
+    // the note is a footnote, and nothing about it hides the list
+    expect(reposStaleNote(v)).not.toBeNull();
+  });
+
+  it("a fresh answer carries no note at all", () => {
+    const v = reposView(res({ indexed: true, repos }), false, false);
+    expect(reposStaleNote(v)).toBeNull();
+  });
+
+  it("never notes staleness on a state that has no list to be stale", () => {
+    for (const v of [
+      reposView(null, false, null),
+      reposView(null, true, null),
+      reposView(res({ scanning: true }), false, true),
+      reposView(res({ reason: "outdated" }), false, false),
+      reposView(res(), false, false),
+    ]) {
+      expect(reposStaleNote(v)).toBeNull();
+    }
+  });
+});
+
+describe("zero rows: missing data vs a real answer", () => {
+  it("an index predating repo detection is NOT 'no repositories'", () => {
+    // The original silent lie. Zero rows because the rule never ran.
+    const v = reposView(res({ indexed: false, reason: "outdated" }), false, false);
+    expect(v.kind).toBe("outdated");
+    expect(msg(v)).not.toMatch(/No git repositories/);
+    // and it is not the user's job to fix, unlike `unavailable`
+    expect(msg(v)).not.toMatch(/Preferences/);
+  });
+
+  it("a fresh index that found nothing IS 'no repositories'", () => {
+    const v = reposView(res({ indexed: true }), false, false);
+    expect(msg(v)).toMatch(/No git repositories/);
+  });
+
+  it("an outdated index still shows rows when it has them", () => {
+    // reason only accompanies indexed: false; if the server served rows they win.
+    const v = reposView(
+      res({ indexed: true, stale: true, repos: [{ path: "/a" }] }), false, false);
+    expect(v.kind).toBe("ready");
+  });
+});
+
 // The four ways a scan can end, from the tab's point of view. Only the first
 // updates the manifest, which is why "a scan completed" was the wrong refetch
 // trigger and the pair (scanning, last_completed_at) is the right one — see
@@ -53,7 +114,7 @@ describe("reposView", () => {
 describe("the four scan endings", () => {
   it("COMPLETED: the index can answer, so the list shows", () => {
     const v = reposView(res({ indexed: true, repos: [{ path: "/r" }] }), false, false);
-    expect(v).toEqual({ kind: "ready", repos: [{ path: "/r" }] });
+    expect(v).toEqual({ kind: "ready", repos: [{ path: "/r" }], stale: false });
   });
 
   it("CANCELLED: no index and nothing running — actionable, not 'building'", () => {
@@ -92,7 +153,8 @@ describe("reposMessage", () => {
       { kind: "failed" },
       { kind: "building" },
       { kind: "unavailable" },
-      { kind: "ready", repos: [] },
+      { kind: "outdated" },
+      { kind: "ready", repos: [], stale: false },
     ];
     const seen = kinds.map(msg);
     expect(seen.every((m) => m.length > 0)).toBe(true);

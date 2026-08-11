@@ -25,13 +25,19 @@ export type ReposView =
   | { kind: "loading" }
   // The request itself failed; the index's state is unknown.
   | { kind: "failed" }
-  // The index cannot answer yet AND a scan is in flight — it is coming.
+  // Nothing to show AND a scan is in flight — a list is coming.
   | { kind: "building" }
-  // The index cannot answer and nothing is scanning: it was never built, or a
-  // scan ended without producing one (cancelled, failed). Needs the user.
+  // Nothing to show, nothing running: no index was ever built, or a scan ended
+  // without producing one (cancelled, failed). Needs the user.
   | { kind: "unavailable" }
+  // The index predates repo detection, so its zero rows are not an answer. A
+  // rebuild is forced on the next scan; nothing for the user to fix.
+  | { kind: "outdated" }
   // The index answered. `repos` may be empty, and that is a real answer.
-  | { kind: "ready"; repos: GitRepo[] };
+  // `stale` folds INTO this variant rather than sitting beside the union, so
+  // "showing a list" and "the list might be a little behind" cannot drift apart:
+  // a stale ready state still renders every card, just with a quiet note.
+  | { kind: "ready"; repos: GitRepo[]; stale: boolean };
 
 /**
  * `liveScanning` is the index poll's `scanning`, or null when nothing has polled
@@ -44,13 +50,26 @@ export function reposView(
 ): ReposView {
   if (failed) return { kind: "failed" };
   if (response === null) return { kind: "loading" };
-  // `indexed` is the only bit that decides whether there is an ANSWER. A rescan
-  // over a usable index keeps serving the last completed generation
-  // (index-store.md §4), so scanning never downgrades a real answer to "wait".
-  if (response.indexed) return { kind: "ready", repos: response.repos };
-  return (liveScanning ?? response.scanning)
-    ? { kind: "building" }
-    : { kind: "unavailable" };
+  const scanning = liveScanning ?? response.scanning;
+  // `indexed` is the only bit that decides whether there is an ANSWER, and a
+  // scan in flight never downgrades one: a rescan keeps serving the last completed
+  // generation (index-store.md §4), and the whole point of `stale` is that a list
+  // a generation behind beats no list. It only becomes a note on the cards.
+  if (response.indexed) {
+    return { kind: "ready", repos: response.repos, stale: response.stale || scanning };
+  }
+  // No answer available. `outdated` is its own state because the remedy differs:
+  // nothing has to be done, a rebuild is already forced — where `unavailable`
+  // genuinely needs the user to start one.
+  if (scanning) return { kind: "building" };
+  return response.reason === "outdated" ? { kind: "outdated" } : { kind: "unavailable" };
+}
+
+/** The quiet note shown above a stale list, or null when there is nothing to say. */
+export function reposStaleNote(view: ReposView): string | null {
+  return view.kind === "ready" && view.stale
+    ? "Reindexing — this list may be out of date."
+    : null;
 }
 
 export function reposMessage(view: ReposView): string {
@@ -61,6 +80,10 @@ export function reposMessage(view: ReposView): string {
       return "Couldn't read the list of repos.";
     case "building":
       return "Still building the file index — repos will appear when the first scan finishes.";
+    case "outdated":
+      // Not actionable on purpose: the rules change already forces a rescan, so
+      // sending the user to Preferences would be busywork.
+      return "The file index predates repo detection — repos will appear after the next scan.";
     case "unavailable":
       // Deliberately actionable: this is the state where nothing is going to
       // happen on its own, including after a scan was cancelled or failed.

@@ -14,7 +14,7 @@ import { useBookmarksVersion, useUrlVersion } from "@platform/lib/hooks";
 import { hydrateRecents, loadRecents, recentFsPath, useRecentsVersion } from "@apps/explorer/lib/recents";
 import { BookmarkPreviewCard, RecentPreviewCard, FolderPreviewCard } from "@apps/explorer/BookmarkCards";
 import { describeSpec, runAiSearch, type AiSearchResult } from "@apps/explorer/lib/ai-search";
-import { reposMessage, reposView } from "@apps/explorer/lib/repos";
+import { reposMessage, reposStaleNote, reposView } from "@apps/explorer/lib/repos";
 import { useIndexStatus } from "@platform/lib/index-status";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { TextArea } from "@platform/ui/field/fields";
@@ -553,6 +553,12 @@ export default function FilesHome({ config }: { config: Config }) {
             ) : tab === "repos" ? (
               repoList.length ? (
                 <>
+                  {/* A stale list still shows every card; this is a footnote, not a
+                      warning. An index is always a little behind the filesystem,
+                      so alarming copy here would cry wolf permanently. */}
+                  {reposStaleNote(reposTab) && (
+                    <p className="fh-search-summary">{reposStaleNote(reposTab)}</p>
+                  )}
                   <div className="fhb-grid">
                     {shownRepos.map((r) => (
                       <FolderPreviewCard key={r.path} path={r.path} />

@@ -37,16 +37,32 @@ THREE THINGS THAT LOOK WRONG AND ARE NOT
    guarded at scan time. It is the layer that holds if an index written by an
    older build carries rows a newer guard would have pruned, and it costs nothing
    — the roots resolve once per request and every check is string comparison.
-3. An index any of whose configured roots was built under a different ignore
-   signature is reported as NOT READY, not as an empty list. This is the migration
-   case and it is the one way this endpoint could ship a silent lie: `.git` moving
-   out of the ignore list and into the leaf rules changed `IgnoreRules.sig()`,
-   which forces a full rescan — but until that rescan finishes, an index already on
-   disk has no `.git` rows whatsoever. A pure query would then answer
-   `{indexed: true, repos: []}` and tell the user, with total confidence, that they
-   have no repositories. So EVERY root's signature is checked individually (see
-   `_usable` for why the rootless form is not enough) and a stale index is reported
-   exactly as a missing one.
+3. A STALE index still answers. If the dirs table yields `.git` rows they are
+   served — while a scan is in flight, while the applied ignore signature is a
+   generation behind, whatever has changed on disk since. An index is ALWAYS
+   slightly behind the filesystem, so treating "behind" as "unusable" would refuse
+   to answer approximately always; the response carries `stale: true` instead and
+   the tab shows the list with a quiet note. Staleness is the normal condition, not
+   an error.
+
+   The rules signature keeps exactly ONE job, and it is not a veto on results. It
+   separates two kinds of zero:
+
+     * zero rows because the RULE NEVER RAN — an index predating `.git` becoming a
+       leaf dir has no `.git` rows to find, and answering "no repositories on this
+       machine" from it is a confident falsehood. This is the original silent lie
+       and the reason any of this exists; it reports not-ready (`reason:
+       "outdated"`) so the tab can say a rebuild is coming.
+     * zero rows because the machine GENUINELY HAS NO REPOS — the rule ran and
+       found nothing. A real answer, served as `{indexed: true, repos: []}`.
+
+   The test is on RAW row count, before screening. Screening can legitimately take
+   real rows down to zero (every repo on the machine inside a dotted directory),
+   and that is a rule that DID run — so it is an answer, not a migration.
+
+   Signatures are still checked per configured ROOT (see `_fresh` on why the
+   rootless form is not enough); the consequence of a mismatch is now `stale`
+   rather than silence.
 
 Order is the index's own row order, which is path order: the compaction writes
 dirs.parquet `ORDER BY dir` (`store._compact_locked`), and stripping the trailing
@@ -97,17 +113,11 @@ def _scanning(cfg) -> bool:
         return False
 
 
-def _usable(cfg) -> bool:
-    """Whether the index on disk can answer this question at all.
-
-    Three ways it cannot, all reported identically to the caller:
-      * no manifest — nothing has ever compacted;
-      * no dirs.parquet — the table this endpoint reads is the one that matters,
-        and the manifest does not imply it;
-      * any CONFIGURED ROOT whose applied ignore signature is not the current one
-        — that root's slice of the index was built under different rules, so it
-        predates `.git` being recorded and holds no `.git` rows. See the module
-        docstring's point 3.
+def _fresh(cfg) -> bool:
+    """Whether every configured root's slice of the index was built under today's
+    rules. NOT a gate on serving results (module docstring point 3) — it decides
+    `stale`, and it separates "no rows because the leaf rule never ran" from "no
+    rows because there are no repos".
 
     Every root is checked INDIVIDUALLY, and the rootless `applied_ignore_sig(cfg)`
     is deliberately not used for this. That form compares only the values in the
@@ -123,8 +133,6 @@ def _usable(cfg) -> bool:
     current signature either — "predates the applied-ignore file" cannot be
     assumed to have been built under today's rules.
     """
-    if read_manifest(cfg) is None or not os.path.exists(cfg.dirs_parquet):
-        return False
     sig = cfg.rules.sig()
     # scan_roots is the definition of "what this index is supposed to cover"
     # (configured roots, else home) and lives with the scan scheduler that acts on
@@ -134,10 +142,19 @@ def _usable(cfg) -> bool:
     return all(applied_ignore_sig(cfg, r) == sig for r in scan_roots(cfg))
 
 
+def _not_ready(cfg, reason: str) -> dict:
+    """The index cannot answer. `stale` is False rather than True: there is no list,
+    so "the list may be out of date" would be a claim about nothing."""
+    return {"indexed": False, "reason": reason, "scanning": _scanning(cfg),
+            "stale": False, "repos": []}
+
+
 def _repos() -> dict:
     cfg = load_config()
-    if not _usable(cfg):
-        return {"indexed": False, "scanning": _scanning(cfg), "repos": []}
+    # The only genuinely unanswerable state: no store to read. Everything past here
+    # queries first and judges freshness second — rows win over signatures.
+    if read_manifest(cfg) is None or not os.path.exists(cfg.dirs_parquet):
+        return _not_ready(cfg, "no-index")
     import duckdb
 
     con = duckdb.connect()
@@ -158,6 +175,14 @@ def _repos() -> dict:
         # never coming. Same split /api/search/files draws (503 vs 502).
         logger.exception("the repo list query failed")
         raise IndexUnreadable(type(e).__name__) from e
+    fresh = _fresh(cfg)
+    # RAW row count, before screening — the one thing the signature still decides.
+    # No rows under old rules means the leaf rule never ran and the data does not
+    # exist yet; saying "no repositories" from that is the original silent lie.
+    # Rows screened down to zero is a different thing entirely: the rule DID run, so
+    # the empty answer is real (module docstring point 3).
+    if not rows and not fresh:
+        return _not_ready(cfg, "outdated")
     guard = MountGuard()
     repos = []
     for (git_dir,) in rows:
@@ -167,7 +192,15 @@ def _repos() -> dict:
         if not root or junk_path(root) or guard.blocks(root):
             continue
         repos.append({"path": canonical_fs_path(root)})
-    return {"indexed": True, "scanning": _scanning(cfg), "repos": repos}
+    scanning = _scanning(cfg)
+    # ONE flag for the user-facing question "might this list be out of date?", over
+    # two causes that have the same answer and the same remedy (wait). A caller that
+    # needs to tell them apart still has `scanning` on its own. Note what is NOT in
+    # here: files changed on disk since the scan. Nothing can know that without
+    # re-walking, which is the cost this endpoint exists to avoid — so `stale: false`
+    # means "as fresh as the index gets", never "identical to the filesystem".
+    return {"indexed": True, "reason": None, "scanning": scanning,
+            "stale": (not fresh) or scanning, "repos": repos}
 
 
 @router.get("/api/git-repos")
