@@ -15,6 +15,7 @@ import { hydrateRecents, loadRecents, recentFsPath, useRecentsVersion } from "@a
 import { BookmarkPreviewCard, RecentPreviewCard, FolderPreviewCard } from "@apps/explorer/BookmarkCards";
 import { describeSpec, runAiSearch, type AiSearchResult } from "@apps/explorer/lib/ai-search";
 import { emptyReposMessage } from "@apps/explorer/lib/repos";
+import { useIndexStatus } from "@platform/lib/index-status";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { TextArea } from "@platform/ui/field/fields";
 
@@ -343,18 +344,41 @@ export default function FilesHome({ config }: { config: Config }) {
   // an empty repo list.
   const [repos, setRepos] = useState<GitRepos | null>(null);
   const [reposFailed, setReposFailed] = useState(false);
+  // ...but "one GET on mount" alone would strand the user, because the answer can
+  // arrive LATER: this list is derived from the file index, and a homepage opened
+  // while the first scan is running would sit on "Still building…" until something
+  // remounted the page — which switching tabs does not do (the tab is a URL param,
+  // not a route). That is not an edge case; it is every user's state right after an
+  // upgrade that changes the index rules and forces a rescan.
+  //
+  // So the existing index poller drives the refetch (useIndexStatus, shared with
+  // the listing's search indicator) rather than a poll of our own: it already
+  // knows both scan rates and already reports `last_completed_at`, which is the
+  // exact edge we need — a scan finished, so ask again. Gated on `!indexed`, so a
+  // page whose answer is already good polls nothing at all.
+  const indexScan = useIndexStatus(repos !== null && !repos.indexed);
+  const scanCompletedAt = indexScan?.last_completed_at ?? null;
   useEffect(() => {
     let alive = true;
     getGitRepos().then(
-      (r) => alive && setRepos(r),
+      (r) => {
+        if (!alive) return;
+        setReposFailed(false);
+        setRepos(r);
+      },
       () => alive && setReposFailed(true),
     );
     return () => {
       alive = false;
     };
-  }, []);
+  }, [scanCompletedAt]);
   const repoList = repos?.repos ?? [];
   const shownRepos = expandedRepos ? repoList : repoList.slice(0, MAX_CARDS);
+  // The live poll outranks the (possibly minutes-old) response for `scanning`
+  // alone, so the empty state moves from "no index — go rebuild it" to "still
+  // building" the moment a scan actually starts.
+  const reposState =
+    repos && indexScan ? { ...repos, scanning: indexScan.scanning } : repos;
   // With no ?tab= in the URL, land on Claude sessions — the leading tab.
   // Bookmark/recent caches still hydrate on mount (effect below) so the other
   // tabs are ready when clicked. An explicit ?tab= always wins.
@@ -538,7 +562,7 @@ export default function FilesHome({ config }: { config: Config }) {
                 // means two different things and the tab must not conflate them:
                 // "you have no repos" is an answer, "we haven't finished looking"
                 // is not.
-                <p className="fh-empty">{emptyReposMessage(repos)}</p>
+                <p className="fh-empty">{emptyReposMessage(reposState ?? repos)}</p>
               )
             ) : shownSessions === null ? (
               <p className="fh-empty">Looking for artifacts…</p>
