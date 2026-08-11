@@ -408,10 +408,6 @@ export interface SearchFileEntry {
 export interface SearchFilesResult {
   entries: SearchFileEntry[];
   truncated: boolean;
-  // Always "index" now that the index is the only engine; kept in the response
-  // for older clients and because "what answered this" is the first support
-  // question about a surprising result.
-  engine: string;
 }
 
 // File search from a filter spec (see apps/explorer/lib/ai-search), scoped to
@@ -434,8 +430,11 @@ export async function searchFiles(
   return data as SearchFilesResult;
 }
 
-export function statPath(fsPath: string): Promise<StatResult> {
-  return getJson<StatResult>("/api/fs/stat?path=" + encodeURIComponent(fsPath));
+// `signal` matters for callers that stat on a user's behalf and then navigate:
+// a stat on a slow mount can resolve after the user has moved on, and acting on
+// it would move them back. See FilesHome's path shortcut.
+export function statPath(fsPath: string, signal?: AbortSignal): Promise<StatResult> {
+  return getJson<StatResult>("/api/fs/stat?path=" + encodeURIComponent(fsPath), { signal });
 }
 
 // Deferred condition.py verdicts (CT-12): {mode: allowed} for every entry

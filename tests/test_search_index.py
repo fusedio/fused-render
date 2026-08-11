@@ -31,11 +31,11 @@ def spec(**over):
         "name_terms": [],
         "extensions": [],
         "kind": "any",
-        "modified_within_days": None,
         "modified_after": None,
         "modified_before": None,
         "min_size_bytes": None,
         "max_size_bytes": None,
+        "path_hints": [],
     }
     base.update(over)
     return base
@@ -77,7 +77,6 @@ def test_index_engine_matches_name_terms_case_insensitively(tmp_path):
                                   ("/r/notes.txt", 20, 200.0)])
     out = _search_index(spec(name_terms=["weather"]), cfg)
     assert _paths(out) == ["/r/Weather Report.csv"]
-    assert out["engine"] == "index"
     assert out["truncated"] is False
 
 
@@ -141,6 +140,70 @@ def test_index_engine_skips_the_dirs_view_when_nothing_narrows_a_directory(tmp_p
         _search_index(spec(extensions=["mp4"], kind="dir"), cfg)
 
 
+def test_index_engine_narrows_by_path_hint_segment(tmp_path):
+    """A hint names a FOLDER, so it matches a path SEGMENT, not any substring.
+
+    "Downloads this week" used to reach the engine as `mtime >= …` alone — half
+    the disk — and the 400-row recency window it truncated to held no Downloads
+    row at all, so the client's ranking boost had nothing to boost. The hint is
+    a WHERE clause now, and `~/my-downloads-backup` is not `~/Downloads`."""
+    cfg = _index(tmp_path, "/r", [
+        ("/r/Downloads/x.csv", 10, 100.0),
+        ("/r/my-downloads-backup/x.csv", 10, 200.0),
+        ("/r/downloads-old.csv", 10, 300.0),
+        ("/r/Documents/y.csv", 10, 400.0),
+    ])
+    # kind="file" so this pins the FILES view alone; the dirs view's own
+    # segment rule (the folder itself) has its own test below.
+    out = _search_index(
+        spec(kind="file", extensions=["csv"], path_hints=["downloads"]), cfg)
+    assert _paths(out) == ["/r/Downloads/x.csv"]
+
+
+def test_index_engine_ors_path_hints_and_ands_them_with_the_rest(tmp_path):
+    cfg = _index(tmp_path, "/r", [
+        ("/r/Downloads/a.csv", 10, 100.0),
+        ("/r/Desktop/b.csv", 10, 100.0),
+        ("/r/Desktop/c.txt", 10, 100.0),
+        ("/r/Music/d.csv", 10, 100.0),
+    ])
+    out = _search_index(
+        spec(kind="file", extensions=["csv"],
+             path_hints=["downloads", "desktop"]), cfg)
+    assert _paths(out) == ["/r/Desktop/b.csv", "/r/Downloads/a.csv"]
+
+
+def test_index_engine_path_hint_matches_a_dir_by_its_own_last_segment(tmp_path):
+    """A dirs row IS a directory, so the hint has to match its final segment as
+    well as an ancestor one — otherwise "the downloads folder" could never
+    return ~/Downloads itself."""
+    cfg = _index(tmp_path, "/r", [], dirs=[
+        "/r/Downloads", "/r/Downloads/inner", "/r/my-downloads-backup",
+        "/r/Documents"])
+    out = _search_index(spec(kind="dir", path_hints=["downloads"]), cfg)
+    assert _paths(out) == ["/r/Downloads", "/r/Downloads/inner"]
+
+
+def test_index_engine_answers_a_path_hints_only_spec(tmp_path):
+    """path_hints narrows, so it is enough on its own: "in downloads" is a
+    legitimately answerable query rather than a rejected one."""
+    cfg = _index(tmp_path, "/r", [("/r/Downloads/a.csv", 10, 100.0),
+                                  ("/r/Documents/b.csv", 10, 100.0)],
+                 dirs=["/r/Downloads", "/r/Documents"])
+    out = _search_index(spec(path_hints=["downloads"]), cfg)
+    assert _paths(out) == ["/r/Downloads", "/r/Downloads/a.csv"]
+
+
+def test_index_engine_path_hint_metachars_stay_literal(tmp_path):
+    """`_` is a LIKE wildcard; a hint carrying one must not match a lookalike
+    sibling (the like_literal + ESCAPE contract)."""
+    cfg = _index(tmp_path, "/r", [("/r/pro_j/a.csv", 10, 100.0),
+                                  ("/r/pro-j/b.csv", 10, 100.0)])
+    out = _search_index(
+        spec(kind="file", extensions=["csv"], path_hints=["pro_j"]), cfg)
+    assert _paths(out) == ["/r/pro_j/a.csv"]
+
+
 def test_index_engine_lets_dirs_past_extension_and_size_filters(tmp_path):
     """Extension and size are FILE facts, so a dir hit passes them (the index
     has no size for a directory at all)."""
@@ -172,16 +235,6 @@ def test_index_engine_date_ranges_are_inclusive_local_days(tmp_path):
     out = _search_index(
         spec(modified_after="2026-06-01", modified_before="2026-06-30"), cfg)
     assert _paths(out) == ["/r/first-instant.txt", "/r/last-instant.txt"]
-
-
-def test_index_engine_honors_modified_within_days(tmp_path):
-    import time
-
-    now = time.time()
-    cfg = _index(tmp_path, "/r", [("/r/fresh.txt", 10, now - 3600),
-                                  ("/r/stale.txt", 10, now - 10 * 86400)])
-    out = _search_index(spec(modified_within_days=2), cfg)
-    assert _paths(out) == ["/r/fresh.txt"]
 
 
 def test_index_engine_screens_hidden_and_junk_paths(tmp_path):
@@ -395,10 +448,10 @@ def test_a_never_built_index_is_an_error_not_an_empty_disk(tmp_path):
 
 def test_a_zero_hit_query_is_an_honest_empty_result(tmp_path):
     """A miss is a miss. There is no wider engine to consult, so an empty
-    result set is the answer — reported as one, with `engine` still set."""
+    result set is the answer — reported as one."""
     cfg = _index(tmp_path, "/r", [("/r/a.txt", 10, 100.0)])
     out = _search_index(spec(name_terms=["nothing-like-this"]), cfg)
-    assert out == {"entries": [], "truncated": False, "engine": "index"}
+    assert out == {"entries": [], "truncated": False}
 
 
 def test_index_engine_refuses_a_spec_with_no_narrowing_constraint(tmp_path):
@@ -437,7 +490,9 @@ def test_the_endpoint_has_no_engine_but_the_index(client, tmp_path, monkeypatch)
     res = client.post("/api/search/files", json={"name_terms": ["quarterly"]})
     assert res.status_code == 200
     body = res.json()
-    assert body["engine"] == "index"
+    # No `engine` discriminator in the response: with one engine it only ever
+    # said "index", and the one client that reads this never used it.
+    assert "engine" not in body
     assert [e["path"] for e in body["entries"]] == ["/r/quarterly.csv"]
 
 
@@ -455,14 +510,4 @@ def test_the_endpoint_returns_an_empty_ok_for_a_miss(client, tmp_path, monkeypat
     monkeypatch.setattr(search_mod, "load_config", lambda: cfg)
     res = client.post("/api/search/files", json={"name_terms": ["zzzz"]})
     assert res.status_code == 200
-    assert res.json() == {"ok": True, "entries": [], "truncated": False,
-                          "engine": "index"}
-
-
-def test_the_endpoint_rejects_a_creation_date_filter(client, tmp_path, monkeypatch):
-    cfg = _index(tmp_path, "/r", [("/r/a.txt", 10, 100.0)])
-    monkeypatch.setattr(search_mod, "load_config", lambda: cfg)
-    res = client.post("/api/search/files",
-                      json={"name_terms": ["a"], "created_after": "2026-06-01"})
-    assert res.status_code == 400
-    assert "created" in res.json()["error"]
+    assert res.json() == {"ok": True, "entries": [], "truncated": False}
