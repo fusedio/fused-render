@@ -60,6 +60,8 @@ def test_editing_a_packaged_template_restages_without_a_version_bump(staged):
     (staged.package / "csv" / "template.html").write_text(
         '<html data-fused-theme>light + dark</html>', encoding="utf-8"
     )
+    # Per-process memo; drop it to model the second app launch.
+    core_templates._reset_expected_marker_cache()
     ensure_core_templates()
     assert staged.served() == '<html data-fused-theme>light + dark</html>'
 
@@ -91,6 +93,19 @@ def test_an_unchanged_tree_does_not_recopy(staged, monkeypatch):
     monkeypatch.setattr(core_templates.shutil, "copytree", boom)
     monkeypatch.setattr(core_templates.shutil, "rmtree", boom)
     assert ensure_core_templates() == staged.core
+
+
+def test_the_packaged_tree_is_hashed_once_per_process(staged, monkeypatch):
+    """Both import-time ensure_core_templates() callers must hash the packaged
+    tree once between them, not twice."""
+    hashed = []
+    real = core_templates._tree_digest
+    monkeypatch.setattr(core_templates, "_tree_digest",
+                        lambda root: hashed.append(root) or real(root))
+
+    ensure_core_templates()  # server/templates.py:16
+    ensure_core_templates()  # executor.py:41
+    assert hashed == [str(staged.package)], hashed
 
 
 def test_the_tree_digest_is_stable_and_order_independent(tmp_path):

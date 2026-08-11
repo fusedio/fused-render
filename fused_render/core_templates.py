@@ -99,9 +99,25 @@ def _tree_digest(root: str) -> str:
     return h.hexdigest()
 
 
+# Process-lifetime memo of the packaged-tree digest, keyed on PACKAGE_TEMPLATES_DIR
+# so it self-corrects across the suite's per-test fake trees.
+_EXPECTED_MARKER_MEMO: tuple[str, str] | None = None
+
+
+def _reset_expected_marker_cache() -> None:
+    """Drop the digest memo (tests only)."""
+    global _EXPECTED_MARKER_MEMO
+    _EXPECTED_MARKER_MEMO = None
+
+
 def _expected_marker() -> str:
     """The marker a correctly staged copy of the current package would hold."""
-    return f"{__version__} {_tree_digest(PACKAGE_TEMPLATES_DIR)}"
+    global _EXPECTED_MARKER_MEMO
+    if _EXPECTED_MARKER_MEMO is not None and _EXPECTED_MARKER_MEMO[0] == PACKAGE_TEMPLATES_DIR:
+        return _EXPECTED_MARKER_MEMO[1]
+    marker = f"{__version__} {_tree_digest(PACKAGE_TEMPLATES_DIR)}"
+    _EXPECTED_MARKER_MEMO = (PACKAGE_TEMPLATES_DIR, marker)
+    return marker
 
 
 def ensure_core_templates() -> str:
