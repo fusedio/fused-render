@@ -29,6 +29,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from fused_render.server import create_app
+from fused_render.ai import registry as _ai_registry
 from fused_render.server.routers import ai_models as ai_models_mod
 
 # Windows makes symlinks a privileged operation, and huggingface_hub itself
@@ -1113,6 +1114,73 @@ def test_every_label_this_module_can_produce_is_explained():
     produced |= {"embeddings", "text generation"}  # the sentence-transformers and GGUF branches
     missing = sorted(label for label in produced if label not in ai_models_mod._TASK_HELP)
     assert not missing, f"labels with no explanation: {missing}"
+
+
+def _labels_this_module_can_produce():
+    """Every task label the listing's own tables can put on a card."""
+    produced = set(ai_models_mod._FRIENDLIER_TAGS.values())
+    produced |= {task for _, task in ai_models_mod._ARCH_TASKS}
+    produced |= {ai_models_mod._diffusers_task(name)
+                 for name in ("StableDiffusionPipeline", "StableVideoDiffusionPipeline",
+                              "MusicGenPipeline")}
+    produced |= {"embeddings", "text generation"}
+    return {label for label in produced if label}
+
+
+def test_every_task_label_is_classified():
+    """Every label is either loadable by a runner or explicitly ruled out.
+
+    A label nobody has thought about and a label that has been ruled out both
+    produce `capability: null`, so they look identical from the page — and that
+    is how "image + text to text" lost its Load button while the app's own
+    Discover tab went on recommending `mlx-community/gemma-3-12b-it-4bit`, a
+    model carrying exactly that label, as a chat model.
+
+    Pinning the CLASSIFICATION rather than the instance: growing the vocabulary
+    without deciding what runs it now fails here instead of quietly removing a
+    control from a card.
+    """
+    unclassified = sorted(
+        label for label in _labels_this_module_can_produce()
+        if label not in _ai_registry._TASK_CAPABILITIES
+        and label not in _ai_registry.NO_RUNNER_YET
+    )
+    assert not unclassified, (
+        "task labels neither mapped to a capability nor listed in "
+        f"registry.NO_RUNNER_YET: {unclassified}"
+    )
+
+
+def test_a_vision_language_model_is_still_loadable_as_a_chat_model(client, hub):
+    """The gemma-3 case, end to end.
+
+    A multimodal checkpoint is labelled "image + text to text" because it CAN
+    take a picture; it is still the causal LM the text runner loads when you
+    only give it text. The card must offer Load, or the page is refusing a
+    model the catalog recommends.
+    """
+    repo = _repo(hub, "models--mlx-community--gemma-3-12b-it-4bit", blobs={"w": 10},
+                 snapshots={"c1": {"m": "w"}}, refs={"main": "c1"})
+    _snapshot_file(repo, "c1", "README.md", "---\npipeline_tag: image-text-to-text\n---\n")
+    row = _repo_row(client, "mlx-community/gemma-3-12b-it-4bit")
+    assert row["task"] == "image + text to text"
+    assert row["capability"] == "text-generation"
+
+
+def test_every_suggested_model_could_be_loaded_by_the_page():
+    """The catalog and the card must not disagree about the same model.
+
+    Discover recommending a model that the Cached tab then refuses to load is
+    the app contradicting itself, and it is what a user actually hit.
+    """
+    from fused_render.ai import catalog
+
+    for capability, entries in catalog.SUGGESTIONS.items():
+        assert capability in set(_ai_registry._TASK_CAPABILITIES.values()), (
+            f"nothing in the task vocabulary maps to {capability!r}, so no cached "
+            f"card will ever offer Load for the models suggested under it"
+        )
+        assert entries, f"{capability} suggests nothing"
 
 
 @requires_symlinks

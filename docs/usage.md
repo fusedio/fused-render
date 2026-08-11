@@ -171,6 +171,11 @@ once that cache exists; the first download from the Hub creates it.
   something you have forgotten about. Hover the dot to see what.
   - Loading a model that is not downloaded yet fetches it first; the progress is
     the same download-manager row.
+  - **Load is offered only where something can actually run it.** Chat models
+    and image models have it; a dataset, an embedding model or a transcription
+    model does not, because nothing here would load them. A multimodal chat
+    model — one labelled "image + text to text" — counts as a chat model: it is
+    loaded for its text, and its picture-reading half simply goes unused.
   - Text generation currently needs Apple Silicon (it runs on MLX). On other
     machines the button is not offered and the Discover tab says why.
 - **The Discover tab searches the Hub for models you don't have.** Type a name,

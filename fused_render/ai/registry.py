@@ -139,16 +139,48 @@ _RUNNERS: tuple[Runner, ...] = (
 )
 
 
-#: Friendly task label (the vocabulary `ai_models._FRIENDLIER_TAGS` produces) ->
-#: the capability that can actually RUN it. Deliberately small and deliberately
-#: not a guess: a label absent from here means "no runner serves this", which is
-#: the honest answer for an embedding model, a dataset, or a vision-language
-#: model until `mlx-vlm` gets a runner.
+#: Friendly task label (the vocabulary `ai_models` produces) -> the capability
+#: that can actually RUN it.
+#:
+#: **A vision-language checkpoint is a text model when you only give it text**,
+#: and that is not a technicality — `mlx-community/gemma-3-12b-it-4bit` is
+#: labelled "image + text to text" because gemma-3 carries a vision tower, and
+#: it is also one of the models this app's own catalog RECOMMENDS for chat.
+#: Leaving the label out of this table took the Load button off a model the app
+#: was suggesting on the next tab over. mlx-lm loads such a checkpoint through
+#: its text config; the image half simply goes unused until an `mlx-vlm` runner
+#: exists to use it.
 _TASK_CAPABILITIES = {
     "text generation": TEXT_GENERATION,
+    "image + text to text": TEXT_GENERATION,
     "text to image": IMAGE_GENERATION,
     "image generation": IMAGE_GENERATION,
 }
+
+#: The other half of the same decision: labels nothing here serves, listed
+#: rather than merely absent.
+#:
+#: Absence is how the gemma bug happened — a label that nobody had thought about
+#: and a label that had been ruled out looked identical, so the vocabulary grew
+#: and the table silently did not. `test_every_task_label_is_classified` requires
+#: every label the listing can produce to appear in one of these two, which turns
+#: "we forgot" into a failing test instead of a missing button.
+NO_RUNNER_YET = frozenset({
+    # Nothing here generates embeddings, classifies, transcribes, or segments —
+    # these are real jobs with no local runner in this cut.
+    "embeddings", "sentence embeddings", "fill mask", "text classification",
+    "token classification", "question answering", "summarization", "translation",
+    "image classification", "zero-shot image classification",
+    "zero-shot text classification", "image segmentation", "object detection",
+    "depth estimation", "image to image", "image to text", "audio classification",
+    "speech recognition", "text to speech", "audio generation", "video generation",
+    # An encoder-decoder (T5-shaped). Not the causal-LM path mlx-lm serves, so
+    # it is not text generation however much the name suggests it.
+    "text-to-text generation",
+    # A model that takes and returns several modalities at once. Which one a
+    # caller wants is not a thing this table can decide.
+    "any input to any output",
+})
 
 
 def capability_for_task(task: str | None) -> str | None:
@@ -158,6 +190,10 @@ def capability_for_task(task: str | None) -> str | None:
     of the mapping between the task vocabulary and the capability vocabulary —
     and a page that guesses "text-generation" for everything will happily try to
     load a diffusion model as a chat model.
+
+    None for a label in `NO_RUNNER_YET`, and None for a label in NEITHER table —
+    the answers are the same but the second one is a bug, which is what the
+    classification test exists to catch.
     """
     if not task:
         return None
