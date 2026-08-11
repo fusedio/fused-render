@@ -51,6 +51,13 @@ _loaded = {}
 #: safe for a given model is an editorial judgement (the same one `catalog.py`
 #: makes about what to suggest), not something to infer from a file listing. A
 #: model absent from here is not unsupported — it loads the ordinary way.
+#:
+#: `skip` names the WEIGHT files the quantized checkpoint replaces — never the
+#: whole subfolder. `from_single_file(config=<repo>, subfolder="transformer")`
+#: reads that subfolder's `config.json` to know what it is building, so a recipe
+#: that ignored `transformer/*` would leave a cache that still needs the network
+#: to load: "Download" would report success and then fail offline, which is the
+#: one promise that button makes.
 _GGUF_RECIPES = {
     "black-forest-labs/FLUX.2-klein-4B": {
         "repo": "unsloth/FLUX.2-klein-4B-GGUF",
@@ -58,6 +65,8 @@ _GGUF_RECIPES = {
         "pipeline": "Flux2KleinPipeline",
         "transformer": "Flux2Transformer2DModel",
         "subfolder": "transformer",
+        "skip": ["transformer/*.safetensors", "transformer/*.bin",
+                 "transformer/*.safetensors.index.json"],
     },
 }
 
@@ -73,17 +82,21 @@ def download(model_id):
     """Fetch what this model needs, and NOT what it doesn't.
 
     For a GGUF recipe that distinction is the whole point: the base repo's own
-    `transformer/` is the ~8GB bf16 component the quantized file replaces, so
-    downloading it would cost the user several gigabytes for weights that are
-    then ignored — and on a 16GB machine, the difference between a model that
-    runs and one that does not.
+    `transformer/` weights are the ~8GB bf16 component the quantized file
+    replaces, so downloading them would cost the user several gigabytes for
+    weights that are then ignored — and on a 16GB machine, the difference
+    between a model that runs and one that does not.
+
+    Its CONFIG still comes down, though (`skip` names weight files, not the
+    subfolder), because a "download" that leaves a cache which cannot load
+    offline has not done the thing the button said it would.
     """
     recipe = _recipe(model_id)
     if not recipe:
         return {"snapshot": worker_base.download_snapshot(model_id), "gguf": None}
 
     snapshot = worker_base.download_snapshot(
-        model_id, ignore_patterns=[recipe["subfolder"] + "/*"])
+        model_id, ignore_patterns=list(recipe["skip"]))
     gguf = worker_base.download_file(
         recipe["repo"], recipe["file"],
         detail=f"Fetching {recipe['file']} (quantized transformer)…")

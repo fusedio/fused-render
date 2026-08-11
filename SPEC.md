@@ -5840,7 +5840,15 @@ an AI Models page that could say what was on disk but not what was *running*.
   unsupported — it loads the ordinary way. The recipe also decides what NOT to
   download: the base repo's own `transformer/` is exactly the weights the
   quantized file replaces, and fetching it would cost several GB for components
-  that are then ignored.
+  that are then ignored — but it skips the WEIGHT files, never the subfolder,
+  because `from_single_file` reads that subfolder's config and a "download" that
+  leaves a cache which cannot load offline has not done what the button said.
+  **A scoped download measures itself against a scoped total**: one file out of
+  a repo that publishes a dozen quantizations counts that file, and a pull that
+  ignores a subfolder does not count it. Summing the whole repo either way is
+  how a 2.6GB fetch came to read as a fraction of 30GB and then jump to
+  complete; the reported figure is also capped at the total, since the disk walk
+  sees siblings the download was never fetching.
 - **AI-8** **The worker measures its own memory.** Only the process holding the
   weights can; on Apple Silicon the GPU pool IS system memory, so RSS is one
   honest number rather than two that need reconciling. What the supervisor knows

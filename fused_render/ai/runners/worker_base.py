@@ -35,6 +35,7 @@ stub callables standing in for the model.
 """
 
 import argparse
+import fnmatch
 import http.server
 import json
 import os
@@ -207,11 +208,19 @@ def bytes_on_disk(folder):
     return total
 
 
-def repo_total_bytes(model_id):
-    """The repo's full size from the Hub, or None.
+def repo_total_bytes(model_id, include=None, ignore=None):
+    """The size of what will ACTUALLY be fetched, from the Hub, or None.
 
     One metadata call, no weights. Without it the bar has no total and shows as
     indeterminate — which is honest, and much better than a wrong total.
+
+    **Scoped, because a repo is rarely fetched whole.** `include` is a single
+    filename (one GGUF out of a repo that publishes a dozen quantizations of the
+    same model); `ignore` is the same fnmatch patterns `snapshot_download` takes,
+    so a download that skips a subfolder does not measure itself against it.
+    Summing the whole repo either way is how a 2.6GB pull came to read as a
+    fraction of 30GB and then jump to "complete" against a figure it never
+    downloaded.
     """
     try:
         from huggingface_hub import HfApi
@@ -221,10 +230,28 @@ def repo_total_bytes(model_id):
         return None
     total = 0
     for sibling in getattr(info, "siblings", None) or []:
+        name = getattr(sibling, "rfilename", None) or ""
         size = getattr(sibling, "size", None)
-        if isinstance(size, int) and size > 0:
-            total += size
+        if not isinstance(size, int) or size <= 0:
+            continue
+        if include is not None and name != include:
+            continue
+        if ignore and any(fnmatch.fnmatch(name, pattern) for pattern in ignore):
+            continue
+        total += size
     return total or None
+
+
+def _capped(done, total):
+    """Never report more done than there is to do.
+
+    `bytes_on_disk` measures the whole repo folder, and a SCOPED total covers
+    only part of it — so a machine that already holds another quantization of
+    the same model would otherwise report 8GB of a 2.6GB download.
+    """
+    if done is None or total is None:
+        return done
+    return min(done, total)
 
 
 def fetch_with_progress(model_id, call, total=None, detail="Fetching weights…", job=None):
@@ -240,7 +267,7 @@ def fetch_with_progress(model_id, call, total=None, detail="Fetching weights…"
     if total is None:
         total = repo_total_bytes(model_id)
     report(job=job, state="running", kind="download", unit="bytes",
-           detail=detail, done=bytes_on_disk(folder), total=total)
+           detail=detail, done=_capped(bytes_on_disk(folder), total), total=total)
 
     result = {}
 
@@ -254,7 +281,8 @@ def fetch_with_progress(model_id, call, total=None, detail="Fetching weights…"
     thread.start()
     while thread.is_alive():
         thread.join(timeout=1.0)
-        report(job=job, done=bytes_on_disk(folder), total=total, detail=detail)
+        report(job=job, done=_capped(bytes_on_disk(folder), total), total=total,
+               detail=detail)
     if "error" in result:
         raise result["error"]
     # Land on the total rather than on the last walk: the snapshot symlinks are
@@ -264,20 +292,37 @@ def fetch_with_progress(model_id, call, total=None, detail="Fetching weights…"
     return result["value"]
 
 
-def download_snapshot(model_id, **kwargs):
-    """The whole repo, with progress. What most runners mean by "download"."""
+def download_snapshot(model_id, ignore_patterns=None, **kwargs):
+    """The repo, with progress. What most runners mean by "download".
+
+    The total is measured against the SAME `ignore_patterns` the download uses,
+    or a pull that deliberately skips a subfolder measures itself against
+    weights it was never going to fetch — a bar that stalls partway and then
+    jumps.
+    """
     from huggingface_hub import snapshot_download
 
-    return fetch_with_progress(model_id, lambda: snapshot_download(model_id, **kwargs))
+    return fetch_with_progress(
+        model_id,
+        lambda: snapshot_download(model_id, ignore_patterns=ignore_patterns, **kwargs),
+        total=repo_total_bytes(model_id, ignore=ignore_patterns),
+    )
 
 
 def download_file(repo_id, filename, detail=None):
-    """One file out of a repo — a GGUF checkpoint, say — with progress."""
+    """One file out of a repo — a GGUF checkpoint, say — with progress.
+
+    The total is THAT FILE's size, not the repo's. A repo that publishes a dozen
+    quantizations of the same model sums to tens of gigabytes, and measuring a
+    2.6GB pull against that is how a download reads as barely started for its
+    whole life and then jumps to complete.
+    """
     from huggingface_hub import hf_hub_download
 
     return fetch_with_progress(
         repo_id,
         lambda: hf_hub_download(repo_id=repo_id, filename=filename),
+        total=repo_total_bytes(repo_id, include=filename),
         detail=detail or f"Fetching {filename}…",
     )
 

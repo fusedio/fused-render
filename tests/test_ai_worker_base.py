@@ -408,3 +408,91 @@ def test_no_runner_reimplements_the_contract():
                 f"{runner.code} reimplements {reimplemented!r}, which belongs to "
                 f"worker_base — see SPEC AI-9a"
             )
+
+
+# -- the total is scoped to what is actually fetched ----------------------------
+
+
+class _Sibling:
+    def __init__(self, rfilename, size):
+        self.rfilename = rfilename
+        self.size = size
+
+
+class _Info:
+    def __init__(self, siblings):
+        self.siblings = siblings
+
+
+def _hub(monkeypatch, base, siblings):
+    """Stand in for one Hub metadata call."""
+    class _Api:
+        def model_info(self, model_id, files_metadata=False):
+            return _Info(siblings)
+
+    import types
+    monkeypatch.setitem(
+        __import__("sys").modules, "huggingface_hub",
+        types.SimpleNamespace(HfApi=_Api))
+
+
+def test_a_single_file_total_is_that_file_not_the_repo(base, monkeypatch):
+    """A GGUF repo publishes a dozen quantizations of one model. Measuring a
+    2.6GB pull against all of them is how a download reads as barely started for
+    its whole life and then jumps to complete."""
+    _hub(monkeypatch, base, [
+        _Sibling("flux-2-klein-4b-Q4_K_M.gguf", 2_600_000_000),
+        _Sibling("flux-2-klein-4b-Q8_0.gguf", 4_800_000_000),
+        _Sibling("flux-2-klein-4b-F16.gguf", 8_100_000_000),
+    ])
+    assert base.repo_total_bytes("u/x", include="flux-2-klein-4b-Q4_K_M.gguf") == 2_600_000_000
+    # …and the unscoped answer is still the whole repo, for a runner that wants it.
+    assert base.repo_total_bytes("u/x") == 15_500_000_000
+
+
+def test_an_ignored_subfolder_is_left_out_of_the_total(base, monkeypatch):
+    """A pull that deliberately skips the weights it is replacing must not
+    measure itself against them — the bar would stall partway and then jump."""
+    _hub(monkeypatch, base, [
+        _Sibling("model_index.json", 500),
+        _Sibling("transformer/config.json", 1_000),
+        _Sibling("transformer/diffusion_pytorch_model.safetensors", 8_000_000_000),
+        _Sibling("text_encoder/model.safetensors", 300_000_000),
+    ])
+    scoped = base.repo_total_bytes("org/m", ignore=["transformer/*.safetensors"])
+    assert scoped == 500 + 1_000 + 300_000_000
+    # The config is deliberately still counted: it is still downloaded, because
+    # `from_single_file` needs it and a cache without it cannot load offline.
+
+
+def test_progress_never_exceeds_a_scoped_total(base, monkeypatch):
+    """`bytes_on_disk` measures the whole repo folder. A machine already holding
+    another quantization of the same model would otherwise report 8GB of a
+    2.6GB download — a bar past 100%."""
+    ticks = []
+    monkeypatch.setattr(base, "repo_folder", lambda model_id, repo_type="model": "/repo")
+    monkeypatch.setattr(base, "bytes_on_disk", lambda folder: 8_000_000_000)
+    monkeypatch.setattr(base, "report",
+                        lambda job=None, **fields: ticks.append(fields) or None)
+
+    base.fetch_with_progress("u/x", lambda: "/f", total=2_600_000_000)
+
+    assert all(t.get("done", 0) <= 2_600_000_000 for t in ticks if "done" in t), ticks
+
+
+def test_the_image_recipe_keeps_the_config_it_needs_to_load():
+    """The recipe skips WEIGHT files, never the subfolder. `from_single_file`
+    reads `transformer/config.json`, so ignoring `transformer/*` would leave a
+    "downloaded" model that still needs the network — the one promise Download
+    makes."""
+    import importlib.util
+
+    path = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        "fused_render", "ai", "runners", "diffusers_image", "worker.py",
+    )
+    source = open(path, encoding="utf-8").read()
+    # Read as source: importing it would pull in torch.
+    assert '"transformer/*"' not in source, "the whole subfolder is ignored again"
+    assert '"transformer/*.safetensors"' in source
+    assert '"skip"' in source
