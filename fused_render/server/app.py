@@ -50,6 +50,7 @@ from fused_render.server.routers.export import router as export_router
 from fused_render.server.fs_mutate import router as fs_mutate_router
 from fused_render.server.routers.fs_read import router as fs_read_router
 from fused_render.server.routers import index as index_routes
+from fused_render.server.routers.jobs import router as jobs_router
 from fused_render.server.routers.render import router as render_router
 from fused_render.server.routers.run import router as run_router
 from fused_render.server.routers.search import router as search_router
@@ -379,6 +380,10 @@ def create_app(start_dir: str) -> FastAPI:
     # /api/env/progress, /api/env/cancel — what the page shell drives after
     # /api/run's pre-flight answers `needs_install` (PY-18 / D173).
     app.include_router(env_router)
+    # The background-job registry (routers/jobs.py): /api/jobs — where a page's
+    # long-running work (a model download, a generation) reports its progress,
+    # and where the shell's download manager reads it back (SPEC §36 / D244).
+    app.include_router(jobs_router)
     app.include_router(ai_router)
     app.include_router(export_router)
     # The OS clipboard bridge (routers/clipboard.py): /api/clipboard/files, the

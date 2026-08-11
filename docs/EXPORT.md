@@ -135,6 +135,7 @@ runtime API is portable:
 | `fused.writeFile(...)` | ❌ | a hosted artifact is immutable. |
 | `fused.stat(...)` | ❌ | no filesystem to stat. |
 | `fused.ai(...)` | ❌ | runs the claude CLI on the author's local machine — unreachable from a hosted page. |
+| `fused.trackJob(...)` | ⚪️ | a **no-op stub**: the handle and all its methods exist and resolve, so a page that reports progress exports and runs unchanged — there is simply no download manager on a hosted page to report to (SPEC BG-14). Unlike `fused.ai`, it does **not** block export: progress reporting is decoration, not data. |
 | SSE live-reload | ❌ | the artifact does not change under the page. |
 
 `fused.env` is the recommended way to tell the two environments apart: it is a

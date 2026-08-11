@@ -1625,7 +1625,7 @@ def test_a_worker_that_died_unreaped_is_not_reported_alive(tmp_path, monkeypatch
     assert envinstall._pid_alive(dead.pid) is False, "a zombie is not alive"
     prog = envinstall.progress(key)
     assert prog["done"] is True, "a dead worker must end the poll"
-    assert "unexpectedly" in prog["error"]
+    assert "without finishing" in prog["error"]
 
 
 @pytest.mark.skipif(os.name == "nt", reason="waitpid reaping is POSIX-only")
@@ -1671,7 +1671,7 @@ def test_a_dead_worker_is_reported_as_finished_not_pending(tmp_path, monkeypatch
                    "error": None, "pid": 2 ** 31 - 1, "ts": time.time()}, f)
     prog = envinstall.progress(key)
     assert prog["done"] is True
-    assert "unexpectedly" in prog["error"]
+    assert "without finishing" in prog["error"]
 
 
 @requires_fused
@@ -2976,3 +2976,42 @@ def _wait_done(key, timeout):
         time.sleep(0.1)
     pytest.fail(f"installer for {key} did not finish within {timeout}s: "
                 f"{envinstall.progress(key)}")
+
+def test_a_crash_message_says_how_far_it_got_and_whether_the_log_is_empty(tmp_path, monkeypatch):
+    """The old message said only "see worker.log", and that was a dead end.
+
+    A worker puts its diagnostics in the RECORD (uv's stderr verbatim), so
+    worker.log holds raw child output only — and a worker that was KILLED never
+    wrote any. Users followed the message to an empty file and had nothing left
+    to go on, so the message now carries the stage the record already knew and
+    states the emptiness as the diagnosis it is.
+    """
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path))
+    key = "abcdefabcdef0123"
+    d = envinstall.progress_dir(key)
+    os.makedirs(d, exist_ok=True)
+    # 2**31-1 is above every platform's pid_max, so it cannot collide with a
+    # live process and skip the crash path (the sibling tests' convention).
+    record = {"stage": "install", "pct": 25, "detail": "resolving mlx-lm", "done": False,
+              "error": None, "pid": 2 ** 31 - 1, "ts": time.time()}
+    with open(os.path.join(d, "progress.json"), "w") as f:
+        json.dump(record, f)
+
+    # No worker.log at all (the spawn never got to create it).
+    err = envinstall.progress(key)["error"]
+    assert "last stage: install" in err and "resolving mlx-lm" in err
+    assert "missing" in err
+
+    # Present but empty — the case the user actually hit.
+    open(os.path.join(d, "worker.log"), "wb").close()
+    err = envinstall.progress(key)["error"]
+    assert "is empty" in err
+    assert "killed rather than failing" in err
+    assert "out-of-memory" in err  # names the causes worth checking
+
+    # With real output, it points at the log and says nothing about killing.
+    with open(os.path.join(d, "worker.log"), "wb") as f:
+        f.write(b"error: no wheels with a matching platform tag\n")
+    err = envinstall.progress(key)["error"]
+    assert "see worker.log" in err
+    assert "killed rather than failing" not in err

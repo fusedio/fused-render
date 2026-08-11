@@ -146,7 +146,13 @@ _SUFFIX = SUFFIX  # historical private alias, used throughout this module
 # Never log the log's own endpoints: the page-error POST and the reader's own
 # reads would otherwise appear as app calls and (worse) a burst of them would
 # spend the rate budget that the calls they describe need.
-SKIP_PREFIXES = ("/api/calls",)
+#
+# /api/jobs is here for the same reason (D244): a progress tick is not a call
+# the page made, it is bookkeeping ABOUT one — a four-minute download reporting
+# at 1.5s is ~160 records describing nothing that happened, and they would
+# crowd out the runs they annotate. The download manager is the surface for
+# that information; the log keeps the call that started the work.
+SKIP_PREFIXES = ("/api/calls", "/api/jobs")
 
 
 # --------------------------------------------------------------- store layout

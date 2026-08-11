@@ -14,6 +14,14 @@
  *     usage names, NOT OpenAI's prompt_tokens/completion_tokens. opts:
  *     systemPrompt, model, effort ("low"|"medium"|"high"|"xhigh"),
  *     onChunk. Local-only — not available on hosted/exported pages.
+ *   fused.trackJob(spec) -> handle {update, finish, fail, cancelled, cancelRequested}
+ *     Report a long-running operation (a model download, a minutes-long
+ *     generation) to the shell's download manager, so it stays visible after
+ *     the page that started it is navigated away from (SPEC §36, D244). Every
+ *     method is fire-and-forget and never rejects — reporting is decoration and
+ *     must not be able to break the work it describes. A no-op stub on a
+ *     hosted page (there is no manager there), so a view that reports progress
+ *     still exports.
  *   fused.params.get(key) / getAll() / set(key, value) / onChange(cb) -> unsubscribe
  *   fused.env -> "local" — the runtime identity. This is the local fused-render app;
  *                the hosted/exported runtime (fused wheel) sets "hosted" instead, so a
@@ -1626,6 +1634,187 @@
     });
   }
 
+  // ---- background jobs / the download manager (SPEC §36, D244) --------------
+  //
+  // A page that starts work outliving the call that started it — a model
+  // download, a checkpoint pull, a generation running for minutes — reports it
+  // here, and the shell draws ONE download manager for every page's work at the
+  // foot of the notification stack. Before this, each such page drew its own
+  // progress bar inside itself, so an 8GB download became invisible the moment
+  // you navigated away from the page that started it.
+  //
+  //   const job = fused.trackJob({ title: "FLUX.2-klein-4B", kind: "download",
+  //                           unit: "bytes", cancellable: true });
+  //   job.update({ done: 1.2e9, total: 8.1e9, detail: "transformer.gguf" });
+  //   if (job.cancelRequested) stopTheWork();      // set from the manager's ✕
+  //   job.finish("Downloaded");                    // or .fail(err) / .cancelled()
+  //
+  // Reporting is DECORATION, never the work itself: every method here is
+  // fire-and-forget and no rejection escapes. A page whose progress reports all
+  // fail must still download the model — so a failed POST is swallowed, and
+  // `update()` resolves with the last record it managed to store rather than
+  // rejecting. The one thing a caller reads back is `cancelRequested`.
+  //
+  // Cancellation is a REQUEST the page honors, not something the shell can do:
+  // only the page knows what "stop" means for its work (the examples call their
+  // own `action: "cancel"` data-file entry point). The manager's ✕ sets the
+  // flag; the page sees it in the reply to the tick it was going to send
+  // anyway, which is why `update()` resolves with the record.
+  const JOB_STATE_RUNNING = "running";
+
+  function newJobId() {
+    // Page-scoped uniqueness is not enough — two tabs on the same page report
+    // into one registry — so this is a random token, not a counter.
+    return "j" + Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
+  }
+
+  // Nudge every other same-origin document that the job list moved, so the
+  // shell's manager appears at the instant a download starts rather than on its
+  // next idle poll. The `storage` event fires in every same-origin browsing
+  // context EXCEPT the one that wrote — which is exactly the shape here (an
+  // iframe writes, the shell listens), and the same mechanism the appearance
+  // theme already converges through. Purely an optimisation: the shell polls
+  // /api/jobs regardless, so a browser that drops the event (or a Python worker
+  // reporting straight to the API, which runs no JS at all) is only slower to
+  // notice, never wrong. Must stay in sync with frontend's lib/jobs.ts.
+  const JOB_PING_KEY = "fused-render:jobs-ping";
+
+  function pingJobs() {
+    try {
+      localStorage.setItem(JOB_PING_KEY, String(Date.now()));
+    } catch (e) {
+      /* private mode / disabled storage — the shell's poll still covers it */
+    }
+  }
+
+  function postJob(body, onReject) {
+    return fetch("/api/jobs", {
+      method: "POST",
+      headers: callHeaders({ "Content-Type": "application/json", "X-Fused": "1" }),
+      body: JSON.stringify(body),
+      // The last report of a page being torn down is the one that matters most
+      // (it is what turns a row from "running" into "cancelled" rather than
+      // leaving it to time out as stalled), and that report is issued from an
+      // unload path where an ordinary fetch is killed with the document.
+      keepalive: true,
+    })
+      .then((res) =>
+        res.json().then((data) => {
+          if (res.ok) return data;
+          // A REJECTED report (a malformed id, a missing title) is an authoring
+          // mistake, and silence would leave the author with a page that works
+          // and a manager that never shows it. Said once per job — a poll loop
+          // would otherwise print the same line every 1.5s — and still not
+          // thrown: a bad progress report must not break the download.
+          onReject((data && data.error) || "HTTP " + res.status);
+          return null;
+        })
+      )
+      // A transport failure (the app quitting under a page mid-report) is not
+      // an authoring mistake and stays quiet.
+      .catch(() => null);
+  }
+
+  function trackJob(spec) {
+    spec = spec || {};
+    const id = spec.id ? String(spec.id) : newJobId();
+    // Mirrors the last record the server confirmed, so `cancelRequested` and
+    // `state` can be read synchronously between ticks.
+    let last = null;
+    let settled = false;
+    let warned = false;
+    // Reports are SERIALIZED, not just fired: they are deltas (only the keys
+    // present are applied), so two in flight at once can land out of order and
+    // an older `done` can overwrite a newer one — a bar that walks backwards.
+    // Chaining costs nothing at a 1.5s tick and removes the race by
+    // construction.
+    let chain = Promise.resolve(null);
+
+    function warnOnce(message) {
+      if (warned) return;
+      warned = true;
+      console.warn("fused.trackJob(" + JSON.stringify(id) + "): " + message);
+    }
+
+    function send(fields) {
+      // A settled job stops reporting. Without this a poll loop that runs one
+      // extra tick after it saw "done" would flip the row back to running and
+      // the manager would show a finished download as live again.
+      if (settled && fields.state === undefined) return chain;
+      const body = Object.assign({ id: id }, fields);
+      chain = chain
+        .then(() => postJob(body, warnOnce))
+        .then((record) => {
+          if (record && record.id === id) last = record;
+          pingJobs();
+          return last;
+        });
+      return chain;
+    }
+
+    const handle = {
+      id: id,
+      // Fire-and-forget by design; awaiting is optional and only ever needed to
+      // read `cancelRequested` at a specific point.
+      update: function (fields) {
+        return send(fields || {});
+      },
+      finish: function (detail) {
+        settled = true;
+        return send({ state: "done", detail: detail === undefined ? "" : detail });
+      },
+      fail: function (message) {
+        settled = true;
+        // An Error, a rejected runPython (`.message` + `.traceback`), or a
+        // plain string all reach here — take the most useful text of each
+        // rather than stringifying an object into "[object Object]".
+        const text =
+          message && message.message
+            ? message.message
+            : message === undefined || message === null
+              ? "failed"
+              : String(message);
+        return send({ state: "error", message: text });
+      },
+      cancelled: function () {
+        settled = true;
+        return send({ state: "cancelled" });
+      },
+    };
+
+    // Read-only views of the last confirmed record. Properties rather than
+    // methods because they are a value the page checks in a poll loop
+    // (`if (job.cancelRequested) …`), and a getter cannot go stale the way a
+    // copied boolean would.
+    Object.defineProperty(handle, "cancelRequested", {
+      get: function () {
+        return !!(last && last.cancel_requested);
+      },
+    });
+    Object.defineProperty(handle, "state", {
+      get: function () {
+        return last ? last.state : JOB_STATE_RUNNING;
+      },
+    });
+
+    // The opening report. Everything the page passed except `id`, which is the
+    // handle's own; `title` is required by the registry and a job with no title
+    // is a row nobody can read, so name it here rather than let the first tick
+    // fail server-side.
+    send({
+      title: spec.title || "Working…",
+      detail: spec.detail || "",
+      kind: spec.kind || "task",
+      unit: spec.unit || "",
+      done: spec.done === undefined ? null : spec.done,
+      total: spec.total === undefined ? null : spec.total,
+      cancellable: !!spec.cancellable,
+      state: JOB_STATE_RUNNING,
+    });
+
+    return handle;
+  }
+
   // --- Auto-reload (SPEC §13.3) ---------------------------------------------
   // This page watches a set of files via the SSE change feed; on any change it
   // reloads THIS frame (honest re-execution — we can't replay what the page did
@@ -1810,6 +1999,7 @@
     uploadFile,
     mkdir,
     ai,
+    trackJob,
     autoReload,
     params: { get, getAll, set, onChange },
   };
