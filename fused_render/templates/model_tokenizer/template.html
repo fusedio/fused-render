@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html data-fused-theme="shell">
+<head>
+<meta charset="utf-8" />
+<title>Tokenizer</title>
+<style>
+  /* Palette pair (SPEC §30) — this view follows the shell's appearance via
+     `data-fused-theme` on <html>. Every colour is a token defined here and
+     nowhere else. The token chips cycle through --tok-1..4 so neighbouring
+     pieces stay distinguishable without colour carrying any meaning. */
+  :root {
+    color-scheme: dark;
+    --fg: #e8eaed;
+    --fg-muted: #9aa0a6;
+    --border: #2a2d33;
+    --bg: #131417;
+    --bg-alt: #1b1d21;
+    --accent: #E5FF44;
+    --error: #ff6b6b;
+    --tok-1: #2b3a52;
+    --tok-2: #2f4636;
+    --tok-3: #46372f;
+    --tok-4: #3d2f46;
+  }
+  :root[data-theme="light"] {
+    color-scheme: light;
+    --fg: #1f2023;
+    --fg-muted: #61656c;
+    --border: #d8dade;
+    --bg: #ffffff;
+    --bg-alt: #f4f5f7;
+    --accent: #5f7300;
+    --error: #c62828;
+    --tok-1: #dbe6f7;
+    --tok-2: #dcefdd;
+    --tok-3: #f6e6d5;
+    --tok-4: #ece0f5;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    padding: 22px 26px 40px;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    font-size: 13px;
+    color: var(--fg);
+    background: var(--bg);
+  }
+  .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  h1 { margin: 0 0 3px; font-size: 20px; font-weight: 600; }
+  .sub { font-size: 12px; color: var(--fg-muted); overflow-wrap: anywhere; }
+  h2 {
+    margin: 22px 0 8px;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: .06em;
+    color: var(--fg-muted);
+  }
+  textarea {
+    width: 100%;
+    min-height: 110px;
+    padding: 10px 12px;
+    font: inherit;
+    color: var(--fg);
+    background: var(--bg-alt);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    resize: vertical;
+  }
+  textarea:focus-visible { outline: 2px solid var(--accent); outline-offset: -1px; }
+  .counts { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0; }
+  .fact {
+    padding: 8px 12px;
+    background: var(--bg-alt);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    min-width: 96px;
+  }
+  .fact .k { font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: var(--fg-muted); }
+  .fact .v { font-size: 15px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  #tokens {
+    padding: 12px;
+    background: var(--bg-alt);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    line-height: 2.1;
+    overflow-wrap: anywhere;
+    white-space: pre-wrap;
+  }
+  .tok { padding: 2px 3px; border-radius: 3px; }
+  .tok:nth-child(4n+1) { background: var(--tok-1); }
+  .tok:nth-child(4n+2) { background: var(--tok-2); }
+  .tok:nth-child(4n+3) { background: var(--tok-3); }
+  .tok:nth-child(4n+4) { background: var(--tok-4); }
+  .pill {
+    display: inline-block;
+    margin: 0 4px 4px 0;
+    padding: 2px 7px;
+    font-size: 11px;
+    border-radius: 4px;
+    background: var(--border);
+    color: var(--fg-muted);
+  }
+  .note {
+    padding: 10px 12px;
+    margin: 12px 0;
+    font-size: 12px;
+    color: var(--fg-muted);
+    background: var(--bg-alt);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    max-width: 70ch;
+  }
+  .err { color: var(--error); }
+  code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+</style>
+</head>
+<body>
+<h1>Tokenizer</h1>
+<div class="sub mono" id="path"></div>
+
+<h2>Text</h2>
+<textarea id="input" spellcheck="false" placeholder="Type or paste text to see how this model splits it…"></textarea>
+<div class="counts" id="counts"></div>
+<div id="notice"></div>
+
+<h2>Tokens</h2>
+<div id="tokens" class="mono"></div>
+
+<h2>This tokenizer</h2>
+<div id="facts"></div>
+
+<script>
+const FILE = fused.params.get("_file");
+document.getElementById("path").textContent = FILE;
+
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => (
+  { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]
+));
+
+// The text lives in a param, so a tokenization is a shareable, reloadable URL
+// like every other view's state — the same rule the rest of the app follows.
+const startText = fused.params.get("text") || "";
+const input = document.getElementById("input");
+input.value = startText;
+
+let seq = 0;
+async function run() {
+  const text = input.value;
+  const mine = ++seq;
+  let data;
+  try {
+    data = await fused.runPython("./tokenize_text.py", { path: FILE, text });
+  } catch (err) {
+    document.getElementById("notice").innerHTML =
+      `<div class="note err">${esc(err && err.message || err)}</div>`;
+    return;
+  }
+  // A slower earlier keystroke must not overwrite a newer answer.
+  if (mine !== seq) return;
+  if (data.error) {
+    document.getElementById("notice").innerHTML = `<div class="note err">${esc(data.error)}</div>`;
+    return;
+  }
+
+  const f = data.facts || {};
+  const counts = [];
+  if (data.available) counts.push(["Tokens", String(data.count ?? 0)]);
+  counts.push(["Characters", String(text.length)]);
+  if (data.available && data.count && text.length) {
+    counts.push(["Chars / token", (text.length / data.count).toFixed(1)]);
+  }
+  if (f.vocabSize) counts.push(["Vocabulary", f.vocabSize.toLocaleString()]);
+  document.getElementById("counts").innerHTML = counts.map(([k, v]) => `
+    <div class="fact"><div class="k">${esc(k)}</div><div class="v">${esc(v)}</div></div>`).join("");
+
+  document.getElementById("notice").innerHTML = data.available ? "" : data.loadError ? `
+    <div class="note err">This <code>tokenizer.json</code> could not be loaded:
+    ${esc(data.loadError)}<br />The facts below are read from the file directly and are
+    unaffected.</div>` : `
+    <div class="note">Live tokenizing needs the <code>tokenizers</code> library, which this
+    folder declares in its <code>pyproject.toml</code> — it is installed on first use by the
+    <b>fused</b> execution engine. The built-in runner has no way to add it, so switch the
+    engine in Preferences to encode text here. Everything below is read from
+    <code>tokenizer.json</code> directly and needs nothing installed.</div>`;
+
+  document.getElementById("tokens").innerHTML = data.tokens.length
+    ? data.tokens.map((t) => {
+        // Show the ORIGINAL slice via offsets, not the decoded piece: every BPE
+        // tokenizer rewrites whitespace (Ġ, ▁), and showing that instead of what
+        // was typed makes the highlighting impossible to follow.
+        const slice = text.slice(t.start, t.end) || t.piece;
+        return `<span class="tok" title="${esc(t.piece)} · id ${t.id}">${esc(slice)}</span>`;
+      }).join("")
+    : `<span class="sub">${data.available ? "Nothing to tokenize yet." : "—"}</span>`;
+
+  const factRows = [
+    ["Kind", f.kind],
+    ["Vocabulary", f.vocabSize ? f.vocabSize.toLocaleString() : null],
+    ["Merges", f.merges ? f.merges.toLocaleString() : null],
+    ["Truncation", f.truncation ? "configured" : null],
+    ["Padding", f.padding ? "configured" : null],
+  ].filter(([, v]) => v);
+  document.getElementById("facts").innerHTML =
+    factRows.map(([k, v]) => `<span class="pill">${esc(k)}: ${esc(v)}</span>`).join("") +
+    ((f.specialTokens || []).length
+      ? `<div style="margin-top:8px">${f.specialTokens.map((t) =>
+          `<span class="pill mono">${esc(t)}</span>`).join("")}</div>`
+      : "");
+}
+
+// Debounced: each keystroke is a subprocess call, and the tokenizer is cached
+// per file on the Python side so only the first one pays for loading it.
+let timer = null;
+input.addEventListener("input", () => {
+  clearTimeout(timer);
+  timer = setTimeout(() => {
+    fused.params.set("text", input.value.slice(0, 2000));
+    run();
+  }, 220);
+});
+run();
+</script>
+</body>
+</html>

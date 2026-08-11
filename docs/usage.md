@@ -131,9 +131,17 @@ once that cache exists; the first download from the Hub creates it.
 - **Last-read time comes from the filesystem.** Volumes mounted `noatime` never
   update it, so on those a model you use daily can still look untouched — check
   the dates the prune dialog lists before confirming.
-- **Clicking a card** opens the repo's cache folder in the explorer, for
-  everything this page doesn't do — reading a config, copying a path, pulling
-  one file out of a snapshot.
+- **Clicking a card opens the model.** You get a **model card** view: what the
+  model is, its parameters and disk, the summary and tags from its own model
+  card, the configuration worth reading (layers, heads, context length,
+  vocabulary), a weights table and its largest tensors. It opens instantly even
+  on a 40GB checkpoint — nothing is loaded, it is all read from the metadata and
+  the safetensors headers. The mode switcher in the header also offers a
+  **tokenizer** playground for any model with a `tokenizer.json`: type text and
+  see how that model splits it, with counts and chars-per-token. (Live encoding
+  there needs the `tokenizers` library, which the template installs itself under
+  the fused engine; the tokenizer's vocabulary and special tokens show either
+  way.) The plain folder listing is still one click away in the same switcher.
 - **It looks where `huggingface_hub` looks** — `HF_HUB_CACHE`,
   `HUGGINGFACE_HUB_CACHE`, `$HF_HOME/hub`, `$XDG_CACHE_HOME/huggingface/hub`,
   then `~/.cache/huggingface/hub` — so a shared model disk pinned with `HF_HOME`

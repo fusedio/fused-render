@@ -450,6 +450,8 @@
     "git",
     "graph",
     "zarr_aoi",
+    "model_card",
+    "model_tokenizer",
     "history"
   ],
   ".zarr/": [

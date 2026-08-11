@@ -1,0 +1,20 @@
+# The tokenizer playground's environment (SPEC PY-16).
+#
+# `tokenizers` is the reason this folder declares anything: it is in neither
+# `[bundled]` nor the core deps, so the app's own interpreter cannot supply it
+# (PY-17). It is also the whole dependency — the playground loads a
+# `tokenizer.json` and encodes text, which is one import and no framework:
+# pulling in `transformers` (and torch behind it) to do the same job would turn
+# a seconds-long first open into a multi-GB one.
+[project]
+name = "fused-render-template-model-tokenizer"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "tokenizers>=0.15",
+]
+
+# Not a distribution — this folder is a set of scripts, not something to build
+# and install.
+[tool.uv]
+package = false

@@ -5417,3 +5417,55 @@ is for, and the cache states it nowhere:
   refs** (HF-15) and cached per snapshot directory, keyed by its mtime — a
   snapshot's contents are immutable once written, so a Refresh over forty repos
   re-reads nothing.
+
+---
+
+## 38. Model Views — Opening a Cached Model (D252)
+
+Goal: a cached model is a folder full of opaque names — `model-00001-of-00004.safetensors`,
+`config.json`, a 40MB `tokenizer.json` — and opening it showed exactly that. Two
+templates make the folder answer for itself, and both read only: nothing here
+loads weights, imports a framework, or touches the network.
+
+- **MV-1** **`model_card` — what this model IS.** Name (decoded from the cache
+  folder, or from the repo folder when a snapshot is opened directly, because a
+  commit sha is not a model's name), parameters, disk, the model card's own
+  summary and tags, the configuration a person actually reads (hidden size,
+  layers, heads, context length, vocabulary), a per-file weights table, the
+  largest tensors, and the file list. Instant on a 40GB checkpoint, because the
+  parameter counts come from the **safetensors headers** rather than the weights
+  (SPEC HF-17's rule, and its quantization arithmetic with it — a 4-bit
+  checkpoint's count is unpacked from its declared width and marked `≈`).
+- **MV-2** **`model_tokenizer` — how it splits text.** A textarea, a token
+  count, chars-per-token, and the text painted token by token. Two halves that
+  fail separately, deliberately: the **facts** (vocabulary size, model kind,
+  merges, special tokens) are read from `tokenizer.json` itself and always work;
+  **encoding** needs the `tokenizers` library, which the folder declares in its
+  own `pyproject.toml` (PY-16) and which therefore arrives only under the fused
+  engine. A missing library is a state the page explains, not an error — and so
+  is a `tokenizer.json` this build of the library refuses, which keeps its facts
+  and says why it could not load. Tokens are highlighted by **offsets into the
+  original text**, never by the decoded piece: every BPE tokenizer rewrites
+  whitespace (`Ġ`, `▁`), and showing that instead of what was typed makes the
+  highlighting unreadable.
+- **MV-3** **Both are gated, and the gates run on every folder you open** —
+  they are bound to the universal `/` registry key beside `zarr_aoi`, the
+  existing view for one kind of directory content. So they obey that gate's
+  discipline: no listing, no walking, constant-time probes, cheapest first. The
+  card's gate accepts a cache repo folder (a name check plus one `isdir`) or a
+  model folder proper, and for the `config.json` case it makes ONE bounded read
+  to confirm the file is a model config — `config.json` is among the most common
+  filenames there is, and a folder of application settings must not sprout a
+  model view. The tokenizer's gate is a single `isfile` for `tokenizer.json`; the
+  older `vocab.txt`+`merges.txt` pair is deliberately not offered, since loading
+  those needs the model class that owns them and a playground that cannot
+  tokenize is worse than none.
+- **MV-4** **The AI Models cards open the card view by name.** A gated template
+  can never be a folder's default mode (CT-12), so a model folder still lists
+  like any other folder for anyone who browses to it — but from the AI Models
+  page the repo IS a model, so its card navigates with `_mode=model_card`. The
+  switcher then offers both model views beside the folder's own modes.
+- **MV-5** **Looking at a model is not using it.** Every read in both templates
+  restores the file's atime, for the same reason the AI Models page does
+  (HF-15): "last read" is what pruning by age is built on, and inspecting a
+  model must not quietly protect it from the next prune.

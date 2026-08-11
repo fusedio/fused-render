@@ -214,7 +214,7 @@ function RepoCard({
             a button inside a link is neither valid nor keyboard-operable. */}
         <a
           className="cc-mdcard-name am-card-name"
-          href={urlForFsPath(repo.path)}
+          href={urlForFsPath(repo.path, "_mode=model_card")}
           title={repo.path}
           onClick={(e) => {
             if (
@@ -227,7 +227,12 @@ function RepoCard({
             )
               return;
             e.preventDefault();
-            navigate(repo.path, { isDir: true });
+            // Straight to the model card view (SPEC §38), not the folder
+            // listing: from here the repo IS a model, and the inspector is what
+            // "open it" means. The listing stays the default everywhere else,
+            // because a gated template can never be a folder's default mode
+            // (CT-12) — so this mode has to be asked for by name.
+            navigate(repo.path, { isDir: true, mode: "model_card" });
           }}
         >
           {repo.id}

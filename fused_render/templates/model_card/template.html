@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<html data-fused-theme="shell">
+<head>
+<meta charset="utf-8" />
+<title>Model card</title>
+<style>
+  /* Palette pair (SPEC §30): this view follows the shell's appearance because
+     it opted in with `data-fused-theme` on <html> above — the runtime then
+     keeps `data-theme` in step. Every colour below is a token defined in these
+     two blocks and nowhere else. */
+  :root {
+    color-scheme: dark;
+    --fg: #e8eaed;
+    --fg-muted: #9aa0a6;
+    --border: #2a2d33;
+    --bg: #131417;
+    --bg-alt: #1b1d21;
+    --accent: #E5FF44;
+    --error: #ff6b6b;
+    --bar: #3a6ee8;
+  }
+  :root[data-theme="light"] {
+    color-scheme: light;
+    --fg: #1f2023;
+    --fg-muted: #61656c;
+    --border: #d8dade;
+    --bg: #ffffff;
+    --bg-alt: #f4f5f7;
+    --accent: #5f7300;
+    --error: #c62828;
+    --bar: #2b5fd9;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    padding: 22px 26px 40px;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    font-size: 13px;
+    line-height: 1.5;
+    color: var(--fg);
+    background: var(--bg);
+  }
+  .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  h1 { margin: 0; font-size: 20px; font-weight: 600; overflow-wrap: anywhere; }
+  .sub { margin-top: 3px; font-size: 12px; color: var(--fg-muted); overflow-wrap: anywhere; }
+  .facts { display: flex; flex-wrap: wrap; gap: 8px; margin: 14px 0 20px; }
+  .fact {
+    padding: 8px 12px;
+    background: var(--bg-alt);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    min-width: 110px;
+  }
+  .fact .k { font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: var(--fg-muted); }
+  .fact .v { font-size: 15px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .pill {
+    display: inline-block;
+    padding: 2px 7px;
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: .04em;
+    border-radius: 4px;
+    background: var(--border);
+    color: var(--fg-muted);
+  }
+  section { margin-bottom: 24px; }
+  h2 {
+    margin: 0 0 8px;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: .06em;
+    color: var(--fg-muted);
+  }
+  table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  td, th { padding: 5px 8px; text-align: left; border-bottom: 1px solid var(--border); vertical-align: top; }
+  th { font-weight: 500; color: var(--fg-muted); }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  td.name { overflow-wrap: anywhere; }
+  .summary { max-width: 70ch; color: var(--fg-muted); white-space: pre-wrap; overflow-wrap: anywhere; }
+  .bar { height: 3px; background: var(--bar); border-radius: 2px; min-width: 1px; }
+  .muted { color: var(--fg-muted); }
+  .err { color: var(--error); }
+  .scroll { max-height: 320px; overflow: auto; border: 1px solid var(--border); border-radius: 8px; }
+  .scroll table td:first-child, .scroll table th:first-child { padding-left: 12px; }
+</style>
+</head>
+<body>
+<div id="root" class="muted">Reading the model…</div>
+
+<script>
+// The target folder — a cache repo, or any folder holding a model. The view is
+// pure metadata: no weights are loaded and nothing is fetched, so it opens as
+// fast on a 40GB checkpoint as on a 40MB one.
+const FILE = fused.params.get("_file");
+
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => (
+  { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]
+));
+
+function bytes(n) {
+  if (!n) return "0 B";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let v = n, u = 0;
+  while (v >= 1024 && u < units.length - 1) { v /= 1024; u++; }
+  return `${u === 0 ? v : v.toFixed(v < 10 ? 1 : 0)} ${units[u]}`;
+}
+
+// Decimal steps, unlike bytes: a "7B model" is 7e9 parameters, never 7 * 2^30.
+function params(n) {
+  if (!n) return "—";
+  if (n >= 1e9) return `${Number((n / 1e9).toFixed(1))}B`;
+  if (n >= 1e6) return `${Math.round(n / 1e6)}M`;
+  if (n >= 1e3) return `${Math.round(n / 1e3)}K`;
+  return String(n);
+}
+
+function rows(items, cells) {
+  return items.map((item) => `<tr>${cells(item)}</tr>`).join("");
+}
+
+function render(d) {
+  const card = d.card, config = d.config;
+  const facts = [];
+  if (d.params.total) {
+    facts.push(["Parameters", `${d.params.estimated ? "≈" : ""}${params(d.params.total)}`]);
+  }
+  facts.push(["On disk", bytes(d.totalSize)]);
+  if (config.quantization) facts.push(["Weights", config.quantization]);
+  if (d.revisions.length > 1) facts.push(["Revisions", String(d.revisions.length)]);
+  facts.push(["Files", String(d.fileCount)]);
+
+  const what = card.pipelineTag || config.pipelineClass || (config.architectures || [])[0];
+  const biggest = d.largest.length ? d.largest[0].params : 0;
+
+  document.getElementById("root").innerHTML = `
+    <h1>${esc(d.name)} <span class="pill">${esc(d.kind)}</span></h1>
+    <div class="sub mono">${esc(d.root)}</div>
+    ${what ? `<div class="sub">${esc(String(what).replace(/-/g, " "))}${
+      card.library ? ` · ${esc(card.library)}` : ""}${
+      card.license ? ` · ${esc(card.license)}` : ""}</div>` : ""}
+
+    <div class="facts">${facts.map(([k, v]) => `
+      <div class="fact"><div class="k">${esc(k)}</div><div class="v">${esc(v)}</div></div>`).join("")}
+    </div>
+
+    ${card.summary ? `<section><h2>From the model card</h2>
+      <div class="summary">${esc(card.summary)}</div></section>` : ""}
+
+    ${card.tags.length ? `<section><h2>Tags</h2>
+      <div>${card.tags.map((t) => `<span class="pill">${esc(t)}</span> `).join("")}</div></section>` : ""}
+
+    ${config.notable.length || config.architectures.length ? `<section><h2>Configuration</h2>
+      <table>
+        ${config.architectures.length ? `<tr><th>Architecture</th><td class="mono">${
+          esc(config.architectures.join(", "))}</td></tr>` : ""}
+        ${config.modelType ? `<tr><th>Model type</th><td class="mono">${esc(config.modelType)}</td></tr>` : ""}
+        ${config.pipelineClass ? `<tr><th>Pipeline</th><td class="mono">${esc(config.pipelineClass)}</td></tr>` : ""}
+        ${rows(config.notable, (n) => `<th>${esc(n.label)}</th><td class="mono">${esc(n.value)}</td>`)}
+      </table></section>` : ""}
+
+    ${d.weights.length ? `<section><h2>Weights</h2>
+      <table>
+        <tr><th>File</th><th class="num">Tensors</th><th class="num">Parameters</th><th>Stored as</th></tr>
+        ${rows(d.weights, (w) => `
+          <td class="name mono">${esc(w.file)}</td>
+          <td class="num">${w.tensors}</td>
+          <td class="num">${d.params.estimated ? "≈" : ""}${params(w.params)}</td>
+          <td class="mono">${esc(Object.keys(w.dtypes).join(", "))}</td>`)}
+      </table></section>` : ""}
+
+    ${d.largest.length ? `<section><h2>Largest tensors</h2>
+      <div class="scroll"><table>
+        <tr><th>Tensor</th><th>Shape</th><th class="num">Parameters</th><th></th></tr>
+        ${rows(d.largest, (t) => `
+          <td class="name mono">${esc(t.name)}</td>
+          <td class="mono">${esc(t.shape.join(" × "))}</td>
+          <td class="num">${params(t.params)}</td>
+          <td style="width:90px"><div class="bar" style="width:${
+            biggest ? Math.max(1, Math.round((t.params / biggest) * 100)) : 1}%"></div></td>`)}
+      </table></div></section>` : ""}
+
+    ${d.revisions.length > 1 ? `<section><h2>Revisions</h2>
+      <table>
+        ${rows(d.revisions, (r) => `
+          <td class="mono">${esc(r.commit.slice(0, 12))}${r.current ? " ←" : ""}</td>
+          <td>${esc(r.refs.join(", "))}</td>
+          <td class="muted">${r.current ? "described above" : ""}</td>`)}
+      </table></section>` : ""}
+
+    <section><h2>Files${d.fileCount > d.files.length ? ` (largest ${d.files.length} of ${d.fileCount})` : ""}</h2>
+      <div class="scroll"><table>
+        ${rows(d.files, (f) => `
+          <td class="name mono">${esc(f.name)}</td>
+          <td class="num">${bytes(f.size)}</td>`)}
+      </table></div></section>
+  `;
+}
+
+async function load() {
+  try {
+    render(await fused.runPython("./inspect_model.py", { path: FILE }));
+  } catch (err) {
+    document.getElementById("root").innerHTML =
+      `<div class="err">Could not read this model: ${esc(err && err.message || err)}</div>`;
+  }
+}
+load();
+</script>
+</body>
+</html>
