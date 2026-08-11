@@ -151,6 +151,104 @@ def test_the_tokenizer_gate_wants_a_loadable_tokenizer(tokenizer_condition, tmp_
     assert tokenizer_condition.main(str(legacy)) is False
 
 
+def _cache_repo(tmp_path, name="models--org--m", commit="c0ffee", tokenizer="{}", ref="main"):
+    """A Hugging Face cache repo: the shape the AI Models cards actually open —
+    the tokenizer lives under `snapshots/<commit>/`, not in the folder itself."""
+    repo = tmp_path / name
+    if tokenizer is not None:
+        _write(repo, os.path.join("snapshots", commit, "tokenizer.json"), tokenizer)
+    else:
+        (repo / "snapshots" / commit).mkdir(parents=True)
+    if ref:
+        _write(repo, os.path.join("refs", ref), commit)
+    return repo
+
+
+def test_the_tokenizer_gate_finds_a_cache_repos_tokenizer(tokenizer_condition, tmp_path):
+    # The entry path that matters: AI Models navigates to the REPO folder, whose
+    # tokenizer.json is one level down under snapshots/<commit>. A gate that only
+    # checked the folder itself never offered this view from the page built to
+    # open models.
+    repo = _cache_repo(tmp_path)
+    assert tokenizer_condition.main(str(repo)) is True
+    # …and the revision is the one `refs/main` names, since that is what a load
+    # would get.
+    assert tokenizer_condition.tokenizer_path(str(repo)) == str(
+        repo / "snapshots" / "c0ffee" / "tokenizer.json")
+
+
+def test_a_cache_repo_with_no_tokenizer_is_not_offered(tokenizer_condition, tmp_path):
+    repo = _cache_repo(tmp_path, tokenizer=None)
+    assert tokenizer_condition.main(str(repo)) is False
+    # A repo whose refs/main is missing cannot be resolved without listing, which
+    # a gate may not do — so it fails closed rather than guessing a revision.
+    unref = _cache_repo(tmp_path, name="models--org--n", ref=None)
+    assert tokenizer_condition.main(str(unref)) is False
+
+
+@pytest.mark.parametrize("ref", ["../../../etc", "a/b", "..", ""])
+def test_a_ref_that_is_not_a_commit_is_refused(tokenizer_condition, tmp_path, ref):
+    # A ref holds a bare sha. Anything with a separator is not one and must never
+    # be joined onto a path.
+    repo = _cache_repo(tmp_path)
+    (repo / "refs" / "main").write_text(ref)
+    assert tokenizer_condition.tokenizer_path(str(repo)) is None
+
+
+def test_the_tokenizer_gate_and_reader_never_disagree(tokenizer_condition, tokenizer_reader,
+                                                      tmp_path):
+    # The gate and the reader each carry their own copy of this rule, because a
+    # template is scripts the engine runs and they cannot share a module. A gate
+    # that offers a view the reader then cannot serve is the one failure this
+    # pair can have, so pin them to the same answer.
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    direct = tmp_path / "snap"
+    _write(direct, "tokenizer.json", "{}")
+    cases = [
+        plain,
+        direct,
+        _cache_repo(tmp_path, name="models--a--good"),
+        _cache_repo(tmp_path, name="models--a--empty", tokenizer=None),
+        _cache_repo(tmp_path, name="models--a--unref", ref=None),
+        _cache_repo(tmp_path, name="models--a--otherref", ref="refs-pr--3"),
+    ]
+    for folder in cases:
+        gate = tokenizer_condition.tokenizer_path(str(folder))
+        reader = tokenizer_reader.tokenizer_path(str(folder))
+        assert gate == reader, folder
+        assert tokenizer_condition.main(str(folder)) is (gate is not None), folder
+
+
+def test_the_tokenizer_gate_never_lists_the_directory(tokenizer_condition, tmp_path, monkeypatch):
+    # Same rule as the card's gate: it runs on every folder open, and over a
+    # mount a gate may not enumerate at all.
+    repo = _cache_repo(tmp_path)
+    for banned in ("listdir", "scandir", "walk"):
+        monkeypatch.setattr(
+            tokenizer_condition.os, banned,
+            lambda *a, **k: pytest.fail(f"the gate called os.{banned}"),
+        )
+    assert tokenizer_condition.main(str(repo)) is True
+
+
+def test_neither_gate_counts_as_using_the_model(card_condition, tokenizer_condition, tmp_path):
+    # MV-5, on the gates as well as the readers: these run on every folder the
+    # user opens, so a gate is the LAST thing that should mark a model as
+    # recently used and protect it from the next prune.
+    folder = tmp_path / "m"
+    _write(folder, "config.json", json.dumps({"model_type": "llama"}))
+    repo = _cache_repo(tmp_path)
+    old = 1_000_000
+    touched = [folder / "config.json", repo / "refs" / "main"]
+    for path in touched:
+        os.utime(path, (old, old))
+    assert card_condition.main(str(folder)) is True
+    assert tokenizer_condition.main(str(repo)) is True
+    for path in touched:
+        assert os.stat(path).st_atime == old, path
+
+
 # -- the inspector ---------------------------------------------------------------
 
 
@@ -278,6 +376,41 @@ def test_a_folder_without_a_tokenizer_says_so(tokenizer_reader, tmp_path):
     folder = tmp_path / "m"
     folder.mkdir()
     assert "error" in tokenizer_reader.main(str(folder), "hi")
+
+
+def test_the_reader_tokenizes_a_cache_repo_through_its_main_revision(tokenizer_reader, tmp_path):
+    # The page opens the REPO folder, so the reader has to resolve the same
+    # snapshot the gate did — otherwise the mode is offered and then errors.
+    repo = _cache_repo(tmp_path, tokenizer=_tokenizer_json({"a": 0, "b": 1}))
+    out = tokenizer_reader.main(str(repo), "")
+    assert "error" not in out
+    assert out["facts"]["vocabSize"] == 2
+
+
+def test_the_facts_are_read_once_not_on_every_keystroke(tokenizer_reader, tmp_path):
+    # tokenizer.json is routinely tens of MB, and nothing survives between calls
+    # (each is a fresh subprocess, PY-6). What keeps typing responsive is that
+    # the page asks for the description ONCE and leaves it out afterwards.
+    folder = tmp_path / "m"
+    folder.mkdir()
+    _write(folder, "tokenizer.json", _tokenizer_json({"a": 0}))
+    assert "facts" in tokenizer_reader.main(str(folder), "", facts=True)
+    keystroke = tokenizer_reader.main(str(folder), "hi", facts=False)
+    assert "facts" not in keystroke  # the whole-file parse is skipped entirely
+
+
+def test_tokenizing_does_not_count_as_using_the_model(tokenizer_reader, tmp_path):
+    # MV-5 again: the facts parse, the ref read, and the library's own load all
+    # read cache files, so all three put the atime back.
+    repo = _cache_repo(tmp_path, tokenizer=_tokenizer_json({"a": 0}))
+    tokenizer = repo / "snapshots" / "c0ffee" / "tokenizer.json"
+    ref = repo / "refs" / "main"
+    old = 1_000_000
+    for path in (tokenizer, ref):
+        os.utime(path, (old, old))
+    tokenizer_reader.main(str(repo), "hello", facts=True)
+    for path in (tokenizer, ref):
+        assert os.stat(path).st_atime == old, path
 
 
 def test_encoding_reports_pieces_ids_and_offsets(tokenizer_reader, tmp_path):

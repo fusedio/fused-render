@@ -54,6 +54,7 @@ def guard_kernel(monkeypatch):
         "stat": os.stat,
         "listdir": os.listdir,
         "scandir": os.scandir,
+        "utime": os.utime,
     }
 
     def _guard(name, fn):
@@ -65,7 +66,7 @@ def guard_kernel(monkeypatch):
 
     for name in ("isfile", "isdir", "exists"):
         monkeypatch.setattr(os.path, name, _guard(name, real[name]))
-    for name in ("stat", "listdir", "scandir"):
+    for name in ("stat", "listdir", "scandir", "utime"):
         monkeypatch.setattr(os, name, _guard(name, real[name]))
     return real
 
@@ -224,6 +225,36 @@ def test_import_os_aliased_routed(monkeypatch, guard_kernel, tmp_path):
     cf = _gate(tmp_path, "import os as o\n"
                          "def main(path):\n    return o.path.isfile(path)\n")
     assert _server_templates._run_condition(cf, STORE) == (True, None)
+
+
+def test_utime_on_a_mount_is_dropped_not_routed(monkeypatch, guard_kernel, tmp_path):
+    # The model gates read a file and put its atime back, so a gate is not what
+    # marks a model as recently used (SPEC MV-5). That is the one WRITE a gate
+    # makes, and on a mount there is no atime worth preserving — the kernel
+    # SETATTR is exactly the call this shim exists to prevent, so it is dropped.
+    # The gate still returns its verdict; the guard proves the kernel was spared.
+    import stat as _s
+    _mount(monkeypatch, {STORE: "dir", "*": "missing"},
+           read_bytes=json.dumps({"model_type": "llama"}).encode())
+    monkeypatch.setattr(
+        mounts_mod, "rc_stat_result",
+        lambda p, **k: os.stat_result((_s.S_IFREG | 0o644, 0, 0, 1, 0, 0, 0, 0, 0.0, 0.0)))
+    card = os.path.join(_server_templates.TEMPLATES_DIR, "model_card", "condition.py")
+    assert _server_templates._run_condition(card, STORE) == (True, None)
+
+
+def test_utime_on_a_local_path_still_restores_the_atime(guard_kernel, tmp_path):
+    # …and a NON-mount target keeps the real behaviour: the gate reads
+    # config.json and hands its atime back untouched.
+    folder = tmp_path / "m"
+    folder.mkdir()
+    config = folder / "config.json"
+    config.write_text(json.dumps({"model_type": "llama"}))
+    old = 1_000_000
+    os.utime(config, (old, old))
+    card = os.path.join(_server_templates.TEMPLATES_DIR, "model_card", "condition.py")
+    assert _server_templates._run_condition(card, str(folder)) == (True, None)
+    assert os.stat(config).st_atime == old
 
 
 def test_from_os_import_path_aliased_routed(monkeypatch, guard_kernel, tmp_path):

@@ -13,7 +13,9 @@ Two shapes count:
    cloned themselves. Recognised by its marker files: `model_index.json` (a
    diffusers pipeline) or `config_sentence_transformers.json` decide it
    outright, and `config.json` decides it only after a BOUNDED read confirming
-   it is a model config rather than some other program's settings file.
+   it is a model config rather than some other program's settings file. That
+   read restores the file's atime, because a gate must not be the thing that
+   marks a model as recently used (MV-5).
 
 That last read is the whole reason this gate is accurate: `config.json` is one
 of the most common filenames there is, and a folder of application settings is
@@ -44,13 +46,23 @@ def _is_cache_repo(path: str) -> bool:
 
 def _has_model_config(path: str) -> bool:
     config = os.path.join(path, "config.json")
-    if not os.path.isfile(config):
-        return False
+    try:
+        before = os.stat(config)
+    except OSError:
+        return False  # absent, or not something we can stat
     try:
         with open(config, "rb") as handle:
             raw = handle.read(_CONFIG_READ_LIMIT)
     except OSError:
         return False
+    finally:
+        # The gate reads a cache file, so it owes the same debt every other read
+        # here does (MV-5/HF-15): "last read" is what the AI Models page prunes
+        # by, and a folder GATE must not be what marks a model as used.
+        try:
+            os.utime(config, (before.st_atime, before.st_mtime))
+        except OSError:
+            pass
     try:
         parsed = json.loads(raw)
     except ValueError:

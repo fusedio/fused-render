@@ -187,7 +187,10 @@ def _mount_gate_builtins(target_path: str, seed=None):
     -> False, os.stat -> OSError, open -> OSError), so the gate returns False
     quietly. A mount path NEVER falls back to the kernel os.* — that reintroduces
     the wedge. Non-mount paths a gate might also touch pass straight through to
-    the real os / open.
+    the real os / open. `os.utime` (the model gates' atime restoration, MV-5) is
+    the one WRITE a gate makes: on a mount it is dropped rather than routed —
+    there is no atime there worth preserving, and the kernel SETATTR is the very
+    call this shim exists to prevent.
     """
     import builtins
     import io
@@ -258,6 +261,17 @@ def _mount_gate_builtins(target_path: str, seed=None):
             raise OSError(f"probe budget exhausted for {p}")
         return mounts.rc_stat_result(p, timeout=left)
 
+    def _utime(p, *a, **k):
+        # Restoring an atime is a LOCAL cache concern: the model gates read a
+        # file and put its atime back so a gate is not what marks a model as
+        # recently used (SPEC MV-5). A mount has no such atime to preserve, and
+        # a kernel SETATTR on the mount is precisely the class of call this shim
+        # exists to keep gates from making — so it is DROPPED, not routed. The
+        # gates wrap it in try/except anyway; silence matches what they expect.
+        if isinstance(p, str) and mounts.is_mount_backed(p):
+            return None
+        return real_os.utime(p, *a, **k)
+
     def _listdir(p="."):
         # A kernel listing over a mount is the mur-sst wedge; the gate is
         # forbidden from enumerating anyway (constant-time by design), so fail
@@ -284,6 +298,7 @@ def _mount_gate_builtins(target_path: str, seed=None):
     class _OsShim:
         path = _OsPathShim()
         stat = staticmethod(_stat)
+        utime = staticmethod(_utime)
         listdir = staticmethod(_listdir)
         scandir = staticmethod(_scandir)
 

@@ -214,7 +214,7 @@ function RepoCard({
             a button inside a link is neither valid nor keyboard-operable. */}
         <a
           className="cc-mdcard-name am-card-name"
-          href={urlForFsPath(repo.path, "_mode=model_card")}
+          href={urlForFsPath(repo.path, "?_mode=model_card")}
           title={repo.path}
           onClick={(e) => {
             if (

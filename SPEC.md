@@ -5456,10 +5456,11 @@ loads weights, imports a framework, or touches the network.
   model folder proper, and for the `config.json` case it makes ONE bounded read
   to confirm the file is a model config — `config.json` is among the most common
   filenames there is, and a folder of application settings must not sprout a
-  model view. The tokenizer's gate is a single `isfile` for `tokenizer.json`; the
-  older `vocab.txt`+`merges.txt` pair is deliberately not offered, since loading
-  those needs the model class that owns them and a playground that cannot
-  tokenize is worse than none.
+  model view. The tokenizer's gate asks one question in the two shapes MV-6
+  names — `tokenizer.json` in the folder itself, or a cache repo's through
+  `refs/main` — and the older `vocab.txt`+`merges.txt` pair is deliberately not
+  offered, since loading those needs the model class that owns them and a
+  playground that cannot tokenize is worse than none.
 - **MV-4** **The AI Models cards open the card view by name.** A gated template
   can never be a folder's default mode (CT-12), so a model folder still lists
   like any other folder for anyone who browses to it — but from the AI Models
@@ -5468,4 +5469,36 @@ loads weights, imports a framework, or touches the network.
 - **MV-5** **Looking at a model is not using it.** Every read in both templates
   restores the file's atime, for the same reason the AI Models page does
   (HF-15): "last read" is what pruning by age is built on, and inspecting a
-  model must not quietly protect it from the next prune.
+  model must not quietly protect it from the next prune. **Including the
+  gates** — they read too (`config.json`, `refs/main`), they run on every folder
+  the user opens, and a gate is the last thing that should mark a model as
+  recently used. That `os.utime` is the one WRITE a gate makes, so the mount
+  shim (CT-12's routing) **drops it on a mount path** rather than routing it: a
+  mount has no atime worth preserving, and a kernel SETATTR there is exactly the
+  class of call the shim exists to keep gates from making.
+- **MV-6** **The folder the AI Models page opens is a cache REPO, so both model
+  templates resolve through it.** A repo folder (`models--org--name`) holds no
+  model files itself — they live under `snapshots/<commit>/` — so "does this
+  folder have a `tokenizer.json`?" is one question with two shapes: the folder
+  itself (a snapshot, or someone's own checkout), or the revision **`refs/main`**
+  names, which is the one a load would get and the same revision `model_card`
+  describes (MV-1). A gate that only checked the folder itself would never offer
+  the tokenizer view from the page built to open models. Resolution costs one
+  bounded read of a 40-byte ref and never a listing (MV-3's discipline holds), so
+  a repo with no `refs/main` fails closed rather than guessing a revision, and a
+  ref carrying a path separator is refused outright rather than joined onto a
+  path. The gate and the reader each carry their own copy of this rule — a
+  template is scripts the engine runs, not a package, and they cannot share a
+  module (PY-15/D166) — so the tests pin the two to the same answer: a gate that
+  offers a view the reader cannot then serve is the one failure this pair has.
+- **MV-7** **Nothing survives between calls, so the playground is built not to
+  need it.** Each `runPython` is a fresh subprocess (PY-6); a tokenizer held in a
+  module-level dict is dead code that reads as an optimisation. What keeps typing
+  responsive instead: the **facts are fetched once**, on page load and on their
+  own request channel (`opts.key`, RH-9 — the default channel is the `.py` path,
+  so a keystroke would otherwise supersede the in-flight facts call and it would
+  never arrive), and every keystroke after that asks for encoding only, skipping
+  the whole-file parse of a `tokenizer.json` that is routinely tens of MB. The
+  per-call cost that remains is the library's own load, which is Rust and
+  measured in tens of milliseconds; holding one tokenizer open across keystrokes
+  would need a resident process, which is a different design from a script.
