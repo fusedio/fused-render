@@ -104,6 +104,26 @@ def test_searching_inside_a_package_falls_back_to_the_walk(tmp_path):
     assert "Cool.app" in [e["rel"] for e in search_under(cfg, "/r")["entries"]]
 
 
+def test_searching_BELOW_a_package_root_also_falls_back_to_the_walk(tmp_path):
+    """Testing only the root's final component was not enough. An index written
+    before the leaf rule holds real dirs rows for paths INSIDE a package, and
+    those rows do describe a scanned directory — so the coverage query says yes
+    and the index answers from whatever partial set of package rows happens to
+    be on disk, while the folder one level up is answered by the live walk. Two
+    sources meant to be interchangeable then disagree, which is the whole reason
+    LEAF_DIR_SUFFIXES is shared between them.
+
+    The rows here are exactly what such an index looks like: the package's inner
+    directories present and populated."""
+    cfg = _index(tmp_path, "/r",
+                 ["/r/a.txt", "/r/Cool.app/Contents/Info.plist"],
+                 dirs=["/r/Cool.app", "/r/Cool.app/Contents"])
+    for root in ("/r/Cool.app", "/r/Cool.app/Contents"):
+        out = search_under(cfg, root)
+        assert out["covered"] is False, f"{root} answered from the index"
+        assert out["entries"] == []
+
+
 def test_search_under_reports_no_coverage_on_an_empty_index(tmp_path):
     out = search_under(IndexConfig(dir=str(tmp_path / "ix")), "/r")
     assert out["covered"] is False

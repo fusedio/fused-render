@@ -23,6 +23,7 @@ from fused_render.index.ignore import (
     SKIP_DIRS,
     IgnoreRules,
     MountGuard,
+    is_inside_leaf_dir,
     is_leaf_dir,
     norm,
 )
@@ -494,7 +495,18 @@ def _run_fsevents(cfg, rules, guard, root, hint, cache, sink, ev, cancel_flag,
             cancelled = True
             break
         d, force = stack.pop()
-        if d in scanned or rules.is_ignored_tree(d) or guard.blocks(d):
+        # is_inside_leaf_dir, and not the is_leaf_dir test scan_dir_once makes:
+        # this loop does not descend to `d`, the journal hands it over, and what
+        # the journal names inside a package is always a descendant (an app
+        # update writes Foo.app/Contents/Resources, Photos writes
+        # Foo.photoslibrary/database) — never the package itself. A
+        # final-component test therefore lets every package internal in through
+        # this path while the walk-driven one drops them, and the tail loop
+        # below then carries those rows forward on every later run. The
+        # package's own dirs row is unaffected: it is is_leaf_dir's, made when
+        # the journal or the walk names the package.
+        if (d in scanned or rules.is_ignored_tree(d) or guard.blocks(d)
+                or is_inside_leaf_dir(d)):
             continue
         scanned.add(d)
         kind, payload, subdirs = scan_dir_once(

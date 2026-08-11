@@ -86,6 +86,26 @@ def is_leaf_dir(path: str) -> bool:
     return path.lower().endswith(LEAF_DIR_SUFFIXES)
 
 
+def is_inside_leaf_dir(path: str) -> bool:
+    """Whether any ANCESTOR of `path` is a package directory — i.e. whether the
+    leaf rule means this path should not exist as a row at all.
+
+    `is_leaf_dir` is enough wherever descent is what's being decided: a walk
+    that refuses to list `Foo.app` never reaches anything below it. Callers that
+    are handed a path instead of descending to it — the FSEvents fast path
+    (scan._run_fsevents), the coverage test in query.search_under — see package
+    internals directly and need this test, because the final component of
+    `Foo.app/Contents/Resources` says nothing about the package above it.
+
+    Ancestors ONLY: a final component that is itself a package is is_leaf_dir's
+    business, and that one gets RECORDED where these get dropped. Pure string
+    work on purpose — it runs once per journal-reported directory, so it must
+    not stat anything. Paths are `norm`ed, so "/" is the only separator."""
+    head, _, _ = path.rpartition("/")
+    return any(part.lower().endswith(LEAF_DIR_SUFFIXES)
+               for part in head.split("/"))
+
+
 # The index prunes MORE than the floor, and may: a scan is a background crawl
 # of the whole home, where these caches are pure cost. The walk cannot use the
 # same list, because inside a repo it defers to the repo's own .gitignore

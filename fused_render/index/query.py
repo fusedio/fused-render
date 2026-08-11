@@ -17,7 +17,7 @@ import os
 import re
 
 from fused_render.index.config import IndexConfig
-from fused_render.index.ignore import is_leaf_dir, norm
+from fused_render.index.ignore import is_inside_leaf_dir, is_leaf_dir, norm
 from fused_render.index.store import (
     depth_expr,
     like_literal,
@@ -276,7 +276,13 @@ def search_under(cfg: IndexConfig, root: str, q: str = "", limit: int = MAX_CORP
     # leaf CHILDREN, not a leaf it was pointed at) — so hand it over, exactly as
     # for any other uncovered folder, instead of reporting an empty corpus as
     # complete.
-    covered = not is_leaf_dir(root) and con.execute(
+    # The test is is_inside_leaf_dir as well, not just the root's own final
+    # component: any index written before the leaf rule still holds real dirs
+    # rows for paths INSIDE a package, and answering `/x/Foo.app/Contents` from
+    # that partial set while `/x/Foo.app` one level up goes to the walk is the
+    # two-interchangeable-sources-disagree bug in miniature.
+    inside_pkg = is_leaf_dir(root) or is_inside_leaf_dir(root)
+    covered = not inside_pkg and con.execute(
         f"SELECT count(*) FROM {dirs_src(cfg)} "
         f"WHERE dir = '{_q(root)}'").fetchone()[0] > 0
     if not covered:

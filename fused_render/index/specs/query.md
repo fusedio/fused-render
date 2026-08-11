@@ -103,7 +103,10 @@ Two flags travel with it:
   partial corpus. **This is the gate**: covered means the index answers, uncovered means
   the live walk does. A package directory (`scan-ignore.md §3`) is the one row that does
   *not* count: it is recorded as an opaque leaf, so its row means "this is a leaf", not
-  "we know what is inside", and a search rooted at one hands over to the walk.
+  "we know what is inside", and a search rooted at one hands over to the walk. So does a
+  search rooted *inside* one: an index written before that rule holds real dirs rows for
+  package internals, and answering from that partial set while the folder one level up is
+  answered by the walk is the same disagreement the shared constant exists to prevent.
 - **`fresh`** — the last compaction is within `FRESH_MAX_AGE_S` (1 h). Reported, not
   enforced. Age does not decide anything because the index is rescanned at every
   startup, a rescan keeps serving its last completed generation

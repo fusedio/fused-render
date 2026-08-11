@@ -86,11 +86,28 @@ derived from this constant), so:
 - **skipping** it would drop the package from the corpus entirely, and the walk
   does list it.
 
-One consequence, handled in `query.search_under`: a package's dirs row means "this
-is a leaf", not "we know what is inside", so a search whose *root* is a package
-reports `covered: false` and falls back to the live walk — which does list a leaf
-it was pointed at. Migration for an index that already descended packages is a
-full rescan.
+`is_leaf_dir` tests the path's own final component, which is all a descent needs:
+a walk that refuses to list `Foo.app` never reaches anything below it. Two callers
+are *handed* a path rather than descending to it, and use `is_inside_leaf_dir`
+(any ancestor is a package) instead:
+
+- the **FSEvents fast path** (`scan-incremental.md §1`) visits whatever directories
+  the OS journal names, and what the journal names inside a package is always a
+  descendant — an app update writes `Foo.app/Contents/Resources`, Photos writes
+  `Foo.photoslibrary/database`, never the package itself. A final-component test
+  passes those straight through, so package internals entered the index by this
+  path even though the walk-driven path excluded them, and the keep list then
+  carried the rows forward on every later run.
+- **`query.search_under`'s coverage test**: a package's dirs row means "this is a
+  leaf", not "we know what is inside", so a search rooted at a package reports
+  `covered: false` and falls back to the live walk — which does list a leaf it was
+  pointed at. The same has to hold one level down, because an index written before
+  this rule holds real dirs rows *inside* packages; answering
+  `Foo.app/Contents` from that partial set while `Foo.app` goes to the walk is the
+  two-interchangeable-sources-disagree bug again.
+
+Neither test purges rows an older index already has: they stop packages entering.
+Migration for an index that already descended packages is a full rescan.
 
 ## 4. Rules-changed fingerprint
 
