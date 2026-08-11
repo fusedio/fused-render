@@ -61,12 +61,7 @@ def test_invalid_override_raises(monkeypatch):
 
 
 def test_api_config_never_cold_imports_the_engine(tmp_path, monkeypatch):
-    # /api/config resolves the engine on every call; on a fresh install the cold
-    # fused import is ~a minute (bytecode compile + the OS scanning every native
-    # module on first load), so it must never run on this request thread — that
-    # is the ~2-min first-launch freeze. engine.warm() pays it in a startup
-    # thread instead; here (no lifespan, so no warm) the request path must still
-    # answer without importing the backend.
+    # /api/config must resolve the engine without the cold import on the request thread.
     from fastapi.testclient import TestClient
 
     import fused_render.engine as engine
@@ -79,9 +74,7 @@ def test_api_config_never_cold_imports_the_engine(tmp_path, monkeypatch):
         raise AssertionError("the cold engine import must not run on /api/config")
 
     monkeypatch.setattr(engine, "available", _boom)  # a cold import would 500 the request
-    # warm-up already landed: /api/config must read "fused" from the cache, never
-    # by importing the backend on the request thread.
-    monkeypatch.setattr(engine, "_available_cached", True)
+    monkeypatch.setattr(engine, "_available_cached", True)  # warm-up already landed
 
     client = TestClient(create_app(start_dir=str(tmp_path)))
     resp = client.get("/api/config")

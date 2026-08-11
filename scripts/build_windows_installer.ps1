@@ -333,16 +333,9 @@ try {
 Get-ChildItem -Path $PythonRoot -Directory -Recurse -Filter "__pycache__" -ErrorAction SilentlyContinue |
     Remove-Item -Recurse -Force
 
-# Precompile bytecode into the payload, as the FINAL payload mutation (was: ship
-# source-only). A source-only bundle recompiles the whole dependency tree on the
-# first import, and because the first /api/config resolves the fused engine that
-# lands on the request thread and freezes the shell for ~a minute on the first
-# launch after install (PY cold-start). Placed after the __pycache__ strip above
-# so the smoke tests' incidental pyc don't leak in and every payload module gets
-# a deterministic pyc. unchecked-hash pyc are trusted without re-stat, so the
-# installer copying these files (fresh mtimes) never invalidates them and the
-# runtime never recompiles. The count guard fails the build rather than silently
-# regressing to a source-only payload.
+# Precompile bytecode into the payload (unchecked-hash, so the installer's fresh
+# mtimes never invalidate it) as the final payload step — after the strip above,
+# else source-only recompiles the whole tree on first import (PY cold-start).
 Invoke-Native $bundlePython @(
     "-I", "-c",
     "import compileall, py_compile, sys; compileall.compile_dir(sys.argv[1], quiet=1, workers=0, invalidation_mode=py_compile.PycInvalidationMode.UNCHECKED_HASH)",

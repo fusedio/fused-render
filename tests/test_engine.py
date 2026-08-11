@@ -48,12 +48,6 @@ def _fresh_interpreter_probe():
 
 
 # --- engine warm-up + non-blocking availability (PY cold-start) --------------
-#
-# The first /api/config resolves the engine, which imports the fused backend. On
-# a fresh install that cold import is ~a minute (bytecode compile + the OS
-# scanning every native module on first load); it must NEVER run on the request
-# thread. warm() pays it once in a startup thread; available_nonblocking() reads
-# the result (or a cheap importability check) and never triggers the import.
 
 
 def test_available_nonblocking_never_triggers_the_cold_import(monkeypatch):
@@ -61,8 +55,6 @@ def test_available_nonblocking_never_triggers_the_cold_import(monkeypatch):
         raise AssertionError("the cold engine import must not run on the request path")
 
     monkeypatch.setattr(engine, "available", _boom)
-    # Whatever it answers, it is computed WITHOUT the cold import (cache /
-    # sys.modules / find_spec) — _boom must never fire.
     assert isinstance(engine.available_nonblocking(), bool)
 
 
@@ -88,10 +80,7 @@ def test_warm_caches_a_positive_and_short_circuits(monkeypatch):
 
 
 def test_warm_caches_a_negative_so_a_broken_fused_is_not_reported_available(monkeypatch):
-    # find_spec sees the package on disk, but the backend import fails. warm()
-    # must cache that False so available_nonblocking reports the truth rather
-    # than find_spec's optimism (a present-but-broken fused reporting fused,
-    # then /api/run taking a path that fails).
+    # find_spec sees the package but the backend import fails: cache the truth, not find_spec.
     monkeypatch.setattr(engine, "available", lambda: False)
     monkeypatch.setattr(engine.importlib.util, "find_spec", lambda _n: object())
     engine.warm()
@@ -100,8 +89,7 @@ def test_warm_caches_a_negative_so_a_broken_fused_is_not_reported_available(monk
 
 
 def test_invalidate_lets_a_mid_session_install_flip_the_engine(monkeypatch):
-    # Startup warm with fused absent caches False; a later install makes it
-    # importable and invalidate() drops the cache so the next resolve sees it.
+    # Warm caches False (fused absent); invalidate() lets a later install be seen.
     monkeypatch.setattr(engine, "available", lambda: False)
     monkeypatch.setattr(engine.importlib.util, "find_spec", lambda _n: None)
     engine.warm()

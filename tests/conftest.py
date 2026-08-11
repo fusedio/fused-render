@@ -357,15 +357,8 @@ def _no_startup_index_scan(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def _no_startup_engine_warm(monkeypatch):
-    """`create_app`'s startup hook warms the fused engine on a daemon thread.
-
-    Same hazard as the mount/index threads above: a `with TestClient(...)` test
-    spawns a daemon that imports `fused` — and fused scandir's its cache dir —
-    never joined, outliving the test. On the `fused-engine` job that os.scandir
-    lands inside a LATER test's global `os.scandir` patch
-    (test_index_scan.py::test_unchanged_leaf_costs_one_stat). The tests ABOUT
-    warm-up call engine.warm()/available_nonblocking() directly. The cache is
-    process-global, so reset it around every test too."""
+    """Neutralize create_app's fused-engine warm daemon in tests (same leaked-thread
+    hazard as the mounts/index fixtures above; it leaks os.scandir into test_index_scan)."""
     from fused_render import engine
 
     monkeypatch.setattr(engine, "warm_in_background", lambda: None)

@@ -246,8 +246,7 @@ def install_fused() -> dict:
             "pip install succeeded but the fused package is still not importable in "
             "the server's interpreter; check the install output / venv"
         )
-    # The startup warm cached "unavailable"; drop it so the engine flips to fused
-    # on the next resolve without a restart (engine.available_nonblocking).
+    # Drop the cached "unavailable" so the engine flips to fused with no restart.
     from fused_render import engine
 
     engine.invalidate()
