@@ -4,9 +4,17 @@ The AI search on the explorer homepage translates a natural-language query into
 a small filter spec CLIENT-side (one /api/ai call); this endpoint is the
 execution half, and the app's own DuckDB/parquet index (`fused_render/index`) is
 the ONE engine that answers it. The index holds every fact the spec filters on —
-name, ext, size, mtime — so the whole spec becomes one SQL query over the `files`
-and `dirs` views and rows come back straight from parquet: no `stat`, no walk, no
-subprocess, and therefore no syscall a wedged mount could swallow.
+name, ext, size, mtime, and the path itself — so the whole spec becomes one SQL
+query over the `files` and `dirs` views and rows come back straight from parquet:
+no `stat`, no walk, no subprocess, and therefore no syscall a wedged mount could
+swallow.
+
+EVERY field of the spec is a constraint, `path_hints` included. It was once
+documented as client-side ranking only, and that was a bug with a name: the
+endpoint dropped it, so "Downloads this week" executed as `mtime >= …` over the
+whole index, `_collect` truncated to the SEARCH_MAX_RESULTS newest rows ANYWHERE,
+and a ranking boost applied afterwards could not recover a Downloads row the SQL
+had already thrown away. A location the user named narrows the query here.
 
 There is deliberately NO fallback. Spotlight (`mdfind`) and the bounded home walk
 both used to sit behind this endpoint, and both are gone: two engines that answer
@@ -21,10 +29,9 @@ query. The consequences are owned rather than papered over:
   * no index yet, or an index that cannot be read, is an ERROR (503 / 502) with
     a message a search box can show. Reporting it as "no matches" would blame
     the user's files for the app's state.
-  * `created_after` / `created_before` are REFUSED: the index stores `mtime` and
-    no birth time, and no engine is left that could stat for one. Only a stale
-    client can still send them; quietly searching by modification date instead
-    would answer a different question than the one asked.
+  * there is no creation-date filter at all: the index stores `mtime` and no
+    birth time, and no engine is left that could stat for one. The client's spec
+    has no such field to send.
 
 Freshness is deliberately not a gate — a scan in flight keeps serving its last
 completed generation, exactly as `query.FRESH_MAX_AGE_S` is informational for the
@@ -41,7 +48,6 @@ match-everything query.
 import logging
 import os
 import re
-import time
 from datetime import date, datetime, timedelta
 
 from fastapi import APIRouter, Body
@@ -83,11 +89,8 @@ SEARCH_MAX_PAGES = 5
 _EXT_ALLOWED = set("abcdefghijklmnopqrstuvwxyz0123456789")
 
 # Date-range spec fields: (key, is_range_end). Modified only — see the module
-# docstring on created_*.
+# docstring on creation dates.
 _DATE_FIELDS = (("modified_after", False), ("modified_before", True))
-# Creation-date fields a stale client may still send. Named so they can be
-# refused explicitly instead of ignored.
-_REFUSED_DATE_FIELDS = ("created_after", "created_before")
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
@@ -110,10 +113,10 @@ def _day_bound_epoch(date_str: str, end: bool) -> float:
 def _parse_spec(body: dict):
     """Coerce the request body into a clean spec dict, or raise ValueError.
 
-    Fields the engine does not implement are IGNORED (`path_hints` is
-    client-side ranking only), with one exception: the creation-date fields are
-    refused outright, because dropping a date filter silently would answer a
-    different question than the caller asked."""
+    Only the keys named below are carried; anything else in the body is ignored.
+    `path_hints` is among them: it is a path-segment WHERE clause, not a ranking
+    hint (see the module docstring), and it is cleaned exactly like `name_terms`
+    because it lands in a LIKE pattern the same way."""
 
     def strings(key, limit, clean):
         raw = body.get(key)
@@ -160,21 +163,17 @@ def _parse_spec(body: dict):
             raise ValueError(f"'{key}' is not a real date")
         return v
 
-    for key in _REFUSED_DATE_FIELDS:
-        if body.get(key) is not None:
-            raise ValueError(
-                f"'{key}' is not supported: the file index records modification "
-                f"time only. Use 'modified_after'/'modified_before'.")
     kind = body.get("kind", "any")
     if kind not in ("file", "dir", "any"):
         raise ValueError("'kind' must be 'file', 'dir', or 'any'")
     spec = {
         "name_terms": strings("name_terms", 8, clean_term),
+        # Capped tighter than name_terms: each hint is an OR'd LIKE over the
+        # PATH, and a model listing eight guessed folder names would widen the
+        # query rather than place it.
+        "path_hints": strings("path_hints", 4, clean_term),
         "extensions": strings("extensions", 8, clean_ext),
         "kind": kind,
-        # Legacy field, still honored: older clients (and a model told about
-        # both shapes) may send it. Ranges are the primary form.
-        "modified_within_days": pos_num("modified_within_days"),
         "min_size_bytes": pos_num("min_size_bytes"),
         "max_size_bytes": pos_num("max_size_bytes"),
     }
@@ -250,15 +249,16 @@ def _drop_gitignored(entries):
 # ------------------------------------------------------------ the index engine
 
 # Spec fields that NARROW a query. `kind` is deliberately absent: "folders"
-# still matches half the disk, so it is not enough on its own.
+# still matches half the disk, so it is not enough on its own. The two tuples
+# differ only in how emptiness reads — a list is empty, a scalar is None.
+_NARROWING_LISTS = ("name_terms", "path_hints", "extensions")
 _NARROWING_KEYS = (
-    "modified_within_days", "modified_after", "modified_before",
-    "min_size_bytes", "max_size_bytes",
+    "modified_after", "modified_before", "min_size_bytes", "max_size_bytes",
 )
 
 
 def _has_narrowing(spec) -> bool:
-    return bool(spec["name_terms"] or spec["extensions"]) or any(
+    return any(spec[k] for k in _NARROWING_LISTS) or any(
         spec[k] is not None for k in _NARROWING_KEYS)
 
 
@@ -268,17 +268,18 @@ def _dir_narrowing(spec) -> bool:
     Extension and size are file facts a dirs row cannot answer, so an
     extensions-only spec ("find my mp4s") narrows the files view and nothing
     else — and a dirs branch with no predicate left would return every folder in
-    the index, spending the result cap on rows that answer nothing."""
-    return bool(spec["name_terms"]) or any(
-        spec[k] is not None for k in
-        ("modified_within_days", "modified_after", "modified_before"))
+    the index, spending the result cap on rows that answer nothing. A path hint
+    IS answerable by a dirs row: the hint matches a segment of `dir`."""
+    return bool(spec["name_terms"] or spec["path_hints"]) or any(
+        spec[k] is not None for k in ("modified_after", "modified_before"))
 
 
-def _index_where(spec, *, path_expr, name_expr, mtime_expr, now_s,
-                 ext_expr=None, size_expr=None) -> str:
+def _index_where(spec, *, path_expr, name_expr, mtime_expr,
+                 ext_expr=None, size_expr=None, path_is_dir=False) -> str:
     """The WHERE clause for one index view. `ext_expr`/`size_expr` are None for
     the dirs view: extension and size are FILE facts, and the dirs table has no
-    size column at all.
+    size column at all. `path_is_dir` says `path_expr` names a DIRECTORY, which
+    changes only how a path hint may match it (see below).
 
     Every value reaching SQL here is either a number cast in Python or a name
     term escaped with `like_literal` (quotes doubled, LIKE metachars escaped) —
@@ -296,6 +297,23 @@ def _index_where(spec, *, path_expr, name_expr, mtime_expr, now_s,
         pieces.append("(" + " OR ".join(
             f"{name_expr} ILIKE '%{like_literal(t)}%' ESCAPE '\\'"
             for t in spec["name_terms"]) + ")")
+    if spec["path_hints"]:
+        # A hint names a FOLDER, so it constrains a path SEGMENT rather than any
+        # substring: `~/Downloads/x.csv` is in downloads, `~/my-downloads-backup`
+        # is not, and neither is a file merely NAMED downloads-old.csv. The index
+        # stores posix paths on every platform (index/ignore.norm), so '/<hint>/'
+        # is the segment shape. OR'd across hints, because the model lists the
+        # places a query could mean; AND'd with everything else, because the user
+        # named a location and the other half of the spec still applies.
+        ors = []
+        for hint in spec["path_hints"]:
+            lit = like_literal(hint)
+            ors.append(f"{path_expr} ILIKE '%/{lit}/%' ESCAPE '\\'")
+            # A dirs row IS the directory, so its own final segment counts too —
+            # otherwise "the downloads folder" could never return ~/Downloads.
+            if path_is_dir:
+                ors.append(f"{path_expr} ILIKE '%/{lit}' ESCAPE '\\'")
+        pieces.append("(" + " OR ".join(ors) + ")")
     if ext_expr is not None and spec["extensions"]:
         # clean_ext restricts these to [a-z0-9]{1,12}; re-checked here so the
         # literal is provably quote-free however this spec was built.
@@ -303,9 +321,6 @@ def _index_where(spec, *, path_expr, name_expr, mtime_expr, now_s,
         if exts:
             pieces.append(f"lower({ext_expr}) IN ("
                           + ",".join(f"'{e}'" for e in exts) + ")")
-    if spec["modified_within_days"] is not None:
-        cutoff = now_s - spec["modified_within_days"] * 86400
-        pieces.append(f"{mtime_expr} >= {float(cutoff)!r}")
     # Local-day bounds, inclusive on both ends: `before 2026-08-05` runs to the
     # midnight AFTER the 5th.
     if spec["modified_after"] is not None:
@@ -322,7 +337,7 @@ def _index_where(spec, *, path_expr, name_expr, mtime_expr, now_s,
     return " AND ".join(pieces)
 
 
-def _files_query(cfg, parts, spec, now_s) -> str:
+def _files_query(cfg, parts, spec) -> str:
     """The files view, newest first. Ordering only decides WHICH rows survive
     the budget (the client re-ranks every hit), and recency is the best sample
     of a file corpus. `path` breaks ties so paging is deterministic."""
@@ -330,11 +345,11 @@ def _files_query(cfg, parts, spec, now_s) -> str:
         f"SELECT path, size, mtime, false AS is_dir FROM {files_src(cfg, parts)} "
         f"WHERE " + _index_where(spec, path_expr="path", name_expr="name",
                                  mtime_expr="mtime", ext_expr="ext",
-                                 size_expr="size", now_s=now_s)
+                                 size_expr="size")
         + " ORDER BY mtime DESC, path")
 
 
-def _dirs_query(cfg, spec, now_s) -> str:
+def _dirs_query(cfg, spec) -> str:
     """The dirs view, SHALLOWEST first.
 
     Not by mtime, unlike files: a dirs row's mtime_ns can be 0 ("unknown" — a
@@ -354,7 +369,7 @@ def _dirs_query(cfg, spec, now_s) -> str:
         f"true AS is_dir FROM {dirs_src(cfg)} "
         f"WHERE " + _index_where(spec, path_expr="dir",
                                  name_expr="regexp_extract(dir, '[^/]*$')",
-                                 mtime_expr=dmtime, now_s=now_s)
+                                 mtime_expr=dmtime, path_is_dir=True)
         + f" ORDER BY {depth_expr('dir')}, dir")
 
 
@@ -413,7 +428,6 @@ def _index_entries(cfg, spec, cap, *, parts=None, dirs=False):
     would return every row twice."""
     import duckdb
 
-    now_s = time.time()
     con = duckdb.connect()
     # The reserve is a rule for SHARING the cap, so it only applies while both
     # branches are live. A folder-only search — `kind: "dir"`, or an index whose
@@ -421,12 +435,12 @@ def _index_entries(cfg, spec, cap, *, parts=None, dirs=False):
     # the whole cap, the same deal files get.
     dirs_budget = min(SEARCH_DIRS_RESERVE, cap) if parts else cap
     dir_entries, dirs_more = (
-        _collect(con, _dirs_query(cfg, spec, now_s), dirs_budget)
+        _collect(con, _dirs_query(cfg, spec), dirs_budget)
         if dirs else ([], False))
     # Files ask for the WHOLE cap and give back whatever the folders took, so an
     # unused folder reserve costs nothing.
     file_entries, files_more = (
-        _collect(con, _files_query(cfg, parts, spec, now_s), cap)
+        _collect(con, _files_query(cfg, parts, spec), cap)
         if parts else ([], False))
     room = cap - len(dir_entries)
     entries = dir_entries + file_entries[:room]
@@ -480,11 +494,7 @@ def _search_index(spec, cfg=None):
         logger.exception("the index search query failed")
         raise RuntimeError(
             f"the file index could not be searched: {type(e).__name__}") from e
-    return {"entries": entries, "truncated": truncated,
-            # Constant now that the index is the only engine. Kept in the
-            # response because old clients read it, and because a support
-            # question about a surprising result starts with "what answered it".
-            "engine": "index"}
+    return {"entries": entries, "truncated": truncated}
 
 
 @router.post("/api/search/files")

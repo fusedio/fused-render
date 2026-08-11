@@ -3,19 +3,40 @@
 // one accent moment) over card grids for the two things worth jumping to:
 // bookmarks and recent files. Entering any target navigates into
 // /explorer/view/... (the explorer proper).
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { navigate, replaceSearch, urlForFsPath } from "@platform/lib/router";
 import { basename, formatMtime, formatMtimeFull, formatSize } from "@platform/lib/format";
 import { iconForEntry } from "@platform/ui/FileIcons";
 import type { Config, ClaudeSessionFolder } from "@platform/lib/api";
-import { getClaudeSessionFolders, statPath } from "@platform/lib/api";
+import { getClaudeSessionFolders, indexSearch, statPath } from "@platform/lib/api";
 import { allBookmarks, hydrateBookmarks, loadBookmarks } from "@platform/lib/bookmarks";
 import { useBookmarksVersion, useUrlVersion } from "@platform/lib/hooks";
+import {
+  fsMutationCount,
+  indexLifecycleCount,
+  subscribeFsMutations,
+  subscribeIndexLifecycle,
+} from "@platform/lib/index-freshness";
 import { hydrateRecents, loadRecents, recentFsPath, useRecentsVersion } from "@apps/explorer/lib/recents";
 import { BookmarkPreviewCard, RecentPreviewCard, ClaudeSessionFolderCard } from "@apps/explorer/BookmarkCards";
 import { describeSpec, runAiSearch, type AiSearchResult } from "@apps/explorer/lib/ai-search";
+import {
+  INSTANT_DEBOUNCE_MS,
+  activeRow,
+  corpusFrom,
+  homeCountNote,
+  homeHitsFrom,
+  isAiRow,
+  pathShortcut,
+  rankingSettled,
+  redirectsToSearch,
+  stepHighlight,
+  submitRow,
+  type CorpusState,
+  type HomeHit,
+} from "@apps/explorer/lib/home-search";
+import { useRankedScan } from "@apps/explorer/listing/useRankedScan";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
-import { TextArea } from "@platform/ui/field/fields";
 
 // How many cards the Bookmarks/Recents tab shows before "Show more" — flat
 // count, not a row multiple, so it's the same rule for either tab regardless
@@ -25,66 +46,399 @@ const MAX_CARDS = 9;
 
 type LaunchTab = "bookmarks" | "recents" | "sessions";
 
-// -- AI search (the files-home composer) --------------------------------------
+// -- The home search bar ------------------------------------------------------
+//
+// A plain file search that answers while you type, with AI search as one row
+// at the bottom of the results rather than the only way in. Typing ranks the
+// home root's index corpus locally (lib/home-search); picking the last row —
+// "Search with AI" — spends the model call the old composer spent on every
+// Enter, including on queries that were just a filename.
+//
+// The two modes never blur into each other: AI results REPLACE the instant
+// list (with the spec echo that makes a wrong interpretation visible), and
+// editing the query drops back to instant results. Only a committed AI search
+// touches the URL — mirroring every keystroke into ?q= would fill the history
+// with half-typed words and re-run a model call on reload.
 
-type SearchPhase = "idle" | "searching";
+// What the AI half of the box is doing. `off` is the normal state: the results
+// are the index's, and the AI row is an offer.
+type AiPhase =
+  | { status: "off" }
+  | { status: "running"; query: string }
+  | { status: "done"; query: string; result: AiSearchResult }
+  | { status: "failed"; query: string; message: string };
 
-// The hero's search box, styled after the /apps hero composer: one line of
-// natural language in, one haiku call to interpret it, one indexed SQL query to
-// answer it (see lib/ai-search.ts). While a result is showing, the homepage's
-// bookmark/recent grids yield to the result grid; Clear (or emptying the box)
-// brings them back.
-function AiSearchComposer({
+const AI_OFF: AiPhase = { status: "off" };
+
+function MagnifierIcon() {
+  return (
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+         strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <circle cx="11" cy="11" r="7" />
+      <path d="M21 21l-4.3-4.3" />
+    </svg>
+  );
+}
+
+function SparkIcon() {
+  return (
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+         strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M12 3l1.8 4.9L18.7 9.7l-4.9 1.8L12 16.4l-1.8-4.9L5.3 9.7l4.9-1.8L12 3z" />
+      <path d="M18 16.5l.7 1.8 1.8.7-1.8.7-.7 1.8-.7-1.8-1.8-.7 1.8-.7.7-1.8z" />
+    </svg>
+  );
+}
+
+// One file hit. An <a> (not a button) so cmd/ctrl-click opens it the way every
+// other path in this app does.
+function FileRow({
+  hit,
+  home,
+  active,
+  id,
+  onHover,
+}: {
+  hit: HomeHit;
+  home: string;
+  active: boolean;
+  id: string;
+  onHover: () => void;
+}) {
+  const display = hit.path.startsWith(home + "/") ? "~/" + hit.rel : hit.path;
+  return (
+    <li role="option" id={id} aria-selected={active}>
+      <a
+        className={"fh-result" + (active ? " is-active" : "")}
+        href={urlForFsPath(hit.path)}
+        title={hit.path}
+        onMouseMove={onHover}
+        onClick={(e) => {
+          if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey)
+            return;
+          e.preventDefault();
+          navigate(hit.path, { isDir: hit.is_dir });
+        }}
+      >
+        <span className="fh-result-icon" aria-hidden="true">
+          {iconForEntry(basename(hit.path), hit.is_dir)}
+        </span>
+        <span className="fh-result-name">{basename(hit.path)}</span>
+        <span className="fh-result-path">{display}</span>
+        <span className="fh-result-meta">
+          {hit.is_dir ? "" : formatSize(hit.size)}
+          {hit.mtime !== null && (
+            <span className="fh-result-date" title={formatMtimeFull(hit.mtime)}>
+              {formatMtime(hit.mtime)}
+            </span>
+          )}
+        </span>
+      </a>
+    </li>
+  );
+}
+
+// The last row: an ACTION, not a hit. Deliberately unlike the file rows above
+// it (accent glyph, no path, no size) because activating it costs a model call
+// and a wait, and because on a zero-hit query it is the only thing on screen.
+//
+// Deliberately NOT hoverable, unlike the file rows: setting the highlight on
+// mousemove meant nudging the pointer across the list armed Enter to spend a
+// model call. A pointer merely crossing a row must not arm a paid action —
+// reaching this one takes an arrow key or a click.
+function AiActionRow({
+  query,
+  active,
+  running,
+  id,
+  onRun,
+}: {
+  query: string;
+  active: boolean;
+  running: boolean;
+  id: string;
+  onRun: () => void;
+}) {
+  return (
+    <li role="option" id={id} aria-selected={active}>
+      <button
+        type="button"
+        className={"fh-result fh-ai-row" + (active ? " is-active" : "")}
+        disabled={running}
+        onClick={onRun}
+      >
+        <span className="fh-result-icon fh-ai-glyph" aria-hidden="true">
+          <SparkIcon />
+        </span>
+        <span className="fh-result-name">Search with AI</span>
+        <span className="fh-result-path">“{query}”</span>
+        <span className="fh-result-meta">
+          {running ? "Asking…" : <kbd>↵</kbd>}
+        </span>
+      </button>
+    </li>
+  );
+}
+
+// The "Understood as: …" echo above AI results — the one place a wrong
+// interpretation becomes visible instead of silently shaping the list.
+function AiResults({ home, query, result }: { home: string; query: string; result: AiSearchResult }) {
+  const summary = describeSpec(result.spec);
+  return (
+    <div className="fh-panel">
+      <p className="fh-search-summary">
+        <span className="fh-ai-badge">
+          <SparkIcon /> AI
+        </span>
+        {summary ? `Understood as: ${summary}` : "No filters — showing closest matches."}
+        {result.truncated && " · Broad query: showing the first slice of matches."}
+      </p>
+      {result.hits.length ? (
+        <ul className="fh-results" role="listbox" aria-label="AI search results">
+          {result.hits.map((h) => (
+            <FileRow
+              key={h.path}
+              home={home}
+              active={false}
+              id={"fh-ai-hit-" + h.path}
+              onHover={() => {}}
+              hit={{
+                path: h.path,
+                rel: h.path.startsWith(home + "/") ? h.path.slice(home.length + 1) : h.path,
+                is_dir: h.is_dir,
+                size: h.size,
+                mtime: h.mtime,
+              }}
+            />
+          ))}
+        </ul>
+      ) : (
+        <p className="fh-empty">
+          AI search found nothing for “{query}”. Try different words, or fewer of them.
+        </p>
+      )}
+    </div>
+  );
+}
+
+function FilesSearch({
   home,
   initialQuery,
-  onResult,
-  onClear,
-  active,
+  onActiveChange,
 }: {
   home: string;
   initialQuery: string;
-  onResult: (query: string, r: AiSearchResult) => void;
-  onClear: () => void;
-  active: boolean;
+  onActiveChange: (active: boolean) => void;
 }) {
   const [query, setQuery] = useState(initialQuery);
-  const [phase, setPhase] = useState<SearchPhase>("idle");
-  const [error, setError] = useState<string | null>(null);
-  // One in-flight search at a time: a new submit aborts the previous walk.
-  const abortRef = useRef<AbortController | null>(null);
-  useEffect(() => () => abortRef.current?.abort(), []);
+  const [ai, setAi] = useState<AiPhase>(AI_OFF);
+  const [highlight, setHighlight] = useState<number | null>(null);
+  const q = query.trim();
+  const active = q !== "";
+  useEffect(() => onActiveChange(active), [active, onActiveChange]);
 
-  const clear = () => {
-    abortRef.current?.abort();
-    setQuery("");
-    setPhase("idle");
-    setError(null);
-    onClear();
+  // -- the corpus ------------------------------------------------------------
+  // Fetched ONCE per index generation, not per keystroke: the index answers
+  // with the whole covered subtree, so re-asking on every letter would spend a
+  // round trip to receive the same rows. Ranking is what runs per query.
+  const [corpus, setCorpus] = useState<CorpusState>({ status: "idle" });
+  // A scan finishing or the index being deleted changes what the corpus IS,
+  // and no other signal reports it (the filesystem did not change) — see
+  // lib/index-freshness.
+  const [lifecycle, setLifecycle] = useState(indexLifecycleCount);
+  useEffect(() => subscribeIndexLifecycle(() => setLifecycle(indexLifecycleCount())), []);
+  // An in-app rename/delete moves paths the fetched corpus already holds, so
+  // search would find the old name and the click would 404. It is a REFETCH
+  // trigger, not a gate: `indexMayAnswer(home)` used to disable instant search
+  // outright, and since `touched` is session-scoped and home is an ancestor of
+  // every mutation, one rename anywhere pinned this page to "still building"
+  // for the rest of the session — while the index was in fact built. The home
+  // page has no live walk to fall back on, so switching search OFF is the worst
+  // available outcome: a corpus one rename stale beats no corpus at all.
+  // (useWalkSearch keeps the gate because it HAS a live walk to prefer.)
+  const [mutations, setMutations] = useState(fsMutationCount);
+  useEffect(() => subscribeFsMutations(() => setMutations(fsMutationCount())), []);
+  // Bumped by a real gesture (typing) to re-run a failed fetch. Without it a
+  // `setCorpus({status:"error"})` was terminal: none of the other deps is
+  // something a user can move, so search stayed dead until a reload.
+  const [retryNonce, setRetryNonce] = useState(0);
+  // Requested on the first keystroke and never unrequested: dropping the
+  // corpus when the box is cleared would re-fetch it on the next letter typed.
+  const [wanted, setWanted] = useState(active);
+  useEffect(() => {
+    if (active) setWanted(true);
+  }, [active]);
+  useEffect(() => {
+    if (!wanted) return;
+    const ctl = new AbortController();
+    setCorpus((prev) => (prev.status === "ok" ? prev : { status: "loading" }));
+    indexSearch(home, { signal: ctl.signal }).then(
+      (res) => {
+        if (!ctl.signal.aborted) setCorpus(corpusFrom(res));
+      },
+      (err: Error) => {
+        if (ctl.signal.aborted || err.name === "AbortError") return;
+        setCorpus({ status: "error", message: err.message });
+      },
+    );
+    return () => ctl.abort();
+  }, [home, wanted, lifecycle, mutations, retryNonce]);
+
+  // -- ranking ---------------------------------------------------------------
+  // The same sliced, cancellable scan the in-folder search runs — literally the
+  // same hook (listing/useRankedScan): a covered home root can be 200k entries,
+  // and scoring that synchronously on a keystroke is the typing freeze
+  // listing/scan-job exists to prevent.
+  const entries = corpus.status === "ok" ? corpus.entries : null;
+  const { ranked, pending } = useRankedScan(entries, q, INSTANT_DEBOUNCE_MS);
+  const hits = useMemo(() => homeHitsFrom(ranked, home), [ranked, home]);
+  const scanning = active && pending;
+
+  // -- the box is where typing goes ------------------------------------------
+  //
+  // This page exists to be typed into, so the caret starts here and STAYS
+  // reachable: a stray click on the background, or arriving with the hands
+  // already moving, must not cost a click on the input to recover. Any printable
+  // keystroke aimed at nothing else focuses the box and lands in it.
+  const inputEl = useRef<HTMLInputElement | null>(null);
+  useEffect(() => {
+    inputEl.current?.focus();
+  }, []);
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const el = e.target as HTMLElement | null;
+      const claim = redirectsToSearch({
+        key: e.key,
+        ctrlKey: e.ctrlKey,
+        altKey: e.altKey,
+        metaKey: e.metaKey,
+        tagName: el?.tagName,
+        isContentEditable: el?.isContentEditable === true,
+        isSearchInput: el === inputEl.current,
+      });
+      // Focus, then let the event through UNHANDLED: the browser delivers this
+      // same keystroke to the newly focused input, so the character is neither
+      // dropped nor inserted twice (preventDefault + appending by hand would
+      // fight the controlled value and lose the caret).
+      if (claim) inputEl.current?.focus();
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, []);
+
+  // -- AI search -------------------------------------------------------------
+  const aiCtl = useRef<AbortController | null>(null);
+  // The path shortcut's stat, cancellable for the same reason: both outlive the
+  // gesture that started them, and both act on the app when they land.
+  const statCtl = useRef<AbortController | null>(null);
+  useEffect(
+    () => () => {
+      aiCtl.current?.abort();
+      statCtl.current?.abort();
+    },
+    [],
+  );
+  const syncQueryParam = (value: string | null) => {
+    const params = new URLSearchParams(location.search);
+    if (value) params.set("q", value);
+    else params.delete("q");
+    const qs = params.toString();
+    replaceSearch(location.pathname + (qs ? "?" + qs : ""));
+  };
+  const runAi = (target: string) => {
+    if (!target) return;
+    // Re-entry guard, the keyboard's half of the `disabled` that already
+    // protects the mouse path: Enter on the AI row while a search is in flight
+    // aborted and re-issued it, so three impatient presses were three billed
+    // model calls. Editing the query is the way to change what is running (it
+    // resets the phase), so a running search is never for a stale query.
+    if (ai.status === "running") return;
+    aiCtl.current?.abort();
+    const ctl = new AbortController();
+    aiCtl.current = ctl;
+    setAi({ status: "running", query: target });
+    runAiSearch(home, target, ctl.signal).then(
+      (result) => {
+        if (ctl.signal.aborted) return;
+        setAi({ status: "done", query: target, result });
+        // Only a committed AI search rides the URL, so a reload reproduces the
+        // search the user paid for — instant results need no restoring.
+        syncQueryParam(target);
+      },
+      (err: Error) => {
+        if (ctl.signal.aborted || err.name === "AbortError") return;
+        // No substituted keyword search: the index results underneath are
+        // still on screen, and they are the honest fallback (lib/ai-search).
+        setAi({ status: "failed", query: target, message: err.message });
+      },
+    );
   };
 
+  const clear = () => {
+    aiCtl.current?.abort();
+    statCtl.current?.abort();
+    setQuery("");
+    setAi(AI_OFF);
+    setHighlight(null);
+    syncQueryParam(null);
+  };
+
+  const edit = (value: string) => {
+    setQuery(value);
+    setHighlight(null);
+    // Editing the query retracts the address that was submitted from it, so a
+    // stat still in flight for the old one must not navigate when it lands.
+    statCtl.current?.abort();
+    // Typing is a user gesture, so it is also the retry for a failed corpus
+    // fetch — the same way useWalkSearch re-arms its stream from setQuery.
+    if (corpus.status === "error") setRetryNonce((n) => n + 1);
+    // Editing the query is how the user gets back from AI results to instant
+    // ones, so it drops the AI phase — and the ?q= that a committed search set.
+    if (ai.status !== "off") {
+      aiCtl.current?.abort();
+      setAi(AI_OFF);
+      syncQueryParam(null);
+    }
+  };
+
+  // A ?q= restored from the URL was a committed AI search, so it re-runs one.
+  const ranInitial = useRef(false);
+  useEffect(() => {
+    if (ranInitial.current) return;
+    ranInitial.current = true;
+    if (initialQuery.trim()) runAi(initialQuery.trim());
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const showingAi = ai.status === "done" && ai.query === q;
+  // Whether the instant list is a finished answer. Gates the AI row's
+  // pre-selection, so Enter during the corpus load or the scan debounce cannot
+  // spend a model call on a query that was about to answer itself.
+  const settled = rankingSettled(corpus.status, scanning);
+  const current = activeRow(highlight, hits.length, settled);
+
+  const openRow = (row: number) => {
+    if (isAiRow(row, hits.length)) runAi(q);
+    else navigate(hits[row].path, { isDir: hits[row].is_dir });
+  };
+
+  // Enter with no row chosen: a query that is really an ADDRESS goes straight
+  // there (a pasted ~/Downloads is not a search); otherwise it commits the top
+  // hit, or — only once ranking has settled on nothing — the AI row.
   const submit = async () => {
-    const q = query.trim();
-    if (!q || phase === "searching") return;
-    abortRef.current?.abort();
-    const ctl = new AbortController();
-    abortRef.current = ctl;
-    setError(null);
-    setPhase("searching");
-    try {
-      // A pasted absolute path (/, ~/, or C:/) that actually exists opens
-      // directly — no reason to run an AI search over an exact address. A
-      // non-existent one falls through to the normal search.
-      if (/^(\/|~\/|~$|[A-Za-z]:[\\/])/.test(q)) {
-        let fsPath = q === "~" || q.startsWith("~/") ? home + q.slice(1) : q;
-        // Backslashes are only separators in drive-letter paths (same rule
-        // as the shell's path codec) — on POSIX "\" is a legal filename char.
-        if (/^[A-Za-z]:[\\/]/.test(fsPath)) fsPath = fsPath.replace(/\\/g, "/");
-        // Strip a trailing slash but keep roots whole: "/" stays "/", and a
-        // drive root keeps its slash (bare "C:" reads as cwd-relative).
-        fsPath = fsPath.replace(/\/+$/, "") || "/";
-        if (/^[A-Za-z]:$/.test(fsPath)) fsPath += "/";
+    if (highlight === null) {
+      const target = pathShortcut(q, home);
+      if (target !== null) {
+        // A stat on a slow or network mount can outlive the intent behind it, and
+        // navigating on a stale answer is the worst kind of wrong: it yanks the
+        // user out of wherever they went next. Superseded by the next submit,
+        // cancelled by clear()/unmount, and re-checked after the await — a
+        // resolved-but-abandoned stat must not move anyone.
+        statCtl.current?.abort();
+        const ctl = new AbortController();
+        statCtl.current = ctl;
         try {
-          const st = await statPath(fsPath);
+          const st = await statPath(target, ctl.signal);
           if (ctl.signal.aborted) return;
           navigate(st.path, { isDir: st.is_dir });
           return;
@@ -93,169 +447,102 @@ function AiSearchComposer({
           // not a real path — treat it as a search query
         }
       }
-      const res = await runAiSearch(home, q, ctl.signal);
-      if (ctl.signal.aborted) return;
-      setPhase("idle");
-      onResult(q, res);
-    } catch (e) {
-      if (ctl.signal.aborted) return;
-      setPhase("idle");
-      setError((e as Error).message);
     }
+    const row = submitRow(highlight, hits.length, settled);
+    if (row !== null) openRow(row);
   };
 
-  // A URL-restored query (?q=…) runs on mount: the URL is the state of
-  // record (same ethos as the listing's ?q=), so landing on a search URL
-  // must reproduce the search, not just prefill the box.
-  const ranInitial = useRef(false);
-  useEffect(() => {
-    if (ranInitial.current) return;
-    ranInitial.current = true;
-    if (initialQuery.trim()) void submit();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  const busy = phase === "searching";
   return (
-    <div className="home-composer-wrap files-search-wrap">
-      <div className={"home-composer files-search" + (busy ? " is-busy" : "")}>
-        {/* The clear ✕ floats at the input's right edge (not in the footer
-            bar) so wiping the query reads as an input affordance. */}
-        <div className="files-search-field">
-          <TextArea
-            className="home-composer-input"
-            placeholder="Search your files — “big csv from last week” — or paste a path like ~/Downloads"
-            aria-label="Search your files"
-            value={query}
-            rows={1}
-            disabled={busy}
-            onChange={(e) => setQuery(e.target.value)}
-            onKeyDown={(e) => {
-              // Enter submits (a search is a one-shot prompt); Shift+Enter
-              // keeps the newline — same contract as the /apps composer.
-              if (e.key === "Enter" && !e.shiftKey) {
-                e.preventDefault();
-                submit();
-              } else if (e.key === "Escape" && active) {
-                e.preventDefault();
-                clear();
-              }
-            }}
-          />
-          {(active || query !== "") && !busy && (
-            <button
-              type="button"
-              className="files-search-clear"
-              title="Clear search (esc)"
-              onClick={clear}
-            >
-              Clear
-            </button>
-          )}
-        </div>
-        <div className="home-composer-bar">
-          <span className="home-composer-hint">
-            {busy ? (
+    <div className="files-search-wrap">
+      <div className="files-search">
+        <span className="files-search-icon" aria-hidden="true">
+          <MagnifierIcon />
+        </span>
+        <input
+          ref={inputEl}
+          type="search"
+          className="files-search-input"
+          placeholder="Search your files — or paste a path like ~/Downloads"
+          aria-label="Search your files"
+          role="combobox"
+          aria-expanded={active && !showingAi}
+          aria-controls="fh-result-list"
+          aria-activedescendant={
+            active && !showingAi && current !== null ? "fh-row-" + current : undefined
+          }
+          autoComplete="off"
+          spellCheck={false}
+          value={query}
+          onChange={(e) => edit(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+              if (!active || showingAi) return;
+              e.preventDefault();
+              setHighlight((h) => stepHighlight(h, hits.length, e.key === "ArrowDown" ? 1 : -1));
+            } else if (e.key === "Enter") {
+              e.preventDefault();
+              void submit();
+            } else if (e.key === "Escape" && active) {
+              e.preventDefault();
+              clear();
+            }
+          }}
+        />
+        {active && (
+          <button type="button" className="files-search-clear" title="Clear search (esc)" onClick={clear}>
+            Clear
+          </button>
+        )}
+      </div>
+
+      {ai.status === "failed" && <ErrorBanner>{ai.message}</ErrorBanner>}
+
+      {!active ? null : showingAi ? (
+        <AiResults home={home} query={ai.query} result={ai.result} />
+      ) : (
+        <div className="fh-panel">
+          <p className="fh-result-note">
+            {corpus.status === "cold" ? (
+              // Never "no matches" for an index that has not been built: that
+              // would blame the user's files for the app's state.
+              "The file index is still building — AI search can answer in the meantime."
+            ) : corpus.status === "error" ? (
+              `The file index could not be searched: ${corpus.message}`
+            ) : corpus.status !== "ok" || scanning ? (
               "Searching…"
+            ) : ranked.length === 0 ? (
+              `No file name matched “${q}” — AI search can look at dates, types and sizes.`
             ) : (
               <>
-                <kbd>↵</kbd> to search · <kbd>⇧↵</kbd> for a new line
-                {active && (
-                  <>
-                    {" · "}
-                    <kbd>esc</kbd> to clear
-                  </>
-                )}
+                {homeCountNote(ranked.length, corpus.truncated)}
+                {" · "}
+                <kbd>↑</kbd>
+                <kbd>↓</kbd> to pick · <kbd>esc</kbd> to clear
               </>
             )}
-          </span>
-          <button
-            type="button"
-            className="home-composer-send"
-            aria-label="Search"
-            title="Search"
-            disabled={!query.trim() || busy}
-            onClick={submit}
-          >
-            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-              <circle cx="11" cy="11" r="7" />
-              <path d="M21 21l-4.3-4.3" />
-            </svg>
-          </button>
+          </p>
+          <ul className="fh-results" id="fh-result-list" role="listbox" aria-label="Search results">
+            {hits.map((hit, i) => (
+              <FileRow
+                key={hit.path}
+                hit={hit}
+                home={home}
+                active={current === i}
+                id={"fh-row-" + i}
+                onHover={() => setHighlight(i)}
+              />
+            ))}
+            <AiActionRow
+              query={q}
+              active={current === hits.length}
+              running={ai.status === "running"}
+              id={"fh-row-" + hits.length}
+              onRun={() => runAi(q)}
+            />
+          </ul>
         </div>
-      </div>
-      {error && <ErrorBanner>{error}</ErrorBanner>}
-    </div>
-  );
-}
-
-// Result list: a flat scannable list (relevance order), not the launcher card
-// grid, so hits get room for path and dates.
-function SearchResults({
-  home,
-  query,
-  result,
-}: {
-  home: string;
-  query: string;
-  result: AiSearchResult;
-}) {
-  const summary = describeSpec(result.spec);
-  return (
-    <section className="fh-section">
-      <h2 className="fh-heading">Results for “{query}”</h2>
-      <p className="fh-search-summary">
-        {result.usedFallback
-          ? "AI unavailable — matched your words directly."
-          : summary
-            ? `Understood as: ${summary}`
-            : "No filters — showing closest matches."}
-        {result.truncated && " · Broad query: showing the first slice of matches."}
-      </p>
-      {result.hits.length ? (
-        // A flat list, not the launcher card grid: results are scanned
-        // top-to-bottom by relevance, and a row gives the path and dates
-        // room the cards don't have.
-        <ul className="fh-results">
-          {result.hits.map((h) => {
-            const display = h.path.startsWith(home + "/")
-              ? "~/" + h.path.slice(home.length + 1)
-              : h.path;
-            return (
-              <li key={h.path}>
-                <a
-                  className="fh-result"
-                  href={urlForFsPath(h.path)}
-                  title={h.path}
-                  onClick={(e) => {
-                    if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey)
-                      return;
-                    e.preventDefault();
-                    navigate(h.path, { isDir: h.is_dir });
-                  }}
-                >
-                  <span className="fh-result-icon" aria-hidden="true">
-                    {iconForEntry(basename(h.path), h.is_dir)}
-                  </span>
-                  <span className="fh-result-name">{basename(h.path)}</span>
-                  <span className="fh-result-path">{display}</span>
-                  <span className="fh-result-meta">
-                    {h.is_dir ? "" : formatSize(h.size)}
-                    {h.mtime !== null && (
-                      <span className="fh-result-date" title={formatMtimeFull(h.mtime)}>
-                        {formatMtime(h.mtime)}
-                      </span>
-                    )}
-                  </span>
-                </a>
-              </li>
-            );
-          })}
-        </ul>
-      ) : (
-        <p className="fh-empty">Nothing matched. Try different words, or fewer of them.</p>
       )}
-    </section>
+    </div>
   );
 }
 
@@ -345,20 +632,12 @@ export default function FilesHome({ config }: { config: Config }) {
     tabParam === "recents" || tabParam === "sessions" || tabParam === "bookmarks"
       ? tabParam
       : "sessions";
-  // A committed AI search result takes over the page body (bookmarks/recents
-  // hide behind it) until cleared — the homepage becomes the result page.
-  const [search, setSearch] = useState<{ query: string; result: AiSearchResult } | null>(null);
-  // The committed query rides the URL (?q=…, same ethos as the listing
-  // search): submit writes it, Clear removes it, and a load with ?q= present
-  // re-runs the search via the composer's initialQuery.
+  // Search takes over the page body (bookmarks/recents hide behind it) for as
+  // long as there is a query — instant results appear while typing, so the
+  // grids yield from the first keystroke rather than on a submit.
+  const [searching, setSearching] = useState(false);
+  // A ?q= present at load was a committed AI search; FilesSearch re-runs it.
   const initialQuery = useRef(new URLSearchParams(location.search).get("q") || "").current;
-  const syncQueryParam = (q: string | null) => {
-    const params = new URLSearchParams(location.search);
-    if (q) params.set("q", q);
-    else params.delete("q");
-    const qs = params.toString();
-    replaceSearch(location.pathname + (qs ? "?" + qs : ""));
-  };
 
   return (
     <div className="files-home">
@@ -368,24 +647,10 @@ export default function FilesHome({ config }: { config: Config }) {
             "Find and preview your files" restatement above the box only
             pushed the one thing you came to use further down. */}
         <header className="home-hero files-hero">
-          <AiSearchComposer
-            home={home}
-            initialQuery={initialQuery}
-            active={search !== null}
-            onResult={(query, result) => {
-              setSearch({ query, result });
-              syncQueryParam(query);
-            }}
-            onClear={() => {
-              setSearch(null);
-              syncQueryParam(null);
-            }}
-          />
+          <FilesSearch home={home} initialQuery={initialQuery} onActiveChange={setSearching} />
         </header>
 
-        {search ? (
-          <SearchResults home={home} query={search.query} result={search.result} />
-        ) : (
+        {searching ? null : (
           <>
           <section className="fh-section">
             <div className="fh-tabs">
