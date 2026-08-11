@@ -5372,7 +5372,15 @@ is for, and the cache states it nowhere:
   multi-GB file. `.bin` pickles and `.gguf` carry no equivalent cheap header, so
   those repos report no count; a figure derived from file size ÷ assumed dtype
   would be a guess dressed as a measurement, in a page whose credibility rests
-  on its numbers being real.
+  on its numbers being real. The revision is **walked**, not listed: a diffusers
+  pipeline keeps its weights per component (`transformer/`, `vae/`,
+  `text_encoder/`), which is the very layout behind the pipelines HF-16 detects,
+  so a top-level-only look would report nothing for the models people most want
+  the number for. What is summed is every component — the parameters the repo
+  actually holds, not a curated idea of which component is "the model" — with a
+  precision variant skipped when its plain counterpart is present
+  (`…fp16.safetensors` beside `….safetensors` is the same tensors twice) and a
+  blob counted once however many names link to it.
 - **HF-18** **The date shown is `added`, not "released".** The Hub's release
   date is not on this disk and this page never goes to the network, so what it
   states is the oldest file in the repo — when this machine first got it. The

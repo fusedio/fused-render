@@ -597,7 +597,7 @@ def test_a_prune_selection_deletes_exactly_the_named_repos(client, hub):
 def _snapshot_file(repo, commit, name, content):
     """A real file inside a snapshot (a model card / config, which arrive as
     ordinary files in the snapshot rather than as weight blobs)."""
-    path = repo / "snapshots" / commit / name
+    path = repo / "snapshots" / commit / name  # `name` may be "unet/model.safetensors"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content) if isinstance(content, str) else path.write_bytes(content)
     return path
@@ -741,3 +741,49 @@ def test_added_is_the_oldest_file_not_the_newest(client, hub):
     # release date, which is not on this disk at all.
     assert row["added"] == 1_000_000
     assert row["mtime"] == 8_000_000
+
+
+@requires_symlinks
+def test_diffusers_weights_in_component_subfolders_are_counted(client, hub):
+    # A pipeline keeps its weights per component, which is exactly the layout
+    # behind the repos whose task we detect from model_index.json — a top-level
+    # look would answer "no count" for the models people most want it for.
+    repo = _repo(hub, "models--org--flux", blobs={"w": 10}, snapshots={"c1": {"m": "w"}}, refs={"main": "c1"})
+    _snapshot_file(repo, "c1", "model_index.json", json.dumps({"_class_name": "FluxPipeline"}))
+    _snapshot_file(repo, "c1", "transformer/diffusion_pytorch_model.safetensors",
+                   _safetensors({"blocks": (12000, 1_000_000)}))
+    _snapshot_file(repo, "c1", "text_encoder/model.safetensors", _safetensors({"emb": (32000, 4096)}))
+    _snapshot_file(repo, "c1", "vae/diffusion_pytorch_model.safetensors", _safetensors({"conv": (512, 512)}))
+    row = _repo_row(client, "org/flux")
+    assert row["task"] == "image generation"
+    assert row["params"] == 12000 * 1_000_000 + 32000 * 4096 + 512 * 512
+
+
+@requires_symlinks
+def test_a_precision_variant_is_not_counted_twice(client, hub):
+    # fp16 variants sit beside the file they are a variant of; both hold the
+    # same tensors, so a repo that pulled both must not report double.
+    repo = _repo(hub, "models--org--sd", blobs={"w": 10}, snapshots={"c1": {"m": "w"}}, refs={"main": "c1"})
+    _snapshot_file(repo, "c1", "unet/diffusion_pytorch_model.safetensors", _safetensors({"a": (1000, 1000)}))
+    _snapshot_file(repo, "c1", "unet/diffusion_pytorch_model.fp16.safetensors", _safetensors({"a": (1000, 1000)}))
+    assert _repo_row(client, "org/sd")["params"] == 1000 * 1000
+
+
+@requires_symlinks
+def test_a_lone_variant_still_counts(client, hub):
+    # …but a repo that only ever pulled the fp16 build has no plain counterpart
+    # to prefer, and must not report nothing.
+    repo = _repo(hub, "models--org--sd", blobs={"w": 10}, snapshots={"c1": {"m": "w"}}, refs={"main": "c1"})
+    _snapshot_file(repo, "c1", "unet/diffusion_pytorch_model.fp16.safetensors", _safetensors({"a": (1000, 1000)}))
+    assert _repo_row(client, "org/sd")["params"] == 1000 * 1000
+
+
+@requires_symlinks
+def test_the_same_blob_under_two_names_counts_once(client, hub):
+    repo = _repo(hub, "models--org--m", blobs={"shared": 4096}, snapshots={"c1": {"m": "shared"}},
+                 refs={"main": "c1"})
+    (repo / "blobs" / "shared").write_bytes(_safetensors({"a": (64, 64)}))
+    snap = repo / "snapshots" / "c1"
+    os.symlink(repo / "blobs" / "shared", snap / "model.safetensors")
+    os.symlink(repo / "blobs" / "shared", snap / "consolidated.safetensors")
+    assert _repo_row(client, "org/m")["params"] == 64 * 64

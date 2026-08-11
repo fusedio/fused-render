@@ -70,6 +70,7 @@ guard like every other mutating POST, and is deliberately narrow:
 """
 import json
 import os
+import re
 import shutil
 import stat
 from dataclasses import dataclass
@@ -342,6 +343,44 @@ def _architecture_task(config: dict) -> str | None:
     return None
 
 
+# A precision variant sits BESIDE the file it is a variant of in diffusers
+# repos (`diffusion_pytorch_model.fp16.safetensors` next to
+# `diffusion_pytorch_model.safetensors`). Both hold the same tensors, so a repo
+# that pulled both must not report twice the parameters it has.
+_VARIANT_SUFFIX = re.compile(r"\.(fp16|bf16|fp8|f16|f8|8bit|4bit)\.safetensors$", re.IGNORECASE)
+
+
+def _weight_files(snapshot_dir: str) -> list[str]:
+    """Every safetensors file of a revision, in tree order.
+
+    A WALK, not a listing of the top level: a diffusers pipeline keeps its
+    weights per component (`transformer/`, `unet/`, `vae/`, `text_encoder/`),
+    which is exactly the layout behind the pipelines whose task we detect, so a
+    top-level-only look would answer "no parameter count" for the models people
+    most want the number for.
+
+    Two things are dropped: a precision variant whose plain counterpart is also
+    present (same tensors, one count), and a second path resolving to a blob
+    already counted (the same weights linked under two names).
+    """
+    found: list[str] = []
+    counted: set[str] = set()
+    for dirpath, _dirnames, filenames in os.walk(snapshot_dir):
+        here = set(filenames)
+        for name in sorted(filenames):
+            if not name.endswith(".safetensors"):
+                continue
+            if _VARIANT_SUFFIX.search(name) and _VARIANT_SUFFIX.sub(".safetensors", name) in here:
+                continue
+            path = os.path.join(dirpath, name)
+            blob = os.path.realpath(path)
+            if blob in counted:
+                continue
+            counted.add(blob)
+            found.append(path)
+    return found
+
+
 def _safetensors_params(path: str) -> int:
     """Parameter count from a safetensors file's header — shapes only, no weights.
 
@@ -452,10 +491,13 @@ def _repo_meta(repo_dir: str) -> _RepoMeta:
         meta.task, meta.task_source = "text generation", "a GGUF weights file"
         library = library or "gguf"
 
+    # Summed across every component of the revision (see _weight_files): for a
+    # pipeline that is transformer + text encoders + VAE, i.e. the parameters
+    # this repo actually holds, rather than a curated idea of which component
+    # counts as "the model".
     total = 0
-    for name in sorted(names):
-        if name.endswith(".safetensors"):
-            total += _safetensors_params(os.path.join(snapshot, name))
+    for path in _weight_files(snapshot):
+        total += _safetensors_params(path)
     meta.params = total or None
     meta.library = library
 
