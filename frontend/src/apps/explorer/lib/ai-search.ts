@@ -5,10 +5,19 @@
 // the indexed roots, home by default, and reports a missing index as an error
 // rather than as an empty disk), and the hits are ranked client-side with the
 // shared fuzzy matcher. The model never sees the filesystem and never returns
-// anything executable — its output is data,
-// validated field by field on BOTH sides of the wire (here at the parse
-// boundary, and again in the server's _parse_spec), and a garbage reply
-// degrades to a plain term search on the user's own words.
+// anything executable — its output is data, validated field by field on BOTH
+// sides of the wire (here at the parse boundary, and again in the server's
+// _parse_spec).
+//
+// This is a DELIBERATE action, not the default path: the explorer's home page
+// answers plain filename queries instantly from the file index, and AI search
+// is one row the user has to pick (see FilesHome). Everything that existed to
+// make an AI-first box tolerable is therefore gone — no keyword fallback spec
+// when the model replies with garbage, no name-terms-stripped retry when the
+// first engine query comes up empty. One model call, one engine query, and a
+// failure is REPORTED: the index results the user was already looking at are
+// the fallback, and silently answering a different question (a keyword search
+// on their raw words) would be worse than saying so.
 import { aiComplete, searchFiles, type SearchFileEntry } from "@platform/lib/api";
 import { fuzzyMatch } from "@platform/lib/fuzzy";
 
@@ -42,7 +51,6 @@ export interface AiSearchHit extends SearchFileEntry {
 export interface AiSearchResult {
   hits: AiSearchHit[];
   truncated: boolean; // the engine hit its result cap
-  usedFallback: boolean; // the model reply was unusable; plain term search ran
   spec: AiSearchSpec;
 }
 
@@ -65,6 +73,9 @@ export function aiSearchSystemPrompt(): string {
     ' "max_size_bytes": number or null,\n' +
     ' "path_hints": [folder-name words the query implies, empty if none]}\n' +
     "Guidelines:\n" +
+    "- At least one of name_terms, extensions, or a date/size bound MUST be " +
+    "set: path_hints and kind are ranking hints the search engine cannot " +
+    "narrow on, so a reply carrying only those has no answer to give.\n" +
     "- name_terms is ONLY for words plausibly in the filename itself " +
     "(a project name, a topic, 'resume'). NEVER put file-type or media-type " +
     "words there — a video file is rarely named 'video'. Filler ('file', " +
@@ -84,9 +95,7 @@ export function aiSearchSystemPrompt(): string {
     "small/tiny→max_size_bytes 100000.\n" +
     "- 'folder'/'directory'→kind \"dir\".\n" +
     "- Location words go to path_hints: downloaded/downloads→downloads; " +
-    "desktop→desktop; documents→documents; photos/pictures→pictures.\n" +
-    "- When the query is only a name, everything except name_terms stays at " +
-    "its empty/null default."
+    "desktop→desktop; documents→documents; photos/pictures→pictures."
   );
 }
 
@@ -130,21 +139,6 @@ export function parseAiSearchSpec(text: string): AiSearchSpec | null {
     min_size_bytes: posNum(o.min_size_bytes),
     max_size_bytes: posNum(o.max_size_bytes),
     path_hints: strings(o.path_hints).slice(0, 4),
-  };
-}
-
-// When the relay is down or replied garbage: the user's own words become
-// name_terms, so the search still does something sensible.
-export function fallbackSpec(query: string): AiSearchSpec {
-  return {
-    name_terms: query.split(/\s+/).filter(Boolean).slice(0, 8),
-    extensions: [],
-    kind: "any",
-    modified_after: null,
-    modified_before: null,
-    min_size_bytes: null,
-    max_size_bytes: null,
-    path_hints: [],
   };
 }
 
@@ -195,9 +189,9 @@ export function hasNonNameFilters(spec: AiSearchSpec): boolean {
 // path_hints is client-side-only (soft ranking, see rankHits) and never
 // reaches /api/search/files, so a spec with only path_hints/kind — e.g. "in
 // downloads" — has zero engine narrowing even though the model parsed fine.
-// Sending it anyway hits "spec has no narrowing constraints" on macOS, or a
-// match-everything home walk elsewhere.
-export function hasEngineNarrowing(spec: AiSearchSpec): boolean {
+// Checked here rather than left to the server purely for the message: the
+// endpoint would reject it too, one round trip later, in its own words.
+function hasEngineNarrowing(spec: AiSearchSpec): boolean {
   return spec.name_terms.length > 0 || hasNonNameFilters(spec);
 }
 
@@ -241,47 +235,28 @@ export function rankHits(
   return hits.slice(0, MAX_HITS);
 }
 
-// Name terms are a hard WHERE in the engine too (an OR of ILIKE substrings), so
-// a spec that ALSO carries real filters retries without them when the first pass
-// comes up empty — same rationale as the soft-term ranking above: "video
-// downloaded today" has its extension and date pinned, and IMG_1234.mov must not
-// be lost to a filename that never says "video". The retry therefore still earns
-// its keep against the index engine, and now costs one more SQL query rather
-// than one more Spotlight run.
-async function queryEngine(spec: AiSearchSpec, signal?: AbortSignal) {
-  const first = await searchFiles(spec, signal);
-  if (first.entries.length || !spec.name_terms.length || !hasNonNameFilters(spec))
-    return first;
-  return searchFiles({ ...spec, name_terms: [] }, signal);
-}
-
-// The full pipeline: model → spec → the index engine → rank.
+// The full pipeline: model → spec → the index engine → rank. One round trip
+// each, and every failure throws for the caller to show — see the module
+// header on why there is nothing to degrade to here.
 export async function runAiSearch(
   home: string,
   query: string,
   signal?: AbortSignal,
 ): Promise<AiSearchResult> {
-  let spec: AiSearchSpec | null = null;
-  try {
-    spec = parseAiSearchSpec(await aiComplete(query, aiSearchSystemPrompt()));
-  } catch {
-    // relay down / claude missing — fall through to the fallback spec
-  }
-  // A spec that parsed fine but narrows nothing the engine understands
-  // (location-only: "in downloads") degrades the same as a parse failure —
-  // otherwise it reaches the engine as an unnarrowed query and errors or
-  // returns whatever the walk hit first.
-  let usedFallback = false;
-  if (spec === null || !hasEngineNarrowing(spec)) {
-    usedFallback = true;
-    spec = fallbackSpec(query);
-  }
+  // A relay failure (no claude, model error) propagates as-is: its message is
+  // already the most specific thing anyone can say about it.
+  const spec = parseAiSearchSpec(await aiComplete(query, aiSearchSystemPrompt()));
+  if (spec === null)
+    throw new Error(
+      "AI search could not read the model's reply as a filter. " +
+        "Try rephrasing, or search by name.",
+    );
+  if (!hasEngineNarrowing(spec))
+    throw new Error(
+      "AI search understood a place but nothing to narrow by — add a name, " +
+        "a file type, or a date.",
+    );
   if (signal?.aborted) throw new DOMException("aborted", "AbortError");
-  const res = await queryEngine(spec, signal);
-  return {
-    hits: rankHits(res.entries, spec, home),
-    truncated: res.truncated,
-    usedFallback,
-    spec,
-  };
+  const res = await searchFiles(spec, signal);
+  return { hits: rankHits(res.entries, spec, home), truncated: res.truncated, spec };
 }

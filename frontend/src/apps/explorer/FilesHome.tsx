@@ -205,11 +205,7 @@ function SearchResults({
     <section className="fh-section">
       <h2 className="fh-heading">Results for “{query}”</h2>
       <p className="fh-search-summary">
-        {result.usedFallback
-          ? "AI unavailable — matched your words directly."
-          : summary
-            ? `Understood as: ${summary}`
-            : "No filters — showing closest matches."}
+        {summary ? `Understood as: ${summary}` : "No filters — showing closest matches."}
         {result.truncated && " · Broad query: showing the first slice of matches."}
       </p>
       {result.hits.length ? (
