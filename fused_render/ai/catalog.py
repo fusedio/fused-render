@@ -48,27 +48,19 @@ SUGGESTIONS: dict[str, list[dict]] = {
             "note": "Very fast and light. Noticeably weaker output, but it runs "
                     "anywhere MLX does.",
         },
-        # Bonsai 27B (prism-ml). The family ships eight repos and only these two
-        # are in a format the MLX runner can load: the GGUF builds are
-        # llama.cpp's, and the AWQ builds are both AWQ and image-text-to-text.
-        # Picking the MLX pair is not a preference, it is the whole of what runs
-        # here — see the module docstring on curation being an editorial act.
-        {
-            "id": "prism-ml/Bonsai-27B-mlx-1bit",
-            "label": "Bonsai 27B (MLX 1-bit)",
-            "size_gb": None,
-            "note": "A 27B model packed to about one bit per weight, so it asks "
-                    "for far less memory than 27B usually does. Quantization "
-                    "this aggressive trades accuracy for that — worth trying "
-                    "against a 4-bit model of a third the size before committing.",
-        },
+        # Bonsai 27B (prism-ml). The family ships eight repos and most of them
+        # cannot run here: the GGUF builds are llama.cpp's format, and the AWQ
+        # builds are both AWQ and image-text-to-text. The MLX ones are what is
+        # left, and only the 2-bit is listed — the 1-bit sibling is omitted
+        # deliberately rather than forgotten (see the note below).
         {
             "id": "prism-ml/Ternary-Bonsai-27B-mlx-2bit",
             "label": "Ternary Bonsai 27B (MLX 2-bit)",
-            "size_gb": None,
-            "note": "The ternary build at two bits per weight — larger than the "
-                    "1-bit one and less aggressively packed, so the obvious "
-                    "second thing to try if that one disappoints.",
+            "size_gb": 8.5,
+            "note": "27B at roughly two bits per weight, so it costs about what "
+                    "Gemma 3 12B does on disk. Tight on 16GB — close other heavy "
+                    "apps first. Ternary quantization is new, so measure it "
+                    "against a 4-bit model you already trust.",
         },
     ],
     registry.IMAGE_GENERATION: [
