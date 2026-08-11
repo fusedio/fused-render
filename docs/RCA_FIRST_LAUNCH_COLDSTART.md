@@ -124,3 +124,34 @@ Ran the freshly-staged payload (my code, bytecode-cold) as a real server and hit
 
 `3.8s` is this machine's Defender-warm cost; a truly Defender-cold fresh install
 pays more, but now in the background — the UI no longer waits on it.
+
+### Real fresh-install measurement (rebuilt installer)
+
+Uninstalled + silently installed the rebuilt installer (10,428 pyc baked in),
+then timed a genuine first launch and a second launch:
+
+| Metric | First launch (Defender-cold) | Second launch (warm) |
+|---|---|---|
+| launcher → server ready | ~64 s | **9.6 s** |
+| first `/api/config` | **157 ms** (was 90,938 ms) | 172 ms |
+| engine warm-up (background) | 37.2 s (logged) | ~3 s |
+
+The `/api/config` freeze is gone and the engine warms in the background — the
+primary fix is confirmed end-to-end on a real install.
+
+### Residual first-launch cost (not this fix)
+
+The real install exposed a **second, independent** first-launch cost: the *base*
+server startup (Python + `fused_render` + FastAPI/uvicorn/pydantic native
+extensions) is Defender-scanned on first load, before the HTTP server is up. On
+a fresh install that exceeds the supervisor's 20 s readiness budget, so the
+supervisor kills and retries the child ~2–3× (`supervisor.log`: repeated
+`Python server did not become ready`) until Defender warms enough for a child to
+serve within the budget — ~64 s total. Second launch: 9.6 s (all cached).
+
+This is the same on-access AV scan, in the base startup rather than the engine
+import; precompiled pyc and the engine warm-up don't touch it. Removing it needs
+either an install-dir Defender exclusion (declined — security tradeoff) or a
+supervisor that doesn't kill a slow-but-progressing child on the first-ever
+launch (a longer/one-shot readiness budget keyed off a first-run marker). Left
+as a follow-up.
