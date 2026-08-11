@@ -33,6 +33,7 @@ from geo_paths import (
     normalize_remote_path,
 )
 from optional_runtime import require
+from raster_categories import classify_categories
 
 
 AUTO_OPTIMIZE_MAX_BYTES = int(
@@ -249,6 +250,9 @@ class RasterSource:
     colormap: str
     rescale: list[list[float]]
     auto_rescale: bool = True
+    render_mode: str = "single"
+    categories: list[dict[str, Any]] | None = None
+    category_colors: dict[int, tuple[int, ...]] = field(default_factory=dict)
     preview_path: str | None = None
     optimized_path: str | None = None
     optimization: dict[str, Any] = field(
@@ -482,6 +486,7 @@ class RasterEngine:
             )
             requested = opts.get("rescale")
             auto_rescale = True
+            sample_data = None
             if (
                 isinstance(requested, list)
                 and len(requested) == 2
@@ -500,8 +505,50 @@ class RasterEngine:
                         np.all(preview_data.data == inferred_nodata, axis=0)[None, :, :],
                     )
                 rescale = _ranges(preview_data)
+                sample_data = preview_data
             else:
                 rescale = _dtype_ranges(dataset.dtypes, render_bands)
+
+            # Categorical eligibility only makes sense for a single-band
+            # source (an RGB composite isn't classified data). Reuses the
+            # preview read above when there is one; a manual/optimized
+            # rescale skips that read, so take one here instead purely to
+            # sample which discrete values are present.
+            categories = None
+            category_colors: dict[int, tuple[int, ...]] = {}
+            if render_bands == 1:
+                if sample_data is None:
+                    try:
+                        with Reader(locator) as reader:
+                            fallback_preview = reader.preview(indexes=indexes, max_size=256)
+                        sample_data = fallback_preview.array
+                        if inferred_nodata is not None:
+                            sample_data = sample_data.copy()
+                            sample_data.mask = np.logical_or(
+                                np.ma.getmaskarray(sample_data),
+                                np.all(sample_data.data == inferred_nodata, axis=0)[None, :, :],
+                            )
+                    except Exception:
+                        sample_data = None
+                embedded_colormap = None
+                with contextlib.suppress(ValueError):
+                    embedded_colormap = dataset.colormap(1)
+                if sample_data is not None:
+                    categories = classify_categories(
+                        sample_data,
+                        dataset.dtypes[0],
+                        embedded_colormap=embedded_colormap,
+                        overrides=opts.get("category_colors"),
+                    )
+                if categories:
+                    category_colors = {c["value"]: tuple(c["color"]) for c in categories}
+            requested_mode = str(opts.get("render_mode") or "")
+            if count >= 3:
+                render_mode = "rgb"
+            elif categories and requested_mode != "single":
+                render_mode = "categorical"
+            else:
+                render_mode = "single"
 
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore", NoOverviewWarning)
@@ -535,6 +582,9 @@ class RasterEngine:
                 colormap=str(opts.get("colormap") or "viridis"),
                 rescale=rescale,
                 auto_rescale=auto_rescale,
+                render_mode=render_mode,
+                categories=categories,
+                category_colors=category_colors,
             )
 
         derivative = self.optimized_dir / f"{fingerprint}.tif"
@@ -585,6 +635,9 @@ class RasterEngine:
             existing = self.sources.get(fingerprint)
             if existing is not None:
                 existing.colormap = record.colormap
+                existing.render_mode = record.render_mode
+                existing.categories = record.categories
+                existing.category_colors = record.category_colors
                 if not record.auto_rescale:
                     existing.rescale = record.rescale
                     existing.auto_rescale = False
@@ -681,13 +734,17 @@ class RasterEngine:
                 "inferred_nodata": record.inferred_nodata,
                 "native_minzoom": record.minzoom,
                 "band_stats": stats,
-                "render_mode": "rgb" if record.count >= 3 else "single",
+                "render_mode": record.render_mode,
+                "categories": record.categories,
             },
             "style": {
                 "opacity": 0.9,
                 "colormap": record.colormap,
                 "rescale": record.rescale[0] if record.count < 3 else None,
-                "render_mode": "rgb" if record.count >= 3 else "single",
+                "render_mode": record.render_mode,
+                "category_colors": {
+                    str(value): list(color) for value, color in record.category_colors.items()
+                },
             },
             "minzoom": 0,
             "maxzoom": record.maxzoom,
@@ -961,7 +1018,12 @@ class RasterEngine:
                 return self.transparent_tile()
             locator = record.locator_for_zoom(z)
             revision = locator
-            key = (source_id, revision, z, x, y, record.colormap, tuple(map(tuple, record.rescale)))
+            categorical = record.render_mode == "categorical"
+            key = (
+                source_id, revision, z, x, y, record.colormap,
+                tuple(map(tuple, record.rescale)), record.render_mode,
+                tuple(sorted(record.category_colors.items())),
+            )
             cached = self.tile_cache.get(key)
             if cached is not None:
                 self.tile_cache.move_to_end(key)
@@ -970,6 +1032,7 @@ class RasterEngine:
             ranges = record.rescale
             colormap_name = record.colormap
             inferred_nodata = record.inferred_nodata
+            category_colors = record.category_colors
 
         try:
             with warnings.catch_warnings():
@@ -980,11 +1043,15 @@ class RasterEngine:
                         y,
                         z,
                         indexes=indexes,
+                        # Categorical class codes must never blend into
+                        # bogus intermediate values, including at the
+                        # lower-resolution preview derivative.
                         resampling_method=(
-                            "bilinear"
-                            if record.preview_path
-                            and locator == record.preview_path
-                            else "nearest"
+                            "nearest"
+                            if categorical or not (
+                                record.preview_path and locator == record.preview_path
+                            )
+                            else "bilinear"
                         ),
                     )
             if inferred_nodata is not None:
@@ -995,9 +1062,12 @@ class RasterEngine:
                     np.ma.getmaskarray(image.array),
                     invalid[None, :, :],
                 )
-            image.rescale(ranges)
-            color = cmap.get(colormap_name) if record.count < 3 else None
-            png = image.render(img_format="PNG", colormap=color)
+            if categorical and category_colors:
+                png = image.render(img_format="PNG", colormap=category_colors)
+            else:
+                image.rescale(ranges)
+                color = cmap.get(colormap_name) if record.count < 3 else None
+                png = image.render(img_format="PNG", colormap=color)
         except TileOutsideBounds:
             png = self.transparent_tile()
 
