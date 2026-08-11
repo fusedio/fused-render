@@ -3120,6 +3120,10 @@ const viewBtn = document.getElementById("viewbtn");
 // (params.onChange fires for every param, `split` and `model` included). null
 // until the first call: boot is not a flip.
 let narrowShown = null;
+// The breakpoint crossing's transient view default ("preview" after a live
+// wide→narrow crossing, else null): consulted only while `paneview` is absent,
+// never persisted — see the NARROW_MQ change handler for why it is not a param.
+let narrowCrossView = null;
 function applyNarrowView() {
   // No pane, no two views to be one of: the toggle and its strip are out of the
   // document (enterNoPane) and `paneview` describes a collapse this target never
@@ -3130,7 +3134,9 @@ function applyNarrowView() {
   // Default CHAT: an unset param reads as the chat, so a narrow pane opens on
   // the conversation — the reason the mode exists — and the preview is one click
   // away. Pane-local like `split`, so a reload keeps the view the user was on.
-  const preview = fused.params.get("paneview") === "preview";
+  // `narrowCrossView` sits between the param and that default: a live crossing
+  // keeps the preview on screen without spending a history entry on a resize.
+  const preview = (fused.params.get("paneview") || narrowCrossView || "chat") === "preview";
   document.body.classList.toggle("view-preview", preview);
   document.body.classList.toggle("view-chat", !preview);
   // The button names its DESTINATION, and names what the destination is FOR: the
@@ -3202,8 +3208,12 @@ function applyNarrowView() {
 }
 viewBtn.addEventListener("click", () => {
   // Writes the param only — applyNarrowView runs from params.onChange, the same
-  // one-way flow `split` and `leftmode` use.
-  fused.params.set("paneview", fused.params.get("paneview") === "preview" ? "chat" : "preview");
+  // one-way flow `split` and `leftmode` use. The opposite of the view ON SCREEN
+  // (narrowShown), not of the raw param: after a breakpoint crossing the preview
+  // can be showing on `narrowCrossView` with the param still absent, and reading
+  // the param there would write "preview" over a visible preview — a toggle
+  // whose first click does nothing.
+  fused.params.set("paneview", narrowShown ? "chat" : "preview");
 });
 applyNarrowView();
 // Crossing the breakpoint, in EITHER direction, without a reload. Two things
@@ -3223,12 +3233,15 @@ NARROW_MQ.addEventListener("change", () => {
   // Crossing DOWN with `paneview` unset: both halves were on screen, and the
   // narrow default (chat — the right call for a FRESH narrow open, see
   // applyNarrowView) would here hide the preview the user was just looking
-  // at, mid-resize, with no click. Record "preview" so the collapse keeps the
-  // half that would otherwise vanish. Written only over an ABSENT param: a
-  // view the user chose with the toggle stays chosen, in both directions —
-  // and enterNoPane's posture holds, this never runs on a no-pane target.
+  // at, mid-resize, with no click. Remember "preview" so the collapse keeps
+  // the half that would otherwise vanish. A VARIABLE, deliberately not a
+  // `fused.params.set` — a resize is not a navigation, and the bridge's
+  // first-change-push would mint a history entry for it, so Back from a
+  // pristine visit would clear the param and jump the layout to chat
+  // (Bugbot, PR #447). The toggle still writes the param, and a param, once
+  // present, wins over this default in both directions — see applyNarrowView.
   if (NARROW_MQ.matches && !noPane && !fused.params.get("paneview")) {
-    fused.params.set("paneview", "preview");
+    narrowCrossView = "preview";
   }
   placeLeftPicker();
   applySplit();
