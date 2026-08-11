@@ -64,6 +64,44 @@
   opacity: 1;
 }
 
+/* -- what the model is for -------------------------------------------------- */
+/* One line above the facts: the task, the parameter count, the library. The
+   task carries the emphasis because it is the answer to "what IS this" that a
+   repo id only hints at. */
+
+.am-card-what {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 10px;
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+
+/* Sentence case, not Title Case: `capitalize` would render the Hub's
+   "text-to-image" as "Text To Image". inline-block is what makes ::first-letter
+   apply to a span at all. */
+.am-card-task {
+  display: inline-block;
+  color: var(--fg);
+  font-weight: 500;
+}
+
+.am-card-task::first-letter {
+  text-transform: uppercase;
+}
+
+.am-card-params {
+  font-variant-numeric: tabular-nums;
+}
+
+.am-card-library::before {
+  /* A separator that belongs to the optional item, so the line has no dangling
+     middot when the library is unknown. */
+  content: "·";
+  margin-right: 10px;
+}
+
 /* -- revision drawer -------------------------------------------------------- */
 
 .am-drawer,

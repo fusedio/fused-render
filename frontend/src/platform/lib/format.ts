@@ -13,6 +13,18 @@ export function formatSize(bytes: number | null | undefined): string {
   return `${v.toFixed(v < 10 ? 1 : 0)} ${units[u]}`;
 }
 
+// Parameter counts, the unit models are compared in — "7.2B", "465M". Distinct
+// from formatSize: these are counts, not bytes, so the steps are decimal (a
+// "7B model" is 7e9 parameters, never 7 * 2^30) and the unit is never implied
+// by the number alone.
+export function formatParams(count: number | null | undefined): string {
+  if (!count || count < 0) return "";
+  if (count >= 1e9) return `${Number((count / 1e9).toFixed(1))}B`;
+  if (count >= 1e6) return `${Math.round(count / 1e6)}M`;
+  if (count >= 1e3) return `${Math.round(count / 1e3)}K`;
+  return `${count}`;
+}
+
 // Listing-grade stamp: locale date + hours:minutes. Seconds are noise in a
 // column of file dates — and carrying them made MODIFIED the widest column in
 // the table, which is backwards for the least important one. The full

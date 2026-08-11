@@ -5351,3 +5351,34 @@ everything unread for N days:
   `lastUsed` and therefore pruning depend on. Their atime is put back after the
   read, so this page cannot quietly exclude from the next prune everything it
   just looked at.
+
+**Naming what a model is** (D248). A repo id and a size do not say what a thing
+is for, and the cache states it nowhere:
+
+- **HF-16** **The purpose is read from whatever evidence the download brought**,
+  best first: the model card's `pipeline_tag` (the Hub's own answer, so nothing
+  is inferred when the card came down); a diffusers `model_index.json`
+  `_class_name`; a sentence-transformers marker; the `architectures` head in
+  `config.json` (…`ForCausalLM` → text generation, …`ForImageClassification` →
+  image classification, with `model_type` separating whisper's
+  …`ForConditionalGeneration` from t5's); a `.gguf` weights file. **Every answer
+  carries where it came from**, and the card shows that on hover: a
+  `pipeline_tag` is a fact and an architecture is a reading of one, and a UI
+  that rendered them identically would be overclaiming. A repo with none of that
+  evidence says nothing rather than guessing from its name.
+- **HF-17** **Parameter count is exact or absent.** It is summed from the
+  **shapes in the safetensors headers** — a little-endian u64 length then that
+  many bytes of JSON, so it costs one small read per shard rather than the
+  multi-GB file. `.bin` pickles and `.gguf` carry no equivalent cheap header, so
+  those repos report no count; a figure derived from file size ÷ assumed dtype
+  would be a guess dressed as a measurement, in a page whose credibility rests
+  on its numbers being real.
+- **HF-18** **The date shown is `added`, not "released".** The Hub's release
+  date is not on this disk and this page never goes to the network, so what it
+  states is the oldest file in the repo — when this machine first got it. The
+  distinction is the honest one: a model published in 2023 and pulled here last
+  week is a week old *to this cache*, and that is the fact the page can back up.
+- **HF-19** **Metadata is read through the same atime-preserving read as the
+  refs** (HF-15) and cached per snapshot directory, keyed by its mtime — a
+  snapshot's contents are immutable once written, so a Refresh over forty repos
+  re-reads nothing.

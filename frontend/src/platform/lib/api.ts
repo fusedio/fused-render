@@ -1889,6 +1889,21 @@ export interface AiModelRepo {
   mtime: number | null;
   /** Newest atime — "last read", which is what pruning by age asks about. */
   lastUsed: number | null;
+  /**
+   * When the repo first landed on this machine (its oldest file). NOT the
+   * model's release date: that is Hub metadata, and this page never goes to
+   * the network.
+   */
+  added: number | null;
+  /** What the model is for ("text generation", "image generation"), or null. */
+  task: string | null;
+  /** Where `task` was read from — a pipeline_tag is the Hub's own answer, an
+   *  architecture is our reading of one, and the UI distinguishes them. */
+  taskSource: string | null;
+  library: string | null;
+  /** Exact parameter count from the safetensors headers; null when the weights
+   *  are in a format with no cheap header to read (.bin, .gguf). */
+  params: number | null;
   revisions: number;
   refs: string[];
 }

@@ -95,6 +95,15 @@ machine — every model, dataset and Space anything on your computer has pulled
 from the Hub, biggest first, with what each one costs on disk. The entry appears
 once that cache exists; the first download from the Hub creates it.
 
+- **Each card says what the model is for** — "text generation", "image
+  generation", "speech recognition" — and how big the model is in parameters
+  ("7.2B params"). Both are read from the files already cached: the purpose from
+  the model card's `pipeline_tag` when it came down with the weights, otherwise
+  from the architecture in `config.json` (hover the label to see which), and the
+  parameter count from the safetensors headers. A repo whose download brought
+  neither says nothing rather than guessing.
+- **"Added" is when this machine got the model, not when it was released.** The
+  release date lives on the Hub, and this page only ever reads your disk.
 - **The sizes are real disk usage.** Inside the cache each revision's files are
   symlinks to one shared copy of the bytes, so the page counts that copy once:
   the per-card sizes add up to the total in the header.

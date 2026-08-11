@@ -68,6 +68,7 @@ guard like every other mutating POST, and is deliberately narrow:
 * Every target is reported individually. One stale row must not lose the other
   nine deletions of a prune.
 """
+import json
 import os
 import shutil
 import stat
@@ -129,6 +130,7 @@ class _RepoScan:
     files: int
     mtime: float
     atime: float
+    oldest: float
 
 
 def _scan_repo(root: str) -> _RepoScan:
@@ -136,6 +138,7 @@ def _scan_repo(root: str) -> _RepoScan:
     files = 0
     newest = 0.0
     used = 0.0
+    oldest = 0.0
     # Only consulted for multiply-linked files — the common case (one link) never
     # touches the set, so a 30k-blob cache doesn't pay for a 30k-entry dict.
     seen: set[tuple[int, int]] = set()
@@ -166,6 +169,11 @@ def _scan_repo(root: str) -> _RepoScan:
             # a snapshot symlink touches the blob, not the link.
             if st.st_atime > used:
                 used = st.st_atime
+            # Oldest real file ≈ when this repo first landed here. The Hub's
+            # release date is NOT on disk (see _repo's "added"), so this is the
+            # only date about a model this machine actually knows.
+            if oldest == 0.0 or st.st_mtime < oldest:
+                oldest = st.st_mtime
             if st.st_nlink > 1:
                 key = (st.st_dev, st.st_ino)
                 if key in seen:
@@ -173,7 +181,286 @@ def _scan_repo(root: str) -> _RepoScan:
                 seen.add(key)
             size += st.st_size
             files += 1
-    return _RepoScan(size=size, files=files, mtime=newest, atime=used)
+    return _RepoScan(size=size, files=files, mtime=newest, atime=used, oldest=oldest)
+
+
+# -- reading files without counting as a read ----------------------------------
+
+
+def _read_preserving_atime(path: str, limit: int) -> bytes | None:
+    """Up to `limit` bytes of `path`, with the file's atime put back afterwards.
+
+    EVERY read in this module goes through here, and that is the point. `lastUsed`
+    — which the prune selection is built on — is "when was something in here last
+    read", and a model card, a config, or a safetensors header is reached through
+    the snapshot symlink, so reading it touches the BLOB's atime. Without the
+    restore, opening the page would mark every repo it inspected as used today and
+    quietly exclude it from the next prune: a measuring instrument changing what
+    it measures.
+    """
+    try:
+        before = os.stat(path)
+    except OSError:
+        return None
+    try:
+        with open(path, "rb") as f:
+            data = f.read(limit)
+    except OSError:
+        return None
+    try:
+        os.utime(path, (before.st_atime, before.st_mtime))
+    except OSError:
+        pass  # read-only mount, or a file that just went — the read still stands
+    return data
+
+
+def _read_json(path: str, limit: int = 4 * 1024 * 1024) -> dict | None:
+    raw = _read_preserving_atime(path, limit)
+    if raw is None:
+        return None
+    try:
+        value = json.loads(raw)
+    except ValueError:
+        return None
+    return value if isinstance(value, dict) else None
+
+
+# -- what a model is FOR -------------------------------------------------------
+# Nothing in the cache states a model's purpose outright, so it is read from the
+# evidence the download happened to bring, best first:
+#
+#   1. README.md front matter — `pipeline_tag` IS the Hub's own answer, so when
+#      the model card came down with the weights there is nothing to infer.
+#   2. model_index.json — a diffusers pipeline; its `_class_name` names the job.
+#   3. config_sentence_transformers.json / modules.json — an embedding model.
+#   4. config.json `architectures` — the transformers head, which encodes the
+#      task in its suffix (…ForCausalLM, …ForImageClassification).
+#   5. a *.gguf file — a llama.cpp text model.
+#
+# Every answer carries WHERE IT CAME FROM, because 1 is a fact and 4 is a
+# reading of one, and a UI that showed them identically would be overclaiming.
+
+# Hub pipeline tags are already readable once the hyphens are spaces, so there
+# is no mapping table to go stale — only these three, whose Hub spelling is
+# jargon for what people actually call them.
+_FRIENDLIER_TAGS = {
+    "feature-extraction": "embeddings",
+    "sentence-similarity": "sentence embeddings",
+    "text2text-generation": "text-to-text generation",
+}
+
+# transformers architecture suffix -> task. Ordered: the first match wins, so
+# the more specific suffixes come before the ones they contain.
+_ARCH_TASKS = (
+    ("ForZeroShotImageClassification", "zero-shot image classification"),
+    ("ForImageClassification", "image classification"),
+    ("ForImageSegmentation", "image segmentation"),
+    ("ForObjectDetection", "object detection"),
+    ("ForSequenceClassification", "text classification"),
+    ("ForTokenClassification", "token classification"),
+    ("ForQuestionAnswering", "question answering"),
+    ("ForSpeechSeq2Seq", "speech recognition"),
+    ("ForConditionalGeneration", "text-to-text generation"),
+    ("ForMaskedLM", "fill mask"),
+    ("ForCausalLM", "text generation"),
+    ("LMHeadModel", "text generation"),
+    ("ForCTC", "speech recognition"),
+)
+
+# …ForConditionalGeneration is the same head for "translate this" and "transcribe
+# this", so the model type is what separates them.
+_AUDIO_MODEL_TYPES = {"whisper", "speech_to_text", "speecht5", "seamless_m4t"}
+
+
+@dataclass
+class _RepoMeta:
+    """What a repo is for and how big the model is — read from the default
+    revision's snapshot, or empty when the download brought no evidence."""
+
+    task: str | None = None
+    task_source: str | None = None
+    params: int | None = None
+    library: str | None = None
+
+
+def _front_matter(snapshot_dir: str) -> dict[str, str]:
+    """Top-level SCALARS of a model card's YAML front matter.
+
+    Deliberately not a YAML parser and deliberately not a YAML dependency (the
+    package does not have one): this reads `key: value` lines between the
+    opening and closing `---`, which is the shape `pipeline_tag` and
+    `library_name` are always written in. Nested blocks (`model-index`,
+    `widget`, tag lists) are skipped rather than half-understood — a key this
+    misses degrades to the config.json reading below, which is the whole point
+    of having a chain of evidence.
+    """
+    raw = _read_preserving_atime(os.path.join(snapshot_dir, "README.md"), 64 * 1024)
+    if raw is None:
+        return {}
+    text = raw.decode("utf-8", errors="replace")
+    if not text.startswith("---"):
+        return {}
+    lines = text.split("\n")[1:]
+    out: dict[str, str] = {}
+    for line in lines:
+        if line.strip() in ("---", "..."):
+            break
+        if not line or line[0].isspace() or line.lstrip().startswith("#"):
+            continue  # nested value, list item, or comment — not a top-level scalar
+        key, sep, value = line.partition(":")
+        if not sep:
+            continue
+        value = value.strip().strip("'\"")
+        if value:
+            out[key.strip()] = value
+    return out
+
+
+def _pipeline_task(tag: str) -> str:
+    return _FRIENDLIER_TAGS.get(tag, tag.replace("-", " "))
+
+
+def _diffusers_task(class_name: str) -> str:
+    lowered = class_name.lower()
+    if "video" in lowered:
+        return "video generation"
+    if "audio" in lowered or "music" in lowered:
+        return "audio generation"
+    return "image generation"
+
+
+def _architecture_task(config: dict) -> str | None:
+    architectures = config.get("architectures")
+    name = architectures[0] if isinstance(architectures, list) and architectures else None
+    if not isinstance(name, str):
+        return None
+    for suffix, task in _ARCH_TASKS:
+        if name.endswith(suffix):
+            if suffix == "ForConditionalGeneration" and config.get("model_type") in _AUDIO_MODEL_TYPES:
+                return "speech recognition"
+            return task
+    return None
+
+
+def _safetensors_params(path: str) -> int:
+    """Parameter count from a safetensors file's header — shapes only, no weights.
+
+    The format opens with a little-endian u64 header length and that many bytes
+    of JSON describing every tensor, so the count is exact and costs one small
+    read rather than the multi-GB file. (`.bin` pickles and `.gguf` carry no
+    equivalent cheap header, so a repo holding only those reports no count
+    instead of a guess.)
+    """
+    head = _read_preserving_atime(path, 8)
+    if head is None or len(head) < 8:
+        return 0
+    length = int.from_bytes(head, "little")
+    # A sane header is kilobytes to a few MB; anything else is not safetensors.
+    if not 0 < length <= 64 * 1024 * 1024:
+        return 0
+    raw = _read_preserving_atime(path, 8 + length)
+    if raw is None or len(raw) < 8 + length:
+        return 0
+    try:
+        header = json.loads(raw[8:])
+    except ValueError:
+        return 0
+    if not isinstance(header, dict):
+        return 0
+    total = 0
+    for name, info in header.items():
+        if name == "__metadata__" or not isinstance(info, dict):
+            continue
+        shape = info.get("shape")
+        if not isinstance(shape, list) or not shape:
+            continue
+        count = 1
+        for dim in shape:
+            if not isinstance(dim, int) or dim < 0:
+                count = 0
+                break
+            count *= dim
+        total += count
+    return total
+
+
+# Metadata is read once per snapshot directory and remembered: a snapshot's
+# contents are immutable once written (every file in it is a link to a
+# content-addressed blob), so its own mtime is a sufficient key, and a Refresh
+# on a 40-repo cache re-reads nothing.
+_META_CACHE: dict[str, tuple[float, _RepoMeta]] = {}
+
+
+def _default_snapshot(repo_dir: str) -> str | None:
+    """The revision to describe the repo by: whatever `refs/main` points at,
+    else the most recently written snapshot."""
+    snapshots_dir = os.path.join(repo_dir, "snapshots")
+    entries = _snapshot_dirs(snapshots_dir)
+    if not entries:
+        return None
+    by_name = {e.name: e.path for e in entries}
+    main = _refs_by_commit(repo_dir).get("main")
+    if main and main in by_name:
+        return by_name[main]
+    newest = max(entries, key=lambda e: e.stat().st_mtime if e.is_dir() else 0)
+    return newest.path
+
+
+def _repo_meta(repo_dir: str) -> _RepoMeta:
+    snapshot = _default_snapshot(repo_dir)
+    if snapshot is None:
+        return _RepoMeta()
+    try:
+        stamp = os.stat(snapshot).st_mtime
+    except OSError:
+        return _RepoMeta()
+    cached = _META_CACHE.get(snapshot)
+    if cached is not None and cached[0] == stamp:
+        return cached[1]
+
+    meta = _RepoMeta()
+    try:
+        names = set(os.listdir(snapshot))
+    except OSError:
+        names = set()
+
+    front = _front_matter(snapshot)
+    library = front.get("library_name")
+    tag = front.get("pipeline_tag")
+    if tag:
+        meta.task, meta.task_source = _pipeline_task(tag), "the model card's pipeline_tag"
+
+    if meta.task is None and "model_index.json" in names:
+        index = _read_json(os.path.join(snapshot, "model_index.json")) or {}
+        class_name = index.get("_class_name")
+        if isinstance(class_name, str) and class_name:
+            meta.task = _diffusers_task(class_name)
+            meta.task_source = f"the diffusers pipeline {class_name}"
+            library = library or "diffusers"
+
+    if meta.task is None and ("config_sentence_transformers.json" in names or "modules.json" in names):
+        meta.task, meta.task_source = "embeddings", "its sentence-transformers config"
+        library = library or "sentence-transformers"
+
+    if meta.task is None and "config.json" in names:
+        config = _read_json(os.path.join(snapshot, "config.json")) or {}
+        task = _architecture_task(config)
+        if task:
+            meta.task, meta.task_source = task, "the architecture in config.json"
+
+    if meta.task is None and any(n.lower().endswith(".gguf") for n in names):
+        meta.task, meta.task_source = "text generation", "a GGUF weights file"
+        library = library or "gguf"
+
+    total = 0
+    for name in sorted(names):
+        if name.endswith(".safetensors"):
+            total += _safetensors_params(os.path.join(snapshot, name))
+    meta.params = total or None
+    meta.library = library
+
+    _META_CACHE[snapshot] = (stamp, meta)
+    return meta
 
 
 def _snapshot_dirs(snapshots_dir: str) -> list[os.DirEntry]:
@@ -232,36 +519,22 @@ def _refs_by_commit(repo_dir: str) -> dict[str, str]:
     """ref name -> the commit it points at. The commit shas are read here (and
     only here): the listing names revisions, the revision view resolves them.
 
-    Each file's **atime is put back** after the read. This is the only place
-    this module opens a file, and `lastUsed` — which pruning by age depends on —
-    is exactly "when was something in here last read". Without the restore, a
-    trip through this page would mark every repo it inspected as freshly used
-    and quietly exclude it from the next prune: a measuring instrument changing
-    what it measures.
+    Through _read_preserving_atime like every other read in this module — see
+    its docstring for why inspecting the cache must not mark it as used.
     """
     refs_dir = os.path.join(repo_dir, "refs")
     out: dict[str, str] = {}
     for name in _ref_names(repo_dir):
-        path = os.path.join(refs_dir, name)
-        try:
-            before = os.stat(path)
-        except OSError:
-            continue
-        try:
-            with open(path, "r", encoding="utf-8", errors="ignore") as f:
-                out[name] = f.read().strip()
-        except OSError:
-            continue
-        try:
-            os.utime(path, (before.st_atime, before.st_mtime))
-        except OSError:
-            pass  # read-only mount, or a file that just went — the read stands
+        raw = _read_preserving_atime(os.path.join(refs_dir, name), 4096)
+        if raw is not None:
+            out[name] = raw.decode("utf-8", errors="ignore").strip()
     return out
 
 
 def _repo(cache_dir: str, dirname: str, kind: str) -> dict:
     repo_dir = os.path.join(cache_dir, dirname)
     scan = _scan_repo(repo_dir)
+    meta = _repo_meta(repo_dir)
     return {
         # "models--openai--whisper-small" -> "openai/whisper-small". A bare
         # repo id (no org) has one segment and comes back unchanged.
@@ -278,6 +551,19 @@ def _repo(cache_dir: str, dirname: str, kind: str) -> dict:
         "mtime": scan.mtime or None,
         # Newest atime — "last read", which is what pruning by age asks about.
         "lastUsed": scan.atime or None,
+        # When the repo first landed here. NOT the model's release date: that
+        # is Hub metadata and this page never goes to the network, so the
+        # honest local answer is "you downloaded this then".
+        "added": scan.oldest or None,
+        # What the model is FOR, and where that was read from — a pipeline_tag
+        # is the Hub's own answer, an architecture is our reading of one, and
+        # the UI says which (see _repo_meta).
+        "task": meta.task,
+        "taskSource": meta.task_source,
+        "library": meta.library,
+        # Parameter count, exact, from the safetensors headers. None when the
+        # weights are in a format with no cheap header to read.
+        "params": meta.params,
         "revisions": _revisions(repo_dir),
         "refs": _ref_names(repo_dir),
     }

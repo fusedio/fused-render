@@ -22,6 +22,7 @@ Four things here are easy to get quietly wrong, so each is pinned:
 The layout the fixtures build is huggingface_hub's own CACHE_STRUCTURE:
 ``<hub>/models--org--name/{blobs,snapshots/<commit>,refs/<ref>}``.
 """
+import json
 import os
 
 import pytest
@@ -583,3 +584,160 @@ def test_a_prune_selection_deletes_exactly_the_named_repos(client, hub):
     data = _delete(client, [{"dir": d} for d in sorted(stale)]).json()
     assert data["freed"] == 700
     assert [r["id"] for r in data["repos"]] == ["fresh"]
+
+
+# -- what a model is for, and how big --------------------------------------------
+# Nothing in the cache states a model's purpose outright, so it is read from
+# whatever evidence the download brought: the model card's pipeline_tag first
+# (the Hub's own answer), then a diffusers/sentence-transformers marker, then
+# the transformers architecture — with the SOURCE reported, because a
+# pipeline_tag is a fact and an architecture is a reading of one.
+
+
+def _snapshot_file(repo, commit, name, content):
+    """A real file inside a snapshot (a model card / config, which arrive as
+    ordinary files in the snapshot rather than as weight blobs)."""
+    path = repo / "snapshots" / commit / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content) if isinstance(content, str) else path.write_bytes(content)
+    return path
+
+
+def _safetensors(shapes, dtype="F16"):
+    """A safetensors file that is nothing but its header — the parameter count
+    is read from tensor SHAPES, so the weights themselves need not exist."""
+    header = {
+        name: {"dtype": dtype, "shape": list(shape), "data_offsets": [0, 0]}
+        for name, shape in shapes.items()
+    }
+    header["__metadata__"] = {"format": "pt"}
+    blob = json.dumps(header).encode()
+    return len(blob).to_bytes(8, "little") + blob
+
+
+def _repo_row(client, repo_id):
+    return next(r for r in _get(client)["repos"] if r["id"] == repo_id)
+
+
+@requires_symlinks
+def test_pipeline_tag_from_the_model_card_wins(client, hub):
+    repo = _repo(hub, "models--org--m", blobs={"w": 10}, snapshots={"c1": {"model.bin": "w"}},
+                 refs={"main": "c1"})
+    _snapshot_file(repo, "c1", "README.md",
+                   "---\nlibrary_name: diffusers\npipeline_tag: text-to-image\ntags:\n  - art\n---\n# Card\n")
+    # A config that would infer something ELSE is present, so this also pins the
+    # precedence rather than just the parse.
+    _snapshot_file(repo, "c1", "config.json", json.dumps({"architectures": ["BertForMaskedLM"]}))
+    row = _repo_row(client, "org/m")
+    assert row["task"] == "text to image"
+    assert row["taskSource"] == "the model card's pipeline_tag"
+    assert row["library"] == "diffusers"
+
+
+@requires_symlinks
+@pytest.mark.parametrize(
+    "architectures,model_type,expected",
+    [
+        (["LlamaForCausalLM"], "llama", "text generation"),
+        (["BertForSequenceClassification"], "bert", "text classification"),
+        (["BertForMaskedLM"], "bert", "fill mask"),
+        (["ViTForImageClassification"], "vit", "image classification"),
+        (["T5ForConditionalGeneration"], "t5", "text-to-text generation"),
+        # Same head, different job — the model type is what separates them.
+        (["WhisperForConditionalGeneration"], "whisper", "speech recognition"),
+        (["SomethingEntirelyNew"], "mystery", None),
+    ],
+)
+def test_task_inferred_from_the_architecture(client, hub, architectures, model_type, expected):
+    repo = _repo(hub, "models--org--m", blobs={"w": 10}, snapshots={"c1": {"model.bin": "w"}},
+                 refs={"main": "c1"})
+    _snapshot_file(repo, "c1", "config.json",
+                   json.dumps({"architectures": architectures, "model_type": model_type}))
+    row = _repo_row(client, "org/m")
+    assert row["task"] == expected
+    # An inference says so; only the model card is reported as the Hub's answer.
+    assert row["taskSource"] == ("the architecture in config.json" if expected else None)
+
+
+@requires_symlinks
+def test_diffusers_and_sentence_transformers_are_recognised(client, hub):
+    a = _repo(hub, "models--org--sd", blobs={"w": 10}, snapshots={"c1": {"m": "w"}}, refs={"main": "c1"})
+    _snapshot_file(a, "c1", "model_index.json", json.dumps({"_class_name": "StableDiffusionXLPipeline"}))
+    b = _repo(hub, "models--org--st", blobs={"w": 10}, snapshots={"c1": {"m": "w"}}, refs={"main": "c1"})
+    _snapshot_file(b, "c1", "modules.json", "[]")
+    assert _repo_row(client, "org/sd")["task"] == "image generation"
+    assert _repo_row(client, "org/sd")["library"] == "diffusers"
+    assert _repo_row(client, "org/st")["task"] == "embeddings"
+
+
+@requires_symlinks
+def test_parameter_count_sums_the_safetensors_shapes(client, hub):
+    repo = _repo(hub, "models--org--m", blobs={"w": 10}, snapshots={"c1": {"m": "w"}}, refs={"main": "c1"})
+    # Two shards, as a real multi-GB model is stored.
+    _snapshot_file(repo, "c1", "model-00001-of-00002.safetensors",
+                   _safetensors({"embed": (32000, 4096), "layer0": (4096, 4096)}))
+    _snapshot_file(repo, "c1", "model-00002-of-00002.safetensors",
+                   _safetensors({"layer1": (4096, 4096), "norm": (4096,)}))
+    expected = 32000 * 4096 + 4096 * 4096 * 2 + 4096
+    assert _repo_row(client, "org/m")["params"] == expected
+
+
+@requires_symlinks
+def test_no_parameter_count_is_reported_rather_than_a_guess(client, hub):
+    # .bin pickles and .gguf carry no cheap header, so the count is absent —
+    # never estimated from the file size.
+    repo = _repo(hub, "models--org--m", blobs={"w": 10}, snapshots={"c1": {"pytorch_model.bin": "w"}},
+                 refs={"main": "c1"})
+    _snapshot_file(repo, "c1", "config.json", json.dumps({"architectures": ["LlamaForCausalLM"]}))
+    row = _repo_row(client, "org/m")
+    assert row["params"] is None
+    assert row["task"] == "text generation"
+
+
+@requires_symlinks
+def test_a_truncated_safetensors_header_is_survived(client, hub):
+    repo = _repo(hub, "models--org--m", blobs={"w": 10}, snapshots={"c1": {"m": "w"}}, refs={"main": "c1"})
+    _snapshot_file(repo, "c1", "model.safetensors", _safetensors({"a": (8, 8)})[:12])
+    assert _repo_row(client, "org/m")["params"] is None
+
+
+@requires_symlinks
+def test_the_default_revision_is_the_one_described(client, hub):
+    repo = _repo(
+        hub,
+        "models--org--m",
+        blobs={"w": 10},
+        snapshots={"old": {"m": "w"}, "new": {"m": "w"}},
+        refs={"main": "new"},
+    )
+    _snapshot_file(repo, "old", "config.json", json.dumps({"architectures": ["BertForMaskedLM"]}))
+    _snapshot_file(repo, "new", "config.json", json.dumps({"architectures": ["LlamaForCausalLM"]}))
+    assert _repo_row(client, "org/m")["task"] == "text generation"
+
+
+@requires_symlinks
+def test_reading_the_metadata_does_not_count_as_using_the_model(client, hub):
+    # Same rule as the ref files: a model card and a safetensors header are
+    # reached THROUGH the snapshot symlink, so reading them touches the blob's
+    # atime — the signal prune is built on.
+    repo = _repo(hub, "models--org--m", blobs={"w": 10}, snapshots={"c1": {"m": "w"}}, refs={"main": "c1"})
+    _snapshot_file(repo, "c1", "README.md", "---\npipeline_tag: text-generation\n---\n")
+    _snapshot_file(repo, "c1", "model.safetensors", _safetensors({"a": (4, 4)}))
+    old = 1_000_000
+    for path in (repo / "blobs" / "w", repo / "refs" / "main",
+                 repo / "snapshots" / "c1" / "README.md",
+                 repo / "snapshots" / "c1" / "model.safetensors"):
+        os.utime(path, (old, old))
+    assert _repo_row(client, "org/m")["task"] == "text generation"
+    assert _repo_row(client, "org/m")["lastUsed"] == old
+
+
+def test_added_is_the_oldest_file_not_the_newest(client, hub):
+    repo = _repo(hub, "models--org--m", blobs={"first": 10, "later": 10})
+    os.utime(repo / "blobs" / "first", (5_000_000, 1_000_000))
+    os.utime(repo / "blobs" / "later", (5_000_000, 8_000_000))
+    row = _repo_row(client, "org/m")
+    # "added" is when the repo first landed here — deliberately not the Hub's
+    # release date, which is not on this disk at all.
+    assert row["added"] == 1_000_000
+    assert row["mtime"] == 8_000_000

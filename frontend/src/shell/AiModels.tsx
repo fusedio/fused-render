@@ -30,7 +30,7 @@ import {
   type AiModelRevision,
   type AiModelsResult,
 } from "@platform/lib/api";
-import { formatSize, formatMtimeFull, timeAgo } from "@platform/lib/format";
+import { formatSize, formatMtimeFull, formatParams, timeAgo } from "@platform/lib/format";
 import { navigate, urlForFsPath } from "@platform/lib/router";
 import { pushToast } from "@platform/lib/toast";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
@@ -131,6 +131,14 @@ function Revisions({
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
     let alive = true;
+    // Dropped BEFORE the refetch, not replaced after it. These numbers are
+    // relative to the other revisions: deleting one makes its siblings' shared
+    // blobs exclusive, so every surviving row's "frees this much" grows the
+    // moment a sibling goes. Holding the old rows through the refetch would
+    // show understated sizes, and a delete clicked in that window would freeze
+    // one into a confirmation that promised to free far less than it will.
+    setRows(null);
+    setError(null);
     getAiModelRevisions(repo.dir).then(
       (r) => alive && setRows(r.revisions),
       (e: Error) => alive && setError(e.message),
@@ -194,6 +202,9 @@ function RepoCard({
   onDeleteRevision: (revision: AiModelRevision) => void;
 }) {
   const when = timeAgo(repo.lastUsed ?? repo.mtime);
+  // "added", not "released": the Hub's release date isn't on this disk (see the
+  // endpoint), so the card states the date this machine actually knows.
+  const added = timeAgo(repo.added);
   return (
     <div className="cc-mdcard am-card">
       <div className="cc-mdcard-head">
@@ -231,12 +242,40 @@ function RepoCard({
           {formatSize(repo.size)}
         </span>
       </div>
+      {/* What the model is FOR, and how big it is — the two questions a name
+          alone doesn't answer. Absent entirely when the download brought no
+          evidence for either, rather than rendered as an empty line: a repo
+          whose weights are a .bin pickle and whose card never came down really
+          is a repo we can only name. */}
+      {(repo.task || repo.params) && (
+        <div className="am-card-what">
+          {repo.task && (
+            // The source is a tooltip rather than a second visible clause: a
+            // pipeline_tag is the Hub's own answer and an architecture is our
+            // reading of one, and that distinction matters when it looks wrong,
+            // not while scanning a grid.
+            <span
+              className="am-card-task"
+              title={repo.taskSource ? `Read from ${repo.taskSource}` : undefined}
+            >
+              {repo.task}
+            </span>
+          )}
+          {repo.params !== null && (
+            <span className="am-card-params" title={`${repo.params.toLocaleString()} parameters`}>
+              {formatParams(repo.params)} params
+            </span>
+          )}
+          {repo.library && <span className="am-card-library">{repo.library}</span>}
+        </div>
+      )}
       <div className="cc-mdcard-foot">
         <span className="cc-mdcard-meta">
           {repo.files} {repo.files === 1 ? "file" : "files"}
           {repo.revisions > 1 ? ` · ${repo.revisions} revisions` : ""}
           {repo.refs.length ? ` · ${repo.refs.join(", ")}` : ""}
           {when ? ` · used ${when}` : ""}
+          {added ? ` · added ${added}` : ""}
         </span>
         <span className="cc-mdcard-actions">
           {/* Only offered where it means something: with a single revision,
