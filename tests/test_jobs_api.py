@@ -213,7 +213,7 @@ def test_a_dismissal_silences_late_ticks_but_not_a_fresh_start():
     Refusing the id outright would break the documented pattern of reusing a
     STABLE id so a reloaded page re-attaches to its own row — the id would be
     dead the first time anyone dismissed it. A tick is a delta or a terminal
-    state; only the opening report a `fused.job()` handle sends states
+    state; only the opening report a `fused.trackJob()` handle sends states
     `running` outright, which is what tells the two apart.
     """
     jobs.upsert({"id": "flux:job", "title": "run one", "state": "running"}, now=1000.0)
@@ -273,7 +273,7 @@ def test_a_reporter_posting_full_status_cannot_re_raise_a_row_it_aged_out_of():
     """Ageing out is the same statement as a dismissal — this row is over — so
     it needs the same protection from the same late tick.
 
-    A reporter with no `fused.job()` handle to remember it already finished (the
+    A reporter with no `fused.trackJob()` handle to remember it already finished (the
     documented direct-HTTP path: a detached worker POSTing its whole status each
     tick) would otherwise re-create the record the moment it aged out, and again
     every FINISHED_TTL_S after that: a finished download blinking back onto the
@@ -353,9 +353,13 @@ def test_the_runtime_and_the_shell_agree_on_the_ping_key():
     assert key in shell
 
 
-def test_the_bridge_exposes_job_on_window_fused():
+def test_the_bridge_exposes_track_job_on_window_fused():
+    """`trackJob`, not `job` (D244): a page does not START work through this
+    bridge, it reports on work it started itself — and `fused.job(...)` read as
+    the job itself rather than as the handle for describing one."""
     runtime = open(
         os.path.join(REPO_ROOT, "fused_render", "static", "runtime.js"), encoding="utf-8"
     ).read()
     api = runtime.split("window.fused = {", 1)[1].split("};", 1)[0]
-    assert "\n    job,\n" in api
+    assert "\n    trackJob,\n" in api
+    assert "\n    job,\n" not in api

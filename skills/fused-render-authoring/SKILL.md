@@ -23,10 +23,10 @@ fused-render is a local file explorer that renders `.html` files live in the bro
    │
    ├─ fused.ai("...")          ← runs the local claude CLI, returns {text, model, usage}
    │
-   └─ fused.job({...})         ← report long work to the shell's download manager
+   └─ fused.trackJob({...})         ← report long work to the shell's download manager
 ```
 
-Three primitives — `runPython`, `params`, and the file IO helpers — are the core API (plus `fused.ai` for asking an AI model through the local claude CLI and `fused.job` for reporting long-running work — each gets its own section below — and two auxiliary members, `fused.env` and `fused.autoReload`, covered in the table). Everything else is ordinary HTML/CSS/JS (no framework, no build step, ES2020 fine).
+Three primitives — `runPython`, `params`, and the file IO helpers — are the core API (plus `fused.ai` for asking an AI model through the local claude CLI and `fused.trackJob` for reporting long-running work — each gets its own section below — and two auxiliary members, `fused.env` and `fused.autoReload`, covered in the table). Everything else is ordinary HTML/CSS/JS (no framework, no build step, ES2020 fine).
 
 ## The Python side: `main()` contract
 
@@ -132,7 +132,7 @@ The runtime is injected automatically when the explorer renders the page. Never 
 | `await fused.writeFile(path, content, opts?)` | Writes UTF-8 text **atomically** (never a half-written file). `opts.expectedMtime` arms an optimistic lock: if the file changed on disk since that mtime, rejects with an error whose `.type === "conflict"` (and `.mtime` = current on-disk value) instead of clobbering. A read-only file rejects with `.type === "readonly"` (check `stat().writable` first to avoid it). Omit `expectedMtime` to write unconditionally. `opts.create` writes only if the path is absent: an existing path rejects with `.type === "exists"` and nothing is written, which is how you create a file without a stat-then-write race. Resolves with a fresh stat object; keep its `.mtime` to re-arm the lock for the next save. |
 | `fused.rawUrl(path)` | **Sync**, returns a URL string serving the file's raw bytes. This is for embedding — `<img src>`, `<video src>`, `<embed>`, download links — where you need a URL, not text. |
 | `await fused.ai(prompt, opts?)` | Ask an AI model; resolves with `{text, model, usage}`. Runs the local `claude` (Claude Code) CLI; local-only. See the **"AI calls"** section below for the options, error types, and the worked pattern. |
-| `fused.job(spec)` | Report a long-running operation (a model download, a minutes-long generation) to the shell's **download manager**, so it stays visible after the user browses away from your page. Returns a handle; see the **"Long-running work"** section below. Never throws, never rejects. |
+| `fused.trackJob(spec)` | Report a long-running operation (a model download, a minutes-long generation) to the shell's **download manager**, so it stays visible after the user browses away from your page. Returns a handle; see the **"Long-running work"** section below. Never throws, never rejects. |
 | `fused.env` | String `"local"` (this local server) vs `"hosted"` (the exported/hosted runtime). Branch on it only if a view must behave differently when exported. |
 | `fused.autoReload(enabled)` | Toggle the automatic reload-on-file-change behavior for this page. Pass `false` to opt out (e.g. an in-page editor that manages its own saves and shouldn't reload under the user). |
 
@@ -410,12 +410,12 @@ Every `fused.runPython` call runs `main()` in a fresh subprocess that the server
 - **Move the heavy job out of band.** For a genuinely long build, run it as a separate process/script that writes an output file, and have the view just `fused.readFile`/`runPython` the finished result.
 - **Cut per-call cost.** Each call re-pays import cost (pandas ≈ 1 s); import lazily inside `main`, and debounce sliders (~150 ms) so a drag doesn't spawn a subprocess per tick.
 
-### Show it in the download manager (`fused.job`)
+### Show it in the download manager (`fused.trackJob`)
 
 The out-of-band pattern above leaves a hole: a detached worker pulling an 8GB model keeps running when the user browses to another file, and the shell replaces your page's frame the moment they do — so your in-page progress bar disappears and the download becomes invisible. Report it instead, and the shell shows it in the **download manager** at the bottom right for as long as it runs, whatever page the user is on:
 
 ```js
-const job = fused.job({
+const job = fused.trackJob({
   title: "FLUX.2-klein-4B",      // required — what is happening, in a few words
   kind: "download",              // "download" | "task"
   unit: "bytes",                 // "bytes" formats done/total as 1.2 / 8.1 GB
@@ -467,8 +467,8 @@ job.finish("Downloaded");        // or job.fail(err) / job.cancelled()
   **The worker is also the only thing that can honor a cancel once the page is gone.** `cancel_requested` comes back in the reply to the tick you were already sending; check it in your progress callback and stop. If your long step is an opaque subprocess (`uv sync`), run a small daemon thread that posts a heartbeat, reads the flag, and kills the child — otherwise the ✕ does nothing for the minutes that matter most.
 
 - **One job per user-meaningful operation**, not per file: aggregate a multi-file download into one row (sum the bytes) and put the current filename in `detail`.
-- Reuse a **stable `id`** (`fused.job({id: "flux:" + jobId, ...})`) when a page can be reloaded mid-work — the reopened page re-attaches to the existing row instead of opening a second one.
-- Exports fine: `fused.job` is a no-op on a hosted page (there is no manager there), so unlike `fused.ai` it does not block export.
+- Reuse a **stable `id`** (`fused.trackJob({id: "flux:" + jobId, ...})`) when a page can be reloaded mid-work — the reopened page re-attaches to the existing row instead of opening a second one.
+- Exports fine: `fused.trackJob` is a no-op on a hosted page (there is no manager there), so unlike `fused.ai` it does not block export.
 
 Escape hatch: because fused-render runs your own trusted code on your own machine, you *can* raise `DEFAULT_TIMEOUT` in `fused_render/executor.py` — but that's editing the package, applies globally, and lets any view hang a worker that long. Prefer the caching/chunking patterns; reach for the constant only for a deliberate, local one-off.
 
@@ -489,6 +489,6 @@ Escape hatch: because fused-render runs your own trusted code on your own machin
 - Dumping the full dataset into a `fused.ai` prompt → token blowout and a worse answer; reduce to compact aggregates first (see "AI calls" above and `examples_seed/ai_demo/`).
 - Forgetting `fused.ai` has no stale-cancel → a double-click fires two concurrent calls; disable the button while one is in flight.
 - Calling `fused.ai` on a page meant for export → the exporter rejects it (SPEC RH-11); gate on `fused.env === "local"`.
-- Starting long work with `fused.job` and never calling `finish`/`fail`/`cancelled` → the row sits there and goes "stalled" after 30 s, telling the user the page was closed when really the job just ended. Report a terminal state on every exit path of the poll loop.
+- Starting long work with `fused.trackJob` and never calling `finish`/`fail`/`cancelled` → the row sits there and goes "stalled" after 30 s, telling the user the page was closed when really the job just ended. Report a terminal state on every exit path of the poll loop.
 - Reporting progress ONLY from the page → the row freezes and goes "stalled" the moment the user opens another file, because the shell tears your frame down. Anything that outlives the page must report from the worker (see "Long-running work" above).
 - Reporting "I wrote the files, try it" as if it were verification → after the page has been opened, `fused-render calls --page <page>` says whether it actually ran (see "Verifying your work" above). Zero records means the page's JS died before it reached Python — a different bug from a failing `main()`, and they look identical without the log.

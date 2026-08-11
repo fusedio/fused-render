@@ -75,7 +75,7 @@ STALE_DROP_S = 600.0
 # that when it IS reached, what survives is what a person would want to see.
 MAX_JOBS = 64
 
-# Ids are chosen by the reporter — the runtime mints one per `fused.job()`, and
+# Ids are chosen by the reporter — the runtime mints one per `fused.trackJob()`, and
 # a Python worker may use a stable one of its own so a re-launched worker
 # re-attaches to its row rather than opening a second. Constrained to a plain
 # token so it stays safe as a dict key, a URL path segment, and a React key.
@@ -94,7 +94,7 @@ PAGE_MAX = 1024
 #
 # What is refused is precise, and the precision is the point: a LATE TICK, never
 # a fresh start. A tick from a poll loop is a delta (`done`, `detail`) or a
-# terminal state; the opening report a `fused.job()` handle sends is the only
+# terminal state; the opening report a `fused.trackJob()` handle sends is the only
 # thing that carries `state: "running"` explicitly. So an opening report CLEARS
 # the dismissal and re-opens the row, and everything else stays refused.
 #
@@ -327,7 +327,7 @@ def dismiss(job_id: str, *, now: float | None = None) -> bool:
     hiding anything the app could otherwise tell you — it is the app admitting
     it has stopped knowing. The user closing that row usually knows exactly what
     it was (they closed the page). And it is not a one-way door: a reporter that
-    comes back opens the row again with its next `fused.job()` handle.
+    comes back opens the row again with its next `fused.trackJob()` handle.
     """
     now = time.time() if now is None else now
     with _lock:
@@ -397,7 +397,7 @@ def _sweep(now: float) -> None:
     because it is the same statement — *this row is over* — and it needs the
     same protection from the same late tick. A reporter that posts its FULL
     status every tick (the documented direct-HTTP path: a detached worker with
-    no `fused.job()` handle to remember it already finished) would otherwise
+    no `fused.trackJob()` handle to remember it already finished) would otherwise
     re-create the record from scratch the moment it aged out, and keep doing so
     every FINISHED_TTL_S for as long as it kept posting — a finished download
     blinking back onto the screen every 30 seconds. Only a fresh opening report

@@ -133,12 +133,12 @@ Any `.html` file can call it and bind the result to the URL:
 - `fused.ai(prompt, opts?)` — ask an AI model through the `claude` (Claude
   Code) CLI on your machine; resolves with `{text, model, usage}`.
   See `examples_seed/ai_demo/` for a working AI-analyst view.
-- `fused.job(spec)` — report work that runs longer than the page you started it
+- `fused.trackJob(spec)` — report work that runs longer than the page you started it
   from (a model download, a long generation) to the **download manager** in the
   bottom-right corner, so it stays visible after you browse away:
 
   ```js
-  const job = fused.job({ title: "FLUX.2-klein-4B", kind: "download",
+  const job = fused.trackJob({ title: "FLUX.2-klein-4B", kind: "download",
                           unit: "bytes", cancellable: true });
   job.update({ done: 1.2e9, total: 8.1e9, detail: "transformer.gguf" });
   if (job.cancelRequested) stopTheWork();   // the manager's ✕ asked

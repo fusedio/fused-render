@@ -1,7 +1,7 @@
 // Reading the background-job registry (fused_render/jobs.py) — the model the
 // download manager draws (SPEC §36, D244).
 //
-// A page reports long-running work through `fused.job()` in the injected
+// A page reports long-running work through `fused.trackJob()` in the injected
 // runtime; the record lives on the server so it outlives the reporting
 // document, and the shell reads it back here. Everything the manager decides
 // from a record — how far along it is, what to call it, whether it can still be

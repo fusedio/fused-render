@@ -14,7 +14,7 @@
  *     usage names, NOT OpenAI's prompt_tokens/completion_tokens. opts:
  *     systemPrompt, model, effort ("low"|"medium"|"high"|"xhigh"),
  *     onChunk. Local-only — not available on hosted/exported pages.
- *   fused.job(spec) -> handle {update, finish, fail, cancelled, cancelRequested}
+ *   fused.trackJob(spec) -> handle {update, finish, fail, cancelled, cancelRequested}
  *     Report a long-running operation (a model download, a minutes-long
  *     generation) to the shell's download manager, so it stays visible after
  *     the page that started it is navigated away from (SPEC §36, D244). Every
@@ -1643,7 +1643,7 @@
   // progress bar inside itself, so an 8GB download became invisible the moment
   // you navigated away from the page that started it.
   //
-  //   const job = fused.job({ title: "FLUX.2-klein-4B", kind: "download",
+  //   const job = fused.trackJob({ title: "FLUX.2-klein-4B", kind: "download",
   //                           unit: "bytes", cancellable: true });
   //   job.update({ done: 1.2e9, total: 8.1e9, detail: "transformer.gguf" });
   //   if (job.cancelRequested) stopTheWork();      // set from the manager's ✕
@@ -1715,7 +1715,7 @@
       .catch(() => null);
   }
 
-  function job(spec) {
+  function trackJob(spec) {
     spec = spec || {};
     const id = spec.id ? String(spec.id) : newJobId();
     // Mirrors the last record the server confirmed, so `cancelRequested` and
@@ -1733,7 +1733,7 @@
     function warnOnce(message) {
       if (warned) return;
       warned = true;
-      console.warn("fused.job(" + JSON.stringify(id) + "): " + message);
+      console.warn("fused.trackJob(" + JSON.stringify(id) + "): " + message);
     }
 
     function send(fields) {
@@ -1999,7 +1999,7 @@
     uploadFile,
     mkdir,
     ai,
-    job,
+    trackJob,
     autoReload,
     params: { get, getAll, set, onChange },
   };

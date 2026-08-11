@@ -5142,7 +5142,7 @@ stop it short of quitting the app.
   browser tab as the shell chrome. The record therefore outlives the document
   that reports it, and the same registry answers a detached Python worker
   POSTing to `/api/jobs` directly.
-- **BG-3** **Reporting bridge** (`static/runtime.js`): `fused.job(spec)` returns
+- **BG-3** **Reporting bridge** (`static/runtime.js`): `fused.trackJob(spec)` returns
   a handle — `update(fields)`, `finish(detail)`, `fail(message)`, `cancelled()`,
   plus the read-only `cancelRequested` / `state`. Reporting is **decoration**:
   every method is fire-and-forget, no rejection escapes, and a page whose
@@ -5180,7 +5180,7 @@ stop it short of quitting the app.
   nothing the app could otherwise say. A dismissed id is remembered (bounded)
   and its **late ticks stay refused**, so a poll loop that runs on after its job
   ended cannot resurrect the row the user just closed; an **opening report**
-  (the only report that states `running` outright, which `fused.job()` sends
+  (the only report that states `running` outright, which `fused.trackJob()` sends
   once per handle) clears the dismissal and re-opens the row, so a page reusing
   a stable id still gets one for its next real run.
 - **BG-8** **API** (`server/routers/jobs.py`): `GET /api/jobs` (unguarded read,
@@ -5220,7 +5220,7 @@ stop it short of quitting the app.
   optimisation only: a Python worker reporting straight to the API runs no JS
   and writes none, so the idle poll is the floor that guarantees its row shows
   up either way.
-- **BG-14** **Portable.** `fused.job` is a no-op stub in the hosted runtime (the
+- **BG-14** **Portable.** `fused.trackJob` is a no-op stub in the hosted runtime (the
   `fused` wheel's copy of the bridge) rather than an export-blocking call like
   `fused.ai` (RH-11): progress reporting is decoration, and a page that reports
   it should still deploy — it simply has no manager to report to.
