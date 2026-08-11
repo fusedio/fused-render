@@ -1059,3 +1059,36 @@ def test_a_revision_that_vanishes_mid_scan_costs_one_revision(client, hub, monke
     assert row["revisions"] == 1
     # …and the surviving revision still describes the repo.
     assert row["task"] == "text generation"
+
+
+@requires_symlinks
+def test_a_task_carries_a_sentence_explaining_what_it_means(client, hub):
+    # "image + text to text" is the Hub's vocabulary, which is jargon until
+    # someone says what goes in and what comes out.
+    repo = _repo(hub, "models--org--vlm", blobs={"w": 10}, snapshots={"c1": {"m": "w"}}, refs={"main": "c1"})
+    _snapshot_file(repo, "c1", "README.md", "---\npipeline_tag: image-text-to-text\n---\n")
+    row = _repo_row(client, "org/vlm")
+    assert row["task"] == "image + text to text"
+    assert "image AND a prompt" in row["taskHelp"]
+
+
+@requires_symlinks
+def test_an_architecture_derived_task_is_explained_too(client, hub):
+    # One glossary serves both paths: the label is the key, not the raw tag.
+    repo = _repo(hub, "models--org--m", blobs={"w": 10}, snapshots={"c1": {"m": "w"}}, refs={"main": "c1"})
+    _snapshot_file(repo, "c1", "config.json", json.dumps({"architectures": ["BertForMaskedLM"]}))
+    row = _repo_row(client, "org/m")
+    assert row["task"] == "fill mask"
+    assert row["taskHelp"].startswith("Fills in blanked-out words")
+
+
+@requires_symlinks
+def test_an_unknown_tag_still_shows_its_label_and_source(client, hub):
+    # The Hub's vocabulary is open-ended, so a tag we have no sentence for
+    # degrades to label + provenance rather than to nothing.
+    repo = _repo(hub, "models--org--m", blobs={"w": 10}, snapshots={"c1": {"m": "w"}}, refs={"main": "c1"})
+    _snapshot_file(repo, "c1", "README.md", "---\npipeline_tag: graph-ml\n---\n")
+    row = _repo_row(client, "org/m")
+    assert row["task"] == "graph ml"
+    assert row["taskSource"] == "the model card's pipeline_tag"
+    assert row["taskHelp"] is None

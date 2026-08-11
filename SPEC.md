@@ -5369,7 +5369,14 @@ is for, and the cache states it nowhere:
   turning hyphens into spaces, which needs no table to stay current — except
   where that produces something unreadable: `image-text-to-text` becomes
   "image + text to text" (an image AND a prompt in, text out) rather than the
-  unparseable "image text to text". **Every answer
+  unparseable "image text to text". **The hover explains the label, not just its
+  provenance**: one sentence saying what goes in and what comes out ("takes an
+  image AND a prompt, answers in text"), because the Hub's vocabulary is jargon
+  to anyone who has not met it, and a card that shows a term without defining it
+  has told the user only that they don't know it. The glossary is keyed by the
+  LABEL, so one table serves the model-card path and the architecture path; a
+  tag it has no sentence for still shows its label and its source, which is what
+  an open vocabulary degrades to gracefully. **Every answer
   carries where it came from**, and the card shows that on hover: a
   `pipeline_tag` is a fact and an architecture is a reading of one, and a UI
   that rendered them identically would be overclaiming. A repo with none of that

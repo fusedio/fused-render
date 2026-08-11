@@ -1900,6 +1900,10 @@ export interface AiModelRepo {
   /** Where `task` was read from — a pipeline_tag is the Hub's own answer, an
    *  architecture is our reading of one, and the UI distinguishes them. */
   taskSource: string | null;
+  /** One sentence on what the task MEANS (what goes in, what comes out), for
+   *  the hover — the labels are the Hub's vocabulary, which is jargon until
+   *  someone explains it. Null for a tag we have no sentence for. */
+  taskHelp: string | null;
   library: string | null;
   /** Parameter count from the safetensors headers; null when the weights are in
    *  a format with no cheap header to read (.bin, .gguf). */

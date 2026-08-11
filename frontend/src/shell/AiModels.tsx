@@ -250,13 +250,18 @@ function RepoCard({
       {(repo.task || repo.params) && (
         <div className="am-card-what">
           {repo.task && (
-            // The source is a tooltip rather than a second visible clause: a
-            // pipeline_tag is the Hub's own answer and an architecture is our
-            // reading of one, and that distinction matters when it looks wrong,
-            // not while scanning a grid.
+            // The hover answers both questions the label raises: what the task
+            // MEANS ("image + text to text" is jargon until someone says it
+            // takes a picture and a prompt), and where it came from — a
+            // pipeline_tag is the Hub's own answer while an architecture is our
+            // reading of one, which matters when the label looks wrong.
             <span
               className="am-card-task"
-              title={repo.taskSource ? `Read from ${repo.taskSource}` : undefined}
+              title={
+                [repo.taskHelp, repo.taskSource && `Read from ${repo.taskSource}.`]
+                  .filter(Boolean)
+                  .join(" ") || undefined
+              }
             >
               {repo.task}
             </span>
@@ -278,7 +283,14 @@ function RepoCard({
             </span>
           )}
           {repo.quantization && (
-            <span className="am-card-quant" title="Weights are stored at this width">
+            <span
+              className="am-card-quant"
+              title={
+                `Weights are stored at ${repo.quantization} each instead of the usual 16, ` +
+                "so the download is a fraction of the full-precision one — cheaper to run, " +
+                "slightly less accurate."
+              }
+            >
               {repo.quantization}
             </span>
           )}

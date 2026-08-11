@@ -102,6 +102,10 @@ once that cache exists; the first download from the Hub creates it.
   from the architecture in `config.json` (hover the label to see which), and the
   parameter count from the safetensors headers. A repo whose download brought
   neither says nothing rather than guessing.
+- **Hover a task to see what it means.** "Image + text to text" says it takes a
+  picture and a prompt and answers in text; "fill mask" says it fills in blanked
+  words. The same hover says where the label came from — the model card, or the
+  architecture in `config.json`.
 - **Quantized models say so, and their size is marked "≈".** A 4-bit checkpoint
   packs eight weights into each stored word, so the card shows the width
   ("4-bit") and reports the parameter count unpacked from it — approximate by

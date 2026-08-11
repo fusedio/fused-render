@@ -315,6 +315,44 @@ def _quantization(config: dict) -> int | None:
     return None
 
 
+# What each task actually MEANS, in terms of what goes in and what comes out.
+# The labels above are the Hub's vocabulary (or our reading of an architecture),
+# and "image + text to text" or "fill mask" tell you nothing if you have not met
+# them before — so the card explains them on hover rather than leaving a phrase
+# to be guessed at.
+#
+# Keyed by the LABEL, not the raw tag, so one table serves both the model-card
+# path and the architecture path. Deliberately incomplete: the Hub adds tags,
+# and a tag we have no sentence for still shows its label and its source, which
+# is what an open vocabulary degrades to gracefully.
+_TASK_HELP = {
+    "text generation": "Continues or answers a prompt in text — chat models, code models, completion.",
+    "text-to-text generation": "Rewrites text into other text — translation, summarising, reformatting.",
+    "fill mask": "Fills in blanked-out words in a sentence. Mostly a building block for other models.",
+    "text classification": "Sorts a piece of text into categories — sentiment, topic, spam.",
+    "token classification": "Labels each word in a sentence — named entities, parts of speech.",
+    "question answering": "Finds the span of a supplied document that answers a question.",
+    "summarization": "Shortens a long text into its main points.",
+    "translation": "Translates text from one language into another.",
+    "embeddings": "Turns text into vectors, so things can be compared or searched by meaning.",
+    "sentence embeddings": "Turns sentences into vectors, so similar sentences land near each other — search, clustering, RAG.",
+    "image + text to text": "Takes an image AND a prompt, answers in text — describing a picture, reading a chart, visual chat.",
+    "image to text": "Describes an image in words — captioning, OCR.",
+    "text to image": "Generates a picture from a written description.",
+    "image generation": "Generates a picture, usually from a written description.",
+    "video generation": "Generates video frames, usually from a description or a still image.",
+    "audio generation": "Generates sound — speech, music, effects.",
+    "text to speech": "Reads text aloud as audio.",
+    "speech recognition": "Transcribes speech in audio into text.",
+    "image classification": "Says what an image is a picture of, from a fixed set of labels.",
+    "zero-shot image classification": "Says what an image shows, against labels you supply at the time rather than a fixed set.",
+    "image segmentation": "Marks which pixels belong to which object.",
+    "object detection": "Finds objects in an image and boxes them.",
+    "depth estimation": "Estimates how far away each part of an image is.",
+    "any input to any output": "Handles several kinds of input and output — text, images, audio — in one model.",
+}
+
+
 @dataclass
 class _RepoMeta:
     """What a repo is for and how big the model is — read from the default
@@ -322,6 +360,8 @@ class _RepoMeta:
 
     task: str | None = None
     task_source: str | None = None
+    # One sentence on what the task means, when we have one for it.
+    task_help: str | None = None
     params: int | None = None
     # True when `params` was recovered from packed weights (see
     # _safetensors_params) rather than read off unpacked shapes — the UI marks
@@ -571,6 +611,9 @@ def _repo_meta(repo_dir: str) -> _RepoMeta:
         meta.task, meta.task_source = "text generation", "a GGUF weights file"
         library = library or "gguf"
 
+    if meta.task:
+        meta.task_help = _TASK_HELP.get(meta.task)
+
     quantized_bits = _quantization(config)
     if quantized_bits:
         meta.quantization = f"{quantized_bits}-bit"
@@ -715,6 +758,9 @@ def _repo(cache_dir: str, dirname: str, kind: str) -> dict:
         # the UI says which (see _repo_meta).
         "task": meta.task,
         "taskSource": meta.task_source,
+        # One sentence on what that task means — the labels are the Hub's
+        # vocabulary, which is jargon until someone explains it.
+        "taskHelp": meta.task_help,
         "library": meta.library,
         # Parameter count, exact, from the safetensors headers. None when the
         # weights are in a format with no cheap header to read.
