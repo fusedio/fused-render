@@ -1397,7 +1397,7 @@ def _run_planning(agent, tmp_path, monkeypatch):
 
 def test_an_approved_plan_moves_the_live_mode_out_of_plan(agent, tmp_path,
                                                           monkeypatch):
-    """The CLI leaves plan mode ITSELF the moment it sees the allow (D246's
+    """The CLI leaves plan mode ITSELF the moment it sees the allow (D248's
     spike: `system/status permissionMode:"default"`), so a derived mode that
     stayed "plan" described a session nobody was in — and `permChoices`' plan
     guard went on suppressing the mode-switch affordance for the rest of the
@@ -1436,7 +1436,7 @@ def test_only_the_plan_tool_moves_the_mode_without_a_setmode(agent, tmp_path,
     """The plan tool is the ONE tool whose bare allow moves the derived mode,
     because it is the one the CLI acts on by itself. An ordinary approval with no
     `setMode` says nothing about the mode and must leave it where it was — even
-    in plan mode, where an ordinary card can still surface (D246)."""
+    in plan mode, where an ordinary card can still surface (D248)."""
     run_dir = _run_planning(agent, tmp_path, monkeypatch)
     with open(os.path.join(agent._perm_dir(run_dir), "req-0.req.json"), "w") as fh:
         json.dump({"id": "req-0", "tool": "Read", "input": {"file_path": "/x"},
@@ -1830,7 +1830,7 @@ def test_the_selector_and_the_backend_offer_the_same_modes(agent):
 
 
 def test_the_note_field_cannot_type_past_what_the_server_will_keep(agent):
-    """The server-side cap (`NOTE_LIMIT`) is bounded either way (D246's
+    """The server-side cap (`NOTE_LIMIT`) is bounded either way (D248's
     truncation marker), but an honest user should never even reach it — the
     textarea's own `maxLength` is the first line of defence, and a test holds
     the two numbers together (D146) so one cannot drift from the other."""

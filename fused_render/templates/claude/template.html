@@ -1311,7 +1311,7 @@
 
   /* ── markdown, in the TWO places rendered markdown lands ──
      `.assistant` (a reply) and `.plan-body` (a plan card's body, which
-     buildPlanCard runs through the same renderMd funnel — D247). Every rule
+     buildPlanCard runs through the same renderMd funnel — D248). Every rule
      below is dualled for the same reason the hljs and .copybtn overrides above
      are: an `.assistant`-only markdown rule left a plan's headings, lists,
      tables and inline code completely unstyled — UA defaults (a 2em h1, 40px
@@ -1364,7 +1364,7 @@
      BOTH scopes, because a code block reaches the page through two funnels:
      the assistant transcript, and `buildPlanCard`, which renders `input.plan`
      through the same renderMd + attachCodeCopy pair inside a `.perm` card
-     (D246). An `.assistant`-only override left a plan's code blocks with the
+     (D248). An `.assistant`-only override left a plan's code blocks with the
      vendor padding unopposed — the exact bug this comment describes,
      reintroduced one call site over. */
   .assistant pre code.hljs,
@@ -4919,7 +4919,7 @@ function addAssistant(text) {
 // Callers run attachCodeCopy themselves (history does one pass over the whole
 // log, the others one per turn). This is the ONLY function outside makeTyper,
 // buildTextView, buildThinkingView and buildPlanCard that may put renderMd
-// output into an innerHTML; a test enumerates that list (D244).
+// output into an innerHTML; a test enumerates that list (D246).
 function addAssistantTurn(text, segments) {
   const turn = addAssistant("");
   const segs = Array.isArray(segments) ? segments : [];
@@ -6840,7 +6840,7 @@ async function pollLoop(run_id) {
         } else if (data.text) {
           // A run whose text only ever arrived on the poll that ENDED it, so no
           // typer was ever pointed at anything. Through addAssistantTurn like
-          // the other finished-turn renders (D244's one-renderer rule): this
+          // the other finished-turn renders (D246's one-renderer rule): this
           // used to hand-roll `innerHTML = renderMd(...)`, which meant a payload
           // that carried segments here rendered its flat text instead of them.
           attachCodeCopy(addAssistantTurn(data.text, data.segments));

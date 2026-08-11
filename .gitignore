@@ -53,4 +53,4 @@ cmux-assets/
 # dev.sh's staged builtin-mount zips (learn.zip / sessions.zip) — build
 # artifacts, freshly rebuilt on every dev.sh run, never committed
 .dev-zips/
-docs/superpowers/
+docs/superpowers/plans/

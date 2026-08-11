@@ -1339,7 +1339,7 @@ def _live_mode(meta: dict, permissions: list) -> str:
     * an `allow` carrying a validated `setMode` — the escalation button, and the
       optional landing mode on a plan approval;
     * an `allow` on `PLAN_TOOL`, with or without a `setMode`. The CLI leaves
-      plan mode ITSELF the moment it sees one (D246's spike: it emits
+      plan mode ITSELF the moment it sees one (D248's spike: it emits
       `system/status permissionMode:"default"` and the tool_result reads "User
       has approved your plan…"), so a derived mode that stayed `"plan"` was
       describing a session that had already left it — and `permChoices`' plan

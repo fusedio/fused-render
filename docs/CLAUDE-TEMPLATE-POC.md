@@ -332,9 +332,9 @@ claude (headless)                    agent.py / browser
   `AskUserQuestion` and `ExitPlanMode`, which the CLI otherwise disables in
   headless mode. Both were kept off by `--disallowed-tools` while this chat
   rendered neither. Both are now **live**: `AskUserQuestion` renders as a
-  question card that answers it over the same bridge (D245), and
+  question card that answers it over the same bridge (D247), and
   `ExitPlanMode` renders as a plan card — "Approve plan" / "Keep planning",
-  with a `plan` permission mode ("Plan first") on the picker (D246). Nothing
+  with a `plan` permission mode ("Plan first") on the picker (D248). Nothing
   is disallowed any more; the flag itself is gone from the spawn.
 
 ## Deliberate simplifications / tradeoffs (revisit later)
@@ -376,7 +376,7 @@ claude (headless)                    agent.py / browser
    not move; fork semantics deemed reasonable for copied files).
    Cross-*machine* transfer would need the transcript embedded in the
    sidecar — out of scope.
-6. **Only text turns — and approval cards — render.** — **SUPERSEDED by D244:**
+6. **Only text turns — and approval cards — render.** — **SUPERSEDED by D246:**
    the transcript now renders the turn's `segments` (a collapsible chip per tool
    call, Edit/Write open on their diff; a folded thinking block; markdown
    prose), for streaming, restored and re-attached turns alike, and `segments`

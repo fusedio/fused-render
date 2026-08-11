@@ -294,7 +294,7 @@ def test_hljs_theme_padding_and_scroll_are_overridden_in_every_scope(source):
     #
     # And it must hold for BOTH SCOPES a highlighted <pre> can appear in, not
     # just the transcript: `buildPlanCard` runs the same renderMd +
-    # attachCodeCopy pair over `input.plan` inside a `.perm` card (D246), so
+    # attachCodeCopy pair over `input.plan` inside a `.perm` card (D248), so
     # an `.assistant`-only override left a plan's code blocks with the vendor
     # padding unopposed — the identical bug, one call site over. Four
     # overrides, therefore: {.assistant, .perm} x {dark, light}. Each is

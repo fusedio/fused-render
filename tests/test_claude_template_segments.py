@@ -935,7 +935,7 @@ def test_one_static_turn_renderer_serves_history_and_the_reattach_repair(source)
 
 
 # The whole set of functions allowed to put renderMd output into an innerHTML.
-# ENUMERATED, not described: "one renderer" (D244) is only a rule if a NEW
+# ENUMERATED, not described: "one renderer" (D246) is only a rule if a NEW
 # hand-rolled site is a test failure, and the poll loop's tail evaded the checks
 # above for exactly as long as they only named the sites that already existed.
 # Each entry is a deliberate seam:
@@ -943,7 +943,7 @@ def test_one_static_turn_renderer_serves_history_and_the_reattach_repair(source)
 #   buildTextView      one prose segment of a turn
 #   buildThinkingView  a folded reasoning block
 #   addAssistantTurn   every FINISHED turn (all four callers above)
-#   buildPlanCard      the one tool INPUT that is genuinely markdown (D246)
+#   buildPlanCard      the one tool INPUT that is genuinely markdown (D248)
 # Adding to this set is a decision about what may reach innerHTML at all; every
 # other payload on this page goes in through textContent.
 _MD_INNERHTML_OWNERS = {
