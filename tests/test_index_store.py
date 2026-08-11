@@ -144,6 +144,44 @@ def test_compact_writes_sorted_partitions_and_a_manifest(tmp_path):
     assert not os.path.isdir(shards)
 
 
+def test_compact_stores_the_absolute_path_depth_on_both_tables(tmp_path):
+    """`depth` is denormalised out of the path so the corpus query can order by
+    a stored int32 instead of counting slashes per row (store.schemas)."""
+    cfg = _cfg(tmp_path)
+    compact(cfg, "/r", _shard(tmp_path, cfg, [
+        ("/r/b", _scanned("s", [_row("/r/b/1.txt")], 10, 2, 0)),
+        ("/r", _scanned("s", [_row("/r/a.txt")], 10, 1, 1)),
+    ]), pa, pq)
+    part = os.path.join(cfg.files_dir, read_manifest(cfg)["partitions"][0]["file"])
+    t = pq.read_table(part)
+    assert dict(zip(t.column("path").to_pylist(),
+                    t.column("depth").to_pylist())) == {
+        "/r/a.txt": 2, "/r/b/1.txt": 3}
+    d = pq.read_table(cfg.dirs_parquet)
+    assert dict(zip(d.column("dir").to_pylist(),
+                    d.column("depth").to_pylist())) == {"/r": 1, "/r/b": 2}
+
+
+def test_compact_backfills_depth_onto_a_pre_depth_index(tmp_path):
+    """Additive schema evolution, like mtime_ns and n_subdirs before it: an
+    index already on disk has one fewer column than the shards it is unioned
+    with, and a positional UNION ALL would fail rather than merge."""
+    cfg = _cfg(tmp_path)
+    compact(cfg, "/one", _shard(tmp_path, cfg, [
+        ("/one", _scanned("s", [_row("/one/a.txt")], 10, 1, 0))]), pa, pq)
+    for fp in [os.path.join(cfg.files_dir, p["file"])
+               for p in read_manifest(cfg)["partitions"]] + [cfg.dirs_parquet]:
+        pq.write_table(pq.read_table(fp).drop(["depth"]), fp)
+    compact(cfg, "/two", _shard(tmp_path, cfg, [
+        ("/two", _scanned("s", [_row("/two/b/c.txt")], 10, 1, 0))]), pa, pq)
+    part = os.path.join(cfg.files_dir, read_manifest(cfg)["partitions"][0]["file"])
+    t = pq.read_table(part)
+    assert dict(zip(t.column("path").to_pylist(),
+                    t.column("depth").to_pylist())) == {
+        "/one/a.txt": 2, "/two/b/c.txt": 3}
+    assert sorted(pq.read_table(cfg.dirs_parquet).column("depth").to_pylist()) == [1, 1]
+
+
 @pytest.mark.parametrize("awkward", ["Dave's stuff", "brack[et]s", "star*dir"])
 def test_compact_survives_a_store_path_with_sql_or_glob_metachars(tmp_path, awkward):
     """The store dir is the USER's path (FUSED_RENDER_HOME under their home),
@@ -290,7 +328,8 @@ def test_compact_reads_the_previous_index_through_the_manifest(tmp_path):
     stray = os.path.join(cfg.files_dir, "part-99999-99999.parquet")
     file_schema, _ = __import__("fused_render.index.store", fromlist=["schemas"]).schemas(pa)
     pq.write_table(pa.table({k: [v] for k, v in zip(
-        file_schema.names, ["/one/ghost.txt", "/one", "ghost.txt", "txt", 1, 1.0])},
+        file_schema.names,
+        ["/one/ghost.txt", "/one", "ghost.txt", "txt", 1, 1.0, 2])},
         schema=file_schema), stray)
     compact(cfg, "/two", _shard(tmp_path, cfg, [
         ("/two", _scanned("s", [_row("/two/b.txt")], 10, 1, 0))]), pa, pq)

@@ -87,6 +87,14 @@ are indifferent to which source produced them. Files come from the partitions, f
 from `dirs.parquet`; the corpus is capped at `MAX_CORPUS` (200 000), the same cap the
 walk uses, and flags `truncated` the same way.
 
+The two sources are **one** query — a `UNION ALL` under a single
+`ORDER BY depth, path LIMIT limit + 1`, so files and folders compete for the same
+budget by depth and the capped corpus keeps the breadth-first character of the walk
+it replaces. Serving files first and giving folders the leftover meant that on any
+tree big enough to truncate there was no leftover, and folder search was dead rather
+than degraded. The named cost of the fix: folders now spend budget files used to have,
+so a very large tree carries slightly fewer files.
+
 Two flags travel with it:
 
 - **`covered`** — the scan visited *this exact directory* (a `dirs.parquet` row for

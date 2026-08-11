@@ -18,7 +18,12 @@ import re
 
 from fused_render.index.config import IndexConfig
 from fused_render.index.ignore import norm
-from fused_render.index.store import like_literal, parquet_src, read_manifest
+from fused_render.index.store import (
+    depth_expr,
+    like_literal,
+    parquet_src,
+    read_manifest,
+)
 
 _DRIVE = re.compile(r"^[A-Za-z]:/")
 
@@ -125,6 +130,20 @@ def _sources(cfg: IndexConfig, parts) -> str:
     manifest."""
     files = [_q(os.path.join(cfg.files_dir, p["file"])) for p in parts]
     return "read_parquet([" + ",".join(f"'{f}'" for f in files) + "])"
+
+
+def _depth_col(con, src: str, path_col: str) -> str:
+    """`depth` when the parquet behind `src` carries it, else the slash-count
+    expression over `path_col`.
+
+    DESCRIBE reads footers only, so this costs no rows. Deciding per SOURCE
+    rather than per file is exact: every partition a manifest names was written
+    by one compaction, so a generation's schema is uniform (and DuckDB would
+    refuse a mixed-schema read_parquet list anyway). An index predating the
+    column keeps answering; migrating it is a full rescan."""
+    cols = {r[0] for r in con.execute(
+        f"DESCRIBE SELECT * FROM {src} LIMIT 0").fetchall()}
+    return "depth" if "depth" in cols else depth_expr(path_col)
 
 
 def lookup(cfg: IndexConfig, query: str = "", limit: int = 100, offset: int = 0,
@@ -275,21 +294,21 @@ def search_under(cfg: IndexConfig, root: str, q: str = "", limit: int = MAX_CORP
     # The trade: directories now spend part of the budget files used to have,
     # so a very large tree carries slightly fewer files. A corpus with no
     # folders in it at all is strictly worse.
-    fdepth = "(length(path) - length(replace(path, '/', '')))"
-    ddepth = "(length(dir) - length(replace(dir, '/', '')))"
     branches = []
     if hit:
+        fsrc = _sources(cfg, hit)
         like = f" AND path ILIKE '%{qlit}%' ESCAPE '\\'" if qlit else ""
         branches.append(
-            f"SELECT path, size, mtime, false AS is_dir, {fdepth} AS depth "
-            f"FROM {_sources(cfg, hit)} "
+            f"SELECT path, size, mtime, false AS is_dir, "
+            f"{_depth_col(con, fsrc, 'path')} AS depth FROM {fsrc} "
             f"WHERE path LIKE '{prefix_like}%' ESCAPE '\\'{like}")
     if include_dirs:
+        dsrc = dirs_src(cfg)
         dlike = f" AND dir ILIKE '%{qlit}%' ESCAPE '\\'" if qlit else ""
         branches.append(
             f"SELECT dir AS path, CAST(NULL AS BIGINT) AS size, "
             f"nullif(mtime_ns, 0) / 1e9 AS mtime, true AS is_dir, "
-            f"{ddepth} AS depth FROM {dirs_src(cfg)} "
+            f"{_depth_col(con, dsrc, 'dir')} AS depth FROM {dsrc} "
             f"WHERE dir LIKE '{prefix_like}%' ESCAPE '\\'{dlike}")
     entries, truncated = [], False
     if branches:
