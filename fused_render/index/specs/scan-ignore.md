@@ -149,8 +149,19 @@ stay invisible while its parent's mtime is unchanged.
   **built** with, written by `save_applied_ignore` only after a *successful*
   compaction.
 - `run_scan` compares the two: a mismatch discards the cache, emits the phase
-  `ignore rules changed - full rescan`, and rebuilds. An **absent** applied file is
-  *not* treated as a change — that case is safe incrementally, per §3.
+  `ignore rules changed - full rescan`, and rebuilds. An **absent** applied file
+  counts as a mismatch too (phase `no applied rules fingerprint - full rescan`).
+
+  That last point reverses the earlier rule ("absent is safe incrementally"), and
+  the reason is the leaf rules. Absent *was* safe while every rule only ever
+  *removed* rows: dropping a pattern is self-purging through the filtered cache
+  (§3), so an unfingerprinted index reconciled itself. A rule that **adds** rows
+  cannot work that way — a `.git` row appears only by visiting the repo directory,
+  and an incremental scan skips exactly that directory because its mtime has not
+  changed. The scan would then *stamp* the new fingerprint over an index that
+  never grew the rows, and every reader trusting the stamp (`/api/git-repos`)
+  would be permanently, confidently wrong. One full rescan is the cheap side of
+  that trade.
 
 ## 5. Storage and API
 

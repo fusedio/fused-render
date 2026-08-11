@@ -339,16 +339,30 @@ def run_scan(run_dir: str) -> None:
     _emit(ev, type="run_start", msg=root)
 
     try:
-        # A changed ignore list invalidates the cache: cached dirs carry subdir
+        # A changed rule set invalidates the cache: cached dirs carry subdir
         # counts computed under the old rules, so an incremental scan would keep
         # skipping folders that are no longer ignored.
+        #
+        # An ABSENT fingerprint counts as changed too, which it did not used to.
+        # That was safe while the only rules were ignore PATTERNS: removing a
+        # pattern is self-purging through the filtered cache (scan-ignore.md §3),
+        # so an unfingerprinted index could be reconciled incrementally. It is not
+        # safe for a rule that ADDS rows. `.git` becoming a leaf dir is exactly
+        # that: the new row can only appear by visiting the repo directory, and an
+        # incremental scan skips it precisely because its mtime has not changed —
+        # after which this scan would STAMP the new fingerprint over an index that
+        # never grew the rows, and every reader that trusts the stamp (notably
+        # /api/git-repos) would be confidently wrong, permanently. One full rescan
+        # of an unfingerprinted index is the cheap side of that trade.
         applied = applied_ignore_sig(cfg, root)
-        rules_changed = applied is not None and applied != rules.sig()
+        rules_changed = applied != rules.sig()
         cache = ({} if (spec.get("full") or rules_changed)
                  else load_dir_cache(cfg, root, pq))
         incremental = bool(cache)
         if rules_changed:
-            _emit(ev, type="phase", msg="ignore rules changed - full rescan")
+            _emit(ev, type="phase", msg=(
+                "ignore rules changed - full rescan" if applied is not None
+                else "no applied rules fingerprint - full rescan"))
 
         # Journal position captured BEFORE scanning: events during the scan get
         # replayed (harmlessly re-checked) next time instead of being missed.
