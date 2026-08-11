@@ -7,8 +7,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { navigate, replaceSearch, urlForFsPath } from "@platform/lib/router";
 import { basename, formatMtime, formatMtimeFull, formatSize } from "@platform/lib/format";
 import { iconForEntry } from "@platform/ui/FileIcons";
-import type { Config, ClaudeSessionFolder } from "@platform/lib/api";
-import { getClaudeSessionFolders, indexSearch, statPath } from "@platform/lib/api";
+import type { Config, ClaudeSessionFolder, GitRepos } from "@platform/lib/api";
+import { getClaudeSessionFolders, getGitRepos, indexSearch, statPath } from "@platform/lib/api";
 import { allBookmarks, hydrateBookmarks, loadBookmarks } from "@platform/lib/bookmarks";
 import { useBookmarksVersion, useUrlVersion } from "@platform/lib/hooks";
 import {
@@ -18,8 +18,16 @@ import {
   subscribeIndexLifecycle,
 } from "@platform/lib/index-freshness";
 import { hydrateRecents, loadRecents, recentFsPath, useRecentsVersion } from "@apps/explorer/lib/recents";
-import { BookmarkPreviewCard, RecentPreviewCard, ClaudeSessionFolderCard } from "@apps/explorer/BookmarkCards";
+import { BookmarkPreviewCard, RecentPreviewCard, FolderPreviewCard } from "@apps/explorer/BookmarkCards";
 import { describeSpec, runAiSearch, type AiSearchResult } from "@apps/explorer/lib/ai-search";
+import {
+  refreshIsPending,
+  reposMessage,
+  reposNeedsIndexPoll,
+  reposStaleNote,
+  reposView,
+} from "@apps/explorer/lib/repos";
+import { useIndexStatus } from "@platform/lib/index-status";
 import {
   INSTANT_DEBOUNCE_MS,
   activeRow,
@@ -38,13 +46,13 @@ import {
 import { useRankedScan } from "@apps/explorer/listing/useRankedScan";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 
-// How many cards the Bookmarks/Recents tab shows before "Show more" — flat
-// count, not a row multiple, so it's the same rule for either tab regardless
-// of how many columns the grid happens to lay out at the current width.
+// How many cards a tab shows before "Show more" — flat count, not a row
+// multiple, so it's the same rule for every tab regardless of how many columns
+// the grid happens to lay out at the current width.
 // 9 fills a 3×3 grid at the layout's usual three columns.
 const MAX_CARDS = 9;
 
-type LaunchTab = "bookmarks" | "recents" | "sessions";
+type LaunchTab = "bookmarks" | "recents" | "sessions" | "repos";
 
 // -- The home search bar ------------------------------------------------------
 //
@@ -595,6 +603,7 @@ export default function FilesHome({ config }: { config: Config }) {
   const [expandedBookmarks, setExpandedBookmarks] = useState(false);
   const [expandedRecents, setExpandedRecents] = useState(false);
   const [expandedSessions, setExpandedSessions] = useState(false);
+  const [expandedRepos, setExpandedRepos] = useState(false);
   // Folders flattened: the homepage is a launcher, and a bookmark buried two
   // folders deep is still one the user cared enough to save. Saved-list order.
   const bookmarks = loadBookmarks().length ? allBookmarks() : [];
@@ -620,6 +629,92 @@ export default function FilesHome({ config }: { config: Config }) {
   }, []);
   const shownSessions =
     sessionFolders && (expandedSessions ? sessionFolders : sessionFolders.slice(0, MAX_CARDS));
+  // Git repos, same deal as the session folders: one cheap GET on mount whatever
+  // tab is showing. The whole response is kept, not just the list — the tab has
+  // to tell "no repos on this machine" apart from "the first index scan hasn't
+  // finished", and only `indexed`/`scanning` carry that. A failed request lands
+  // on a null response, which the tab renders as its own message rather than as
+  // an empty repo list.
+  const [repos, setRepos] = useState<GitRepos | null>(null);
+  const [reposFailed, setReposFailed] = useState(false);
+  // ...but "one GET on mount" alone would strand the user, because the answer can
+  // arrive LATER: this list is derived from the file index, and a homepage opened
+  // while the first scan is running would sit on "Still building…" until something
+  // remounted the page — which switching tabs does not do (the tab is a URL param,
+  // not a route). That is not an edge case; it is every user's state right after an
+  // upgrade that changes the index rules and forces a rescan.
+  //
+  // So the existing index poller drives the refetch (useIndexStatus, shared with
+  // the listing's search indicator) rather than a poll of our own: it already
+  // knows both scan rates.
+  //
+  // It runs until the answer is FINAL, not merely present (reposNeedsIndexPoll).
+  // Gating on `!indexed` stopped the poll the instant a stale-but-served list
+  // arrived — which froze `indexKey` below, so the cards and their "Reindexing"
+  // note stayed on screen forever, even after the scan that would have cleared
+  // them finished.
+  const indexScan = useIndexStatus(reposNeedsIndexPoll(repos));
+  // Refetch whenever the index's OBSERVABLE STATE changes — not when a scan
+  // "completes". Completion was the previous trigger and it was subtly wrong:
+  // `last_completed_at` is read off the manifest, and a cancelled, failed or
+  // killed run stops without ever writing one (runner.derive_state sets running
+  // false on any run_end; _with_liveness does the same for an abandoned worker).
+  // So those runs moved `scanning` true -> false with `last_completed_at` frozen,
+  // no refetch fired, and the tab sat on "Still building…" with nothing running.
+  //
+  // Keying on the pair covers every way a scan can end — completed, cancelled,
+  // failed, killed — and also the start of one, with no transition bookkeeping to
+  // get wrong. Extra refetches are harmless (the request is a cheap read and the
+  // view is a pure function of its result), which is the point: this trigger is
+  // deliberately over-eager rather than clever.
+  const indexKey = indexScan
+    ? `${indexScan.scanning}|${indexScan.last_completed_at ?? ""}`
+    : null;
+  // The key the response we are HOLDING was fetched under. `undefined` means
+  // nothing has been fetched yet, which no real key can equal.
+  const [fetchedKey, setFetchedKey] = useState<string | null | undefined>(undefined);
+  useEffect(() => {
+    let alive = true;
+    const key = indexKey;
+    getGitRepos().then(
+      (r) => {
+        if (!alive) return;
+        setReposFailed(false);
+        setRepos(r);
+        setFetchedKey(key);
+      },
+      () => {
+        if (!alive) return;
+        setReposFailed(true);
+        // Stamped on failure too, or `refreshPending` would stay true forever and
+        // the tab would claim something is coming when nothing is.
+        setFetchedKey(key);
+      },
+    );
+    return () => {
+      alive = false;
+    };
+  }, [indexKey]);
+  // DERIVED, not stored in an effect. The instant `indexKey` changes, this is
+  // already true in the very same render — which is the whole point: a
+  // `setRefreshPending(true)` in an effect lands one frame late, and that one frame
+  // is precisely the scan-end flicker (the tab showing "go rebuild it" between the
+  // poll going idle and the new list arriving). Triggered is not arrived, so the
+  // view has to be able to see the gap rather than be told about it afterwards.
+  //
+  // The rule itself (notably: the first poll reading is a BASELINE, not a change)
+  // lives in refreshIsPending so it is covered by the state-table walk.
+  const refreshPending = refreshIsPending(fetchedKey, indexKey);
+  // One total function over all four inputs, so no impossible in-between state can
+  // be rendered — see the state table in lib/repos.ts.
+  const reposTab = reposView({
+    response: repos,
+    failed: reposFailed,
+    liveScanning: indexScan?.scanning ?? null,
+    refreshPending,
+  });
+  const repoList = reposTab.kind === "ready" ? reposTab.repos : [];
+  const shownRepos = expandedRepos ? repoList : repoList.slice(0, MAX_CARDS);
   // With no ?tab= in the URL, land on Claude sessions — the leading tab.
   // Bookmark/recent caches still hydrate on mount (effect below) so the other
   // tabs are ready when clicked. An explicit ?tab= always wins.
@@ -629,7 +724,10 @@ export default function FilesHome({ config }: { config: Config }) {
     void hydrateRecents();
   }, []);
   const tab: LaunchTab =
-    tabParam === "recents" || tabParam === "sessions" || tabParam === "bookmarks"
+    tabParam === "recents" ||
+    tabParam === "sessions" ||
+    tabParam === "bookmarks" ||
+    tabParam === "repos"
       ? tabParam
       : "sessions";
   // Search takes over the page body (bookmarks/recents hide behind it) for as
@@ -681,6 +779,15 @@ export default function FilesHome({ config }: { config: Config }) {
                 onClick={() => setTab("recents")}
               >
                 Recents
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={tab === "repos"}
+                className={"fh-tab" + (tab === "repos" ? " active" : "")}
+                onClick={() => setTab("repos")}
+              >
+                Repos
               </button>
               </div>
               {/* Browse rides the tab strip's right edge — the one action in a
@@ -745,13 +852,41 @@ export default function FilesHome({ config }: { config: Config }) {
               ) : (
                 <p className="fh-empty">Nothing opened yet. Files you view will show up here.</p>
               )
+            ) : tab === "repos" ? (
+              repoList.length ? (
+                <>
+                  {/* A stale list still shows every card; this is a footnote, not a
+                      warning. An index is always a little behind the filesystem,
+                      so alarming copy here would cry wolf permanently. */}
+                  {reposStaleNote(reposTab) && (
+                    <p className="fh-search-summary">{reposStaleNote(reposTab)}</p>
+                  )}
+                  <div className="fhb-grid">
+                    {shownRepos.map((r) => (
+                      <FolderPreviewCard key={r.path} path={r.path} />
+                    ))}
+                  </div>
+                  {repoList.length > MAX_CARDS && (
+                    <ShowMoreButton
+                      expanded={expandedRepos}
+                      onClick={() => setExpandedRepos((v) => !v)}
+                    />
+                  )}
+                </>
+              ) : (
+                // Every no-cards case routes through the same function, so "you
+                // have no repos" can never be shown for "we haven't finished
+                // looking" (or the reverse) — the distinction the index makes
+                // necessary, and the one three earlier versions of this got wrong.
+                <p className="fh-empty">{reposMessage(reposTab)}</p>
+              )
             ) : shownSessions === null ? (
               <p className="fh-empty">Looking for artifacts…</p>
             ) : sessionFolders && sessionFolders.length ? (
               <>
                 <div className="fhb-grid">
                   {shownSessions.map((f) => (
-                    <ClaudeSessionFolderCard key={f.path} path={f.path} />
+                    <FolderPreviewCard key={f.path} path={f.path} />
                   ))}
                 </div>
                 {sessionFolders.length > MAX_CARDS && (

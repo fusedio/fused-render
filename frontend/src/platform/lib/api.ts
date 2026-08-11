@@ -1871,6 +1871,39 @@ export function getClaudeSessionFolders(): Promise<{ folders: ClaudeSessionFolde
   return getJson<{ folders: ClaudeSessionFolder[] }>("/api/claude-sessions");
 }
 
+// -- Git repos (GET /api/git-repos) -------------------------------------------
+// Git repositories on this machine, for the Explorer homepage's "Repos" tab.
+// One entry per repo root, in path order; `path` is ready to pass straight to
+// navigate(path, {isDir:true}).
+//
+// `indexed` is the state the tab has to distinguish: the list is derived from
+// the file index, so a machine whose first scan has not finished yet is NOT the
+// same as a machine with no repos, and `scanning` says whether one is in flight.
+// Both come from the same vocabulary /api/index/status uses.
+//
+// `stale` means "this list may be out of date, reindexing" — a scan is running, or
+// the index was built under older rules. It is NOT an error and NOT a reason to
+// hide the list: an index is always slightly behind the filesystem, so a stale
+// answer is the normal one. The server serves rows whenever it has them and only
+// reports `indexed: false` when it genuinely cannot answer, in which case `reason`
+// says which way ("no-index": nothing has ever been built; "outdated": the index
+// predates repo detection, so its zero rows are not an answer).
+export interface GitRepo {
+  path: string;
+}
+
+export interface GitRepos {
+  indexed: boolean;
+  scanning: boolean;
+  stale: boolean;
+  reason?: "no-index" | "outdated" | null;
+  repos: GitRepo[];
+}
+
+export function getGitRepos(): Promise<GitRepos> {
+  return getJson<GitRepos>("/api/git-repos");
+}
+
 // -- AI completion (POST /api/ai) ---------------------------------------------
 // The fused.ai relay: one non-streaming completion through the server's warm
 // Claude Code CLI instance (server/ai.py). The shell uses this for small

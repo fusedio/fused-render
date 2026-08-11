@@ -1,10 +1,15 @@
 from collections import deque
 import os
+import re
 import stat as stat_mod
 import sys
 from types import SimpleNamespace
 
-from fused_render.index.ignore import LEAF_DIR_SUFFIXES, SHARED_IGNORE_DIRS
+from fused_render.index.ignore import (
+    LEAF_DIR_NAMES,
+    LEAF_DIR_SUFFIXES,
+    SHARED_IGNORE_DIRS,
+)
 from fused_render.server.common import _error
 from fused_render.server.gitignore import _IgnoreOracle, _repo_toplevel
 
@@ -80,18 +85,23 @@ WALK_BATCH_SIZE = 500
 # descends, on mounts and locally alike. Checked between yielded entries
 # (best-effort — a single blocking listdir can't be interrupted mid-call).
 WALK_FLUSH_INTERVAL_S = 0.15
-# Directory names never descended into by the walk, checked against the bare
-# name so it also applies under hidden=1 (".git" is machine noise, not
-# "hidden data"). This is only the UNIVERSAL floor — inside a git repository
-# the walk additionally prunes whatever the repo's own .gitignore ignores
-# (see _IgnoreOracle), which is what actually catches dist/, build/, .next/,
-# target/ and friends without hardcoding every ecosystem's junk dir. The
-# floor still matters outside repos (a stray node_modules in ~/Downloads)
-# and for .git itself, which git never reports as ignored.
+# Directory names never emitted or descended into by the walk, checked against
+# the bare name so it also applies under hidden=1 (a node_modules is machine
+# noise, not "hidden data"). This is only the UNIVERSAL floor — inside a git
+# repository the walk additionally prunes whatever the repo's own .gitignore
+# ignores (see _IgnoreOracle), which is what actually catches dist/, build/,
+# .next/, target/ and friends without hardcoding every ecosystem's junk dir. The
+# floor still matters outside repos (a stray node_modules in ~/Downloads).
 # Defined once in index/ignore.py, because the index's default list has to
 # contain it: search is answered by this walk or by the index depending on
 # whether a scan has reached the folder, and a name pruned by one but kept by
 # the other flips results between two interchangeable sources.
+#
+# `.git` is NOT in here — it is a LEAF name (WALK_LEAF_DIR_NAMES below), emitted
+# as one entry and never descended. It has to be, in lockstep with the index:
+# the index records a `.git` dirs row now (that row is what /api/git-repos reads
+# instead of stat-ing 71k directories), and a walk that kept pruning the name
+# would be the exact disagreement this shared definition exists to prevent.
 WALK_IGNORE_DIRS = set(SHARED_IGNORE_DIRS)
 # Cap on concurrently open check-ignore co-processes during one walk (a home
 # walk crosses dozens of repos; each oracle holds a git subprocess).
@@ -104,6 +114,40 @@ WALK_MAX_ORACLES = 8
 # source but not the other flips results between two sources meant to be
 # interchangeable.
 WALK_LEAF_DIR_SUFFIXES = LEAF_DIR_SUFFIXES
+# The same treatment for directories matched by exact NAME rather than suffix —
+# `.git`. Emitted (so the corpus agrees with the index's `.git` dirs row) and
+# never descended (so a repo's object database stays out of a search that has a
+# 200k-entry budget). Under the walk's default hidden=0 a dot-name is dropped
+# before this rule is even consulted, so in practice only an explicitly
+# hidden-inclusive walk ever emits it. Suffix matching is wrong here: a bare
+# repository is conventionally `foo.git`, and treating those as opaque would hide
+# the entire repository — see LEAF_DIR_NAMES.
+WALK_LEAF_DIR_NAMES = LEAF_DIR_NAMES
+
+
+def junk_path(path: str) -> bool:
+    """Whether `path` is machine-managed junk or hidden data that no explorer
+    surface may show.
+
+    The screening standard for results that did NOT come out of this walk — the
+    index-backed search (routers/search.py) and the homepage's repo list
+    (routers/git_repos.py) both answer from parquet rows, and the index's own
+    ignore rules are a user-editable NAME list that says nothing about hidden
+    files. So a row is held to what this walk enforces during traversal:
+    WALK_IGNORE_DIRS segments and dot-segments never surface.
+
+    It lives here, next to WALK_IGNORE_DIRS, for the reason that constant does:
+    one definition, so two interchangeable sources cannot disagree about which
+    paths exist.
+    """
+    # Both separators: the index stores posix paths (index/ignore.norm) whatever
+    # the platform, and one screening standard has to cover both spellings.
+    for seg in re.split(r"[/\\]", path):
+        if seg in WALK_IGNORE_DIRS:
+            return True
+        if seg.startswith(".") and seg not in (".", ".."):
+            return True
+    return False
 
 
 class _RcDirEntry:
@@ -397,7 +441,10 @@ def _walk_bfs(path, include_hidden, max_entries=None, max_depth=None):
                         is_link = child.is_symlink()
                     except OSError:
                         is_link = True  # can't tell — safer not to descend
-                    if not is_link and not child.name.lower().endswith(WALK_LEAF_DIR_SUFFIXES):
+                    lowered = child.name.lower()
+                    is_leaf = (lowered in WALK_LEAF_DIR_NAMES
+                               or lowered.endswith(WALK_LEAF_DIR_SUFFIXES))
+                    if not is_link and not is_leaf:
                         if not can_descend:
                             depth_capped = True
                             continue  # at the depth cap — don't enqueue deeper

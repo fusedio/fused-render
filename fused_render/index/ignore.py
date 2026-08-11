@@ -9,6 +9,12 @@ Three layers, deliberately distinct:
     Dependency and build caches that are huge, machine-generated and useless
     to search. Pruning them is not a display filter: the walk never descends,
     so they cost no stat, no parquet row and no query time.
+  * the LEAF rules (`LEAF_DIR_SUFFIXES`, `LEAF_DIR_NAMES`) — recorded as one
+    opaque row and never listed. The middle ground between indexing a tree and
+    pretending it isn't there: a macOS package or a `.git` directory is worth
+    knowing about but never worth looking inside. Cheaper than an ignore rule,
+    too, since ignore rules prune subdirectories but not the files sitting
+    directly in the pruned directory.
   * `MountGuard` — remote buckets mounted by fused-render. `default_ignore()`
     already names the mounts dir, but that list is user-editable and a kernel
     `scandir`/`stat` on an rclone NFS mount path can wedge the mount
@@ -64,8 +70,15 @@ SKIP_DIRS = {
 # and kept by the other makes results flip between two sources that are meant
 # to be interchangeable — the same inconsistency server/index_gitignore.py
 # exists to prevent for gitignored entries.
+#
+# `.git` is deliberately NOT here — it is a LEAF dir (LEAF_DIR_NAMES below), so
+# it gets one row and no contents rather than vanishing. Ignoring it would be
+# strictly worse than the leaf rule even on cost grounds: ignore rules prune
+# SUBdirectories but not files, so a pruned-tree `.git` would still contribute
+# the ~15 loose files sitting directly in it (HEAD, config, index, …) and still
+# pay to list the directory. A leaf dir is never listed at all.
 SHARED_IGNORE_DIRS = (
-    "node_modules", ".venv", "venv", "__pycache__", ".git", "site-packages",
+    "node_modules", ".venv", "venv", "__pycache__", "site-packages",
 )
 # macOS package directories: ONE entry, never descended. Their internals are
 # implementation details (Finder hides them too) and one Electron .app alone is
@@ -79,15 +92,83 @@ SHARED_IGNORE_DIRS = (
 # and not the other flips results between two interchangeable sources. The
 # dependency direction is server -> index; do not invert it.
 LEAF_DIR_SUFFIXES = (".app", ".framework", ".bundle", ".photoslibrary")
+# Leaf directories matched by EXACT NAME rather than by suffix.
+#
+# `.git` is one: the explorer's homepage lists this machine's git repositories,
+# and making that a queryable index fact ("which dirs rows are named .git") beats
+# the alternative of stat-ing every one of ~71k indexed directories for a `.git`
+# child on every request. The leaf rule is what makes it nearly free — one row,
+# no descent, so a repo's object database (routinely 10k+ files) stays out.
+#
+# Name equality, NOT an extra LEAF_DIR_SUFFIXES entry: that tuple is matched with
+# `endswith`, and a bare repository is conventionally named `foo.git` — a suffix
+# rule would record those as opaque leaves and hide their entire contents, which
+# for a bare repo is the whole repository. `.git` as a NAME is unambiguous.
+#
+# Shared with server/walk.py (WALK_LEAF_DIR_NAMES) for the same reason
+# LEAF_DIR_SUFFIXES is, and it matters more here: `.git` moved OUT of
+# SHARED_IGNORE_DIRS to get this treatment, so a walk that kept pruning it would
+# disagree with the index about whether `.git` exists at all.
+LEAF_DIR_NAMES = (".git",)
 
 
 def is_leaf_dir(path: str) -> bool:
-    """Whether `path` is a package directory — recorded, but never descended."""
-    return path.lower().endswith(LEAF_DIR_SUFFIXES)
+    """Whether `path` is a leaf directory — recorded, but never descended.
+
+    A macOS package (LEAF_DIR_SUFFIXES) or a directory whose name is one of
+    LEAF_DIR_NAMES (`.git`). Both are opaque for the same reason: the contents
+    are machine-managed implementation detail nobody searches for, while the
+    directory's own existence is worth a row."""
+    tail = path.rpartition("/")[2].lower()
+    return tail in LEAF_DIR_NAMES or tail.endswith(LEAF_DIR_SUFFIXES)
+
+
+def ignored_for_index(rules: "IgnoreRules", path: str, *, tree: bool) -> bool:
+    """THE question every ignore gate asks: does the ignore list forbid a
+    `dirs.parquet` ROW for `path`?
+
+    This is the single definition, and it exists because there are THREE gates
+    that filter by the ignore list (specs/scan-ignore.md §3) and the leaf
+    exemption has to mean the same thing at all of them:
+
+      * `scan.keep_subdirs`     — subdirs handed on by a walk        (tree=False)
+      * `store.load_dir_cache`  — cached rows read back from parquet (tree=True)
+      * `scan._run_fsevents`    — paths named by the OS journal      (tree=True)
+
+    Applying it at only one of those is not a partial fix, it is a DATA LOSS bug:
+    `keep_subdirs` alone let a full rescan write `.git` rows for a config that
+    names `.git`, and then the next incremental pass — where the cache filter
+    decides what is carried forward and the journal gate decides what is
+    re-added — dropped every one of them. A user whose Repos tab worked lost it
+    on the next scan. Same shape as the walk/index parity bug and the
+    canonical_root drift: one rule, several implementations, silent disagreement.
+
+    `tree` is about what the CALLER knows, not about the rule:
+      * False — the path came from a walk that already vetted its ancestors, so
+        only its own name is in question. Deliberately NOT the tree test: a scan
+        root that itself sits inside a directory matching an ignore NAME (say
+        `~/venv/myproject`) would otherwise have every path under it forbidden.
+      * True — the path arrived without its ancestors being checked (a cached
+        row, a journal entry), so an ignored ANCESTOR forbids it too.
+
+    The leaf exemption is applied once, here: a leaf dir is never forbidden by a
+    verdict on its OWN name (see `keep_subdirs` for why — the ignore list can
+    only delete the row, never save any work), but ancestors keep their veto, so
+    `<repo>/.git` survives an entry naming `.git` while
+    `node_modules/pkg/.git` does not.
+    """
+    if is_leaf_dir(path):
+        if not tree:
+            # Its own name is the only thing in question, and a leaf is exempt
+            # from that.
+            return False
+        parent = path.rpartition("/")[0]
+        return bool(parent) and rules.is_ignored_tree(parent)
+    return rules.is_ignored_tree(path) if tree else rules.is_ignored(path)
 
 
 def is_inside_leaf_dir(path: str) -> bool:
-    """Whether any ANCESTOR of `path` is a package directory — i.e. whether the
+    """Whether any ANCESTOR of `path` is a leaf directory — i.e. whether the
     leaf rule means this path should not exist as a row at all.
 
     `is_leaf_dir` is enough wherever descent is what's being decided: a walk
@@ -95,14 +176,18 @@ def is_inside_leaf_dir(path: str) -> bool:
     are handed a path instead of descending to it — the FSEvents fast path
     (scan._run_fsevents), the coverage test in query.search_under — see package
     internals directly and need this test, because the final component of
-    `Foo.app/Contents/Resources` says nothing about the package above it.
+    `Foo.app/Contents/Resources` says nothing about the package above it. `.git`
+    makes this path hotter, not different: an active repo writes under
+    `.git/objects` constantly, so the journal names those directories on almost
+    every incremental run.
 
-    Ancestors ONLY: a final component that is itself a package is is_leaf_dir's
+    Ancestors ONLY: a final component that is itself a leaf is is_leaf_dir's
     business, and that one gets RECORDED where these get dropped. Pure string
     work on purpose — it runs once per journal-reported directory, so it must
     not stat anything. Paths are `norm`ed, so "/" is the only separator."""
     head, _, _ = path.rpartition("/")
-    return any(part.lower().endswith(LEAF_DIR_SUFFIXES)
+    return any(part.lower() in LEAF_DIR_NAMES
+               or part.lower().endswith(LEAF_DIR_SUFFIXES)
                for part in head.split("/"))
 
 
@@ -258,7 +343,23 @@ class IgnoreRules:
                 if s not in SKIP_DIRS and not self.is_ignored(s)]
 
     def sig(self) -> str:
-        return ignore_sig(self.patterns)
+        """The fingerprint of everything that decides WHAT LANDS IN THE INDEX,
+        which is what every caller actually means by this value: `scan.run_scan`
+        drops its incremental cache when it changes, and the router's
+        needs_rescan bit is the same comparison.
+
+        So it covers the leaf-dir rules as well as the user's patterns. That is
+        not decoration — `.git` moved from the ignore list to LEAF_DIR_NAMES,
+        which turns "no `.git` rows" from a fact into a rule change, and an index
+        built before it holds no `.git` rows at all. Without the leaf rules in
+        here, that index's sig would still match and nothing would ever rescan
+        it, so /api/git-repos would confidently report zero repositories forever.
+        Including them makes the first scan after the upgrade a full rescan for
+        everyone, and lets a reader detect a pre-rule index (routers/git_repos.py)
+        instead of trusting it."""
+        return ignore_sig([*self.patterns,
+                           "\x00leaf-names=" + ",".join(LEAF_DIR_NAMES),
+                           "\x00leaf-suffixes=" + ",".join(LEAF_DIR_SUFFIXES)])
 
 
 class MountGuard:

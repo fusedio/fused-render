@@ -23,6 +23,7 @@ from fused_render.index.ignore import (
     SKIP_DIRS,
     IgnoreRules,
     MountGuard,
+    ignored_for_index,
     is_inside_leaf_dir,
     is_leaf_dir,
     norm,
@@ -37,11 +38,31 @@ from fused_render.index.store import (
 
 
 def keep_subdirs(subdirs, rules: IgnoreRules, guard: MountGuard):
-    """The subdirectories a walk may descend into: not a hardcoded skip, not
-    ignored, and not mount-backed."""
+    """The subdirectories a walk may hand on: not a hardcoded skip, not
+    mount-backed, and not ignored — except that a LEAF dir survives the ignore
+    list.
+
+    "Hand on" rather than "descend into", because a leaf dir kept here is not
+    descended: scan_dir_once records it and returns no children. Which is exactly
+    why the ignore list does not get a veto over one. An ignore entry buys the
+    scan two things — no descent and no row — and for a leaf dir the first is
+    already true, so all it can still do is delete the row. For `.git` that row
+    IS the repo-detection fact /api/git-repos reads, and a user (or an old saved
+    config, from back when `.git` shipped in the default ignore list) still
+    naming `.git` there would silently empty the homepage's Repos tab while
+    saving one stat. SKIP_DIRS and the mount guard keep their veto: those are
+    hazards, not preferences.
+
+    Narrow on purpose — this only overrides the verdict on the leaf dir ITSELF.
+    A repo inside an ignored tree is still gone, because the walk never reaches
+    its parent to offer it here.
+
+    The exemption is NOT spelled out here: it lives in `ignored_for_index`, which
+    every ignore gate routes through. It used to be inline, and that is exactly
+    how the other two gates went on purging the rows this one kept."""
     return [s for s in subdirs
-            if s not in SKIP_DIRS and not rules.is_ignored(s)
-            and not guard.blocks(s)]
+            if s not in SKIP_DIRS and not guard.blocks(s)
+            and not ignored_for_index(rules, s, tree=False)]
 
 
 def _dir_sig(entries):
@@ -323,16 +344,30 @@ def run_scan(run_dir: str) -> None:
     _emit(ev, type="run_start", msg=root)
 
     try:
-        # A changed ignore list invalidates the cache: cached dirs carry subdir
+        # A changed rule set invalidates the cache: cached dirs carry subdir
         # counts computed under the old rules, so an incremental scan would keep
         # skipping folders that are no longer ignored.
+        #
+        # An ABSENT fingerprint counts as changed too, which it did not used to.
+        # That was safe while the only rules were ignore PATTERNS: removing a
+        # pattern is self-purging through the filtered cache (scan-ignore.md §3),
+        # so an unfingerprinted index could be reconciled incrementally. It is not
+        # safe for a rule that ADDS rows. `.git` becoming a leaf dir is exactly
+        # that: the new row can only appear by visiting the repo directory, and an
+        # incremental scan skips it precisely because its mtime has not changed —
+        # after which this scan would STAMP the new fingerprint over an index that
+        # never grew the rows, and every reader that trusts the stamp (notably
+        # /api/git-repos) would be confidently wrong, permanently. One full rescan
+        # of an unfingerprinted index is the cheap side of that trade.
         applied = applied_ignore_sig(cfg, root)
-        rules_changed = applied is not None and applied != rules.sig()
+        rules_changed = applied != rules.sig()
         cache = ({} if (spec.get("full") or rules_changed)
                  else load_dir_cache(cfg, root, pq))
         incremental = bool(cache)
         if rules_changed:
-            _emit(ev, type="phase", msg="ignore rules changed - full rescan")
+            _emit(ev, type="phase", msg=(
+                "ignore rules changed - full rescan" if applied is not None
+                else "no applied rules fingerprint - full rescan"))
 
         # Journal position captured BEFORE scanning: events during the scan get
         # replayed (harmlessly re-checked) next time instead of being missed.
@@ -505,8 +540,14 @@ def _run_fsevents(cfg, rules, guard, root, hint, cache, sink, ev, cancel_flag,
         # below then carries those rows forward on every later run. The
         # package's own dirs row is unaffected: it is is_leaf_dir's, made when
         # the journal or the walk names the package.
-        if (d in scanned or rules.is_ignored_tree(d) or guard.blocks(d)
-                or is_inside_leaf_dir(d)):
+        # ignored_for_index, not rules.is_ignored_tree: a leaf dir the user's
+        # ignore list names must still be re-added here, or an incremental pass
+        # PURGES the rows the walk-driven scan wrote (the cache filter drops them
+        # from the keep list, this gate refuses to recreate them, and the
+        # compaction then has neither). tree=True because the journal hands over
+        # a path whose ancestors nobody checked.
+        if (d in scanned or ignored_for_index(rules, d, tree=True)
+                or guard.blocks(d) or is_inside_leaf_dir(d)):
             continue
         scanned.add(d)
         kind, payload, subdirs = scan_dir_once(
