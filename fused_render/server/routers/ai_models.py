@@ -516,8 +516,10 @@ def _default_snapshot(repo_dir: str) -> str | None:
     main = _refs_by_commit(repo_dir).get("main")
     if main and main in by_name:
         return by_name[main]
-    newest = max(entries, key=lambda e: e.stat().st_mtime if e.is_dir() else 0)
-    return newest.path
+    # `entries` are already directories (_snapshot_dirs filtered them), so the
+    # only question left is which is newest — and a snapshot that vanished
+    # between the two is simply not it.
+    return max(entries, key=_entry_mtime).path
 
 
 def _repo_meta(repo_dir: str) -> _RepoMeta:
@@ -591,14 +593,39 @@ def _repo_meta(repo_dir: str) -> _RepoMeta:
     return meta
 
 
+def _entry_is_dir(entry: os.DirEntry, *, follow: bool = True) -> bool:
+    """`entry.is_dir()` for a tree that other processes are writing.
+
+    A cache is a shared directory: a download finalising, or a delete from
+    another window, can take an entry away between the `scandir` that listed it
+    and the `stat` that asks about it. `_scan_repo` has always treated that race
+    as "report what was there"; these two call sites used to raise instead and
+    fail the whole listing with a 500, which is a worse answer than a row fewer.
+    """
+    try:
+        return entry.is_dir(follow_symlinks=follow)
+    except OSError:
+        return False
+
+
+def _entry_mtime(entry: os.DirEntry) -> float:
+    try:
+        return entry.stat().st_mtime
+    except OSError:
+        return 0.0  # gone mid-scan, so it cannot be the newest
+
+
 def _snapshot_dirs(snapshots_dir: str) -> list[os.DirEntry]:
     """The revision directories under `snapshots/`. Symlinked entries are not
     followed — every deletion path below reasons about what is inside this
     repo."""
     try:
-        return [e for e in os.scandir(snapshots_dir) if e.is_dir(follow_symlinks=False)]
+        entries = list(os.scandir(snapshots_dir))
     except OSError:
         return []
+    # Filtered OUTSIDE the scandir's try: an entry that disappears here must
+    # cost its own row, not the whole list of revisions.
+    return [e for e in entries if _entry_is_dir(e, follow=False)]
 
 
 def _snapshot_blobs(snapshot_dir: str, blobs_dir: str) -> set[str]:
@@ -714,8 +741,9 @@ def _listing() -> dict:
         # symlinked in from another disk (how people move a 40GB model off the
         # boot volume) is a real cached repo, and its files still measure
         # correctly since the walk lstats what it finds on the other side. A
-        # broken link answers False and drops out.
-        if not entry.is_dir():
+        # broken link answers False and drops out, as does one that vanished
+        # between the scandir and here (_entry_is_dir).
+        if not _entry_is_dir(entry):
             continue
         kind = next(
             (k for prefix, k in _KIND_PREFIXES.items() if entry.name.startswith(prefix)), None

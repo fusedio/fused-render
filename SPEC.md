@@ -5301,7 +5301,11 @@ later with nothing on screen to say so.
   so it runs on mount and on an explicit Refresh — never on a focus/return tick,
   which would re-walk tens of thousands of files each time the window came back.
   It runs in the threadpool (a sync endpoint), so a big cache cannot stall the
-  requests the rest of the page is making.
+  requests the rest of the page is making. And it **never fails because the
+  cache changed under it**: a download finalising or another window's delete can
+  take an entry away between the listing that found it and the stat that asks
+  about it, so every such read treats the race as "report what was there" — a
+  row fewer, never an error page.
 
 **Managing it** (D250). Three deletions, widening — one repo, one revision, or
 everything unread for N days:

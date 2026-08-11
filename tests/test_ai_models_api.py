@@ -880,3 +880,182 @@ def test_quantization_is_read_even_when_the_card_named_the_task(client, hub):
     row = _repo_row(client, "org/vlm")
     assert row["task"] == "image + text to text"  # not the unreadable "image text to text"
     assert row["quantization"] == "4-bit"
+
+
+@requires_symlinks
+def test_a_gguf_repo_is_recognised(client, hub):
+    # The last link in the evidence chain, and the one a llama.cpp user's cache
+    # is full of: no config.json, no card, just weights.
+    repo = _repo(hub, "models--TheBloke--m-GGUF", blobs={"w": 10},
+                 snapshots={"c1": {"model.Q4_K_M.gguf": "w"}}, refs={"main": "c1"})
+    assert repo.exists()
+    row = _repo_row(client, "TheBloke/m-GGUF")
+    assert row["task"] == "text generation"
+    assert row["taskSource"] == "a GGUF weights file"
+    assert row["library"] == "gguf"
+    assert row["params"] is None  # no cheap header to read
+
+
+@requires_symlinks
+@pytest.mark.parametrize(
+    "class_name,expected",
+    [
+        ("StableVideoDiffusionPipeline", "video generation"),
+        ("MusicGenPipeline", "audio generation"),
+        ("AudioLDM2Pipeline", "audio generation"),
+        ("StableDiffusionPipeline", "image generation"),
+    ],
+)
+def test_a_diffusers_pipeline_names_its_medium(client, hub, class_name, expected):
+    repo = _repo(hub, "models--org--p", blobs={"w": 10}, snapshots={"c1": {"m": "w"}}, refs={"main": "c1"})
+    _snapshot_file(repo, "c1", "model_index.json", json.dumps({"_class_name": class_name}))
+    assert _repo_row(client, "org/p")["task"] == expected
+
+
+@requires_symlinks
+def test_a_card_without_front_matter_falls_through_to_the_config(client, hub):
+    repo = _repo(hub, "models--org--m", blobs={"w": 10}, snapshots={"c1": {"m": "w"}}, refs={"main": "c1"})
+    _snapshot_file(repo, "c1", "README.md", "# Just a heading, no front matter\n")
+    _snapshot_file(repo, "c1", "config.json", json.dumps({"architectures": ["LlamaForCausalLM"]}))
+    row = _repo_row(client, "org/m")
+    assert row["task"] == "text generation"
+    assert row["taskSource"] == "the architecture in config.json"
+
+
+@requires_symlinks
+def test_without_a_main_ref_the_newest_snapshot_describes_the_repo(client, hub):
+    repo = _repo(hub, "models--org--m", blobs={"w": 10},
+                 snapshots={"old": {"m": "w"}, "new": {"m": "w"}}, refs={})
+    _snapshot_file(repo, "old", "config.json", json.dumps({"architectures": ["BertForMaskedLM"]}))
+    _snapshot_file(repo, "new", "config.json", json.dumps({"architectures": ["LlamaForCausalLM"]}))
+    os.utime(repo / "snapshots" / "old", (1_000_000, 1_000_000))
+    assert _repo_row(client, "org/m")["task"] == "text generation"
+
+
+@requires_symlinks
+def test_metadata_is_read_once_per_snapshot(client, hub):
+    # The cache's promise ("a Refresh over forty repos re-reads nothing") and
+    # its accepted cost, in one test: the key is the snapshot directory's own
+    # mtime, because a snapshot is immutable once written — so an in-place edit
+    # of a file inside it is deliberately NOT noticed.
+    repo = _repo(hub, "models--org--m", blobs={"w": 10}, snapshots={"c1": {"m": "w"}}, refs={"main": "c1"})
+    config = repo / "snapshots" / "c1" / "config.json"
+    config.parent.mkdir(parents=True, exist_ok=True)
+    config.write_text(json.dumps({"architectures": ["LlamaForCausalLM"]}))
+    assert _repo_row(client, "org/m")["task"] == "text generation"
+
+    before = os.stat(repo / "snapshots" / "c1")
+    config.write_text(json.dumps({"architectures": ["BertForMaskedLM"]}))
+    os.utime(repo / "snapshots" / "c1", (before.st_atime, before.st_mtime))
+    assert _repo_row(client, "org/m")["task"] == "text generation"  # served from the cache
+
+    os.utime(repo / "snapshots" / "c1", (before.st_atime, before.st_mtime + 10))
+    assert _repo_row(client, "org/m")["task"] == "fill mask"  # the directory moved, so re-read
+
+
+def test_a_target_that_is_not_an_object_is_reported_not_crashed(client, hub):
+    _repo(hub, "models--real", blobs={"a": 100})
+    data = _delete(client, ["models--real", 42, None]).json()
+    assert data["freed"] == 0
+    assert [f["error"] for f in data["failures"]] == ["target must be an object"] * 3
+    assert [r["id"] for r in data["repos"]] == ["real"]
+
+
+def test_a_target_the_filesystem_refuses_does_not_lose_the_batch(client, hub, monkeypatch):
+    _repo(hub, "models--ok", blobs={"a": 100})
+    held = _repo(hub, "models--held", blobs={"a": 500})
+    real_rmtree = local_rmtree = __import__("shutil").rmtree
+
+    def fake_rmtree(path, *args, **kwargs):
+        if str(path) == str(held):
+            raise PermissionError(13, "Permission denied")
+        return real_rmtree(path, *args, **kwargs)
+
+    monkeypatch.setattr(ai_models_mod.shutil, "rmtree", fake_rmtree)
+    data = _delete(client, [{"dir": "models--held"}, {"dir": "models--ok"}]).json()
+    # The one that could go, went; the one that could not is named.
+    assert data["freed"] == 100
+    assert [f["dir"] for f in data["failures"]] == ["models--held"]
+    assert "Permission denied" in data["failures"][0]["error"]
+    assert [r["id"] for r in data["repos"]] == ["held"]
+
+
+# -- a cache other processes are writing ------------------------------------------
+# The listing must never 500 because a download finalised or another window
+# deleted something between the scandir that listed an entry and the stat that
+# asked about it. A row fewer is a better answer than an error page.
+
+
+class _Vanished:
+    """A listing entry whose directory was removed before we could stat it."""
+
+    def __init__(self, name, path):
+        self.name, self.path = name, path
+
+    def is_dir(self, follow_symlinks=True):
+        raise FileNotFoundError(2, "No such file or directory")
+
+    def stat(self, *, follow_symlinks=True):
+        raise FileNotFoundError(2, "No such file or directory")
+
+
+class _ScandirResult:
+    """A stand-in for os.scandir's return value.
+
+    It has to be an ITERATOR as well as a context manager: os.walk keeps the
+    original object, enters it for cleanup, and then calls next() on that same
+    object — so returning a plain list (or even an iterable) is not enough.
+    """
+
+    def __init__(self, entries):
+        self._entries = list(entries)
+
+    def append(self, entry):
+        self._entries.append(entry)
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        if not self._entries:
+            raise StopIteration
+        return self._entries.pop(0)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def close(self):
+        self._entries.clear()
+
+
+def _with_vanished_entry(monkeypatch, inside: str, name: str):
+    real_scandir = os.scandir
+
+    def fake_scandir(path=".", *args, **kwargs):
+        entries = _ScandirResult(real_scandir(path, *args, **kwargs))
+        if str(path) == str(inside):
+            entries.append(_Vanished(name, os.path.join(str(inside), name)))
+        return entries
+
+    monkeypatch.setattr(ai_models_mod.os, "scandir", fake_scandir)
+
+
+def test_a_repo_that_vanishes_mid_listing_costs_one_row_not_the_page(client, hub, monkeypatch):
+    _repo(hub, "models--survivor", blobs={"a": 100})
+    _with_vanished_entry(monkeypatch, hub, "models--gone")
+    data = _get(client)
+    assert [r["id"] for r in data["repos"]] == ["survivor"]
+
+
+@requires_symlinks
+def test_a_revision_that_vanishes_mid_scan_costs_one_revision(client, hub, monkeypatch):
+    repo = _repo(hub, "models--org--m", blobs={"a": 100}, snapshots={"c1": {"m": "a"}}, refs={"main": "c1"})
+    _snapshot_file(repo, "c1", "config.json", json.dumps({"architectures": ["LlamaForCausalLM"]}))
+    _with_vanished_entry(monkeypatch, repo / "snapshots", "c2")
+    row = _repo_row(client, "org/m")
+    assert row["revisions"] == 1
+    # …and the surviving revision still describes the repo.
+    assert row["task"] == "text generation"
