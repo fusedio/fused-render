@@ -41,8 +41,13 @@ def spec(**over):
     return base
 
 
-def _index(tmp_path, root, files, dirs=(), dir_mtime_ns=1_000_000_000, name="ix"):
-    """An index over `files` — (path, size, mtime) triples — plus `dirs`."""
+def _index(tmp_path, root, files, dirs=(), dir_mtime_ns=1_000_000_000, name="ix",
+           dir_mtimes=None):
+    """An index over `files` — (path, size, mtime) triples — plus `dirs`.
+
+    `dir_mtimes` overrides the mtime_ns of individual directories; 0 there is
+    the index's "unknown" (a dirs row written before the column existed, or a
+    directory whose stat failed)."""
     cfg = IndexConfig(dir=str(tmp_path / name))
     shards = str(tmp_path / name / "run" / "shards")
     os.makedirs(shards, exist_ok=True)
@@ -54,7 +59,8 @@ def _index(tmp_path, root, files, dirs=(), dir_mtime_ns=1_000_000_000, name="ix"
         ext = fname.rsplit(".", 1)[1].lower() if "." in fname else ""
         by_dir.setdefault(d, []).append((path, d, fname, ext, size, mtime))
     for d, rows in by_dir.items():
-        sink.add(d, "s", ("sig", rows, sum(r[4] for r in rows), dir_mtime_ns, 0))
+        mt = (dir_mtimes or {}).get(d, dir_mtime_ns)
+        sink.add(d, "s", ("sig", rows, sum(r[4] for r in rows), mt, 0))
     sink.close()
     compact(cfg, root, shards, pa, pq)
     return cfg
@@ -200,6 +206,50 @@ def test_index_engine_marks_a_capped_result_set_truncated(tmp_path, monkeypatch)
     assert out["truncated"] is True
     monkeypatch.setattr(search_mod, "SEARCH_MAX_RESULTS", 5)
     assert _search_index(spec(name_terms=["hit"]), cfg)["truncated"] is False
+
+
+def test_a_matching_folder_survives_a_flood_of_newer_files(tmp_path, monkeypatch):
+    """Folders get their OWN budget, not a share of one recency-ordered cap.
+
+    Under a single `ORDER BY mtime DESC LIMIT cap` over the union of both views,
+    any query matching more recent files than the cap buried the folder
+    entirely: "where is my reports folder" answered with the files inside it and
+    never the folder. That is the files-starve-folders failure
+    query.search_under exists to prevent for in-folder search, and a shared
+    recency budget reintroduced it here."""
+    monkeypatch.setattr(search_mod, "SEARCH_MAX_RESULTS", 8)
+    monkeypatch.setattr(search_mod, "SEARCH_DIRS_RESERVE", 2)
+    cfg = _index(
+        tmp_path, "/r",
+        # 20 files, every one NEWER than the folder that shares their name
+        [(f"/r/reports/report-{i}.csv", 10, 10_000.0 + i) for i in range(20)],
+        dirs=["/r/reports"],
+        dir_mtimes={"/r/reports": 1_000_000_000},  # 1.0s epoch: older than all
+    )
+    out = _search_index(spec(name_terms=["report"]), cfg)
+    paths = [e["path"] for e in out["entries"]]
+    assert "/r/reports" in paths
+    assert len(paths) == 8            # still exactly the cap
+    assert sum(1 for p in paths if p.endswith(".csv")) == 7
+    assert out["truncated"] is True
+
+
+def test_a_folder_with_no_recorded_mtime_is_not_starved(tmp_path, monkeypatch):
+    """mtime_ns 0 means "unknown" and reads as NULL, which sorts LAST under
+    `mtime DESC` — so the shared budget dropped these folders first of all.
+    Folders are ordered shallowest-first instead, which no mtime can affect."""
+    monkeypatch.setattr(search_mod, "SEARCH_MAX_RESULTS", 4)
+    monkeypatch.setattr(search_mod, "SEARCH_DIRS_RESERVE", 1)
+    cfg = _index(
+        tmp_path, "/r",
+        [(f"/r/photos/pic-{i}.png", 10, 10_000.0 + i) for i in range(10)],
+        dirs=["/r/photos"],
+        dir_mtimes={"/r/photos": 0},
+    )
+    out = _search_index(spec(name_terms=["photo"]), cfg)
+    entries = {e["path"]: e for e in out["entries"]}
+    assert "/r/photos" in entries
+    assert entries["/r/photos"]["mtime"] is None  # unknown, reported as such
 
 
 def test_index_engine_reads_through_the_manifest_not_a_glob(tmp_path):

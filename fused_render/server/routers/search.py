@@ -49,7 +49,7 @@ from fastapi.concurrency import run_in_threadpool
 
 from fused_render.index.config import load_config
 from fused_render.index.query import dirs_src, files_src
-from fused_render.index.store import like_literal, read_manifest
+from fused_render.index.store import depth_expr, like_literal, read_manifest
 from fused_render.server.common import _error
 from fused_render.server.gitignore import _IgnoreOracle
 from fused_render.server.walk import WALK_IGNORE_DIRS
@@ -60,6 +60,16 @@ router = APIRouter()
 # Rows a search may return. A broad query can match tens of thousands of index
 # rows; the client shows ~60, so 400 leaves plenty of ranking headroom.
 SEARCH_MAX_RESULTS = 400
+# Of that cap, the share DIRECTORY hits may claim. Folders are queried on their
+# own budget rather than competing with files for one ordered cap: a folder and
+# the files inside it match the same name term, the files are almost always the
+# newer rows, and under a shared recency budget a folder with more than `cap`
+# recent files in it could never surface — "where is my reports folder" answered
+# with the reports and never the folder. That is the files-starve-folders failure
+# query.search_under fixed for the in-folder corpus, in a different disguise.
+# The named cost: on a query matching both kinds heavily, up to this many file
+# rows give way to folders. Unused folder budget goes back to files.
+SEARCH_DIRS_RESERVE = 100
 
 _EXT_ALLOWED = set("abcdefghijklmnopqrstuvwxyz0123456789")
 
@@ -303,42 +313,92 @@ def _index_where(spec, *, path_expr, name_expr, mtime_expr, now_s,
     return " AND ".join(pieces)
 
 
-def _index_rows(cfg, spec, limit, *, parts=None, dirs=False):
-    """The spec as ONE query over the requested index views, newest first.
+def _files_query(cfg, parts, spec, now_s) -> str:
+    """The files view, newest first. Ordering only decides WHICH rows survive
+    the budget (the client re-ranks every hit), and recency is the best sample
+    of a file corpus. `path` breaks ties so paging is deterministic."""
+    return (
+        f"SELECT path, size, mtime, false AS is_dir FROM {files_src(cfg, parts)} "
+        f"WHERE " + _index_where(spec, path_expr="path", name_expr="name",
+                                 mtime_expr="mtime", ext_expr="ext",
+                                 size_expr="size", now_s=now_s)
+        + " ORDER BY mtime DESC, path")
 
-    Both views are named through the MANIFEST (query.files_src / dirs_src),
-    never a glob of the files dir: a compaction leaves the previous generation's
-    partitions on disk for readers still holding the old manifest
-    (index-store.md §4), so a glob would return every row twice."""
+
+def _dirs_query(cfg, spec, now_s) -> str:
+    """The dirs view, SHALLOWEST first.
+
+    Not by mtime, unlike files: a dirs row's mtime_ns can be 0 ("unknown" — a
+    row written before the column existed, or a directory whose stat failed),
+    which reads as NULL and sorts last under `mtime DESC`, so a recency order
+    dropped exactly those folders first. Shallow-first is immune to that, is
+    deterministic, and keeps the breadth-first character search_under's corpus
+    has — a folder near the top of the tree is the likelier answer to "where is
+    my X folder". `depth` is computed from the path rather than read from the
+    column so an index written before that column still orders correctly.
+
+    A dirs row carries no name column, so the final path component is the name.
+    """
+    dmtime = "nullif(mtime_ns, 0) / 1e9"
+    return (
+        f"SELECT dir AS path, CAST(NULL AS BIGINT) AS size, {dmtime} AS mtime, "
+        f"true AS is_dir FROM {dirs_src(cfg)} "
+        f"WHERE " + _index_where(spec, path_expr="dir",
+                                 name_expr="regexp_extract(dir, '[^/]*$')",
+                                 mtime_expr=dmtime, now_s=now_s)
+        + f" ORDER BY {depth_expr('dir')}, dir")
+
+
+def _row_entry(row) -> dict:
+    path, size, mtime, is_dir = row
+    return {"path": path, "is_dir": bool(is_dir),
+            "size": None if is_dir or size is None else int(size),
+            "mtime": None if mtime is None else float(mtime)}
+
+
+def _screen(rows) -> list:
+    """Response entries for `rows`, minus the hits no search may surface.
+
+    The index's own ignore rules are a user-editable name list; git is a server
+    concern (server/index_gitignore.py makes the same move for the in-folder
+    corpus, for the same reason: a gitignored build directory's 100k generated
+    files must not flood a search)."""
+    return _drop_gitignored([_row_entry(r) for r in rows if not _junk_path(r[0])])
+
+
+def _collect(con, sql, budget: int):
+    """Up to `budget` screened entries for one branch, plus whether the branch
+    had more rows than it was allowed to contribute. One row past the budget is
+    fetched, so "there was more" is known without a count."""
+    rows = con.execute(f"{sql} LIMIT {budget + 1}").fetchall()
+    return _screen(rows[:budget]), len(rows) > budget
+
+
+def _index_entries(cfg, spec, cap, *, parts=None, dirs=False):
+    """Screened entries for the spec, and whether anything was left behind.
+
+    Each view is its own query with its own budget — see SEARCH_DIRS_RESERVE for
+    why folders are not made to compete with files for one ordered cap. Both are
+    named through the MANIFEST (query.files_src / dirs_src), never a glob of the
+    files dir: a compaction leaves the previous generation's partitions on disk
+    for readers still holding the old manifest (index-store.md §4), so a glob
+    would return every row twice."""
     import duckdb
 
     now_s = time.time()
-    branches = []
-    if parts:
-        fsrc = files_src(cfg, parts)
-        branches.append(
-            f"SELECT path, size, mtime, false AS is_dir FROM {fsrc} WHERE "
-            + _index_where(spec, path_expr="path", name_expr="name",
-                           mtime_expr="mtime", ext_expr="ext",
-                           size_expr="size", now_s=now_s))
-    if dirs:
-        dsrc = dirs_src(cfg)
-        # A dirs row carries no name column, so the final path component is the
-        # name; mtime_ns of 0 means "unknown" and becomes NULL, which fails
-        # every mtime comparison rather than passing it.
-        dmtime = "nullif(mtime_ns, 0) / 1e9"
-        branches.append(
-            f"SELECT dir AS path, CAST(NULL AS BIGINT) AS size, "
-            f"{dmtime} AS mtime, true AS is_dir FROM {dsrc} WHERE "
-            + _index_where(spec, path_expr="dir",
-                           name_expr="regexp_extract(dir, '[^/]*$')",
-                           mtime_expr=dmtime, now_s=now_s))
-    # One row past the cap, so "there was more" is known without a count.
-    # Newest first: the client re-ranks every hit anyway, so ordering only
-    # decides WHICH rows survive the cap, and recency is the best sample.
-    return duckdb.connect().execute(
-        " UNION ALL ".join(branches)
-        + f" ORDER BY mtime DESC LIMIT {int(limit)}").fetchall()
+    con = duckdb.connect()
+    dir_entries, dirs_more = (
+        _collect(con, _dirs_query(cfg, spec, now_s), min(SEARCH_DIRS_RESERVE, cap))
+        if dirs else ([], False))
+    # Files ask for the WHOLE cap and give back whatever the folders took, so an
+    # unused folder reserve costs nothing.
+    file_entries, files_more = (
+        _collect(con, _files_query(cfg, parts, spec, now_s), cap)
+        if parts else ([], False))
+    room = cap - len(dir_entries)
+    entries = dir_entries + file_entries[:room]
+    truncated = dirs_more or files_more or len(file_entries) > room
+    return entries, truncated
 
 
 def _search_index(spec, cfg=None):
@@ -380,26 +440,14 @@ def _search_index(spec, cfg=None):
         raise IndexUnavailable(
             "the file index holds nothing this search could match yet — it may "
             "still be scanning")
-    cap = SEARCH_MAX_RESULTS
     try:
-        rows = _index_rows(cfg, spec, cap + 1, parts=parts, dirs=dirs)
+        entries, truncated = _index_entries(
+            cfg, spec, SEARCH_MAX_RESULTS, parts=parts, dirs=dirs)
     except Exception as e:  # noqa: BLE001 - duckdb's exception tree, flattened
         logger.exception("the index search query failed")
         raise RuntimeError(
             f"the file index could not be searched: {type(e).__name__}") from e
-    truncated = len(rows) > cap
-    entries = [
-        {"path": path, "is_dir": bool(is_dir),
-         "size": None if is_dir or size is None else int(size),
-         "mtime": None if mtime is None else float(mtime)}
-        for path, size, mtime, is_dir in rows[:cap]
-        if not _junk_path(path)
-    ]
-    # The index knows nothing about git (its ignore rules are name patterns), so
-    # gitignored hits are screened here — the same oracle the explorer's walk
-    # uses, and the same reason server/index_gitignore.py filters the in-folder
-    # corpus: a build directory's 100k generated files must not flood a search.
-    return {"entries": _drop_gitignored(entries), "truncated": truncated,
+    return {"entries": entries, "truncated": truncated,
             # Constant now that the index is the only engine. Kept in the
             # response because old clients read it, and because a support
             # question about a surprising result starts with "what answered it".
