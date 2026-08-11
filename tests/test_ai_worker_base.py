@@ -371,3 +371,40 @@ def test_fetch_with_progress_re_raises_on_the_calling_thread(base, monkeypatch):
 
     with pytest.raises(OSError, match="connection reset"):
         base.fetch_with_progress("org/m", boom, total=None)
+
+
+# -- the shipped runners actually use it ----------------------------------------
+
+
+def test_every_registered_runner_ships_both_of_its_files():
+    """A runner is a folder holding a declaration and a worker (AI-2), and
+    `available()` reports a folder missing either as "not built yet" — which is
+    a silent degradation if it ever happens by accident (a packaging exclusion,
+    a half-finished backend). Pinned so it is a failing test instead."""
+    from fused_render.ai import registry
+
+    for runner in registry.all_runners():
+        assert os.path.isfile(runner.worker), f"{runner.code}: no worker.py"
+        assert os.path.isfile(runner.pyproject), f"{runner.code}: no pyproject.toml"
+
+
+def test_no_runner_reimplements_the_contract():
+    """The whole point of the extraction (AI-9a).
+
+    A worker that grew its own HTTP server, its own auth check or its own
+    reporter would put the SUPERVISOR's contract back in two places — the exact
+    drift this module exists to prevent, and invisible until the two disagree.
+    Checked as source, because the alternative is running mlx on Linux.
+    """
+    from fused_render.ai import registry
+
+    for runner in registry.all_runners():
+        source = open(runner.worker, encoding="utf-8").read()
+        assert "import worker_base" in source, f"{runner.code} does not use the base"
+        assert "worker_base.serve(" in source, f"{runner.code} does not serve through the base"
+        for reimplemented in ("BaseHTTPRequestHandler", "X-Fused-Worker",
+                              "socketserver", "argparse"):
+            assert reimplemented not in source, (
+                f"{runner.code} reimplements {reimplemented!r}, which belongs to "
+                f"worker_base — see SPEC AI-9a"
+            )
