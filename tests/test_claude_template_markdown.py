@@ -77,11 +77,11 @@ def _block(src, start, end):
 # absent from the old hand-rolled renderMd — so this errors (RED) until the
 # replacement lands, rather than silently extracting the wrong function.
 _RENDER_START = "let _md;  // configured once, lazily"
-_RENDER_END = "pre.appendChild(b);\n  });\n}"
+_RENDER_END = "pre.appendChild(wrap);\n  });\n}"
 # attachCodeCopy alone (a suffix of the block above) — for tests that only
 # need the copy/highlight pass, not marked/DOMPurify at all.
 _ATTACH_START = "function attachCodeCopy(rootEl) {"
-_ATTACH_END = "pre.appendChild(b);\n  });\n}"
+_ATTACH_END = "pre.appendChild(wrap);\n  });\n}"
 
 
 def _node(script, tmp_path):
@@ -371,6 +371,43 @@ def test_the_copy_button_is_styled_in_every_scope_attach_code_copy_runs_in(sourc
     )
 
 
+def test_the_hidden_copy_button_reserves_no_layout_space(source):
+    # The button used to be a sticky `float: right` inside the pre, at
+    # `opacity: 0` until hover. A float shortens the first line box whether or not
+    # anything is painted in it, so every tool chip's first payload line came out a
+    # button's width narrower than the lines below it — permanently, for a control
+    # nobody could see (measured in Chrome: the first line ended 60px early).
+    #
+    # The fix is a zero-footprint wrapper: `height: 0` generates no line box and no
+    # float intrusion, `overflow: visible` still paints the button, and the WRAPPER
+    # takes the stickiness — a sticky box is confined to its containing block, so a
+    # sticky button inside a zero-height wrapper would have nowhere to travel and
+    # would scroll away with the payload, which is the bug the sticky was for.
+    style = _style(source)
+    base = _rules(style, "pre .copywrap")
+    assert base, "no `.copywrap` box rule — the wrapper has no zero footprint"
+    decls = " ".join(d for _, d in base)
+    assert re.search(r"height:\s*0\b", decls), (
+        "the wrapper must be zero-height, or it reserves a line of its own")
+    assert re.search(r"overflow:\s*visible\b", decls), (
+        "a zero-height wrapper with hidden overflow paints no button at all")
+    assert re.search(r"display:\s*block\b", decls), (
+        "an inline wrapper sits IN the first line box, which is the whole bug")
+    # ...and no `.copybtn` rule anywhere still floats or otherwise takes part in
+    # flow: absolute inside the wrapper is the only placement left.
+    for selectors, body in _rules(style, ".copybtn"):
+        assert "float" not in body, (
+            "a floated copy button reserves first-line space: %r" % (selectors,))
+    # The stickiness moved to the wrapper, in the chip scope where a pre scrolls.
+    chip = [d for sels, d in base if any(".toolchip" in s for s in sels)]
+    assert chip and re.search(r"position:\s*sticky\b", " ".join(chip)), (
+        "nothing is sticky in a chip pre, so the button scrolls out of frame")
+    # The diff's per-line band rule (`pre.diff > span`) would otherwise hand the
+    # wrapper a line's height and a line's padding — it is a `> span` too.
+    assert _rules(style, "pre.diff > span.copywrap"), (
+        "the wrapper is not exempted from the diff's per-line band rule")
+
+
 def test_block_markdown_does_not_render_under_pre_wrap(source):
     # marked emits BLOCK html separated by literal newlines — verified against
     # the vendored marked.min.js: "a\n\nb\n\n- x" parses to
@@ -452,9 +489,10 @@ const highlighted = [];
 hljs.highlightElement = (el) => highlighted.push(el.className);
 global.window = {{ hljs }};
 // attachCodeCopy's copy-button pass (unrelated to this test) still runs and
-// calls document.createElement — a plain settable-properties stub is all
-// that needs (no jsdom: not laid out, not rendered, just assigned to).
-global.document = {{ createElement: () => ({{}}) }};
+// calls document.createElement — a plain settable-properties stub with an
+// appendChild (the button goes inside a wrapper span) is all that needs (no
+// jsdom: not laid out, not rendered, just assigned to).
+global.document = {{ createElement: () => ({{ appendChild() {{}} }}) }};
 
 function fakeCodeEl(cls) {{
   const classes = cls.split(/\\s+/);
@@ -502,9 +540,12 @@ def test_the_copy_button_copies_the_block_not_its_own_label(source, tmp_path):
     #    band. The line breaks a COPY needs are therefore put back here, which is
     #    what keeps a copied diff a diff instead of one run-together line.
     #
-    # Also pins that the button is inserted FIRST: inside a scrolling pre it is
-    # `position: sticky`, and sticky can only hold an element at the top of the
-    # scrollport from a flow position at the top of the box.
+    # Also pins the INSERTION SHAPE: the button rides in a `.copywrap` span which
+    # goes in FIRST. Something has to be `position: sticky` for the control to stay
+    # in frame while a long payload scrolls, and a sticky box can only be held at
+    # the top of a scrollport from a flow position at the top of the box — the
+    # wrapper is the box that carries it (see
+    # test_the_hidden_copy_button_reserves_no_layout_space for why not the button).
     block = _block(source, _ATTACH_START, _ATTACH_END)
     script = f"""
 const copied = [];
@@ -515,10 +556,10 @@ Object.defineProperty(globalThis, "navigator", {{
 }});
 global.window = {{}};   // no hljs: this test is about the copy pass only
 const buttons = [];
-global.document = {{ createElement: () => {{
-  const b = {{}};
-  buttons.push(b);
-  return b;
+global.document = {{ createElement: (tag) => {{
+  const el = {{ tag, kids: [], appendChild(n) {{ el.kids.push(n); return n; }} }};
+  if (tag === "button") buttons.push(el);
+  return el;
 }} }};
 function span(t) {{ return {{ textContent: t }}; }}
 // A diff pre, as fillToolChipBody builds it: span-per-line, no newlines.
@@ -558,13 +599,17 @@ attachCodeCopy(rootEl);
 buttons.forEach((b) => b.onclick());
 console.log(JSON.stringify({{
   copied,
-  first: pres.map((p) => p.first === buttons[pres.indexOf(p)]),
+  first: pres.map((p) => {{
+    const w = p.first;
+    return [w && w.tag, w && w.className, w && w.kids[0] === buttons[pres.indexOf(p)]];
+  }}),
 }}));
 """
     got = _node(script, tmp_path)
     assert got["copied"] == ["- old\n+ new", "ls -la", "x = 1"]
-    assert got["first"] == [True, True, True], (
-        "the copy button must be inserted first — sticky cannot pin it otherwise")
+    assert got["first"] == [["span", "copywrap", True]] * 3, (
+        "the copy button must go in first, inside its zero-footprint wrapper — "
+        "sticky cannot pin it otherwise, and a bare button reserves space")
 
 
 def test_attach_code_copy_is_idempotent_against_double_highlighting(

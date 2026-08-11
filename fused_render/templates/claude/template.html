@@ -1030,19 +1030,93 @@
      diff's coloured bands can run the full width of the box (see pre.diff). */
   .toolchip .chip-body { padding-right: 10px; }
   /* One clipped line, always: the summary is a control, and a wrapped 40-line
-     command would make the row taller than the body it hides. Clipped on the
-     summary itself rather than on .chip-sub inside it — an inline-block child
-     with its own ellipsis still widens the row it sits in — and NOT via
-     `display: flex`, which would take the disclosure triangle with it. */
+     command would make the row taller than the body it hides. The clip stays on
+     the summary itself as the backstop, and the summary itself is NOT the flex
+     container — `display: flex` there takes the disclosure triangle with it,
+     since the marker only exists on a `display: list-item` box. The marker also
+     stays INSIDE (the default), which is what keeps it in the same line box, and
+     right beside the tool name, as the row it opens: moved outside it is painted
+     left of the summary's border box, a marker's width away from the row, and
+     `overflow: hidden` on a list item clips an outside marker away entirely.
+     `text-overflow` is deliberately NOT set here: the row below is an atomic
+     inline, which an ellipsis cannot clip INTO — it would drop the entire row and
+     draw a lone "…" in its place. Each half of the row ellipsizes itself. */
   .toolchip > summary {
     cursor: pointer;
     color: var(--dim);
     white-space: nowrap;
     overflow: hidden;
-    text-overflow: ellipsis;
     transition: color .12s ease-out;
   }
   .toolchip > summary:hover { color: var(--fg); }
+  /* The row inside the summary is a flex line, because its halves do not clip
+     the same way. A command reads left-to-right and can lose its tail; a PATH's
+     tail is its filename, which is the whole reason the row carries a path —
+     clipped from the right ("/Users/…/claude-template…") the row names no file at
+     all. Flex is what gives the path half a width to ellipsize against: as the
+     one shrinkable item it gets exactly the space the fixed halves (name, counts)
+     leave over, and clips inside itself. INLINE-flex, so it shares the summary's
+     first line box with the disclosure marker instead of pushing it onto a line
+     of its own (a block child of a `list-style-position: inside` list item takes
+     the whole first line and leaves the marker stranded above the row) — and
+     the marker's room is 1.2em of it, taken TWICE, once for each way this row
+     gets measured:
+       * `max-width` for a chip in a constrained column — an inline-level
+         shrink-to-fit box is sized against the whole containing block, the marker
+         beside it not subtracted, so without the cap the row comes out one marker
+         too wide and the tail of the path falls outside the clip;
+       * `margin-right` for a chip whose container is itself shrink-to-fit (a
+         turn's body is), where 100% IS this row's own content: the cap alone
+         would then shave 1.2em off a row that had all the room in the world and
+         clip a short path for no reason. A margin is counted into the width the
+         container asks for, so it buys back exactly what the cap takes.
+     What overflows in the first case is the empty margin, never the text. */
+  .toolchip > summary > .chip-row {
+    display: inline-flex;
+    align-items: baseline;
+    max-width: calc(100% - 1.2em);
+    margin-right: 1.2em;
+    min-width: 0;
+    overflow: hidden;
+  }
+  /* Nested flex: .chip-sub keeps owning both halves, so the mono/colour rules
+     below stay one declaration, and only the path half may shrink. */
+  .toolchip .chip-sub { display: flex; min-width: 0; flex: 0 1 auto; }
+  .toolchip .chip-row > .chip-status,
+  .toolchip .chip-row > .chip-name { flex: 0 0 auto; }
+  /* The lead half ellipsizes on its own (the summary's `text-overflow` cannot
+     reach INTO a flex item), which is what a long Bash command needs... */
+  .toolchip .chip-sub > .chip-lead {
+    flex: 0 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  /* ...but never when there is a path beside it: flex distributes shrinkage in
+     proportion to base size, so a 700px path and a 40px "+12 -3" would BOTH give
+     up their share and the counts would come out as "+12 …". With a path present
+     the counts are fixed and the path absorbs the whole overflow. */
+  .toolchip .chip-sub.has-path > .chip-lead { flex: 0 0 auto; }
+  /* The LEFT-clipping half. `direction: rtl` moves the line's end edge — and
+     with it the ellipsis — to the left; `text-align: left` keeps a short path
+     against the left edge instead of floating it out to the right; and the <bdi>
+     inside it (see buildToolChip) isolates the path so its own characters stay in
+     logical order — an rtl paragraph would otherwise swing a trailing "/" or the
+     multiline clip marker round to the front of the string. */
+  .toolchip .chip-sub > .chip-path {
+    flex: 0 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    direction: rtl;
+    text-align: left;
+  }
+  /* The gap the halves used to get from the "  " in the summary string — on the
+     LEAD, and only when there is one: a Read has no lead at all, and a margin on
+     the path would then double the space after the tool name. */
+  .toolchip .chip-sub > .chip-lead:not(:empty) { margin-right: 6px; }
   /* The status slot. `width: 1.1em` on the base holds the column open whether
      or not the glyph is drawn, so every chip's name starts at the same x — an
      ok chip has NO glyph (see TOOL_STATUS_GLYPH: success is the default outcome
@@ -1087,6 +1161,15 @@
   }
   .toolchip .chip-label {
     color: var(--dim); font-size: 12px; margin-top: 6px; word-break: break-word;
+  }
+  /* The full path, WRAPPED — the one place a clipped path is recoverable. The
+     summary row keeps the filename (see .chip-path) but a 120-character path
+     still loses its middle there, and the middle is where the repo, the worktree
+     and the package live. Mono because it is machine text, and `word-break:
+     break-word` (inherited above) because a path has no spaces to break at. */
+  .toolchip .chip-label.chip-label-path {
+    font-family: "SF Mono", Menlo, Monaco, "Cascadia Mono", monospace;
+    color: var(--faint);
   }
   /* A flag that changes what the call DID (`replace_all`), as its own badge —
      it used to be parenthetical text glued to a path the summary row already
@@ -1149,19 +1232,55 @@
   /* Pinned while the pre scrolls: absolutely positioned inside a scroll
      container, the copy button is positioned against the CONTENT, so it slid
      out of the frame the moment a long output was scrolled — the affordance
-     vanished exactly when the block was big enough to want it. Sticky needs the
-     button to be first in flow (attachCodeCopy inserts it there), and `right`
-     is dropped because sticky reads it as a horizontal constraint. */
-  .assistant .toolchip .chip-body pre .copybtn,
-  .perm .toolchip .chip-body pre .copybtn {
+     vanished exactly when the block was big enough to want it. So the STICKY box
+     is this zero-height wrapper (attachCodeCopy puts it first in flow, which is
+     where a sticky box has to start to be held at the top of a scrollport), and
+     the button is absolutely positioned inside it — see .copywrap for why the
+     button itself is not the sticky one. */
+  .assistant .toolchip .chip-body pre .copywrap,
+  .perm .toolchip .chip-body pre .copywrap {
     position: sticky;
-    top: 6px;
-    right: auto;
-    float: right;
-    margin: 0 6px 0 8px;
+    top: 0;
+    z-index: 1;
   }
+  /* ...and the wrapper reserves NO space. The button used to be `float: right`
+     itself, which shortens the first line box by a button's width whether or not
+     the button is drawn — with `opacity: 0` the payload's first line was simply
+     60px narrower than every line under it, permanently, for a control nobody
+     could see. A `height: 0` block generates no line box and no float intrusion,
+     so the payload starts at the pre's own padding edge; `overflow: visible` lets
+     the button paint outside it; and being the sticky (i.e. positioned) box makes
+     it the containing block the absolute button resolves against. The button is
+     not the sticky box because a sticky box is confined to its containing block:
+     inside a zero-height float it would have nowhere to travel and would scroll
+     away with the content, which is the bug this whole seam exists to fix. */
+  .assistant pre .copywrap,
+  .perm pre .copywrap { display: block; height: 0; overflow: visible; }
+  /* The diff's per-line band rule would otherwise give the wrapper a line's
+     worth of height and a line's padding — it is a `> span` like the lines are. */
+  .toolchip pre.diff > span.copywrap { min-height: 0; padding: 0; }
   .toolchip .chip-todo { font-size: 13px; }
   .toolchip .chip-todo.done { color: var(--dim); text-decoration: line-through; }
+  /* A plan, in the chip that RECORDS it (the card is the live surface; on a
+     restored transcript the card is gone and this is the only copy). Prose, so it
+     borrows the plan card's own typography — `.plan-body`'s rules are unscoped
+     for exactly this reason — and only the card's box furniture is left behind. */
+  .toolchip .chip-plan { font-size: 13px; margin-top: 6px; }
+  .toolchip .chip-plan > :first-child { margin-top: 0; }
+  .toolchip .chip-plan > :last-child { margin-bottom: 0; }
+  /* A question and its options, as the transcript record of what was asked. The
+     option rows keep their leading spaces (`pre-wrap`) because the indent is what
+     makes them read as options OF the question above them, and every string here
+     is model-authored text put in through textContent — never markdown. */
+  .toolchip .chip-ask-q { font-size: 13px; margin-top: 10px; word-break: break-word; }
+  .toolchip .chip-ask-o {
+    margin-top: 2px;
+    color: var(--dim);
+    font-size: 12px;
+    font-family: "SF Mono", Menlo, Monaco, "Cascadia Mono", monospace;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
   .toolchip .chip-img {
     display: block; max-width: 100%; border-radius: 8px; margin-top: 6px;
   }
@@ -5847,12 +5966,24 @@ function attachCodeCopy(rootEl) {
     const b = document.createElement("button");
     b.className = "copybtn"; b.textContent = "copy"; b.type = "button";
     b.onclick = () => { navigator.clipboard.writeText(text); b.textContent = "copied"; setTimeout(() => (b.textContent = "copy"), 1200); };
-    // FIRST, not last: inside a scrolling pre the button is `position: sticky`
-    // (see the .copybtn rules), and a sticky element can only be held at the top
-    // of the scrollport from a flow position at the top of the box. Out of flow
-    // (`position: absolute`) everywhere else, so being first costs nothing there.
-    if (pre.firstChild) pre.insertBefore(b, pre.firstChild);
-    else pre.appendChild(b);
+    // The button goes in a ZERO-FOOTPRINT WRAPPER, first in flow, and never
+    // straight into the pre. Two requirements meet here: inside a scrolling chip
+    // pre the control has to stay in frame while the payload scrolls (so
+    // something must be `position: sticky`, and a sticky box can only be held at
+    // the top of a scrollport from a flow position at the top of the box), and it
+    // must reserve NO space while it is invisible. The button used to satisfy the
+    // first by being a sticky `float: right` — and a float shortens the first line
+    // box whether or not the float is painted, so every chip's first payload line
+    // was a button's width narrower than the lines under it, permanently, for a
+    // control at `opacity: 0`. The wrapper is `height: 0` (no line box, no float
+    // intrusion), takes the stickiness, and — being positioned — is the
+    // containing block the absolutely positioned button resolves against. See
+    // the .copywrap rules for why the button is not the sticky box itself.
+    const wrap = document.createElement("span");
+    wrap.className = "copywrap";
+    wrap.appendChild(b);
+    if (pre.firstChild) pre.insertBefore(wrap, pre.firstChild);
+    else pre.appendChild(wrap);
   });
 }
 
@@ -5970,14 +6101,22 @@ function segLineCount(v) {
   return typeof v === "string" && v !== "" ? v.split("\n").length : 0;
 }
 
-// The one-liner beside the tool name in the chip's summary row. Per-tool,
-// because "what did this call DO" is a different question for every tool and a
-// generic answer (the first key of the input, say) is noise for all of them.
-// Always ONE line — this is the <summary> of a <details>, and a newline in it
-// breaks the row — and never the whole input: the chip's BODY is what shows
-// everything, and unlike an approval card (which must show every byte it is
-// asking permission for) this describes a call that already happened.
-function toolChipSummary(seg) {
+// The one-liner beside the tool name in the chip's summary row, in TWO halves:
+// `lead`, what the call did, and `path`, the file it did it to. Split rather
+// than one string because the row is one clipped line and the halves do not
+// clip the same way — a command or a pattern reads left-to-right and may lose
+// its tail, whereas a path's tail is its FILENAME, and a path clipped from the
+// right ("/Users/…/fused-render-worktrees/claude-template…") names no file at
+// all. The renderer gives `path` its own left-clipping box (.chip-path); the
+// string form below is what everything else reads.
+//
+// Per-tool, because "what did this call DO" is a different question for every
+// tool and a generic answer (the first key of the input, say) is noise for all
+// of them. Always ONE line — this is the <summary> of a <details>, and a newline
+// in it breaks the row — and never the whole input: the chip's BODY is what
+// shows everything, and unlike an approval card (which must show every byte it
+// is asking permission for) this describes a call that already happened.
+function toolChipSummaryParts(seg) {
   const inp = seg && seg.input && typeof seg.input === "object" ? seg.input : {};
   const str = (v) => (typeof v === "string" ? v : v === undefined || v === null ? "" : JSON.stringify(v));
   // First line only, with an ellipsis when there was more — the clip has to be
@@ -5991,20 +6130,20 @@ function toolChipSummary(seg) {
     return "";
   };
   const where = (v) => (str(v) ? "  in " + line1(v) : "");
-  // Two halves of a summary, double-space separated — and NOT a trailing
-  // separator when the second half is missing (an Edit with no file_path is a
-  // real, if odd, input, and "+0 -0  " reads as a truncation).
-  const join = (a, b) => (b ? a + "  " + b : a);
+  // A summary with no path half. The default: only the file tools have a tail
+  // worth protecting, and a pattern or a URL in a left-clipping box would read
+  // backwards (its own head is the part that identifies it).
+  const lead = (text) => ({ lead: text, path: "" });
 
   switch (seg && seg.name) {
     case "Bash":
-      return "$ " + line1(inp.command);
+      return lead("$ " + line1(inp.command));
     case "Read":
     case "NotebookEdit":
-      return pick("file_path", "path", "notebook_path");
+      return { lead: "", path: pick("file_path", "path", "notebook_path") };
     case "Glob":
     case "Grep":
-      return line1(inp.pattern) + where(inp.path || inp.glob);
+      return lead(line1(inp.pattern) + where(inp.path || inp.glob));
     case "Edit": {
       // +added -removed, so the SIZE of the change is legible unopened — and
       // FIRST, because a path is long enough to be clipped by the summary's
@@ -6013,25 +6152,49 @@ function toolChipSummary(seg) {
       // Edit rows can be scanned as a column of magnitudes.
       const counts = "+" + segLineCount(inp.new_string)
                      + " -" + segLineCount(inp.old_string);
-      return join(counts, pick("file_path"));
+      return { lead: counts, path: pick("file_path") };
     }
     case "Write":
-      return join("+" + segLineCount(inp.content), pick("file_path"));
+      return { lead: "+" + segLineCount(inp.content), path: pick("file_path") };
     case "Task":
-      return pick("description", "subagent_type");
+      return lead(pick("description", "subagent_type"));
     case "TodoWrite": {
       const todos = Array.isArray(inp.todos) ? inp.todos : [];
       const done = todos.filter((t) => t && t.status === "completed").length;
-      return done + "/" + todos.length + " done";
+      return lead(done + "/" + todos.length + " done");
     }
     case "WebFetch":
     case "WebSearch":
-      return pick("url", "query");
+      return lead(pick("url", "query"));
+    case PLAN_TOOL:
+      // Not the plan's first line: a plan opens with a heading or a preamble
+      // ("Here is what I will do"), which describes nothing. What the row has to
+      // say is that a plan HAPPENED — the body carries the plan itself.
+      return lead("proposed a plan");
+    case ANSWERABLE_TOOL: {
+      // The first question, verbatim. It is the thing the user was asked, and
+      // for the single-question case (much the commonest) it is the whole call.
+      const asked = (Array.isArray(inp.questions) ? inp.questions : []).find(
+        (q) => q && typeof q === "object" && typeof q.question === "string"
+               && q.question);
+      return lead(asked ? line1(asked.question) : "");
+    }
   }
   // Unknown tool — every MCP tool, and whatever the CLI grows next. The name
   // is already in the summary row beside this, so there is nothing honest to
   // add: the body shows the whole input instead.
-  return "";
+  return lead("");
+}
+
+// The same summary as one string: the row's `title` (so a path clipped at both
+// ends is still readable on hover) and whatever else wants the whole line.
+// Double-space separated, and NOT with a trailing separator when the path half
+// is missing — an Edit with no file_path is a real, if odd, input, and "+0 -0  "
+// reads as a truncation.
+function toolChipSummary(seg) {
+  const parts = toolChipSummaryParts(seg);
+  if (!parts.path) return parts.lead;
+  return parts.lead ? parts.lead + "  " + parts.path : parts.path;
 }
 
 // The chip's expanded body, rebuilt from the segment (never patched): a
@@ -6047,11 +6210,21 @@ function fillToolChipBody(body, seg) {
     body.appendChild(p);
     return p;
   };
-  const label = (text) => {
+  const label = (text, cls) => {
     const d = document.createElement("div");
-    d.className = "chip-label";
+    d.className = cls ? "chip-label " + cls : "chip-label";
     d.textContent = text;
     body.appendChild(d);
+  };
+  // The target path, WHOLE and wrapped. The summary row above carries a path too
+  // and clips it — from the left, so the filename survives (see .chip-path) — but
+  // a 120-character path still loses its middle there, and the middle is which
+  // repo, which worktree, which package. An open chip is where the complete path
+  // has to be recoverable, so this is the one repetition worth its 20 pixels.
+  const pathLabel = (v) => {
+    const s = typeof v === "string" ? v
+              : v === undefined || v === null ? "" : JSON.stringify(v);
+    if (s) label(s, "chip-label-path");
   };
   // A flag that changes what the call DID, as its own badge. Not appended to the
   // path: glued on as "(every occurrence)" it read as part of the filename, and
@@ -6067,9 +6240,7 @@ function fillToolChipBody(body, seg) {
   switch (seg.name) {
     case "Edit": {
       used.push("file_path", "old_string", "new_string", "replace_all");
-      // No path label here: the summary row one line above IS the path (see
-      // toolChipSummary), and an open chip repeating it verbatim was the same
-      // string twice in 20 vertical pixels.
+      pathLabel(inp.file_path);
       if (inp.replace_all) flag("every occurrence");
       // One span per LINE, and no "\n" text nodes between them: the spans are
       // `display: block` (that is what makes the +/- colour a full-width band),
@@ -6094,6 +6265,7 @@ function fillToolChipBody(body, seg) {
     }
     case "Write":
       used.push("file_path", "content");
+      pathLabel(inp.file_path);
       pre(typeof inp.content === "string" ? inp.content : "");
       break;
     case "Bash":
@@ -6113,6 +6285,59 @@ function fillToolChipBody(body, seg) {
                           + String((t && (t.content || t.activeForm)) || "");
         body.appendChild(row);
       });
+      break;
+    }
+    case PLAN_TOOL: {
+      // The plan, as PROSE. Both of these tools own a card (buildPlanCard,
+      // buildQuestionCard) which is the surface the user acts on while the turn
+      // is live — but a card is a control, and controls do not survive a reload:
+      // on a restored transcript this chip is the only record that a plan was
+      // ever proposed, and a raw JSON dump of `{"plan": "## Step one\n\n- ..."}`
+      // is a record of the bytes rather than of the plan.
+      //
+      // `plan` is the ONE tool input on this page that goes through renderMd
+      // instead of textContent, for the same reason it does on the card: it is
+      // not bytes off a disk, it is markdown the model wrote for a human to read
+      // (D248 — and the funnel is the shared marked + DOMPurify one, so this
+      // adds a call SITE, not a second renderer). Kept in sync with
+      // buildPlanCard deliberately: same key, same funnel, same leftover rule.
+      const plan = typeof inp.plan === "string" && inp.plan ? inp.plan : "";
+      if (plan) {
+        used.push("plan");
+        const d = document.createElement("div");
+        d.className = "plan-body chip-plan";
+        d.innerHTML = renderMd(plan);
+        body.appendChild(d);
+        attachCodeCopy(d);   // a plan quotes code; the copy buttons come with it
+      }
+      // ...and when it is not a usable string it stays UNUSED, so it falls into
+      // the leftover dump below with everything else — a chip must never imply a
+      // plan was read when there was nothing to read.
+      break;
+    }
+    case ANSWERABLE_TOOL: {
+      // What was asked, and what the options were. Structured plain text, never
+      // markdown: every string here (the question, the labels, the descriptions)
+      // is model-authored, the labels are what the answer is keyed by, and an
+      // option that renders as anything other than its literal text is an option
+      // the user cannot check against the answer they gave. So: textContent.
+      const questions = Array.isArray(inp.questions) ? inp.questions : null;
+      if (questions) {
+        used.push("questions");
+        questions.forEach((q) => {
+          const item = q && typeof q === "object" ? q : {};
+          label(String(item.question === undefined || item.question === null
+                       ? "" : item.question), "chip-ask-q");
+          (Array.isArray(item.options) ? item.options : []).forEach((o) => {
+            const opt = o && typeof o === "object" ? o : {};
+            const text = String(opt.label === undefined || opt.label === null
+                                ? "" : opt.label);
+            const desc = String(opt.description === undefined
+                                || opt.description === null ? "" : opt.description);
+            label("  ○ " + text + (desc ? " — " + desc : ""), "chip-ask-o");
+          });
+        });
+      }
       break;
     }
     default:
@@ -6171,7 +6396,25 @@ function buildToolChip(seg) {
   if (prettyName !== rawName) head.setAttribute("title", rawName);
   const sub = document.createElement("span");
   sub.className = "chip-sub";
-  head.append(glyph, name, sub);
+  // Two spans, not one string: `lead` keeps the row's fixed width (a status
+  // glyph, a name, "+12 -3") and `path` is the one item allowed to shrink, so it
+  // ellipsizes from the LEFT inside the space that is left and the filename
+  // survives — see .chip-path, and toolChipSummaryParts for which tools have a
+  // path half at all. The <bdi> is what keeps the path's own characters in
+  // logical order inside that right-to-left box.
+  const lead = document.createElement("span");
+  lead.className = "chip-lead";
+  const path = document.createElement("span");
+  path.className = "chip-path";
+  const pathText = document.createElement("bdi");
+  path.appendChild(pathText);
+  sub.append(lead, path);
+  // The flex row lives INSIDE the summary: a flex summary loses its disclosure
+  // triangle (the marker only exists on a `display: list-item` box).
+  const row = document.createElement("span");
+  row.className = "chip-row";
+  row.append(glyph, name, sub);
+  head.append(row);
   const body = document.createElement("div");
   body.className = "chip-body";
   el.append(head, body);
@@ -6206,7 +6449,18 @@ function buildToolChip(seg) {
     glyph.textContent =
       Object.prototype.hasOwnProperty.call(TOOL_STATUS_GLYPH, status)
         ? TOOL_STATUS_GLYPH[status] : TOOL_STATUS_GLYPH.running;
-    sub.textContent = toolChipSummary(next);
+    const parts = toolChipSummaryParts(next);
+    lead.textContent = parts.lead;
+    pathText.textContent = parts.path;
+    // Which half is allowed to shrink is a fact about the CONTENT, so the class
+    // carries it: with a path, the lead is fixed and the path absorbs the clip;
+    // without one, the lead is the whole row and ellipsizes itself.
+    sub.classList.toggle("has-path", !!parts.path);
+    // The whole one-liner on hover: the row clips a long path at BOTH ends
+    // (the left-clip keeps its filename, the summary's own ellipsis its head),
+    // and a tooltip is the cheapest way to read it without opening the chip.
+    const full = toolChipSummary(next);
+    if (full) sub.setAttribute("title", full);
     body.replaceChildren();
     fillToolChipBody(body, next);
   }

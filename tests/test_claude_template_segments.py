@@ -75,6 +75,12 @@ _PERM_END = ("  return rest.length ? Object.fromEntries(rest.map((k) => "
 # rather than silently passing against the old text-only renderer.
 _SEG_START = "const TOOL_STATUS_GLYPH = {"
 _SEG_END = "  return tail >= 0 ? segText(list[tail]) : null;\n}"
+# The two tool names the chip renderers share with the CARD renderers
+# (buildPlanCard, buildQuestionCard). Extracted rather than restated here: a chip
+# and a card that disagreed about which name means "a plan" would put a JSON dump
+# beside a plan card, which is the finding these probes cover.
+_TOOL_NAMES_START = 'const PLAN_TOOL = "ExitPlanMode";'
+_TOOL_NAMES_END = 'const ANSWERABLE_TOOL = "AskUserQuestion";'
 # makeTyper, for the one probe that exercises its new retarget() contract.
 _TYPER_START = "function makeTyper(bodyEl) {"
 _TYPER_END = "abort() { if (raf) cancelAnimationFrame(raf); cur.remove(); },\n  };\n}"
@@ -216,10 +222,11 @@ class _Probe:
     def __init__(self, source, tmp_path):
         self.perm = _block(source, _PERM_START, _PERM_END)
         self.seg = _block(source, _SEG_START, _SEG_END)
+        self.names = _block(source, _TOOL_NAMES_START, _TOOL_NAMES_END)
         self._tmp_path = tmp_path
 
     def run(self, body):
-        script = "\n".join([_DOM, _STUBS, self.perm, self.seg, body])
+        script = "\n".join([_DOM, _STUBS, self.names, self.perm, self.seg, body])
         return _node(script, self._tmp_path)
 
     def render(self, segments, typer=False, twice=False):
@@ -332,11 +339,76 @@ def test_one_diff_formatter_serves_both_the_card_and_the_chip(source):
     # counts still render (an Edit with no strings really did change nothing)
     # and there is no dangling separator where the path would have been.
     ("Edit", {}, "+0 -0"),
+    # A plan: that it HAPPENED, not its first line — a plan opens with a heading
+    # or a preamble, which describes nothing. The body carries the plan.
+    ("ExitPlanMode", {"plan": "## Step one\n\n- do it"}, "proposed a plan"),
+    ("ExitPlanMode", {}, "proposed a plan"),
+    # A question: the first question, verbatim — it is what the user was asked,
+    # and for a single-question call it is the whole call.
+    ("AskUserQuestion", {"questions": [
+        {"question": "Which database?", "options": [{"label": "DuckDB"}]},
+        {"question": "Behind a flag?", "options": [{"label": "Yes"}]}]},
+     "Which database?"),
+    # ...the first USABLE one: a question with no text says nothing.
+    ("AskUserQuestion", {"questions": [{"options": []}, {"question": "Real one?"}]},
+     "Real one?"),
+    ("AskUserQuestion", {"questions": "not a list"}, ""),
 ])
 def test_tool_chip_summary_per_tool(probe, name, inp, expected):
     got = probe.run("console.log(JSON.stringify({s: toolChipSummary(%s)}));"
                     % json.dumps({"name": name, "input": inp}))
     assert got["s"] == expected
+
+
+def test_the_summary_path_is_its_own_left_clipping_span(probe, source):
+    # THE finding: the summary row is one clipped line, and a path clipped from
+    # the right ("/Users/…/claude-template…") names no file — the filename is the
+    # tail. So the path is not part of the summary string in the DOM: it is its own
+    # span, ellipsized from the LEFT, with a <bdi> inside keeping the path's
+    # characters in logical order inside that right-to-left box.
+    long_path = "/Users/x/very/deeply/nested/worktree/pkg/templates/claude/mod.py"
+    got = probe.render([_tool("Edit", {"file_path": long_path,
+                                       "old_string": "a", "new_string": "b"})])
+    chip = _by_class(got["tree"], "toolchip")[0]
+    sub = _by_class(chip, "chip-sub")[0]
+    assert [k["cls"] for k in sub["children"]] == ["chip-lead", "chip-path"]
+    assert [k["text"] for k in sub["children"]] == ["+1 -1", long_path]
+    path = _by_class(sub, "chip-path")[0]
+    assert [k["tag"] for k in path["children"]] == ["bdi"], (
+        "the path needs a bidi isolate, or an rtl box swings a trailing '/' or "
+        "the multiline clip marker round to the front of the string"
+    )
+    # Which half shrinks is a fact about the content, so the class carries it.
+    assert "has-path" in sub["cls"].split()
+    lead_only = probe.render([_tool("Bash", {"command": "ls -la"})])
+    bare = _by_class(_by_class(lead_only["tree"], "toolchip")[0], "chip-sub")[0]
+    assert "has-path" not in bare["cls"].split()
+    assert _by_class(bare, "chip-path")[0]["text"] == ""
+    # ...and the whole one-liner is still one string, on the row's title: a path
+    # long enough to be clipped at both ends has to be readable without opening.
+    assert bare["attrs"].get("title") == "$ ls -la"
+    assert _by_class(chip, "chip-sub")[0]["attrs"].get("title") == "+1 -1  " + long_path
+
+    # The CSS half of the same finding.
+    style = source[source.index("<style>"):source.index("</style>")]
+    style = re.sub(r"/\*.*?\*/", "", style, flags=re.S)
+    path_rule = re.search(r"\.toolchip \.chip-sub > \.chip-path\s*\{([^}]*)\}", style)
+    assert path_rule, "no .chip-path rule: nothing clips the path from the left"
+    for decl in ("direction: rtl", "text-align: left", "text-overflow: ellipsis",
+                 "overflow: hidden", "min-width: 0"):
+        assert decl in path_rule.group(1), (
+            "%r missing from .chip-path — the left clip needs all of it" % decl)
+    row = re.search(r"\.toolchip > summary > \.chip-row\s*\{([^}]*)\}", style)
+    assert row and "inline-flex" in row.group(1), (
+        "the summary's row must be an inline flex line: flex is what gives the "
+        "path half a width to ellipsize against, and inline keeps the disclosure "
+        "marker on the row instead of stranding it on a line above"
+    )
+    summary_rule = re.search(r"\.toolchip > summary\s*\{([^}]*)\}", style)
+    assert "text-overflow" not in summary_rule.group(1), (
+        "an ellipsis on the summary cannot clip INTO the atomic inline row — it "
+        "drops the whole row and draws a lone '…' in its place"
+    )
 
 
 def test_summary_never_spans_lines_even_for_multiline_input(probe):
@@ -401,9 +473,16 @@ def test_edit_chip_renders_a_line_classed_diff_and_opens_by_default(probe):
     # in tests/test_claude_template_markdown.py, which pins exactly that.
     assert [k["tag"] for k in pre["children"]] == ["span", "span"]
     assert pre["text"] == "- old+ new"
-    # And the path is not repeated: the summary row above it already IS the path
-    # (toolChipSummary), so the body opens straight onto the diff.
-    assert not _by_class(chip, "chip-label")
+    # And the FULL path is a label above the diff. The summary row carries a path
+    # too, but it is one clipped line: it keeps the filename (.chip-path clips from
+    # the LEFT) and loses the middle, so the open chip is the only place a
+    # 120-character path is recoverable whole.
+    label = _by_class(chip, "chip-label")
+    assert [n["text"] for n in label] == ["/a.py"]
+    assert "chip-label-path" in label[0]["cls"].split(), (
+        "the path label carries its own class — it is machine text set in mono, "
+        "not a prose label like a Bash description"
+    )
 
 
 def test_only_a_diff_with_something_below_the_fold_gets_the_fade(probe, source):
@@ -535,6 +614,79 @@ console.log(JSON.stringify({tree: dump(container)}));
     body = got["tree"]["text"]
     for key in ("__proto__", "beta", "alpha", "three"):
         assert key in body, key
+
+
+def test_the_plan_chip_renders_the_plan_as_markdown_not_json(probe):
+    # ExitPlanMode used to fall through to the unknown-tool branch, so the chip
+    # beside a live plan card was a JSON dump of the plan's source — and on a
+    # RESTORED transcript, where the card (a control) is gone, that dump was the
+    # only record that a plan had ever been proposed.
+    #
+    # `plan` is the one tool input on the page that goes through renderMd rather
+    # than textContent, for the same reason it does on the card: it is not bytes
+    # off a disk, it is markdown the model wrote for a human (D248). Same key,
+    # same funnel, same leftover rule as buildPlanCard.
+    plan = "## Step one\n\n- read the file\n- write the fix"
+    got = probe.render([_tool("ExitPlanMode", {"plan": plan})])
+    chip = _by_class(got["tree"], "toolchip")[0]
+    assert chip["open"] is False, (
+        "the card is the surface a live plan is acted on; the chip is the "
+        "transcript record and stays folded"
+    )
+    assert got["mdCalls"] == [plan]
+    rendered = _by_class(chip, "chip-plan")
+    assert [n["html"] for n in rendered] == ["<md>" + plan + "</md>"]
+    assert "plan-body" in rendered[0]["cls"].split(), (
+        "the chip's plan borrows the plan card's own typography — that is what "
+        "`.plan-body`'s unscoped rules are for"
+    )
+    # A plan quotes code, so the copy buttons come with it — as on the card.
+    assert got["attachCalls"] == [rendered[0]["uid"]]
+    assert "{" not in chip["text"], "the plan must not ALSO be dumped as JSON"
+
+
+def test_an_unusable_plan_falls_into_the_leftover_dump(probe):
+    # `plan` is only "used" when it is a usable string; otherwise it goes through
+    # the leftover dump with everything else, so the chip never implies a plan was
+    # read when there was nothing to read (buildPlanCard's rule, verbatim).
+    for inp in ({"plan": ""}, {"plan": {"nested": "object"}}, {"other": 1}):
+        got = probe.render([_tool("ExitPlanMode", inp)])
+        chip = _by_class(got["tree"], "toolchip")[0]
+        assert got["mdCalls"] == [], inp
+        for key in inp:
+            assert key in chip["text"], (inp, key)
+
+
+def test_the_question_chip_is_plain_text_questions_and_options(probe):
+    # AskUserQuestion had the same JSON-dump problem, and the opposite fix: every
+    # string here is model-authored, the labels are what an answer is KEYED by, and
+    # an option rendered as anything but its literal text is an option the user
+    # cannot check against the answer they gave. So: textContent, all of it.
+    got = probe.render([_tool("AskUserQuestion", {"questions": [
+        {"question": "Which database?", "options": [
+            {"label": "DuckDB", "description": "local, zero setup"},
+            {"label": "Postgres", "description": "shared, needs a URL"}]},
+        {"question": "Behind a flag?", "options": [{"label": "Yes"}]},
+    ]})])
+    chip = _by_class(got["tree"], "toolchip")[0]
+    assert chip["open"] is False
+    assert got["mdCalls"] == [], "model-authored options are not markdown"
+    assert [n["text"] for n in _by_class(chip, "chip-ask-q")] == [
+        "Which database?", "Behind a flag?"]
+    assert [n["text"] for n in _by_class(chip, "chip-ask-o")] == [
+        "  ○ DuckDB — local, zero setup",
+        "  ○ Postgres — shared, needs a URL",
+        "  ○ Yes",
+    ]
+    assert all(not n.get("html") for n in _nodes(chip)), (
+        "a question or an option reached innerHTML"
+    )
+    # A questions value that is not a list is not a question list: it falls into
+    # the leftover dump rather than being silently dropped.
+    bad = probe.render([_tool("AskUserQuestion", {"questions": "nope",
+                                                 "extra": True})])
+    text = _by_class(bad["tree"], "toolchip")[0]["text"]
+    assert "nope" in text and "extra" in text
 
 
 def test_known_tool_leftover_keys_are_dumped_not_dropped(probe):
@@ -944,11 +1096,16 @@ def test_one_static_turn_renderer_serves_history_and_the_reattach_repair(source)
 #   buildThinkingView  a folded reasoning block
 #   addAssistantTurn   every FINISHED turn (all four callers above)
 #   buildPlanCard      the one tool INPUT that is genuinely markdown (D248)
+#   fillToolChipBody   the SAME input, in the chip that records it — a live plan
+#                      has a card, but a restored transcript has only the chip,
+#                      and a JSON dump of the plan's source is a record of bytes
+#                      rather than of the plan. `input.plan` and nothing else in
+#                      that function: every other branch is textContent.
 # Adding to this set is a decision about what may reach innerHTML at all; every
 # other payload on this page goes in through textContent.
 _MD_INNERHTML_OWNERS = {
     "makeTyper", "buildTextView", "buildThinkingView", "addAssistantTurn",
-    "buildPlanCard",
+    "buildPlanCard", "fillToolChipBody",
 }
 
 
