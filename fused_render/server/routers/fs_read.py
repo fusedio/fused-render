@@ -236,6 +236,17 @@ def api_fs_list(path: str, cursor: str | None = None):
         return _list_response(path, entries[:_server_walk.LIST_MAX_ENTRIES], truncated, None)
     if not os.path.isdir(path):
         return _error(f"not a directory: {path}", status=400)
+    # Opening a folder is the signal that its slice of the index has to be
+    # fresh, and this is the only request that says so on every platform. The
+    # check is thrown onto a background thread and throttled to one at a time
+    # (routers/index.note_folder_opened) — nothing about this listing waits on
+    # it. Imported lazily and looked up through the module so the seam stays
+    # patchable, and so a listing does not pull the index package in.
+    try:
+        from fused_render.server.routers import index as _index_router
+        _index_router.note_folder_opened(path)
+    except Exception:  # noqa: BLE001 - a listing must not fail on housekeeping
+        logger.exception("could not note %s for the index freshness check", path)
     entries = []
     # scandir over listdir+per-entry stat/isdir: the readdir already carries
     # each entry's type, so is_dir() is free and stat() is a single call —

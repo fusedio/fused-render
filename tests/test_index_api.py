@@ -665,3 +665,75 @@ def test_a_rules_edit_rescans_every_stale_root_not_just_the_first(home, tmp_path
     assert body["needs_rescan"] is True
     assert started == [str(a), str(b)]
     assert body["rescan_run_ids"] == ["r1", "r2"]
+
+
+# -- open-folder freshness -----------------------------------------------------
+
+def test_listing_a_folder_notes_it_for_the_freshness_check(home, tmp_path,
+                                                           monkeypatch):
+    """The hook is on /api/fs/list because that is what "opened a folder"
+    actually is; the check itself must never run on the request thread."""
+    seen = []
+    monkeypatch.setattr(index_router, "note_folder_opened",
+                        lambda p: seen.append(p) or True)
+    src = _tree(tmp_path)
+    resp = _client(tmp_path).get("/api/fs/list", params={"path": str(src)})
+    assert resp.status_code == 200
+    assert seen == [str(src)]
+
+
+def test_the_freshness_check_runs_at_most_one_at_a_time(home, tmp_path,
+                                                        monkeypatch):
+    """A folder being watched re-lists on every mtime tick, so the hook fires
+    far more often than a check costs. Overlapping checks would each open
+    duckdb over dirs.parquet for nothing."""
+    threads = []
+    monkeypatch.setattr(index_router.threading, "Thread",
+                        lambda **kw: threads.append(kw) or _FakeThread())
+    assert index_router.note_folder_opened(str(tmp_path)) is True
+    assert index_router.note_folder_opened(str(tmp_path)) is False
+    assert len(threads) == 1
+    # The slot frees once the check finishes, so the next open is checked again.
+    threads[0]["target"](*threads[0]["args"])
+    assert index_router.note_folder_opened(str(tmp_path)) is True
+
+
+class _FakeThread:
+    def start(self):
+        pass
+
+
+def test_a_stale_open_folder_gets_its_configured_root_rescanned(
+        home, tmp_path, monkeypatch):
+    """The glue end to end, synchronously: the persisted config supplies the
+    roots and the check fires the ordinary incremental scan of the enclosing
+    one."""
+    started = []
+    monkeypatch.setattr(index_router.runner, "start",
+                        lambda cfg, root, full=False: started.append(root)
+                        or {"run_id": "r1", "root": root})
+    src = _tree(tmp_path)
+    cfg = load_config()
+    cfg.roots = [str(src)]
+    index_router.save_config(cfg)
+    sub = src / "sub"
+    # An index that recorded `sub` long before its current mtime.
+    _write_dirs_index(load_config(), {str(src): 1, str(sub): 1})
+    monkeypatch.setattr(index_router.freshness, "QUIET_S", 0.0)
+    index_router._run_freshness_check(str(sub))
+    assert started == [str(src)]
+
+
+def _write_dirs_index(cfg, dirs):
+    """A minimal real index whose dirs.parquet holds {dir: mtime_ns}."""
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    from fused_render.index.store import Sink, compact
+    shards = os.path.join(cfg.dir, "shards")
+    os.makedirs(shards, exist_ok=True)
+    sink = Sink(shards, "t", pa, pq, cfg.shard_rows)
+    for d, mtime_ns in dirs.items():
+        sink.add(d, "s", ("sig", [], 0, mtime_ns, 0))
+    sink.close()
+    compact(cfg, next(iter(dirs)), shards, pa, pq)

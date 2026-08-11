@@ -16,10 +16,11 @@ query.md §5`).
 import asyncio
 import logging
 import os
+import threading
 
 from fastapi import APIRouter, Body, Header, Query
 
-from fused_render.index import runner
+from fused_render.index import freshness, runner
 from fused_render.index.config import IndexConfig, load_config, save_config
 from fused_render.index.ignore import default_ignore, norm
 from fused_render.index.query import MAX_CORPUS
@@ -103,6 +104,49 @@ def run_startup_scan(start_dir: str | None = None) -> None:
 async def startup_scan(start_dir: str | None = None) -> None:
     """The create_app hook. Off the event loop because it touches the disk."""
     await asyncio.to_thread(run_startup_scan, start_dir)
+
+
+# ------------------------------------------------------ open-folder freshness
+
+# At most one check in flight. /api/fs/list fires for every folder the explorer
+# opens AND again on every watch tick of a folder being displayed, so the hook
+# is called far more often than a check costs — and a check opens duckdb over
+# dirs.parquet. A plain non-reentrant lock, acquired by the request thread and
+# released by the worker, is the whole throttle.
+_freshness_slot = threading.Lock()
+
+
+def _run_freshness_check(path: str) -> None:
+    """The check itself, off the request thread. Never raises: a listing must
+    not fail, or slow down, because index housekeeping did."""
+    try:
+        cfg = load_config()
+        root = freshness.note_folder_opened(cfg, path, scan_roots(cfg))
+        if root:
+            logger.info("index: %s changed since the last scan; rescanning %s",
+                        path, root)
+    except Exception:  # noqa: BLE001 - housekeeping must never surface
+        logger.exception("could not check index freshness for %s", path)
+    finally:
+        if _freshness_slot.locked():
+            _freshness_slot.release()
+
+
+def note_folder_opened(path: str) -> bool:
+    """The explorer opened `path`: check the index against it in the background.
+
+    Returns whether a check was started. Called from /api/fs/list — the folder
+    the user is looking at is the one whose search must not be stale, and the
+    listing request is the only signal that says so on every platform."""
+    if not _freshness_slot.acquire(blocking=False):
+        return False
+    try:
+        threading.Thread(target=_run_freshness_check, args=(path,),
+                         daemon=True, name="index-freshness").start()
+    except RuntimeError:  # interpreter shutting down
+        _freshness_slot.release()
+        return False
+    return True
 
 
 # ------------------------------------------------------------------- scanning
