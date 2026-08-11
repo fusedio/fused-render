@@ -778,6 +778,21 @@ def test_a_lone_variant_still_counts(client, hub):
     assert _repo_row(client, "org/sd")["params"] == 1000 * 1000
 
 
+def test_a_hardlinked_weight_alias_counts_once(client, hub):
+    # The alias rule keys on the file's identity, not its resolved path: a
+    # resolved path collapses a symlink onto its target but leaves two
+    # HARDLINKS looking like two files — and a cache written where symlinks
+    # were unavailable is exactly where the aliases are hardlinks.
+    repo = _repo(hub, "models--org--m", blobs={"w": 10}, snapshots={"c1": {"m": "w"}}, refs={"main": "c1"})
+    snap = repo / "snapshots" / "c1"
+    (snap / "model.safetensors").write_bytes(_safetensors({"a": (128, 128)}))
+    try:
+        os.link(snap / "model.safetensors", snap / "consolidated.safetensors")
+    except (OSError, NotImplementedError):
+        pytest.skip("filesystem does not support hard links")
+    assert _repo_row(client, "org/m")["params"] == 128 * 128
+
+
 @requires_symlinks
 def test_the_same_blob_under_two_names_counts_once(client, hub):
     repo = _repo(hub, "models--org--m", blobs={"shared": 4096}, snapshots={"c1": {"m": "shared"}},

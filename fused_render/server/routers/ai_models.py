@@ -360,11 +360,18 @@ def _weight_files(snapshot_dir: str) -> list[str]:
     most want the number for.
 
     Two things are dropped: a precision variant whose plain counterpart is also
-    present (same tensors, one count), and a second path resolving to a blob
-    already counted (the same weights linked under two names).
+    present (same tensors, one count), and a second name for a blob already
+    counted.
+
+    That second rule keys on `(st_dev, st_ino)` — the file's identity — rather
+    than on its resolved path, which is the same rule `_scan_repo` uses for
+    bytes and for the same reason. A resolved path collapses a symlink onto its
+    target but leaves two HARDLINKS looking like two files, and a cache written
+    where symlinks were unavailable is exactly where the aliases are hardlinks.
+    Following the symlink is also what stat does here, so one key covers both.
     """
     found: list[str] = []
-    counted: set[str] = set()
+    counted: set[tuple[int, int]] = set()
     for dirpath, _dirnames, filenames in os.walk(snapshot_dir):
         here = set(filenames)
         for name in sorted(filenames):
@@ -373,10 +380,14 @@ def _weight_files(snapshot_dir: str) -> list[str]:
             if _VARIANT_SUFFIX.search(name) and _VARIANT_SUFFIX.sub(".safetensors", name) in here:
                 continue
             path = os.path.join(dirpath, name)
-            blob = os.path.realpath(path)
-            if blob in counted:
+            try:
+                st = os.stat(path)  # follows the link: the blob's own identity
+            except OSError:
+                continue  # a dangling link has no header to read anyway
+            key = (st.st_dev, st.st_ino)
+            if key in counted:
                 continue
-            counted.add(blob)
+            counted.add(key)
             found.append(path)
     return found
 
