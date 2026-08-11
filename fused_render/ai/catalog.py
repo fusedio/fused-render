@@ -20,8 +20,11 @@ from __future__ import annotations
 
 from fused_render.ai import registry
 
-#: capability -> suggested models, best first. `size_gb` is the download; `note`
-#: is why you would or would not pick this one.
+#: capability -> suggested models, best first. `size_gb` is the download —
+#: **None when nobody has measured it**, which the card shows as "—" rather than
+#: as a number someone would plan a multi-GB download around (the same no-guess
+#: rule the Hub result cards follow, D255). `note` is why you would or would not
+#: pick this one.
 SUGGESTIONS: dict[str, list[dict]] = {
     registry.TEXT_GENERATION: [
         {
@@ -44,6 +47,28 @@ SUGGESTIONS: dict[str, list[dict]] = {
             "size_gb": 3.4,
             "note": "Very fast and light. Noticeably weaker output, but it runs "
                     "anywhere MLX does.",
+        },
+        # Bonsai 27B (prism-ml). The family ships eight repos and only these two
+        # are in a format the MLX runner can load: the GGUF builds are
+        # llama.cpp's, and the AWQ builds are both AWQ and image-text-to-text.
+        # Picking the MLX pair is not a preference, it is the whole of what runs
+        # here — see the module docstring on curation being an editorial act.
+        {
+            "id": "prism-ml/Bonsai-27B-mlx-1bit",
+            "label": "Bonsai 27B (MLX 1-bit)",
+            "size_gb": None,
+            "note": "A 27B model packed to about one bit per weight, so it asks "
+                    "for far less memory than 27B usually does. Quantization "
+                    "this aggressive trades accuracy for that — worth trying "
+                    "against a 4-bit model of a third the size before committing.",
+        },
+        {
+            "id": "prism-ml/Ternary-Bonsai-27B-mlx-2bit",
+            "label": "Ternary Bonsai 27B (MLX 2-bit)",
+            "size_gb": None,
+            "note": "The ternary build at two bits per weight — larger than the "
+                    "1-bit one and less aggressively packed, so the obvious "
+                    "second thing to try if that one disappoints.",
         },
     ],
     registry.IMAGE_GENERATION: [

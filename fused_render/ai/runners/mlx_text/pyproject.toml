@@ -8,10 +8,13 @@
 # `envinstall` builds this on first use, with the same detached `uv sync`,
 # progress record and verbatim errors any declaring folder gets.
 #
-# Four packages, and each earns its place: mlx-lm loads and generates,
-# huggingface_hub downloads, psutil answers "how much memory is this costing",
-# tqdm is hf's progress hook (subclassed in worker.py to report byte counts to
-# the app's download manager rather than to a terminal nobody is watching).
+# Three packages, and each earns its place: mlx-lm loads and generates,
+# huggingface_hub downloads, psutil answers "how much memory is this costing".
+#
+# tqdm used to be here, for a `tqdm_class` shim that reported hf's progress bars
+# to the download manager. It is gone with the shim (AI-5b): that hook only
+# exposes the outer FILE counter, which is how a 4.6GB pull came to read
+# "10 / 11 B", and progress is measured from the disk now.
 [project]
 name = "fused-render-runner-mlx-text"
 version = "0.1.0"
@@ -20,7 +23,6 @@ dependencies = [
     "mlx-lm",
     "huggingface_hub",
     "psutil",
-    "tqdm",
 ]
 
 # Not a distribution — a folder of scripts, not something to build and install.

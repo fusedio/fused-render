@@ -68,7 +68,18 @@ HEALTH_TIMEOUT_S = 5.0
 # Generation can take minutes (an image at high step counts, a long completion).
 GENERATE_TIMEOUT_S = 900.0
 
+# How long an image request will wait for its model to become resident. Long,
+# because the honest worst case is a multi-GB download on a slow connection
+# followed by a minutes-long load — and the alternative to waiting is failing a
+# request the user is already watching a progress row for. Bounded all the same:
+# a wait with no end is a wedge, not a feature.
+LOAD_WAIT_TIMEOUT_S = 3600.0
+
 JOB_PREFIX = jobs.SERVER_ID_PREFIX + "ai-model:"
+#: One row per RENDER, not per model: two images from the same pipeline are two
+#: pieces of work with two progress bars, and a shared id would have the second
+#: overwrite the first's row mid-flight.
+IMAGE_JOB_PREFIX = jobs.SERVER_ID_PREFIX + "ai-image:"
 
 
 class SupervisorError(RuntimeError):
@@ -648,6 +659,54 @@ def load(model: str, capability: str, *, weights_only: bool = False) -> dict:
     return {"jobId": job, "model": model, "state": worker.state}
 
 
+def image_job_id(uid: str) -> str:
+    """The download-manager row for one render.
+
+    Built here rather than by the router for the same reason `job_id_for` is:
+    the `sys:` prefix is what makes a row unwritable by a page (BG-4a), so every
+    id carrying it is minted in one place.
+    """
+    return IMAGE_JOB_PREFIX + "".join(c for c in uid if c.isalnum() or c in "._-")
+
+
+def start_image(model: str, request: dict, job: str) -> None:
+    """Open `job` and render on a thread. Raises before starting if it cannot.
+
+    The runner check happens HERE, synchronously, so an image asked of a machine
+    with no image runner answers the request with the reason instead of opening
+    a job row that immediately fails — the caller gets an error it can show,
+    rather than a progress bar it has to watch die.
+    """
+    runner = registry.for_capability(registry.IMAGE_GENERATION)
+    if runner is None:
+        known = next((r for r in registry.all_runners()
+                      if r.capability == registry.IMAGE_GENERATION), None)
+        raise SupervisorError(
+            known.available().reason if known
+            else f"no runner provides {registry.IMAGE_GENERATION!r}")
+    if not shutil.which("uv"):
+        raise SupervisorError("uv is not available, so the model environment cannot be built")
+
+    title = str(request.get("prompt") or model).strip() or model
+    _report(job, title=title[:80], state="running", kind="task", cancellable=True,
+            unit="", detail="Preparing…", done=None, total=None)
+
+    def run() -> None:
+        try:
+            result = generate_image(model, request, job)
+        except SupervisorError as e:
+            message = str(e)
+            if message == "cancelled":
+                _report(job, state="cancelled")
+            else:
+                _report(job, state="error", message=message)
+            return
+        _report(job, state="done", done=result.get("steps"), total=result.get("steps"),
+                detail=f"Saved {os.path.basename(result.get('path') or 'image')}")
+
+    threading.Thread(target=run, name="ai-image", daemon=True).start()
+
+
 def unload(model: str | None = None, capability: str | None = None) -> bool:
     """Stop a resident worker. True if there was one to stop."""
     with _lock:
@@ -715,6 +774,70 @@ def generate_text(model: str, body: dict):
                 yield json.loads(line.decode())
             except ValueError:
                 continue
+
+
+def _wait_ready(model: str, capability: str, job: str) -> Worker:
+    """Make `model` resident, reporting the wait to `job`. Blocking.
+
+    Text generation cannot do this — a chat box must not hang for the minutes a
+    cold load takes, so `generate_text` fails fast with the job id instead. An
+    image CAN: the caller already has a job to watch, because rendering a
+    picture is minutes of work whether or not the weights were already in
+    memory. So the wait is part of the job rather than a second failure the
+    caller has to orchestrate around.
+
+    The load reports to its OWN row (`sys:ai-model:<repo>`, with the download's
+    byte counts); this row says only that the image is waiting on it. Two rows,
+    two truths, and the manager shows both.
+    """
+    started = load(model, capability)
+    deadline = time.monotonic() + LOAD_WAIT_TIMEOUT_S
+    while time.monotonic() < deadline:
+        worker = ready_worker(capability, model)
+        if worker is not None:
+            return worker
+        with _lock:
+            current = _workers.get(capability)
+        if current is None or current.model != model:
+            raise SupervisorError(f"{model} was unloaded before it could be used")
+        if current.state == "error":
+            raise SupervisorError(current.error or "the model failed to load")
+        if _cancel_requested(job):
+            raise SupervisorError("cancelled")
+        _report(job, detail=f"Waiting for {model} — {current.detail or current.state}…")
+        time.sleep(0.5)
+    raise SupervisorError(
+        f"{model} did not finish loading in time (watch {started['jobId']})")
+
+
+def generate_image(model: str, request: dict, job: str) -> dict:
+    """Render one image. Blocking — call it on a thread, never on the loop.
+
+    Loads the model first if it is not resident, which is the difference from
+    the text path (see `_wait_ready`). The worker writes the PNG itself and
+    reports its denoising steps straight to `job`, so nothing here polls: this
+    function's whole job is to hold the request open and turn a dead worker into
+    an error somebody can read.
+    """
+    worker = ready_worker(registry.IMAGE_GENERATION, model)
+    if worker is None:
+        worker = _wait_ready(model, registry.IMAGE_GENERATION, job)
+
+    try:
+        response = _worker_request(worker, "/generate", body={**request, "job": job},
+                                   timeout=GENERATE_TIMEOUT_S)
+    except (OSError, ValueError) as e:
+        raise SupervisorError(f"the image process did not answer: {e}") from e
+    with response:
+        try:
+            payload = json.loads(response.read().decode() or "{}")
+        except ValueError as e:
+            raise SupervisorError("the image process sent a malformed reply") from e
+    if payload.get("cancelled"):
+        raise SupervisorError("cancelled")
+    if not payload.get("ok"):
+        raise SupervisorError(str(payload.get("error") or "the image failed to render"))
+    return payload.get("result") or {}
 
 
 def cancel_generation(capability: str = registry.TEXT_GENERATION) -> bool:

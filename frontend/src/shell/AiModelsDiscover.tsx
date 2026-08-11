@@ -290,7 +290,18 @@ function Suggested({
                         ✓ downloaded
                       </span>
                     )}
-                    <span className="am-card-size">{m.size_gb} GB</span>
+                    {/* An unmeasured size is a dash, never a guess — the
+                        same rule the Hub result cards follow above. */}
+                    <span
+                      className="am-card-size"
+                      title={
+                        m.size_gb === null
+                          ? "Nobody has recorded this one's download size yet."
+                          : undefined
+                      }
+                    >
+                      {m.size_gb === null ? "—" : `${m.size_gb} GB`}
+                    </span>
                   </div>
                   <div className="am-suggest-note">{m.note}</div>
                   {/* No `detail` override: the job says what it is doing
@@ -304,7 +315,11 @@ function Suggested({
                         type="button"
                         className="am-card-power"
                         onClick={() => start(m.id, group.capability)}
-                        title={`Download ${m.id} (~${m.size_gb} GB)`}
+                        title={
+                          m.size_gb === null
+                            ? `Download ${m.id}`
+                            : `Download ${m.id} (~${m.size_gb} GB)`
+                        }
                       >
                         Download
                       </button>

@@ -17,9 +17,18 @@
  *   fused.ai.models.list() / catalog() / load(id) / download(id) / unload(id)
  *     Local inference (SPEC §40): what this machine is holding in memory and
  *     what it costs. load/download return {jobId} — a cold load is a multi-GB
- *     download, so nothing waits on it; watch it with fused.job(jobId). To
- *     GENERATE with a local model there is no new call: pass its repo id as
- *     fused.ai(prompt, {model: "org/name"}).
+ *     download, so nothing waits on it; watch it with fused.watchJob(jobId). To
+ *     GENERATE TEXT with a local model there is no new call: pass its repo id
+ *     as fused.ai(prompt, {model: "org/name"}).
+ *   fused.ai.image({prompt, model, width, height, steps, guidance, seed,
+ *                   onProgress}) -> Promise<{path, url, seed, ...}>
+ *     Text to image, locally (SPEC AI-9). Resolves with the PNG's path and a
+ *     ready-made /api/fs/raw url to point an <img> at, plus the seed that was
+ *     used — invented server-side when you don't pass one, so a render is
+ *     always repeatable. Minutes long: onProgress fires per denoising step with
+ *     the download-manager record, and that row's ✕ really stops it. Rejects
+ *     with .type "cancelled" | "ai_error" | "unavailable" (no image runner on
+ *     this machine — the reason is in the message).
  *   fused.watchJob(id) -> {get, watch, stop, cancel}
  *     Observe a job this page did NOT create — the server-owned work that
  *     fused.ai.models.load() and image generation start. The read side of the
@@ -2029,6 +2038,60 @@
     return data;
   }
 
+  // fused.ai.image({prompt, ...}) -> Promise<{path, url, seed, ...}>
+  //
+  // The one call in this bridge that RESOLVES WITH A FILE. Text streams, so
+  // fused.ai hands back words; an image is an artefact, so this hands back
+  // somewhere to point an <img> at — `url` is already the /api/fs/raw address,
+  // because every page that calls this would otherwise write the same line.
+  //
+  // Minutes, not seconds. The server answers immediately with a job id, and
+  // this waits on it: `onProgress(job)` fires per tick with the record the
+  // download manager is drawing (done/total are DENOISING STEPS), and the same
+  // row's ✕ really stops the render — the work is the server's, not the page's.
+  //
+  // The seed comes back whether or not one was passed, so "make that one again"
+  // is always a call away.
+  function aiImage(opts) {
+    opts = opts || {};
+    if (typeof opts.prompt !== "string" || !opts.prompt.trim()) {
+      const err = new Error("fused.ai.image({prompt}): prompt must be a non-empty string");
+      err.type = "bad_request";
+      return Promise.reject(err);
+    }
+    const onProgress = typeof opts.onProgress === "function" ? opts.onProgress : null;
+    const body = {};
+    for (const key of ["prompt", "model", "width", "height", "steps", "guidance", "seed"]) {
+      if (opts[key] !== undefined) body[key] = opts[key];
+    }
+    return aiPost("/api/ai/image", body).then((started) => {
+      const watcher = watchJob(started.jobId);
+      const done = () => ({ ...started, url: rawUrl(started.path) });
+      return watcher.watch(onProgress).then((record) => {
+        if (!record) {
+          // The row aged out from under us — a backgrounded tab can sleep past
+          // its retention on a render this long. The FILE is the other witness,
+          // and the one that actually matters.
+          return stat(started.path).then(done, () => {
+            const err = new Error("the image job is no longer being reported");
+            err.type = "ai_error";
+            err.jobId = started.jobId;
+            throw err;
+          });
+        }
+        if (record.state === "done") return done();
+        const err = new Error(
+          record.state === "cancelled"
+            ? "the image was cancelled"
+            : record.message || "the image failed to render",
+        );
+        err.type = record.state === "cancelled" ? "cancelled" : "ai_error";
+        err.jobId = started.jobId;
+        throw err;
+      });
+    });
+  }
+
   const aiModels = {
     list: () => fetch("/api/ai/runtime", { headers: callHeaders({}) }).then((r) => r.json()),
     catalog: () => fetch("/api/ai/catalog", { headers: callHeaders({}) }).then((r) => r.json()),
@@ -2039,6 +2102,7 @@
     unload: (model) => aiPost("/api/ai/runtime/unload", { model }),
   };
   ai.models = aiModels;
+  ai.image = aiImage;
 
   // -------------------------------------------------------------- fused.watchJob
   //
@@ -2070,14 +2134,26 @@
       // Resolves when the job reaches a terminal state; calls back on the way.
       // Polling rather than a socket: the manager is already polling, jobs tick
       // about once a second, and a page that navigates away simply stops.
+      //
+      // Resolves with NULL when the row is gone — either stop() was called, or
+      // it was there and vanished. A finished record is dropped after its
+      // retention window (SPEC BG-6), which a backgrounded tab can easily sleep
+      // straight through on a render that takes minutes; polling forever for a
+      // row that is never coming back is a promise that never settles.
       async watch(onUpdate, intervalMs) {
         const every = Math.max(200, intervalMs || 700);
+        let seen = false;
+        let missing = 0;
         for (;;) {
           if (stopped) return null;
           const record = await get().catch(() => null);
           if (record) {
+            seen = true;
+            missing = 0;
             if (typeof onUpdate === "function") onUpdate(record);
             if (record.state !== "running") return record;
+          } else if (seen && ++missing >= 5) {
+            return null;
           }
           await new Promise((r) => setTimeout(r, every));
         }

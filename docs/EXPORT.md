@@ -134,7 +134,9 @@ runtime API is portable:
 | `fused.env` | ✅ | runtime identity — `"local"` in the fused-render app, `"hosted"` here. Branch on it to gate local-only paths when deployed. |
 | `fused.writeFile(...)` | ❌ | a hosted artifact is immutable. |
 | `fused.stat(...)` | ❌ | no filesystem to stat. |
-| `fused.ai(...)` | ❌ | runs the claude CLI on the author's local machine — unreachable from a hosted page. |
+| `fused.ai(...)` | ❌ | runs the claude CLI — or a model resident on the author's own machine — neither of which a hosted page can reach. |
+| `fused.ai.image(...)` / `fused.ai.models.*` | ❌ | local inference (SPEC §40): a resident worker process on the author's machine, and a PNG on its disk. |
+| `fused.watchJob(...)` | ⚪️ | must be a **no-op stub** in the hosted runtime, like `trackJob` (SPEC BG-14): the handle exists and `watch` resolves with null, so a page that observes server-owned work still exports and runs. There is no download manager — and no server-side work — on a hosted page to observe. The stub lives in the `fused` wheel, a separate repo; this row is the obligation on it, not a report of its state. |
 | `fused.trackJob(...)` | ⚪️ | a **no-op stub**: the handle and all its methods exist and resolve, so a page that reports progress exports and runs unchanged — there is simply no download manager on a hosted page to report to (SPEC BG-14). Unlike `fused.ai`, it does **not** block export: progress reporting is decoration, not data. |
 | SSE live-reload | ❌ | the artifact does not change under the page. |
 

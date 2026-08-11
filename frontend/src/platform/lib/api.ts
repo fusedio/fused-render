@@ -2126,7 +2126,9 @@ export function getAiRuntime(): Promise<AiRuntime> {
 export interface AiCatalogModel {
   id: string;
   label: string;
-  size_gb: number;
+  /** The download in GB, or null when nobody has measured it — shown as "—"
+   *  rather than as a number someone would plan a multi-GB fetch around. */
+  size_gb: number | null;
   note: string;
 }
 

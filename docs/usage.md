@@ -179,7 +179,16 @@ once that cache exists; the first download from the Hub creates it.
     model — one labelled "image + text to text" — counts as a chat model: it is
     loaded for its text, and its picture-reading half simply goes unused.
   - Text generation currently needs Apple Silicon (it runs on MLX). On other
-    machines the button is not offered and the Discover tab says why.
+    machines the button is not offered and the Discover tab says why. Image
+    generation runs anywhere torch does — the first use of it builds a several-GB
+    environment, which shows as its own row in the download manager before any
+    weights are fetched.
+- **Pages can use these models.** `fused.ai(prompt, {model: "org/name"})` runs a
+  local chat model instead of Claude, and `fused.ai.image({prompt})` renders a
+  picture — both through the same download manager, so a page that asks for a
+  model you don't have yet shows the download rather than hanging. Images land
+  in `~/.fused-render/ai/images/`, named by the time they were made, and the
+  seed comes back with every one so you can make the same picture again.
 - **Two tabs: Local and Discover.** Local is what this machine has; Discover is
   what the Hub has. Which one is showing is part of the address (`?tab=discover`),
   so you can bookmark or share a link to either — and the **back button** returns

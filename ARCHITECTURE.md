@@ -263,6 +263,15 @@ thing by it. `POST /api/ai/runtime/load|unload|download` — `X-Fused` guarded, 
 they start processes and write gigabytes; `load` and `download` return a `{jobId}`
 into the download manager rather than blocking.
 
+`POST /api/ai/image` (SPEC AI-9) → `{jobId, path, model, prompt, width, height,
+steps, guidance, seed}` immediately; the render runs on a thread and reports its
+denoising steps to `sys:ai-image:<uid>`. The path and the seed are settled in
+that first reply — the server owns both — so there is no second endpoint for the
+result and the job record needs no result field. The reply carries the CLAMPED
+values (sides 256–2048 snapped to /16, steps ≤100, guidance ≤20), not the
+requested ones. The PNG lands in `<home>/ai/images/` and is read back through
+`/api/fs/raw`.
+
 `fused_render/ai/` is three modules and a folder of runners. `registry.py` says
 what this machine can do (`available()` answers with a REASON, and resolution
 skips a runner that cannot run here). `supervisor.py` owns the worker processes:
@@ -273,7 +282,15 @@ one resident model per capability, auto-evicting; liveness via `Popen.poll()`
 BRING-UP (a random per-worker id, never the token), because two workers for one
 capability overlap — an eviction's replacement starts while the old one is being
 killed — and a shared name let the second one's `unlink` delete the port the first
-had just published. `catalog.py` holds the curated model
+had just published.
+
+`runners/worker_base.py` is the worker half of that contract, written once: the
+four routes, the auth header, the port handshake, the state machine and the
+disk-measured download. A runner folder supplies only `download`, `load` and
+`generate` and calls `serve()`. Stdlib-only — anything imported there becomes a
+dependency of every backend, and it is what makes the contract testable on CI
+(`tests/test_ai_worker_base.py` drives the real routes with stub callables;
+neither concrete worker can run there). `catalog.py` holds the curated model
 lists that used to live inside the sandbox apps.
 
 A runner is a folder with a `pyproject.toml` and a `worker.py`; its venv is built

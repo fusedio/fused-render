@@ -131,8 +131,18 @@ Any `.html` file can call it and bind the result to the URL:
   URL (`get`, `getAll`, `set`, `onChange`). Refreshing or bookmarking a view
   reproduces its exact state.
 - `fused.ai(prompt, opts?)` — ask an AI model through the `claude` (Claude
-  Code) CLI on your machine; resolves with `{text, model, usage}`.
+  Code) CLI on your machine; resolves with `{text, model, usage}`. Pass a
+  Hugging Face repo id as `model` (`"mlx-community/Qwen3-8B-4bit"`) and the same
+  call runs a model **locally** instead — the slash is what tells them apart.
   See `examples_seed/ai_demo/` for a working AI-analyst view.
+- `fused.ai.image({prompt, ...})` — text to image, locally; resolves with the
+  PNG's path, a ready-made URL to point an `<img>` at, and the seed used (one is
+  chosen for you if you don't pass one, so a render is always repeatable). It
+  runs for minutes, so `onProgress` fires per denoising step and the download
+  manager's ✕ really stops it.
+- `fused.ai.models.list() / load(id) / unload(id)` — what this machine is
+  holding in memory and what it costs. See the **AI Models** page
+  ([docs](docs/usage.md#ai-models)).
 - `fused.trackJob(spec)` — report work that runs longer than the page you started it
   from (a model download, a long generation) to the **download manager** in the
   bottom-right corner, so it stays visible after you browse away:

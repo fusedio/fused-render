@@ -5244,10 +5244,15 @@ stop it short of quitting the app.
   optimisation only: a Python worker reporting straight to the API runs no JS
   and writes none, so the idle poll is the floor that guarantees its row shows
   up either way.
-- **BG-14** **Portable.** `fused.trackJob` is a no-op stub in the hosted runtime (the
-  `fused` wheel's copy of the bridge) rather than an export-blocking call like
-  `fused.ai` (RH-11): progress reporting is decoration, and a page that reports
-  it should still deploy — it simply has no manager to report to.
+- **BG-14** **Portable.** `fused.trackJob` **and `fused.watchJob`** are no-op
+  stubs in the hosted runtime (the `fused` wheel's copy of the bridge) rather
+  than export-blocking calls like `fused.ai` (RH-11): progress reporting is
+  decoration, and a page that reports or observes it should still deploy — it
+  simply has no manager to talk to. `watchJob`'s stub resolves its `watch` with
+  null, the same answer the local one gives for a row that is gone, so a page
+  written against it needs no hosted-only branch. **This is an obligation on a
+  DIFFERENT repo**: adding to the bridge here is not done until that copy has
+  the same name.
 
 ---
 
@@ -5792,6 +5797,50 @@ an AI Models page that could say what was on disk but not what was *running*.
   one walk, handed down, not a second walk Discover runs for itself: two walks
   meant two definitions of "on this machine" and a window where the tabs
   disagreed about the same repo.
+- **AI-9** **Image generation is job-backed, and the reply decides everything
+  but the pixels.** `POST /api/ai/image` answers immediately with a `jobId` to
+  watch AND with the **path** and the **seed** already settled — so no second
+  endpoint exists for "what did I get", and the job record needs no result
+  field. The server picks both because it owns where user files go
+  (`<home>/ai/images/`, not beside a page that may sit in a read-only folder)
+  and because a seed invented inside the worker and never surfaced would make
+  every unseeded render unrepeatable. The reply describes the render that will
+  actually happen, not the one that was asked for: sides are clamped to
+  256–2048 and snapped to a multiple of 16, steps to 100, guidance to 20 — a
+  4096² render at 500 steps is an OOM, and a caller echoing its own request
+  would mislabel the picture it got. **Unlike text, an image WAITS for its
+  model.** `fused.ai` fails fast with a job id because a chat box must not hang
+  for a cold multi-GB load; an image caller is already watching a progress row
+  for work that takes minutes either way, so the wait belongs inside the job
+  rather than being a second failure to orchestrate around. The load keeps its
+  own row (`sys:ai-model:<repo>`, with the bytes); the image row says only that
+  it is waiting. One row per RENDER (`sys:ai-image:<uid>`), never per model — a
+  shared id would have a second render overwrite the first's progress. The PNG
+  is read back through `/api/fs/raw` like every other local file, and
+  `fused.ai.image()` hands the page a ready-made URL for it.
+- **AI-9a** **The worker contract is written once, in `runners/worker_base.py`.**
+  A runner is still a folder, but the half that is the SUPERVISOR'S contract —
+  the auth header's name, the status file's shape, the state vocabulary it
+  polls, the way download bytes are measured — lives in one stdlib-only module
+  both runners import, and a concrete runner supplies only `download`, `load`
+  and `generate`. Copying it per folder would have put that contract in two
+  places, which is the failure mode every bug in this feature has had. It is
+  stdlib-only for two reasons: anything imported there becomes a dependency of
+  every backend forever, and it makes the contract **testable on CI**, which
+  neither concrete worker is (one needs Metal, the other several GB of torch).
+  `load` is handed what `download` returned rather than resolving the files
+  again — doing it twice re-ran the Hub metadata call and re-reported a finished
+  download on every load of a cached model.
+- **AI-9b** **A quantized single-file component is a RECIPE, not a heuristic.**
+  The image runner keeps an explicit table of which quantized checkpoint
+  replaces which component of which model (FLUX.2 klein's ~8GB bf16 transformer
+  → a ~2.6GB Q4_K_M GGUF), because "which quantization of which part is safe" is
+  the same editorial judgement `catalog.py` makes about what to suggest, not
+  something to infer from a file listing. A model absent from the table is not
+  unsupported — it loads the ordinary way. The recipe also decides what NOT to
+  download: the base repo's own `transformer/` is exactly the weights the
+  quantized file replaces, and fetching it would cost several GB for components
+  that are then ignored.
 - **AI-8** **The worker measures its own memory.** Only the process holding the
   weights can; on Apple Silicon the GPU pool IS system memory, so RSS is one
   honest number rather than two that need reconciling. What the supervisor knows

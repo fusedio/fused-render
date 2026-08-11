@@ -95,6 +95,82 @@ FAKE_WORKER = textwrap.dedent('''
 ''')
 
 
+# An image worker: loads instantly, answers /health, and writes a real (tiny)
+# PNG where the request tells it to. Stands in for diffusers_image/worker.py's
+# CONTRACT — a single JSON reply and a file on disk — not for its pipeline.
+FAKE_IMAGE_WORKER = textwrap.dedent('''
+    import argparse, http.server, json, os, socketserver, sys, threading, time
+
+    TOKEN = os.environ.get("FUSED_AI_WORKER_TOKEN", "")
+    STATE = {"state": "loading", "model": "", "detail": "", "error": "",
+             "resident_bytes": None, "loaded_at": None}
+    # The 67 bytes of a 1x1 PNG. A real file, so the test can assert the server
+    # hands back a path that actually resolves.
+    PNG = bytes.fromhex(
+        "89504e470d0a1a0a0000000d4948445200000001000000010806000000"
+        "1f15c4890000000d4944415478da63fcffff3f0300050001ff9a9c1c00"
+        "00000049454e44ae426082")
+
+    class H(http.server.BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+        def log_message(self, *a): pass
+        def ok(self):
+            if TOKEN and self.headers.get("X-Fused-Worker") == TOKEN:
+                return True
+            self.send_response(403); self.send_header("Content-Length","0"); self.end_headers()
+            return False
+        def _json(self, payload, status=200):
+            body = json.dumps(payload).encode()
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers(); self.wfile.write(body)
+        def do_GET(self):
+            if not self.ok(): return
+            self._json(STATE)
+        def do_POST(self):
+            if not self.ok(): return
+            n = int(self.headers.get("Content-Length") or 0)
+            raw = self.rfile.read(n) if n else b"{}"
+            body = json.loads(raw or b"{}")
+            if self.path.startswith("/quit"):
+                self._json({"ok": True})
+                threading.Thread(target=lambda: (time.sleep(0.05), os._exit(0)), daemon=True).start()
+                return
+            if self.path.startswith("/generate"):
+                if os.environ.get("FAKE_IMAGE_FAILS") == "1":
+                    self._json({"ok": False, "error": "the pipeline exploded"}); return
+                out = body["out"]
+                os.makedirs(os.path.dirname(out), exist_ok=True)
+                with open(out, "wb") as f: f.write(PNG)
+                self._json({"ok": True, "result": {
+                    "path": out, "seconds": 0.1, "seed": body.get("seed"),
+                    "width": body.get("width"), "height": body.get("height"),
+                    "steps": body.get("steps")}})
+                return
+            self._json({"ok": True})
+
+    class S(socketserver.ThreadingTCPServer):
+        daemon_threads = True; allow_reuse_address = True
+
+    p = argparse.ArgumentParser()
+    p.add_argument("--model"); p.add_argument("--status", default="")
+    p.add_argument("--job", default=""); p.add_argument("--download-only", action="store_true")
+    a = p.parse_args()
+    if a.download_only:
+        sys.exit(0)
+    STATE["model"] = a.model
+    srv = S(("127.0.0.1", 0), H)
+    with open(a.status, "w") as f:
+        json.dump({"port": srv.server_address[1], "pid": os.getpid()}, f)
+    def ready():
+        time.sleep(float(os.environ.get("FAKE_LOAD_SECONDS", "0.1")))
+        STATE.update(state="ready", resident_bytes=4321, loaded_at=time.time())
+    threading.Thread(target=ready, daemon=True).start()
+    srv.serve_forever()
+''')
+
+
 @pytest.fixture()
 def fake_runner(tmp_path, monkeypatch):
     """A registry with one runner whose worker is the fake, and whose venv is
@@ -105,6 +181,25 @@ def fake_runner(tmp_path, monkeypatch):
     runner = registry.Runner(
         code="fake-text", capability=registry.TEXT_GENERATION,
         folder=str(folder), label="Fake",
+    )
+    monkeypatch.setattr(registry, "_RUNNERS", (runner,))
+    monkeypatch.setattr(supervisor, "_ensure_venv", lambda r, w, j: sys.executable)
+    monkeypatch.setattr(supervisor.shutil, "which", lambda name: "/usr/bin/uv")
+    yield runner
+    supervisor.unload()
+    supervisor.reset()
+
+
+@pytest.fixture()
+def fake_image_runner(tmp_path, monkeypatch):
+    """A registry whose ONLY runner serves image generation, with the fake
+    worker and this interpreter — so no torch, no weights, no network."""
+    folder = tmp_path / "fake_image_runner"
+    folder.mkdir()
+    (folder / "worker.py").write_text(FAKE_IMAGE_WORKER)
+    runner = registry.Runner(
+        code="fake-image", capability=registry.IMAGE_GENERATION,
+        folder=str(folder), label="Fake image",
     )
     monkeypatch.setattr(registry, "_RUNNERS", (runner,))
     monkeypatch.setattr(supervisor, "_ensure_venv", lambda r, w, j: sys.executable)
@@ -449,8 +544,8 @@ def test_the_runtime_endpoint_reports_runners_and_nothing_loaded(client):
 
 def test_every_mutating_route_carries_the_guard(client):
     for path in ("/api/ai/runtime/load", "/api/ai/runtime/unload",
-                 "/api/ai/runtime/download"):
-        assert client.post(path, json={"model": "org/x"}).status_code == 403
+                 "/api/ai/runtime/download", "/api/ai/image"):
+        assert client.post(path, json={"model": "org/x", "prompt": "x"}).status_code == 403
 
 
 def test_the_catalog_explains_a_capability_this_machine_cannot_serve(client, monkeypatch):
@@ -493,3 +588,130 @@ def test_a_slash_bearing_model_goes_local(client, monkeypatch):
                            headers={"X-Fused": "1"})
     assert response.status_code == 502
     assert "Apple Silicon" in response.json()["error"]["message"]
+
+
+# -- image generation (SPEC AI-9) -----------------------------------------------
+# The image half of the API. Everything the caller needs comes back from the
+# POST — path and seed included — so nothing has to look the result up later,
+# and the job row carries only progress.
+
+
+def _wait_job(job_id, timeout=20.0):
+    """The record, once it stops running."""
+    deadline = time.monotonic() + timeout
+    row = None
+    while time.monotonic() < deadline:
+        row = next((j for j in jobs.list_jobs() if j["id"] == job_id), None)
+        if row and row["state"] != "running":
+            return row
+        time.sleep(0.05)
+    raise AssertionError(f"{job_id} never finished: {row}")
+
+
+def test_an_image_renders_to_disk_and_the_job_finishes(client, fake_image_runner):
+    response = client.post("/api/ai/image", json={"prompt": "a red square"},
+                           headers={"X-Fused": "1"})
+    assert response.status_code == 200
+    started = response.json()
+
+    row = _wait_job(started["jobId"])
+    assert row["state"] == "done", row
+    # The path the POST promised is the path that exists — no second lookup.
+    assert os.path.isfile(started["path"])
+    assert open(started["path"], "rb").read(8) == b"\x89PNG\r\n\x1a\n"
+
+
+def test_the_reply_carries_the_seed_even_when_none_was_asked_for(client, fake_image_runner):
+    """A seed invented inside the worker and never surfaced would make every
+    unseeded image unrepeatable — "make that one again" has to be possible."""
+    first = client.post("/api/ai/image", json={"prompt": "x"},
+                        headers={"X-Fused": "1"}).json()
+    assert isinstance(first["seed"], int) and first["seed"] >= 0
+    # And an explicit seed is honoured rather than replaced.
+    second = client.post("/api/ai/image", json={"prompt": "x", "seed": 1234},
+                         headers={"X-Fused": "1"}).json()
+    assert second["seed"] == 1234
+
+
+def test_the_reply_describes_the_render_that_will_actually_happen(client, fake_image_runner):
+    """Clamped and snapped, not echoed. A caller that trusts its own request
+    would mislabel the picture it gets."""
+    body = {"prompt": "x", "width": 99999, "height": 1000, "steps": 5000, "guidance": 99}
+    reply = client.post("/api/ai/image", json=body, headers={"X-Fused": "1"}).json()
+    assert reply["width"] == 2048          # clamped to the ceiling
+    assert reply["height"] == 992          # 1000 snapped down to a multiple of 16
+    assert reply["steps"] == 100           # clamped
+    assert reply["guidance"] == 20.0       # clamped
+
+
+def test_two_renders_are_two_rows_and_two_files(client, fake_image_runner):
+    """One row per RENDER, not per model: a shared id would have the second
+    overwrite the first's progress mid-flight."""
+    one = client.post("/api/ai/image", json={"prompt": "a"}, headers={"X-Fused": "1"}).json()
+    two = client.post("/api/ai/image", json={"prompt": "b"}, headers={"X-Fused": "1"}).json()
+    assert one["jobId"] != two["jobId"]
+    assert one["path"] != two["path"]
+    _wait_job(one["jobId"])
+    _wait_job(two["jobId"])
+
+
+def test_an_image_row_is_server_owned_and_reserved(client, fake_image_runner):
+    started = client.post("/api/ai/image", json={"prompt": "x"},
+                          headers={"X-Fused": "1"}).json()
+    assert started["jobId"].startswith(jobs.SERVER_ID_PREFIX)
+    row = _wait_job(started["jobId"])
+    assert row["owner"] == jobs.OWNER_SERVER
+    # And a page cannot post to it — the same rule that stops a page faking a
+    # finished download (BG-4a).
+    refused = client.post("/api/jobs", json={"id": started["jobId"], "state": "done"},
+                          headers={"X-Fused": "1"})
+    assert refused.status_code == 400
+    assert "reserved" in refused.json()["error"]
+
+
+def test_an_image_needs_a_prompt(client, fake_image_runner):
+    for body in ({}, {"prompt": ""}, {"prompt": "   "}, {"prompt": 7}):
+        response = client.post("/api/ai/image", json=body, headers={"X-Fused": "1"})
+        assert response.status_code == 400, body
+
+
+def test_a_failing_render_reports_the_reason_on_the_row(client, fake_image_runner,
+                                                        monkeypatch):
+    monkeypatch.setenv("FAKE_IMAGE_FAILS", "1")
+    started = client.post("/api/ai/image", json={"prompt": "x"},
+                          headers={"X-Fused": "1"}).json()
+    row = _wait_job(started["jobId"])
+    assert row["state"] == "error"
+    assert "exploded" in row["message"]
+
+
+def test_an_image_on_a_machine_with_no_image_runner_says_why(client, monkeypatch):
+    """Refused UP FRONT, with the platform's reason — not a job row that opens
+    and immediately dies, which gives the caller a bar to watch instead of an
+    error to show."""
+    ghost = registry.Runner(
+        code="ghost", capability=registry.IMAGE_GENERATION,
+        folder="/nowhere", label="Ghost",
+    )
+    monkeypatch.setattr(registry, "_RUNNERS", (ghost,))
+    response = client.post("/api/ai/image", json={"prompt": "x"},
+                           headers={"X-Fused": "1"})
+    assert response.status_code == 409
+    assert "not built yet" in response.json()["error"]
+    # No row was opened for work that never started.
+    assert not [j for j in jobs.list_jobs() if j["id"].startswith(supervisor.IMAGE_JOB_PREFIX)]
+
+
+def test_an_image_waits_for_its_model_rather_than_failing_fast(client, fake_image_runner,
+                                                               monkeypatch):
+    """The difference from the text path, and it is deliberate. A chat box must
+    not hang for a cold load, so `generate_text` fails fast with the job id. An
+    image caller already has a job to watch — rendering is minutes either way —
+    so the wait belongs inside it."""
+    monkeypatch.setenv("FAKE_LOAD_SECONDS", "1.5")
+    assert supervisor.describe()["loaded"] == []
+    started = client.post("/api/ai/image", json={"prompt": "x"},
+                          headers={"X-Fused": "1"}).json()
+    row = _wait_job(started["jobId"], timeout=40)
+    assert row["state"] == "done", row
+    assert os.path.isfile(started["path"])
