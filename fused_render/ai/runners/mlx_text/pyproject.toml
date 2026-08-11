@@ -1,0 +1,28 @@
+# The MLX text runner's environment (SPEC §40, PY-16).
+#
+# This folder exists so that `mlx-lm` is named in exactly one place and lives in
+# exactly one interpreter — not fused-render's. The app is a file explorer; it
+# must start on a machine that has never run a model, and it must not carry a
+# Metal-only dependency into a Windows wheel.
+#
+# `envinstall` builds this on first use, with the same detached `uv sync`,
+# progress record and verbatim errors any declaring folder gets.
+#
+# Four packages, and each earns its place: mlx-lm loads and generates,
+# huggingface_hub downloads, psutil answers "how much memory is this costing",
+# tqdm is hf's progress hook (subclassed in worker.py to report byte counts to
+# the app's download manager rather than to a terminal nobody is watching).
+[project]
+name = "fused-render-runner-mlx-text"
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = [
+    "mlx-lm",
+    "huggingface_hub",
+    "psutil",
+    "tqdm",
+]
+
+# Not a distribution — a folder of scripts, not something to build and install.
+[tool.uv]
+package = false

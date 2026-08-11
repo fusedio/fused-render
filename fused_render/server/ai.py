@@ -93,7 +93,17 @@ _AI_BIN_ENV = "FUSED_RENDER_CLAUDE_BIN"
 # just validation: on the Windows .cmd-shim path argv is re-parsed by cmd.exe
 # (whose quoting cannot be escaped reliably), so every argv element must be a
 # static literal, a tempdir path, or a value this regex admitted.
-_AI_MODEL_RE = re.compile(r"[A-Za-z0-9._-]+")
+# A cloud alias ("opus") or a Hugging Face repo id ("mlx-community/Qwen3-8B-4bit").
+# The slash is the SEAM (SPEC §40): a model id with an org in it names a repo on
+# disk, which means local inference, and one without it is a Claude alias. That
+# is not a heuristic — a Hub id always has the form `org/name`, and no Claude
+# alias ever contains a slash — and it is what lets `fused.ai(prompt, {model})`
+# reach a local model with no new parameter and no change to any existing caller.
+_AI_MODEL_RE = re.compile(r"[A-Za-z0-9._/-]+")
+
+
+def _is_local_model(model: str) -> bool:
+    return "/" in model
 
 
 def _ai_error(type_: str, message: str, status: int = 502) -> JSONResponse:
@@ -644,6 +654,88 @@ def _ai_result_payload(data: dict, requested_model: str):
             "usage": _ai_usage(data.get("usage"))}, None
 
 
+def _local_relay(model: str, prompt: str, system_prompt: str, stream: bool,
+                 body: dict):
+    """One completion from a model resident on THIS machine (SPEC §40).
+
+    Same wire shape as the Claude path, deliberately: `{ok, result:{text, model,
+    usage}}`, or NDJSON `{"type":"chunk","text"}` lines closed by `{"type":"done"}`
+    when streaming. A page swapping `model: "opus"` for
+    `model: "mlx-community/Qwen3-8B-4bit"` should have to change nothing else,
+    and `fused.ai`'s own streaming reader is already written against that shape.
+
+    A model that is not resident answers **409 with the job id of the load this
+    call just started** — see `supervisor.generate_text`. That is a real state,
+    not an error to swallow: the page can show the download it just caused.
+    """
+    from fused_render.ai import supervisor
+
+    messages = [{"role": "user", "content": prompt}]
+    if system_prompt and system_prompt != _AI_DEFAULT_SYSTEM_PROMPT:
+        messages.insert(0, {"role": "system", "content": system_prompt})
+    request = {
+        "messages": messages,
+        "max_tokens": body.get("max_tokens"),
+        "temperature": body.get("temperature"),
+        "top_p": body.get("top_p"),
+    }
+    request = {k: v for k, v in request.items() if v is not None}
+
+    try:
+        events = supervisor.generate_text(model, request)
+        first = next(events, None)
+    except supervisor.ModelNotReady as e:
+        return JSONResponse(
+            {"ok": False, "error": {"type": "model_loading", "message": str(e),
+                                    "jobId": e.job_id}},
+            status_code=409)
+    except supervisor.SupervisorError as e:
+        return _ai_error("ai_unavailable", str(e), status=502)
+
+    def walk():
+        """The events, with the one already pulled off put back in front."""
+        if first is not None:
+            yield first
+        yield from events
+
+    if not stream:
+        text, usage = [], {}
+        for event in walk():
+            if event.get("type") == "chunk":
+                text.append(event.get("text") or "")
+            elif event.get("type") == "done":
+                if not event.get("ok", True):
+                    return _ai_error("ai_error", str(event.get("error") or "generation failed"),
+                                     status=502)
+                usage = {"output_tokens": event.get("tokens"),
+                         "seconds": event.get("seconds")}
+        return JSONResponse(
+            {"ok": True, "result": {"text": "".join(text), "model": model, "usage": usage}})
+
+    def lines():
+        # Errors after the first byte are demoted to an ok:false done frame on a
+        # 200, exactly as the Claude path does — the status is already sent.
+        try:
+            for event in walk():
+                if event.get("type") == "chunk":
+                    yield json.dumps({"type": "chunk", "text": event.get("text") or ""}) + "\n"
+                elif event.get("type") == "done":
+                    ok = bool(event.get("ok", True))
+                    yield json.dumps({
+                        "type": "done", "ok": ok, "model": model,
+                        "usage": {"output_tokens": event.get("tokens"),
+                                  "seconds": event.get("seconds")},
+                        **({} if ok else {"error": {
+                            "type": "ai_error",
+                            "message": str(event.get("error") or "generation failed")}}),
+                    }) + "\n"
+        except supervisor.SupervisorError as e:
+            yield json.dumps({"type": "done", "ok": False,
+                              "error": {"type": "ai_unavailable", "message": str(e)}}) + "\n"
+
+    return StreamingResponse(lines(), media_type="application/x-ndjson")
+
+
 async def _ai_relay(body: dict):
     """Validate an /api/ai body and run one claude CLI completion.
 
@@ -688,6 +780,12 @@ async def _ai_relay(body: dict):
     if stream is not None and not isinstance(stream, bool):
         return _ai_error(
             "bad_request", "'stream' must be a boolean", status=400)
+
+    # The fork. Everything above is shared validation — a prompt is a prompt and
+    # a stream flag is a stream flag wherever the tokens come from — and
+    # everything below this line is the Claude CLI's own path.
+    if _is_local_model(model):
+        return _local_relay(model, prompt, system_prompt, bool(stream), body)
 
     if not _claude_bin():
         return _ai_error(

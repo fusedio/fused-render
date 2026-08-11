@@ -5144,6 +5144,14 @@ stop it short of quitting the app.
   browser tab as the shell chrome. The record therefore outlives the document
   that reports it, and the same registry answers a detached Python worker
   POSTing to `/api/jobs` directly.
+- **BG-2a** **Observing is the other half, and it arrived with a sibling name.**
+  `trackJob` writes: a page reports work IT runs. A page can now also start work
+  the SERVER runs (§40) and wants to show that progress inline with a ✕ — which
+  is a read, of a row it did not create. `fused.watchJob(id)` is that half.
+  Named as trackJob's sibling deliberately: D244 called it `trackJob` rather than
+  `job` because a bare `fused.job(...)` reads as the job itself rather than as a
+  handle, and that still holds — TRACK takes a spec and creates a row, WATCH
+  takes an id and looks at one.
 - **BG-3** **Reporting bridge** (`static/runtime.js`): `fused.trackJob(spec)` returns
   a handle — `update(fields)`, `finish(detail)`, `fail(message)`, `cancelled()`,
   plus the read-only `cancelRequested` / `state`. Reporting is **decoration**:
@@ -5153,14 +5161,24 @@ stop it short of quitting the app.
   backwards. A **rejected** report (bad id, missing title) warns once to the
   console: silence would leave an author with a page that works and a manager
   that never shows it.
-- **BG-4** **Cancel is a REQUEST, not a kill.** The server does not know what
-  the work is or which process is doing it, so `POST /api/jobs/{id}/cancel` only
-  sets `cancel_requested`; the reporting page reads it back in the reply to the
+- **BG-4** **Cancel is a REQUEST for a PAGE-owned job, and an ACTION for a
+  SERVER-owned one.** For work a page runs, the server does not know what the
+  work is or which process is doing it, so `POST /api/jobs/{id}/cancel` only sets
+  `cancel_requested`; the reporting page reads it back in the reply to the
   progress tick it was going to send anyway, and stops the way it knows how. The
   row stays "running / Cancelling…" until the work actually stops — a row that
   flipped to "cancelled" while the download carried on underneath would be a lie
-  the UI told to look responsive. A job that never declared itself
-  `cancellable` shows no ✕ at all rather than a dead one.
+  the UI told to look responsive. A job that never declared itself `cancellable`
+  shows no ✕ at all rather than a dead one. Since local inference (§40) the
+  server ALSO runs work of its own — a model download, a generation — and there
+  it owns the process and really can stop it. Same ✕, two meanings, so every
+  record carries an `owner` (`"page"` / `"server"`).
+- **BG-4a** **Server-owned ids are reserved.** They are deterministic
+  (`sys:ai-model:<repo>`), so without a rule a page could post `state: "done"` for
+  a download that is still running and the manager would have no way to catch the
+  lie. `POST /api/jobs` REFUSES any id under the `sys:` prefix; only this process
+  writes those. `owner` follows from the id at creation and is never settable
+  from a report body — a page cannot claim to be the server by saying so.
 - **BG-5** **Stalled, not frozen.** A `running` record with no update for
   `STALE_AFTER_S` (30s) is reported `stalled: true` — computed on read, so a
   late tick un-stalls it with no timer involved. The UI dims the row and says
@@ -5609,3 +5627,74 @@ three weeks ago, and would cost nothing to open.
   is looking at it. Every field of a result is optional: the Hub returns what it
   returns, an older deployment may refuse an `expand[]` field entirely, and a
   missing field is one a card leaves out rather than an exception.
+
+---
+
+## 40. Local Inference — Running a Model on This Machine (D257)
+
+Goal: `fused.ai(prompt)` meant exactly one thing — a completion from the Claude
+Code CLI — while local models lived inside individual apps. `local_chat` shipped
+its own MLX server, its own dependency declaration, its own download reporter and
+its own curated model list; the image app shipped the same apparatus again for
+diffusers. Two copies of "how do I run a model", neither reusable by a third, and
+an AI Models page that could say what was on disk but not what was *running*.
+
+- **AI-1** **One door, two tiers.** `POST /api/ai` is extended, not replaced: its
+  `model` parameter already existed, and a value containing a **slash** is a
+  Hugging Face repo id and therefore local, while one without is a Claude alias.
+  That is not a heuristic — a Hub id is always `org/name` and no Claude alias
+  contains a slash. So `fused.ai(prompt, {model})` reaches a local model with no
+  new parameter, the streaming shape is byte-identical (`{"type":"chunk"}` lines
+  closed by `{"type":"done"}`), and **a call with no `model` still means Claude**,
+  which is what keeps every page written before this working.
+- **AI-2** **A runner is a folder, and its environment is `envinstall`'s.** Each
+  backend is a folder holding a `pyproject.toml` and a `worker.py`. The
+  declaration is the ONLY place mlx/torch are named — fused-render's own venv
+  must stay a file explorer's, and must not carry a Metal-only dependency into a
+  Windows wheel — and it is built by the existing detached `uv sync` loader
+  (PY-18), with the same progress record and the same verbatim uv errors any
+  declaring folder gets. No second install mechanism exists for AI.
+- **AI-3** **Four routes, and that is the whole worker contract.** `GET /health`
+  (state, resident bytes), `POST /generate` (NDJSON for text), `POST /cancel`,
+  `POST /quit`. Adding a capability is writing a worker, not extending the
+  supervisor. The port is **ephemeral and published by the child** — anything the
+  parent reserved could be taken between its bind and the exec — and every
+  request carries a per-worker token in a header, so a foreign page that guessed
+  the port still cannot drive the model.
+- **AI-4** **One resident model per capability, auto-evicting.** Loading a second
+  text model stops the first BEFORE the new one loads. Arithmetic, not taste: two
+  8GB models on a 16GB machine is a swap storm, and a swap storm reads to the user
+  as "the app hung". A text model and an image model coexist — different
+  capabilities, and the user asked for both.
+- **AI-5** **Load is a job, never an awaited request.** A cold load is a multi-GB
+  download and a minutes-long weight load, so `load()` returns a **job id** and the
+  work continues on a thread. Progress goes to the existing download manager
+  (§36) under the deterministic id `sys:ai-model:<repo>`, which is also what lets
+  the AI Models page join a job row onto a repo card without a second index.
+  Generating with a model that is not resident **starts the load and fails with
+  that job id** (409): a caller should not have to orchestrate load-then-wait
+  before its first call, and generation must not block for minutes either.
+- **AI-6** **Availability is answered with a REASON.** MLX is Apple-Silicon-only,
+  so `available()` returns "needs Apple Silicon — MLX runs on Metal only (this is
+  linux/x86_64)", and resolution SKIPS an unavailable runner rather than picking
+  it and failing at load time — which would report "the model failed to load" for
+  a machine that was never going to load it. A capability this machine cannot
+  serve is still listed, with its reason: hiding it leaves a user hunting for a
+  feature that was never there.
+- **AI-7** **Liveness is `poll()`, and stopping is platform-specific.** Never
+  `os.kill(pid, 0)`: on POSIX an unreaped child is a zombie and signal 0 to a
+  zombie succeeds, so the check answers "alive" for a model that crashed; on
+  Windows `os.kill` maps onto `TerminateProcess`, so the *liveness probe kills the
+  process it asks about*. Stopping takes the whole process group — a worker
+  spawns children that would otherwise keep the weights — through `killpg` on
+  POSIX **only when the pid is its own group leader** (the guard `envinstall`
+  carries for the same reason: a stale pid in the server's group once shut down a
+  test session) and `CTRL_BREAK` + `taskkill /T /F` on Windows, which has no
+  `killpg` at all.
+- **AI-8** **The worker measures its own memory.** Only the process holding the
+  weights can; on Apple Silicon the GPU pool IS system memory, so RSS is one
+  honest number rather than two that need reconciling. What the supervisor knows
+  better is whether the process is ALIVE — a worker that stops answering becomes
+  `error`, never a `ready` row that lies. The figure is **resident bytes**, and it
+  is not the model's size: it overcounts shared pages and moves during a
+  generation.

@@ -244,6 +244,34 @@ safetensors headers — metadata no Hub row uses. Sizes are recovered from
 uses locally; no metadata means no size rather than a guess. Sync `def`: one
 bounded outbound call plus a cache walk, so it belongs in the threadpool.
 
+### `/api/ai/runtime`, `/api/ai/catalog` — local inference (SPEC §40, D257)
+
+`GET /api/ai/runtime` → `{runners:[{code,capability,label,available,reason}],
+loaded:[{model,capability,runner,state,residentBytes,loadedAt,jobId}],
+totalResidentBytes}`. `GET /api/ai/catalog` → the curated suggestions per
+capability. `POST /api/ai/runtime/load|unload|download` — `X-Fused` guarded, since
+they start processes and write gigabytes; `load` and `download` return a `{jobId}`
+into the download manager rather than blocking.
+
+`fused_render/ai/` is three modules and a folder of runners. `registry.py` says
+what this machine can do (`available()` answers with a REASON, and resolution
+skips a runner that cannot run here). `supervisor.py` owns the worker processes:
+one resident model per capability, auto-evicting; liveness via `Popen.poll()`
+(never `os.kill(pid, 0)` — a zombie answers that yes, and on Windows it
+*terminates* the process); stopping via `killpg` on a verified group leader, or
+`CTRL_BREAK`/`taskkill /T /F` on Windows. `catalog.py` holds the curated model
+lists that used to live inside the sandbox apps.
+
+A runner is a folder with a `pyproject.toml` and a `worker.py`; its venv is built
+by `envinstall` (PY-18), not by anything new, and the worker speaks four routes
+(`/health`, `/generate`, `/cancel`, `/quit`) on an ephemeral port the child
+publishes, authenticated with a per-worker token. Nothing under `fused_render/`
+imports mlx or torch — they are named only in a runner's declaration.
+
+`POST /api/ai` routes on the model id: one containing a **slash** is a Hub repo id
+and goes to the local runner, one without is a Claude alias and goes to the CLI as
+before.
+
 ### `GET /static/*`
 StaticFiles mount for shell + runtime. Templates dir is NOT statically mounted — templates are served through `/render` like any HTML file.
 

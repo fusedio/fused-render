@@ -356,10 +356,18 @@ def test_the_runtime_and_the_shell_agree_on_the_ping_key():
 def test_the_bridge_exposes_track_job_on_window_fused():
     """`trackJob`, not `job` (D244): a page does not START work through this
     bridge, it reports on work it started itself — and `fused.job(...)` read as
-    the job itself rather than as the handle for describing one."""
+    the job itself rather than as the handle for describing one.
+
+    The rule survived local inference (SPEC §40) rather than being flipped by it.
+    A page CAN now observe work it did not start — a model download the server
+    runs — but that arrived as `watchJob`, trackJob's sibling, so the bare noun
+    is still not the API: TRACK takes a spec and creates a row, WATCH takes an id
+    and looks at one.
+    """
     runtime = open(
         os.path.join(REPO_ROOT, "fused_render", "static", "runtime.js"), encoding="utf-8"
     ).read()
     api = runtime.split("window.fused = {", 1)[1].split("};", 1)[0]
     assert "\n    trackJob,\n" in api
+    assert "\n    watchJob,\n" in api
     assert "\n    job,\n" not in api

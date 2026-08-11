@@ -52,6 +52,7 @@ from fused_render.server.routers.git_repos import router as git_repos_router
 from fused_render.server.routers import index as index_routes
 from fused_render.server.routers.jobs import router as jobs_router
 from fused_render.server.routers.ai_models import router as ai_models_router
+from fused_render.server.routers.ai_runtime import router as ai_runtime_router
 from fused_render.server.routers.hub_models import router as hub_models_router
 from fused_render.server.routers.render import router as render_router
 from fused_render.server.routers.run import router as run_router
@@ -231,6 +232,15 @@ def create_app(start_dir: str) -> FastAPI:
     async def _startup_shutdown_ai():
         await shutdown_ai_session()
 
+    # Local model workers die with the app. They hold GIGABYTES — a stranded one
+    # is not a leaked file handle, it is a machine that has quietly lost 8GB of
+    # memory to a process nothing on screen mentions any more.
+    @app.on_event("shutdown")
+    async def _shutdown_ai_workers():
+        from fused_render.ai import supervisor
+
+        supervisor.unload_all()
+
     # Reclaim project venvs whose source folder is gone (SPEC PY-16). Keying a
     # venv on the folder's path means moving or renaming a project orphans its
     # environment BY DESIGN — a moved project starts clean — so without this the
@@ -342,6 +352,11 @@ def create_app(start_dir: str) -> FastAPI:
     # this feature makes. A separate module because "what is on my disk" and
     # "what is on the network" fail differently and share nothing but the join.
     app.include_router(hub_models_router)
+    # Local inference (routers/ai_runtime.py, SPEC §40): which models this
+    # machine is holding in memory, what they cost, and the load/unload/download
+    # that change that. Reads unguarded; the three POSTs start processes and
+    # write gigabytes, so they carry the D3 X-Fused guard.
+    app.include_router(ai_runtime_router)
     # Claude Code CONFIG editing for the Preferences page's "Claude config" tab
     # (routers/claude_config.py): one dispatch POST over the
     # fused_render/claude_config/ feature modules, plus a cheap availability

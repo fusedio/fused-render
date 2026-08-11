@@ -14,10 +14,24 @@
  *     usage names, NOT OpenAI's prompt_tokens/completion_tokens. opts:
  *     systemPrompt, model, effort ("low"|"medium"|"high"|"xhigh"),
  *     onChunk. Local-only — not available on hosted/exported pages.
+ *   fused.ai.models.list() / catalog() / load(id) / download(id) / unload(id)
+ *     Local inference (SPEC §40): what this machine is holding in memory and
+ *     what it costs. load/download return {jobId} — a cold load is a multi-GB
+ *     download, so nothing waits on it; watch it with fused.job(jobId). To
+ *     GENERATE with a local model there is no new call: pass its repo id as
+ *     fused.ai(prompt, {model: "org/name"}).
+ *   fused.watchJob(id) -> {get, watch, stop, cancel}
+ *     Observe a job this page did NOT create — the server-owned work that
+ *     fused.ai.models.load() and image generation start. The read side of the
+ *     download manager; trackJob below is the write side. TRACK is "I am doing
+ *     this and reporting it" (takes a spec, creates a row); WATCH is "someone
+ *     else is doing it and I am looking" (takes an id).
  *   fused.trackJob(spec) -> handle {update, finish, fail, cancelled, cancelRequested}
- *     Report a long-running operation (a model download, a minutes-long
- *     generation) to the shell's download manager, so it stays visible after
- *     the page that started it is navigated away from (SPEC §36, D244). Every
+ *     Report a long-running operation THIS PAGE is running to the shell's
+ *     download manager, so it stays visible after the page that started it is
+ *     navigated away from (SPEC §36, D244). Model downloads used to be the
+ *     motivating example; they are the server's job now (SPEC §40) and a page
+ *     observes them with fused.job() instead of reporting them. Every
  *     method is fire-and-forget and never rejects — reporting is decoration and
  *     must not be able to break the work it describes. A no-op stub on a
  *     hosted page (there is no manager there), so a view that reports progress
@@ -1987,6 +2001,100 @@
     loadConfig().then(begin);
   }
 
+  // ---------------------------------------------------------------- local models
+  //
+  // fused.ai.models — the lifecycle half of the AI API (SPEC §40). Generation
+  // itself needs nothing new: fused.ai(prompt, {model: "org/name", onChunk})
+  // already reaches a local model, because a model id with a slash in it IS a
+  // Hugging Face repo id and the server routes on that.
+  //
+  // What DOES need an API is everything around it — a model is a resident
+  // process here, not a request to somebody else's datacentre, so a page can ask
+  // what is loaded, put something in memory, and give the memory back.
+  //
+  // load() and download() return a JOB, not a finished model: a cold load is a
+  // multi-GB download and nothing waits on it. Watch it with fused.job(id).
+  async function aiPost(path, body) {
+    const res = await fetch(path, {
+      method: "POST",
+      headers: callHeaders({ "Content-Type": "application/json", "X-Fused": "1" }),
+      body: JSON.stringify(body || {}),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      const err = new Error((data && data.error) || res.statusText);
+      err.type = res.status === 409 ? "unavailable" : "bad_request";
+      throw err;
+    }
+    return data;
+  }
+
+  const aiModels = {
+    list: () => fetch("/api/ai/runtime", { headers: callHeaders({}) }).then((r) => r.json()),
+    catalog: () => fetch("/api/ai/catalog", { headers: callHeaders({}) }).then((r) => r.json()),
+    load: (model, opts) =>
+      aiPost("/api/ai/runtime/load", { model, ...(opts || {}) }),
+    download: (model, opts) =>
+      aiPost("/api/ai/runtime/download", { model, ...(opts || {}) }),
+    unload: (model) => aiPost("/api/ai/runtime/unload", { model }),
+  };
+  ai.models = aiModels;
+
+  // -------------------------------------------------------------- fused.watchJob
+  //
+  // The READ side of the download manager, and the half trackJob never had.
+  //
+  // Named as trackJob's sibling on purpose (D244 named that one `trackJob` and
+  // not `job` because a bare `fused.job(...)` reads as the job itself rather
+  // than as a handle). The pair is the distinction: TRACK takes a spec and
+  // creates a row for work this page runs; WATCH takes an id and observes work
+  // it did not start.
+  //
+  // trackJob is for work THIS PAGE runs: it writes progress and reads back a
+  // cancel REQUEST it then honours itself. But a page can now start work the
+  // SERVER runs — a model load, an image generation — and it has every reason to
+  // show that progress inline and offer a ✕ for it. That job is not the page's
+  // to report and its cancel is not advisory: the server owns the process and
+  // can really stop it.
+  //
+  // So: observe by id, poll while it lives, cancel for real.
+  function watchJob(id) {
+    let stopped = false;
+    async function get() {
+      const res = await fetch("/api/jobs", { headers: callHeaders({}) });
+      const data = await res.json().catch(() => ({}));
+      return (data.jobs || []).find((j) => j.id === id) || null;
+    }
+    return {
+      get,
+      // Resolves when the job reaches a terminal state; calls back on the way.
+      // Polling rather than a socket: the manager is already polling, jobs tick
+      // about once a second, and a page that navigates away simply stops.
+      async watch(onUpdate, intervalMs) {
+        const every = Math.max(200, intervalMs || 700);
+        for (;;) {
+          if (stopped) return null;
+          const record = await get().catch(() => null);
+          if (record) {
+            if (typeof onUpdate === "function") onUpdate(record);
+            if (record.state !== "running") return record;
+          }
+          await new Promise((r) => setTimeout(r, every));
+        }
+      },
+      stop() {
+        stopped = true;
+      },
+      // A real stop for a server-owned job; for a page-owned one this is the
+      // same request trackJob's own reporter reads back off its next tick.
+      cancel: () =>
+        fetch("/api/jobs/" + encodeURIComponent(id) + "/cancel", {
+          method: "POST",
+          headers: callHeaders({ "X-Fused": "1" }),
+        }).then((r) => r.ok),
+    };
+  }
+
   window.fused = {
     // Runtime identity: "local" here (the fused-render app). The hosted/exported
     // runtime sets "hosted", so a page can branch on where it runs (EXPORT.md).
@@ -2000,6 +2108,7 @@
     mkdir,
     ai,
     trackJob,
+    watchJob,
     autoReload,
     params: { get, getAll, set, onChange },
   };
