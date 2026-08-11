@@ -22,11 +22,16 @@ import type { IndexSearchResult, WalkEntry } from "@platform/lib/api";
 import { indexCorpusFrom } from "@apps/explorer/listing/index-corpus";
 import type { SearchHit } from "@apps/explorer/listing/types";
 
-// Rows rendered at most. Smaller than the listing's SEARCH_RESULT_CAP: this
-// list sits under a hero on a launcher page, not in a scrollable file table,
-// and past a screenful the useful move is a better query. Ranking still runs
-// over the whole corpus — the note below owns up to what is not shown.
-export const HOME_RESULT_CAP = 40;
+// Rows rendered at most. Far smaller than the listing's SEARCH_RESULT_CAP, and
+// the number is set by what has to stay VISIBLE rather than by how many hits are
+// interesting: "Search with AI" is the LAST row of this list, so any cap that
+// overflows the viewport hides the one action a user who isn't finding their file
+// needs — at 40 it sat two screens down, reachable only by scrolling past the
+// results that had already failed them. Ten rows plus the AI row fit a laptop
+// screen. Ranking still runs over the whole corpus (the note below owns up to
+// what is not shown); past ten rows the useful move is a better query or the AI
+// row, not more scrolling.
+export const HOME_RESULT_CAP = 10;
 
 // How still the query must be before the corpus is re-scanned. Short enough to
 // read as "while typing", long enough that a burst of keystrokes costs one scan
