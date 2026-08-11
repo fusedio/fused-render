@@ -661,8 +661,8 @@
 
    A shed column is COLLAPSED, not removed. `display: none` on the header
    looks like the obvious way and is the wrong one: the column survives
-   regardless — the status and sentinel rows span all three (colSpan={3} in
-   Listing.tsx) — and a display:none header contributes no width to
+   regardless — the status and sentinel rows span the whole table (columnCount
+   in listing/types) — and a display:none header contributes no width to
    table-layout:fixed, which left NAME and the shed column BOTH width-less.
    WebKit splits the remainder evenly between width-less columns, so NAME took
    half and the hidden column kept the other half as blank space running to
@@ -1391,8 +1391,14 @@ table.listing-table th {
      it, leaving a 1px bleed gap — paint the divider as an inset shadow so it
      rides with the header instead. */
   box-shadow: inset 0 -1px 0 var(--border);
-  cursor: pointer;
   user-select: none;
+}
+
+/* Only a header that sorts something gets the affordance. Search mode's single
+   PATH header does not sort (relevance order only — Listing.tsx's thead), and
+   a pointer cursor over it promised a click that does nothing. */
+table.listing-table th.sortable {
+  cursor: pointer;
 }
 
 table.listing-table th.sortable:hover {

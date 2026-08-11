@@ -5,9 +5,9 @@
 // because both have already been got wrong once:
 //
 //   1. `display: none` on the shed HEADER left two width-less columns (the
-//      column survives either way — the status rows span all three via
-//      colSpan={3}), and WebKit splits the remainder evenly between them. NAME
-//      took half; the shed column kept the rest as a dead strip.
+//      column survives either way — the status rows span the whole table), and
+//      WebKit splits the remainder evenly between them. NAME took half; the
+//      shed column kept the rest as a dead strip.
 //   2. Pinning NAME with `calc(100% - 96px)` reads correctly and is silently
 //      DISCARDED by WKWebKit for table cells under table-layout:fixed. It
 //      passed a source check that asserted the calc string while the shipped
@@ -16,6 +16,10 @@
 // So the invariant is: a shed column stays a RENDERED zero-width column, sized
 // in px, leaving NAME as the only width-less column. Real geometry still needs
 // a browser (see the report).
+//
+// This is about the PLAIN listing. Search mode never mounts SIZE/MODIFIED at
+// all (listing/search-columns), so these rules simply have nothing to match
+// there — and the one-width-less-column invariant holds trivially.
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";

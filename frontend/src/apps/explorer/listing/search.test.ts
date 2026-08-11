@@ -5,7 +5,7 @@
 // every re-score. Anything per-COMPARISON in here is multiplied by ~3.5M.
 import { expect, test } from "bun:test";
 import type { WalkEntry } from "@platform/lib/api";
-import { rankCompare, scoreEntries, sortHits } from "@apps/explorer/listing/search";
+import { rankCompare, scoreEntries } from "@apps/explorer/listing/search";
 
 function entry(rel: string): WalkEntry {
   return { rel, is_dir: false, size: 1, mtime: 1 } as WalkEntry;
@@ -69,18 +69,6 @@ test("the comparator does no per-comparison string splitting", () => {
   // it inside the comparator meant two split("/") allocations per comparison.
   const hits = scoreEntries("c", [entry("a/b/c.ts"), entry("c.ts")], 0, true);
   expect(hits.map((h) => h.depth)).toEqual([3, 1]);
-});
-
-test("sortHits stays case-insensitive too", () => {
-  // "a-x" and "Á-x" collate EQUAL at base sensitivity, so their relative
-  // order is just the stable sort's — the property under test is that both
-  // sort before "b-x" rather than after "z".
-  const hits = scoreEntries("x", ["b-x", "Á-x", "a-x"].map(entry), 0, true);
-  expect(sortHits(hits, "name", "asc").map((h) => h.entry.rel)).toEqual([
-    "Á-x",
-    "a-x",
-    "b-x",
-  ]);
 });
 
 test("ranking a large hit set stays well under a frame budget", () => {

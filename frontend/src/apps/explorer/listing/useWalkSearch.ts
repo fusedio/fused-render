@@ -33,11 +33,9 @@ import {
   STREAM_FLUSH_MS,
   URL_SYNC_MS,
   type SearchHit,
-  type SortKey,
-  type SortOrder,
   type WalkState,
 } from "@apps/explorer/listing/types";
-import { queryWantsHidden, rankCompare, scoreEntries, sortHits } from "@apps/explorer/listing/search";
+import { queryWantsHidden, rankCompare, scoreEntries } from "@apps/explorer/listing/search";
 
 function currentQuery(): string {
   return new URLSearchParams(location.search).get("q") || "";
@@ -60,10 +58,6 @@ export function useWalkSearch(fsPath: string, refresh: number, urlSync = true) {
   // Bumped to re-run the stream effect after an error, from a real user
   // gesture only (focus / typing) — an effect-driven retry would loop forever.
   const [retryNonce, setRetryNonce] = useState(0);
-  // Sort applied to search results. null = relevance (fuzzy rank). Deliberately
-  // NOT URL-synced (unlike the normal-mode sort) — it resets on every query
-  // change, so persisting it would fight that reset.
-  const [searchSort, setSearchSort] = useState<{ sort: SortKey; order: SortOrder } | null>(null);
 
   // The input echoes `query` (immediate) so keystrokes never wait on the
   // fuzzy-scoring/rendering work below. `deferredQuery` trails behind under
@@ -277,7 +271,6 @@ export function useWalkSearch(fsPath: string, refresh: number, urlSync = true) {
     // A query change is a boundary: the rows are being replaced anyway, so a
     // generation deferred during the previous query lands here for free.
     reconcile();
-    setSearchSort(null); // a new query drops back to relevance order
     // Editing the query is also a user gesture: if the last walk attempt
     // failed, give it another shot instead of leaving search dead forever.
     // (An idle walk needs no handling here — the auto-request effect fires
@@ -297,18 +290,6 @@ export function useWalkSearch(fsPath: string, refresh: number, urlSync = true) {
       const qs = params.toString();
       replaceSearch(location.pathname + (qs ? "?" + qs : ""));
     }, URL_SYNC_MS);
-  };
-
-  // Search headers cycle asc → desc → relevance. Relevance (the fuzzy rank) is
-  // the mode search results are actually FOR, and before this there was no way
-  // back to it short of retyping the query — the toggle only ever flipped
-  // between two column orders.
-  const setSearchSortKey = (key: SortKey) => {
-    setSearchSort((prev) => {
-      if (!prev || prev.sort !== key) return { sort: key, order: "asc" };
-      if (prev.order === "asc") return { sort: key, order: "desc" };
-      return null;
-    });
   };
 
   // Incremental-scoring cache for the corpus. As long as the query,
@@ -401,11 +382,15 @@ export function useWalkSearch(fsPath: string, refresh: number, urlSync = true) {
   // computed for the CURRENT query, so a scan still catching up never shows
   // the previous query's matches — the same rule search-hold enforces
   // downstream, applied at the source.
+  // Relevance (the fuzzy rank) is the only order search results have. Column
+  // sorting used to be offered here and was withdrawn with the Size/Modified
+  // headers: the hit set is capped and, mid-walk, partial — a by-date or
+  // by-size ordering over it reads as an answer to a question the data cannot
+  // answer, and the search UI already warns the coverage is approximate.
   const hits = useMemo(() => {
     if (!searching || scanned.q !== q) return [];
-    if (!searchSort) return scanned.items; // relevance order
-    return sortHits(scanned.items, searchSort.sort, searchSort.order);
-  }, [searching, scanned, q, searchSort]);
+    return scanned.items;
+  }, [searching, scanned, q]);
 
   // True while the scan for the current query has not published yet — the
   // spinner and the dimmed-rows treatment key off this, so it has to mean
@@ -436,11 +421,11 @@ export function useWalkSearch(fsPath: string, refresh: number, urlSync = true) {
   }));
   const lastRankCommit = useRef(0);
   // Declared BEFORE the commit effect so it runs first in the same flush: a
-  // query change (or a sort change) is a direct response to a gesture and must
-  // paint immediately, never wait out a throttle window opened by the stream.
+  // query change is a direct response to a gesture and must paint immediately,
+  // never wait out a throttle window opened by the stream.
   useEffect(() => {
     lastRankCommit.current = 0;
-  }, [q, searchSort]);
+  }, [q]);
   useEffect(() => {
     // Only a streaming walk churns. Anything else (settled, errored, or
     // invalidated to idle) commits at once — there is nothing left to smooth
@@ -519,8 +504,5 @@ export function useWalkSearch(fsPath: string, refresh: number, urlSync = true) {
     visibleHits,
     showingHeld,
     cappedAway,
-    searchSort,
-    setSearchSort,
-    setSearchSortKey,
   };
 }

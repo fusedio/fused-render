@@ -1,7 +1,7 @@
 // Fuzzy scoring and ranking for the in-folder search (over the streamed walk).
 import type { WalkEntry } from "@platform/lib/api";
 import { fuzzyMatch } from "@platform/lib/fuzzy";
-import type { SearchHit, SortKey, SortOrder } from "@apps/explorer/listing/types";
+import type { SearchHit } from "@apps/explorer/listing/types";
 
 // A dot-leading query segment is explicit intent to SEE hidden entries.
 // The walk itself always includes hidden entries (one dataset — the server
@@ -110,19 +110,4 @@ export function scoreEntries(
                 depth: depthOf(entry.rel) });
   }
   return hits;
-}
-
-// Column-sort a ranked result set (the search headers' asc/desc modes; null
-// searchSort — relevance — leaves the rankCompare order untouched upstream).
-export function sortHits(hits: SearchHit[], sort: SortKey, order: SortOrder): SearchHit[] {
-  const flip = order === "desc" ? -1 : 1;
-  const byName = (a: SearchHit, b: SearchHit) => byRel(a.entry.rel, b.entry.rel);
-  return [...hits].sort((a, b) => {
-    let cmp: number;
-    if (sort === "size") cmp = (a.entry.size ?? -1) - (b.entry.size ?? -1);
-    else if (sort === "mtime") cmp = (a.entry.mtime ?? 0) - (b.entry.mtime ?? 0);
-    else cmp = byName(a, b);
-    if (cmp === 0) cmp = byName(a, b);
-    return cmp * flip;
-  });
 }

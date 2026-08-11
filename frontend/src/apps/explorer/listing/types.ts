@@ -35,6 +35,16 @@ export const SORT_KEYS = { name: "Name", size: "Size", mtime: "Modified" };
 export type SortKey = keyof typeof SORT_KEYS;
 export type SortOrder = "asc" | "desc";
 
+// Columns the listing table renders. Search mode shows the matched PATH alone:
+// a hit's row is already a full rel path, and it needs every pixel the table
+// has. Status, banner and sentinel rows span the table, so their colSpan must
+// follow the mode — a hardcoded 3 under a one-column head declares two columns
+// nothing else mentions, and table-layout:fixed hands them width (the dead
+// strip in listing/column-shedding).
+export function columnCount(searching: boolean): number {
+  return searching ? 1 : 3;
+}
+
 // Search-result rows rendered per "page". Fuzzy-scoring can match thousands
 // of entries in a large tree; mounting them all as <tr>s at once is what jams
 // the main thread (scoring itself is comparatively cheap). Scrolling to the
