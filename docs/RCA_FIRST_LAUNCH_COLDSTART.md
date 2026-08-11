@@ -137,7 +137,31 @@ then timed a genuine first launch and a second launch:
 | engine warm-up (background) | 37.2 s (logged) | ~3 s |
 
 The `/api/config` freeze is gone and the engine warms in the background — the
-primary fix is confirmed end-to-end on a real install.
+primary fix is confirmed end-to-end on a real install. (This `~64 s` first launch
+is the same kill-retry loop described below, then still uncured.)
+
+### Post-fix measurement, all fixes in (supervisor `attempt` log)
+
+Uninstalled + reinstalled the installer carrying **every** fix — precompiled pyc,
+engine warm-up, warm-import at install, and the new supervisor readiness timing —
+then read the real launcher→ready line straight from `supervisor.log`:
+
+| Launch | `supervisor.log` | Attempt |
+|---|---|---|
+| 1st after fresh install | `server ready in 11.4s` | **1** |
+| 2nd (warm) | `server ready in 3.8s` | 1 |
+| 3rd (warm) | `server ready in 2.6s` | 1 |
+| 4th (warm) | `server ready in 3.1s` | 1 |
+
+**Zero** `Python server did not become ready` across every launch — the
+kill-retry loop is not entered at all, and warm launches land at ~3 s (the ~2 s
+app-graph import plus lifespan). Caveat: this machine's Defender was already warm
+from prior installs, so the 11.4 s first launch does **not** include the full
+cold on-access scan a pristine machine pays; the point it *does* prove is that
+first launch now completes in a **single attempt** (well under the 20 s budget)
+rather than churning through kills — which is exactly what the warm-at-install
+step is for. The cold ~2-min case can't be re-created here without clearing
+Defender's cache.
 
 ### Residual first-launch cost (not this fix)
 
