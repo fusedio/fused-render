@@ -795,6 +795,32 @@ def test_the_NEAREST_release_the_folder_allows_is_chosen(tmp_path, pin, expected
     assert envinstall.project_python_version(proj) == expected
 
 
+@pytest.mark.parametrize("pin,expected", [
+    (">=3.12.5", "3.12"),
+    (">3.12", "3.12"),
+    ("==3.12.5", "3.12"),
+    ("<=3.12.9", None),
+    ("!=3.12.3", None),
+])
+def test_a_patch_level_pin_is_answered_at_MINOR_granularity(tmp_path, pin, expected):
+    """The boundary of what this module can promise, pinned so it stays a decision.
+
+    What it can obtain is `uv python install 3.X`, whose PATCH is uv's choice and
+    not ours, so a patch-level guarantee is not one it is able to make. The pin is
+    therefore judged against bare `3.12`: a pin that excludes it lands back on the
+    3.12 line (first three cases), and a pin that merely excludes some other patch
+    reads as "the default is fine" (last two).
+
+    Both directions can end up on a 3.12 whose patch the folder forbade — and when
+    they do, `uv sync` refuses in its own words, naming both versions, with the base
+    interpreter beside it. That is the property that matters and the reason this is
+    a boundary rather than a bug: a patch pin can cost a clear error, never a silent
+    run on a Python the folder ruled out.
+    """
+    proj = _project(tmp_path, requires_python=pin)
+    assert envinstall.project_python_version(proj) == expected
+
+
 @pytest.mark.parametrize("pin", [">=4.0", "<3.9", "==2.7.*"])
 def test_a_pin_NOTHING_can_satisfy_is_refused_in_our_own_words(tmp_path, pin):
     """The one failure uv cannot explain, so it must not be left to uv.

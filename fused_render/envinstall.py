@@ -610,6 +610,31 @@ def project_python_version(project_dir: str | None) -> str | None:
     requires-python conflict, and uv's message named a 3.12 the user had not asked
     for and could not find in their own files.
 
+    **The decision is MINOR-granular, and that is a boundary rather than an
+    oversight.** The pin is compared against `SCRIPT_PYTHON_VERSION` — `3.12`, not
+    the patch the interpreter actually reports — so a patch-level pin is answered
+    at the granularity this module can act on: what it can obtain is
+    `uv python install 3.X`, whose patch is uv's choice and not ours, so a
+    patch-level guarantee is not one it is able to make. What that costs is
+    bounded and, importantly, never silent:
+
+      * `>=3.12.5`, `>3.12`, `==3.12.5` — the pin excludes bare `3.12`, so this
+        answers `3.12` and the environment is built on the 3.12 this machine has.
+        The patch may be too old, and then `uv sync` refuses in its own words,
+        naming both versions, with the base interpreter beside it (`_build`).
+      * `<=3.12.9`, `!=3.12.3` — bare `3.12` satisfies these, so they read as "the
+        default is fine". If the real 3.12 is the excluded patch, the same uv
+        refusal follows.
+
+    So the failure mode for a patch pin is a loud, accurate error naming the
+    interpreter we chose — never a run on a Python the folder forbade. Closing the
+    gap properly means threading the specifier through the resolution and its
+    cache and preferring a uv-managed newer patch, with its own terminal answer for
+    "downloaded and still unsatisfying"; that is a larger change than the pin shape
+    justifies today, and it is written here so the limit is a decision on the record
+    rather than something the next reader has to rediscover (D177's corollary;
+    pinned by `test_a_patch_level_pin_is_answered_at_MINOR_granularity`).
+
     Raises `UnsupportedPythonRequirement` when no release this app is willing to
     build on satisfies the pin. Callers on the request path (`is_installed`) let it
     propagate: `engine.run_python` asks FIRST and turns it into a real message, and
