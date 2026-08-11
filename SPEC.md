@@ -5226,3 +5226,73 @@ stop it short of quitting the app.
   `fused` wheel's copy of the bridge) rather than an export-blocking call like
   `fused.ai` (RH-11): progress reporting is decoration, and a page that reports
   it should still deploy — it simply has no manager to report to.
+
+---
+
+## 37. Local Models — What the Hugging Face Cache Holds (D246)
+
+Goal: the models, datasets and Spaces this machine has downloaded from the
+Hugging Face Hub are visible and accounted for, from a sidebar entry, without
+anyone having to remember where the cache lives or run `du` on it.
+
+The cache is shared and invisible: a `transformers` import in a page's Python,
+a `diffusers` pipeline, a template someone pasted in, or an `hf download` in a
+terminal all write into the same tree, and nothing in the app has ever named
+it. It grows in multi-GB steps and the app is the thing that grew it — a
+checkpoint pulled by a page the user opened once is still on their disk a month
+later with nothing on screen to say so.
+
+- **HF-1** **A read-only inventory, not a manager.** The page lists what is
+  cached and what it costs; it never downloads, evicts, or repairs anything.
+  Deleting a blob out from under a half-loaded pipeline is a different feature
+  with a different set of confirmations — and "what is on my disk" is the whole
+  question this one answers.
+- **HF-2** **Where the cache is** follows `huggingface_hub`'s own resolution
+  order, not a hardcoded `~/.cache`: `HF_HUB_CACHE`, else the deprecated
+  `HUGGINGFACE_HUB_CACHE`, else `$HF_HOME/hub`, else
+  `$XDG_CACHE_HOME/huggingface/hub`, else `~/.cache/huggingface/hub`. Any other
+  order reports "nothing cached" on precisely the machines that care most — the
+  ones with a shared model disk pinned by `HF_HOME`. Resolved per request, so
+  the answer is the environment the server is actually running in.
+- **HF-3** **One row per repo**, decoded from the cache's own directory
+  encoding: `models--openai--whisper-small` → `openai/whisper-small`, kind
+  `model`; `datasets--` → dataset, `spaces--` → space. A directory carrying
+  none of those three prefixes is not a repo folder and is skipped, which is
+  also what keeps `.locks/`, `version.txt` and half-written `tmp*` downloads
+  out of the list.
+- **HF-4** **Size is bytes on disk, measured with `lstat`.** Every file under
+  `snapshots/` is a symlink back into the same repo's `blobs/`, so a walk that
+  followed them would multiply a repo by its revision count — on a real cache
+  that is a page about disk usage being wrong by hundreds of GB. Hardlinks (one
+  blob shared by two entries, and what Windows falls back to when it cannot
+  symlink) are de-duplicated by `(st_dev, st_ino)` for the same reason. The
+  per-row sizes therefore sum to the reported total.
+- **HF-5** **Newest-file time, directories excluded.** A repo's stamp is the
+  newest mtime among its files *and its snapshot symlinks* — a blob is written
+  once, but materialising a revision creates its links, so the links are what
+  "last pulled" looks like on disk. Directory mtimes are left out because they
+  also move on deletion, which would report a repo someone just emptied as
+  freshly used. A repo with no files at all reports no time rather than "now".
+- **HF-6** **Biggest first.** The page exists to answer "what is this costing
+  me", and a name sort buries the 8GB checkpoint among forty 2MB tokenizer
+  repos. Each row also carries its file count, its revision count when it holds
+  more than one, and the refs (`main`, a tag) pointing into it.
+- **HF-7** **A row is a door into the explorer**: it navigates to the repo's
+  cache folder as an ordinary directory (a real `<a href>`, so middle-click and
+  copy-link behave), which is where deleting one would happen — with the file
+  manager's own confirmation, not a bespoke one.
+- **HF-8** **The sidebar entry is gated on the cache existing** (`GET
+  /api/local-models/status`, one `isdir`), so a machine that has never pulled
+  from the Hub is not offered a page that can only say "nothing here". Unlike
+  the Claude-config entry's gate — an installation property, which cannot change
+  while the app runs — this one can flip mid-session: the first download creates
+  the directory. So a confirmed *yes* is
+  cached for the session and a *no* only briefly, and the page's own answer
+  refreshes the gate. The route stays reachable by URL either way, and states
+  which of the two nothings it found — no cache directory at all, or a cache
+  that is empty.
+- **HF-9** **Scanning is on demand.** The walk touches every blob in the cache,
+  so it runs on mount and on an explicit Refresh — never on a focus/return tick,
+  which would re-walk tens of thousands of files each time the window came back.
+  It runs in the threadpool (a sync endpoint), so a big cache cannot stall the
+  requests the rest of the page is making.

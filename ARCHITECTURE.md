@@ -183,6 +183,21 @@ running one); `POST /api/jobs/clear` closes all finished. State lives in
 `fused_render/jobs.py`, in memory. `/api/jobs` is in `calls.SKIP_PREFIXES` — a
 tick is bookkeeping about a call, not a call.
 
+### `/api/local-models` — Hugging Face cache inventory (SPEC §37, D246)
+
+`GET /api/local-models` → `{cacheDir, hfHome, exists, totalSize, repos}`, one
+entry per cached repo (`{id, kind, path, size, files, mtime, revisions, refs}`),
+biggest first. `GET /api/local-models/status` → `{available, cacheDir}` is the
+cheap gate behind the sidebar entry (one `isdir`, no walk). Both are unguarded
+reads — the endpoint never downloads or evicts anything. `local_models.py`
+resolves the cache per request through huggingface_hub's own precedence
+(`HF_HUB_CACHE` > `HUGGINGFACE_HUB_CACHE` > `$HF_HOME/hub` >
+`$XDG_CACHE_HOME/huggingface/hub` > `~/.cache/huggingface/hub`) and measures
+each repo with `lstat`, skipping the `snapshots/` symlinks (they point back into
+the same repo's `blobs/`) and de-duplicating hardlinks by `(st_dev, st_ino)`, so
+`size` is bytes on disk and the rows sum to `totalSize`. Sync `def` — the walk
+is disk-bound and belongs in the threadpool.
+
 ### `GET /static/*`
 StaticFiles mount for shell + runtime. Templates dir is NOT statically mounted — templates are served through `/render` like any HTML file.
 

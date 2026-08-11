@@ -1,7 +1,8 @@
 // The SHELL's own sidebar — the app-switcher. The sub-app list on top, grouped
 // under uppercase category headings (FUSED / CLAUDE / GUIDE) so the Claude
 // entries read as one family instead of three unrelated rows in a flat list of
-// six; settings list (Templates / Mounts / Preferences) pinned to the bottom.
+// six; settings list (Templates / Mounts / Local models / Preferences) pinned
+// to the bottom.
 // Composes the shared SidebarFrame chassis like every sub-app sidebar does
 // (apps/*/sidebar/*Sidebar.tsx); the shell knows nothing about bookmarks or
 // recents — those live with their owners.
@@ -18,6 +19,7 @@ import { useUrlVersion, useLearnMountReady, useSessionsMountReady } from "@platf
 import { useAccountLoggedIn } from "@platform/lib/account";
 import { useDeployEnabled } from "@platform/lib/prefs";
 import { useClaudeConfigAvailable } from "@apps/claude_config";
+import { useLocalModelsAvailable } from "@shell/LocalModels";
 
 // Magnifier — the Explorer's front door is its search prompt (FilesHome's
 // hero), so the entry reads as "find things" rather than "a folder".
@@ -69,6 +71,16 @@ const ARTIFACTS_ICON = (
   </svg>
 );
 
+// Stacked disks — the Local models entry is an inventory of what the Hugging
+// Face cache is storing on this machine, so it reads as storage, not as a chip.
+const LOCAL_MODELS_ICON = (
+  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <ellipse cx="12" cy="5" rx="8" ry="3" />
+    <path d="M4 5v6c0 1.66 3.58 3 8 3s8-1.34 8-3V5" />
+    <path d="M4 11v6c0 1.66 3.58 3 8 3s8-1.34 8-3v-6" />
+  </svg>
+);
+
 export default function ShellSidebar({ config }: { config: Config }) {
   // Re-render on any nav/url change (active-item highlight).
   useUrlVersion();
@@ -85,6 +97,12 @@ export default function ShellSidebar({ config }: { config: Config }) {
   // Claude Config is native (no mount) — availability is just "does ~/.claude
   // exist on this machine", one cached probe (see useClaudeConfigAvailable).
   const claudeConfigAvailable = useClaudeConfigAvailable();
+  // Same shape of gate for Local models: the row appears once this machine has
+  // a Hugging Face cache dir at all, so a user who has never downloaded a model
+  // isn't offered a page that can only ever say "nothing here". Unlike the
+  // Claude probe this one can flip mid-session (the first download creates the
+  // dir), which is why its "no" is only cached briefly (see the hook).
+  const localModelsAvailable = useLocalModelsAvailable();
 
   return (
     <SidebarFrame title="Render" version={config.version}>
@@ -149,6 +167,11 @@ export default function ShellSidebar({ config }: { config: Config }) {
             </svg>
           }
         />
+        {/* Next to Mounts: both answer "what storage does this machine have
+            attached", one remote and one the Hub filled in locally. */}
+        {localModelsAvailable && (
+          <NavItem href="/local-models" id="local-models-link" label="Local models" icon={LOCAL_MODELS_ICON} />
+        )}
         <NavItem
           href="/preferences"
           label="Preferences"

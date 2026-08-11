@@ -1872,6 +1872,43 @@ export function getClaudeSessionFolders(): Promise<{ folders: ClaudeSessionFolde
   return getJson<{ folders: ClaudeSessionFolder[] }>("/api/claude-sessions");
 }
 
+// -- Local models (GET /api/local-models) -------------------------------------
+// What the Hugging Face cache holds on this machine, for the sidebar's "Local
+// models" page (shell/LocalModels.tsx). One entry per cached repo, biggest
+// first; `size` is bytes actually on disk (the server measures blobs and skips
+// the snapshot symlinks pointing at them), so the sizes sum to `totalSize`.
+// `path` is the repo's cache folder, ready for navigate(path, {isDir:true}).
+export interface LocalModelRepo {
+  id: string;
+  kind: "model" | "dataset" | "space";
+  path: string;
+  size: number;
+  files: number;
+  /** Epoch seconds of the newest file in the repo folder, or null if unknown. */
+  mtime: number | null;
+  revisions: number;
+  refs: string[];
+}
+
+export interface LocalModelsResult {
+  cacheDir: string;
+  hfHome: string;
+  /** False when nothing has ever been downloaded — the cache dir isn't there. */
+  exists: boolean;
+  totalSize: number;
+  repos: LocalModelRepo[];
+}
+
+export function getLocalModels(): Promise<LocalModelsResult> {
+  return getJson<LocalModelsResult>("/api/local-models");
+}
+
+// Cheap probe (one isdir on the server, no walk) behind the sidebar entry's
+// gate — see shell/LocalModels.tsx's useLocalModelsAvailable.
+export function getLocalModelsStatus(): Promise<{ available: boolean; cacheDir: string }> {
+  return getJson<{ available: boolean; cacheDir: string }>("/api/local-models/status");
+}
+
 // -- AI completion (POST /api/ai) ---------------------------------------------
 // The fused.ai relay: one non-streaming completion through the server's warm
 // Claude Code CLI instance (server/ai.py). The shell uses this for small

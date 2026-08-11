@@ -9,6 +9,7 @@
 //   "/claude-config"         -> Claude config panel (native, no mount)
 //   "/claude-md"             -> legacy; redirects into the panel's MD Files tab
 //   "/claude-artifacts"      -> project folders with Claude Code sessions
+//   "/local-models"          -> Hugging Face cache inventory
 //   "/preferences|/templates|/mounts" -> settings pages
 // Legacy pre-rename urls (/view/..., /embed/..., /view/_prefs-family) are
 // rewritten in place at boot by router.ts before any of this runs.
@@ -45,6 +46,7 @@ import Tabs from "@apps/explorer/Tabs";
 import Preferences from "@shell/Preferences";
 import Templates from "@shell/templates/Templates";
 import Mounts from "@shell/Mounts";
+import LocalModels from "@shell/LocalModels";
 import Apps from "@apps/builder/Apps";
 import FilesHome from "@apps/explorer/FilesHome";
 import { learnEntryPath } from "@apps/learn";
@@ -520,6 +522,8 @@ export default function App({ config }: { config: Config }) {
   const isTemplates = pathname === "/templates";
   // PROTOTYPE: mounts page (see shell/Mounts.tsx).
   const isMounts = pathname === "/mounts";
+  // What the Hugging Face cache holds on this machine (shell/LocalModels.tsx).
+  const isLocalModels = pathname === "/local-models";
   // Apps hub = the app home: all detected apps with search + tag filters.
   const isApps = pathname === "/apps";
   // File-explorer homepage: the bookmark launcher.
@@ -569,7 +573,7 @@ export default function App({ config }: { config: Config }) {
   // letting it fall through to the "Unrecognized URL" branch for a frame.
   const linkedResolving = linkedName !== null && linkedPath === null;
   const isSentinel =
-    isPanel || isTabs || isPrefs || isTemplates || isMounts || isApps || isExplorerHome || isLearn || isSessions || isClaudeConfig || isClaudeArtifacts || isBookmark;
+    isPanel || isTabs || isPrefs || isTemplates || isMounts || isLocalModels || isApps || isExplorerHome || isLearn || isSessions || isClaudeConfig || isClaudeArtifacts || isBookmark;
   const fsPath = isSentinel || appFsPath ? null : fsPathFromLocation();
   // Browsing to a `.bookmark` file in the explorer opens it like a Finder
   // double-click (SB-9): same component as the `_bookmark` sentinel, fed the
@@ -587,7 +591,9 @@ export default function App({ config }: { config: Config }) {
             ? "Templates"
             : isMounts
               ? "Mounts"
-              : isApps
+              : isLocalModels
+                ? "Local models"
+                : isApps
                 ? "Apps"
                 : isExplorerHome
                   ? "File Explorer"
@@ -677,6 +683,17 @@ export default function App({ config }: { config: Config }) {
     main = (
       <div id="content" key={epoch}>
         <Mounts key={epoch} />
+      </div>
+    );
+  } else if (isLocalModels) {
+    // Local models — the Hugging Face cache inventory, in the same cc-* page
+    // chrome as Artifacts. Reachable by URL even where the sidebar hides its
+    // entry (no cache dir yet); the page states that case itself.
+    main = (
+      <div id="content" key={epoch}>
+        <div className="cc-page">
+          <LocalModels key={epoch} />
+        </div>
       </div>
     );
   } else if (isApps) {

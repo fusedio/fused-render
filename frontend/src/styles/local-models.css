@@ -1,0 +1,66 @@
+/* Local models (/local-models, shell/LocalModels.tsx) — the Hugging Face cache
+   inventory. The page chrome is the cc-* family imported just above (heading,
+   caption, pills, empty state); what lives here is only the row: a link with
+   the repo id + its meta line on the left and the size pinned right, since the
+   page is read down the size column. */
+
+.lm-list {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.lm-row {
+  display: flex;
+  align-items: baseline;
+  gap: 16px;
+  padding: 11px 14px;
+  color: inherit;
+  text-decoration: none;
+  background: var(--bg-alt);
+  border-bottom: 1px solid var(--border);
+}
+
+.lm-row:last-child {
+  border-bottom: none;
+}
+
+.lm-row:hover {
+  background: var(--row-bg-hover);
+}
+
+.lm-row:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.lm-row-main {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.lm-row-name {
+  display: block;
+  font-weight: 500;
+  /* A repo id is a path-shaped string with no spaces — wrap inside it rather
+     than let a long org/name push the size column off the row. */
+  overflow-wrap: anywhere;
+}
+
+.lm-row-meta {
+  display: block;
+  margin-top: 2px;
+  font-size: 12px;
+  color: var(--fg-muted);
+  overflow-wrap: anywhere;
+}
+
+/* Tabular figures so the sizes line up as a column even though each row sizes
+   itself independently. */
+.lm-row-size {
+  flex: 0 0 auto;
+  font-variant-numeric: tabular-nums;
+  color: var(--fg-muted);
+}

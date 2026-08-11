@@ -88,6 +88,27 @@ servers) sees ordinary local paths.
 - Mounts stay up until you unmount them — including across app restarts, and
   every mount is automatically remounted when the server starts.
 
+## Local models
+
+**Local models** in the sidebar lists what the Hugging Face cache holds on this
+machine — every model, dataset and Space anything on your computer has pulled
+from the Hub, biggest first, with what each one costs on disk. The entry appears
+once that cache exists; the first download from the Hub creates it.
+
+- **It reads, it never downloads or deletes.** Clicking a row opens the repo's
+  cache folder in the explorer, which is where you'd remove one — with your file
+  manager's own confirmation, not a button here.
+- **The sizes are real disk usage.** Inside the cache each revision's files are
+  symlinks to one shared copy of the bytes, so the page counts that copy once:
+  the per-row sizes add up to the total in the header.
+- **It looks where `huggingface_hub` looks** — `HF_HUB_CACHE`,
+  `HUGGINGFACE_HUB_CACHE`, `$HF_HOME/hub`, `$XDG_CACHE_HOME/huggingface/hub`,
+  then `~/.cache/huggingface/hub` — so a shared model disk pinned with `HF_HOME`
+  is the one you see. The path in use is printed under the heading.
+- **Scanning happens when you open the page** and when you press Refresh. It
+  walks every file in the cache, so it is deliberately not re-run each time you
+  switch back to the window.
+
 ## Preferences
 
 The gear at the sidebar's bottom-left opens **Preferences**:
