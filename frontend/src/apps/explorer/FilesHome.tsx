@@ -328,7 +328,16 @@ function FilesSearch({
 
   // -- AI search -------------------------------------------------------------
   const aiCtl = useRef<AbortController | null>(null);
-  useEffect(() => () => aiCtl.current?.abort(), []);
+  // The path shortcut's stat, cancellable for the same reason: both outlive the
+  // gesture that started them, and both act on the app when they land.
+  const statCtl = useRef<AbortController | null>(null);
+  useEffect(
+    () => () => {
+      aiCtl.current?.abort();
+      statCtl.current?.abort();
+    },
+    [],
+  );
   const syncQueryParam = (value: string | null) => {
     const params = new URLSearchParams(location.search);
     if (value) params.set("q", value);
@@ -367,6 +376,7 @@ function FilesSearch({
 
   const clear = () => {
     aiCtl.current?.abort();
+    statCtl.current?.abort();
     setQuery("");
     setAi(AI_OFF);
     setHighlight(null);
@@ -376,6 +386,9 @@ function FilesSearch({
   const edit = (value: string) => {
     setQuery(value);
     setHighlight(null);
+    // Editing the query retracts the address that was submitted from it, so a
+    // stat still in flight for the old one must not navigate when it lands.
+    statCtl.current?.abort();
     // Typing is a user gesture, so it is also the retry for a failed corpus
     // fetch — the same way useWalkSearch re-arms its stream from setQuery.
     if (corpus.status === "error") setRetryNonce((n) => n + 1);
@@ -416,11 +429,21 @@ function FilesSearch({
     if (highlight === null) {
       const target = pathShortcut(q, home);
       if (target !== null) {
+        // A stat on a slow or network mount can outlive the intent behind it, and
+        // navigating on a stale answer is the worst kind of wrong: it yanks the
+        // user out of wherever they went next. Superseded by the next submit,
+        // cancelled by clear()/unmount, and re-checked after the await — a
+        // resolved-but-abandoned stat must not move anyone.
+        statCtl.current?.abort();
+        const ctl = new AbortController();
+        statCtl.current = ctl;
         try {
-          const st = await statPath(target);
+          const st = await statPath(target, ctl.signal);
+          if (ctl.signal.aborted) return;
           navigate(st.path, { isDir: st.is_dir });
           return;
         } catch {
+          if (ctl.signal.aborted) return;
           // not a real path — treat it as a search query
         }
       }

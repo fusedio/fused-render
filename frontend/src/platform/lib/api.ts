@@ -430,8 +430,11 @@ export async function searchFiles(
   return data as SearchFilesResult;
 }
 
-export function statPath(fsPath: string): Promise<StatResult> {
-  return getJson<StatResult>("/api/fs/stat?path=" + encodeURIComponent(fsPath));
+// `signal` matters for callers that stat on a user's behalf and then navigate:
+// a stat on a slow mount can resolve after the user has moved on, and acting on
+// it would move them back. See FilesHome's path shortcut.
+export function statPath(fsPath: string, signal?: AbortSignal): Promise<StatResult> {
+  return getJson<StatResult>("/api/fs/stat?path=" + encodeURIComponent(fsPath), { signal });
 }
 
 // Deferred condition.py verdicts (CT-12): {mode: allowed} for every entry
