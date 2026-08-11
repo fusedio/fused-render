@@ -283,11 +283,11 @@
   display: none;
 }
 
-/* …and takes the zone divider with it, so a static page (or a view still
-   resolving its stat) shows no stray hairline floating in the bar. */
-#topbar-mode-slot:empty + .bar-rule {
-  display: none;
-}
+/* It used to have to take a zone divider with it, so a static page (or a view
+   still resolving its stat) showed no stray hairline floating in the bar. The
+   crumb bar has no layout zone left to divide from — the splits are items in the
+   path `⋮` now (Breadcrumb.tsx) — so that pair, and the `.bar-rule` margin reset
+   that went with it, are gone. The panel bar below still needs both. */
 
 /* Same pair for the panel pane bar, whose mode menu (PaneModeMenu) renders
    nothing on a single-mode path and while the pane is still statting — the
@@ -301,11 +301,6 @@
   display: none;
 }
 
-/* #breadcrumb already spaces its children with `gap`, so the rule brings no
-   margin of its own here (it does in .panel-bar, whose gap is 2px). */
-#breadcrumb .bar-rule {
-  margin: 0;
-}
 
 /* ---- One control recipe for the explorer's bars --------------------------
    The title bar, the listing search row, the preview-pane header and the
@@ -399,6 +394,43 @@
   display: flex;
   align-items: center;
   gap: 2px;
+}
+
+/* ---- a side column's HEADER STRIP, and there are two of them --------------
+   The file preview's sidebar (.preview-side-header, preview.css) and the folder
+   listing's preview pane (.pane-header, below) are the SAME bar: the way OUT of
+   the column at its left end, the mode pill at its right, over a full-height
+   frame. The two components already share their buttons (SideChrome.tsx); this is
+   the layout half of that sharing.
+
+   NO RULE FOR THE BUTTONS THEMSELVES (.side-close, .side-toggle): both ride the
+   plain .bar-ctl-icon recipe above, and their glyphs are a 16px chevron / the
+   companion's own mode icon, in currentColor like everything else in these rows.
+   A `.side-toggle.active` pressed look lived here for one round, while the opener
+   stayed on screen with the panel open and the column carried a closing chevron of
+   its own. Exactly one of the two buttons is ever rendered now (SideChrome
+   documents the split), so there is no "on" state left for either to wear.
+
+   The far end is packed by an auto margin on a TAIL WRAPPER rather than on the
+   leading items, which is load-bearing and not a style preference: the left end
+   holds a VARIABLE number of things (the pane's also carries the open folder's
+   primary action, portaled in and usually absent), and an auto margin on whichever
+   of those renders last distributes the free space differently every time — with
+   two present, the middle one drifts to the centre. One auto margin, always on the
+   same element, packs the right end and leaves the left alone whatever is in it. */
+.side-header-tail {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+}
+
+/* Nothing to pack — and an empty wrapper would still spend one of the strip's
+   8px gaps. (Reached by the pane's non-Preview states, whose strip has no
+   expand button to put here.) */
+.side-header-tail:empty {
+  display: none;
 }
 
 /* ---- The mode control ---------------------------------------------------
@@ -554,6 +586,17 @@
   color: var(--accent);
 }
 
+/* Group divider inside an overflow popup (the path `⋮` separates what it does
+   to the FILE — reveal, copy path — from what it does to the WINDOW: the two
+   splits). Inset to the rows' own padding so it reads as a break in the list
+   rather than a line drawn across the box. */
+.bar-menu-sep {
+  flex: 0 0 auto;
+  height: 1px;
+  margin: 4px 8px;
+  background: var(--border);
+}
+
 .star-btn {
   flex: 0 0 auto;
   font: inherit;
@@ -578,6 +621,37 @@
   color: var(--fg);
   border-color: var(--border);
   background: rgba(var(--tint), 0.08);
+}
+
+/* The PAGE-LEVEL split (shell/App.tsx StatView): this view's own column, and
+   then the preview sidebar's when a file preview opens one
+   (apps/explorer/PreviewSidebar). Always rendered, so with no sidebar it is
+   simply the single-column layout it was. Sits directly inside #main, which is a
+   flex COLUMN — hence the flex/min-height here, and `row` for the split. */
+.stat-split {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+}
+
+/* The left column: the crumb bar, then #content. The bar lives IN here rather
+   than spanning the window, so it ends at the divider and the sidebar's own
+   header row is the top of the window on its side — same arrangement, and the
+   same reason, as .listing-main over a folder. */
+.stat-main {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Portal target for the sidebar (preview-side-slot.ts). `display: contents` so
+   the divider and the column it holds become flex children of .stat-split
+   itself — and so the slot, empty on every route that has no sidebar, costs the
+   layout nothing whatsoever. */
+.stat-side-slot {
+  display: contents;
 }
 
 #content {
@@ -871,10 +945,12 @@
    standing the bar up in those states. It is not a nicety; without it the
    strip collapses to its border and the seam breaks.
 
-   `justify-content: flex-end` for the same reason: the strip's contents are
-   the mode menu and the open-full-screen glyph, which belong at the far end
-   the way the crumb bar's own controls do. With the name gone there is no
-   leading item left to push them there.
+   It leads with the way OUT of the column and ends with the mode pill — the file
+   sidebar's header exactly, and the shared `.side-header-tail` above is what packs
+   that end. `flex-start` here, therefore, rather than the `flex-end` this rule
+   carried while the strip had no leading item at all: the left end now holds the
+   close chevron and (for a folder with a page to open) the folder's own primary,
+   and those pack from the left like any bar's.
 
    Horizontal padding stays at the PANE's 10px gutter (the crumb bar keeps the
    listing's 16px): each bar lines up with the column underneath it, and the
@@ -883,7 +959,7 @@
   flex: 0 0 auto;
   display: flex;
   align-items: center;
-  justify-content: flex-end;
+  justify-content: flex-start;
   gap: 8px;
   padding: var(--topbar-pad-y) 10px;
   height: var(--topbar-h);
@@ -893,20 +969,20 @@
 }
 
 /* Portal target for the open folder's "Open as app" (pane-action-slot.ts).
-   `display: contents` so the button is a flex item of the header itself and
-   picks up its gap and alignment, and `margin-right: auto` so it sits at the
-   header's LEFT end while the mode chip and the expand glyph stay packed
-   right: it belongs to the folder on the other side of the divider, not to the
-   row the rest of this bar is about.
+   `display: contents` so the button is a flex item of the header itself and picks
+   up its gap and alignment — landing it at the header's LEFT end beside the close
+   chevron, because it belongs to the folder on the other side of the divider and
+   not to the row the pill is about.
+
+   It used to carry `margin-right: auto` to get there, back when it was the strip's
+   only leading item; that job belongs to `.side-header-tail` now, and leaving a
+   second auto margin in the row would split the free space between the two and
+   float this button into the middle of the bar.
 
    :empty and it disappears — most folders have no lone page to open, and an
    empty item would still spend one of the header's 8px gaps. */
 .listing-pane .pane-action-slot {
   display: contents;
-}
-
-.listing-pane .pane-action-slot > * {
-  margin-right: auto;
 }
 
 /* Folder preview fallback: the folder's own entries, read-only. Narrower

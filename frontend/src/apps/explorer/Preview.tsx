@@ -15,7 +15,7 @@ import {
   deleteEntry,
 } from "@platform/lib/api";
 import type { Deployment, StatResult, TemplateEntry } from "@platform/lib/api";
-import { navigate, navigateUrl, urlForFsPath, replaceSearch } from "@platform/lib/router";
+import { navigate, navigateUrl, urlForFsPath, replaceSearch, IS_EMBED } from "@platform/lib/router";
 import { formatSize, formatMtimeFull, basename } from "@platform/lib/format";
 import { useRefreshOnReturn } from "@platform/lib/hooks";
 import { useDeployEnabled } from "@platform/lib/prefs";
@@ -37,11 +37,23 @@ import { pushToast } from "@platform/lib/toast";
 import { templateModeIcon, modeTitle, KNOWN_SENTINEL_MODES } from "@apps/explorer/ModeSwitcher";
 import {
   isModePending,
+  isSidebarMode,
+  partitionModes,
   visibleModes,
   defaultMode,
   effectiveActive,
 } from "@platform/lib/mode-visibility";
+import { useDirMode } from "@apps/explorer/lib/dir-mode";
+import {
+  sideSplit,
+  initialSide,
+  sideToggleTarget,
+  reconcileSideSearch,
+} from "@apps/explorer/lib/preview-side";
 import { ModeMenu, OverflowMenu } from "@apps/explorer/BarMenu";
+import { SideToggleButton } from "@apps/explorer/SideChrome";
+import PreviewSidebar from "@apps/explorer/PreviewSidebar";
+import { subscribePreviewSideSlot, previewSideSlot } from "@apps/explorer/preview-side-slot";
 import { subscribeTopbarSlot, topbarSlot } from "@apps/explorer/topbar-slot";
 import { subscribePaneActionSlot, paneActionSlot } from "@apps/explorer/pane-action-slot";
 import ContextMenu, { type MenuEntry, type MenuItem } from "@platform/ui/ContextMenu";
@@ -86,6 +98,16 @@ function Header({ fsPath, stat, children, afterName, onContextMenu }: HeaderProp
 function TopbarActions({ children }: { children: ReactNode }) {
   const slot = useSyncExternalStore(subscribeTopbarSlot, topbarSlot, () => null);
   return slot ? createPortal(children, slot) : null;
+}
+
+// The preview sidebar's slot, up at StatView level (preview-side-slot.ts). The
+// sidebar is a PAGE-LEVEL column — a sibling of the crumb bar and the content
+// TOGETHER, not something inside the body under the bar — so the bar ends at the
+// divider and the sidebar's own header is the top of its column. This view is
+// what knows whether there is a sidebar, so it renders the content and StatView
+// renders the box: same arrangement as TopbarActions above, other way round.
+function usePreviewSideSlot(): HTMLElement | null {
+  return useSyncExternalStore(subscribePreviewSideSlot, previewSideSlot, () => null);
 }
 
 // Where the open FOLDER's primary action goes. The preview pane's header when
@@ -440,7 +462,74 @@ function TemplatePreview({
   // verdict is still in flight (CT-12) are present but PENDING — shown in the
   // switcher as a disabled spinner, not selectable, never the default.
   const isPending = (t: TemplateEntry) => isModePending(t, conditions);
-  const defaultEntry = defaultTemplate(templates);
+
+  // --- the content/sidebar split (`_side`) ----------------------------------
+  // ONE surface splits: a single FILE opened on the explorer route in its own
+  // window. Everything else keeps `claude`/`history` as ordinary content modes,
+  // and deliberately:
+  //   * a DIRECTORY's chat is the folder-scoped one and has no file preview to
+  //     sit beside; its mode list is governed from the listing's pane instead
+  //     (see headerActions);
+  //   * `IS_EMBED` is every pane of panel/tab mode — those panes ARE a split the
+  //     user built, sized by them, with their own bar (PaneModeMenu) writing
+  //     `_mode`. A pane that grew a second split of its own would be answering a
+  //     layout question the user already answered;
+  //   * `appChrome` (the app builder) pins its own mode allowlist.
+  const splitCapable = !!actionsInTopbar && !stat.is_dir && !IS_EMBED && !appChrome;
+  const parts = partitionModes(templates);
+
+  // --- the BORROWED companion: `git`, from this file's parent folder ----------
+  // A working tree belongs to the FOLDER (templates/git/condition.py), so the
+  // registry keeps `git` on the universal "/" key alone and this file's own
+  // template list will never carry one. "What has changed in here" is worth just
+  // as much while reading a file, so the sidebar asks the PARENT DIRECTORY for
+  // its entry through the ordinary stat + condition machinery every mode surface
+  // uses (lib/dir-mode — which is also where the caching lives, so walking a
+  // folder file by file costs one probe rather than one per file). A parent
+  // outside a repository, or on a mount, denies the gate and there is simply no
+  // Git pill.
+  //
+  // Unless the file HAS one of its own: a user registry may bind `git` to a file
+  // extension, and then the entry is the file's, aimed at the file, and there is
+  // nothing to borrow — offering both would draw the same mode twice.
+  const parentDir = dirname(fsPath);
+  const ownGit = parts.sidebar.some((e) => e.mode === "git");
+  const parentGit = useDirMode(splitCapable && !ownGit ? parentDir : null, "git");
+  const borrowedGit = ownGit ? null : parentGit.entry;
+  const borrowedPending = !ownGit && parentGit.pending;
+  // Registry order for the file's own companions, then SIDEBAR_MODES order over
+  // the assembled list — Claude / Git / History, whatever the registry ranked
+  // (see orderSidebarModes). `on` vs `offered` is the pending placeholder's whole
+  // story and lib/preview-side is where it is written down: while the borrowed
+  // probe is in flight the entry may be LISTED (so a `?_side=git` deep link is not
+  // stripped before the verdict) but decides nothing — it cannot turn the split
+  // on for a file that has no companion of its own, cannot become the toggle's
+  // target, and cannot leave a `_side` behind if the verdict is no.
+  const split = sideSplit({
+    splitCapable,
+    content: parts.content,
+    own: parts.sidebar,
+    borrowed: borrowedGit,
+    borrowedPending,
+  });
+  const sideOn = split.on;
+  // What the CONTENT pane may show, and what the SIDEBAR may show. Unsplit
+  // surfaces put everything in the content list, which is what keeps their
+  // behaviour byte-identical to before. Keyed on `offered` rather than on `on`:
+  // the two differ only for a file with no companions of its own, where both
+  // branches are the same list anyway, and the sidebar half has to keep listing
+  // the pending entry for the deep link's sake.
+  const contentModes = split.offered ? parts.content : templates;
+  const sidebarModes = split.offered ? split.all : [];
+  // Pending, for a SIDEBAR entry. The borrowed `git` entry is gated on the
+  // PARENT's verdicts, resolved by lib/dir-mode — not on any of this file's, so
+  // it cannot go through `isPending` (which reads `conditions`, this file's map,
+  // and would call a borrowed entry settled the moment the file's own gates
+  // landed). Everything else is an ordinary entry of this file's.
+  const isSidePending = (t: TemplateEntry) =>
+    t.mode === "git" && !ownGit ? borrowedPending : isPending(t);
+
+  const defaultEntry = defaultTemplate(contentModes);
   // `mode` is what the user (or the URL) ASKED for; `entry` is what this paint
   // can actually render. They differ for exactly one render whenever a verdict
   // lands and DROPS the requested mode (a URL-requested conditional that
@@ -449,8 +538,8 @@ function TemplatePreview({
   // reading the stale request meant the held-frame swap spent that paint with
   // no frame at all (a blank pane), then mounted a frame for the dropped mode
   // whose `srcFor` is null, and only unwound it once the state caught up.
-  const [mode, setModeState] = useState<string>(() => activeTemplate(templates).mode);
-  const entry = templates.find((t) => t.mode === mode) || defaultEntry;
+  const [mode, setModeState] = useState<string>(() => activeTemplate(contentModes).mode);
+  const entry = contentModes.find((t) => t.mode === mode) || defaultEntry;
   const activeMode = entry.mode;
   // Reconcile the request with what actually rendered. Purely bookkeeping now
   // (the switcher's selection, and the guard in setMode) — no rendering waits
@@ -458,6 +547,86 @@ function TemplatePreview({
   useEffect(() => {
     if (mode !== activeMode) setModeState(activeMode);
   }, [mode, activeMode]);
+
+  // --- `_side`: which companion the sidebar shows, absent = closed -----------
+  // Read from the URL at mount, exactly like `_mode`, so a bookmark or a shared
+  // link restores the split. Then owned as state and written back through
+  // replaceSearch — the sidebar is a view of this same file, not a navigation.
+  // Resolved against the split's FULL list (pending placeholder included) and
+  // against `offered` rather than `on`, so a `?_side=git` deep link is captured at
+  // mount even for a file with no companion of its own — the verdict is what
+  // decides it, and waiting for the real entry would have let the reconciling
+  // effect below strip the param before the answer arrived (lib/preview-side).
+  const [side, setSideState] = useState<string | null>(() =>
+    initialSide(location.search, split)
+  );
+  // Same request/paint distinction as `mode` above: a verdict that DENIES the
+  // open companion drops it from `sidebarModes`, and this paint must not frame a
+  // mode that is no longer on offer. Everything downstream reads `activeSide`.
+  const sideEntry = sidebarModes.find((e) => e.mode === side) ?? null;
+  const activeSide = sideEntry?.mode ?? null;
+  useEffect(() => {
+    if (side !== activeSide) setSideState(activeSide);
+  }, [side, activeSide]);
+  // Which companion a bare "open the sidebar" reopens: the last one the user had
+  // open on this file, so closing and reopening is not a reset. STATE, not a ref,
+  // because the toggle button RENDERS from it — it wears the icon of the mode it
+  // would open, so a closed sidebar that last showed History shows the History
+  // glyph, and a ref read during render is a value React does not promise is
+  // current.
+  const [lastSide, setLastSide] = useState<string | null>(null);
+  useEffect(() => {
+    if (activeSide) setLastSide(activeSide);
+  }, [activeSide]);
+  // What the toggle acts on, and so what it looks like (lib/preview-side). Over
+  // the SETTLED companions only: a placeholder whose probe may yet say "no
+  // repository here" must not put a button in the bar for the length of that
+  // probe and take it away again, and must not outrank a companion this file
+  // definitely has.
+  const sideTargets = sideOn ? split.settled : [];
+  const sideTarget = sideToggleTarget(sideTargets, activeSide, lastSide);
+  const sideTargetEntry = sideTargets.find((e) => e.mode === sideTarget) ?? null;
+
+  // The box the sidebar goes in — StatView's, one level up from #content, so the
+  // column stands beside the crumb bar rather than under it.
+  const sideSlot = usePreviewSideSlot();
+
+  const setSide = (next: string | null) => {
+    const params = new URLSearchParams(location.search);
+    if (next) params.set("_side", next);
+    else params.delete("_side");
+    const search = params.toString();
+    replaceSearch(location.pathname + (search ? "?" + search : ""));
+    setSideState(next);
+  };
+  const toggleSide = () => {
+    if (activeSide) setSide(null);
+    else if (sideTarget) setSide(sideTarget);
+  };
+
+  // Keep the URL honest about what is actually open, for the cases the user's
+  // own clicks don't cover: the legacy `_mode=claude` migration above, and a
+  // `_side` that named a mode this file doesn't offer (a carried-over param, or
+  // a gate that has just denied it). Both are REPLACED, never pushed — neither
+  // is a place the Back button should have to visit. The rules, including which
+  // of them a still-pending borrowed entry suspends, are in lib/preview-side.
+  //
+  // Guarded on `splitCapable` and not on the split being ON, which is the whole
+  // point: a borrowed `git` that resolves to DENIED takes the split off with it,
+  // and a `_side=git` left in the URL there is not inert — the session sidecar
+  // records the query (lib/session) and replays it on the next bare open.
+  const sideKeys = sidebarModes.map((e) => e.mode).join(",");
+  useEffect(() => {
+    const search = reconcileSideSearch(location.search, {
+      splitCapable,
+      offered: split.offered,
+      activeSide,
+    });
+    if (search === null) return; // already agrees
+    replaceSearch(location.pathname + (search ? "?" + search : ""));
+    // `sideKeys` is in the deps because a landing verdict is what makes a
+    // previously-fine `_side` stale.
+  }, [splitCapable, split.offered, activeSide, sideKeys]);
   const deployEnabled = useDeployEnabled();
   // `_listing` sentinel (D81): the shell's built-in directory listing, mounted
   // in place of the preview iframe — no iframe, no `_file`. Every directory
@@ -556,7 +725,7 @@ function TemplatePreview({
   const setMode = async (next: string) => {
     if (next === activeMode || switching.current) return;
     // Unresolved gate: not selectable (the switcher disables it too).
-    const target = templates.find((t) => t.mode === next);
+    const target = contentModes.find((t) => t.mode === next);
     if (target && isPending(target)) return;
     switching.current = true;
     setSwitchingTo(next);
@@ -620,6 +789,44 @@ function TemplatePreview({
     if (m === "_render") return `/render?path=${encodeURIComponent(fsPath)}`;
     const t = templates.find((x) => x.mode === m);
     return t ? `/render?path=${encodeURIComponent(t.path as string)}&_file=${encodeURIComponent(fsPath)}${remote}` : null;
+  };
+
+  // The SIDEBAR's iframe URL. Built here rather than through `srcFor` above,
+  // because the two differ on both of the things that URL says:
+  //
+  //   WHICH ENTRY. The borrowed `git` entry is not in `templates` (it is the
+  //   parent folder's — see above), so a lookup there would miss it. The lookup
+  //   is `sidebarModes`, which is the list the column is actually showing.
+  //
+  //   WHAT `_file` NAMES. For the companions of this file, this file. For a
+  //   borrowed `git`, the PARENT DIRECTORY — the template is unchanged and asks
+  //   git about whatever `_file` names, so aiming it at the folder is the whole
+  //   of the borrowing. `_remote` does not travel with it either: that flag says
+  //   where THIS FILE's bytes come from, and the git gate refuses a mount-backed
+  //   directory outright, so a borrowed target is never remote.
+  //
+  // Plus the one thing the sidebar has to tell a template about its host —
+  // `chat_only=1` for the chat. That template's own layout is a split whose left
+  // half is ITS copy of this file's preview (templates/claude/template.html),
+  // which in the sidebar would be the same file previewed twice in one window,
+  // the inner one a few hundred pixels wide. The param makes it take that half
+  // away and run the chat column full width; the template does it through its
+  // existing no-pane path (enterNoPane), the same designed absence a folder with
+  // no app entry gets.
+  //
+  // Null while the mode's gate is unresolved — a pending borrowed entry has no
+  // template path yet — and the column holds a spinner.
+  const sideSrcFor = (m: string): string | null => {
+    const t = sidebarModes.find((e) => e.mode === m);
+    if (!t || t.path === null) return null;
+    const borrowed = m === "git" && !ownGit;
+    const target = borrowed ? parentDir : fsPath;
+    const rem = borrowed ? "" : remote;
+    const chatOnly = m === "claude" ? "&chat_only=1" : "";
+    return (
+      `/render?path=${encodeURIComponent(t.path)}` +
+      `&_file=${encodeURIComponent(target)}${rem}${chatOnly}`
+    );
   };
 
   // Held-frame swap. Switching mode used to destroy the iframe and mount the
@@ -710,10 +917,10 @@ function TemplatePreview({
   // caller can take is a branch nothing can test. If another template ever frames
   // an embed of its counterpart's own target, the opt-out comes back with that
   // caller.
-  const otherEntry = templates.find((t) => t.mode !== "_listing");
+  const otherEntry = contentModes.find((t) => t.mode !== "_listing");
   const counterpart = defaultEntry.mode !== "_listing" ? defaultEntry.mode : otherEntry?.mode;
   const toggleListing =
-    otherEntry && templates.some((t) => t.mode === "_listing")
+    otherEntry && contentModes.some((t) => t.mode === "_listing")
       ? () => setMode(isListing ? (counterpart as string) : "_listing")
       : null;
 
@@ -721,8 +928,17 @@ function TemplatePreview({
   // IN PLACE (setMode does the editor-flush + `_mode` replaceState) rather than
   // re-navigating to the same path — no re-stat, no iframe teardown/rebuild
   // beyond the mode change the switcher would make anyway.
-  const loadOpenWith = () =>
-    Promise.resolve(buildOpenWithItems(templates, (m) => void setMode(m)));
+  //
+  // It lists EVERY mode, sidebar companions included — "Open With → Claude" is a
+  // request for the chat, and where the chat lives is this view's business, not
+  // the menu's. On a splitting surface that request opens the sidebar instead of
+  // replacing the content pane, which is the same answer the mode partition
+  // gives everywhere else.
+  const openMode = (m: string) => {
+    if (sideOn && isSidebarMode(m)) setSide(m);
+    else void setMode(m);
+  };
+  const loadOpenWith = () => Promise.resolve(buildOpenWithItems(templates, openMode));
   const fileMenu = usePreviewFileMenu(fsPath, stat, loadOpenWith);
 
   // The folder's relationship to the app system, and the button that follows
@@ -794,17 +1010,26 @@ function TemplatePreview({
           A control that has to be explained is worse than the standard one
           every user already has.
           ACCEPTED TRADEOFF, and this part IS the product decision: nothing
-          switches a folder INTO one of those modes from the explorer any more.
-          The pane's menu writes `_panelMode` — what the PANE previews — not
-          `_mode`, and the chip only ever offers the listing⇄counterpart pair.
-          So a folder's git/history/graph views are entered by `?_mode=` (a
-          URL, a bookmark, the file menu's Open With) and left by the chip. The
-          user chose that over two switchers in one view: for a folder, the
-          pane IS the explorer, and its peers are opt-in tools rather than ways
-          of looking at the listing. */}
+          switches a folder's own `_mode` from the explorer any more. The pane's
+          menu writes `_side` — which of the PANE's three the pane is showing
+          (Preview / Claude / Git, listing/pane-side.ts) — and the chip only ever
+          offers the listing⇄counterpart pair. So a folder's `_mode=history` /
+          `_mode=graph` views are entered by URL (a bookmark, the file menu's Open
+          With) and left by the chip. The user chose that over two switchers in one
+          view: for a folder, the pane IS the explorer, and its peers are opt-in
+          tools rather than ways of looking at the listing.
+          Two of those peers came BACK as pane modes rather than as `_mode` views,
+          and that is the same call rather than a reversal: the pane's Claude and
+          Git sit beside the listing instead of replacing it, so they are
+          companions to browsing the folder — which is exactly the argument the
+          file sidebar makes one level down. */}
       {!(stat.is_dir && !appChrome) && (
         <ModeMenu
-          entries={templates.map((t) => ({
+          /* Content modes only where the split is on: the companions
+             (`claude`, `git`, `history`) are the SIDEBAR's list, and offering them
+             here as well would be one control writing two different halves of
+             the screen. See the partition above. */
+          entries={contentModes.map((t) => ({
             mode: t.mode,
             icon: templateModeIcon(t),
             pending: isPending(t),
@@ -815,6 +1040,23 @@ function TemplatePreview({
              user is waiting on that button. */
           busy={switchingTo ?? (shown !== activeMode ? activeMode : null)}
           onSelect={setMode}
+        />
+      )}
+      {/* The sidebar's OPENER, immediately right of the mode control it
+          partitions with — the shared control (SideChrome), which is where the
+          "one affordance, two places, chosen by state" split between this button
+          and the column's own close chevron is written down. It renders only
+          while the column is SHUT, and it wears the COMPANION'S OWN ICON, so a
+          closed sidebar that last showed Git shows the Git glyph.
+
+          Absent entirely when this file has no companion at all (no `claude`, no
+          `git` in the parent, no `history`, or a gate denied them): a control for
+          nothing is worse than no control. */}
+      {sideTargetEntry && !activeSide && (
+        <SideToggleButton
+          what={modeTitle(sideTargetEntry.mode)}
+          icon={templateModeIcon(sideTargetEntry)}
+          onClick={toggleSide}
         />
       )}
       {/* Rightmost, per the bars' grammar: the low-frequency one-shots live in
@@ -951,6 +1193,30 @@ function TemplatePreview({
           </button>
         )}
       </div>
+      {/* The `_side` split's right-hand column, portaled UP to StatView's split
+          container (usePreviewSideSlot). It is a sibling of the whole left column
+          — crumb bar included — which is what makes the bar stop at the divider
+          and the sidebar's header line up with it at the top of the window.
+          The portal is also what keeps the CONTENT iframe alive across an
+          open/close: nothing above `.preview-body` is restructured, so React never
+          re-parents the frame, and re-parenting an iframe reloads its document
+          (the same rule the held-frame swap keeps for reordering). */}
+      {activeSide &&
+        sideSlot &&
+        createPortal(
+          <PreviewSidebar
+            entries={sidebarModes.map((t) => ({
+              mode: t.mode,
+              icon: templateModeIcon(t),
+              pending: isSidePending(t),
+            }))}
+            active={activeSide}
+            src={sideEntry && isSidePending(sideEntry) ? null : sideSrcFor(activeSide)}
+            onSelect={setSide}
+            onClose={() => setSide(null)}
+          />,
+          sideSlot
+        )}
       {fileMenu.overlays}
     </>
   );

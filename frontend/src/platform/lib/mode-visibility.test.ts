@@ -3,6 +3,10 @@ import type { TemplateEntry } from "@platform/lib/api";
 import {
   visibleModes,
   isModePending,
+  isSidebarMode,
+  partitionModes,
+  orderSidebarModes,
+  defaultSidebarMode,
   defaultMode,
   effectiveActive,
 } from "@platform/lib/mode-visibility";
@@ -16,6 +20,7 @@ const t = (mode: string, conditional = false): TemplateEntry => ({
 
 const listing = t("_listing");
 const claude = t("claude");
+const git = t("git", true);
 const app = t("app", true);
 const split = t("claude_split", true);
 
@@ -53,6 +58,93 @@ describe("visibleModes", () => {
 
   it("is order-preserving", () => {
     expect(names(visibleModes([app, listing, claude], null))).toEqual(["app", "_listing", "claude"]);
+  });
+});
+
+describe("partitionModes", () => {
+  const image = t("image");
+  const history = t("history");
+
+  it("splits the companions out and preserves order in both halves", () => {
+    const { content, sidebar } = partitionModes([image, t("photos"), claude, history]);
+    expect(names(content)).toEqual(["image", "photos"]);
+    expect(names(sidebar)).toEqual(["claude", "history"]);
+  });
+
+  it("leaves a list with no companions entirely to the content pane", () => {
+    const { content, sidebar } = partitionModes([image, listing]);
+    expect(names(content)).toEqual(["image", "_listing"]);
+    expect(sidebar).toEqual([]);
+  });
+
+  it("agrees with isSidebarMode", () => {
+    expect(isSidebarMode("claude")).toBe(true);
+    expect(isSidebarMode("git")).toBe(true);
+    expect(isSidebarMode("history")).toBe(true);
+    expect(isSidebarMode("claude_split")).toBe(false);
+    expect(isSidebarMode("_render")).toBe(false);
+  });
+
+  // `git` is on SIDEBAR_MODES but never in a FILE's own template list: the
+  // registry keeps it on the universal "/" directory key and its gate refuses a
+  // file, so a file's partition can only ever see one if a user registry rebinds
+  // it. The file sidebar's own git entry is BORROWED from the parent folder and
+  // appended (lib/dir-mode), which is why `orderSidebarModes` exists.
+  it("does not invent a git entry for a file that has none", () => {
+    const { content, sidebar } = partitionModes([image, claude, history]);
+    expect(names(content)).toEqual(["image"]);
+    expect(names(sidebar)).toEqual(["claude", "history"]);
+  });
+
+  it("takes a file's own git entry into the sidebar half when there is one", () => {
+    // A user registry may bind `git` to a file extension; it is still a companion.
+    const { content, sidebar } = partitionModes([image, git, claude]);
+    expect(names(content)).toEqual(["image"]);
+    expect(names(sidebar)).toEqual(["git", "claude"]);
+  });
+
+  it("defaults the sidebar to the chat, whatever the registry's order was", () => {
+    // The registry ranks views for a FILE TYPE; this is a preference between the
+    // companions, so SIDEBAR_MODES order wins over the list's.
+    expect(defaultSidebarMode([history, git, claude])).toBe("claude");
+    expect(defaultSidebarMode([history, git])).toBe("git");
+    expect(defaultSidebarMode([history])).toBe("history");
+    expect(defaultSidebarMode([])).toBe(null);
+  });
+});
+
+// The switcher's order is Claude / Git / History for every file, because the list
+// is ASSEMBLED (git arrives from the parent folder and is appended) rather than
+// read off one registry key.
+describe("orderSidebarModes", () => {
+  const history = t("history");
+
+  it("puts the companions in SIDEBAR_MODES order, not the input's", () => {
+    expect(names(orderSidebarModes([history, claude]))).toEqual(["claude", "history"]);
+    // The shape the file sidebar actually builds: the file's own companions in
+    // registry order, then the borrowed git appended at the end.
+    expect(names(orderSidebarModes([claude, history, git]))).toEqual([
+      "claude",
+      "git",
+      "history",
+    ]);
+  });
+
+  it("leaves an unknown companion at the end, in the order it came", () => {
+    const mine = t("my_notes");
+    const yours = t("your_notes");
+    expect(names(orderSidebarModes([mine, history, yours, claude]))).toEqual([
+      "claude",
+      "history",
+      "my_notes",
+      "your_notes",
+    ]);
+  });
+
+  it("does not mutate its input", () => {
+    const input = [t("history"), claude];
+    orderSidebarModes(input);
+    expect(names(input)).toEqual(["history", "claude"]);
   });
 });
 
