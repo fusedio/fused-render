@@ -52,7 +52,11 @@ from fused_render.index.query import dirs_src, files_src
 from fused_render.index.store import depth_expr, like_literal, read_manifest
 from fused_render.server.common import _error
 from fused_render.server.gitignore import _IgnoreOracle
-from fused_render.server.walk import WALK_IGNORE_DIRS
+# The one screening standard for rows that did not come out of the walk itself;
+# it lives next to WALK_IGNORE_DIRS so the two sources cannot disagree. Bound to
+# the pre-existing private name here because this module's callers (and its
+# tests) already know it as that.
+from fused_render.server.walk import junk_path as _junk_path
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -181,22 +185,6 @@ def _parse_spec(body: dict):
     for key, _end in _DATE_FIELDS:
         spec[key] = date_str(key)
     return spec
-
-
-# Path segments that mark a hit as machine-managed junk or hidden data. The
-# index's own ignore rules are a user-editable name list that says nothing about
-# hidden files, so hits are screened with the same standards the explorer's walk
-# enforces during traversal: WALK_IGNORE_DIRS segments and dot-segments never
-# surface (matching /api/fs/walk's default).
-def _junk_path(path: str) -> bool:
-    # Both separators: the index stores posix paths (index/ignore.norm) whatever
-    # the platform, and one screening standard has to cover both spellings.
-    for seg in re.split(r"[/\\]", path):
-        if seg in WALK_IGNORE_DIRS:
-            return True
-        if seg.startswith(".") and seg not in (".", ".."):
-            return True
-    return False
 
 
 def _nearest_repo(dirpath: str, memo: dict) -> str | None:

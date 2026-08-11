@@ -1,5 +1,6 @@
 from collections import deque
 import os
+import re
 import stat as stat_mod
 import sys
 from types import SimpleNamespace
@@ -104,6 +105,31 @@ WALK_MAX_ORACLES = 8
 # source but not the other flips results between two sources meant to be
 # interchangeable.
 WALK_LEAF_DIR_SUFFIXES = LEAF_DIR_SUFFIXES
+
+
+def junk_path(path: str) -> bool:
+    """Whether `path` is machine-managed junk or hidden data that no explorer
+    surface may show.
+
+    The screening standard for results that did NOT come out of this walk — the
+    index-backed search (routers/search.py) and the homepage's repo list
+    (routers/git_repos.py) both answer from parquet rows, and the index's own
+    ignore rules are a user-editable NAME list that says nothing about hidden
+    files. So a row is held to what this walk enforces during traversal:
+    WALK_IGNORE_DIRS segments and dot-segments never surface.
+
+    It lives here, next to WALK_IGNORE_DIRS, for the reason that constant does:
+    one definition, so two interchangeable sources cannot disagree about which
+    paths exist.
+    """
+    # Both separators: the index stores posix paths (index/ignore.norm) whatever
+    # the platform, and one screening standard has to cover both spellings.
+    for seg in re.split(r"[/\\]", path):
+        if seg in WALK_IGNORE_DIRS:
+            return True
+        if seg.startswith(".") and seg not in (".", ".."):
+            return True
+    return False
 
 
 class _RcDirEntry:
