@@ -25,6 +25,7 @@ import re
 import threading
 
 from fastapi import APIRouter, Body, Header, Query
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse
 
 from fused_render.index import freshness, runner
@@ -425,7 +426,13 @@ async def api_index_ask(body: dict = Body(default={}),
     sql = _sql_from_answer((answered.get("result") or {}).get("text") or "")
     if not sql:
         return _error("the model answered with no SQL", status=502)
-    out = _guarded(load_config(), sql, body.get("limit"))
+    # In a threadpool, unlike `query` next door: that one is a plain `def`
+    # handler, so FastAPI already threadpools it, while this handler must be
+    # `async` for the relay `await` above — and a duckdb query bounded only by
+    # guarded_query.TIMEOUT_S (10s) run inline would block the event loop, and
+    # with it every other request the app is making meanwhile.
+    out = await run_in_threadpool(
+        lambda: _guarded(load_config(), sql, body.get("limit")))
     if not isinstance(out, dict):
         # Same 400, plus the statement that earned it.
         return JSONResponse({**json.loads(bytes(out.body)), "sql": sql},

@@ -38,6 +38,13 @@ duckdb's own ("no such column" is the caller's typo, not a server fault), and `a
 returns the compiled `sql` even when the guard refuses it. What makes them safe is
 `query.md §5`, not the header.
 
+Both also run their statement **off the event loop**: a guarded query is duckdb plus
+disk, bounded only by `TIMEOUT_S` (10 s), and a handler that blocks that long freezes
+every other request the app is making — including the status polling the same panel
+does. `query` gets that for free by being a plain `def` handler (FastAPI threadpools
+those); `ask` must be `async` for the AI relay hop, so it asks for a threadpool
+explicitly.
+
 ## 2. Status, and the first-boot window
 
 `GET /api/index/status` answers flat, render-ready state: `running`, `phase`, `dirs`,

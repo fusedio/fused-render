@@ -866,6 +866,36 @@ def test_ask_passes_an_ai_failure_through_unchanged(home, tmp_path, monkeypatch)
     assert resp.json()["error"]["type"] == "ai_unavailable"
 
 
+def test_ask_runs_the_guarded_query_off_the_event_loop(home, tmp_path, monkeypatch):
+    """`ask` is an async handler, so anything it calls directly runs ON the
+    event loop — and the guarded query is duckdb plus disk, bounded only by
+    TIMEOUT_S (10s). Blocking there freezes every other request in the server,
+    including the scan-status polling the same panel is doing. `query` next
+    door is safe only because it is a plain `def` handler, which FastAPI runs
+    in a threadpool; this one has to ask for that explicitly."""
+    import asyncio
+
+    seen = {}
+    real = index_router.run_guarded
+
+    def spy(*a, **kw):
+        try:
+            asyncio.get_running_loop()
+            seen["on_loop"] = True
+        except RuntimeError:
+            seen["on_loop"] = False
+        return real(*a, **kw)
+
+    monkeypatch.setattr(index_router, "run_guarded", spy)
+    monkeypatch.setattr(index_router._server_ai, "_ai_relay",
+                        _fake_relay("SELECT count(*) AS n FROM dirs"))
+    body = _indexed_client(tmp_path).post(
+        "/api/index/ask", json={"prompt": "how many folders"},
+        headers={"X-Fused": "1"}).json()
+    assert body["ok"] is True
+    assert seen["on_loop"] is False
+
+
 def test_ask_rejects_an_empty_prompt(home, tmp_path):
     resp = _indexed_client(tmp_path).post(
         "/api/index/ask", json={"prompt": "  "}, headers={"X-Fused": "1"})
