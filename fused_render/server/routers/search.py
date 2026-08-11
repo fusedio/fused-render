@@ -68,7 +68,9 @@ SEARCH_MAX_RESULTS = 400
 # with the reports and never the folder. That is the files-starve-folders failure
 # query.search_under fixed for the in-folder corpus, in a different disguise.
 # The named cost: on a query matching both kinds heavily, up to this many file
-# rows give way to folders. Unused folder budget goes back to files.
+# rows give way to folders. Unused folder budget goes back to files — and this is
+# a rule for SHARING the cap, not a ceiling on folders, so a search with no files
+# in it (kind "dir", or an index with no file partitions yet) gets the whole cap.
 SEARCH_DIRS_RESERVE = 100
 # Pages a branch may read while filling its budget. Gitignored rows can only be
 # recognised OUTSIDE SQL, so a page that screens down to nothing has to be
@@ -413,8 +415,13 @@ def _index_entries(cfg, spec, cap, *, parts=None, dirs=False):
 
     now_s = time.time()
     con = duckdb.connect()
+    # The reserve is a rule for SHARING the cap, so it only applies while both
+    # branches are live. A folder-only search — `kind: "dir"`, or an index whose
+    # file partitions are not there yet — has nothing competing with it and gets
+    # the whole cap, the same deal files get.
+    dirs_budget = min(SEARCH_DIRS_RESERVE, cap) if parts else cap
     dir_entries, dirs_more = (
-        _collect(con, _dirs_query(cfg, spec, now_s), min(SEARCH_DIRS_RESERVE, cap))
+        _collect(con, _dirs_query(cfg, spec, now_s), dirs_budget)
         if dirs else ([], False))
     # Files ask for the WHOLE cap and give back whatever the folders took, so an
     # unused folder reserve costs nothing.

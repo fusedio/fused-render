@@ -252,6 +252,52 @@ def test_a_folder_with_no_recorded_mtime_is_not_starved(tmp_path, monkeypatch):
     assert entries["/r/photos"]["mtime"] is None  # unknown, reported as such
 
 
+def test_a_folder_only_search_gets_the_whole_cap(tmp_path):
+    """The folder reserve is a rule for SHARING the cap, not a ceiling on
+    folders.
+
+    With `kind: "dir"` the files branch never runs, so nothing is competing for
+    the budget — and capping folders at the reserve truncated a folder search at
+    a quarter of the result cap, handing the client a fraction of the ranking
+    headroom every other search gets. Files already ask for the whole cap and
+    give back what folders took; folders do the same when files are not playing.
+    Deliberately run at the REAL constants, since the bug was the relationship
+    between them."""
+    dirs = [f"/r/reports-{i:03d}" for i in range(150)]
+    cfg = _index(tmp_path, "/r", [], dirs=dirs)
+    out = _search_index(spec(name_terms=["report"], kind="dir"), cfg)
+    assert search_mod.SEARCH_DIRS_RESERVE < 150 <= search_mod.SEARCH_MAX_RESULTS
+    assert len(out["entries"]) == 150
+    assert out["truncated"] is False
+
+
+def test_folders_get_the_whole_cap_when_the_index_holds_no_files(tmp_path):
+    """Same rule from the other direction: `kind: "any"` against an index whose
+    file partitions are absent (a scan that has only written dirs so far) is a
+    folder-only search in practice, and must not be capped as if files were
+    competing for the budget."""
+    dirs = [f"/r/reports-{i:03d}" for i in range(150)]
+    cfg = _index(tmp_path, "/r", [], dirs=dirs)
+    out = _search_index(spec(name_terms=["report"]), cfg)
+    assert len(out["entries"]) == 150
+    assert out["truncated"] is False
+
+
+def test_the_folder_reserve_still_bounds_folders_when_files_compete(tmp_path,
+                                                                   monkeypatch):
+    """The other half of the rule: with both branches live, folders are held to
+    the reserve so a folder-heavy query cannot spend the whole cap on dirs."""
+    monkeypatch.setattr(search_mod, "SEARCH_MAX_RESULTS", 8)
+    monkeypatch.setattr(search_mod, "SEARCH_DIRS_RESERVE", 2)
+    cfg = _index(tmp_path, "/r",
+                 [(f"/r/report-{i}.csv", 10, 100.0 + i) for i in range(10)],
+                 dirs=[f"/r/reports-{i}" for i in range(10)])
+    out = _search_index(spec(name_terms=["report"]), cfg)
+    assert len(out["entries"]) == 8
+    assert sum(1 for e in out["entries"] if e["is_dir"]) == 2
+    assert out["truncated"] is True
+
+
 def test_gitignored_hits_do_not_spend_the_result_cap(tmp_path, monkeypatch):
     """The cap is a budget for hits the user can SEE.
 
