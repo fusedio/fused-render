@@ -721,30 +721,29 @@ def available() -> bool:
     return True
 
 
-# Cached availability, set once by warm() so the request path never triggers the
-# cold import. Only a positive result is cached: a negative leaves it unset so a
-# mid-session `fused` install is still picked up live (fused_engine_available's
-# original per-call contract).
+# Availability cached by warm() so the request path never triggers the cold
+# import. BOTH outcomes are cached: caching the negative too means a
+# present-but-broken fused reports the truth rather than find_spec's
+# package-on-disk optimism. A mid-session `fused` install flips it via
+# invalidate() (deploy.install_fused), preserving the no-restart contract.
 _available_cached: bool | None = None
 _available_lock = threading.Lock()
 
 
 def warm() -> None:
-    """Import the fused backend once, off the request path, and cache success.
+    """Import the fused backend once, off the request path, and cache the result.
 
     Run in a startup daemon thread. On a fresh install this import pays a
     one-time cold cost — bytecode-compiling the dependency tree and the OS
     scanning every native module on first load — and left lazy it lands on the
     first /api/config (which resolves the engine) and freezes the shell for ~a
     minute. Paid here instead, the shell stays responsive. The duration log is
-    the clearest signal of this cost in a user's logs: ~seconds warm, far more
-    on a cold first launch."""
+    the clearest signal of this cost in a user's logs."""
     global _available_cached
     t0 = time.monotonic()
     ok = available()
-    if ok:
-        with _available_lock:
-            _available_cached = True
+    with _available_lock:
+        _available_cached = ok
     logger.info("engine warm-up: fused backend %s (%.1fs)",
                 "ready" if ok else "unavailable", time.monotonic() - t0)
 
@@ -754,14 +753,25 @@ def warm_in_background() -> None:
     threading.Thread(target=warm, daemon=True, name="engine-warmup").start()
 
 
+def invalidate() -> None:
+    """Drop the cached availability so the next resolve re-checks live.
+
+    A mid-session `fused` install (deploy.install_fused) makes the startup
+    warm's cached "unavailable" stale; without this the engine stays builtin
+    until a restart, contradicting fused_engine_available's no-restart flip."""
+    global _available_cached
+    with _available_lock:
+        _available_cached = None
+
+
 def available_nonblocking() -> bool:
     """available() that never triggers the cold import on the caller's thread.
 
     For the request path (/api/config resolves the engine every call): returns
-    warm()'s cached result, else a cheap importability check that does not
-    execute the fused package tree. Provisional until warm() lands — in the
-    packaged app fused is always present, so this reads True at once and warm()
-    only confirms it."""
+    warm()'s cached result once it has run, else a cheap importability check
+    that does not execute the fused package tree. Provisional only until warm()
+    lands — in the packaged app fused is always present, so this reads True at
+    once and warm() confirms it."""
     with _available_lock:
         if _available_cached is not None:
             return _available_cached

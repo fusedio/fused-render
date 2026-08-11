@@ -47,14 +47,6 @@ def _fresh_interpreter_probe():
     engine.reset_app_interpreter_cache()
 
 
-@pytest.fixture(autouse=True)
-def _fresh_availability_cache():
-    """warm()'s cached availability is process-global; clear it per test."""
-    engine._available_cached = None
-    yield
-    engine._available_cached = None
-
-
 # --- engine warm-up + non-blocking availability (PY cold-start) --------------
 #
 # The first /api/config resolves the engine, which imports the fused backend. On
@@ -95,12 +87,28 @@ def test_warm_caches_a_positive_and_short_circuits(monkeypatch):
     assert engine.available_nonblocking() is True
 
 
-def test_warm_does_not_cache_a_negative(monkeypatch):
-    # A negative stays uncached so a mid-session `fused` install is still seen
-    # live (fused_engine_available's original per-call contract).
+def test_warm_caches_a_negative_so_a_broken_fused_is_not_reported_available(monkeypatch):
+    # find_spec sees the package on disk, but the backend import fails. warm()
+    # must cache that False so available_nonblocking reports the truth rather
+    # than find_spec's optimism (a present-but-broken fused reporting fused,
+    # then /api/run taking a path that fails).
     monkeypatch.setattr(engine, "available", lambda: False)
+    monkeypatch.setattr(engine.importlib.util, "find_spec", lambda _n: object())
     engine.warm()
-    assert engine._available_cached is None
+    assert engine._available_cached is False
+    assert engine.available_nonblocking() is False
+
+
+def test_invalidate_lets_a_mid_session_install_flip_the_engine(monkeypatch):
+    # Startup warm with fused absent caches False; a later install makes it
+    # importable and invalidate() drops the cache so the next resolve sees it.
+    monkeypatch.setattr(engine, "available", lambda: False)
+    monkeypatch.setattr(engine.importlib.util, "find_spec", lambda _n: None)
+    engine.warm()
+    assert engine.available_nonblocking() is False
+    monkeypatch.setattr(engine.importlib.util, "find_spec", lambda _n: object())
+    engine.invalidate()
+    assert engine.available_nonblocking() is True
 
 
 def test_warm_logs_the_duration(monkeypatch, caplog):

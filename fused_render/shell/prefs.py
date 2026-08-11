@@ -183,9 +183,9 @@ def fused_engine_available() -> bool:
 
     Read on the request path (/api/config resolves the engine every call), so it
     must not trigger the cold backend import itself — engine.warm() does that
-    once in a startup thread and caches it; this reads that (or a cheap
-    importability check) live, so /api/deploy/install still flips it mid-session
-    without a restart.
+    once in a startup thread and caches the result; this reads that (or, until
+    warm lands, a cheap importability check). /api/deploy/install still flips it
+    mid-session without a restart via engine.invalidate().
     """
     try:
         from fused_render import engine as _engine
