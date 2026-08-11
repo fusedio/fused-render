@@ -1,11 +1,11 @@
 """Local version control for app folders (<workspace>/<tag>/<name>).
 
 Every app scaffolded by POST /api/apps/new ships with a git repo and a single
-boilerplate commit; after that, every change lands as its own small commit —
-each completed Claude turn (templates/claude/agent.py mirrors the commit
-helper here, since templates must not import fused_render, D166) and every
-manual mutation made through the editor's /api/fs endpoints (fs_mutate.py,
-debounced/serialized through app_commit_queue's single worker).
+boilerplate commit; after that, each completed Claude turn lands as its own
+small commit (templates/claude/agent.py mirrors the commit helper here, since
+templates must not import fused_render, D166). Manual edits made through the
+editor's /api/fs endpoints are NOT committed (D245) — the user's own commits
+and Claude's turns are the whole history.
 
 Everything here is BEST-EFFORT: git may be missing, the folder may not be a
 repo (pre-feature apps, hand-made folders), a concurrent commit may hold
