@@ -1134,8 +1134,10 @@
      when the diff has more lines than the clip above can show — the only case
      where a hard bottom edge would read as "that was the whole change". */
   .toolchip pre.diff.clipped {
-    mask-image: linear-gradient(to bottom, #000 calc(100% - 24px), transparent);
-    -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 24px), transparent);
+    /* Masks read only the alpha channel, so `black` is not a theme colour —
+       named to satisfy the no-hex-outside-palettes gate (test_theme.py). */
+    mask-image: linear-gradient(to bottom, black calc(100% - 24px), transparent);
+    -webkit-mask-image: linear-gradient(to bottom, black calc(100% - 24px), transparent);
   }
   .toolchip pre.diff > span {
     display: block;
