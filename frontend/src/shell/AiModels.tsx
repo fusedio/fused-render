@@ -538,6 +538,11 @@ export default function AiModels() {
   // is a new repo, and a page still showing "not downloaded" beside a finished
   // pull is the same lie the ✓-on-click bug was.
   const [scan, setScan] = useState(0);
+  // Models whose pull has ended but whose confirming walk has not landed. For
+  // that moment they are in neither the runtime's downloading list nor the
+  // listing, and a card reading only those two put a Download button back on a
+  // model that had just finished downloading.
+  const [settling, setSettling] = useState<Set<string>>(new Set());
 
   useEffect(() => {
     let alive = true;
@@ -609,10 +614,25 @@ export default function AiModels() {
     previousDownloads.current = now;
     // Only on a set that SHRANK. A set that GREW means a pull just started, and
     // a walk then would find exactly the disk the page already knows about.
-    if (before.some((model) => !now.includes(model))) setScan((n) => n + 1);
+    const finished = before.filter((model) => !now.includes(model));
+    if (!finished.length) return;
+    // The walk takes a moment, and for that moment the model is in NEITHER the
+    // downloading list nor the listing — which is how a finished download got a
+    // "Download" button back for a beat. It stays "finishing" until the walk it
+    // just triggered answers for it.
+    setSettling((s) => new Set([...s, ...finished]));
+    setScan((n) => n + 1);
   }, [downloadingKey]);
 
   const data = load.status === "ok" ? load.data : null;
+
+  useEffect(() => {
+    // Any fresh listing settles every pending question: it either found the
+    // model or it did not, and a failed or cancelled pull must not sit as
+    // "finishing" for the rest of the session waiting for a success that is
+    // not coming.
+    if (data) setSettling((s) => (s.size ? new Set() : s));
+  }, [data]);
   const repos = data?.repos ?? [];
   const loadedById = new Map(runtime.loaded.map((m) => [m.model, m]));
   // Matched by TITLE, which the supervisor sets to the model id, rather than by
@@ -732,7 +752,12 @@ export default function AiModels() {
           // Discover runs for itself: one listing, one definition of "on this
           // machine", and no window where the two tabs disagree about the same
           // repo.
-          <AiModelsDiscover onDisk={onDisk} downloading={downloading} jobByModel={jobByModel} />
+          <AiModelsDiscover
+            onDisk={onDisk}
+            downloading={downloading}
+            settling={settling}
+            jobByModel={jobByModel}
+          />
         )}
         {tab === "cached" && load.status === "error" && <ErrorBanner>{load.message}</ErrorBanner>}
         {tab === "cached" && runtimeError && <ErrorBanner>{runtimeError}</ErrorBanner>}

@@ -194,6 +194,7 @@ function Suggested({
   catalog,
   onDisk,
   downloading,
+  settling,
   jobByModel,
 }: {
   catalog: AiCatalogCapability[];
@@ -201,19 +202,25 @@ function Suggested({
    *  is still running. Owned by the page, so both tabs mean one thing by it. */
   onDisk: Set<string> | null;
   downloading: Set<string>;
+  /** Pulls that have STOPPED being reported and whose confirming walk has not
+   *  landed yet — the far end of the same gap `pending` covers at the near end. */
+  settling: Set<string>;
   jobByModel: Map<string, Job>;
 }) {
   const [pending, setPending] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  // The click is held until the RUNTIME confirms the pull, not until the POST
-  // returns. Clearing on the reply put the card back to "Download" for the beat
-  // before the next runtime poll, which reads as the button having done nothing
-  // — and `onDisk` covers the other end, a "download" that was a cache hit and
-  // finished before any poll ever saw it.
-  const settled = pending !== null && (downloading.has(pending) || !!onDisk?.has(pending));
+  // The click is held until something ELSE can speak for the pull — the runtime
+  // reporting it, `settling` carrying it through the walk, or the walk finding
+  // it on disk (a "download" that was a cache hit and finished before any poll
+  // saw it). Clearing on the POST's reply put the card back to "Download" for
+  // the beat before the next runtime poll, which reads as the button having
+  // done nothing.
+  const spokenFor =
+    pending !== null &&
+    (downloading.has(pending) || settling.has(pending) || !!onDisk?.has(pending));
   useEffect(() => {
-    if (settled) setPending(null);
-  }, [settled]);
+    if (spokenFor) setPending(null);
+  }, [spokenFor]);
   if (!catalog.length) return null;
 
   const start = async (model: string, capability: string) => {
@@ -249,12 +256,22 @@ function Suggested({
           </div>
           <div className="cc-mdgrid am-grid">
             {group.models.map((m) => {
-              // Three states, and keeping them apart is the whole fix: HERE (a
-              // materialised snapshot), COMING (a pull the server is running),
-              // and neither. The bug this replaces collapsed the last two —
-              // pressing Download made the card claim "✓ downloaded" while the
-              // 4.6GB pull it had just started was on its first byte.
-              const busy = downloading.has(m.id) || pending === m.id;
+              // FOUR states, and every one of them was a bug at some point:
+              //
+              //   unknown — the cache walk has not answered yet. Neither the ✓
+              //     nor the button, because both would be a claim. Treating
+              //     null as an empty set showed Download on a model already on
+              //     disk for the length of the first walk.
+              //   busy    — a pull is running. This spans three sources, and it
+              //     needs all three: `pending` from the click until the runtime
+              //     poll sees it, `downloading` while the runtime reports it,
+              //     and `settling` from the moment it stops being reported until
+              //     the walk that confirms it lands. Drop any one and the
+              //     Download button flickers back on live work.
+              //   have    — a materialised snapshot. The ✓.
+              //   neither — the button.
+              const known = onDisk !== null;
+              const busy = downloading.has(m.id) || pending === m.id || settling.has(m.id);
               const have = !!onDisk?.has(m.id);
               return (
                 <div key={m.id} className="cc-mdcard am-card am-suggestcard">
@@ -282,7 +299,7 @@ function Suggested({
                   {busy && <ModelProgress job={jobByModel.get(m.id)} />}
                   <div className="cc-mdcard-foot">
                     <span className="cc-mdcard-meta cc-mono">{m.id}</span>
-                    {!have && !busy && group.available && (
+                    {known && !have && !busy && group.available && (
                       <button
                         type="button"
                         className="am-card-power"
@@ -306,10 +323,12 @@ function Suggested({
 export default function AiModelsDiscover({
   onDisk,
   downloading,
+  settling,
   jobByModel,
 }: {
   onDisk: Set<string> | null;
   downloading: Set<string>;
+  settling: Set<string>;
   jobByModel: Map<string, Job>;
 }) {
   const [query, setQuery] = useState("");
@@ -393,6 +412,7 @@ export default function AiModelsDiscover({
           catalog={catalog}
           onDisk={onDisk}
           downloading={downloading}
+          settling={settling}
           jobByModel={jobByModel}
         />
       )}
