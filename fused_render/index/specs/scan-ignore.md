@@ -66,6 +66,32 @@ Filtering the cache is what makes newly-ignored folders **self-purging**: an ign
 directory is absent from the cache, so it is never added to the keep list, so
 compaction drops its file rows (`index-store.md §4`). No full rescan is needed.
 
+### Package leaves
+
+`LEAF_DIR_SUFFIXES` (`.app`, `.framework`, `.bundle`, `.photoslibrary`) is a
+*fourth*, differently-shaped rule, and not an ignore pattern: a package is
+**recorded and not descended**, where an ignored directory is neither. It is one
+`dirs.parquet` row with no file rows, produced by `scan_dir_once` returning before
+it lists the directory — so it costs the stat it had already taken and no scandir,
+whatever the package holds.
+
+Both halves matter, and each fixes parity in the opposite direction from the other.
+`/api/fs/walk` emits `Foo.app` as a single leaf entry (`WALK_LEAF_DIR_SUFFIXES`,
+derived from this constant), so:
+
+- **descending** it filled the index with `Foo.app/Contents/...` paths the walk
+  never emits — thousands of rows per Electron app, spending a 200 000-row corpus
+  budget on entries nobody searches for and, because ranking scores the whole
+  relative path, out-ranking real hits;
+- **skipping** it would drop the package from the corpus entirely, and the walk
+  does list it.
+
+One consequence, handled in `query.search_under`: a package's dirs row means "this
+is a leaf", not "we know what is inside", so a search whose *root* is a package
+reports `covered: false` and falls back to the live walk — which does list a leaf
+it was pointed at. Migration for an index that already descended packages is a
+full rescan.
+
 ## 4. Rules-changed fingerprint
 
 Removing a pattern cannot be handled incrementally: cached `n_subdirs` values were

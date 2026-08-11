@@ -101,7 +101,9 @@ Two flags travel with it:
   `root`), not merely some ancestor. A folder that was pruned, ignored, or left below a
   cancelled run's frontier therefore reports honestly instead of answering with a
   partial corpus. **This is the gate**: covered means the index answers, uncovered means
-  the live walk does.
+  the live walk does. A package directory (`scan-ignore.md §3`) is the one row that does
+  *not* count: it is recorded as an opaque leaf, so its row means "this is a leaf", not
+  "we know what is inside", and a search rooted at one hands over to the walk.
 - **`fresh`** — the last compaction is within `FRESH_MAX_AGE_S` (1 h). Reported, not
   enforced. Age does not decide anything because the index is rescanned at every
   startup, a rescan keeps serving its last completed generation

@@ -67,6 +67,25 @@ SKIP_DIRS = {
 SHARED_IGNORE_DIRS = (
     "node_modules", ".venv", "venv", "__pycache__", ".git", "site-packages",
 )
+# macOS package directories: ONE entry, never descended. Their internals are
+# implementation details (Finder hides them too) and one Electron .app alone is
+# thousands of files, which on a 200k-capped corpus is budget spent on rows
+# nobody searches for — and, because search scores the whole relative path, on
+# rows a matching package name would then rank ahead of real hits.
+#
+# Shared with server/walk.py (WALK_LEAF_DIR_SUFFIXES) for the same reason
+# SHARED_IGNORE_DIRS is: search is answered by the live walk or by the index
+# depending on whether a scan has reached the folder, so a rule applied by one
+# and not the other flips results between two interchangeable sources. The
+# dependency direction is server -> index; do not invert it.
+LEAF_DIR_SUFFIXES = (".app", ".framework", ".bundle", ".photoslibrary")
+
+
+def is_leaf_dir(path: str) -> bool:
+    """Whether `path` is a package directory — recorded, but never descended."""
+    return path.lower().endswith(LEAF_DIR_SUFFIXES)
+
+
 # The index prunes MORE than the floor, and may: a scan is a background crawl
 # of the whole home, where these caches are pure cost. The walk cannot use the
 # same list, because inside a repo it defers to the repo's own .gitignore

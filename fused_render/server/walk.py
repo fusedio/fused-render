@@ -4,7 +4,7 @@ import stat as stat_mod
 import sys
 from types import SimpleNamespace
 
-from fused_render.index.ignore import SHARED_IGNORE_DIRS
+from fused_render.index.ignore import LEAF_DIR_SUFFIXES, SHARED_IGNORE_DIRS
 from fused_render.server.common import _error
 from fused_render.server.gitignore import _IgnoreOracle, _repo_toplevel
 
@@ -99,7 +99,11 @@ WALK_MAX_ORACLES = 8
 # macOS package directories: emitted as a single (dir) entry but never
 # descended — their internals are implementation details (Finder hides them
 # too), and one Electron .app alone can be thousands of files.
-WALK_LEAF_DIR_SUFFIXES = (".app", ".framework", ".bundle", ".photoslibrary")
+# Defined once in index/ignore.py for the same reason WALK_IGNORE_DIRS is: the
+# index applies the identical leaf rule, and a package descended by one corpus
+# source but not the other flips results between two sources meant to be
+# interchangeable.
+WALK_LEAF_DIR_SUFFIXES = LEAF_DIR_SUFFIXES
 
 
 class _RcDirEntry:

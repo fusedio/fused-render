@@ -91,6 +91,19 @@ def test_search_under_reports_no_coverage_for_an_unindexed_root(tmp_path):
     assert out["entries"] == []
 
 
+def test_searching_inside_a_package_falls_back_to_the_walk(tmp_path):
+    """The scan records a .app as ONE opaque row and never lists it, so its dirs
+    row says "this is a leaf", not "we know what is inside". Answering `covered`
+    for it would report an empty corpus as complete; the live walk, which does
+    list a leaf it was pointed at, has the real answer."""
+    cfg = _index(tmp_path, "/r", ["/r/a.txt"], dirs=["/r/Cool.app"])
+    out = search_under(cfg, "/r/Cool.app")
+    assert out["covered"] is False
+    assert out["entries"] == []
+    # the package itself is still an entry of its PARENT's corpus
+    assert "Cool.app" in [e["rel"] for e in search_under(cfg, "/r")["entries"]]
+
+
 def test_search_under_reports_no_coverage_on_an_empty_index(tmp_path):
     out = search_under(IndexConfig(dir=str(tmp_path / "ix")), "/r")
     assert out["covered"] is False

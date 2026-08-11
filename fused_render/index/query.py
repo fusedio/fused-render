@@ -17,7 +17,7 @@ import os
 import re
 
 from fused_render.index.config import IndexConfig
-from fused_render.index.ignore import norm
+from fused_render.index.ignore import is_leaf_dir, norm
 from fused_render.index.store import (
     depth_expr,
     like_literal,
@@ -268,7 +268,15 @@ def search_under(cfg: IndexConfig, root: str, q: str = "", limit: int = MAX_CORP
     # Coverage is "the scan visited this exact directory", which is what keeps
     # a partial index honest: a root whose parent was scanned but which was
     # itself pruned (ignored, or below a cancelled run's frontier) has no row.
-    covered = con.execute(
+    #
+    # A package directory is the exception: the scan records it as ONE opaque
+    # row and never lists it (scan.scan_dir_once), so its dirs row means "this
+    # is a leaf", not "we know what is inside". The explorer can still navigate
+    # into a .app, and the live walk answers that (it only refuses to descend
+    # leaf CHILDREN, not a leaf it was pointed at) — so hand it over, exactly as
+    # for any other uncovered folder, instead of reporting an empty corpus as
+    # complete.
+    covered = not is_leaf_dir(root) and con.execute(
         f"SELECT count(*) FROM {dirs_src(cfg)} "
         f"WHERE dir = '{_q(root)}'").fetchone()[0] > 0
     if not covered:

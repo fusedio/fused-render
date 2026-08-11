@@ -19,7 +19,13 @@ import time
 
 from fused_render.index import fsevents
 from fused_render.index.config import IndexConfig
-from fused_render.index.ignore import SKIP_DIRS, IgnoreRules, MountGuard, norm
+from fused_render.index.ignore import (
+    SKIP_DIRS,
+    IgnoreRules,
+    MountGuard,
+    is_leaf_dir,
+    norm,
+)
 from fused_render.index.store import (
     Sink,
     applied_ignore_sig,
@@ -73,6 +79,14 @@ def scan_dir_once(d, cache, rules, guard, devs=None, root_dev=None):
             devs.add(dst.st_dev)
     except OSError:
         return None, None, []
+    if is_leaf_dir(d):
+        # A macOS package: RECORDED as one dirs row (this return), never listed.
+        # The walk emits `Foo.app` itself as a single leaf entry and nothing
+        # inside it, so the index has to do both halves — dropping the package
+        # from its parent's descent list instead would leave no dirs row for it
+        # at all, and break the same parity in the other direction. Costs the
+        # stat above and no scandir, whatever the package holds.
+        return "s", (_dir_sig([]), [], 0, d_mtime_ns, 0), []
     cached = cache.get(d)
     subdirs = []
     # cached[2] == -1 means a pre-upgrade row with unknown subdir count:
