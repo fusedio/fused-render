@@ -1,13 +1,15 @@
 ---
 name: making-a-release
-description: Use when cutting a new fused-render release, bumping the version, or creating a release tag — bumps __version__, commits, tags vX.Y.Z, and pushes to trigger the DMG build/release workflow.
+description: Use when cutting a new fused-render release, bumping the version, or creating a release tag — bumps __version__, lands it on protected main via a bump PR, then tags vX.Y.Z and pushes the tag to trigger the DMG build/release workflow.
 ---
 
 # Making a Release
 
 ## Overview
 
-A release is: bump `__version__`, commit it, create a matching `vX.Y.Z` tag, and push the tag. Pushing the tag is what triggers `.github/workflows/release.yml` (build → sign → notarize → publish DMG + GitHub Release).
+A release is: bump `__version__`, land that bump on `main` **through a PR**, then tag the merged commit `vX.Y.Z` and push the tag. Pushing the tag is what triggers `.github/workflows/release.yml` (build → sign → notarize → publish DMG + GitHub Release).
+
+**`main` is a protected branch.** Direct pushes are rejected (`GH006: Changes must be made through a pull request`), so the bump PR is not optional — it is the only path. Do not try `git push origin main` first.
 
 **Single source of truth:** the version lives ONLY in `fused_render/__init__.py`. `pyproject.toml` derives it dynamically (`[tool.hatch.version]`) — never edit a version into `pyproject.toml`.
 
@@ -33,27 +35,53 @@ A release is: bump `__version__`, commit it, create a matching `vX.Y.Z` tag, and
    git tag --sort=-creatordate | head -1
    ```
 
-3. **Bump `__version__`** in `fused_render/__init__.py` (Edit tool). This is the only file to change.
+3. **Branch, then bump.** Work on a branch from the start — `main` is protected:
+   ```bash
+   git switch -c bump-X.Y.Z
+   ```
+   Bump `__version__` in `fused_render/__init__.py` (Edit tool). This is the only
+   file to change.
 
 4. **Commit** (message matches the repo's history convention exactly):
    ```bash
    git commit -am "Bump version to X.Y.Z"
    ```
 
-5. **Tag** — annotated, name is `v` + the exact version:
+5. **Open the bump PR** and let it merge. Push the branch and open the PR with the
+   `creating-pull-requests` skill (title `Bump version to X.Y.Z`), then enable
+   auto-merge so it lands as soon as checks go green:
+   ```bash
+   git push -u origin HEAD
+   gh pr create --title "Bump version to X.Y.Z" --body-file <body.md>
+   gh pr merge <N> --squash --auto
+   ```
+   Poll until it actually reports `MERGED` — do NOT tag before then:
+   ```bash
+   gh pr view <N> --json state,mergeStateStatus,mergeCommit
+   ```
+
+6. **Return to `main` and pull the merged bump.** The squash merge creates a NEW
+   commit, so the tag must point at that commit, not your local branch commit:
+   ```bash
+   git switch main
+   git pull --ff-only origin main
+   grep __version__ fused_render/__init__.py   # confirm it reads X.Y.Z
+   ```
+
+7. **Tag** — annotated, name is `v` + the exact version:
    ```bash
    git tag -a vX.Y.Z -m "vX.Y.Z"
    ```
 
-6. **Push commit and tag.** The tag push is the release trigger:
+8. **Push the tag.** This is the release trigger:
    ```bash
-   git push origin main
    git push origin vX.Y.Z
    ```
 
-7. **Verify** the release workflow started:
+9. **Verify** the release workflow started, then clean up the branch:
    ```bash
    gh run list --workflow=release.yml --limit 3
+   git branch -d bump-X.Y.Z && git push origin --delete bump-X.Y.Z
    ```
 
 ## Quick Reference
@@ -64,18 +92,23 @@ A release is: bump `__version__`, commit it, create a matching `vX.Y.Z` tag, and
 | Tag format | `vX.Y.Z` (must match `__version__`) |
 | Release trigger | pushing a `v*` tag → `.github/workflows/release.yml` |
 | Commit message | `Bump version to X.Y.Z` |
+| How the bump lands | bump PR into protected `main`, squash-merged (never a direct push) |
+| What gets tagged | the squash-merge commit on `main`, after `git pull` |
 | Do NOT edit | `pyproject.toml` version (dynamic via hatchling) |
 
 ## Common Mistakes
 
 - **Editing the version in `pyproject.toml`.** It's dynamic; the value there is ignored/derived. Edit `__init__.py` only.
 - **Tag name ≠ `__version__`.** e.g. tagging `v0.3.5` while `__version__` is still `0.3.4`. Bump and commit *before* tagging.
-- **Pushing the commit but forgetting the tag.** No tag push = no release. Both pushes are required.
+- **Committing the bump straight onto local `main`.** The push will be rejected by
+  branch protection and you'll have to move the commit to a branch anyway
+  (`git branch bump-X.Y.Z && git reset --hard origin/main`). Branch first (step 3).
+- **Tagging your local bump commit instead of the merged one.** The squash merge
+  produces a different SHA; tagging the pre-merge commit points the release at a
+  commit that is not on `main`. Pull `main` first (step 6), then tag.
+- **Tagging before the PR is actually merged.** "Auto-merge enabled" is not merged —
+  wait for `state: MERGED`.
+- **Forgetting the tag push.** No tag push = no release, even once the bump is on `main`.
 - **Reusing an existing tag.** Tags are immutable releases; pick an unused version. Check `git tag` first.
-- **Releasing off a dirty tree or a non-`main` branch.** Start from clean `main`.
 - **Skipping `git pull`.** Tagging a stale local `main` builds and ships an old
-  commit. Always pull (step 1) so the tag points at the true latest.
-
-## Team Workflow Note
-
-Historically version bumps often went through a PR (`Bump version to X.Y.Z (#NNN)`) before tagging `main`. If your project requires PRs into `main`, open the bump PR first, let it merge, then tag the merged commit on `main` (steps 5–6). The tag must point at a commit already on `main`.
+  commit. Always pull (steps 1 and 6) so the tag points at the true latest.
