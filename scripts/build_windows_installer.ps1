@@ -178,20 +178,8 @@ Invoke-Native $bundlePython @(
     "import duckdb, sys; con = duckdb.connect(config=dict(extension_directory=sys.argv[1])); [con.install_extension(name) for name in sys.argv[2:]]",
     $duckdbExtensions, "httpfs", "excel", "spatial"
 )
-# Precompile bytecode INTO the payload (was: strip every __pycache__ to save
-# size). A source-only bundle recompiles the whole dependency tree on first
-# import, and because the first /api/config resolves the fused engine that
-# import lands on the request thread and freezes the shell for ~a minute on the
-# first launch after install (PY cold-start). unchecked-hash pyc are trusted
-# without re-stat, so the installer copying these files (fresh mtimes) never
-# invalidates them and the runtime never recompiles. compile_dir returns a bool
-# (best-effort — a file that will not compile just falls back to source, exactly
-# today's behavior), so the process still exits 0.
-Invoke-Native $bundlePython @(
-    "-I", "-c",
-    "import compileall, py_compile, sys; compileall.compile_dir(sys.argv[1], quiet=1, workers=0, invalidation_mode=py_compile.PycInvalidationMode.UNCHECKED_HASH)",
-    (Join-Path $PythonRoot "Lib")
-)
+Get-ChildItem -Path $PythonRoot -Directory -Recurse -Filter "__pycache__" -ErrorAction SilentlyContinue |
+    Remove-Item -Recurse -Force
 Get-ChildItem -Path (Join-Path $PythonRoot "Scripts") -Filter "*.exe" -ErrorAction SilentlyContinue |
     Remove-Item -Force
 Copy-Item -LiteralPath $Uv -Destination (Join-Path $PythonRoot "uv.exe") -Force
@@ -344,6 +332,27 @@ try {
 }
 Get-ChildItem -Path $PythonRoot -Directory -Recurse -Filter "__pycache__" -ErrorAction SilentlyContinue |
     Remove-Item -Recurse -Force
+
+# Precompile bytecode into the payload, as the FINAL payload mutation (was: ship
+# source-only). A source-only bundle recompiles the whole dependency tree on the
+# first import, and because the first /api/config resolves the fused engine that
+# lands on the request thread and freezes the shell for ~a minute on the first
+# launch after install (PY cold-start). Placed after the __pycache__ strip above
+# so the smoke tests' incidental pyc don't leak in and every payload module gets
+# a deterministic pyc. unchecked-hash pyc are trusted without re-stat, so the
+# installer copying these files (fresh mtimes) never invalidates them and the
+# runtime never recompiles. The count guard fails the build rather than silently
+# regressing to a source-only payload.
+Invoke-Native $bundlePython @(
+    "-I", "-c",
+    "import compileall, py_compile, sys; compileall.compile_dir(sys.argv[1], quiet=1, workers=0, invalidation_mode=py_compile.PycInvalidationMode.UNCHECKED_HASH)",
+    (Join-Path $PythonRoot "Lib")
+)
+$pycCount = (Get-ChildItem -Path (Join-Path $PythonRoot "Lib") -Recurse -Filter "*.pyc" -ErrorAction SilentlyContinue | Measure-Object).Count
+if ($pycCount -lt 1000) {
+    throw "bytecode precompile produced only $pycCount .pyc - expected the full dependency tree"
+}
+Write-Host "Precompiled $pycCount .pyc into the payload"
 
 if ($SkipInstaller) {
     Write-Host "Staged bundle: $StageDir"
