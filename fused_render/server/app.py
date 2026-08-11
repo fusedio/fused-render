@@ -207,13 +207,10 @@ def create_app(start_dir: str) -> FastAPI:
     async def _startup_prewarm_ai():
         prewarm_ai()
 
-    # Warm the fused compute engine off the request path (PY cold-start). The
-    # first /api/config resolves the engine, importing the fused backend; on a
-    # fresh install that import pays a one-time cold cost (bytecode-compile the
-    # dependency tree + the OS scanning every native module on first load) that,
-    # left lazy, freezes the shell for ~a minute on first launch. A daemon thread
-    # pays it in the background while effective_engine reports a cheap
-    # provisional answer, so the UI is responsive immediately.
+    # Warm the fused engine off the request path: the first /api/config resolves
+    # the engine, and importing the fused backend is a ~minute cold cost on a
+    # fresh install. A daemon thread pays it in the background while
+    # effective_engine reports a cheap provisional answer (PY cold-start).
     @app.on_event("startup")
     async def _startup_warm_engine():
         from fused_render import engine

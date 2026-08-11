@@ -765,8 +765,6 @@ def available_nonblocking() -> bool:
     with _available_lock:
         if _available_cached is not None:
             return _available_cached
-    if "fused.agent_core.backends.local.python_compute" in sys.modules:
-        return True
     return importlib.util.find_spec("fused") is not None
 
 

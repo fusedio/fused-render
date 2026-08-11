@@ -77,8 +77,6 @@ def test_available_nonblocking_never_triggers_the_cold_import(monkeypatch):
 def test_available_nonblocking_reads_find_spec_not_the_import(monkeypatch):
     monkeypatch.setattr(engine, "available",
                         lambda: (_ for _ in ()).throw(AssertionError("no cold import")))
-    monkeypatch.delitem(sys.modules,
-                        "fused.agent_core.backends.local.python_compute", raising=False)
     monkeypatch.setattr(engine.importlib.util, "find_spec", lambda _n: object())
     assert engine.available_nonblocking() is True
     monkeypatch.setattr(engine.importlib.util, "find_spec", lambda _n: None)
