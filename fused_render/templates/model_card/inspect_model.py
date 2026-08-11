@@ -22,8 +22,16 @@ part of the package (SPEC PY-15/D166), so it never imports `fused_render`.
 """
 import json
 import os
+from urllib.parse import quote
 
 _KIND_PREFIXES = {"models--": "model", "datasets--": "dataset", "spaces--": "space"}
+
+# Where this repo lives on the Hub. The kind decides the path: a dataset is
+# huggingface.co/datasets/<id>, and linking it as huggingface.co/<id> would be a
+# 404 dressed up as a link. A folder with no kind is somebody's own checkout and
+# has no Hub page to point at — the link is absent rather than guessed.
+_HUB_ORIGIN = "https://huggingface.co"
+_HUB_PATH = {"model": "", "dataset": "datasets/", "space": "spaces/"}
 
 _PACKED_DTYPES = {"U8", "I8", "U16", "I16", "U32", "I32", "U64", "I64"}
 _DTYPE_BITS = {
@@ -280,6 +288,11 @@ def main(path):
     return {
         "name": name,
         "kind": kind or "folder",
+        # quote(), not an f-string of the raw id: a repo id is user data on its
+        # way into a URL, and the canonical encoder is the one that gets every
+        # case right rather than the ones we thought of. safe="/" keeps the
+        # org/name separator a separator.
+        "hubUrl": f"{_HUB_ORIGIN}/{_HUB_PATH[kind]}{quote(name, safe='/')}" if kind else None,
         "root": root.replace(os.sep, "/"),
         "revision": revision,
         "revisions": revisions,

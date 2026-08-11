@@ -116,22 +116,31 @@ once that cache exists; the first download from the Hub creates it.
 - **The sizes are real disk usage.** Inside the cache each revision's files are
   symlinks to one shared copy of the bytes, so the page counts that copy once:
   the per-card sizes add up to the total in the header.
-- **You can clear space from here**, three ways, each behind a confirmation
-  that names what goes and what it frees:
+- **You can clear space from here**, two ways, each behind a confirmation that
+  names what goes and what it frees:
   - **Delete a repo** — the ✕ on its card.
   - **Delete one revision** — expand a card with more than one revision. The
     size shown is what deleting *that* revision frees: revisions share their
     weights, so two revisions of a 7GB model differing in a config file are
     7GB shared and a few KB each, and only the few KB come back.
-  - **Prune** — everything not *read* in the last 30/90/180/365 days. The
-    dialog lists exactly which repos qualify, with their sizes and ages, before
-    you confirm.
+
+  There is deliberately no bulk "delete everything older than N days": the age
+  it would select on is filesystem last-read time, which some volumes never
+  record (see below), and one confirm on a list built from that is a multi-GB
+  re-download waiting to happen. The ages on the cards are there for you to
+  weigh one model at a time.
 - **Nothing is re-downloaded for you.** Deleting a model means the next thing
   that wants it pulls it from the Hub again.
 - **Last-read time comes from the filesystem.** Volumes mounted `noatime` never
-  update it, so on those a model you use daily can still look untouched — check
-  the dates the prune dialog lists before confirming.
-- **Clicking a card opens the model.** You get a **model card** view: what the
+  update it, so on those a model you use daily can still look untouched. Weigh
+  "used 4 months ago" with that in mind before deleting anything.
+- **The name goes to the Hub; "Explore" opens it here.** Clicking a model's
+  name opens its page on huggingface.co in a new tab — the licence, the full
+  model card, the discussions and every revision live there, not on your disk.
+  **Explore**, in the card's footer, opens the copy you already have.
+- **Explore gives you a model card** view — which carries its own **Hugging
+  Face ↗** link in the header, so the way back out to the licence, the
+  discussions and the other revisions is always one click away. It shows what the
   model is, its parameters and disk, the summary and tags from its own model
   card, the configuration worth reading (layers, heads, context length,
   vocabulary), a weights table and its largest tensors. It opens instantly even
@@ -146,9 +155,11 @@ once that cache exists; the first download from the Hub creates it.
   `HUGGINGFACE_HUB_CACHE`, `$HF_HOME/hub`, `$XDG_CACHE_HOME/huggingface/hub`,
   then `~/.cache/huggingface/hub` — so a shared model disk pinned with `HF_HOME`
   is the one you see. The path in use is printed under the heading.
-- **Scanning happens when you open the page** and when you press Refresh. It
-  walks every file in the cache, so it is deliberately not re-run each time you
-  switch back to the window.
+- **Scanning happens when you open the page**, and only then. It walks every
+  file in the cache, so it is deliberately not re-run each time you switch back
+  to the window — and there is no Refresh button, because knowing when that walk
+  is worth paying for is not something you should have to judge. Deleting
+  something re-reads the cache on its own.
 - **The Discover tab searches the Hub for models you don't have.** Type a name,
   filter by task, sort by downloads, likes, recently updated or newest. Each
   result says whether it is **already on this machine** (with what it costs on

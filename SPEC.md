@@ -5244,11 +5244,14 @@ later with nothing on screen to say so.
 
 - **HF-1** **An inventory that can also clear space** (D250 revisited the
   original read-only posture, which shipped first). The page's first job is to
-  show what is cached and what it costs; on top of that it offers exactly three
-  deletions — a repo, one revision of a repo, and a prune of everything unread
-  for N days. It still never downloads, re-downloads, or repairs anything, and
-  no deletion happens without a confirmation that names what goes and what it
-  frees.
+  show what is cached and what it costs; on top of that it offers exactly two
+  deletions — a repo, or one revision of a repo. It never downloads,
+  re-downloads, or repairs anything, and no deletion happens without a
+  confirmation that names what goes and what it frees. **Bulk age-based pruning
+  was offered and withdrawn (D256):** a dialog that selects models by a
+  threshold is one wrong click from a multi-GB re-download, and `lastUsed` rests
+  on an atime that `noatime` volumes never write — a caveat printed inside the
+  dialog cannot make a list built on it safe to confirm in one action.
 - **HF-2** **Where the cache is** follows `huggingface_hub`'s own resolution
   order, not a hardcoded `~/.cache`: `HF_HUB_CACHE`, else the deprecated
   `HUGGINGFACE_HUB_CACHE`, else `$HF_HOME/hub`, else
@@ -5279,10 +5282,16 @@ later with nothing on screen to say so.
   me", and a name sort buries the 8GB checkpoint among forty 2MB tokenizer
   repos. Each row also carries its file count, its revision count when it holds
   more than one, and the refs (`main`, a tag) pointing into it.
-- **HF-7** **A card is a door into the explorer**: it navigates to the repo's
-  cache folder as an ordinary directory (a real `<a href>`, so middle-click and
-  copy-link behave), for everything this page does not do — reading a config,
-  copying a path, picking one file out of a snapshot.
+- **HF-7** **A card has TWO doors, and they lead to different places (D256).**
+  The **name** goes to the model's page on the **Hub** — a repo id is a Hub
+  address, and the licence, the full model card, the discussions and every
+  revision live there, none of it on this disk. **"Explore"** opens it *here*,
+  in the model card view (§38), which reads this folder's own files. Both are
+  real `<a href>`s, so middle-click and copy-link behave. One control cannot
+  serve both: a name that sometimes meant "read about this" and sometimes meant
+  "open the local copy" would be a coin flip, and the two destinations answer
+  different questions. Explore is visible without hovering — unlike the delete
+  controls beside it, which stay quiet until the card is hovered.
 - **HF-8** **The sidebar entry is gated on the cache existing** (`GET
   /api/ai-models/status`, one `isdir`), so a machine that has never pulled
   from the Hub is not offered a page that can only say "nothing here". Unlike
@@ -5297,9 +5306,13 @@ later with nothing on screen to say so.
   by URL either way, and states
   which of the two nothings it found — no cache directory at all, or a cache
   that is empty.
-- **HF-9** **Scanning is on demand.** The walk touches every blob in the cache,
-  so it runs on mount and on an explicit Refresh — never on a focus/return tick,
-  which would re-walk tens of thousands of files each time the window came back.
+- **HF-9** **Scanning happens once per visit.** The walk touches every blob in
+  the cache, so it runs **on mount and nowhere else** — never on a focus/return
+  tick, which would re-walk tens of thousands of files each time the window came
+  back, and no longer behind a Refresh button (D256), which asked the user to
+  know when a re-walk was worth paying for. A delete answers with the fresh
+  listing it just measured, so the one thing that changes the cache from here
+  refreshes it without being asked.
   It runs in the threadpool (a sync endpoint), so a big cache cannot stall the
   requests the rest of the page is making. And it **never fails because the
   cache changed under it**: a download finalising or another window's delete can
@@ -5307,8 +5320,8 @@ later with nothing on screen to say so.
   about it, so every such read treats the race as "report what was there" — a
   row fewer, never an error page.
 
-**Managing it** (D250). Three deletions, widening — one repo, one revision, or
-everything unread for N days:
+**Managing it** (D250, narrowed by D256). Two deletions — one repo, or one
+revision of one — each behind a confirmation naming what goes and what it frees:
 
 - **HF-10** **Deleting a repo** removes its cache folder and the `.locks/` entry
   that mirrors its name, and reports the bytes it held. Nothing else in the
@@ -5326,16 +5339,13 @@ everything unread for N days:
   shares stated separately — two revisions of a 7GB model that differ in a
   config file are 7GB shared and a few KB each, and a row claiming 7GB apiece
   would be a lie in the one column this page exists for.
-- **HF-12** **Prune is a selection the user reads, not a rule the server
-  applies.** The dialog filters the listing on screen by `lastUsed` (30/90/180/
-  365 days), shows every repo that qualifies with its size and age, and sends
-  the resulting **names**. So what gets deleted is exactly the list that was
-  confirmed — never a threshold re-evaluated server-side against state the user
-  never saw. A repo with no readable timestamp is left out: "we don't know when
-  this was used" is not evidence that it is cold. The dialog says plainly that
-  last-read time comes from the filesystem and that `noatime` volumes never
-  update it, because that caveat decides whether the dates above it can be
-  trusted.
+- **HF-12** **RETIRED (D256).** Bulk age-based pruning is gone. What it stood
+  on remains true and still shapes the page: `lastUsed` is filesystem atime,
+  `noatime` volumes never write it, and a repo with no readable timestamp proves
+  nothing about being cold — which is exactly why "used 4 months ago" is a fact
+  on a card someone reads before deleting one model, and not a threshold that
+  selects twenty. Deleting still names its targets one at a time (HF-13), and
+  the multi-target request shape survives because a revision delete uses it.
 - **HF-13** **A delete request names a cache FOLDER, never a path.** The name
   must be a single path segment carrying a known kind prefix; the path is built
   server-side from the cache dir the server resolved. A repo folder that is a
@@ -5345,16 +5355,17 @@ everything unread for N days:
   it removes multi-GB directories, and a blind cross-origin POST must not reach
   it. A malformed revision is an error, never a fallback to "delete the whole
   repo" — only an *absent* revision means the repo.
-- **HF-14** **Every target is reported.** One stale row must not lose the other
-  nine deletions of a prune, so each target succeeds or fails on its own and the
+- **HF-14** **Every target is reported.** One stale row must not lose the rest
+  of a multi-target request, so each target succeeds or fails on its own and the
   failures come back named. The reply is the **fresh listing**, re-read from
   disk after the deletions, so the page swaps in state it just measured instead
   of patching rows it hopes are still true.
 - **HF-15** **Reading the page does not count as using a model.** Resolving
   revisions means opening ref files, which bumps their atime — the very signal
-  `lastUsed` and therefore pruning depend on. Their atime is put back after the
-  read, so this page cannot quietly exclude from the next prune everything it
-  just looked at.
+  `lastUsed` reports. Their atime is put back after the read, so the page cannot
+  quietly rewrite the "last used" of everything it just looked at into now,
+  which would make the one number a person deletes by say the same thing about
+  every model they own.
 
 **Naming what a model is** (D251). A repo id and a size do not say what a thing
 is for, and the cache states it nowhere:
@@ -5427,6 +5438,14 @@ Goal: a cached model is a folder full of opaque names — `model-00001-of-00004.
 template makes the folder answer for itself, and it reads only: nothing here
 loads weights, imports a framework, or touches the network.
 
+- **MV-0** **A link back out to the Hub (D256).** The view reads the folder on
+  THIS disk; the licence, the discussions and every revision live on the model's
+  Hub page and nothing here can show them, so the header carries a link to it —
+  built from the KIND as well as the id, since a dataset linked as
+  `huggingface.co/<id>` is a 404 dressed up as a link, and absent entirely for a
+  folder that is not a cache repo (someone's own checkout has no Hub page, and a
+  link built from a local directory name would point at a stranger's). The id
+  goes through `quote()` on its way into the URL, not an f-string.
 - **MV-1** **`model_card` — what this model IS.** Name (decoded from the cache
   folder, or from the repo folder when a snapshot is opened directly, because a
   commit sha is not a model's name), parameters, disk, the model card's own
@@ -5476,16 +5495,16 @@ loads weights, imports a framework, or touches the network.
   then offers that mode beside the folder's own.
 - **MV-5** **Looking at a model is not using it.** Every read in the template
   restores the file's atime, for the same reason the AI Models page does
-  (HF-15): "last read" is what pruning by age is built on, and inspecting a
-  model must not quietly protect it from the next prune. **Including the
+  (HF-15): "last used" is the number a person weighs before deleting a model,
+  and looking at one must not rewrite that number into now. **Including the
   gates** — they read too (`config.json`, `refs/main`), they run on every folder
   the user opens, and a gate is the last thing that should mark a model as
   recently used. That `os.utime` is the one WRITE a gate makes, so the mount
   shim (CT-12's routing) **drops it on a mount path** rather than routing it: a
   mount has no atime worth preserving, and a kernel SETATTR there is exactly the
   class of call the shim exists to keep gates from making.
-- **MV-6** **The folder the AI Models page opens is a cache REPO, so both model
-  the layout has exactly ONE owner.** A repo folder (`models--org--name`) holds
+- **MV-6** **The folder the AI Models page opens is a cache REPO, and the
+  layout has exactly ONE owner.** A repo folder (`models--org--name`) holds
   no model files itself — they live under `snapshots/<commit>/`, at the revision
   **`refs/main`** names, which is the one a load would get. `inspect_model.py`
   resolves that once when the card is drawn and reports it as `root`; the page

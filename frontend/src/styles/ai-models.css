@@ -5,7 +5,7 @@
    imported just above: .cc-mdgrid/.cc-mdcard (the MD Files card), .cc-iconbtn
    for the actions, .cc-pill, .cc-heading. What lives here is only what those
    have no answer for — the size figure that is the whole point of the page, the
-   revision drawer a card opens, and the prune dialog's list. */
+   "Explore" link, the revision drawer a card opens, and the Discover tab. */
 
 /* Cards keep their natural height: with the grid's default `stretch`, opening
    one card's revision drawer stretched whatever card shared its row into a
@@ -52,15 +52,39 @@
   white-space: nowrap;
 }
 
-/* The actions are quiet until the card is hovered or one of them is focused: a
-   grid of ✕ buttons reads as a page about deleting, and this one is about
-   looking. */
-.am-card .cc-mdcard-actions {
+/* "Explore" is the local door — the model card view — next to the delete
+   controls. A link, not a button: it navigates, and middle-click and copy-link
+   have to keep working. Sized to sit level with the icon buttons beside it. */
+.am-card-explore {
+  padding: 2px 8px;
+  font-size: 12px;
+  color: var(--fg-muted);
+  text-decoration: none;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  white-space: nowrap;
+}
+
+.am-card-explore:hover {
+  color: var(--fg);
+  background: var(--bg-alt);
+}
+
+.am-card-explore:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* The DESTRUCTIVE actions are quiet until the card is hovered or one of them is
+   focused: a grid of ✕ buttons reads as a page about deleting, and this one is
+   about looking. "Explore" is exempt — it is the card's other destination, and
+   an affordance you have to hover to discover is one most people never find. */
+.am-card .cc-mdcard-actions .cc-iconbtn {
   opacity: 0;
 }
 
-.am-card:hover .cc-mdcard-actions,
-.am-card:focus-within .cc-mdcard-actions {
+.am-card:hover .cc-mdcard-actions .cc-iconbtn,
+.am-card:focus-within .cc-mdcard-actions .cc-iconbtn {
   opacity: 1;
 }
 
@@ -166,60 +190,15 @@
   opacity: 1;
 }
 
-/* -- prune dialog ----------------------------------------------------------- */
+/* -- Cached / Discover, and the Discover tab itself -------------------------
+   Cards on both tabs are the same .cc-mdcard/.am-card — one model should not
+   look like two different things depending on which tab found it — so what
+   lives here is the tab strip, the query controls, and the two badges that only
+   mean something for a Hub result.
 
-.am-prune-choices {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin-bottom: 14px;
-}
-
-/* The list is the confirmation: it names every repo that is about to go, so it
-   scrolls rather than truncating — a prune must never hide part of itself. */
-.am-prune-list {
-  max-height: 220px;
-  margin: 0 0 14px;
-  padding: 0;
-  overflow-y: auto;
-  list-style: none;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-}
-
-.am-prune-list li {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 7px 10px;
-  border-bottom: 1px solid var(--border);
-}
-
-.am-prune-list li:last-child {
-  border-bottom: none;
-}
-
-.am-prune-name {
-  min-width: 0;
-  overflow-wrap: anywhere;
-}
-
-.am-prune-meta {
-  flex: 0 0 auto;
-  font-size: 12px;
-  color: var(--fg-muted);
-  font-variant-numeric: tabular-nums;
-}
-
-/* -- Discover (shell/AiModelsDiscover.tsx) -----------------------------------
-   The Hub half of the page. Cards are the same .cc-mdcard/.am-card as the
-   cached half — one model should not look like two different things depending
-   on which tab found it — so what lives here is the tab strip, the query
-   controls, and the two badges that only mean something for a Hub result. */
-
-/* A segmented pair in the page head, left of the actions. Same shape as the
-   Preferences tabs, sized for a header rather than a page. */
+   The strip is the ONLY thing in the page head (D256): with Prune and Refresh
+   gone, the toggle sits in the same place in every state instead of sliding as
+   buttons appear and disappear beside it. */
 .am-tabs {
   display: inline-flex;
   margin-right: 4px;

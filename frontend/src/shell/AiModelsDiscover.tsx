@@ -5,9 +5,9 @@
 // tab. First, the JOIN: huggingface.co cannot tell you that the model you are
 // reading about is already in your cache, was last read three weeks ago, and
 // would cost nothing to open — this page can, because its sibling tab already
-// measured exactly that. Second, the SIZE: the prune feature next door exists
-// because caches fill up, so "≈16 GB" belongs next to a model's name before
-// anyone decides to fetch it, not after.
+// measured exactly that. Second, the SIZE: a cache fills up with multi-GB
+// checkpoints nothing on screen mentions, so "≈16 GB" belongs next to a model's
+// name before anyone decides to fetch it, not after.
 //
 // **Read-only.** There is no download button, and its absence is deliberate:
 // pulling gigabytes onto someone's disk is a different decision with a
@@ -64,36 +64,19 @@ function HubCard({ model }: { model: HubModel }) {
   return (
     <div className="cc-mdcard am-card am-hubcard">
       <div className="cc-mdcard-head">
-        {/* Where the name takes you depends on whether you have it. A model on
-            this disk opens in the model card view, like the cached tab's cards
-            do; one you don't have opens its page on the Hub, in a new tab,
-            because there is nothing local to show and the Hub's own page is the
-            honest destination. */}
-        {here && local.path ? (
-          <a
-            className="cc-mdcard-name am-card-name"
-            href={`#${local.path}`}
-            title={local.path}
-            onClick={(e) => {
-              if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey)
-                return;
-              e.preventDefault();
-              navigate(local.path as string, { isDir: true, mode: "model_card" });
-            }}
-          >
-            {model.id}
-          </a>
-        ) : (
-          <a
-            className="cc-mdcard-name am-card-name"
-            href={model.url}
-            target="_blank"
-            rel="noopener noreferrer"
-            title={`Open ${model.id} on the Hub`}
-          >
-            {model.id}
-          </a>
-        )}
+        {/* The name goes to the Hub, downloaded or not — the same rule the
+            cached cards follow, so a model's name means one destination
+            everywhere on this page. Opening a copy you already have is the
+            footer's "Explore". */}
+        <a
+          className="cc-mdcard-name am-card-name"
+          href={model.url}
+          target="_blank"
+          rel="noopener noreferrer"
+          title={`Open ${model.id} on the Hub`}
+        >
+          {model.id}
+        </a>
         {model.gated && (
           <span
             className="cc-pill am-hub-gated"
@@ -135,6 +118,24 @@ function HubCard({ model }: { model: HubModel }) {
           {updated ? `updated ${updated}` : null}
         </span>
         <span className="am-hub-state">
+          {/* Only a COMPLETE download can be explored: "partial" means blobs
+              with no materialised snapshot, so there is no revision for the
+              model card to describe. */}
+          {here && local.path && (
+            <a
+              className="am-card-explore"
+              href={`#${local.path}`}
+              title={`Explore ${model.id} here — ${local.path}`}
+              onClick={(e) => {
+                if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey)
+                  return;
+                e.preventDefault();
+                navigate(local.path as string, { isDir: true, mode: "model_card" });
+              }}
+            >
+              Explore
+            </a>
+          )}
           {local.state === "downloaded" && (
             <span
               className="am-hub-here"

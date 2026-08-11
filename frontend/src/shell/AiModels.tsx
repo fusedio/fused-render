@@ -5,20 +5,20 @@
 // transformers import, a diffusers pipeline, an `hf download`, a page a user
 // pasted in — and it is invisible: it fills up under ~/.cache with multi-GB
 // checkpoints nothing on screen ever mentions. This page is the missing
-// inventory: one row per cached repo, biggest first, with what it costs on
-// disk and a click through to the folder in the explorer.
+// inventory: one card per cached repo, biggest first, with what it costs on
+// disk, its NAME linking to the model's page on the Hub and an "Explore" that
+// opens it HERE — two destinations, so neither has to win the same click.
 //
-// It manages that cache too (D250), in three widening steps — a repo, one
-// revision of a repo, or a prune of everything unread for N days. Every one of
-// them names its targets in a confirmation the user reads first, and the
-// dangerous arithmetic (which blobs a revision actually owns) lives on the
-// server, where the filesystem is.
+// It manages that cache too (D250), two ways: delete a repo, or delete one
+// revision of one. Both name their targets in a confirmation the user reads
+// first, and the dangerous arithmetic (which blobs a revision actually owns)
+// lives on the server, where the filesystem is.
 //
 // Page chrome AND the cards are the cc-* family — cc-mdgrid/cc-mdcard, the same
 // card the Claude config panel's MD Files section uses — so the shell's
 // non-explorer pages read as one surface rather than each inventing a list.
 // Only what those classes have no answer for is local (styles/ai-models.css):
-// the size figure, the revision drawer, and the prune dialog's list.
+// the size figure, the Explore link, the revision drawer, and the tab strip.
 import { useEffect, useState } from "react";
 import AiModelsDiscover from "./AiModelsDiscover";
 import {
@@ -86,12 +86,6 @@ export function useAiModelsAvailable(): boolean {
   return available;
 }
 
-// Prune thresholds, in days. Deliberately coarse and deliberately not
-// "1 week": the shortest offer is a month because the cost of pruning a model
-// you are about to use again is a multi-GB re-download.
-const PRUNE_CHOICES = [30, 90, 180, 365];
-const DEFAULT_PRUNE_DAYS = 90;
-
 type Load =
   | { status: "loading" }
   | { status: "ok"; data: AiModelsResult }
@@ -101,21 +95,27 @@ type Load =
 // first — there is no path from a click straight to a delete.
 type Pending =
   | { kind: "repo"; repo: AiModelRepo }
-  | { kind: "revision"; repo: AiModelRepo; revision: AiModelRevision }
-  // Prune carries no selection: the dialog owns the age, and derives the list
-  // from the listing on screen, so the two can never disagree.
-  | { kind: "prune" };
+  | { kind: "revision"; repo: AiModelRepo; revision: AiModelRevision };
+
+// Where a cached repo lives on the Hub. The cache folder encodes the KIND as
+// well as the id, and the Hub's URL for a dataset or a Space is not the one for
+// a model — `datasets--squad` is huggingface.co/datasets/squad, and linking it
+// as huggingface.co/squad would be a 404 dressed up as a link.
+const HUB_ORIGIN = "https://huggingface.co";
+const HUB_PREFIX: Record<AiModelRepo["kind"], string> = {
+  model: "",
+  dataset: "datasets/",
+  space: "spaces/",
+};
+
+function hubUrl(repo: AiModelRepo): string {
+  const id = repo.id.split("/").map(encodeURIComponent).join("/");
+  return `${HUB_ORIGIN}/${HUB_PREFIX[repo.kind]}${id}`;
+}
 
 function shortCommit(commit: string): string {
   // Cache directories are named by full sha; the first 7 are what anyone reads.
   return /^[0-9a-f]{16,}$/i.test(commit) ? commit.slice(0, 7) : commit;
-}
-
-function staleRepos(repos: AiModelRepo[], days: number): AiModelRepo[] {
-  const cutoff = Date.now() / 1000 - days * 86400;
-  // A repo with no readable timestamp is left alone rather than swept: "we
-  // don't know when this was used" is not evidence that it is cold.
-  return repos.filter((r) => r.lastUsed !== null && r.lastUsed < cutoff);
 }
 
 // The revisions drawer: fetched per repo when a row is expanded, since
@@ -209,32 +209,18 @@ function RepoCard({
   return (
     <div className="cc-mdcard am-card">
       <div className="cc-mdcard-head">
-        {/* The card's name is the door into the explorer, and stays a real
-            <a href> so middle-click and copy-link behave (same contract as the
-            bookmark cards). The actions live in the footer, outside the link —
-            a button inside a link is neither valid nor keyboard-operable. */}
+        {/* The NAME goes to the HUB. A repo id is a Hub address, and the page
+            it names is where the licence, the full model card, the discussions
+            and every revision live — none of which this machine has. Opening it
+            HERE is a different act with a different destination, so it gets its
+            own control in the footer instead of competing for the same click.
+            Still a real <a href>, so middle-click and copy-link behave. */}
         <a
           className="cc-mdcard-name am-card-name"
-          href={urlForFsPath(repo.path, "?_mode=model_card")}
-          title={repo.path}
-          onClick={(e) => {
-            if (
-              e.defaultPrevented ||
-              e.button !== 0 ||
-              e.metaKey ||
-              e.ctrlKey ||
-              e.shiftKey ||
-              e.altKey
-            )
-              return;
-            e.preventDefault();
-            // Straight to the model card view (SPEC §38), not the folder
-            // listing: from here the repo IS a model, and the inspector is what
-            // "open it" means. The listing stays the default everywhere else,
-            // because a gated template can never be a folder's default mode
-            // (CT-12) — so this mode has to be asked for by name.
-            navigate(repo.path, { isDir: true, mode: "model_card" });
-          }}
+          href={hubUrl(repo)}
+          target="_blank"
+          rel="noopener noreferrer"
+          title={`Open ${repo.id} on the Hugging Face Hub`}
         >
           {repo.id}
         </a>
@@ -312,6 +298,32 @@ function RepoCard({
           {added ? ` · added ${added}` : ""}
         </span>
         <span className="cc-mdcard-actions">
+          {/* The local door: the model card view (SPEC §38), read from this
+              folder's own files. A real <a href> so middle-click and copy-link
+              work, with left-click intercepted for client-side navigation like
+              every other in-app link. The folder LISTING stays the default
+              everywhere else, because a gated template can never be a default
+              mode (CT-12) — so this asks for the mode by name. */}
+          <a
+            className="am-card-explore"
+            href={urlForFsPath(repo.path, "?_mode=model_card")}
+            title={`Explore ${repo.id} here — ${repo.path}`}
+            onClick={(e) => {
+              if (
+                e.defaultPrevented ||
+                e.button !== 0 ||
+                e.metaKey ||
+                e.ctrlKey ||
+                e.shiftKey ||
+                e.altKey
+              )
+                return;
+              e.preventDefault();
+              navigate(repo.path, { isDir: true, mode: "model_card" });
+            }}
+          >
+            Explore
+          </a>
           {/* Only offered where it means something: with a single revision,
               deleting "the revision" and deleting the repo are the same act,
               and two controls for it would just ask the user to tell them
@@ -371,95 +383,6 @@ function RepoCard({
   );
 }
 
-// The prune dialog: pick an age, read the list it selects, confirm. The
-// selection is client-side over `lastUsed` from the last scan, and what gets
-// sent is the resulting NAMES — so what the server deletes is exactly what this
-// list showed, never a threshold it re-evaluates against different state.
-function PruneModal({
-  repos,
-  busy,
-  onCancel,
-  onConfirm,
-}: {
-  repos: AiModelRepo[];
-  busy: boolean;
-  onCancel: () => void;
-  onConfirm: (days: number, stale: AiModelRepo[]) => void;
-}) {
-  const [days, setDays] = useState(DEFAULT_PRUNE_DAYS);
-  const stale = staleRepos(repos, days);
-  const freed = stale.reduce((sum, r) => sum + r.size, 0);
-  return (
-    <Modal
-      title="Prune unused models"
-      busy={busy}
-      onClose={onCancel}
-      footer={
-        <>
-          <button type="button" className="btn btn-secondary" disabled={busy} onClick={onCancel}>
-            Cancel
-          </button>
-          <button
-            type="button"
-            className="btn btn-danger"
-            disabled={busy || !stale.length}
-            onClick={() => onConfirm(days, stale)}
-          >
-            {busy
-              ? "Deleting…"
-              : stale.length
-                ? `Delete ${stale.length} ${stale.length === 1 ? "repo" : "repos"} · ${formatSize(freed)}`
-                : "Nothing to prune"}
-          </button>
-        </>
-      }
-    >
-      <div className="am-prune-choices">
-        {/* A segmented choice in the app's own button vocabulary: the active
-            threshold is the primary button, the rest are secondary. A tinted
-            border alone was too quiet for the control that decides what gets
-            deleted. */}
-        {PRUNE_CHOICES.map((choice) => (
-          <button
-            key={choice}
-            type="button"
-            className={"btn " + (choice === days ? "btn-primary" : "btn-secondary")}
-            aria-pressed={choice === days}
-            disabled={busy}
-            onClick={() => setDays(choice)}
-          >
-            {choice} days
-          </button>
-        ))}
-      </div>
-      <p>
-        Deletes every cached repo not <em>read</em> in the last {days} days. Re-downloading one is
-        the full transfer again.
-      </p>
-      {stale.length ? (
-        <ul className="am-prune-list">
-          {stale.map((r) => (
-            <li key={r.dir}>
-              <span className="am-prune-name">{r.id}</span>
-              <span className="am-prune-meta">
-                {formatSize(r.size)} · used {timeAgo(r.lastUsed) ?? "unknown"}
-              </span>
-            </li>
-          ))}
-        </ul>
-      ) : (
-        <p className="cc-unset">Nothing in this cache is that old.</p>
-      )}
-      {/* The honest caveat: this reads last-READ time, and some setups never
-          record it. Said here rather than in a doc nobody opens mid-delete. */}
-      <p className="cc-unset">
-        Last-read time comes from the filesystem. Volumes mounted <code>noatime</code> never update
-        it, so check the dates above before confirming.
-      </p>
-    </Modal>
-  );
-}
-
 export default function AiModels() {
   // Cached is the default, and Discover is the only thing on this page that
   // touches the network — so nothing is sent to a third party until someone
@@ -467,12 +390,6 @@ export default function AiModels() {
   // keeps the query from firing on page load.
   const [tab, setTab] = useState<"cached" | "discover">("cached");
   const [load, setLoad] = useState<Load>({ status: "loading" });
-  // Bumped by Refresh to re-run the scan in place. Scanning is a disk walk over
-  // every blob, so it happens on mount and on an explicit Refresh — never on a
-  // focus/return tick, which would re-walk tens of thousands of files every
-  // time the user alt-tabbed back. A delete answers with the fresh listing
-  // itself, so it needs no bump either.
-  const [reloadKey, setReloadKey] = useState(0);
   const [expanded, setExpanded] = useState<string | null>(null);
   const [pending, setPending] = useState<Pending | null>(null);
   const [busy, setBusy] = useState(false);
@@ -504,7 +421,12 @@ export default function AiModels() {
     return () => {
       alive = false;
     };
-  }, [reloadKey]);
+    // Scanning is a disk walk over every blob, so it runs ONCE per mount —
+    // never on a focus/return tick, which would re-walk tens of thousands of
+    // files every time the user alt-tabbed back, and never behind a Refresh
+    // button, which asked the user to know when a re-walk was worth it. A
+    // delete answers with the fresh listing itself, so nothing re-triggers it.
+  }, []);
 
   const data = load.status === "ok" ? load.data : null;
   const repos = data?.repos ?? [];
@@ -570,26 +492,6 @@ export default function AiModels() {
                 Discover
               </button>
             </div>
-            {tab === "cached" && repos.length > 0 && (
-              <button
-                type="button"
-                className="btn btn-secondary"
-                disabled={load.status === "loading"}
-                onClick={() => setPending({ kind: "prune" })}
-              >
-                Prune…
-              </button>
-            )}
-            {tab === "cached" && (
-              <button
-                type="button"
-                className="btn"
-                onClick={() => setReloadKey((k) => k + 1)}
-                disabled={load.status === "loading"}
-              >
-                {load.status === "loading" ? "Scanning…" : "Refresh"}
-              </button>
-            )}
           </div>
         </div>
         {tab === "discover" && <AiModelsDiscover />}
@@ -631,20 +533,6 @@ export default function AiModels() {
             </p>
           ))}
       </main>
-
-      {pending?.kind === "prune" && (
-        <PruneModal
-          repos={repos}
-          busy={busy}
-          onCancel={() => setPending(null)}
-          onConfirm={(days, stale) =>
-            runDelete(
-              stale.map((r) => ({ dir: r.dir })),
-              `pruned ${stale.length} unused ${days} days or more`,
-            )
-          }
-        />
-      )}
 
       {pending?.kind === "repo" && (
         <Modal

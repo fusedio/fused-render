@@ -400,6 +400,28 @@ def test_a_folder_that_is_not_in_a_cache_keeps_its_own_name(inspector, tmp_path)
     _write(folder, "config.json", json.dumps({"model_type": "llama"}))
     out = inspector.main(str(folder))
     assert out["name"] == "my-finetune" and out["kind"] == "folder"
+    # …and gets NO Hub link: it is somebody's own checkout, and a link built
+    # from a local directory name would point at a stranger's repo.
+    assert out["hubUrl"] is None
+
+
+@pytest.mark.parametrize("dirname,kind,url", [
+    ("models--meta-llama--Llama-3.1-8B", "model",
+     "https://huggingface.co/meta-llama/Llama-3.1-8B"),
+    ("datasets--org--squad", "dataset", "https://huggingface.co/datasets/org/squad"),
+    ("spaces--org--demo", "space", "https://huggingface.co/spaces/org/demo"),
+])
+def test_the_card_links_back_to_the_hub(inspector, tmp_path, dirname, kind, url):
+    # The way OUT of the view: it reads this disk, while the licence, the
+    # discussions and every revision live on the Hub page it cannot show. The
+    # KIND decides the path — a dataset linked as huggingface.co/<id> is a 404
+    # dressed up as a link.
+    repo = tmp_path / dirname
+    _write(repo, "snapshots/c1/config.json", json.dumps({"model_type": "llama"}))
+    _write(repo, "refs/main", "c1")
+    out = inspector.main(str(repo))
+    assert out["kind"] == kind
+    assert out["hubUrl"] == url
 
 
 def test_a_tokenizer_the_library_refuses_is_explained(tokenizer_reader, tmp_path):
