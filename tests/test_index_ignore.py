@@ -146,6 +146,37 @@ def test_a_bare_repo_named_foo_dot_git_is_NOT_a_leaf():
     assert is_inside_leaf_dir("/x/.git/objects/ab")
 
 
+def test_ignored_for_index_is_the_one_predicate_all_three_gates_share():
+    """The leaf exemption is a rule about what may EXIST as a row, and there are
+    three gates that filter by the ignore list. Applying it at one of them was a
+    data-loss bug (see test_index_scan's purge test), so it lives in exactly one
+    predicate and every gate routes through it."""
+    from fused_render.index.ignore import IgnoreRules, ignored_for_index
+
+    rules = IgnoreRules([".git", "node_modules"])
+
+    # the leaf's OWN name never forbids its row, under either flavour
+    assert not ignored_for_index(rules, "/w/proj/.git", tree=False)
+    assert not ignored_for_index(rules, "/w/proj/.git", tree=True)
+    # ...but an ignored ANCESTOR still does, and only the tree flavour sees it
+    assert ignored_for_index(rules, "/w/node_modules/pkg/.git", tree=True)
+    # ordinary dirs are unaffected in both flavours
+    assert ignored_for_index(rules, "/w/node_modules", tree=False)
+    assert ignored_for_index(rules, "/w/node_modules/pkg/lib", tree=True)
+    assert not ignored_for_index(rules, "/w/src", tree=True)
+
+
+def test_tree_false_does_not_judge_ancestors_so_a_root_inside_a_named_dir_works():
+    """Why keep_subdirs must NOT use the tree flavour: a scan root that itself sits
+    inside a directory matching an ignore NAME would otherwise have every path
+    under it forbidden, and the whole subtree would silently vanish."""
+    from fused_render.index.ignore import IgnoreRules, ignored_for_index
+
+    rules = IgnoreRules(["venv"])
+    assert not ignored_for_index(rules, "/home/me/venv/myproject/src", tree=False)
+    assert ignored_for_index(rules, "/home/me/venv/myproject/src", tree=True)
+
+
 def test_leaf_rules_are_part_of_the_applied_signature():
     """The signature means "the rules this index was built under", and the leaf
     rules decide index content just as the patterns do. If they were left out, an

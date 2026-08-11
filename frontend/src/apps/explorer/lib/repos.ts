@@ -119,6 +119,37 @@ export function reposView({
 }
 
 /**
+ * Whether a /api/git-repos refetch that COULD CHANGE THE ANSWER is in flight.
+ *
+ * `fetchedKey` is the index-state key the held response was fetched under;
+ * `indexKey` is the current one. Both are opaque strings (see FilesHome), and
+ * `null` means "no poll reading yet".
+ *
+ * Two cases are deliberately NOT pending, and both are about the mount sequence:
+ *
+ *   * nothing fetched yet (`undefined`) — the view is `loading` regardless, and
+ *     there is no held answer for a pending flag to protect.
+ *   * the held response was fetched before any poll reading (`fetchedKey` null)
+ *     and this is that FIRST reading arriving. That is a baseline adoption, not a
+ *     change: the response already carried the server's own `scanning` for the
+ *     same moment, so the refetch it triggers cannot change the answer. Calling
+ *     it pending made an idle no-index tab flash "Still building…" over its
+ *     Preferences CTA for one redundant round trip on every load.
+ *
+ * Every later transition IS pending, which is what keeps the scan-end flicker
+ * fixed — including the case where the held response predates the scan entirely
+ * (fetched idle, then a scan starts and ends), where the response's own
+ * `scanning` is false and nothing else would cover the gap.
+ */
+export function refreshIsPending(
+  fetchedKey: string | null | undefined,
+  indexKey: string | null,
+): boolean {
+  if (fetchedKey === undefined || fetchedKey === null) return false;
+  return fetchedKey !== indexKey;
+}
+
+/**
  * Whether the tab should keep polling the index. True until the answer is FINAL —
  * indexed and not stale. Gating on `!indexed` (the previous rule) stopped the poll
  * the moment a stale-but-served list arrived, which froze the refetch key and left

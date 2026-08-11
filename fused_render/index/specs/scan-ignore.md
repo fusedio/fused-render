@@ -54,13 +54,27 @@ stale rows survive a scan:
 
 | Route | Filter | Function |
 |---|---|---|
-| the walk's subdirectory list | `keep_subdirs` (also applies `SKIP_DIRS` and the mount guard) | `scan_dir_once`, both the unchanged and rescanned branches |
-| cached directories loaded from `dirs.parquet` | `is_ignored_tree` | `load_dir_cache` |
-| paths replayed from the FSEvents journal | `is_ignored_tree` + the mount guard | `_run_fsevents` |
+| the walk's subdirectory list | `ignored_for_index(…, tree=False)` (also applies `SKIP_DIRS` and the mount guard) | `scan_dir_once`, both the unchanged and rescanned branches |
+| cached directories loaded from `dirs.parquet` | `ignored_for_index(…, tree=True)` | `load_dir_cache` |
+| paths replayed from the FSEvents journal | `ignored_for_index(…, tree=True)` + the mount guard | `_run_fsevents` |
 
-`is_ignored` tests one directory (the walk already pruned its parents);
-`is_ignored_tree` also matches paths *inside* an ignored folder, for the two routes
-where a path arrives without its ancestors having been checked.
+All three go through **one predicate**, `ignore.ignored_for_index` — "does the
+ignore list forbid a row for this path?". `tree` says what the CALLER knows, not
+what the rule is: `tree=False` tests the directory's own name (the walk already
+pruned its parents), `tree=True` also matches paths *inside* an ignored folder, for
+the two routes where a path arrives without its ancestors having been checked.
+`tree=False` must NOT be widened to the tree test — a scan root that itself sits
+inside a directory matching an ignore *name* (`~/venv/myproject`) would then have
+its whole subtree forbidden.
+
+One predicate rather than three call sites spelling out the same rule, because the
+leaf exemption below is a rule about *what may exist as a row* and it was once
+applied at only the first of these three. The result was not a partial fix but
+DATA LOSS: a full rescan wrote the `.git` rows, and the next incremental pass —
+where the cache filter decides what is carried forward and the journal gate
+decides what is re-added — deleted every one of them, so a working Repos tab
+broke on the next scan. Same failure shape as the walk/index parity rule and
+`runner.canonical_root`: one rule, several implementations, silent disagreement.
 
 Filtering the cache is what makes newly-ignored folders **self-purging**: an ignored
 directory is absent from the cache, so it is never added to the keep list, so
@@ -101,11 +115,13 @@ directories on every request. Three consequences worth stating:
   prune *subdirectories* but not files: an ignored `.git` would still contribute
   the ~15 loose files sitting directly in it (`HEAD`, `config`, `index`, …) and
   still pay to list the directory. A leaf is never listed at all;
-- `keep_subdirs` lets a leaf dir survive the **user's** ignore list (`SKIP_DIRS`
-  and the mount guard keep their veto). An ignore entry buys a scan no-descent and
-  no-row; for a leaf the first is already true, so all it could still do is delete
-  the row that repo detection depends on — and `.git` shipped in the default list
-  once, so old saved configs really do name it.
+- a leaf dir survives the **user's** ignore list (`SKIP_DIRS` and the mount guard
+  keep their veto). An ignore entry buys a scan no-descent and no-row; for a leaf
+  the first is already true, so all it could still do is delete the row that repo
+  detection depends on — and `.git` shipped in the default list once, so old saved
+  configs really do name it. The exemption lives in `ignored_for_index` (§3) and so
+  applies at **all three** gates; ancestors keep their veto, so `<repo>/.git`
+  survives an entry naming `.git` while `node_modules/pkg/.git` does not.
 
 `is_leaf_dir` tests the path's own final component, which is all a descent needs:
 a walk that refuses to list `Foo.app` never reaches anything below it. Two callers

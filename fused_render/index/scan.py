@@ -23,6 +23,7 @@ from fused_render.index.ignore import (
     SKIP_DIRS,
     IgnoreRules,
     MountGuard,
+    ignored_for_index,
     is_inside_leaf_dir,
     is_leaf_dir,
     norm,
@@ -54,10 +55,14 @@ def keep_subdirs(subdirs, rules: IgnoreRules, guard: MountGuard):
 
     Narrow on purpose — this only overrides the verdict on the leaf dir ITSELF.
     A repo inside an ignored tree is still gone, because the walk never reaches
-    its parent to offer it here."""
+    its parent to offer it here.
+
+    The exemption is NOT spelled out here: it lives in `ignored_for_index`, which
+    every ignore gate routes through. It used to be inline, and that is exactly
+    how the other two gates went on purging the rows this one kept."""
     return [s for s in subdirs
             if s not in SKIP_DIRS and not guard.blocks(s)
-            and (is_leaf_dir(s) or not rules.is_ignored(s))]
+            and not ignored_for_index(rules, s, tree=False)]
 
 
 def _dir_sig(entries):
@@ -535,8 +540,14 @@ def _run_fsevents(cfg, rules, guard, root, hint, cache, sink, ev, cancel_flag,
         # below then carries those rows forward on every later run. The
         # package's own dirs row is unaffected: it is is_leaf_dir's, made when
         # the journal or the walk names the package.
-        if (d in scanned or rules.is_ignored_tree(d) or guard.blocks(d)
-                or is_inside_leaf_dir(d)):
+        # ignored_for_index, not rules.is_ignored_tree: a leaf dir the user's
+        # ignore list names must still be re-added here, or an incremental pass
+        # PURGES the rows the walk-driven scan wrote (the cache filter drops them
+        # from the keep list, this gate refuses to recreate them, and the
+        # compaction then has neither). tree=True because the journal hands over
+        # a path whose ancestors nobody checked.
+        if (d in scanned or ignored_for_index(rules, d, tree=True)
+                or guard.blocks(d) or is_inside_leaf_dir(d)):
             continue
         scanned.add(d)
         kind, payload, subdirs = scan_dir_once(

@@ -21,6 +21,7 @@ import { hydrateRecents, loadRecents, recentFsPath, useRecentsVersion } from "@a
 import { BookmarkPreviewCard, RecentPreviewCard, FolderPreviewCard } from "@apps/explorer/BookmarkCards";
 import { describeSpec, runAiSearch, type AiSearchResult } from "@apps/explorer/lib/ai-search";
 import {
+  refreshIsPending,
   reposMessage,
   reposNeedsIndexPoll,
   reposStaleNote,
@@ -700,7 +701,10 @@ export default function FilesHome({ config }: { config: Config }) {
   // is precisely the scan-end flicker (the tab showing "go rebuild it" between the
   // poll going idle and the new list arriving). Triggered is not arrived, so the
   // view has to be able to see the gap rather than be told about it afterwards.
-  const refreshPending = fetchedKey !== indexKey;
+  //
+  // The rule itself (notably: the first poll reading is a BASELINE, not a change)
+  // lives in refreshIsPending so it is covered by the state-table walk.
+  const refreshPending = refreshIsPending(fetchedKey, indexKey);
   // One total function over all four inputs, so no impossible in-between state can
   // be rendered — see the state table in lib/repos.ts.
   const reposTab = reposView({

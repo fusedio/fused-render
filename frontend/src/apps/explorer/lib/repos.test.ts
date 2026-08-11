@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import {
+  refreshIsPending,
   reposMessage,
   reposNeedsIndexPoll,
   reposStaleNote,
@@ -200,6 +201,93 @@ describe("reposNeedsIndexPoll", () => {
   });
 });
 
+// -- refreshIsPending: the mount corner --------------------------------------
+
+describe("refreshIsPending", () => {
+  it("is false before anything has been fetched", () => {
+    expect(refreshIsPending(undefined, null)).toBe(false);
+    expect(refreshIsPending(undefined, "false|1")).toBe(false);
+  });
+
+  it("treats the FIRST poll reading as a baseline, not a change", () => {
+    // The bug: at mount the held response is fetched before any poll, so
+    // fetchedKey is null; the first reading then flipped the key and claimed a
+    // pending refresh, flashing "Still building…" over an idle tab's CTA.
+    expect(refreshIsPending(null, "false|123")).toBe(false);
+    expect(refreshIsPending(null, null)).toBe(false);
+  });
+
+  it("is true for every later change, which is what fixes the scan-end flicker", () => {
+    expect(refreshIsPending("false|1", "true|1")).toBe(true);   // scan started
+    expect(refreshIsPending("true|1", "false|1")).toBe(true);   // cancelled/failed
+    expect(refreshIsPending("true|1", "false|2")).toBe(true);   // completed
+    expect(refreshIsPending("false|1", "false|1")).toBe(false); // nothing changed
+  });
+});
+
+describe("the mount sequence, step by step", () => {
+  // An IDLE machine with no index: the tab must reach its actionable CTA and stay
+  // there, never passing through "Still building…".
+  const idleNoIndex = res({ indexed: false, scanning: false, reason: "no-index" });
+
+  it("loading -> unavailable, with no building flash in between", () => {
+    // 1. mounted, nothing fetched, no poll yet
+    let key: string | null = null;
+    let fetched: string | null | undefined = undefined;
+    expect(
+      reposView({ response: null, failed: false, liveScanning: null,
+                  refreshPending: refreshIsPending(fetched, key) }).kind,
+    ).toBe("loading");
+
+    // 2. first response lands (fetched before any poll reading)
+    fetched = null;
+    expect(
+      reposView({ response: idleNoIndex, failed: false, liveScanning: null,
+                  refreshPending: refreshIsPending(fetched, key) }).kind,
+    ).toBe("unavailable");
+
+    // 3. the first poll reading arrives: idle, agreeing with the response. THIS is
+    //    the step that used to flash "building" for a redundant round trip.
+    key = "false|999";
+    const v = reposView({ response: idleNoIndex, failed: false, liveScanning: false,
+                          refreshPending: refreshIsPending(fetched, key) });
+    expect(v.kind).toBe("unavailable");
+    expect(msg(v)).toMatch(/Preferences/);
+
+    // 4. the redundant refetch lands with the same answer. Still settled.
+    fetched = key;
+    expect(
+      reposView({ response: idleNoIndex, failed: false, liveScanning: false,
+                  refreshPending: refreshIsPending(fetched, key) }).kind,
+    ).toBe("unavailable");
+  });
+
+  it("an outdated index reaches its own message without a building flash", () => {
+    const outdated = res({ indexed: false, scanning: false, reason: "outdated" });
+    const v = reposView({ response: outdated, failed: false, liveScanning: false,
+                          refreshPending: refreshIsPending(null, "false|1") });
+    expect(v.kind).toBe("outdated");
+  });
+
+  it("but a scan starting AFTER the baseline still reaches building, no CTA flash", () => {
+    // The case that needs `refreshPending`: the held response predates the scan
+    // entirely, so its own `scanning` is false and only pending covers the gap.
+    const fetched = "false|1";
+    // scan runs
+    expect(
+      reposView({ response: idleNoIndex, failed: false, liveScanning: true,
+                  refreshPending: refreshIsPending(fetched, "true|1") }).kind,
+    ).toBe("building");
+    // scan ends; poll idle again, refetch in flight -> must NOT show the CTA
+    const gap = reposView({
+      response: idleNoIndex, failed: false, liveScanning: false,
+      refreshPending: refreshIsPending(fetched, "false|2"),
+    });
+    expect(gap.kind).toBe("building");
+    expect(msg(gap)).not.toMatch(/Preferences/);
+  });
+});
+
 // -- the whole table, walked ------------------------------------------------
 //
 // Every input combination, checked against the two invariants and for total
@@ -215,12 +303,30 @@ describe("the complete input space", () => {
     LIST,
     STALE_LIST,
   ];
+  // refreshPending is walked as the KEY PAIR it is derived from, not as a free
+  // boolean: the mount corner (fetchedKey null + a first reading) is a specific
+  // pair, and enumerating the boolean alone is what let it through inspection.
+  const keyPairs: Array<[string | null | undefined, string | null]> = [
+    [undefined, null],      // mounted, nothing fetched, no poll
+    [undefined, "false|1"], // nothing fetched, poll already read
+    [null, null],           // response held, poll never read
+    [null, "false|1"],      // THE mount corner: first reading arrives
+    ["false|1", "false|1"], // settled
+    ["false|1", "true|1"],  // a scan started
+    ["true|1", "false|1"],  // cancelled or failed
+    ["true|1", "false|2"],  // completed
+  ];
   const cells: Array<{ input: ReposInputs; v: ReposView }> = [];
   for (const response of responses) {
     for (const failed of [false, true]) {
       for (const liveScanning of [null, false, true]) {
-        for (const refreshPending of [false, true]) {
-          const input = { response, failed, liveScanning, refreshPending };
+        for (const [fetchedKey, indexKey] of keyPairs) {
+          const input = {
+            response,
+            failed,
+            liveScanning,
+            refreshPending: refreshIsPending(fetchedKey, indexKey),
+          };
           cells.push({ input, v: reposView(input) });
         }
       }
@@ -248,6 +354,22 @@ describe("the complete input space", () => {
       const scanning = input.liveScanning ?? input.response?.scanning ?? false;
       if (scanning || input.refreshPending) {
         expect(msg(v)).not.toMatch(/Preferences/);
+      }
+    }
+  });
+
+  it("NO FALSE BUILDING: a settled idle load never claims a scan", () => {
+    // The #2 invariant, by construction. When the response itself reports idle,
+    // the live poll agrees, and the only key movement is the mount baseline, there
+    // is nothing in motion — so `building` would be a claim about nothing and
+    // would hide the CTA the user actually needs.
+    for (const [fetchedKey, indexKey] of keyPairs) {
+      if (refreshIsPending(fetchedKey, indexKey)) continue;
+      for (const response of responses) {
+        if (response === null || response.indexed || response.scanning) continue;
+        const v = reposView({ response, failed: false, liveScanning: false,
+                              refreshPending: false });
+        expect(v.kind).not.toBe("building");
       }
     }
   });

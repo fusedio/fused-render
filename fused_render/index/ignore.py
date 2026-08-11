@@ -123,6 +123,50 @@ def is_leaf_dir(path: str) -> bool:
     return tail in LEAF_DIR_NAMES or tail.endswith(LEAF_DIR_SUFFIXES)
 
 
+def ignored_for_index(rules: "IgnoreRules", path: str, *, tree: bool) -> bool:
+    """THE question every ignore gate asks: does the ignore list forbid a
+    `dirs.parquet` ROW for `path`?
+
+    This is the single definition, and it exists because there are THREE gates
+    that filter by the ignore list (specs/scan-ignore.md §3) and the leaf
+    exemption has to mean the same thing at all of them:
+
+      * `scan.keep_subdirs`     — subdirs handed on by a walk        (tree=False)
+      * `store.load_dir_cache`  — cached rows read back from parquet (tree=True)
+      * `scan._run_fsevents`    — paths named by the OS journal      (tree=True)
+
+    Applying it at only one of those is not a partial fix, it is a DATA LOSS bug:
+    `keep_subdirs` alone let a full rescan write `.git` rows for a config that
+    names `.git`, and then the next incremental pass — where the cache filter
+    decides what is carried forward and the journal gate decides what is
+    re-added — dropped every one of them. A user whose Repos tab worked lost it
+    on the next scan. Same shape as the walk/index parity bug and the
+    canonical_root drift: one rule, several implementations, silent disagreement.
+
+    `tree` is about what the CALLER knows, not about the rule:
+      * False — the path came from a walk that already vetted its ancestors, so
+        only its own name is in question. Deliberately NOT the tree test: a scan
+        root that itself sits inside a directory matching an ignore NAME (say
+        `~/venv/myproject`) would otherwise have every path under it forbidden.
+      * True — the path arrived without its ancestors being checked (a cached
+        row, a journal entry), so an ignored ANCESTOR forbids it too.
+
+    The leaf exemption is applied once, here: a leaf dir is never forbidden by a
+    verdict on its OWN name (see `keep_subdirs` for why — the ignore list can
+    only delete the row, never save any work), but ancestors keep their veto, so
+    `<repo>/.git` survives an entry naming `.git` while
+    `node_modules/pkg/.git` does not.
+    """
+    if is_leaf_dir(path):
+        if not tree:
+            # Its own name is the only thing in question, and a leaf is exempt
+            # from that.
+            return False
+        parent = path.rpartition("/")[0]
+        return bool(parent) and rules.is_ignored_tree(parent)
+    return rules.is_ignored_tree(path) if tree else rules.is_ignored(path)
+
+
 def is_inside_leaf_dir(path: str) -> bool:
     """Whether any ANCESTOR of `path` is a leaf directory — i.e. whether the
     leaf rule means this path should not exist as a row at all.

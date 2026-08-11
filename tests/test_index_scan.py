@@ -209,6 +209,51 @@ def test_a_user_ignore_entry_cannot_delete_the_dot_git_row(tmp_path):
     assert scan_dir_once(str(git), {}, rules, guard)[2] == []
 
 
+def test_an_ignored_dot_git_row_SURVIVES_an_incremental_rescan(tmp_path):
+    """The data-loss sequence, end to end: a full rescan writes the `.git` rows,
+    then an incremental pass over a config that NAMES `.git` must not purge them.
+
+    keep_subdirs alone was not enough. The cache filter (load_dir_cache) decides
+    what an incremental pass carries forward and the journal gate decides what it
+    re-adds; with the leaf exemption in only the walk gate, the rows the first scan
+    wrote were dropped by the second — so a user whose Repos tab worked lost it on
+    the next scan. Worse than a stale list: actively purged."""
+    src = tmp_path / "src"
+    src.mkdir()
+    _tree(src)
+    _repo(src, "proj")
+    cfg = _cfg(tmp_path, ignore=["node_modules", ".git"])
+
+    _run(cfg, str(src))
+    git_dir = str(src / "proj" / ".git")
+    dirs = pq.read_table(cfg.dirs_parquet).column("dir").to_pylist()
+    assert git_dir in dirs, "the full rescan should record the leaf row"
+
+    # ...and the incremental pass must keep it. Both gates are exercised: the
+    # cache filter (whether it is carried forward) and the journal/walk gate
+    # (whether it is re-added).
+    _run(cfg, str(src), run_name="run2")
+    dirs2 = pq.read_table(cfg.dirs_parquet).column("dir").to_pylist()
+    assert git_dir in dirs2, "an incremental pass purged the .git row"
+
+
+def test_load_dir_cache_keeps_an_ignored_leaf_but_drops_a_real_ignored_tree(tmp_path):
+    """The cache filter is the sharpest edge: a row missing here is a row the next
+    compaction deletes. Leaf exempt, ancestors still vetoing."""
+    import pyarrow.parquet as pqmod
+
+    src = tmp_path / "src"
+    src.mkdir()
+    _tree(src)
+    _repo(src, "proj")
+    cfg = _cfg(tmp_path, ignore=["node_modules", ".git"])
+    _run(cfg, str(src))
+
+    cache = load_dir_cache(cfg, str(src), pqmod)
+    assert str(src / "proj" / ".git") in cache          # leaf: exempt
+    assert str(src / "node_modules") not in cache       # ordinary ignore: gone
+
+
 def test_keep_subdirs_still_honors_ignores_for_non_leaf_dirs(tmp_path):
     """The leaf override is narrow — it decides the verdict on the leaf dir
     ITSELF and changes nothing else, including for a repo sitting inside an
