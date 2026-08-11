@@ -603,6 +603,37 @@ def app_satisfies(requirements: list[str]) -> bool:
         return False
 
 
+def app_python_version() -> str:
+    """The app interpreter's Python version — THIS process's, by construction.
+
+    Not a probe, and not an assumption either: `app_interpreter()` accepts a
+    candidate only when it reports our own `sys.prefix` (the one acceptance rule
+    for both its rungs, wrapper included), and the same prefix is the same
+    installation, hence the same interpreter version. So the answer is already in
+    this process, and asking a subprocess for it would spend a spawn on the request
+    path to learn something we can prove.
+
+    Asked before the app-interpreter fast path is taken, against a folder's
+    `requires-python`: a folder pinned to `==3.11.*` must not run on the app's 3.12
+    just because the app happens to ship every distribution it named (D244). The
+    fast path skips the venv entirely, so this is the only place that pin can be
+    honoured on it — and unlike the venv path there is nothing to build here, so the
+    only honouring available is declining.
+    """
+    return "%d.%d.%d" % sys.version_info[:3]
+
+
+def _app_interpreter_may_run(project_dir: str) -> bool:
+    """Does this app's own interpreter satisfy `project_dir`'s `requires-python`?
+
+    True when the folder pins nothing, which is every folder that never thought
+    about it — so the fast path is exactly as available as it was before D244.
+    """
+    from fused_render import projectenv
+
+    return projectenv.python_pin_allows(project_dir, app_python_version())
+
+
 def _interpreter_path_available() -> bool:
     """Can this backend run code on an interpreter WE choose?
 
@@ -994,13 +1025,25 @@ def _needs_install_dict(project_dir: str, abs_path: str) -> dict:
     # follow once it lands. The key differs between the rounds on purpose — it is
     # what lets the page tell "we made progress, ask again" from "we installed and
     # nothing changed", which is a loop.
-    needs_python = not envinstall.script_python_ready()
+    #
+    # The version is the PROJECT's (D244), so a folder that pins `==3.11.*` reports
+    # 3.11 here and downloads 3.11 — and says WHY, quoting the folder's own
+    # declaration. Naming only the version would leave a user reading "needs Python
+    # 3.11" with no way to tell whether that came from their file or from the app,
+    # which is the confusion this whole change exists to remove.
+    needs_python = not envinstall.project_python_ready(project_dir)
+    pinned = envinstall.project_python_version(project_dir)
+    version = pinned or envinstall.SCRIPT_PYTHON_VERSION
     if needs_python:
-        key = envinstall.PYTHON_BOOTSTRAP_KEY
+        key = envinstall.python_bootstrap_key(version)
+        because = (
+            f" (this folder's pyproject.toml requires {projectenv.requires_python_of(project_dir)})"
+            if pinned else ""
+        )
         message = (
-            f"{name} declares dependencies that need Python "
-            f"{envinstall.SCRIPT_PYTHON_VERSION}, which this machine does not have "
-            "yet. It needs a one-time download, and then the packages themselves."
+            f"{name} declares dependencies that need Python {version}{because}, "
+            "which this machine does not have yet. It needs a one-time download, "
+            "and then the packages themselves."
         )
     else:
         key = envinstall.venv_key_for(project_dir)
@@ -1029,7 +1072,7 @@ def _needs_install_dict(project_dir: str, abs_path: str) -> dict:
             # So the loader can name what it is fetching instead of listing packages
             # it is not downloading yet. Absent (not false) on the ordinary path, so
             # a client that ignores it is unaffected.
-            **({"python": envinstall.SCRIPT_PYTHON_VERSION} if needs_python else {}),
+            **({"python": version} if needs_python else {}),
         },
         "error": {
             "type": "EnvNotInstalled",
@@ -1090,6 +1133,25 @@ async def run_python(path: str, params: dict) -> dict:
     # markers when it syncs, so every side agrees about what the environment
     # actually contains.
     requirements = projectenv.applicable_dependencies_of(project) if project else []
+
+    # A folder may pin the Python its environment is built on, and one this app
+    # cannot provide is the DECLARATION's problem, not an install to attempt: the
+    # loader would download an interpreter, fail to satisfy the pin with it, and
+    # offer the same download again. Answered here — before the fast path, before
+    # the pre-flight — and answered in our own words, because this is the one
+    # failure in the whole flow that uv cannot explain: its message would name a
+    # version the user never wrote down.
+    #
+    # Outside the `try` below on purpose: that block's catch-all reports
+    # "fused-render internal error (not your script)", which is the wrong sentence
+    # for a line the user typed into their own pyproject.toml.
+    if project is not None:
+        from fused_render import envinstall
+
+        try:
+            envinstall.project_python_version(project)
+        except envinstall.UnsupportedPythonRequirement as e:
+            return _error_dict("UnsupportedPythonRequirement", str(e))
 
     # No project -> the app's own interpreter, no venv (PY-17). `interpreter` and
     # `requirements` are mutually exclusive upstream (the interpreter branch
@@ -1169,8 +1231,19 @@ async def run_python(path: str, params: dict) -> dict:
         # Off the event loop for the same reason `app_interpreter` and
         # `is_installed` are: both probes behind it spawn a subprocess on their
         # first call.
+        #
+        # Skipped, too, for a folder whose `requires-python` this app's own
+        # interpreter does not meet (D244). The fast path's entire claim is that
+        # running here is equivalent to running in the venv it skips — and a folder
+        # that pinned its Python has said, in the one place the packaging ecosystem
+        # provides for saying it, that those two are not equivalent. The venv path
+        # honours the pin by building on a satisfying interpreter; the only way this
+        # path can honour it is by declining, which costs a download the fast path
+        # would have saved and is the trade the declaration asks for.
         locked = bool(project) and projectenv.has_lock(project)
-        if project and requirements and not locked and _interpreter_path_available():
+        if (project and requirements and not locked
+                and _app_interpreter_may_run(project)
+                and _interpreter_path_available()):
             interpreter = await asyncio.to_thread(
                 _app_interpreter_if_satisfies, requirements
             )

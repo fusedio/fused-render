@@ -125,7 +125,7 @@ def warm_fused_backend_venv(tmp_path_factory):
     # Pinned rather than taught the two-round flow on purpose: what these tests need
     # is *a* working venv, not a particular Python, and making CI download 30MB of
     # CPython to satisfy a fixture buys nothing. The bootstrap flow has its own tests.
-    envinstall._script_python = (None, True)
+    envinstall._python_by_version[envinstall.SCRIPT_PYTHON_VERSION] = (None, True)
 
     # One shared project folder for every worker, in xdist's common base temp dir.
     # The venv key IS this path (projectenv), so all workers agree on the venv only
@@ -296,10 +296,15 @@ def _pin_the_script_interpreter_resolution():
     pre-D214 behaviour, so tests written before the pin keep testing what they meant
     to. Tests that are ABOUT the resolution reset it (see `_fresh_script_python` in
     tests/test_env_install.py) and drive it explicitly.
+
+    Only the DEFAULT version is pinned, deliberately. A folder that declares its own
+    `requires-python` (D244) resolves under its own key, and pinning that one here
+    would hand every such test a ready interpreter it never asked for — the tests
+    about a folder's pin are precisely the tests that must drive it themselves.
     """
     from fused_render import envinstall
 
-    envinstall._script_python = (None, True)
+    envinstall._python_by_version[envinstall.SCRIPT_PYTHON_VERSION] = (None, True)
     try:
         yield
     finally:

@@ -77,13 +77,18 @@ def _isolated_install_state(tmp_path, monkeypatch):
     envinstall.reset_venv_validation_cache()
 
 
-def _project(tmp_path, name="proj", deps=("some-dist",)) -> str:
-    """A project folder declaring `deps`. Returns its absolute path — the key."""
+def _project(tmp_path, name="proj", deps=("some-dist",), requires_python=None) -> str:
+    """A project folder declaring `deps`. Returns its absolute path — the key.
+
+    `requires_python` writes the folder's `[project].requires-python` (D244) — the
+    declaration that decides which interpreter its environment is built on.
+    """
     d = tmp_path / name
     d.mkdir(parents=True, exist_ok=True)
     (d / "pyproject.toml").write_text(
         "[project]\nname = '%s'\nversion = '0.1.0'\ndependencies = [%s]\n"
-        % (name, ", ".join(repr(x) for x in deps)),
+        % (name, ", ".join(repr(x) for x in deps))
+        + ("requires-python = '%s'\n" % requires_python if requires_python else ""),
         encoding="utf-8",
     )
     return str(d)
@@ -542,9 +547,9 @@ def test_the_interpreter_is_resolved_ONCE_per_process(
     calls = []
     real = envinstall._probe_python
 
-    def counted(path):
+    def counted(path, version=envinstall.SCRIPT_PYTHON_VERSION):
         calls.append(path)
-        return real(path)
+        return real(path, version)
 
     monkeypatch.setattr(envinstall, "_probe_python", counted)
     for _ in range(5):
@@ -579,7 +584,7 @@ def test_the_interpreter_is_never_ANOTHER_VENVS_python(
 
     monkeypatch.setattr(envinstall, "uv_bin", lambda: "/usr/bin/uv")
     monkeypatch.setattr(envinstall.subprocess, "run", spy)
-    monkeypatch.setattr(envinstall, "_probe_python", lambda p: True)
+    monkeypatch.setattr(envinstall, "_probe_python", lambda p, version=None: True)
     monkeypatch.setattr(envinstall, "_running_version", lambda: (3, 14))
     envinstall.script_python()
 
@@ -736,6 +741,288 @@ def test_the_resolved_script_interpreter_reaches_the_worker(
 
 class _FakePopen:
     pid = 4242
+
+
+# --- a folder that declares its own `requires-python` (D244) -------------------
+#
+# D214 pinned the base interpreter to 3.12, and until now that pin was the ONLY
+# answer: a folder whose `pyproject.toml` said `requires-python = "==3.11.*"` got a
+# 3.12 base anyway, `uv sync` refused with a requires-python conflict, and the
+# version in uv's message appeared nowhere in the user's own files — so the error
+# gave no hint that the 3.12 came from the app rather than from anything they
+# wrote. These tests cover the three halves of honouring the declaration: choosing
+# the release, acquiring it, and refusing — in our own words — the pins that no
+# interpreter this app will build on can satisfy.
+
+
+@pytest.mark.parametrize("pin", [">=3.11", ">=3.12", "==3.12.*", ">=3.10,<3.14", ">=3.9"])
+def test_a_pin_the_default_ALREADY_satisfies_moves_nothing(tmp_path, pin):
+    """None is not "no pin" — it is "no change", and that distinction is the point.
+
+    Every core template declares `>=3.12`, and a folder the pin already satisfies
+    must resolve exactly as it did before D244: the same interpreter, the same venv
+    key, no second CPython downloaded to reach a version the app is already on. So
+    the honouring only ever ENGAGES for a declaration the default genuinely fails.
+    """
+    proj = _project(tmp_path, requires_python=pin)
+    assert envinstall.project_python_version(proj) is None
+
+
+@pytest.mark.parametrize("pin,expected", [
+    ("==3.11.*", "3.11"),
+    ("<3.11", "3.10"),
+    (">=3.13", "3.13"),
+    (">3.13", "3.13"),
+    (">=3.9,<3.11", "3.10"),
+    ("!=3.12.*", "3.11"),
+    (">=3.12.5", "3.12"),
+])
+def test_the_NEAREST_release_the_folder_allows_is_chosen(tmp_path, pin, expected):
+    """Nearest the pin, older on a tie — never simply "the newest that satisfies".
+
+    The pin is the version this app is built, shipped and tested on, and wheel
+    coverage thins out with distance from it (which is the whole reason D214 pinned
+    anything). So `>=3.13` gets 3.13 rather than whatever CPython is newest, and
+    `<3.11` gets 3.10 rather than the oldest release in existence: the folder's
+    declaration says how far to move, and nothing moves further than that.
+
+    `>3.13` -> 3.13 is the case that shows this is version arithmetic and not string
+    matching: 3.13.0 is excluded but 3.13.7 is not, so the minor is still 3.13. And
+    `>=3.12.5` -> 3.12 keeps a patch-level pin on its own minor, where uv's newest
+    3.12 can satisfy it, instead of reading "3.12 fails" as "leave the 3.12 line".
+    """
+    proj = _project(tmp_path, requires_python=pin)
+    assert envinstall.project_python_version(proj) == expected
+
+
+@pytest.mark.parametrize("pin,expected", [
+    (">=3.12.5", "3.12"),
+    (">3.12", "3.12"),
+    ("==3.12.5", "3.12"),
+    ("<=3.12.9", None),
+    ("!=3.12.3", None),
+])
+def test_a_patch_level_pin_is_answered_at_MINOR_granularity(tmp_path, pin, expected):
+    """The boundary of what this module can promise, pinned so it stays a decision.
+
+    What it can obtain is `uv python install 3.X`, whose PATCH is uv's choice and
+    not ours, so a patch-level guarantee is not one it is able to make. The pin is
+    therefore judged against bare `3.12`: a pin that excludes it lands back on the
+    3.12 line (first three cases), and a pin that merely excludes some other patch
+    reads as "the default is fine" (last two).
+
+    Both directions can end up on a 3.12 whose patch the folder forbade — and when
+    they do, `uv sync` refuses in its own words, naming both versions, with the base
+    interpreter beside it. That is the property that matters and the reason this is
+    a boundary rather than a bug: a patch pin can cost a clear error, never a silent
+    run on a Python the folder ruled out.
+    """
+    proj = _project(tmp_path, requires_python=pin)
+    assert envinstall.project_python_version(proj) == expected
+
+
+@pytest.mark.parametrize("pin", [">=4.0", "<3.9", "==2.7.*"])
+def test_a_pin_NOTHING_can_satisfy_is_refused_in_our_own_words(tmp_path, pin):
+    """The one failure uv cannot explain, so it must not be left to uv.
+
+    There is no useful "not installed yet" here: the loader would download an
+    interpreter, fail the pin with it, and offer the same download again. So it is
+    raised rather than answered — and the message has to carry the folder's own
+    declaration and the range this app can offer, because a user reading only uv's
+    text would see a version they never wrote and no statement of who chose it.
+    """
+    proj = _project(tmp_path, requires_python=pin)
+    with pytest.raises(envinstall.UnsupportedPythonRequirement) as exc:
+        envinstall.project_python_version(proj)
+    message = str(exc.value)
+    assert pin in message, f"the folder's own declaration is missing from: {message}"
+    assert envinstall.SCRIPT_PYTHON_VERSION in message and "3.10" in message, (
+        "the message must say what this app CAN build on, or it names a problem "
+        f"with no range to fix it against: {message}"
+    )
+
+
+def test_an_unreadable_pin_is_ignored_rather_than_fatal(tmp_path, caplog):
+    """A typo in a manifest must not take every script in the folder down with it.
+
+    Same rule as invalid TOML (`_load_manifest`) and a broken marker
+    (`marker_applies`): this runs on the /api/run path, and uv will reject the same
+    string with a better message when the environment is actually built, so
+    declining to guess costs nothing. Guessing the other way costs the whole folder.
+    """
+    proj = _project(tmp_path, requires_python="banana")
+    with caplog.at_level(logging.WARNING):
+        assert envinstall.project_python_version(proj) is None
+    assert "banana" in caplog.text, "silently ignoring it leaves nothing to debug"
+
+
+def test_the_resolution_is_measured_per_VERSION_not_per_machine(
+    tmp_path, monkeypatch, _fresh_script_python
+):
+    """Readiness is a fact about an interpreter, and there is more than one now.
+
+    One cached slot would let either answer stand in for the other — a machine
+    that IS the pinned 3.12 would report itself ready for a folder's 3.11 and hand
+    `uv sync` a 3.12 base for a project that just said it cannot use one.
+    """
+    monkeypatch.setattr(envinstall, "_running_version", lambda: (3, 12))
+    _uv_stub(tmp_path, monkeypatch, finds=None)  # uv can find no other version
+    proj = _project(tmp_path, requires_python="==3.11.*")
+
+    assert envinstall.script_python_ready() is True, "we ARE the pinned version"
+    assert envinstall.project_python_ready(proj) is False, (
+        "ready for 3.12 is not ready for the 3.11 this folder asked for"
+    )
+
+
+def test_a_pinned_folder_is_built_on_ITS_interpreter_not_the_backends(
+    tmp_path, monkeypatch, _fresh_script_python
+):
+    """`uv sync --python` is the whole mechanism, so this is where honouring happens.
+
+    The unpinned folder still reads `_python_executable()` off the live backend —
+    there the backend runs the code, so its interpreter and the environment's have
+    to be one choice. The pinned folder deliberately does not: its run is handed the
+    venv's own interpreter, so insisting on the backend's would be insisting the
+    venv be built on the very interpreter the folder said it cannot use.
+    """
+    py311 = _py312_stub(tmp_path, name="py311", version="3.11")
+    _uv_stub(tmp_path, monkeypatch, finds=str(py311))
+    monkeypatch.setattr(envinstall, "_running_version", lambda: (3, 12))
+    monkeypatch.setattr(envinstall, "_python_executable", lambda: "/app/bin/python")
+
+    pinned = _project(tmp_path, name="pinned", requires_python="==3.11.*")
+    plain = _project(tmp_path, name="plain")
+    assert envinstall.project_python_ready(pinned) is True
+    assert envinstall.project_base_python(pinned) == str(py311)
+    assert envinstall.project_base_python(plain) == "/app/bin/python"
+
+
+def test_the_pinned_interpreter_REACHES_the_worker(
+    tmp_path, monkeypatch, _fresh_script_python
+):
+    """Slot 5 of argv, and nothing else — the worker cannot re-derive it (D152).
+
+    A resolution that stopped short of the spawn would leave every venv built on
+    whatever the app runs, which is the whole bug: the folder's declaration would be
+    read, agreed with, and then not acted on.
+    """
+    py311 = _py312_stub(tmp_path, name="py311", version="3.11")
+    _uv_stub(tmp_path, monkeypatch, finds=str(py311))
+    monkeypatch.setattr(envinstall, "_running_version", lambda: (3, 12))
+    proj = _project(tmp_path, name="pinned", deps=["pip"], requires_python="==3.11.*")
+    # Resolved BEFORE Popen is replaced: the resolution itself spawns (uv find, then
+    # the probe), and a fake Popen would break the very lookup under test. A ready
+    # answer is cached, so the spawn below reads it rather than re-measuring.
+    assert envinstall.project_python_ready(proj) is True
+
+    argv = []
+    monkeypatch.setattr(envinstall.subprocess, "Popen",
+                        lambda cmd, **kw: argv.append(cmd) or _FakePopen())
+    envinstall.start(proj)
+
+    assert argv, "no worker was spawned"
+    assert argv[0][-2] == str(py311), (
+        f"the folder's own interpreter never reached `uv sync --python`: {argv[0]}"
+    )
+
+
+def test_a_pinned_folder_downloads_ITS_python_under_ITS_OWN_key(
+    tmp_path, monkeypatch, _fresh_script_python
+):
+    """The bootstrap round, for a version the folder chose rather than the pin.
+
+    The key folds the version in because two folders can want two Pythons: under one
+    key the second download would join the first's record, poll it to completion and
+    conclude that ITS interpreter had arrived.
+    """
+    monkeypatch.setattr(envinstall, "_running_version", lambda: (3, 12))
+    _uv_stub(tmp_path, monkeypatch, finds=None)
+    proj = _project(tmp_path, deps=["pip"], requires_python="==3.11.*")
+
+    spawned = []
+    monkeypatch.setattr(envinstall, "_spawn",
+                        lambda key, p, **kw: spawned.append((key, kw)) or 4242)
+    record = envinstall.start(proj)
+
+    assert spawned, "no installer was started"
+    key, kw = spawned[0]
+    assert kw.get("acquire_python") == "3.11", "downloaded the app's version, not the folder's"
+    assert key == envinstall.python_bootstrap_key("3.11")
+    assert key != envinstall.PYTHON_BOOTSTRAP_KEY, (
+        "the folder's interpreter must not report under the default's key"
+    )
+    assert envinstall.valid_key(key), "a bootstrap key must still be key-SHAPED"
+    assert record["key"] == key, "the page would poll a record that does not exist"
+
+
+def test_the_floor_is_a_version_our_own_child_code_actually_parses_on(tmp_path):
+    """The floor is a claim about code the USER cannot fix, so it is checked.
+
+    A project venv does not run the user's file alone: it runs the wrapper
+    `build_code` puts around it, the `_binding.py` embedded in that, and — when the
+    fused engine is installed — upstream's handler and runner scripts. Below the
+    floor the venv would build fine and then die on a syntax error in code nobody
+    who reads the traceback ever wrote.
+
+    `feature_version` compiles under the floor's grammar without needing that
+    interpreter present, and the floor is read from the constant rather than
+    written out, so this fails when the constant is lowered past what the code
+    supports and stays quiet when it is deliberately raised (D177: derive the
+    check, or make divergence a failure — a comment cannot fail).
+    """
+    import ast
+
+    floor = (3, envinstall._MIN_PROJECT_PYTHON_MINOR)
+    wrapper = engine.build_code("def main():\n    return 1\n",
+                                str(tmp_path), str(tmp_path / "s.py"))
+    ast.parse(wrapper, feature_version=floor)
+
+    if not engine.available():
+        return  # upstream's half is only checkable where upstream is installed
+    from fused.agent_core.backends.aws.lambda_ import _HANDLER_FILES, _HERE
+    from fused.agent_core.backends.local.python_compute import _RUN_SCRIPT
+
+    ast.parse(_RUN_SCRIPT, feature_version=floor)
+    for name in _HANDLER_FILES:
+        path = os.path.join(str(_HERE), name)
+        if not os.path.isfile(path):
+            continue
+        with open(path, "r", encoding="utf-8") as fh:
+            ast.parse(fh.read(), feature_version=floor)
+
+
+def test_two_versions_never_share_one_bootstrap_key():
+    """Distinct, key-shaped, and stable — the properties every caller depends on."""
+    keys = {v: envinstall.python_bootstrap_key(v) for v in ("3.10", "3.11", "3.13")}
+    assert len(set(keys.values())) == 3, keys
+    assert all(envinstall.valid_key(k) for k in keys.values()), keys
+    assert envinstall.python_bootstrap_key("3.11") == envinstall.python_bootstrap_key("3.11")
+
+
+def test_a_pinned_folder_is_NOT_installed_until_its_own_python_arrives(
+    tmp_path, monkeypatch, _fresh_script_python
+):
+    """And the marker of the venv it cannot build yet is left strictly alone.
+
+    Same short-circuit D214 put ahead of the D212 machinery, now asking the
+    PROJECT's question: probing that venv, unlinking its marker or spending the
+    one-rebuild-per-process budget on it would all be acting on a directory that
+    the missing interpreter says nothing about.
+    """
+    monkeypatch.setattr(envinstall, "_running_version", lambda: (3, 12))
+    _uv_stub(tmp_path, monkeypatch, finds=None)
+    proj = _project(tmp_path, deps=["pip"], requires_python="==3.11.*")
+    venv_dir = _marked_venv(proj, runnable=True)
+
+    probed = []
+    monkeypatch.setattr(envinstall, "_venv_is_usable",
+                        lambda d: probed.append(d) or True)
+    assert envinstall.is_installed(proj) is False
+    assert not probed, "validated a venv that cannot even be built yet"
+    assert os.path.exists(os.path.join(venv_dir, envinstall.READY_MARKER)), (
+        "unlinked the marker of a venv the missing interpreter says nothing about"
+    )
 
 
 @requires_fused
@@ -2059,7 +2346,7 @@ def test_an_unmarked_venv_directory_is_removed_before_syncing(tmp_path, monkeypa
 def test_an_empty_interpreter_slot_means_the_workers_OWN_python(tmp_path, monkeypatch):
     """None has always meant "the backend's own interpreter", never a version.
 
-    `_resolve_script_python` answers `(None, True)` whenever the server is
+    `_resolve_python` answers `(None, True)` whenever the server is
     already on the pinned version — the common path for the DMG, the AppImage,
     the Windows installer and scripts/dev.sh — and `_spawn` carries that None
     across argv as "". Mapping it to the literal "3.12" makes `uv sync --python
@@ -2147,7 +2434,7 @@ def test_a_machine_with_no_uv_still_serves_the_app_interpreter_path(
 ):
     """The other half of D231: no uv must not take PY-17 down with it.
 
-    `_resolve_script_python` still answers READY without uv, on purpose —
+    `_resolve_python` still answers READY without uv, on purpose —
     readiness is about the interpreter, and a folder that declares no
     dependencies needs nothing built. Refusing there would break every ordinary
     script to report a capability most runs never use.

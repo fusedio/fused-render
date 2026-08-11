@@ -500,6 +500,61 @@ def test_sidecar_lands_inside_the_venv_not_the_project(home):
 
 
 # ---------------------------------------------------------------------------
+# `requires-python`: the folder's other declaration (D244)
+# ---------------------------------------------------------------------------
+
+
+def _pin(d, pin):
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "pyproject.toml").write_text(
+        "[project]\nname = 'x'\nversion = '0.1.0'\ndependencies = ['cowsay']\n"
+        "requires-python = '%s'\n" % pin, encoding="utf-8",
+    )
+    return str(d)
+
+
+def test_the_pin_is_read_verbatim_and_evaluated_as_a_specifier(home):
+    """Read here, beside `dependencies`, because it is the same table and parser.
+
+    A second reader of `pyproject.toml` is a second place for "what does this
+    folder declare" to be answered differently.
+    """
+    proj = _pin(home / "app", ">=3.11,<3.13")
+    assert projectenv.requires_python_of(proj) == ">=3.11,<3.13"
+    assert projectenv.python_pin_allows(proj, "3.12") is True
+    assert projectenv.python_pin_allows(proj, "3.12.7") is True
+    assert projectenv.python_pin_allows(proj, "3.13.0") is False
+    assert projectenv.python_pin_allows(proj, "3.10.4") is False
+
+
+def test_a_folder_with_no_pin_allows_everything(home):
+    """Which is every folder that never thought about it — so nothing may narrow."""
+    d = _write_project(home / "app")
+    assert projectenv.requires_python_of(str(d)) is None
+    assert projectenv.python_pin_allows(str(d), "3.9.1") is True
+
+
+@pytest.mark.parametrize("pin", ["banana", "3.12", ">=", "== 3.11.*.*"])
+def test_an_unreadable_pin_fails_OPEN_but_an_unreadable_version_fails_CLOSED(home, pin):
+    """The asymmetry is deliberate, and it turns on whose text is unreadable.
+
+    The PIN is the user's, and this module runs on the /api/run path: a typo must
+    not take every script in the folder down, especially when uv will reject the
+    same string with a better message the moment the environment is built. The
+    VERSION is our own measurement of an interpreter, so an unreadable one is a bug
+    on this side — and the safe answer to "may this unknown thing run a folder that
+    pinned its Python" is no, which costs a venv build rather than silently
+    violating the pin.
+    """
+    proj = _pin(home / "app", pin)
+    assert projectenv.python_pin(proj) is None
+    assert projectenv.python_pin_allows(proj, "3.12") is True
+
+    ok = _pin(home / "strict", ">=3.11")
+    assert projectenv.python_pin_allows(ok, "not-a-version") is False
+
+
+# ---------------------------------------------------------------------------
 # Leftover PEP 723 headers are inert
 # ---------------------------------------------------------------------------
 

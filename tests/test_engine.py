@@ -59,12 +59,19 @@ requires_tomllib = pytest.mark.skipif(
 )
 
 
-def _declare(folder, deps='"pyarrow", "requests"'):
-    """Give `folder` the pyproject.toml that declares its environment."""
+def _declare(folder, deps='"pyarrow", "requests"', requires_python=None):
+    """Give `folder` the pyproject.toml that declares its environment.
+
+    `requires_python` writes `[project].requires-python` (D244) — the declaration
+    that decides which interpreter the environment is built on, and whether the
+    app's own interpreter may run these scripts at all.
+    """
     os.makedirs(str(folder), exist_ok=True)
     with open(os.path.join(str(folder), "pyproject.toml"), "w", encoding="utf-8") as fh:
         fh.write("[project]\nname = 't'\nversion = '0.1.0'\n"
                  f"dependencies = [{deps}]\n")
+        if requires_python:
+            fh.write(f"requires-python = '{requires_python}'\n")
     return str(folder)
 
 
@@ -997,6 +1004,109 @@ def test_a_declaration_the_app_already_satisfies_builds_no_venv(monkeypatch, tmp
     assert call["interpreter"] == engine.app_interpreter()
     assert "requirements" not in call, (
         "upstream ignores requirements once interpreter is set; passing both misleads"
+    )
+
+
+# --- a folder that pins its own Python (D244) ---------------------------------
+
+
+@requires_tomllib
+def test_a_folder_whose_PIN_the_app_fails_declines_the_fast_path(monkeypatch, tmp_path):
+    """The fast path's claim is equivalence; `requires-python` denies it.
+
+    Skipping the venv is only sound because running on the app interpreter is
+    equivalent to running in the environment that was skipped — every declared
+    package proven present. A folder that pins its Python has said, in the one
+    place packaging provides for saying it, that the two are NOT equivalent, and no
+    amount of package-level proof can answer a version-level claim.
+
+    The venv path honours such a pin by building on a satisfying interpreter. The
+    only way this path can honour it is by declining — which costs the download the
+    fast path exists to save, and is exactly the trade the declaration asks for.
+
+    Both halves are here because the gate is only correct if it still OPENS: a
+    check that always declined would look identical to a fixed bug from the venv
+    side, and would quietly cost every unpinned folder its fast path.
+    """
+    def _routed(pin):
+        proj = _declare(tmp_path / pin.replace(">", "g").replace("=", "e").replace(".", ""),
+                        '"pandas>=2.0.0"', requires_python=pin)
+        target = os.path.join(proj, "declared.py")
+        with open(target, "w", encoding="utf-8") as fh:
+            fh.write("def main():\n    return 1\n")
+        backend = _FakeBackend(_FakeResult(return_value="1"))
+        monkeypatch.setattr(engine, "get_backend", lambda: backend)
+        # The app interpreter's version is pinned rather than measured: the suite
+        # runs on 3.10-3.13 and this test is about the COMPARISON, not about which
+        # Python happens to be running it. `_app_interpreter_if_satisfies` is
+        # stubbed for the same reason — whether pandas is installed here decides
+        # nothing about whether a pin is honoured.
+        monkeypatch.setattr(engine, "app_python_version", lambda: "3.11.9")
+        monkeypatch.setattr(engine, "_app_interpreter_if_satisfies",
+                            lambda requirements: "/app/bin/python")
+        seen = _preflight_spy(monkeypatch)
+        out = asyncio.run(engine.run_python(target, {}))
+        assert out["ok"] is True, out
+        return backend.calls[0]["interpreter"], seen, proj
+
+    interpreter, seen, _ = _routed(">=3.10")
+    assert interpreter == "/app/bin/python", "baseline: a pin we meet keeps the fast path"
+    assert seen == [], "baseline: nothing to install, so no pre-flight"
+
+    interpreter, seen, proj = _routed(">=3.12")
+    assert interpreter == envinstall.venv_python_for(proj), (
+        "ran on the app's 3.11 for a folder that requires >=3.12"
+    )
+    assert seen == [["pandas>=2.0.0"]], "the venv path was not taken"
+
+
+@requires_tomllib
+def test_a_pin_this_app_cannot_meet_is_the_USERS_error_not_an_engine_error(
+    monkeypatch, tmp_path
+):
+    """`EngineError: fused-render internal error (not your script)` is a lie here.
+
+    The line came from the user's own pyproject.toml, so it gets its own error type
+    and a message that quotes it. Answered before the pre-flight, too: routing it to
+    the loader would download an interpreter, fail the pin with it, and offer the
+    same download again.
+    """
+    proj = _declare(tmp_path, '"pandas"', requires_python=">=4.0")
+    target = os.path.join(proj, "declared.py")
+    with open(target, "w", encoding="utf-8") as fh:
+        fh.write("def main():\n    return 1\n")
+    seen = _preflight_spy(monkeypatch)
+
+    out = asyncio.run(engine.run_python(target, {}))
+    assert out["ok"] is False
+    assert out["error"]["type"] == "UnsupportedPythonRequirement", out
+    assert ">=4.0" in out["error"]["message"], out
+    assert "internal error" not in out["error"]["message"], (
+        "a declaration this app cannot honour is not a fused-render bug"
+    )
+    assert seen == [], "asked the loader to install for a pin no install can satisfy"
+
+
+@requires_tomllib
+def test_the_loader_names_the_python_it_is_fetching_AND_why(monkeypatch, tmp_path):
+    """Two rounds, and the first one has to explain itself.
+
+    "needs Python 3.11" alone leaves the user unable to tell whether that came from
+    their file or from the app — which is the confusion this whole change exists to
+    remove — so the folder's own declaration is quoted alongside it. The key is the
+    VERSION's, so the page polls the download it actually started.
+    """
+    proj = _declare(tmp_path, '"cowsay"', requires_python="==3.11.*")
+    monkeypatch.setattr(envinstall, "project_python_ready", lambda project: False)
+
+    out = engine._needs_install_dict(proj, abs_path=os.path.join(proj, "s.py"))
+    needs = out["needs_install"]
+    assert needs["python"] == "3.11", needs
+    assert needs["key"] == envinstall.python_bootstrap_key("3.11"), needs
+    assert needs["key"] != envinstall.PYTHON_BOOTSTRAP_KEY
+    assert "3.11" in out["error"]["message"]
+    assert "==3.11.*" in out["error"]["message"], (
+        f"the folder's own declaration is not quoted: {out['error']['message']}"
     )
 
 

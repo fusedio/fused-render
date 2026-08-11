@@ -83,12 +83,13 @@ dependencies = ["xarray", "netCDF4"]
 package = false
 ```
 
-Four things to know before you write one:
+Five things to know before you write one:
 
 - **The declaration is the COMPLETE list.** The venv contains exactly what you name and nothing else — the bundled set above is *not* unioned in. Declare numpy if you import numpy, even though the app ships it.
 - **It is all-or-nothing per folder.** Adding a `pyproject.toml` to get one extra package means every import in every `.py` under that folder must be listed. A folder with no manifest runs on the app's own interpreter and gets the whole bundled set for free — which is why the supported set is still the better default.
 - **Only the project root counts.** That's the app folder, a template folder, or the *topmost* ancestor holding a `pyproject.toml`. One in a subfolder is inert; the inspector flags it.
 - **First render triggers an install.** The user sees a loader while `uv sync` runs, then the run is retried automatically. Commit the `uv.lock` it writes — that's what makes the folder resolve identically elsewhere.
+- **`requires-python` is honoured, so write it only when you mean it.** Environments are built on Python 3.12 by default, and a declaration that version satisfies (`>=3.12`, `>=3.11` — write one of these unless you have a reason not to) costs nothing. A declaration it *fails* moves the folder to the nearest Python that satisfies it, which is a real one-time CPython download for the user and a smaller set of available wheels: `==3.11.*` builds on 3.11, `>=3.13` on 3.13. Below 3.10 nothing can be built at all, and the run says so instead of installing. A pin also **rules out the no-download fast path** — a folder whose packages the app already ships normally skips the venv entirely, and it cannot do that for a folder that asked for another interpreter.
 
 Adding a dependency later is just an edit: save `pyproject.toml`, re-render, and the environment is reconciled. Never run `uv sync` by hand in the folder — it would create an in-folder `.venv` that diverges from the one the app actually uses (venvs live centrally under `~/.fused-render/`).
 

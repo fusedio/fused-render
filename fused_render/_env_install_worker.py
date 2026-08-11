@@ -11,8 +11,11 @@ detached child is a bootstrap that broke once already) and so cannot call
 of a cache key, which is how a loader ends up filling a directory no run reads.
 
 `<python_executable>` is the base interpreter the environment is built on, and it
-must be the value `envinstall._python_executable()` returned — the backend runs
-the code, so its interpreter and the environment's have to be one choice. argv
+must be the value `envinstall.project_base_python()` returned — for an ordinary
+folder the backend's own interpreter (the backend runs the code, so its
+interpreter and the environment's have to be one choice), and for a folder that
+declares `requires-python` the release that satisfies it (D244). Either way the
+choice is the server's and arrives whole; nothing here re-decides it. argv
 cannot carry None, so the EMPTY STRING stands for it; `install` is the one place
 that mapping happens, and it maps to this worker's OWN `sys.executable` (see
 `_PINNED_PYTHON_VERSION` for why not a version string).
@@ -20,8 +23,8 @@ that mapping happens, and it maps to this worker's OWN `sys.executable` (see
 `<acquire_python>` (same empty-string idiom) switches this worker to its OTHER job:
 DOWNLOAD that Python version, report it, and stop without building anything (D214).
 The two cannot be one run — the interpreter is reported under
-`envinstall.PYTHON_BOOTSTRAP_KEY` and the packages under the project's own key,
-and one worker reports under one key.
+`envinstall.python_bootstrap_key(<version>)` and the packages under the project's
+own key, and one worker reports under one key.
 
 Reports through `<progress_dir>/progress.json` — the same
 `{stage, pct, detail, done, error, pid, ts}` record
@@ -97,8 +100,8 @@ _SIDECAR_NAME = ".fused-source.json"
 #
 # An empty interpreter slot means the backend's `python_executable` was None, and
 # None has always meant "the backend's own interpreter", never a version. It is
-# also the COMMON case: `envinstall._resolve_script_python` answers `(None, True)`
-# whenever the server is already on the pinned version, which is every packaged
+# also the COMMON case: `envinstall._resolve_python` answers `(None, True)`
+# whenever the server is already on the version asked for, which is every packaged
 # build (the DMG's `python@3.12`, the AppImage's and the Windows installer's
 # `uv python install 3.12`) and every `scripts/dev.sh` checkout since D214.
 #
@@ -112,7 +115,7 @@ _SIDECAR_NAME = ".fused-source.json"
 #
 # The pin itself still exists and still matters; it lives at
 # `envinstall.SCRIPT_PYTHON_VERSION` (D214), where it is what
-# `_resolve_script_python` probes FOR and what the bootstrap round downloads.
+# `_resolve_python` probes FOR and what the bootstrap round downloads.
 _PINNED_PYTHON_VERSION = "3.12"
 
 
@@ -149,7 +152,7 @@ def _acquire_python(version):
 
     No uv means no download is possible, and saying so beats a `FileNotFoundError`
     from the spawn: on a machine with no uv the server would not have asked for this
-    interpreter in the first place (`envinstall._resolve_script_python` degrades to
+    interpreter in the first place (`envinstall._resolve_python` degrades to
     the running one), so reaching here without uv means something moved underneath
     us and the message should say which thing.
     """
@@ -296,9 +299,17 @@ def _build(project_dir, venv_dir, uv_cache_dir, python_executable):
         # Verbatim: uv's own text names the real problem (no wheel for this
         # platform, a bad pin, no network, a lock that no longer matches the
         # manifest), and that is the answer the user needs.
+        #
+        # The BASE INTERPRETER is named alongside it, and that one line is ours
+        # rather than uv's, because it is the one fact uv's message cannot supply:
+        # this environment is built on an interpreter the app chose (the pin, or
+        # what the folder's `requires-python` asked for — D214/D244), and a
+        # resolver failure that turns on the Python version reads as unexplainable
+        # until you know which Python it was and that you did not pick it. It is
+        # added, never substituted: uv's text stays exactly as uv wrote it.
         raise RuntimeError(
-            "Failed to build the environment for %s:\n%s"
-            % (project_dir, (proc.stderr or proc.stdout).strip())
+            "Failed to build the environment for %s (base interpreter: %s):\n%s"
+            % (project_dir, python_executable, (proc.stderr or proc.stdout).strip())
         )
 
     venv_python = _venv_python(venv_dir)

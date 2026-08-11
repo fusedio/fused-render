@@ -35,6 +35,14 @@ unchanged. "No solution found ... imagecodecs has no wheels with a matching
 platform tag" is the whole reason this flow is visible; a generic message would
 leave the user exactly where they started.
 
+**The base interpreter is the PROJECT's** (D244). `SCRIPT_PYTHON_VERSION` is the
+default and the common answer, but a folder whose `pyproject.toml` declares a
+`requires-python` the default fails is built on the nearest release that satisfies
+it — acquired first, exactly like the pinned one, under that version's own
+bootstrap key. Before this, `requires-python` was read by nobody here: the venv was
+built on 3.12 whatever the folder said, and `uv sync` refused with a
+requires-python conflict naming a version the user had never written down.
+
 Progress granularity is deliberately coarse. `uv sync` runs behind
 `capture_output=True`, so its per-package progress cannot be streamed;
 `STAGES` names what is actually observable and nothing here invents a
@@ -112,8 +120,46 @@ STAGE_PCT = {"spawn": 0, "python": 5, "create": 10, "install": 25, "done": 100}
 # 2.21.0rc1 over stable 2.20.0. Shipping release-candidate scientific libraries to
 # every user of every app, to work around an interpreter choice, is worse than the
 # bug. On 3.12 the flag is moot anyway.
+#
+# The pin is the DEFAULT, not the only answer: a folder that declares
+# `requires-python` and is not satisfied by 3.12 is built on the nearest release
+# that IS (D244, `project_python_version`). Everything below still describes the
+# common path — no declaration, or one 3.12 already meets — which is every core
+# template and every folder that never thought about it.
 SCRIPT_PYTHON_VERSION = "3.12"
 _SCRIPT_PYTHON_VERSION_INFO = tuple(int(p) for p in SCRIPT_PYTHON_VERSION.split("."))
+
+# The oldest CPython a folder may pin us to (D244). This app's own
+# `requires-python` floor, and that is the whole justification: what a project venv
+# actually runs is not the user's file alone but the wrapper `engine.build_code`
+# builds around it (plus the `_binding.py` it embeds, plus upstream's own handler
+# and runner scripts), and none of those are things the user can fix. Below the
+# floor a venv would build fine and then die on a syntax error in code they never
+# wrote.
+#
+# Named rather than asserted would be D177's mistake, so the claim has a check:
+# `test_the_floor_is_a_version_our_own_child_code_actually_parses_on` compiles both
+# halves at `feature_version=(3, _MIN_PROJECT_PYTHON_MINOR)`, so raising this
+# constant is a decision and lowering it past what the code supports is a failure.
+#
+# There is deliberately no ceiling to match it: a pin ABOVE the default names the
+# version itself (`>=3.13` -> 3.13), so the newest version this app can honour is
+# whatever uv can currently install, and a `3.15` that uv has never heard of fails
+# with uv's own words rather than against a constant somebody has to remember to
+# bump.
+_MIN_PROJECT_PYTHON_MINOR = 10
+
+
+class UnsupportedPythonRequirement(RuntimeError):
+    """A folder's `requires-python` names no interpreter this app will build on.
+
+    Raised rather than answered, because there is no useful "not installed yet"
+    for it: the loader would download, fail, and offer the same download again.
+    `engine.run_python` turns it into the house error shape, and `routers/env.py`
+    already contains `RuntimeError` for the same reason (which is why this
+    subclasses it rather than `Exception`).
+    """
+
 
 # Escape hatch and test seam: an explicit interpreter to build script venvs from.
 # Mirrors `engine._APP_PYTHON_ENV`, and like it the value is still PROBED — an
@@ -125,29 +171,47 @@ _SCRIPT_PYTHON_ENV = "FUSED_RENDER_SCRIPT_PYTHON"
 # it is not 1s, not why it would be 60.
 _SCRIPT_PYTHON_TIMEOUT_S = 5
 
-# The cached `(interpreter, ready)` resolution; `_UNRESOLVED` until first asked.
-# A sentinel rather than None because None is a MEANINGFUL answer here ("build
-# from ours"), so it cannot double as "not yet measured".
-_UNRESOLVED = object()
-_script_python: object = _UNRESOLVED
+# Cached `(interpreter, ready)` resolutions, keyed by the `major.minor` they
+# answer for. A DICT rather than one slot because the version is no longer one
+# value per machine: the pin answers for every folder that does not care, and a
+# folder that pins its own Python (D244) resolves separately and independently —
+# a machine can be ready for 3.12 and not for 3.11 at the same instant, and one
+# slot would let either answer stand in for the other.
+#
+# Absence, not a sentinel, is "not yet measured": a MEANINGFUL None lives inside
+# the tuple (it means "build from ours"), so it cannot double as "unmeasured", but
+# a missing key can.
+_python_by_version: dict[str, tuple[str | None, bool]] = {}
 _script_python_lock = threading.Lock()
 
-# The progress key the interpreter download reports under (D214).
-#
-# A fixed, key-SHAPED constant rather than a venv key, because this is the one
-# state where a venv key genuinely cannot be computed: `progress.json` lives under
-# the key, the key folds in the base interpreter, and the base interpreter is
-# exactly what is missing. Deriving one from whatever interpreter happens to be
-# running would name the directory of a venv nobody will ever build — and the real
-# install, once 3.12 lands, would report somewhere else entirely, leaving the page
-# polling a file that never changes again.
-#
-# Key-shaped so `valid_key`, `progress_dir`, `progress()` and `cancel()` all work on
-# it unchanged: the interpreter download is a different THING to install, not a
-# different mechanism for reporting one.
-PYTHON_BOOTSTRAP_KEY = hashlib.sha256(
-    b"fused-render:script-python-bootstrap"
-).hexdigest()[:16]
+def python_bootstrap_key(version: str) -> str:
+    """The progress key an interpreter download reports under (D214).
+
+    A key derived from the VERSION rather than from a venv, because this is the one
+    state where a venv key genuinely cannot be computed: `progress.json` lives under
+    the key, the key is the project's, and what is missing is not the project but
+    the interpreter its environment has to be built on. Deriving one from the
+    project would name the directory of a venv nobody will build yet — and the real
+    install, once the interpreter lands, would report under that same key,
+    so the page could not tell the two rounds apart.
+
+    Folding the version in is what keeps two rounds distinguishable when two folders
+    want two different Pythons (D244): a 3.11 download and a 3.13 download are
+    different installs, and under one key the second would join the first's record,
+    poll it to completion, and conclude that ITS interpreter had arrived.
+
+    Key-shaped so `valid_key`, `progress_dir`, `progress()` and `cancel()` all work
+    on it unchanged: an interpreter download is a different THING to install, not a
+    different mechanism for reporting one.
+    """
+    return hashlib.sha256(
+        b"fused-render:script-python-bootstrap:" + version.encode("utf-8")
+    ).hexdigest()[:16]
+
+
+# The key the DEFAULT interpreter's download reports under — the only one a
+# caller can name without a project in hand.
+PYTHON_BOOTSTRAP_KEY = python_bootstrap_key(SCRIPT_PYTHON_VERSION)
 
 # How long a claim with no progress record yet is assumed to belong to a caller
 # still inside `Popen` (see _claim_is_stale). Normally microseconds; this only has
@@ -285,8 +349,8 @@ def _running_version() -> tuple[int, int]:
     return sys.version_info[:2]
 
 
-def _probe_python(path: str) -> bool:
-    """Does `path` run, AND report `SCRIPT_PYTHON_VERSION`? One subprocess, both.
+def _probe_python(path: str, version: str = SCRIPT_PYTHON_VERSION) -> bool:
+    """Does `path` run, AND report `version`? One subprocess, both.
 
     Two facts from one spawn because they are one question: an interpreter we
     cannot start and an interpreter of the wrong version are equally unusable as a
@@ -315,38 +379,50 @@ def _probe_python(path: str) -> bool:
     except (OSError, subprocess.SubprocessError):
         # A spawn that never happened (no such file, not executable) or never
         # finished (timeout). Either way we have no evidence this is a usable
-        # 3.12, and the whole point of the pin is not to guess.
+        # interpreter of the version asked for, and the whole point of asking for
+        # a version is not to guess.
         return False
-    return proc.returncode == 0 and proc.stdout.strip() == SCRIPT_PYTHON_VERSION
+    return proc.returncode == 0 and proc.stdout.strip() == version
 
 
-def _resolve_script_python() -> tuple[str | None, bool]:
-    """`(interpreter, ready)` — what script venvs are built from, or why not yet.
+def _resolve_python(version: str) -> tuple[str | None, bool]:
+    """`(interpreter, ready)` — what a venv on `version` is built from, or why not yet.
 
     `interpreter` is what the backend should be given: **None means "ours"**, the
     value the backend has always had, so `python_identity` produces the identical
     key it produces today. `ready` is False only when this machine has no usable
-    3.12 yet and one has to be downloaded before anything can be keyed at all.
+    interpreter of that version yet and one has to be downloaded before anything can
+    be keyed at all.
+
+    `version` is `SCRIPT_PYTHON_VERSION` for every folder that declares no
+    `requires-python` (and every folder the pin already satisfies) — the common
+    path, and the only one before D244. A folder that pins something else resolves
+    through this same function with its own version, so there is ONE resolution
+    order rather than a pinned path and a project path that can drift apart.
 
     The order is deliberate:
 
     1. **An explicit override**, probed. Same contract as
-       `engine._APP_PYTHON_ENV`: an override that is not a usable 3.12 is a
-       misconfiguration to refuse, not a reason to build on it.
-    2. **Ourselves, when we are already 3.12** — and this is the common path, not a
-       shortcut. All three packaged builds run 3.12 (the DMG's `python@3.12`, the
-       AppImage's and the Windows installer's `uv python install 3.12`), and so does
-       a `scripts/dev.sh` checkout since D214. Resolving a uv-MANAGED 3.12 for them
-       instead would re-key every venv they own and download a second CPython to
-       reach a version they already had: `uv python find --managed-python` only
-       matches uv's own registry, and every bundled 3.12 is copied into the payload
-       rather than registered there.
-    3. **A uv-managed 3.12**, probed. This is the path that fixes the reported bug —
-       a server on 3.14 built every script venv on cp314, so a script wanting
-       tensorflow (no cp314 wheels) was an unresolvable dead end that no rebuild
-       could repair. Managed only: no Homebrew, no system python, no PATH search,
-       because the point is a known interpreter rather than whichever 3.12 a machine
-       happens to have.
+       `engine._APP_PYTHON_ENV`: an override that is not a usable interpreter of
+       the DEFAULT version is a misconfiguration to refuse, not a reason to build
+       on it. It does not refuse a project's own version, because it was never an
+       answer to that question — `FUSED_RENDER_SCRIPT_PYTHON` names the interpreter
+       this app builds on by default, and a folder asking for another one is not
+       misconfigured by it. Such a request falls through to uv below.
+    2. **Ourselves, when we are already that version** — and for the pin this is the
+       common path, not a shortcut. All three packaged builds run 3.12 (the DMG's
+       `python@3.12`, the AppImage's and the Windows installer's `uv python install
+       3.12`), and so does a `scripts/dev.sh` checkout since D214. Resolving a
+       uv-MANAGED 3.12 for them instead would re-key every venv they own and download
+       a second CPython to reach a version they already had: `uv python find
+       --managed-python` only matches uv's own registry, and every bundled 3.12 is
+       copied into the payload rather than registered there.
+    3. **A uv-managed interpreter of that version**, probed. This is the path that
+       fixes the reported bug — a server on 3.14 built every script venv on cp314, so
+       a script wanting tensorflow (no cp314 wheels) was an unresolvable dead end that
+       no rebuild could repair. Managed only: no Homebrew, no system python, no PATH
+       search, because the point is a known interpreter rather than whichever 3.12 a
+       machine happens to have.
     4. **No uv at all -> ours, unpinned, and no project venv is possible.** A
        source checkout without uv cannot find or fetch a managed anything, so
        there is nothing to pin to. This still answers READY, and deliberately so:
@@ -359,8 +435,11 @@ def _resolve_script_python() -> tuple[str | None, bool]:
     """
     override = os.environ.get(_SCRIPT_PYTHON_ENV)
     if override:
-        return (override, True) if _probe_python(override) else (None, False)
-    if _running_version() == _SCRIPT_PYTHON_VERSION_INFO:
+        if _probe_python(override, version):
+            return override, True
+        if version == SCRIPT_PYTHON_VERSION:
+            return None, False
+    if _running_version() == tuple(int(p) for p in version.split(".")):
         return None, True
     uv = uv_bin()
     if uv is None:
@@ -380,7 +459,7 @@ def _resolve_script_python() -> tuple[str | None, bool]:
             # on the machine. `--system` excludes virtual environments, which leaves
             # the genuinely managed interpreter.
             [uv, "python", "find", "--managed-python", "--no-project", "--system",
-             SCRIPT_PYTHON_VERSION],
+             version],
             capture_output=True, text=True,
             timeout=_SCRIPT_PYTHON_TIMEOUT_S, close_fds=False,
         )
@@ -391,10 +470,10 @@ def _resolve_script_python() -> tuple[str | None, bool]:
         # Nothing wrong — just nothing to build on yet. Reported, never raised:
         # `is_installed` asks this on the request path and needs a yes/no.
         return None, False
-    return (found, True) if _probe_python(found) else (None, False)
+    return (found, True) if _probe_python(found, version) else (None, False)
 
 
-def _script_python_resolution() -> tuple[str | None, bool]:
+def _python_resolution(version: str) -> tuple[str | None, bool]:
     """The resolution, measured at most once per process — **while it succeeds**.
 
     A READY answer is cached: it costs up to two spawns and `is_installed` consults
@@ -413,34 +492,209 @@ def _script_python_resolution() -> tuple[str | None, bool]:
     machine genuinely has no 3.12, which is a transient state by construction.
     (Same rule as the three-valued venv probe: an answer that says "I found nothing"
     is not evidence to memoize.)
+
+    Per VERSION, so a machine that is ready for the pin and not for a folder's own
+    3.11 remembers exactly that — one cached answer standing in for another would be
+    the same defect as caching a not-ready one, reached by a different route.
     """
-    global _script_python
-    if _script_python is not _UNRESOLVED:
-        return _script_python  # type: ignore[return-value]
+    cached = _python_by_version.get(version)
+    if cached is not None:
+        return cached
     with _script_python_lock:
-        if _script_python is not _UNRESOLVED:
-            return _script_python  # type: ignore[return-value]
-        resolution = _resolve_script_python()
+        cached = _python_by_version.get(version)
+        if cached is not None:
+            return cached
+        resolution = _resolve_python(version)
         if resolution[1]:
-            _script_python = resolution
+            _python_by_version[version] = resolution
         return resolution
 
 
 def script_python() -> str | None:
-    """The interpreter script venvs are built from; None means "ours"."""
-    return _script_python_resolution()[0]
+    """The interpreter script venvs are built from by DEFAULT; None means "ours".
+
+    The answer for a folder that declares no `requires-python`, and what
+    `engine.get_backend()` pins the backend to. `project_base_python` is what the
+    builder asks, because a folder may pin its own (D244).
+    """
+    return _python_resolution(SCRIPT_PYTHON_VERSION)[0]
 
 
 def script_python_ready() -> bool:
-    """False iff a 3.12 has to be downloaded before any venv can be keyed."""
-    return _script_python_resolution()[1]
+    """False iff a 3.12 has to be downloaded before a default venv can be keyed."""
+    return _python_resolution(SCRIPT_PYTHON_VERSION)[1]
 
 
 def reset_script_python_cache() -> None:
-    """Forget the resolution. For tests, and for after an interpreter download."""
-    global _script_python
+    """Forget every resolution. For tests, and for after an interpreter download."""
     with _script_python_lock:
-        _script_python = _UNRESOLVED
+        _python_by_version.clear()
+
+
+def _version_points(spec, minor: int) -> list[str]:
+    """Release strings of `3.<minor>` worth testing against `spec`.
+
+    The question a candidate has to answer is "does SOME release of this minor
+    satisfy the pin", and no single representative can ask it: `3.12` fails
+    `>3.12` (which 3.12.1 meets), `3.12.0` fails `>=3.12.5` (which 3.12.7 meets),
+    and both fail `==3.12.5` (which one exact release meets). So the points are the
+    two ends of the minor plus every version the SPECIFIER ITSELF names in it —
+    a pin that mentions a release is a pin that can be met by it.
+    """
+    points = ["3.%d" % minor, "3.%d.0" % minor, "3.%d.99" % minor]
+    for clause in spec:
+        named = clause.version.rstrip("*").rstrip(".")
+        if named.startswith("3.%d." % minor) or named == "3.%d" % minor:
+            points.append(named)
+    return points
+
+
+def _pin_minors(spec) -> list[int]:
+    """The CPython 3.x minors worth building `spec` on, nearest the pin first.
+
+    Nearest `SCRIPT_PYTHON_VERSION`, older on a tie, because the pin is the version
+    this app is built, shipped and tested on: the further a project drags the base
+    interpreter from it, the thinner the wheel coverage gets (which is the whole
+    reason D214 pinned anything at all), so we move exactly as far as the folder's
+    declaration demands and no further. `>=3.13` gets 3.13, not the newest CPython
+    in existence; `<3.11` gets 3.10, not the oldest.
+
+    The candidates are DERIVED from the specifier — each clause's own minor and its
+    two neighbours — rather than enumerated over a supported range. A range would
+    need a ceiling, and a hand-maintained ceiling is D177's failure mode exactly:
+    it would silently stop honouring `>=3.15` the year 3.15 shipped, with nothing to
+    fail. Every bound a specifier can express sits at, just above, or just below a
+    version it names, so the clauses are a complete source for the search. The floor
+    is real and stays (`_MIN_PROJECT_PYTHON_MINOR`) — floors only rise.
+    """
+    interesting = {_SCRIPT_PYTHON_VERSION_INFO[1]}
+    from packaging.version import InvalidVersion, Version
+
+    for clause in spec:
+        try:
+            named = Version(clause.version.rstrip("*").rstrip("."))
+        except InvalidVersion:
+            continue
+        if named.major != 3:
+            # A pin on another major is not a minor we could offer it. Skipped
+            # rather than refused here, so the "nothing satisfies this" answer is
+            # made in ONE place (`project_python_version`) with the pin in hand.
+            continue
+        interesting.update((named.minor - 1, named.minor, named.minor + 1))
+
+    usable = []
+    for minor in sorted(interesting):
+        if minor < _MIN_PROJECT_PYTHON_MINOR:
+            continue
+        try:
+            if any(spec.contains(p, prereleases=True) for p in _version_points(spec, minor)):
+                usable.append(minor)
+        except InvalidVersion:
+            continue
+    return sorted(usable, key=lambda m: (abs(m - _SCRIPT_PYTHON_VERSION_INFO[1]), m))
+
+
+def project_python_version(project_dir: str | None) -> str | None:
+    """The `major.minor` this project's venv must be built on; None = the default.
+
+    None is the answer for the overwhelming majority of folders, and it means
+    exactly what it meant before D244: build on `SCRIPT_PYTHON_VERSION`, through
+    `script_python()`, keyed and reported as always. It covers a folder that
+    declares no `requires-python`, one whose declaration the pin already satisfies
+    (`>=3.11`, `>=3.12`, `>=3.10,<3.14`), and one whose declaration cannot be read.
+    So nothing moves for any core template, and no venv is re-keyed by this landing.
+
+    A version string is returned only when the folder's pin genuinely EXCLUDES the
+    default — `==3.11.*`, `>=3.13`, `<3.12` — which before D244 was an unresolvable
+    dead end: the loader built on 3.12 regardless, `uv sync` refused with a
+    requires-python conflict, and uv's message named a 3.12 the user had not asked
+    for and could not find in their own files.
+
+    **The decision is MINOR-granular, and that is a boundary rather than an
+    oversight.** The pin is compared against `SCRIPT_PYTHON_VERSION` — `3.12`, not
+    the patch the interpreter actually reports — so a patch-level pin is answered
+    at the granularity this module can act on: what it can obtain is
+    `uv python install 3.X`, whose patch is uv's choice and not ours, so a
+    patch-level guarantee is not one it is able to make. What that costs is
+    bounded and, importantly, never silent:
+
+      * `>=3.12.5`, `>3.12`, `==3.12.5` — the pin excludes bare `3.12`, so this
+        answers `3.12` and the environment is built on the 3.12 this machine has.
+        The patch may be too old, and then `uv sync` refuses in its own words,
+        naming both versions, with the base interpreter beside it (`_build`).
+      * `<=3.12.9`, `!=3.12.3` — bare `3.12` satisfies these, so they read as "the
+        default is fine". If the real 3.12 is the excluded patch, the same uv
+        refusal follows.
+
+    So the failure mode for a patch pin is a loud, accurate error naming the
+    interpreter we chose — never a run on a Python the folder forbade. Closing the
+    gap properly means threading the specifier through the resolution and its
+    cache and preferring a uv-managed newer patch, with its own terminal answer for
+    "downloaded and still unsatisfying"; that is a larger change than the pin shape
+    justifies today, and it is written here so the limit is a decision on the record
+    rather than something the next reader has to rediscover (D177's corollary;
+    pinned by `test_a_patch_level_pin_is_answered_at_MINOR_granularity`).
+
+    Raises `UnsupportedPythonRequirement` when no release this app is willing to
+    build on satisfies the pin. Callers on the request path (`is_installed`) let it
+    propagate: `engine.run_python` asks FIRST and turns it into a real message, and
+    `routers/env.py` already contains `RuntimeError` for the install endpoint.
+    """
+    if not project_dir:
+        return None
+    from fused_render import projectenv
+
+    if projectenv.python_pin_allows(project_dir, SCRIPT_PYTHON_VERSION):
+        return None
+    spec = projectenv.python_pin(project_dir)
+    if spec is None:  # unreadable, hence not enforceable — see `python_pin`
+        return None
+    minors = _pin_minors(spec)
+    if not minors:
+        raise UnsupportedPythonRequirement(
+            f"{projectenv.display_name(project_dir)} declares `requires-python = "
+            f'"{spec}"` in its pyproject.toml, and nothing this app can build a '
+            f"project environment on satisfies it: environments are built on Python "
+            f"{SCRIPT_PYTHON_VERSION} by default, or on the nearest CPython "
+            f"3.{_MIN_PROJECT_PYTHON_MINOR} or newer that the folder allows. Nothing "
+            "was installed and nothing was run — widen `requires-python`, or open "
+            "this folder in a tool that has the interpreter it wants."
+        )
+    return "3.%d" % minors[0]
+
+
+def project_python_ready(project_dir: str | None) -> bool:
+    """False iff the interpreter THIS project's venv needs has to be downloaded.
+
+    The pinned default routes through `script_python_ready()` unchanged — same
+    function, same cache, same monkeypatch seam — so a folder that pins nothing
+    behaves exactly as it did before D244.
+    """
+    version = project_python_version(project_dir)
+    if version is None:
+        return script_python_ready()
+    return _python_resolution(version)[1]
+
+
+def project_base_python(project_dir: str | None) -> str | None:
+    """The interpreter `uv sync --python` builds this project's venv from.
+
+    None means "the worker's own", which is the server's (`_spawn` launches it with
+    `sys.executable`) — see the worker's `_PINNED_PYTHON_VERSION` for why the empty
+    argv slot must never become a version string.
+
+    For a folder with no pin of its own this is `_python_executable()`: the value
+    read off the LIVE backend rather than restated, because on that path the backend
+    and the environment have to be one choice. A pinned folder deliberately does not
+    read it — the run is handed the venv's own interpreter (`venv_python_for`), so
+    what the backend would otherwise have used never enters the picture, and
+    insisting on it would be insisting the venv be built on an interpreter the
+    folder just said it cannot use.
+    """
+    version = project_python_version(project_dir)
+    if version is None:
+        return _python_executable()
+    return _python_resolution(version)[0]
 
 
 def venv_key_for(project_dir: str) -> str:
@@ -726,10 +980,11 @@ def is_installed(project_dir: str) -> bool:
     """
     if not project_dir:
         return True  # nothing to install; the interpreter path handles it
-    if not script_python_ready():
-        # No 3.12 on this machine yet (D214), so there is no venv DIRECTORY to name:
-        # the key folds in the base interpreter, and any directory computed in this
-        # state belongs to a venv nobody will build. Answered here, ahead of
+    if not project_python_ready(project_dir):
+        # The interpreter this project's environment has to be built on is not on
+        # this machine yet (D214, and since D244 that may be a version the FOLDER
+        # asked for rather than the pin). Nothing can be built from it, so nothing
+        # under the venv directory means anything yet. Answered here, ahead of
         # everything below, because every one of those steps would be acting on a
         # venv that does not exist — probing its interpreter, unlinking its marker,
         # or spending the one-rebuild-per-process budget (D212) on it. The install
@@ -1362,9 +1617,11 @@ def _spawn(key: str, project_dir: str, acquire_python: str | None = None) -> int
     cannot call `projectenv` itself. Two independent derivations of the venv
     directory is exactly how a loader ends up filling a directory no run reads.
 
-    Slot 5 is the base interpreter — `uv sync --python`. The backend's
-    `_python_executable()` rather than the worker's own `sys.executable`: the
-    backend runs the code, so its interpreter and the environment's have to be
+    Slot 5 is the base interpreter — `uv sync --python` — and it is
+    `project_base_python`, i.e. the backend's `_python_executable()` for an
+    unpinned folder and the folder's own Python when it declared one (D244). The
+    backend's, rather than the worker's own `sys.executable`, because on that path
+    the backend runs the code and its interpreter and the environment's have to be
     one choice. argv cannot carry None, so the empty string stands for it and the
     worker falls back to its OWN `sys.executable` — deliberately not to the pinned
     `SCRIPT_PYTHON_VERSION`. Passing the version string where uv expects an
@@ -1396,7 +1653,7 @@ def _spawn(key: str, project_dir: str, acquire_python: str | None = None) -> int
             [sys.executable, worker, key, d,
              os.path.abspath(project_dir), venv_dir_for(project_dir),
              projectenv.uv_cache_dir(),
-             _python_executable() or "", acquire_python or ""],
+             project_base_python(project_dir) or "", acquire_python or ""],
             stdout=logf, stderr=logf, stdin=subprocess.DEVNULL,
             env=_worker_env(), **detach,
         )
@@ -1439,15 +1696,21 @@ def start(project_dir: str) -> dict:
     `runtime.js`'s `installEnv` registry — but that is about not issuing five
     POSTs; this is what makes five POSTs harmless if they arrive anyway.)
 
-    When this machine has no pinned Python yet (D214) the FIRST thing installed is
-    that interpreter, under `PYTHON_BOOTSTRAP_KEY` — every step below is written
-    against a key rather than against a venv, so the claim, the join, the spawn
-    record and the polling all apply unchanged. The client then re-runs, the
-    interpreter resolves, and this function is called again for the packages
-    themselves. Two visible rounds, because they are two downloads.
+    When this machine does not have the interpreter this project needs (D214) the
+    FIRST thing installed is that interpreter, under its own version's bootstrap key
+    — every step below is written against a key rather than against a venv, so the
+    claim, the join, the spawn record and the polling all apply unchanged. The
+    client then re-runs, the interpreter resolves, and this function is called again
+    for the packages themselves. Two visible rounds, because they are two downloads.
+
+    The version is the PROJECT's (D244): the pin for a folder that declares no
+    `requires-python`, and the folder's own nearest allowed release when it does. So
+    two folders wanting two Pythons download two interpreters, each under its own
+    key, and neither is mistaken for the other's progress.
     """
-    acquire_python = None if script_python_ready() else SCRIPT_PYTHON_VERSION
-    key = PYTHON_BOOTSTRAP_KEY if acquire_python else venv_key_for(project_dir)
+    version = project_python_version(project_dir) or SCRIPT_PYTHON_VERSION
+    acquire_python = None if project_python_ready(project_dir) else version
+    key = python_bootstrap_key(version) if acquire_python else venv_key_for(project_dir)
     if is_installed(project_dir):
         record = {"stage": "done", "pct": 100, "detail": "already installed",
                   "done": True, "error": None, "pid": os.getpid(), "ts": time.time()}
