@@ -35,14 +35,7 @@ import {
   type CorpusState,
   type HomeHit,
 } from "@apps/explorer/lib/home-search";
-import { queryWantsHidden, rankCompare, scoreEntries } from "@apps/explorer/listing/search";
-import { startScanJob } from "@apps/explorer/listing/scan-job";
-import {
-  RERANK_COMMIT_MS,
-  SCAN_IMMEDIATE_MAX,
-  SCAN_SLICE,
-  type SearchHit,
-} from "@apps/explorer/listing/types";
+import { useRankedScan } from "@apps/explorer/listing/useRankedScan";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 
 // How many cards the Bookmarks/Recents tab shows before "Show more" — flat
@@ -292,50 +285,14 @@ function FilesSearch({
   }, [home, wanted, lifecycle, mutations, retryNonce]);
 
   // -- ranking ---------------------------------------------------------------
-  // The same sliced, cancellable scan the in-folder search runs: a covered home
-  // root can be 200k entries, and scoring that synchronously on a keystroke is
-  // the typing freeze listing/scan-job exists to prevent.
+  // The same sliced, cancellable scan the in-folder search runs — literally the
+  // same hook (listing/useRankedScan): a covered home root can be 200k entries,
+  // and scoring that synchronously on a keystroke is the typing freeze
+  // listing/scan-job exists to prevent.
   const entries = corpus.status === "ok" ? corpus.entries : null;
-  const [scanned, setScanned] = useState<{ q: string; items: SearchHit[]; done: boolean }>({
-    q: "",
-    items: [],
-    done: true,
-  });
-  useEffect(() => {
-    if (entries === null || q === "") {
-      setScanned((prev) =>
-        prev.q === q && prev.items.length === 0 && prev.done ? prev : { q, items: [], done: true },
-      );
-      return;
-    }
-    return startScanJob(
-      {
-        q,
-        showHidden: queryWantsHidden(q),
-        entries,
-        from: 0,
-        ranked: [],
-        sliceSize: SCAN_SLICE,
-        immediateMax: SCAN_IMMEDIATE_MAX,
-        debounceMs: INSTANT_DEBOUNCE_MS,
-        commitMs: RERANK_COMMIT_MS,
-      },
-      {
-        score: scoreEntries,
-        sort: (hitsToSort) => hitsToSort.sort(rankCompare),
-        now: Date.now,
-        setTimer: (fn, ms) => window.setTimeout(fn, ms),
-        clearTimer: (id) => window.clearTimeout(id),
-        onPublish: (result, done) => setScanned({ ...result, done }),
-        onProgress: () => {},
-      },
-    );
-  }, [q, entries]);
-
-  // Rows are only ever shown under the query they were scored for.
-  const ranked = scanned.q === q ? scanned.items : [];
+  const { ranked, pending } = useRankedScan(entries, q, INSTANT_DEBOUNCE_MS);
   const hits = useMemo(() => homeHitsFrom(ranked, home), [ranked, home]);
-  const scanning = active && (scanned.q !== q || !scanned.done);
+  const scanning = active && pending;
 
   // -- the box is where typing goes ------------------------------------------
   //
