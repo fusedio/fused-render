@@ -81,6 +81,7 @@ FAKE_WORKER = textwrap.dedent('''
     p.add_argument("--job", default=""); p.add_argument("--download-only", action="store_true")
     a = p.parse_args()
     if a.download_only:
+        time.sleep(float(os.environ.get("FAKE_DOWNLOAD_SECONDS", "0")))
         sys.exit(0 if os.environ.get("FAKE_DOWNLOAD_FAILS") != "1" else 1)
     STATE["model"] = a.model
     srv = S(("127.0.0.1", 0), H)
@@ -133,6 +134,29 @@ def _wait_ready(model, timeout=20.0):
             return worker
         time.sleep(0.05)
     raise AssertionError(f"{model} never became ready: {supervisor.describe()}")
+
+
+def _wait_downloading(model, timeout=20.0):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        rows = [r for r in supervisor.describe()["downloading"] if r["model"] == model]
+        if rows:
+            return rows
+        time.sleep(0.05)
+    raise AssertionError(f"{model} never reported downloading: {supervisor.describe()}")
+
+
+def _drain_downloads(timeout=20.0):
+    """Let in-flight fetches finish before the test ends.
+
+    Not politeness: the fetch thread reports to the job registry when it lands,
+    and the autouse `jobs.reset()` runs the moment the test returns — so a test
+    that walked away from a running download would drop a stray row into
+    whichever test came next.
+    """
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline and supervisor.describe()["downloading"]:
+        time.sleep(0.05)
 
 
 # -- the registry ---------------------------------------------------------------
@@ -334,6 +358,54 @@ def test_download_only_never_becomes_resident(fake_runner):
     assert row and row["state"] == "done"
     # A download fills the cache; it does not replace what someone is using.
     assert supervisor.describe()["loaded"] == []
+    # …and it is no longer claimed as in flight, which is what lets the page
+    # re-walk the cache and draw the checkmark.
+    assert supervisor.describe()["downloading"] == []
+
+
+def test_a_download_in_flight_is_reported_as_downloading(fake_runner, monkeypatch):
+    """A weights-only pull holds no memory and evicts nothing — but it IS
+    something this machine is doing, and leaving it out of the runtime made it
+    invisible: the page polls job rows only while the runtime says something is
+    happening, so a Download reported progress nobody read, and the Discover
+    card it came from claimed "✓ downloaded" over a pull on its first byte."""
+    monkeypatch.setenv("FAKE_DOWNLOAD_SECONDS", "2")
+    supervisor.load("org/slowfiles", registry.TEXT_GENERATION, weights_only=True)
+    rows = _wait_downloading("org/slowfiles")
+    assert rows[0]["jobId"] == supervisor.job_id_for("org/slowfiles")
+    # Downloading is NOT residency: nothing is holding memory.
+    assert supervisor.describe()["loaded"] == []
+    _drain_downloads()
+
+
+def test_a_second_download_of_the_same_model_joins_the_first(fake_runner, monkeypatch):
+    """Two `snapshot_download` runs over one cache directory is not a faster
+    download, it is a race for the same `.incomplete` files."""
+    monkeypatch.setenv("FAKE_DOWNLOAD_SECONDS", "2")
+    started = supervisor.load("org/twice", registry.TEXT_GENERATION, weights_only=True)
+    _wait_downloading("org/twice")
+    again = supervisor.load("org/twice", registry.TEXT_GENERATION, weights_only=True)
+    assert again["jobId"] == started["jobId"]
+    assert len(supervisor.describe()["downloading"]) == 1
+    _drain_downloads()
+
+
+def test_two_bring_ups_do_not_share_a_status_file(fake_runner):
+    """The port handshake is per BRING-UP, not per capability.
+
+    Two workers for one capability really do overlap — an eviction's
+    replacement starts while the old one is still being killed, a Download runs
+    beside a Load. When they shared `<capability>.json`, the second one's
+    `unlink` deleted the port the first had just published, and the first sat
+    out its entire 120-second bootstrap timeout waiting for a file that was
+    never coming back.
+    """
+    one = supervisor.Worker(model="org/a", capability=registry.TEXT_GENERATION,
+                            runner_code="fake-text")
+    two = supervisor.Worker(model="org/b", capability=registry.TEXT_GENERATION,
+                            runner_code="fake-text")
+    assert supervisor._status_path(one) != supervisor._status_path(two)
+    assert supervisor._log_path(one) != supervisor._log_path(two)
 
 
 # -- the endpoints --------------------------------------------------------------

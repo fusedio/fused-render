@@ -317,20 +317,24 @@
   color: var(--fg-muted);
 }
 
+/* The busy dot, and only the busy dot. "Loaded" used to be a 7px bullet here
+   too, and it was the wrong instrument: in a grid of a dozen cards a small
+   quiet dot is not findable by sweeping, which is the only way anyone reads a
+   grid. That state is now .am-card-loaded + .am-loaded-badge below. */
 .am-runtime-dot {
   flex: 0 0 auto;
   width: 7px;
   height: 7px;
   border-radius: 50%;
-  background: var(--accent);
-}
-
-/* Busy pulses; ready does not. A model mid-download and a model sitting in
-   memory are different enough that the eye should not have to read the text to
-   tell them apart. */
-.am-runtime-dot-busy {
   background: var(--fg-muted);
   animation: am-pulse 1.4s ease-in-out infinite;
+}
+
+.am-runtime-detail {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 @keyframes am-pulse {
@@ -339,7 +343,7 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .am-runtime-dot-busy { animation: none; }
+  .am-runtime-dot { animation: none; }
 }
 
 .am-card-runtime-ready { color: var(--fg); }
@@ -349,6 +353,47 @@
   margin-left: auto;
   font-variant-numeric: tabular-nums;
   color: var(--fg-muted);
+}
+
+/* When the memory figure is the whole row (a loaded model, whose STATE the
+   badge already carries), it leads rather than being pushed to the far edge by
+   an absent label. */
+.am-runtime-mem-lead {
+  margin-left: 0;
+}
+
+/* -- loaded, said loudly -----------------------------------------------------
+   The user's complaint, verbatim: "Loaded bullet on a model is too subtle (not
+   bright enough) to indicate it is running". Two changes, because the grid is
+   read two ways — swept, and then read.
+
+   Swept: the CARD changes. A green rail down its left edge and a wash over the
+   whole surface, so a loaded model is findable among a dozen without reading a
+   word of any of them.
+
+   Read: a filled BADGE beside the name, in the same green as the sidebar's live
+   dot (--success-bright). One colour means "running" across this app rather
+   than one colour per surface. */
+.am-card-loaded {
+  border-color: color-mix(in srgb, var(--success-bright) 55%, var(--border));
+  background: color-mix(in srgb, var(--success-bright) 9%, var(--bg-alt));
+  box-shadow: inset 3px 0 0 var(--success-bright);
+}
+
+.am-loaded-badge {
+  flex: 0 0 auto;
+  padding: 2px 8px;
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  border-radius: 999px;
+  /* The .am-hub-here pattern: a filled pill whose text is the PAGE background,
+     which stays readable in both themes without a second token — dark text on
+     the bright green above, white on the darker green below. */
+  color: var(--bg);
+  background: var(--success-bright);
 }
 
 /* Bytes only: a download knows its total, so it gets a real bar. Loading

@@ -32,6 +32,7 @@ import json
 import os
 import socket
 import socketserver
+import stat
 import sys
 import threading
 import time
@@ -113,59 +114,116 @@ def resident_bytes():
 # --------------------------------------------------------------- model loading
 
 
+def _repo_folder(model_id):
+    """This repo's folder in the hub cache, or None.
+
+    `repo_folder_name` is hf's OWN encoder for `org/name` -> `models--org--name`,
+    and it is used here rather than a `.replace("/", "--")` for the usual reason:
+    the layout is theirs to change, and a second copy of it in this file would
+    keep reporting numbers for a directory that no longer exists. If hf ever
+    moves the helper, progress degrades to a pulse — never to a wrong figure.
+    """
+    try:
+        from huggingface_hub.constants import HF_HUB_CACHE
+        from huggingface_hub.file_download import repo_folder_name
+    except ImportError:
+        return None
+    return os.path.join(HF_HUB_CACHE, repo_folder_name(repo_id=model_id, repo_type="model"))
+
+
+def _bytes_on_disk(folder):
+    """How much of `folder` is on disk right now, in bytes — None if unknown.
+
+    Counts the `.incomplete` files hf writes while a download is in flight,
+    which is the whole point: they ARE the progress. Symlinks are skipped from
+    the `lstat` result itself, so the snapshot entries are not counted a second
+    time on top of the blobs they point at.
+    """
+    if not folder:
+        return None
+    total = 0
+    for dirpath, _dirs, files in os.walk(folder):
+        for name in files:
+            try:
+                info = os.lstat(os.path.join(dirpath, name))
+            except OSError:
+                continue
+            if not stat.S_ISLNK(info.st_mode):
+                total += info.st_size
+    return total
+
+
+def _repo_total_bytes(model_id):
+    """The repo's full size from the Hub, or None.
+
+    One metadata call, no weights. Without it the bar has no total and shows as
+    indeterminate — which is honest, and much better than the alternative this
+    replaced: `snapshot_download`'s `tqdm_class` only wraps the outer
+    "Fetching N files" counter, so reporting ITS numbers as bytes produced
+    "10 / 11 B" for a 4.6GB model.
+    """
+    try:
+        from huggingface_hub import HfApi
+
+        info = HfApi().model_info(model_id, files_metadata=True)
+    except Exception:  # noqa: BLE001 - a missing total is a cosmetic loss, never fatal
+        return None
+    total = 0
+    for sibling in getattr(info, "siblings", None) or []:
+        size = getattr(sibling, "size", None)
+        if isinstance(size, int) and size > 0:
+            total += size
+    return total or None
+
+
 def _download(model_id):
     """Fetch what is missing. Returns the snapshot path.
 
     Split from loading because the AI Models page's "Download" wants exactly
     this half: fill the cache, hold nothing.
+
+    **Progress is measured from the DISK, not from hf's progress bars.**
+    `snapshot_download` only exposes its outer file counter through
+    `tqdm_class`; the per-file byte bars are internal. Reporting the file
+    counter as bytes is how a 4.6GB download came to read "10 / 11 B", and
+    during a single large shard that counter does not move at all — so the row
+    also went stale mid-download and the manager declared nobody was reporting.
+    Walking the repo folder answers both: real bytes, and a tick every second
+    whatever hf is doing.
     """
     set_state(state="downloading", detail="Fetching weights…")
+
+    folder = _repo_folder(model_id)
+    total = _repo_total_bytes(model_id)
     report(state="running", kind="download", unit="bytes",
-           detail="Fetching weights…", done=None, total=None)
+           detail="Fetching weights…", done=_bytes_on_disk(folder), total=total)
 
     from huggingface_hub import snapshot_download
 
-    # ONE progress figure for the whole snapshot: hf reports per file, and a bar
-    # that restarts at zero for each of four shards is worse than one that
-    # counts the set. Every live tqdm registers itself here and the totals are
-    # summed across them.
-    seen = {}
+    result = {}
 
-    class _Tqdm:
-        def __init__(self, *args, **kwargs):
-            self.total = kwargs.get("total") or 0
-            self.n = 0
-            self.desc = kwargs.get("desc") or ""
-            seen[id(self)] = self
+    def fetch():
+        try:
+            result["path"] = snapshot_download(model_id)
+        except BaseException as e:  # noqa: BLE001 - carried to the calling thread and re-raised there
+            result["error"] = e
 
-        def update(self, n=1):
-            self.n += n
-            done = sum(t.n for t in seen.values())
-            total = sum(t.total for t in seen.values()) or None
-            report(done=done, total=total, detail=self.desc or "Fetching weights…")
-
-        def close(self):
-            seen.pop(id(self), None)
-
-        # tqdm's context-manager and iterator surface, minimally — hf uses it
-        # both ways depending on the code path.
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *exc):
-            self.close()
-            return False
-
-        def __iter__(self):
-            return iter(())
-
-        def set_description(self, desc=None, refresh=True):
-            self.desc = desc or ""
-
-        def refresh(self):
-            pass
-
-    return snapshot_download(model_id, tqdm_class=_Tqdm)
+    thread = threading.Thread(target=fetch, name="snapshot", daemon=True)
+    thread.start()
+    while thread.is_alive():
+        thread.join(timeout=1.0)
+        # Every second, whatever hf is doing internally. This is the progress
+        # AND the heartbeat: without it a long single-file download reports
+        # nothing for minutes and the manager calls the row abandoned — which is
+        # exactly what "No longer reporting" meant on a live 4.6GB pull.
+        report(done=_bytes_on_disk(folder), total=total, detail="Fetching weights…")
+    if "error" in result:
+        raise result["error"]
+    # Land on the total rather than on the last walk: the snapshot symlinks are
+    # not counted, so a finished repo measures slightly under its own size and a
+    # bar that stopped at 98% reads as a download that gave up.
+    report(done=total or _bytes_on_disk(folder), total=total)
+    return result["path"]
 
 
 def _download_and_load(model_id):

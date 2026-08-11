@@ -139,6 +139,31 @@ _RUNNERS: tuple[Runner, ...] = (
 )
 
 
+#: Friendly task label (the vocabulary `ai_models._FRIENDLIER_TAGS` produces) ->
+#: the capability that can actually RUN it. Deliberately small and deliberately
+#: not a guess: a label absent from here means "no runner serves this", which is
+#: the honest answer for an embedding model, a dataset, or a vision-language
+#: model until `mlx-vlm` gets a runner.
+_TASK_CAPABILITIES = {
+    "text generation": TEXT_GENERATION,
+    "text to image": IMAGE_GENERATION,
+    "image generation": IMAGE_GENERATION,
+}
+
+
+def capability_for_task(task: str | None) -> str | None:
+    """Which capability, if any, could load a model doing `task`.
+
+    Here rather than in the page, because the page would then hold a second copy
+    of the mapping between the task vocabulary and the capability vocabulary —
+    and a page that guesses "text-generation" for everything will happily try to
+    load a diffusion model as a chat model.
+    """
+    if not task:
+        return None
+    return _TASK_CAPABILITIES.get(task)
+
+
 def all_runners() -> tuple[Runner, ...]:
     return _RUNNERS
 

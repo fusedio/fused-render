@@ -31,6 +31,8 @@ import {
   type HubTask,
 } from "@platform/lib/api";
 import { refreshAiRuntime } from "./aiRuntime";
+import { ModelProgress } from "./AiProgress";
+import type { Job } from "@platform/lib/jobs";
 import { formatSize, formatParams, timeAgo } from "@platform/lib/format";
 import { navigate, urlForFsPath } from "@platform/lib/router";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
@@ -190,13 +192,28 @@ function sizeTitle(model: HubModel): string | undefined {
 // curation where nobody browsing for a model would ever see it.
 function Suggested({
   catalog,
-  onDownloaded,
+  onDisk,
+  downloading,
+  jobByModel,
 }: {
   catalog: AiCatalogCapability[];
-  onDownloaded: () => void;
+  /** Repo ids with a MATERIALISED snapshot on this disk, or null while the walk
+   *  is still running. Owned by the page, so both tabs mean one thing by it. */
+  onDisk: Set<string> | null;
+  downloading: Set<string>;
+  jobByModel: Map<string, Job>;
 }) {
   const [pending, setPending] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // The click is held until the RUNTIME confirms the pull, not until the POST
+  // returns. Clearing on the reply put the card back to "Download" for the beat
+  // before the next runtime poll, which reads as the button having done nothing
+  // — and `onDisk` covers the other end, a "download" that was a cache hit and
+  // finished before any poll ever saw it.
+  const settled = pending !== null && (downloading.has(pending) || !!onDisk?.has(pending));
+  useEffect(() => {
+    if (settled) setPending(null);
+  }, [settled]);
   if (!catalog.length) return null;
 
   const start = async (model: string, capability: string) => {
@@ -204,12 +221,12 @@ function Suggested({
     setPending(model);
     try {
       await downloadAiModel(model, capability);
-      // The row appears in the download manager; the page just stops waiting.
+      // The pull is the server's now. Asking the runtime for a fresh read is the
+      // whole follow-up: the card's state comes from what is actually happening,
+      // never from the fact that a button was pressed.
       refreshAiRuntime();
-      onDownloaded();
     } catch (e) {
       setError((e as Error).message);
-    } finally {
       setPending(null);
     }
   };
@@ -231,42 +248,54 @@ function Suggested({
             )}
           </div>
           <div className="cc-mdgrid am-grid">
-            {group.models.map((m) => (
-              <div key={m.id} className="cc-mdcard am-card am-suggestcard">
-                <div className="cc-mdcard-head">
-                  <a
-                    className="cc-mdcard-name am-card-name"
-                    href={`https://huggingface.co/${m.id}`}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    title={`Open ${m.id} on the Hub`}
-                  >
-                    {m.label}
-                  </a>
-                  {m.have && (
-                    <span className="am-suggest-have" title={`${m.id} is already on this machine`}>
-                      ✓ downloaded
-                    </span>
-                  )}
-                  <span className="am-card-size">{m.size_gb} GB</span>
-                </div>
-                <div className="am-suggest-note">{m.note}</div>
-                <div className="cc-mdcard-foot">
-                  <span className="cc-mdcard-meta cc-mono">{m.id}</span>
-                  {!m.have && group.available && (
-                    <button
-                      type="button"
-                      className="am-card-power"
-                      disabled={pending === m.id}
-                      onClick={() => start(m.id, group.capability)}
-                      title={`Download ${m.id} (~${m.size_gb} GB)`}
+            {group.models.map((m) => {
+              // Three states, and keeping them apart is the whole fix: HERE (a
+              // materialised snapshot), COMING (a pull the server is running),
+              // and neither. The bug this replaces collapsed the last two —
+              // pressing Download made the card claim "✓ downloaded" while the
+              // 4.6GB pull it had just started was on its first byte.
+              const busy = downloading.has(m.id) || pending === m.id;
+              const have = !!onDisk?.has(m.id);
+              return (
+                <div key={m.id} className="cc-mdcard am-card am-suggestcard">
+                  <div className="cc-mdcard-head">
+                    <a
+                      className="cc-mdcard-name am-card-name"
+                      href={`https://huggingface.co/${m.id}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      title={`Open ${m.id} on the Hub`}
                     >
-                      {pending === m.id ? "Starting…" : "Download"}
-                    </button>
-                  )}
+                      {m.label}
+                    </a>
+                    {have && !busy && (
+                      <span className="am-suggest-have" title={`${m.id} is already on this machine`}>
+                        ✓ downloaded
+                      </span>
+                    )}
+                    <span className="am-card-size">{m.size_gb} GB</span>
+                  </div>
+                  <div className="am-suggest-note">{m.note}</div>
+                  {/* No `detail` override: the job says what it is doing
+                      ("Fetching weights…", "Preparing MLX…") and a fixed word
+                      here would paper over a venv build with "Downloading". */}
+                  {busy && <ModelProgress job={jobByModel.get(m.id)} />}
+                  <div className="cc-mdcard-foot">
+                    <span className="cc-mdcard-meta cc-mono">{m.id}</span>
+                    {!have && !busy && group.available && (
+                      <button
+                        type="button"
+                        className="am-card-power"
+                        onClick={() => start(m.id, group.capability)}
+                        title={`Download ${m.id} (~${m.size_gb} GB)`}
+                      >
+                        Download
+                      </button>
+                    )}
+                  </div>
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </div>
       ))}
@@ -274,13 +303,20 @@ function Suggested({
   );
 }
 
-export default function AiModelsDiscover() {
+export default function AiModelsDiscover({
+  onDisk,
+  downloading,
+  jobByModel,
+}: {
+  onDisk: Set<string> | null;
+  downloading: Set<string>;
+  jobByModel: Map<string, Job>;
+}) {
   const [query, setQuery] = useState("");
   const [task, setTask] = useState("");
   const [sort, setSort] = useState<HubSort>("downloads");
   const [tasks, setTasks] = useState<HubTask[]>([]);
   const [catalog, setCatalog] = useState<AiCatalogCapability[]>([]);
-  const [catalogKey, setCatalogKey] = useState(0);
   const [models, setModels] = useState<HubModel[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -301,25 +337,16 @@ export default function AiModelsDiscover() {
   }, []);
 
   useEffect(() => {
-    // The catalog is the curation; whether each entry is already on disk is the
-    // cache's answer, so the two are joined here rather than on the server —
-    // the same rule the search results follow (HS-5).
-    Promise.all([getAiCatalog(), searchHubModels({ limit: 1 })]).then(
-      async ([cat]) => {
-        const local = await fetch("/api/ai-models")
-          .then((r) => r.json())
-          .catch(() => ({ repos: [] }));
-        const have = new Set<string>((local.repos ?? []).map((r: { id: string }) => r.id));
-        setCatalog(
-          cat.capabilities.map((group) => ({
-            ...group,
-            models: group.models.map((m) => ({ ...m, have: have.has(m.id) })),
-          })),
-        );
-      },
+    // Just the curation. Whether each entry is on this disk is the PAGE's
+    // answer, arriving as `onDisk` — this used to run its own cache walk beside
+    // the page's, which meant two definitions of "downloaded" and two moments
+    // they were true. (It also awaited a one-result Hub search it then threw
+    // away, so a machine with no network showed no suggestions at all.)
+    getAiCatalog().then(
+      (cat) => setCatalog(cat.capabilities),
       () => setCatalog([]),
     );
-  }, [catalogKey]);
+  }, []);
 
   useEffect(() => {
     if (timer.current) window.clearTimeout(timer.current);
@@ -355,14 +382,20 @@ export default function AiModelsDiscover() {
   }, [settled]);
 
   const host = endpoint ? endpoint.replace(/^https?:\/\//, "") : "huggingface.co";
-  const reload = () => setCatalogKey((k) => k + 1);
 
   return (
     <>
       {/* Suggested first, and only with no query: a curated handful is the
           answer to "what should I even get", which is the question someone has
           BEFORE they know what to type. Once they type, they have a better one. */}
-      {!settled.q && !settled.task && <Suggested catalog={catalog} onDownloaded={reload} />}
+      {!settled.q && !settled.task && (
+        <Suggested
+          catalog={catalog}
+          onDisk={onDisk}
+          downloading={downloading}
+          jobByModel={jobByModel}
+        />
+      )}
 
       <div className="am-hub-controls">
         <input
@@ -403,7 +436,7 @@ export default function AiModelsDiscover() {
       {/* Said plainly, once: this tab is the one place in the app that asks a
           third party a question. */}
       <p className="cc-caption am-hub-note">
-        Searching {host}. Results are read-only — nothing is downloaded from here.
+        Searching {host}. Search results are read-only; the suggestions above can be downloaded.
       </p>
 
       {error && <ErrorBanner>{error}</ErrorBanner>}

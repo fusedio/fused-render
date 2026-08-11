@@ -107,6 +107,14 @@ class Worker:
     model: str
     capability: str
     runner_code: str
+    #: Unique per bring-up, and the reason the status and log files are named
+    #: after it rather than after the capability. Two workers for one capability
+    #: DO overlap — an eviction's replacement starts while the old one is still
+    #: being killed, a Download runs beside a Load — and when they shared a path
+    #: the second one's `unlink` deleted the port the first had just published,
+    #: so the first waited out its whole bootstrap timeout on a file that would
+    #: never come back. Not the token: a secret must not become a filename.
+    uid: str = field(default_factory=lambda: secrets.token_hex(4))
     state: str = "starting"  # starting | venv | downloading | loading | ready | error
     detail: str = ""
     error: str = ""
@@ -130,6 +138,15 @@ class Worker:
 _lock = threading.RLock()
 #: capability -> the one Worker resident for it.
 _workers: dict[str, Worker] = {}
+#: model -> the weights-only fetch running for it right now.
+#:
+#: A separate table from `_workers` because a download is not residency — it
+#: evicts nothing and holds no memory — but it IS something this machine is
+#: doing, and leaving it out of `describe()` made it invisible: the AI Models
+#: page polls job rows only while the runtime says something is happening, so a
+#: pure Download reported progress that nothing was reading, and the sidebar
+#: showed a quiet machine that was pulling 8GB.
+_downloads: dict[str, dict] = {}
 #: Every token handed to a live worker. A worker reports its own download
 #: progress to `/api/jobs` under a `sys:` id, which pages are forbidden from
 #: writing — so the endpoint has to be able to tell a worker from a page, and
@@ -273,6 +290,22 @@ def _kill_tree(worker: Worker) -> None:
             time.sleep(0.05)
 
 
+def _cleanup_files(worker: Worker) -> None:
+    """Drop this bring-up's status and log files.
+
+    Per-bring-up names mean they would otherwise accumulate one pair per load
+    forever. Nothing is lost: a worker that failed has already had its stderr
+    read into the error the job row carries, and this only runs once the process
+    is gone. Best-effort — on Windows an unlink can lose a race with the child's
+    last write, and a leftover log is not worth failing an unload over.
+    """
+    for path in (_status_path(worker), _log_path(worker)):
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+
+
 def _terminate(worker: Worker) -> None:
     """Ask the worker to quit, then make sure of it.
 
@@ -295,6 +328,7 @@ def _terminate(worker: Worker) -> None:
             worker.proc.wait(timeout=1.0)
         except (subprocess.TimeoutExpired, OSError):
             pass
+    _cleanup_files(worker)
 
 
 def _child_env(token: str) -> dict:
@@ -321,11 +355,17 @@ def _worker_dir() -> str:
     return directory
 
 
-def _status_path(capability: str) -> str:
-    return os.path.join(_worker_dir(), capability.replace("/", "-") + ".json")
+def _slug(worker: Worker) -> str:
+    return worker.capability.replace("/", "-") + "-" + worker.uid
 
 
-def _log_path(capability: str) -> str:
+def _status_path(worker: Worker) -> str:
+    """Where this worker publishes its port. One file per BRING-UP, never per
+    capability — see `Worker.uid`."""
+    return os.path.join(_worker_dir(), _slug(worker) + ".json")
+
+
+def _log_path(worker: Worker) -> str:
     """Where a worker's stderr goes.
 
     A FILE, never `subprocess.PIPE`. A pipe nobody drains holds ~64KB before the
@@ -333,7 +373,7 @@ def _log_path(capability: str) -> str:
     (hf and torch both do, at length) would wedge mid-load while still looking
     alive, and the pipe only gets read after exit, which by then never comes.
     """
-    return os.path.join(_worker_dir(), capability.replace("/", "-") + ".log")
+    return os.path.join(_worker_dir(), _slug(worker) + ".log")
 
 
 def _tail(path: str, limit: int = 2000) -> str:
@@ -352,14 +392,14 @@ def _spawn(runner: registry.Runner, worker: Worker, python: str) -> None:
     race, since anything this process reserves can be taken between the bind and
     the exec.
     """
-    status = _status_path(worker.capability)
+    status = _status_path(worker)
     try:
         os.unlink(status)
     except OSError:
         pass
 
     job = job_id_for(worker.model)
-    log = _log_path(worker.capability)
+    log = _log_path(worker)
     proc = subprocess.Popen(
         [python, runner.worker, "--model", worker.model, "--status", status, "--job", job],
         stdin=subprocess.DEVNULL,
@@ -517,7 +557,7 @@ def _fetch_only(runner: registry.Runner, model: str, job: str) -> None:
     try:
         python = _ensure_venv(runner, stub, job)
         _report(job, detail="Fetching weights…")
-        log = _log_path(runner.capability + "-download")
+        log = _log_path(stub)
         proc = subprocess.Popen(
             [python, runner.worker, "--model", model, "--job", job, "--download-only"],
             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=open(log, "w"),
@@ -543,6 +583,8 @@ def _fetch_only(runner: registry.Runner, model: str, job: str) -> None:
     finally:
         with _lock:
             _worker_tokens.discard(stub.token)
+            _downloads.pop(model, None)
+        _cleanup_files(stub)
 
 
 def load(model: str, capability: str, *, weights_only: bool = False) -> dict:
@@ -567,6 +609,14 @@ def load(model: str, capability: str, *, weights_only: bool = False) -> dict:
 
     job = job_id_for(model)
     if weights_only:
+        with _lock:
+            # A second Download on a model already being fetched joins the first.
+            # Two `snapshot_download` runs over one cache directory is not a
+            # faster download, it is a race for the same `.incomplete` files.
+            if model in _downloads:
+                return {"jobId": job, "model": model, "state": "downloading"}
+            _downloads[model] = {"model": model, "capability": capability,
+                                 "jobId": job, "startedAt": time.time()}
         _report(job, title=model, state="running", kind="download", cancellable=True,
                 unit="bytes", detail="Preparing…", done=None, total=None)
         threading.Thread(target=_fetch_only, args=(runner, model, job),
@@ -722,10 +772,17 @@ def describe() -> dict:
             }
             for w in _workers.values()
         ]
+        # Weights landing on disk, holding no memory and evicting nothing. The
+        # BYTES are the job row's to report; this only says which models have
+        # one in flight, which is what tells a page whether to read job rows at
+        # all and what stops a Discover card claiming "✓ downloaded" over a pull
+        # that is still running.
+        downloading = [dict(row) for row in _downloads.values()]
     total = sum(row["residentBytes"] or 0 for row in loaded)
     return {
         "runners": registry.describe(),
         "loaded": loaded,
+        "downloading": downloading,
         "totalResidentBytes": total or None,
     }
 
@@ -734,3 +791,4 @@ def reset() -> None:
     """Tests only: drop the table without touching real processes."""
     with _lock:
         _workers.clear()
+        _downloads.clear()

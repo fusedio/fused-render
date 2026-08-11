@@ -1130,3 +1130,42 @@ def test_both_evidence_paths_agree_on_the_label(client, hub):
     # …while still reporting which evidence answered.
     assert from_card["taskSource"] == "the model card's pipeline_tag"
     assert from_config["taskSource"] == "the architecture in config.json"
+
+
+# -- which capability could LOAD this (SPEC §40) ---------------------------------
+# Answered HERE rather than in the page. The task vocabulary and the capability
+# vocabulary both live on this side; a page deciding for itself would need a
+# second copy of the mapping, and the first version of that page guessed
+# "text-generation" for every cached repo — offering to load a dataset as a chat
+# model, and a diffusion model as one too.
+
+
+@requires_symlinks
+def test_a_repo_reports_the_capability_that_could_load_it(client, hub):
+    text = _repo(hub, "models--org--chat", blobs={"w": 10}, snapshots={"c1": {"m": "w"}}, refs={"main": "c1"})
+    _snapshot_file(text, "c1", "config.json",
+                   json.dumps({"architectures": ["LlamaForCausalLM"], "model_type": "llama"}))
+    image = _repo(hub, "models--org--sd", blobs={"w": 10}, snapshots={"c1": {"m": "w"}}, refs={"main": "c1"})
+    _snapshot_file(image, "c1", "model_index.json", json.dumps({"_class_name": "StableDiffusionXLPipeline"}))
+    assert _repo_row(client, "org/chat")["capability"] == "text-generation"
+    assert _repo_row(client, "org/sd")["capability"] == "text-to-image"
+
+
+@requires_symlinks
+def test_a_repo_no_runner_serves_reports_no_capability(client, hub):
+    """None is the honest answer, and the page turns it into "no Load button" —
+    rather than a button that is offered and always fails."""
+    embed = _repo(hub, "models--org--st", blobs={"w": 10}, snapshots={"c1": {"m": "w"}}, refs={"main": "c1"})
+    _snapshot_file(embed, "c1", "modules.json", "[]")
+    assert _repo_row(client, "org/st")["task"] == "embeddings"
+    assert _repo_row(client, "org/st")["capability"] is None
+
+
+@requires_symlinks
+def test_a_dataset_is_never_loadable(client, hub):
+    # A dataset folder can carry a config.json that reads like a model's. The
+    # kind is what settles it: nothing here loads a dataset into a text runner.
+    data = _repo(hub, "datasets--org--corpus", blobs={"w": 10}, snapshots={"c1": {"m": "w"}}, refs={"main": "c1"})
+    _snapshot_file(data, "c1", "config.json",
+                   json.dumps({"architectures": ["LlamaForCausalLM"], "model_type": "llama"}))
+    assert _repo_row(client, "org/corpus")["capability"] is None

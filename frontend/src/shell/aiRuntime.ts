@@ -17,16 +17,24 @@ import { getAiRuntime, type AiRuntime } from "@platform/lib/api";
 const ACTIVE_MS = 1000;
 const IDLE_MS = 10_000;
 
-const EMPTY: AiRuntime = { runners: [], loaded: [], totalResidentBytes: null };
+const EMPTY: AiRuntime = { runners: [], loaded: [], downloading: [], totalResidentBytes: null };
 
 let current: AiRuntime = EMPTY;
 let timer: number | null = null;
 let inFlight = false;
 const listeners = new Set<(runtime: AiRuntime) => void>();
 
-/** Anything mid-flight — a venv build, a download, weights going into memory. */
+/** Anything mid-flight — a venv build, a download, weights going into memory.
+ *
+ *  `downloading` is not an afterthought in this predicate: a weights-only pull
+ *  holds no memory and appears in no worker row, so a runtime that only looked
+ *  at `loaded` called an 8GB download an idle machine — dropping the poll to
+ *  once every ten seconds and leaving the page's job rows unread. */
 export function isBusy(runtime: AiRuntime): boolean {
-  return runtime.loaded.some((m) => m.state !== "ready" && m.state !== "error");
+  return (
+    runtime.downloading.length > 0 ||
+    runtime.loaded.some((m) => m.state !== "ready" && m.state !== "error")
+  );
 }
 
 function publish(next: AiRuntime) {

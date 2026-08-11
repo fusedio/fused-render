@@ -78,6 +78,7 @@ from dataclasses import dataclass
 from fastapi import APIRouter, Body, Header
 
 from fused_render._view_url_codec import canonical_fs_path
+from fused_render.ai import registry as _ai_registry
 from fused_render.server.common import _error, _require_fused
 
 router = APIRouter()
@@ -788,6 +789,15 @@ def _repo(cache_dir: str, dirname: str, kind: str) -> dict:
         "paramsEstimated": meta.params_estimated,
         # What the checkpoint declares about its weight width ("4-bit").
         "quantization": meta.quantization,
+        # Which capability could LOAD this, or None (SPEC §40). Answered here
+        # because the task vocabulary and the capability vocabulary both live on
+        # this side: a page deciding for itself would need a second copy of the
+        # mapping, and would cheerfully try to load a diffusion model as a chat
+        # model. None for a dataset, a Space, an embedding model, or anything no
+        # runner serves yet.
+        "capability": (
+            _ai_registry.capability_for_task(meta.task) if kind == "model" else None
+        ),
         "revisions": _revisions(repo_dir),
         "refs": _ref_names(repo_dir),
     }

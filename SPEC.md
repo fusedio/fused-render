@@ -5182,8 +5182,12 @@ stop it short of quitting the app.
 - **BG-5** **Stalled, not frozen.** A `running` record with no update for
   `STALE_AFTER_S` (30s) is reported `stalled: true` — computed on read, so a
   late tick un-stalls it with no timer involved. The UI dims the row and says
-  *"No longer reporting — the page that started it was closed"*, which is the
-  truth: the reporter is gone, the work very likely is not. It is dropped
+  *"No longer reporting"* — plus **which reporter went quiet**, which follows
+  from `owner`: *"the page that started it was closed"* for a page-owned row,
+  *"the process running it stopped reporting"* for a server-owned one. Blaming a
+  page for a model download nobody's page started sends the user to look in the
+  wrong place. Either way it is the truth: the reporter is gone, the work very
+  likely is not. It is dropped
   entirely after `STALE_DROP_S` (10 min) so a dead reporter cannot wedge the
   list for the session.
 - **BG-6** **Retention.** A finished record stays `FINISHED_TTL_S` (30s) — long
@@ -5679,6 +5683,34 @@ an AI Models page that could say what was on disk but not what was *running*.
   Generating with a model that is not resident **starts the load and fails with
   that job id** (409): a caller should not have to orchestrate load-then-wait
   before its first call, and generation must not block for minutes either.
+- **AI-5a** **A download is part of the runtime, even though it is not
+  residency.** `GET /api/ai/runtime` reports `downloading` beside `loaded`: a
+  weights-only pull holds no memory and evicts nothing, but it is work this
+  machine is doing, and a runtime that omitted it made an 8GB fetch invisible —
+  the page polls job rows only while the runtime says something is happening, so
+  a Download reported progress nothing was reading, and the card that started it
+  went on saying "not downloaded". The BYTES stay in the job row; this list only
+  says which models have a pull in flight. A second Download of a model already
+  being fetched **joins the first** rather than starting a second
+  `snapshot_download` over the same `.incomplete` files.
+- **AI-5b** **Download progress is measured from the DISK.**
+  `snapshot_download` exposes only its outer "Fetching N files" counter through
+  `tqdm_class`; the per-file byte bars are internal. Reporting that counter as
+  bytes is how a 4.6GB pull came to read **"10 / 11 B"**, and during a single
+  large shard it does not move at all — so the row also went stale mid-download
+  and the manager declared nobody was reporting. The runner instead walks its own
+  repo folder (counting the `.incomplete` files, skipping the snapshot symlinks)
+  on a **one-second poll that doubles as the heartbeat**, and the repo's total
+  comes from one Hub metadata call. No total means an indeterminate bar, which is
+  honest; a wrong total is not.
+- **AI-5c** **The port handshake file is per BRING-UP, never per capability.**
+  Two workers for one capability really do overlap — an eviction's replacement
+  starts while the old one is still being killed, a Download runs beside a Load —
+  and when they shared `<capability>.json` the second one's `unlink` deleted the
+  port the first had just published, so the first sat out its entire bootstrap
+  timeout waiting for a file that was never coming back. The name carries a
+  random per-worker id (never the token: a secret must not become a filename),
+  and both the status and log files are removed once the process is gone.
 - **AI-6** **Availability is answered with a REASON.** MLX is Apple-Silicon-only,
   so `available()` returns "needs Apple Silicon — MLX runs on Metal only (this is
   linux/x86_64)", and resolution SKIPS an unavailable runner rather than picking
@@ -5701,10 +5733,19 @@ an AI Models page that could say what was on disk but not what was *running*.
   the job row, because that is the only place byte counts exist), loading (text
   and a pulse, **no bar**: weights going into memory is one opaque step and an
   invented percentage reads as frozen), loaded (with its resident memory), or
-  failed (with the reason). **Load / Unload** is a word rather than a glyph and
+  failed (with the reason). **Loaded is said loudly**: a filled badge beside the
+  name and a colour change over the whole card, in the same green as the
+  sidebar's live dot. A small bullet was the wrong instrument — a grid is read by
+  sweeping before it is read by reading, and the one state that costs gigabytes
+  continuously has to survive the sweep. **Load / Unload** is a word rather than a glyph and
   is always visible: it is the one control on the page that spends MEMORY rather
   than disk, and it is not offered at all for a capability no runner here serves
-  — a button that always fails is worse than no button. A **dot on the sidebar
+  — a button that always fails is worse than no button. **Which capability
+  could load a repo is answered by the SERVER** (`capability` on each listed
+  repo, or null): the task vocabulary and the capability vocabulary both live
+  there, and a page deciding for itself needs a second copy of the mapping — the
+  first version of it guessed text generation for every cached repo and offered
+  to load a dataset as a chat model. A **dot on the sidebar
   entry** whenever anything is resident, naming it on hover: gigabytes held by
   something you have forgotten about is exactly what an indicator is for, and it
   is the same treatment being signed in already gets (AC-1).
@@ -5717,6 +5758,15 @@ an AI Models page that could say what was on disk but not what was *running*.
   still listed, with its reason. **Downloading is offered here** (D258,
   superseding HS-1's read-only posture): the job-backed machinery HS-1 named as
   the prerequisite now exists, so the ✕ in the manager really stops a pull.
+  The ✓ means a **materialised snapshot**, never merely a repo folder:
+  `huggingface_hub` creates `models--org--name/` on the first byte, so a set
+  built from folder names flipped a suggestion to "✓ downloaded" seconds
+  after Download was pressed, over a 4.6GB pull that had barely started. While
+  the pull runs the card shows that pull's progress instead — the same three
+  states the Hub result cards already draw. And the cache answer is the PAGE's
+  one walk, handed down, not a second walk Discover runs for itself: two walks
+  meant two definitions of "on this machine" and a window where the tabs
+  disagreed about the same repo.
 - **AI-8** **The worker measures its own memory.** Only the process holding the
   weights can; on Apple Silicon the GPU pool IS system memory, so RSS is one
   honest number rather than two that need reconciling. What the supervisor knows

@@ -1914,6 +1914,10 @@ export interface AiModelRepo {
   paramsEstimated: boolean;
   /** What the checkpoint declares about its weight width ("4-bit"), or null. */
   quantization: string | null;
+  /** Which capability could LOAD this locally, or null when nothing here
+   *  serves it (a dataset, an embedding model, a VLM). Decided server-side so
+   *  the page holds no second copy of the task→capability mapping. */
+  capability: string | null;
   revisions: number;
   refs: string[];
 }
@@ -2095,9 +2099,20 @@ export interface AiLoadedModel {
   jobId: string;
 }
 
+/** A weights-only fetch in flight: on disk, not in memory. The BYTES live in the
+ *  job row (`jobId`); this only says the pull is still running — which is what
+ *  keeps a Discover card from claiming "✓ downloaded" the moment it was asked. */
+export interface AiDownload {
+  model: string;
+  capability: string;
+  jobId: string;
+  startedAt: number;
+}
+
 export interface AiRuntime {
   runners: AiRunner[];
   loaded: AiLoadedModel[];
+  downloading: AiDownload[];
   totalResidentBytes: number | null;
 }
 
@@ -2105,14 +2120,14 @@ export function getAiRuntime(): Promise<AiRuntime> {
   return getJson<AiRuntime>("/api/ai/runtime");
 }
 
+/** One curated suggestion. Deliberately says nothing about whether you HAVE it:
+ *  the server's catalog is the curation, and what is on this disk is the cache
+ *  listing's answer — joined by the page so both tabs mean one thing by it. */
 export interface AiCatalogModel {
   id: string;
   label: string;
   size_gb: number;
   note: string;
-  /** Joined in by the page against the local cache — the server's catalog is
-   *  the curation only, and what is on this disk is the cache's question. */
-  have?: boolean;
 }
 
 export interface AiCatalogCapability {

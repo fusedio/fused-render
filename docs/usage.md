@@ -155,14 +155,16 @@ once that cache exists; the first download from the Hub creates it.
   `HUGGINGFACE_HUB_CACHE`, `$HF_HOME/hub`, `$XDG_CACHE_HOME/huggingface/hub`,
   then `~/.cache/huggingface/hub` — so a shared model disk pinned with `HF_HOME`
   is the one you see. The path in use is printed under the heading.
-- **Scanning happens when you open the page**, and only then. It walks every
-  file in the cache, so it is deliberately not re-run each time you switch back
-  to the window — and there is no Refresh button, because knowing when that walk
-  is worth paying for is not something you should have to judge. Deleting
-  something re-reads the cache on its own.
+- **Scanning happens when you open the page**, and then only when the cache
+  really changed. It walks every file in the cache, so it is deliberately not
+  re-run each time you switch back to the window — and there is no Refresh
+  button, because knowing when that walk is worth paying for is not something
+  you should have to judge. Deleting something re-reads the cache on its own,
+  and so does a download finishing.
 - **You can load a model into memory from here.** Each cached model has a
-  **Load** button; while it is resident the card says so with the memory it is
-  holding, and **Unload** gives that back. Only one model per kind stays loaded
+  **Load** button; while it is resident the card turns green and carries a
+  **LOADED** badge next to its name — findable at a glance in a grid of a dozen
+  — with the memory it is holding underneath, and **Unload** gives that back. Only one model per kind stays loaded
   — loading a second chat model unloads the first, because two 8GB models on a
   16GB machine is a swap storm — and a dot appears on the AI Models entry in the
   sidebar whenever anything is in memory, so gigabytes are never held by
@@ -181,9 +183,12 @@ once that cache exists; the first download from the Hub creates it.
   - **Nothing is sent anywhere until you open that tab**, and the caption says
     which host is being asked. Typing is batched into one request, and repeating
     a search inside a minute or so reuses the answer rather than asking again.
-  - **Download happens here now.** Suggested models and search results carry a
-    **Download** button; the transfer shows up in the download manager at the
-    bottom-right like any other long job, and its ✕ really stops it.
+  - **Download happens here now.** The suggestions below carry a **Download**
+    button; the transfer shows up in the download manager at the bottom-right
+    like any other long job, and its ✕ really stops it. Search results stay
+    read-only. While a download runs, its card shows that progress rather than
+    the ✓ — the ✓ means the model is complete and ready to open, not that you
+    once asked for it.
   - **Suggested** is a short curated list per capability — chat models, image
     models — with what each costs and why you would pick it, and a ✓ on the ones
     you already have. It only shows when the search box is empty: it is the

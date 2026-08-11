@@ -187,7 +187,12 @@ tick is bookkeeping about a call, not a call.
 
 `GET /api/ai-models` → `{cacheDir, hfHome, exists, totalSize, repos}`, one
 entry per cached repo (`{id, dir, kind, path, size, files, mtime, lastUsed,
-revisions, refs}`), biggest first. `GET /api/ai-models/status` →
+task, taskHelp, taskSource, library, params, paramsEstimated, quantization,
+capability, revisions, refs}`), biggest first. `capability` is which local runner
+kind could LOAD this — `text-generation`, `text-to-image`, or null for a dataset,
+a Space, an embedding model or anything no runner serves (SPEC AI-7a). Answered
+here because the task vocabulary and the capability vocabulary both live on this
+side; a page deciding for itself would hold a second copy of the mapping. `GET /api/ai-models/status` →
 `{available, cacheDir}` is the cheap gate behind the sidebar entry (one `isdir`,
 no walk). `GET /api/ai-models/revisions?repo=<dir>` → per-revision
 `{commit, refs, size, shared, files, mtime}`, where `size` is the revision's
@@ -248,8 +253,13 @@ bounded outbound call plus a cache walk, so it belongs in the threadpool.
 
 `GET /api/ai/runtime` → `{runners:[{code,capability,label,available,reason}],
 loaded:[{model,capability,runner,state,residentBytes,loadedAt,jobId}],
-totalResidentBytes}`. `GET /api/ai/catalog` → the curated suggestions per
-capability. `POST /api/ai/runtime/load|unload|download` — `X-Fused` guarded, since
+downloading:[{model,capability,jobId,startedAt}], totalResidentBytes}`.
+`downloading` is weights landing on disk — no memory, no eviction, no worker row —
+and it is in this reply rather than only in the job list because it is what tells
+a page whether to read job rows at all (AI-5a). `GET /api/ai/catalog` → the curated
+suggestions per capability, and nothing about what is on this disk: the cache is
+the AI-models listing's question, joined by the page so both its tabs mean one
+thing by it. `POST /api/ai/runtime/load|unload|download` — `X-Fused` guarded, since
 they start processes and write gigabytes; `load` and `download` return a `{jobId}`
 into the download manager rather than blocking.
 
@@ -259,7 +269,11 @@ skips a runner that cannot run here). `supervisor.py` owns the worker processes:
 one resident model per capability, auto-evicting; liveness via `Popen.poll()`
 (never `os.kill(pid, 0)` — a zombie answers that yes, and on Windows it
 *terminates* the process); stopping via `killpg` on a verified group leader, or
-`CTRL_BREAK`/`taskkill /T /F` on Windows. `catalog.py` holds the curated model
+`CTRL_BREAK`/`taskkill /T /F` on Windows. The port-handshake file is named per
+BRING-UP (a random per-worker id, never the token), because two workers for one
+capability overlap — an eviction's replacement starts while the old one is being
+killed — and a shared name let the second one's `unlink` delete the port the first
+had just published. `catalog.py` holds the curated model
 lists that used to live inside the sandbox apps.
 
 A runner is a folder with a `pyproject.toml` and a `worker.py`; its venv is built

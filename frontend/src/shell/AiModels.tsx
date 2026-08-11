@@ -19,9 +19,10 @@
 // non-explorer pages read as one surface rather than each inventing a list.
 // Only what those classes have no answer for is local (styles/ai-models.css):
 // the size figure, the Explore link, the revision drawer, and the tab strip.
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import AiModelsDiscover from "./AiModelsDiscover";
-import { publishAiRuntime, refreshAiRuntime, useAiRuntime } from "./aiRuntime";
+import { ModelProgress } from "./AiProgress";
+import { isBusy, publishAiRuntime, refreshAiRuntime, useAiRuntime } from "./aiRuntime";
 import {
   deleteAiModels,
   getAiModelRevisions,
@@ -194,6 +195,28 @@ function Revisions({
   );
 }
 
+// The loud one. A loaded model is the only state on this page that costs
+// something continuously — gigabytes of RAM, right now — so it is the one state
+// that has to be findable by SWEEPING a grid rather than by reading it. A 7px
+// bullet was not: at a glance a loaded card looked exactly like the eleven
+// cached cards around it. Green, filled, in the card's head, and the card
+// itself changes colour underneath it (styles/ai-models.css). The same green as
+// the sidebar's live dot, because "this is running" should be one colour in
+// this app rather than one per surface.
+function LoadedBadge({ loaded }: { loaded: AiLoadedModel }) {
+  return (
+    <span
+      className="am-loaded-badge"
+      title={
+        `${loaded.model} is loaded in memory` +
+        (loaded.residentBytes ? ` — ${formatSize(loaded.residentBytes)} resident` : "")
+      }
+    >
+      Loaded
+    </span>
+  );
+}
+
 // The live state of one model: what it is doing, and what it is costing.
 //
 // Four states worth distinguishing, and the distinctions are the point:
@@ -203,21 +226,21 @@ function Revisions({
 // error (with what went wrong, because "it failed" sends people nowhere).
 function RuntimeChip({ loaded, job }: { loaded?: AiLoadedModel; job?: Job }) {
   if (loaded?.state === "ready") {
+    // The badge above already said "loaded"; this row carries the one thing a
+    // badge cannot — the number. Nothing at all when the worker could not
+    // measure itself, rather than a row that repeats the badge.
+    if (!loaded.residentBytes) return null;
     return (
       <div className="am-card-runtime am-card-runtime-ready">
-        <span className="am-runtime-dot" />
-        Loaded
-        {loaded.residentBytes ? (
-          <span
-            className="am-runtime-mem"
-            title={
-              "Resident memory of the model's process. Not the model's size: it " +
-              "counts shared pages too and moves while it generates."
-            }
-          >
-            {formatSize(loaded.residentBytes)} in memory
-          </span>
-        ) : null}
+        <span
+          className="am-runtime-mem am-runtime-mem-lead"
+          title={
+            "Resident memory of the model's process. Not the model's size: it " +
+            "counts shared pages too and moves while it generates."
+          }
+        >
+          {formatSize(loaded.residentBytes)} in memory
+        </span>
       </div>
     );
   }
@@ -228,20 +251,7 @@ function RuntimeChip({ loaded, job }: { loaded?: AiLoadedModel; job?: Job }) {
       </div>
     );
   }
-  const detail = loaded?.detail || job?.detail || "Preparing…";
-  const pct =
-    job && job.total && job.done !== null ? Math.min(100, (job.done / job.total) * 100) : null;
-  return (
-    <div className="am-card-runtime">
-      <span className="am-runtime-dot am-runtime-dot-busy" />
-      {detail}
-      {pct !== null && (
-        <span className="am-runtime-bar">
-          <span className="am-runtime-bar-fill" style={{ width: `${pct}%` }} />
-        </span>
-      )}
-    </div>
-  );
+  return <ModelProgress detail={loaded?.detail} job={job} />;
 }
 
 function RepoCard({
@@ -277,8 +287,9 @@ function RepoCard({
   // "added", not "released": the Hub's release date isn't on this disk (see the
   // endpoint), so the card states the date this machine actually knows.
   const added = timeAgo(repo.added);
+  const live = loaded?.state === "ready";
   return (
-    <div className="cc-mdcard am-card">
+    <div className={"cc-mdcard am-card" + (live ? " am-card-loaded" : "")}>
       <div className="cc-mdcard-head">
         {/* The NAME goes to the HUB. A repo id is a Hub address, and the page
             it names is where the licence, the full model card, the discussions
@@ -295,6 +306,7 @@ function RepoCard({
         >
           {repo.id}
         </a>
+        {loaded?.state === "ready" && <LoadedBadge loaded={loaded} />}
         <span className="cc-pill">{repo.kind}</span>
         {/* The size is the reason this page exists, so it is a figure in the
             card's head rather than another clause in the meta line. */}
@@ -521,10 +533,18 @@ export default function AiModels() {
   // already gone). A banner rather than a toast: it names things the user asked
   // for and did not get.
   const [failures, setFailures] = useState<string[]>([]);
+  // Bumped to re-walk the cache. Not a Refresh button (D256) — the two writers
+  // are both the app noticing that the disk really changed: a finished download
+  // is a new repo, and a page still showing "not downloaded" beside a finished
+  // pull is the same lie the ✓-on-click bug was.
+  const [scan, setScan] = useState(0);
 
   useEffect(() => {
     let alive = true;
-    setLoad({ status: "loading" });
+    // A RE-walk keeps the listing on screen while it runs: replacing a good
+    // grid with "Reading the cache…" because a download finished would make the
+    // page flash for news that only adds one card.
+    setLoad((prev) => (prev.status === "ok" ? prev : { status: "loading" }));
     getAiModels().then(
       (data) => {
         // The page's own answer is authoritative for the sidebar gate: a cache
@@ -545,17 +565,20 @@ export default function AiModels() {
     return () => {
       alive = false;
     };
-    // Scanning is a disk walk over every blob, so it runs ONCE per mount —
-    // never on a focus/return tick, which would re-walk tens of thousands of
-    // files every time the user alt-tabbed back, and never behind a Refresh
-    // button, which asked the user to know when a re-walk was worth it. A
-    // delete answers with the fresh listing itself, so nothing re-triggers it.
-  }, []);
+    // Scanning is a disk walk over every blob, so it runs once per mount and
+    // then only when the disk is KNOWN to have changed — never on a focus/return
+    // tick, which would re-walk tens of thousands of files every time the user
+    // alt-tabbed back, and never behind a Refresh button, which asked the user
+    // to know when a re-walk was worth it. A delete answers with the fresh
+    // listing itself; a finished download bumps `scan`.
+  }, [scan]);
 
-  const anyBusy = runtime.loaded.some((m) => m.state !== "ready" && m.state !== "error");
+  const anyBusy = isBusy(runtime);
   useEffect(() => {
-    if (tab !== "cached") return;
-    // Only while a bring-up is live: the manager already polls these for its own
+    // Both tabs now: a Download started from Discover is a job row Discover
+    // draws on its own cards, and gating the poll on the cached tab left those
+    // cards frozen on "Starting…".
+    // Only while something is live: the manager already polls these for its own
     // list, and a second poller on an idle machine is two requests a second for
     // an empty array.
     if (!anyBusy) {
@@ -570,23 +593,62 @@ export default function AiModels() {
       alive = false;
       window.clearInterval(timer);
     };
-  }, [tab, anyBusy]);
+  }, [anyBusy]);
+
+  // A download that has STOPPED being reported has landed (or failed), and
+  // either way the disk is not what the last walk said it was. This is the one
+  // honest trigger for a re-walk: the transition, not a timer and not a click.
+  const downloadingKey = runtime.downloading
+    .map((d) => d.model)
+    .sort()
+    .join(" ");
+  const previousDownloads = useRef<string[]>([]);
+  useEffect(() => {
+    const now = downloadingKey ? downloadingKey.split(" ") : [];
+    const before = previousDownloads.current;
+    previousDownloads.current = now;
+    // Only on a set that SHRANK. A set that GREW means a pull just started, and
+    // a walk then would find exactly the disk the page already knows about.
+    if (before.some((model) => !now.includes(model))) setScan((n) => n + 1);
+  }, [downloadingKey]);
 
   const data = load.status === "ok" ? load.data : null;
   const repos = data?.repos ?? [];
   const loadedById = new Map(runtime.loaded.map((m) => [m.model, m]));
-  const jobById = new Map(jobs.map((j) => [j.id, j]));
-  // A capability with no runner here cannot be loaded, so the button is not
-  // offered — see the reason on the Discover tab instead of a control that
-  // always fails.
-  const canLoadText = runtime.runners.some(
-    (r) => r.capability === "text-generation" && r.available,
+  // Matched by TITLE, which the supervisor sets to the model id, rather than by
+  // re-deriving the job id here: that derivation sanitises characters, and a
+  // second copy of the rule in TypeScript would drift from the Python one the
+  // moment either changed.
+  const jobByModel = new Map(
+    jobs.filter((j) => j.owner === "server").map((j) => [j.title, j]),
   );
+  // Loadable means TWO things, and conflating them was a bug: this repo has a
+  // capability at all (a dataset, an embedding model or a vision-language model
+  // has none), and a runner here serves that capability. The repo's capability
+  // comes from the server, which owns both vocabularies.
+  const servable = new Set(
+    runtime.runners.filter((r) => r.available).map((r) => r.capability),
+  );
+  const canLoad = (repo: AiModelRepo) =>
+    !!repo.capability && servable.has(repo.capability);
+  // What Discover means by "you already have this one". A MATERIALISED snapshot,
+  // not merely a folder: huggingface_hub creates `models--org--name/` the moment
+  // a pull starts, so a set built from folder names alone flipped a suggestion
+  // to "✓ downloaded" seconds after the Download button was pressed. It is the
+  // same partial-vs-downloaded line the Hub result cards already draw.
+  //
+  // `null` until the walk has answered, so a card says neither "you have this"
+  // nor "you don't" while the page still has no idea.
+  const onDisk = data ? new Set(repos.filter((r) => r.revisions > 0).map((r) => r.id)) : null;
+  const downloading = new Set(runtime.downloading.map((d) => d.model));
 
   const runLoad = async (repo: AiModelRepo) => {
     setRuntimeError(null);
     try {
-      await loadAiModel(repo.id);
+      // The capability travels with the request: without it the API defaults to
+      // text generation, and a diffusion model would be handed to the chat
+      // runner.
+      await loadAiModel(repo.id, repo.capability ?? undefined);
       refreshAiRuntime();
     } catch (e) {
       setRuntimeError((e as Error).message);
@@ -665,7 +727,13 @@ export default function AiModels() {
             </div>
           </div>
         </div>
-        {tab === "discover" && <AiModelsDiscover />}
+        {tab === "discover" && (
+          // The cache answer comes from the PAGE's walk, not from a second one
+          // Discover runs for itself: one listing, one definition of "on this
+          // machine", and no window where the two tabs disagree about the same
+          // repo.
+          <AiModelsDiscover onDisk={onDisk} downloading={downloading} jobByModel={jobByModel} />
+        )}
         {tab === "cached" && load.status === "error" && <ErrorBanner>{load.message}</ErrorBanner>}
         {tab === "cached" && runtimeError && <ErrorBanner>{runtimeError}</ErrorBanner>}
         {tab === "cached" && failures.length > 0 && (
@@ -688,9 +756,9 @@ export default function AiModels() {
                   repo={r}
                   expanded={expanded === r.dir}
                   loaded={loadedById.get(r.id)}
-                  job={jobById.get(`sys:ai-model:${r.id.replace("/", "--")}`)}
+                  job={jobByModel.get(r.id)}
                   busy={busy}
-                  canLoad={canLoadText}
+                  canLoad={canLoad(r)}
                   onToggle={() => setExpanded(expanded === r.dir ? null : r.dir)}
                   onDeleteRepo={() => setPending({ kind: "repo", repo: r })}
                   onDeleteRevision={(revision) => setPending({ kind: "revision", repo: r, revision })}
