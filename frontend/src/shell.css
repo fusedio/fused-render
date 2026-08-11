@@ -22,9 +22,9 @@
    is a settings surface of the same family, and its rules layer over the
    .btn / .field-control vocabulary imported above. */
 @import "./styles/claude-config.css";
-/* After claude-config.css because the Local models page borrows its page chrome
+/* After claude-config.css because the AI Models page borrows its page chrome
    (.cc-main / .cc-heading / .cc-pill) and only adds its own row layout. */
-@import "./styles/local-models.css";
+@import "./styles/ai-models.css";
 @import "./styles/mounts.css";
 @import "./styles/setup-modal.css";
 @import "./styles/templates.css";

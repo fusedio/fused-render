@@ -1,4 +1,4 @@
-// /local-models: what the Hugging Face cache holds on this machine, and the
+// /ai-models: what the Hugging Face cache holds on this machine, and the
 // deletions that free it.
 //
 // The cache is shared by everything that speaks huggingface_hub — a
@@ -14,19 +14,21 @@
 // dangerous arithmetic (which blobs a revision actually owns) lives on the
 // server, where the filesystem is.
 //
-// Page chrome is the cc-* family (ClaudeArtifacts does the same) so the shell's
-// non-explorer pages read as one surface; the row, drawer and prune list are
-// local (styles/local-models.css).
+// Page chrome AND the cards are the cc-* family — cc-mdgrid/cc-mdcard, the same
+// card the Claude config panel's MD Files section uses — so the shell's
+// non-explorer pages read as one surface rather than each inventing a list.
+// Only what those classes have no answer for is local (styles/ai-models.css):
+// the size figure, the revision drawer, and the prune dialog's list.
 import { useEffect, useState } from "react";
 import {
-  deleteLocalModels,
-  getLocalModelRevisions,
-  getLocalModels,
-  getLocalModelsStatus,
-  type LocalModelDeleteTarget,
-  type LocalModelRepo,
-  type LocalModelRevision,
-  type LocalModelsResult,
+  deleteAiModels,
+  getAiModelRevisions,
+  getAiModels,
+  getAiModelsStatus,
+  type AiModelDeleteTarget,
+  type AiModelRepo,
+  type AiModelRevision,
+  type AiModelsResult,
 } from "@platform/lib/api";
 import { formatSize, formatMtimeFull, timeAgo } from "@platform/lib/format";
 import { navigate, urlForFsPath } from "@platform/lib/router";
@@ -45,7 +47,7 @@ import { Modal } from "@platform/ui/modal/Modal";
 // The answer is PUBLISHED rather than just stored, because the two writers are
 // not the mounted sidebar: a probe from another mount, and the page's own load
 // (which knows the truth without a second request), both have to reach a
-// sidebar that is already on screen. Without that, opening /local-models by URL
+// sidebar that is already on screen. Without that, opening /ai-models by URL
 // on a machine whose cache appeared this session would update the cache and
 // leave the entry missing until something remounted the sidebar. Deleting the
 // last repo publishes too — the cache DIRECTORY survives an empty cache, so the
@@ -59,7 +61,7 @@ function publishAvailable(available: boolean) {
   for (const listener of gateListeners) listener(available);
 }
 
-export function useLocalModelsAvailable(): boolean {
+export function useAiModelsAvailable(): boolean {
   const [available, setAvailable] = useState(cached?.available ?? false);
   useEffect(() => {
     gateListeners.add(setAvailable);
@@ -67,7 +69,7 @@ export function useLocalModelsAvailable(): boolean {
     // mount's probe resolving) would otherwise be missed.
     if (cached) setAvailable(cached.available);
     if (!cached || (!cached.available && Date.now() - cached.at >= PROBE_TTL_MS)) {
-      getLocalModelsStatus().then(
+      getAiModelsStatus().then(
         (s) => publishAvailable(s.available),
         () => {
           // A failed probe is not a cached "no": leave the last known answer
@@ -91,14 +93,14 @@ const DEFAULT_PRUNE_DAYS = 90;
 
 type Load =
   | { status: "loading" }
-  | { status: "ok"; data: LocalModelsResult }
+  | { status: "ok"; data: AiModelsResult }
   | { status: "error"; message: string };
 
 // What the confirmation is about. Every destructive action becomes one of these
 // first — there is no path from a click straight to a delete.
 type Pending =
-  | { kind: "repo"; repo: LocalModelRepo }
-  | { kind: "revision"; repo: LocalModelRepo; revision: LocalModelRevision }
+  | { kind: "repo"; repo: AiModelRepo }
+  | { kind: "revision"; repo: AiModelRepo; revision: AiModelRevision }
   // Prune carries no selection: the dialog owns the age, and derives the list
   // from the listing on screen, so the two can never disagree.
   | { kind: "prune" };
@@ -108,7 +110,7 @@ function shortCommit(commit: string): string {
   return /^[0-9a-f]{16,}$/i.test(commit) ? commit.slice(0, 7) : commit;
 }
 
-function staleRepos(repos: LocalModelRepo[], days: number): LocalModelRepo[] {
+function staleRepos(repos: AiModelRepo[], days: number): AiModelRepo[] {
   const cutoff = Date.now() / 1000 - days * 86400;
   // A repo with no readable timestamp is left alone rather than swept: "we
   // don't know when this was used" is not evidence that it is cold.
@@ -122,14 +124,14 @@ function Revisions({
   repo,
   onDelete,
 }: {
-  repo: LocalModelRepo;
-  onDelete: (revision: LocalModelRevision) => void;
+  repo: AiModelRepo;
+  onDelete: (revision: AiModelRevision) => void;
 }) {
-  const [rows, setRows] = useState<LocalModelRevision[] | null>(null);
+  const [rows, setRows] = useState<AiModelRevision[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
     let alive = true;
-    getLocalModelRevisions(repo.dir).then(
+    getAiModelRevisions(repo.dir).then(
       (r) => alive && setRows(r.revisions),
       (e: Error) => alive && setError(e.message),
     );
@@ -140,32 +142,32 @@ function Revisions({
   }, [repo.dir, repo.revisions]);
 
   if (error) return <ErrorBanner>{error}</ErrorBanner>;
-  if (!rows) return <div className="lm-drawer-note">Reading revisions…</div>;
-  if (!rows.length) return <div className="lm-drawer-note">No revisions materialised.</div>;
+  if (!rows) return <div className="am-drawer-note">Reading revisions…</div>;
+  if (!rows.length) return <div className="am-drawer-note">No revisions materialised.</div>;
   return (
-    <div className="lm-drawer">
+    <div className="am-drawer">
       {rows.map((rev) => (
-        <div className="lm-rev" key={rev.commit}>
-          <span className="lm-rev-main">
-            <span className="lm-rev-commit cc-mono">{shortCommit(rev.commit)}</span>
+        <div className="am-rev" key={rev.commit}>
+          <span className="am-rev-main">
+            <span className="am-rev-commit cc-mono">{shortCommit(rev.commit)}</span>
             {rev.refs.map((ref) => (
               <span className="cc-pill" key={ref}>
                 {ref}
               </span>
             ))}
-            <span className="lm-rev-meta">
+            <span className="am-rev-meta">
               {rev.files} {rev.files === 1 ? "file" : "files"}
               {rev.shared ? ` · ${formatSize(rev.shared)} shared with other revisions` : ""}
             </span>
           </span>
           {/* The size that matters is what deleting THIS revision frees, not
               what it appears to contain — see the endpoint's docstring. */}
-          <span className="lm-rev-size" title="Freed by deleting this revision">
+          <span className="am-rev-size" title="Freed by deleting this revision">
             {formatSize(rev.size)}
           </span>
           <button
             type="button"
-            className="lm-iconbtn lm-iconbtn-danger"
+            className="cc-iconbtn cc-iconbtn-danger"
             title={`Delete revision ${shortCommit(rev.commit)}`}
             aria-label={`Delete revision ${shortCommit(rev.commit)}`}
             onClick={() => onDelete(rev)}
@@ -178,29 +180,29 @@ function Revisions({
   );
 }
 
-function RepoRow({
+function RepoCard({
   repo,
   expanded,
   onToggle,
   onDeleteRepo,
   onDeleteRevision,
 }: {
-  repo: LocalModelRepo;
+  repo: AiModelRepo;
   expanded: boolean;
   onToggle: () => void;
   onDeleteRepo: () => void;
-  onDeleteRevision: (revision: LocalModelRevision) => void;
+  onDeleteRevision: (revision: AiModelRevision) => void;
 }) {
   const when = timeAgo(repo.lastUsed ?? repo.mtime);
   return (
-    <div className={"lm-row" + (expanded ? " lm-row-open" : "")}>
-      <div className="lm-row-head">
-        {/* The folder opens in the explorer, and stays a real <a href> so
-            middle-click and "copy link" behave (same contract as the bookmark
-            cards). The row's buttons live OUTSIDE the anchor — a button inside
-            a link is neither valid nor operable by keyboard. */}
+    <div className="cc-mdcard am-card">
+      <div className="cc-mdcard-head">
+        {/* The card's name is the door into the explorer, and stays a real
+            <a href> so middle-click and copy-link behave (same contract as the
+            bookmark cards). The actions live in the footer, outside the link —
+            a button inside a link is neither valid nor keyboard-operable. */}
         <a
-          className="lm-row-link"
+          className="cc-mdcard-name am-card-name"
           href={urlForFsPath(repo.path)}
           title={repo.path}
           onClick={(e) => {
@@ -217,32 +219,60 @@ function RepoRow({
             navigate(repo.path, { isDir: true });
           }}
         >
-          <span className="lm-row-name">
-            {repo.id} <span className="cc-pill">{repo.kind}</span>
-          </span>
-          <span className="lm-row-meta">
-            {repo.files} {repo.files === 1 ? "file" : "files"}
-            {repo.revisions > 1 ? ` · ${repo.revisions} revisions` : ""}
-            {repo.refs.length ? ` · ${repo.refs.join(", ")}` : ""}
-            {when ? ` · used ${when}` : ""}
-          </span>
+          {repo.id}
         </a>
+        <span className="cc-pill">{repo.kind}</span>
+        {/* The size is the reason this page exists, so it is a figure in the
+            card's head rather than another clause in the meta line. */}
         <span
-          className="lm-row-size"
+          className="am-card-size"
           title={repo.mtime ? `Last changed ${formatMtimeFull(repo.mtime)}` : undefined}
         >
           {formatSize(repo.size)}
         </span>
-        {/* Only offered where it means something: with a single revision,
-            deleting "the revision" and deleting the repo are the same act, and
-            two controls for it would just ask the user to tell them apart. */}
-        {repo.revisions > 1 && (
+      </div>
+      <div className="cc-mdcard-foot">
+        <span className="cc-mdcard-meta">
+          {repo.files} {repo.files === 1 ? "file" : "files"}
+          {repo.revisions > 1 ? ` · ${repo.revisions} revisions` : ""}
+          {repo.refs.length ? ` · ${repo.refs.join(", ")}` : ""}
+          {when ? ` · used ${when}` : ""}
+        </span>
+        <span className="cc-mdcard-actions">
+          {/* Only offered where it means something: with a single revision,
+              deleting "the revision" and deleting the repo are the same act,
+              and two controls for it would just ask the user to tell them
+              apart. */}
+          {repo.revisions > 1 && (
+            <button
+              type="button"
+              className={"cc-iconbtn" + (expanded ? " cc-btn-on" : "")}
+              title={expanded ? "Hide revisions" : "Show revisions"}
+              aria-label={`${expanded ? "Hide" : "Show"} revisions of ${repo.id}`}
+              aria-expanded={expanded}
+              onClick={onToggle}
+            >
+              <svg
+                width="14"
+                height="14"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                aria-hidden="true"
+              >
+                <path d={expanded ? "m6 15 6-6 6 6" : "m6 9 6 6 6-6"} />
+              </svg>
+            </button>
+          )}
           <button
             type="button"
-            className={"lm-iconbtn" + (expanded ? " lm-iconbtn-on" : "")}
-            title={expanded ? "Hide revisions" : "Show revisions"}
-            aria-expanded={expanded}
-            onClick={onToggle}
+            className="cc-iconbtn cc-iconbtn-danger"
+            title={`Delete ${repo.id}`}
+            aria-label={`Delete ${repo.id}`}
+            onClick={onDeleteRepo}
           >
             <svg
               width="14"
@@ -255,19 +285,10 @@ function RepoRow({
               strokeLinejoin="round"
               aria-hidden="true"
             >
-              <path d={expanded ? "m6 15 6-6 6 6" : "m6 9 6 6 6-6"} />
+              <path d="M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14" />
             </svg>
           </button>
-        )}
-        <button
-          type="button"
-          className="lm-iconbtn lm-iconbtn-danger"
-          title={`Delete ${repo.id}`}
-          aria-label={`Delete ${repo.id}`}
-          onClick={onDeleteRepo}
-        >
-          ✕
-        </button>
+        </span>
       </div>
       {/* Same predicate as the expander above, so a repo that drops to one
           revision under a deletion collapses itself rather than stranding an
@@ -287,10 +308,10 @@ function PruneModal({
   onCancel,
   onConfirm,
 }: {
-  repos: LocalModelRepo[];
+  repos: AiModelRepo[];
   busy: boolean;
   onCancel: () => void;
-  onConfirm: (days: number, stale: LocalModelRepo[]) => void;
+  onConfirm: (days: number, stale: AiModelRepo[]) => void;
 }) {
   const [days, setDays] = useState(DEFAULT_PRUNE_DAYS);
   const stale = staleRepos(repos, days);
@@ -320,7 +341,7 @@ function PruneModal({
         </>
       }
     >
-      <div className="lm-prune-choices">
+      <div className="am-prune-choices">
         {/* A segmented choice in the app's own button vocabulary: the active
             threshold is the primary button, the rest are secondary. A tinted
             border alone was too quiet for the control that decides what gets
@@ -343,11 +364,11 @@ function PruneModal({
         the full transfer again.
       </p>
       {stale.length ? (
-        <ul className="lm-prune-list">
+        <ul className="am-prune-list">
           {stale.map((r) => (
             <li key={r.dir}>
-              <span className="lm-prune-name">{r.id}</span>
-              <span className="lm-prune-meta">
+              <span className="am-prune-name">{r.id}</span>
+              <span className="am-prune-meta">
                 {formatSize(r.size)} · used {timeAgo(r.lastUsed) ?? "unknown"}
               </span>
             </li>
@@ -366,7 +387,7 @@ function PruneModal({
   );
 }
 
-export default function LocalModels() {
+export default function AiModels() {
   const [load, setLoad] = useState<Load>({ status: "loading" });
   // Bumped by Refresh to re-run the scan in place. Scanning is a disk walk over
   // every blob, so it happens on mount and on an explicit Refresh — never on a
@@ -385,7 +406,7 @@ export default function LocalModels() {
   useEffect(() => {
     let alive = true;
     setLoad({ status: "loading" });
-    getLocalModels().then(
+    getAiModels().then(
       (data) => {
         // The page's own answer is authoritative for the sidebar gate: a cache
         // that exists (or has just appeared) shouldn't wait out the probe TTL,
@@ -410,10 +431,10 @@ export default function LocalModels() {
   const data = load.status === "ok" ? load.data : null;
   const repos = data?.repos ?? [];
 
-  const runDelete = async (targets: LocalModelDeleteTarget[], label: string) => {
+  const runDelete = async (targets: AiModelDeleteTarget[], label: string) => {
     setBusy(true);
     try {
-      const result = await deleteLocalModels(targets);
+      const result = await deleteAiModels(targets);
       publishAvailable(result.exists);
       setLoad({ status: "ok", data: result });
       setFailures(
@@ -440,14 +461,14 @@ export default function LocalModels() {
       <main className="cc-main">
         <div className="cc-page-head">
           <div>
-            <h2 className="cc-heading">Local models</h2>
+            <h2 className="cc-heading">AI Models</h2>
             <div className="cc-caption cc-mono">
               {data
                 ? `${data.cacheDir}${repos.length ? ` · ${repos.length} cached · ${formatSize(data.totalSize)}` : ""}`
                 : "Hugging Face cache"}
             </div>
           </div>
-          <div className="lm-head-actions">
+          <div className="am-head-actions">
             {repos.length > 0 && (
               <button
                 type="button"
@@ -479,9 +500,9 @@ export default function LocalModels() {
         {load.status === "loading" && <p className="cc-empty">Reading the Hugging Face cache…</p>}
         {data &&
           (repos.length ? (
-            <div className="lm-list">
+            <div className="cc-mdgrid am-grid">
               {repos.map((r) => (
-                <RepoRow
+                <RepoCard
                   key={r.path}
                   repo={r}
                   expanded={expanded === r.dir}

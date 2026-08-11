@@ -1,0 +1,166 @@
+/* AI Models (/ai-models, shell/AiModels.tsx) — the Hugging Face cache
+   inventory and its delete controls.
+
+   The page chrome and the cards themselves come from claude-config.css,
+   imported just above: .cc-mdgrid/.cc-mdcard (the MD Files card), .cc-iconbtn
+   for the actions, .cc-pill, .cc-heading. What lives here is only what those
+   have no answer for — the size figure that is the whole point of the page, the
+   revision drawer a card opens, and the prune dialog's list. */
+
+/* Cards keep their natural height: with the grid's default `stretch`, opening
+   one card's revision drawer stretched whatever card shared its row into a
+   matching column of empty space. */
+.am-grid {
+  align-items: start;
+}
+
+.am-head-actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 8px;
+}
+
+/* A repo id is a path-shaped string with no spaces. .cc-mdcard-name ellipsizes
+   on one line, which is right for a filename and wrong for `org/name`: the org
+   is the half that gets cut. Wrap inside it instead and let the card grow. */
+.am-card-name {
+  color: inherit;
+  text-decoration: none;
+  white-space: normal;
+  overflow: visible;
+  overflow-wrap: anywhere;
+}
+
+.am-card-name:hover {
+  text-decoration: underline;
+}
+
+.am-card-name:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 3px;
+}
+
+/* Pushed to the card's right edge, tabular so the figures line up down a
+   column of cards even though each card sizes itself. */
+.am-card-size {
+  margin-left: auto;
+  padding-left: 8px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+/* The actions are quiet until the card is hovered or one of them is focused: a
+   grid of ✕ buttons reads as a page about deleting, and this one is about
+   looking. */
+.am-card .cc-mdcard-actions {
+  opacity: 0;
+}
+
+.am-card:hover .cc-mdcard-actions,
+.am-card:focus-within .cc-mdcard-actions {
+  opacity: 1;
+}
+
+/* -- revision drawer -------------------------------------------------------- */
+
+.am-drawer,
+.am-drawer-note {
+  font-size: 12px;
+}
+
+.am-drawer-note {
+  color: var(--fg-muted);
+}
+
+.am-rev {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 0;
+  border-top: 1px solid var(--border);
+}
+
+.am-rev-main {
+  display: flex;
+  flex: 1 1 auto;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.am-rev-commit {
+  font-weight: 500;
+}
+
+.am-rev-meta,
+.am-rev-size {
+  color: var(--fg-muted);
+}
+
+.am-rev-size {
+  flex: 0 0 auto;
+  font-variant-numeric: tabular-nums;
+}
+
+/* A drawer row's ✕ follows the drawer row it belongs to, not the whole card. */
+.am-rev .cc-iconbtn {
+  flex: 0 0 auto;
+  width: 22px;
+  height: 22px;
+  opacity: 0;
+}
+
+.am-rev:hover .cc-iconbtn,
+.am-rev .cc-iconbtn:focus-visible {
+  opacity: 1;
+}
+
+/* -- prune dialog ----------------------------------------------------------- */
+
+.am-prune-choices {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+/* The list is the confirmation: it names every repo that is about to go, so it
+   scrolls rather than truncating — a prune must never hide part of itself. */
+.am-prune-list {
+  max-height: 220px;
+  margin: 0 0 14px;
+  padding: 0;
+  overflow-y: auto;
+  list-style: none;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.am-prune-list li {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+.am-prune-list li:last-child {
+  border-bottom: none;
+}
+
+.am-prune-name {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.am-prune-meta {
+  flex: 0 0 auto;
+  font-size: 12px;
+  color: var(--fg-muted);
+  font-variant-numeric: tabular-nums;
+}

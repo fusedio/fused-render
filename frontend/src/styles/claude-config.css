@@ -427,9 +427,11 @@
   color: var(--fg);
 }
 
+/* --error, not --danger: there is no --danger token, so both declarations were
+   invalid at computed-value time and this hover did nothing at all. */
 .cc-iconbtn-danger:hover {
-  background: color-mix(in srgb, var(--danger) 12%, transparent);
-  color: var(--danger);
+  background: color-mix(in srgb, var(--error) 12%, transparent);
+  color: var(--error);
 }
 
 .cc-iconbtn:focus-visible {

@@ -51,7 +51,7 @@ from fused_render.server.routers.fs_read import router as fs_read_router
 from fused_render.server.routers.git_repos import router as git_repos_router
 from fused_render.server.routers import index as index_routes
 from fused_render.server.routers.jobs import router as jobs_router
-from fused_render.server.routers.local_models import router as local_models_router
+from fused_render.server.routers.ai_models import router as ai_models_router
 from fused_render.server.routers.render import router as render_router
 from fused_render.server.routers.run import router as run_router
 from fused_render.server.routers.search import router as search_router
@@ -331,10 +331,10 @@ def create_app(start_dir: str) -> FastAPI:
     # fresh walk, so it cannot touch a mount. Read-only, no auth guard.
     app.include_router(git_repos_router)
     # What the Hugging Face cache holds on this machine, for the sidebar's
-    # "Local models" page (routers/local_models.py). The reads are unguarded;
+    # "AI Models" page (routers/ai_models.py). The reads are unguarded;
     # its one destructive POST (delete a repo/revision) carries the D3 X-Fused
     # guard. It never downloads anything.
-    app.include_router(local_models_router)
+    app.include_router(ai_models_router)
     # Claude Code CONFIG editing for the Preferences page's "Claude config" tab
     # (routers/claude_config.py): one dispatch POST over the
     # fused_render/claude_config/ feature modules, plus a cheap availability

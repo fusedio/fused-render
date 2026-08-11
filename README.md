@@ -164,7 +164,7 @@ Runtime features and settings live in [docs/usage.md](docs/usage.md):
 - [Remote storage (mounts)](docs/usage.md#remote-storage-mounts) — mount
   S3-compatible stores, Google Drive, and anything else rclone speaks, as local
   folders.
-- [Local models](docs/usage.md#local-models) — what the Hugging Face cache
+- [AI Models](docs/usage.md#ai-models) — what the Hugging Face cache
   holds on this machine, what it costs on disk, and how to clear it.
 - [Preferences](docs/usage.md#preferences) — the in-app settings panel
   (execution engine, deploy toggle, logs, template registry).

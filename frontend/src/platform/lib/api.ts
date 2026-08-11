@@ -1871,13 +1871,13 @@ export function getClaudeSessionFolders(): Promise<{ folders: ClaudeSessionFolde
   return getJson<{ folders: ClaudeSessionFolder[] }>("/api/claude-sessions");
 }
 
-// -- Local models (GET /api/local-models) -------------------------------------
+// -- AI Models (GET /api/ai-models) -------------------------------------
 // What the Hugging Face cache holds on this machine, for the sidebar's "Local
-// models" page (shell/LocalModels.tsx). One entry per cached repo, biggest
+// models" page (shell/AiModels.tsx). One entry per cached repo, biggest
 // first; `size` is bytes actually on disk (the server measures blobs and skips
 // the snapshot symlinks pointing at them), so the sizes sum to `totalSize`.
 // `path` is the repo's cache folder, ready for navigate(path, {isDir:true}).
-export interface LocalModelRepo {
+export interface AiModelRepo {
   id: string;
   /** Cache folder name ("models--org--name") — what a delete request names. */
   dir: string;
@@ -1893,30 +1893,30 @@ export interface LocalModelRepo {
   refs: string[];
 }
 
-export interface LocalModelsResult {
+export interface AiModelsResult {
   cacheDir: string;
   hfHome: string;
   /** False when nothing has ever been downloaded — the cache dir isn't there. */
   exists: boolean;
   totalSize: number;
-  repos: LocalModelRepo[];
+  repos: AiModelRepo[];
 }
 
-export function getLocalModels(): Promise<LocalModelsResult> {
-  return getJson<LocalModelsResult>("/api/local-models");
+export function getAiModels(): Promise<AiModelsResult> {
+  return getJson<AiModelsResult>("/api/ai-models");
 }
 
 // Cheap probe (one isdir on the server, no walk) behind the sidebar entry's
-// gate — see shell/LocalModels.tsx's useLocalModelsAvailable.
-export function getLocalModelsStatus(): Promise<{ available: boolean; cacheDir: string }> {
-  return getJson<{ available: boolean; cacheDir: string }>("/api/local-models/status");
+// gate — see shell/AiModels.tsx's useAiModelsAvailable.
+export function getAiModelsStatus(): Promise<{ available: boolean; cacheDir: string }> {
+  return getJson<{ available: boolean; cacheDir: string }>("/api/ai-models/status");
 }
 
 // One repo's revisions, fetched when a row is expanded (the listing doesn't
 // resolve every snapshot symlink for every repo). `size` is what deleting THIS
 // revision would free — blobs no sibling revision references — and `shared` is
 // what it holds in common with them and would leave behind.
-export interface LocalModelRevision {
+export interface AiModelRevision {
   commit: string;
   refs: string[];
   size: number;
@@ -1925,11 +1925,11 @@ export interface LocalModelRevision {
   mtime: number | null;
 }
 
-export function getLocalModelRevisions(
+export function getAiModelRevisions(
   dir: string,
-): Promise<{ repo: string; revisions: LocalModelRevision[] }> {
-  return getJson<{ repo: string; revisions: LocalModelRevision[] }>(
-    "/api/local-models/revisions?repo=" + encodeURIComponent(dir),
+): Promise<{ repo: string; revisions: AiModelRevision[] }> {
+  return getJson<{ repo: string; revisions: AiModelRevision[] }>(
+    "/api/ai-models/revisions?repo=" + encodeURIComponent(dir),
   );
 }
 
@@ -1940,26 +1940,26 @@ export function getLocalModelRevisions(
 // The reply is the whole listing, re-read from disk after the deletions, plus
 // what was freed and any per-target failures — so the page swaps in fresh state
 // instead of patching rows it hopes are still true.
-export interface LocalModelDeleteTarget {
+export interface AiModelDeleteTarget {
   dir: string;
   revision?: string | null;
 }
 
-export interface LocalModelDeleteFailure {
+export interface AiModelDeleteFailure {
   dir: string | null;
   revision: string | null;
   error: string;
 }
 
-export type LocalModelsDeleteResult = LocalModelsResult & {
+export type AiModelsDeleteResult = AiModelsResult & {
   freed: number;
-  failures: LocalModelDeleteFailure[];
+  failures: AiModelDeleteFailure[];
 };
 
-export function deleteLocalModels(
-  targets: LocalModelDeleteTarget[],
-): Promise<LocalModelsDeleteResult> {
-  return postJson<LocalModelsDeleteResult>("/api/local-models/delete", { targets });
+export function deleteAiModels(
+  targets: AiModelDeleteTarget[],
+): Promise<AiModelsDeleteResult> {
+  return postJson<AiModelsDeleteResult>("/api/ai-models/delete", { targets });
 }
 
 // -- Git repos (GET /api/git-repos) -------------------------------------------

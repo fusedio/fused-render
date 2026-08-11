@@ -1,6 +1,6 @@
-"""GET /api/local-models (+ /status, /revisions) and POST /api/local-models/delete
+"""GET /api/ai-models (+ /status, /revisions) and POST /api/ai-models/delete
 — what the Hugging Face cache holds on this machine, and the deletions that free
-it, for the sidebar's "Local models" page.
+it, for the sidebar's "AI Models" page.
 
 The cache is a *shared* directory: anything that speaks `huggingface_hub`
 (transformers, sentence-transformers, diffusers, a template a user pasted in,
@@ -49,7 +49,7 @@ then the id with `/` written as `--` (`models--openai--whisper-small` ->
 is not a repo folder and is skipped, which is also what keeps `.locks/`,
 `version.txt` and half-written `tmp*` dirs out of the list.
 
-**Deletion** (`POST /api/local-models/delete`, D247) carries the D3 `X-Fused`
+**Deletion** (`POST /api/ai-models/delete`, D247) carries the D3 `X-Fused`
 guard like every other mutating POST, and is deliberately narrow:
 
 * Targets are named by cache **folder name**, never by a path from the client:
@@ -422,8 +422,8 @@ def _delete_revision(repo_dir: str, revision: object) -> int:
 # -- endpoints -----------------------------------------------------------------
 
 
-@router.get("/api/local-models/status")
-def api_local_models_status():
+@router.get("/api/ai-models/status")
+def api_ai_models_status():
     """Cheap availability probe for the sidebar entry — one isdir(), no walk.
 
     False on a machine that has never pulled from the Hub, which is what keeps
@@ -434,8 +434,8 @@ def api_local_models_status():
     return {"available": os.path.isdir(cache_dir), "cacheDir": canonical_fs_path(cache_dir)}
 
 
-@router.get("/api/local-models")
-def api_local_models():
+@router.get("/api/ai-models")
+def api_ai_models():
     """Every repo in the hub cache, biggest first.
 
     Sync `def` on purpose: this walks a tree that can hold tens of thousands of
@@ -445,8 +445,8 @@ def api_local_models():
     return _listing()
 
 
-@router.get("/api/local-models/revisions")
-def api_local_models_revisions(repo: str):
+@router.get("/api/ai-models/revisions")
+def api_ai_models_revisions(repo: str):
     """One repo's revisions, each with the bytes deleting it would actually
     free.
 
@@ -496,14 +496,14 @@ def api_local_models_revisions(repo: str):
     return {"repo": repo, "revisions": revisions}
 
 
-@router.post("/api/local-models/delete")
-def api_local_models_delete(body: dict = Body(...), x_fused: str | None = Header(default=None)):
+@router.post("/api/ai-models/delete")
+def api_ai_models_delete(body: dict = Body(...), x_fused: str | None = Header(default=None)):
     """Delete named repos and/or revisions, then answer with the fresh listing.
 
     Body: `{"targets": [{"dir": "models--org--name", "revision": "<sha>"|null}]}`.
     A missing `revision` deletes the whole repo folder.
 
-    The reply is the same shape `GET /api/local-models` returns, plus `freed`
+    The reply is the same shape `GET /api/ai-models` returns, plus `freed`
     and `failures`, so the page swaps in state it just re-read from disk rather
     than patching rows it hopes are still true. Guarded by `X-Fused` (D3) like
     every mutating POST: this one removes multi-GB directories, and a blind

@@ -183,19 +183,19 @@ running one); `POST /api/jobs/clear` closes all finished. State lives in
 `fused_render/jobs.py`, in memory. `/api/jobs` is in `calls.SKIP_PREFIXES` — a
 tick is bookkeeping about a call, not a call.
 
-### `/api/local-models` — Hugging Face cache inventory (SPEC §37, D246)
+### `/api/ai-models` — Hugging Face cache inventory (SPEC §37, D246)
 
-`GET /api/local-models` → `{cacheDir, hfHome, exists, totalSize, repos}`, one
+`GET /api/ai-models` → `{cacheDir, hfHome, exists, totalSize, repos}`, one
 entry per cached repo (`{id, dir, kind, path, size, files, mtime, lastUsed,
-revisions, refs}`), biggest first. `GET /api/local-models/status` →
+revisions, refs}`), biggest first. `GET /api/ai-models/status` →
 `{available, cacheDir}` is the cheap gate behind the sidebar entry (one `isdir`,
-no walk). `GET /api/local-models/revisions?repo=<dir>` → per-revision
+no walk). `GET /api/ai-models/revisions?repo=<dir>` → per-revision
 `{commit, refs, size, shared, files, mtime}`, where `size` is the revision's
 EXCLUSIVE bytes (what deleting it frees) and `shared` what it holds in common
 with its siblings; computed on demand because it resolves every snapshot symlink
 in the repo. Those three are unguarded reads.
 
-`local_models.py` resolves the cache per request through huggingface_hub's own
+`ai_models.py` resolves the cache per request through huggingface_hub's own
 precedence (`HF_HUB_CACHE` > `HUGGINGFACE_HUB_CACHE` > `$HF_HOME/hub` >
 `$XDG_CACHE_HOME/huggingface/hub` > `~/.cache/huggingface/hub`) and measures
 each repo with `lstat`, skipping the `snapshots/` symlinks (they point back into
@@ -205,7 +205,7 @@ atime over real files; the ref reads this module makes restore atime afterwards,
 so inspecting the cache cannot mark it as used. Sync `def` — the walk is
 disk-bound and belongs in the threadpool.
 
-`POST /api/local-models/delete` (SPEC HF-10..HF-15, D247) takes
+`POST /api/ai-models/delete` (SPEC HF-10..HF-15, D247) takes
 `{"targets": [{"dir": "models--org--name", "revision": "<sha>"|null}]}` and
 answers with the fresh listing plus `freed` and per-target `failures`. `X-Fused`
 guarded (D3). A target names a cache FOLDER — validated as one path segment with

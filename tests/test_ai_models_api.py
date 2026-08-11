@@ -1,6 +1,6 @@
 """The Hugging Face cache inventory and its deletions behind the sidebar's
-"Local models" page (server/routers/local_models.py): GET /api/local-models,
-/status, /revisions, and POST /api/local-models/delete.
+"AI Models" page (server/routers/ai_models.py): GET /api/ai-models,
+/status, /revisions, and POST /api/ai-models/delete.
 
 Four things here are easy to get quietly wrong, so each is pinned:
 
@@ -28,7 +28,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from fused_render.server import create_app
-from fused_render.server.routers import local_models as local_models_mod
+from fused_render.server.routers import ai_models as ai_models_mod
 
 # Windows makes symlinks a privileged operation, and huggingface_hub itself
 # falls back to copies there — the dedup rule under test is a POSIX-cache one.
@@ -78,7 +78,7 @@ def _repo(hub, dirname, blobs=None, snapshots=None, refs=None):
 
 
 def _get(client):
-    r = client.get("/api/local-models")
+    r = client.get("/api/ai-models")
     assert r.status_code == 200
     return r.json()
 
@@ -219,7 +219,7 @@ def test_an_unreadable_repo_folder_does_not_fail_the_page(client, hub, monkeypat
             raise PermissionError(13, "Permission denied")
         return real_scandir(path, *args, **kwargs)
 
-    monkeypatch.setattr(local_models_mod.os, "scandir", fake_scandir)
+    monkeypatch.setattr(ai_models_mod.os, "scandir", fake_scandir)
     assert [(r["id"], r["size"]) for r in _get(client)["repos"]] == [("ok", 100), ("locked", 0)]
 
 
@@ -243,7 +243,7 @@ def test_a_file_that_vanishes_mid_scan_is_skipped(client, hub, monkeypatch):
             return [*real_scandir(path, *args, **kwargs), _Vanished()]
         return real_scandir(path, *args, **kwargs)
 
-    monkeypatch.setattr(local_models_mod.os, "scandir", fake_scandir)
+    monkeypatch.setattr(ai_models_mod.os, "scandir", fake_scandir)
     (out,) = _get(client)["repos"]
     assert out["size"] == 100
     assert out["files"] == 1
@@ -265,18 +265,18 @@ def test_the_page_url_serves_the_shell(client):
     # while the sidebar entry is hidden is a real GET the server has to answer
     # with the shell (routers/shell.py) — otherwise the route 404s for exactly
     # the people HF-8 says can still reach it.
-    r = client.get("/local-models")
+    r = client.get("/ai-models")
     assert r.status_code == 200
     assert r.headers["content-type"].startswith("text/html")
 
 
 def test_status_probe(client, hub, tmp_path, monkeypatch):
-    assert client.get("/api/local-models/status").json() == {
+    assert client.get("/api/ai-models/status").json() == {
         "available": True,
         "cacheDir": str(hub).replace("\\", "/"),
     }
     monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path / "nope"))
-    assert client.get("/api/local-models/status").json()["available"] is False
+    assert client.get("/api/ai-models/status").json()["available"] is False
 
 
 # -- where the cache is --------------------------------------------------------
@@ -289,34 +289,34 @@ def clean_env(monkeypatch):
 
 
 def test_cache_dir_defaults_under_the_home_cache(clean_env):
-    assert local_models_mod.hub_cache_dir() == os.path.join(
+    assert ai_models_mod.hub_cache_dir() == os.path.join(
         os.path.expanduser("~"), ".cache", "huggingface", "hub"
     )
 
 
 def test_xdg_cache_home_moves_the_default(clean_env, monkeypatch, tmp_path):
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
-    assert local_models_mod.hub_cache_dir() == os.path.join(str(tmp_path), "huggingface", "hub")
+    assert ai_models_mod.hub_cache_dir() == os.path.join(str(tmp_path), "huggingface", "hub")
 
 
 def test_hf_home_wins_over_xdg(clean_env, monkeypatch, tmp_path):
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "xdg"))
     monkeypatch.setenv("HF_HOME", str(tmp_path / "hf"))
-    assert local_models_mod.hub_cache_dir() == os.path.join(str(tmp_path / "hf"), "hub")
+    assert ai_models_mod.hub_cache_dir() == os.path.join(str(tmp_path / "hf"), "hub")
 
 
 def test_hub_cache_vars_win_over_hf_home(clean_env, monkeypatch, tmp_path):
     monkeypatch.setenv("HF_HOME", str(tmp_path / "hf"))
     monkeypatch.setenv("HUGGINGFACE_HUB_CACHE", str(tmp_path / "legacy"))
-    assert local_models_mod.hub_cache_dir() == str(tmp_path / "legacy")
+    assert ai_models_mod.hub_cache_dir() == str(tmp_path / "legacy")
     # The current name outranks the deprecated one.
     monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path / "current"))
-    assert local_models_mod.hub_cache_dir() == str(tmp_path / "current")
+    assert ai_models_mod.hub_cache_dir() == str(tmp_path / "current")
 
 
 def test_user_paths_are_expanded(clean_env, monkeypatch):
     monkeypatch.setenv("HF_HUB_CACHE", os.path.join("~", "models"))
-    assert local_models_mod.hub_cache_dir() == os.path.join(os.path.expanduser("~"), "models")
+    assert ai_models_mod.hub_cache_dir() == os.path.join(os.path.expanduser("~"), "models")
 
 
 # -- revisions view ------------------------------------------------------------
@@ -327,7 +327,7 @@ def test_user_paths_are_expanded(clean_env, monkeypatch):
 
 
 def _revisions(client, repo):
-    r = client.get("/api/local-models/revisions", params={"repo": repo})
+    r = client.get("/api/ai-models/revisions", params={"repo": repo})
     assert r.status_code == 200, r.text
     return {rev["commit"]: rev for rev in r.json()["revisions"]}
 
@@ -359,7 +359,7 @@ def test_a_lone_revision_owns_everything_it_references(client, hub):
 
 
 def test_revisions_of_an_unknown_repo_are_a_404(client, hub):
-    assert client.get("/api/local-models/revisions", params={"repo": "models--nope"}).status_code == 404
+    assert client.get("/api/ai-models/revisions", params={"repo": "models--nope"}).status_code == 404
 
 
 # -- deleting ------------------------------------------------------------------
@@ -367,7 +367,7 @@ def test_revisions_of_an_unknown_repo_are_a_404(client, hub):
 
 def _delete(client, targets, headers=None):
     return client.post(
-        "/api/local-models/delete",
+        "/api/ai-models/delete",
         json={"targets": targets},
         headers={"X-Fused": "1"} if headers is None else headers,
     )
@@ -537,7 +537,7 @@ def test_delete_requires_the_write_guard(client, hub):
 
 def test_delete_needs_a_non_empty_target_list(client, hub):
     assert _delete(client, []).status_code == 400
-    assert client.post("/api/local-models/delete", json={}, headers={"X-Fused": "1"}).status_code == 400
+    assert client.post("/api/ai-models/delete", json={}, headers={"X-Fused": "1"}).status_code == 400
 
 
 # -- pruning by age --------------------------------------------------------------
@@ -567,7 +567,7 @@ def test_reading_the_page_does_not_mark_a_repo_as_freshly_used(client, hub):
     for path in (repo / "blobs" / "a", repo / "refs" / "main"):
         os.utime(path, (old, old))
     assert _get(client)["repos"][0]["lastUsed"] == old
-    client.get("/api/local-models/revisions", params={"repo": "models--m"})
+    client.get("/api/ai-models/revisions", params={"repo": "models--m"})
     assert _get(client)["repos"][0]["lastUsed"] == old
 
 

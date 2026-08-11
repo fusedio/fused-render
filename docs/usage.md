@@ -88,9 +88,9 @@ servers) sees ordinary local paths.
 - Mounts stay up until you unmount them — including across app restarts, and
   every mount is automatically remounted when the server starts.
 
-## Local models
+## AI Models
 
-**Local models** in the sidebar lists what the Hugging Face cache holds on this
+**AI Models** in the sidebar lists what the Hugging Face cache holds on this
 machine — every model, dataset and Space anything on your computer has pulled
 from the Hub, biggest first, with what each one costs on disk. The entry appears
 once that cache exists; the first download from the Hub creates it.

@@ -5229,7 +5229,7 @@ stop it short of quitting the app.
 
 ---
 
-## 37. Local Models — What the Hugging Face Cache Holds (D246)
+## 37. AI Models — What the Hugging Face Cache Holds (D246)
 
 Goal: the models, datasets and Spaces this machine has downloaded from the
 Hugging Face Hub are visible and accounted for, from a sidebar entry, without
@@ -5284,7 +5284,7 @@ later with nothing on screen to say so.
   copy-link behave), for everything this page does not do — reading a config,
   copying a path, picking one file out of a snapshot.
 - **HF-8** **The sidebar entry is gated on the cache existing** (`GET
-  /api/local-models/status`, one `isdir`), so a machine that has never pulled
+  /api/ai-models/status`, one `isdir`), so a machine that has never pulled
   from the Hub is not offered a page that can only say "nothing here". Unlike
   the Claude-config entry's gate — an installation property, which cannot change
   while the app runs — this one can flip mid-session: the first download creates
