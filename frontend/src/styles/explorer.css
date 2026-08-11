@@ -1142,9 +1142,29 @@ table.listing-table tr.skel-row:hover {
    is the state where a long query most needs the room.
 
    Reversible on a keystroke: clearing the query (or Esc) brings the path
-   straight back, so nothing is lost, only deferred. The ★ and the `···` stay
-   — they act on the folder, which has not changed. */
+   straight back, so nothing is lost, only deferred. */
 #breadcrumb:has(.listing-search.searching) .crumbs {
+  display: none;
+}
+
+/* …and so does the ★, for the same reason the path did. It acts on the folder,
+   which has not changed — but it was the last thing holding the field off the
+   left edge, and a search box that spans the whole bar is what someone typing a
+   query is asking for. Bookmarking is still one keystroke away (Esc).
+
+   `display: none`, not visibility/opacity: the star's box is 24px plus the
+   deliberate -11px right margin above, and hiding it while keeping the box would
+   leave the field starting 13px in from a gap. A flex item removed this way
+   takes its `gap` share with it, so there is nothing left behind. (This is the
+   opposite of the table-column case in listing/column-shedding.test.ts, where
+   the shed element had to stay rendered — a table column under
+   `table-layout: fixed` outlives its hidden header.)
+
+   Hidden, never unmounted: React keeps the button mounted, so an armed bookmark
+   is not disarmed by a keystroke (see useUpdateButton in Breadcrumb.tsx).
+   Scoped under #breadcrumb because panel mode renders one star per pane from the
+   same component. */
+#breadcrumb:has(.listing-search.searching) .bookmark-star-btn {
   display: none;
 }
 
