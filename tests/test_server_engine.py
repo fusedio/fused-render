@@ -58,3 +58,25 @@ def test_invalid_override_raises(monkeypatch):
     monkeypatch.setenv("FUSED_RENDER_ENGINE", "nonsense")
     with pytest.raises(RuntimeError, match="not one of"):
         server._forced_engine()
+
+
+def test_api_config_never_cold_imports_the_engine(tmp_path, monkeypatch):
+    # /api/config must resolve the engine without the cold import on the request thread.
+    from fastapi.testclient import TestClient
+
+    import fused_render.engine as engine
+    from fused_render.server import create_app
+
+    monkeypatch.delenv("FUSED_RENDER_ENGINE", raising=False)
+    monkeypatch.setattr("fused_render.shell.prefs.selected_engine", lambda: "fused")
+
+    def _boom():
+        raise AssertionError("the cold engine import must not run on /api/config")
+
+    monkeypatch.setattr(engine, "available", _boom)  # a cold import would 500 the request
+    monkeypatch.setattr(engine, "_available_cached", True)  # warm-up already landed
+
+    client = TestClient(create_app(start_dir=str(tmp_path)))
+    resp = client.get("/api/config")
+    assert resp.status_code == 200
+    assert resp.json()["engine"] == "fused"

@@ -333,6 +333,20 @@ try {
 Get-ChildItem -Path $PythonRoot -Directory -Recurse -Filter "__pycache__" -ErrorAction SilentlyContinue |
     Remove-Item -Recurse -Force
 
+# Precompile bytecode into the payload (unchecked-hash, so the installer's fresh
+# mtimes never invalidate it) as the final payload step — after the strip above,
+# else source-only recompiles the whole tree on first import (PY cold-start).
+Invoke-Native $bundlePython @(
+    "-I", "-c",
+    "import compileall, py_compile, sys; compileall.compile_dir(sys.argv[1], quiet=1, workers=0, invalidation_mode=py_compile.PycInvalidationMode.UNCHECKED_HASH)",
+    (Join-Path $PythonRoot "Lib")
+)
+$pycCount = (Get-ChildItem -Path (Join-Path $PythonRoot "Lib") -Recurse -Filter "*.pyc" -ErrorAction SilentlyContinue | Measure-Object).Count
+if ($pycCount -lt 1000) {
+    throw "bytecode precompile produced only $pycCount .pyc - expected the full dependency tree"
+}
+Write-Host "Precompiled $pycCount .pyc into the payload"
+
 if ($SkipInstaller) {
     Write-Host "Staged bundle: $StageDir"
     exit 0

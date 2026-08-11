@@ -568,18 +568,22 @@ def _wait_until_ready(process, port: int, token: str, timeout_s: float) -> None:
 
 def _start_ready_server(paths: DesktopPaths, token: str):
     last_error = None
-    for _attempt in range(3):
+    for attempt in range(3):
         port = _available_port()
         job = Job()
         process = None
+        t0 = time.monotonic()
         try:
             # job.spawn must be inside this try too: its failure modes
             # (pywintypes.error, FileNotFoundError) would otherwise escape the
             # loop and skip job.close() below.
             process = _start_server(job, paths, port, token)
             _wait_until_ready(process, port, token, _READY_TIMEOUT_S)
+            paths.log(f"server ready in {time.monotonic() - t0:.1f}s (attempt {attempt + 1})")
             return job, process, port
         except (OSError, RuntimeError, TimeoutError, *_backend.SPAWN_ERRORS) as error:
+            paths.log(f"start attempt {attempt + 1} failed after "
+                      f"{time.monotonic() - t0:.1f}s: {error}")
             job.close()
             if process is not None:
                 process.wait(5000)

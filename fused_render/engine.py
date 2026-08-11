@@ -58,6 +58,7 @@ The wire shape returned here is the built-in executor's
 shape regardless of which engine ran the code.
 """
 import asyncio
+import importlib.util
 import json
 import logging
 import os
@@ -66,6 +67,7 @@ import shlex
 import subprocess
 import sys
 import threading
+import time
 import traceback
 
 logger = logging.getLogger(__name__)
@@ -717,6 +719,58 @@ def available() -> bool:
     except ImportError:
         return False
     return True
+
+
+# warm() caches both outcomes; invalidate() clears it (mid-session install).
+_available_cached: bool | None = None
+_available_lock = threading.Lock()
+
+
+def warm() -> None:
+    """Import the fused backend once off the request path and cache the result.
+
+    Startup daemon thread: on a fresh install the cold import is ~a minute and
+    left lazy it would freeze the first /api/config that resolves the engine."""
+    global _available_cached
+    t0 = time.monotonic()
+    ok = available()
+    with _available_lock:
+        _available_cached = ok
+    logger.info("engine warm-up: fused backend %s (%.1fs)",
+                "ready" if ok else "unavailable", time.monotonic() - t0)
+
+
+def warm_in_background() -> None:
+    """Fire-and-forget warm() on a daemon thread (server startup hook)."""
+    threading.Thread(target=warm, daemon=True, name="engine-warmup").start()
+
+
+def forced_override() -> str | None:
+    """Normalized FUSED_RENDER_ENGINE ('builtin'/'fused'/'auto') or None — the one
+    reader of that env var (startup validation, effective_engine, the warm hook)."""
+    raw = os.environ.get("FUSED_RENDER_ENGINE")
+    return raw.strip().lower() if raw is not None else None
+
+
+def warm_unless_forced_builtin() -> None:
+    """Warm the engine in the background unless it is forced to builtin (startup hook)."""
+    if forced_override() != "builtin":
+        warm_in_background()
+
+
+def invalidate() -> None:
+    """Clear the cached availability so the next resolve re-checks (mid-session install)."""
+    global _available_cached
+    with _available_lock:
+        _available_cached = None
+
+
+def available_nonblocking() -> bool:
+    """available() without the cold import: warm()'s cached result, else find_spec."""
+    with _available_lock:
+        if _available_cached is not None:
+            return _available_cached
+    return importlib.util.find_spec("fused") is not None
 
 
 def get_backend():

@@ -47,6 +47,83 @@ def _fresh_interpreter_probe():
     engine.reset_app_interpreter_cache()
 
 
+# --- engine warm-up + non-blocking availability (PY cold-start) --------------
+
+
+def test_available_nonblocking_never_triggers_the_cold_import(monkeypatch):
+    def _boom():
+        raise AssertionError("the cold engine import must not run on the request path")
+
+    monkeypatch.setattr(engine, "available", _boom)
+    assert isinstance(engine.available_nonblocking(), bool)
+
+
+def test_available_nonblocking_reads_find_spec_not_the_import(monkeypatch):
+    monkeypatch.setattr(engine, "available",
+                        lambda: (_ for _ in ()).throw(AssertionError("no cold import")))
+    monkeypatch.setattr(engine.importlib.util, "find_spec", lambda _n: object())
+    assert engine.available_nonblocking() is True
+    monkeypatch.setattr(engine.importlib.util, "find_spec", lambda _n: None)
+    assert engine.available_nonblocking() is False
+
+
+def test_warm_caches_a_positive_and_short_circuits(monkeypatch):
+    monkeypatch.setattr(engine, "available", lambda: True)
+    engine.warm()
+    assert engine._available_cached is True
+
+    def _no_find_spec(_name):
+        raise AssertionError("cached result must be used, not a fresh probe")
+
+    monkeypatch.setattr(engine.importlib.util, "find_spec", _no_find_spec)
+    assert engine.available_nonblocking() is True
+
+
+def test_warm_caches_a_negative_so_a_broken_fused_is_not_reported_available(monkeypatch):
+    # find_spec sees the package but the backend import fails: cache the truth, not find_spec.
+    monkeypatch.setattr(engine, "available", lambda: False)
+    monkeypatch.setattr(engine.importlib.util, "find_spec", lambda _n: object())
+    engine.warm()
+    assert engine._available_cached is False
+    assert engine.available_nonblocking() is False
+
+
+def test_invalidate_lets_a_mid_session_install_flip_the_engine(monkeypatch):
+    # Warm caches False (fused absent); invalidate() lets a later install be seen.
+    monkeypatch.setattr(engine, "available", lambda: False)
+    monkeypatch.setattr(engine.importlib.util, "find_spec", lambda _n: None)
+    engine.warm()
+    assert engine.available_nonblocking() is False
+    monkeypatch.setattr(engine.importlib.util, "find_spec", lambda _n: object())
+    engine.invalidate()
+    assert engine.available_nonblocking() is True
+
+
+def test_warm_logs_the_duration(monkeypatch, caplog):
+    monkeypatch.setattr(engine, "available", lambda: True)
+    with caplog.at_level("INFO", logger="fused_render.engine"):
+        engine.warm()
+    assert "engine warm-up" in caplog.text
+
+
+def test_forced_override_is_the_one_normalized_reader_of_the_env_var(monkeypatch):
+    monkeypatch.setenv("FUSED_RENDER_ENGINE", "  BuiltIn ")
+    assert engine.forced_override() == "builtin"
+    monkeypatch.delenv("FUSED_RENDER_ENGINE", raising=False)
+    assert engine.forced_override() is None
+
+
+def test_warm_unless_forced_builtin_gates_on_the_override(monkeypatch):
+    calls = []
+    monkeypatch.setattr(engine, "warm_in_background", lambda: calls.append(1))
+    monkeypatch.setenv("FUSED_RENDER_ENGINE", "builtin")
+    engine.warm_unless_forced_builtin()
+    assert calls == []
+    monkeypatch.setenv("FUSED_RENDER_ENGINE", "auto")
+    engine.warm_unless_forced_builtin()
+    assert calls == [1]
+
+
 # --- the folder rule (SPEC PY-16) --------------------------------------------
 
 # Reading a `pyproject.toml` needs `tomllib` (3.11+ stdlib) or the `tomli`

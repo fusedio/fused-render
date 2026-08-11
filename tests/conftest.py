@@ -355,6 +355,18 @@ def _no_startup_index_scan(monkeypatch):
     monkeypatch.setattr(index_routes, "startup_scan", _skip)
 
 
+@pytest.fixture(autouse=True)
+def _no_startup_engine_warm(monkeypatch):
+    """Neutralize create_app's fused-engine warm daemon in tests (same leaked-thread
+    hazard as the mounts/index fixtures above; it leaks os.scandir into test_index_scan)."""
+    from fused_render import engine
+
+    monkeypatch.setattr(engine, "warm_in_background", lambda: None)
+    engine._available_cached = None
+    yield
+    engine._available_cached = None
+
+
 @pytest.fixture(scope="session", autouse=True)
 def _no_real_rcd_spawn():
     """Make spawning a REAL rclone rcd from the suite impossible, loudly.

@@ -207,6 +207,13 @@ def create_app(start_dir: str) -> FastAPI:
     async def _startup_prewarm_ai():
         prewarm_ai()
 
+    # Warm the fused engine off the request path (else the first /api/config pays the cold import).
+    @app.on_event("startup")
+    async def _startup_warm_engine():
+        from fused_render import engine
+
+        engine.warm_unless_forced_builtin()
+
     # User-level skill sync (D185): install/refresh the canonical fused-render
     # skills in Claude Code's skills dir. Since D216 this is for sessions
     # fused-render did NOT launch — the user's own `claude` in their app folder
