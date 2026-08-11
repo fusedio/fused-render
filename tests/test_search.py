@@ -25,7 +25,6 @@ def test_parse_spec_cleans_terms_extensions_and_numbers():
             "name_terms": ['we"ather\\', "  ", "ok"],
             "extensions": [".MOV", "tar.gz", "c/v", "mp4"],
             "kind": "file",
-            "modified_within_days": 1,
             "min_size_bytes": 10,
         }
     )
@@ -34,7 +33,6 @@ def test_parse_spec_cleans_terms_extensions_and_numbers():
     # dot peeled + lowercased; anything outside [a-z0-9]{1,12} dropped
     assert parsed["extensions"] == ["mov", "mp4"]
     assert parsed["kind"] == "file"
-    assert parsed["modified_within_days"] == 1
     assert parsed["min_size_bytes"] == 10
 
 
@@ -44,7 +42,7 @@ def test_parse_spec_cleans_terms_extensions_and_numbers():
         {"name_terms": "notalist"},
         {"name_terms": [1]},
         {"kind": "everything"},
-        {"modified_within_days": -1},
+        {"min_size_bytes": -1},
         {"min_size_bytes": True},
         {"modified_after": "last week"},
         {"modified_before": "2026-02-31"},
@@ -56,16 +54,14 @@ def test_parse_spec_rejects_malformed_bodies(body):
         _parse_spec(body)
 
 
-@pytest.mark.parametrize("key", ["created_after", "created_before"])
-def test_parse_spec_refuses_a_creation_date_filter(key):
-    """The index stores `mtime` and no birth time, and it is the only engine —
-    so a created_* filter is unanswerable. It is REFUSED rather than dropped:
-    silently searching by modification date instead would answer a different
-    question than the caller asked. Only a stale client can still send one."""
-    with pytest.raises(ValueError, match="created"):
-        _parse_spec({"name_terms": ["x"], key: "2026-06-01"})
-    # ...and the key is not in the parsed spec at all
-    assert key not in _parse_spec({"name_terms": ["x"]})
+@pytest.mark.parametrize(
+    "key", ["created_after", "created_before", "modified_within_days"])
+def test_parse_spec_carries_no_legacy_keys(key):
+    """The only client of this endpoint is the explorer's AI search, and it
+    sends neither a creation-date filter (the index records mtime only) nor the
+    old `modified_within_days` shape. Both are gone from the spec entirely —
+    unknown keys in the body are simply not carried, like any other."""
+    assert key not in _parse_spec({"name_terms": ["x"], key: "2026-06-01"})
 
 
 def test_day_bounds_are_inclusive_local_days():

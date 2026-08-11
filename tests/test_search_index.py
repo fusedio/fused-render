@@ -31,7 +31,6 @@ def spec(**over):
         "name_terms": [],
         "extensions": [],
         "kind": "any",
-        "modified_within_days": None,
         "modified_after": None,
         "modified_before": None,
         "min_size_bytes": None,
@@ -77,7 +76,6 @@ def test_index_engine_matches_name_terms_case_insensitively(tmp_path):
                                   ("/r/notes.txt", 20, 200.0)])
     out = _search_index(spec(name_terms=["weather"]), cfg)
     assert _paths(out) == ["/r/Weather Report.csv"]
-    assert out["engine"] == "index"
     assert out["truncated"] is False
 
 
@@ -172,16 +170,6 @@ def test_index_engine_date_ranges_are_inclusive_local_days(tmp_path):
     out = _search_index(
         spec(modified_after="2026-06-01", modified_before="2026-06-30"), cfg)
     assert _paths(out) == ["/r/first-instant.txt", "/r/last-instant.txt"]
-
-
-def test_index_engine_honors_modified_within_days(tmp_path):
-    import time
-
-    now = time.time()
-    cfg = _index(tmp_path, "/r", [("/r/fresh.txt", 10, now - 3600),
-                                  ("/r/stale.txt", 10, now - 10 * 86400)])
-    out = _search_index(spec(modified_within_days=2), cfg)
-    assert _paths(out) == ["/r/fresh.txt"]
 
 
 def test_index_engine_screens_hidden_and_junk_paths(tmp_path):
@@ -395,10 +383,10 @@ def test_a_never_built_index_is_an_error_not_an_empty_disk(tmp_path):
 
 def test_a_zero_hit_query_is_an_honest_empty_result(tmp_path):
     """A miss is a miss. There is no wider engine to consult, so an empty
-    result set is the answer — reported as one, with `engine` still set."""
+    result set is the answer — reported as one."""
     cfg = _index(tmp_path, "/r", [("/r/a.txt", 10, 100.0)])
     out = _search_index(spec(name_terms=["nothing-like-this"]), cfg)
-    assert out == {"entries": [], "truncated": False, "engine": "index"}
+    assert out == {"entries": [], "truncated": False}
 
 
 def test_index_engine_refuses_a_spec_with_no_narrowing_constraint(tmp_path):
@@ -437,7 +425,9 @@ def test_the_endpoint_has_no_engine_but_the_index(client, tmp_path, monkeypatch)
     res = client.post("/api/search/files", json={"name_terms": ["quarterly"]})
     assert res.status_code == 200
     body = res.json()
-    assert body["engine"] == "index"
+    # No `engine` discriminator in the response: with one engine it only ever
+    # said "index", and the one client that reads this never used it.
+    assert "engine" not in body
     assert [e["path"] for e in body["entries"]] == ["/r/quarterly.csv"]
 
 
@@ -455,14 +445,4 @@ def test_the_endpoint_returns_an_empty_ok_for_a_miss(client, tmp_path, monkeypat
     monkeypatch.setattr(search_mod, "load_config", lambda: cfg)
     res = client.post("/api/search/files", json={"name_terms": ["zzzz"]})
     assert res.status_code == 200
-    assert res.json() == {"ok": True, "entries": [], "truncated": False,
-                          "engine": "index"}
-
-
-def test_the_endpoint_rejects_a_creation_date_filter(client, tmp_path, monkeypatch):
-    cfg = _index(tmp_path, "/r", [("/r/a.txt", 10, 100.0)])
-    monkeypatch.setattr(search_mod, "load_config", lambda: cfg)
-    res = client.post("/api/search/files",
-                      json={"name_terms": ["a"], "created_after": "2026-06-01"})
-    assert res.status_code == 400
-    assert "created" in res.json()["error"]
+    assert res.json() == {"ok": True, "entries": [], "truncated": False}

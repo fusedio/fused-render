@@ -408,10 +408,6 @@ export interface SearchFileEntry {
 export interface SearchFilesResult {
   entries: SearchFileEntry[];
   truncated: boolean;
-  // Always "index" now that the index is the only engine; kept in the response
-  // for older clients and because "what answered this" is the first support
-  // question about a surprising result.
-  engine: string;
 }
 
 // File search from a filter spec (see apps/explorer/lib/ai-search), scoped to
