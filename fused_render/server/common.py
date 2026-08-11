@@ -37,15 +37,16 @@ def _forced_engine() -> str | None:
     wrong default is worse than none: it is the only place most people ever
     read this contract.
     """
-    raw = os.environ.get("FUSED_RENDER_ENGINE")
-    if raw is None:
+    from fused_render import engine as _engine
+
+    requested = _engine.forced_override()
+    if requested is None:
         logger.info(
             "execution engine: following the preference (~/.fused-render/prefs.json, "
             "default fused when its package is importable, else builtin); "
             "FUSED_RENDER_ENGINE overrides it for this process"
         )
         return None
-    requested = raw.strip().lower()
     if requested not in ("auto", "fused", "builtin"):
         raise RuntimeError(
             f"FUSED_RENDER_ENGINE={requested!r} is not one of: auto, fused, builtin"
@@ -53,13 +54,7 @@ def _forced_engine() -> str | None:
     if requested == "builtin":
         logger.info("execution engine: builtin (forced by FUSED_RENDER_ENGINE)")
         return "builtin"
-    try:
-        from fused_render import engine as _engine
-
-        ok = _engine.available()
-    except ImportError:
-        ok = False
-    if ok:
+    if _engine.available():
         logger.info("execution engine: fused (forced by FUSED_RENDER_ENGINE)")
         # Probe the app's interpreter now, while logging is configured and no
         # request is waiting (PY-17): it decides whether every header-less script

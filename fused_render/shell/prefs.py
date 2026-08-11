@@ -181,10 +181,8 @@ def calls_retention_days() -> int:
 def fused_engine_available() -> bool:
     """Whether the fused backend is importable, resolved off the request path:
     engine.warm() caches it at startup, /api/deploy/install flips it via invalidate()."""
-    try:
-        from fused_render import engine as _engine
-    except ImportError:
-        return False
+    from fused_render import engine as _engine
+
     return _engine.available_nonblocking()
 
 
@@ -202,10 +200,11 @@ def effective_engine() -> str:
     (the earlier startup-frozen resolution let the page and dispatch drift
     after an install).
     """
-    forced = os.environ.get("FUSED_RENDER_ENGINE")
+    from fused_render import engine as _engine
+
+    forced = _engine.forced_override()
     if forced is not None:
-        requested = forced.strip().lower()
-        if requested == "builtin":
+        if forced == "builtin":
             return "builtin"
         # auto / fused: fused iff importable now (=fused was startup-validated).
         return "fused" if fused_engine_available() else "builtin"

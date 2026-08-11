@@ -106,6 +106,24 @@ def test_warm_logs_the_duration(monkeypatch, caplog):
     assert "engine warm-up" in caplog.text
 
 
+def test_forced_override_is_the_one_normalized_reader_of_the_env_var(monkeypatch):
+    monkeypatch.setenv("FUSED_RENDER_ENGINE", "  BuiltIn ")
+    assert engine.forced_override() == "builtin"
+    monkeypatch.delenv("FUSED_RENDER_ENGINE", raising=False)
+    assert engine.forced_override() is None
+
+
+def test_warm_unless_forced_builtin_gates_on_the_override(monkeypatch):
+    calls = []
+    monkeypatch.setattr(engine, "warm_in_background", lambda: calls.append(1))
+    monkeypatch.setenv("FUSED_RENDER_ENGINE", "builtin")
+    engine.warm_unless_forced_builtin()
+    assert calls == []
+    monkeypatch.setenv("FUSED_RENDER_ENGINE", "auto")
+    engine.warm_unless_forced_builtin()
+    assert calls == [1]
+
+
 # --- the folder rule (SPEC PY-16) --------------------------------------------
 
 # Reading a `pyproject.toml` needs `tomllib` (3.11+ stdlib) or the `tomli`

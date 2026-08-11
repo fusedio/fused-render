@@ -212,8 +212,7 @@ def create_app(start_dir: str) -> FastAPI:
     async def _startup_warm_engine():
         from fused_render import engine
 
-        if os.environ.get("FUSED_RENDER_ENGINE", "").strip().lower() != "builtin":
-            engine.warm_in_background()
+        engine.warm_unless_forced_builtin()
 
     # User-level skill sync (D185): install/refresh the canonical fused-render
     # skills in Claude Code's skills dir. Since D216 this is for sessions

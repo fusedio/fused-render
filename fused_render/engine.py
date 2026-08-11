@@ -745,6 +745,19 @@ def warm_in_background() -> None:
     threading.Thread(target=warm, daemon=True, name="engine-warmup").start()
 
 
+def forced_override() -> str | None:
+    """Normalized FUSED_RENDER_ENGINE ('builtin'/'fused'/'auto') or None — the one
+    reader of that env var (startup validation, effective_engine, the warm hook)."""
+    raw = os.environ.get("FUSED_RENDER_ENGINE")
+    return raw.strip().lower() if raw is not None else None
+
+
+def warm_unless_forced_builtin() -> None:
+    """Warm the engine in the background unless it is forced to builtin (startup hook)."""
+    if forced_override() != "builtin":
+        warm_in_background()
+
+
 def invalidate() -> None:
     """Clear the cached availability so the next resolve re-checks (mid-session install)."""
     global _available_cached
