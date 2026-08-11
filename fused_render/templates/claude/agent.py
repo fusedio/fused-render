@@ -231,8 +231,15 @@ WHOLE_TOOL_GRANTABLE = frozenset({
 # decides how much is auto-approved before it is consulted, and whatever is
 # left still has to be answerable or it goes back to being a silent refusal.
 #
-#   plan        nothing is touched at all: claude researches, then calls
-#               ExitPlanMode with a plan for the user to approve (the plan card)
+#   plan        the CLI's own plan mode: claude is expected to research and not
+#               modify anything until it calls ExitPlanMode with a plan for the
+#               user to approve (the plan card). That "not modify anything" is
+#               CLI-ENFORCED, not ours, and UNVERIFIED here against a live
+#               headless run (queued for the end-to-end task) — the prompt tool
+#               stays wired exactly as in every other mode, so an ordinary card
+#               can still surface for some other tool while planning and stays
+#               fully answerable if one does; only the ExitPlanMode card itself
+#               is the intended way out (see `permChoices`' liveMode guard)
 #   prompt      the CLI default — a card for anything not already allowed
 #   acceptEdits file edits go through; Bash/web/everything else still cards
 #   auto        the CLI's own classifier auto-approves what it judges safe,
@@ -289,20 +296,33 @@ KEEP_PLANNING = "Revise the plan — the user wants changes."
 # How much of that note is carried. The user typed it, so it is not sanitised —
 # it is BOUNDED: a pasted file must not become the deny message, and the control
 # characters that are not whitespace have no business in a JSON string the CLI
-# hands the model.
+# hands the model. The page mirrors this number as `PLAN_NOTE_LIMIT` (a
+# `maxLength` on the textarea, so a user typing honestly never even reaches the
+# cut) — a test holds the two together (D146).
 NOTE_LIMIT = 2000
+# The cut is never SILENT (D241's precedent: a size cap that just drops bytes
+# without saying so reads as data loss, not a limit) — a note over the cap gets
+# this appended, so both the user's own card and the sentence the model reads
+# say plainly that something was left out, rather than quietly shortening it.
+NOTE_TRUNCATED = f"\n[note truncated at {NOTE_LIMIT} chars]"
 
 
 def _keep_planning(note: str) -> str:
     """The deny message for a plan sent back for revision, plus the user's note.
 
     Newlines and tabs survive (a note is allowed to be two lines); anything below
-    them is dropped, and the whole thing is capped. Never markup and never tool
-    input — this string only ever becomes the `message` of a deny."""
+    them is dropped, and the whole thing is capped — visibly, with `NOTE_TRUNCATED`
+    appended when the cap actually bit. Never markup and never tool input — this
+    string only ever becomes the `message` of a deny."""
     text = "".join(ch for ch in str(note or "")
                    if ch in "\n\t" or ch >= " ")
-    text = text.strip()[:NOTE_LIMIT].strip()
-    return KEEP_PLANNING + (" The user's note: " + text if text else "")
+    text = text.strip()
+    cut = len(text) > NOTE_LIMIT
+    text = text[:NOTE_LIMIT].strip()
+    if not text:
+        return KEEP_PLANNING
+    return (KEEP_PLANNING + " The user's note: " + text
+            + (NOTE_TRUNCATED if cut else ""))
 
 
 def _multi_answer_ok(value: str, labels: list) -> bool:

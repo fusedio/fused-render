@@ -863,7 +863,7 @@ def test_diff_colours_are_theme_variables_defined_in_both_themes(source):
 # that every model-authored string went in through textContent.
 
 _CARD_CONSTS_START = "const WHOLE_TOOL_GRANTABLE = new Set(["
-_CARD_CONSTS_END = 'const ANSWERABLE_TOOL = "AskUserQuestion";'
+_CARD_CONSTS_END = "const PLAN_NOTE_LIMIT = 2000;"
 _CARD_START = "function permChoices(tool, label, liveMode) {"
 # buildPlanCard's last two lines — the LAST builder in the region, and unique to
 # it (the other two append their status differently), so the window closes on the
@@ -918,7 +918,7 @@ function cdump(n) {
     tag: n.tagName.toLowerCase(), cls: n.className, text: n.textContent,
     html: n.innerHTML, type: n.type === undefined ? null : n.type,
     name: n.name === undefined ? null : n.name,
-    checked: !!n.checked, disabled: !!n.disabled,
+    checked: !!n.checked, disabled: !!n.disabled, attrs: n.attrs || {},
     children: n.children.map(cdump),
   };
 }
@@ -1292,9 +1292,11 @@ def test_a_plan_card_offers_exactly_approve_and_keep_planning(card):
     assert _buttons(got["before"]) == ["Approve plan", "Keep planning"]
     for banned in ("Allow", "Deny", "let Claude decide"):
         assert not any(banned in b for b in _buttons(got["before"]))
-    # One note field, and it is a textarea (free text, not an option list).
-    assert [n["tag"] for n in _nodes(got["before"]) if n["tag"] == "textarea"] \
-        == ["textarea"]
+    # One note field, and it is a textarea (free text, not an option list),
+    # named for anyone who cannot see the placeholder.
+    notes = [n for n in _nodes(got["before"]) if n["tag"] == "textarea"]
+    assert [n["tag"] for n in notes] == ["textarea"]
+    assert notes[0]["attrs"].get("aria-label")
 
 
 def test_approving_a_plan_sends_a_plain_allow(card):
@@ -1314,6 +1316,11 @@ def test_approving_a_plan_sends_a_plain_allow(card):
     assert "resolved" in got["tree"]["cls"].split()
     assert not _buttons(got["tree"]) and not [
         n for n in _nodes(got["tree"]) if n["tag"] == "textarea"]
+    # No `setMode` rode along (the picker was never given one to sit on in this
+    # probe), so the approval lands the picker on the CLI default rather than
+    # leaving it on whatever it was — see the parametrized test below for the
+    # full landing-mode matrix.
+    assert got["paramWrites"] == [["permission", "prompt"]]
 
 
 @pytest.mark.parametrize("picked,mode", [
@@ -1332,6 +1339,11 @@ def test_the_landing_mode_is_the_pickers_only_when_it_is_switchable(
   await settle();
 """, reply={"decision": "allow", "mode": mode})
     assert got["sent"][0]["mode"] == mode, got["sent"]
+    # Approving ALWAYS moves the picker forward, off "plan" — to the granted
+    # `setMode` when there was one, "prompt" (the CLI default) otherwise — so a
+    # picker left on "plan" (or on anything else that sends no setMode) does not
+    # silently re-enter plan mode on the very next turn.
+    assert got["paramWrites"] == [["permission", mode or "prompt"]], got["paramWrites"]
 
 
 def test_keeping_planning_denies_and_carries_the_users_note(card):
@@ -1351,6 +1363,9 @@ def test_keeping_planning_denies_and_carries_the_users_note(card):
     status = _by_class(got["tree"], "perm-status")[0]
     assert status["text"] == "◦ Sent back for revision"
     assert "resolved" in got["tree"]["cls"].split()
+    # "Keep planning" touches the picker not at all — the session is still
+    # planning, so there is nothing to land.
+    assert got["paramWrites"] == []
 
 
 def test_keeping_planning_with_no_note_still_sends_the_deny(card):
@@ -1389,6 +1404,8 @@ def test_a_failed_send_brings_the_plan_buttons_back(card):
     assert "could not record that decision" in \
         _by_class(got["tree"], "perm-status")[0]["text"]
     assert "resolved" not in got["tree"]["cls"].split()
+    # Nothing landed, so the picker must not move either.
+    assert got["paramWrites"] == []
 
 
 @pytest.mark.parametrize("decision,expected", [
@@ -1415,6 +1432,9 @@ def test_a_plan_card_shows_the_verdict_that_won_the_latch(card):
     assert got["sent"][0]["decision"] == "allow"
     assert _by_class(got["tree"], "perm-status")[0]["text"] == \
         "◦ Sent back for revision"
+    # The losing half of a double-click must not move the picker either — the
+    # plan was NOT actually approved, whatever was clicked.
+    assert got["paramWrites"] == []
 
 
 def test_a_plan_request_with_no_plan_shows_what_did_arrive(card):

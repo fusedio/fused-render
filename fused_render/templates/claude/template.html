@@ -4361,7 +4361,10 @@ const EFFORTS = ["", "low", "medium", "high", "xhigh", "max"];
 // PERMISSION_MODES keys; the labels say what the user gets. `auto` is a
 // broader opt-in, NOT a blanket one — Claude Code's own classifier judges each
 // request and still escalates what it won't vouch for. `plan` is the other end:
-// nothing is touched at all until a plan card is approved, so it leads the list.
+// the CLI is expected to hold off touching anything until a plan card is
+// approved (its own enforcement, not verified here in headless mode — an
+// ordinary card can still surface and still stays answerable while planning),
+// so it reads best leading the list.
 const PERMISSION_MODES = ["plan", "prompt", "acceptEdits", "auto"];
 const PERMISSION_LABELS = {
   plan: "plan first",
@@ -4665,6 +4668,11 @@ const SWITCHABLE_MODES = new Set(["acceptEdits", "auto"]);
 const PLAN_TOOL = "ExitPlanMode";
 const ANSWERABLE_TOOL = "AskUserQuestion";
 
+// Mirrors agent.py's NOTE_LIMIT — set as the note textarea's `maxLength`, so an
+// honest user typing a note never reaches the server-side cut at all; a test
+// holds the two numbers together (D146).
+const PLAN_NOTE_LIMIT = 2000;
+
 // An Edit's `old_string`/`new_string` as one `-`/`+` marked block — the shape a
 // diff is read in. TWO call sites and therefore its own function: the approval
 // card (below) asks "shall I make this change", the transcript's Edit chip says
@@ -4756,7 +4764,13 @@ function permChoices(tool, label, liveMode) {
   if (WHOLE_TOOL_GRANTABLE.has(tool)) {
     choices.push(["Allow all " + label + " in this reply", "allow", "session", "", ""]);
   }
-  if ((liveMode || DEFAULT_PERMISSION) !== "auto") {
+  // Never on an ordinary card while the run is still PLANNING: this button's
+  // whole job is to loosen a strict mode via `setMode`, and doing that from a
+  // side-door tool card would leave plan mode through a door that is not the
+  // plan card itself — the one place that is actually supposed to decide it.
+  // (Whether an ordinary card can even appear mid-plan is the CLI's call, not
+  // verified here — see PLAN_TOOL's comment; this guard holds either way.)
+  if ((liveMode || DEFAULT_PERMISSION) !== "auto" && liveMode !== "plan") {
     choices.push(["Allow, and let Claude decide from here", "allow", "once", "auto", ""]);
   }
   choices.push(["Deny", "deny", "once", "", ""]);
@@ -5155,6 +5169,12 @@ function buildPlanCard(p, run_id) {
   const note = document.createElement("textarea");
   note.className = "plan-note";
   note.rows = 2;
+  // Bounded to what agent.py will actually keep (`NOTE_LIMIT`) — the server
+  // still truncates and marks the cut if this is ever bypassed (pasted text
+  // over the limit lands here truncated by the browser itself), but an honest
+  // user typing past the limit should never be the one who finds out later.
+  note.maxLength = PLAN_NOTE_LIMIT;
+  note.setAttribute("aria-label", "Note for revising the plan");
   note.placeholder = "Optional: what to change (sent with “Keep planning”)";
   const actions = document.createElement("div");
   actions.className = "perm-actions";
@@ -5193,8 +5213,22 @@ function buildPlanCard(p, run_id) {
         mode: mode || "", note: text || "",
       }, { key: null });
       if (res && res.error) throw new Error(res.error);
-      // A mode switch outlives this run: carry it into the next spawn too.
-      if (res && res.mode) { fused.params.set("permission", res.mode); syncSelects(); }
+      // An approval always resolves the picker forward — never only when a
+      // `setMode` rode along. The CLI leaves plan mode the instant it sees the
+      // plain allow (the whole point of the spike), so if the param were left
+      // on "plan" the very next per-turn spawn would silently re-enter it and
+      // plan again, forever, with no card ever explaining why. Land on the
+      // looser mode when the picker actually granted one (`res.mode`, gated on
+      // SWITCHABLE_MODES same as always), "prompt" — the CLI default — when it
+      // did not. "Keep planning" changes nothing here: the session is still
+      // planning, so the picker is left exactly where the user put it, and the
+      // authoritative READ of what landed (`res.decision`), not the click,
+      // decides whether this ran — the losing half of a double-click must not
+      // reset the picker for an approval that never actually took.
+      if ((res && res.decision) === "allow") {
+        fused.params.set("permission", res.mode || "prompt");
+        syncSelects();
+      }
       // agent.py answers with what landed on disk (first writer wins), so a
       // double-click renders the verdict the tool actually got.
       resolve((res && res.decision) || decision);
@@ -5208,8 +5242,10 @@ function buildPlanCard(p, run_id) {
 
   // Where the session should land once planning is over: the picker's CURRENT
   // choice, and only when the bridge will honour it. Sitting on "plan first" or
-  // "ask every time" sends nothing at all — the plain allow already leaves plan
-  // mode, and tightening mid-turn is the picker's job, not a card's.
+  // "ask every time" sends no `setMode` at all — the plain allow already leaves
+  // plan mode on its own, and tightening mid-turn is the picker's job, not a
+  // card's — but the picker itself still gets moved off "plan" above, to
+  // "prompt", once the approval lands.
   const landing = () => {
     const picked = fused.params.get("permission") || "";
     return SWITCHABLE_MODES.has(picked) ? picked : "";

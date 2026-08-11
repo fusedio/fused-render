@@ -67,6 +67,19 @@ def _load(name):
     return mod
 
 
+def _const_block(html, start, end):
+    """The text between one source marker and the next, for scraping a JS
+    const out of the shipping page. Asserts the marker is actually THERE before
+    slicing — `html.split(start)[1]` on a marker that moved or was renamed
+    raises a bare IndexError, which reads as the harness being broken rather
+    than as the two sides having drifted apart, which is the thing this is
+    for."""
+    assert start in html, f"marker not found in template.html: {start!r}"
+    after = html.split(start, 1)[1]
+    assert end in after, f"end marker not found after {start!r}: {end!r}"
+    return after.split(end, 1)[0]
+
+
 @pytest.fixture
 def agent():
     return _load("agent")
@@ -932,7 +945,33 @@ def test_a_note_is_bounded_and_carries_no_control_characters(agent, tmp_path):
     message = agent._read_decision(agent._perm_dir(run_dir), "req-p")["message"]
     assert "\x00" not in message and "\x07" not in message
     assert "line one\n\tline two" in message
-    assert len(message) <= len(agent.KEEP_PLANNING) + agent.NOTE_LIMIT + 40
+    # A note this far over NOTE_LIMIT is also cut visibly, not just shortened.
+    assert message.endswith(agent.NOTE_TRUNCATED)
+    assert len(message) <= (len(agent.KEEP_PLANNING) + agent.NOTE_LIMIT
+                             + len(agent.NOTE_TRUNCATED) + 40)
+
+
+def test_a_note_over_the_limit_ends_with_an_explicit_truncation_marker(
+        agent, tmp_path):
+    """D241's precedent: a cap that just drops bytes past it, silently, reads as
+    data loss rather than a limit — the model and the disk record must both
+    say plainly that something was cut, not merely act as if the note ended
+    there on its own."""
+    run_dir = _park_a_plan(agent, tmp_path)
+    agent._decide("run", "req-p", "deny", "once",
+                  note="x" * (agent.NOTE_LIMIT + 500))
+    message = agent._read_decision(agent._perm_dir(run_dir), "req-p")["message"]
+    assert message.endswith(agent.NOTE_TRUNCATED)
+    assert message.count("x") == agent.NOTE_LIMIT
+
+
+def test_a_note_at_or_under_the_limit_carries_no_truncation_marker(
+        agent, tmp_path):
+    run_dir = _park_a_plan(agent, tmp_path)
+    agent._decide("run", "req-p", "deny", "once", note="x" * agent.NOTE_LIMIT)
+    message = agent._read_decision(agent._perm_dir(run_dir), "req-p")["message"]
+    assert "truncated" not in message
+    assert message.count("x") == agent.NOTE_LIMIT
 
 
 def test_a_note_never_rides_a_plan_approval(agent, tmp_path):
@@ -1501,7 +1540,7 @@ def test_every_switchable_mode_list_agrees(agent):
 
     # …and the set the plan card filters the picker through, which is the only
     # place the page names these modes as a list of its own.
-    listed = html.split("const SWITCHABLE_MODES = new Set([")[1].split("]);")[0]
+    listed = _const_block(html, "const SWITCHABLE_MODES = new Set([", "]);")
     in_page = {m.strip().strip('"') for m in listed.split(",") if m.strip()}
     assert in_page == set(agent.SWITCHABLE_MODES), in_page
 
@@ -1660,6 +1699,18 @@ def test_the_mode_switch_is_dropped_once_the_run_is_already_auto():
     assert choices == ["Allow", "Deny"]
 
 
+def test_the_mode_switch_is_never_offered_on_an_ordinary_card_while_planning():
+    """The plan card is the intended exit from plan mode — an ordinary tool
+    card's escalation button loosening the mode via `setMode` would be a second,
+    side, door out of the same state, opened by a click that never looked at a
+    plan at all."""
+    if not shutil.which("node"):
+        pytest.skip("node is needed to run the card's own button builder")
+    choices = _perm_choices("Bash", "plan")
+    assert _SWITCH not in choices
+    assert choices == ["Allow", "Deny"]
+
+
 @pytest.mark.parametrize("tool,grantable", [
     ("Edit", True), ("Write", True), ("Read", True), ("Glob", True),
     ("Grep", True), ("NotebookEdit", True),
@@ -1686,9 +1737,20 @@ def test_the_selector_and_the_backend_offer_the_same_modes(agent):
     assert 'const DEFAULT_PERMISSION = "prompt"' in html
     # Every option needs a label, or `fillSelect` renders the word "undefined"
     # as a permission mode the user is being asked to choose.
-    labels = html.split("const PERMISSION_LABELS = {")[1].split("};")[0]
+    labels = _const_block(html, "const PERMISSION_LABELS = {", "};")
     labelled = set(re.findall(r"(\w+):", labels))
     assert labelled == set(in_page), labelled
+
+
+def test_the_note_field_cannot_type_past_what_the_server_will_keep(agent):
+    """The server-side cap (`NOTE_LIMIT`) is bounded either way (D246's
+    truncation marker), but an honest user should never even reach it — the
+    textarea's own `maxLength` is the first line of defence, and a test holds
+    the two numbers together (D146) so one cannot drift from the other."""
+    html = open(os.path.join(TEMPLATE_DIR, "template.html"), encoding="utf-8").read()
+    listed = _const_block(html, "const PLAN_NOTE_LIMIT = ", ";")
+    assert int(listed.strip()) == agent.NOTE_LIMIT
+    assert "note.maxLength = PLAN_NOTE_LIMIT" in html
 
 
 def _summarize(tool, tool_input):
