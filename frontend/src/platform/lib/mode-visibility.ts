@@ -52,6 +52,80 @@ export function isModeVisible(entry: TemplateEntry, verdicts: ConditionVerdicts)
   return verdicts[entry.mode] !== false; // absent verdict (failed call) shows
 }
 
+// --- content pane vs. sidebar (Preview's `_side`) ---------------------------
+// Some of the modes around a file are not another WAY OF LOOKING at it, they
+// are companions TO looking at it: the agent chat, the working tree it sits in,
+// and the file's own history all talk about the file while you are viewing it as
+// something (an image, a table, its source). Putting them in the same radio list
+// as the real content modes made them mutually exclusive with the view they are
+// about — asking Claude about a .png meant giving up looking at the .png.
+//
+// So on a single-file explorer preview they move to a right-hand SIDEBAR with
+// its own URL param (`_side`), and the content pane's own mode list drops them.
+// The partition lives here, with the rest of the mode policy, because every
+// surface has to agree on which side of the split a mode belongs to — and
+// because the surfaces that DON'T split (the panel/tab panes, the app builder)
+// must keep offering them as ordinary modes, which is only safe while "is this a
+// sidebar mode?" has one definition.
+//
+// `git` IS ON THIS LIST AND IS NOT IN ANY FILE'S TEMPLATE LIST, and both halves
+// of that are deliberate. The registry binds `git` to the universal "/" DIRECTORY
+// key alone and its gate refuses anything that is not a directory
+// (templates/git/condition.py: a working tree belongs to the folder, since you
+// stash a tree and not a file), so `partitionModes` will never pull a `git` entry
+// out of a file's own modes. The file sidebar BORROWS one from the file's parent
+// folder instead (apps/explorer/lib/dir-mode.ts) and inserts it here — which is
+// why the ordering below is a rule of its own rather than the registry's.
+export const SIDEBAR_MODES = ["claude", "git", "history"] as const;
+
+const SIDEBAR_MODE_SET: ReadonlySet<string> = new Set(SIDEBAR_MODES);
+
+export function isSidebarMode(mode: string): boolean {
+  return SIDEBAR_MODE_SET.has(mode);
+}
+
+// Split an ALREADY-VISIBLE list in two, order-preserving in both halves.
+export function partitionModes(entries: TemplateEntry[]): {
+  content: TemplateEntry[];
+  sidebar: TemplateEntry[];
+} {
+  return {
+    content: entries.filter((e) => !isSidebarMode(e.mode)),
+    sidebar: entries.filter((e) => isSidebarMode(e.mode)),
+  };
+}
+
+// The sidebar switcher's order: SIDEBAR_MODES', not the registry's.
+//
+// The registry ranks views for a FILE TYPE — which of `.png`'s viewers should
+// open first — and that is a genuinely different question from how the companions
+// rank against each other, which is the same answer for every file: the chat, the
+// working tree, then the history. It also has to be a rule here because the list
+// is ASSEMBLED rather than read: `git` is borrowed from the parent folder (see
+// above) and appended, so leaving the order to the input would put Git after
+// History for every file in a repository.
+//
+// Stable within a rank, so an unknown companion (a user registry binding one of
+// its own into this half) keeps its relative position at the end rather than
+// being reshuffled.
+export function orderSidebarModes(entries: TemplateEntry[]): TemplateEntry[] {
+  const rank = (mode: string) => {
+    const i = (SIDEBAR_MODES as readonly string[]).indexOf(mode);
+    return i === -1 ? SIDEBAR_MODES.length : i;
+  };
+  return [...entries].sort((a, b) => rank(a.mode) - rank(b.mode));
+}
+
+// Which sidebar mode a bare "open the sidebar" lands on: SIDEBAR_MODES order,
+// not the registry's, because this is a preference between the companions (the
+// chat first — it is the one users open the sidebar FOR) rather than a ranking of
+// views for a file type. Falls through to whatever IS on offer so a file that
+// only has `history` still opens something.
+export function defaultSidebarMode(sidebar: TemplateEntry[]): string | null {
+  for (const mode of SIDEBAR_MODES) if (sidebar.some((e) => e.mode === mode)) return mode;
+  return sidebar[0]?.mode ?? null;
+}
+
 // Order-preserving filter — the registry's own ranking is the menu order.
 export function visibleModes(
   entries: TemplateEntry[],

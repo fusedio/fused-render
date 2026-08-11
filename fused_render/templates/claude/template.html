@@ -1583,6 +1583,32 @@ function focusBox(el) {
 const FILE = fused.params.get("_file") || "";
 const BASENAME = FILE.split("/").pop();
 
+// Chat-only host: this document is framed as a SIDEBAR beside the shell's own
+// preview of the same target (the explorer's `_side` split — Preview.tsx and
+// PreviewSidebar.tsx), so our own left half would be that file previewed twice
+// in one window, the inner copy a few hundred pixels wide. The host says so with
+// `chat_only=1`, and we take the pane away: no second preview, no divider, no
+// annotate switch, and the chat column runs full width.
+//
+// A HOST fact, not view state, which is why it is read once into a const and
+// never written: nothing in here toggles it, and someone who reaches this URL
+// without the param wants the full split. The teardown is the template's
+// existing NO-PANE path (enterNoPane, below) — the same designed absence a
+// folder with no app entry gets — so this adds a reason to enter that state
+// rather than a second layout to maintain.
+//
+// Read off THIS FRAME'S OWN URL, not through fused.params, and that distinction
+// is the whole difference between a host fact and view state. This page sets no
+// `_fusedParamBoundary`, so its param target is the SHELL's URL (D46/D72) —
+// which is exactly right for `split`, `session_id`, `annotations` and the rest
+// (they belong in the shell URL, and so in a bookmark), and exactly wrong for
+// this: the host chose the layout when it built the iframe src, and putting that
+// choice on the shell URL would let it outlive the host that made it. `_file`
+// rides the same way for the same reason, and is special-cased in the runtime
+// to prove it; a leading underscore is reserved (unreadable through
+// fused.params), so this one is read directly.
+const CHAT_ONLY = new URLSearchParams(location.search).get("chat_only") === "1";
+
 if (!FILE) {
   document.body.innerHTML = '<div id="msg">No file selected (missing _file param).</div>';
   throw new Error("claude template: missing _file");
@@ -1831,10 +1857,12 @@ function searchParamsOf(search) {
 // `leftmode` and `paneview` are in here for the `split` reason: they are this
 // chat's own layout bookkeeping (which view the left pane frames, which of the
 // two views a narrow host shows), and reporting them to the model as params the
-// APP is running with would be describing our chrome as its state.
+// APP is running with would be describing our chrome as its state. `chat_only`
+// is the extreme case of that: it describes THIS DOCUMENT'S HOST (see
+// CHAT_ONLY), and there is no pane for it to be a param of.
 const CHAT_PARAMS = new Set(["_file", "_mode", "session_id", "run", "split",
                              "model", "effort", "permission", "annotations",
-                             "annmode", "leftmode", "paneview",
+                             "annmode", "leftmode", "paneview", "chat_only",
                              "path"]);
 
 function appParamsOf(all) {
@@ -2205,6 +2233,12 @@ async function paneURL() {
     const { entry } = await fused.runPython("./app.py", { dir: FILE });
     if (entry) {
       setTargetNoun("project");   // an app folder — the prompt says so too
+      // Chat-only host (see CHAT_ONLY): the pane is the host's, not ours. The
+      // NOUN is still set — it describes the target, and the system prompt and
+      // the placeholders need it either way — but `appEntry` is not: it names
+      // "the entry html the pane is rendering", and from here nothing is. Same
+      // as the no-pane folder below, which leaves it empty for the same reason.
+      if (CHAT_ONLY) return null;
       appEntry = entry;
       return "/render?path=" + encodeURIComponent(entry);
     }
@@ -2238,6 +2272,11 @@ async function paneURL() {
   // user's own override (§16), which stat has already resolved by the time we
   // see it.
   setTargetNoun("file");
+  // Chat-only host (see CHAT_ONLY) — before the entry lookup below, on purpose:
+  // the "no preview view for this file" throw is about a pane WE have to fill,
+  // and in this layout there is no pane to fail at filling. A file the host
+  // frames a chat for must not open with an error panel over a working chat.
+  if (CHAT_ONLY) return null;
   paneEntries = paneOfferable(st.templates);
   paneRemote = !!st.remote;
   const t = curLeftEntry();

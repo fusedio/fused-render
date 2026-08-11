@@ -1,6 +1,6 @@
 // /claude-artifacts: the Explorer homepage's "Artifacts" tab, promoted to a
 // page of its own under the sidebar's CLAUDE group. Same data and the same
-// card as the tab (GET /api/claude-sessions → ClaudeSessionFolderCard, one
+// card as the tab (GET /api/claude-sessions → FolderPreviewCard, one
 // entry per project folder that holds Claude Code transcripts, newest first);
 // the difference is that a page has room to list every folder instead of
 // folding at the tab's MAX_CARDS, so there is no "Show more" here.
@@ -9,7 +9,7 @@
 // list, for people who think of it as a Claude thing rather than a file thing.
 import { useEffect, useState } from "react";
 import { getClaudeSessionFolders, type ClaudeSessionFolder } from "@platform/lib/api";
-import { ClaudeSessionFolderCard } from "@apps/explorer/BookmarkCards";
+import { FolderPreviewCard } from "@apps/explorer/BookmarkCards";
 
 export default function ClaudeArtifacts() {
   // One cheap GET on mount — no client-side cache to reconcile, and the shell
@@ -42,7 +42,7 @@ export default function ClaudeArtifacts() {
         ) : folders.length ? (
           <div className="fhb-grid">
             {folders.map((f) => (
-              <ClaudeSessionFolderCard key={f.path} path={f.path} />
+              <FolderPreviewCard key={f.path} path={f.path} />
             ))}
           </div>
         ) : (

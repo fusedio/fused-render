@@ -1,16 +1,19 @@
 // Crumb bar, in three zones left to right:
 //
-//   path    ★ bookmark button, then the crumbs (or the editable path field)
+//   path    ★ bookmark button, the crumbs (or the editable path field), then the
+//           path `⋮` — reveal, copy path, and (a file only) the two splits
 //   mode    the `#topbar-mode-slot` portal target — Preview renders the view's
-//           conditional primary action and the shared mode control into it
+//           conditional primary action, the shared mode control and the preview
+//           sidebar's toggle into it
 //   search  over a FOLDER only: the listing's search row portals in here, so
 //           its column has one header strip instead of two (search-slot.ts)
-//   layout  a hairline rule, then split-right / split-down / `···`
 //
 // The Finder and split glyphs used to live INSIDE the crumb strip, welded to
 // the last path segment: the path zone was not only the path, and "open in
-// Finder" (rare) sat at the same weight as the splits (frequent). Reveal and
-// "Copy path" moved into the `···` overflow; the splits form the layout group.
+// Finder" (rare) sat at the same weight as the splits (frequent). They then
+// separated — reveal/copy into a `···` overflow, the splits into a layout zone
+// of their own at the bar's far right — and have since converged again, as
+// NAMED ITEMS in the one path menu (see LayoutZone's epitaph below).
 //
 // Rendered by every view: path crumbs for listing/preview, a static label for
 // the layout modes (LM-11 / TM-9 — ★/update still operate on currentUrl()).
@@ -37,7 +40,6 @@ import { resolveCloudUrl } from "@platform/lib/api";
 import { pushToast } from "@platform/lib/toast";
 import { encodePaneSegment, splitShellSearch } from "@platform/lib/layout-codec";
 import { panelUrl } from "@apps/explorer/Panel";
-import { SplitRightIcon, SplitDownIcon } from "@platform/ui/SplitIcons";
 import { PathOverflow } from "@apps/explorer/BarMenu";
 import { springDisarms } from "@apps/explorer/listing/drag-drop";
 import { cameFromSelParam } from "@apps/explorer/listing/selection";
@@ -214,44 +216,18 @@ function FolderSearchSlot() {
   return <div className="crumb-search-slot" ref={ref} />;
 }
 
-// Split entry buttons: the bar's layout zone, in the same position in every
-// state so the hand learns where layout lives. Nothing here for a folder at
-// all (listing/folder-chrome.ts says which state we are in): the splits are
-// the pair that make least sense over a view that already IS a split, and with
-// them gone the rule and the hairline would be a zone with nothing in it.
-// The path `···` used to end this zone; it now travels with the path itself
-// (see the crumb strip below), which is what it acts on.
-function LayoutZone({ fsPath }: { fsPath: string }) {
-  const claimed = useSyncExternalStore(subscribeFolderChrome, folderChromeClaimed, () => false);
-  if (claimed) return null;
-  return (
-    <>
-      <span className="bar-rule" aria-hidden="true" />
-      <div className="bar-zone">
-        <button
-          type="button"
-          id="split-right-btn"
-          className="bar-ctl bar-ctl-icon"
-          title="Open this view in panel mode, split right"
-          aria-label="Split right"
-          onClick={() => enterPanel(fsPath, "row")}
-        >
-          <SplitRightIcon />
-        </button>
-        <button
-          type="button"
-          id="split-down-btn"
-          className="bar-ctl bar-ctl-icon"
-          title="Open this view in panel mode, split down"
-          aria-label="Split down"
-          onClick={() => enterPanel(fsPath, "col")}
-        >
-          <SplitDownIcon />
-        </button>
-      </div>
-    </>
-  );
-}
+// The bar's LAYOUT ZONE is gone, and with it the hairline that made it read as
+// a zone. It held exactly two controls — split-right and split-down, for a file
+// preview only (a folder never had them: the splits make least sense over a view
+// that already IS a split) — as unlabelled filled-rectangle glyphs pinned to the
+// far right of the window, an inch of empty bar away from the path they act on.
+// Both are items in the path `⋮` now (BarMenu's PathOverflow), where they sit
+// beside "Open in Finder"/"Copy path", carry their names, and travel with the
+// path itself. `enterPanel` below is unchanged and is still what they call.
+//
+// Which state we are in — file or folder — is `listing/folder-chrome.ts`'s
+// claim, read where the menu is rendered rather than by a zone component of its
+// own.
 
 // A pending copy/cut is shown ONLY on the affected rows (Listing.tsx marks them
 // with a badge and edge bar). There is deliberately no global chip here: the
@@ -454,6 +430,10 @@ export function Breadcrumb({
   const captureBar = (el: HTMLElement | null) => {
     if (el) barRef.current = el.parentElement;
   };
+  // Folder or file? The listing claims the bar's chrome over a folder
+  // (listing/folder-chrome.ts) — the one thing that decides whether the path
+  // menu offers the splits (see PathOverflow below).
+  const folderClaimed = useSyncExternalStore(subscribeFolderChrome, folderChromeClaimed, () => false);
   const [editing, setEditing] = useState(false);
   // Set by the click-away below for the rest of its gesture — see the bar's
   // click handler, which must not treat that same click as "open the field".
@@ -707,17 +687,23 @@ export function Breadcrumb({
           {pieces}
         </div>
       )}
-      {/* The path `···` — "Open in Finder", "Copy path" — sits immediately
-          right of the name it acts on, in every view. It used to end the bar's
-          layout zone for a file and the search row for a folder: two homes,
-          both of them the bar's far right, neither of them next to the thing
-          being opened or copied. The crumb strip stops growing (explorer.css)
-          so this stays against the path rather than drifting to the edge. */}
-      <PathOverflow fsPath={fsPath} />
+      {/* The path `⋮` — "Open in Finder", "Copy path", and for a FILE the two
+          split-entry actions — sits immediately right of the name it acts on, in
+          every view. It used to end the bar's layout zone for a file and the
+          search row for a folder: two homes, both of them the bar's far right,
+          neither of them next to the thing being opened or copied. The crumb
+          strip stops growing (explorer.css) so this stays against the path
+          rather than drifting to the edge.
+          No splits over a FOLDER (the chrome claim is how we know): they make
+          least sense over a view that already is a split, which is why the old
+          layout zone hid itself there too. */}
+      <PathOverflow
+        fsPath={fsPath}
+        onSplit={folderClaimed ? undefined : (dir) => enterPanel(fsPath, dir)}
+      />
       <UpdateBookmarkButton />
       <TopbarActionsSlot />
       <FolderSearchSlot />
-      <LayoutZone fsPath={fsPath} />
     </>
   );
 }

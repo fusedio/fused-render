@@ -159,6 +159,114 @@ def test_a_package_directory_is_recorded_but_not_descended(tmp_path):
     assert subs == []            # and nothing below it is queued
 
 
+def _repo(root, name="proj"):
+    """A repo whose .git holds the loose files git actually puts there plus a
+    subdirectory, so "recorded but not listed" is distinguishable from "pruned as
+    an ignored tree" (an ignore rule prunes the subdir but NOT the loose files)."""
+    proj = root / name
+    git = proj / ".git"
+    (git / "objects" / "ab").mkdir(parents=True)
+    (git / "objects" / "ab" / "cdef").write_text("blob", encoding="utf-8")
+    for loose in ("HEAD", "config", "index"):
+        (git / loose).write_text("x", encoding="utf-8")
+    (proj / "main.py").write_text("print()", encoding="utf-8")
+    return proj, git
+
+
+def test_dot_git_is_recorded_as_a_leaf_and_never_listed(tmp_path):
+    """Repo-ness has to be a queryable index fact (routers/git_repos.py reads
+    these rows instead of stat-ing every indexed directory), and it has to cost
+    one row: NOT the ~15 loose files directly inside `.git`, which is exactly what
+    an ignore rule would have left behind, and certainly not the object
+    database."""
+    proj, git = _repo(tmp_path)
+    rules, guard = IgnoreRules([]), _guard(tmp_path)
+
+    # the repo's own scan offers .git onward — that is how the row gets made
+    kind, payload, subs = scan_dir_once(str(proj), {}, rules, guard)
+    assert kind == "s"
+    assert str(git) in subs
+    assert [r[2] for r in payload[1]] == ["main.py"]
+
+    # and .git itself is one row with nothing in it and nothing below it
+    kind, payload, subs = scan_dir_once(str(git), {}, rules, guard)
+    assert kind == "s"           # recorded
+    assert payload[1] == []      # no HEAD/config/index rows
+    assert payload[4] == 0
+    assert subs == []            # objects/ never queued
+
+
+def test_a_user_ignore_entry_cannot_delete_the_dot_git_row(tmp_path):
+    """An ignore entry buys a scan two things: no descent and no row. For a leaf
+    dir the first is already true, so all it can still do is delete the row that
+    IS the repo-detection fact — silently emptying the homepage's Repos tab to
+    save one stat. `.git` shipped in the default ignore list once, so old saved
+    configs really do name it."""
+    proj, git = _repo(tmp_path)
+    rules, guard = IgnoreRules([".git"]), _guard(tmp_path)
+    assert str(git) in scan_dir_once(str(proj), {}, rules, guard)[2]
+    # ... and it is still opaque: kept, not descended
+    assert scan_dir_once(str(git), {}, rules, guard)[2] == []
+
+
+def test_an_ignored_dot_git_row_SURVIVES_an_incremental_rescan(tmp_path):
+    """The data-loss sequence, end to end: a full rescan writes the `.git` rows,
+    then an incremental pass over a config that NAMES `.git` must not purge them.
+
+    keep_subdirs alone was not enough. The cache filter (load_dir_cache) decides
+    what an incremental pass carries forward and the journal gate decides what it
+    re-adds; with the leaf exemption in only the walk gate, the rows the first scan
+    wrote were dropped by the second — so a user whose Repos tab worked lost it on
+    the next scan. Worse than a stale list: actively purged."""
+    src = tmp_path / "src"
+    src.mkdir()
+    _tree(src)
+    _repo(src, "proj")
+    cfg = _cfg(tmp_path, ignore=["node_modules", ".git"])
+
+    _run(cfg, str(src))
+    git_dir = str(src / "proj" / ".git")
+    dirs = pq.read_table(cfg.dirs_parquet).column("dir").to_pylist()
+    assert git_dir in dirs, "the full rescan should record the leaf row"
+
+    # ...and the incremental pass must keep it. Both gates are exercised: the
+    # cache filter (whether it is carried forward) and the journal/walk gate
+    # (whether it is re-added).
+    _run(cfg, str(src), run_name="run2")
+    dirs2 = pq.read_table(cfg.dirs_parquet).column("dir").to_pylist()
+    assert git_dir in dirs2, "an incremental pass purged the .git row"
+
+
+def test_load_dir_cache_keeps_an_ignored_leaf_but_drops_a_real_ignored_tree(tmp_path):
+    """The cache filter is the sharpest edge: a row missing here is a row the next
+    compaction deletes. Leaf exempt, ancestors still vetoing."""
+    import pyarrow.parquet as pqmod
+
+    src = tmp_path / "src"
+    src.mkdir()
+    _tree(src)
+    _repo(src, "proj")
+    cfg = _cfg(tmp_path, ignore=["node_modules", ".git"])
+    _run(cfg, str(src))
+
+    cache = load_dir_cache(cfg, str(src), pqmod)
+    assert str(src / "proj" / ".git") in cache          # leaf: exempt
+    assert str(src / "node_modules") not in cache       # ordinary ignore: gone
+
+
+def test_keep_subdirs_still_honors_ignores_for_non_leaf_dirs(tmp_path):
+    """The leaf override is narrow — it decides the verdict on the leaf dir
+    ITSELF and changes nothing else, including for a repo sitting inside an
+    ignored tree (the walk never reaches its parent to offer it)."""
+    guard = _guard(tmp_path)
+    rules = IgnoreRules([".git", "node_modules"])
+    assert keep_subdirs([str(tmp_path / "node_modules")], rules, guard) == []
+    # SKIP_DIRS and the mount guard keep their veto over a leaf dir too
+    assert keep_subdirs(["/dev"], rules, guard) == []
+    blocked = MountGuard(mounts_dir=str(tmp_path / "m"))
+    assert keep_subdirs([str(tmp_path / "m" / "s3" / ".git")], rules, blocked) == []
+
+
 def test_keep_subdirs_drops_skip_dirs_ignored_and_mount_paths(tmp_path):
     guard = MountGuard(mounts_dir=str(tmp_path / "mounts"))
     subs = [str(tmp_path / "ok"), str(tmp_path / "mounts" / "s3"),
@@ -286,7 +394,22 @@ def test_a_second_run_carries_unchanged_directories_forward(tmp_path):
                for e in _events(run_dir))
 
 
-def test_a_rescan_picks_up_a_new_file(tmp_path):
+def test_a_rescan_picks_up_a_new_file(tmp_path, monkeypatch):
+    """The mtime-driven incremental path: `sub`'s mtime moved, so it is rescanned
+    and the new file lands.
+
+    The FSEvents fast path is pinned OFF, and that is load-bearing rather than
+    tidiness. FSEvents is a machine-global, ASYNCHRONOUS journal: with the journal
+    live, run 2 takes the fast path and visits only what the OS has already
+    reported — so if the report for `sub` has not landed yet, every cached row is
+    carried forward and this assertion fails with no bug present. Measured: 4 runs
+    in 10 under `-n auto` once neighbouring tests in this file started writing
+    enough files to make the journal lag. The fsevents path has its own tests
+    (test_the_fsevents_path_does_not_walk_into_a_package), which pin `hint` for the
+    same reason in the other direction."""
+    from fused_render.index import fsevents
+
+    monkeypatch.setattr(fsevents, "hint", lambda *a, **k: None)
     src = tmp_path / "src"
     src.mkdir()
     _tree(src)
@@ -298,6 +421,35 @@ def test_a_rescan_picks_up_a_new_file(tmp_path):
     assert _summary(run_dir)["msg"] == "complete"
     part = os.path.join(cfg.files_dir, read_manifest(cfg)["partitions"][0]["file"])
     assert str(src / "sub" / "new.txt") in pq.read_table(part).column("path").to_pylist()
+
+
+def test_a_missing_applied_fingerprint_forces_a_full_rescan(tmp_path):
+    """An index with no `ignore_applied.json` must NOT be reconciled
+    incrementally, and this is not a theoretical tidiness point.
+
+    Absent used to count as "no change", which was sound while every rule only
+    ever REMOVED rows: dropping an ignore pattern is self-purging through the
+    filtered cache. A rule that ADDS rows breaks it — a `.git` row appears only by
+    visiting the repo directory, and an incremental scan skips exactly that
+    directory because its mtime is unchanged. The run would then stamp the new
+    fingerprint over an index that never grew the rows, and /api/git-repos, which
+    trusts that stamp, would report zero repositories forever.
+    """
+    src = tmp_path / "src"
+    src.mkdir()
+    _tree(src)
+    cfg = _cfg(tmp_path, ignore=["node_modules"])
+    _run(cfg, str(src))
+    # a repo appears, and the fingerprint is lost (an index predating the file)
+    (src / "proj" / ".git").mkdir(parents=True)
+    os.remove(cfg.applied_ignore_json)
+
+    run_dir = _run(cfg, str(src), run_name="run2")
+    msgs = [e.get("msg") for e in _events(run_dir)]
+    assert "no applied rules fingerprint - full rescan" in msgs
+    assert "scanning (full)" in msgs
+    dirs = pq.read_table(cfg.dirs_parquet).column("dir").to_pylist()
+    assert str(src / "proj" / ".git") in dirs
 
 
 def test_changing_the_ignore_rules_forces_a_full_rescan(tmp_path):

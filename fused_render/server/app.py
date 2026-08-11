@@ -48,6 +48,7 @@ from fused_render.server.routers.env import router as env_router
 from fused_render.server.routers.export import router as export_router
 from fused_render.server.fs_mutate import router as fs_mutate_router
 from fused_render.server.routers.fs_read import router as fs_read_router
+from fused_render.server.routers.git_repos import router as git_repos_router
 from fused_render.server.routers import index as index_routes
 from fused_render.server.routers.jobs import router as jobs_router
 from fused_render.server.routers.local_models import router as local_models_router
@@ -325,9 +326,14 @@ def create_app(start_dir: str) -> FastAPI:
     # Claude Code project folders for the Explorer homepage's "Claude
     # sessions" tab (routers/claude_sessions.py) — read-only, no auth guard.
     app.include_router(claude_sessions_router)
+    # Git repositories on this machine for the Explorer homepage's "Repos" tab
+    # (routers/git_repos.py) — candidates come from the file index, never a
+    # fresh walk, so it cannot touch a mount. Read-only, no auth guard.
+    app.include_router(git_repos_router)
     # What the Hugging Face cache holds on this machine, for the sidebar's
-    # "Local models" page (routers/local_models.py) — read-only, no auth guard,
-    # and it never downloads or evicts anything.
+    # "Local models" page (routers/local_models.py). The reads are unguarded;
+    # its one destructive POST (delete a repo/revision) carries the D3 X-Fused
+    # guard. It never downloads anything.
     app.include_router(local_models_router)
     # Claude Code CONFIG editing for the Preferences page's "Claude config" tab
     # (routers/claude_config.py): one dispatch POST over the

@@ -332,10 +332,13 @@ async def api_fs_walk(request: Request, path: str, hidden: str = "0", stream: st
     # disconnect without stalling the event loop.
     #
     # `hidden=1` (explicit intent: the user typed a dot-leading query)
-    # includes dot-files and descends into dot-dirs. WALK_IGNORE_DIRS and
-    # gitignore pruning apply regardless — those trees are noise, not
-    # "hidden data", and letting hidden=1 descend into .git/node_modules
-    # would flood the results with machine-managed junk.
+    # includes dot-files and descends into dot-dirs. WALK_IGNORE_DIRS,
+    # the leaf rules and gitignore pruning apply regardless — those trees are
+    # noise, not "hidden data", and letting hidden=1 descend into
+    # node_modules or a repo's .git would flood the results with
+    # machine-managed junk. `.git` is emitted as ONE undescended entry (it is a
+    # leaf name, so the index has a row for it and the two corpora agree);
+    # everything under it stays out either way.
     #
     # `stream=1` returns NDJSON: zero or more `{"entries": [...]}` batch
     # lines (WALK_BATCH_SIZE each) followed by exactly one terminal

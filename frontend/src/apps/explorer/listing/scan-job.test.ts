@@ -196,10 +196,11 @@ test("finding nothing yet is not the same as being finished", () => {
 test("the consumer clears its pending state only on a FINAL publish", () => {
   // Source guard: the flag exists on the publish, and dropping it on the way
   // into state is exactly the regression (the hook used to record only
-  // {q, items}, so any publish read as settled).
-  const hook = readFileSync(join(import.meta.dir, "useWalkSearch.ts"), "utf8");
+  // {q, items}, so any publish read as settled). There is ONE consumer now —
+  // both search boxes share useRankedScan — so this guards one file, not two.
+  const hook = readFileSync(join(import.meta.dir, "useRankedScan.ts"), "utf8");
   expect(hook).toMatch(/onPublish:\s*\(result,\s*done\)\s*=>\s*setScanned\(\{\s*\.\.\.result,\s*done\s*\}\)/);
-  expect(hook).toMatch(/scanPending\s*=\s*searching\s*&&\s*\(scanned\.q\s*!==\s*q\s*\|\|\s*!scanned\.done\)/);
+  expect(hook).toMatch(/pending\s*=\s*scanned\.q\s*!==\s*q\s*\|\|\s*!scanned\.done/);
 });
 
 test("progress is reported per slice so a cancelled scan can resume", () => {

@@ -21,21 +21,18 @@ import {
 } from "@platform/lib/index-freshness";
 import { replaceSearch } from "@platform/lib/router";
 import { nextHeldHits, resolveDisplayedHits, type QueryTagged } from "@platform/lib/search-hold";
-import { startScanJob } from "@apps/explorer/listing/scan-job";
+import { useRankedScan } from "@apps/explorer/listing/useRankedScan";
 import { shouldReconcile } from "@apps/explorer/listing/revalidate";
 import { capHits } from "@apps/explorer/listing/result-cap";
 import {
   IDLE_WALK,
   RERANK_COMMIT_MS,
   SCAN_DEBOUNCE_MS,
-  SCAN_IMMEDIATE_MAX,
-  SCAN_SLICE,
   STREAM_FLUSH_MS,
   URL_SYNC_MS,
   type SearchHit,
   type WalkState,
 } from "@apps/explorer/listing/types";
-import { queryWantsHidden, rankCompare, scoreEntries } from "@apps/explorer/listing/search";
 
 function currentQuery(): string {
   return new URLSearchParams(location.search).get("q") || "";
@@ -292,112 +289,28 @@ export function useWalkSearch(fsPath: string, refresh: number, urlSync = true) {
     }, URL_SYNC_MS);
   };
 
-  // Incremental-scoring cache for the corpus. As long as the query,
-  // hidden-intent and entries array are unchanged, only entries appended
-  // since `scored` get fuzzy-matched and merged into the previous ranked
-  // list — so a stream flush near the tail of a 200k walk costs one small
-  // scan, not a re-scan of everything. Any change to query/hidden/array
-  // starts a fresh scan. It also carries a chunked scan's PROGRESS, so a job
-  // cancelled mid-flight (by the next stream flush) resumes instead of
-  // starting over.
-  const scoreCache = useRef<{
-    q: string;
-    showHidden: boolean;
-    entries: WalkEntry[] | null;
-    scored: number; // how many of `entries` have been scored already
-    ranked: SearchHit[];
-  }>({ q: "", showHidden: false, entries: null, scored: 0, ranked: [] });
-
-  // The scan's published output, tagged with the query it was computed for.
-  // That tag is the whole reason this is not re-derived at render time: see
-  // lib/search-hold, and scan-job's header.
-  // `done` distinguishes "this is the whole answer for q" from "this is what
-  // the scan has found so far". Without it an intermediate slice — or the
-  // empty publish for a folder with no corpus — read as a settled result, and
-  // a zero-hit moment mid-scan rendered a confident "No matches".
-  const [scanned, setScanned] = useState<QueryTagged<SearchHit> & { done: boolean }>(
-    () => ({ q: "", items: [], done: true }),
-  );
-
-  const showHidden = queryWantsHidden(q);
+  // The corpus to rank, once this generation's walk has entries to offer.
   const corpus =
     searching && (validWalk.status === "ok" || validWalk.status === "streaming")
       ? validWalk.entries
       : null;
-  // Stream flushes reuse the same entries ARRAY (it is appended in place), so
-  // the array identity cannot tell the job that more arrived — its length can.
-  const corpusLen = corpus ? corpus.length : 0;
 
-  // The scan itself. An effect, not a memo: a full scan of an index-backed
-  // corpus is far too much work to do synchronously on a keystroke, and a
-  // memo cannot be interrupted once it starts (useDeferredValue only buys the
-  // cheap echo render before it). scan-job slices it, yields between slices,
-  // and is cancelled here the moment the query, hidden-intent or corpus moves.
-  useEffect(() => {
-    if (corpus === null) {
-      // No corpus to scan (the walk is idle, streaming its first batch, or
-      // errored). No scan is in flight, so this IS the final answer for q —
-      // what is outstanding is the walk, which validWalk reports on its own.
-      setScanned((prev) =>
-        prev.q === q && prev.items.length === 0 && prev.done
-          ? prev
-          : { q, items: [], done: true },
-      );
-      return;
-    }
-    const cache = scoreCache.current;
-    const resumable =
-      cache.entries === corpus && cache.q === q && cache.showHidden === showHidden;
-    if (!resumable) {
-      scoreCache.current = { q, showHidden, entries: corpus, scored: 0, ranked: [] };
-    }
-    const live = scoreCache.current;
-    return startScanJob(
-      {
-        q,
-        showHidden,
-        entries: corpus,
-        from: live.scored,
-        ranked: live.ranked,
-        sliceSize: SCAN_SLICE,
-        immediateMax: SCAN_IMMEDIATE_MAX,
-        debounceMs: SCAN_DEBOUNCE_MS,
-        commitMs: RERANK_COMMIT_MS,
-      },
-      {
-        score: scoreEntries,
-        sort: (hitsToSort) => hitsToSort.sort(rankCompare),
-        now: Date.now,
-        setTimer: (fn, ms) => window.setTimeout(fn, ms),
-        clearTimer: (id) => window.clearTimeout(id),
-        onPublish: (result, done) => setScanned({ ...result, done }),
-        onProgress: (n) => {
-          live.scored = n;
-        },
-      },
-    );
-  }, [q, showHidden, corpus, corpusLen]);
+  // The scan itself — incremental, sliced and cancellable, shared with the
+  // explorer home page's box (listing/useRankedScan carries the reasoning).
+  const { ranked, pending } = useRankedScan(corpus, q, SCAN_DEBOUNCE_MS);
 
-  // What the rest of the hook consumes. Rows are dropped unless they were
-  // computed for the CURRENT query, so a scan still catching up never shows
-  // the previous query's matches — the same rule search-hold enforces
-  // downstream, applied at the source.
+  // What the rest of the hook consumes.
   // Relevance (the fuzzy rank) is the only order search results have. Column
   // sorting used to be offered here and was withdrawn with the Size/Modified
   // headers: the hit set is capped and, mid-walk, partial — a by-date or
   // by-size ordering over it reads as an answer to a question the data cannot
   // answer, and the search UI already warns the coverage is approximate.
-  const hits = useMemo(() => {
-    if (!searching || scanned.q !== q) return [];
-    return scanned.items;
-  }, [searching, scanned, q]);
+  const hits = useMemo(() => (searching ? ranked : []), [searching, ranked]);
 
   // True while the scan for the current query has not published yet — the
   // spinner and the dimmed-rows treatment key off this, so it has to mean
   // "an answer is still coming", not merely "the deferred value lags".
-  // Pending until a FINAL publish for the current query lands. Cleared by the
-  // tag alone, an intermediate slice would end the "Searching…" state early.
-  const scanPending = searching && (scanned.q !== q || !scanned.done);
+  const scanPending = searching && pending;
   const isStale = deferredStale || scanPending;
 
   // --- Streaming re-rank throttle (B4) --------------------------------------

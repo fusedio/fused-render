@@ -155,13 +155,24 @@ def test_walk_app_bundle_is_leaf(tmp_path):
     assert not any(r.startswith("Cool.app/") for r in rels)
 
 
-def test_walk_hidden_still_prunes_git_and_venv(tmp_path):
-    # .git/.venv are machine-managed noise, pruned even under hidden=1 —
-    # otherwise a ".py" extension search floods with .git object files.
+def test_walk_hidden_never_yields_the_contents_of_git_or_venv(tmp_path):
+    """The invariant: under hidden=1, NOTHING inside .git or .venv surfaces —
+    otherwise a ".py" extension search floods with a repo's object files.
+
+    The two get there by different mechanisms, and the difference is deliberate.
+    `.venv` is on the shared ignore floor (WALK_IGNORE_DIRS): pruned outright, not
+    even its own name shows. `.git` is a LEAF (WALK_LEAF_DIR_NAMES): emitted as one
+    undescended entry, because the index records a `.git` dirs row for it — that
+    row is what /api/git-repos reads instead of stat-ing every indexed directory —
+    and the walk and the index must not disagree about what exists
+    (tests/test_index_ignore.py holds that parity directly). One entry per repo is
+    the entire cost; the tree below it stays out either way.
+    """
     for name in (".git", ".venv"):
         d = tmp_path / name
-        d.mkdir()
+        (d / "sub").mkdir(parents=True)
         (d / "junk.txt").write_text("x", encoding="utf-8")
+        (d / "sub" / "deep.py").write_text("x", encoding="utf-8")
     (tmp_path / ".env").write_text("x", encoding="utf-8")
     data = (
         _client(tmp_path)
@@ -170,8 +181,22 @@ def test_walk_hidden_still_prunes_git_and_venv(tmp_path):
     )
     rels = {e["rel"] for e in data["entries"]}
     assert ".env" in rels  # a real dotfile still shows
-    assert ".git" not in rels and ".venv" not in rels
+    # THE invariant: no descendant of either, at any depth.
     assert not any(r.startswith((".git/", ".venv/")) for r in rels)
+    assert ".venv" not in rels  # ignore floor: pruned, name and all
+    assert ".git" in rels       # leaf: recorded, matching the index's row
+
+
+def test_walk_default_hides_git_entirely(tmp_path):
+    """The leaf rule only decides what happens once a dot-name is in scope. With
+    the default hidden=0 — every walk the explorer makes except an explicitly
+    dot-leading query — `.git` is dropped as a dotfile before the rule is ever
+    consulted, so making it a leaf did not put it in front of anyone."""
+    (tmp_path / ".git").mkdir()
+    (tmp_path / "keep.txt").write_text("x", encoding="utf-8")
+    data = _client(tmp_path).get("/api/fs/walk", params={"path": str(tmp_path)}).json()
+    rels = {e["rel"] for e in data["entries"]}
+    assert rels == {"keep.txt"}
 
 
 def test_walk_symlink_dir_not_descended(tmp_path):

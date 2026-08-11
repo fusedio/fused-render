@@ -68,10 +68,19 @@ def scan_roots(cfg: IndexConfig, start_dir: str | None = None) -> list:
     one project answers almost no search the explorer wants to ask. `start_dir`
     is accepted so a caller can express a narrower intent, but it is not used
     as a fallback — an index that silently follows whichever folder the app was
-    opened on would give different answers per window."""
+    opened on would give different answers per window.
+
+    Roots come back in `runner.canonical_root` form — the same spelling
+    `runner.start` files every store key under. This function's output is not only
+    started but COMPARED against those keys (the stale-fingerprint scan below,
+    freshness.note_folder_opened, routers/git_repos._usable), and the user's raw
+    configured spelling is not the stored one: `~/proj` never matches
+    `/Users/me/proj`, and on Windows `expanduser("~")` returns `C:\\Users\\me`
+    against a stored `C:/Users/me`, so every lookup misses on that platform and the
+    index reads as permanently unreconciled."""
     if cfg.roots:
-        return list(cfg.roots)
-    return [os.path.expanduser("~")]
+        return [runner.canonical_root(r) for r in cfg.roots]
+    return [runner.canonical_root("~")]
 
 
 def run_startup_scan(start_dir: str | None = None) -> None:

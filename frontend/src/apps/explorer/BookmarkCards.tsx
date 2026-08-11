@@ -380,11 +380,16 @@ export function RecentPreviewCard({
   );
 }
 
-// A folder holding Claude Code sessions, in the same card shell as a
-// bookmark — header (icon + name over path) over the same folder "stack"
-// preview a directory bookmark gets (FolderStack, above). Clicking opens the
-// folder itself in the Explorer, not the Sessions app.
-export function ClaudeSessionFolderCard({ path }: { path: string }) {
+// A plain folder, in the same card shell as a bookmark — header (icon + name
+// over path) over the same folder "stack" preview a directory bookmark gets
+// (FolderStack, above). Clicking opens the folder itself in the Explorer.
+//
+// Deliberately knows nothing about WHY the folder is being listed: the homepage's
+// Artifacts tab points it at Claude Code project folders and its Repos tab at
+// git repo roots, and both want exactly "the folder preview the other tabs
+// show". Any per-tab metadata (a branch, a session time) would belong in the
+// card's header, so it would have to arrive as a prop — none does, on purpose.
+export function FolderPreviewCard({ path }: { path: string }) {
   return (
     <a
       className="fhb-card"

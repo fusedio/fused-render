@@ -27,6 +27,25 @@ from fused_render.shell import storage
 WORKER_MODULE = "fused_render.index.worker"
 
 
+def canonical_root(root: str) -> str:
+    """The canonical spelling of a scan root: expanded, absolute, forward slashes.
+
+    THE one form, because a root is a KEY, not just a path. It is what `start`
+    records in the run spec, so it is what `scan.run_scan` hands to
+    `save_applied_ignore` and `_record_scan` — meaning every fingerprint, debounce
+    entry and freshness comparison in the store is filed under this spelling. A
+    caller that looks one of those up with the user's raw spelling misses:
+    `~/proj` and `/Users/me/proj` are the same root, and on Windows
+    `os.path.expanduser("~")` hands back `C:\\Users\\me` while this stores
+    `C:/Users/me`, so EVERY lookup misses on that platform.
+
+    Exists as a function rather than a line inside `start` for exactly that
+    reason: the bug is two spellings drifting apart, so there is one definition
+    and callers that need to compare (`routers/index.scan_roots`) use it too.
+    Idempotent, so applying it to an already-canonical root is free and safe."""
+    return norm(os.path.abspath(os.path.expanduser((root or "~").strip())))
+
+
 def _mounts_dir() -> str:
     """Indirection so a test can point the mount guard somewhere harmless."""
     from fused_render.shell.mounts import mounts_dir
@@ -114,7 +133,7 @@ def start(cfg: IndexConfig, root: str, full: bool = False) -> dict:
     from its own spec — let a pre-edit run finish last and stamp the OLD rules
     over the post-edit run's, leaving the root stale indefinitely. The store
     lock serializes the two compactions; none of that is what it protects."""
-    root = norm(os.path.abspath(os.path.expanduser((root or "~").strip())))
+    root = canonical_root(root)
     # The guard runs BEFORE any kernel syscall on the caller's path: it is
     # pure string work against the mount records, while os.path.isdir on a
     # path under a wedged NFS mount blocks the request thread indefinitely

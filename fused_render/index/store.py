@@ -16,6 +16,7 @@ import os
 import time
 
 from fused_render.index.config import IndexConfig
+from fused_render.index.ignore import ignored_for_index
 
 
 # How often the Windows lock re-tries. Short enough to hand the lock over
@@ -224,7 +225,14 @@ def load_dir_cache(cfg: IndexConfig, root: str, pq) -> dict:
     """dir -> (mtime_ns, n_files, n_subdirs) for cached dirs under `root`,
     from dirs.parquet. Returns {} when there is no usable cache (missing file
     or a pre-mtime index). Ignored subtrees are filtered out here, which is
-    what makes a newly-ignored folder self-purging (specs/scan-ignore.md §3)."""
+    what makes a newly-ignored folder self-purging (specs/scan-ignore.md §3).
+
+    Self-purging is why this filter is also the sharpest edge in the whole ignore
+    story: a row missing from this cache is a row the next compaction drops. So it
+    asks `ignored_for_index`, the one predicate all three gates share, rather than
+    the raw rules — otherwise a LEAF dir the user's ignore list names (a `.git`,
+    for every config saved before it left the default list) is written by a full
+    rescan and then deleted by the very next incremental one."""
     if not os.path.exists(cfg.dirs_parquet):
         return {}
     names = pq.read_schema(cfg.dirs_parquet).names
@@ -241,7 +249,8 @@ def load_dir_cache(cfg: IndexConfig, root: str, pq) -> dict:
     for d, m, n, ns in zip(t.column("dir").to_pylist(),
                            t.column("mtime_ns").to_pylist(),
                            t.column("n_files").to_pylist(), subs):
-        if (d == root or d.startswith(prefix)) and not rules.is_ignored_tree(d):
+        if ((d == root or d.startswith(prefix))
+                and not ignored_for_index(rules, d, tree=True)):
             cache[d] = (m, n, ns)
     return cache
 

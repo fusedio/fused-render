@@ -240,6 +240,136 @@
   z-index: 1;
 }
 
+/* ---- the preview SIDEBAR (`_side`) ---------------------------------------
+   A file preview's right-hand column: the companion modes (`claude`,
+   `history`) beside the content pane instead of in place of it
+   (apps/explorer/PreviewSidebar.tsx).
+
+   PAGE-LEVEL, and that is the layout: both items below are flex children of
+   `.stat-split` (explorer.css), the row that holds this view's whole left column
+   — crumb bar AND content — as its other child. So the divider runs the full
+   height of the window, the crumb bar stops at it, and this column's header row
+   is the top of the window on its side. Rendered here by a portal from Preview
+   into StatView's slot (preview-side-slot.ts), which also means nothing above
+   `.preview-body` is restructured when the sidebar opens — the content iframe is
+   never re-parented, and so never reloaded.
+
+   The divider is the listing's, to the pixel (.listing-divider): a 5px
+   transparent strip with negative margins so the handle overhangs both
+   neighbours, painting the hairline only on hover/drag. Two draggable seams in
+   one app must not feel like two different controls. */
+.preview-side-divider {
+  flex: 0 0 5px;
+  cursor: col-resize;
+  background: transparent;
+  margin: 0 -2px;
+  z-index: 2;
+  /* The drag is pointer-captured; without this, touch scrolling fights it. */
+  touch-action: none;
+}
+
+.preview-side-divider:hover,
+.preview-side-divider.dragging {
+  background: var(--border);
+}
+
+/* An iframe is a separate document and would swallow the captured pointer
+   stream — inert BOTH sides for the drag's duration. */
+.stat-split:has(.preview-side-divider.dragging) iframe {
+  pointer-events: none;
+}
+
+/* The column, full height of the window. Its flex-basis is set inline in pixels
+   (PreviewSidebar): a sidebar's job is to hold a chat composer and a message
+   column legibly, which is a width, not a share of the window — hence px here
+   where the listing's pane is a fraction. The min-width is the same floor the
+   drag clamps to, and backstops a window resize that narrows the row under an
+   already-sized column.
+   `position: relative` anchors the seam below. */
+.preview-side {
+  flex: 0 0 auto;
+  min-width: 280px;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-alt);
+  position: relative;
+}
+
+/* The seam between the two columns, and where it STOPS — the listing pane's rule
+   (.listing-pane-slot::before), for the reason written out there: the two header
+   strips are the same height, background and bottom hairline precisely so they
+   read as ONE bar across the window, and a border-left running the full height
+   would cut that bar in two boxes. So the line starts where the CONTENT does.
+   The drag target is untouched — the divider is a separate full-height flex item,
+   transparent until hover. Only the painted line is short. */
+.preview-side::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: var(--topbar-h);
+  bottom: 0;
+  width: 1px;
+  background: var(--border);
+  pointer-events: none;
+}
+
+/* The column's own top strip, and it must match the crumb bar across the seam
+   the way the listing pane's header does (.pane-header, explorer.css): same
+   --topbar-h, same vertical padding, same hairline. The two are one bar across
+   the window, split by the divider.
+
+   Two items, at opposite ends: the close chevron leads, on the seam the column
+   collapses toward, and the mode control is packed to the far end the way the crumb
+   bar's own controls are. That far end is `.side-header-tail` (explorer.css), the
+   ONE auto margin the two side-column headers share — so the right-hand end holds
+   whichever of the two things renders there (the ModeMenu, or the flat
+   .preview-side-name label a one-companion file gets) without either needing a rule
+   of its own, and the strip cannot be thrown off by what does or does not render at
+   its left end. The explicit `height` is what stands the bar up; same dependency,
+   same reason, as .pane-header. */
+.preview-side-header {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 8px;
+  padding: var(--topbar-pad-y) 10px;
+  height: var(--topbar-h);
+  box-sizing: border-box;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-alt);
+}
+
+/* The one-companion case: the same icon and words the menu would show, with
+   nothing to click (BarMenu's ModeMenu hides itself at one entry — "one mode is
+   not a choice" — which would leave this strip empty over an unlabelled
+   document). Deliberately NOT .bar-ctl-bordered: it is a label, and a plate
+   around it would invite the click it does not take. */
+.preview-side-name {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 2px;
+  font-size: 12px;
+  line-height: 1;
+  color: var(--fg);
+  white-space: nowrap;
+}
+
+/* Fills what the header leaves. flex, not height:100%, so the header can't push
+   it past the column's bottom edge (same as .listing-pane .pane-frame). */
+.preview-side-frame {
+  flex: 1 1 auto;
+  min-height: 0;
+  width: 100%;
+  height: auto;
+  border: 0;
+  display: block;
+  background: var(--bg);
+}
+
 .metadata-card {
   margin: 24px;
   padding: 20px;

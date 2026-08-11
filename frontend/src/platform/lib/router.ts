@@ -174,12 +174,17 @@ export function navigate(
   opts?: { isDir?: boolean; mode?: string; sel?: string | null },
 ): void {
   // Navigating between files/dirs drops old view params (fresh query string) —
-  // EXCEPT the pane's chosen mode (`_panelMode`), which is sticky across
-  // DIRECTORY navigation: a folder hop keeps previewing in the mode the user
-  // picked. Reserved (`_`-prefixed) name, so no template-param shadowing
-  // concern, and directory-only for the same reason its companion was: a file
-  // view hosts a template iframe whose ancestor-climb (runtime.js D72 globals)
-  // reads every shell-URL param.
+  // EXCEPT the preview pane's own state (`_side`: which of its three modes it is
+  // showing, or that it is shut — listing/pane-side.ts), which is sticky across
+  // DIRECTORY navigation: a folder hop keeps the pane as the user left it, open on
+  // the same companion or closed. Reserved (`_`-prefixed) name, so no
+  // template-param shadowing concern, and directory-only for the same reason its
+  // predecessor was: a file view hosts a template iframe whose ancestor-climb
+  // (runtime.js D72 globals) reads every shell-URL param.
+  //
+  // It replaces `_panelMode`, which named which of the SELECTED ROW's templates
+  // the pane was previewing. That switcher is gone (pane-side.ts records the
+  // trade), so nothing writes the param and nothing would read one carried here.
   //
   // Its companion `preview` (the pane's on/off) is GONE, not merely unlisted:
   // the split is decided by the container's width now (listing/pane.ts), so
@@ -200,14 +205,14 @@ export function navigate(
   // survives the drop; a RELOAD or a copied link is where it bites, bringing
   // back the breadcrumb walking up into the snapshot cache's internals and the
   // preview pane inside the preview pane. Carried on FILE hops as well as
-  // folder ones, unlike `_panelMode`: the framed listing opens files too, and
+  // folder ones, unlike `_side`: the framed listing opens files too, and
   // the chrome the flag suppresses is the same chrome on a file view.
   const current = new URLSearchParams(location.search);
   const parts: string[] = [];
   if (current.get("snapshot") === "1") parts.push("snapshot=1");
   if (opts?.isDir === true) {
-    const panelMode = current.get("_panelMode");
-    if (panelMode !== null) parts.push("_panelMode=" + encodeURIComponent(panelMode));
+    const side = current.get("_side");
+    if (side !== null) parts.push("_side=" + encodeURIComponent(side));
   }
   // `opts.mode` picks the destination's template mode (`_mode`) — how the app
   // cards open a project folder straight into the plain app view (appEntry's

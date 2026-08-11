@@ -1,27 +1,42 @@
-// Right-hand preview pane for the directory listing (views/Listing.tsx) —
-// selection-driven: previews the listing's lead row when exactly one row is
-// selected, and shows a neutral placeholder otherwise. Reuses the app's own
-// template pipeline for FILES AND FOLDERS alike: the selection is stat'ed to
-// discover its template modes and the default embeds as the normal /render
-// iframe. A folder's `_listing` mode mounts the real shell Listing component
-// (embedded — no URL writes, no nested pane, no global keyboard); a folder
-// with a lone top-level HTML "app" additionally offers the pane-only `_app`
-// mode that renders that app in place. The header carries a mode menu so the
-// previewed mode can be switched (pane-local, transient — it never touches
-// the URL or saved viewstate). The one target with NO menu and no preview is
-// the self target (nothing selected — the folder already open on the left):
-// see its branch below. Wire-up state (pane visibility, width, the divider
-// drag) stays in Listing — this component only owns what the pane shows for a
-// given selection.
+// Right-hand preview pane for the directory listing (views/Listing.tsx), and the
+// folder's half of the companion split the file view grew (Preview.tsx /
+// PreviewSidebar.tsx). It shows ONE OF THREE things — listing/pane-side.ts owns
+// the list and the `_side` param that records which:
+//
+//   Preview  the selection-driven preview it has always been: the listing's lead
+//            row when exactly one row is selected, a neutral placeholder
+//            otherwise. Reuses the app's own template pipeline for FILES AND
+//            FOLDERS alike — the selection is stat'ed to discover its template
+//            modes and its DEFAULT embeds as the normal /render iframe (which
+//            mode that is, is listing/pane-modes.ts's call). A folder's
+//            `_listing` mode mounts the real shell Listing component (embedded —
+//            no URL writes, no nested pane, no global keyboard); a folder with a
+//            lone top-level HTML "app" gets the pane-only `_app` mode instead,
+//            rendering that app in place.
+//   Claude   the chat, chat-only, about the selected row (about the FOLDER when
+//            the selection names no single row).
+//   Git      the OPEN FOLDER's working tree. The one mode whose subject is not
+//            the selection at all — see paneKey on why that matters.
+//
+// The two companions' template entries are the FOLDER's, resolved once by Listing
+// (lib/dir-mode) and handed down: neither changes with the selection, and this
+// component remounts on every selection change.
+//
+// The header is the file sidebar's header, to the button: the way out of the
+// column at its left end, the mode pill at its right (SideChrome). Wire-up state
+// — whether there is a pane at all, its width, the divider drag, and `_side`
+// itself — stays in Listing; this component owns only what the pane shows.
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { listDir, resolveConditions, statPath } from "@platform/lib/api";
 import type { TemplateEntry } from "@platform/lib/api";
-import { navigate, replaceSearch } from "@platform/lib/router";
+import { navigate } from "@platform/lib/router";
 import { formatSize } from "@platform/lib/format";
+import { modeTitle } from "@platform/lib/mode-name";
 import { isModeVisible } from "@platform/lib/mode-visibility";
 import { iconForEntry, isAppEntry } from "@platform/ui/FileIcons";
-import { KNOWN_SENTINEL_MODES, templateModeIcon } from "@apps/explorer/ModeSwitcher";
+import { KNOWN_SENTINEL_MODES } from "@apps/explorer/ModeSwitcher";
 import { ModeMenu } from "@apps/explorer/BarMenu";
+import { SideCloseButton, paneSideIcon } from "@apps/explorer/SideChrome";
 import { useAppButton } from "@apps/explorer/lib/app-button";
 import { withNoFocus } from "@apps/explorer/listing/frame-focus";
 import { usePaneFocusGuard } from "@apps/explorer/listing/usePaneFocusGuard";
@@ -36,6 +51,12 @@ import {
   paneModeList,
   paneOpenAction,
 } from "@apps/explorer/listing/pane-modes";
+import {
+  paneSideList,
+  paneSideTarget,
+  type PaneSide,
+  type PaneSideEntries,
+} from "@apps/explorer/listing/pane-side";
 
 // The selected row, as the pane needs it. Structurally a subset of Listing's
 // RowCtx, so the lead row can be passed straight through.
@@ -53,24 +74,11 @@ export interface PaneTarget {
 // the ordering rules in listing/pane-modes.ts).
 const APP_MODE = PANE_APP_MODE;
 
-// Monochrome switcher icon for the `_app` mode — currentColor like the other
-// mode icons, so it takes the switcher's muted/active tinting instead of the
-// colored file icon (which read as an odd yellow button in the strip).
-const APP_MODE_ICON = (
-  <svg
-    viewBox="0 0 24 24"
-    width="16"
-    height="16"
-    fill="none"
-    stroke="currentColor"
-    strokeWidth="2"
-    strokeLinecap="round"
-    strokeLinejoin="round"
-  >
-    <rect x="3" y="3" width="18" height="18" rx="3" />
-    <path d="M10 8.5l6 3.5-6 3.5z" />
-  </svg>
-);
+// `_app` no longer needs a SWITCHER ICON of its own. It had one — a monochrome
+// play-in-a-box, currentColor like every other mode glyph — for the pane's own
+// per-template menu, which listed `_app` beside the row's real templates. That
+// menu is gone (see the header below): `_app` is now only ever RENDERED, as one
+// of the things `Preview` can resolve to, and nothing draws it in a bar.
 
 // The stat'ed template picture for the selected row. `conditions` is null
 // while gated entries are still resolving (CT-12 deferred verdicts).
@@ -91,13 +99,6 @@ type InfoState =
 interface AppTarget {
   name: string;
   path: string;
-}
-
-// One entry of the pane's mode menu (template modes + pane sentinels) — the
-// shape BarMenu's shared ModeMenu takes.
-interface PaneMode {
-  mode: string;
-  icon: React.ReactNode;
 }
 
 // Portal target for the open folder's primary action (pane-action-slot.ts).
@@ -121,31 +122,37 @@ function PaneActionSlot() {
 export default function ListingPreviewPane({
   row,
   selCount,
+  folder,
+  side,
+  sideEntries,
+  onSelectSide,
+  onClose,
 }: {
   // The lead row when exactly one row is selected, else null.
   row: PaneTarget | null;
   // Total selected rows, for the multi-selection placeholder.
   selCount: number;
+  // The OPEN folder — the listing on the other side of the divider. `Git`'s
+  // subject, and `Claude`'s when the selection names no single row.
+  folder: string;
+  // Which of the three the pane is showing. Already resolved against what this
+  // folder offers (pane-side's activePaneSide, in Listing), so it is always a
+  // mode `sideEntries` can actually back.
+  side: PaneSide;
+  // The FOLDER's `claude` / `git` template entries, or null where the folder does
+  // not offer the mode (lib/dir-mode). Resolved by Listing, which does not remount
+  // per selection — see the module comment.
+  sideEntries: PaneSideEntries;
+  onSelectSide: (side: PaneSide) => void;
+  // Shuts the pane (`_side=off`). The listing's search row grows the reopening
+  // half of the affordance while the pane is down — SideChrome writes the split
+  // between the two down.
+  onClose: () => void;
 }) {
   const [info, setInfo] = useState<InfoState>({ status: "loading" });
   // Lone-app probe result for a folder: undefined = still loading, null =
   // no unambiguous app. Only drives the `_app` menu entry, never a default.
   const [app, setApp] = useState<AppTarget | null | undefined>(undefined);
-  // Mode override from the mode menu, synced to the URL as `_panelMode` so
-  // the chosen pane mode SURVIVES selection switches: the component is keyed
-  // on the previewed path (Listing) and remounts per selection, but each
-  // mount re-seeds from the URL. A selection that doesn't offer the mode
-  // falls back to its default (activeMode below) while the param stays put —
-  // the next selection that does offer it picks it up again.
-  const [modeOverride, setModeOverride] = useState<string | null>(
-    () => new URLSearchParams(location.search).get("_panelMode")
-  );
-  const selectMode = (m: string) => {
-    setModeOverride(m);
-    const params = new URLSearchParams(location.search);
-    params.set("_panelMode", m);
-    replaceSearch(location.pathname + "?" + params.toString());
-  };
 
   // Stat the selection — files and folders alike carry a template mode list
   // (folders at minimum the `_listing` sentinel). The cleanup flag is the
@@ -156,8 +163,14 @@ export default function ListingPreviewPane({
   // The self target renders without asking the server anything (no modes, no
   // app probe — see its branch below), so neither fetch is started for it.
   const self = !!row?.self;
+  // Only `Preview` is about the row's own templates. Claude and Git are handed
+  // their entry by the caller and aimed by `_file`, so in those two modes the
+  // stat and the lone-app probe below would both be work for an answer nothing
+  // reads — including on every selection change, since Claude stays mounted
+  // across one.
+  const previewing = side === "preview";
   useEffect(() => {
-    if (!path || self) return;
+    if (!path || self || !previewing) return;
     let alive = true;
     setInfo({ status: "loading" });
     statPath(path).then(
@@ -190,7 +203,7 @@ export default function ListingPreviewPane({
     return () => {
       alive = false;
     };
-  }, [path, self]);
+  }, [path, self, previewing]);
 
   // Folder lone-app probe, for the `_app` mode. A truncated listing is only a
   // partial page (server cap), so a lone HTML match in it doesn't prove it is
@@ -198,7 +211,7 @@ export default function ListingPreviewPane({
   // onSingleApp guard). Errors also just drop the mode; the embedded Listing
   // surfaces the folder's real error itself.
   useEffect(() => {
-    if (!path || !isDir || self) return;
+    if (!path || !isDir || self || !previewing) return;
     let alive = true;
     setApp(undefined);
     listDir(path).then(
@@ -217,7 +230,7 @@ export default function ListingPreviewPane({
     return () => {
       alive = false;
     };
-  }, [path, isDir, self]);
+  }, [path, isDir, self, previewing]);
 
   // The "Open as app" / "Add as app" button for a previewed FOLDER that holds a
   // lone top-level page — label, click and destination decided in one shared
@@ -232,41 +245,102 @@ export default function ListingPreviewPane({
   // returns; the branches it guards are the ones that render a frame.
   const { rootRef, guardProps } = usePaneFocusGuard<HTMLDivElement>();
 
+  // --- the pane's three modes (listing/pane-side.ts) --------------------------
+  // Which are on offer follows entirely from what the FOLDER gave us: `preview`
+  // always, the companions only where the folder has an entry for them. Nothing
+  // about the selected row enters into it, which is what lets the pill hold still
+  // as the user arrows down the list.
+  const sides = paneSideList(sideEntries);
+  const sideMenu = (
+    <ModeMenu
+      entries={sides.map((m) => ({ mode: m, icon: paneSideIcon(m, sideEntries) }))}
+      active={side}
+      onSelect={(m) => onSelectSide(m as PaneSide)}
+    />
+  );
+
   // The pane's chrome strip, and EVERY state gets one — a loading skeleton, an
   // error, the metadata card and the multi-selection placeholder alike. It is
   // the TOP BAR of the right-hand column now that the pane runs the full height
   // of the window, so it has to hold its height in every state or the seam it
   // shares with the crumb bar on the left breaks (see .pane-header).
   //
-  // It used to open with a COLLAPSE button, sitting on the seam it sent the
-  // pane back to. That went with the toggle: the split is now decided by the
-  // container's width (listing/pane.ts), so a closed pane would have had no
-  // way back short of resizing the window.
+  // It opens with the way OUT of the column and it ends with the mode pill, which
+  // is the file sidebar's header exactly (SideChrome, PreviewSidebar) — the two
+  // columns are the same column over a folder and over a file, so they wear the
+  // same bar.
   //
-  // It then carried the previewed row's ICON AND NAME. Those are gone too. The
-  // pane's subject is whichever row is selected, and that row is highlighted an
-  // inch to the left with its name in the same eyeline — restating it here put
-  // the loudest text in the strip on the one fact the layout already made
-  // obvious, and (unlike the crumb bar it now sits beside) it named a thing the
-  // bar's own controls do not act on.
+  // Both of those are in `strip` rather than in `extra`, i.e. in every state: a
+  // control that vanishes while a row stats is a control the user cannot rely on,
+  // and closing the pane is not something a loading preview should be able to
+  // take away. The same reasoning already put the OPEN FOLDER's primary action
+  // here (portaled down from Preview.tsx, pane-action-slot.ts — see there for why
+  // it is not in the title bar): it belongs to the folder on the left, not to
+  // whichever row the pane happens to be showing.
   //
-  // `extra` is what the settled preview puts in it: the mode menu and the
-  // open-full-screen button, at the strip's far end.
+  // The chevron went missing for a while in between. It used to sit on the seam it
+  // sent the pane back to, and went with the toggle when visibility became purely
+  // a measurement of the container's width (listing/pane.ts) — a closed pane had
+  // no way back short of resizing the window. It is back because the reopening
+  // half is back with it, in the listing's search row.
   //
-  // It opens with the OPEN FOLDER's primary action, portaled down from
-  // Preview.tsx (pane-action-slot.ts) — see there for why it is not in the
-  // title bar. In `strip` itself, so it is present in every state: that button
-  // belongs to the folder on the left, not to whichever row the pane happens
-  // to be showing, and it must not blink out while a preview loads.
+  // The strip also used to carry the previewed row's ICON AND NAME, and those are
+  // still gone: the row is highlighted an inch to the left with its name in the
+  // same eyeline, so restating it here put the loudest text in the strip on the
+  // one fact the layout already made obvious.
+  //
+  // `extra` is what only the settled Preview puts in it — the open-full-screen
+  // button and a folder-app's primary — at the far end, after the pill.
   const strip = (extra?: React.ReactNode) => (
     <div className="pane-header">
+      <SideCloseButton what={modeTitle(side)} onClick={onClose} />
       <PaneActionSlot />
-      {extra}
+      <div className="side-header-tail">
+        {sideMenu}
+        {extra}
+      </div>
     </div>
   );
 
-  // Placeholders need no fetch: nothing selected, or a multi-selection. No
-  // subject, so the strip carries nothing but an empty name.
+  // --- Claude and Git: the companions ----------------------------------------
+  // Both render straight from the FOLDER's entry, with no question asked about
+  // the selected row, so they come BEFORE every one of the row-driven branches
+  // below (the loading skeleton, the placeholders, the self target). Git in
+  // particular has to: its subject is the folder, so a folder with nothing
+  // selected still has a working tree to show.
+  //
+  // `_file` is where the two differ, and it is the whole of the difference —
+  // both templates are used exactly as they ship. paneSideTarget says which:
+  // the folder for Git, the selected row for Claude (the folder again when the
+  // selection names no single row, so the chat has something to be about).
+  const sideEntry = side === "claude" ? sideEntries.claude : side === "git" ? sideEntries.git : null;
+  if (sideEntry && sideEntry.path !== null) {
+    const target = paneSideTarget(side, folder, row && !row.self ? row.path : null);
+    // `chat_only=1` takes away the chat template's OWN left preview pane: in a
+    // column this narrow its copy of the target would be a second, differently
+    // run preview of the same thing (see Preview's sideSrcFor, and CHAT_ONLY in
+    // templates/claude/template.html). `_remote` is deliberately absent from
+    // both: Claude reads through the server either way, and the git gate refuses
+    // a mount-backed directory outright.
+    const chatOnly = side === "claude" ? "&chat_only=1" : "";
+    return (
+      <div className="listing-pane" ref={rootRef} {...guardProps}>
+        {strip()}
+        <iframe
+          className="pane-frame"
+          src={withNoFocus(
+            `/render?path=${encodeURIComponent(sideEntry.path)}` +
+              `&_file=${encodeURIComponent(target)}${chatOnly}`
+          )}
+          title={modeTitle(side)}
+        />
+      </div>
+    );
+  }
+
+  // Placeholders need no fetch: nothing selected, or a multi-selection. No row to
+  // preview, so the strip is the bare one — its chevron and its three-way pill,
+  // which are about the PANE and the folder rather than about the missing row.
   if (!row) {
     return (
       <div className="listing-pane">
@@ -281,24 +355,23 @@ export default function ListingPreviewPane({
   }
 
   // The SELF target — nothing selected, so the pane's subject is the folder
-  // already open on the left. It has no preview: just the folder's name and
-  // the hint that says what to do about it. No actions either — the folder's
-  // own primary ("Open as app") used to be handed down into this header, but a
-  // folder that HAS an app is not empty, so FS-16's auto-select means this
-  // row is barely ever on screen; the button belongs in the title bar, which
-  // is where it now stays whether the pane is open or not (Preview.tsx).
+  // already open on the left. It has no preview: just the hint that says what to
+  // do about it. No actions either — the folder's own primary ("Open as app")
+  // used to be handed down into this header, but a folder that HAS an app is not
+  // empty, so FS-16's auto-select means this row is barely ever on screen; the
+  // button belongs in the title bar, which is where it now stays whether the pane
+  // is open or not (Preview.tsx).
   //
-  // NO MODE MENU. The folder's peers under the `/` key are heavyweight opt-ins
-  // (the chat, git, history), so the picker's only job here was to offer a
-  // chat on the folder from a header that otherwise said "select something" —
-  // a "Choose view" chip pointing at a view nobody came for. The folder's own
-  // modes are still one click from the LEFT half (Preview's chip), and every
-  // entry in it previews on selection; and since opening a folder now
-  // auto-selects its first entry (FS-16) and a background click no longer
-  // deselects (FS-15), this state is reached essentially only by an empty
-  // folder or by a deliberate Escape. With no picker there is no mode,
-  // which is why this branch renders before any of the mode machinery — and
-  // why the stat/app-probe fetches above skip the self target entirely.
+  // NO PER-ROW MODE LIST, which is why this branch renders before all the mode
+  // machinery below and why the stat/app-probe fetches above skip the self target
+  // entirely: there is no row to resolve templates for. The pane's OWN three-way
+  // pill is in `strip` and so is present here like everywhere else — and it is
+  // exactly the control this state used to lack. The picker that was removed here
+  // was the per-row one: its only job in this state was to offer a chat on the
+  // folder from a header that otherwise said "select something", i.e. a "Choose
+  // view" chip pointing at a view nobody came for. Claude-on-the-folder is now a
+  // named mode of the pane rather than a mode of the absent row, so it is offered
+  // plainly instead of hidden behind a picker with nothing else in it.
   if (row.self) {
     return (
       <div className="listing-pane">
@@ -329,17 +402,22 @@ export default function ListingPreviewPane({
     );
   }
 
-  // --- the pane's mode list ---------------------------------------------------
+  // --- what `Preview` resolves to for this row --------------------------------
 
   // Mode order = pane priority, decided in listing/pane-modes.ts — which also
   // documents why a lone app leads over `_listing`, and why `app` and `_app`
-  // are never both offered. This component only turns those mode names into
-  // menu entries with icons.
+  // are never both offered. This component only turns that ranking into a
+  // rendered frame.
   //
   // Gate policy is the shared one (lib/mode-visibility), on every mode surface
-  // alike: an entry hides only on an EXPLICIT denial. A denied override is not
-  // pinned into the list — the active mode falls back to the pane's default
-  // (`activePaneMode` guards it), matching Preview.
+  // alike: an entry hides only on an EXPLICIT denial.
+  //
+  // What is gone is the CHOICE among them. The pane's header used to carry a
+  // switcher over this whole list, synced to `_panelMode` — one control for the
+  // row's templates, in a bar that now carries the pane's own three
+  // (listing/pane-side.ts explains the trade). So the list is read for its LEAD
+  // only: `Preview` means "this row's default view", and `activePaneMode` is
+  // called with no override.
   const allowed = (e: TemplateEntry) => isModeVisible(e, info.conditions);
   const embeddable = info.templates.filter((e) => e.mode !== "_listing" && allowed(e));
 
@@ -349,22 +427,13 @@ export default function ListingPreviewPane({
     isDir: !!row.isDir,
     hasApp: !!app,
   });
-  const byMode = new Map(info.templates.map((e) => [e.mode, e]));
-  const modes: PaneMode[] = modeNames.map((m) => ({
-    mode: m,
-    icon: m === APP_MODE ? APP_MODE_ICON : templateModeIcon(byMode.get(m) as TemplateEntry),
-  }));
 
-  // While the mode list is still undecided, hold the skeleton — the pane must
-  // never settle on an interim mode and then jump. Undecided means: the
-  // folder's app probe is in flight (`_app` would lead the list), or any
-  // gated template's verdict is unresolved (a higher-ranked conditional mode
-  // may still enter the list). This holds even with a `_panelMode` override
-  // seeded from the URL: the override's mode may itself still be absent from
-  // the interim list (a gated entry), so rendering before the list settles
-  // could show the default and then jump. Both signals resolve exactly once per mount (the component is
-  // keyed on the previewed path), and a user's switcher click can only happen
-  // after they resolve, so this never re-shows the skeleton post-settle.
+  // While that list is still undecided, hold the skeleton — the pane must never
+  // settle on an interim mode and then jump. Undecided means: the folder's app
+  // probe is in flight (`_app` would lead the list), or any gated template's
+  // verdict is unresolved (a higher-ranked conditional mode may still enter it).
+  // Both signals resolve exactly once per mount (the component is keyed on the
+  // previewed path), so this never re-shows the skeleton post-settle.
   const gatesPending =
     info.conditions === null &&
     info.templates.some((e) => e.conditional && e.mode !== "_listing");
@@ -376,10 +445,10 @@ export default function ListingPreviewPane({
       </div>
     );
   }
-  // Default = the first mode in pane priority order; the menu override wins
-  // while it's still offered. null = this row offers nothing at all, which
+  // The row's DEFAULT view — the first mode in pane priority order, with no
+  // override to beat it (see above). null = this row offers nothing at all, which
   // falls through to the metadata card at the bottom.
-  const activeMode = activePaneMode(modeNames, modeOverride);
+  const activeMode = activePaneMode(modeNames, null);
   const activeEntry = embeddable.find((e) => e.mode === activeMode) ?? null;
 
   // What the strip's far end offers for this row — decided in
@@ -393,17 +462,12 @@ export default function ListingPreviewPane({
     navigate(openTarget.path, { isDir: openTarget.isDir, mode: openTarget.mode });
   };
 
-  // The settled header: the shared strip, with the mode control and (for a row
-  // that has one) its open control after the name, at the far end of the strip.
-  // Every OTHER state renders the bare strip instead — same chrome, nothing to
-  // switch or expand yet. (The self target has its own, picker-less one and
-  // returns above.)
+  // The settled Preview's header: the shared strip (chevron, folder action, the
+  // pane's three-way pill) plus, at its very end, the controls that only mean
+  // something once a row's own view has resolved. Every OTHER state renders the
+  // bare strip — same chrome, nothing to expand yet.
   const header = strip(
     <>
-      {/* The same mode control the title bar and the pane bars carry. It used
-          to be four naked squares here, indistinguishable from the one-shot
-          glyphs beside them. */}
-      <ModeMenu entries={modes} active={activeMode ?? ""} onSelect={selectMode} />
       {/* Expand the previewed FILE full-screen — as a quiet icon, not the
           bordered "Open" primary it used to be. Nothing in this strip is a
           primary: the row's double-click and Enter already open it, so a
@@ -416,9 +480,14 @@ export default function ListingPreviewPane({
           restated them.
 
           It opens in the mode the pane is SHOWING (paneOpenTarget) — "make this
-          the whole view" cannot be the one action that discards the template
-          the user picked. The row's own double-click and Enter stay a plain
-          open: those are "open this thing", not "open what I am looking at". */}
+          the whole view" cannot be the one action that discards what is on
+          screen. The row's own double-click and Enter stay a plain open: those
+          are "open this thing", not "open what I am looking at".
+          Only in `Preview`, since only there is the pane showing the row's own
+          content. Claude and Git return well above this (and Git is not about
+          the row at all), so neither reaches here — "make this the whole view"
+          for a companion is a question about the FILE view's `_side`, and the way
+          to ask it is to open the row and use the sidebar there. */}
       {open.kind === "expand" && (
         <button
           type="button"

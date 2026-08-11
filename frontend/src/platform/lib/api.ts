@@ -408,10 +408,6 @@ export interface SearchFileEntry {
 export interface SearchFilesResult {
   entries: SearchFileEntry[];
   truncated: boolean;
-  // Always "index" now that the index is the only engine; kept in the response
-  // for older clients and because "what answered this" is the first support
-  // question about a surprising result.
-  engine: string;
 }
 
 // File search from a filter spec (see apps/explorer/lib/ai-search), scoped to
@@ -434,8 +430,11 @@ export async function searchFiles(
   return data as SearchFilesResult;
 }
 
-export function statPath(fsPath: string): Promise<StatResult> {
-  return getJson<StatResult>("/api/fs/stat?path=" + encodeURIComponent(fsPath));
+// `signal` matters for callers that stat on a user's behalf and then navigate:
+// a stat on a slow mount can resolve after the user has moved on, and acting on
+// it would move them back. See FilesHome's path shortcut.
+export function statPath(fsPath: string, signal?: AbortSignal): Promise<StatResult> {
+  return getJson<StatResult>("/api/fs/stat?path=" + encodeURIComponent(fsPath), { signal });
 }
 
 // Deferred condition.py verdicts (CT-12): {mode: allowed} for every entry
@@ -1961,6 +1960,39 @@ export function deleteLocalModels(
   targets: LocalModelDeleteTarget[],
 ): Promise<LocalModelsDeleteResult> {
   return postJson<LocalModelsDeleteResult>("/api/local-models/delete", { targets });
+}
+
+// -- Git repos (GET /api/git-repos) -------------------------------------------
+// Git repositories on this machine, for the Explorer homepage's "Repos" tab.
+// One entry per repo root, in path order; `path` is ready to pass straight to
+// navigate(path, {isDir:true}).
+//
+// `indexed` is the state the tab has to distinguish: the list is derived from
+// the file index, so a machine whose first scan has not finished yet is NOT the
+// same as a machine with no repos, and `scanning` says whether one is in flight.
+// Both come from the same vocabulary /api/index/status uses.
+//
+// `stale` means "this list may be out of date, reindexing" — a scan is running, or
+// the index was built under older rules. It is NOT an error and NOT a reason to
+// hide the list: an index is always slightly behind the filesystem, so a stale
+// answer is the normal one. The server serves rows whenever it has them and only
+// reports `indexed: false` when it genuinely cannot answer, in which case `reason`
+// says which way ("no-index": nothing has ever been built; "outdated": the index
+// predates repo detection, so its zero rows are not an answer).
+export interface GitRepo {
+  path: string;
+}
+
+export interface GitRepos {
+  indexed: boolean;
+  scanning: boolean;
+  stale: boolean;
+  reason?: "no-index" | "outdated" | null;
+  repos: GitRepo[];
+}
+
+export function getGitRepos(): Promise<GitRepos> {
+  return getJson<GitRepos>("/api/git-repos");
 }
 
 // -- AI completion (POST /api/ai) ---------------------------------------------
