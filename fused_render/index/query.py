@@ -259,39 +259,49 @@ def search_under(cfg: IndexConfig, root: str, q: str = "", limit: int = MAX_CORP
     limit = max(0, min(int(limit), MAX_CORPUS))
     hit = prune(m["partitions"], prefix)
     qlit = like_literal(q.strip()) if q and q.strip() else ""
-    like = f" AND path ILIKE '%{qlit}%' ESCAPE '\\'" if qlit else ""
-    # Shallow entries first (fewer slashes), path order within a depth: when
+    # Files and directories compete in ONE depth-ordered query, not two.
+    #
+    # Two queries meant the files branch was served first and directories got
+    # only `limit - len(files)` rows — so on any tree big enough to truncate the
+    # corpus, `room` was 0 and folder search was DEAD, not degraded: a query
+    # naming a folder returned the files inside it and never the folder. The
+    # live walk never had this bug because BFS interleaves both kinds.
+    #
+    # Shallow entries first (smaller `depth`), path order within a depth: when
     # the cap bites on a >limit tree, the capped corpus keeps the same
     # breadth-first character as the walk it replaces — plain ORDER BY path
     # would starve everything after the first deep subtree.
-    depth = "(length(path) - length(replace(path, '/', '')))"
+    #
+    # The trade: directories now spend part of the budget files used to have,
+    # so a very large tree carries slightly fewer files. A corpus with no
+    # folders in it at all is strictly worse.
+    fdepth = "(length(path) - length(replace(path, '/', '')))"
+    ddepth = "(length(dir) - length(replace(dir, '/', '')))"
+    branches = []
+    if hit:
+        like = f" AND path ILIKE '%{qlit}%' ESCAPE '\\'" if qlit else ""
+        branches.append(
+            f"SELECT path, size, mtime, false AS is_dir, {fdepth} AS depth "
+            f"FROM {_sources(cfg, hit)} "
+            f"WHERE path LIKE '{prefix_like}%' ESCAPE '\\'{like}")
+    if include_dirs:
+        dlike = f" AND dir ILIKE '%{qlit}%' ESCAPE '\\'" if qlit else ""
+        branches.append(
+            f"SELECT dir AS path, CAST(NULL AS BIGINT) AS size, "
+            f"nullif(mtime_ns, 0) / 1e9 AS mtime, true AS is_dir, "
+            f"{ddepth} AS depth FROM {dirs_src(cfg)} "
+            f"WHERE dir LIKE '{prefix_like}%' ESCAPE '\\'{dlike}")
     entries, truncated = [], False
-    if hit and limit:
+    if branches:
         # One row past the cap, so "there was more" is known without a count.
         rows = con.execute(
-            f"SELECT path, size, mtime FROM {_sources(cfg, hit)} "
-            f"WHERE path LIKE '{prefix_like}%' ESCAPE '\\'{like} "
-            f"ORDER BY {depth}, path LIMIT {limit + 1}").fetchall()
-        for path, size, mtime in rows[:limit]:
-            entries.append({"rel": path[len(prefix):], "is_dir": False,
+            " UNION ALL ".join(branches)
+            + f" ORDER BY depth, path LIMIT {limit + 1}").fetchall()
+        for path, size, mtime, is_dir, _depth in rows[:limit]:
+            entries.append({"rel": path[len(prefix):], "is_dir": bool(is_dir),
                             "size": int(size) if size is not None else None,
                             "mtime": float(mtime) if mtime is not None else None})
         truncated = len(rows) > limit
-    if include_dirs:
-        dlike = f" AND dir ILIKE '%{qlit}%' ESCAPE '\\'" if qlit else ""
-        # Even with no room left, one probe row decides `truncated`: file rows
-        # exactly filling the cap must not silently drop every directory while
-        # claiming the corpus is complete.
-        room = limit - len(entries)
-        ddepth = "(length(dir) - length(replace(dir, '/', '')))"
-        drows = con.execute(
-            f"SELECT dir, mtime_ns FROM {dirs_src(cfg)} "
-            f"WHERE dir LIKE '{prefix_like}%' ESCAPE '\\'{dlike} "
-            f"ORDER BY {ddepth}, dir LIMIT {room + 1}").fetchall()
-        for d, mtime_ns in drows[:room]:
-            entries.append({"rel": d[len(prefix):], "is_dir": True, "size": None,
-                            "mtime": (mtime_ns / 1e9) if mtime_ns else None})
-        truncated = truncated or len(drows) > room
     return {"covered": True, "fresh": fresh, "updated": updated, "age_s": age,
             "root": root, "scanned_partitions": len(hit),
             "of_partitions": len(m["partitions"]), "entries": entries,
