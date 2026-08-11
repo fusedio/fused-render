@@ -19,9 +19,12 @@ import pytest
 
 @pytest.fixture(autouse=True)
 def _clear_conditions_cache():
-    _server_fs_read._CONDITIONS_CACHE.clear()
+    # Cleared through the DEFINING module: fs_read deliberately holds no
+    # cache binding of its own any more (a by-value copy went stale when tests
+    # reload server.templates — the bug this fixture's suite pins).
+    _server_templates._CONDITIONS_CACHE.clear()
     yield
-    _server_fs_read._CONDITIONS_CACHE.clear()
+    _server_templates._CONDITIONS_CACHE.clear()
 
 
 @pytest.fixture

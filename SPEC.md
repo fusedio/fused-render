@@ -5229,7 +5229,7 @@ stop it short of quitting the app.
 
 ---
 
-## 37. AI Models — What the Hugging Face Cache Holds (D246)
+## 37. AI Models — What the Hugging Face Cache Holds (D249)
 
 Goal: the models, datasets and Spaces this machine has downloaded from the
 Hugging Face Hub are visible and accounted for, from a sidebar entry, without
@@ -5242,7 +5242,7 @@ it. It grows in multi-GB steps and the app is the thing that grew it — a
 checkpoint pulled by a page the user opened once is still on their disk a month
 later with nothing on screen to say so.
 
-- **HF-1** **An inventory that can also clear space** (D247 revisited the
+- **HF-1** **An inventory that can also clear space** (D250 revisited the
   original read-only posture, which shipped first). The page's first job is to
   show what is cached and what it costs; on top of that it offers exactly three
   deletions — a repo, one revision of a repo, and a prune of everything unread
@@ -5303,7 +5303,7 @@ later with nothing on screen to say so.
   It runs in the threadpool (a sync endpoint), so a big cache cannot stall the
   requests the rest of the page is making.
 
-**Managing it** (D247). Three deletions, widening — one repo, one revision, or
+**Managing it** (D250). Three deletions, widening — one repo, one revision, or
 everything unread for N days:
 
 - **HF-10** **Deleting a repo** removes its cache folder and the `.locks/` entry
@@ -5352,7 +5352,7 @@ everything unread for N days:
   read, so this page cannot quietly exclude from the next prune everything it
   just looked at.
 
-**Naming what a model is** (D248). A repo id and a size do not say what a thing
+**Naming what a model is** (D251). A repo id and a size do not say what a thing
 is for, and the cache states it nowhere:
 
 - **HF-16** **The purpose is read from whatever evidence the download brought**,

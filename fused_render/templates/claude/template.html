@@ -20,10 +20,20 @@
     --fg: #ececf1;
     --fg-strong: #ffffff;
     --dim: #9a9fa9;
-    --faint: #6b7079;
+    /* --faint is the quietest text on the page (timestamps, meta lines, the
+       thinking summary). It was #6b7079 on #191a1e — 3.1:1, under the 4.5:1
+       floor for text this small — so it is lifted to a value that clears it
+       while still reading as "quieter than --dim". */
+    --faint: #8a8f99;
     --border: #34363e;
     --border-strong: #4a4d57;
     --accent: #d97757;
+    /* --accent is a FILL/BORDER colour: it is chosen to look right as a solid
+       swatch, not to be read as text on a tinted background (the qhead chip's
+       accent-on-10%-accent was 3.4:1 dark / 3.9:1 light). --accent-text is the
+       same hue pushed until small text on that tint clears 4.5:1. Never use it
+       for a fill and never use --accent for text on a tint. */
+    --accent-text: #e8907a;
     --on-accent: #1a1a1a;
     --error: #f26d6d;
     --ok: #6cc07a;
@@ -32,6 +42,13 @@
     --pre-bg: #141519;
     --pre-fg: #d4d4d8;
     --link: #7aa8ff;
+    /* diff lines in Edit chips — own variables, not --ok/--error: those are
+       status colours on text, these are backgrounds a whole line sits on and
+       need to stay readable under --pre-fg in each theme. */
+    --diff-add-bg: rgba(108, 192, 122, .14);
+    --diff-add-fg: #8ed49a;
+    --diff-del-bg: rgba(242, 109, 109, .14);
+    --diff-del-fg: #f08d8d;
     --shadow: rgba(0, 0, 0, .4);
     --scrollbar: #3a3d45;
     --handle-hover: #4a4d57;
@@ -46,10 +63,11 @@
     --fg: #1f2023;
     --fg-strong: #000000;
     --dim: #61656c;
-    --faint: #9a9ea6;
+    --faint: #676c74;
     --border: #e3e4e8;
     --border-strong: #c9cbd2;
     --accent: #b8542f;
+    --accent-text: #9e4319;
     --on-accent: #ffffff;
     --error: #c62828;
     --ok: #2e7d32;
@@ -58,6 +76,10 @@
     --pre-bg: #f7f8f9;
     --pre-fg: #33363c;
     --link: #1c5fb8;
+    --diff-add-bg: rgba(46, 125, 50, .10);
+    --diff-add-fg: #1f6b25;
+    --diff-del-bg: rgba(198, 40, 40, .10);
+    --diff-del-fg: #a81f1f;
     --shadow: rgba(0, 0, 0, .10);
     --scrollbar: #cdd0d6;
     --handle-hover: #a8adb6;
@@ -686,11 +708,30 @@
   }
   .assistant .body {
     min-width: 0;
-    white-space: pre-wrap;
     word-break: break-word;
     padding-top: 2px;
   }
-  .error {
+  /* NOT pre-wrap, and `.seg-text` (the per-segment prose element) with it.
+     Everything that lands in either is marked's BLOCK html, and marked
+     separates block elements with a literal newline —
+     `<p>a</p>\n<p>b</p>\n<ul>\n<li>x</li>\n</ul>\n`. Under pre-wrap every one
+     of those is a VISIBLE blank line: between paragraphs, INSIDE lists, and one
+     trailing the reply. `.toolchip, .thinking` below already set `normal` for
+     exactly this reason; this is the same fix at its source. Nothing here still
+     needs pre-wrap: all three addAssistant() callers pass "", and renderMd's
+     vendor-less fallback wraps its text in a `<pre>`, which owns its own
+     white-space. A line break inside a paragraph is marked's job (`breaks:
+     true` turns a lone newline into a `<br>`), not the cascade's. */
+  .assistant .body, .seg-text { white-space: normal; }
+  /* SCOPED, deliberately: `.error` unqualified is a magnet. The tool chip's
+     status glyph used to carry a bare `error` class and picked this whole red
+     pill up by accident — background, border, 8px of padding — which both
+     recoloured a 1-character glyph as a badge and made the chip's row jump
+     taller the moment a tool failed. The glyph's classes are `is-ok`/`is-error`
+     /`is-running` now (see .chip-status), and this rule names the ONE element
+     that is actually a failed-run card: addError()'s `turn error` row. Anything
+     that wants this box asks for it by that shape. */
+  .turn.error {
     color: var(--error);
     background: color-mix(in srgb, var(--error) 8%, transparent);
     border: 1px solid color-mix(in srgb, var(--error) 30%, transparent);
@@ -736,11 +777,36 @@
     padding: 12px 14px;
     box-shadow: 0 4px 16px var(--shadow);
   }
-  .perm.resolved { border-color: var(--border); box-shadow: none; }
+  /* A resolved card is a RECEIPT, not a question. It keeps its place in the
+     transcript (the decision is part of the history) and gives up everything
+     that was competing for attention: the fill, the shadow, the accent ring,
+     and a chunk of its padding. What is left is the status line at full
+     contrast and its context at --dim — the shape of a note, not of a prompt.
+     Its header goes past tense in JS (resolve()), because a card still reading
+     "Claude is asking you" under an answer is a card that looks live. */
+  .perm.resolved {
+    border-color: var(--border);
+    box-shadow: none;
+    background: transparent;
+    padding: 8px 12px;
+    border-radius: 10px;
+  }
+  .perm.resolved .plan-body,
+  .perm.resolved .qtext,
+  .perm.resolved .perm-sub { color: var(--dim); }
+  .perm.resolved .qhead {
+    color: var(--dim);
+    border-color: var(--border);
+    background: transparent;
+  }
   .perm .perm-head { font-size: 13px; color: var(--dim); }
-  .perm .perm-head .tool { color: var(--accent); font-weight: 600; }
+  .perm .perm-head .tool { color: var(--accent-text); font-weight: 600; }
   .perm .perm-sub { color: var(--dim); word-break: break-word; font-size: 12px; margin-top: 2px; }
   .perm pre {
+    /* Anchors .copybtn, top-right — attachCodeCopy runs on a plan card's body
+       too (buildPlanCard), and without this its absolutely-positioned button
+       escapes to the nearest positioned ancestor instead of its own pre. */
+    position: relative;
     background: var(--pre-bg);
     color: var(--pre-fg);
     border: 1px solid var(--border);
@@ -756,7 +822,7 @@
   .perm .perm-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
   .perm button {
     font: inherit;
-    font-size: 12.5px;
+    font-size: 13px;
     font-weight: 500;
     padding: 5px 14px;
     border: 1px solid var(--border);
@@ -774,10 +840,475 @@
   }
   .perm button.primary:hover:not(:disabled) { filter: brightness(1.1); background: var(--accent); }
   .perm button:disabled { opacity: .55; cursor: default; }
+  /* ONE focus ring for every keyboard-reachable control on these surfaces.
+     Buttons and options had none at all (a `cursor: pointer` box that a Tab key
+     cannot find is not a control), and a <summary> keeps only the UA's default
+     which the card fills paint over. :focus-visible, not :focus — a mouse click
+     on a summary should not leave a ring behind. */
+  .perm button:focus-visible,
+  .perm .qopt:focus-visible,
+  .toolchip > summary:focus-visible,
+  .thinking > summary:focus-visible {
+    outline: 2px solid color-mix(in srgb, var(--accent) 70%, transparent);
+    outline-offset: 2px;
+  }
   .perm .perm-status { margin-top: 10px; font-size: 13px; }
   .perm .perm-status.allow { color: var(--ok); }
   .perm .perm-status.deny { color: var(--error); }
   .perm .perm-status.expired { color: var(--dim); }
+  /* An ANSWER is not an approval: "You chose: Beta" in the allow green reads as
+     a verdict on the question. The label recedes and the choice itself carries
+     the contrast, because the choice is the fact worth re-reading later. */
+  .perm .perm-status.chose { color: var(--dim); }
+  .perm .perm-status.chose .val { color: var(--fg); }
+
+  /* ── question cards (AskUserQuestion) ──
+     The same bones as a permission card — one quiet box, one status line when it
+     resolves — but the accent is stronger and the options fill the width: this
+     one is not "may I", it is a question waiting for an answer, and the answer
+     is a choice rather than a verdict, so the options are the card's body
+     instead of a row of pill buttons under a payload. */
+  .perm.ask { border-color: color-mix(in srgb, var(--accent) 80%, transparent); }
+  .perm.ask.resolved { border-color: var(--border); }
+  /* The questions scroll, the send button does not. A four-question card with
+     four options each is ~40 rows of controls; unbounded, it pushed its own
+     "Send answer" past the bottom of the pane, so the one control that
+     completes the card was the one thing the user could not see. */
+  .perm.ask .qscroll { max-height: 46vh; overflow: auto; }
+  .perm .qblock + .qblock { margin-top: 14px; }
+  .perm .qhead {
+    display: inline-block;
+    font-size: 10.5px;
+    font-weight: 600;
+    letter-spacing: .05em;
+    text-transform: uppercase;
+    color: var(--accent-text);
+    border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent);
+    background: color-mix(in srgb, var(--accent) 10%, transparent);
+    border-radius: 999px;
+    padding: 1px 8px;
+    margin-bottom: 6px;
+  }
+  .perm .qtext { font-size: 14px; line-height: 1.45; word-break: break-word; }
+  .perm .qopts { display: flex; flex-direction: column; gap: 6px; margin-top: 9px; }
+  /* Both shapes of an option: a click-to-answer button, and a tickable row for
+     multi-select / multi-question cards. Same box either way. */
+  .perm .qopt {
+    display: flex;
+    gap: 9px;
+    align-items: flex-start;
+    text-align: left;
+    width: 100%;
+    padding: 8px 12px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: transparent;
+    color: var(--fg);
+    font: inherit;
+    font-size: 13px;
+    cursor: pointer;
+    transition: background .12s ease-out, border-color .12s ease-out;
+  }
+  .perm .qopt:hover:not(:disabled) {
+    border-color: color-mix(in srgb, var(--accent) 60%, transparent);
+    background: var(--surface-2);
+  }
+  .perm .qopt .lbl { font-weight: 600; display: block; }
+  .perm .qopt .desc {
+    display: block;
+    margin-top: 2px;
+    color: var(--dim);
+    font-size: 12px;
+    line-height: 1.4;
+    word-break: break-word;
+  }
+  /* Drawn, not native. Under `color-scheme: dark` Chrome paints an UNCHECKED
+     checkbox as a filled light square, which on a dark card reads as already
+     ticked — so a four-option multi-select looked pre-answered, and the one
+     option the user actually ticked (accent-filled) read as merely
+     highlighted. appearance: none takes that away and states both states
+     explicitly: empty box = the card's own background, checked = an accent
+     fill with a --surface inset punching the middle out (a dot for a radio, a
+     square for a checkbox) — no glyph font, no SVG, both themes from tokens. */
+  .perm .qopt input {
+    appearance: none;
+    -webkit-appearance: none;
+    width: 14px;
+    height: 14px;
+    margin: 3px 0 0;
+    flex-shrink: 0;
+    border: 1.5px solid var(--border-strong);
+    background: var(--bg);
+    border-radius: 4px;
+    cursor: pointer;
+    transition: background .12s ease-out, border-color .12s ease-out;
+  }
+  .perm .qopt input[type="radio"] { border-radius: 50%; }
+  .perm .qopt input:checked {
+    background: var(--accent);
+    border-color: var(--accent);
+    box-shadow: inset 0 0 0 3px var(--surface);
+  }
+  .perm .qopt input:focus-visible {
+    outline: 2px solid color-mix(in srgb, var(--accent) 70%, transparent);
+    outline-offset: 2px;
+  }
+  .perm .qsend { margin-top: 12px; }
+
+  /* ── plan cards (ExitPlanMode) ──
+     Same bones again, with one difference that is the whole point: the body is
+     rendered MARKDOWN, not a monospace payload — a plan is prose Claude wrote to
+     be read — so it gets a reply's type and line height, and only its code
+     blocks fall back to the `.perm pre` box above. Scrolls at a bounded height:
+     a long plan must not push its own two buttons off the screen. */
+  .perm.plan { border-color: color-mix(in srgb, var(--accent) 80%, transparent); }
+  .perm.plan.resolved { border-color: var(--border); }
+  .perm .plan-body {
+    font-size: 13px;
+    line-height: 1.5;
+    margin-top: 8px;
+    max-height: 420px;
+    overflow: auto;
+    word-break: break-word;
+  }
+  .perm .plan-body > :first-child { margin-top: 0; }
+  .perm .plan-body > :last-child { margin-bottom: 0; }
+  .perm .plan-note {
+    display: block;
+    box-sizing: border-box;
+    width: 100%;
+    margin-top: 10px;
+    padding: 6px 9px;
+    font: inherit;
+    font-size: 13px;
+    color: var(--fg);
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    resize: vertical;
+  }
+  .perm .plan-note:focus {
+    outline: none;
+    border-color: color-mix(in srgb, var(--accent) 60%, transparent);
+  }
+  /* "Sent back for revision" is not a refusal — it is the other half of a
+     conversation, so it does not read in the deny red. */
+  .perm.plan .perm-status.deny { color: var(--dim); }
+
+  /* ── the tool timeline (segments inside an assistant turn) ──
+     Deliberately quieter than a permission card: a card is a question and has
+     to be seen, a chip is a receipt for something that already happened, and a
+     transcript of forty loud cards is unreadable. Same border language, no
+     accent ring, no shadow. `white-space: normal` is kept explicit here even
+     though `.assistant .body` no longer inherits pre-wrap down to them: these
+     rows are also built inside the permission cards, and stating it costs
+     nothing next to reintroducing the blank-line bug by inheritance. */
+  .toolchip, .thinking { white-space: normal; margin: 6px 0; }
+  /* A CLOSED chip is a line in a timeline, not a card: one hairline rail down
+     the left edge and nothing else — no box, no fill, no radius. Fifteen boxed
+     rows in a row read as fifteen separate things each asking to be considered
+     (and, stacked, as a dotted staircase); fifteen rail lines read as one
+     transcript you can skim in a single pass. Opening a chip is what promotes
+     it to a surface: the rail brightens, a faint fill comes in, and the right
+     side rounds off — so at most a couple of chips in a long turn are ever
+     drawn as boxes, which is exactly the couple the user opened. */
+  .toolchip {
+    padding: 2px 0 2px 12px;
+    border-left: 1px solid var(--border);
+    border-radius: 0;
+    margin: 1px 0;
+    font-size: 13px;
+  }
+  .toolchip[open] {
+    border-left-color: var(--border-strong);
+    background: color-mix(in srgb, var(--surface) 45%, transparent);
+    border-radius: 0 8px 8px 0;
+    margin: 8px 0;
+    padding: 4px 0 6px 12px;
+  }
+  /* The body's own right inset — the chip itself keeps `padding-right: 0` so a
+     diff's coloured bands can run the full width of the box (see pre.diff). */
+  .toolchip .chip-body { padding-right: 10px; }
+  /* One clipped line, always: the summary is a control, and a wrapped 40-line
+     command would make the row taller than the body it hides. The clip stays on
+     the summary itself as the backstop, and the summary itself is NOT the flex
+     container — `display: flex` there takes the disclosure triangle with it,
+     since the marker only exists on a `display: list-item` box. The marker also
+     stays INSIDE (the default), which is what keeps it in the same line box, and
+     right beside the tool name, as the row it opens: moved outside it is painted
+     left of the summary's border box, a marker's width away from the row, and
+     `overflow: hidden` on a list item clips an outside marker away entirely.
+     `text-overflow` is deliberately NOT set here: the row below is an atomic
+     inline, which an ellipsis cannot clip INTO — it would drop the entire row and
+     draw a lone "…" in its place. Each half of the row ellipsizes itself. */
+  .toolchip > summary {
+    cursor: pointer;
+    color: var(--dim);
+    white-space: nowrap;
+    overflow: hidden;
+    transition: color .12s ease-out;
+  }
+  .toolchip > summary:hover { color: var(--fg); }
+  /* The row inside the summary is a flex line, because its halves do not clip
+     the same way. A command reads left-to-right and can lose its tail; a PATH's
+     tail is its filename, which is the whole reason the row carries a path —
+     clipped from the right ("/Users/…/claude-template…") the row names no file at
+     all. Flex is what gives the path half a width to ellipsize against: as the
+     one shrinkable item it gets exactly the space the fixed halves (name, counts)
+     leave over, and clips inside itself. INLINE-flex, so it shares the summary's
+     first line box with the disclosure marker instead of pushing it onto a line
+     of its own (a block child of a `list-style-position: inside` list item takes
+     the whole first line and leaves the marker stranded above the row) — and
+     the marker's room is 1.2em of it, taken TWICE, once for each way this row
+     gets measured:
+       * `max-width` for a chip in a constrained column — an inline-level
+         shrink-to-fit box is sized against the whole containing block, the marker
+         beside it not subtracted, so without the cap the row comes out one marker
+         too wide and the tail of the path falls outside the clip;
+       * `margin-right` for a chip whose container is itself shrink-to-fit (a
+         turn's body is), where 100% IS this row's own content: the cap alone
+         would then shave 1.2em off a row that had all the room in the world and
+         clip a short path for no reason. A margin is counted into the width the
+         container asks for, so it buys back exactly what the cap takes.
+     What overflows in the first case is the empty margin, never the text. */
+  .toolchip > summary > .chip-row {
+    display: inline-flex;
+    align-items: baseline;
+    max-width: calc(100% - 1.2em);
+    margin-right: 1.2em;
+    min-width: 0;
+    overflow: hidden;
+  }
+  /* Nested flex: .chip-sub keeps owning both halves, so the mono/colour rules
+     below stay one declaration, and only the path half may shrink. */
+  .toolchip .chip-sub { display: flex; min-width: 0; flex: 0 1 auto; }
+  .toolchip .chip-row > .chip-status,
+  .toolchip .chip-row > .chip-name { flex: 0 0 auto; }
+  /* The lead half ellipsizes on its own (the summary's `text-overflow` cannot
+     reach INTO a flex item), which is what a long Bash command needs... */
+  .toolchip .chip-sub > .chip-lead {
+    flex: 0 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  /* ...but never when there is a path beside it: flex distributes shrinkage in
+     proportion to base size, so a 700px path and a 40px "+12 -3" would BOTH give
+     up their share and the counts would come out as "+12 …". With a path present
+     the counts are fixed and the path absorbs the whole overflow. */
+  .toolchip .chip-sub.has-path > .chip-lead { flex: 0 0 auto; }
+  /* The LEFT-clipping half. `direction: rtl` moves the line's end edge — and
+     with it the ellipsis — to the left; `text-align: left` keeps a short path
+     against the left edge instead of floating it out to the right; and the <bdi>
+     inside it (see buildToolChip) isolates the path so its own characters stay in
+     logical order — an rtl paragraph would otherwise swing a trailing "/" or the
+     multiline clip marker round to the front of the string. */
+  .toolchip .chip-sub > .chip-path {
+    flex: 0 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    direction: rtl;
+    text-align: left;
+  }
+  /* The gap the halves used to get from the "  " in the summary string — on the
+     LEAD, and only when there is one: a Read has no lead at all, and a margin on
+     the path would then double the space after the tool name. */
+  .toolchip .chip-sub > .chip-lead:not(:empty) { margin-right: 6px; }
+  /* The status slot. `width: 1.1em` on the base holds the column open whether
+     or not the glyph is drawn, so every chip's name starts at the same x — an
+     ok chip has NO glyph (see TOOL_STATUS_GLYPH: success is the default outcome
+     and a wall of ticks is a wall of noise), and only running and error mark
+     themselves. The classes are `is-*` prefixed because a bare `error` here
+     collided with the page's `.error` card rule (see .turn.error above). */
+  .toolchip .chip-status { display: inline-block; width: 1.1em; color: var(--dim); }
+  .toolchip .chip-status.is-ok { color: var(--ok); }
+  .toolchip .chip-status.is-error { color: var(--error); }
+  /* A DRAWN ring, not a spinning glyph: "◜" rotated about the line box's centre
+     rather than its own, so it orbited — a quarter-circle swinging around a
+     point below itself, which reads as a glitch rather than as progress. This
+     is a real 9px circle with one accent arc, rotating about its own centre. */
+  .toolchip .chip-status.is-running {
+    width: 9px;
+    height: 9px;
+    margin: 0 4px 0 1px;
+    border: 1.5px solid var(--border-strong);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    display: inline-block;
+    vertical-align: -1px;
+    animation: chipspin .7s linear infinite;
+  }
+  @keyframes chipspin { to { transform: rotate(360deg); } }
+  @media (prefers-reduced-motion: reduce) {
+    .toolchip .chip-status.is-running { animation: none; }
+  }
+  /* The tool NAME is a label, not the headline: what the user scans a
+     transcript for is the path or the command beside it, and fifteen accent
+     names down the left made the accent meaningless. --dim + 600 keeps it
+     readable as the row's key without competing with its value. */
+  .toolchip .chip-name { color: var(--dim); font-weight: 600; }
+  /* The summary's value half — a path, a command, a count — is machine text, so
+     it is set in the mono stack the body uses. Same string, same shape, whether
+     the chip is open or closed. */
+  .toolchip .chip-sub {
+    color: var(--dim);
+    margin-left: 6px;
+    font-family: "SF Mono", Menlo, Monaco, "Cascadia Mono", monospace;
+    font-size: 12px;
+  }
+  .toolchip .chip-label {
+    color: var(--dim); font-size: 12px; margin-top: 6px; word-break: break-word;
+  }
+  /* The full path, WRAPPED — the one place a clipped path is recoverable. The
+     summary row keeps the filename (see .chip-path) but a 120-character path
+     still loses its middle there, and the middle is where the repo, the worktree
+     and the package live. Mono because it is machine text, and `word-break:
+     break-word` (inherited above) because a path has no spaces to break at. */
+  .toolchip .chip-label.chip-label-path {
+    font-family: "SF Mono", Menlo, Monaco, "Cascadia Mono", monospace;
+    color: var(--faint);
+  }
+  /* A flag that changes what the call DID (`replace_all`), as its own badge —
+     it used to be parenthetical text glued to a path the summary row already
+     showed, which read as part of the filename. */
+  .toolchip .chip-flag {
+    display: inline-block;
+    margin-top: 6px;
+    padding: 0 7px;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: .03em;
+    color: var(--dim);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+  }
+  /* WRAPPED, not scrolled. A tool's output is a wall of lines of unknown width
+     (a stack trace, a `ls -la`, a JSON dump) and a horizontal scrollbar hides
+     the end of every one of them behind a gesture nobody makes — the text is
+     there but unread. The radius steps down to 8px inside an 8px-rounded chip:
+     a 12px child corner inside a smaller parent corner reads as a mistake. */
+  .toolchip .chip-body pre {
+    margin: 6px 0 2px;
+    max-height: 260px;
+    overflow: auto;
+    border-radius: 8px;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  /* A diff is read as BANDS: one span per line, each a block, so the +/- colour
+     covers the whole row instead of stopping where the text does (the old
+     inline spans left ragged right edges that made a diff look like highlighted
+     prose). The pre gives up its side padding and the lines take it back, so a
+     band runs the full width of the box. Clipped at 14 lines with a fade at the
+     bottom edge — a 400-line Edit must not own the whole viewport, and a hard
+     cut with no cue reads as "that was the whole change". */
+  .toolchip pre.diff {
+    white-space: pre-wrap;
+    word-break: break-word;
+    padding: 8px 0;
+    max-height: calc(14 * 1.55em);   /* CHIP_DIFF_CLIP_LINES, in JS */
+  }
+  /* The fade is on a CLASS, not on every diff: a mask is painted on the element
+     box whether or not there is anything below it, so an unconditional one would
+     dissolve the last line of a two-line diff. fillToolChipBody adds `clipped`
+     when the diff has more lines than the clip above can show — the only case
+     where a hard bottom edge would read as "that was the whole change". */
+  .toolchip pre.diff.clipped {
+    /* Masks read only the alpha channel, so `black` is not a theme colour —
+       named to satisfy the no-hex-outside-palettes gate (test_theme.py). */
+    mask-image: linear-gradient(to bottom, black calc(100% - 24px), transparent);
+    -webkit-mask-image: linear-gradient(to bottom, black calc(100% - 24px), transparent);
+  }
+  .toolchip pre.diff > span {
+    display: block;
+    padding: 0 12px;
+    min-height: 1.55em;
+  }
+  .diff-add { color: var(--diff-add-fg); background: var(--diff-add-bg); }
+  .diff-del { color: var(--diff-del-fg); background: var(--diff-del-bg); }
+  /* Pinned while the pre scrolls: absolutely positioned inside a scroll
+     container, the copy button is positioned against the CONTENT, so it slid
+     out of the frame the moment a long output was scrolled — the affordance
+     vanished exactly when the block was big enough to want it. So the STICKY box
+     is this zero-height wrapper (attachCodeCopy puts it first in flow, which is
+     where a sticky box has to start to be held at the top of a scrollport), and
+     the button is absolutely positioned inside it — see .copywrap for why the
+     button itself is not the sticky one. */
+  .assistant .toolchip .chip-body pre .copywrap,
+  .perm .toolchip .chip-body pre .copywrap {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+  }
+  /* ...and the wrapper reserves NO space. The button used to be `float: right`
+     itself, which shortens the first line box by a button's width whether or not
+     the button is drawn — with `opacity: 0` the payload's first line was simply
+     60px narrower than every line under it, permanently, for a control nobody
+     could see. A `height: 0` block generates no line box and no float intrusion,
+     so the payload starts at the pre's own padding edge; `overflow: visible` lets
+     the button paint outside it; and being the sticky (i.e. positioned) box makes
+     it the containing block the absolute button resolves against. The button is
+     not the sticky box because a sticky box is confined to its containing block:
+     inside a zero-height float it would have nowhere to travel and would scroll
+     away with the content, which is the bug this whole seam exists to fix. */
+  .assistant pre .copywrap,
+  .perm pre .copywrap { display: block; height: 0; overflow: visible; }
+  /* The diff's per-line band rule would otherwise give the wrapper a line's
+     worth of height and a line's padding — it is a `> span` like the lines are. */
+  .toolchip pre.diff > span.copywrap { min-height: 0; padding: 0; }
+  .toolchip .chip-todo { font-size: 13px; }
+  .toolchip .chip-todo.done { color: var(--dim); text-decoration: line-through; }
+  /* A plan, in the chip that RECORDS it (the card is the live surface; on a
+     restored transcript the card is gone and this is the only copy). Prose, so it
+     borrows the plan card's own typography — `.plan-body`'s rules are unscoped
+     for exactly this reason — and only the card's box furniture is left behind. */
+  .toolchip .chip-plan { font-size: 13px; margin-top: 6px; }
+  .toolchip .chip-plan > :first-child { margin-top: 0; }
+  .toolchip .chip-plan > :last-child { margin-bottom: 0; }
+  /* A question and its options, as the transcript record of what was asked. The
+     option rows keep their leading spaces (`pre-wrap`) because the indent is what
+     makes them read as options OF the question above them, and every string here
+     is model-authored text put in through textContent — never markdown. */
+  .toolchip .chip-ask-q { font-size: 13px; margin-top: 10px; word-break: break-word; }
+  .toolchip .chip-ask-o {
+    margin-top: 2px;
+    color: var(--dim);
+    font-size: 12px;
+    font-family: "SF Mono", Menlo, Monaco, "Cascadia Mono", monospace;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  .toolchip .chip-img {
+    display: block; max-width: 100%; border-radius: 8px; margin-top: 6px;
+  }
+  .thinking > summary {
+    cursor: pointer; color: var(--faint); font-size: 12px; font-style: italic;
+    transition: color .12s ease-out;
+  }
+  .thinking > summary:hover { color: var(--dim); }
+  .thinking .thinking-body {
+    color: var(--dim);
+    border-left: 2px solid var(--border-strong);
+    padding-left: 10px;
+    margin-top: 4px;
+  }
+  /* Opening a chip or a thinking block reveals its body in one short beat, so
+     the eye follows what appeared instead of re-finding it after a jump.
+     Opacity + 2px of travel only (no height animation: <details> has no
+     animatable open height, and faking one janks a 400ms-repainting transcript),
+     inside the reduced-motion guard — with motion off the body simply appears,
+     which is the same information without the movement. */
+  @media (prefers-reduced-motion: no-preference) {
+    .toolchip[open] > .chip-body,
+    .thinking[open] > .thinking-body { animation: reveal .14s ease-out; }
+  }
+  @keyframes reveal {
+    from { opacity: 0; transform: translateY(2px); }
+    to { opacity: 1; transform: none; }
+  }
 
   /* ── composer (shared by home + chat) ── */
   .composer {
@@ -897,17 +1428,29 @@
   }
   #chat.home #footnote { display: none; }
 
-  /* markdown inside assistant turns */
-  .assistant b, .assistant strong { color: var(--fg-strong); font-weight: 600; }
-  .assistant em { font-style: italic; }
-  .assistant code {
+  /* ── markdown, in the TWO places rendered markdown lands ──
+     `.assistant` (a reply) and `.plan-body` (a plan card's body, which
+     buildPlanCard runs through the same renderMd funnel — D248). Every rule
+     below is dualled for the same reason the hljs and .copybtn overrides above
+     are: an `.assistant`-only markdown rule left a plan's headings, lists,
+     tables and inline code completely unstyled — UA defaults (a 2em h1, 40px
+     list indents, borderless tables) inside a card that is otherwise 13px
+     prose. `pre`/`pre code.hljs`/`.copybtn` are NOT dualled here on purpose:
+     `.perm pre` already boxes a plan's code blocks, and a second `.plan-body
+     pre` rule of equal specificity would be a source-order coin flip. */
+  .assistant b, .assistant strong,
+  .plan-body b, .plan-body strong { color: var(--fg-strong); font-weight: 600; }
+  .assistant em, .plan-body em { font-style: italic; }
+  .assistant code,
+  .plan-body code {
     background: var(--code-bg);
     color: var(--code-fg);
     border-radius: 5px;
     padding: 1px 5px;
-    font-size: 12.5px;
+    font-size: 13px;
   }
   .assistant pre {
+    position: relative;  /* anchors .copybtn, top-right */
     background: var(--pre-bg);
     border: 1px solid var(--border);
     border-radius: 12px;
@@ -915,14 +1458,132 @@
     margin: 8px 0;
     overflow-x: auto;
     white-space: pre;
-    font-size: 12.5px;
+    font-size: 13px;
     line-height: 1.55;
   }
-  .assistant pre code { background: transparent; color: var(--pre-fg); padding: 0; }
-  .assistant .h { color: var(--fg-strong); font-weight: 600; font-size: 15px; }
-  .assistant .bullet { color: var(--accent); }
-  .assistant a { color: var(--link); text-decoration: none; }
-  .assistant a:hover { text-decoration: underline; }
+  .assistant pre code, .plan-body pre code {
+    background: transparent; color: var(--pre-fg); padding: 0;
+  }
+  /* vendor/hljs.css ships its own `pre code.hljs{padding:1em;overflow-x:auto}`
+     (unmodified github/github-dark rules) — its <link> lands after this
+     inline <style> at runtime and would otherwise win the cascade over the
+     padding:0 above, stacking an extra 1em of padding AND nesting a second
+     horizontal scrollbar inside this pre's own overflow-x:auto. Needs two
+     overrides per scope, not one: the dark/default vendor rule is bare `pre
+     code.hljs` (1 class' worth of specificity: .assistant+.hljs, or
+     .perm+.hljs, beats it), but the light-theme vendor rule is
+     `:root[data-theme="light"] pre code.hljs` — :root + [data-theme="light"]
+     + .hljs is 3 classes' worth, which the bare override does NOT beat (2 < 3,
+     so on light theme the vendor rule still wins and the bug reproduces
+     there). The light rules below match that scope one class richer
+     (:root[data-theme="light"] + .assistant|.perm + .hljs = 4), so they
+     provably outrank it on specificity alone — no dependence on which
+     stylesheet the browser loads/parses later.
+
+     BOTH scopes, because a code block reaches the page through two funnels:
+     the assistant transcript, and `buildPlanCard`, which renders `input.plan`
+     through the same renderMd + attachCodeCopy pair inside a `.perm` card
+     (D248). An `.assistant`-only override left a plan's code blocks with the
+     vendor padding unopposed — the exact bug this comment describes,
+     reintroduced one call site over. */
+  .assistant pre code.hljs,
+  .perm pre code.hljs { padding: 0; overflow-x: visible; }
+  :root[data-theme="light"] .assistant pre code.hljs,
+  :root[data-theme="light"] .perm pre code.hljs { padding: 0; overflow-x: visible; }
+  /* Copy button: hidden until the pre is hovered (or focused, keyboard-only
+     users get no hover) — a permanently-visible button on every code block
+     is noise the eye has to filter on every single message. Scoped to both
+     funnels for the same reason as the hljs overrides above: attachCodeCopy
+     runs on a plan card too, and an unscoped `.copybtn` there is an unstyled
+     inline `copy` word shoved into the middle of the plan's prose. Both
+     `.assistant pre` and `.perm pre` set `position: relative`, which is what
+     the `position: absolute` here is anchored to. */
+  .assistant pre .copybtn,
+  .perm pre .copybtn {
+    position: absolute;
+    top: 6px;
+    right: 6px;
+    opacity: 0;
+    transition: opacity .12s;
+    font: inherit;
+    font-size: 11px;
+    padding: 3px 9px;
+    border: 1px solid var(--border-strong);
+    border-radius: 999px;
+    background: var(--surface);
+    color: var(--dim);
+    cursor: pointer;
+  }
+  .assistant pre:hover .copybtn,
+  .assistant pre .copybtn:focus-visible,
+  .perm pre:hover .copybtn,
+  .perm pre .copybtn:focus-visible { opacity: 1; }
+  .assistant pre .copybtn:hover,
+  .perm pre .copybtn:hover { color: var(--fg); border-color: var(--faint); }
+  /* GFM tables (marked) — borders only, the assistant column is narrow
+     enough that anything fancier just fights word-break. Full width, because a
+     shrink-to-fit table in a prose column reads as a floating fragment, and
+     roomier cells: 4px of vertical padding put the rows closer together than
+     the text inside them was tall. */
+  .assistant table,
+  .plan-body table {
+    border-collapse: collapse;
+    margin: 8px 0;
+    font-size: 13px;
+    width: 100%;
+  }
+  .assistant th, .assistant td,
+  .plan-body th, .plan-body td {
+    border: 1px solid var(--border);
+    padding: 6px 10px;
+    text-align: left;
+  }
+  .assistant th, .plan-body th { color: var(--fg-strong); background: var(--surface); }
+  /* marked emits real h1-h4/ul/ol/li/blockquote now — the old renderMd's
+     hand-rolled `.h`/`.bullet` span markup (and this CSS's old targets of
+     the same names) is gone with it.
+     A LADDER, not one size four times over: every heading was 15px/600, so a
+     reply's h1 and its h3 were the same object and the document had no
+     structure to skim — the only cue left was the text itself. Four steps,
+     each a clear notch apart at this reading size, with h4 dropping to --dim
+     because by the fourth level the useful signal is "this is a sub-label",
+     not "look here". */
+  .assistant h1, .plan-body h1 {
+    color: var(--fg-strong); font-weight: 600; font-size: 17px;
+    letter-spacing: -.01em; margin: 18px 0 6px;
+  }
+  .assistant h2, .plan-body h2 {
+    color: var(--fg-strong); font-weight: 600; font-size: 15.5px; margin: 18px 0 6px;
+  }
+  .assistant h3, .plan-body h3 {
+    color: var(--fg-strong); font-weight: 600; font-size: 14px; margin: 18px 0 6px;
+  }
+  .assistant h4, .plan-body h4 {
+    color: var(--dim); font-weight: 600; font-size: 13px; margin: 18px 0 6px;
+  }
+  /* Every paragraph marked emits is a real <p>, whose UA default margin is 1em
+     — too much in a column this narrow, while the old 6px was too little for
+     the heading ladder above to breathe against. Zeroed at the two ends of a
+     body so a reply does not float inside its own bubble (the same rule `.perm
+     .plan-body` already applies to itself), and zeroed for whatever element
+     comes first — a turn that opens on a heading was starting 18px down. */
+  .assistant p, .plan-body p { margin: 12px 0; }
+  .assistant .body > :first-child, .seg-text > :first-child { margin-top: 0; }
+  .assistant .body > p:last-child, .seg-text > p:last-child { margin-bottom: 0; }
+  .assistant ul, .assistant ol,
+  .plan-body ul, .plan-body ol { margin: 8px 0; padding-left: 22px; }
+  .assistant li, .plan-body li { margin: 2px 0; }
+  /* The bullets are punctuation, not content: in the accent they were fifteen
+     orange dots pulling the eye down the left margin of every list. */
+  .assistant li::marker, .plan-body li::marker { color: var(--faint); }
+  .assistant blockquote,
+  .plan-body blockquote {
+    margin: 8px 0; padding: 2px 0 2px 12px;
+    border-left: 3px solid var(--border-strong);
+    color: var(--dim);
+  }
+  .assistant a, .plan-body a { color: var(--link); text-decoration: none; }
+  .assistant a:hover, .plan-body a:hover { text-decoration: underline; }
   .cursor { color: var(--accent); animation: blink 1s step-end infinite; }
   @keyframes blink { 0%,49%{opacity:1} 50%,100%{opacity:0} }
 
@@ -1551,6 +2212,48 @@ fused.autoReload(false);
 // The agent is this template's own copy (templates are self-contained, no
 // cross-template imports).
 const AGENT = "./agent.py";
+
+// ── vendored markdown libs (marked/DOMPurify/hljs), same relative-path style
+// as tableau/template.html:364 — templates render at /render?path=…, so a
+// relative <script src> here would resolve against /render, not this
+// template's own directory; folding this template's own absolute directory
+// into the path (fused.rawUrl(BASE_DIR + rel) instead of a bare relative rel)
+// is what makes it resolve correctly regardless.
+const HTML_PATH = new URLSearchParams(window.location.search).get("path") || "";
+const BASE_DIR = HTML_PATH.slice(0, Math.max(HTML_PATH.lastIndexOf("/"), HTML_PATH.lastIndexOf("\\")) + 1);
+const loadScript = (rel) => new Promise((ok, bad) => {
+  const s = document.createElement("script");
+  s.src = fused.rawUrl(BASE_DIR + rel);
+  s.onload = ok; s.onerror = () => bad(new Error("failed to load " + rel));
+  document.head.appendChild(s);
+});
+{
+  const hljsTheme = document.createElement("link");
+  hljsTheme.rel = "stylesheet";
+  hljsTheme.href = fused.rawUrl(BASE_DIR + "vendor/hljs.css");
+  document.head.appendChild(hljsTheme);
+}
+// Fire-and-forget, not gating anything below: nothing in this file calls
+// renderMd() synchronously at boot — every call site sits downstream of an
+// `await fused.runPython(...)` round trip (the poll loop, resumeRun, the
+// boot-time run probe), which dwarfs the time to load three small
+// same-origin files. Unlike tableau/usd this script isn't wrapped in its own
+// async boot IIFE to `await` this — that would mean restructuring the whole
+// file, out of scope here.
+//
+// A failed load must not fail SILENTLY: renderMd()'s own fallback (see
+// below) keeps a reply from going blank, but the user still needs to know
+// markdown is degraded — addError() is a plain function declaration,
+// hoisted, so it's callable here even though it's defined later in the file.
+(async () => {
+  try {
+    await loadScript("vendor/marked.min.js");
+    await loadScript("vendor/purify.min.js");
+    await loadScript("vendor/highlight.min.js");
+  } catch (err) {
+    addError("Markdown libraries failed to load (" + err.message + ") — replies will show as plain text.");
+  }
+})();
 
 const log = document.getElementById("log");
 const logwrap = document.getElementById("logwrap");
@@ -4128,9 +4831,14 @@ const EFFORTS = ["", "low", "medium", "high", "xhigh", "max"];
 // How much Claude may do without stopping for a card. Values are agent.py's
 // PERMISSION_MODES keys; the labels say what the user gets. `auto` is a
 // broader opt-in, NOT a blanket one — Claude Code's own classifier judges each
-// request and still escalates what it won't vouch for.
-const PERMISSION_MODES = ["prompt", "acceptEdits", "auto"];
+// request and still escalates what it won't vouch for. `plan` is the other end:
+// the CLI is expected to hold off touching anything until a plan card is
+// approved (its own enforcement, not verified here in headless mode — an
+// ordinary card can still surface and still stays answerable while planning),
+// so it reads best leading the list.
+const PERMISSION_MODES = ["plan", "prompt", "acceptEdits", "auto"];
 const PERMISSION_LABELS = {
+  plan: "plan first",
   prompt: "ask every time",
   acceptEdits: "auto-accept edits",
   auto: "Claude decides",
@@ -4357,6 +5065,27 @@ function addAssistant(text) {
   return d;
 }
 
+// One FINISHED assistant turn, from whatever the payload carries: its
+// `segments` when it has them — the authoritative transcript, tool chips and
+// all — and its flat `text` otherwise (an error path, or a transcript recorded
+// before segments existed). Never both: the text segments join back to exactly
+// that string, so rendering both would print the reply twice.
+//
+// Four callers — history restore, the two re-attach repair branches, and the
+// poll loop's typer-less tail — all rendering a turn nobody is streaming, which
+// is why there is no typer here and why every segment renders statically.
+// Callers run attachCodeCopy themselves (history does one pass over the whole
+// log, the others one per turn). This is the ONLY function outside makeTyper,
+// buildTextView, buildThinkingView and buildPlanCard that may put renderMd
+// output into an innerHTML; a test enumerates that list (D246).
+function addAssistantTurn(text, segments) {
+  const turn = addAssistant("");
+  const segs = Array.isArray(segments) ? segments : [];
+  if (segs.length) renderSegments(turn.lastChild, segs, {});
+  else turn.lastChild.innerHTML = renderMd(text || "");
+  return turn;
+}
+
 function addError(text) {
   const d = document.createElement("div");
   d.className = "turn error";
@@ -4397,6 +5126,60 @@ const WHOLE_TOOL_GRANTABLE = new Set([
   "Edit", "Write", "Read", "Glob", "Grep", "NotebookEdit",
 ]);
 
+// Modes a card may switch the RUNNING session to. Mirrors SWITCHABLE_MODES in
+// agent.py (which drops anything else before it is latched) and in
+// permission_server.py (which re-validates before the CLI is told); a test holds
+// all four copies together. Read here by the plan card, which sends the picker's
+// current mode as the one the session should LAND in once the plan is approved —
+// so it has to know which of them the bridge will actually honour, and
+// `bypassPermissions` is absent from this list for the same reason it is absent
+// from the picker.
+const SWITCHABLE_MODES = new Set(["acceptEdits", "auto"]);
+
+// The two tools whose cards are not approvals — see buildQuestionCard (an answer,
+// not a verdict) and buildPlanCard (a plan to approve or send back). Both mirror
+// agent.py's constants, which are where the special handling is enforced.
+const PLAN_TOOL = "ExitPlanMode";
+const ANSWERABLE_TOOL = "AskUserQuestion";
+
+// Mirrors agent.py's NOTE_LIMIT — set as the note textarea's `maxLength`, so an
+// honest user typing a note never reaches the server-side cut at all; a test
+// holds the two numbers together (D146).
+const PLAN_NOTE_LIMIT = 2000;
+
+// An Edit's `old_string`/`new_string` as one `-`/`+` marked block — the shape a
+// diff is read in. TWO call sites and therefore its own function: the approval
+// card (below) asks "shall I make this change", the transcript's Edit chip says
+// "this change was made", and the two showing the same edit differently would
+// be a bug that only ever surfaces as confusion. Non-strings are JSON-encoded
+// rather than coerced, same rule as `str` in summarizePermission: a stray
+// object must read as its contents, never as "[object Object]".
+function formatEditDiff(input) {
+  const inp = input && typeof input === "object" ? input : {};
+  const str = (v) => (typeof v === "string" ? v : v === undefined || v === null ? "" : JSON.stringify(v));
+  const mark = (v, ch) => str(v).split("\n").map((line) => ch + " " + line).join("\n");
+  return mark(inp.old_string, "-") + "\n" + mark(inp.new_string, "+");
+}
+
+// A tool's name as a HUMAN reads it. An MCP tool arrives on the wire as
+// `mcp__<server>__<tool>` — three underscores of protocol in a row whose useful
+// half is the last segment, and in a narrow column the prefix is what gets the
+// space while the verb is what gets clipped. Rendered "<server>: <tool>", with
+// the tool half's underscores back to spaces. Everything else is returned
+// untouched: the CLI's own tools are already the names the user knows.
+//
+// TWO call sites (the transcript's chip and the approval card) on purpose: the
+// same call named two different things on one screen is a bug that only ever
+// shows up as confusion. The RAW wire name is never LOST at either site — it
+// rides along as the element's `title`, because the wire name is what an Allow
+// actually authorises, and both cards still print the whole input verbatim.
+function prettyToolName(name) {
+  const raw = String(name === undefined || name === null ? "" : name);
+  const m = /^mcp__(.+?)__(.+)$/.exec(raw);
+  if (!m) return raw;
+  return m[1].replace(/_+/g, " ") + ": " + m[2].replace(/_+/g, " ");
+}
+
 // What the user is actually being asked to allow. Every field goes in through
 // textContent — tool input is model-authored text, never parsed as markup.
 // NOTHING here truncates: an Allow hands the tool its input verbatim, so a
@@ -4406,7 +5189,6 @@ const WHOLE_TOOL_GRANTABLE = new Set([
 function summarizePermission(tool, input) {
   const inp = input && typeof input === "object" ? input : {};
   const str = (v) => (typeof v === "string" ? v : v === undefined || v === null ? "" : JSON.stringify(v));
-  const mark = (v, ch) => str(v).split("\n").map((line) => ch + " " + line).join("\n");
 
   const used = [];
   const show = (k) => {
@@ -4426,8 +5208,13 @@ function summarizePermission(tool, input) {
     case "Edit": {
       const path = show("file_path");
       show("replace_all");  // rendered as the annotation below, so it is covered
+      // Marked as covered here, rendered by formatEditDiff — which reads the
+      // raw input, so `show`'s only job on these two is the bookkeeping that
+      // keeps them out of the leftover dump.
+      show("old_string");
+      show("new_string");
       return out(path + (inp.replace_all ? "  (every occurrence)" : ""),
-                 mark(show("old_string"), "-") + "\n" + mark(show("new_string"), "+"));
+                 formatEditDiff(inp));
     }
     case "Write":
       return out(show("file_path"), show("content"));
@@ -4470,7 +5257,13 @@ function permChoices(tool, label, liveMode) {
   if (WHOLE_TOOL_GRANTABLE.has(tool)) {
     choices.push(["Allow all " + label + " in this reply", "allow", "session", "", ""]);
   }
-  if ((liveMode || DEFAULT_PERMISSION) !== "auto") {
+  // Never on an ordinary card while the run is still PLANNING: this button's
+  // whole job is to loosen a strict mode via `setMode`, and doing that from a
+  // side-door tool card would leave plan mode through a door that is not the
+  // plan card itself — the one place that is actually supposed to decide it.
+  // (Whether an ordinary card can even appear mid-plan is the CLI's call, not
+  // verified here — see PLAN_TOOL's comment; this guard holds either way.)
+  if ((liveMode || DEFAULT_PERMISSION) !== "auto" && liveMode !== "plan") {
     choices.push(["Allow, and let Claude decide from here", "allow", "once", "auto", ""]);
   }
   choices.push(["Deny", "deny", "once", "", ""]);
@@ -4478,8 +5271,17 @@ function permChoices(tool, label, liveMode) {
 }
 
 function buildPermCard(p, run_id, liveMode) {
+  // A question is not a permission: there is nothing to allow, only something to
+  // answer. A plan is a third thing again — one to approve or send back. Same
+  // handle ({el, resolve}) for all three, so syncPermissions cannot tell them
+  // apart — the difference is entirely in what the card can send.
+  if (p.tool === ANSWERABLE_TOOL) return buildQuestionCard(p, run_id);
+  if (p.tool === PLAN_TOOL) return buildPlanCard(p, run_id);
   const toolName = p.tool || "a tool";
-  const label = toolName.length > 28 ? toolName.slice(0, 27) + "…" : toolName;
+  // The DISPLAY name is humanized (see prettyToolName); the wire name stays on
+  // the element as its title, and the payload below is untouched either way.
+  const pretty = prettyToolName(toolName);
+  const label = pretty.length > 28 ? pretty.slice(0, 27) + "…" : pretty;
 
   const el = document.createElement("div");
   el.className = "turn perm";
@@ -4487,7 +5289,8 @@ function buildPermCard(p, run_id, liveMode) {
   head.className = "perm-head";
   const tool = document.createElement("span");
   tool.className = "tool";
-  tool.textContent = toolName;
+  tool.textContent = pretty;
+  if (pretty !== toolName) tool.setAttribute("title", toolName);
   head.append("Claude wants to use ", tool);
   el.appendChild(head);
 
@@ -4526,6 +5329,9 @@ function buildPermCard(p, run_id, liveMode) {
     shown = key;
     actions.remove();
     el.classList.add("resolved");
+    // Past tense once it is history: a card still reading "Claude wants to use"
+    // above a verdict looks like a prompt that is somehow still waiting.
+    head.replaceChildren("Claude wanted to use ", tool);
     if (decision === "allow") {
       status.className = "perm-status allow";
       status.textContent = mode
@@ -4576,6 +5382,406 @@ function buildPermCard(p, run_id, liveMode) {
     actions.appendChild(b);
   });
 
+  return { el, resolve };
+}
+
+// AskUserQuestion — the model asking the USER something, parked on the same
+// bridge as an approval because the CLI routes it through the prompt tool (it is
+// gated on `requiresUserInteraction`, so `auto` and `acceptEdits` do not
+// auto-approve it either). What goes back is a CHOICE, not a verdict:
+//
+//   * every control here sends `decide` with `answers`, a record keyed by the
+//     exact question text whose value is the chosen option's `label` (multiple
+//     labels joined with ", "). That is the shape the CLI honours — measured;
+//   * there is deliberately no plain Allow: an allow with no answers reaches the
+//     model as "The user did not answer the questions", i.e. a card the user
+//     answered and a model that learnt nothing. A deny carrying the text instead
+//     arrives as `is_error`, so that is not the channel either;
+//   * no "allow all in this reply" and no mode switch — a question is one
+//     exchange, and answering it says nothing about how much to auto-approve.
+//     agent.py enforces both by tool name rather than trusting this card.
+//
+// Every string on the card is model-authored (the question, the labels, the
+// descriptions) and goes in through textContent, whole: the option labels are the
+// only thing that can be sent, so an option the user cannot read properly is an
+// answer they did not mean to give.
+function buildQuestionCard(p, run_id) {
+  const input = p.input && typeof p.input === "object" ? p.input : {};
+  const raw = Array.isArray(input.questions) ? input.questions : [];
+  const optionsOf = (q) => (Array.isArray(q.options) ? q.options : []).filter(
+    (o) => o && typeof o === "object" && typeof o.label === "string" && o.label);
+  const usable = (q) => q && typeof q === "object" && typeof q.question === "string"
+                        && q.question && optionsOf(q).length > 0;
+  // ALL of them, or none: the answer record is validated as a whole on the way
+  // back, so one unreadable question means nothing can be sent — and a card that
+  // renders the readable half only would hide that.
+  const questions = raw.filter(usable);
+  // Two questions with the SAME text is the third way a payload is unanswerable,
+  // and the quietest: `answers` is keyed by question text, so fromEntries would
+  // collapse the pair (last one wins), the validator rejects a duplicate key it
+  // cannot attribute, and the request would latch a permanent deny — a card full
+  // of live controls that could only ever say no.
+  const answerable = questions.length > 0 && questions.length === raw.length
+    && new Set(questions.map((q) => q.question)).size === questions.length;
+  // One question, one choice → each option IS the button and a click answers it.
+  // Otherwise an answer is only complete once every question has one, so the
+  // options become tickable rows with a submit.
+  const oneShot = answerable && questions.length === 1 && !questions[0].multiSelect;
+
+  const el = document.createElement("div");
+  el.className = "turn perm ask";
+  const head = document.createElement("div");
+  head.className = "perm-head";
+  head.textContent = "Claude is asking you";
+  el.appendChild(head);
+
+  const status = document.createElement("div");
+  status.className = "perm-status";
+  const controls = [];   // removed once the card resolves
+  const widgets = [];    // disabled while an answer is in flight
+  const blocks = [];     // { question, picked() }
+
+  async function post(fields, optimistic) {
+    widgets.forEach((w) => { w.disabled = true; });
+    status.className = "perm-status";
+    status.textContent = "sending…";
+    try {
+      const res = await fused.runPython(AGENT, Object.assign({
+        action: "decide", run_id, request_id: p.id, scope: "once",
+      }, fields), { key: null });
+      if (res && res.error) throw new Error(res.error);
+      // agent.py answers with what landed on disk (first writer wins), so the
+      // losing half of a double-click shows the answer the tool actually got.
+      resolve((res && res.decision) || fields.decision, "", "",
+              (res && res.answers) || optimistic);
+    } catch (err) {
+      // The subprocess is still blocked, so the controls have to come back.
+      widgets.forEach((w) => { w.disabled = false; });
+      status.className = "perm-status deny";
+      status.textContent = "Could not send that: " + err.message;
+    }
+  }
+
+  // A JSON string, not a nested object: params cross into python string-shaped,
+  // the same way app_state sends its snapshot.
+  const send = (answers) => post(
+    { decision: "allow", answers: JSON.stringify(answers) }, answers);
+  const dismiss = () => post({ decision: "deny" }, null);
+
+  let shown = "";
+  function resolve(decision, scope, mode, answers) {
+    const chosen = answers && typeof answers === "object"
+      ? Object.keys(answers).map((k) => answers[k]).filter((v) => typeof v === "string")
+      : [];
+    const key = decision + "/" + chosen.join(" · ");
+    if (key === shown) return;
+    shown = key;
+    controls.forEach((c) => c.remove());
+    el.classList.add("resolved");
+    head.textContent = "Claude asked you";   // past tense: this one is history
+    if (decision === "allow") {
+      // NOT the allow green: an answer is not an approval (see .perm-status
+      // .chose). The label recedes and the choice carries the contrast — two
+      // nodes, so the colours are CSS and the text is still one string.
+      status.className = "perm-status chose";
+      if (chosen.length) {
+        const val = document.createElement("span");
+        val.className = "val";
+        val.textContent = chosen.join(" · ");
+        status.replaceChildren("✓ You chose: ", val);
+      } else {
+        status.className = "perm-status allow";
+        status.textContent = "✓ Answered";
+      }
+    } else if (decision === "expired") {
+      status.className = "perm-status expired";
+      status.textContent = "◦ Unanswered — the reply ended before you answered";
+    } else {
+      status.className = "perm-status deny";
+      status.textContent = "✗ Not answered";
+    }
+  }
+
+  // label (bold) over description (small), the body of every option either way.
+  function optionText(option) {
+    const wrap = document.createElement("span");
+    const lbl = document.createElement("span");
+    lbl.className = "lbl";
+    lbl.textContent = option.label;
+    wrap.appendChild(lbl);
+    if (typeof option.description === "string" && option.description) {
+      const desc = document.createElement("span");
+      desc.className = "desc";
+      desc.textContent = option.description;
+      wrap.appendChild(desc);
+    }
+    return wrap;
+  }
+
+  function submit() {
+    const pairs = [];
+    for (const block of blocks) {
+      const labels = block.picked();
+      if (!labels.length) {
+        status.className = "perm-status deny";
+        status.textContent = "Pick an answer for every question.";
+        return;
+      }
+      // One string per question — the chosen labels joined with ", ", which is
+      // what the CLI validates against the option list it sent.
+      pairs.push([block.question, labels.join(", ")]);
+    }
+    // fromEntries, not assignment: a question whose text is "__proto__" would
+    // vanish into the prototype setter, exactly as in leftoverInput (D161).
+    send(Object.fromEntries(pairs));
+  }
+
+  if (answerable) {
+    // The questions go in a scroller, and the send button stays outside it. A
+    // four-question card with four options each is ~40 rows tall; unbounded, it
+    // pushed its own "Send answer" off the bottom of the pane — the one control
+    // that finishes the card was the one thing the user could not reach.
+    const scroll = document.createElement("div");
+    scroll.className = "qscroll";
+    el.appendChild(scroll);
+    questions.forEach((q, i) => {
+      const block = document.createElement("div");
+      block.className = "qblock";
+      if (typeof q.header === "string" && q.header) {
+        const chip = document.createElement("div");
+        chip.className = "qhead";
+        chip.textContent = q.header;
+        block.appendChild(chip);
+      }
+      const text = document.createElement("div");
+      text.className = "qtext";
+      text.textContent = q.question;
+      block.appendChild(text);
+
+      const list = document.createElement("div");
+      list.className = "qopts";
+      const ticks = [];
+      optionsOf(q).forEach((option) => {
+        if (oneShot) {
+          const b = document.createElement("button");
+          b.type = "button";
+          b.className = "qopt";
+          b.appendChild(optionText(option));
+          b.onclick = () => send(Object.fromEntries([[q.question, option.label]]));
+          widgets.push(b);
+          list.appendChild(b);
+          return;
+        }
+        const row = document.createElement("label");
+        row.className = "qopt";
+        const box = document.createElement("input");
+        box.type = q.multiSelect ? "checkbox" : "radio";
+        box.name = "q-" + p.id + "-" + i;   // our own id, so it is a safe name
+        row.append(box, optionText(option));
+        widgets.push(box);
+        ticks.push({ box, label: option.label });
+        list.appendChild(row);
+      });
+      block.appendChild(list);
+      scroll.appendChild(block);
+      controls.push(list);
+      blocks.push({
+        question: q.question,
+        picked: () => ticks.filter((t) => t.box.checked).map((t) => t.label),
+      });
+    });
+    // Same rule as an approval card: no input key is invisible. `questions` is
+    // rendered above; anything else the CLI sent (`metadata`, or a field a later
+    // version adds) is printed verbatim rather than assumed unimportant — it
+    // rides back out in updatedInput either way.
+    const extra = leftoverInput(input, ["questions"]);
+    if (extra) {
+      const pre = document.createElement("pre");
+      pre.textContent = JSON.stringify(extra, null, 2);
+      el.appendChild(pre);
+    }
+  } else {
+    // Nothing here can be answered, so say that and show what arrived verbatim
+    // rather than offering controls that could only send an invalid answer.
+    const note = document.createElement("div");
+    note.className = "perm-sub";
+    note.textContent = "This question did not arrive in a shape this window can "
+                     + "answer — dismissing it lets the reply continue.";
+    const pre = document.createElement("pre");
+    pre.textContent = JSON.stringify(input, null, 2);
+    el.append(note, pre);
+  }
+
+  if (!oneShot) {
+    const bar = document.createElement("div");
+    bar.className = "perm-actions qsend";
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = answerable ? "primary" : "";
+    b.textContent = answerable ? "Send answer" : "Dismiss";
+    b.onclick = answerable ? submit : dismiss;
+    widgets.push(b);
+    bar.appendChild(b);
+    el.appendChild(bar);
+    controls.push(bar);
+  }
+
+  el.appendChild(status);
+  return { el, resolve };
+}
+
+// ExitPlanMode — the model asking to stop planning and start doing the work. Not
+// an ordinary approval either: what is parked is a PLAN, and the two answers are
+// "go ahead" and "keep planning".
+//
+//   * Approve plan sends a plain `allow`. Nothing else is needed to get moving —
+//     the CLI leaves plan mode itself when it sees one (spiked against 2.1.226:
+//     it emits `system/status permissionMode:"default"` and the tool_result reads
+//     "User has approved your plan…"). A `mode` rides along ONLY when the picker
+//     already sits on a looser mode, which is then the mode the session should
+//     land in; it goes through the same validated channel as the approval card's
+//     escalation, so anything off SWITCHABLE_MODES (bypassPermissions included)
+//     is dropped by agent.py rather than reaching the CLI;
+//   * Keep planning sends a `deny` plus the optional note the user typed. The
+//     SENTENCE the model reads is composed by agent.py — the note is the only
+//     part this card contributes, it travels as a param, and it is never written
+//     back into the page or into any tool input;
+//   * there is no "allow all in this reply": there is one plan, and a session
+//     grant would pre-approve the next one unseen (agent.py enforces it too —
+//     ExitPlanMode is not in WHOLE_TOOL_GRANTABLE).
+//
+// The plan is the ONE payload on any card that is rendered as markdown, because
+// it is the one that genuinely IS markdown — a tool input is bytes off a disk and
+// goes in through textContent, whereas a plan is prose the model wrote for the
+// user to read. It therefore goes through `renderMd` (marked + DOMPurify, the
+// same funnel every reply uses) and nothing else on the card touches innerHTML.
+function buildPlanCard(p, run_id) {
+  const input = p.input && typeof p.input === "object" ? p.input : {};
+  const plan = typeof input.plan === "string" && input.plan ? input.plan : "";
+
+  const el = document.createElement("div");
+  el.className = "turn perm plan";
+  const head = document.createElement("div");
+  head.className = "perm-head";
+  head.textContent = "Claude has a plan";
+  el.appendChild(head);
+
+  if (plan) {
+    const body = document.createElement("div");
+    body.className = "plan-body";
+    body.innerHTML = renderMd(plan);
+    el.appendChild(body);
+    attachCodeCopy(body);   // a plan quotes code; the copy buttons come with it
+  }
+  // The same disclosure rule as every other card: no input key is invisible.
+  // `plan` is the body above when it is usable; when it is not, it falls into
+  // this dump with everything else, so the card never implies a plan was read.
+  const extra = leftoverInput(input, plan ? ["plan"] : []);
+  if (extra) {
+    const pre = document.createElement("pre");
+    pre.textContent = JSON.stringify(extra, null, 2);
+    el.appendChild(pre);
+  }
+
+  const note = document.createElement("textarea");
+  note.className = "plan-note";
+  note.rows = 2;
+  // Bounded to what agent.py will actually keep (`NOTE_LIMIT`) — the server
+  // still truncates and marks the cut if this is ever bypassed (pasted text
+  // over the limit lands here truncated by the browser itself), but an honest
+  // user typing past the limit should never be the one who finds out later.
+  note.maxLength = PLAN_NOTE_LIMIT;
+  note.setAttribute("aria-label", "Note for revising the plan");
+  note.placeholder = "Optional: what to change (sent with “Keep planning”)";
+  const actions = document.createElement("div");
+  actions.className = "perm-actions";
+  const status = document.createElement("div");
+  status.className = "perm-status";
+  const widgets = [note];
+
+  let shown = "";
+  function resolve(decision) {
+    if (decision === shown) return;
+    shown = decision;
+    note.remove();
+    actions.remove();
+    el.classList.add("resolved");
+    head.textContent = "Claude had a plan";   // past tense: this one is history
+    if (decision === "allow") {
+      status.className = "perm-status allow";
+      status.textContent = "✓ Plan approved";
+    } else if (decision === "expired") {
+      status.className = "perm-status expired";
+      status.textContent = "◦ Unanswered — the reply ended before you decided";
+    } else {
+      // Not a refusal — the other half of a conversation, so it does not read
+      // in the deny red (see .perm.plan .perm-status.deny).
+      status.className = "perm-status deny";
+      status.textContent = "◦ Sent back for revision";
+    }
+  }
+
+  async function send(decision, mode, text) {
+    widgets.forEach((w) => { w.disabled = true; });
+    status.className = "perm-status";
+    status.textContent = "sending…";
+    try {
+      const res = await fused.runPython(AGENT, {
+        action: "decide", run_id, request_id: p.id, decision, scope: "once",
+        mode: mode || "", note: text || "",
+      }, { key: null });
+      if (res && res.error) throw new Error(res.error);
+      // An approval always resolves the picker forward — never only when a
+      // `setMode` rode along. The CLI leaves plan mode the instant it sees the
+      // plain allow (the whole point of the spike), so if the param were left
+      // on "plan" the very next per-turn spawn would silently re-enter it and
+      // plan again, forever, with no card ever explaining why. Land on the
+      // looser mode when the picker actually granted one (`res.mode`, gated on
+      // SWITCHABLE_MODES same as always), "prompt" — the CLI default — when it
+      // did not. "Keep planning" changes nothing here: the session is still
+      // planning, so the picker is left exactly where the user put it, and the
+      // authoritative READ of what landed (`res.decision`), not the click,
+      // decides whether this ran — the losing half of a double-click must not
+      // reset the picker for an approval that never actually took.
+      if ((res && res.decision) === "allow") {
+        fused.params.set("permission", res.mode || "prompt");
+        syncSelects();
+      }
+      // agent.py answers with what landed on disk (first writer wins), so a
+      // double-click renders the verdict the tool actually got.
+      resolve((res && res.decision) || decision);
+    } catch (err) {
+      // The subprocess is still blocked, so the buttons have to come back.
+      widgets.forEach((w) => { w.disabled = false; });
+      status.className = "perm-status deny";
+      status.textContent = "Could not send that: " + err.message;
+    }
+  }
+
+  // Where the session should land once planning is over: the picker's CURRENT
+  // choice, and only when the bridge will honour it. Sitting on "plan first" or
+  // "ask every time" sends no `setMode` at all — the plain allow already leaves
+  // plan mode on its own, and tightening mid-turn is the picker's job, not a
+  // card's — but the picker itself still gets moved off "plan" above, to
+  // "prompt", once the approval lands.
+  const landing = () => {
+    const picked = fused.params.get("permission") || "";
+    return SWITCHABLE_MODES.has(picked) ? picked : "";
+  };
+
+  [["Approve plan", "primary", () => send("allow", landing(), "")],
+   ["Keep planning", "", () => send("deny", "", note.value)],
+  ].forEach(([text, cls, onclick]) => {
+    const b = document.createElement("button");
+    b.type = "button";
+    if (cls) b.className = cls;
+    b.textContent = text;
+    b.onclick = onclick;
+    widgets.push(b);
+    actions.appendChild(b);
+  });
+
+  el.append(note, actions, status);
   return { el, resolve };
 }
 
@@ -4636,7 +5842,10 @@ function syncPermissions(list, run_id, working, liveMode) {
     if (!card.el.isConnected) {
       showPermissionCard(card, working);
     }
-    if (p.decision) card.resolve(p.decision, p.scope, p.mode);
+    // `answers` is only ever set on a question card, and it is why poll carries
+    // it: a frame that re-attaches after the click has to be able to show what
+    // was chosen, not just that something was.
+    if (p.decision) card.resolve(p.decision, p.scope, p.mode, p.answers);
   }
 }
 
@@ -4697,45 +5906,133 @@ function addWorking() {
   };
 }
 
-// ── minimal markdown → HTML, tolerant of unclosed markers mid-stream ──
+// ── real markdown: vendored marked + DOMPurify (vendor/, loaded at boot —
+// see loadScript below), tolerant of an unclosed fence mid-stream (the typer
+// calls this on partial text every animation frame). marked never touches
+// model-authored raw HTML on its own — an `<img onerror=…>` in the model's
+// own reply sails through marked's parser unchanged — so DOMPurify is the
+// only thing standing between marked's output and bodyEl.innerHTML, and
+// every render (partial or final) goes through both, never marked alone. ──
+let _md;  // configured once, lazily — marked.use() mutates shared state
+function _mdSetup() {
+  if (_md) return _md;
+  marked.use({
+    gfm: true, breaks: true,
+    renderer: {
+      // Positional (href, title, text) — the vendored marked@12's actual
+      // renderer-override signature (checked by hand against
+      // vendor/marked.min.js; some marked docs show a token-object shape
+      // that belongs to a later major version and silently no-ops here).
+      link(href, title, text) {
+        // DOMPurify.sanitize() sanitizes HTML fragments, not URLs: fed a
+        // bare string like this href, it just re-serializes it (entity-
+        // encoding any `&` — double-encoding on top of the escape below)
+        // and does nothing to stop a `javascript:` scheme, which comes out
+        // the other side looking like ordinary, harmless text. The href's
+        // real security check is the document-level DOMPurify.sanitize()
+        // in _md below, which does enforce an allowed-URI check on href
+        // attributes. All that's needed here is keeping the raw href from
+        // breaking out of the `"..."` attribute it's interpolated into.
+        const h = (href || "").replace(/&/g, "&amp;").replace(/"/g, "&quot;");
+        return `<a href="${h}" target="_blank" rel="noopener noreferrer">${text}</a>`;
+      },
+    },
+  });
+  _md = (t) => DOMPurify.sanitize(marked.parse(t), {
+    FORBID_TAGS: ["style", "form", "input", "iframe"],
+    ADD_ATTR: ["target", "rel"],
+  });
+  return _md;
+}
 function renderMd(text) {
-  const esc = (s) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-  const inline = (s) => {
-    // pull inline code out first so its contents stay literal
-    const codes = [];
-    return esc(s)
-      .replace(/`([^`]+)`/g, (_, c) => "" + (codes.push(c) - 1) + "")
-      .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
-      .replace(/(^|\W)\*([^*\s][^*]*)\*/g, "$1<em>$2</em>")
-      .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank">$1</a>')
-      .replace(/(^|[^"(\]])(https?:\/\/[^\s)<]+)/g, '$1<a href="$2" target="_blank">$2</a>')
-      .replace(/(\d+)/g, (_, i) => "<code>" + codes[i] + "</code>");
-  };
-
-  const out = [];
-  const parts = text.split(/```/);
-  for (let i = 0; i < parts.length; i++) {
-    if (i % 2 === 1) {  // inside a fence (possibly still open mid-stream)
-      const body = parts[i].replace(/^[\w+-]*\n?/, "");  // drop language tag
-      out.push("<pre><code>" + esc(body) + "</code></pre>");
-      continue;
-    }
-    const lines = parts[i].split("\n").map((line) => {
-      let m;
-      if ((m = line.match(/^(#{1,4})\s+(.*)$/)))
-        return '<span class="h">' + inline(m[2]) + "</span>";
-      if ((m = line.match(/^(\s*)[-*]\s+(.*)$/)))
-        return m[1] + '<span class="bullet">•</span> ' + inline(m[2]);
-      if ((m = line.match(/^(\s*)(\d+)\.\s+(.*)$/)))
-        return m[1] + '<span class="bullet">' + m[2] + ".</span> " + inline(m[3]);
-      return inline(line);
-    });
-    out.push(lines.join("\n"));
+  // Vendor libs failed to load (see the loader's .catch below) or haven't
+  // resolved yet: a ReferenceError here would kill the typer's rAF drain
+  // mid-stream with `raf` already nulled out, so it never resumes and the
+  // reply is left permanently blank with nothing in the DOM to explain why.
+  // `typeof x === "undefined"` never throws even for an undeclared global —
+  // touching the bare identifier `marked`/`DOMPurify` directly would.
+  if (typeof marked === "undefined" || typeof DOMPurify === "undefined"
+      || typeof DOMPurify.sanitize !== "function") {
+    return "<pre>" + text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;") + "</pre>";
   }
-  return out.join("");
+  // Mid-stream tolerance: an odd number of ``` means a fence is still open —
+  // close it so marked doesn't swallow the tail as one giant unterminated
+  // code block while the reply is still arriving.
+  const fences = (text.match(/```/g) || []).length;
+  if (fences % 2 === 1) text += "\n```";
+  return _mdSetup()(text);
+}
+// Copy-to-clipboard + syntax highlighting on every rendered <pre> — wired
+// into the typer's finish() and every static (non-typed) render, NEVER the
+// per-frame streaming path in makeTyper's tick(): hljs.highlightElement is
+// real DOM work repeated ~36 times per reply, and re-guessing a partial
+// fence's language on every frame flickers colors as more text arrives, so
+// it only runs once a reply's text is final.
+function attachCodeCopy(rootEl) {
+  rootEl.querySelectorAll("pre code").forEach((el) => {
+    if (!window.hljs || el.classList.contains("hljs")) return;  // idempotent
+    // Only registered languages: the hljs "common" bundle is missing
+    // plenty marked's `language-xxx` class routinely names (dockerfile,
+    // mermaid, hcl/terraform, powershell, elixir, scala, latex, …), and
+    // highlightElement console.warns once per call for anything it can't
+    // find — getLanguage is the documented way to check first.
+    const lang = (el.className.match(/language-(\S+)/) || [])[1];
+    if (lang && hljs.getLanguage(lang)) { try { hljs.highlightElement(el); } catch {} }
+  });
+  // What a <pre> puts on the clipboard. Three shapes reach this and only the
+  // first is a plain text node: a markdown code block (`<pre><code>`),
+  // renderMd's vendor-less fallback (`<pre>` + text), and an Edit chip's diff —
+  // which is one <span> PER LINE and carries no newline characters at all,
+  // because the spans are `display: block` and a "\n" text node between them
+  // would render as a second, empty line inside every band. Joining them back
+  // here is what keeps a copied diff a diff instead of one run-together line.
+  const copyText = (pre) => {
+    const code = pre.querySelector("code");
+    if (code) return code.textContent;
+    const lines = pre.querySelectorAll(":scope > span");
+    if (lines && lines.length) {
+      return Array.prototype.map.call(lines, (s) => s.textContent).join("\n");
+    }
+    return pre.textContent;
+  };
+  rootEl.querySelectorAll("pre").forEach((pre) => {
+    if (pre.querySelector(".copybtn")) return;
+    // Read the text BEFORE the button joins the tree. `pre.textContent` with the
+    // button already inside it copies the button's own label — every code block
+    // with no <code> child (renderMd's vendor-less fallback, and every tool
+    // chip's payload) copied its contents with a "copy" glued to the end.
+    const text = copyText(pre);
+    const b = document.createElement("button");
+    b.className = "copybtn"; b.textContent = "copy"; b.type = "button";
+    b.onclick = () => { navigator.clipboard.writeText(text); b.textContent = "copied"; setTimeout(() => (b.textContent = "copy"), 1200); };
+    // The button goes in a ZERO-FOOTPRINT WRAPPER, first in flow, and never
+    // straight into the pre. Two requirements meet here: inside a scrolling chip
+    // pre the control has to stay in frame while the payload scrolls (so
+    // something must be `position: sticky`, and a sticky box can only be held at
+    // the top of a scrollport from a flow position at the top of the box), and it
+    // must reserve NO space while it is invisible. The button used to satisfy the
+    // first by being a sticky `float: right` — and a float shortens the first line
+    // box whether or not the float is painted, so every chip's first payload line
+    // was a button's width narrower than the lines under it, permanently, for a
+    // control at `opacity: 0`. The wrapper is `height: 0` (no line box, no float
+    // intrusion), takes the stickiness, and — being positioned — is the
+    // containing block the absolutely positioned button resolves against. See
+    // the .copywrap rules for why the button is not the sticky box itself.
+    const wrap = document.createElement("span");
+    wrap.className = "copywrap";
+    wrap.appendChild(b);
+    if (pre.firstChild) pre.insertBefore(wrap, pre.firstChild);
+    else pre.appendChild(wrap);
+  });
 }
 
 // ── typewriter: polls fill `target`; a rAF loop drains it smoothly ──
+// `bodyEl` may be null — a typer built PARKED, with nothing to stream into
+// yet. That is what a segment transcript needs: the reply's element exists
+// before its first text segment does (the turn may open with a tool call), and
+// which element the prose lands in changes DURING the turn, as new segments
+// push the streaming tail along. See retarget() below; a parked typer draws
+// nothing, not even its cursor.
 function makeTyper(bodyEl) {
   let target = "";
   let shown = 0;
@@ -4744,10 +6041,11 @@ function makeTyper(bodyEl) {
   const cur = document.createElement("span");
   cur.className = "cursor";
   cur.textContent = "▋";
-  bodyEl.after(cur);
+  if (bodyEl) bodyEl.after(cur);
 
   function tick() {
     raf = null;
+    if (!bodyEl) return;  // parked mid-frame (retarget); nothing to draw into
     if (shown > target.length) {
       // Target got rewritten shorter (authoritative final text): without this
       // clamp nothing ever redraws and the frozen frame keeps stale text.
@@ -4767,17 +6065,552 @@ function makeTyper(bodyEl) {
   }
 
   return {
-    update(text) { target = text; if (!raf) raf = requestAnimationFrame(tick); },
-    finish(text) {
+    update(text) {
+      if (!bodyEl) return;  // parked: the tail of this reply is not prose
       target = text;
+      if (!raf) raf = requestAnimationFrame(tick);
+    },
+    finish(text) {
       finished = true;
+      if (!bodyEl) { cur.remove(); return Promise.resolve(); }
+      target = text;
       if (!raf) raf = requestAnimationFrame(tick);
       return new Promise((resolve) => {
-        (function wait() { raf ? requestAnimationFrame(wait) : resolve(); })();
+        (function wait() {
+          if (raf) { requestAnimationFrame(wait); return; }
+          attachCodeCopy(bodyEl.parentElement);
+          resolve();
+        })();
       });
+    },
+    // Point the typer at a DIFFERENT element, or at nothing (`null`). Callers
+    // own the old element from here: whatever fraction of its text had been
+    // drawn stays drawn, so the caller must render it whole first (see
+    // renderSegments, which does exactly that before every retarget). The
+    // counters reset because they measure progress through the NEW element's
+    // text, and the pending frame is cancelled because it would otherwise draw
+    // the old text into the new element.
+    retarget(el) {
+      if (el === bodyEl) return;
+      if (raf) { cancelAnimationFrame(raf); raf = null; }
+      bodyEl = el;
+      target = "";
+      shown = 0;
+      if (el) el.after(cur); else cur.remove();
     },
     abort() { if (raf) cancelAnimationFrame(raf); cur.remove(); },
   };
+}
+
+// ── the tool timeline: one reply's ordered transcript ─────────
+// agent.py's `_segments_from_rows` returns the turn as an ordered list of
+// text / thinking / tool segments (its docstring is the contract; read it
+// before changing anything here). This is the renderer for that list, and the
+// ONE rule that outranks every layout choice below: a tool's input and output
+// are raw bytes — a file's contents, a command's stdout, an MCP server's
+// answer — so they go in through textContent and nothing else, ever. Only
+// `text` and `thinking` segments are prose, and only they see renderMd.
+// Only the two states worth MARKING. `ok` is empty on purpose: success is what
+// almost every row in a transcript is, and a column of fifteen green ticks is a
+// column of decoration the eye has to filter to find the one row that failed.
+// `running` is empty too — the CSS draws that one as a real spinning ring
+// (.chip-status.is-running), because a rotated glyph orbits its line box's
+// centre instead of its own.
+const TOOL_STATUS_GLYPH = { running: "", ok: "", error: "✗" };
+
+// Chips that open themselves. An Edit or a Write IS its diff: hiding it behind
+// a click means the one thing the user most needs to check — what changed in
+// their file — is the one thing they have to hunt for. A TodoWrite is the same
+// case for a different reason: its body IS the plan the agent is working to, it
+// is short and fixed-width, and folded it becomes "3/7 done" — a number with no
+// way to see what the seven are. Everything else (a Read's contents, a Bash
+// command's output) is context you look at when something surprises you, so it
+// stays folded.
+const TOOL_OPEN_BY_DEFAULT = new Set(["Edit", "Write", "TodoWrite"]);
+
+// How many lines of a diff a chip shows before it scrolls. Held together with
+// the `max-height` on `.toolchip pre.diff` (14 * 1.55em, the line height there):
+// this side decides whether the block gets the bottom fade that says "there is
+// more below", so the two numbers being the same is what makes the cue honest.
+const CHIP_DIFF_CLIP_LINES = 14;
+
+// Lines in a string, counting "" as zero (not one): an Edit that only adds
+// text has no removed lines, and "-1" would be a lie about the change.
+function segLineCount(v) {
+  return typeof v === "string" && v !== "" ? v.split("\n").length : 0;
+}
+
+// The one-liner beside the tool name in the chip's summary row, in TWO halves:
+// `lead`, what the call did, and `path`, the file it did it to. Split rather
+// than one string because the row is one clipped line and the halves do not
+// clip the same way — a command or a pattern reads left-to-right and may lose
+// its tail, whereas a path's tail is its FILENAME, and a path clipped from the
+// right ("/Users/…/fused-render-worktrees/claude-template…") names no file at
+// all. The renderer gives `path` its own left-clipping box (.chip-path); the
+// string form below is what everything else reads.
+//
+// Per-tool, because "what did this call DO" is a different question for every
+// tool and a generic answer (the first key of the input, say) is noise for all
+// of them. Always ONE line — this is the <summary> of a <details>, and a newline
+// in it breaks the row — and never the whole input: the chip's BODY is what
+// shows everything, and unlike an approval card (which must show every byte it
+// is asking permission for) this describes a call that already happened.
+function toolChipSummaryParts(seg) {
+  const inp = seg && seg.input && typeof seg.input === "object" ? seg.input : {};
+  const str = (v) => (typeof v === "string" ? v : v === undefined || v === null ? "" : JSON.stringify(v));
+  // First line only, with an ellipsis when there was more — the clip has to be
+  // visible, or a heredoc reads as a one-line command.
+  const line1 = (v) => {
+    const s = str(v).split("\n");
+    return s[0] + (s.length > 1 ? " …" : "");
+  };
+  const pick = (...keys) => {
+    for (const k of keys) if (inp[k]) return line1(inp[k]);
+    return "";
+  };
+  const where = (v) => (str(v) ? "  in " + line1(v) : "");
+  // A summary with no path half. The default: only the file tools have a tail
+  // worth protecting, and a pattern or a URL in a left-clipping box would read
+  // backwards (its own head is the part that identifies it).
+  const lead = (text) => ({ lead: text, path: "" });
+
+  switch (seg && seg.name) {
+    case "Bash":
+      return lead("$ " + line1(inp.command));
+    case "Read":
+    case "NotebookEdit":
+      return { lead: "", path: pick("file_path", "path", "notebook_path") };
+    case "Glob":
+    case "Grep":
+      return lead(line1(inp.pattern) + where(inp.path || inp.glob));
+    case "Edit": {
+      // +added -removed, so the SIZE of the change is legible unopened — and
+      // FIRST, because a path is long enough to be clipped by the summary's
+      // ellipsis and a count that only shows on short paths is a count you
+      // cannot rely on. Fixed-width and always in the same place, so a run of
+      // Edit rows can be scanned as a column of magnitudes.
+      const counts = "+" + segLineCount(inp.new_string)
+                     + " -" + segLineCount(inp.old_string);
+      return { lead: counts, path: pick("file_path") };
+    }
+    case "Write":
+      return { lead: "+" + segLineCount(inp.content), path: pick("file_path") };
+    case "Task":
+      return lead(pick("description", "subagent_type"));
+    case "TodoWrite": {
+      const todos = Array.isArray(inp.todos) ? inp.todos : [];
+      const done = todos.filter((t) => t && t.status === "completed").length;
+      return lead(done + "/" + todos.length + " done");
+    }
+    case "WebFetch":
+    case "WebSearch":
+      return lead(pick("url", "query"));
+    case PLAN_TOOL:
+      // Not the plan's first line: a plan opens with a heading or a preamble
+      // ("Here is what I will do"), which describes nothing. What the row has to
+      // say is that a plan HAPPENED — the body carries the plan itself.
+      return lead("proposed a plan");
+    case ANSWERABLE_TOOL: {
+      // The first question, verbatim. It is the thing the user was asked, and
+      // for the single-question case (much the commonest) it is the whole call.
+      const asked = (Array.isArray(inp.questions) ? inp.questions : []).find(
+        (q) => q && typeof q === "object" && typeof q.question === "string"
+               && q.question);
+      return lead(asked ? line1(asked.question) : "");
+    }
+  }
+  // Unknown tool — every MCP tool, and whatever the CLI grows next. The name
+  // is already in the summary row beside this, so there is nothing honest to
+  // add: the body shows the whole input instead.
+  return lead("");
+}
+
+// The same summary as one string: the row's `title` (so a path clipped at both
+// ends is still readable on hover) and whatever else wants the whole line.
+// Double-space separated, and NOT with a trailing separator when the path half
+// is missing — an Edit with no file_path is a real, if odd, input, and "+0 -0  "
+// reads as a truncation.
+function toolChipSummary(seg) {
+  const parts = toolChipSummaryParts(seg);
+  if (!parts.path) return parts.lead;
+  return parts.lead ? parts.lead + "  " + parts.path : parts.path;
+}
+
+// The chip's expanded body, rebuilt from the segment (never patched): a
+// segment's input never changes once it is on the wire, and its output arrives
+// once, so a full rebuild is both cheap and the only version that cannot go
+// out of sync with the segment.
+function fillToolChipBody(body, seg) {
+  const inp = seg.input && typeof seg.input === "object" ? seg.input : {};
+  const pre = (text, cls) => {
+    const p = document.createElement("pre");
+    if (cls) p.className = cls;
+    p.textContent = text;   // raw tool text: textContent, never innerHTML
+    body.appendChild(p);
+    return p;
+  };
+  const label = (text, cls) => {
+    const d = document.createElement("div");
+    d.className = cls ? "chip-label " + cls : "chip-label";
+    d.textContent = text;
+    body.appendChild(d);
+  };
+  // The target path, WHOLE and wrapped. The summary row above carries a path too
+  // and clips it — from the left, so the filename survives (see .chip-path) — but
+  // a 120-character path still loses its middle there, and the middle is which
+  // repo, which worktree, which package. An open chip is where the complete path
+  // has to be recoverable, so this is the one repetition worth its 20 pixels.
+  const pathLabel = (v) => {
+    const s = typeof v === "string" ? v
+              : v === undefined || v === null ? "" : JSON.stringify(v);
+    if (s) label(s, "chip-label-path");
+  };
+  // A flag that changes what the call DID, as its own badge. Not appended to the
+  // path: glued on as "(every occurrence)" it read as part of the filename, and
+  // it was sitting on a second copy of a path the summary row already shows.
+  const flag = (text) => {
+    const d = document.createElement("div");
+    d.className = "chip-flag";
+    d.textContent = text;
+    body.appendChild(d);
+  };
+  const used = [];
+
+  switch (seg.name) {
+    case "Edit": {
+      used.push("file_path", "old_string", "new_string", "replace_all");
+      pathLabel(inp.file_path);
+      if (inp.replace_all) flag("every occurrence");
+      // One span per LINE, and no "\n" text nodes between them: the spans are
+      // `display: block` (that is what makes the +/- colour a full-width band),
+      // so a newline character between two blocks renders as an extra empty
+      // line inside every band — the diff came out double-spaced. The line
+      // breaks a copy needs are put back by attachCodeCopy's copyText().
+      const p = document.createElement("pre");
+      const lines = formatEditDiff(inp).split("\n");
+      // `clipped` only when there IS something below the fold — see
+      // .toolchip pre.diff.clipped: a mask paints the box, not the overflow, so
+      // an unconditional fade dissolves the last line of a two-line diff.
+      p.className = lines.length > CHIP_DIFF_CLIP_LINES ? "diff clipped" : "diff";
+      lines.forEach((line) => {
+        const s = document.createElement("span");
+        s.className = line.charAt(0) === "+" ? "diff-add"
+                      : line.charAt(0) === "-" ? "diff-del" : "";
+        s.textContent = line;
+        p.appendChild(s);
+      });
+      body.appendChild(p);
+      break;
+    }
+    case "Write":
+      used.push("file_path", "content");
+      pathLabel(inp.file_path);
+      pre(typeof inp.content === "string" ? inp.content : "");
+      break;
+    case "Bash":
+      used.push("command", "description");
+      if (inp.description) label(String(inp.description));
+      pre(typeof inp.command === "string" ? inp.command : "");
+      break;
+    case "TodoWrite": {
+      used.push("todos");
+      const todos = Array.isArray(inp.todos) ? inp.todos : [];
+      todos.forEach((t) => {
+        const row = document.createElement("div");
+        row.className = "chip-todo";
+        const done = t && t.status === "completed";
+        if (done) row.classList.add("done");
+        row.textContent = (done ? "☑ " : "☐ ")
+                          + String((t && (t.content || t.activeForm)) || "");
+        body.appendChild(row);
+      });
+      break;
+    }
+    case PLAN_TOOL: {
+      // The plan, as PROSE. Both of these tools own a card (buildPlanCard,
+      // buildQuestionCard) which is the surface the user acts on while the turn
+      // is live — but a card is a control, and controls do not survive a reload:
+      // on a restored transcript this chip is the only record that a plan was
+      // ever proposed, and a raw JSON dump of `{"plan": "## Step one\n\n- ..."}`
+      // is a record of the bytes rather than of the plan.
+      //
+      // `plan` is the ONE tool input on this page that goes through renderMd
+      // instead of textContent, for the same reason it does on the card: it is
+      // not bytes off a disk, it is markdown the model wrote for a human to read
+      // (D248 — and the funnel is the shared marked + DOMPurify one, so this
+      // adds a call SITE, not a second renderer). Kept in sync with
+      // buildPlanCard deliberately: same key, same funnel, same leftover rule.
+      const plan = typeof inp.plan === "string" && inp.plan ? inp.plan : "";
+      if (plan) {
+        used.push("plan");
+        const d = document.createElement("div");
+        d.className = "plan-body chip-plan";
+        d.innerHTML = renderMd(plan);
+        body.appendChild(d);
+        attachCodeCopy(d);   // a plan quotes code; the copy buttons come with it
+      }
+      // ...and when it is not a usable string it stays UNUSED, so it falls into
+      // the leftover dump below with everything else — a chip must never imply a
+      // plan was read when there was nothing to read.
+      break;
+    }
+    case ANSWERABLE_TOOL: {
+      // What was asked, and what the options were. Structured plain text, never
+      // markdown: every string here (the question, the labels, the descriptions)
+      // is model-authored, the labels are what the answer is keyed by, and an
+      // option that renders as anything other than its literal text is an option
+      // the user cannot check against the answer they gave. So: textContent.
+      const questions = Array.isArray(inp.questions) ? inp.questions : null;
+      if (questions) {
+        used.push("questions");
+        questions.forEach((q) => {
+          const item = q && typeof q === "object" ? q : {};
+          label(String(item.question === undefined || item.question === null
+                       ? "" : item.question), "chip-ask-q");
+          (Array.isArray(item.options) ? item.options : []).forEach((o) => {
+            const opt = o && typeof o === "object" ? o : {};
+            const text = String(opt.label === undefined || opt.label === null
+                                ? "" : opt.label);
+            const desc = String(opt.description === undefined
+                                || opt.description === null ? "" : opt.description);
+            label("  ○ " + text + (desc ? " — " + desc : ""), "chip-ask-o");
+          });
+        });
+      }
+      break;
+    }
+    default:
+      // No renderer for this tool, so the input IS the body: pretty JSON of
+      // the whole thing. A chip that showed part of an unknown call would be a
+      // chip that misdescribed what ran.
+      used.push(...Object.keys(inp));
+      if (Object.keys(inp).length) pre(JSON.stringify(inp, null, 2));
+  }
+
+  // Anything the branch above did not render — same rule as the approval
+  // card's: a key that changes what the tool did (`run_in_background`,
+  // `timeout`, a flag added after this was written) must not be invisible
+  // because our renderer predates it.
+  const extra = leftoverInput(inp, used);
+  if (extra) pre(JSON.stringify(extra, null, 2));
+
+  // "" is an empty result and null is "no result yet" — two different facts,
+  // and only the first has anything to show.
+  if (typeof seg.output === "string" && seg.output !== "") {
+    pre(seg.output, "chip-out");
+  }
+  (Array.isArray(seg.images) ? seg.images : []).forEach((img) => {
+    // The media type lands in a `data:` URL, so it is validated rather than
+    // trusted: base64 payload, image/* type, nothing else. A rejected image is
+    // skipped, not coerced — inventing `image/png` for something that said it
+    // was text/html would be guessing about bytes we did not read.
+    const type = String((img && img.media_type) || "");
+    const data = String((img && img.data) || "");
+    if (!/^image\/[\w.+-]+$/.test(type) || !/^[A-Za-z0-9+/=\s]+$/.test(data)) return;
+    const el = document.createElement("img");
+    el.className = "chip-img";
+    el.src = "data:" + type + ";base64," + data.replace(/\s+/g, "");
+    el.alt = seg.name + " result image";
+    body.appendChild(el);
+  });
+}
+
+// One tool call. Returns a view handle rather than an element: the same call is
+// re-rendered on every 400 ms poll — first `running` with no output, later
+// `ok`/`error` with one — and it has to be the SAME <details> throughout, or a
+// chip the user opened would snap shut under them every tick.
+function buildToolChip(seg) {
+  const el = document.createElement("details");
+  el.className = "toolchip";
+  if (TOOL_OPEN_BY_DEFAULT.has(seg.name)) el.open = true;
+  const head = document.createElement("summary");
+  const glyph = document.createElement("span");
+  const name = document.createElement("span");
+  name.className = "chip-name";
+  // Humanized for reading, raw on the row's title — same rule, and the same
+  // helper, as the approval card's header (see prettyToolName).
+  const rawName = String(seg.name || "tool");
+  const prettyName = prettyToolName(rawName);
+  name.textContent = prettyName;
+  if (prettyName !== rawName) head.setAttribute("title", rawName);
+  const sub = document.createElement("span");
+  sub.className = "chip-sub";
+  // Two spans, not one string: `lead` keeps the row's fixed width (a status
+  // glyph, a name, "+12 -3") and `path` is the one item allowed to shrink, so it
+  // ellipsizes from the LEFT inside the space that is left and the filename
+  // survives — see .chip-path, and toolChipSummaryParts for which tools have a
+  // path half at all. The <bdi> is what keeps the path's own characters in
+  // logical order inside that right-to-left box.
+  const lead = document.createElement("span");
+  lead.className = "chip-lead";
+  const path = document.createElement("span");
+  path.className = "chip-path";
+  const pathText = document.createElement("bdi");
+  path.appendChild(pathText);
+  sub.append(lead, path);
+  // The flex row lives INSIDE the summary: a flex summary loses its disclosure
+  // triangle (the marker only exists on a `display: list-item` box).
+  const row = document.createElement("span");
+  row.className = "chip-row";
+  row.append(glyph, name, sub);
+  head.append(row);
+  const body = document.createElement("div");
+  body.className = "chip-body";
+  el.append(head, body);
+
+  // What the DOM currently says, as one string. Re-rendering an unchanged chip
+  // every 400 ms would drop scroll position inside a long output and fight the
+  // user's own selection; this is the cheap way to not.
+  //
+  // `input` is deliberately NOT in the key. It cannot change under a live chip
+  // — agent.py reads tool calls only from FINALIZED assistant rows, whose input
+  // is complete and deduped by tool id — and a Write's `content` is uncapped,
+  // so keying on it would re-stringify the whole file being written on every
+  // 400 ms poll for the rest of the turn. `output` is capped (4000 chars) and
+  // images contribute only their count, so what is left is cheap.
+  let shown = null;
+  function update(next) {
+    const key = JSON.stringify([next.status, next.output,
+                                (next.images || []).length]);
+    if (key === shown) return;
+    shown = key;
+    const status = String(next.status || "running");
+    // `is-` prefixed, and not the bare status word: `error` alone collided with
+    // the page's own `.error` rule (a red pill with a border and 8px of padding
+    // — see .turn.error), which repainted this 1-character glyph as a badge and
+    // made the whole row jump taller the moment a tool failed.
+    glyph.className = "chip-status is-" + status;
+    // A presence check, not `||`: "" is a real glyph choice here (ok draws
+    // nothing, running is drawn by CSS), so falling back on falsiness would put
+    // the error glyph rule's fallback on an ok chip. hasOwnProperty, not `in`,
+    // because `in` also answers yes to "toString" — an unknown status must land
+    // on the running glyph, never on a function's source text.
+    glyph.textContent =
+      Object.prototype.hasOwnProperty.call(TOOL_STATUS_GLYPH, status)
+        ? TOOL_STATUS_GLYPH[status] : TOOL_STATUS_GLYPH.running;
+    const parts = toolChipSummaryParts(next);
+    lead.textContent = parts.lead;
+    pathText.textContent = parts.path;
+    // Which half is allowed to shrink is a fact about the CONTENT, so the class
+    // carries it: with a path, the lead is fixed and the path absorbs the clip;
+    // without one, the lead is the whole row and ellipsizes itself.
+    sub.classList.toggle("has-path", !!parts.path);
+    // The whole one-liner on hover: the row clips a long path at BOTH ends
+    // (the left-clip keeps its filename, the summary's own ellipsis its head),
+    // and a tooltip is the cheapest way to read it without opening the chip.
+    const full = toolChipSummary(next);
+    if (full) sub.setAttribute("title", full);
+    body.replaceChildren();
+    fillToolChipBody(body, next);
+  }
+  update(seg);
+  return { kind: "tool", el, update };
+}
+
+// Thinking, folded. Collapsed and unlabelled by content on purpose: the point
+// of showing it at all is that it HAPPENED and is inspectable, and a reasoning
+// trace summarised in the summary line would be a second thing to read for
+// every one the user actually wanted to open.
+function buildThinkingView() {
+  const el = document.createElement("details");
+  el.className = "thinking";
+  const head = document.createElement("summary");
+  head.textContent = "Thought for a moment";
+  const body = document.createElement("div");
+  body.className = "thinking-body";
+  el.append(head, body);
+  return {
+    kind: "thinking", el, text: null,
+    render(t) { body.innerHTML = renderMd(t); },
+  };
+}
+
+// A run of prose. Its own element rather than markdown appended to the turn,
+// because the typer needs something to own: the streaming tail is one element
+// whose innerHTML is rewritten per frame, and the segments around it must not
+// be inside what gets rewritten.
+function buildTextView() {
+  const el = document.createElement("div");
+  el.className = "seg-text";
+  return {
+    kind: "text", el, text: null,
+    render(t) { el.innerHTML = renderMd(t); },
+  };
+}
+
+function buildSegmentView(seg) {
+  if (seg.kind === "tool") return buildToolChip(seg);
+  if (seg.kind === "thinking") return buildThinkingView();
+  return buildTextView();  // "text", and anything a newer agent.py invents
+}
+
+const segText = (seg) => (seg && typeof seg.text === "string" ? seg.text : "");
+// container element -> the views rendered into it, by segment index. A WeakMap
+// so a removed turn (an errored run drops its whole bubble) takes its state
+// with it.
+const segStates = new WeakMap();
+
+// Render `segments` into `container`, idempotently: called on EVERY poll with
+// the whole list, it builds each segment's view once at its index and
+// afterwards only updates in place. `opts.typer` streams the trailing text
+// segment (omit it for a finished turn — history restore — and everything
+// renders statically). Returns that trailing text, which is what the caller
+// hands typer.finish() when the run ends.
+function renderSegments(container, segments, opts) {
+  const typer = (opts && opts.typer) || null;
+  const list = Array.isArray(segments) ? segments : [];
+  let st = segStates.get(container);
+  if (!st) { st = { views: [], typed: -1 }; segStates.set(container, st); }
+  // ONLY a text segment at the very end of the list is still growing. One
+  // anywhere else is finished by definition — something came after it — and a
+  // typer aimed at it would re-animate settled prose on every poll.
+  const tail = list.length && list[list.length - 1].kind === "text"
+    ? list.length - 1 : -1;
+
+  // The reply grew PAST the segment the typer was streaming (a tool call, or
+  // more prose after one). That text is final now, and the typer may have
+  // drawn only part of it — so render it whole, give it its copy buttons, and
+  // let the typer go before the loop below points it anywhere new.
+  if (st.typed >= 0 && st.typed !== tail) {
+    const done = st.views[st.typed];
+    const seg = list[st.typed];
+    if (done && done.kind === "text") {
+      done.text = segText(seg);
+      done.render(done.text);
+      attachCodeCopy(done.el);
+    }
+    st.typed = -1;
+    if (typer) typer.retarget(null);
+  }
+
+  for (let i = 0; i < list.length; i++) {
+    const seg = list[i] || {};
+    let view = st.views[i];
+    if (!view || view.kind !== (seg.kind === "tool" || seg.kind === "thinking"
+                                ? seg.kind : "text")) {
+      // A settled index never changes kind (segments only grow, and same-kind
+      // neighbours merge in agent.py) — but rebuilding beats rendering a tool
+      // call into a prose element if that ever stops being true.
+      if (view) view.el.remove();
+      view = buildSegmentView(seg);
+      st.views[i] = view;
+      container.appendChild(view.el);
+    }
+    if (view.kind === "tool") { view.update(seg); continue; }
+    const text = segText(seg);
+    if (i === tail && typer) {
+      if (st.typed !== i) { typer.retarget(view.el); st.typed = i; }
+      view.text = text;   // the typer owns this element's DOM until it moves on
+      typer.update(text);
+      continue;
+    }
+    if (view.text !== text) { view.text = text; view.render(text); }
+  }
+
+  // Defensive: within one turn the list only grows, but a container reused for
+  // a shorter turn must not keep the old tail on screen.
+  st.views.splice(list.length).forEach((v) => v.el.remove());
+  return tail >= 0 ? segText(list[tail]) : null;
 }
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -5229,6 +7062,9 @@ async function pollLoop(run_id) {
   setRunningUi(true);
   let reply = null;
   let typer = null;
+  let segBody = null;    // the element the segment views are rendered into
+  let segMode = false;   // this turn returned segments, so they are the truth
+  let tailText = null;   // the trailing text segment, for typer.finish()
   try {
     while (true) {
       const data = await fused.runPython(AGENT, { action: "poll", run_id }, { key: null });
@@ -5241,13 +7077,33 @@ async function pollLoop(run_id) {
       // Not awaited: a snapshot must never hold up the streaming reply, and the
       // answered-set makes a second poll arriving mid-answer a no-op.
       if (data.app_state && data.app_state.length) answerAppState(data.app_state, run_id, w);
-      if (data.text) {
+      // `segments` is the authoritative transcript of the turn (text,
+      // thinking, tool calls, in order — see _segments_from_rows). `data.text`
+      // is the flat legacy field and is NOT rendered as well when segments
+      // exist: on a run that carried stream deltas the text segments join back
+      // to exactly that string, so rendering both prints the reply twice.
+      const segs = Array.isArray(data.segments) ? data.segments : [];
+      if (segs.length || data.text) {
         if (!reply) {
           reply = addAssistant("");
           log.insertBefore(reply, w.el);  // status line stays below the streaming reply
-          typer = makeTyper(reply.lastChild);
+          segBody = reply.lastChild;
+          // Parked when there are segments: renderSegments points the typer at
+          // the trailing text segment, which may not exist yet (a turn can open
+          // with a tool call) and changes as the turn grows.
+          typer = makeTyper(segs.length ? null : segBody);
         }
-        if (!data.done) typer.update(data.text);
+        if (segs.length) {
+          if (!segMode) {
+            // A first poll with text but no segments yet (no assistant row on
+            // disk) started this turn on the legacy path — take it back before
+            // the segments render, or the flat text stays behind them.
+            segMode = true;
+            typer.retarget(null);
+            segBody.replaceChildren();
+          }
+          tailText = renderSegments(segBody, segs, { typer });
+        } else if (!data.done) typer.update(data.text);
       }
       if (data.done) {
         fused.params.set("run", "");
@@ -5265,10 +7121,22 @@ async function pollLoop(run_id) {
         if (!end.keepText) {
           if (typer) typer.abort();
           if (reply) reply.remove();
+        } else if (segMode) {
+          // Drain the trailing prose (`null` when the turn ended on a tool
+          // call — finish() then just retires the cursor), then one
+          // highlight/copy pass over the whole finished transcript: the text
+          // segments, and every <pre> the tool chips added.
+          await typer.finish(tailText || "");
+          attachCodeCopy(reply);
         } else if (typer) {
           await typer.finish(data.text);
         } else if (data.text) {
-          addAssistant("").lastChild.innerHTML = renderMd(data.text);
+          // A run whose text only ever arrived on the poll that ENDED it, so no
+          // typer was ever pointed at anything. Through addAssistantTurn like
+          // the other finished-turn renders (D246's one-renderer rule): this
+          // used to hand-roll `innerHTML = renderMd(...)`, which meant a payload
+          // that carried segments here rendered its flat text instead of them.
+          attachCodeCopy(addAssistantTurn(data.text, data.segments));
         }
         if (end.error) addError(end.error);
         if (end.note) addNote(end.note, null, "⏹");
@@ -5499,12 +7367,20 @@ async function resumeRun(run_id) {
         if (matches || !users.length) addError(probe.error);
         return;
       }
+      // `probe` is a poll payload, so it carries the turn's segments too — the
+      // repair has to render what pollLoop would have, or a run that finished
+      // while this frame was away loses its whole tool timeline until the next
+      // history restore puts it back.
       if (matches) {
         while (lastTurn.nextElementSibling) lastTurn.nextElementSibling.remove();
-        if (probe.text) addAssistant("").lastChild.innerHTML = renderMd(probe.text);
+        if (probe.text || (probe.segments || []).length) {
+          attachCodeCopy(addAssistantTurn(probe.text, probe.segments));
+        }
       } else if (!users.length && probeMsg) {
         addUser(probeMsg);
-        if (probe.text) addAssistant("").lastChild.innerHTML = renderMd(probe.text);
+        if (probe.text || (probe.segments || []).length) {
+          attachCodeCopy(addAssistantTurn(probe.text, probe.segments));
+        }
       }
       scrollBottom();
       return;
@@ -5618,9 +7494,15 @@ async function loadHistory(session_id) {
     const { turns } = await fused.runPython(AGENT, { action: "history", file: FILE, session_id }, { key: null });
     log.innerHTML = "";  // drop the skeleton now that real turns are ready
     for (const t of turns) {
+      // Assistant turns carry `segments`; USER turns have no such key at all,
+      // which addAssistantTurn's Array.isArray tolerates (a truthiness test on
+      // a missing key would too, but this says out loud that the key is
+      // optional). A restored turn renders through the same renderSegments the
+      // live stream uses — no typer, because nothing is arriving.
       if (t.role === "user") addUser(stripBlocks(t.text));
-      else addAssistant("").lastChild.innerHTML = renderMd(t.text);
+      else addAssistantTurn(t.text, t.segments);
     }
+    attachCodeCopy(log);  // one pass over the whole restored transcript
     scrollBottom();
   } catch (err) {
     log.innerHTML = "";

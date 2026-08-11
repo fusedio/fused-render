@@ -1950,7 +1950,7 @@ export function getAiModelRevisions(
 
 // Delete cached repos and/or single revisions. A target with no `revision` is
 // the whole repo folder. Targets are named by cache FOLDER NAME — the server
-// builds every path itself from the cache dir it resolved (D247).
+// builds every path itself from the cache dir it resolved (D250).
 //
 // The reply is the whole listing, re-read from disk after the deletions, plus
 // what was freed and any per-target failures — so the page swaps in fresh state

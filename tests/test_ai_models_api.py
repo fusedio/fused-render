@@ -543,7 +543,7 @@ def test_delete_needs_a_non_empty_target_list(client, hub):
 
 # -- pruning by age --------------------------------------------------------------
 # Prune is a client-side selection over `lastUsed` executed as a bulk delete of
-# NAMED repos (D247), so what the server owes it is an honest read-time stamp.
+# NAMED repos (D250), so what the server owes it is an honest read-time stamp.
 
 
 def test_last_used_reads_the_newest_atime(client, hub):

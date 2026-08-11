@@ -49,7 +49,7 @@ then the id with `/` written as `--` (`models--openai--whisper-small` ->
 is not a repo folder and is skipped, which is also what keeps `.locks/`,
 `version.txt` and half-written `tmp*` dirs out of the list.
 
-**Deletion** (`POST /api/ai-models/delete`, D247) carries the D3 `X-Fused`
+**Deletion** (`POST /api/ai-models/delete`, D250) carries the D3 `X-Fused`
 guard like every other mutating POST, and is deliberately narrow:
 
 * Targets are named by cache **folder name**, never by a path from the client:

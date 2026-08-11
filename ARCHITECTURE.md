@@ -183,7 +183,7 @@ running one); `POST /api/jobs/clear` closes all finished. State lives in
 `fused_render/jobs.py`, in memory. `/api/jobs` is in `calls.SKIP_PREFIXES` — a
 tick is bookkeeping about a call, not a call.
 
-### `/api/ai-models` — Hugging Face cache inventory (SPEC §37, D246)
+### `/api/ai-models` — Hugging Face cache inventory (SPEC §37, D249)
 
 `GET /api/ai-models` → `{cacheDir, hfHome, exists, totalSize, repos}`, one
 entry per cached repo (`{id, dir, kind, path, size, files, mtime, lastUsed,
@@ -205,7 +205,7 @@ atime over real files; the ref reads this module makes restore atime afterwards,
 so inspecting the cache cannot mark it as used. Sync `def` — the walk is
 disk-bound and belongs in the threadpool.
 
-`POST /api/ai-models/delete` (SPEC HF-10..HF-15, D247) takes
+`POST /api/ai-models/delete` (SPEC HF-10..HF-15, D250) takes
 `{"targets": [{"dir": "models--org--name", "revision": "<sha>"|null}]}` and
 answers with the fresh listing plus `freed` and per-target `failures`. `X-Fused`
 guarded (D3). A target names a cache FOLDER — validated as one path segment with

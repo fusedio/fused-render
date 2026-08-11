@@ -8,7 +8,7 @@
 // inventory: one row per cached repo, biggest first, with what it costs on
 // disk and a click through to the folder in the explorer.
 //
-// It manages that cache too (D247), in three widening steps — a repo, one
+// It manages that cache too (D250), in three widening steps — a repo, one
 // revision of a repo, or a prune of everything unread for N days. Every one of
 // them names its targets in a confirmation the user reads first, and the
 // dangerous arithmetic (which blobs a revision actually owns) lives on the
