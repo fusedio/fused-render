@@ -17,7 +17,6 @@ from fastapi.responses import (
     StreamingResponse,
 )
 
-from fused_render import app_commit_queue, app_git
 from fused_render import calls as shell_calls
 from fused_render.server.common import _error, _require_fused
 from fused_render.server.gitignore import _is_repo_root
@@ -59,31 +58,6 @@ def _snapshot_refusal(*paths: str | None):
         if isinstance(p, str) and p and os.path.isabs(p) and _is_under_snapshot_root(p):
             return JSONResponse({"error": "readonly"}, status_code=403)
     return None
-
-
-def _commit_mutation(result, verb: str, *paths) -> None:
-    """Record a successful mutation for commit in the app repo it touched.
-
-    App folders (<workspace>/<tag>/<name>) are version-controlled from
-    creation (app_git); editor-driven changes get the same history as Claude
-    turns. The commit itself is debounced and serialized through
-    app_commit_queue's single worker, so a burst of autosaves becomes one
-    commit and two saves can never race
-    each other on the repo's index.lock. A refused mutation (any JSONResponse
-    error status) commits nothing, and everything downstream is best-effort
-    and hard-scoped to app dirs — a git failure never fails the mutation that
-    already landed, and nothing outside an app dir is ever committed to."""
-    if getattr(result, "status_code", 200) != 200:
-        return
-    done = set()
-    for p in paths:
-        if not isinstance(p, str) or not p:
-            continue
-        app_dir = app_git.app_dir_for(p)
-        if app_dir is None or app_dir in done:
-            continue
-        done.add(app_dir)
-        app_commit_queue.mark(p, verb)
 
 
 def _fs_write(body: dict, x_fused: str | None):
@@ -990,7 +964,6 @@ def api_fs_write(request: Request, body: dict = Body(...),
         # so there is still one rule (it allocates nothing when it passes).
         unauthorized=_require_fused(x_fused) is not None,
     )
-    _commit_mutation(result, "Edit", body.get("path"))
     return result
 
 @router.post("/api/fs/upload")
@@ -1018,7 +991,6 @@ async def api_fs_upload(request: Request, file: UploadFile = File(...),
         # Both refusals are 403; only a read-only target is `readonly`.
         unauthorized=_require_fused(x_fused) is not None,
     )
-    _commit_mutation(result, "Upload", path)
     return result
 
 @router.post("/api/fs/mkdir")
@@ -1033,13 +1005,12 @@ def api_fs_compress(body: dict = Body(...), x_fused: str | None = Header(default
     # Only the archive appears; the folder it was made from is untouched, so
     # (like copy) its cached stat stays valid.
     _invalidate_stat_cache(_compress_dest(body))
-    _commit_mutation(result, "Compress", _compress_dest(body))
     return result
 
 def _compress_dest(body: dict) -> str | None:
     # The path the archive lands at, mirroring _fs_compress's own default, so
-    # the cache invalidation and the app commit name the file that actually
-    # changed rather than the folder that didn't.
+    # the cache invalidation names the file that actually changed rather than
+    # the folder that didn't.
     dest = body.get("dest")
     if isinstance(dest, str) and dest:
         return dest
@@ -1052,7 +1023,6 @@ def _compress_dest(body: dict) -> str | None:
 def api_fs_delete(body: dict = Body(...), x_fused: str | None = Header(default=None)):
     result = _fs_delete(body, x_fused)
     _invalidate_stat_cache(body.get("path"))
-    _commit_mutation(result, "Delete", body.get("path"))
     return result
 
 @router.post("/api/fs/rename")
@@ -1060,8 +1030,6 @@ def api_fs_rename(body: dict = Body(...), x_fused: str | None = Header(default=N
     result = _fs_rename(body, x_fused)
     # A move changes both ends: src disappears, dst appears.
     _invalidate_stat_cache(body.get("src"), body.get("dst"))
-    # Both ends: a cross-app move changes two repos (dedup'd when same app).
-    _commit_mutation(result, "Rename", body.get("dst"), body.get("src"))
     return result
 
 @router.post("/api/fs/copy")
@@ -1069,5 +1037,4 @@ def api_fs_copy(body: dict = Body(...), x_fused: str | None = Header(default=Non
     result = _fs_copy(body, x_fused)
     # A copy only writes dst; src is untouched, so its cached stat stays valid.
     _invalidate_stat_cache(body.get("dst"))
-    _commit_mutation(result, "Add", body.get("dst"))
     return result

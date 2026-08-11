@@ -21,7 +21,6 @@ import os
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
-from fused_render import app_commit_queue
 from fused_render import calls as shell_calls
 from fused_render.account import router as account_router
 from fused_render.deploy import router as deploy_router
@@ -242,19 +241,6 @@ def create_app(start_dir: str) -> FastAPI:
             return
         if removed:
             logger.info("reclaimed %d orphaned project venv(s)", removed)
-
-    # Debounced app-repo committer (app_commit_queue): the /api/fs mutation
-    # hooks mark apps dirty, this one worker turns each editing burst into a
-    # single commit. Startup event on purpose — tests that build the app
-    # without lifespan queue marks and flush() them explicitly. Shutdown
-    # flushes so a pending commit is not dropped by a dev-server reload.
-    @app.on_event("startup")
-    async def _startup_commit_queue():
-        app_commit_queue.start()
-
-    @app.on_event("shutdown")
-    async def _shutdown_commit_queue():
-        await app_commit_queue.stop()
 
     app.exception_handler(Exception)(unhandled_exception)
 
