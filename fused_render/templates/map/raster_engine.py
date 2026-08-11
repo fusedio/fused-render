@@ -33,7 +33,7 @@ from geo_paths import (
     normalize_remote_path,
 )
 from optional_runtime import require
-from raster_categories import classify_categories
+from raster_categories import classify_categories, resolve_render_mode
 
 
 AUTO_OPTIMIZE_MAX_BYTES = int(
@@ -251,6 +251,7 @@ class RasterSource:
     rescale: list[list[float]]
     auto_rescale: bool = True
     render_mode: str = "single"
+    auto_render_mode: bool = True
     categories: list[dict[str, Any]] | None = None
     category_colors: dict[int, tuple[int, ...]] = field(default_factory=dict)
     preview_path: str | None = None
@@ -516,6 +517,7 @@ class RasterEngine:
             # sample which discrete values are present.
             categories = None
             category_colors: dict[int, tuple[int, ...]] = {}
+            embedded_colormap = None
             if render_bands == 1:
                 if sample_data is None:
                     try:
@@ -530,7 +532,6 @@ class RasterEngine:
                             )
                     except Exception:
                         sample_data = None
-                embedded_colormap = None
                 with contextlib.suppress(ValueError):
                     embedded_colormap = dataset.colormap(1)
                 if sample_data is not None:
@@ -543,12 +544,7 @@ class RasterEngine:
                 if categories:
                     category_colors = {c["value"]: tuple(c["color"]) for c in categories}
             requested_mode = str(opts.get("render_mode") or "")
-            if count >= 3:
-                render_mode = "rgb"
-            elif categories and requested_mode != "single":
-                render_mode = "categorical"
-            else:
-                render_mode = "single"
+            render_mode = resolve_render_mode(count, categories, embedded_colormap, requested_mode)
 
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore", NoOverviewWarning)
@@ -583,6 +579,7 @@ class RasterEngine:
                 rescale=rescale,
                 auto_rescale=auto_rescale,
                 render_mode=render_mode,
+                auto_render_mode=(requested_mode == ""),
                 categories=categories,
                 category_colors=category_colors,
             )
@@ -635,9 +632,11 @@ class RasterEngine:
             existing = self.sources.get(fingerprint)
             if existing is not None:
                 existing.colormap = record.colormap
-                existing.render_mode = record.render_mode
-                existing.categories = record.categories
-                existing.category_colors = record.category_colors
+                if not record.auto_render_mode or existing.auto_render_mode:
+                    existing.render_mode = record.render_mode
+                    existing.categories = record.categories
+                    existing.category_colors = record.category_colors
+                    existing.auto_render_mode = record.auto_render_mode
                 if not record.auto_rescale:
                     existing.rescale = record.rescale
                     existing.auto_rescale = False
@@ -692,11 +691,12 @@ class RasterEngine:
         self, record: RasterSource, artifact_id: str, warnings: list[str] | None = None
     ) -> dict[str, Any]:
         bands = 3 if record.count >= 3 else 1
+        categorical = record.render_mode == "categorical"
         stats = [
             {
                 "index": index + 1,
-                "p2": record.rescale[index][0],
-                "p98": record.rescale[index][1],
+                "p2": None if categorical else record.rescale[index][0],
+                "p98": None if categorical else record.rescale[index][1],
             }
             for index in range(min(bands, len(record.rescale)))
         ]
@@ -740,7 +740,7 @@ class RasterEngine:
             "style": {
                 "opacity": 0.9,
                 "colormap": record.colormap,
-                "rescale": record.rescale[0] if record.count < 3 else None,
+                "rescale": record.rescale[0] if record.count < 3 and not categorical else None,
                 "render_mode": record.render_mode,
                 "category_colors": {
                     str(value): list(color) for value, color in record.category_colors.items()

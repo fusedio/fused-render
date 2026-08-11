@@ -34,7 +34,7 @@ import os
 
 from geo_paths import is_remote_path, normalize_remote_path
 from optional_runtime import require
-from raster_categories import classify_categories
+from raster_categories import classify_categories, resolve_render_mode
 
 # ---- output caps (keep artifacts screen-sized / network-friendly) -----------
 MAX_RASTER_DIM = 1400        # longest edge of the reprojected raster PNG
@@ -702,7 +702,7 @@ def _render_raster(ds, artifact_dir, artifact_id, opts, detected):
         except Exception:
             categories = None
     requested_mode = str(opts.get("render_mode") or "")
-    categorical = bool(categories) and ds.count < 3 and requested_mode != "single"
+    categorical = resolve_render_mode(ds.count, categories, embedded_colormap, requested_mode) == "categorical"
     warp_resampling = Resampling.nearest if categorical else Resampling.bilinear
 
     with WarpedVRT(ds, crs="EPSG:4326", resampling=warp_resampling) as vrt:
@@ -810,7 +810,7 @@ def _render_array(arr, bounds, artifact_dir, artifact_id, opts, detected):
     if count < 3:
         categories = classify_categories(arr[0], dtype0, overrides=opts.get("category_colors"))
     requested_mode = str(opts.get("render_mode") or "")
-    categorical = bool(categories) and count < 3 and requested_mode != "single"
+    categorical = resolve_render_mode(count, categories, None, requested_mode) == "categorical"
 
     category_colors = {}
     if count >= 3:

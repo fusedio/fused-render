@@ -69,14 +69,14 @@ def classify_categories(
         return None
 
     if embedded_colormap:
-        candidates = [int(v) for v in unique if int(v) in embedded_colormap]
+        candidates = sorted(int(v) for v in unique if int(v) in embedded_colormap)
         if not candidates:
             # The table doesn't cover what's actually in the data (e.g. a
-            # stale/partial one) — fall back to the raw sample.
-            candidates = [int(v) for v in unique]
+            # stale/partial one) — fall back to the raw sample, capped like
+            # the heuristic path below.
+            candidates = sorted(int(v) for v in unique)[:cap]
     else:
-        candidates = [int(v) for v in unique]
-    candidates = sorted(candidates)[:cap]
+        candidates = sorted(int(v) for v in unique)[:cap]
 
     overrides = overrides or {}
     categories = []
@@ -98,3 +98,33 @@ def classify_categories(
             }
         )
     return categories
+
+
+def resolve_render_mode(
+    count: int,
+    categories: list[dict[str, Any]] | None,
+    embedded_colormap: dict[int, tuple[int, ...]] | None,
+    requested_mode: str,
+) -> str:
+    """Decide "rgb" / "categorical" / "single" from band count, detected
+    categories, whether an embedded GDAL colormap backs them, and any
+    explicit ``opts["render_mode"]`` request (``""`` when nothing was
+    requested).
+
+    An embedded colormap is an authoritative signal ("this file IS paletted
+    data") and auto-defaults to categorical; the bare unique-value heuristic
+    (no colormap) is a weaker signal — plenty of ordinary continuous data is
+    coarsely quantized (an 8-bit hillshade, a small DEM) — so it only
+    switches to categorical on an explicit request, matching every other
+    style choice (colormap, opacity, ...) in never silently changing how an
+    already-open raster renders.
+    """
+    if count >= 3:
+        return "rgb"
+    if not categories:
+        return "single"
+    if requested_mode == "single":
+        return "single"
+    if requested_mode == "categorical":
+        return "categorical"
+    return "categorical" if embedded_colormap else "single"

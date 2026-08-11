@@ -1807,14 +1807,10 @@ function sliderCtl(label, valTxt, min, max, val, on) {
 function alphaCtl(label, alpha, fallback, on) {
   const a = alpha ?? fallback;
   const pct = Math.round(a / 255 * 100);
-  const c = ctlShell(label, pct + "%");
-  const r = document.createElement("input"); r.type = "range"; r.min = 0; r.max = 100; r.value = pct;
-  r.oninput = e => {
-    const v = Number(e.target.value);
+  const c = sliderCtl(label, pct + "%", 0, 100, pct, v => {
     c.querySelector(".ctl-lbl b").textContent = v + "%";
     on(Math.round(v / 100 * 255));
-  };
-  c.appendChild(r);
+  });
   return c;
 }
 function selectCtl(label, opts, val, on) {
@@ -1839,15 +1835,13 @@ function categoryRow(cat, s, L) {
   if (!s.category_labels) s.category_labels = {};
   const row = document.createElement("div"); row.className = "catrow";
   const swatch = document.createElement("input"); swatch.type = "color";
-  // style.category_colors starts out backend-populated as [r,g,b,a] arrays
-  // (same convention as fill_color/line_color); once the user edits a
-  // swatch it becomes a "#rrggbb" string like any other color input's value.
-  const stored = s.category_colors[key];
-  swatch.value = typeof stored === "string" ? stored : rgbToHex(stored || cat.color);
+  swatch.value = rgbToHex(s.category_colors[key] || cat.color);
   // change (not input): a raster color edit re-renders on the backend, so
   // it should commit once the picker closes rather than spam requests
-  // while the user is still dragging inside it.
-  swatch.onchange = e => { s.category_colors[key] = e.target.value; s._touched = true; reloadRaster(L); };
+  // while the user is still dragging inside it. Store as [r,g,b,a] (via
+  // hexToRgb), the same shape category_colors already carries for the
+  // untouched entries and the same convention fill_color/line_color use.
+  swatch.onchange = e => { s.category_colors[key] = [...hexToRgb(e.target.value), 255]; s._touched = true; reloadRaster(L); };
   const text = document.createElement("input"); text.type = "text";
   text.value = s.category_labels[key] ?? cat.label;
   text.oninput = e => { s.category_labels[key] = e.target.value; s._touched = true; };
@@ -2081,7 +2075,8 @@ async function resolveUploadDir() {
   if (state.dir) return state.dir;
   if (!homeDirPromise) {
     homeDirPromise = fused.runPython("./discover.py", { dir: "", src: location.origin })
-      .then(result => result.dir || "");
+      .then(result => result.dir || "")
+      .catch(error => { homeDirPromise = null; throw error; });
   }
   return homeDirPromise;
 }
@@ -2089,6 +2084,10 @@ function joinPath(dir, name) {
   const sep = dir.includes("\\") && !dir.includes("/") ? "\\" : "/";
   return dir.replace(/[\\/]+$/, "") + sep + name;
 }
+// Any fused.stat failure (not just a 404) reads as "path is free" — the
+// upload right behind this will fail loudly on its own if something else
+// was actually wrong, so nothing is hidden by being optimistic (same
+// tradeoff as markdown/template.html's mediaExists/freeMediaName).
 async function uniqueDestPath(dir, name) {
   const dot = name.lastIndexOf(".");
   const stem = dot > 0 ? name.slice(0, dot) : name;
@@ -2102,9 +2101,9 @@ async function uniqueDestPath(dir, name) {
   return joinPath(dir, candidate);
 }
 async function importDroppedFile(file) {
-  const dir = await resolveUploadDir();
-  if (!dir) { toast("bad", "Couldn't drop " + file.name, "No destination folder available."); return; }
   try {
+    const dir = await resolveUploadDir();
+    if (!dir) { toast("bad", "Couldn't drop " + file.name, "No destination folder available."); return; }
     const dest = await uniqueDestPath(dir, file.name);
     await fused.uploadFile(dest, file);
     await loadTarget(dest, dest.split(/[\\/]/).pop());
