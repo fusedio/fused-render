@@ -118,6 +118,19 @@ describe("the span bound", () => {
     }
   });
 
+  test("the named cost: a 3-char initialism over a long prose title is refused", () => {
+    // Not a bug — a measured trade, recorded so it is not rediscovered as one.
+    // The bookmark search matches against page titles, and word-initials over a
+    // long one spread further than a short query's bound allows. The obvious fix
+    // (an allowance per segment-start hit) re-admits the whole-path smear this
+    // bound exists for — see maxSpan's comment for the numbers. One more typed
+    // character brings it back.
+    const title = "Zarr v3 multiscale pyramid budget notes";
+    expect(fuzzyMatch("zmp", title)).toBeNull();
+    // Typing more of the first word buys the span back.
+    expect(fuzzyMatch("zarrmp", title)).not.toBeNull();
+  });
+
   test("the bound is on the whole span, not on each gap", () => {
     // Two tight halves separated by one long gap is a GOOD match ("index" then
     // ".md" across a directory name), so a per-gap cap has to be loose — and

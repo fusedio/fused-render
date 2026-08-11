@@ -64,6 +64,16 @@ function isSegmentStart(text: string, i: number): boolean {
  * query in fuzzy.test.ts and refuses `index.md` against
  * `docs/LINUX_DESKTOP_SPEC.md`. The `+ 8` is what keeps very short queries
  * usable, where a proportional bound alone would be a couple of characters.
+ *
+ * NAMED COST: a very short query used as word initials over a long prose string
+ * — `zmp` for the bookmark titled "Zarr v3 multiscale pyramid budget notes",
+ * span 20 against a bound of 17 — stops matching. The obvious fix, an extra
+ * allowance per matched char that lands on a segment start, was measured and is
+ * WORSE: at `+4` per start it rescues that case and re-admits `index.md`
+ * against `/Users/…/docs/EXPORT.md` (span 40, four segment starts, bound 48),
+ * which is the very smear this exists to refuse. A short query over prose is
+ * low-signal either way, and one more character typed fixes it; a whole-path
+ * smear ranked among real hits is what the user actually reported.
  */
 export function maxSpan(queryLength: number): number {
   return queryLength * 3 + 8;
