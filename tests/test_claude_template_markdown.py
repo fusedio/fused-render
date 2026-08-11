@@ -164,6 +164,45 @@ def test_raw_html_reaches_sanitize_unstripped_with_forbid_config(node_probe):
     assert "iframe" in (doc_call["opts"] or {}).get("FORBID_TAGS", [])
 
 
+def test_the_dompurify_config_is_exactly_the_intended_one(node_probe):
+    # CONFIG-LEVEL, and the reason it is pinned to the byte: every probe in
+    # this file stubs DOMPurify (see the module docstring), so a config that
+    # silently WIDENS — one more allowed tag, an `ADD_TAGS`, a loosened
+    # `ALLOWED_URI_REGEXP` — changes nothing any other test here can see, and
+    # the real stripping is only ever exercised by the live browser check. So
+    # the wiring itself is the contract: exact sets, and explicit ABSENCE
+    # assertions for the two keys that would re-open what FORBID_TAGS closes.
+    #   - FORBID_TAGS: the four tags a model-authored reply has no business
+    #     emitting — `style` (it can restyle the whole app), `form`/`input`
+    #     (a credential prompt drawn inside the transcript), `iframe`.
+    #   - ADD_ATTR: exactly target+rel, and only because the link renderer
+    #     emits `target="_blank" rel="noopener noreferrer"` itself; DOMPurify
+    #     would otherwise strip the very hardening that renderer adds.
+    #   - NO ADD_TAGS: re-allowing anything by name is how `style`/`iframe`
+    #     come back through the front door.
+    #   - NO ALLOWED_URI_REGEXP: absent means DOMPurify's own default URI
+    #     allow-list applies, which is what blocks a `javascript:` href (see
+    #     test_javascript_href_is_not_specially_encoded_by_the_link_renderer:
+    #     the template deliberately does NOT neutralize the scheme itself, so
+    #     this key is load-bearing by its absence).
+    node_probe.render_md("hello [x](https://example.com)")
+    calls = node_probe.last_sanitize_calls
+    assert len(calls) == 1, "one document-level sanitize call per render"
+    opts = calls[0]["opts"] or {}
+    assert set(opts["FORBID_TAGS"]) == {"style", "form", "input", "iframe"}
+    assert opts["ADD_ATTR"] == ["target", "rel"]
+    assert "ADD_TAGS" not in opts, (
+        "an ADD_TAGS entry re-allows by name what FORBID_TAGS just closed"
+    )
+    assert "ALLOWED_URI_REGEXP" not in opts, (
+        "DOMPurify's default URI allow-list is what blocks javascript: hrefs — "
+        "overriding it is how a scheme the link renderer passes through lands"
+    )
+    # ...and nothing else was configured: a new key is a deliberate decision,
+    # not something that arrives unnoticed with an unrelated edit.
+    assert set(opts) == {"FORBID_TAGS", "ADD_ATTR"}, sorted(opts)
+
+
 def test_unclosed_fence_mid_stream_still_renders(node_probe):
     html = node_probe.render_md("before\n```py\nprint(1)")
     assert "<code" in html and "print(1)" in html
@@ -209,8 +248,38 @@ def test_javascript_href_is_not_specially_encoded_by_the_link_renderer(node_prob
 # --- review-fix coverage (findings 1/2/3/6) ---------------------------------
 
 
-def test_hljs_theme_padding_and_scroll_are_overridden_for_the_assistant_pre(
-        source):
+def _style(source):
+    """The template's inline stylesheet, comments stripped.
+
+    The comments matter: several of them QUOTE css (the hljs override's own
+    comment contains ``pre code.hljs{padding:1em}``), so any brace-counting
+    walk over the raw text finds rules that do not exist.
+    """
+    style = source[source.index("<style>"):source.index("</style>")]
+    return re.sub(r"/\*.*?\*/", "", style, flags=re.S)
+
+
+def _rules(style, needle):
+    """Every rule in `style` whose selector list mentions `needle`, as
+    (list-of-selectors, declarations)."""
+    out = []
+    for match in re.finditer(r"([^{}]+)\{([^{}]*)\}", style):
+        selectors = [s.strip() for s in match.group(1).split(",") if s.strip()]
+        if any(needle in s for s in selectors):
+            out.append((selectors, match.group(2)))
+    return out
+
+
+def _class_likes(sel):
+    # class-likes: .class, [attr=...], :root (this codebase's only
+    # zero-argument pseudo-class in play here) — each worth one, same as
+    # a real browser's specificity algorithm.
+    return (len(re.findall(r"\.[\w-]+", sel))
+            + len(re.findall(r"\[[^\]]+\]", sel))
+            + len(re.findall(r":root\b", sel)))
+
+
+def test_hljs_theme_padding_and_scroll_are_overridden_in_every_scope(source):
     # BEHAVIOR-LEVEL (CSS specificity, source-contract style — no DOM to lay
     # out in node). vendor/hljs.css ships TWO same-purpose rules, and each
     # needs its own same-or-higher-scope override or the doubled-padding +
@@ -221,15 +290,18 @@ def test_hljs_theme_padding_and_scroll_are_overridden_for_the_assistant_pre(
     # .hljs — 2 class-likes), which beats the dark vendor rule's 1 but NOT
     # the light vendor rule's 3 (:root + [data-theme="light"] + .hljs) — on
     # light theme the vendor rule still won and the bug reproduced there
-    # even though dark/default was fixed. Pin that BOTH overrides exist now,
-    # each with the SAME properties fixed, and — the actual bug, not just
-    # rule presence — that each override's specificity (computed by hand for
-    # these exact, flat, combinator-free selectors: id count, then
-    # class-likes [class/attribute/:root], then type count) strictly beats
-    # its same-scope vendor counterpart. Specificity comparison is a pure
-    # count; this holds regardless of which stylesheet the browser
-    # loads/parses later, which is the whole point of fixing it this way
-    # rather than relying on source order.
+    # even though dark/default was fixed.
+    #
+    # And it must hold for BOTH SCOPES a highlighted <pre> can appear in, not
+    # just the transcript: `buildPlanCard` runs the same renderMd +
+    # attachCodeCopy pair over `input.plan` inside a `.perm` card (D246), so
+    # an `.assistant`-only override left a plan's code blocks with the vendor
+    # padding unopposed — the identical bug, one call site over. Four
+    # overrides, therefore: {.assistant, .perm} x {dark, light}. Each is
+    # checked against its same-theme vendor counterpart on specificity alone
+    # (a pure count for these flat, combinator-free selectors), which holds
+    # regardless of which stylesheet the browser loads/parses later — the
+    # whole point of fixing it this way rather than relying on source order.
     with open(os.path.join(VENDOR_DIR, "hljs.css"), encoding="utf-8") as h:
         vendor_css = h.read()
     vendor_dark_sel = "pre code.hljs"
@@ -237,45 +309,126 @@ def test_hljs_theme_padding_and_scroll_are_overridden_for_the_assistant_pre(
     assert vendor_dark_sel + "{display:block;overflow-x:auto;padding:1em}" in vendor_css
     assert vendor_light_sel + "{display:block;overflow-x:auto;padding:1em}" in vendor_css
 
-    style = source[source.index("<style>"):source.index("</style>")]
-    # Line-anchored: the dark rule's line starts directly with `.assistant`;
-    # the light rule's line starts with the `:root[data-theme="light"] `
-    # prefix before it — `^` (MULTILINE) tells them apart, a lookbehind on
-    # the character before the match would not (both are preceded by a
-    # plain space either way).
-    dark_rule = re.search(r"^\s*\.assistant pre code\.hljs\s*\{([^}]*)\}", style, re.M)
-    light_rule = re.search(
-        r'^\s*(:root\[data-theme="light"\]\s*\.assistant pre code\.hljs)\s*\{([^}]*)\}',
-        style, re.M)
-    assert dark_rule, "no dark/default .assistant pre code.hljs override found"
-    assert light_rule, 'no :root[data-theme="light"] .assistant pre code.hljs override found'
-    for decls in (dark_rule.group(1), light_rule.group(2)):
-        assert re.search(r"padding:\s*0\b", decls)
-        assert re.search(r"overflow-x:\s*visible\b", decls)
-    override_dark_sel = ".assistant pre code.hljs"
-    override_light_sel = light_rule.group(1)
+    rules = _rules(_style(source), "pre code.hljs")
+    assert rules, "no `pre code.hljs` override left in the template at all"
+    overrides = []
+    for selectors, decls in rules:
+        assert re.search(r"padding:\s*0\b", decls), (selectors, decls)
+        assert re.search(r"overflow-x:\s*visible\b", decls), (selectors, decls)
+        overrides += selectors
+    light = ':root[data-theme="light"] '
+    assert set(overrides) == {
+        ".assistant pre code.hljs",
+        ".perm pre code.hljs",
+        light + ".assistant pre code.hljs",
+        light + ".perm pre code.hljs",
+    }, sorted(overrides)
 
-    def class_likes(sel):
-        # class-likes: .class, [attr=...], :root (this codebase's only
-        # zero-argument pseudo-class in play here) — each worth one, same as
-        # a real browser's specificity algorithm.
-        return (len(re.findall(r"\.[\w-]+", sel))
-                + len(re.findall(r"\[[^\]]+\]", sel))
-                + len(re.findall(r":root\b", sel)))
+    # .hljs -> 1; :root + attr + .hljs -> 3
+    assert (_class_likes(vendor_dark_sel), _class_likes(vendor_light_sel)) == (1, 3)
+    for scope in (".assistant", ".perm"):
+        dark_sel = "%s pre code.hljs" % scope
+        light_sel = light + dark_sel
+        # scope + .hljs -> 2; :root + attr + scope + .hljs -> 4
+        assert (_class_likes(dark_sel), _class_likes(light_sel)) == (2, 4)
+        assert _class_likes(dark_sel) > _class_likes(vendor_dark_sel), (
+            "%s dark-scope override no longer beats the dark vendor rule" % scope
+        )
+        assert _class_likes(light_sel) > _class_likes(vendor_light_sel), (
+            "%s light-scope override does not beat the light vendor rule "
+            "on specificity" % scope
+        )
 
-    vendor_dark_classes = class_likes(vendor_dark_sel)      # .hljs -> 1
-    vendor_light_classes = class_likes(vendor_light_sel)    # :root + attr + .hljs -> 3
-    override_dark_classes = class_likes(override_dark_sel)      # .assistant + .hljs -> 2
-    override_light_classes = class_likes(override_light_sel)    # :root + attr + .assistant + .hljs -> 4
-    assert (vendor_dark_classes, vendor_light_classes) == (1, 3)
-    assert (override_dark_classes, override_light_classes) == (2, 4)
-    assert override_dark_classes > vendor_dark_classes, (
-        "dark-scope override no longer beats the dark vendor rule on specificity"
+
+def test_the_copy_button_is_styled_in_every_scope_attach_code_copy_runs_in(source):
+    # The other half of the same finding: attachCodeCopy(body) is called on a
+    # PLAN card, and every `.copybtn` rule was `.assistant`-scoped — so a plan
+    # containing a code block got a real button with no styling at all, an
+    # unstyled inline "copy" word sitting in the middle of the plan's prose
+    # (and, unpositioned, in normal flow rather than pinned to the pre).
+    # Every `.copybtn` rule must therefore cover `.perm pre` wherever it
+    # covers `.assistant pre`, and `.perm pre` must be a positioning context
+    # for the absolute placement to resolve against.
+    style = _style(source)
+    rules = _rules(style, ".copybtn")
+    assert rules, "no .copybtn rules at all"
+    for selectors, decls in rules:
+        variants = {s.replace(".assistant", "").replace(".perm", "")
+                    for s in selectors}
+        for shape in variants:
+            assert any(s == ".assistant" + shape for s in selectors), (
+                "no .assistant variant of %r" % shape)
+            assert any(s == ".perm" + shape for s in selectors), (
+                "a .copybtn rule reaches the transcript but not a plan card: "
+                "%r (finding 2 reproducing)" % (selectors,))
+        assert decls.strip()
+    perm_pre = _rules(style, ".perm pre")
+    box = [decls for selectors, decls in perm_pre if ".perm pre" in selectors]
+    assert box, "no `.perm pre` box rule"
+    assert re.search(r"position:\s*relative\b", box[0]), (
+        "`.perm pre` is not a positioning context, so the copy button escapes "
+        "to the nearest positioned ancestor instead of its own pre"
     )
-    assert override_light_classes > vendor_light_classes, (
-        "light-scope override does not beat the light vendor rule on specificity "
-        "— this is finding 1 reproducing"
-    )
+
+
+def test_block_markdown_does_not_render_under_pre_wrap(source):
+    # marked emits BLOCK html separated by literal newlines — verified against
+    # the vendored marked.min.js: "a\n\nb\n\n- x" parses to
+    # `"<p>a</p>\n<p>b</p>\n<ul>\n<li>x</li>\n</ul>\n"`. Under `white-space:
+    # pre-wrap` every one of those newlines is a rendered blank line: between
+    # paragraphs, INSIDE the list, and one trailing the reply. `.toolchip,
+    # .thinking` already carried `white-space: normal` as a local fix for
+    # exactly this; the two elements renderMd's output actually lands in are
+    # `.assistant .body` (the streaming target and addAssistantTurn's) and
+    # `.seg-text` (one prose segment), and they must not be pre-wrap either.
+    # `.assistant pre` keeps its own `white-space: pre` — that is the one place
+    # literal whitespace IS the content, and renderMd's vendor-less fallback
+    # relies on it.
+    style = _style(source)
+    for selector in (".assistant .body", ".seg-text"):
+        applies = [decls for selectors, decls in _rules(style, selector)
+                   if selector in selectors]
+        assert applies, "no rule for %s" % selector
+        declared = " ".join(applies)
+        assert re.search(r"white-space:\s*normal\b", declared), (
+            "%s must declare white-space: normal — pre-wrap turns marked's "
+            "block separators into visible blank lines" % selector)
+        assert "pre-wrap" not in declared, (
+            "%s is still pre-wrap (finding 1 reproducing)" % selector)
+    # ...and a <p> margin, or the UA default 1em rules the paragraph gap in a
+    # column whose headings use 10px and whose lists use 4px.
+    para = [decls for selectors, decls in _rules(style, ".assistant p")
+            if ".assistant p" in selectors]
+    assert para, "no `.assistant p` rule: marked's paragraphs get the UA 1em"
+    assert re.search(r"margin:", para[0])
+
+
+def test_a_single_newline_still_breaks_the_line_without_pre_wrap(node_probe):
+    # The compensating half of dropping pre-wrap, and why it loses nothing: a
+    # lone newline INSIDE a paragraph is a line break Claude typed, and
+    # `breaks: true` renders it as a real <br> rather than leaving it to the
+    # cascade. So the newlines that stop rendering are exactly the ones marked
+    # inserted BETWEEN blocks (not content), while the model's own survive as
+    # markup — which is what makes `white-space: normal` the right fix rather
+    # than a trade.
+    assert node_probe.render_md("a\nb\n\nc") == "<p>a<br>b</p>\n<p>c</p>\n"
+
+
+def test_marked_block_output_really_is_newline_separated(source, tmp_path):
+    # The premise of the test above, taken from the vendored library rather
+    # than from a comment: if a future marked stopped separating blocks with
+    # literal newlines the whitespace rule would be harmless rather than
+    # load-bearing, and this test says which world we are in.
+    with open(os.path.join(VENDOR_DIR, "marked.min.js"), encoding="utf-8") as h:
+        marked_src = h.read()
+    script = marked_src + """
+global.window = {};
+global.DOMPurify = { sanitize: (d) => d };
+const DOMPurify = global.DOMPurify;
+console.log(JSON.stringify({ html: marked.parse("a\\n\\nb\\n\\n- x") }));
+"""
+    got = _node(script, tmp_path)
+    assert got["html"] == "<p>a</p>\n<p>b</p>\n<ul>\n<li>x</li>\n</ul>\n"
 
 
 def test_attach_code_copy_skips_languages_hljs_does_not_have(source, tmp_path):

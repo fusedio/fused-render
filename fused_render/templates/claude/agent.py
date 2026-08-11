@@ -1332,17 +1332,39 @@ def _live_mode(meta: dict, permissions: list) -> str:
 
     Derived rather than stored, so it survives a re-attach and cannot drift
     from the decisions claude actually received: the spawn mode, re-pointed by
-    each allow whose `setMode` reached disk, in the order they were answered.
+    each landed decision that MOVED it, in the order they were answered.
+
+    Two kinds of decision move it, and the second one is not ours:
+
+    * an `allow` carrying a validated `setMode` — the escalation button, and the
+      optional landing mode on a plan approval;
+    * an `allow` on `PLAN_TOOL`, with or without a `setMode`. The CLI leaves
+      plan mode ITSELF the moment it sees one (D246's spike: it emits
+      `system/status permissionMode:"default"` and the tool_result reads "User
+      has approved your plan…"), so a derived mode that stayed `"plan"` was
+      describing a session that had already left it — and `permChoices`' plan
+      guard went on suppressing the mode-switch affordance on every later card
+      of the run, for a plan mode nobody was in. Where it lands mirrors the
+      picker write-back at template.html's `buildPlanCard.send` exactly: the
+      granted `setMode` when the approval carried one, `DEFAULT_PERMISSION_MODE`
+      ("prompt", the CLI's own default) otherwise. A "keep planning" `deny`
+      moves nothing — the session is still planning, which is the point of it.
     """
     mode = meta.get("mode")
     if mode not in PERMISSION_MODES:
         mode = DEFAULT_PERMISSION_MODE
-    switches = [p for p in permissions
-                if p.get("decision") == "allow" and p.get("mode") in SWITCHABLE_MODES]
+    moves = []
+    for perm in permissions:
+        if perm.get("decision") != "allow":
+            continue
+        if perm.get("mode") in SWITCHABLE_MODES:
+            moves.append((perm, perm["mode"]))
+        elif perm.get("tool") == PLAN_TOOL:
+            moves.append((perm, DEFAULT_PERMISSION_MODE))
     # by created_at, not by id: ids lead with HH%M%S, which misorders a run
     # spanning midnight.
-    for perm in sorted(switches, key=lambda p: p.get("created_at") or 0):
-        mode = perm["mode"]
+    for _perm, landed in sorted(moves, key=lambda m: m[0].get("created_at") or 0):
+        mode = landed
     return mode
 
 
@@ -1865,6 +1887,34 @@ def _is_text_delta(row) -> bool:
     return (ev.get("delta") or {}).get("type") == "text_delta"
 
 
+def _thinking_delta_text(row) -> str:
+    """The reasoning text of one streamed thinking chunk; "" for any other row
+    AND for a chunk that carries no text.
+
+    The empty case is the interesting one, and it is not an error: the wire key
+    is `thinking` (as assumed), but WHETHER it holds anything is model-dependent
+    on the shipping CLI. Measured over real `out.jsonl` files from live runs
+    (CLI 2.1.226): `claude-haiku-4-5` streams the real trace, while
+    `claude-sonnet-5` streams `{"type": "thinking_delta", "thinking": "",
+    "estimated_tokens": 50}` and finalizes a `{"type": "thinking", "thinking":
+    "", "signature": "…"}` block — the reasoning is REDACTED, and only its token
+    estimate survives. Both surfaces agree within a run (all-empty or all-real,
+    never one of each), so there is no recovering the text where it is redacted:
+    the only honest rendering is no thinking block at all, which is what
+    `_segments_from_rows` does with a segment this leaves empty. Reading the key
+    through one function keeps the shape in one place for both the per-row growth
+    and the "did any of them carry text?" gate."""
+    if not isinstance(row, dict) or row.get("type") != "stream_event":
+        return ""
+    ev = row.get("event") or {}
+    if ev.get("type") != "content_block_delta":
+        return ""
+    delta = ev.get("delta") or {}
+    if delta.get("type") != "thinking_delta":
+        return ""
+    return str(delta.get("thinking") or "")
+
+
 def _segments_from_rows(rows: list) -> list:
     """The ordered transcript of a reply: text, thinking and tool segments.
 
@@ -1882,6 +1932,16 @@ def _segments_from_rows(rows: list) -> list:
     per-message on purpose: it makes the choice independent of where the
     `assistant` row sits relative to its own `message_stop`, which is the
     ordering a duplicate would otherwise hinge on.
+
+    THINKING follows the same deltas-or-finalized-blocks rule as text, on its
+    own gate: the finalized `thinking` block is read only when no
+    `thinking_delta` carried any text. That covers two real cases the text gate
+    does not — the persisted transcript (no `stream_event` rows at all, so a
+    restored turn's reasoning has nowhere else to come from) and a run whose
+    prose streamed while its reasoning did not. A thinking segment that ends up
+    with no text is DROPPED rather than returned empty: some models redact the
+    trace entirely (see `_thinking_delta_text`), and a "Thought for a moment"
+    disclosure that unfolds to nothing is worse than no disclosure.
 
     Tool calls are read ONLY from finalized `assistant` rows. The streamed
     `content_block_start` for the same call arrives with `input: {}` and its
@@ -1915,6 +1975,12 @@ def _segments_from_rows(rows: list) -> list:
     stripped = set()    # tool_use ids of calls deliberately not shown
     orphans = {}        # results that arrived before their tool_use row
     streamed = any(_is_text_delta(row) for row in rows)
+    # The same "deltas or finalized blocks, never both" choice as `streamed`,
+    # decided separately because it is a different question: a run can stream its
+    # prose and still carry no usable thinking delta (redacted, or a transcript
+    # with no `stream_event` rows at all — which is EVERY row set `_history`
+    # reads, and is why a restored turn never showed a thinking block before).
+    thinking_streamed = any(_thinking_delta_text(row) for row in rows)
     any_text = False    # mirrors _poll's `bool(text_parts)`
     pending_sep = False
     plumbing = "mcp__%s__%s" % (PERMISSION_SERVER, APP_STATE_TOOL)
@@ -1972,13 +2038,34 @@ def _segments_from_rows(rows: list) -> list:
                          "\n\n" if pending_sep else "")
                     any_text, pending_sep = True, False
                 elif delta.get("type") == "thinking_delta":
-                    grow("thinking", str(delta.get("thinking", "")))
+                    # Only a chunk that actually carries text opens a segment:
+                    # a redacted trace is all-empty chunks (see
+                    # `_thinking_delta_text`), and growing on those built a
+                    # thinking segment whose body was "" — which the page
+                    # rendered as a "Thought for a moment" disclosure that
+                    # unfolded to nothing at all.
+                    chunk = _thinking_delta_text(row)
+                    if chunk:
+                        grow("thinking", chunk)
             elif et == "message_stop":
                 # A tool-using turn is several assistant messages; without a
                 # break their texts concatenate mid-word ("orange.After").
                 pending_sep = any_text
         elif t == "assistant" and isinstance(content, list):
-            # Text blocks first and joined the way `_history` joins them, so a
+            # Thinking BEFORE text, because that is the order a real message
+            # carries them (thinking, then text, then tool_use) and segments are
+            # an ordered record. Read only when no thinking delta carried text:
+            # the finalized block repeats verbatim what the deltas delivered, so
+            # reading both prints the reasoning twice — and where there were no
+            # deltas at all (the persisted transcript) this is its only source.
+            if not thinking_streamed:
+                for block in content:
+                    if not isinstance(block, dict) or block.get("type") != "thinking":
+                        continue
+                    chunk = str(block.get("thinking") or "")
+                    if chunk.strip():
+                        grow("thinking", chunk)
+            # Text blocks next, joined the way `_history` joins them, so a
             # restored turn's `text` and its segments say the same thing. Safe
             # against block order because a real message is text-then-tools.
             if not streamed:
@@ -2029,10 +2116,20 @@ def _segments_from_rows(rows: list) -> list:
                     orphans[tool_id] = payload
     # Finalize: the parts lists collapse to the plain `text` string the schema
     # promises. Tool segments have no `text` at all and are left alone.
+    out = []
     for seg in segments:
         if seg["kind"] != "tool":
             seg["text"] = "".join(seg["text"])
-    return segments
+        # A thinking segment with nothing in it is not a disclosure, it is an
+        # empty box. The growth guards above already refuse an empty chunk, so
+        # this only catches a trace that was pure whitespace — but it is the
+        # invariant the page depends on ("a thinking segment HAS a body"), so it
+        # is enforced here rather than assumed. Text segments are NOT filtered:
+        # an empty one is how the page knows the reply's tail is still coming.
+        if seg["kind"] == "thinking" and not seg["text"].strip():
+            continue
+        out.append(seg)
+    return out
 
 
 def _poll(run_id: str) -> dict:

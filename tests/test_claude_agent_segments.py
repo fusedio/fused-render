@@ -275,6 +275,121 @@ def test_meta_and_sidechain_rows_are_skipped(agent, tmp_path):
     assert [(s["kind"], s["text"]) for s in segments] == [("text", "mine")]
 
 
+# ------------------------------------------------------------------- thinking
+# The live page showed a "Thought for a moment" disclosure that unfolded to
+# NOTHING. The rows below are copied from real `out.jsonl` files this very
+# template wrote during live runs (CLI 2.1.226): the wire key IS `thinking` (as
+# the original fixture assumed), but whether it holds anything is
+# MODEL-DEPENDENT.
+#
+#   claude-sonnet-5    every delta is `{"type": "thinking_delta",
+#                      "thinking": "", "estimated_tokens": 50}` and the
+#                      finalized block is `{"type": "thinking", "thinking": "",
+#                      "signature": "Es…"}` — the trace is REDACTED, and only
+#                      its token estimate (a `system/thinking_tokens` row)
+#                      survives.
+#   claude-haiku-4-5   the real trace, in both places.
+#
+# Measured over 20 run dirs: the two surfaces always agree inside a run
+# (all-empty or all-real, never one of each), so where it is redacted there is
+# nothing to recover — the only honest rendering is no block at all.
+
+
+def _redacted_thinking_rows():
+    """A sonnet-5 turn, verbatim shapes: a thinking block whose text was
+    redacted, then a reply."""
+    return [
+        {"type": "stream_event", "event": {
+            "type": "content_block_start", "index": 0,
+            "content_block": {"type": "thinking", "thinking": "",
+                              "signature": ""}}},
+        {"type": "system", "subtype": "thinking_tokens",
+         "estimated_tokens": 50, "estimated_tokens_delta": 50},
+        {"type": "stream_event", "event": {
+            "type": "content_block_delta", "index": 0,
+            "delta": {"type": "thinking_delta", "thinking": "",
+                      "estimated_tokens": 50}}},
+        {"type": "stream_event", "event": {
+            "type": "content_block_delta", "index": 0,
+            "delta": {"type": "thinking_delta", "thinking": "",
+                      "estimated_tokens": None}}},
+        {"type": "assistant", "message": {"model": "claude-sonnet-5", "content": [
+            {"type": "thinking", "thinking": "", "signature": "EsoDCokBCBAYAipA"}]}},
+        _delta("text_delta", "Done."),
+        {"type": "assistant", "message": {"model": "claude-sonnet-5", "content": [
+            {"type": "text", "text": "Done."}]}},
+    ]
+
+
+def test_a_redacted_thinking_trace_produces_no_segment_at_all(agent, tmp_path):
+    """The reported bug. An empty-bodied disclosure is worse than none: it is a
+    control that promises something to read and has nothing."""
+    data = _poll_rows(agent, tmp_path, _redacted_thinking_rows())
+    assert [s["kind"] for s in data["segments"]] == ["text"]
+    assert data["segments"][0]["text"] == "Done."
+
+
+def test_a_thinking_segment_always_has_a_body(agent, tmp_path):
+    """The invariant the page renders against, including a trace that is pure
+    whitespace — which the per-chunk guard alone would let through."""
+    rows = _redacted_thinking_rows()
+    rows.insert(4, _delta("thinking_delta", "   \n  "))
+    for seg in agent._segments_from_rows(rows):
+        if seg["kind"] == "thinking":
+            assert seg["text"].strip(), "an empty thinking segment reached the page"
+    assert [s["kind"] for s in _poll_rows(agent, tmp_path, rows)["segments"]] == ["text"]
+
+
+def test_a_streamed_thinking_trace_is_read_once_not_twice(agent, tmp_path):
+    """The haiku-4-5 shape: the finalized `assistant` row repeats verbatim the
+    trace its deltas already delivered, so reading both says it twice."""
+    data = _poll_rows(agent, tmp_path, [
+        _delta("thinking_delta", "The user is asking "),
+        _delta("thinking_delta", "for the goal of life."),
+        {"type": "assistant", "message": {"model": "claude-haiku-4-5-20251001",
+                                          "content": [
+            {"type": "thinking",
+             "thinking": "The user is asking for the goal of life.",
+             "signature": "EqICCokBCBAYAipA"}]}},
+        _delta("text_delta", "42."),
+    ])
+    assert [(s["kind"], s["text"]) for s in data["segments"]] == [
+        ("thinking", "The user is asking for the goal of life."),
+        ("text", "42.")]
+
+
+def test_thinking_is_read_from_the_finalized_row_when_nothing_streamed(
+        agent, tmp_path):
+    """A row set with no thinking DELTA at all — which is every transcript
+    `_history` reads (there are no `stream_event` rows there), so the reasoning
+    of a restored turn had no source and never appeared."""
+    data = _poll_rows(agent, tmp_path, [
+        {"type": "assistant", "message": {"content": [
+            {"type": "thinking", "thinking": "Read it first.", "signature": "EqIC"},
+            {"type": "tool_use", "id": "tu1", "name": "Read",
+             "input": {"file_path": "/a.py"}}]}},
+        {"type": "user", "message": {"content": [
+            {"type": "tool_result", "tool_use_id": "tu1", "content": "x=1"}]}},
+        {"type": "assistant", "message": {"content": [
+            {"type": "text", "text": "It sets x."}]}},
+    ])
+    assert [(s["kind"], s.get("name") or s["text"]) for s in data["segments"]] == [
+        ("thinking", "Read it first."), ("tool", "Read"), ("text", "It sets x.")]
+
+
+def test_the_thinking_gate_is_separate_from_the_text_gate(agent, tmp_path):
+    """Two different questions: text streamed here, thinking did not. One shared
+    gate would have let a run's PROSE decide where its reasoning is read from."""
+    rows = _redacted_thinking_rows()
+    # ...the same run, except the finalized block DID carry the trace.
+    rows[4] = {"type": "assistant", "message": {"content": [
+        {"type": "thinking", "thinking": "Weighing it up.", "signature": "Es"}]}}
+    data = _poll_rows(agent, tmp_path, rows)
+    assert [(s["kind"], s["text"]) for s in data["segments"]] == [
+        ("thinking", "Weighing it up."), ("text", "Done.")]
+    assert data["text"] == "Done.", "the flat field is untouched by any of this"
+
+
 # ---------------------------------------------------------- text did not move
 
 def _old_text(rows):
@@ -494,6 +609,27 @@ def test_history_turns_carry_segments(agent, tmp_path, monkeypatch):
     assert kinds == [("text", "Editing now."), ("tool", "Edit"), ("text", "Done.")]
     tool = turns[1]["segments"][1]
     assert tool["status"] == "ok" and tool["output"] == "applied"
+
+
+def test_history_restores_a_turns_thinking_block(agent, tmp_path, monkeypatch):
+    """The transcript has no `stream_event` rows at all, so its finalized
+    `thinking` block is the only source there is — a restored turn used to lose
+    its reasoning entirely, and a REDACTED one still (correctly) shows none."""
+    turns = _history(agent, tmp_path, monkeypatch, [
+        _t_user("what does it do?"),
+        _t_assistant([{"type": "thinking", "thinking": "Read the file first.",
+                       "signature": "EqIC"},
+                      {"type": "text", "text": "It sets the title."}]),
+        _t_user("and now?"),
+        _t_assistant([{"type": "thinking", "thinking": "", "signature": "EsoD"},
+                      {"type": "text", "text": "Nothing."}]),
+    ])
+    assert [(s["kind"], s["text"]) for s in turns[1]["segments"]] == [
+        ("thinking", "Read the file first."), ("text", "It sets the title.")]
+    assert [(s["kind"], s["text"]) for s in turns[3]["segments"]] == [
+        ("text", "Nothing.")]
+    # The flat field is prose only, exactly as before.
+    assert turns[1]["text"] == "It sets the title."
 
 
 def test_history_keeps_a_stretch_that_only_called_tools(agent, tmp_path, monkeypatch):

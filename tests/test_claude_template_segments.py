@@ -819,10 +819,13 @@ def test_poll_renders_segments_instead_of_the_flat_text_never_both(source):
 
 
 def test_one_static_turn_renderer_serves_history_and_the_reattach_repair(source):
-    # Three places render a FINISHED assistant turn: history restore and the
-    # two re-attach repair branches (which work off a poll payload, so they
-    # carry segments too — a run that finished while the frame was away used to
-    # lose its whole tool timeline here). One function for all three.
+    # FOUR places render a FINISHED assistant turn: history restore, the two
+    # re-attach repair branches (which work off a poll payload, so they carry
+    # segments too — a run that finished while the frame was away used to lose
+    # its whole tool timeline here), and the poll loop's typer-less tail (a run
+    # whose text only ever arrived on the poll that ENDED it). One function for
+    # all four: the tail used to hand-roll `innerHTML = renderMd(data.text)`, so
+    # a payload that carried segments rendered its flat text instead of them.
     helper = _block(source, "function addAssistantTurn(text, segments) {",
                     "  return turn;\n}")
     # Optional-key access: history USER turns carry no `segments` key at all.
@@ -835,9 +838,59 @@ def test_one_static_turn_renderer_serves_history_and_the_reattach_repair(source)
     assert "addAssistantTurn(t.text, t.segments)" in history
     assert len(re.findall(r"addAssistantTurn\(probe\.text, probe\.segments\)",
                           source)) == 2
+    assert "addAssistantTurn(data.text, data.segments)" in source, (
+        "the poll loop's typer-less tail is the fourth finished-turn render, "
+        "and it must go through the same function as the other three"
+    )
     # ...and nowhere still renders a finished turn's flat text on its own.
     assert "renderMd(probe.text)" not in source
     assert "renderMd(t.text)" not in source
+    assert "renderMd(data.text)" not in source
+
+
+# The whole set of functions allowed to put renderMd output into an innerHTML.
+# ENUMERATED, not described: "one renderer" (D244) is only a rule if a NEW
+# hand-rolled site is a test failure, and the poll loop's tail evaded the checks
+# above for exactly as long as they only named the sites that already existed.
+# Each entry is a deliberate seam:
+#   makeTyper          the streaming target, rewritten per animation frame
+#   buildTextView      one prose segment of a turn
+#   buildThinkingView  a folded reasoning block
+#   addAssistantTurn   every FINISHED turn (all four callers above)
+#   buildPlanCard      the one tool INPUT that is genuinely markdown (D246)
+# Adding to this set is a decision about what may reach innerHTML at all; every
+# other payload on this page goes in through textContent.
+_MD_INNERHTML_OWNERS = {
+    "makeTyper", "buildTextView", "buildThinkingView", "addAssistantTurn",
+    "buildPlanCard",
+}
+
+
+def test_only_the_sanctioned_renderers_put_markdown_into_an_innerhtml(source):
+    js = source[source.index("<script>"):]
+    # Comments out first, both kinds: they QUOTE code (this very fix's own
+    # comment names `innerHTML = renderMd(...)` to say what it replaced), and a
+    # scanner that counts prose as a call site fails for the wrong reason.
+    # Line-anchored for `//` so a `https://` inside a string survives.
+    js = re.sub(r"/\*.*?\*/", "", js, flags=re.S)
+    js = re.sub(r"^[ \t]*//.*$", "", js, flags=re.M)
+    # TOP-LEVEL `function name(` declarations only (column 0), so a site inside
+    # a nested helper is attributed to the function that owns it — makeTyper's
+    # two are inside its own `tick()`, and "tick" is not an answer to which
+    # renderer this is.
+    decls = [(m.start(), m.group(1))
+             for m in re.finditer(r"^function\s+(\w+)\s*\(", js, re.M)]
+    sites = list(re.finditer(r"innerHTML\s*=\s*renderMd\(", js))
+    assert sites, "no renderMd render sites found at all — anchor rotted"
+    owners = set()
+    for site in sites:
+        above = [name for pos, name in decls if pos < site.start()]
+        assert above, "a renderMd innerHTML outside any function"
+        owners.add(above[-1])
+    assert owners == _MD_INNERHTML_OWNERS, (
+        "renderMd output reaches an innerHTML somewhere new, or a sanctioned "
+        "renderer stopped doing it: %s" % sorted(owners)
+    )
 
 
 def test_diff_colours_are_theme_variables_defined_in_both_themes(source):

@@ -1377,6 +1377,93 @@ def test_the_live_mode_ignores_the_pickers_param(agent, tmp_path, monkeypatch):
     assert agent._live_mode({"mode": "nonsense"}, []) == agent.DEFAULT_PERMISSION_MODE
 
 
+def _run_planning(agent, tmp_path, monkeypatch):
+    """A live run spawned in `plan` mode, with a parked `ExitPlanMode` request —
+    the plan card, unanswered."""
+    run_dir = _run_dir(agent, tmp_path)
+    with open(os.path.join(run_dir, "meta.json"), "w") as fh:
+        json.dump({"file": "/x.html", "message": "hi", "resumed_from": "",
+                   "mode": "plan"}, fh)
+    with open(os.path.join(agent._perm_dir(run_dir), "req-1.req.json"), "w") as fh:
+        json.dump({"id": "req-1", "tool": agent.PLAN_TOOL,
+                   "input": {"plan": "# Plan\n\n1. do it"},
+                   "created_at": 1000.0}, fh)
+    with open(os.path.join(run_dir, "out.jsonl"), "w") as fh:
+        fh.write(json.dumps({"type": "system", "session_id": "s"}) + "\n")
+    monkey_runs(agent, tmp_path)
+    monkeypatch.setattr(agent, "_alive", lambda _: True)
+    return run_dir
+
+
+def test_an_approved_plan_moves_the_live_mode_out_of_plan(agent, tmp_path,
+                                                          monkeypatch):
+    """The CLI leaves plan mode ITSELF the moment it sees the allow (D246's
+    spike: `system/status permissionMode:"default"`), so a derived mode that
+    stayed "plan" described a session nobody was in — and `permChoices`' plan
+    guard went on suppressing the mode-switch affordance for the rest of the
+    run. A plain approval lands on the CLI's own default, exactly like the
+    picker write-back in `buildPlanCard.send`."""
+    _run_planning(agent, tmp_path, monkeypatch)
+    assert agent._poll("run")["mode"] == "plan"
+
+    out = agent._decide("run", "req-1", "allow", "once")
+    assert out["decision"] == "allow" and out["mode"] == "", out
+    assert agent._poll("run")["mode"] == agent.DEFAULT_PERMISSION_MODE == "prompt"
+
+
+def test_an_approved_plan_carrying_a_setmode_lands_on_that_mode(agent, tmp_path,
+                                                                monkeypatch):
+    """The optional landing mode: when the approval carried one, the live mode is
+    IT and not the default — the same `SWITCHABLE_MODES`-validated channel every
+    other card's escalation uses."""
+    _run_planning(agent, tmp_path, monkeypatch)
+    out = agent._decide("run", "req-1", "allow", "once", mode="acceptEdits")
+    assert out["mode"] == "acceptEdits", out
+    assert agent._poll("run")["mode"] == "acceptEdits"
+
+
+def test_keep_planning_leaves_the_live_mode_in_plan(agent, tmp_path, monkeypatch):
+    """"Keep planning" is a deny: the session is still planning, so nothing about
+    the mode has changed and the plan card is still the only way out."""
+    _run_planning(agent, tmp_path, monkeypatch)
+    out = agent._decide("run", "req-1", "deny", "once", note="narrower please")
+    assert out["decision"] == "deny", out
+    assert agent._poll("run")["mode"] == "plan"
+
+
+def test_only_the_plan_tool_moves_the_mode_without_a_setmode(agent, tmp_path,
+                                                             monkeypatch):
+    """The plan tool is the ONE tool whose bare allow moves the derived mode,
+    because it is the one the CLI acts on by itself. An ordinary approval with no
+    `setMode` says nothing about the mode and must leave it where it was — even
+    in plan mode, where an ordinary card can still surface (D246)."""
+    run_dir = _run_planning(agent, tmp_path, monkeypatch)
+    with open(os.path.join(agent._perm_dir(run_dir), "req-0.req.json"), "w") as fh:
+        json.dump({"id": "req-0", "tool": "Read", "input": {"file_path": "/x"},
+                   "created_at": 900.0}, fh)
+    agent._decide("run", "req-0", "allow", "once")
+    assert agent._poll("run")["mode"] == "plan"
+
+
+def test_the_mode_after_a_plan_follows_the_order_the_decisions_landed(
+        agent, tmp_path, monkeypatch):
+    """Same created_at ordering discipline as every other move: the plan approval
+    is one entry in that sequence, not a special case that wins regardless of
+    when it happened. Here a later escalation re-points the mode the plan
+    approval had just reset."""
+    run_dir = _run_planning(agent, tmp_path, monkeypatch)
+    agent._decide("run", "req-1", "allow", "once")     # created_at 1000
+    with open(os.path.join(agent._perm_dir(run_dir), "req-2.req.json"), "w") as fh:
+        json.dump({"id": "req-2", "tool": "Read", "input": {"file_path": "/x"},
+                   "created_at": 2000.0}, fh)
+    agent._decide("run", "req-2", "allow", "once", mode="auto")
+    assert agent._poll("run")["mode"] == "auto"
+    # ...and the same two decisions read in the other file order still land the
+    # same way, because the order is created_at and not listing order.
+    perms = agent._permissions(run_dir)
+    assert agent._live_mode({"mode": "plan"}, list(reversed(perms))) == "auto"
+
+
 def test_start_records_the_mode_it_spawned_with(agent, tmp_path, monkeypatch):
     target = tmp_path / "sample.html"
     target.write_text("<html></html>")

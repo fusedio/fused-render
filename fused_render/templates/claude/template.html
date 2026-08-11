@@ -697,10 +697,21 @@
   }
   .assistant .body {
     min-width: 0;
-    white-space: pre-wrap;
     word-break: break-word;
     padding-top: 2px;
   }
+  /* NOT pre-wrap, and `.seg-text` (the per-segment prose element) with it.
+     Everything that lands in either is marked's BLOCK html, and marked
+     separates block elements with a literal newline —
+     `<p>a</p>\n<p>b</p>\n<ul>\n<li>x</li>\n</ul>\n`. Under pre-wrap every one
+     of those is a VISIBLE blank line: between paragraphs, INSIDE lists, and one
+     trailing the reply. `.toolchip, .thinking` below already set `normal` for
+     exactly this reason; this is the same fix at its source. Nothing here still
+     needs pre-wrap: all three addAssistant() callers pass "", and renderMd's
+     vendor-less fallback wraps its text in a `<pre>`, which owns its own
+     white-space. A line break inside a paragraph is marked's job (`breaks:
+     true` turns a lone newline into a `<br>`), not the cascade's. */
+  .assistant .body, .seg-text { white-space: normal; }
   .error {
     color: var(--error);
     background: color-mix(in srgb, var(--error) 8%, transparent);
@@ -752,6 +763,10 @@
   .perm .perm-head .tool { color: var(--accent); font-weight: 600; }
   .perm .perm-sub { color: var(--dim); word-break: break-word; font-size: 12px; margin-top: 2px; }
   .perm pre {
+    /* Anchors .copybtn, top-right — attachCodeCopy runs on a plan card's body
+       too (buildPlanCard), and without this its absolutely-positioned button
+       escapes to the nearest positioned ancestor instead of its own pre. */
+    position: relative;
     background: var(--pre-bg);
     color: var(--pre-fg);
     border: 1px solid var(--border);
@@ -891,8 +906,10 @@
      Deliberately quieter than a permission card: a card is a question and has
      to be seen, a chip is a receipt for something that already happened, and a
      transcript of forty loud cards is unreadable. Same border language, no
-     accent ring, no shadow. `white-space: normal` because .assistant .body is
-     pre-wrap for the streaming text and these are structured rows, not prose. */
+     accent ring, no shadow. `white-space: normal` is kept explicit here even
+     though `.assistant .body` no longer inherits pre-wrap down to them: these
+     rows are also built inside the permission cards, and stating it costs
+     nothing next to reintroducing the blank-line bug by inheritance. */
   .toolchip, .thinking { white-space: normal; margin: 6px 0; }
   .toolchip {
     border: 1px solid var(--border);
@@ -1094,22 +1111,37 @@
      inline <style> at runtime and would otherwise win the cascade over the
      padding:0 above, stacking an extra 1em of padding AND nesting a second
      horizontal scrollbar inside this pre's own overflow-x:auto. Needs two
-     overrides, not one: the dark/default vendor rule is bare `pre
-     code.hljs` (2 classes' worth of specificity: .assistant+.hljs beats
-     it), but the light-theme vendor rule is `:root[data-theme="light"] pre
-     code.hljs` — :root + [data-theme="light"] + .hljs is 3 classes' worth,
-     which the bare override below does NOT beat (2 < 3, so on light theme
-     the vendor rule still wins and the bug reproduces there). The second
-     rule matches that scope one class richer (:root[data-theme="light"] +
-     .assistant + .hljs = 4), so it provably outranks it on specificity
-     alone — no dependence on which stylesheet the browser loads/parses
-     later. */
-  .assistant pre code.hljs { padding: 0; overflow-x: visible; }
-  :root[data-theme="light"] .assistant pre code.hljs { padding: 0; overflow-x: visible; }
+     overrides per scope, not one: the dark/default vendor rule is bare `pre
+     code.hljs` (1 class' worth of specificity: .assistant+.hljs, or
+     .perm+.hljs, beats it), but the light-theme vendor rule is
+     `:root[data-theme="light"] pre code.hljs` — :root + [data-theme="light"]
+     + .hljs is 3 classes' worth, which the bare override does NOT beat (2 < 3,
+     so on light theme the vendor rule still wins and the bug reproduces
+     there). The light rules below match that scope one class richer
+     (:root[data-theme="light"] + .assistant|.perm + .hljs = 4), so they
+     provably outrank it on specificity alone — no dependence on which
+     stylesheet the browser loads/parses later.
+
+     BOTH scopes, because a code block reaches the page through two funnels:
+     the assistant transcript, and `buildPlanCard`, which renders `input.plan`
+     through the same renderMd + attachCodeCopy pair inside a `.perm` card
+     (D246). An `.assistant`-only override left a plan's code blocks with the
+     vendor padding unopposed — the exact bug this comment describes,
+     reintroduced one call site over. */
+  .assistant pre code.hljs,
+  .perm pre code.hljs { padding: 0; overflow-x: visible; }
+  :root[data-theme="light"] .assistant pre code.hljs,
+  :root[data-theme="light"] .perm pre code.hljs { padding: 0; overflow-x: visible; }
   /* Copy button: hidden until the pre is hovered (or focused, keyboard-only
      users get no hover) — a permanently-visible button on every code block
-     is noise the eye has to filter on every single message. */
-  .assistant pre .copybtn {
+     is noise the eye has to filter on every single message. Scoped to both
+     funnels for the same reason as the hljs overrides above: attachCodeCopy
+     runs on a plan card too, and an unscoped `.copybtn` there is an unstyled
+     inline `copy` word shoved into the middle of the plan's prose. Both
+     `.assistant pre` and `.perm pre` set `position: relative`, which is what
+     the `position: absolute` here is anchored to. */
+  .assistant pre .copybtn,
+  .perm pre .copybtn {
     position: absolute;
     top: 6px;
     right: 6px;
@@ -1125,8 +1157,11 @@
     cursor: pointer;
   }
   .assistant pre:hover .copybtn,
-  .assistant pre .copybtn:focus-visible { opacity: 1; }
-  .assistant pre .copybtn:hover { color: var(--fg); border-color: var(--faint); }
+  .assistant pre .copybtn:focus-visible,
+  .perm pre:hover .copybtn,
+  .perm pre .copybtn:focus-visible { opacity: 1; }
+  .assistant pre .copybtn:hover,
+  .perm pre .copybtn:hover { color: var(--fg); border-color: var(--faint); }
   /* GFM tables (marked) — borders only, the assistant column is narrow
      enough that anything fancier just fights word-break. */
   .assistant table { border-collapse: collapse; margin: 8px 0; font-size: 12.5px; }
@@ -1142,6 +1177,13 @@
   .assistant h1, .assistant h2, .assistant h3, .assistant h4 {
     color: var(--fg-strong); font-weight: 600; font-size: 15px; margin: 10px 0 4px;
   }
+  /* Every paragraph marked emits is a real <p>, whose UA default margin is 1em
+     — twice the gap of the headings above and the lists below, in a column this
+     narrow. Zeroed at the two ends of a body so a reply does not float inside
+     its own bubble (the same rule `.perm .plan-body` already applies to itself). */
+  .assistant p { margin: 6px 0; }
+  .assistant .body > p:first-child, .seg-text > p:first-child { margin-top: 0; }
+  .assistant .body > p:last-child, .seg-text > p:last-child { margin-bottom: 0; }
   .assistant ul, .assistant ol { margin: 4px 0; padding-left: 22px; }
   .assistant li { margin: 2px 0; }
   .assistant li::marker { color: var(--accent); }
@@ -4600,10 +4642,13 @@ function addAssistant(text) {
 // before segments existed). Never both: the text segments join back to exactly
 // that string, so rendering both would print the reply twice.
 //
-// Three callers — history restore and the two re-attach repair branches — all
-// rendering a turn nobody is streaming, which is why there is no typer here and
-// why every segment renders statically. Callers run attachCodeCopy themselves
-// (history does one pass over the whole log, the repair path one per turn).
+// Four callers — history restore, the two re-attach repair branches, and the
+// poll loop's typer-less tail — all rendering a turn nobody is streaming, which
+// is why there is no typer here and why every segment renders statically.
+// Callers run attachCodeCopy themselves (history does one pass over the whole
+// log, the others one per turn). This is the ONLY function outside makeTyper,
+// buildTextView, buildThinkingView and buildPlanCard that may put renderMd
+// output into an innerHTML; a test enumerates that list (D244).
 function addAssistantTurn(text, segments) {
   const turn = addAssistant("");
   const segs = Array.isArray(segments) ? segments : [];
@@ -6399,9 +6444,12 @@ async function pollLoop(run_id) {
         } else if (typer) {
           await typer.finish(data.text);
         } else if (data.text) {
-          const turn = addAssistant("");
-          turn.lastChild.innerHTML = renderMd(data.text);
-          attachCodeCopy(turn);
+          // A run whose text only ever arrived on the poll that ENDED it, so no
+          // typer was ever pointed at anything. Through addAssistantTurn like
+          // the other finished-turn renders (D244's one-renderer rule): this
+          // used to hand-roll `innerHTML = renderMd(...)`, which meant a payload
+          // that carried segments here rendered its flat text instead of them.
+          attachCodeCopy(addAssistantTurn(data.text, data.segments));
         }
         if (end.error) addError(end.error);
         if (end.note) addNote(end.note, null, "⏹");
