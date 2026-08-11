@@ -34,7 +34,11 @@ from fused_render.server.gitignore import _git_ignored, _is_repo_root
 #
 # CACHES and SENTINELS stay by-value on purpose: a dict is the same object either
 # way, and `_WALK_TRUNCATED` is compared with `is`, so a re-bound copy would break
-# identity rather than merely go stale.
+# identity rather than merely go stale. EXCEPTION: `_CONDITIONS_CACHE` is read
+# through its defining module (`_server_templates._CONDITIONS_CACHE`) like the
+# TTL knobs — tests reload `fused_render.server.templates`, which rebinds a
+# fresh dict there, and a by-value copy here would keep serving the orphaned
+# pre-reload cache.
 from fused_render.server import mount as _server_mount
 from fused_render.server.mount import (
     _STAT_CACHE,
@@ -50,7 +54,6 @@ from fused_render.server.proxy import (
 )
 from fused_render.server import templates as _server_templates
 from fused_render.server.templates import (
-    _CONDITIONS_CACHE,
     _conditions_payload,
     _prefs_mtime,
 )
@@ -130,14 +133,14 @@ def api_fs_conditions(path: str):
     # recent verdict. Only success payloads (plain dicts) are cached; error
     # responses (_error -> JSONResponse) are always recomputed.
     pm = _prefs_mtime()
-    cached = _CONDITIONS_CACHE.get(path)
+    cached = _server_templates._CONDITIONS_CACHE.get(path)
     if (cached is not None
             and time.monotonic() - cached[0] < _server_templates._CONDITIONS_TTL_S
             and cached[1] == pm):
         return cached[2]
     result = _conditions_payload(path)
     if isinstance(result, dict):
-        _CONDITIONS_CACHE[path] = (time.monotonic(), pm, result)
+        _server_templates._CONDITIONS_CACHE[path] = (time.monotonic(), pm, result)
     return result
 
 @router.get("/api/fs/list")
