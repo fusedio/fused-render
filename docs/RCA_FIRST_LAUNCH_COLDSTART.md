@@ -160,3 +160,39 @@ activated, before the first launch): it imports `fused_render.server.app` and
 exclusion (rejected — a silent, per-user weakening of real-time protection) and
 no elevation. The install runs longer by roughly the scan cost; the first launch
 is correspondingly warm.
+
+## Every launch (warm): where the seconds go
+
+Every launch — not just the first — spends several seconds before the shell is
+usable, because a fresh Python process must rebuild the whole server before it
+can serve. Measured against the installed 0.4.3 interpreter (Defender-warm):
+
+| Phase | Warm cost | Notes |
+|---|---|---|
+| interpreter start + `import fused_render.cli` | ~0.5 s | before the `boot:` log line |
+| `import fused_render.server` (the app graph) | **~2.0 s** | 634 module imports; **no single culprit** — top self-times are `fused_render.executor` 127 ms, `server.templates` 125 ms, `fastapi.openapi.models` 90 ms, then a long tail of pydantic/fastapi/router modules |
+| `create_app()` body + `sync_user_skills()` | ~0.05 s | cheap; not a factor |
+| lifespan startup → uvicorn accepts | ~1–3 s | background threads (rcd spawn + mount attach, engine warm, AI prewarm, index scan) all fire at once and contend while uvicorn finishes startup |
+| supervisor readiness poll (100 ms interval) | ≤0.1 s | not a factor |
+
+So a warm launch is ~5–7 s, and the ~2 s app-graph import is the floor — it is
+inherent to a FastAPI app of this size and can't be removed without lazily
+loading routers (out of scope; high risk for route registration). The
+backgrounded `fused` import (2.8 s) does **not** block readiness and, measured,
+does **not** slow the main-thread import via GIL contention.
+
+### The occasional *much* longer launch (the "sometimes ~2 min")
+
+`_start_ready_server` gives the child a `_READY_TIMEOUT_S = 20 s` budget and
+retries up to **3×**. When base startup exceeds 20 s — a Defender-cold first
+launch, or heavy startup contention — the supervisor kills the child and
+respawns it (`supervisor.log`: repeated `Python server did not become ready`),
+turning one ~7 s launch into 20–60 s. The warm-import-at-install step above is
+what keeps the cold first launch under the budget so this retry loop is not
+entered.
+
+**Instrumentation.** `_start_ready_server` now logs the real launcher→ready time
+and, crucially, the attempt number: `server ready in 6.4s (attempt 1)` on a
+clean launch, or `start attempt 1 failed after 20.0s: …` + a higher final
+attempt number whenever the kill-retry loop was entered — the single clearest
+signal in `supervisor.log` of *which* launches paid the retry penalty.
