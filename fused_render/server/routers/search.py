@@ -4,9 +4,17 @@ The AI search on the explorer homepage translates a natural-language query into
 a small filter spec CLIENT-side (one /api/ai call); this endpoint is the
 execution half, and the app's own DuckDB/parquet index (`fused_render/index`) is
 the ONE engine that answers it. The index holds every fact the spec filters on —
-name, ext, size, mtime — so the whole spec becomes one SQL query over the `files`
-and `dirs` views and rows come back straight from parquet: no `stat`, no walk, no
-subprocess, and therefore no syscall a wedged mount could swallow.
+name, ext, size, mtime, and the path itself — so the whole spec becomes one SQL
+query over the `files` and `dirs` views and rows come back straight from parquet:
+no `stat`, no walk, no subprocess, and therefore no syscall a wedged mount could
+swallow.
+
+EVERY field of the spec is a constraint, `path_hints` included. It was once
+documented as client-side ranking only, and that was a bug with a name: the
+endpoint dropped it, so "Downloads this week" executed as `mtime >= …` over the
+whole index, `_collect` truncated to the SEARCH_MAX_RESULTS newest rows ANYWHERE,
+and a ranking boost applied afterwards could not recover a Downloads row the SQL
+had already thrown away. A location the user named narrows the query here.
 
 There is deliberately NO fallback. Spotlight (`mdfind`) and the bounded home walk
 both used to sit behind this endpoint, and both are gone: two engines that answer
@@ -105,8 +113,10 @@ def _day_bound_epoch(date_str: str, end: bool) -> float:
 def _parse_spec(body: dict):
     """Coerce the request body into a clean spec dict, or raise ValueError.
 
-    Only the keys named below are carried; anything else in the body is ignored
-    (`path_hints` is client-side ranking only)."""
+    Only the keys named below are carried; anything else in the body is ignored.
+    `path_hints` is among them: it is a path-segment WHERE clause, not a ranking
+    hint (see the module docstring), and it is cleaned exactly like `name_terms`
+    because it lands in a LIKE pattern the same way."""
 
     def strings(key, limit, clean):
         raw = body.get(key)
@@ -158,6 +168,10 @@ def _parse_spec(body: dict):
         raise ValueError("'kind' must be 'file', 'dir', or 'any'")
     spec = {
         "name_terms": strings("name_terms", 8, clean_term),
+        # Capped tighter than name_terms: each hint is an OR'd LIKE over the
+        # PATH, and a model listing eight guessed folder names would widen the
+        # query rather than place it.
+        "path_hints": strings("path_hints", 4, clean_term),
         "extensions": strings("extensions", 8, clean_ext),
         "kind": kind,
         "min_size_bytes": pos_num("min_size_bytes"),
@@ -235,14 +249,16 @@ def _drop_gitignored(entries):
 # ------------------------------------------------------------ the index engine
 
 # Spec fields that NARROW a query. `kind` is deliberately absent: "folders"
-# still matches half the disk, so it is not enough on its own.
+# still matches half the disk, so it is not enough on its own. The two tuples
+# differ only in how emptiness reads — a list is empty, a scalar is None.
+_NARROWING_LISTS = ("name_terms", "path_hints", "extensions")
 _NARROWING_KEYS = (
     "modified_after", "modified_before", "min_size_bytes", "max_size_bytes",
 )
 
 
 def _has_narrowing(spec) -> bool:
-    return bool(spec["name_terms"] or spec["extensions"]) or any(
+    return any(spec[k] for k in _NARROWING_LISTS) or any(
         spec[k] is not None for k in _NARROWING_KEYS)
 
 
@@ -252,16 +268,18 @@ def _dir_narrowing(spec) -> bool:
     Extension and size are file facts a dirs row cannot answer, so an
     extensions-only spec ("find my mp4s") narrows the files view and nothing
     else — and a dirs branch with no predicate left would return every folder in
-    the index, spending the result cap on rows that answer nothing."""
-    return bool(spec["name_terms"]) or any(
+    the index, spending the result cap on rows that answer nothing. A path hint
+    IS answerable by a dirs row: the hint matches a segment of `dir`."""
+    return bool(spec["name_terms"] or spec["path_hints"]) or any(
         spec[k] is not None for k in ("modified_after", "modified_before"))
 
 
 def _index_where(spec, *, path_expr, name_expr, mtime_expr,
-                 ext_expr=None, size_expr=None) -> str:
+                 ext_expr=None, size_expr=None, path_is_dir=False) -> str:
     """The WHERE clause for one index view. `ext_expr`/`size_expr` are None for
     the dirs view: extension and size are FILE facts, and the dirs table has no
-    size column at all.
+    size column at all. `path_is_dir` says `path_expr` names a DIRECTORY, which
+    changes only how a path hint may match it (see below).
 
     Every value reaching SQL here is either a number cast in Python or a name
     term escaped with `like_literal` (quotes doubled, LIKE metachars escaped) —
@@ -279,6 +297,23 @@ def _index_where(spec, *, path_expr, name_expr, mtime_expr,
         pieces.append("(" + " OR ".join(
             f"{name_expr} ILIKE '%{like_literal(t)}%' ESCAPE '\\'"
             for t in spec["name_terms"]) + ")")
+    if spec["path_hints"]:
+        # A hint names a FOLDER, so it constrains a path SEGMENT rather than any
+        # substring: `~/Downloads/x.csv` is in downloads, `~/my-downloads-backup`
+        # is not, and neither is a file merely NAMED downloads-old.csv. The index
+        # stores posix paths on every platform (index/ignore.norm), so '/<hint>/'
+        # is the segment shape. OR'd across hints, because the model lists the
+        # places a query could mean; AND'd with everything else, because the user
+        # named a location and the other half of the spec still applies.
+        ors = []
+        for hint in spec["path_hints"]:
+            lit = like_literal(hint)
+            ors.append(f"{path_expr} ILIKE '%/{lit}/%' ESCAPE '\\'")
+            # A dirs row IS the directory, so its own final segment counts too —
+            # otherwise "the downloads folder" could never return ~/Downloads.
+            if path_is_dir:
+                ors.append(f"{path_expr} ILIKE '%/{lit}' ESCAPE '\\'")
+        pieces.append("(" + " OR ".join(ors) + ")")
     if ext_expr is not None and spec["extensions"]:
         # clean_ext restricts these to [a-z0-9]{1,12}; re-checked here so the
         # literal is provably quote-free however this spec was built.
@@ -334,7 +369,7 @@ def _dirs_query(cfg, spec) -> str:
         f"true AS is_dir FROM {dirs_src(cfg)} "
         f"WHERE " + _index_where(spec, path_expr="dir",
                                  name_expr="regexp_extract(dir, '[^/]*$')",
-                                 mtime_expr=dmtime)
+                                 mtime_expr=dmtime, path_is_dir=True)
         + f" ORDER BY {depth_expr('dir')}, dir")
 
 

@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, mock } from "bun:test";
 import {
+  engineSpec,
   hasNonNameFilters,
   parseAiSearchSpec,
   rankHits,
@@ -119,28 +120,18 @@ describe("rankHits", () => {
     expect(hits[0].path).toBe(`${HOME}/Movies/video-final.mp4`);
   });
 
-  it("boosts path hints and orders term-less specs by recency", () => {
-    const withHints = spec({ extensions: ["mov"], path_hints: ["downloads"] });
-    const hits = rankHits(
-      [
-        entry("Movies/a.mov", { mtime: NOW - 10 }),
-        entry("Downloads/b.mov", { mtime: NOW - 9999 }),
-      ],
-      withHints,
-      HOME,
-    );
-    // The hint boost outweighs recency; without hints recency would win.
-    expect(hits[0].path).toBe(`${HOME}/Downloads/b.mov`);
-
-    const noHints = rankHits(
-      [
-        entry("Movies/a.mov", { mtime: NOW - 10 }),
-        entry("Downloads/b.mov", { mtime: NOW - 9999 }),
-      ],
-      { ...withHints, path_hints: [] },
-      HOME,
-    );
-    expect(noHints[0].path).toBe(`${HOME}/Movies/a.mov`);
+  it("orders term-less specs by recency, path hints or not", () => {
+    // path_hints is an ENGINE constraint now (search.py), so every row that
+    // comes back already matches one — a ranking boost for it would score the
+    // whole result set identically and only add noise.
+    const rows = [
+      entry("Movies/a.mov", { mtime: NOW - 10 }),
+      entry("Downloads/b.mov", { mtime: NOW - 9999 }),
+    ];
+    for (const hints of [["downloads"], []]) {
+      const hits = rankHits(rows, spec({ extensions: ["mov"], path_hints: hints }), HOME);
+      expect(hits[0].path).toBe(`${HOME}/Movies/a.mov`);
+    }
   });
 
   it("scores against the home-relative path, not /Users/<name>", () => {
@@ -168,16 +159,22 @@ function jsonResponse(body: unknown, status = 200): Response {
   });
 }
 
-/** Stub /api/ai and /api/search/files; records every request URL in order. */
+/**
+ * Stub /api/ai and /api/search/files; records every request URL in order, and
+ * the spec bodies the engine was actually asked for (`sent`).
+ */
 function stubApi(opts: {
   aiText?: string;
   aiStatus?: number;
   entries?: SearchFileEntry[];
-}): string[] {
-  const calls: string[] = [];
-  globalThis.fetch = mock(async (url: string | URL | Request) => {
+}): string[] & { sent: AiSearchSpec[] } {
+  const calls = [] as unknown as string[] & { sent: AiSearchSpec[] };
+  calls.sent = [];
+  globalThis.fetch = mock(async (url: string | URL | Request, init?: RequestInit) => {
     const u = String(url);
     calls.push(u);
+    if (u === "/api/search/files" && typeof init?.body === "string")
+      calls.sent.push(JSON.parse(init.body) as AiSearchSpec);
     if (u === "/api/ai") {
       if (opts.aiStatus && opts.aiStatus !== 200)
         return jsonResponse({ error: "claude is not installed" }, opts.aiStatus);
@@ -224,11 +221,73 @@ describe("runAiSearch", () => {
   });
 
   it("reports a spec that narrows nothing the engine understands", async () => {
-    // "in downloads" parses fine but only sets path_hints, which is
-    // client-side ranking and never reaches the engine.
-    const calls = stubApi({ aiText: JSON.stringify({ path_hints: ["downloads"] }) });
-    await expect(runAiSearch(HOME, "stuff in downloads")).rejects.toThrow(/narrow/i);
+    // "show me folders" parses fine but sets only `kind`, which still matches
+    // half the disk — the endpoint would refuse it a round trip later.
+    const calls = stubApi({ aiText: JSON.stringify({ kind: "dir" }) });
+    await expect(runAiSearch(HOME, "show me folders")).rejects.toThrow(/narrow/i);
     expect(calls).toEqual(["/api/ai"]);
+  });
+
+  it("answers a path-hints-only query — a place IS something to narrow by", async () => {
+    // "in downloads" was refused while path_hints was documented as ranking
+    // only. It is a WHERE clause now (search.py), so the query is answerable.
+    const calls = stubApi({
+      aiText: JSON.stringify({ path_hints: ["downloads"] }),
+      entries: [entry("Downloads/a.csv")],
+    });
+    const res = await runAiSearch(HOME, "stuff in downloads");
+    expect(calls).toEqual(["/api/ai", "/api/search/files"]);
+    expect(calls.sent[0].path_hints).toEqual(["downloads"]);
+    expect(res.hits.map((h) => h.path)).toEqual([`${HOME}/Downloads/a.csv`]);
+  });
+});
+
+// -- name terms: hard predicate only when they are the only narrowing ---------
+
+describe("engineSpec", () => {
+  it("drops name_terms when the spec has other real narrowing", () => {
+    // "videos I downloaded last week": ext+date already pin the query, so a
+    // hard name filter would reject IMG_1234.mov for not saying "video".
+    const sent = engineSpec(
+      spec({ name_terms: ["video"], extensions: ["mov"], modified_after: "2026-08-04" }),
+    );
+    expect(sent.name_terms).toEqual([]);
+    expect(sent.extensions).toEqual(["mov"]);
+    expect(sent.modified_after).toBe("2026-08-04");
+  });
+
+  it("keeps name_terms when they are the only narrowing", () => {
+    // Otherwise the query would match every file in the index.
+    expect(engineSpec(spec({ name_terms: ["resume"] })).name_terms).toEqual(["resume"]);
+    // path_hints narrows a PLACE, not a name, so "resume in downloads" still
+    // needs the name as a predicate — a whole folder is not an answer.
+    const withHint = engineSpec(spec({ name_terms: ["resume"], path_hints: ["downloads"] }));
+    expect(withHint.name_terms).toEqual(["resume"]);
+  });
+});
+
+describe("runAiSearch name-term softening", () => {
+  it("sends no name_terms but still ranks by them when other filters exist", async () => {
+    const calls = stubApi({
+      aiText: JSON.stringify({
+        name_terms: ["video"],
+        extensions: ["mov", "mp4"],
+        modified_after: "2026-08-04",
+      }),
+      entries: [entry("Downloads/IMG_1234.mov"), entry("Movies/video-final.mp4")],
+    });
+    const res = await runAiSearch(HOME, "videos I downloaded last week");
+    // One model call, one engine query — the deleted name-stripped retry is
+    // not back; the softening happens BEFORE the single request.
+    expect(calls).toEqual(["/api/ai", "/api/search/files"]);
+    expect(calls.sent[0].name_terms).toEqual([]);
+    // The unnamed video survives, and the named one still ranks first.
+    expect(res.hits.map((h) => h.path)).toEqual([
+      `${HOME}/Movies/video-final.mp4`,
+      `${HOME}/Downloads/IMG_1234.mov`,
+    ]);
+    // The ECHO shows what the model understood, not what the engine was sent.
+    expect(res.spec.name_terms).toEqual(["video"]);
   });
 
   it("propagates a relay failure", async () => {

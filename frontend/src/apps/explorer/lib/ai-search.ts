@@ -14,7 +14,8 @@
 // is one row the user has to pick (see FilesHome). Everything that existed to
 // make an AI-first box tolerable is therefore gone — no keyword fallback spec
 // when the model replies with garbage, no name-terms-stripped retry when the
-// first engine query comes up empty. One model call, one engine query, and a
+// first engine query comes up empty (the softening that retry existed for is
+// decided UP FRONT instead — see engineSpec). One model call, one engine query, and a
 // failure is REPORTED: the index results the user was already looking at are
 // the fallback, and silently answering a different question (a keyword search
 // on their raw words) would be worse than saying so.
@@ -38,9 +39,12 @@ export interface AiSearchSpec {
   modified_before: string | null;
   min_size_bytes: number | null;
   max_size_bytes: number | null;
-  // Directory-name hints ("in my photos folder", "downloaded" → downloads) —
-  // soft ranking boosts, never hard filters, because the model is guessing
-  // at folder names it cannot see.
+  // Directory-name hints ("in my photos folder", "downloaded" → downloads).
+  // A real engine constraint: each hint must match a path SEGMENT, OR'd across
+  // hints and ANDed with the rest of the spec (see search.py). It used to be
+  // documented as a client-side ranking boost, which made "Downloads this week"
+  // execute as a date filter over the whole index and truncate to the newest
+  // rows ANYWHERE — a boost cannot recover rows the SQL already dropped.
   path_hints: string[];
 }
 
@@ -73,9 +77,9 @@ export function aiSearchSystemPrompt(): string {
     ' "max_size_bytes": number or null,\n' +
     ' "path_hints": [folder-name words the query implies, empty if none]}\n' +
     "Guidelines:\n" +
-    "- At least one of name_terms, extensions, or a date/size bound MUST be " +
-    "set: path_hints and kind are ranking hints the search engine cannot " +
-    "narrow on, so a reply carrying only those has no answer to give.\n" +
+    "- At least one of name_terms, extensions, path_hints, or a date/size " +
+    "bound MUST be set: kind alone (\"folders\") still matches half the disk, " +
+    "so a reply carrying only that has no answer to give.\n" +
     "- name_terms is ONLY for words plausibly in the filename itself " +
     "(a project name, a topic, 'resume'). NEVER put file-type or media-type " +
     "words there — a video file is rarely named 'video'. Filler ('file', " +
@@ -95,7 +99,9 @@ export function aiSearchSystemPrompt(): string {
     "small/tiny→max_size_bytes 100000.\n" +
     "- 'folder'/'directory'→kind \"dir\".\n" +
     "- Location words go to path_hints: downloaded/downloads→downloads; " +
-    "desktop→desktop; documents→documents; photos/pictures→pictures."
+    "desktop→desktop; documents→documents; photos/pictures→pictures. These " +
+    "RESTRICT the search to folders with that exact name, so only name a place " +
+    "the query actually asks for — a guess excludes everywhere else."
   );
 }
 
@@ -160,7 +166,8 @@ export function describeSpec(spec: AiSearchSpec): string {
     parts.push(`modified ${fmtRange(spec.modified_after, spec.modified_before)}`);
   if (spec.min_size_bytes !== null) parts.push(`≥${fmtBytes(spec.min_size_bytes)}`);
   if (spec.max_size_bytes !== null) parts.push(`≤${fmtBytes(spec.max_size_bytes)}`);
-  if (spec.path_hints.length) parts.push("near " + spec.path_hints.join(", "));
+  // "in", not "near": the engine restricts to these folders (see path_hints).
+  if (spec.path_hints.length) parts.push("in " + spec.path_hints.join(", "));
   return parts.join(" · ");
 }
 
@@ -185,21 +192,41 @@ export function hasNonNameFilters(spec: AiSearchSpec): boolean {
   );
 }
 
-// Whether the spec gives the ENGINE (server) anything to narrow on.
-// path_hints is client-side-only (soft ranking, see rankHits) and never
-// reaches /api/search/files, so a spec with only path_hints/kind — e.g. "in
-// downloads" — has zero engine narrowing even though the model parsed fine.
-// Checked here rather than left to the server purely for the message: the
-// endpoint would reject it too, one round trip later, in its own words.
+// Whether the spec gives the ENGINE (server) anything to narrow on. Every
+// field but `kind` counts — path_hints included, since it is a path-segment
+// WHERE clause (search.py), so "in downloads" is answerable. Only a spec that
+// narrows nothing at all is refused here, one round trip before the endpoint
+// would refuse it in its own words.
 function hasEngineNarrowing(spec: AiSearchSpec): boolean {
-  return spec.name_terms.length > 0 || hasNonNameFilters(spec);
+  return spec.name_terms.length > 0 || spec.path_hints.length > 0 || hasNonNameFilters(spec);
 }
 
-// Rank the engine's hits: fuzzy name-term score + path-hint boost, recency
-// tie-break (and the whole order when the spec has no name terms). The
-// engine already applied the HARD filters (ext/kind/date/size); name terms
-// are re-scored here because the engine matches them with a dumb
-// case-insensitive substring (SQL ILIKE) and cannot rank.
+/**
+ * The spec as the ENGINE should execute it: name terms dropped when the spec
+ * narrows on anything else.
+ *
+ * The server ANDs name_terms in as an OR of ILIKEs, which is a hard filter on
+ * the file's name — and for "videos I downloaded last week" that is the wrong
+ * question: the query is already pinned by extension and date, and IMG_1234.mov
+ * would be excluded for never saying "video". So when there is other real
+ * narrowing the terms become boost-only and rankHits alone uses them (its soft
+ * branch, previously unreachable in production). When they are the ONLY
+ * narrowing they must stay a predicate — otherwise the query matches the index.
+ *
+ * This is deliberately not the deleted name-terms-stripped RETRY: the decision
+ * is made before the single request, so it is still one model call and one
+ * engine query.
+ */
+export function engineSpec(spec: AiSearchSpec): AiSearchSpec {
+  return hasNonNameFilters(spec) ? { ...spec, name_terms: [] } : spec;
+}
+
+// Rank the engine's hits: fuzzy name-term score, recency tie-break (and the
+// whole order when the spec has no name terms). The engine applied the hard
+// filters it was sent (ext/kind/date/size/path); name terms are scored here
+// because the engine either matched them with a dumb case-insensitive substring
+// or — under engineSpec's softening — never saw them at all, and cannot rank
+// either way. path_hints gets no boost: every returned row already matches one.
 export function rankHits(
   entries: SearchFileEntry[],
   spec: AiSearchSpec,
@@ -225,10 +252,6 @@ export function rankHits(
       }
       if (matched === 0 && !soft) continue;
     }
-    const dirPart = rel.slice(0, rel.lastIndexOf("/") + 1).toLowerCase();
-    for (const hint of spec.path_hints) {
-      if (dirPart.includes(hint.toLowerCase())) score += 10;
-    }
     hits.push({ ...e, score });
   }
   hits.sort((a, b) => b.score - a.score || (b.mtime ?? 0) - (a.mtime ?? 0));
@@ -253,10 +276,12 @@ export async function runAiSearch(
     );
   if (!hasEngineNarrowing(spec))
     throw new Error(
-      "AI search understood a place but nothing to narrow by — add a name, " +
-        "a file type, or a date.",
+      "AI search found nothing to narrow by — add a name, a place, a file " +
+        "type, or a date.",
     );
   if (signal?.aborted) throw new DOMException("aborted", "AbortError");
-  const res = await searchFiles(spec, signal);
+  // The engine runs the softened spec; the ECHO shows what the model
+  // understood, so a wrong interpretation is still visible.
+  const res = await searchFiles(engineSpec(spec), signal);
   return { hits: rankHits(res.entries, spec, home), truncated: res.truncated, spec };
 }

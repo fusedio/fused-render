@@ -35,6 +35,7 @@ def spec(**over):
         "modified_before": None,
         "min_size_bytes": None,
         "max_size_bytes": None,
+        "path_hints": [],
     }
     base.update(over)
     return base
@@ -137,6 +138,70 @@ def test_index_engine_skips_the_dirs_view_when_nothing_narrows_a_directory(tmp_p
     # every folder there is — there is no wider engine to hand it to.
     with pytest.raises(ValueError, match="folder"):
         _search_index(spec(extensions=["mp4"], kind="dir"), cfg)
+
+
+def test_index_engine_narrows_by_path_hint_segment(tmp_path):
+    """A hint names a FOLDER, so it matches a path SEGMENT, not any substring.
+
+    "Downloads this week" used to reach the engine as `mtime >= …` alone — half
+    the disk — and the 400-row recency window it truncated to held no Downloads
+    row at all, so the client's ranking boost had nothing to boost. The hint is
+    a WHERE clause now, and `~/my-downloads-backup` is not `~/Downloads`."""
+    cfg = _index(tmp_path, "/r", [
+        ("/r/Downloads/x.csv", 10, 100.0),
+        ("/r/my-downloads-backup/x.csv", 10, 200.0),
+        ("/r/downloads-old.csv", 10, 300.0),
+        ("/r/Documents/y.csv", 10, 400.0),
+    ])
+    # kind="file" so this pins the FILES view alone; the dirs view's own
+    # segment rule (the folder itself) has its own test below.
+    out = _search_index(
+        spec(kind="file", extensions=["csv"], path_hints=["downloads"]), cfg)
+    assert _paths(out) == ["/r/Downloads/x.csv"]
+
+
+def test_index_engine_ors_path_hints_and_ands_them_with_the_rest(tmp_path):
+    cfg = _index(tmp_path, "/r", [
+        ("/r/Downloads/a.csv", 10, 100.0),
+        ("/r/Desktop/b.csv", 10, 100.0),
+        ("/r/Desktop/c.txt", 10, 100.0),
+        ("/r/Music/d.csv", 10, 100.0),
+    ])
+    out = _search_index(
+        spec(kind="file", extensions=["csv"],
+             path_hints=["downloads", "desktop"]), cfg)
+    assert _paths(out) == ["/r/Desktop/b.csv", "/r/Downloads/a.csv"]
+
+
+def test_index_engine_path_hint_matches_a_dir_by_its_own_last_segment(tmp_path):
+    """A dirs row IS a directory, so the hint has to match its final segment as
+    well as an ancestor one — otherwise "the downloads folder" could never
+    return ~/Downloads itself."""
+    cfg = _index(tmp_path, "/r", [], dirs=[
+        "/r/Downloads", "/r/Downloads/inner", "/r/my-downloads-backup",
+        "/r/Documents"])
+    out = _search_index(spec(kind="dir", path_hints=["downloads"]), cfg)
+    assert _paths(out) == ["/r/Downloads", "/r/Downloads/inner"]
+
+
+def test_index_engine_answers_a_path_hints_only_spec(tmp_path):
+    """path_hints narrows, so it is enough on its own: "in downloads" is a
+    legitimately answerable query rather than a rejected one."""
+    cfg = _index(tmp_path, "/r", [("/r/Downloads/a.csv", 10, 100.0),
+                                  ("/r/Documents/b.csv", 10, 100.0)],
+                 dirs=["/r/Downloads", "/r/Documents"])
+    out = _search_index(spec(path_hints=["downloads"]), cfg)
+    assert _paths(out) == ["/r/Downloads", "/r/Downloads/a.csv"]
+
+
+def test_index_engine_path_hint_metachars_stay_literal(tmp_path):
+    """`_` is a LIKE wildcard; a hint carrying one must not match a lookalike
+    sibling (the like_literal + ESCAPE contract)."""
+    cfg = _index(tmp_path, "/r", [("/r/pro_j/a.csv", 10, 100.0),
+                                  ("/r/pro-j/b.csv", 10, 100.0)])
+    out = _search_index(
+        spec(kind="file", extensions=["csv"], path_hints=["pro_j"]), cfg)
+    assert _paths(out) == ["/r/pro_j/a.csv"]
 
 
 def test_index_engine_lets_dirs_past_extension_and_size_filters(tmp_path):

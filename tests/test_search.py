@@ -36,10 +36,21 @@ def test_parse_spec_cleans_terms_extensions_and_numbers():
     assert parsed["min_size_bytes"] == 10
 
 
+def test_parse_spec_carries_path_hints_cleaned_and_capped():
+    """`path_hints` is a real engine constraint (it narrows to a path SEGMENT),
+    so it is carried — and cleaned exactly like `name_terms`, because it lands
+    in a LIKE pattern the same way."""
+    parsed = _parse_spec(
+        {"path_hints": ['down"loads\\', "  ", "desktop", "a", "b", "c", "d"]})
+    assert parsed["path_hints"] == ["downloads", "desktop", "a", "b"]
+
+
 @pytest.mark.parametrize(
     "body",
     [
         {"name_terms": "notalist"},
+        {"path_hints": "notalist"},
+        {"path_hints": [1]},
         {"name_terms": [1]},
         {"kind": "everything"},
         {"min_size_bytes": -1},
