@@ -1,61 +1,101 @@
 import { describe, expect, it } from "bun:test";
-import { emptyReposMessage, withLiveScanning } from "@apps/explorer/lib/repos";
+import { reposMessage, reposView, type ReposView } from "@apps/explorer/lib/repos";
+import type { GitRepos } from "@platform/lib/api";
 
-describe("withLiveScanning", () => {
-  const stale = { indexed: false, scanning: true, repos: [] };
+const msg = (v: ReposView) => reposMessage(v);
+const res = (over: Partial<GitRepos> = {}): GitRepos => ({
+  indexed: false,
+  scanning: false,
+  repos: [],
+  ...over,
+});
 
-  it("does not lower scanning when a scan just finished", () => {
-    // The flicker: indexed is still false from the pre-scan response, so lowering
-    // scanning here renders "go rebuild the index" for as long as the refetch
-    // takes — telling the user to do the thing that just happened.
-    const merged = withLiveScanning(stale, false);
-    expect(merged.scanning).toBe(true);
-    expect(emptyReposMessage(merged)).toMatch(/Still building/);
+describe("reposView", () => {
+  it("is loading until a response arrives, which is not the same as empty", () => {
+    expect(reposView(null, false, null)).toEqual({ kind: "loading" });
+    expect(msg(reposView(null, false, null))).toMatch(/Looking for repos/);
   });
 
-  it("raises scanning the moment a scan starts", () => {
-    const idle = { indexed: false, scanning: false, repos: [] };
-    expect(emptyReposMessage(idle)).toMatch(/Preferences → Indexing/);
-    expect(emptyReposMessage(withLiveScanning(idle, true))).toMatch(/Still building/);
+  it("reports a failed request rather than an empty machine", () => {
+    expect(reposView(null, true, null)).toEqual({ kind: "failed" });
+    // even with a response in hand, a later failure is not "no repos"
+    expect(reposView(res({ indexed: true }), true, null).kind).toBe("failed");
   });
 
-  it("is a no-op with no poll data yet", () => {
-    expect(withLiveScanning(stale, null)).toBe(stale);
+  it("an indexed answer is ready, empty list included", () => {
+    const v = reposView(res({ indexed: true }), false, null);
+    expect(v).toEqual({ kind: "ready", repos: [] });
+    expect(msg(v)).toMatch(/No git repositories/);
   });
 
-  it("defers to a fresh response: once refetched, the server's value stands", () => {
-    // The post-refetch state for an index that finished but is still unusable
-    // (e.g. another configured root is unreconciled) must reach the real message.
-    const fresh = { indexed: false, scanning: false, repos: [] };
-    expect(withLiveScanning(fresh, false).scanning).toBe(false);
-    expect(emptyReposMessage(withLiveScanning(fresh, false)))
-      .toMatch(/Preferences → Indexing/);
+  it("keeps serving a real answer while a RESCAN runs", () => {
+    // A rescan over a usable index keeps serving the last completed generation
+    // (index-store.md §4), so scanning must not downgrade an answer to "wait".
+    const v = reposView(res({ indexed: true, repos: [{ path: "/a" }] }), false, true);
+    expect(v).toEqual({ kind: "ready", repos: [{ path: "/a" }] });
+  });
+
+  it("the live poll outranks the response's older scanning flag", () => {
+    // response says idle, poll says a scan just started
+    expect(reposView(res(), false, true).kind).toBe("building");
+    // response says scanning, poll says it has stopped — see the four endings below
+    expect(reposView(res({ scanning: true }), false, false).kind).toBe("unavailable");
+    // ...and with nothing polled yet, the response's own flag is all there is
+    expect(reposView(res({ scanning: true }), false, null).kind).toBe("building");
   });
 });
 
-describe("emptyReposMessage", () => {
-  it("says there are none only when the index has actually looked", () => {
-    const msg = emptyReposMessage({ indexed: true, scanning: false, repos: [] });
-    expect(msg).toMatch(/No git repositories/);
+// The four ways a scan can end, from the tab's point of view. Only the first
+// updates the manifest, which is why "a scan completed" was the wrong refetch
+// trigger and the pair (scanning, last_completed_at) is the right one — see
+// FilesHome. Here the contract is narrower and total: given a fresh response and
+// the live flag, the state is never "building" once nothing is scanning.
+describe("the four scan endings", () => {
+  it("COMPLETED: the index can answer, so the list shows", () => {
+    const v = reposView(res({ indexed: true, repos: [{ path: "/r" }] }), false, false);
+    expect(v).toEqual({ kind: "ready", repos: [{ path: "/r" }] });
   });
 
-  it("keeps saying 'none' during a RESCAN over an existing index", () => {
-    // scanning is independent of has_index (index-store.md §4: a rescan keeps
-    // serving the last completed generation), so a rescan must not turn a real
-    // answer into "still building".
-    const msg = emptyReposMessage({ indexed: true, scanning: true, repos: [] });
-    expect(msg).toMatch(/No git repositories/);
+  it("CANCELLED: no index and nothing running — actionable, not 'building'", () => {
+    // The regression this replaced: scanning went true -> false with the manifest
+    // untouched, so the old clamp held "Still building…" forever.
+    const v = reposView(res({ indexed: false, scanning: false }), false, false);
+    expect(v.kind).toBe("unavailable");
+    expect(msg(v)).toMatch(/Preferences → Indexing/);
+    expect(msg(v)).not.toMatch(/Still building/);
   });
 
-  it("says the index is still building while the first scan runs", () => {
-    const msg = emptyReposMessage({ indexed: false, scanning: true, repos: [] });
-    expect(msg).toMatch(/Still building/);
-    expect(msg).not.toMatch(/No git repositories/);
+  it("FAILED: indistinguishable from cancelled here, and should be", () => {
+    // A failed run also stops without a manifest. The tab has no better advice
+    // than "rebuild it", so both endings share one honest message.
+    const v = reposView(res({ indexed: false, scanning: false }), false, false);
+    expect(v.kind).toBe("unavailable");
   });
 
-  it("points at the rebuild control when nothing has ever indexed", () => {
-    const msg = emptyReposMessage({ indexed: false, scanning: false, repos: [] });
-    expect(msg).toMatch(/Preferences → Indexing/);
-    expect(msg).not.toMatch(/No git repositories/);
+  it("NEVER STARTED: same state, reached without any scan at all", () => {
+    const v = reposView(res(), false, null);
+    expect(v.kind).toBe("unavailable");
+    expect(msg(v)).toMatch(/hasn't been built yet/);
+  });
+
+  it("IN FLIGHT: only this one says 'building'", () => {
+    expect(msg(reposView(res({ scanning: true }), false, true))).toMatch(
+      /Still building/,
+    );
+  });
+});
+
+describe("reposMessage", () => {
+  it("gives every state its own copy, and no state falls through", () => {
+    const kinds: ReposView[] = [
+      { kind: "loading" },
+      { kind: "failed" },
+      { kind: "building" },
+      { kind: "unavailable" },
+      { kind: "ready", repos: [] },
+    ];
+    const seen = kinds.map(msg);
+    expect(seen.every((m) => m.length > 0)).toBe(true);
+    expect(new Set(seen).size).toBe(kinds.length);
   });
 });

@@ -1,35 +1,71 @@
-// The Repos tab's empty-state copy (FilesHome.tsx).
+// What the Explorer homepage's Repos tab is currently showing, and the copy for
+// each state.
 //
-// The repo list is DERIVED from the file index, so an empty list is ambiguous in
-// a way the other tabs' empty lists are not: bookmarks and recents are local
-// state that is simply empty, but "no repos" can mean the first index scan
-// hasn't finished. Saying "no repos found" then is a lie about the machine, and
-// the user has no way to tell it apart from the truth — so the three cases get
-// three messages. Pure, so it can be tested without rendering the page.
-import type { GitRepos } from "@platform/lib/api";
+// This exists as ONE total function over the inputs because deriving the state ad
+// hoc did not work. The tab has two independently-updating sources — a
+// /api/git-repos response (which can be seconds old) and the live index poll — and
+// three rounds of bugs all came from the same shape: reading a boolean from one
+// source next to a boolean from the other produces intermediate combinations that
+// are not real states. "Still building" forever (no refetch), then the opposite
+// flicker ("go rebuild the index" for one frame right after a scan finished), then
+// "Still building" forever again for a CANCELLED scan. Each patch created the next
+// edge case.
+//
+// So the states are enumerated instead of derived, the impossible combinations are
+// not representable, and the freshness problem is solved where it belongs: the
+// caller refetches whenever the index's observable state changes AT ALL (see
+// FilesHome), so a scan that completes, is cancelled, fails, or is killed all end
+// with a fresh response. That is what lets `liveScanning` simply win here rather
+// than being clamped one way — the clamp was the previous fix, and it was a clamp
+// precisely because the refetch could not be trusted to happen.
+import type { GitRepo, GitRepos } from "@platform/lib/api";
 
-// Fold the live index poll's `scanning` into a (possibly stale) /api/git-repos
-// response. The poll may only RAISE the flag, never lower it.
-//
-// Raising is the useful half: the empty state moves from "no index — go rebuild
-// it" to "still building" the moment a scan starts, without waiting for a refetch.
-// Lowering would be actively wrong — the instant a scan finishes `scanning` goes
-// false while `indexed` is still false from the pre-scan response, so the tab would
-// render "go rebuild the index from Preferences" for as long as the refetch takes,
-// telling the user to do something that just happened. The refetch is already in
-// flight (FilesHome keys it on that same completion), so holding the previous
-// message until the real answer lands is both correct and shorter. Once it lands,
-// `scanning` comes fresh from the server and this is a no-op.
-export function withLiveScanning(r: GitRepos, liveScanning: boolean | null): GitRepos {
-  if (liveScanning === null) return r;
-  return { ...r, scanning: r.scanning || liveScanning };
+export type ReposView =
+  // No response yet. Distinct from "ready with nothing", which is an answer.
+  | { kind: "loading" }
+  // The request itself failed; the index's state is unknown.
+  | { kind: "failed" }
+  // The index cannot answer yet AND a scan is in flight — it is coming.
+  | { kind: "building" }
+  // The index cannot answer and nothing is scanning: it was never built, or a
+  // scan ended without producing one (cancelled, failed). Needs the user.
+  | { kind: "unavailable" }
+  // The index answered. `repos` may be empty, and that is a real answer.
+  | { kind: "ready"; repos: GitRepo[] };
+
+/**
+ * `liveScanning` is the index poll's `scanning`, or null when nothing has polled
+ * yet. It wins over the response's own (older) copy whenever it exists.
+ */
+export function reposView(
+  response: GitRepos | null,
+  failed: boolean,
+  liveScanning: boolean | null,
+): ReposView {
+  if (failed) return { kind: "failed" };
+  if (response === null) return { kind: "loading" };
+  // `indexed` is the only bit that decides whether there is an ANSWER. A rescan
+  // over a usable index keeps serving the last completed generation
+  // (index-store.md §4), so scanning never downgrades a real answer to "wait".
+  if (response.indexed) return { kind: "ready", repos: response.repos };
+  return (liveScanning ?? response.scanning)
+    ? { kind: "building" }
+    : { kind: "unavailable" };
 }
 
-export function emptyReposMessage(r: GitRepos): string {
-  if (r.indexed) return "No git repositories found on this machine.";
-  // Not indexed. `scanning` separates "wait, it's happening" from "nothing has
-  // ever indexed this machine", which needs the user to go start a scan.
-  return r.scanning
-    ? "Still building the file index — repos will appear when the first scan finishes."
-    : "The file index hasn't been built yet, so there's nothing to list repos from. Rebuild it from Preferences → Indexing.";
+export function reposMessage(view: ReposView): string {
+  switch (view.kind) {
+    case "loading":
+      return "Looking for repos…";
+    case "failed":
+      return "Couldn't read the list of repos.";
+    case "building":
+      return "Still building the file index — repos will appear when the first scan finishes.";
+    case "unavailable":
+      // Deliberately actionable: this is the state where nothing is going to
+      // happen on its own, including after a scan was cancelled or failed.
+      return "The file index hasn't been built yet, so there's nothing to list repos from. Rebuild it from Preferences → Indexing.";
+    case "ready":
+      return "No git repositories found on this machine.";
+  }
 }

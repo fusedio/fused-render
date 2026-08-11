@@ -14,7 +14,7 @@ import { useBookmarksVersion, useUrlVersion } from "@platform/lib/hooks";
 import { hydrateRecents, loadRecents, recentFsPath, useRecentsVersion } from "@apps/explorer/lib/recents";
 import { BookmarkPreviewCard, RecentPreviewCard, FolderPreviewCard } from "@apps/explorer/BookmarkCards";
 import { describeSpec, runAiSearch, type AiSearchResult } from "@apps/explorer/lib/ai-search";
-import { emptyReposMessage, withLiveScanning } from "@apps/explorer/lib/repos";
+import { reposMessage, reposView } from "@apps/explorer/lib/repos";
 import { useIndexStatus } from "@platform/lib/index-status";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { TextArea } from "@platform/ui/field/fields";
@@ -353,11 +353,25 @@ export default function FilesHome({ config }: { config: Config }) {
   //
   // So the existing index poller drives the refetch (useIndexStatus, shared with
   // the listing's search indicator) rather than a poll of our own: it already
-  // knows both scan rates and already reports `last_completed_at`, which is the
-  // exact edge we need — a scan finished, so ask again. Gated on `!indexed`, so a
-  // page whose answer is already good polls nothing at all.
+  // knows both scan rates. Gated on `!indexed`, so a page whose answer is already
+  // good polls nothing at all.
   const indexScan = useIndexStatus(repos !== null && !repos.indexed);
-  const scanCompletedAt = indexScan?.last_completed_at ?? null;
+  // Refetch whenever the index's OBSERVABLE STATE changes — not when a scan
+  // "completes". Completion was the previous trigger and it was subtly wrong:
+  // `last_completed_at` is read off the manifest, and a cancelled, failed or
+  // killed run stops without ever writing one (runner.derive_state sets running
+  // false on any run_end; _with_liveness does the same for an abandoned worker).
+  // So those runs moved `scanning` true -> false with `last_completed_at` frozen,
+  // no refetch fired, and the tab sat on "Still building…" with nothing running.
+  //
+  // Keying on the pair covers every way a scan can end — completed, cancelled,
+  // failed, killed — and also the start of one, with no transition bookkeeping to
+  // get wrong. Extra refetches are harmless (the request is a cheap read and the
+  // view is a pure function of its result), which is the point: this trigger is
+  // deliberately over-eager rather than clever.
+  const indexKey = indexScan
+    ? `${indexScan.scanning}|${indexScan.last_completed_at ?? ""}`
+    : null;
   useEffect(() => {
     let alive = true;
     getGitRepos().then(
@@ -371,12 +385,12 @@ export default function FilesHome({ config }: { config: Config }) {
     return () => {
       alive = false;
     };
-  }, [scanCompletedAt]);
-  const repoList = repos?.repos ?? [];
+  }, [indexKey]);
+  // One total function over both sources, so no impossible in-between state can be
+  // rendered (see lib/repos.ts on why this is enumerated rather than derived).
+  const reposTab = reposView(repos, reposFailed, indexScan?.scanning ?? null);
+  const repoList = reposTab.kind === "ready" ? reposTab.repos : [];
   const shownRepos = expandedRepos ? repoList : repoList.slice(0, MAX_CARDS);
-  // The live poll may only RAISE `scanning`, never lower it — see
-  // withLiveScanning for why lowering renders the wrong instruction.
-  const reposState = repos && withLiveScanning(repos, indexScan?.scanning ?? null);
   // With no ?tab= in the URL, land on Claude sessions — the leading tab.
   // Bookmark/recent caches still hydrate on mount (effect below) so the other
   // tabs are ready when clicked. An explicit ?tab= always wins.
@@ -537,11 +551,7 @@ export default function FilesHome({ config }: { config: Config }) {
                 <p className="fh-empty">Nothing opened yet. Files you view will show up here.</p>
               )
             ) : tab === "repos" ? (
-              reposFailed ? (
-                <p className="fh-empty">Couldn't read the list of repos.</p>
-              ) : repos === null ? (
-                <p className="fh-empty">Looking for repos…</p>
-              ) : repoList.length ? (
+              repoList.length ? (
                 <>
                   <div className="fhb-grid">
                     {shownRepos.map((r) => (
@@ -556,11 +566,11 @@ export default function FilesHome({ config }: { config: Config }) {
                   )}
                 </>
               ) : (
-                // The repo list is derived from the file index, so an empty list
-                // means two different things and the tab must not conflate them:
-                // "you have no repos" is an answer, "we haven't finished looking"
-                // is not.
-                <p className="fh-empty">{emptyReposMessage(reposState ?? repos)}</p>
+                // Every no-cards case routes through the same function, so "you
+                // have no repos" can never be shown for "we haven't finished
+                // looking" (or the reverse) — the distinction the index makes
+                // necessary, and the one three earlier versions of this got wrong.
+                <p className="fh-empty">{reposMessage(reposTab)}</p>
               )
             ) : shownSessions === null ? (
               <p className="fh-empty">Looking for artifacts…</p>
