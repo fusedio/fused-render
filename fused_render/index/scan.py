@@ -37,11 +37,27 @@ from fused_render.index.store import (
 
 
 def keep_subdirs(subdirs, rules: IgnoreRules, guard: MountGuard):
-    """The subdirectories a walk may descend into: not a hardcoded skip, not
-    ignored, and not mount-backed."""
+    """The subdirectories a walk may hand on: not a hardcoded skip, not
+    mount-backed, and not ignored — except that a LEAF dir survives the ignore
+    list.
+
+    "Hand on" rather than "descend into", because a leaf dir kept here is not
+    descended: scan_dir_once records it and returns no children. Which is exactly
+    why the ignore list does not get a veto over one. An ignore entry buys the
+    scan two things — no descent and no row — and for a leaf dir the first is
+    already true, so all it can still do is delete the row. For `.git` that row
+    IS the repo-detection fact /api/git-repos reads, and a user (or an old saved
+    config, from back when `.git` shipped in the default ignore list) still
+    naming `.git` there would silently empty the homepage's Repos tab while
+    saving one stat. SKIP_DIRS and the mount guard keep their veto: those are
+    hazards, not preferences.
+
+    Narrow on purpose — this only overrides the verdict on the leaf dir ITSELF.
+    A repo inside an ignored tree is still gone, because the walk never reaches
+    its parent to offer it here."""
     return [s for s in subdirs
-            if s not in SKIP_DIRS and not rules.is_ignored(s)
-            and not guard.blocks(s)]
+            if s not in SKIP_DIRS and not guard.blocks(s)
+            and (is_leaf_dir(s) or not rules.is_ignored(s))]
 
 
 def _dir_sig(entries):

@@ -66,10 +66,11 @@ Filtering the cache is what makes newly-ignored folders **self-purging**: an ign
 directory is absent from the cache, so it is never added to the keep list, so
 compaction drops its file rows (`index-store.md §4`). No full rescan is needed.
 
-### Package leaves
+### Leaf directories
 
-`LEAF_DIR_SUFFIXES` (`.app`, `.framework`, `.bundle`, `.photoslibrary`) is a
-*fourth*, differently-shaped rule, and not an ignore pattern: a package is
+`LEAF_DIR_SUFFIXES` (`.app`, `.framework`, `.bundle`, `.photoslibrary`) and
+`LEAF_DIR_NAMES` (`.git`) are a
+*fourth*, differently-shaped rule, and not an ignore pattern: a leaf dir is
 **recorded and not descended**, where an ignored directory is neither. It is one
 `dirs.parquet` row with no file rows, produced by `scan_dir_once` returning before
 it lists the directory — so it costs the stat it had already taken and no scandir,
@@ -85,6 +86,26 @@ derived from this constant), so:
   relative path, out-ranking real hits;
 - **skipping** it would drop the package from the corpus entirely, and the walk
   does list it.
+
+`.git` is a leaf by NAME, and it is the reason the name half of the rule exists.
+It used to sit in `SHARED_IGNORE_DIRS`; it was moved here so the index carries one
+row per repository, which makes "is this directory a git repo" a queryable index
+fact — `/api/git-repos` (the Explorer homepage's Repos tab) selects the `.git`
+rows and takes each one's parent, instead of stat-ing every one of ~71 000 indexed
+directories on every request. Three consequences worth stating:
+
+- matching is **name equality, never a suffix**: `LEAF_DIR_SUFFIXES` is matched
+  with `endswith`, and a bare repository is conventionally named `foo.git` —
+  a suffix rule would make those opaque and hide the whole repository;
+- a leaf is strictly cheaper than an ignore pattern here, because ignore rules
+  prune *subdirectories* but not files: an ignored `.git` would still contribute
+  the ~15 loose files sitting directly in it (`HEAD`, `config`, `index`, …) and
+  still pay to list the directory. A leaf is never listed at all;
+- `keep_subdirs` lets a leaf dir survive the **user's** ignore list (`SKIP_DIRS`
+  and the mount guard keep their veto). An ignore entry buys a scan no-descent and
+  no-row; for a leaf the first is already true, so all it could still do is delete
+  the row that repo detection depends on — and `.git` shipped in the default list
+  once, so old saved configs really do name it.
 
 `is_leaf_dir` tests the path's own final component, which is all a descent needs:
 a walk that refuses to list `Foo.app` never reaches anything below it. Two callers
@@ -116,6 +137,14 @@ computed under the old rules (`scan-incremental.md §2`), so a re-included folde
 stay invisible while its parent's mtime is unchanged.
 
 - `ignore_sig` — sha1 of the newline-joined active pattern list.
+- `IgnoreRules.sig()` — what every caller actually compares: `ignore_sig` over the
+  patterns **plus the leaf rules** (§3). The leaf rules decide index content just as
+  the patterns do, so leaving them out would mean an index built before `.git`
+  became a leaf keeps matching, never rescans, and holds no `.git` rows — making
+  `/api/git-repos` report zero repositories forever. Including them makes the first
+  scan after that change a full rescan, and lets a reader detect a pre-rule index
+  (`applied_ignore_sig(cfg) != cfg.rules.sig()`) and report "not ready" instead of
+  trusting it.
 - `ignore_applied.json` in the index dir — the fingerprint the current index was
   **built** with, written by `save_applied_ignore` only after a *successful*
   compaction.

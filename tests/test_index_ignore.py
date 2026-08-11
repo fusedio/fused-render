@@ -98,3 +98,62 @@ def test_the_walk_and_the_index_share_one_ignore_floor():
     # the index may prune MORE (a background crawl of the whole home), but
     # never less: everything the walk hides has to be hidden by the index too
     assert set(WALK_IGNORE_DIRS) <= set(DEFAULT_IGNORE_NAMES)
+
+
+def test_the_walk_and_the_index_share_one_leaf_rule():
+    """Same argument as the ignore floor, for the OTHER structural rule. It
+    matters more here: `.git` is a leaf rather than an ignore entry precisely so
+    the index carries a row for it, and a walk that kept pruning the name would
+    disagree with the index about whether `.git` exists."""
+    from fused_render.index.ignore import LEAF_DIR_NAMES, LEAF_DIR_SUFFIXES
+    from fused_render.server.walk import (
+        WALK_LEAF_DIR_NAMES,
+        WALK_LEAF_DIR_SUFFIXES,
+    )
+
+    assert WALK_LEAF_DIR_NAMES == LEAF_DIR_NAMES
+    assert WALK_LEAF_DIR_SUFFIXES == LEAF_DIR_SUFFIXES
+
+
+def test_dot_git_is_a_leaf_not_an_ignore_entry():
+    """It must be in EXACTLY one of the two mechanisms. In the ignore list it
+    would leave no row for /api/git-repos to read (and would still index the ~15
+    loose files sitting directly in `.git`, since ignore rules prune
+    subdirectories but not files)."""
+    from fused_render.index.ignore import (
+        DEFAULT_IGNORE_NAMES,
+        SHARED_IGNORE_DIRS,
+        is_leaf_dir,
+    )
+    from fused_render.server.walk import WALK_IGNORE_DIRS
+
+    assert ".git" not in SHARED_IGNORE_DIRS
+    assert ".git" not in DEFAULT_IGNORE_NAMES
+    assert ".git" not in WALK_IGNORE_DIRS
+    assert is_leaf_dir("/x/proj/.git")
+
+
+def test_a_bare_repo_named_foo_dot_git_is_NOT_a_leaf():
+    """Why `.git` is a NAME rule and not another LEAF_DIR_SUFFIXES entry: that
+    tuple is matched with endswith, and a bare repository is conventionally
+    `foo.git` — treating those as opaque would hide the whole repository."""
+    from fused_render.index.ignore import is_inside_leaf_dir, is_leaf_dir
+
+    assert not is_leaf_dir("/srv/git/foo.git")
+    assert not is_inside_leaf_dir("/srv/git/foo.git/refs")
+    # and the real thing still is one, at any depth
+    assert is_leaf_dir("/x/.git")
+    assert is_inside_leaf_dir("/x/.git/objects/ab")
+
+
+def test_leaf_rules_are_part_of_the_applied_signature():
+    """The signature means "the rules this index was built under", and the leaf
+    rules decide index content just as the patterns do. If they were left out, an
+    index predating the `.git` leaf rule would keep matching and never rescan, so
+    /api/git-repos would report zero repositories forever."""
+    from fused_render.index.ignore import IgnoreRules, ignore_sig
+
+    assert IgnoreRules(["a", "b"]).sig() != ignore_sig(["a", "b"])
+    # still a pure function of the rules: same patterns, same signature
+    assert IgnoreRules(["a", "b"]).sig() == IgnoreRules(["a", "b"]).sig()
+    assert IgnoreRules(["a"]).sig() != IgnoreRules(["b"]).sig()

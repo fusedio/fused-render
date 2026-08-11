@@ -159,6 +159,69 @@ def test_a_package_directory_is_recorded_but_not_descended(tmp_path):
     assert subs == []            # and nothing below it is queued
 
 
+def _repo(root, name="proj"):
+    """A repo whose .git holds the loose files git actually puts there plus a
+    subdirectory, so "recorded but not listed" is distinguishable from "pruned as
+    an ignored tree" (an ignore rule prunes the subdir but NOT the loose files)."""
+    proj = root / name
+    git = proj / ".git"
+    (git / "objects" / "ab").mkdir(parents=True)
+    (git / "objects" / "ab" / "cdef").write_text("blob", encoding="utf-8")
+    for loose in ("HEAD", "config", "index"):
+        (git / loose).write_text("x", encoding="utf-8")
+    (proj / "main.py").write_text("print()", encoding="utf-8")
+    return proj, git
+
+
+def test_dot_git_is_recorded_as_a_leaf_and_never_listed(tmp_path):
+    """Repo-ness has to be a queryable index fact (routers/git_repos.py reads
+    these rows instead of stat-ing every indexed directory), and it has to cost
+    one row: NOT the ~15 loose files directly inside `.git`, which is exactly what
+    an ignore rule would have left behind, and certainly not the object
+    database."""
+    proj, git = _repo(tmp_path)
+    rules, guard = IgnoreRules([]), _guard(tmp_path)
+
+    # the repo's own scan offers .git onward — that is how the row gets made
+    kind, payload, subs = scan_dir_once(str(proj), {}, rules, guard)
+    assert kind == "s"
+    assert str(git) in subs
+    assert [r[2] for r in payload[1]] == ["main.py"]
+
+    # and .git itself is one row with nothing in it and nothing below it
+    kind, payload, subs = scan_dir_once(str(git), {}, rules, guard)
+    assert kind == "s"           # recorded
+    assert payload[1] == []      # no HEAD/config/index rows
+    assert payload[4] == 0
+    assert subs == []            # objects/ never queued
+
+
+def test_a_user_ignore_entry_cannot_delete_the_dot_git_row(tmp_path):
+    """An ignore entry buys a scan two things: no descent and no row. For a leaf
+    dir the first is already true, so all it can still do is delete the row that
+    IS the repo-detection fact — silently emptying the homepage's Repos tab to
+    save one stat. `.git` shipped in the default ignore list once, so old saved
+    configs really do name it."""
+    proj, git = _repo(tmp_path)
+    rules, guard = IgnoreRules([".git"]), _guard(tmp_path)
+    assert str(git) in scan_dir_once(str(proj), {}, rules, guard)[2]
+    # ... and it is still opaque: kept, not descended
+    assert scan_dir_once(str(git), {}, rules, guard)[2] == []
+
+
+def test_keep_subdirs_still_honors_ignores_for_non_leaf_dirs(tmp_path):
+    """The leaf override is narrow — it decides the verdict on the leaf dir
+    ITSELF and changes nothing else, including for a repo sitting inside an
+    ignored tree (the walk never reaches its parent to offer it)."""
+    guard = _guard(tmp_path)
+    rules = IgnoreRules([".git", "node_modules"])
+    assert keep_subdirs([str(tmp_path / "node_modules")], rules, guard) == []
+    # SKIP_DIRS and the mount guard keep their veto over a leaf dir too
+    assert keep_subdirs(["/dev"], rules, guard) == []
+    blocked = MountGuard(mounts_dir=str(tmp_path / "m"))
+    assert keep_subdirs([str(tmp_path / "m" / "s3" / ".git")], rules, blocked) == []
+
+
 def test_keep_subdirs_drops_skip_dirs_ignored_and_mount_paths(tmp_path):
     guard = MountGuard(mounts_dir=str(tmp_path / "mounts"))
     subs = [str(tmp_path / "ok"), str(tmp_path / "mounts" / "s3"),
