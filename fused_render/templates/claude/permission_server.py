@@ -42,6 +42,29 @@ Wire contract (Claude Code CLI, verified against 2.1.220):
     "behavior": "allow", "destination": "session"}]`, which hands the matching
     to the CLI's own rule engine rather than to a hand-rolled one here.
 
+ONE tool is not an approval at all: `AskUserQuestion` is the model asking the
+user something, and its answer rides back on the SAME allow — `updatedInput` =
+the parked input plus a top-level `answers` record keyed by the exact question
+text, value = the chosen option's `label` (multi-select: the chosen labels
+joined with ", "). Verified against 2.1.226; the field is declared by the tool's
+own input schema, which is not in `--help` (read out of the binary, then
+confirmed end to end). The two shapes that look right and are not: a plain
+`allow` reaches the model as "The user did not answer the questions", and a
+`deny` carrying the answer as its message arrives as `is_error: true` filed
+under `permission_denials`. `updatedInput` is re-validated against the tool's
+schema, so it must be the parked input PLUS the key — dropping `questions` is a
+`<tool_use_error>`, not a silent no-op.
+
+ONE more tool needs nothing here, and that is worth writing down because it looks
+like it should: `ExitPlanMode` (the model asking to stop planning) rides the
+ORDINARY paths. Spiked against 2.1.226: a plain `allow` is enough — the CLI leaves
+plan mode itself when it sees one (it emits `system/status
+permissionMode:"default"`, the tool_result reads "User has approved your plan…"),
+so the plan passes back through `updatedInput` byte-identical like any other
+input, and "keep planning" is an ordinary `deny` whose `message` agent.py
+composes. Whatever the page sends as an ANSWER is still refused for it, by the
+`ANSWERABLE_TOOL` gate below: only a question can carry `answers`.
+
 The JSON-RPC framing is newline-delimited JSON on stdin/stdout (MCP stdio).
 stdout carries protocol only — diagnostics go to stderr.
 """
@@ -77,6 +100,11 @@ DECISION_WRITE_WINDOW = 2.0
 # Modes a card may switch the running session to. Mirrors SWITCHABLE_MODES in
 # agent.py; a test asserts the two agree. Never `bypassPermissions`.
 SWITCHABLE_MODES = frozenset({"acceptEdits", "auto"})
+# The one tool whose card answers a question instead of approving a call (see
+# the module docstring for its wire). Its answer is model-visible tool input
+# that the PAGE authors, which is why it is validated below against the parked
+# request's own questions and option labels — and why nothing else may carry it.
+ANSWERABLE_TOOL = "AskUserQuestion"
 
 PERM_DIR = os.path.abspath(sys.argv[1]) if len(sys.argv) > 1 else ""
 STATE_DIR = os.path.abspath(sys.argv[2]) if len(sys.argv) > 2 else ""
@@ -193,9 +221,112 @@ def _await_decision(req_id: str) -> dict:
                          WAIT_TIMEOUT, {"decision": "deny", "reason": "timeout"})
 
 
+def _multi_answer_ok(value: str, labels: list) -> bool:
+    """Is `value` the ", "-join of a non-empty run of `labels`, in option order?
+
+    Matched by CONSTRUCTION rather than by splitting on ", ", because a label may
+    itself contain ", " and splitting would either accept a label the request
+    never offered or reject one it did. Walked as the set of offsets into `value`
+    reachable after consuming some prefix of the options, so a question with many
+    options costs O(options x len(value)) rather than enumerating subsets.
+    """
+    reach = {0}
+    for label in labels:
+        nxt = set(reach)
+        for off in reach:
+            if not value.startswith(label, off):
+                continue
+            end = off + len(label)
+            if end == len(value):
+                return True          # consumed the whole answer, ending on a label
+            if value.startswith(", ", end):
+                nxt.add(end + 2)
+        reach = nxt
+    return False
+
+
+def _answers_from(questions, answers):
+    """The answer record that may be forwarded, or None — which means deny.
+
+    MUST stay identical to `_answers_from` in agent.py: that copy validates the
+    click before it is latched, this one validates before the CLI is told about
+    it, and a test runs both over one table (D146). Two copies because this
+    server is spawned standalone by the CLI and imports nothing of ours.
+
+    Every value has to be a label the PARKED REQUEST itself offered for that
+    exact question, because the alternative failure is the model acting on a
+    choice the user never made. An omitted question is allowed (the CLI reads it
+    as unanswered, which is true); an invented one is not.
+    """
+    if not isinstance(questions, list) or not questions:
+        return None
+    if not isinstance(answers, dict) or not answers:
+        return None
+    asked = {}
+    for question in questions:
+        if not isinstance(question, dict):
+            return None
+        text = question.get("question")
+        options = question.get("options")
+        if not isinstance(text, str) or not text or not isinstance(options, list):
+            return None
+        labels = [opt["label"] for opt in options
+                  if isinstance(opt, dict) and isinstance(opt.get("label"), str)
+                  and opt["label"]]
+        # No usable option, or two questions an answer keyed by that text could
+        # equally belong to: nothing here can be answered unambiguously.
+        if not labels or text in asked:
+            return None
+        asked[text] = (labels, bool(question.get("multiSelect")))
+    out = {}
+    for text, value in answers.items():
+        if not isinstance(text, str) or text not in asked:
+            return None
+        if not isinstance(value, str) or not value:
+            return None
+        labels, multi = asked[text]
+        if not (_multi_answer_ok(value, labels) if multi else value in labels):
+            return None
+        out[text] = value
+    return out
+
+
+# What the model is told when an answer arrives that the parked question cannot
+# account for. A sentence, not a schema error: the model can act on "ask again".
+BAD_ANSWER = ("The answer could not be matched to the question that was asked, "
+              "so nothing was recorded. Ask again if you still need it.")
+
+
 def _permission_result(tool_name: str, tool_input: dict, decision: dict) -> dict:
     """Turn the browser's click into the CLI's permission-result shape."""
     verdict = decision.get("decision")
+    if verdict == "allow" and tool_name == ANSWERABLE_TOOL:
+        # A question is answered, never "allowed": the answer IS the payload, and
+        # an allow without one reads to the model as "the user did not answer".
+        # No updatedPermissions on this branch by construction — a question is
+        # one exchange, so there is nothing to grant for the rest of the reply
+        # and nothing about it says anything about the permission mode.
+        answers = _answers_from(tool_input.get("questions"),
+                                decision.get("answers"))
+        if answers is None:
+            return {"behavior": "deny", "message": BAD_ANSWER,
+                    "decisionClassification": "user_reject"}
+        # The parked input PLUS the key. Rebuilding it would drop `questions`,
+        # which the CLI re-validates and rejects as a <tool_use_error>.
+        updated = dict(tool_input)
+        # …minus anything the MODEL wrote on the answer keys. All three are
+        # declared fields of this tool's input, so the model can fill them in, and
+        # `response` OUTRANKS `answers` in the CLI's choice of tool_result
+        # wording: a model that sent one would be answering its own question while
+        # the card told the user their click had landed. The user authors the
+        # answer here, so nothing model-authored on these keys survives. The CLI's
+        # own normalisation strips them today — which is exactly why this must not
+        # depend on it continuing to.
+        for model_written in ("response", "answers", "annotations"):
+            updated.pop(model_written, None)
+        updated["answers"] = answers
+        return {"behavior": "allow", "updatedInput": updated,
+                "decisionClassification": "user_temporary"}
     if verdict == "allow":
         result = {"behavior": "allow", "updatedInput": tool_input,
                   "decisionClassification": "user_temporary"}

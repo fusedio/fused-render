@@ -36,11 +36,14 @@ Actions:
   main(action="poll", run_id=...)
       -> {"text": ..., "done": bool, "session_id": ..., "error": ..., "tokens": N,
           "phase": ..., "message": <the run's first message, for re-attach>,
-          "permissions": [{"id", "tool", "input", "decision", "scope"}, ...],
+          "permissions": [{"id", "tool", "input", "decision", "scope",
+                           "answers"}, ...],
           "app_state": [{"id", "reason", "created_at"}, ...]  (unanswered only),
           "mode": <the mode this run is RUNNING in, not the picker's>}
   main(action="decide", run_id=..., request_id=..., decision="allow"|"deny",
-       scope="once"|"session")        -> {"decided": ..., "decision": ...}
+       scope="once"|"session", answers=<json string, AskUserQuestion only>,
+       note=<free text, ExitPlanMode deny only>)
+                                      -> {"decided": ..., "decision": ...}
   main(action="app_state", run_id=..., request_id=..., state=<json string>)
                                       -> {"answered": ...}
   main(action="sessions", file=...)   -> {"sessions": [...]}   (sidecar only)
@@ -228,12 +231,22 @@ WHOLE_TOOL_GRANTABLE = frozenset({
 # decides how much is auto-approved before it is consulted, and whatever is
 # left still has to be answerable or it goes back to being a silent refusal.
 #
+#   plan        the CLI's own plan mode: claude is expected to research and not
+#               modify anything until it calls ExitPlanMode with a plan for the
+#               user to approve (the plan card). That "not modify anything" is
+#               CLI-ENFORCED, not ours, and UNVERIFIED here against a live
+#               headless run (queued for the end-to-end task) — the prompt tool
+#               stays wired exactly as in every other mode, so an ordinary card
+#               can still surface for some other tool while planning and stays
+#               fully answerable if one does; only the ExitPlanMode card itself
+#               is the intended way out (see `permChoices`' liveMode guard)
 #   prompt      the CLI default — a card for anything not already allowed
 #   acceptEdits file edits go through; Bash/web/everything else still cards
 #   auto        the CLI's own classifier auto-approves what it judges safe,
 #               and escalates the rest to a card (it is a broader opt-in, NOT
 #               a blanket one — bypassPermissions is deliberately not offered)
-PERMISSION_MODES = {"prompt": None, "acceptEdits": "acceptEdits", "auto": "auto"}
+PERMISSION_MODES = {"plan": "plan", "prompt": None,
+                    "acceptEdits": "acceptEdits", "auto": "auto"}
 DEFAULT_PERMISSION_MODE = "prompt"
 
 # Modes a card may switch the RUNNING session to, via a `setMode` permission
@@ -243,6 +256,164 @@ DEFAULT_PERMISSION_MODE = "prompt"
 # here for the same reason it is absent from the picker — the goal is having
 # Claude evaluate the request, not having nobody evaluate it.
 SWITCHABLE_MODES = frozenset({"acceptEdits", "auto"})
+
+# The one tool whose card is not an approval: `AskUserQuestion` is the model
+# asking the USER something, so what goes back is an answer. `decide` carries it
+# as `answers` (a record keyed by the exact question text, value = the chosen
+# option's label, or the chosen labels joined with ", " for a multi-select) and
+# permission_server turns that into the `updatedInput` the CLI honours — see its
+# module docstring for the wire and how it was pinned.
+#
+# Deliberately NOT in WHOLE_TOOL_GRANTABLE and never carrying a `setMode`: a
+# question is one exchange, so "allow all of these in this reply" would mean
+# answering the next question without asking, and a mode switch riding on it
+# would loosen approvals for every later tool on the back of a click that said
+# nothing about permissions.
+ANSWERABLE_TOOL = "AskUserQuestion"
+
+# The other tool whose card is not an ordinary approval: `ExitPlanMode` is the
+# model asking to stop planning and start doing, and what is parked with it is a
+# PLAN (`input.plan`, markdown) rather than a call to vet. The verdict is still an
+# ordinary one — spiked against CLI 2.1.226: a plain `{"decision": "allow"}` is
+# enough, because the CLI leaves plan mode itself when it sees one (it emits
+# `system/status permissionMode:"default"` and the tool_result reads "User has
+# approved your plan…"). What is special is only the DENY: "keep planning" has to
+# tell the model to revise rather than to give up, and that sentence is composed
+# here (see `_keep_planning`) rather than by whatever called `decide`.
+#
+# Deliberately NOT in WHOLE_TOOL_GRANTABLE: there is one plan, so "allow all
+# ExitPlanMode in this reply" is either a grant for nothing or a pre-approval of
+# the NEXT plan, unseen. A `setMode` MAY ride along on the allow, unlike a
+# question card's — it is the mode the session lands in once planning is over,
+# which is a statement about permissions — and it goes through the same
+# SWITCHABLE_MODES gate as every other card's.
+PLAN_TOOL = "ExitPlanMode"
+
+# What "keep planning" tells the model. Page-independent on purpose: the deny
+# message is the only thing the model reads off this card, and the page's half of
+# it is a NOTE appended below, never the instruction itself.
+KEEP_PLANNING = "Revise the plan — the user wants changes."
+# How much of that note is carried. The user typed it, so it is not sanitised —
+# it is BOUNDED: a pasted file must not become the deny message, and the control
+# characters that are not whitespace have no business in a JSON string the CLI
+# hands the model. The page mirrors this number as `PLAN_NOTE_LIMIT` (a
+# `maxLength` on the textarea, so a user typing honestly never even reaches the
+# cut) — a test holds the two together (D146).
+NOTE_LIMIT = 2000
+# The cut is never SILENT (D241's precedent: a size cap that just drops bytes
+# without saying so reads as data loss, not a limit) — a note over the cap gets
+# this appended, so both the user's own card and the sentence the model reads
+# say plainly that something was left out, rather than quietly shortening it.
+NOTE_TRUNCATED = f"\n[note truncated at {NOTE_LIMIT} chars]"
+
+
+def _keep_planning(note: str) -> str:
+    """The deny message for a plan sent back for revision, plus the user's note.
+
+    Newlines and tabs survive (a note is allowed to be two lines); anything below
+    them is dropped, and the whole thing is capped — visibly, with `NOTE_TRUNCATED`
+    appended when the cap actually bit. Never markup and never tool input — this
+    string only ever becomes the `message` of a deny."""
+    text = "".join(ch for ch in str(note or "")
+                   if ch in "\n\t" or ch >= " ")
+    text = text.strip()
+    cut = len(text) > NOTE_LIMIT
+    text = text[:NOTE_LIMIT].strip()
+    if not text:
+        return KEEP_PLANNING
+    return (KEEP_PLANNING + " The user's note: " + text
+            + (NOTE_TRUNCATED if cut else ""))
+
+
+def _multi_answer_ok(value: str, labels: list) -> bool:
+    """Is `value` the ", "-join of a non-empty run of `labels`, in option order?
+
+    Matched by CONSTRUCTION rather than by splitting on ", ", because a label may
+    itself contain ", " and splitting would either accept a label the request
+    never offered or reject one it did. Walked as the set of offsets into `value`
+    reachable after consuming some prefix of the options, so a question with many
+    options costs O(options x len(value)) rather than enumerating subsets.
+    """
+    reach = {0}
+    for label in labels:
+        nxt = set(reach)
+        for off in reach:
+            if not value.startswith(label, off):
+                continue
+            end = off + len(label)
+            if end == len(value):
+                return True          # consumed the whole answer, ending on a label
+            if value.startswith(", ", end):
+                nxt.add(end + 2)
+        reach = nxt
+    return False
+
+
+def _answers_from(questions, answers):
+    """The answer record that may be latched, or None — which means deny.
+
+    MUST stay identical to `_answers_from` in permission_server.py: this copy
+    validates the click before it is written down, that one validates before the
+    CLI is told about it, and a test runs both over one table (D146). Two copies
+    because that server is spawned standalone by the CLI and imports nothing of
+    ours.
+
+    Every value has to be a label the PARKED REQUEST itself offered for that
+    exact question, because the alternative failure is the model acting on a
+    choice the user never made. An omitted question is allowed (the CLI reads it
+    as unanswered, which is true); an invented one is not.
+    """
+    if not isinstance(questions, list) or not questions:
+        return None
+    if not isinstance(answers, dict) or not answers:
+        return None
+    asked = {}
+    for question in questions:
+        if not isinstance(question, dict):
+            return None
+        text = question.get("question")
+        options = question.get("options")
+        if not isinstance(text, str) or not text or not isinstance(options, list):
+            return None
+        labels = [opt["label"] for opt in options
+                  if isinstance(opt, dict) and isinstance(opt.get("label"), str)
+                  and opt["label"]]
+        # No usable option, or two questions an answer keyed by that text could
+        # equally belong to: nothing here can be answered unambiguously.
+        if not labels or text in asked:
+            return None
+        asked[text] = (labels, bool(question.get("multiSelect")))
+    out = {}
+    for text, value in answers.items():
+        if not isinstance(text, str) or text not in asked:
+            return None
+        if not isinstance(value, str) or not value:
+            return None
+        labels, multi = asked[text]
+        if not (_multi_answer_ok(value, labels) if multi else value in labels):
+            return None
+        out[text] = value
+    return out
+
+
+def _as_answers(answers: str):
+    """The `answers` param as an object. It arrives as a JSON STRING like every
+    other param (the URL/param binder is str-shaped), exactly as `app_state`
+    sends its snapshot. Anything unparseable is handed on as-is so
+    `_answers_from` rejects it — this function never decides anything."""
+    if isinstance(answers, dict):
+        return answers          # a direct caller (tests, the apps API)
+    try:
+        return json.loads(answers) if answers else None
+    except (TypeError, ValueError):
+        return None
+
+
+# What the model is told when an answer arrives that the parked question cannot
+# account for. Mirrors permission_server's BAD_ANSWER — this side writes it into
+# the decision file, that side is where it reaches the CLI.
+BAD_ANSWER = ("The answer could not be matched to the question that was asked, "
+              "so nothing was recorded. Ask again if you still need it.")
 
 
 def _claude_bin() -> str:
@@ -972,6 +1143,7 @@ def _permissions(run_dir: str) -> list:
         if not isinstance(req, dict) or _bad_id(str(req.get("id") or "")):
             continue
         res = _read_decision(perm_dir, req["id"])
+        answers = res.get("answers")
         out.append({
             "id": req["id"],
             "tool": str(req.get("tool") or ""),
@@ -980,6 +1152,10 @@ def _permissions(run_dir: str) -> list:
             "decision": str(res.get("decision") or ""),
             "scope": str(res.get("scope") or ""),
             "mode": str(res.get("mode") or ""),
+            # Only a question card has these, and it is the same reason the whole
+            # list is returned: a frame that re-attaches has to be able to
+            # rebuild a card it never saw, including what was chosen on it.
+            "answers": answers if isinstance(answers, dict) else {},
         })
     return out
 
@@ -994,16 +1170,21 @@ def _permissions(run_dir: str) -> list:
 DECISION_WRITE_WINDOW = 2.0
 
 
-def _request_tool(req_path: str) -> str:
-    """The tool a parked request is asking about, or "" if it can't be read —
-    which lands outside WHOLE_TOOL_GRANTABLE, so an unreadable request cannot
-    talk its way into a session-wide grant."""
+def _request_asks(req_path: str) -> tuple:
+    """(tool, input) for a parked request; ("", {}) if it can't be read.
+
+    An unreadable request therefore lands outside WHOLE_TOOL_GRANTABLE (so it
+    cannot talk its way into a session-wide grant) and outside ANSWERABLE_TOOL
+    (so no answer can be validated against questions nobody can see)."""
     try:
         with open(req_path, encoding="utf-8") as fh:
             req = json.load(fh)
     except (OSError, json.JSONDecodeError):
-        return ""
-    return str(req.get("tool") or "") if isinstance(req, dict) else ""
+        return "", {}
+    if not isinstance(req, dict):
+        return "", {}
+    body = req.get("input")
+    return str(req.get("tool") or ""), body if isinstance(body, dict) else {}
 
 
 def _read_decision(perm_dir: str, request_id: str, wait: float = 0.0) -> dict:
@@ -1062,7 +1243,7 @@ def _write_decision(perm_dir: str, request_id: str, payload: dict) -> bool:
 
 
 def _decide(run_id: str, request_id: str, decision: str, scope: str,
-            mode: str = "") -> dict:
+            mode: str = "", answers: str = "", note: str = "") -> dict:
     run_dir = os.path.join(RUNS, run_id)
     if _bad_id(run_id) or not os.path.isdir(run_dir):
         return {"error": "unknown run_id"}
@@ -1075,12 +1256,13 @@ def _decide(run_id: str, request_id: str, decision: str, scope: str,
     # Anything that is not an explicit allow is a deny: a mangled param must
     # fail closed, never grant.
     verdict = "allow" if decision == "allow" else "deny"
+    tool, asked = _request_asks(req_path)
     if _alive(run_dir):
         # Narrow, never widen: a session grant is only honoured for the tools
         # the card offers it for. Asking for one on a Bash request — which the
         # UI never does — downgrades to allow-once instead of installing a
         # session-wide Bash rule, and the caller is told which scope it got.
-        if scope == "session" and _request_tool(req_path) not in WHOLE_TOOL_GRANTABLE:
+        if scope == "session" and tool not in WHOLE_TOOL_GRANTABLE:
             scope = "once"
         payload = {"decision": verdict,
                    "scope": "session" if scope == "session" else "once"}
@@ -1088,8 +1270,30 @@ def _decide(run_id: str, request_id: str, decision: str, scope: str,
         # ever alongside an allow (a deny that also loosened the mode would be
         # incoherent), and only to a mode on the short switchable list — an
         # unrecognised one is dropped, never passed through to the CLI.
-        if verdict == "allow" and mode in SWITCHABLE_MODES:
+        # A question card is excluded by tool, not by trusting it not to ask:
+        # answering a question says nothing about how much to auto-approve.
+        if verdict == "allow" and mode in SWITCHABLE_MODES and tool != ANSWERABLE_TOOL:
             payload["mode"] = mode
+        if verdict == "deny" and tool == PLAN_TOOL:
+            # "Keep planning": the one deny that carries a message of its own, so
+            # the model revises the plan instead of reading a refusal and giving
+            # up. The SENTENCE is ours (`_keep_planning`) and only the user's
+            # optional note comes from the caller — and only for this tool, so a
+            # `note` on anything else cannot rewrite another card's deny.
+            payload["message"] = _keep_planning(note)
+        if verdict == "allow" and tool == ANSWERABLE_TOOL:
+            # The answer IS the payload here, so a click that carries no valid
+            # one is recorded as a deny rather than as an allow the model would
+            # read as "the user did not answer the questions". Validated against
+            # the parked request's own questions, never against what was sent.
+            picked = _answers_from(asked.get("questions"), _as_answers(answers))
+            if picked is None:
+                payload = {"decision": "deny", "scope": "once",
+                           "message": BAD_ANSWER}
+            else:
+                payload["answers"] = picked
+        # Anywhere else `answers` is simply not a field: dropping it here is what
+        # keeps the page from adding keys to a tool input it does not own.
     else:
         # The run is over, so nothing will ever read this answer. Record the
         # expiry rather than the click: an Allow that was in flight when the
@@ -1106,10 +1310,14 @@ def _decide(run_id: str, request_id: str, decision: str, scope: str,
     res = _read_decision(perm_dir, request_id, wait=DECISION_WRITE_WINDOW)
     if not res.get("decision"):
         return {"error": "could not record that decision"}
+    landed = res.get("answers")
     return {"decided": request_id,
             "decision": str(res["decision"]),
             "scope": str(res.get("scope") or ""),
-            "mode": str(res.get("mode") or "")}
+            "mode": str(res.get("mode") or ""),
+            # What the card shows as chosen — the answer that WON the latch, so
+            # the losing half of a double-click renders the other one's choice.
+            "answers": landed if isinstance(landed, dict) else {}}
 
 
 def _live_mode(meta: dict, permissions: list) -> str:
@@ -1124,17 +1332,39 @@ def _live_mode(meta: dict, permissions: list) -> str:
 
     Derived rather than stored, so it survives a re-attach and cannot drift
     from the decisions claude actually received: the spawn mode, re-pointed by
-    each allow whose `setMode` reached disk, in the order they were answered.
+    each landed decision that MOVED it, in the order they were answered.
+
+    Two kinds of decision move it, and the second one is not ours:
+
+    * an `allow` carrying a validated `setMode` — the escalation button, and the
+      optional landing mode on a plan approval;
+    * an `allow` on `PLAN_TOOL`, with or without a `setMode`. The CLI leaves
+      plan mode ITSELF the moment it sees one (D248's spike: it emits
+      `system/status permissionMode:"default"` and the tool_result reads "User
+      has approved your plan…"), so a derived mode that stayed `"plan"` was
+      describing a session that had already left it — and `permChoices`' plan
+      guard went on suppressing the mode-switch affordance on every later card
+      of the run, for a plan mode nobody was in. Where it lands mirrors the
+      picker write-back at template.html's `buildPlanCard.send` exactly: the
+      granted `setMode` when the approval carried one, `DEFAULT_PERMISSION_MODE`
+      ("prompt", the CLI's own default) otherwise. A "keep planning" `deny`
+      moves nothing — the session is still planning, which is the point of it.
     """
     mode = meta.get("mode")
     if mode not in PERMISSION_MODES:
         mode = DEFAULT_PERMISSION_MODE
-    switches = [p for p in permissions
-                if p.get("decision") == "allow" and p.get("mode") in SWITCHABLE_MODES]
+    moves = []
+    for perm in permissions:
+        if perm.get("decision") != "allow":
+            continue
+        if perm.get("mode") in SWITCHABLE_MODES:
+            moves.append((perm, perm["mode"]))
+        elif perm.get("tool") == PLAN_TOOL:
+            moves.append((perm, DEFAULT_PERMISSION_MODE))
     # by created_at, not by id: ids lead with HH%M%S, which misorders a run
     # spanning midnight.
-    for perm in sorted(switches, key=lambda p: p.get("created_at") or 0):
-        mode = perm["mode"]
+    for _perm, landed in sorted(moves, key=lambda m: m[0].get("created_at") or 0):
+        mode = landed
     return mode
 
 
@@ -1329,9 +1559,11 @@ def _start(file: str, message: str, session_id: str, model: str,
            f"mcp__{PERMISSION_SERVER}__{PERMISSION_TOOL}",
            # Naming a permission-prompt tool also un-gates AskUserQuestion and
            # ExitPlanMode, which the CLI otherwise disables in headless mode.
-           # This chat renders neither a question picker nor a plan dialog, so
-           # keep them off: the change is about tool approvals and nothing else.
-           "--disallowed-tools", "AskUserQuestion,ExitPlanMode",
+           # Both are now RENDERED — a question card (ANSWERABLE_TOOL) and a plan
+           # card (PLAN_TOOL), each of which can say the thing the model is
+           # waiting for — so nothing is disallowed and the flag is gone
+           # altogether rather than passed with an empty value, which the CLI
+           # would read as a tool whose name is the empty string.
            # Up to two pre-allowances, and they are the only ones — everything
            # else still raises a card. Both are the same thing in different
            # clothes: looking at the app the user is looking at.
@@ -1578,12 +1810,334 @@ def _skill_calls(row: dict) -> list:
     return out
 
 
+#: Display cap on one tool's output inside a segment. NOT a permission surface:
+#: an approval card renders the tool's input untruncated and is the thing a
+#: decision is made on (D161), so trimming here only ever costs the user a
+#: re-read of something that already happened.
+SEGMENT_OUTPUT_CAP = 4000
+#: A base64 image bigger than this is dropped rather than shipped. The whole
+#: segment list is re-sent on EVERY poll (400 ms), so one 8 MB screenshot would
+#: be re-read, re-encoded and re-parsed a hundred-odd times a minute for the rest
+#: of the turn — and the page has nowhere useful to put it either.
+SEGMENT_IMAGE_CAP = 2 * 1024 * 1024
+
+
+def _cap_output(text: str) -> str:
+    """`text` trimmed to the display cap, saying how much it dropped.
+
+    The tail matters more than the cap: silently truncated output reads as a
+    tool that returned exactly that much, which is a lie a user cannot detect.
+    """
+    if len(text) <= SEGMENT_OUTPUT_CAP:
+        return text
+    return text[:SEGMENT_OUTPUT_CAP] + "… (+%d chars)" % (
+        len(text) - SEGMENT_OUTPUT_CAP)
+
+
+def _tool_result_payload(block: dict) -> tuple:
+    """(output, images) for one `tool_result` block.
+
+    `content` is a plain STRING for most tools and a list of typed blocks for
+    the ones that return images — BOTH shapes are on the wire, so both are read
+    here rather than at each call site. A block list that carries no text at all
+    yields "" and not None: None is reserved for "no result has arrived yet",
+    which is a different fact about the tool.
+
+    The oversize note is appended AFTER the cap, deliberately: it is the only
+    trace left of an image that was dropped, so it must not be the thing the
+    cap eats.
+    """
+    content = block.get("content")
+    if isinstance(content, str):
+        return _cap_output(content), []
+    parts, images, notes = [], [], []
+    for sub in content if isinstance(content, list) else []:
+        if not isinstance(sub, dict):
+            continue
+        if sub.get("type") == "text":
+            if isinstance(sub.get("text"), str):
+                parts.append(sub["text"])
+        elif sub.get("type") == "image":
+            source = sub.get("source") or {}
+            data = source.get("data")
+            # base64 only: a URL-sourced image is not something this page can
+            # render from the payload, and inventing a fetch for it would put a
+            # model-authored URL on the network.
+            if source.get("type") != "base64" or not isinstance(data, str):
+                continue
+            if len(data) > SEGMENT_IMAGE_CAP:
+                notes.append("[image dropped: %d bytes of base64 is over the "
+                             "%d byte cap]" % (len(data), SEGMENT_IMAGE_CAP))
+                continue
+            images.append({"media_type": str(source.get("media_type")
+                                             or "image/png"), "data": data})
+    out = _cap_output("\n".join(parts))
+    if notes:
+        out = "\n".join(([out] if out else []) + notes)
+    return out, images
+
+
+def _is_text_delta(row) -> bool:
+    """Whether `row` is one streamed chunk of assistant prose."""
+    if not isinstance(row, dict) or row.get("type") != "stream_event":
+        return False
+    ev = row.get("event") or {}
+    if ev.get("type") != "content_block_delta":
+        return False
+    return (ev.get("delta") or {}).get("type") == "text_delta"
+
+
+def _thinking_delta_text(row) -> str:
+    """The reasoning text of one streamed thinking chunk; "" for any other row
+    AND for a chunk that carries no text.
+
+    The empty case is the interesting one, and it is not an error: the wire key
+    is `thinking` (as assumed), but WHETHER it holds anything is model-dependent
+    on the shipping CLI. Measured over real `out.jsonl` files from live runs
+    (CLI 2.1.226): `claude-haiku-4-5` streams the real trace, while
+    `claude-sonnet-5` streams `{"type": "thinking_delta", "thinking": "",
+    "estimated_tokens": 50}` and finalizes a `{"type": "thinking", "thinking":
+    "", "signature": "…"}` block — the reasoning is REDACTED, and only its token
+    estimate survives. Both surfaces agree within a run (all-empty or all-real,
+    never one of each), so there is no recovering the text where it is redacted:
+    the only honest rendering is no thinking block at all, which is what
+    `_segments_from_rows` does with a segment this leaves empty. Reading the key
+    through one function keeps the shape in one place for both the per-row growth
+    and the "did any of them carry text?" gate."""
+    if not isinstance(row, dict) or row.get("type") != "stream_event":
+        return ""
+    ev = row.get("event") or {}
+    if ev.get("type") != "content_block_delta":
+        return ""
+    delta = ev.get("delta") or {}
+    if delta.get("type") != "thinking_delta":
+        return ""
+    return str(delta.get("thinking") or "")
+
+
+def _segments_from_rows(rows: list) -> list:
+    """The ordered transcript of a reply: text, thinking and tool segments.
+
+    ONE reader with TWO callers — `_poll` over the live `out.jsonl` and
+    `_history` over the persisted session transcript — because they render the
+    same conversation, and a second implementation would differ only by
+    drifting. The row shapes are near-identical (the API message nests under
+    `message` in both); what differs is that only `out.jsonl` carries
+    `stream_event` rows. So text arrives as deltas there and as finalized blocks
+    in the transcript, and both are read — but never both at once: an
+    `assistant` row repeats verbatim the text its deltas already delivered, so
+    the finalized blocks are read ONLY when this row set carries no text delta
+    at all (the persisted transcript, or a CLI too old for
+    `--include-partial-messages`). Decided over the whole list rather than
+    per-message on purpose: it makes the choice independent of where the
+    `assistant` row sits relative to its own `message_stop`, which is the
+    ordering a duplicate would otherwise hinge on.
+
+    THINKING follows the same deltas-or-finalized-blocks rule as text, on its
+    own gate: the finalized `thinking` block is read only when no
+    `thinking_delta` carried any text. That covers two real cases the text gate
+    does not — the persisted transcript (no `stream_event` rows at all, so a
+    restored turn's reasoning has nowhere else to come from) and a run whose
+    prose streamed while its reasoning did not. A thinking segment that ends up
+    with no text is DROPPED rather than returned empty: some models redact the
+    trace entirely (see `_thinking_delta_text`), and a "Thought for a moment"
+    disclosure that unfolds to nothing is worse than no disclosure.
+
+    Tool calls are read ONLY from finalized `assistant` rows. The streamed
+    `content_block_start` for the same call arrives with `input: {}` and its
+    arguments only as `input_json_delta` fragments (same reason as
+    `_skill_calls`), so the finalized row is both complete and what keeps one
+    call from being reported twice.
+
+    Ordering is file order, and a `tool_result` is joined to its `tool_use` by
+    `tool_use_id` rather than by position — parallel tools answer out of call
+    order routinely, and a result can even be flushed before the message that
+    asked for it, hence `orphans`.
+
+    Two segments of the same kind in a row MERGE (the tail grows in place)
+    rather than accumulating one segment per delta: the page renders a text
+    segment as markdown, and markdown split across arbitrary delta boundaries
+    is not the same document.
+
+    **For anything rendering this: segments are the authoritative transcript.**
+    Render them whenever the list is non-empty. `text` on the poll payload (and
+    on a history turn) is the flat LEGACY field: it is byte-identical to what it
+    was before segments existed, and the text segments join back into it exactly
+    — but only on a run that carried stream deltas. Where there are none (a CLI
+    without `--include-partial-messages`) `text` falls back to the `result` row,
+    which is the LAST assistant message only, so it can be a strict subset of
+    what the segments say. Rendering `text` when segments exist therefore shows
+    less than the turn contained; the reverse never happens. `text` stays the
+    right thing to show for the error paths, which produce no segments at all.
+    """
+    segments = []
+    by_tool_id = {}     # tool_use id -> its segment, for the result to find
+    stripped = set()    # tool_use ids of calls deliberately not shown
+    orphans = {}        # results that arrived before their tool_use row
+    streamed = any(_is_text_delta(row) for row in rows)
+    # The same "deltas or finalized blocks, never both" choice as `streamed`,
+    # decided separately because it is a different question: a run can stream its
+    # prose and still carry no usable thinking delta (redacted, or a transcript
+    # with no `stream_event` rows at all — which is EVERY row set `_history`
+    # reads, and is why a restored turn never showed a thinking block before).
+    thinking_streamed = any(_thinking_delta_text(row) for row in rows)
+    any_text = False    # mirrors _poll's `bool(text_parts)`
+    pending_sep = False
+    plumbing = "mcp__%s__%s" % (PERMISSION_SERVER, APP_STATE_TOOL)
+
+    def tail(kind):
+        return segments[-1] if segments and segments[-1]["kind"] == kind else None
+
+    def grow(kind, chunk, separator=""):
+        """Append `chunk` to the trailing `kind` segment, opening one if the
+        tail is something else.
+
+        Parts in a LIST, joined once at the end — never `+=` on a str. This
+        whole function re-runs from scratch on every 400 ms poll, so growing a
+        string in place re-copies the accumulated segment per delta: quadratic
+        in the deltas of one turn, and measurably so (~46 ms a tick at 20k
+        deltas, ~0.7 s at 80k, against a flat few ms for parts+join). `_poll`'s
+        own `text_parts` exists for exactly this reason, and the finalize step
+        below is what keeps the list an implementation detail — the returned
+        segment carries a plain `text` string.
+
+        `separator` goes INSIDE the segment it precedes — even when that segment
+        is brand new — so that joining the text segments reproduces `_poll`'s
+        `text` byte for byte on a streamed run. The two accumulations are two
+        copies of one rule, so a test asserts they agree rather than a comment
+        saying they should (D146).
+        """
+        seg = tail(kind)
+        if seg is None:
+            seg = {"kind": kind, "text": []}
+            segments.append(seg)
+        if separator:
+            seg["text"].append(separator)
+        seg["text"].append(chunk)
+
+    def settle(seg, payload):
+        seg["status"], seg["output"], seg["images"] = payload
+
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        # Synthetic rows and subagent rows are not this conversation — the same
+        # guard `_history` has always applied to turns.
+        if row.get("isMeta") or row.get("isSidechain"):
+            continue
+        t = row.get("type")
+        message = row.get("message")
+        content = message.get("content") if isinstance(message, dict) else None
+        if t == "stream_event":
+            ev = row.get("event") or {}
+            et = ev.get("type")
+            if et == "content_block_delta":
+                delta = ev.get("delta") or {}
+                if delta.get("type") == "text_delta":
+                    grow("text", str(delta.get("text", "")),
+                         "\n\n" if pending_sep else "")
+                    any_text, pending_sep = True, False
+                elif delta.get("type") == "thinking_delta":
+                    # Only a chunk that actually carries text opens a segment:
+                    # a redacted trace is all-empty chunks (see
+                    # `_thinking_delta_text`), and growing on those built a
+                    # thinking segment whose body was "" — which the page
+                    # rendered as a "Thought for a moment" disclosure that
+                    # unfolded to nothing at all.
+                    chunk = _thinking_delta_text(row)
+                    if chunk:
+                        grow("thinking", chunk)
+            elif et == "message_stop":
+                # A tool-using turn is several assistant messages; without a
+                # break their texts concatenate mid-word ("orange.After").
+                pending_sep = any_text
+        elif t == "assistant" and isinstance(content, list):
+            # Thinking BEFORE text, because that is the order a real message
+            # carries them (thinking, then text, then tool_use) and segments are
+            # an ordered record. Read only when no thinking delta carried text:
+            # the finalized block repeats verbatim what the deltas delivered, so
+            # reading both prints the reasoning twice — and where there were no
+            # deltas at all (the persisted transcript) this is its only source.
+            if not thinking_streamed:
+                for block in content:
+                    if not isinstance(block, dict) or block.get("type") != "thinking":
+                        continue
+                    chunk = str(block.get("thinking") or "")
+                    if chunk.strip():
+                        grow("thinking", chunk)
+            # Text blocks next, joined the way `_history` joins them, so a
+            # restored turn's `text` and its segments say the same thing. Safe
+            # against block order because a real message is text-then-tools.
+            if not streamed:
+                whole = "\n".join(b.get("text", "") for b in content
+                                  if isinstance(b, dict) and b.get("type") == "text")
+                if whole.strip():
+                    grow("text", whole,
+                         "\n\n" if any_text and tail("text") is not None else "")
+                    any_text = True
+            for block in content:
+                if not isinstance(block, dict) or block.get("type") != "tool_use":
+                    continue
+                name = str(block.get("name") or "")
+                tool_id = str(block.get("id") or "")
+                if name == plumbing:
+                    # This template's own bridge asking the page what it is
+                    # showing. Nobody requested it and its answer is our JSON,
+                    # so it is not part of the conversation. ONLY this exact
+                    # name: every other MCP tool is a real call.
+                    if tool_id:
+                        stripped.add(tool_id)
+                    continue
+                if tool_id and tool_id in by_tool_id:
+                    continue  # the same finalized message written twice
+                tool_input = block.get("input")
+                seg = {"kind": "tool", "id": tool_id, "name": name,
+                       "input": tool_input if isinstance(tool_input, dict) else {},
+                       "status": "running", "output": None, "images": []}
+                segments.append(seg)
+                if tool_id:
+                    by_tool_id[tool_id] = seg
+                    if tool_id in orphans:
+                        settle(seg, orphans.pop(tool_id))
+        elif t == "user" and isinstance(content, list):
+            for block in content:
+                if not isinstance(block, dict) or block.get("type") != "tool_result":
+                    continue
+                tool_id = str(block.get("tool_use_id") or "")
+                if tool_id in stripped:
+                    continue
+                output, images = _tool_result_payload(block)
+                payload = ("error" if block.get("is_error") else "ok",
+                           output, images)
+                seg = by_tool_id.get(tool_id)
+                if seg is not None:
+                    settle(seg, payload)
+                elif tool_id:
+                    orphans[tool_id] = payload
+    # Finalize: the parts lists collapse to the plain `text` string the schema
+    # promises. Tool segments have no `text` at all and are left alone.
+    out = []
+    for seg in segments:
+        if seg["kind"] != "tool":
+            seg["text"] = "".join(seg["text"])
+        # A thinking segment with nothing in it is not a disclosure, it is an
+        # empty box. The growth guards above already refuse an empty chunk, so
+        # this only catches a trace that was pure whitespace — but it is the
+        # invariant the page depends on ("a thinking segment HAS a body"), so it
+        # is enforced here rather than assumed. Text segments are NOT filtered:
+        # an empty one is how the page knows the reply's tail is still coming.
+        if seg["kind"] == "thinking" and not seg["text"].strip():
+            continue
+        out.append(seg)
+    return out
+
+
 def _poll(run_id: str) -> dict:
     run_dir = os.path.join(RUNS, run_id)
     if _bad_id(run_id) or not os.path.isdir(run_dir):
         return {"text": "", "done": True, "session_id": "", "error": "unknown run_id",
                 "permissions": [], "app_state": [], "skills": [], "retry": None,
-                "retry_total": 0, "retry_status": 0}
+                "retry_total": 0, "retry_status": 0, "segments": []}
 
     text_parts = []
     result_text = None
@@ -1599,6 +2153,14 @@ def _poll(run_id: str) -> dict:
     retry_total = 0      # how many retries this run has seen at all
     retry_status = 0     # HTTP status of the last one (529 overloaded, 429 …)
     gave_up = None       # the retry still in flight when the run ended badly
+    # Every row this poll managed to parse, handed to `_segments_from_rows` once
+    # the loop is done. Collected rather than parsed a second time: the file is
+    # re-read from scratch on every 400 ms tick, so a second `json.loads` pass
+    # over the whole turn is the cost worth avoiding — this list only holds a
+    # second reference to objects the loop already built. A half-written last
+    # line never reaches it, for the same reason it never reaches anything else
+    # here: the `continue` below is above the append.
+    parsed = []
 
     try:
         lines = open(os.path.join(run_dir, "out.jsonl"), encoding="utf-8",
@@ -1611,6 +2173,7 @@ def _poll(run_id: str) -> dict:
             row = json.loads(line)
         except json.JSONDecodeError:
             continue  # half-written last line; next poll gets it
+        parsed.append(row)
         t = row.get("type")
         # Any of these means the request the retries were for went THROUGH.
         # Rows are in file order, so anything the model produced after an
@@ -1782,12 +2345,26 @@ def _poll(run_id: str) -> dict:
     text = "".join(text_parts)
     if not text and done and result_text and not error:
         text = result_text
+    # `segments` is the authoritative record of the turn; `text` is the flat
+    # legacy field, kept byte-identical to what it has always been for the
+    # callers that only want prose (and for the error paths, which have no
+    # segments to render).
+    #
+    # They agree EXACTLY — the text segments join back into this string — only
+    # while stream deltas are present, which is every run of a current CLI.
+    # On a delta-less run the fallback two blocks up makes `text` the `result`
+    # row, i.e. the LAST assistant message, while `segments` carry all of them:
+    # so `text` can be a strict SUBSET of the transcript, never a superset, and
+    # never a different turn. That is deliberate and pinned by a test — the
+    # alternative was widening `text` on the fallback path, and its byte
+    # identity is a harder constraint than this asymmetry is a cost.
     return {"text": text, "done": done, "session_id": new_session, "error": error,
             "tokens": tokens_done + tokens_current, "phase": phase,
             "message": meta.get("message", ""), "permissions": permissions,
             "app_state": app_state, "mode": _live_mode(meta, permissions),
             "skills": skills, "retry": retry, "retry_total": retry_total,
-            "retry_status": retry_status}
+            "retry_status": retry_status,
+            "segments": _segments_from_rows(parsed)}
 
 
 # ------------------------------------------------------- sessions & history
@@ -2213,7 +2790,15 @@ def _history(file: str, session_id: str) -> dict:
     content, and a glob would render some other copy's conversation while
     resume continues this one's. Migrates first (same as `start`) so a moved
     file's saved session shows its turns immediately, without waiting for the
-    user to send a message."""
+    user to send a message.
+
+    Assistant turns carry `segments` as well as `text` — the same ordered
+    text/tool record `_poll` returns, through the same `_segments_from_rows`, so
+    a restored conversation shows the tool calls it made instead of only the
+    prose around them. User turns keep just `text`: there is nothing structured
+    about a typed message, and the app-state block is stripped from it BEFORE
+    anything else reads it (below), which is also why segments cannot become a
+    second route back for the block the user never saw."""
     if _bad_id(session_id):
         return {"turns": []}
     file = os.path.abspath(file)
@@ -2224,6 +2809,31 @@ def _history(file: str, session_id: str) -> dict:
         return {"turns": []}
 
     turns = []
+    stretch = []  # rows of the assistant reply being read, for its segments
+
+    def close_stretch():
+        """Attach the stretch's segments to the assistant turn they belong to.
+
+        Deferred to the END of the stretch because that is the first moment the
+        turn is certainly there: the text turn is opened by whichever assistant
+        row first carries prose, and a reply that only called tools opens no
+        turn at all until here — dropping its segments would lose the only
+        record that the work happened. Merged, never assigned, for the same
+        reason consecutive assistant rows merge their text: a user row that was
+        filtered out (a slash command, an app-state-only message) does not end
+        the reply, so a later stretch can land on the same turn.
+        """
+        if not stretch:
+            return
+        segments = _segments_from_rows(stretch)
+        del stretch[:]
+        if not segments:
+            return
+        if turns and turns[-1]["role"] == "assistant":
+            turns[-1]["segments"] = turns[-1].get("segments", []) + segments
+        else:
+            turns.append({"role": "assistant", "text": "", "segments": segments})
+
     for line in open(path, encoding="utf-8", errors="replace"):
         try:
             row = json.loads(line)
@@ -2246,8 +2856,15 @@ def _history(file: str, session_id: str) -> dict:
             # recognise is the whole reason it is stripped here.
             text = _strip_app_state(text)
             if text.strip() and not text.startswith(("<local-command", "<command-name")):
+                close_stretch()  # before the user turn, or the segments land on it
                 turns.append({"role": "user", "text": text})
+            else:
+                # Everything else on a `user` row belongs to the assistant's
+                # reply: tool_result blocks are what its tool segments are
+                # waiting for, and the synthetic rows are not a turn either way.
+                stretch.append(row)
         elif role == "assistant" and isinstance(content, list):
+            stretch.append(row)
             text = "\n".join(b.get("text", "") for b in content
                              if isinstance(b, dict) and b.get("type") == "text")
             if text.strip():
@@ -2257,6 +2874,7 @@ def _history(file: str, session_id: str) -> dict:
                     turns[-1]["text"] += "\n\n" + text
                 else:
                     turns.append({"role": "assistant", "text": text})
+    close_stretch()
     return {"turns": turns}
 
 
@@ -2302,7 +2920,8 @@ def main(action: str = "start", file: str = "", message: str = "",
          run_id: str = "", request_id: str = "", decision: str = "",
          scope: str = "once", permission_mode: str = "", mode: str = "",
          state: str = "", has_pane: str = "", enrich: str = "",
-         version_id: str = "", confirm_unique: str = "") -> dict:
+         version_id: str = "", confirm_unique: str = "",
+         answers: str = "", note: str = "") -> dict:
     if action == "start":
         if not file:
             return {"error": "missing target file (no _file param?)"}
@@ -2317,7 +2936,12 @@ def main(action: str = "start", file: str = "", message: str = "",
     if action == "poll":
         return _poll(run_id)
     if action == "decide":
-        return _decide(run_id, request_id, decision, scope, mode)
+        # `answers` arrives as a JSON string for the same reason `state` does
+        # below — params cross into python string-shaped — and is only read for
+        # an AskUserQuestion request (see _decide). `note` is the plan card's
+        # equivalent: free text the user typed next to "keep planning", read only
+        # for an ExitPlanMode deny and only ever as part of its message.
+        return _decide(run_id, request_id, decision, scope, mode, answers, note)
     if action == "app_state":
         # `state` arrives as a JSON string, not a nested object: params reach
         # main() through the URL/param binder (str-shaped), and the snapshot is

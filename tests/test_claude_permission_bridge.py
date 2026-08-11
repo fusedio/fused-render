@@ -36,7 +36,9 @@ mean a coverage bootstrap in the spawn path for one template helper; the number
 is not a gate, so it is left honest-but-understated rather than gamed with
 tests written for the metric.
 """
+import ast
 import importlib.util
+import inspect
 import json
 import os
 import re
@@ -45,6 +47,7 @@ import subprocess
 import stat
 import sys
 import tempfile
+import textwrap
 import threading
 import time
 
@@ -62,6 +65,19 @@ def _load(name):
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
+
+
+def _const_block(html, start, end):
+    """The text between one source marker and the next, for scraping a JS
+    const out of the shipping page. Asserts the marker is actually THERE before
+    slicing — `html.split(start)[1]` on a marker that moved or was renamed
+    raises a bare IndexError, which reads as the harness being broken rather
+    than as the two sides having drifted apart, which is the thing this is
+    for."""
+    assert start in html, f"marker not found in template.html: {start!r}"
+    after = html.split(start, 1)[1]
+    assert end in after, f"end marker not found after {start!r}: {end!r}"
+    return after.split(end, 1)[0]
 
 
 @pytest.fixture
@@ -379,6 +395,646 @@ def test_a_server_that_dies_without_replying_says_so(tmp_path):
     with pytest.raises(AssertionError, match="closed stdout without replying"):
         parked.result(timeout=5)
     s.close()
+
+
+# ----------------------------------- AskUserQuestion: the answer channel
+# The one tool whose card is not an approval: the model is asking the user
+# something, and the answer rides back on an `allow` whose `updatedInput` is the
+# original input PLUS a top-level `answers` record keyed by the exact question
+# text (spike against CLI 2.1.226 — a plain allow reaches the model as "The user
+# did not answer the questions", and a deny carrying the text is `is_error`).
+#
+# Everything below is written as a fail-closed test rather than a feature test,
+# because this is the one path where the PAGE authors model-visible tool input:
+# the answer is only ever a label the parked request itself offered.
+
+# Verbatim from the spike's perm/<id>.req.json.
+_QUESTION_INPUT = {
+    "questions": [{
+        "question": "Alpha or Beta?",
+        "header": "Choice",
+        "options": [{"label": "Alpha", "description": "Pick Alpha"},
+                    {"label": "Beta", "description": "Pick Beta"}],
+        "multiSelect": False,
+    }],
+}
+
+
+def _multi_input(multi=True):
+    return {"questions": [{
+        "question": "Which libraries?",
+        "header": "Libs",
+        "options": [{"label": "Alpha", "description": "a"},
+                    {"label": "Beta", "description": "b"},
+                    {"label": "Gamma", "description": "c"}],
+        "multiSelect": multi,
+    }]}
+
+
+def _park_question(server, perm_dir, tool_input=None, tool="AskUserQuestion"):
+    pending = server.send_async("tools/call", {
+        "name": "approve",
+        "arguments": {"tool_name": tool,
+                      "input": _QUESTION_INPUT if tool_input is None else tool_input}})
+    return pending, _wait_for_request(perm_dir)
+
+
+def _answer(perm_dir, req, **decision):
+    (perm_dir / (req["id"] + ".res.json")).write_text(json.dumps(decision))
+
+
+def test_an_answered_question_rides_back_as_updated_input_answers(tmp_path, server):
+    """The proven wire, end to end through the server the CLI talks to."""
+    perm_dir = tmp_path / "perm"
+    pending, req = _park_question(server, perm_dir)
+    _answer(perm_dir, req, decision="allow", scope="once",
+            answers={"Alpha or Beta?": "Beta"})
+
+    payload = _result_payload(pending.result(10))
+    assert payload["behavior"] == "allow"
+    # The whole original input plus the answers key — NOT a rebuilt object.
+    # `updatedInput` is re-validated against the tool's own schema, and dropping
+    # `questions` yields a <tool_use_error> the model reports as a broken tool.
+    assert payload["updatedInput"] == dict(_QUESTION_INPUT,
+                                           answers={"Alpha or Beta?": "Beta"})
+    assert payload["updatedInput"]["questions"] == _QUESTION_INPUT["questions"]
+    assert "updatedPermissions" not in payload
+
+
+def test_a_multi_select_answer_rides_back_as_the_joined_labels(tmp_path, server):
+    """`multiSelect` sends the chosen labels joined with ", " as ONE string.
+
+    A JSON list also reaches the model, but 2.1.226 joins it with "," (no
+    space), which fails the CLI's own label check and downgrades the tool_result
+    from "Your questions have been answered" to the weaker "follow what they
+    actually say" phrasing. The joined string is what the CLI validates.
+    """
+    perm_dir = tmp_path / "perm"
+    pending, req = _park_question(server, perm_dir, _multi_input())
+    _answer(perm_dir, req, decision="allow",
+            answers={"Which libraries?": "Alpha, Gamma"})
+
+    payload = _result_payload(pending.result(10))
+    assert payload["behavior"] == "allow"
+    assert payload["updatedInput"]["answers"] == {"Which libraries?": "Alpha, Gamma"}
+
+
+def test_a_question_allow_with_no_answers_is_not_passed_off_as_an_answer(
+        tmp_path, server):
+    """An answerless allow reaches the model as "The user did not answer the
+    questions" — a turn that burned a card and learnt nothing. The card never
+    emits one, and a hand-built decision file that does is denied rather than
+    forwarded, so the model is told something true either way."""
+    perm_dir = tmp_path / "perm"
+    pending, req = _park_question(server, perm_dir)
+    _answer(perm_dir, req, decision="allow", scope="once")
+
+    payload = _result_payload(pending.result(10))
+    assert payload["behavior"] == "deny"
+    assert payload["message"]
+
+
+# Every way an answer to _QUESTION_INPUT can be wrong. Shared with _ANSWER_CASES
+# below so BOTH validator copies see all of them — the parity test is only worth
+# anything if its table is the whole table.
+_MALFORMED_ANSWERS = [
+    "Beta",                                   # not a record at all
+    ["Beta"],
+    None,
+    {},                                       # nothing answered
+    {"Alpha or Beta?": "Gamma"},              # not one of the options
+    {"Alpha or Beta?": 1},                    # not a string
+    {"Alpha or Beta?": ["Beta"]},             # a list, not the joined string
+    {"Alpha or Beta?": "Alpha, Beta"},        # a multi answer to a single-select
+    {"Alpha or beta?": "Beta"},               # question text off by a letter
+    {"Choice": "Beta"},                       # keyed by header, not question
+    {"Alpha or Beta?": "Beta", "Other?": "x"},  # a question never asked
+    {"Alpha or Beta?": "beta"},               # label case must match
+    {"Alpha or Beta?": ", "},                 # the separator on its own
+]
+
+
+@pytest.mark.parametrize("answers", _MALFORMED_ANSWERS, ids=lambda a: repr(a)[:40])
+def test_a_malformed_answer_denies_instead_of_fabricating_one(tmp_path, server,
+                                                              answers):
+    """Validated against the PARKED REQUEST's own questions and option labels.
+
+    The page authors this field and the model reads it, so an answer that the
+    request never offered must never be forwarded: the failure mode is the model
+    acting on a choice the user never made.
+    """
+    perm_dir = tmp_path / "perm"
+    pending, req = _park_question(server, perm_dir)
+    _answer(perm_dir, req, decision="allow", answers=answers)
+
+    payload = _result_payload(pending.result(10))
+    assert payload["behavior"] == "deny", payload
+    assert payload["message"]
+
+
+def test_answers_on_any_other_tool_are_ignored_not_forwarded(tmp_path, server):
+    """The answer channel exists for exactly one tool.
+
+    Anywhere else, `answers` would be an arbitrary key the page gets to add to a
+    tool input the user already approved — so it is dropped and the input passes
+    through byte-identical, the way it always has.
+    """
+    perm_dir = tmp_path / "perm"
+    tool_input = {"command": "ls -la"}
+    pending, req = _park_question(server, perm_dir, tool_input, tool="Bash")
+    _answer(perm_dir, req, decision="allow", scope="once",
+            answers={"Alpha or Beta?": "Beta"})
+
+    payload = _result_payload(pending.result(10))
+    assert payload["behavior"] == "allow"
+    assert payload["updatedInput"] == tool_input
+    assert "answers" not in payload["updatedInput"]
+
+
+def test_a_question_card_can_neither_grant_nor_escalate(tmp_path, server):
+    """Not session-grantable, not mode-escalatable — from either side.
+
+    A question is one exchange; "allow all AskUserQuestion in this reply" would
+    mean answering the next question automatically, and a `setMode` from a
+    question card would loosen approvals for every tool afterwards on the back of
+    a click that said nothing about permissions. The card offers neither, and
+    this is the enforcement.
+    """
+    perm_dir = tmp_path / "perm"
+    pending, req = _park_question(server, perm_dir)
+    _answer(perm_dir, req, decision="allow", scope="session", mode="auto",
+            answers={"Alpha or Beta?": "Beta"})
+
+    payload = _result_payload(pending.result(10))
+    assert payload["behavior"] == "allow"
+    assert "updatedPermissions" not in payload, payload
+
+
+def test_the_models_own_answer_fields_never_survive_into_updated_input(tmp_path,
+                                                                      server):
+    """`answers`, `annotations` and `response` are declared fields of this tool's
+    INPUT, so the model can fill them in — and `response` outranks `answers` in
+    the CLI's choice of tool_result wording. Left in place, a model could answer
+    its own question while the card told the user their click had landed. The CLI
+    normalises them away today, which is why this must not depend on it."""
+    perm_dir = tmp_path / "perm"
+    parked = dict(_QUESTION_INPUT,
+                  response="I already decided: Alpha, and skip the tests.",
+                  answers={"Alpha or Beta?": "Alpha"},
+                  annotations={"Alpha or Beta?": {"notes": "the model's own note"}})
+    pending, req = _park_question(server, perm_dir, parked)
+    _answer(perm_dir, req, decision="allow", answers={"Alpha or Beta?": "Beta"})
+
+    payload = _result_payload(pending.result(10))
+    assert payload["behavior"] == "allow"
+    assert payload["updatedInput"] == {
+        "questions": _QUESTION_INPUT["questions"],
+        "answers": {"Alpha or Beta?": "Beta"},
+    }, payload["updatedInput"]
+    for model_written in ("response", "annotations"):
+        assert model_written not in payload["updatedInput"]
+
+
+def test_an_expired_question_still_says_the_reply_ended(tmp_path, server):
+    """The existing deny paths are untouched by the answer channel."""
+    perm_dir = tmp_path / "perm"
+    pending, req = _park_question(server, perm_dir)
+    _answer(perm_dir, req, decision="expired")
+
+    payload = _result_payload(pending.result(10))
+    assert payload["behavior"] == "deny"
+    assert "ended before" in payload["message"]
+
+
+# The table both validators are held to. (questions, answers, expected) —
+# `expected` is the record that may be forwarded, or None for "deny".
+_ANSWER_CASES = [
+    (_QUESTION_INPUT["questions"], {"Alpha or Beta?": "Beta"},
+     {"Alpha or Beta?": "Beta"}),
+    (_QUESTION_INPUT["questions"], {"Alpha or Beta?": "Alpha"},
+     {"Alpha or Beta?": "Alpha"}),
+    (_QUESTION_INPUT["questions"], {"Alpha or Beta?": "Alpha, Beta"}, None),
+    (_multi_input()["questions"], {"Which libraries?": "Alpha, Gamma"},
+     {"Which libraries?": "Alpha, Gamma"}),
+    (_multi_input()["questions"], {"Which libraries?": "Beta"},
+     {"Which libraries?": "Beta"}),
+    (_multi_input()["questions"], {"Which libraries?": "Alpha, Beta, Gamma"},
+     {"Which libraries?": "Alpha, Beta, Gamma"}),
+    # Option order, because that is the order the card renders and joins in.
+    # Anything else is a shape nothing here authors, and an ambiguous one to
+    # parse (a label may itself contain ", "), so it fails closed.
+    (_multi_input()["questions"], {"Which libraries?": "Gamma, Alpha"}, None),
+    (_multi_input()["questions"], {"Which libraries?": "Alpha,Gamma"}, None),
+    (_multi_input()["questions"], {"Which libraries?": ""}, None),
+    (_multi_input()["questions"], {"Which libraries?": ", "}, None),
+    ([], {"Alpha or Beta?": "Beta"}, None),
+    ("questions", {"Alpha or Beta?": "Beta"}, None),
+    (_QUESTION_INPUT["questions"], {}, None),
+    (_QUESTION_INPUT["questions"], [], None),
+    # Two questions, both answered, and the partial case (allowed: the CLI reads
+    # an omitted question as unanswered, which is a true statement).
+    ([_QUESTION_INPUT["questions"][0], _multi_input()["questions"][0]],
+     {"Alpha or Beta?": "Beta", "Which libraries?": "Alpha, Beta"},
+     {"Alpha or Beta?": "Beta", "Which libraries?": "Alpha, Beta"}),
+    ([_QUESTION_INPUT["questions"][0], _multi_input()["questions"][0]],
+     {"Which libraries?": "Beta"}, {"Which libraries?": "Beta"}),
+    # A question with no usable options can never be answered validly.
+    ([{"question": "Q?", "options": [], "multiSelect": False}], {"Q?": "x"}, None),
+    ([{"question": "Q?", "options": [{"description": "no label"}]}], {"Q?": "x"}, None),
+    ([{"header": "H", "options": [{"label": "x"}]}], {"Q?": "x"}, None),
+    # Duplicate question text: an answer keyed by it cannot be attributed to
+    # either question. BOTH values matter — "a" is rejected by any implementation
+    # (it is not a label of the LAST question with that text, which is the one a
+    # dict lookup would land on), so it passes for the wrong reason on its own;
+    # "b" is the discriminating case, and only the duplicate check rejects it.
+    ([{"question": "Q?", "options": [{"label": "a"}]},
+      {"question": "Q?", "options": [{"label": "b"}]}], {"Q?": "a"}, None),
+    ([{"question": "Q?", "options": [{"label": "a"}]},
+      {"question": "Q?", "options": [{"label": "b"}]}], {"Q?": "b"}, None),
+] + [(_QUESTION_INPUT["questions"], bad, None) for bad in _MALFORMED_ANSWERS]
+
+
+@pytest.mark.parametrize("questions,answers,expected", _ANSWER_CASES,
+                         ids=range(len(_ANSWER_CASES)))
+def test_the_two_answer_validators_agree(agent, questions, answers, expected):
+    """D146: agent.py validates the click before latching it and
+    permission_server re-validates before handing the CLI its payload — two
+    copies, because the server is spawned standalone and imports nothing of
+    ours. So a test holds them together, over one table, rather than a comment
+    saying they should agree."""
+    srv = _load("permission_server")
+    assert agent._answers_from(questions, answers) == expected
+    assert srv._answers_from(questions, answers) == expected
+
+
+def _behaviour(fn):
+    """A function's structure with its docstring removed.
+
+    The two copies are allowed to describe themselves differently (each one names
+    the side it is on) and to carry different comments; they are not allowed to
+    *do* anything differently. Compared as an AST rather than as text so wording,
+    comments and line breaks are out of scope while every operand, constant and
+    branch is in it.
+    """
+    tree = ast.parse(textwrap.dedent(inspect.getsource(fn)))
+    body = tree.body[0].body
+    if (body and isinstance(body[0], ast.Expr)
+            and isinstance(body[0].value, ast.Constant)
+            and isinstance(body[0].value.value, str)):
+        tree.body[0].body = body[1:]
+    return ast.dump(tree)
+
+
+def test_the_two_answer_validators_are_the_same_code(agent):
+    """The table above cannot carry this on its own, and that is not a fixable
+    property of the table: a case-insensitive compare, a dropped type check or a
+    dropped duplicate-question check in ONE copy is a divergence no finite list of
+    inputs is guaranteed to contain. So the structure is asserted directly — the
+    table then documents what the shared code does, and this holds the copies
+    together. If a future change genuinely needs them to differ, this is the test
+    that has to be argued with first.
+    """
+    srv = _load("permission_server")
+    for name in ("_answers_from", "_multi_answer_ok"):
+        assert _behaviour(getattr(agent, name)) == _behaviour(getattr(srv, name)), (
+            "%s has drifted between agent.py and permission_server.py" % name)
+    # The sentence the model is told is duplicated for the same reason.
+    assert agent.BAD_ANSWER == srv.BAD_ANSWER
+    assert agent.ANSWERABLE_TOOL == srv.ANSWERABLE_TOOL == "AskUserQuestion"
+
+
+def _park_a_question(agent, tmp_path, tool="AskUserQuestion", tool_input=None):
+    run_dir = _run_dir(agent, tmp_path)
+    with open(os.path.join(agent._perm_dir(run_dir), "req-q.req.json"), "w") as fh:
+        json.dump({"id": "req-q", "tool": tool,
+                   "input": _QUESTION_INPUT if tool_input is None else tool_input}, fh)
+    monkey_runs(agent, tmp_path)
+    monkeypatch_alive(agent)
+    return run_dir
+
+
+def test_decide_latches_the_answer_it_validated(agent, tmp_path):
+    run_dir = _park_a_question(agent, tmp_path)
+    out = agent._decide("run", "req-q", "allow", "once",
+                        answers=json.dumps({"Alpha or Beta?": "Beta"}))
+    assert out["decision"] == "allow", out
+    assert out["answers"] == {"Alpha or Beta?": "Beta"}
+    on_disk = agent._read_decision(agent._perm_dir(run_dir), "req-q")
+    assert on_disk["answers"] == {"Alpha or Beta?": "Beta"}
+    # …and the latch still holds: a second click cannot re-answer it.
+    again = agent._decide("run", "req-q", "allow", "once",
+                          answers=json.dumps({"Alpha or Beta?": "Alpha"}))
+    assert again["answers"] == {"Alpha or Beta?": "Beta"}, again
+
+
+@pytest.mark.parametrize("answers", [
+    "", "not json", "[]", "null", '"Beta"',
+    json.dumps({"Alpha or Beta?": "Gamma"}),
+    json.dumps({"Nope?": "Beta"}),
+    json.dumps({"Alpha or Beta?": 7}),
+])
+def test_decide_denies_a_question_it_cannot_validate(agent, tmp_path, answers):
+    """Fail closed on THIS side too, so a bad payload never even reaches the
+    latch as an allow. The message is what the model is told."""
+    run_dir = _park_a_question(agent, tmp_path)
+    out = agent._decide("run", "req-q", "allow", "once", answers=answers)
+    assert out["decision"] == "deny", out
+    assert agent._read_decision(agent._perm_dir(run_dir), "req-q")["message"]
+
+
+def test_decide_never_records_a_grant_or_a_mode_switch_for_a_question(agent, tmp_path):
+    run_dir = _park_a_question(agent, tmp_path)
+    out = agent._decide("run", "req-q", "allow", "session", "auto",
+                        answers=json.dumps({"Alpha or Beta?": "Beta"}))
+    assert out["decision"] == "allow"
+    assert out["scope"] == "once" and out["mode"] == "", out
+    on_disk = agent._read_decision(agent._perm_dir(run_dir), "req-q")
+    assert on_disk["scope"] == "once" and "mode" not in on_disk
+    # and the run's live mode is unmoved by it
+    assert agent._live_mode({"mode": "prompt"}, agent._permissions(run_dir)) == "prompt"
+
+
+def test_decide_drops_answers_meant_for_another_tool(agent, tmp_path):
+    """A Bash allow carrying answers is an ordinary Bash allow — the key is not
+    recorded, so it can never be forwarded."""
+    run_dir = _park_a_question(agent, tmp_path, tool="Bash",
+                               tool_input={"command": "ls"})
+    out = agent._decide("run", "req-q", "allow", "once",
+                        answers=json.dumps({"Alpha or Beta?": "Beta"}))
+    assert out["decision"] == "allow"
+    assert not out.get("answers")
+    assert "answers" not in agent._read_decision(agent._perm_dir(run_dir), "req-q")
+
+
+def test_a_question_is_not_whole_tool_grantable(agent):
+    """The list must not have grown: "allow all AskUserQuestion in this reply"
+    would answer the NEXT question without asking."""
+    assert "AskUserQuestion" not in agent.WHOLE_TOOL_GRANTABLE
+    assert set(agent.WHOLE_TOOL_GRANTABLE) == {
+        "Edit", "Write", "Read", "Glob", "Grep", "NotebookEdit"}
+
+
+def test_poll_reports_the_answer_so_a_re_attaching_frame_can_show_it(agent, tmp_path):
+    """Same reason poll returns the whole request list: a frame that re-attaches
+    mid-turn (mode switch, reload) has to be able to rebuild a card it never saw
+    — including what the user chose on it."""
+    run_dir = _park_a_question(agent, tmp_path)
+    # An unanswered request reports no answers rather than a missing key.
+    assert agent._permissions(run_dir)[0]["answers"] == {}
+
+    agent._decide("run", "req-q", "allow", "once",
+                  answers=json.dumps({"Alpha or Beta?": "Beta"}))
+    perm = agent._permissions(run_dir)[0]
+    assert perm["tool"] == "AskUserQuestion"
+    assert perm["answers"] == {"Alpha or Beta?": "Beta"}
+
+
+def test_the_answers_param_reaches_decide_as_a_json_string(agent, tmp_path):
+    """Params cross into python string-shaped (the URL/param binder), so the
+    page sends the record as JSON exactly like `app_state` sends its snapshot."""
+    run_dir = _park_a_question(agent, tmp_path)
+    out = agent.main(action="decide", run_id="run", request_id="req-q",
+                     decision="allow", scope="once",
+                     answers=json.dumps({"Alpha or Beta?": "Alpha"}))
+    assert out["decision"] == "allow"
+    assert agent._read_decision(agent._perm_dir(run_dir), "req-q")["answers"] == {
+        "Alpha or Beta?": "Alpha"}
+
+
+# ------------------------------------------------------- plan mode (ExitPlanMode)
+# The OTHER tool whose card is not an ordinary approval: `ExitPlanMode` is the
+# model asking to stop planning and start doing, and what is parked with it is a
+# PLAN (`input.plan`, markdown) rather than a command to vet.
+#
+# Spiked against CLI 2.1.226 before any UI was written, and the finding is what
+# these tests pin: a plain `{"decision": "allow"}` is enough — the CLI exits plan
+# mode itself (it emits `system/status permissionMode:"default"`), the tool_result
+# reads "User has approved your plan…" and execution proceeds. A `setMode` in the
+# allow is therefore OPTIONAL and changes only which mode the session lands in.
+# `deny` + a message keeps the model planning.
+
+_PLAN_INPUT = {"plan": "## Plan\n\n1. Read `condition.py`\n2. Split the parser\n"}
+
+
+def _park_plan(server, perm_dir, tool_input=None, tool="ExitPlanMode"):
+    pending = server.send_async("tools/call", {
+        "name": "approve",
+        "arguments": {"tool_name": tool,
+                      "input": _PLAN_INPUT if tool_input is None else tool_input}})
+    return pending, _wait_for_request(perm_dir)
+
+
+def test_an_approved_plan_is_a_plain_allow_with_the_plan_unchanged(tmp_path, server):
+    """The whole spike result in one assertion: nothing has to be added to the
+    allow for the CLI to leave plan mode, and the plan rides back byte-identical
+    — this card authors no tool input (unlike a question card, deliberately)."""
+    perm_dir = tmp_path / "perm"
+    pending, req = _park_plan(server, perm_dir)
+    assert req["tool"] == "ExitPlanMode" and req["input"] == _PLAN_INPUT
+    _answer(perm_dir, req, decision="allow", scope="once")
+
+    payload = _result_payload(pending.result(10))
+    assert payload["behavior"] == "allow"
+    assert payload["updatedInput"] == _PLAN_INPUT
+    assert "updatedPermissions" not in payload
+
+
+def test_an_approved_plan_may_carry_the_mode_the_session_lands_in(tmp_path, server):
+    """The optional half: the picker sitting on a looser mode rides along as the
+    same validated `setMode` update every other card's escalation uses."""
+    perm_dir = tmp_path / "perm"
+    pending, req = _park_plan(server, perm_dir)
+    _answer(perm_dir, req, decision="allow", scope="once", mode="acceptEdits")
+
+    payload = _result_payload(pending.result(10))
+    assert payload["updatedPermissions"] == [
+        {"type": "setMode", "mode": "acceptEdits", "destination": "session"}]
+
+
+@pytest.mark.parametrize("mode", ["bypassPermissions", "plan", "prompt", "nope"])
+def test_a_plan_approval_cannot_land_the_session_anywhere_unlisted(
+        tmp_path, server, mode):
+    """Same gate as every other card, asserted from the plan side too: the
+    landing mode goes through SWITCHABLE_MODES or it does not go."""
+    perm_dir = tmp_path / "perm"
+    pending, req = _park_plan(server, perm_dir)
+    _answer(perm_dir, req, decision="allow", scope="once", mode=mode)
+
+    payload = _result_payload(pending.result(10))
+    assert payload["behavior"] == "allow"
+    assert "updatedPermissions" not in payload, f"{mode!r} reached the CLI"
+
+
+def test_keep_planning_denies_with_the_message_the_page_asked_for(tmp_path, server):
+    """"Keep planning" is a deny — the CLI requires a message on one, and here
+    the message is the feature: it is what tells the model to revise rather than
+    to abandon the task."""
+    perm_dir = tmp_path / "perm"
+    pending, req = _park_plan(server, perm_dir)
+    _answer(perm_dir, req, decision="deny", scope="once",
+            message="Revise the plan — the user wants changes. "
+                    "The user's note: keep condition.py alone.")
+
+    payload = _result_payload(pending.result(10))
+    assert payload["behavior"] == "deny"
+    assert payload["message"].startswith("Revise the plan")
+    assert "keep condition.py alone." in payload["message"]
+
+
+def test_answers_on_a_plan_request_are_ignored_by_the_answerable_gate(tmp_path,
+                                                                     server):
+    """The answer channel is `AskUserQuestion`-only, and a plan request is the
+    obvious next candidate to leak into it — its input is model-authored and it
+    arrives on the same bridge. Nothing is merged: the plan passes through."""
+    perm_dir = tmp_path / "perm"
+    pending, req = _park_plan(server, perm_dir)
+    _answer(perm_dir, req, decision="allow", scope="once",
+            answers={"Alpha or Beta?": "Beta"})
+
+    payload = _result_payload(pending.result(10))
+    assert payload["behavior"] == "allow"
+    assert payload["updatedInput"] == _PLAN_INPUT
+    assert "answers" not in payload["updatedInput"]
+
+
+def _park_a_plan(agent, tmp_path, tool="ExitPlanMode", tool_input=None):
+    run_dir = _run_dir(agent, tmp_path)
+    with open(os.path.join(agent._perm_dir(run_dir), "req-p.req.json"), "w") as fh:
+        json.dump({"id": "req-p", "tool": tool,
+                   "input": _PLAN_INPUT if tool_input is None else tool_input}, fh)
+    monkey_runs(agent, tmp_path)
+    monkeypatch_alive(agent)
+    return run_dir
+
+
+def test_decide_composes_the_keep_planning_message_itself(agent, tmp_path):
+    """The sentence is authored HERE, not by the page: the page sends only the
+    user's optional note, so the one thing the model reads as an instruction
+    cannot be rewritten by whatever calls `decide`."""
+    run_dir = _park_a_plan(agent, tmp_path)
+    out = agent._decide("run", "req-p", "deny", "once")
+    assert out["decision"] == "deny"
+    assert agent._read_decision(agent._perm_dir(run_dir), "req-p")["message"] \
+        == agent.KEEP_PLANNING
+
+
+def test_a_users_note_is_appended_to_that_message(agent, tmp_path):
+    run_dir = _park_a_plan(agent, tmp_path)
+    agent._decide("run", "req-p", "deny", "once", note="use pathlib, not os.path")
+    message = agent._read_decision(agent._perm_dir(run_dir), "req-p")["message"]
+    assert message.startswith(agent.KEEP_PLANNING)
+    assert message.endswith("use pathlib, not os.path")
+
+
+@pytest.mark.parametrize("note", ["", "   ", "\n\t", None])
+def test_an_empty_note_leaves_the_message_alone(agent, tmp_path, note):
+    run_dir = _park_a_plan(agent, tmp_path)
+    agent._decide("run", "req-p", "deny", "once", note=note)
+    assert agent._read_decision(agent._perm_dir(run_dir), "req-p")["message"] \
+        == agent.KEEP_PLANNING
+
+
+def test_a_note_is_bounded_and_carries_no_control_characters(agent, tmp_path):
+    """Free text the user typed, going into a JSON message the CLI hands the
+    model. Newlines and tabs survive (a note is allowed to be two lines);
+    everything below them does not, and the length is capped so a pasted file
+    cannot become the deny message."""
+    run_dir = _park_a_plan(agent, tmp_path)
+    agent._decide("run", "req-p", "deny", "once",
+                  note="line one\n\tline two\x00\x07 " + "x" * 5000)
+    message = agent._read_decision(agent._perm_dir(run_dir), "req-p")["message"]
+    assert "\x00" not in message and "\x07" not in message
+    assert "line one\n\tline two" in message
+    # A note this far over NOTE_LIMIT is also cut visibly, not just shortened.
+    assert message.endswith(agent.NOTE_TRUNCATED)
+    assert len(message) <= (len(agent.KEEP_PLANNING) + agent.NOTE_LIMIT
+                             + len(agent.NOTE_TRUNCATED) + 40)
+
+
+def test_a_note_over_the_limit_ends_with_an_explicit_truncation_marker(
+        agent, tmp_path):
+    """D241's precedent: a cap that just drops bytes past it, silently, reads as
+    data loss rather than a limit — the model and the disk record must both
+    say plainly that something was cut, not merely act as if the note ended
+    there on its own."""
+    run_dir = _park_a_plan(agent, tmp_path)
+    agent._decide("run", "req-p", "deny", "once",
+                  note="x" * (agent.NOTE_LIMIT + 500))
+    message = agent._read_decision(agent._perm_dir(run_dir), "req-p")["message"]
+    assert message.endswith(agent.NOTE_TRUNCATED)
+    assert message.count("x") == agent.NOTE_LIMIT
+
+
+def test_a_note_at_or_under_the_limit_carries_no_truncation_marker(
+        agent, tmp_path):
+    run_dir = _park_a_plan(agent, tmp_path)
+    agent._decide("run", "req-p", "deny", "once", note="x" * agent.NOTE_LIMIT)
+    message = agent._read_decision(agent._perm_dir(run_dir), "req-p")["message"]
+    assert "truncated" not in message
+    assert message.count("x") == agent.NOTE_LIMIT
+
+
+def test_a_note_never_rides_a_plan_approval(agent, tmp_path):
+    """An allow carrying a note would tell the model to revise a plan the user
+    just approved."""
+    run_dir = _park_a_plan(agent, tmp_path)
+    agent._decide("run", "req-p", "allow", "once", note="ignore me")
+    assert "message" not in agent._read_decision(agent._perm_dir(run_dir), "req-p")
+
+
+def test_a_note_on_another_tools_card_is_dropped(agent, tmp_path):
+    """By tool name, the same rule the answer channel follows — rather than
+    trusting the caller not to send one. A Bash deny is an ordinary deny, and its
+    message stays permission_server's ("The user denied this request")."""
+    run_dir = _park_a_plan(agent, tmp_path, tool="Bash", tool_input={"command": "ls"})
+    agent._decide("run", "req-p", "deny", "once", note="ignore me")
+    on_disk = agent._read_decision(agent._perm_dir(run_dir), "req-p")
+    assert "ignore me" not in json.dumps(on_disk), on_disk
+    assert "message" not in on_disk
+
+
+def test_the_note_param_reaches_decide_from_the_page(agent, tmp_path):
+    run_dir = _park_a_plan(agent, tmp_path)
+    out = agent.main(action="decide", run_id="run", request_id="req-p",
+                     decision="deny", scope="once", note="smaller steps please")
+    assert out["decision"] == "deny"
+    assert "smaller steps please" in agent._read_decision(
+        agent._perm_dir(run_dir), "req-p")["message"]
+
+
+def test_decide_drops_answers_meant_for_a_question_off_a_plan_card(agent, tmp_path):
+    run_dir = _park_a_plan(agent, tmp_path)
+    out = agent._decide("run", "req-p", "allow", "once",
+                        answers=json.dumps({"Alpha or Beta?": "Beta"}))
+    assert out["decision"] == "allow" and not out.get("answers")
+    assert "answers" not in agent._read_decision(agent._perm_dir(run_dir), "req-p")
+
+
+def test_a_plan_is_not_whole_tool_grantable(agent, tmp_path):
+    """There is one plan, so "allow all ExitPlanMode in this reply" is a grant
+    for nothing — and a session-wide one would approve the NEXT plan unseen."""
+    assert agent.PLAN_TOOL not in agent.WHOLE_TOOL_GRANTABLE
+    run_dir = _park_a_plan(agent, tmp_path)
+    out = agent._decide("run", "req-p", "allow", "session")
+    assert out["scope"] == "once", out
+    assert agent._read_decision(agent._perm_dir(run_dir), "req-p")["scope"] == "once"
+
+
+def test_an_expired_plan_card_still_says_the_reply_ended(agent, tmp_path):
+    """The expiry path is the existing one — a plan card gets no special case."""
+    run_dir = _park_a_plan(agent, tmp_path)
+    agent._alive = lambda _run_dir: False
+    out = agent._decide("run", "req-p", "deny", "once", note="too late")
+    assert out["decision"] == "expired"
+    on_disk = agent._read_decision(agent._perm_dir(run_dir), "req-p")
+    assert on_disk == {"decision": "expired"}, on_disk
+
+
+def test_the_two_sides_agree_on_which_tool_carries_a_plan(agent):
+    """D146: the page branches on this name too, so nothing may drift."""
+    html = open(os.path.join(TEMPLATE_DIR, "template.html"), encoding="utf-8").read()
+    assert agent.PLAN_TOOL == "ExitPlanMode"
+    assert 'const PLAN_TOOL = "ExitPlanMode";' in html
 
 
 # ------------------------------------------------------------ agent.py side
@@ -721,6 +1377,93 @@ def test_the_live_mode_ignores_the_pickers_param(agent, tmp_path, monkeypatch):
     assert agent._live_mode({"mode": "nonsense"}, []) == agent.DEFAULT_PERMISSION_MODE
 
 
+def _run_planning(agent, tmp_path, monkeypatch):
+    """A live run spawned in `plan` mode, with a parked `ExitPlanMode` request —
+    the plan card, unanswered."""
+    run_dir = _run_dir(agent, tmp_path)
+    with open(os.path.join(run_dir, "meta.json"), "w") as fh:
+        json.dump({"file": "/x.html", "message": "hi", "resumed_from": "",
+                   "mode": "plan"}, fh)
+    with open(os.path.join(agent._perm_dir(run_dir), "req-1.req.json"), "w") as fh:
+        json.dump({"id": "req-1", "tool": agent.PLAN_TOOL,
+                   "input": {"plan": "# Plan\n\n1. do it"},
+                   "created_at": 1000.0}, fh)
+    with open(os.path.join(run_dir, "out.jsonl"), "w") as fh:
+        fh.write(json.dumps({"type": "system", "session_id": "s"}) + "\n")
+    monkey_runs(agent, tmp_path)
+    monkeypatch.setattr(agent, "_alive", lambda _: True)
+    return run_dir
+
+
+def test_an_approved_plan_moves_the_live_mode_out_of_plan(agent, tmp_path,
+                                                          monkeypatch):
+    """The CLI leaves plan mode ITSELF the moment it sees the allow (D248's
+    spike: `system/status permissionMode:"default"`), so a derived mode that
+    stayed "plan" described a session nobody was in — and `permChoices`' plan
+    guard went on suppressing the mode-switch affordance for the rest of the
+    run. A plain approval lands on the CLI's own default, exactly like the
+    picker write-back in `buildPlanCard.send`."""
+    _run_planning(agent, tmp_path, monkeypatch)
+    assert agent._poll("run")["mode"] == "plan"
+
+    out = agent._decide("run", "req-1", "allow", "once")
+    assert out["decision"] == "allow" and out["mode"] == "", out
+    assert agent._poll("run")["mode"] == agent.DEFAULT_PERMISSION_MODE == "prompt"
+
+
+def test_an_approved_plan_carrying_a_setmode_lands_on_that_mode(agent, tmp_path,
+                                                                monkeypatch):
+    """The optional landing mode: when the approval carried one, the live mode is
+    IT and not the default — the same `SWITCHABLE_MODES`-validated channel every
+    other card's escalation uses."""
+    _run_planning(agent, tmp_path, monkeypatch)
+    out = agent._decide("run", "req-1", "allow", "once", mode="acceptEdits")
+    assert out["mode"] == "acceptEdits", out
+    assert agent._poll("run")["mode"] == "acceptEdits"
+
+
+def test_keep_planning_leaves_the_live_mode_in_plan(agent, tmp_path, monkeypatch):
+    """"Keep planning" is a deny: the session is still planning, so nothing about
+    the mode has changed and the plan card is still the only way out."""
+    _run_planning(agent, tmp_path, monkeypatch)
+    out = agent._decide("run", "req-1", "deny", "once", note="narrower please")
+    assert out["decision"] == "deny", out
+    assert agent._poll("run")["mode"] == "plan"
+
+
+def test_only_the_plan_tool_moves_the_mode_without_a_setmode(agent, tmp_path,
+                                                             monkeypatch):
+    """The plan tool is the ONE tool whose bare allow moves the derived mode,
+    because it is the one the CLI acts on by itself. An ordinary approval with no
+    `setMode` says nothing about the mode and must leave it where it was — even
+    in plan mode, where an ordinary card can still surface (D248)."""
+    run_dir = _run_planning(agent, tmp_path, monkeypatch)
+    with open(os.path.join(agent._perm_dir(run_dir), "req-0.req.json"), "w") as fh:
+        json.dump({"id": "req-0", "tool": "Read", "input": {"file_path": "/x"},
+                   "created_at": 900.0}, fh)
+    agent._decide("run", "req-0", "allow", "once")
+    assert agent._poll("run")["mode"] == "plan"
+
+
+def test_the_mode_after_a_plan_follows_the_order_the_decisions_landed(
+        agent, tmp_path, monkeypatch):
+    """Same created_at ordering discipline as every other move: the plan approval
+    is one entry in that sequence, not a special case that wins regardless of
+    when it happened. Here a later escalation re-points the mode the plan
+    approval had just reset."""
+    run_dir = _run_planning(agent, tmp_path, monkeypatch)
+    agent._decide("run", "req-1", "allow", "once")     # created_at 1000
+    with open(os.path.join(agent._perm_dir(run_dir), "req-2.req.json"), "w") as fh:
+        json.dump({"id": "req-2", "tool": "Read", "input": {"file_path": "/x"},
+                   "created_at": 2000.0}, fh)
+    agent._decide("run", "req-2", "allow", "once", mode="auto")
+    assert agent._poll("run")["mode"] == "auto"
+    # ...and the same two decisions read in the other file order still land the
+    # same way, because the order is created_at and not listing order.
+    perms = agent._permissions(run_dir)
+    assert agent._live_mode({"mode": "plan"}, list(reversed(perms))) == "auto"
+
+
 def test_start_records_the_mode_it_spawned_with(agent, tmp_path, monkeypatch):
     target = tmp_path / "sample.html"
     target.write_text("<html></html>")
@@ -770,9 +1513,11 @@ def test_start_asks_the_cli_to_route_permissions_here(agent, tmp_path, monkeypat
     # acceptEdits was only ever there because headless claude could not be
     # asked; with a prompt tool wired up the default (ask) is answerable.
     assert "--permission-mode" not in cmd
-    # A prompt tool also un-gates these two in headless mode; this chat renders
-    # neither, so they stay off.
-    assert cmd[cmd.index("--disallowed-tools") + 1] == "AskUserQuestion,ExitPlanMode"
+    # A prompt tool un-gates AskUserQuestion and ExitPlanMode in headless mode.
+    # Both now render — a question card and a plan card — so nothing is disallowed
+    # and the flag is gone rather than passed with an empty value (which the CLI
+    # reads as a tool named "").
+    assert "--disallowed-tools" not in cmd
 
     config = json.loads(open(cmd[cmd.index("--mcp-config") + 1]).read())
     entry = config["mcpServers"][agent.PERMISSION_SERVER]
@@ -864,9 +1609,10 @@ def test_only_a_switchable_mode_is_recorded_and_only_alongside_an_allow(
         agent._perm_dir(run_dir), "req-1").get("mode", "") == recorded
 
 
-def test_the_three_switchable_mode_lists_agree(agent):
-    """agent.py validates it, permission_server re-validates it, and the card
-    offers it — three copies, so a test holds them together (D146)."""
+def test_every_switchable_mode_list_agrees(agent):
+    """agent.py validates it, permission_server re-validates it, and the page
+    both offers it (the approval card's choice table) and picks from it (the plan
+    card's landing mode) — so a test holds every copy together (D146)."""
     assert set(agent.SWITCHABLE_MODES) == set(_load("permission_server").SWITCHABLE_MODES)
     # every switchable mode must also be a mode the picker can spawn with,
     # or a card could leave the session somewhere the next turn cannot
@@ -878,6 +1624,12 @@ def test_the_three_switchable_mode_lists_agree(agent):
     offered = {m for m in re.findall(r'"(?:allow|deny)", "(?:once|session)", "(\w*)"', html) if m}
     assert offered, "the card no longer offers a mode switch at all"
     assert offered <= set(agent.SWITCHABLE_MODES), offered
+
+    # …and the set the plan card filters the picker through, which is the only
+    # place the page names these modes as a list of its own.
+    listed = _const_block(html, "const SWITCHABLE_MODES = new Set([", "]);")
+    in_page = {m.strip().strip('"') for m in listed.split(",") if m.strip()}
+    assert in_page == set(agent.SWITCHABLE_MODES), in_page
 
 
 def test_an_unreadable_request_cannot_win_a_session_grant(agent, tmp_path):
@@ -953,6 +1705,7 @@ def test_permission_timeout_is_actually_configurable(tmp_path, monkeypatch, env,
     ("prompt", None),                  # CLI default — a card for everything
     ("acceptEdits", "acceptEdits"),    # edits through, Bash/web still card
     ("auto", "auto"),                  # the CLI's classifier judges each one
+    ("plan", "plan"),                  # research first, then a plan card
     ("", None),                        # unset -> strictest
     ("bypassPermissions", None),       # not on the menu, and not reachable
     ("dontAsk", None),
@@ -960,7 +1713,7 @@ def test_permission_timeout_is_actually_configurable(tmp_path, monkeypatch, env,
 ])
 def test_the_approvals_mode_reaches_the_cli_and_cannot_be_widened(
         agent, tmp_path, monkeypatch, picked, flag):
-    """The selector's three modes map onto --permission-mode. Anything else
+    """The selector's modes map onto --permission-mode. Anything else
     falls back to the strictest: a mangled param must never buy more
     auto-approval than the user picked, and the CLI's blanket
     `bypassPermissions` is deliberately not offered at all."""
@@ -1033,6 +1786,18 @@ def test_the_mode_switch_is_dropped_once_the_run_is_already_auto():
     assert choices == ["Allow", "Deny"]
 
 
+def test_the_mode_switch_is_never_offered_on_an_ordinary_card_while_planning():
+    """The plan card is the intended exit from plan mode — an ordinary tool
+    card's escalation button loosening the mode via `setMode` would be a second,
+    side, door out of the same state, opened by a click that never looked at a
+    plan at all."""
+    if not shutil.which("node"):
+        pytest.skip("node is needed to run the card's own button builder")
+    choices = _perm_choices("Bash", "plan")
+    assert _SWITCH not in choices
+    assert choices == ["Allow", "Deny"]
+
+
 @pytest.mark.parametrize("tool,grantable", [
     ("Edit", True), ("Write", True), ("Read", True), ("Glob", True),
     ("Grep", True), ("NotebookEdit", True),
@@ -1054,8 +1819,25 @@ def test_the_selector_and_the_backend_offer_the_same_modes(agent):
     listed = html.split("const PERMISSION_MODES = [")[1].split("];")[0]
     in_page = [m.strip().strip('"') for m in listed.split(",") if m.strip()]
     assert set(in_page) == set(agent.PERMISSION_MODES)
+    assert "plan" in in_page, "the picker no longer offers planning first"
     assert agent.DEFAULT_PERMISSION_MODE == "prompt"
     assert 'const DEFAULT_PERMISSION = "prompt"' in html
+    # Every option needs a label, or `fillSelect` renders the word "undefined"
+    # as a permission mode the user is being asked to choose.
+    labels = _const_block(html, "const PERMISSION_LABELS = {", "};")
+    labelled = set(re.findall(r"(\w+):", labels))
+    assert labelled == set(in_page), labelled
+
+
+def test_the_note_field_cannot_type_past_what_the_server_will_keep(agent):
+    """The server-side cap (`NOTE_LIMIT`) is bounded either way (D248's
+    truncation marker), but an honest user should never even reach it — the
+    textarea's own `maxLength` is the first line of defence, and a test holds
+    the two numbers together (D146) so one cannot drift from the other."""
+    html = open(os.path.join(TEMPLATE_DIR, "template.html"), encoding="utf-8").read()
+    listed = _const_block(html, "const PLAN_NOTE_LIMIT = ", ";")
+    assert int(listed.strip()) == agent.NOTE_LIMIT
+    assert "note.maxLength = PLAN_NOTE_LIMIT" in html
 
 
 def _summarize(tool, tool_input):
@@ -1064,9 +1846,14 @@ def _summarize(tool, tool_input):
     Extracted and executed rather than asserted about: what matters is the
     text a user actually reads before clicking Allow, and that is the output
     of this function, not the shape of its source.
+
+    The extraction window opens at `formatEditDiff` (the function immediately
+    above it in the template), not at `summarizePermission` itself: the Edit
+    case renders its `-`/`+` body through that helper now, because the
+    transcript's Edit chip shows the same diff and one formatter serves both.
     """
     html = open(os.path.join(TEMPLATE_DIR, "template.html"), encoding="utf-8").read()
-    start = html.index("function summarizePermission(")
+    start = html.index("function formatEditDiff(")
     fn = html[start:html.index("function buildPermCard(", start)]
     script = fn + "\nconsole.log(JSON.stringify(summarizePermission(%s, %s)));" % (
         json.dumps(tool), json.dumps(tool_input))
@@ -1517,9 +2304,14 @@ def test_template_wires_the_decide_action(agent):
     assert 'action: "decide"' in html
     assert "syncPermissions(data.permissions" in html
     # A tool input is model-authored text; rendering it as markup would be an
-    # injection straight into the approval prompt the user is reading.
-    assert ".innerHTML" not in html.split("function buildPermCard")[1] \
+    # injection straight into the approval prompt the user is reading. The ONE
+    # exception is the plan card, whose `input.plan` genuinely IS markdown — and
+    # it goes through `renderMd`, the sanitize-safe funnel, never anywhere else.
+    # Asserted as the exhaustive list of innerHTML writes in the card region, so
+    # a second one cannot be added without this test naming it.
+    region = html.split("function buildPermCard")[1] \
         .split("function syncPermissions")[0]
+    assert re.findall(r"\.innerHTML\s*=\s*([^;]+);", region) == ["renderMd(plan)"]
 
 
 def monkey_runs(agent, tmp_path):
