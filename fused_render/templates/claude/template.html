@@ -4569,11 +4569,16 @@ function buildPermCard(p, run_id, liveMode) {
 //
 // Writes the param rather than calling applyNarrowView, the same one-way flow
 // #viewbtn uses. No-op in the wide layout (nothing is hidden) and for the no-pane
-// target (`paneview` describes a collapse it never does).
+// target (`paneview` describes a collapse it never does). The Preview test is
+// `narrowShown` — the view ON SCREEN — not the raw param: after a breakpoint
+// crossing the preview shows on `narrowCrossView` with the param still absent,
+// and the raw read left the card in the collapsed #log, a hard block with no
+// visible way to answer it (Bugbot, PR #447). Same reason #viewbtn toggles off
+// narrowShown.
 function showPermissionCard(card, working) {
   if (working && working.el && working.el.isConnected) log.insertBefore(card.el, working.el);
   else log.appendChild(card.el);
-  if (!noPane && NARROW_MQ.matches && fused.params.get("paneview") === "preview") {
+  if (!noPane && NARROW_MQ.matches && narrowShown) {
     fused.params.set("paneview", "chat");
   }
   scrollBottom();
