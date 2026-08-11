@@ -37,15 +37,16 @@ THREE THINGS THAT LOOK WRONG AND ARE NOT
    guarded at scan time. It is the layer that holds if an index written by an
    older build carries rows a newer guard would have pruned, and it costs nothing
    — the roots resolve once per request and every check is string comparison.
-3. An index whose applied ignore signature does not match the current one is
-   reported as NOT READY, not as an empty list. This is the migration case and it
-   is the one way this endpoint could ship a silent lie: `.git` moving out of the
-   ignore list and into the leaf rules changed `IgnoreRules.sig()`, which forces
-   a full rescan — but until that rescan finishes, an index already on disk has
-   no `.git` rows whatsoever. A pure query would then answer
-   `{indexed: true, repos: []}` and tell the user, with total confidence, that
-   they have no repositories. So the signature is checked and a stale index is
-   reported exactly as a missing one.
+3. An index any of whose configured roots was built under a different ignore
+   signature is reported as NOT READY, not as an empty list. This is the migration
+   case and it is the one way this endpoint could ship a silent lie: `.git` moving
+   out of the ignore list and into the leaf rules changed `IgnoreRules.sig()`,
+   which forces a full rescan — but until that rescan finishes, an index already on
+   disk has no `.git` rows whatsoever. A pure query would then answer
+   `{indexed: true, repos: []}` and tell the user, with total confidence, that they
+   have no repositories. So EVERY root's signature is checked individually (see
+   `_usable` for why the rootless form is not enough) and a stale index is reported
+   exactly as a missing one.
 
 Order is the index's own row order, which is path order: the compaction writes
 dirs.parquet `ORDER BY dir` (`store._compact_locked`), and stripping the trailing
@@ -103,20 +104,34 @@ def _usable(cfg) -> bool:
       * no manifest — nothing has ever compacted;
       * no dirs.parquet — the table this endpoint reads is the one that matters,
         and the manifest does not imply it;
-      * an applied ignore signature that is not the current one — the index was
-        built under different rules, so it predates `.git` being recorded and has
-        no `.git` rows to find. See the module docstring's point 3.
+      * any CONFIGURED ROOT whose applied ignore signature is not the current one
+        — that root's slice of the index was built under different rules, so it
+        predates `.git` being recorded and holds no `.git` rows. See the module
+        docstring's point 3.
 
-    `applied_ignore_sig(cfg)` with no root answers "do ALL recorded roots match
-    the current rules", which is the right question: a machine indexing two roots
-    where only one has been rescanned can still be missing every repo under the
-    other.
+    Every root is checked INDIVIDUALLY, and the rootless `applied_ignore_sig(cfg)`
+    is deliberately not used for this. That form compares only the values in the
+    file's `roots` map and never consults `legacy_sig` — so on a store migrated
+    from the pre-per-root format, the moment the FIRST root is rescanned and
+    stamped, `{"roots": {"/a": current}, "legacy_sig": old}` reads as "everything
+    matches" while `/b` is still described by nothing but the stale legacy sig and
+    still has no repo rows. The per-root form returns `legacy_sig` for exactly
+    those roots (`roots.get(root, data.get("legacy_sig"))`), which is the answer
+    that makes them visible as stale.
+
+    A root that has never been stamped at all answers None, which is not the
+    current signature either — "predates the applied-ignore file" cannot be
+    assumed to have been built under today's rules.
     """
     if read_manifest(cfg) is None or not os.path.exists(cfg.dirs_parquet):
         return False
-    # None means "an index predating the applied-ignore file", which cannot be
-    # assumed to have been built under the current rules either.
-    return applied_ignore_sig(cfg) == cfg.rules.sig()
+    sig = cfg.rules.sig()
+    # scan_roots is the definition of "what this index is supposed to cover"
+    # (configured roots, else home) and lives with the scan scheduler that acts on
+    # it; duplicating the fallback here is how the two would drift.
+    from fused_render.server.routers.index import scan_roots
+
+    return all(applied_ignore_sig(cfg, r) == sig for r in scan_roots(cfg))
 
 
 def _repos() -> dict:

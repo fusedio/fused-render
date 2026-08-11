@@ -349,7 +349,22 @@ def test_a_second_run_carries_unchanged_directories_forward(tmp_path):
                for e in _events(run_dir))
 
 
-def test_a_rescan_picks_up_a_new_file(tmp_path):
+def test_a_rescan_picks_up_a_new_file(tmp_path, monkeypatch):
+    """The mtime-driven incremental path: `sub`'s mtime moved, so it is rescanned
+    and the new file lands.
+
+    The FSEvents fast path is pinned OFF, and that is load-bearing rather than
+    tidiness. FSEvents is a machine-global, ASYNCHRONOUS journal: with the journal
+    live, run 2 takes the fast path and visits only what the OS has already
+    reported — so if the report for `sub` has not landed yet, every cached row is
+    carried forward and this assertion fails with no bug present. Measured: 4 runs
+    in 10 under `-n auto` once neighbouring tests in this file started writing
+    enough files to make the journal lag. The fsevents path has its own tests
+    (test_the_fsevents_path_does_not_walk_into_a_package), which pin `hint` for the
+    same reason in the other direction."""
+    from fused_render.index import fsevents
+
+    monkeypatch.setattr(fsevents, "hint", lambda *a, **k: None)
     src = tmp_path / "src"
     src.mkdir()
     _tree(src)
@@ -361,6 +376,35 @@ def test_a_rescan_picks_up_a_new_file(tmp_path):
     assert _summary(run_dir)["msg"] == "complete"
     part = os.path.join(cfg.files_dir, read_manifest(cfg)["partitions"][0]["file"])
     assert str(src / "sub" / "new.txt") in pq.read_table(part).column("path").to_pylist()
+
+
+def test_a_missing_applied_fingerprint_forces_a_full_rescan(tmp_path):
+    """An index with no `ignore_applied.json` must NOT be reconciled
+    incrementally, and this is not a theoretical tidiness point.
+
+    Absent used to count as "no change", which was sound while every rule only
+    ever REMOVED rows: dropping an ignore pattern is self-purging through the
+    filtered cache. A rule that ADDS rows breaks it — a `.git` row appears only by
+    visiting the repo directory, and an incremental scan skips exactly that
+    directory because its mtime is unchanged. The run would then stamp the new
+    fingerprint over an index that never grew the rows, and /api/git-repos, which
+    trusts that stamp, would report zero repositories forever.
+    """
+    src = tmp_path / "src"
+    src.mkdir()
+    _tree(src)
+    cfg = _cfg(tmp_path, ignore=["node_modules"])
+    _run(cfg, str(src))
+    # a repo appears, and the fingerprint is lost (an index predating the file)
+    (src / "proj" / ".git").mkdir(parents=True)
+    os.remove(cfg.applied_ignore_json)
+
+    run_dir = _run(cfg, str(src), run_name="run2")
+    msgs = [e.get("msg") for e in _events(run_dir)]
+    assert "no applied rules fingerprint - full rescan" in msgs
+    assert "scanning (full)" in msgs
+    dirs = pq.read_table(cfg.dirs_parquet).column("dir").to_pylist()
+    assert str(src / "proj" / ".git") in dirs
 
 
 def test_changing_the_ignore_rules_forces_a_full_rescan(tmp_path):

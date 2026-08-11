@@ -18,6 +18,7 @@ from fastapi.testclient import TestClient
 from fused_render.index.config import load_config
 from fused_render.index.store import save_applied_ignore
 from fused_render.server import create_app
+from fused_render.server.routers.index import scan_roots
 
 
 @pytest.fixture()
@@ -68,13 +69,27 @@ def _write_dirs_index(dirs, *, manifest=True, applied=True):
         with open(cfg.partitions_json, "w") as f:
             json.dump({"partitions": [], "rows": 0, "updated": 0.0}, f)
     if applied:
-        save_applied_ignore(cfg, "/")
+        # The roots the endpoint checks are the CONFIGURED ones (scan_roots:
+        # cfg.roots, else home), each individually — so stamping some other path
+        # would leave the index reading as stale.
+        for r in scan_roots(cfg):
+            save_applied_ignore(cfg, r)
     return cfg
 
 
 def _git(path):
     """The dirs row a repo at `path` produces."""
     return str(path) + "/.git"
+
+
+def _set_roots(roots):
+    """Persist the configured scan roots, so scan_roots() reports them instead of
+    falling back to the real home directory."""
+    from fused_render.index.config import save_config
+
+    cfg = load_config()
+    cfg.roots = [str(r) for r in roots]
+    save_config(cfg)
 
 
 # -- the happy path ------------------------------------------------------------
@@ -197,16 +212,44 @@ def test_an_index_with_no_applied_signature_at_all_is_not_indexed(home, tmp_path
 
 
 def test_a_partially_rescanned_multi_root_index_is_not_indexed(home, tmp_path,
-                                                              client):
-    """Two roots, only one rescanned under the current rules: every repo under
-    the other is still missing, so the honest answer is "not ready"."""
-    repo = tmp_path / "repo"
-    cfg = _write_dirs_index([str(repo), _git(repo)])
-    with open(cfg.applied_ignore_json) as f:
-        data = json.load(f)
-    data["roots"]["/other"] = "a-stale-signature"
+                                                               client):
+    """Two configured roots, only one rescanned under the current rules: every
+    repo under the other is still missing, so the honest answer is "not ready"."""
+    a, b = tmp_path / "a", tmp_path / "b"
+    repo = a / "repo"
+    _set_roots([a, b])
+    cfg = _write_dirs_index([str(repo), _git(repo)], applied=False)
+    save_applied_ignore(cfg, str(a))   # only /a reconciled
+    assert client.get("/api/git-repos").json()["indexed"] is False
+    save_applied_ignore(cfg, str(b))
+    body = client.get("/api/git-repos").json()
+    assert body["indexed"] is True
+    assert [r["path"] for r in body["repos"]] == [str(repo)]
+
+
+def test_a_legacy_sig_root_is_stale_even_once_another_root_is_stamped(
+        home, tmp_path, client):
+    """Bugbot's multi-root hole, pinned. On a store migrated from the pre-per-root
+    applied-ignore format, stamping the FIRST root leaves
+    `{"roots": {a: current}, "legacy_sig": old}` — and the ROOTLESS
+    applied_ignore_sig() reads only the `roots` values, so it answers "everything
+    matches" while root `b` is still described by nothing but the stale legacy sig
+    and still holds no `.git` rows. Checking each root individually is what sees
+    it: the per-root form falls back to `legacy_sig` for `b`."""
+    from fused_render.index.store import applied_ignore_sig
+
+    a, b = tmp_path / "a", tmp_path / "b"
+    repo = a / "repo"
+    _set_roots([a, b])
+    cfg = _write_dirs_index([str(repo), _git(repo)], applied=False)
+    # the pre-per-root file, then one root migrated onto the new format
     with open(cfg.applied_ignore_json, "w") as f:
-        json.dump(data, f)
+        json.dump({"sig": "a-pre-leaf-rule-global-sig"}, f)
+    save_applied_ignore(cfg, str(a))
+
+    # the rootless form is exactly as misleading as reported...
+    assert applied_ignore_sig(cfg) == cfg.rules.sig()
+    # ...and the endpoint must not be fooled by it
     assert client.get("/api/git-repos").json()["indexed"] is False
 
 
