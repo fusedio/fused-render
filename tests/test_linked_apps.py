@@ -518,7 +518,8 @@ def test_history_backend_shows_history_but_refuses_revert_for_linked(
 
 def test_git_scoping_ignores_linked_folders(client, tmp_path, workspace):
     """A linked folder lives outside the workspace, so app_git's path-prefix
-    scoping must yield None for it — fused-render never auto-commits there."""
+    scoping must yield None for it — nothing fused-render commits on its own
+    (a Claude turn) may ever land in the user's own repository."""
     from fused_render import app_git
 
     d = _folder(tmp_path, "myrepo")
