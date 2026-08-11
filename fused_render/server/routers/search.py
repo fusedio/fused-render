@@ -70,6 +70,13 @@ SEARCH_MAX_RESULTS = 400
 # The named cost: on a query matching both kinds heavily, up to this many file
 # rows give way to folders. Unused folder budget goes back to files.
 SEARCH_DIRS_RESERVE = 100
+# Pages a branch may read while filling its budget. Gitignored rows can only be
+# recognised OUTSIDE SQL, so a page that screens down to nothing has to be
+# followed by another or a gitignored build directory answers the whole query;
+# each extra page costs one duckdb query plus its check-ignore batch, and the
+# common case (few ignored hits) is one page. A bound rather than "until the cap
+# is full" because a query can match more ignored rows than any budget.
+SEARCH_MAX_PAGES = 5
 
 _EXT_ALLOWED = set("abcdefghijklmnopqrstuvwxyz0123456789")
 
@@ -368,10 +375,29 @@ def _screen(rows) -> list:
 
 def _collect(con, sql, budget: int):
     """Up to `budget` screened entries for one branch, plus whether the branch
-    had more rows than it was allowed to contribute. One row past the budget is
-    fetched, so "there was more" is known without a count."""
-    rows = con.execute(f"{sql} LIMIT {budget + 1}").fetchall()
-    return _screen(rows[:budget]), len(rows) > budget
+    had more rows than it was allowed to contribute.
+
+    Paged, because the cap is a budget for hits the user can SEE and screening
+    happens outside SQL: taking `budget` rows once and screening afterwards let
+    a page of gitignored rows answer the query with an empty list while real
+    matches sat one row past the cap. Each page asks for exactly the shortfall
+    plus one probe row, so the common case is a single query."""
+    kept: list = []
+    offset = 0
+    more = False
+    for _page in range(SEARCH_MAX_PAGES):
+        want = budget - len(kept)
+        if want <= 0:
+            break
+        rows = con.execute(
+            f"{sql} LIMIT {want + 1} OFFSET {offset}").fetchall()
+        more = len(rows) > want
+        page = rows[:want]
+        offset += len(page)
+        kept.extend(_screen(page))
+        if not more:
+            break
+    return kept[:budget], more
 
 
 def _index_entries(cfg, spec, cap, *, parts=None, dirs=False):

@@ -252,6 +252,55 @@ def test_a_folder_with_no_recorded_mtime_is_not_starved(tmp_path, monkeypatch):
     assert entries["/r/photos"]["mtime"] is None  # unknown, reported as such
 
 
+def test_gitignored_hits_do_not_spend_the_result_cap(tmp_path, monkeypatch):
+    """The cap is a budget for hits the user can SEE.
+
+    Gitignored rows can only be recognised outside SQL (git is not a duckdb
+    function), so a page that filters down to nothing has to be followed by
+    another — otherwise a build directory's 100k generated files answer the
+    whole query with an empty list, and with no engine behind this one that is a
+    hard false miss, not a degraded result."""
+    import subprocess as sp
+
+    monkeypatch.setattr(search_mod, "SEARCH_MAX_RESULTS", 3)
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    sp.run(["git", "init", "-q", str(repo)], check=True)
+    (repo / ".gitignore").write_text("dist/\n")
+    (repo / "dist").mkdir()
+    root = str(repo).replace(os.sep, "/")
+    # The four NEWEST matches are all gitignored; the two real ones are oldest.
+    files = [(f"{root}/dist/bundle-{i}.js", 10, 10_000.0 + i) for i in range(4)]
+    files += [(f"{root}/app.js", 10, 100.0), (f"{root}/main.js", 10, 101.0)]
+    cfg = _index(tmp_path, root, files, dirs=[f"{root}/dist"])
+    out = _search_index(spec(extensions=["js"]), cfg)
+    assert _paths(out) == [f"{root}/app.js", f"{root}/main.js"]
+    # Everything that matched was either returned or filtered — nothing is being
+    # withheld, so the client must not be told there is more.
+    assert out["truncated"] is False
+
+
+def test_the_cap_still_bounds_a_result_set_with_ignored_hits(tmp_path, monkeypatch):
+    """The refill fills the cap; it does not lift it, and `truncated` still says
+    when rows were left behind."""
+    import subprocess as sp
+
+    monkeypatch.setattr(search_mod, "SEARCH_MAX_RESULTS", 3)
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    sp.run(["git", "init", "-q", str(repo)], check=True)
+    (repo / ".gitignore").write_text("dist/\n")
+    (repo / "dist").mkdir()
+    root = str(repo).replace(os.sep, "/")
+    files = [(f"{root}/dist/bundle-{i}.js", 10, 10_000.0 + i) for i in range(3)]
+    files += [(f"{root}/keep-{i}.js", 10, 100.0 + i) for i in range(6)]
+    cfg = _index(tmp_path, root, files, dirs=[f"{root}/dist"])
+    out = _search_index(spec(extensions=["js"]), cfg)
+    assert len(out["entries"]) == 3
+    assert all("/dist/" not in e["path"] for e in out["entries"])
+    assert out["truncated"] is True
+
+
 def test_index_engine_reads_through_the_manifest_not_a_glob(tmp_path):
     """A compaction leaves the PREVIOUS generation's partitions on disk for
     readers still holding the old manifest (index-store.md §4). Globbing the
