@@ -460,7 +460,17 @@ function fakeCodeEl(cls) {{
   const classes = cls.split(/\\s+/);
   return {{ className: cls, classList: {{ contains: (c) => classes.includes(c) }} }};
 }}
-function fakePre() {{ return {{ querySelector: () => null, appendChild: () => {{}} }}; }}
+// The copy-button pass reads a block's text before the button joins it
+// (querySelector/querySelectorAll) and inserts the button FIRST when there is a
+// first child to insert before — see attachCodeCopy. None of that is what this
+// test measures; the surface just has to exist.
+function fakePre() {{
+  return {{
+    querySelector: () => null, querySelectorAll: () => [],
+    textContent: "", firstChild: null,
+    appendChild: () => {{}}, insertBefore: () => {{}},
+  }};
+}}
 const codeEls = [
   fakeCodeEl("language-python"),      // registered — must highlight
   fakeCodeEl("language-mermaid"),     // NOT in the common bundle — must skip
@@ -475,6 +485,86 @@ console.log(JSON.stringify({{ highlighted }}));
 """
     got = _node(script, tmp_path)
     assert got["highlighted"] == ["language-python"]
+
+
+def test_the_copy_button_copies_the_block_not_its_own_label(source, tmp_path):
+    # TWO bugs at one seam, which is why they are pinned together.
+    #
+    # 1. The button used to read `pre.textContent` INSIDE its own click handler,
+    #    by which time the button was a child of that pre — so every block with
+    #    no `<code>` element (renderMd's vendor-less fallback, and every tool
+    #    chip's payload: a diff, a command, an output dump) copied its own
+    #    contents with the word "copy" glued to the end. The text is captured
+    #    before the button is inserted now.
+    # 2. An Edit chip's diff is one `<span>` PER LINE and carries no newline
+    #    characters at all — the spans are `display: block`, and a "\n" text node
+    #    between two blocks renders as an extra empty line inside every coloured
+    #    band. The line breaks a COPY needs are therefore put back here, which is
+    #    what keeps a copied diff a diff instead of one run-together line.
+    #
+    # Also pins that the button is inserted FIRST: inside a scrolling pre it is
+    # `position: sticky`, and sticky can only hold an element at the top of the
+    # scrollport from a flow position at the top of the box.
+    block = _block(source, _ATTACH_START, _ATTACH_END)
+    script = f"""
+const copied = [];
+// defineProperty, not assignment: node ships its own read-only `navigator`.
+Object.defineProperty(globalThis, "navigator", {{
+  value: {{ clipboard: {{ writeText: (t) => copied.push(t) }} }},
+  configurable: true,
+}});
+global.window = {{}};   // no hljs: this test is about the copy pass only
+const buttons = [];
+global.document = {{ createElement: () => {{
+  const b = {{}};
+  buttons.push(b);
+  return b;
+}} }};
+function span(t) {{ return {{ textContent: t }}; }}
+// A diff pre, as fillToolChipBody builds it: span-per-line, no newlines.
+const diffPre = {{
+  kids: [span("- old"), span("+ new")],
+  textContent: "- old+ new",
+  firstChild: {{}},
+  querySelector: () => null,
+  querySelectorAll(sel) {{ return sel === ":scope > span" ? this.kids : []; }},
+  insertBefore(n) {{ this.first = n; }},
+  appendChild(n) {{ this.last = n; }},
+}};
+// A plain payload pre (a Bash command, an output dump): text, no children.
+const textPre = {{
+  textContent: "ls -la",
+  firstChild: {{ nodeType: 3 }},   // a real <pre>text</pre> has a text node
+  querySelector: () => null,
+  querySelectorAll: () => [],
+  insertBefore(n) {{ this.first = n; }},
+  appendChild(n) {{ this.last = n; }},
+}};
+// A markdown code block: the <code> child is the authority.
+const codePre = {{
+  textContent: "x = 1copy",
+  firstChild: {{}},
+  querySelector: (sel) => (sel === "code" ? {{ textContent: "x = 1" }} : null),
+  querySelectorAll: () => [],
+  insertBefore(n) {{ this.first = n; }},
+  appendChild(n) {{ this.last = n; }},
+}};
+const pres = [diffPre, textPre, codePre];
+const rootEl = {{
+  querySelectorAll: (sel) => (sel === "pre code" ? [] : pres),
+}};
+{block}
+attachCodeCopy(rootEl);
+buttons.forEach((b) => b.onclick());
+console.log(JSON.stringify({{
+  copied,
+  first: pres.map((p) => p.first === buttons[pres.indexOf(p)]),
+}}));
+"""
+    got = _node(script, tmp_path)
+    assert got["copied"] == ["- old\n+ new", "ls -la", "x = 1"]
+    assert got["first"] == [True, True, True], (
+        "the copy button must be inserted first — sticky cannot pin it otherwise")
 
 
 def test_attach_code_copy_is_idempotent_against_double_highlighting(

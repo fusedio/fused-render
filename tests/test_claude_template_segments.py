@@ -310,10 +310,12 @@ def test_one_diff_formatter_serves_both_the_card_and_the_chip(source):
     ("Glob", {"pattern": "*.py", "path": "/src"}, "*.py  in /src"),
     ("Grep", {"pattern": "TODO", "glob": "*.js"}, "TODO  in *.js"),
     # +added -removed, counted in lines, so the size of the change is legible
-    # without opening the chip.
+    # without opening the chip — and LEADING, because the path is the half the
+    # row's ellipsis clips and a count that only survives on short paths is a
+    # count nobody can rely on.
     ("Edit", {"file_path": "/a.py", "old_string": "x\ny", "new_string": "z"},
-     "/a.py  +1 -2"),
-    ("Write", {"file_path": "/a.py", "content": "one\ntwo\nthree"}, "/a.py  +3"),
+     "+1 -2  /a.py"),
+    ("Write", {"file_path": "/a.py", "content": "one\ntwo\nthree"}, "+3  /a.py"),
     ("Task", {"description": "hunt the bug", "subagent_type": "Explore"},
      "hunt the bug"),
     ("TodoWrite", {"todos": [{"content": "a", "status": "completed"},
@@ -326,6 +328,10 @@ def test_one_diff_formatter_serves_both_the_card_and_the_chip(source):
     # carries the tool name (asserted separately below), so the one-liner is
     # empty rather than a duplicate of it.
     ("mcp__whatever__do_thing", {"a": 1}, ""),
+    # A missing input is not an error — every branch above tolerates it. The
+    # counts still render (an Edit with no strings really did change nothing)
+    # and there is no dangling separator where the path would have been.
+    ("Edit", {}, "+0 -0"),
 ])
 def test_tool_chip_summary_per_tool(probe, name, inp, expected):
     got = probe.run("console.log(JSON.stringify({s: toolChipSummary(%s)}));"
@@ -351,7 +357,27 @@ def test_unknown_tool_chip_shows_its_name_in_the_summary_row(probe):
     got = probe.render([_tool("mcp__linear__create_issue", {"title": "x"})])
     chip = _by_class(got["tree"], "toolchip")[0]
     summary = [n for n in _nodes(chip) if n["tag"] == "summary"][0]
-    assert "mcp__linear__create_issue" in summary["text"]
+    # Humanized for reading — `mcp__server__tool` is three underscores of
+    # protocol in the row a user scans — but the WIRE name is never lost: it is
+    # the row's title, because that is the name an approval authorises.
+    assert "linear: create issue" in summary["text"]
+    assert summary["attrs"].get("title") == "mcp__linear__create_issue"
+
+
+@pytest.mark.parametrize("raw,pretty", [
+    ("mcp__linear__create_issue", "linear: create issue"),
+    ("mcp__x__y", "x: y"),
+    # A CLI tool is already the name the user knows it by: untouched.
+    ("Bash", "Bash"),
+    ("TodoWrite", "TodoWrite"),
+    # Not an MCP name, however much it looks like one.
+    ("mcp__nothing_after", "mcp__nothing_after"),
+    ("", ""),
+])
+def test_pretty_tool_name_humanizes_only_mcp_names(probe, raw, pretty):
+    got = probe.run("console.log(JSON.stringify({n: prettyToolName(%s)}));"
+                    % json.dumps(raw))
+    assert got["n"] == pretty
 
 
 # --- the chip's body --------------------------------------------------------
@@ -367,9 +393,39 @@ def test_edit_chip_renders_a_line_classed_diff_and_opens_by_default(probe):
     # Colouring is per-line CSS classes, never inline styles.
     assert [n["text"] for n in _by_class(pre, "diff-del")] == ["- old"]
     assert [n["text"] for n in _by_class(pre, "diff-add")] == ["+ new"]
-    # Newlines survive as real text nodes, so the pre reads (and copies) as a
-    # diff rather than one run-together line.
-    assert pre["text"] == "- old\n+ new"
+    # ONE span per line and NO newline text nodes between them: the spans are
+    # `display: block` (that is what makes the +/- colour a full-width band), so
+    # a "\n" between two blocks renders as an extra empty line and the diff came
+    # out double-spaced. The line breaks a COPY needs are put back by
+    # attachCodeCopy — see test_the_copy_button_copies_the_block_not_its_own_label
+    # in tests/test_claude_template_markdown.py, which pins exactly that.
+    assert [k["tag"] for k in pre["children"]] == ["span", "span"]
+    assert pre["text"] == "- old+ new"
+    # And the path is not repeated: the summary row above it already IS the path
+    # (toolChipSummary), so the body opens straight onto the diff.
+    assert not _by_class(chip, "chip-label")
+
+
+def test_only_a_diff_with_something_below_the_fold_gets_the_fade(probe, source):
+    # The bottom fade is the cue that a diff is CLIPPED, and a mask paints the
+    # element's box rather than its overflow — so an unconditional one dissolves
+    # the last line of a two-line diff. The class is therefore decided from the
+    # line count, and the count has to be the same number the CSS clips at or the
+    # cue lies in one direction or the other.
+    style = source[source.index("<style>"):source.index("</style>")]
+    clip = re.search(r"const CHIP_DIFF_CLIP_LINES = (\d+);", source)
+    assert clip, "no CHIP_DIFF_CLIP_LINES: nothing decides when the fade applies"
+    assert "max-height: calc(%s * 1.55em)" % clip.group(1) in style, (
+        "the CSS clip and the JS fade threshold have drifted apart")
+    lines = int(clip.group(1))
+
+    short = probe.render([_tool("Edit", {"file_path": "/a.py",
+                                         "old_string": "x", "new_string": "y"})])
+    assert "clipped" not in _by_class(short["tree"], "diff")[0]["cls"].split()
+    long_edit = probe.render([_tool("Edit", {
+        "file_path": "/a.py", "old_string": "\n".join("l%d" % i for i in range(lines)),
+        "new_string": "z"})])
+    assert "clipped" in _by_class(long_edit["tree"], "diff")[0]["cls"].split()
 
 
 def test_write_chip_opens_and_shows_path_plus_content(probe):
@@ -416,20 +472,47 @@ def test_error_status_shows_the_failure_glyph_and_its_output(probe):
     chip = _by_class(got["tree"], "toolchip")[0]
     glyph = _by_class(chip, "chip-status")[0]
     assert glyph["text"] == "✗"
-    assert "error" in glyph["cls"].split(), "the class carries the colour, not a style attr"
+    # `is-error`, not `error`: a bare `error` class here picked up the page's own
+    # `.error` card rule (a red pill with a border and 8px of padding), which
+    # repainted a one-character glyph as a badge and made the row jump taller the
+    # moment a tool failed.
+    assert "is-error" in glyph["cls"].split(), (
+        "the class carries the colour, not a style attr")
+    assert "error" not in glyph["cls"].split(), (
+        "the unprefixed class is what collided with the .error card rule")
     assert any(n["text"] == "exit 1: nope" for n in _by_class(chip, "chip-out")), (
         "a failed tool's output is the only explanation of the failure — it must render"
     )
 
 
-def test_running_status_shows_a_spinner_glyph(probe):
+def test_running_status_marks_the_row_with_a_drawn_spinner(probe):
+    # The spinner is CSS, not text: `.chip-status.is-running` is a 9px ring with
+    # one accent arc rotating about its own centre. It used to be a rotated "◜",
+    # which spins about the LINE BOX's centre — a quarter-circle orbiting a point
+    # below itself, which reads as a rendering glitch rather than as progress.
     got = probe.render([_tool("Bash", {"command": "sleep 1"})])
     glyph = _by_class(got["tree"], "chip-status")[0]
     assert glyph["text"] == TOOL_RUNNING_GLYPH
-    assert "running" in glyph["cls"].split()
+    assert "is-running" in glyph["cls"].split()
 
 
-TOOL_RUNNING_GLYPH = "◜"
+def test_the_running_spinner_is_drawn_by_css_and_stops_for_reduced_motion(source):
+    style = source[source.index("<style>"):source.index("</style>")]
+    ring = re.search(r"\.chip-status\.is-running \{([^}]*)\}", style)
+    assert ring, "no .chip-status.is-running rule: nothing draws the spinner"
+    for decl in ("border-radius: 50%", "border-top-color: var(--accent)",
+                 "animation: chipspin"):
+        assert decl in ring.group(1), decl
+    # Guarded, like every other animation on the page.
+    guard = style[style.index("@media (prefers-reduced-motion: reduce)",
+                              style.index(".chip-status.is-running")):]
+    assert "chip-status.is-running { animation: none; }" in guard
+
+
+# Empty: a running row is marked by the CSS ring above, and an OK row is not
+# marked at all (see TOOL_STATUS_GLYPH — success is what almost every row in a
+# transcript is, and a column of ticks is a column of decoration).
+TOOL_RUNNING_GLYPH = ""
 
 
 # --- nothing is dropped, nothing is trusted ---------------------------------
@@ -549,8 +632,11 @@ console.log(JSON.stringify({first, second}));
     assert a["children"][0]["uid"] == b["children"][0]["uid"], (
         "a status flip must update the existing chip, not append a second one"
     )
-    assert _by_class(a, "chip-status")[0]["text"] == TOOL_RUNNING_GLYPH
-    assert _by_class(b, "chip-status")[0]["text"] == "✓"
+    assert _by_class(a, "chip-status")[0]["cls"].split()[-1] == "is-running"
+    # The status SLOT survives the flip and holds the row's alignment; an ok row
+    # simply has nothing in it (TOOL_STATUS_GLYPH.ok is "").
+    assert _by_class(b, "chip-status")[0]["cls"].split()[-1] == "is-ok"
+    assert _by_class(b, "chip-status")[0]["text"] == ""
     assert any(n["text"] == "a.py" for n in _by_class(b, "chip-out"))
 
 
@@ -1093,7 +1179,11 @@ def test_clicking_an_option_sends_that_label_as_the_answer(card):
     }]
     status = _by_class(got["tree"], "perm-status")[0]
     assert status["text"] == "✓ You chose: Beta"
-    assert "allow" in status["cls"].split()
+    # `chose`, not `allow`: an answer is not an approval, and "You chose: Beta"
+    # in the allow green read as a verdict on the question. The choice itself is
+    # the part that keeps full contrast (.perm-status.chose .val).
+    assert "chose" in status["cls"].split()
+    assert _texts(got["tree"], "val") == ["Beta"]
     # The options are gone once it is answered — the card is a record now.
     assert not _by_class(got["tree"], "qopt")
     assert "resolved" in got["tree"]["cls"].split()
