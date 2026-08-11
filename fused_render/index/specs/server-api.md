@@ -122,7 +122,11 @@ developer's real home. The scheduler's own tests call `run_startup_scan()` direc
 ## Non-goals
 
 - **Watching the filesystem** — there is no daemon. Freshness comes from the startup
-  scan plus on-demand scans; a watcher is a later project.
+  scan, on-demand scans, and the open-folder check `GET /api/fs/list` performs
+  (`scan-incremental.md §5`): a folder whose own mtime is ahead of the index gets its
+  root rescanned in the background. A folder nobody opens still waits for a startup or
+  manual scan, and a change deeper than the folder being viewed does not move its
+  mtime — an ambient watcher remains a later project.
 - **Indexing remote mounts** — refused structurally (`scan-ignore.md §7`).
 - **AI/SQL access to the index** — `query.md §5`.
 

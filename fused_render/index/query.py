@@ -48,8 +48,10 @@ MAX_CORPUS = 200_000
 # live walk, since offering the pre-rename name back to the user who just
 # renamed it is not a trade (frontend lib/index-freshness.ts).
 #
-# There is no watcher (`scan.md`), so this is the honest bound on how wrong an
-# unflagged corpus can be. It is a trade, not a
+# There is no watcher (`scan.md`) — opening a folder whose own mtime is ahead of
+# the index rescans its root (`scan-incremental.md §5`), but a change deeper than
+# the folder being viewed does not move that mtime — so this is still the honest
+# bound on how wrong an unflagged corpus can be. It is a trade, not a
 # fact about the data — long enough that the index is actually used during a
 # working session, short enough that a morning's edits don't answer an
 # afternoon's search.
