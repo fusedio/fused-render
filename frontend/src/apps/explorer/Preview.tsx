@@ -39,13 +39,17 @@ import {
   isModePending,
   isSidebarMode,
   partitionModes,
-  orderSidebarModes,
-  defaultSidebarMode,
   visibleModes,
   defaultMode,
   effectiveActive,
 } from "@platform/lib/mode-visibility";
 import { useDirMode } from "@apps/explorer/lib/dir-mode";
+import {
+  sideSplit,
+  initialSide,
+  sideToggleTarget,
+  reconcileSideSearch,
+} from "@apps/explorer/lib/preview-side";
 import { ModeMenu, OverflowMenu } from "@apps/explorer/BarMenu";
 import { SideToggleButton } from "@apps/explorer/SideChrome";
 import PreviewSidebar from "@apps/explorer/PreviewSidebar";
@@ -492,29 +496,38 @@ function TemplatePreview({
   const ownGit = parts.sidebar.some((e) => e.mode === "git");
   const parentGit = useDirMode(splitCapable && !ownGit ? parentDir : null, "git");
   const borrowedGit = ownGit ? null : parentGit.entry;
+  const borrowedPending = !ownGit && parentGit.pending;
   // Registry order for the file's own companions, then SIDEBAR_MODES order over
   // the assembled list — Claude / Git / History, whatever the registry ranked
-  // (see orderSidebarModes).
-  const sideAll = orderSidebarModes(
-    borrowedGit ? [...parts.sidebar, borrowedGit] : parts.sidebar
-  );
-  // ...and only while there is something to put on BOTH sides. A file whose only
-  // visible mode is `claude` has no content pane to put a sidebar next to, so it
-  // renders exactly as it did before the split existed: chat, full width, as a
-  // content mode.
-  const sideOn = splitCapable && parts.content.length > 0 && sideAll.length > 0;
+  // (see orderSidebarModes). `on` vs `offered` is the pending placeholder's whole
+  // story and lib/preview-side is where it is written down: while the borrowed
+  // probe is in flight the entry may be LISTED (so a `?_side=git` deep link is not
+  // stripped before the verdict) but decides nothing — it cannot turn the split
+  // on for a file that has no companion of its own, cannot become the toggle's
+  // target, and cannot leave a `_side` behind if the verdict is no.
+  const split = sideSplit({
+    splitCapable,
+    content: parts.content,
+    own: parts.sidebar,
+    borrowed: borrowedGit,
+    borrowedPending,
+  });
+  const sideOn = split.on;
   // What the CONTENT pane may show, and what the SIDEBAR may show. Unsplit
   // surfaces put everything in the content list, which is what keeps their
-  // behaviour byte-identical to before.
-  const contentModes = sideOn ? parts.content : templates;
-  const sidebarModes = sideOn ? sideAll : [];
+  // behaviour byte-identical to before. Keyed on `offered` rather than on `on`:
+  // the two differ only for a file with no companions of its own, where both
+  // branches are the same list anyway, and the sidebar half has to keep listing
+  // the pending entry for the deep link's sake.
+  const contentModes = split.offered ? parts.content : templates;
+  const sidebarModes = split.offered ? split.all : [];
   // Pending, for a SIDEBAR entry. The borrowed `git` entry is gated on the
   // PARENT's verdicts, resolved by lib/dir-mode — not on any of this file's, so
   // it cannot go through `isPending` (which reads `conditions`, this file's map,
   // and would call a borrowed entry settled the moment the file's own gates
   // landed). Everything else is an ordinary entry of this file's.
   const isSidePending = (t: TemplateEntry) =>
-    t.mode === "git" && !ownGit ? parentGit.pending : isPending(t);
+    t.mode === "git" && !ownGit ? borrowedPending : isPending(t);
 
   const defaultEntry = defaultTemplate(contentModes);
   // `mode` is what the user (or the URL) ASKED for; `entry` is what this paint
@@ -539,26 +552,14 @@ function TemplatePreview({
   // Read from the URL at mount, exactly like `_mode`, so a bookmark or a shared
   // link restores the split. Then owned as state and written back through
   // replaceSearch — the sidebar is a view of this same file, not a navigation.
-  const [side, setSideState] = useState<string | null>(() => {
-    if (!sideOn) return null;
-    const params = new URLSearchParams(location.search);
-    const want = params.get("_side");
-    // Against `sideAll` and not `parts.sidebar`, so a `?_side=git` deep link is
-    // captured at mount: the borrowed entry is on that list from the first render
-    // as a PENDING placeholder (lib/dir-mode explains why it has to be), where
-    // waiting for the real one would have let the reconciling effect below strip
-    // the param before the answer arrived.
-    if (want && sideAll.some((e) => e.mode === want)) return want;
-    // LEGACY DEEP LINKS. `?_mode=claude` is what every bookmark, recent, saved
-    // session and shared URL from before the split says, and it is still a
-    // perfectly clear request — "open this file's chat". It now means the
-    // SIDEBAR: the content pane falls back to its default mode (effectiveActive
-    // does that for free, since `claude` is no longer in its list) and the
-    // reconciling effect below rewrites the URL once.
-    const legacy = params.get("_mode");
-    if (legacy && sideAll.some((e) => e.mode === legacy)) return legacy;
-    return null;
-  });
+  // Resolved against the split's FULL list (pending placeholder included) and
+  // against `offered` rather than `on`, so a `?_side=git` deep link is captured at
+  // mount even for a file with no companion of its own — the verdict is what
+  // decides it, and waiting for the real entry would have let the reconciling
+  // effect below strip the param before the answer arrived (lib/preview-side).
+  const [side, setSideState] = useState<string | null>(() =>
+    initialSide(location.search, split)
+  );
   // Same request/paint distinction as `mode` above: a verdict that DENIES the
   // open companion drops it from `sidebarModes`, and this paint must not frame a
   // mode that is no longer on offer. Everything downstream reads `activeSide`.
@@ -577,16 +578,14 @@ function TemplatePreview({
   useEffect(() => {
     if (activeSide) setLastSide(activeSide);
   }, [activeSide]);
-  // What the toggle acts on, and so what it looks like: whatever is open, else
-  // the last thing that was, else this file's default companion (the chat, if it
-  // has one — lib/mode-visibility). Null only when the file has no companion at
-  // all, which is also when the button does not render.
-  const sideTarget =
-    activeSide ??
-    (lastSide && sidebarModes.some((e) => e.mode === lastSide)
-      ? lastSide
-      : defaultSidebarMode(sidebarModes));
-  const sideTargetEntry = sidebarModes.find((e) => e.mode === sideTarget) ?? null;
+  // What the toggle acts on, and so what it looks like (lib/preview-side). Over
+  // the SETTLED companions only: a placeholder whose probe may yet say "no
+  // repository here" must not put a button in the bar for the length of that
+  // probe and take it away again, and must not outrank a companion this file
+  // definitely has.
+  const sideTargets = sideOn ? split.settled : [];
+  const sideTarget = sideToggleTarget(sideTargets, activeSide, lastSide);
+  const sideTargetEntry = sideTargets.find((e) => e.mode === sideTarget) ?? null;
 
   // The box the sidebar goes in — StatView's, one level up from #content, so the
   // column stands beside the crumb bar rather than under it.
@@ -609,26 +608,25 @@ function TemplatePreview({
   // own clicks don't cover: the legacy `_mode=claude` migration above, and a
   // `_side` that named a mode this file doesn't offer (a carried-over param, or
   // a gate that has just denied it). Both are REPLACED, never pushed — neither
-  // is a place the Back button should have to visit.
+  // is a place the Back button should have to visit. The rules, including which
+  // of them a still-pending borrowed entry suspends, are in lib/preview-side.
   //
-  // Only ever on a splitting surface: a panel pane renders `claude` as its
-  // content mode and its `_mode` is the pane bar's to write, so nothing here may
-  // touch it.
+  // Guarded on `splitCapable` and not on the split being ON, which is the whole
+  // point: a borrowed `git` that resolves to DENIED takes the split off with it,
+  // and a `_side=git` left in the URL there is not inert — the session sidecar
+  // records the query (lib/session) and replays it on the next bare open.
   const sideKeys = sidebarModes.map((e) => e.mode).join(",");
   useEffect(() => {
-    if (!sideOn) return;
-    const params = new URLSearchParams(location.search);
-    const legacy = params.get("_mode");
-    const stale = legacy !== null && isSidebarMode(legacy);
-    if (params.get("_side") === activeSide && !stale) return; // already agrees
-    if (activeSide) params.set("_side", activeSide);
-    else params.delete("_side");
-    if (stale) params.delete("_mode");
-    const search = params.toString();
+    const search = reconcileSideSearch(location.search, {
+      splitCapable,
+      offered: split.offered,
+      activeSide,
+    });
+    if (search === null) return; // already agrees
     replaceSearch(location.pathname + (search ? "?" + search : ""));
     // `sideKeys` is in the deps because a landing verdict is what makes a
     // previously-fine `_side` stale.
-  }, [sideOn, activeSide, sideKeys]);
+  }, [splitCapable, split.offered, activeSide, sideKeys]);
   const deployEnabled = useDeployEnabled();
   // `_listing` sentinel (D81): the shell's built-in directory listing, mounted
   // in place of the preview iframe — no iframe, no `_file`. Every directory
