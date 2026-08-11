@@ -26,7 +26,7 @@ import {
   type HubTask,
 } from "@platform/lib/api";
 import { formatSize, formatParams, timeAgo } from "@platform/lib/format";
-import { navigate } from "@platform/lib/router";
+import { navigate, urlForFsPath } from "@platform/lib/router";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 
 // Long enough that a typed word is one request rather than five, short enough
@@ -124,7 +124,10 @@ function HubCard({ model }: { model: HubModel }) {
           {here && local.path && (
             <a
               className="am-card-explore"
-              href={`#${local.path}`}
+              // The same URL the cached tab's Explore builds — a raw "#" + path
+              // drops the mode, so a middle-click would land on the folder
+              // listing rather than the model card.
+              href={urlForFsPath(local.path, "?_mode=model_card")}
               title={`Explore ${model.id} here — ${local.path}`}
               onClick={(e) => {
                 if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey)
