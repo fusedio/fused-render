@@ -48,6 +48,22 @@ test("a substring match still outranks a fuzzy one", () => {
   );
 });
 
+test("a whole-path smear is not a hit at all", () => {
+  // The span bound (lib/fuzzy `maxSpan`). `storepy` over this path is a valid
+  // subsequence spread across 37 characters — s from `fused`, t from
+  // `templates`, and so on — and it used to rank among the real store.py hits.
+  //
+  // The tier is deliberately NOT tested alongside it: tightening cannot move the
+  // LAST matched position (the end is fixed by the forward pass), and
+  // `nameTier`'s ancestors-only rule reads exactly that position, so tier
+  // semantics are unchanged by construction.
+  const smear = "fused_render/templates/autocad_viewer/tests/test_browse.py";
+  expect(scoreEntries("storepy", [entry(smear)], 0, true)).toEqual([]);
+  expect(ranked("storepy", [smear, "fused_render/index/store.py"])).toEqual([
+    "fused_render/index/store.py",
+  ]);
+});
+
 test("shallower paths win ties", () => {
   expect(ranked("readme", ["a/b/c/readme.md", "readme.md"])[0]).toBe("readme.md");
 });
