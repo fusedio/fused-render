@@ -1,11 +1,13 @@
-"""GET /api/local-models (+ /status) — what the Hugging Face cache holds on
-this machine, for the sidebar's "Local models" page.
+"""GET /api/local-models (+ /status, /revisions) and POST /api/local-models/delete
+— what the Hugging Face cache holds on this machine, and the deletions that free
+it, for the sidebar's "Local models" page.
 
 The cache is a *shared* directory: anything that speaks `huggingface_hub`
 (transformers, sentence-transformers, diffusers, a template a user pasted in,
 the `hf` CLI) downloads into the same tree, and nothing ever tells the user
-what accumulated there or how much disk it is now worth. This endpoint reads
-that tree — it never downloads, deletes or evicts anything.
+what accumulated there or how much disk it is now worth. This module reads that
+tree, and — only on an explicit request naming what to remove — deletes from
+it. It never downloads or re-downloads anything.
 
 The layout it reads is `huggingface_hub`'s own (CACHE_STRUCTURE in their
 docs)::
@@ -35,27 +37,52 @@ Two consequences drive `_scan_repo`:
   mtimes are left out because they also move on *deletion*, which would report
   a repo someone just emptied as freshly used.
 
+`atime` rides along beside it for a different question — "when was this last
+*read*", which is what pruning by age needs (a model pulled a year ago and
+loaded this morning is in use; mtime cannot tell those apart). Only real files
+carry it: reading a model through a snapshot symlink updates the BLOB's atime,
+not the link's.
+
 Repo ids are decoded the way `huggingface_hub` encodes them — kind prefix,
 then the id with `/` written as `--` (`models--openai--whisper-small` ->
 `openai/whisper-small`). A directory whose name carries no known kind prefix
 is not a repo folder and is skipped, which is also what keeps `.locks/`,
 `version.txt` and half-written `tmp*` dirs out of the list.
 
-Read-only, so no D3 `X-Fused` guard (same posture as
-routers/claude_sessions.py).
+**Deletion** (`POST /api/local-models/delete`, D247) carries the D3 `X-Fused`
+guard like every other mutating POST, and is deliberately narrow:
+
+* Targets are named by cache **folder name**, never by a path from the client:
+  the name is checked to be a single path segment carrying a known kind prefix,
+  and joined onto the resolved cache dir here. A path from a request body would
+  make this endpoint an arbitrary-rmtree.
+* A repo folder that is a **symlink** is refused rather than followed — those
+  live on another disk (how people move a 40GB model off the boot volume), and
+  deleting through the link would reach outside the directory this endpoint is
+  scoped to.
+* Deleting a **revision** removes only the blobs that revision alone
+  references. A blob shared with another revision survives; refs pointing at
+  the deleted commit go with it, since a ref to a revision that no longer
+  exists is dangling. If it was the last revision, the repo folder goes too —
+  a shell of refs and orphaned blobs is not something to leave behind.
+* Every target is reported individually. One stale row must not lose the other
+  nine deletions of a prune.
 """
 import os
+import shutil
 import stat
 from dataclasses import dataclass
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Body, Header
 
 from fused_render._view_url_codec import canonical_fs_path
+from fused_render.server.common import _error, _require_fused
 
 router = APIRouter()
 
 # Directory-name prefix -> the kind reported to the UI. This is also the
-# allowlist: a hub-cache entry that starts with none of these is not a repo.
+# allowlist: a hub-cache entry that starts with none of these is not a repo,
+# and is not something this module will delete.
 _KIND_PREFIXES = {"models--": "model", "datasets--": "dataset", "spaces--": "space"}
 
 
@@ -85,20 +112,30 @@ def hub_cache_dir() -> str:
     return os.path.join(hf_home(), "hub")
 
 
+class _TargetError(Exception):
+    """A delete target we refuse, or cannot find.
+
+    Raised per target and reported per target: a prune naming ten repos must
+    not lose nine deletions because the tenth row was stale.
+    """
+
+
 @dataclass
 class _RepoScan:
     """One repo folder's on-disk footprint (see the module docstring for why
-    size and mtime treat symlinks differently)."""
+    size, mtime and atime each treat symlinks differently)."""
 
     size: int
     files: int
     mtime: float
+    atime: float
 
 
 def _scan_repo(root: str) -> _RepoScan:
     size = 0
     files = 0
     newest = 0.0
+    used = 0.0
     # Only consulted for multiply-linked files — the common case (one link) never
     # touches the set, so a 30k-blob cache doesn't pay for a 30k-entry dict.
     seen: set[tuple[int, int]] = set()
@@ -125,6 +162,10 @@ def _scan_repo(root: str) -> _RepoScan:
                 newest = st.st_mtime
             if stat.S_ISLNK(st.st_mode):
                 continue  # points back into this repo's blobs/ — already counted
+            # Only real files carry a meaningful atime: loading a model through
+            # a snapshot symlink touches the blob, not the link.
+            if st.st_atime > used:
+                used = st.st_atime
             if st.st_nlink > 1:
                 key = (st.st_dev, st.st_ino)
                 if key in seen:
@@ -132,20 +173,51 @@ def _scan_repo(root: str) -> _RepoScan:
                 seen.add(key)
             size += st.st_size
             files += 1
-    return _RepoScan(size=size, files=files, mtime=newest)
+    return _RepoScan(size=size, files=files, mtime=newest, atime=used)
 
 
-def _revisions(repo_dir: str) -> int:
+def _snapshot_dirs(snapshots_dir: str) -> list[os.DirEntry]:
+    """The revision directories under `snapshots/`. Symlinked entries are not
+    followed — every deletion path below reasons about what is inside this
+    repo."""
     try:
-        return sum(1 for e in os.scandir(os.path.join(repo_dir, "snapshots")) if e.is_dir())
+        return [e for e in os.scandir(snapshots_dir) if e.is_dir(follow_symlinks=False)]
+    except OSError:
+        return []
+
+
+def _snapshot_blobs(snapshot_dir: str, blobs_dir: str) -> set[str]:
+    """The blobs a revision references — resolved link targets that really land
+    in this repo's `blobs/`.
+
+    Anything resolving elsewhere is deliberately NOT returned: on Windows (and
+    any filesystem without symlinks) a snapshot entry is the file itself, whose
+    bytes go away with the snapshot directory; and a target outside `blobs/` is
+    not a path this module will ever unlink.
+    """
+    base = os.path.realpath(blobs_dir)
+    found: set[str] = set()
+    for dirpath, _dirnames, filenames in os.walk(snapshot_dir):
+        for name in filenames:
+            target = os.path.realpath(os.path.join(dirpath, name))
+            if os.path.dirname(target) == base:
+                found.add(target)
+    return found
+
+
+def _blob_size(path: str) -> int:
+    try:
+        return os.lstat(path).st_size
     except OSError:
         return 0
 
 
-def _refs(repo_dir: str) -> list[str]:
-    """Branch/tag names under refs/ (`main`, a release tag, …). The commit shas
-    they hold are deliberately not read: the page names revisions, it doesn't
-    resolve them."""
+def _revisions(repo_dir: str) -> int:
+    return len(_snapshot_dirs(os.path.join(repo_dir, "snapshots")))
+
+
+def _ref_names(repo_dir: str) -> list[str]:
+    """Branch/tag names under refs/ (`main`, a release tag, …)."""
     refs_dir = os.path.join(repo_dir, "refs")
     names: list[str] = []
     for dirpath, _dirnames, filenames in os.walk(refs_dir):
@@ -156,6 +228,37 @@ def _refs(repo_dir: str) -> list[str]:
     return names
 
 
+def _refs_by_commit(repo_dir: str) -> dict[str, str]:
+    """ref name -> the commit it points at. The commit shas are read here (and
+    only here): the listing names revisions, the revision view resolves them.
+
+    Each file's **atime is put back** after the read. This is the only place
+    this module opens a file, and `lastUsed` — which pruning by age depends on —
+    is exactly "when was something in here last read". Without the restore, a
+    trip through this page would mark every repo it inspected as freshly used
+    and quietly exclude it from the next prune: a measuring instrument changing
+    what it measures.
+    """
+    refs_dir = os.path.join(repo_dir, "refs")
+    out: dict[str, str] = {}
+    for name in _ref_names(repo_dir):
+        path = os.path.join(refs_dir, name)
+        try:
+            before = os.stat(path)
+        except OSError:
+            continue
+        try:
+            with open(path, "r", encoding="utf-8", errors="ignore") as f:
+                out[name] = f.read().strip()
+        except OSError:
+            continue
+        try:
+            os.utime(path, (before.st_atime, before.st_mtime))
+        except OSError:
+            pass  # read-only mount, or a file that just went — the read stands
+    return out
+
+
 def _repo(cache_dir: str, dirname: str, kind: str) -> dict:
     repo_dir = os.path.join(cache_dir, dirname)
     scan = _scan_repo(repo_dir)
@@ -163,6 +266,9 @@ def _repo(cache_dir: str, dirname: str, kind: str) -> dict:
         # "models--openai--whisper-small" -> "openai/whisper-small". A bare
         # repo id (no org) has one segment and comes back unchanged.
         "id": "/".join(dirname.split("--")[1:]),
+        # The cache folder name, which is what a delete request names (never a
+        # path — see the module docstring).
+        "dir": dirname,
         "kind": kind,
         # Canonicalized like every other fs path the frontend gets, so it can
         # go straight to navigate(path, {isDir: true}).
@@ -170,31 +276,14 @@ def _repo(cache_dir: str, dirname: str, kind: str) -> dict:
         "size": scan.size,
         "files": scan.files,
         "mtime": scan.mtime or None,
+        # Newest atime — "last read", which is what pruning by age asks about.
+        "lastUsed": scan.atime or None,
         "revisions": _revisions(repo_dir),
-        "refs": _refs(repo_dir),
+        "refs": _ref_names(repo_dir),
     }
 
 
-@router.get("/api/local-models/status")
-def api_local_models_status():
-    """Cheap availability probe for the sidebar entry — one isdir(), no walk.
-
-    False on a machine that has never pulled from the Hub, which is what keeps
-    the row out of that sidebar; the page itself still answers (with an empty
-    state) if the URL is opened directly.
-    """
-    cache_dir = hub_cache_dir()
-    return {"available": os.path.isdir(cache_dir), "cacheDir": canonical_fs_path(cache_dir)}
-
-
-@router.get("/api/local-models")
-def api_local_models():
-    """Every repo in the hub cache, biggest first.
-
-    Sync `def` on purpose: this walks a tree that can hold tens of thousands of
-    blobs, so FastAPI runs it in the threadpool instead of stalling the event
-    loop for every other request the page fires.
-    """
+def _listing() -> dict:
     cache_dir = hub_cache_dir()
     repos: list[dict] = []
     try:
@@ -225,3 +314,230 @@ def api_local_models():
         "totalSize": sum(r["size"] for r in repos),
         "repos": repos,
     }
+
+
+# -- target resolution ---------------------------------------------------------
+# Everything destructive goes through these two. A request names a cache FOLDER
+# (and optionally a revision); the path is built here, from the cache dir this
+# server resolved, and never taken from the client.
+
+
+def _segment(name: object, what: str) -> str:
+    if not isinstance(name, str) or not name:
+        raise _TargetError(f"{what} is required")
+    if name in (".", "..") or "/" in name or "\\" in name or name != os.path.basename(name):
+        raise _TargetError(f"{name!r} is not a {what}")
+    return name
+
+
+def _resolve_repo_dir(cache_dir: str, name: object) -> str:
+    """The absolute path of a cache repo folder named by a request. Read paths
+    accept a symlinked folder; `_require_deletable` is what refuses it."""
+    repo = _segment(name, "cache folder name")
+    if not any(repo.startswith(prefix) for prefix in _KIND_PREFIXES):
+        raise _TargetError(f"{repo!r} is not a Hugging Face cache repo folder")
+    path = os.path.join(cache_dir, repo)
+    if not os.path.isdir(path):
+        raise _TargetError(f"{repo} is not in this cache")
+    return path
+
+
+def _require_deletable(repo_dir: str) -> None:
+    if os.path.islink(repo_dir):
+        raise _TargetError(
+            f"{os.path.basename(repo_dir)} is a symlink into another location — "
+            "delete it where the files really live"
+        )
+
+
+# -- deletion ------------------------------------------------------------------
+
+
+def _delete_repo(repo_dir: str) -> int:
+    """Remove a whole repo folder; returns the bytes it held."""
+    freed = _scan_repo(repo_dir).size
+    shutil.rmtree(repo_dir)
+    # The lock folder mirrors the repo's name and is bookkeeping for a repo that
+    # no longer exists — leaving it behind litters the cache with lock dirs for
+    # repos nobody can see. ignore_errors: it may not exist, and a lock we
+    # cannot remove is not a reason to report the deletion as failed.
+    shutil.rmtree(
+        os.path.join(os.path.dirname(repo_dir), ".locks", os.path.basename(repo_dir)),
+        ignore_errors=True,
+    )
+    return freed
+
+
+def _delete_revision(repo_dir: str, revision: object) -> int:
+    """Remove one revision: its snapshot directory, the blobs only it
+    references, and any ref pointing at it. Returns the bytes freed."""
+    commit = _segment(revision, "revision")
+    snapshots_dir = os.path.join(repo_dir, "snapshots")
+    target = os.path.join(snapshots_dir, commit)
+    if not os.path.isdir(target) or os.path.islink(target):
+        raise _TargetError(f"revision {commit} is not in this cache")
+
+    blobs_dir = os.path.join(repo_dir, "blobs")
+    kept: set[str] = set()
+    for entry in _snapshot_dirs(snapshots_dir):
+        if entry.name != commit:
+            kept |= _snapshot_blobs(entry.path, blobs_dir)
+
+    freed = 0
+    for blob in sorted(_snapshot_blobs(target, blobs_dir) - kept):
+        size = _blob_size(blob)
+        try:
+            os.remove(blob)
+        except OSError:
+            continue  # already gone, or held; the snapshot still goes
+        freed += size
+    # Whatever the snapshot dir holds in its own right — on a filesystem without
+    # symlinks that is the revision's actual bytes, everywhere else a few
+    # hundred bytes of stray files.
+    freed += _scan_repo(target).size
+    shutil.rmtree(target)
+
+    refs_dir = os.path.join(repo_dir, "refs")
+    for ref, points_at in _refs_by_commit(repo_dir).items():
+        if points_at != commit:
+            continue
+        # A ref to a revision that no longer exists is dangling — and would make
+        # the next `from_pretrained` resolve to nothing.
+        path = os.path.join(refs_dir, ref)
+        size = _blob_size(path)
+        try:
+            os.remove(path)
+        except OSError:
+            continue
+        freed += size
+
+    if not _snapshot_dirs(snapshots_dir):
+        # Nothing is left to point at. The remaining shell (refs, any blob no
+        # revision referenced) is litter, so the repo goes — which is also what
+        # huggingface_hub's own delete-cache does with a last revision.
+        freed += _delete_repo(repo_dir)
+    return freed
+
+
+# -- endpoints -----------------------------------------------------------------
+
+
+@router.get("/api/local-models/status")
+def api_local_models_status():
+    """Cheap availability probe for the sidebar entry — one isdir(), no walk.
+
+    False on a machine that has never pulled from the Hub, which is what keeps
+    the row out of that sidebar; the page itself still answers (with an empty
+    state) if the URL is opened directly.
+    """
+    cache_dir = hub_cache_dir()
+    return {"available": os.path.isdir(cache_dir), "cacheDir": canonical_fs_path(cache_dir)}
+
+
+@router.get("/api/local-models")
+def api_local_models():
+    """Every repo in the hub cache, biggest first.
+
+    Sync `def` on purpose: this walks a tree that can hold tens of thousands of
+    blobs, so FastAPI runs it in the threadpool instead of stalling the event
+    loop for every other request the page fires.
+    """
+    return _listing()
+
+
+@router.get("/api/local-models/revisions")
+def api_local_models_revisions(repo: str):
+    """One repo's revisions, each with the bytes deleting it would actually
+    free.
+
+    `size` is the revision's EXCLUSIVE bytes — blobs no other revision
+    references — because that is what a delete recovers; `shared` is what it
+    holds in common with its siblings, and stays behind. Two revisions of a
+    7GB model that differ in a config file are 7GB shared and a few KB each,
+    and a row claiming 7GB apiece would be a lie in the one column this page
+    exists for.
+
+    Computed on demand rather than in the listing: it resolves every symlink in
+    every snapshot, which the biggest-first overview does not need.
+    """
+    cache_dir = hub_cache_dir()
+    try:
+        repo_dir = _resolve_repo_dir(cache_dir, repo)
+    except _TargetError as e:
+        return _error(str(e), status=404)
+
+    blobs_dir = os.path.join(repo_dir, "blobs")
+    snapshots_dir = os.path.join(repo_dir, "snapshots")
+    per_revision = {e.name: _snapshot_blobs(e.path, blobs_dir) for e in _snapshot_dirs(snapshots_dir)}
+    refs_by_commit: dict[str, list[str]] = {}
+    for ref, commit in _refs_by_commit(repo_dir).items():
+        refs_by_commit.setdefault(commit, []).append(ref)
+
+    revisions = []
+    for commit, blobs in per_revision.items():
+        others: set[str] = set()
+        for other, other_blobs in per_revision.items():
+            if other != commit:
+                others |= other_blobs
+        own = _scan_repo(os.path.join(snapshots_dir, commit))
+        revisions.append(
+            {
+                "commit": commit,
+                "refs": sorted(refs_by_commit.get(commit, [])),
+                # own.size covers a snapshot dir that holds real files rather
+                # than links (Windows), and is 0 in the ordinary symlink case.
+                "size": sum(_blob_size(b) for b in blobs - others) + own.size,
+                "shared": sum(_blob_size(b) for b in blobs & others),
+                "files": len(blobs) + own.files,
+                "mtime": own.mtime or None,
+            }
+        )
+    revisions.sort(key=lambda r: (-r["size"], r["commit"]))
+    return {"repo": repo, "revisions": revisions}
+
+
+@router.post("/api/local-models/delete")
+def api_local_models_delete(body: dict = Body(...), x_fused: str | None = Header(default=None)):
+    """Delete named repos and/or revisions, then answer with the fresh listing.
+
+    Body: `{"targets": [{"dir": "models--org--name", "revision": "<sha>"|null}]}`.
+    A missing `revision` deletes the whole repo folder.
+
+    The reply is the same shape `GET /api/local-models` returns, plus `freed`
+    and `failures`, so the page swaps in state it just re-read from disk rather
+    than patching rows it hopes are still true. Guarded by `X-Fused` (D3) like
+    every mutating POST: this one removes multi-GB directories, and a blind
+    cross-origin POST must not reach it.
+    """
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    targets = body.get("targets")
+    if not isinstance(targets, list) or not targets:
+        return _error("'targets' must be a non-empty list")
+
+    cache_dir = hub_cache_dir()
+    freed = 0
+    failures = []
+    for target in targets:
+        if not isinstance(target, dict):
+            failures.append({"dir": None, "revision": None, "error": "target must be an object"})
+            continue
+        name, revision = target.get("dir"), target.get("revision")
+        try:
+            repo_dir = _resolve_repo_dir(cache_dir, name)
+            _require_deletable(repo_dir)
+            # `revision is None` is the whole repo; anything else is a revision
+            # and must survive _segment. Testing truthiness instead would turn a
+            # malformed revision ("", 0) into "delete the entire repo" — the
+            # widest possible reading of the narrowest possible request.
+            freed += (
+                _delete_repo(repo_dir) if revision is None else _delete_revision(repo_dir, revision)
+            )
+        except _TargetError as e:
+            failures.append({"dir": name, "revision": revision, "error": str(e)})
+        except OSError as e:
+            # Permission, a file held open, a disk error: this target failed and
+            # the rest of the batch still runs.
+            failures.append({"dir": name, "revision": revision, "error": str(e)})
+    return {**_listing(), "freed": freed, "failures": failures}

@@ -95,12 +95,27 @@ machine — every model, dataset and Space anything on your computer has pulled
 from the Hub, biggest first, with what each one costs on disk. The entry appears
 once that cache exists; the first download from the Hub creates it.
 
-- **It reads, it never downloads or deletes.** Clicking a row opens the repo's
-  cache folder in the explorer, which is where you'd remove one — with your file
-  manager's own confirmation, not a button here.
 - **The sizes are real disk usage.** Inside the cache each revision's files are
   symlinks to one shared copy of the bytes, so the page counts that copy once:
-  the per-row sizes add up to the total in the header.
+  the per-card sizes add up to the total in the header.
+- **You can clear space from here**, three ways, each behind a confirmation
+  that names what goes and what it frees:
+  - **Delete a repo** — the ✕ on its card.
+  - **Delete one revision** — expand a card with more than one revision. The
+    size shown is what deleting *that* revision frees: revisions share their
+    weights, so two revisions of a 7GB model differing in a config file are
+    7GB shared and a few KB each, and only the few KB come back.
+  - **Prune** — everything not *read* in the last 30/90/180/365 days. The
+    dialog lists exactly which repos qualify, with their sizes and ages, before
+    you confirm.
+- **Nothing is re-downloaded for you.** Deleting a model means the next thing
+  that wants it pulls it from the Hub again.
+- **Last-read time comes from the filesystem.** Volumes mounted `noatime` never
+  update it, so on those a model you use daily can still look untouched — check
+  the dates the prune dialog lists before confirming.
+- **Clicking a card** opens the repo's cache folder in the explorer, for
+  everything this page doesn't do — reading a config, copying a path, pulling
+  one file out of a snapshot.
 - **It looks where `huggingface_hub` looks** — `HF_HUB_CACHE`,
   `HUGGINGFACE_HUB_CACHE`, `$HF_HOME/hub`, `$XDG_CACHE_HOME/huggingface/hub`,
   then `~/.cache/huggingface/hub` — so a shared model disk pinned with `HF_HOME`

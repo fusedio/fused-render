@@ -5242,11 +5242,13 @@ it. It grows in multi-GB steps and the app is the thing that grew it — a
 checkpoint pulled by a page the user opened once is still on their disk a month
 later with nothing on screen to say so.
 
-- **HF-1** **A read-only inventory, not a manager.** The page lists what is
-  cached and what it costs; it never downloads, evicts, or repairs anything.
-  Deleting a blob out from under a half-loaded pipeline is a different feature
-  with a different set of confirmations — and "what is on my disk" is the whole
-  question this one answers.
+- **HF-1** **An inventory that can also clear space** (D247 revisited the
+  original read-only posture, which shipped first). The page's first job is to
+  show what is cached and what it costs; on top of that it offers exactly three
+  deletions — a repo, one revision of a repo, and a prune of everything unread
+  for N days. It still never downloads, re-downloads, or repairs anything, and
+  no deletion happens without a confirmation that names what goes and what it
+  frees.
 - **HF-2** **Where the cache is** follows `huggingface_hub`'s own resolution
   order, not a hardcoded `~/.cache`: `HF_HUB_CACHE`, else the deprecated
   `HUGGINGFACE_HUB_CACHE`, else `$HF_HOME/hub`, else
@@ -5277,10 +5279,10 @@ later with nothing on screen to say so.
   me", and a name sort buries the 8GB checkpoint among forty 2MB tokenizer
   repos. Each row also carries its file count, its revision count when it holds
   more than one, and the refs (`main`, a tag) pointing into it.
-- **HF-7** **A row is a door into the explorer**: it navigates to the repo's
+- **HF-7** **A card is a door into the explorer**: it navigates to the repo's
   cache folder as an ordinary directory (a real `<a href>`, so middle-click and
-  copy-link behave), which is where deleting one would happen — with the file
-  manager's own confirmation, not a bespoke one.
+  copy-link behave), for everything this page does not do — reading a config,
+  copying a path, picking one file out of a snapshot.
 - **HF-8** **The sidebar entry is gated on the cache existing** (`GET
   /api/local-models/status`, one `isdir`), so a machine that has never pulled
   from the Hub is not offered a page that can only say "nothing here". Unlike
@@ -5300,3 +5302,52 @@ later with nothing on screen to say so.
   which would re-walk tens of thousands of files each time the window came back.
   It runs in the threadpool (a sync endpoint), so a big cache cannot stall the
   requests the rest of the page is making.
+
+**Managing it** (D247). Three deletions, widening — one repo, one revision, or
+everything unread for N days:
+
+- **HF-10** **Deleting a repo** removes its cache folder and the `.locks/` entry
+  that mirrors its name, and reports the bytes it held. Nothing else in the
+  cache is touched.
+- **HF-11** **Deleting a revision removes only what that revision alone owns.**
+  Its snapshot directory goes, and with it the blobs no *other* revision
+  references — a blob two revisions share stays, because taking it would corrupt
+  the revision left behind, which is a worse outcome than any amount of wasted
+  disk. Refs pointing at the deleted commit go too (a ref to a revision that no
+  longer exists is dangling, and would make the next `from_pretrained` resolve
+  to nothing). If it was the **last** revision, the whole repo folder goes: a
+  shell of refs and unreferenced blobs is not something to leave behind, and it
+  is what `huggingface_hub`'s own delete does with a last revision. The number
+  shown against a revision is therefore its **exclusive** bytes, with what it
+  shares stated separately — two revisions of a 7GB model that differ in a
+  config file are 7GB shared and a few KB each, and a row claiming 7GB apiece
+  would be a lie in the one column this page exists for.
+- **HF-12** **Prune is a selection the user reads, not a rule the server
+  applies.** The dialog filters the listing on screen by `lastUsed` (30/90/180/
+  365 days), shows every repo that qualifies with its size and age, and sends
+  the resulting **names**. So what gets deleted is exactly the list that was
+  confirmed — never a threshold re-evaluated server-side against state the user
+  never saw. A repo with no readable timestamp is left out: "we don't know when
+  this was used" is not evidence that it is cold. The dialog says plainly that
+  last-read time comes from the filesystem and that `noatime` volumes never
+  update it, because that caveat decides whether the dates above it can be
+  trusted.
+- **HF-13** **A delete request names a cache FOLDER, never a path.** The name
+  must be a single path segment carrying a known kind prefix; the path is built
+  server-side from the cache dir the server resolved. A repo folder that is a
+  **symlink** is refused rather than followed — those point at another disk, and
+  deleting through one would reach outside the directory this endpoint is scoped
+  to. The POST carries the `X-Fused` guard (D3) like every mutating endpoint:
+  it removes multi-GB directories, and a blind cross-origin POST must not reach
+  it. A malformed revision is an error, never a fallback to "delete the whole
+  repo" — only an *absent* revision means the repo.
+- **HF-14** **Every target is reported.** One stale row must not lose the other
+  nine deletions of a prune, so each target succeeds or fails on its own and the
+  failures come back named. The reply is the **fresh listing**, re-read from
+  disk after the deletions, so the page swaps in state it just measured instead
+  of patching rows it hopes are still true.
+- **HF-15** **Reading the page does not count as using a model.** Resolving
+  revisions means opening ref files, which bumps their atime — the very signal
+  `lastUsed` and therefore pruning depend on. Their atime is put back after the
+  read, so this page cannot quietly exclude from the next prune everything it
+  just looked at.

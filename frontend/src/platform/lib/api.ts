@@ -1880,12 +1880,16 @@ export function getClaudeSessionFolders(): Promise<{ folders: ClaudeSessionFolde
 // `path` is the repo's cache folder, ready for navigate(path, {isDir:true}).
 export interface LocalModelRepo {
   id: string;
+  /** Cache folder name ("models--org--name") — what a delete request names. */
+  dir: string;
   kind: "model" | "dataset" | "space";
   path: string;
   size: number;
   files: number;
   /** Epoch seconds of the newest file in the repo folder, or null if unknown. */
   mtime: number | null;
+  /** Newest atime — "last read", which is what pruning by age asks about. */
+  lastUsed: number | null;
   revisions: number;
   refs: string[];
 }
@@ -1907,6 +1911,56 @@ export function getLocalModels(): Promise<LocalModelsResult> {
 // gate — see shell/LocalModels.tsx's useLocalModelsAvailable.
 export function getLocalModelsStatus(): Promise<{ available: boolean; cacheDir: string }> {
   return getJson<{ available: boolean; cacheDir: string }>("/api/local-models/status");
+}
+
+// One repo's revisions, fetched when a row is expanded (the listing doesn't
+// resolve every snapshot symlink for every repo). `size` is what deleting THIS
+// revision would free — blobs no sibling revision references — and `shared` is
+// what it holds in common with them and would leave behind.
+export interface LocalModelRevision {
+  commit: string;
+  refs: string[];
+  size: number;
+  shared: number;
+  files: number;
+  mtime: number | null;
+}
+
+export function getLocalModelRevisions(
+  dir: string,
+): Promise<{ repo: string; revisions: LocalModelRevision[] }> {
+  return getJson<{ repo: string; revisions: LocalModelRevision[] }>(
+    "/api/local-models/revisions?repo=" + encodeURIComponent(dir),
+  );
+}
+
+// Delete cached repos and/or single revisions. A target with no `revision` is
+// the whole repo folder. Targets are named by cache FOLDER NAME — the server
+// builds every path itself from the cache dir it resolved (D247).
+//
+// The reply is the whole listing, re-read from disk after the deletions, plus
+// what was freed and any per-target failures — so the page swaps in fresh state
+// instead of patching rows it hopes are still true.
+export interface LocalModelDeleteTarget {
+  dir: string;
+  revision?: string | null;
+}
+
+export interface LocalModelDeleteFailure {
+  dir: string | null;
+  revision: string | null;
+  error: string;
+}
+
+export type LocalModelsDeleteResult = LocalModelsResult & {
+  freed: number;
+  failures: LocalModelDeleteFailure[];
+};
+
+export function deleteLocalModels(
+  targets: LocalModelDeleteTarget[],
+): Promise<LocalModelsDeleteResult> {
+  return postJson<LocalModelsDeleteResult>("/api/local-models/delete", { targets });
 }
 
 // -- AI completion (POST /api/ai) ---------------------------------------------

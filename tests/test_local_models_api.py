@@ -1,7 +1,8 @@
-"""GET /api/local-models (+ /status) — the Hugging Face cache inventory behind
-the sidebar's "Local models" page (server/routers/local_models.py).
+"""The Hugging Face cache inventory and its deletions behind the sidebar's
+"Local models" page (server/routers/local_models.py): GET /api/local-models,
+/status, /revisions, and POST /api/local-models/delete.
 
-Two things here are easy to get quietly wrong, so both are pinned:
+Four things here are easy to get quietly wrong, so each is pinned:
 
 * **Where the cache is.** huggingface_hub resolves it through four env vars
   with a precedence order; reading only ``~/.cache/huggingface/hub`` would
@@ -11,6 +12,12 @@ Two things here are easy to get quietly wrong, so both are pinned:
   repo's ``blobs/``, so a naive walk multiplies a repo's size by its revision
   count — a page whose entire job is disk footprint would then be wrong by
   hundreds of GB on a big cache.
+* **What a revision deletion may take.** A blob two revisions share must
+  survive the first one's deletion; getting this wrong corrupts the revision
+  left behind, which is worse than any amount of wasted disk.
+* **What a delete request may name.** The target is a cache FOLDER NAME, and
+  every path is built server-side from it. A path taken from a request body
+  would make this an arbitrary-rmtree endpoint.
 
 The layout the fixtures build is huggingface_hub's own CACHE_STRUCTURE:
 ``<hub>/models--org--name/{blobs,snapshots/<commit>,refs/<ref>}``.
@@ -310,3 +317,269 @@ def test_hub_cache_vars_win_over_hf_home(clean_env, monkeypatch, tmp_path):
 def test_user_paths_are_expanded(clean_env, monkeypatch):
     monkeypatch.setenv("HF_HUB_CACHE", os.path.join("~", "models"))
     assert local_models_mod.hub_cache_dir() == os.path.join(os.path.expanduser("~"), "models")
+
+
+# -- revisions view ------------------------------------------------------------
+# `size` per revision is what deleting it would FREE (blobs no sibling shares),
+# not what it appears to contain. Two revisions of a 7GB model differing in a
+# config file are 7GB shared and a few KB each; a row claiming 7GB apiece would
+# be a lie in the one column this page exists for.
+
+
+def _revisions(client, repo):
+    r = client.get("/api/local-models/revisions", params={"repo": repo})
+    assert r.status_code == 200, r.text
+    return {rev["commit"]: rev for rev in r.json()["revisions"]}
+
+
+@requires_symlinks
+def test_revision_sizes_split_exclusive_from_shared(client, hub):
+    _repo(
+        hub,
+        "models--org--m",
+        blobs={"shared": 4000, "only_a": 300, "only_b": 70},
+        snapshots={
+            "aaa": {"model.bin": "shared", "extra.json": "only_a"},
+            "bbb": {"model.bin": "shared", "extra.json": "only_b"},
+        },
+        refs={"main": "bbb", "v1": "aaa"},
+    )
+    revs = _revisions(client, "models--org--m")
+    assert revs["aaa"]["size"] == 300 and revs["aaa"]["shared"] == 4000
+    assert revs["bbb"]["size"] == 70 and revs["bbb"]["shared"] == 4000
+    assert revs["aaa"]["refs"] == ["v1"] and revs["bbb"]["refs"] == ["main"]
+    assert revs["aaa"]["files"] == 2
+
+
+@requires_symlinks
+def test_a_lone_revision_owns_everything_it_references(client, hub):
+    _repo(hub, "models--solo", blobs={"a": 900}, snapshots={"c1": {"m.bin": "a"}}, refs={"main": "c1"})
+    (rev,) = _revisions(client, "models--solo").values()
+    assert rev["size"] == 900 and rev["shared"] == 0
+
+
+def test_revisions_of_an_unknown_repo_are_a_404(client, hub):
+    assert client.get("/api/local-models/revisions", params={"repo": "models--nope"}).status_code == 404
+
+
+# -- deleting ------------------------------------------------------------------
+
+
+def _delete(client, targets, headers=None):
+    return client.post(
+        "/api/local-models/delete",
+        json={"targets": targets},
+        headers={"X-Fused": "1"} if headers is None else headers,
+    )
+
+
+def test_deleting_a_repo_frees_it_and_answers_with_the_fresh_listing(client, hub):
+    _repo(hub, "models--keep", blobs={"a": 100})
+    doomed = _repo(hub, "models--drop", blobs={"a": 5000})
+    r = _delete(client, [{"dir": "models--drop"}])
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data["freed"] == 5000
+    assert data["failures"] == []
+    # The reply IS the listing, re-read from disk — not a patched copy of the
+    # rows the page was showing.
+    assert [repo["id"] for repo in data["repos"]] == ["keep"]
+    assert data["totalSize"] == 100
+    assert not doomed.exists()
+
+
+def test_deleting_a_repo_takes_its_lock_folder_with_it(client, hub):
+    _repo(hub, "models--m", blobs={"a": 10})
+    locks = hub / ".locks" / "models--m"
+    locks.mkdir(parents=True)
+    (locks / "abc.lock").write_text("")
+    assert _delete(client, [{"dir": "models--m"}]).status_code == 200
+    assert not locks.exists()
+
+
+@requires_symlinks
+def test_deleting_a_revision_keeps_a_blob_its_sibling_shares(client, hub):
+    repo = _repo(
+        hub,
+        "models--org--m",
+        blobs={"shared": 4000, "only_a": 300},
+        snapshots={
+            "aaa": {"model.bin": "shared", "extra.json": "only_a"},
+            "bbb": {"model.bin": "shared"},
+        },
+        refs={"main": "bbb", "v1": "aaa"},
+    )
+    data = _delete(client, [{"dir": "models--org--m", "revision": "aaa"}]).json()
+    assert data["failures"] == []
+    # NOT 4300: `shared` still backs revision bbb. The 3 extra bytes are the
+    # refs/v1 file, which pointed at the revision that just went.
+    assert data["freed"] == 300 + len("aaa")
+    assert not (repo / "snapshots" / "aaa").exists()
+    assert (repo / "blobs" / "shared").exists()
+    assert not (repo / "blobs" / "only_a").exists()
+    # The surviving revision still resolves through its link.
+    assert (repo / "snapshots" / "bbb" / "model.bin").read_bytes() == b"x" * 4000
+
+
+@requires_symlinks
+def test_deleting_a_revision_drops_the_refs_that_pointed_at_it(client, hub):
+    repo = _repo(
+        hub,
+        "models--org--m",
+        blobs={"a": 100, "b": 100},
+        snapshots={"aaa": {"m": "a"}, "bbb": {"m": "b"}},
+        refs={"main": "bbb", "v1": "aaa", "tags/old": "aaa"},
+    )
+    _delete(client, [{"dir": "models--org--m", "revision": "aaa"}])
+    assert not (repo / "refs" / "v1").exists()
+    assert not (repo / "refs" / "tags" / "old").exists()
+    assert (repo / "refs" / "main").read_text() == "bbb"
+
+
+@requires_symlinks
+def test_deleting_the_last_revision_removes_the_whole_repo(client, hub):
+    repo = _repo(
+        hub,
+        "models--org--m",
+        # `orphan` is referenced by no snapshot — exactly the litter that would
+        # be left behind by removing only the revision's own bytes.
+        blobs={"a": 100, "orphan": 900},
+        snapshots={"aaa": {"m": "a"}},
+        refs={"main": "aaa"},
+    )
+    data = _delete(client, [{"dir": "models--org--m", "revision": "aaa"}]).json()
+    assert not repo.exists()
+    assert data["freed"] == 1000 + len("aaa")  # the blob, the orphan, the ref
+    assert data["repos"] == []
+
+
+def test_targets_are_reported_one_by_one(client, hub):
+    _repo(hub, "models--real", blobs={"a": 100})
+    data = _delete(
+        client, [{"dir": "models--real"}, {"dir": "models--ghost"}, {"dir": "models--real"}]
+    ).json()
+    # The one that existed is gone; the two that could not be found are named
+    # rather than swallowed — a prune must not lose nine deletions to one
+    # stale row.
+    assert data["freed"] == 100
+    assert [f["dir"] for f in data["failures"]] == ["models--ghost", "models--real"]
+    assert data["repos"] == []
+
+
+# -- what a delete request may name ---------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "../../../etc",
+        "/etc/passwd",
+        "..",
+        ".",
+        "models--a/../../../tmp",
+        ".locks",
+        "version.txt",
+        "tmp7f3k",
+        "",
+        None,
+        123,
+    ],
+)
+def test_a_target_that_is_not_a_repo_folder_name_is_refused(client, hub, tmp_path, name):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "keep.txt").write_text("hi")
+    (hub / ".locks").mkdir()
+    (hub / "version.txt").write_text("1")
+    (hub / "tmp7f3k").mkdir()
+    data = _delete(client, [{"dir": name}]).json()
+    assert data["freed"] == 0
+    assert len(data["failures"]) == 1
+    # Nothing outside the cache was touched, and the non-repo entries stay.
+    assert (outside / "keep.txt").exists()
+    assert (hub / ".locks").exists() and (hub / "version.txt").exists()
+
+
+@pytest.mark.parametrize("revision", ["../../../../etc", "..", "/abs", "", "a/b", 0, False])
+@requires_symlinks
+def test_a_revision_that_is_not_a_plain_name_is_refused(client, hub, tmp_path, revision):
+    # Including the falsy ones: a malformed revision must be an error, never a
+    # fallback to "delete the whole repo" — the widest possible reading of the
+    # narrowest possible request. Only an ABSENT revision means the repo.
+    repo = _repo(hub, "models--m", blobs={"a": 10}, snapshots={"c1": {"m": "a"}}, refs={"main": "c1"})
+    data = _delete(client, [{"dir": "models--m", "revision": revision}]).json()
+    assert data["freed"] == 0 and len(data["failures"]) == 1
+    assert (repo / "snapshots" / "c1").exists()
+    assert repo.exists()
+
+
+@requires_symlinks
+def test_a_symlinked_repo_folder_is_refused_rather_than_followed(client, hub, tmp_path):
+    elsewhere = tmp_path / "big-disk"
+    elsewhere.mkdir()
+    real = _repo(elsewhere, "models--org--huge", blobs={"a": 4096}, snapshots={"c1": {"m": "a"}})
+    os.symlink(real, hub / "models--org--huge")
+    for target in ({"dir": "models--org--huge"}, {"dir": "models--org--huge", "revision": "c1"}):
+        data = _delete(client, [target]).json()
+        assert data["freed"] == 0
+        assert "symlink" in data["failures"][0]["error"]
+    # Neither the link nor the files it points at were removed.
+    assert (hub / "models--org--huge").is_symlink()
+    assert (real / "blobs" / "a").exists()
+
+
+def test_delete_requires_the_write_guard(client, hub):
+    repo = _repo(hub, "models--m", blobs={"a": 100})
+    r = _delete(client, [{"dir": "models--m"}], headers={})
+    assert r.status_code == 403
+    assert repo.exists()
+
+
+def test_delete_needs_a_non_empty_target_list(client, hub):
+    assert _delete(client, []).status_code == 400
+    assert client.post("/api/local-models/delete", json={}, headers={"X-Fused": "1"}).status_code == 400
+
+
+# -- pruning by age --------------------------------------------------------------
+# Prune is a client-side selection over `lastUsed` executed as a bulk delete of
+# NAMED repos (D247), so what the server owes it is an honest read-time stamp.
+
+
+def test_last_used_reads_the_newest_atime(client, hub):
+    repo = _repo(hub, "models--m", blobs={"cold": 10, "warm": 10})
+    os.utime(repo / "blobs" / "cold", (1_000_000, 5_000_000))
+    os.utime(repo / "blobs" / "warm", (2_000_000, 4_000_000))
+    (out,) = _get(client)["repos"]
+    # atime, not mtime: a model pulled long ago and loaded this morning is in
+    # use, and mtime cannot tell those two apart.
+    assert out["lastUsed"] == 2_000_000
+    assert out["mtime"] == 5_000_000
+
+
+@requires_symlinks
+def test_reading_the_page_does_not_mark_a_repo_as_freshly_used(client, hub):
+    # The endpoints open ref files to resolve revisions, which bumps their
+    # atime. Left alone, a trip through this page would mark every repo it
+    # inspected as used today and quietly exclude it from the next prune — a
+    # measuring instrument changing what it measures.
+    repo = _repo(hub, "models--m", blobs={"a": 10}, snapshots={"c1": {"m": "a"}}, refs={"main": "c1"})
+    old = 1_000_000
+    for path in (repo / "blobs" / "a", repo / "refs" / "main"):
+        os.utime(path, (old, old))
+    assert _get(client)["repos"][0]["lastUsed"] == old
+    client.get("/api/local-models/revisions", params={"repo": "models--m"})
+    assert _get(client)["repos"][0]["lastUsed"] == old
+
+
+def test_a_prune_selection_deletes_exactly_the_named_repos(client, hub):
+    stale_a = _repo(hub, "models--stale-a", blobs={"a": 400})
+    stale_b = _repo(hub, "datasets--stale-b", blobs={"a": 300})
+    fresh = _repo(hub, "models--fresh", blobs={"a": 200})
+    for repo, atime in ((stale_a, 1_000_000), (stale_b, 1_000_000), (fresh, 9_000_000)):
+        os.utime(repo / "blobs" / "a", (atime, atime))
+    listing = _get(client)
+    cutoff = 5_000_000
+    stale = [r["dir"] for r in listing["repos"] if r["lastUsed"] and r["lastUsed"] < cutoff]
+    data = _delete(client, [{"dir": d} for d in sorted(stale)]).json()
+    assert data["freed"] == 700
+    assert [r["id"] for r in data["repos"]] == ["fresh"]
