@@ -119,11 +119,17 @@ export default function LocalModels() {
     setLoad({ status: "loading" });
     getLocalModels().then(
       (data) => {
-        if (!alive) return;
         // The page's own answer is authoritative for the sidebar gate: a cache
         // that exists (or has just appeared) shouldn't wait out the probe TTL,
-        // and a sidebar already on screen hears this immediately.
+        // and a sidebar already on screen hears this immediately. Published
+        // BEFORE the `alive` check, deliberately: the gate is shared state, and
+        // the sidebar it is for outlives this page (navigating between shell
+        // routes unmounts the page and keeps ShellSidebar mounted). A scan the
+        // user navigated away from still learned the truth — dropping it would
+        // hide a real cache for the rest of the TTL. Only the local setState,
+        // which belongs to a component that may be gone, sits behind the guard.
         publishAvailable(data.exists);
+        if (!alive) return;
         setLoad({ status: "ok", data });
       },
       (e: Error) => alive && setLoad({ status: "error", message: e.message }),
