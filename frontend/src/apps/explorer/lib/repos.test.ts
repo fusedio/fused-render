@@ -1,5 +1,37 @@
 import { describe, expect, it } from "bun:test";
-import { emptyReposMessage } from "@apps/explorer/lib/repos";
+import { emptyReposMessage, withLiveScanning } from "@apps/explorer/lib/repos";
+
+describe("withLiveScanning", () => {
+  const stale = { indexed: false, scanning: true, repos: [] };
+
+  it("does not lower scanning when a scan just finished", () => {
+    // The flicker: indexed is still false from the pre-scan response, so lowering
+    // scanning here renders "go rebuild the index" for as long as the refetch
+    // takes — telling the user to do the thing that just happened.
+    const merged = withLiveScanning(stale, false);
+    expect(merged.scanning).toBe(true);
+    expect(emptyReposMessage(merged)).toMatch(/Still building/);
+  });
+
+  it("raises scanning the moment a scan starts", () => {
+    const idle = { indexed: false, scanning: false, repos: [] };
+    expect(emptyReposMessage(idle)).toMatch(/Preferences → Indexing/);
+    expect(emptyReposMessage(withLiveScanning(idle, true))).toMatch(/Still building/);
+  });
+
+  it("is a no-op with no poll data yet", () => {
+    expect(withLiveScanning(stale, null)).toBe(stale);
+  });
+
+  it("defers to a fresh response: once refetched, the server's value stands", () => {
+    // The post-refetch state for an index that finished but is still unusable
+    // (e.g. another configured root is unreconciled) must reach the real message.
+    const fresh = { indexed: false, scanning: false, repos: [] };
+    expect(withLiveScanning(fresh, false).scanning).toBe(false);
+    expect(emptyReposMessage(withLiveScanning(fresh, false)))
+      .toMatch(/Preferences → Indexing/);
+  });
+});
 
 describe("emptyReposMessage", () => {
   it("says there are none only when the index has actually looked", () => {

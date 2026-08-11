@@ -14,7 +14,7 @@ import { useBookmarksVersion, useUrlVersion } from "@platform/lib/hooks";
 import { hydrateRecents, loadRecents, recentFsPath, useRecentsVersion } from "@apps/explorer/lib/recents";
 import { BookmarkPreviewCard, RecentPreviewCard, FolderPreviewCard } from "@apps/explorer/BookmarkCards";
 import { describeSpec, runAiSearch, type AiSearchResult } from "@apps/explorer/lib/ai-search";
-import { emptyReposMessage } from "@apps/explorer/lib/repos";
+import { emptyReposMessage, withLiveScanning } from "@apps/explorer/lib/repos";
 import { useIndexStatus } from "@platform/lib/index-status";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { TextArea } from "@platform/ui/field/fields";
@@ -374,11 +374,9 @@ export default function FilesHome({ config }: { config: Config }) {
   }, [scanCompletedAt]);
   const repoList = repos?.repos ?? [];
   const shownRepos = expandedRepos ? repoList : repoList.slice(0, MAX_CARDS);
-  // The live poll outranks the (possibly minutes-old) response for `scanning`
-  // alone, so the empty state moves from "no index — go rebuild it" to "still
-  // building" the moment a scan actually starts.
-  const reposState =
-    repos && indexScan ? { ...repos, scanning: indexScan.scanning } : repos;
+  // The live poll may only RAISE `scanning`, never lower it — see
+  // withLiveScanning for why lowering renders the wrong instruction.
+  const reposState = repos && withLiveScanning(repos, indexScan?.scanning ?? null);
   // With no ?tab= in the URL, land on Claude sessions — the leading tab.
   // Bookmark/recent caches still hydrate on mount (effect below) so the other
   // tabs are ready when clicked. An explicit ?tab= always wins.
