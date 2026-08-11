@@ -391,6 +391,41 @@ def test_configured_roots_win_over_the_default(home, tmp_path):
         str(tmp_path / "proj")]
 
 
+def test_scan_roots_are_canonical_so_store_lookups_hit(home, tmp_path, monkeypatch):
+    """Roots are KEYS, not just paths: runner.start files every fingerprint,
+    debounce entry and freshness record under runner.canonical_root(root), and
+    scan_roots' output is compared against those keys (the stale-fingerprint
+    rescan, routers/git_repos._usable). A raw configured spelling misses —
+    `~/proj` is not `/home/me/proj`, and on Windows `expanduser("~")` gives
+    `C:\\Users\\me` against a stored `C:/Users/me`, so every lookup misses there
+    and the index reads as permanently unreconciled.
+
+    Asserted as "identical to what runner.start would use", not against a
+    hand-written string: the whole bug is two spellings drifting, so the test has
+    to pin them together rather than restate one of them (and a separator
+    assertion would only ever fire on Windows, where this suite does not run)."""
+    real_expanduser = os.path.expanduser
+    fake_home = str(tmp_path / "userhome")
+
+    def expand(p):
+        if p == "~":
+            return fake_home
+        if p.startswith("~/"):
+            return fake_home + p[1:]
+        return real_expanduser(p)
+
+    monkeypatch.setattr(os.path, "expanduser", expand)
+    cfg = load_config()
+    cfg.roots = ["~/proj", str(tmp_path / "other") + "/"]
+    assert index_router.scan_roots(cfg) == [
+        runner.canonical_root(r) for r in cfg.roots]
+    # ~ really was expanded, so this is not a tautology over two no-ops
+    assert index_router.scan_roots(cfg)[0] == str(tmp_path / "userhome" / "proj")
+    # and the default root gets the same treatment
+    cfg.roots = []
+    assert index_router.scan_roots(cfg) == [runner.canonical_root("~")]
+
+
 # -- manual actions ------------------------------------------------------------
 
 def test_scan_passes_the_full_flag_through(home, tmp_path, monkeypatch):

@@ -227,6 +227,39 @@ def test_a_partially_rescanned_multi_root_index_is_not_indexed(home, tmp_path,
     assert [r["path"] for r in body["repos"]] == [str(repo)]
 
 
+def test_a_root_configured_in_a_NON_canonical_spelling_still_reads_usable(
+        home, tmp_path, client, monkeypatch):
+    """The fingerprint is stamped under runner.canonical_root(root), so looking it
+    up with the user's raw configured spelling misses and the tab would sit in the
+    not-indexed empty state forever — even after a successful scan. On Windows that
+    is EVERY root (`expanduser("~")` -> `C:\\Users\\me` vs a stored `C:/Users/me`),
+    which is strictly worse than the multi-root staleness the per-root check fixed.
+
+    Exercised through `~` rather than through separators: expansion is a
+    normalization every platform performs, so this fails on POSIX too if the
+    lookup key is raw."""
+    from fused_render.index import runner
+
+    real_expanduser = os.path.expanduser
+
+    def expand(p):
+        if p == "~":
+            return str(tmp_path)
+        if p.startswith("~/"):
+            return str(tmp_path) + p[1:]
+        return real_expanduser(p)
+
+    monkeypatch.setattr(os.path, "expanduser", expand)
+    repo = tmp_path / "proj" / "repo"
+    _set_roots(["~/proj"])                       # raw, un-expanded spelling
+    cfg = _write_dirs_index([_git(repo)], applied=False)
+    save_applied_ignore(cfg, runner.canonical_root("~/proj"))   # what a scan writes
+
+    body = client.get("/api/git-repos").json()
+    assert body["indexed"] is True
+    assert [r["path"] for r in body["repos"]] == [str(repo)]
+
+
 def test_a_legacy_sig_root_is_stale_even_once_another_root_is_stamped(
         home, tmp_path, client):
     """Bugbot's multi-root hole, pinned. On a store migrated from the pre-per-root
