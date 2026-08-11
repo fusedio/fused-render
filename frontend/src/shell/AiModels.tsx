@@ -761,26 +761,36 @@ export default function AiModels() {
                       are already looking at. A real <a href> so middle-click
                       and copy-link work, with left-click intercepted for
                       client-side navigation like every other in-app link. */}
-                  <a
-                    className="am-cache-dir"
-                    href={urlForFsPath(data.cacheDir)}
-                    title={`Open ${data.cacheDir} in the explorer`}
-                    onClick={(e) => {
-                      if (
-                        e.defaultPrevented ||
-                        e.button !== 0 ||
-                        e.metaKey ||
-                        e.ctrlKey ||
-                        e.shiftKey ||
-                        e.altKey
-                      )
-                        return;
-                      e.preventDefault();
-                      navigate(data.cacheDir, { isDir: true });
-                    }}
-                  >
-                    {data.cacheDir}
-                  </a>
+                  {/* …but only where there is something to open. `exists:
+                      false` means no download has ever created this directory,
+                      and a link to a path that is not there is worse than
+                      text: it looks like an answer and lands on an error. The
+                      path is still SHOWN — it is where the models would go, and
+                      the empty state below says so. */}
+                  {data.exists ? (
+                    <a
+                      className="am-cache-dir"
+                      href={urlForFsPath(data.cacheDir)}
+                      title={`Open ${data.cacheDir} in the explorer`}
+                      onClick={(e) => {
+                        if (
+                          e.defaultPrevented ||
+                          e.button !== 0 ||
+                          e.metaKey ||
+                          e.ctrlKey ||
+                          e.shiftKey ||
+                          e.altKey
+                        )
+                          return;
+                        e.preventDefault();
+                        navigate(data.cacheDir, { isDir: true });
+                      }}
+                    >
+                      {data.cacheDir}
+                    </a>
+                  ) : (
+                    data.cacheDir
+                  )}
                   {repos.length
                     ? ` · ${repos.length} cached · ${formatSize(data.totalSize)} total`
                     : ""}
