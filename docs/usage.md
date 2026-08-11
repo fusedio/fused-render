@@ -54,6 +54,30 @@ otherwise the outermost folder above it holding a `pyproject.toml`. A
 `pyproject.toml` in a *subfolder* of a project is ignored — the inspector shows
 when that happens.
 
+### Choosing a Python version
+
+Environments are built on **Python 3.12** by default. A folder can ask for
+another one with `requires-python`, and it is honoured:
+
+```toml
+requires-python = "==3.11.*"   # this folder's environment is built on 3.11
+```
+
+Anything 3.12 already satisfies (`>=3.11`, `>=3.12`) changes nothing — same
+interpreter, same environment, no download. A declaration 3.12 *fails* moves the
+folder to the nearest Python that satisfies it (`==3.11.*` → 3.11, `>=3.13` →
+3.13), which the app fetches once, as its own progress row, before installing the
+packages. Two folders wanting two different Pythons get two independent
+downloads.
+
+Two things to know before pinning one. It costs the **no-download fast path**: a
+folder whose packages the app already ships normally skips the environment build
+entirely, and it cannot do that for a folder that asked for a different
+interpreter. And **3.10 is the floor** — below it nothing can be built, and the
+run says so instead of installing. A folder with no dependencies to install has
+no environment to build, so it runs on the app's own interpreter whatever it
+pins.
+
 > **Breaking change (unreleased).** Per-file PEP 723 `# /// script` headers are
 > no longer read — a leftover block is an ordinary comment, ignored like any
 > other. Move its `dependencies` into the project root's `pyproject.toml`.

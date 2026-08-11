@@ -78,8 +78,8 @@ def api_env_install(body: dict = Body(...), x_fused: str | None = Header(default
     try:
         record = envinstall.start(project)
         # The key comes back FROM `start`, never recomputed here: when this machine
-        # has no pinned Python yet the install reports under
-        # `envinstall.PYTHON_BOOTSTRAP_KEY` rather than the venv key (D214), and a
+        # does not have the Python this project needs, the install reports under
+        # that VERSION's bootstrap key rather than the venv key (D214/D244), and a
         # second derivation would hand the page a key with no record behind it.
         key = record["key"]
     except (ImportError, RuntimeError) as e:

@@ -5,6 +5,12 @@ in that folder's `pyproject.toml` — not of anything written inside the file
 (SPEC PY-16). Every `.py` under a project root runs in the same environment
 however deep it sits, so one page calling five scripts installs one environment.
 
+The manifest declares two things this module reads: `[project].dependencies` (what
+goes IN the environment) and `[project].requires-python` (which interpreter it is
+built ON — PY-19). Both are read here and decided elsewhere: `envinstall` turns the
+pin into an interpreter, `engine` asks whether the app's own one may run these
+scripts at all.
+
 The boundary is resolved BEFORE the manifest is looked for, and in a fixed order:
 
   1. the app folder (`app_git.app_dir_for` — exactly `<fused_dir()>/<tag>/<name>`)
@@ -374,6 +380,107 @@ def applicable_dependencies_of(project_dir: str) -> list[str]:
     stripping them would lose information for no gain.
     """
     return [d for d in dependencies_of(project_dir) if marker_applies(d)]
+
+
+# --------------------------------------------------------------------------
+# The Python the environment is built on
+# --------------------------------------------------------------------------
+
+
+def requires_python_of(project_dir: str) -> str | None:
+    """`[project].requires-python` verbatim, or None when the folder declares none.
+
+    The declaration, not a decision: what to DO about it is
+    `envinstall.project_python_version` (which interpreter to build the venv on)
+    and `python_pin_allows` (whether a given interpreter may run these scripts).
+    Kept here beside `dependencies_of` because it is read from the same table by
+    the same parser, and a second reader of `pyproject.toml` is a second place
+    for "what does this folder declare" to be answered differently.
+    """
+    meta = _load_manifest(project_dir)
+    if not isinstance(meta, dict):
+        return None
+    project = meta.get("project")
+    if not isinstance(project, dict):
+        return None
+    pin = project.get("requires-python")
+    return pin if isinstance(pin, str) and pin.strip() else None
+
+
+def python_pin(project_dir: str):
+    """The folder's `requires-python` as a `SpecifierSet`, or None.
+
+    None covers all three ways there is nothing to enforce — no declaration, no
+    `packaging`, or a declaration that does not parse — because every caller
+    treats them identically: an interpreter is allowed unless something readable
+    says otherwise.
+
+    An unparseable pin is a warning and not an error, matching `_load_manifest`'s
+    rule for invalid TOML and `marker_applies`' for a broken marker: this module
+    runs on the /api/run path, and a typo in a manifest must not take the run
+    down with it. uv will reject the same string with a far better message when
+    the environment is actually built, so nothing is lost by declining to guess
+    here — what would be lost by guessing the OTHER way is every script in the
+    folder, over a string we could not read.
+    """
+    pin = requires_python_of(project_dir)
+    if pin is None:
+        return None
+    try:
+        from packaging.specifiers import InvalidSpecifier, SpecifierSet
+    except ImportError:
+        logger.warning(
+            "cannot read `requires-python` in %s: packaging is not importable, so "
+            "the folder's Python pin is ignored", pyproject_path(project_dir),
+        )
+        return None
+    try:
+        return SpecifierSet(pin)
+    except InvalidSpecifier:
+        logger.warning(
+            "ignoring `requires-python = %r` in %s: it is not a valid PEP 440 "
+            "specifier", pin, pyproject_path(project_dir),
+        )
+        return None
+
+
+def python_pin_allows(project_dir: str, version: str) -> bool:
+    """May `version` (`3.12`, `3.12.7`) run this folder's scripts?
+
+    True whenever nothing readable forbids it — see `python_pin`. Asked by the
+    install loader about the interpreter it is about to build the venv on, and by
+    `engine.run_python` about the APP interpreter before it takes the fast path
+    that skips the venv entirely: a folder pinned to `==3.11.*` must not quietly
+    run on the app's 3.12 just because the app happens to ship every package it
+    named.
+
+    `prereleases=True` for the same reason `app_satisfies` passes it: a machine
+    whose interpreter really is `3.14.0rc2` is running that version, and the
+    default would answer "no" about the interpreter the user is demonstrably on.
+
+    A version string this cannot parse answers False rather than True. That is the
+    one place in here the fail-open rule inverts, and deliberately: the argument is
+    OUR measurement of an interpreter, not the user's text, so an unreadable one is
+    a bug on this side — and the safe answer to "may this unknown thing run a
+    folder that pinned its Python" is no, which costs a venv build rather than a
+    silent violation of the pin.
+    """
+    spec = python_pin(project_dir)
+    if spec is None:
+        return True
+    try:
+        from packaging.version import InvalidVersion, Version
+    except ImportError:
+        return True
+    try:
+        return spec.contains(Version(version), prereleases=True)
+    except InvalidVersion:
+        logger.warning(
+            "could not read %r as a Python version while checking it against "
+            "`requires-python` in %s; treating it as not allowed",
+            version, pyproject_path(project_dir),
+        )
+        return False
 
 
 # --------------------------------------------------------------------------
