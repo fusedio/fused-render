@@ -195,6 +195,53 @@ def test_mtime_is_the_newest_entry(client, hub):
     assert out["mtime"] == 2000
 
 
+# -- a cache being written under us ---------------------------------------------
+# The scan runs against a directory other processes are actively downloading
+# into, so both of its defensive paths are real: a folder it cannot read, and a
+# file that exists in the listing but is gone by the time it is stat'd. Neither
+# may fail the page — a partial answer beats a 500.
+
+
+def test_an_unreadable_repo_folder_does_not_fail_the_page(client, hub, monkeypatch):
+    _repo(hub, "models--ok", blobs={"a": 100})
+    locked = _repo(hub, "models--locked", blobs={"a": 100})
+    real_scandir = os.scandir
+
+    def fake_scandir(path=".", *args, **kwargs):
+        if str(path) == str(locked):
+            raise PermissionError(13, "Permission denied")
+        return real_scandir(path, *args, **kwargs)
+
+    monkeypatch.setattr(local_models_mod.os, "scandir", fake_scandir)
+    assert [(r["id"], r["size"]) for r in _get(client)["repos"]] == [("ok", 100), ("locked", 0)]
+
+
+def test_a_file_that_vanishes_mid_scan_is_skipped(client, hub, monkeypatch):
+    repo = _repo(hub, "models--org--m", blobs={"stays": 100})
+    blobs = str(repo / "blobs")
+    real_scandir = os.scandir
+
+    class _Vanished:
+        """A listing entry whose file was deleted before we could stat it —
+        what a completed download's temp-blob rename looks like from here."""
+
+        name = "vanishing"
+        path = os.path.join(blobs, "vanishing")
+
+        def stat(self, *, follow_symlinks=True):
+            raise FileNotFoundError(2, "No such file or directory")
+
+    def fake_scandir(path=".", *args, **kwargs):
+        if str(path) == blobs:
+            return [*real_scandir(path, *args, **kwargs), _Vanished()]
+        return real_scandir(path, *args, **kwargs)
+
+    monkeypatch.setattr(local_models_mod.os, "scandir", fake_scandir)
+    (out,) = _get(client)["repos"]
+    assert out["size"] == 100
+    assert out["files"] == 1
+
+
 # -- no cache at all -----------------------------------------------------------
 
 

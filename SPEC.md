@@ -5287,8 +5287,12 @@ later with nothing on screen to say so.
   the Claude-config entry's gate — an installation property, which cannot change
   while the app runs — this one can flip mid-session: the first download creates
   the directory. So a confirmed *yes* is
-  cached for the session and a *no* only briefly, and the page's own answer
-  refreshes the gate. The route stays reachable by URL either way, and states
+  cached for the session, a *no* only briefly, and the answer is **published**
+  to whatever sidebar is mounted rather than only stored — a probe resolving in
+  one mount, and the page's own load (which knows the truth without a second
+  request), both have to reach a sidebar already on screen, or opening the page
+  by URL would leave its own entry missing beside it. The route stays reachable
+  by URL either way, and states
   which of the two nothings it found — no cache directory at all, or a cache
   that is empty.
 - **HF-9** **Scanning is on demand.** The walk touches every blob in the cache,
