@@ -295,6 +295,14 @@
   .swatchrow { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
   .swatch { display: flex; align-items: center; gap: 5px; font-size: 11px; color: var(--muted); }
   .swatch i { width: 11px; height: 11px; border-radius: 3px; display: inline-block; }
+  .catlist { margin-top: 8px; display: flex; flex-direction: column; gap: 5px; max-height: 260px; overflow-y: auto; }
+  .catrow { display: flex; align-items: center; gap: 7px; }
+  .catrow input[type=color] { width: 22px; height: 22px; flex: none; }
+  .catrow input[type=text] {
+    flex: 1; min-width: 0; border: 1px solid var(--border); border-radius: 6px;
+    padding: 4px 7px; font-size: 11.5px; color: var(--text); background: var(--panel-2);
+  }
+  .catrow .catcount { flex: none; font-size: 10px; color: var(--faint); font-family: var(--mono); }
 
   /* right-docked style panel */
   #stylepanel {
@@ -369,6 +377,13 @@
   .hidden { display: none !important; }
   .mono { font-family: var(--mono); }
   #boot-msg { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: var(--muted); font-size: 13px; z-index: 30; }
+
+  #dropzone {
+    position: absolute; inset: 10px; z-index: 40; display: flex; align-items: center; justify-content: center;
+    border: 2px dashed var(--accent); border-radius: var(--r); background: rgba(255,62,0,.08);
+    color: var(--accent); font-size: 15px; font-weight: 600; pointer-events: none;
+  }
+  #dropzone.hidden { display: none; }
 </style>
 </head>
 <body>
@@ -376,6 +391,7 @@
   <main id="mapwrap">
     <div id="map"></div>
     <div id="boot-msg">initializing…</div>
+    <div id="dropzone" class="hidden">Drop files to add as layers</div>
 
     <button id="btn-panel" class="hidden" title="Show panel">
       <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2l9 5-9 5-9-5 9-5zM3 12l9 5 9-5M3 17l9 5 9-5"/></svg>
@@ -575,6 +591,12 @@ const BASEMAPS = {
 /* ---- map -------------------------------------------------------------- */
 const startCam = (P.get("cam") || "37.7749,-122.4194,11").split(",").map(Number);
 let baseName = ["dark","light","sat"].includes(P.get("base")) ? P.get("base") : "light";
+// map.isStyleLoaded() requires every source's tiles to be fully loaded, not
+// just the style itself — waiting on it to add/remove a single layer means a
+// big raster/vector layer still streaming tiles blocks touching ANY layer.
+// addLayer/removeLayer only actually need the style's initial load done, so
+// track that lighter, one-shot condition ourselves via "style.load".
+let styleReady = false;
 const map = new maplibregl.Map({
   container: "map", style: BASEMAPS[baseName],
   center: [startCam[1] || -122.4194, startCam[0] || 37.7749], zoom: startCam[2] || 11,
@@ -870,6 +892,8 @@ async function loadTarget(target, name) {
     const desc = await fused.runPython("./map_render.py", {
       target, colormap: (L.style && L.style.colormap) || "viridis",
       rescale: (L.style && L.style.rescale) ? L.style.rescale.join(",") : "",
+      render_mode: (L.style && L.style.render_mode) || "",
+      category_colors: JSON.stringify((L.style && L.style.category_colors) || {}),
       ...sourceArgs(target),
     });
     L.loading = false; L.descriptor = desc;
@@ -1049,7 +1073,9 @@ function boundsFeature(bounds) {
 }
 
 function rebuildRasterTiles() {
-  if (!map.isStyleLoaded()) return;
+  // Only false for the brief window between a basemap switch and its
+  // "style.load" — which already re-runs this once ready, so just bail.
+  if (!styleReady) return;
   const wanted = new Map();
   for (const L of state.layers.values()) {
     const d = L.descriptor;
@@ -1153,7 +1179,7 @@ function removeVectorSource(sourceId) {
   if (map.getSource(ids.source)) map.removeSource(ids.source);
 }
 function rebuildVectorTiles() {
-  if (!map.isStyleLoaded()) return;
+  if (!styleReady) return;
   const wanted = new Map();
   for (const L of state.layers.values()) {
     const d = L.descriptor;
@@ -1585,7 +1611,20 @@ function renderStyleDock() {
 
 function rasterControls(body, L) {
   const s = L.style, d = L.descriptor;
-  if (s.render_mode !== "rgb") {
+  const categories = d.stats.categories;
+  if (categories && categories.length) {
+    body.appendChild(selectCtl("Render", ["Continuous", "Categorical"],
+      s.render_mode === "categorical" ? "Categorical" : "Continuous",
+      v => {
+        s.render_mode = v === "Categorical" ? "categorical" : "single";
+        s._touched = true; reloadRaster(L);
+      }));
+  }
+  if (s.render_mode === "categorical" && categories && categories.length) {
+    const list = document.createElement("div"); list.className = "catlist";
+    for (const cat of categories) list.appendChild(categoryRow(cat, s, L));
+    body.appendChild(list);
+  } else if (s.render_mode !== "rgb") {
     body.appendChild(selectCtl("Colormap", Object.keys(CMAPS), s.colormap || "viridis", v => {
       s.colormap = v; s._touched = true; reloadRaster(L);
     }));
@@ -1652,12 +1691,22 @@ function vectorControls(body, L) {
     body.appendChild(leg);
   } else {
     // fill + line color pickers
-    if (!isLine) body.appendChild(colorCtl("Fill", rgbToHex(s.fill_color||L.defaultColor), hex => {
-      const a = (s.fill_color && s.fill_color[3]) ?? 90; s.fill_color = [...hexToRgb(hex), a]; s._touched=true; rebuildDeck(); renderLayerCards();
-    }));
+    if (!isLine) {
+      body.appendChild(colorCtl("Fill", rgbToHex(s.fill_color||L.defaultColor), hex => {
+        const a = (s.fill_color && s.fill_color[3]) ?? 90; s.fill_color = [...hexToRgb(hex), a]; s._touched=true; rebuildDeck(); renderLayerCards();
+      }));
+      body.appendChild(alphaCtl("Fill opacity", s.fill_color && s.fill_color[3], 90, a => {
+        s.fill_color = [...(s.fill_color||L.defaultColor).slice(0,3), a]; s._touched=true; rebuildDeck(); renderLayerCards();
+      }));
+    }
     body.appendChild(colorCtl("Line / point", rgbToHex(s.line_color||L.defaultColor), hex => {
       const a = (s.line_color && s.line_color[3]) ?? 220; s.line_color = [...hexToRgb(hex), a]; s._touched=true;
       if (isPoint) { const fa=(s.fill_color&&s.fill_color[3])??220; s.fill_color=[...hexToRgb(hex),fa]; }
+      rebuildDeck(); renderLayerCards();
+    }));
+    body.appendChild(alphaCtl("Line opacity", s.line_color && s.line_color[3], 220, a => {
+      s.line_color = [...(s.line_color||L.defaultColor).slice(0,3), a]; s._touched=true;
+      if (isPoint) { s.fill_color = [...(s.fill_color||L.defaultColor).slice(0,3), a]; }
       rebuildDeck(); renderLayerCards();
     }));
   }
@@ -1672,11 +1721,17 @@ function vectorTileControls(body, L) {
   const gtypes = d.stats.geometry_types || [];
   const isPoint = gtypes.some(g => g.includes("Point"));
   const isLine = gtypes.some(g => g.includes("Line"));
-  if (!isLine) body.appendChild(colorCtl("Fill", rgbToHex(s.fill_color || L.defaultColor), hex => {
-    const alpha = (s.fill_color && s.fill_color[3]) ?? 90;
-    s.fill_color = [...hexToRgb(hex), alpha]; s._touched = true;
-    rebuildVectorTiles(); renderLayerCards();
-  }));
+  if (!isLine) {
+    body.appendChild(colorCtl("Fill", rgbToHex(s.fill_color || L.defaultColor), hex => {
+      const alpha = (s.fill_color && s.fill_color[3]) ?? 90;
+      s.fill_color = [...hexToRgb(hex), alpha]; s._touched = true;
+      rebuildVectorTiles(); renderLayerCards();
+    }));
+    body.appendChild(alphaCtl("Fill opacity", s.fill_color && s.fill_color[3], 90, a => {
+      s.fill_color = [...(s.fill_color || L.defaultColor).slice(0,3), a]; s._touched = true;
+      rebuildVectorTiles(); renderLayerCards();
+    }));
+  }
   body.appendChild(colorCtl("Line / point", rgbToHex(s.line_color || L.defaultColor), hex => {
     const alpha = (s.line_color && s.line_color[3]) ?? 220;
     s.line_color = [...hexToRgb(hex), alpha]; s._touched = true;
@@ -1684,6 +1739,11 @@ function vectorTileControls(body, L) {
       const fillAlpha = (s.fill_color && s.fill_color[3]) ?? 220;
       s.fill_color = [...hexToRgb(hex), fillAlpha];
     }
+    rebuildVectorTiles(); renderLayerCards();
+  }));
+  body.appendChild(alphaCtl("Line opacity", s.line_color && s.line_color[3], 220, a => {
+    s.line_color = [...(s.line_color || L.defaultColor).slice(0,3), a]; s._touched = true;
+    if (isPoint) { s.fill_color = [...(s.fill_color || L.defaultColor).slice(0,3), a]; }
     rebuildVectorTiles(); renderLayerCards();
   }));
   if (!isPoint) body.appendChild(sliderCtl("Line width", (s.line_width ?? 1.5).toFixed(1), 0, 8, Math.round((s.line_width ?? 1.5) * 2),
@@ -1711,6 +1771,9 @@ function binaryPointControls(body, L) {
     body.appendChild(colorCtl("Color", rgbToHex(s.fill_color||L.defaultColor), hex => {
       const a = (s.fill_color && s.fill_color[3]) ?? 220; s.fill_color = [...hexToRgb(hex), a]; s._touched = true; rebuildDeck(); renderLayerCards();
     }));
+    body.appendChild(alphaCtl("Opacity", s.fill_color && s.fill_color[3], 220, a => {
+      s.fill_color = [...(s.fill_color||L.defaultColor).slice(0,3), a]; s._touched = true; rebuildDeck(); renderLayerCards();
+    }));
   }
   body.appendChild(sliderCtl("Point size", String(s.point_radius??4), 1, 24, s.point_radius??4,
     v => { s.point_radius = v; s._touched = true; rebuildDeck(); updateCtlLabel(body,"Point size",String(v)); }));
@@ -1720,7 +1783,10 @@ async function reloadRaster(L) {
   L.loading = true; renderFileList();
   try {
     const desc = await fused.runPython("./map_render.py", { target: L.target, colormap: L.style.colormap || "viridis",
-      rescale: L.style.rescale ? L.style.rescale.join(",") : "", ...sourceArgs(L.target) });
+      rescale: L.style.rescale ? L.style.rescale.join(",") : "",
+      render_mode: L.style.render_mode || "",
+      category_colors: JSON.stringify(L.style.category_colors || {}),
+      ...sourceArgs(L.target) });
     L.loading = false;
     if (desc.status === "ok") {
       const keepStyle = L.style; L.descriptor = desc; L.style = Object.assign({}, desc.style, keepStyle);
@@ -1746,6 +1812,18 @@ function sliderCtl(label, valTxt, min, max, val, on) {
   const r = document.createElement("input"); r.type="range"; r.min=min; r.max=max; r.value=val;
   r.oninput = e => on(Number(e.target.value)); c.appendChild(r); return c;
 }
+// Alpha-only slider: colorCtl's native <input type=color> has no alpha channel,
+// so fill/line transparency (an [r,g,b,a] byte already carried on the style)
+// needs its own control. `alpha` is 0-255; `on` receives the same range.
+function alphaCtl(label, alpha, fallback, on) {
+  const a = alpha ?? fallback;
+  const pct = Math.round(a / 255 * 100);
+  const c = sliderCtl(label, pct + "%", 0, 100, pct, v => {
+    c.querySelector(".ctl-lbl b").textContent = v + "%";
+    on(Math.round(v / 100 * 255));
+  });
+  return c;
+}
 function selectCtl(label, opts, val, on) {
   const c = ctlShell(label, "");
   const sel = document.createElement("select");
@@ -1758,6 +1836,30 @@ function colorCtl(label, hex, on) {
   inp.oninput = e => on(e.target.value);
   c.querySelector(".ctl-lbl b").replaceWith(inp);   // swatch sits on the label's right
   return c;
+}
+// One row of a categorical raster's legend: a swatch (recolors the raster,
+// needs a backend re-render) plus a free-text label (cosmetic only — the
+// value it's keyed to is still what gets rendered on the map).
+function categoryRow(cat, s, L) {
+  const key = String(cat.value);
+  if (!s.category_colors) s.category_colors = {};
+  if (!s.category_labels) s.category_labels = {};
+  const row = document.createElement("div"); row.className = "catrow";
+  const swatch = document.createElement("input"); swatch.type = "color";
+  swatch.value = rgbToHex(s.category_colors[key] || cat.color);
+  // change (not input): a raster color edit re-renders on the backend, so
+  // it should commit once the picker closes rather than spam requests
+  // while the user is still dragging inside it. Store as [r,g,b,a] (via
+  // hexToRgb), the same shape category_colors already carries for the
+  // untouched entries and the same convention fill_color/line_color use.
+  swatch.onchange = e => { s.category_colors[key] = [...hexToRgb(e.target.value), 255]; s._touched = true; reloadRaster(L); };
+  const text = document.createElement("input"); text.type = "text";
+  text.value = s.category_labels[key] ?? cat.label;
+  text.oninput = e => { s.category_labels[key] = e.target.value; s._touched = true; };
+  const count = document.createElement("span"); count.className = "catcount";
+  count.textContent = cat.count != null ? cat.count.toLocaleString() : "";
+  row.append(swatch, text, count);
+  return row;
 }
 const fmt = v => v == null ? "—" : (Math.abs(v) >= 1000 || (v !== 0 && Math.abs(v) < 0.01) ? Number(v).toExponential(1) : Number(v).toFixed(2));
 
@@ -1880,9 +1982,11 @@ function setBasemap(name) {
   if (!BASEMAPS[name] || name === baseName) return;
   baseName = name; P.set("base", name);
   qs("basemap-seg").querySelectorAll("button").forEach(b => b.classList.toggle("on", b.dataset.b === name));
+  styleReady = false;
   map.setStyle(BASEMAPS[name]);   // overlay is a control → survives setStyle
 }
 map.on("style.load", () => {
+  styleReady = true;
   rasterSourceIds = new Set();
   vectorSourceIds = new Set();
   for (const L of state.layers.values()) L._tileUrl = null;
@@ -1977,6 +2081,115 @@ qs("btn-importpath").onclick = importDirectPath;
 qs("importpath").onkeydown = event => {
   if (event.key === "Enter") importDirectPath();
 };
+
+/* ---- drag-and-drop import: drop OS files straight onto the map -------- */
+// Ad-hoc drops (no folder browsed yet) land in a temp staging dir, not the
+// user's home folder — discover.py prunes it, so a stray drop never piles
+// up in Home forever.
+let dropsDirPromise = null;
+async function resolveUploadDir() {
+  if (state.dir) return state.dir;
+  if (!dropsDirPromise) {
+    dropsDirPromise = fused.runPython("./discover.py", { action: "drops_dir" })
+      .then(result => {
+        if (result.error) throw new Error(result.error);
+        return result.dir || "";
+      })
+      .catch(error => { dropsDirPromise = null; throw error; });
+  }
+  return dropsDirPromise;
+}
+function joinPath(dir, name) {
+  const sep = dir.includes("\\") && !dir.includes("/") ? "\\" : "/";
+  return dir.replace(/[\\/]+$/, "") + sep + name;
+}
+// GIS sidecars that ride along with a primary file (shapefile members,
+// world files, PAM metadata): uploaded, but never loaded as layers.
+const SIDECAR_EXTENSIONS = [
+  ".shx", ".dbf", ".prj", ".cpg", ".sbn", ".sbx", ".shp.xml",
+  ".qix", ".qpj", ".aux.xml", ".ovr", ".tfw", ".tifw", ".wld",
+];
+function isSidecarName(name) {
+  const lower = name.toLowerCase();
+  return SIDECAR_EXTENSIONS.some(ext => lower.endsWith(ext));
+}
+// Split on the FIRST dot so files pairing on a shared basename
+// (farms.shp + farms.shx, landcover.tif + landcover.tif.aux.xml) get a
+// collision suffix inserted at the same spot and stay paired.
+function splitDroppedName(name) {
+  const dot = name.indexOf(".", 1);
+  return dot > 0 ? [name.slice(0, dot), name.slice(dot)] : [name, ""];
+}
+// Any fused.stat failure (not just a 404) reads as "path is free" — the
+// upload right behind this will fail loudly on its own if something else
+// was actually wrong, so nothing is hidden by being optimistic (same
+// tradeoff as markdown/template.html's mediaExists/freeMediaName).
+async function pathIsFree(path) {
+  try { await fused.stat(path); return false; } catch { return true; }
+}
+async function groupDestPaths(dir, group) {
+  let candidate = group.map(file => joinPath(dir, file.name));
+  for (let i = 1; i <= 100; i++) {
+    const free = await Promise.all(candidate.map(pathIsFree));
+    if (free.every(Boolean)) break;
+    candidate = group.map(file => {
+      const [stem, rest] = splitDroppedName(file.name);
+      return joinPath(dir, `${stem} (${i})${rest}`);
+    });
+  }
+  return candidate;
+}
+async function importDroppedFiles(files) {
+  let dir = "";
+  try {
+    dir = await resolveUploadDir();
+  } catch (error) {
+    toast("bad", "Couldn't drop files", error.message);
+    return;
+  }
+  if (!dir) { toast("bad", "Couldn't drop files", "No destination folder available."); return; }
+  const groups = new Map();
+  for (const file of files) {
+    const key = splitDroppedName(file.name)[0].toLowerCase();
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(file);
+  }
+  for (const group of groups.values()) {
+    try {
+      const dests = await groupDestPaths(dir, group);
+      for (let i = 0; i < group.length; i++) await fused.uploadFile(dests[i], group[i]);
+      for (let i = 0; i < group.length; i++) {
+        if (isSidecarName(group[i].name)) continue;
+        await loadTarget(dests[i], dests[i].split(/[\\/]/).pop());
+      }
+    } catch (error) {
+      toast("bad", "Couldn't add " + group.map(file => file.name).join(", "), error.message);
+    }
+  }
+}
+const mapwrap = qs("mapwrap"), dropzone = qs("dropzone");
+let dragDepth = 0;
+mapwrap.addEventListener("dragenter", event => {
+  if (!event.dataTransfer.types.includes("Files")) return;
+  event.preventDefault();
+  dragDepth++;
+  dropzone.classList.remove("hidden");
+});
+mapwrap.addEventListener("dragover", event => {
+  if (!event.dataTransfer.types.includes("Files")) return;
+  event.preventDefault();
+});
+mapwrap.addEventListener("dragleave", () => {
+  dragDepth = Math.max(0, dragDepth - 1);
+  if (dragDepth === 0) dropzone.classList.add("hidden");
+});
+mapwrap.addEventListener("drop", async event => {
+  if (!event.dataTransfer.types.includes("Files")) return;
+  event.preventDefault();
+  dragDepth = 0;
+  dropzone.classList.add("hidden");
+  await importDroppedFiles([...event.dataTransfer.files]);
+});
 
 /* toast */
 let toastTimer = null;

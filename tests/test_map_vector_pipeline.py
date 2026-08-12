@@ -55,6 +55,26 @@ def _make_grid(path: Path, width: int = 40, height: int = 40) -> None:
     frame.to_file(path, layer="segments", driver="GPKG", engine="pyogrio")
 
 
+def _make_utm_grid(path: Path, width: int = 20, height: int = 20) -> None:
+    cell = 2000.0
+    geometries = []
+    classes = []
+    for row in range(height):
+        for column in range(width):
+            west = 500000.0 + column * cell
+            south = 2200000.0 + row * cell
+            geometries.append(
+                box(west, south, west + cell * 0.8, south + cell * 0.8)
+            )
+            classes.append((row + column) % 7)
+    frame = gpd.GeoDataFrame(
+        {"class": classes},
+        geometry=geometries,
+        crs="EPSG:32639",
+    )
+    frame.to_file(path, layer="segments", driver="GPKG", engine="pyogrio")
+
+
 def _request(path: Path) -> dict:
     return {
         "target": str(path),
@@ -143,6 +163,66 @@ def test_tile_outside_source_is_empty(tmp_path, monkeypatch):
     x, y = _tile(120.0, 50.0, 8)
 
     assert engine.tile(descriptor["data"]["source_id"], 8, x, y) == b""
+
+
+def _decoded_points(value):
+    if isinstance(value[0], (int, float)):
+        return [value]
+    return [point for item in value for point in _decoded_points(item)]
+
+
+def test_projected_crs_geopackage_serves_correctly_placed_tiles(
+    tmp_path, monkeypatch
+):
+    source = tmp_path / "utm.gpkg"
+    _make_utm_grid(source)
+    monkeypatch.setattr(vector_engine, "VECTOR_TILE_MIN_FEATURES", 10)
+    engine = _engine()
+
+    descriptor = engine.try_describe(_request(source))
+
+    assert descriptor["status"] == "ok"
+    assert descriptor["crs_original"] == "EPSG:32639"
+    west, south, east, north = descriptor["bounds"]
+    assert 50.9 < west < east < 51.5
+    assert 19.5 < south < north < 20.5
+
+    zoom = 10
+    x, y = _tile((west + east) / 2.0, (south + north) / 2.0, zoom)
+    tile = engine.tile(descriptor["data"]["source_id"], zoom, x, y)
+
+    assert tile
+    features = mapbox_vector_tile.decode(tile)["layer"]["features"]
+    assert features
+    for feature in features:
+        for px, py in _decoded_points(feature["geometry"]["coordinates"]):
+            assert -1024 <= px <= 5120
+            assert -1024 <= py <= 5120
+
+
+def test_projected_crs_dense_overview_is_reprojected(tmp_path, monkeypatch):
+    source = tmp_path / "utm.gpkg"
+    _make_utm_grid(source)
+    monkeypatch.setattr(vector_engine, "VECTOR_TILE_MIN_FEATURES", 10)
+    monkeypatch.setattr(vector_engine, "MAX_TILE_FEATURES", 50)
+    engine = _engine()
+    descriptor = engine.try_describe(_request(source))
+    west, south, east, north = descriptor["bounds"]
+
+    zoom = 8
+    x, y = _tile((west + east) / 2.0, (south + north) / 2.0, zoom)
+    tile = engine.tile(descriptor["data"]["source_id"], zoom, x, y)
+
+    assert tile
+    features = mapbox_vector_tile.decode(tile)["layer"]["features"]
+    assert features
+    assert all(
+        feature["properties"]["feature_count"] > 0 for feature in features
+    )
+    for feature in features:
+        for px, py in _decoded_points(feature["geometry"]["coordinates"]):
+            assert -1024 <= px <= 5120
+            assert -1024 <= py <= 5120
 
 
 def test_vector_tile_is_served_over_the_daemon_endpoint(tmp_path, monkeypatch):
