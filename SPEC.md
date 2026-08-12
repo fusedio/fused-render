@@ -5318,20 +5318,21 @@ later with nothing on screen to say so.
   "open the local copy" would be a coin flip, and the two destinations answer
   different questions. Explore is visible without hovering — unlike the delete
   controls beside it, which stay quiet until the card is hovered.
-- **HF-8** **The sidebar entry is gated on the cache existing** (`GET
-  /api/ai-models/status`, one `isdir`), so a machine that has never pulled
-  from the Hub is not offered a page that can only say "nothing here". Unlike
-  the Claude-config entry's gate — an installation property, which cannot change
-  while the app runs — this one can flip mid-session: the first download creates
-  the directory. So a confirmed *yes* is
-  cached for the session, a *no* only briefly, and the answer is **published**
-  to whatever sidebar is mounted rather than only stored — a probe resolving in
-  one mount, and the page's own load (which knows the truth without a second
-  request), both have to reach a sidebar already on screen, or opening the page
-  by URL would leave its own entry missing beside it. The route stays reachable
-  by URL either way, and states
-  which of the two nothings it found — no cache directory at all, or a cache
-  that is empty.
+- **HF-8** **REVISED (D265): the sidebar entry is UNCONDITIONAL — no gate, no
+  probe.** It used to be gated on the cache directory existing (`GET
+  /api/ai-models/status`, one `isdir`, published to whatever sidebar was
+  mounted because the answer can flip mid-session), on the argument that a
+  machine which has never pulled from the Hub should not be offered a page that
+  can only say "nothing here". Discover (§39) retired that argument: the page
+  DOWNLOADS now — the suggested models, through the local runner (HS-1 as
+  amended by D258) — so on exactly the machine the gate was hiding it from, it
+  is the way to get a first model. Hiding the only door because the room is
+  empty is worse than an empty room with a door — and the gate's own cost was
+  real: a probe endpoint, a session cache with two TTLs, and a publish channel
+  so the page could tell a sidebar what it had just learned, all of it in
+  service of removing a row. Both nothings still get named on arrival — no
+  cache directory at all, or a cache that is empty — and each ends in the same
+  offer, a control that opens Discover.
 - **HF-9** **Scanning happens once per visit.** The walk touches every blob in
   the cache, so it runs **on mount and nowhere else** — never on a focus/return
   tick, which would re-walk tens of thousands of files each time the window came
@@ -5710,6 +5711,21 @@ an AI Models page that could say what was on disk but not what was *running*.
   Windows wheel — and it is built by the existing detached `uv sync` loader
   (PY-18), with the same progress record and the same verbatim uv errors any
   declaring folder gets. No second install mechanism exists for AI.
+- **AI-2a** **A runner declares WHEELS, and uv's children do not inherit this
+  process's Python environment** (D266). Two halves of one failure. A dependency
+  uv cannot download as a wheel is compiled by a build backend in an interpreter
+  uv creates — and that interpreter inherits the installer's environment, which
+  inside the macOS .app carries py2app's `PYTHONHOME` pointing into the bundle.
+  Build interpreters therefore loaded the app's own frozen `_distutils_hack`
+  over the setuptools doing the build, and every source build in the packaged
+  app died on `No module named 'jaraco.text'` — reported to the user as a runner
+  environment that would not build, on the one runner that had a `git+` pin.
+  `_env_install_worker` scrubs `PYTHON*`/`VIRTUAL_ENV` from every uv invocation
+  now, the same names every other child spawn in this app already strips. The
+  wheels-only rule stands on its own merit beside it: a runner environment is
+  built on a user's laptop the first time they press Download, and compiling
+  from source there is minutes of their battery for something a release already
+  answers. Held by a test over every runner's declaration.
 - **AI-3** **Four routes, and that is the whole worker contract.** `GET /health`
   (state, resident bytes), `POST /generate` (NDJSON for text), `POST /cancel`,
   `POST /quit`. Adding a capability is writing a worker, not extending the
@@ -5951,6 +5967,16 @@ an AI Models page that could say what was on disk but not what was *running*.
   shared id would have a second render overwrite the first's progress. The PNG
   is read back through `/api/fs/raw` like every other local file, and
   `fused.ai.image()` hands the page a ready-made URL for it.
+- **AI-9c** **Both rows say the same failure** (D266). Two rows, two truths is
+  the rule; two rows where one of them lies is not. A waiting render watches the
+  worker RECORD it started, never the `_workers` table — a failed bring-up drops
+  itself from that table inside the same locked block that stamps the error, so
+  a waiter polling the table finds only that the model is gone and reports "was
+  unloaded before it could be used" for a load that failed with a real message.
+  That message is what a user reads and retries against, and it made a permanent
+  environment failure look like a transient race. "Unloaded" survives as the
+  answer for what it actually describes: a record that never errored and was
+  taken away — evicted by another model, or unloaded from the AI Models page.
 - **AI-9a** **The worker contract is written once, in `runners/worker_base.py`.**
   A runner is still a folder, but the half that is the SUPERVISOR'S contract —
   the auth header's name, the status file's shape, the state vocabulary it

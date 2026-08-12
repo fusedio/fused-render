@@ -10,12 +10,21 @@
 # it is a reported stage rather than a silent wait, and the AI Models page shows
 # it as "Preparing Diffusers (PyTorch)…" before any weights are fetched.
 #
+# **Every dependency here must be installable as a WHEEL, and that is a rule
+# rather than a preference.** A source build runs a build backend in a subprocess
+# uv creates, and inside the macOS .app that subprocess used to inherit the
+# bundle's `PYTHONHOME` — the app's frozen `_distutils_hack` then hijacked the
+# fresh setuptools and every build died on `No module named 'jaraco.text'`
+# (D266). `_env_install_worker` scrubs the env now, so the trap is disarmed; the
+# rule stands anyway, because a source build in this environment is minutes of
+# compiling on a user's laptop for something a wheel already answers.
+#
 # What each earns:
 #   torch          the tensors and the device (CUDA / MPS / CPU)
-#   diffusers      the pipelines. FROM GIT: FLUX.2 support landed after the last
-#                  release, and pinning to PyPI would mean the one model this
-#                  runner ships a recipe for cannot load. Revisit at the release
-#                  that carries Flux2KleinPipeline.
+#   diffusers      the pipelines. `>=0.39` because that is the first RELEASE
+#                  carrying Flux2KleinPipeline — this used to track
+#                  git+https://github.com/huggingface/diffusers.git for exactly
+#                  that class, back when it existed only on main (D266).
 #   transformers   the text encoder every text-to-image pipeline puts in front
 #   accelerate     device placement / offload for models bigger than the GPU
 #   sentencepiece  the tokenizer format those text encoders use
@@ -30,7 +39,7 @@ version = "0.1.0"
 requires-python = ">=3.10"
 dependencies = [
     "torch",
-    "diffusers @ git+https://github.com/huggingface/diffusers.git",
+    "diffusers>=0.39",
     "transformers",
     "accelerate",
     "sentencepiece",

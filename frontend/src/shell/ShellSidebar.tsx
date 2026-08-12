@@ -20,7 +20,6 @@ import { useUrlVersion, useLearnMountReady, useSessionsMountReady, useCommunityM
 import { useAccountLoggedIn } from "@platform/lib/account";
 import { useDeployEnabled } from "@platform/lib/prefs";
 import { useClaudeConfigAvailable } from "@apps/claude_config/available";
-import { useAiModelsAvailable } from "@shell/aiModelsAvailable";
 import { useAiRuntime } from "@shell/aiRuntime";
 import { formatSize } from "@platform/lib/format";
 
@@ -133,12 +132,13 @@ export default function ShellSidebar({ config }: { config: Config }) {
   // Claude Config is native (no mount) — availability is just "does ~/.claude
   // exist on this machine", one cached probe (see useClaudeConfigAvailable).
   const claudeConfigAvailable = useClaudeConfigAvailable();
-  // Same shape of gate for AI Models: the row appears once this machine has
-  // a Hugging Face cache dir at all, so a user who has never downloaded a model
-  // isn't offered a page that can only ever say "nothing here". Unlike the
-  // Claude probe this one can flip mid-session (the first download creates the
-  // dir), which is why its "no" is only cached briefly (see the hook).
-  const localModelsAvailable = useAiModelsAvailable();
+  // AI Models carries NO such gate (HF-8, D265). It once appeared only where a
+  // Hugging Face cache already existed — a page that could otherwise only say
+  // "nothing here" — but the page grew Discover (§39), so on a machine with an
+  // empty cache it is the door to getting a first model rather than an empty
+  // room. A gate that hides the only way in is worse than a page that opens
+  // saying "nothing yet, here is the Hub".
+  //
   // A model resident in memory is the one piece of app state that costs
   // something while you are not looking at it — gigabytes, until you unload it.
   // So it gets the same treatment as being signed in: a dot on its own entry,
@@ -178,9 +178,7 @@ export default function ShellSidebar({ config }: { config: Config }) {
       .flatMap((g, i) => g.map((item, j) => (i > 0 && j === 0 ? { ...item, dividerBefore: true } : item))),
     { key: "templates", label: "Templates", icon: TEMPLATES_ICON, href: "/templates", pinBottom: true },
     { key: "mounts", label: "Mounts", icon: MOUNTS_ICON, href: "/mounts" },
-    ...(localModelsAvailable
-      ? [{ key: "ai-models", label: "AI Models", icon: AI_MODELS_ICON, href: "/ai-models" }]
-      : []),
+    { key: "ai-models", label: "AI Models", icon: AI_MODELS_ICON, href: "/ai-models" },
     { key: "preferences", label: "Preferences", icon: PREFERENCES_ICON, href: "/preferences" },
   ];
 
@@ -233,27 +231,25 @@ export default function ShellSidebar({ config }: { config: Config }) {
         <NavItem href="/mounts" label="Mounts" icon={MOUNTS_ICON} />
         {/* Next to Mounts: both answer "what storage does this machine have
             attached", one remote and one the Hub filled in locally. */}
-        {localModelsAvailable && (
-          <NavItem
-            href="/ai-models"
-            id="ai-models-link"
-            label="AI Models"
-            icon={AI_MODELS_ICON}
-            extra={
-              residentModels.length ? (
-                <span
-                  className="account-signedin-dot"
-                  title={
-                    `In memory: ${residentModels.map((m) => m.model).join(", ")}` +
-                    (aiRuntime.totalResidentBytes
-                      ? ` — ${formatSize(aiRuntime.totalResidentBytes)}`
-                      : "")
-                  }
-                />
-              ) : undefined
-            }
-          />
-        )}
+        <NavItem
+          href="/ai-models"
+          id="ai-models-link"
+          label="AI Models"
+          icon={AI_MODELS_ICON}
+          extra={
+            residentModels.length ? (
+              <span
+                className="account-signedin-dot"
+                title={
+                  `In memory: ${residentModels.map((m) => m.model).join(", ")}` +
+                  (aiRuntime.totalResidentBytes
+                    ? ` — ${formatSize(aiRuntime.totalResidentBytes)}`
+                    : "")
+                }
+              />
+            ) : undefined
+          }
+        />
         <NavItem
           href="/preferences"
           label="Preferences"

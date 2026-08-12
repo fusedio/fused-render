@@ -257,6 +257,14 @@
   outline-offset: -2px;
 }
 
+/* The empty Local tab carries a control as well as a sentence (HF-8): it is a
+   door to Discover, not a dead end. .cc-empty centres the text; the paragraph
+   only needs its default margins dropped so the button sits under the line
+   rather than a blank line below it. */
+.am-empty p {
+  margin: 0 0 12px;
+}
+
 .am-hub-controls {
   display: flex;
   flex-wrap: wrap;

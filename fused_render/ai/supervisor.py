@@ -721,16 +721,10 @@ def _fetch_only(runner: registry.Runner, model: str, job: str) -> None:
         _cleanup_files(stub)
 
 
-def load(model: str, capability: str, *, weights_only: bool = False) -> dict:
-    """Make `model` resident for `capability`; returns `{jobId, model, state}`.
-
-    `weights_only` downloads and stops — the AI Models page's "Download", which
-    must not evict whatever is currently loaded.
-
-    Idempotent for the model already loading or loaded — a second call joins the
-    first rather than starting a duplicate, which matters because two pages
-    opening at once is the normal case, not the exotic one.
-    """
+def _runner_or_raise(capability: str) -> registry.Runner:
+    """The runner serving `capability`, or a SupervisorError saying why there isn't
+    one — the machine's reason ("needs Apple Silicon") where a runner exists but
+    cannot run here, and a bare "no runner provides …" where none is registered."""
     runner = registry.for_capability(capability)
     if runner is None:
         known = next((r for r in registry.all_runners() if r.capability == capability), None)
@@ -738,28 +732,31 @@ def load(model: str, capability: str, *, weights_only: bool = False) -> dict:
             known.available().reason if known
             else f"no runner provides {capability!r}"
         )
+    return runner
+
+
+def _start_resident(model: str, capability: str) -> tuple[dict, Worker]:
+    """`load`'s residency path, handing back the WORKER RECORD beside the reply.
+
+    Two callers, two needs. `load` is answering an endpoint, so the reply is all
+    it wants. `_wait_ready` is about to sit and watch — and watching the
+    `_workers` TABLE is not good enough, because `_bring_up`'s failure path drops
+    the worker from the table in the same locked block that records why it
+    failed. A waiter polling the table therefore finds the model gone and never
+    the reason it went, which is how every failed image render came back as
+    "was unloaded before it could be used" (D266). Holding the record, a waiter
+    reads the error off the very object it was waiting for.
+    """
+    runner = _runner_or_raise(capability)
     _require_build_tools()
 
     job = job_id_for(model)
-    if weights_only:
-        with _lock:
-            # A second Download on a model already being fetched joins the first.
-            # Two `snapshot_download` runs over one cache directory is not a
-            # faster download, it is a race for the same `.incomplete` files.
-            if model in _downloads:
-                return {"jobId": job, "model": model, "state": "downloading"}
-            _downloads[model] = {"model": model, "capability": capability,
-                                 "jobId": job, "startedAt": time.time()}
-        _report(job, title=model, state="running", kind="download", cancellable=True,
-                unit="bytes", detail="Preparing…", done=None, total=None)
-        threading.Thread(target=_fetch_only, args=(runner, model, job),
-                         name=f"ai-fetch-{capability}", daemon=True).start()
-        return {"jobId": job, "model": model, "state": "downloading"}
-
     with _lock:
         current = _workers.get(capability)
         if current is not None and current.model == model and current.state != "error":
-            return {"jobId": job_id_for(model), "model": model, "state": current.state}
+            # Joining an in-flight bring-up hands back ITS record, so the second
+            # caller watches the same thing the first one is watching.
+            return {"jobId": job, "model": model, "state": current.state}, current
         if current is not None:
             # Eviction: the weights of the old model must be released BEFORE the
             # new ones start loading, or the machine holds both at once — which
@@ -778,7 +775,39 @@ def load(model: str, capability: str, *, weights_only: bool = False) -> dict:
             detail="Preparing…", done=None, total=None)
     threading.Thread(target=_bring_up, args=(runner, worker, job),
                      name=f"ai-load-{capability}", daemon=True).start()
-    return {"jobId": job, "model": model, "state": worker.state}
+    return {"jobId": job, "model": model, "state": worker.state}, worker
+
+
+def load(model: str, capability: str, *, weights_only: bool = False) -> dict:
+    """Make `model` resident for `capability`; returns `{jobId, model, state}`.
+
+    `weights_only` downloads and stops — the AI Models page's "Download", which
+    must not evict whatever is currently loaded.
+
+    Idempotent for the model already loading or loaded — a second call joins the
+    first rather than starting a duplicate, which matters because two pages
+    opening at once is the normal case, not the exotic one.
+    """
+    if not weights_only:
+        return _start_resident(model, capability)[0]
+
+    runner = _runner_or_raise(capability)
+    _require_build_tools()
+
+    job = job_id_for(model)
+    with _lock:
+        # A second Download on a model already being fetched joins the first.
+        # Two `snapshot_download` runs over one cache directory is not a
+        # faster download, it is a race for the same `.incomplete` files.
+        if model in _downloads:
+            return {"jobId": job, "model": model, "state": "downloading"}
+        _downloads[model] = {"model": model, "capability": capability,
+                             "jobId": job, "startedAt": time.time()}
+    _report(job, title=model, state="running", kind="download", cancellable=True,
+            unit="bytes", detail="Preparing…", done=None, total=None)
+    threading.Thread(target=_fetch_only, args=(runner, model, job),
+                     name=f"ai-fetch-{capability}", daemon=True).start()
+    return {"jobId": job, "model": model, "state": "downloading"}
 
 
 def image_job_id(uid: str) -> str:
@@ -949,23 +978,35 @@ def _wait_ready(model: str, capability: str, job: str) -> Worker:
 
     The load reports to its OWN row (`sys:ai-model:<repo>`, with the download's
     byte counts); this row says only that the image is waiting on it. Two rows,
-    two truths, and the manager shows both.
+    two truths, and the manager shows both — but BOTH rows have to be able to
+    say the same failure, which is what `_start_resident` returning the record
+    is for (D266).
     """
-    started = load(model, capability)
+    started, pending = _start_resident(model, capability)
     deadline = time.monotonic() + LOAD_WAIT_TIMEOUT_S
     while time.monotonic() < deadline:
         worker = ready_worker(capability, model)
         if worker is not None:
             return worker
+        # Every read in ONE critical section, because `_bring_up`'s failure path
+        # writes them in one: it stamps the error on the record AND drops the
+        # record from the table without releasing the lock between. Read apart,
+        # a waiter could catch the table already emptied and the error not yet
+        # written, and report a phantom eviction for a load that failed with a
+        # real message — the bug this ordering exists to make impossible.
         with _lock:
-            current = _workers.get(capability)
-        if current is None or current.model != model:
+            state, error, detail = pending.state, pending.error, pending.detail
+            evicted = _workers.get(capability) is not pending
+        if state == "error":
+            raise SupervisorError(error or "the model failed to load")
+        if evicted:
+            # Genuinely taken away rather than broken: another model claimed the
+            # capability, or an unload landed. The record we hold never errored,
+            # so there is no better answer than what happened to it.
             raise SupervisorError(f"{model} was unloaded before it could be used")
-        if current.state == "error":
-            raise SupervisorError(current.error or "the model failed to load")
         if _cancel_requested(job):
             raise SupervisorError("cancelled")
-        _report(job, detail=f"Waiting for {model} — {current.detail or current.state}…")
+        _report(job, detail=f"Waiting for {model} — {detail or state}…")
         time.sleep(0.5)
     raise SupervisorError(
         f"{model} did not finish loading in time (watch {started['jobId']})")

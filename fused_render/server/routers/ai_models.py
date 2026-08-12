@@ -982,16 +982,11 @@ def _delete_revision(repo_dir: str, revision: object) -> int:
 # -- endpoints -----------------------------------------------------------------
 
 
-@router.get("/api/ai-models/status")
-def api_ai_models_status():
-    """Cheap availability probe for the sidebar entry — one isdir(), no walk.
-
-    False on a machine that has never pulled from the Hub, which is what keeps
-    the row out of that sidebar; the page itself still answers (with an empty
-    state) if the URL is opened directly.
-    """
-    cache_dir = hub_cache_dir()
-    return {"available": os.path.isdir(cache_dir), "cacheDir": canonical_fs_path(cache_dir)}
+# GET /api/ai-models/status was here: one isdir(), answering "does this machine
+# have a hub cache at all" for the sidebar entry's gate. The entry is
+# unconditional now (HF-8, D265) and nothing else ever asked, so the probe went
+# with its only caller — `GET /api/ai-models` reports the same fact as `exists`
+# for the page's empty state, which is the one reader left.
 
 
 @router.get("/api/ai-models")

@@ -401,8 +401,20 @@ find "$APP_DIR/Contents/Resources/lib" -type d -name __pycache__ -prune \
   -exec rm -rf {} +
 # Installer/dev tooling the app never runs: no pip in the bundle by design
 # (SPEC §19 DP-3 — the Deploy surface uses the baked-in CLI, not pip).
+#
+# `_distutils_hack` + `distutils-precedence.pth` are setuptools' distutils shim,
+# installed as top-level names BESIDE the `setuptools/` package rather than
+# inside it — so deleting setuptools alone left an orphaned hack with nothing
+# behind it, and that orphan was not inert. Any python started with this bundle
+# on its path (uv's build-isolation interpreters, before D266 taught
+# `_env_install_worker` to scrub PYTHONHOME) imported the app's frozen copy in
+# place of the one shipped with the setuptools actually doing the build, and
+# every source build died on `No module named 'jaraco.text'`. The env scrub is
+# the fix; this is the other half — a shim for a package that is not here has no
+# reason to ship.
 rm -rf "$PRUNE_PYLIB/pip" "$PRUNE_PYLIB/setuptools" "$PRUNE_PYLIB/wheel" \
-       "$PRUNE_PYLIB/pkg_resources" "$PRUNE_PYLIB/PyObjCTest"
+       "$PRUNE_PYLIB/pkg_resources" "$PRUNE_PYLIB/PyObjCTest" \
+       "$PRUNE_PYLIB/_distutils_hack" "$PRUNE_PYLIB/distutils-precedence.pth"
 # The copied Python.framework: stdlib test suite + developer-only modules +
 # C headers. The app's own stdlib lives here (Resources/lib holds packages),
 # so prune surgically, never wholesale.
@@ -410,7 +422,9 @@ FW_LIB="$PRUNE_FRAMEWORK/Versions/3.12/lib/python3.12"
 rm -rf "$FW_LIB/test" "$FW_LIB/idlelib" "$FW_LIB/ensurepip" \
        "$FW_LIB/lib2to3" "$FW_LIB/tkinter" \
        "$FW_LIB/site-packages/pip" "$FW_LIB/site-packages/setuptools" \
-       "$FW_LIB/site-packages/wheel"
+       "$FW_LIB/site-packages/wheel" \
+       "$FW_LIB/site-packages/_distutils_hack" \
+       "$FW_LIB/site-packages/distutils-precedence.pth"
 rm -rf "$PRUNE_FRAMEWORK/Versions/3.12/include" \
        "$PRUNE_FRAMEWORK/Versions/3.12/Headers" \
        "$PRUNE_FRAMEWORK/Versions/3.12/share" \

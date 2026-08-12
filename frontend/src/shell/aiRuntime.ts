@@ -4,8 +4,10 @@
 // Two readers, one poll. The sidebar needs a single bit — is anything loaded —
 // and the page needs the whole table; polling twice would be two requests a
 // second for one in-memory answer, and worse, they would disagree for a beat
-// after a load or an unload. So the poll lives here and both subscribe, the same
-// publish/subscribe shape `useAiModelsAvailable` already uses for the cache gate.
+// after a load or an unload. So the poll lives here and both subscribe: one
+// module-level record, a listener set, and a `publish` that writes both — which
+// is also what lets a load STARTED on the page reach a sidebar that never
+// polled for it.
 //
 // The cadence follows the state, not the clock: while something is loading or
 // downloading the numbers move every second, and while nothing is happening
