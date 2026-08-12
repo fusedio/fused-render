@@ -15,6 +15,7 @@ import importlib.util
 import json
 import os
 import threading
+import time
 import urllib.error
 import urllib.request
 
@@ -517,3 +518,62 @@ def test_the_image_recipe_keeps_the_config_it_needs_to_load():
     assert '"transformer/*"' not in source, "the whole subfolder is ignored again"
     assert '"transformer/*.safetensors"' in source
     assert '"skip"' in source
+
+
+# -- the heartbeat --------------------------------------------------------------
+
+
+def test_a_slow_generation_keeps_its_row_alive(base, monkeypatch):
+    """A row is called stalled after 30s of silence, and a denoiser is slower.
+
+    The image runner reports once per denoising step. A FLUX step on a laptop
+    routinely takes longer than the whole stale window, so a render that was
+    progressing perfectly announced, at step 1 of 3, that nobody was reporting
+    it. AI-5b already made this rule for downloads ("the poll doubles as the
+    heartbeat"); this is it reaching the other reporter.
+    """
+    sent = []
+    monkeypatch.setattr(base, "HEARTBEAT_S", 0.02)
+    monkeypatch.setattr(base, "report", lambda job=None, **f: sent.append((job, f)))
+
+    # One real tick, then a long silence — exactly the shape of a slow step.
+    base._last_report.update(job="sys:ai-image:abc",
+                             fields={"done": 1, "total": 3, "detail": "step 1/3"})
+    with base.heartbeat():
+        time.sleep(0.2)
+
+    assert sent, "the row went un-touched through a slow generation"
+    job, fields = sent[0]
+    assert job == "sys:ai-image:abc"
+    # The SAME payload: a tick that learned nothing must not move the bar.
+    assert fields == {"done": 1, "total": 3, "detail": "step 1/3"}
+
+
+def test_the_heartbeat_stops_with_the_work(base, monkeypatch):
+    """It must not keep touching a row after the generation returns — that would
+    be the same lie in the other direction."""
+    sent = []
+    monkeypatch.setattr(base, "HEARTBEAT_S", 0.02)
+    monkeypatch.setattr(base, "report", lambda job=None, **f: sent.append((job, f)))
+    base._last_report.update(job="j", fields={"done": 1})
+
+    with base.heartbeat():
+        time.sleep(0.1)
+    settled = len(sent)
+    time.sleep(0.1)
+
+    assert len(sent) == settled, "the heartbeat outlived the work it was for"
+
+
+def test_a_finished_row_is_never_re_reported(base, monkeypatch):
+    """A terminal state is the end of the row's life. Repeating it would revive
+    a record the manager had already retired."""
+    sent = []
+    monkeypatch.setattr(base, "HEARTBEAT_S", 0.02)
+    monkeypatch.setattr(base, "report", lambda job=None, **f: sent.append((job, f)))
+    base._last_report.update(job="j", fields={"state": "done", "detail": "Saved"})
+
+    with base.heartbeat():
+        time.sleep(0.1)
+
+    assert sent == [], "a finished row was kept alive by its own heartbeat"

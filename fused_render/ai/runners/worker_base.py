@@ -35,6 +35,7 @@ stub callables standing in for the model.
 """
 
 import argparse
+import contextlib
 import fnmatch
 import http.server
 import json
@@ -108,6 +109,18 @@ class Cancelled(Exception):
 # ------------------------------------------------------- reporting to the app
 
 
+#: The last thing `report` sent, so `heartbeat` can send it again. One slot:
+#: a worker reports about one piece of work at a time.
+_last_report = {}
+_last_report_lock = threading.Lock()
+
+#: How often a heartbeat re-sends it. Well under `jobs.STALE_AFTER_S` (30s) —
+#: the number that matters is the GAP between real ticks, and for a denoiser
+#: that gap is one step, which on a laptop is routinely longer than the whole
+#: stale window.
+HEARTBEAT_S = 5.0
+
+
 def report(job=None, **fields):
     """One progress tick to the download manager. Never raises, never blocks long.
 
@@ -123,6 +136,11 @@ def report(job=None, **fields):
     job = job or JOB_ID
     if not job or not JOB_URL.startswith("http"):
         return None
+    # Remembered before the send, so a heartbeat repeats what we MEANT to say
+    # even if this particular tick never landed.
+    with _last_report_lock:
+        _last_report.clear()
+        _last_report.update(job=job, fields=dict(fields))
     body = json.dumps({"id": job, **fields}).encode()
     request = urllib.request.Request(
         JOB_URL, data=body,
@@ -135,6 +153,53 @@ def report(job=None, **fields):
     except (urllib.error.URLError, OSError, ValueError):
         return None
     return record if isinstance(record, dict) else None
+
+
+@contextlib.contextmanager
+def heartbeat():
+    """Keep the job row alive for as long as the body runs.
+
+    A row with no update in `jobs.STALE_AFTER_S` (30s) is reported as "no longer
+    reporting", which is true of a page that was closed and a LIE about a worker
+    that is simply slow. The image runner reports once per denoising step, and a
+    FLUX step on a laptop routinely takes longer than the whole stale window — so
+    a render that was progressing perfectly announced, at step 1 of 3, that
+    nobody was reporting it.
+
+    This is AI-5b's rule ("the poll doubles as the heartbeat") applied where it
+    was missing. It lives in the base rather than in the denoiser because the
+    property that causes it — progress whose natural granularity is coarser than
+    30 seconds — belongs to the CONTRACT, and the next runner to have it should
+    not have to rediscover this.
+
+    Deliberately re-sends the LAST payload rather than inventing a new one: the
+    bar must not move on a tick that learned nothing, and repeating `done`/
+    `total` is what "still here, still on this step" looks like. Plain `report`,
+    never `report_or_cancel` — a `Cancelled` raised on a timer thread is raised
+    at nobody. The ✕ is still honoured where it always was, in the generating
+    thread's own tick.
+    """
+    stop = threading.Event()
+
+    def beat():
+        while not stop.wait(HEARTBEAT_S):
+            with _last_report_lock:
+                if not _last_report:
+                    continue
+                job = _last_report["job"]
+                fields = dict(_last_report["fields"])
+            # A terminal state is never repeated: the work is over and the row
+            # is not ours to keep touching.
+            if fields.get("state") in ("done", "error", "cancelled"):
+                continue
+            report(job=job, **fields)
+
+    thread = threading.Thread(target=beat, name="heartbeat", daemon=True)
+    thread.start()
+    try:
+        yield
+    finally:
+        stop.set()
 
 
 def report_or_cancel(job=None, **fields):
@@ -481,7 +546,7 @@ def _handler(generate, streaming):
             stream. An image is not a sequence of tokens, and pretending it is
             would buy nothing — its progress is steps, and those go to the job
             row where the download manager can already draw them."""
-            with GENERATE_LOCK:
+            with GENERATE_LOCK, heartbeat():
                 CANCEL.clear()
                 try:
                     self._json({"ok": True, "result": generate(body)})
@@ -504,7 +569,7 @@ def _handler(generate, streaming):
                 self.wfile.write(f"{len(line):X}\r\n".encode() + line + b"\r\n")
                 self.wfile.flush()
 
-            with GENERATE_LOCK:
+            with GENERATE_LOCK, heartbeat():
                 CANCEL.clear()
                 try:
                     generate(body, write)

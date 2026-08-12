@@ -5805,6 +5805,22 @@ an AI Models page that could say what was on disk but not what was *running*.
   names neither what to install nor why a download wanted it. Both are knowable
   before a job row exists, so both are a 409 on the request with a sentence the
   page can show.
+- **AI-5h** **Every reporter heartbeats, because "no longer reporting" must
+  never be said about work that is simply slow.** A row untouched for
+  `STALE_AFTER_S` (30s) is reported as stalled — true of a page that was closed,
+  a LIE about a worker mid-step. AI-5b made a download's disk poll double as its
+  heartbeat; the image runner reports once per DENOISING STEP, and a FLUX step on
+  a laptop routinely takes longer than the whole stale window, so a render that
+  was progressing perfectly announced at **step 1 of 3** that nobody was
+  reporting it. The heartbeat therefore lives in `worker_base` and wraps every
+  generation, because the property that causes this — progress whose natural
+  granularity is coarser than the stale window — belongs to the CONTRACT rather
+  than to one denoiser. It re-sends the LAST payload, never an invented one (a
+  tick that learned nothing must not move the bar), it is plain `report` and
+  never `report_or_cancel` (a `Cancelled` raised on a timer thread is raised at
+  nobody — the ✕ is still honoured in the generating thread's own tick), and it
+  never repeats a TERMINAL state, which would revive a row the manager had
+  already retired.
 - **AI-6** **Availability is answered with a REASON.** MLX is Apple-Silicon-only,
   so `available()` returns "needs Apple Silicon — MLX runs on Metal only (this is
   linux/x86_64)", and resolution SKIPS an unavailable runner rather than picking
