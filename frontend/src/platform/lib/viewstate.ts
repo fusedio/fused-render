@@ -39,3 +39,40 @@ export function setViewState(path: string, search: string): void {
   else delete map[path];
   save(map);
 }
+
+// Drop a param from EVERY entry — the shape a retirement takes here. A key the
+// app no longer reads is not harmless: it stays in storage forever, it is the
+// thing a later reader misinterprets, and while it is there the old behaviour
+// is one accidental read away from coming back.
+//
+// Pure, and separate from the storage below, for a testing reason: there is no
+// localStorage in the bun suite, so the rewriting of every folder's query
+// string — the part with rules (see the empty-entry case) — has to be reachable
+// without one. Returns a new map; the caller decides whether to write it.
+//
+// An entry left with no params at all is DELETED rather than stored as "?" or
+// "": setViewState already treats an empty search as absence, so keeping one
+// would be an entry that says nothing and a map that only ever grows.
+export function stripParam(map: Record<string, string>, name: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [path, search] of Object.entries(map)) {
+    const s = new URLSearchParams(search);
+    s.delete(name);
+    const qs = s.toString();
+    if (qs) out[path] = "?" + qs;
+  }
+  return out;
+}
+
+// The one-time purge itself: strip these params from the whole store, once, at
+// the module init of whoever owned them. Cheap enough to run unconditionally on
+// every load (one read, one write of a map that holds a query string per folder
+// the user has visited), which is why there is no "have I already done this?"
+// flag — a flag is a second piece of state that can itself go stale, and this
+// migration is idempotent by construction.
+export function purgeViewStateParams(...names: string[]): void {
+  const map = load();
+  let out = map;
+  for (const name of names) out = stripParam(out, name);
+  save(out);
+}
