@@ -130,7 +130,9 @@ def _remove_stale_locks():
     import glob
     git_dir = os.path.join(CACHE_REPO, ".git")
     for lock in (glob.glob(os.path.join(git_dir, "*.lock"))
-                 + glob.glob(os.path.join(git_dir, "info", "*.lock"))):
+                 + glob.glob(os.path.join(git_dir, "info", "*.lock"))
+                 + glob.glob(os.path.join(git_dir, "refs", "**", "*.lock"),
+                             recursive=True)):
         try:
             os.unlink(lock)
         except OSError:
