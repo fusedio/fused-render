@@ -11,9 +11,16 @@
 //   3. no entry file at all — the Home grid's tinted monogram, so a card is
 //      never blank.
 //
+// The precedence is a FALLBACK CHAIN, not a fixed choice, and it has to be:
+// `preview_image` says a file of that name exists and is non-empty, not that it
+// decodes. A corrupt or half-written PNG in an <img> renders as nothing, so a
+// wrongly-confident step 1 would be a permanently blank card — strictly worse
+// than the live render it replaced. An image error drops to step 2.
+//
 // Display-only either way: a pointer-events shield keeps every click on the
 // card, which opens the app. Both the iframe and the image are lazy, so a big
 // workspace doesn't load everything at once.
+import { useState } from "react";
 import type { AppInfo } from "@platform/lib/api";
 import { rawUrl } from "@platform/lib/api";
 import { hrefFor, onAppCardClick, openTargetFor } from "@platform/lib/appEntry";
@@ -37,6 +44,9 @@ export function AppPreviewCard({
 }) {
   const title = app.title || app.name;
   const ago = timeAgo(app.updated_at);
+  // Set when the authored thumbnail fails to decode — see the fallback chain in
+  // the module comment. One-way: a retry would loop on a file that is broken.
+  const [shotFailed, setShotFailed] = useState(false);
   // An anchor, not a button — see AppCard. The href is what makes middle-click
   // and "Open in new tab" land on the same place a left click does.
   return (
@@ -59,13 +69,14 @@ export function AppPreviewCard({
         </span>
       </span>
       <span className="app-pcard-thumb" aria-hidden="true">
-        {app.preview_image ? (
+        {app.preview_image && !shotFailed ? (
           <>
             <img
               className="app-pcard-shot"
               src={rawUrl(app.preview_image)}
               alt=""
               loading="lazy"
+              onError={() => setShotFailed(true)}
             />
             {/* The same shield the iframe gets. An <img> swallows no clicks of
                 its own, but it DOES carry the browser's native drag-the-image

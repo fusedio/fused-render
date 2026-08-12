@@ -14,6 +14,12 @@ import { navigate, navigateUrl, urlForFsPath, EMBED_PREFIX, VIEW_PREFIX } from "
 import { listDir, rawUrl, statPath } from "@platform/lib/api";
 import type { FsEntry } from "@platform/lib/api";
 import { basename } from "@platform/lib/format";
+import {
+  bestPeekFile,
+  isPreviewImage,
+  peekRank,
+  peekRankIsUnbeatable,
+} from "@apps/explorer/lib/folder-peek";
 import { iconForEntry } from "@platform/ui/FileIcons";
 import { armBookmark, isBookmarkMissing, splitBookmarkUrl } from "@platform/lib/bookmarks";
 import type { Bookmark } from "@platform/lib/bookmarks";
@@ -92,54 +98,30 @@ function teaserEntries(entries: FsEntry[]): FsEntry[] {
 // How many subfolders a file-less folder probes for something to peek at.
 const APP_PROBE_LIMIT = 3;
 
-// The authored thumbnail (fused_render/app_listing.PREVIEW_IMAGE_NAME). It
-// outranks every extension below, including an html: a folder that ships one
-// has said what its picture is, and no live render of its page can beat that.
-// Matched by whole NAME, not by extension — any other .png in the folder is
-// just a file, and would be a poor guess at what the folder is about.
-const PREVIEW_IMAGE_NAME = "preview.png";
-
-// Peek priority for everything else: an html (the folder is a fused-app — show
-// the app itself) beats an md (the folder's story) beats a json beats anything
-// else. Ranks are offset by one so `preview.png` can sit at 0, above them all.
-const PEEK_EXT_ORDER = ["html", "htm", "md", "markdown", "json"];
-
-export function peekRank(name: string): number {
-  if (name.toLowerCase() === PREVIEW_IMAGE_NAME) return 0;
-  const dot = name.lastIndexOf(".");
-  const ext = dot === -1 ? "" : name.slice(dot + 1).toLowerCase();
-  const idx = PEEK_EXT_ORDER.indexOf(ext);
-  return 1 + (idx === -1 ? PEEK_EXT_ORDER.length : idx);
-}
-
-// A peeked file that is the authored image is shown AS an image, not framed in
-// an embed iframe: the embed would be a whole shell page load to render one
-// <img>, and its own chrome around it.
-export function isPreviewImage(fsPath: string): boolean {
-  const name = fsPath.slice(fsPath.lastIndexOf("/") + 1);
-  return name.toLowerCase() === PREVIEW_IMAGE_NAME;
-}
-
 // Display-only image thumbnail, in the same box (and with the same shield) the
 // scaled iframe gets.
-function ImagePreview({ src }: { src: string }) {
+//
+// `onError` is not defensive noise: a `preview.png` the server reported can
+// still be a corrupt or half-written PNG, and an <img> that fails renders as
+// nothing at all — a permanently blank card, with no path back to the live
+// render because THIS component was chosen instead of it. Falling back to the
+// caller's iframe on the error keeps the old guarantee that a card is never
+// blank.
+function ImagePreview({ src, fallback }: { src: string; fallback: ReactNode }) {
+  const [failed, setFailed] = useState(false);
+  if (failed) return <>{fallback}</>;
   return (
     <span className="fhb-preview" aria-hidden="true">
-      <img className="fhb-shot" src={src} alt="" loading="lazy" />
+      <img
+        className="fhb-shot"
+        src={src}
+        alt=""
+        loading="lazy"
+        onError={() => setFailed(true)}
+      />
       <span className="fhb-shield" />
     </span>
   );
-}
-
-// The file worth peeking at among a folder's teaser entries: best extension
-// rank wins; entries arrive alphabetically sorted, so ties keep the first.
-export function bestPeekFile(entries: FsEntry[]): FsEntry | null {
-  let best: FsEntry | null = null;
-  for (const e of entries) {
-    if (e.is_dir) continue;
-    if (!best || peekRank(e.name) < peekRank(best.name)) best = e;
-  }
-  return best;
 }
 
 // The stack body of a folder card: back-to-front fanned chips over an
@@ -192,7 +174,11 @@ function FolderStack({ path }: { path: string }) {
         const rank = peekRank(f.name);
         if (!best || rank < best.rank)
           best = { path: joinPath(subPath, f.name), rank, dir: d.name };
-        if (rank === 0) break; // the authored preview.png — nothing outranks it
+        // Stop as soon as nothing later can beat this — an authored image, or
+        // a page, which is what "there is a fused app in here" looks like. One
+        // listDir instead of three per card, which on an rclone/NFS target is
+        // the difference between a card and a stalled mount listing.
+        if (peekRankIsUnbeatable(rank)) break;
       }
       setSubPeek(best ? { path: best.path, dir: best.dir } : null);
     })();
@@ -219,11 +205,15 @@ function FolderStack({ path }: { path: string }) {
   // The front sheet's body, under its title row: the peeked view, or (once
   // settled with nothing to peek) a count so the card isn't a void. Either way
   // it is ONE preview per card — the back sheets load nothing (see below).
+  const livePeek = peekPath ? <LivePreview src={embedUrlForFsPath(peekPath)} /> : null;
   const body = peekPath ? (
     isPreviewImage(peekPath) ? (
-      <ImagePreview src={rawUrl(peekPath)} />
+      // A broken image falls back to the embed of that same path, which renders
+      // the file through the shell — worst case its own error state, never a
+      // blank card.
+      <ImagePreview src={rawUrl(peekPath)} fallback={livePeek} />
     ) : (
-      <LivePreview src={embedUrlForFsPath(peekPath)} />
+      livePeek
     )
   ) : settled ? (
     <span className="fhb-sheet-note">

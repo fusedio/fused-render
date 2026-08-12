@@ -15,6 +15,7 @@ list it as a folder" — see `app_dict`.
 import html
 import os
 import re
+import stat
 
 _TITLE_RE = re.compile(rb"<title[^>]*>(.*?)</title>", re.IGNORECASE | re.DOTALL)
 
@@ -42,20 +43,41 @@ def app_entry(dir_path: str) -> str | None:
 #
 # Exactly one name, not a search over `preview.*` or `screenshot.*`: a user
 # adding a thumbnail should never have to work out which of several candidates
-# wins, and a fixed name is also what makes "is there one" a single stat.
+# wins. Matched EXACTLY, case included — see `app_preview_image` for why that
+# costs a listdir rather than a stat.
 PREVIEW_IMAGE_NAME = "preview.png"
 
 
 def app_preview_image(dir_path: str) -> str | None:
     """The app folder's authored thumbnail (`preview.png` at its root), or None.
 
-    Unlike `app_entry` this swallows nothing it needs to distinguish: `isfile`
-    is False for a missing file, an unreadable one and a DIRECTORY of that name
-    alike, and all three mean the same thing to the caller — there is no picture
-    to show, fall back to the live render.
+    Resolved by LISTING the directory rather than probing the path, and the
+    reason is case: `os.path.isfile` inherits the filesystem's own case-folding,
+    so a `Preview.png` would be a thumbnail on macOS/Windows and not on ext4 —
+    the same folder answering differently per machine, and disagreeing with the
+    explorer's peek rule (apps/explorer/lib/folder-peek.ts), which compares the
+    name exactly. An exact membership test is the only rule both sides can hold.
+
+    Zero-length is treated as absent. A truncated or interrupted write leaves a
+    file `isfile` is perfectly happy with, and a non-null answer here is
+    load-bearing in a way the entry rule's is not: the card's fallbacks (the
+    live render, the monogram) are only reachable while this is None, so a
+    wrongly-confident path is a permanently broken image rather than a
+    degraded one. It is not a validity check and does not pretend to be — a
+    corrupt non-empty PNG still gets through, which is why both card surfaces
+    also carry an onError fallback.
+
+    Never raises: an unreadable or vanished directory is "no picture", which is
+    exactly what the caller renders.
     """
-    p = os.path.join(dir_path, PREVIEW_IMAGE_NAME)
-    return os.path.abspath(p) if os.path.isfile(p) else None
+    try:
+        if PREVIEW_IMAGE_NAME not in os.listdir(dir_path):
+            return None
+        p = os.path.join(dir_path, PREVIEW_IMAGE_NAME)
+        st = os.stat(p)
+    except OSError:
+        return None
+    return os.path.abspath(p) if stat.S_ISREG(st.st_mode) and st.st_size > 0 else None
 
 
 def app_dict(path: str, name: str, tag: str, entry_html: str | None) -> dict:

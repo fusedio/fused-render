@@ -188,12 +188,36 @@ def test_a_directory_named_preview_png_is_not_a_preview(tmp_path):
     assert app["preview_image"] is None
 
 
-def test_the_preview_name_is_exact_and_case_sensitive_extension_aside(tmp_path):
+def test_only_that_one_name_is_a_preview(tmp_path):
     """Only `preview.png` — not preview.jpg, not screenshot.png. One name, so a
     user adding one never has to guess which of several the card will pick."""
     d = _app(tmp_path / "local", "other")
     (d / "preview.jpg").write_bytes(b"\xff\xd8\xff")
     (d / "screenshot.png").write_bytes(b"\x89PNG\r\n\x1a\n")
+
+    (app,) = app_listing.two_level_apps(tmp_path)
+    assert app["preview_image"] is None
+
+
+def test_the_name_match_is_case_sensitive_on_every_filesystem(tmp_path):
+    """`Preview.png` is not `preview.png`, and it must not become one on a
+    case-INSENSITIVE filesystem (macOS, Windows) — an `os.path.isfile` probe
+    would say yes there and no on ext4, so the same folder would get a thumbnail
+    on one machine and not another. The frontend's own peek rule compares the
+    name exactly, and this is the half that has to meet it."""
+    d = _app(tmp_path / "local", "shouty")
+    (d / "Preview.png").write_bytes(b"\x89PNG\r\n\x1a\n")
+
+    (app,) = app_listing.two_level_apps(tmp_path)
+    assert app["preview_image"] is None
+
+
+def test_an_empty_preview_file_is_no_preview(tmp_path):
+    """An interrupted write leaves a zero-byte file. `isfile` is happily True
+    for it, and the card would then render a permanently broken <img> with no
+    way back to the live render — the fallbacks only exist while this is None."""
+    d = _app(tmp_path / "local", "torn")
+    (d / "preview.png").write_bytes(b"")
 
     (app,) = app_listing.two_level_apps(tmp_path)
     assert app["preview_image"] is None
