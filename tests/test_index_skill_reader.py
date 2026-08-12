@@ -30,6 +30,32 @@ def _reader():
     return namespace
 
 
+# ------------------------------------------------------------- the skill itself
+
+def test_the_frontmatter_description_stays_two_lines():
+    """It is what the dispatcher routes on, not documentation — it was ~880
+    characters of trigger list, which is a paragraph nobody reads."""
+    description = SKILL.split("description:", 1)[1].split("\n", 1)[0].strip()
+    assert len(description) < 420, len(description)
+
+
+def test_the_skill_documents_only_the_two_bridge_methods():
+    # The doc is where an author learns the surface, so a removed method left
+    # documented is worse than one left implemented.
+    # The old name survives in exactly one place, on purpose: the pitfall for a
+    # reader who came looking for it.
+    assert SKILL.count("fused.index.") == 1
+    assert "Looking for `fused.index.*`" in SKILL
+    for gone in ("stats(", "lookup(", "status(", "scan(", "cancel(", "config.",
+                 "repos("):
+        assert "fused.fileIndex." + gone not in SKILL, gone
+    # And the routes behind them have to stay documented, since raw HTTP is now
+    # the only way to reach them.
+    for route in ("/api/index/scan", "/api/index/cancel", "/api/index/config",
+                  "/api/git-repos", "/api/index/status"):
+        assert route in SKILL, route
+
+
 # --------------------------------------------------------------- the JS example
 
 def test_every_section_cross_reference_names_a_section_that_exists():
@@ -43,7 +69,7 @@ def test_every_section_cross_reference_names_a_section_that_exists():
 
 
 def test_the_per_keystroke_example_guards_its_own_renders():
-    """`fused.index.*` has no supersede channel (runPython's D114 is not shared),
+    """`fused.fileIndex.*` has no supersede channel (runPython's D114 is not it),
     so the copy-pasted example must not let a slower earlier query win."""
     example = SKILL.split("### The canonical shape", 1)[1].split("```", 2)[1]
     assert "let generation = 0;" in example

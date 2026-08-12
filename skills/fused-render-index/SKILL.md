@@ -1,6 +1,6 @@
 ---
 name: fused-render-index
-description: How to read fused-render's file index from an app — the `fused.index.*` JS bridge for interactive UI, and a copy-paste duckdb reader for bulk Python that reads the store's parquet directly. Use whenever a page or script needs to search, count, aggregate, or list files across the machine rather than one folder; whenever the user asks for a file search box, a disk-usage or file-type breakdown, a "find all my X files" view, a repos/projects list, or SQL over their filesystem; whenever they mention the index, indexing, a scan, ~/.fused-render/index, partitions.json, dirs.parquet, /api/index/*, or /api/git-repos; and whenever an app carries its own filesystem-scanning engine that should be deleted in favour of this one. For writing the .html/.py files themselves use `fused-render-authoring`; for binding a preview template to an extension use `fused-render-custom-templates`.
+description: Read fused-render's machine-wide file index instead of walking the filesystem — the `fused.fileIndex.search/query` JS bridge, and a copy-paste duckdb reader for bulk Python. Use for a file search box, a disk-usage or file-type breakdown, a repos list, SQL over the filesystem, or any mention of the index, a scan, partitions.json or /api/index/*.
 ---
 
 # Reading the fused-render file index
@@ -11,9 +11,9 @@ Two ways in, and the choice is not stylistic:
 
 | Need | Path |
 |---|---|
-| Interactive UI reads — a search box, stat tiles, a result table, paging | **`fused.index.*`** (JS). No subprocess per keystroke; readiness and server-side screening are included. |
+| Interactive UI reads — a search box, stat tiles, a result table, paging | **`fused.fileIndex.*`** (JS). No subprocess per keystroke; readiness is included. |
 | Bulk/analytical reads that stay in Python — aggregate the whole index, join it against another parquet, feed pandas/geopandas | **Read the parquet directly** with duckdb. A 200-row JSON response is the wrong shape *and* the wrong bottleneck. |
-| Writes — start a scan, cancel one, edit roots/ignore | **HTTP** (`fused.index.scan` / `cancel` / `config.set`). Never write into the store directory yourself. |
+| Writes and index management — start a scan, cancel one, edit roots/ignore, the repos list | **Raw `fetch` + `X-Fused: 1`** (section C). Not on the bridge: managing the index is a shell action, not a render path. Never write into the store directory yourself. |
 
 ## The readiness rule (read this before anything else)
 
@@ -24,23 +24,20 @@ An index query answers **zero rows** both when nothing matches and when no index
 
 The JS bridge hands you that distinction on every call; the Python reader gets it by returning `(None, None)` for a store with nothing to read yet. Neither treats "no index" as an error — it is a state you render.
 
-## A. The JS bridge: `fused.index.*`
+## A. The JS bridge: `fused.fileIndex.*`
 
-Injected with the rest of `window.fused` — no script tag, no fetch, no `X-Fused` header to remember (the bridge sends it on every POST for you).
+Injected with the rest of `window.fused` — no script tag, no fetch, no `X-Fused` header to remember (the bridge sends it on the `query` POST for you).
+
+**Two methods, and that is the whole bridge:**
 
 | Call | Answers |
 |---|---|
-| `await fused.index.stats({root})` | Totals + per-extension breakdown for one subtree: `{rows, dirs, total_size, types: [{ext, n, size}], updated, last_root, empty}`. `root` defaults to the last-scanned root. |
-| `await fused.index.lookup({q, limit, offset, sort})` | Files whose **path** matches `q`: `{rows: [{path, dir, name, ext, size, mtime}], total, empty, scanned_partitions, of_partitions}`. `q` is a substring, `*` is a wildcard, and a `q` starting with `/`, `~` or a drive letter is anchored at the start. `sort` is one of `path` / `size` / `mtime` (default) / `name`. |
-| `await fused.index.search({root, q, limit})` | The in-folder corpus for `root`, in `/api/fs/walk`'s entry shape: `{entries: [{rel, is_dir, size, mtime}], covered, fresh, age_s, truncated}`. This is the explorer's own search source — reach for it when you want *one folder's* tree, not a machine-wide match. |
-| `await fused.index.query({sql, limit})` | One **read-only** SQL statement over the `files` and `dirs` views: `{columns, rows, truncated}`. The real workhorse for anything shaped like a report. |
-| `await fused.index.status({runId, since})` | `{indexed, has_index, scanning, files_indexed, last_completed_at, phase, files, dirs, run_id, error, …}` — the live scan readout, plus `events`/`cursor` when you pass the `runId` a `scan()` returned. `error` is **data** (the last run's failure sentence, to render), not a rejection. With no `runId` it answers for the most recent *running* run, which is what a page that just loaded wants. |
-| `await fused.index.scan({root, full})` | Start a scan; `{run_id, root, runs}`. No `root` means every configured root. `full: true` discards the reuse cache. |
-| `await fused.index.cancel({runId})` | Cancel a run by id. |
-| `await fused.index.config.get()` / `.set({roots, ignore})` | `{roots, configured_roots, ignore, defaults, location}`. A `set` that changes the rules starts reconciling rescans and says so (`needs_rescan`, `rescan_run_ids`). |
-| `await fused.index.repos()` | Git repositories on the machine: `{repos: [{path}], indexed, reason, scanning, stale}`. See section D — do not rewrite this query yourself. |
+| `await fused.fileIndex.search({root, q, limit})` | The in-folder corpus for `root`, in `/api/fs/walk`'s entry shape: `{entries: [{rel, is_dir, size, mtime}], covered, fresh, age_s, truncated}`. This is the explorer's own search source — reach for it when you want *one folder's* tree, not a machine-wide match. Cheap enough to call per keystroke. |
+| `await fused.fileIndex.query({sql, limit})` | One **read-only** SQL statement over the `files` and `dirs` views: `{columns, rows, truncated}` — `rows` are arrays, positional to `columns`. Everything machine-wide: totals, per-extension breakdowns, a path match, a report. `limit` defaults to 200 and caps at 5000. |
 
-**Every one of them also resolves with `ready`:**
+Why only two. `query` *is* the totals and the path lookup — `/api/index/stats` and `/api/index/lookup` are SELECTs over the same two views, so wrapping them was a second spelling of one capability. Readiness rides on both responses, so a `status` method would have been surface without capability. And starting a scan, editing roots/ignore, or listing repos is **index management**: a shell action, reachable by raw `fetch` with `X-Fused: 1` (section C) for the rare page that genuinely means it, not something a render path should reach for by accident.
+
+**Both of them also resolve with `ready`:**
 
 ```js
 ready = { indexed, scanning, stale, reason }
@@ -51,9 +48,11 @@ ready = { indexed, scanning, stale, reason }
 - `stale` — the answer may be behind the filesystem (a scan running, or a slice built under superseded ignore rules). It never means "identical to the filesystem" — an index is always slightly behind.
 - `reason` — `"no-index"`, `"outdated"` (the rule that would produce these rows never ran, so a rebuild is coming), `"not-covered"` (the index exists but has not visited this root), or `null`.
 
-A field is `null` only where that response genuinely cannot say, never as a guess: `search()` reports `scanning: null` because it is the per-keystroke path and must not double its request count, and a failed readiness probe answers all-null rather than claiming the index is missing. Where the endpoint carries richer facts they stay on the result too — `empty`, `covered`, `fresh`, `age_s`, and `repos()`'s own `reason`.
+A field is `null` only where that response genuinely cannot say, never as a guess: `search()` reports `scanning: null` because it is the per-keystroke path and must not double its request count, and a failed readiness probe answers all-null rather than claiming the index is missing. Where the endpoint carries richer facts they stay on the result too — `covered`, `fresh`, `age_s`, `truncated`.
 
-**Two routes are deliberately not on the bridge**, both still reachable by raw `fetch` for a caller that truly means it: `POST /api/index/delete` (wiping the user's whole index is not something a page does on load) and `POST /api/index/ask` (it spends AI credits per call, so it belongs behind an explicit user action, not a render path).
+`query()` gets its envelope from one parallel `/api/index/status` GET. That probe is not billed as an app call (`calls.SKIP_PREFIXES`) and its `error` field is *data* — the last scan's failure sentence — so a crashed scan does not turn every subsequent call into a traceback.
+
+**Two routes are not reachable at all from the bridge and never were**, both still available by raw `fetch` for a caller that truly means it: `POST /api/index/delete` (wiping the user's whole index is not something a page does on load) and `POST /api/index/ask` (it spends AI credits per call, so it belongs behind an explicit user action, not a render path).
 
 ### The canonical shape: stat tiles + a paginated table
 
@@ -79,33 +78,44 @@ A field is `null` only where that response genuinely cannot say, never as a gues
     return true;
   }
 
+  // /api/index/query takes ONE sql string and no bind parameters, so a value
+  // from the user has to be quoted here. Doubling `'` is the whole rule for a
+  // SQL literal, and the guard (`fused_render/index/guarded_query.py`) accepts a
+  // single read-only statement — so a stray `;` cannot become a second one.
+  const lit = (s) => "'" + String(s).replace(/'/g, "''") + "'";
+
   async function drawTiles() {
-    const s = await fused.index.stats({});
-    if (!banner(s.ready)) return;
+    const out = await fused.fileIndex.query({
+      sql: "SELECT count(*), sum(size) FROM files",
+    });
+    if (!banner(out.ready)) return;
+    const [files, bytes] = out.rows[0];  // rows are arrays, positional to `columns`
     document.getElementById("tiles").textContent =
-      `${s.rows.toLocaleString()} files · ${s.dirs.toLocaleString()} folders · ` +
-      `${(s.total_size / 1e9).toFixed(1)} GB`;
+      `${files.toLocaleString()} files · ${(bytes / 1e9).toFixed(1)} GB`;
   }
 
   // Index calls are NOT superseded the way runPython's are (D114): nothing
-  // aborts the in-flight "ab" lookup when "abc" starts, and the broader earlier
+  // aborts the in-flight "ab" query when "abc" starts, and the broader earlier
   // query is usually the slower one — so its reply can land LAST and leave the
-  // table (and the title) showing a query the box no longer contains. One
-  // generation counter per render path is the whole guard.
+  // table showing a query the box no longer contains. One generation counter per
+  // render path is the whole guard.
   let generation = 0;
 
   async function drawRows() {
     const mine = ++generation;
-    const q = fused.params.get("q") || "";
+    const like = lit("%" + (fused.params.get("q") || "") + "%");
     const offset = parseInt(fused.params.get("offset") || "0", 10);
-    const out = await fused.index.lookup({ q, limit: PAGE, offset, sort: "size" });
+    const out = await fused.fileIndex.query({
+      sql: `SELECT name, size, dir FROM files WHERE path ILIKE ${like}
+            ORDER BY size DESC LIMIT ${PAGE} OFFSET ${offset}`,
+    });
     if (mine !== generation) return;  // a newer keystroke already owns the table
     if (!banner(out.ready)) return;
     document.getElementById("rows").innerHTML = out.rows
-      .map((r) => `<tr><td>${r.name}</td><td>${r.size}</td><td>${r.dir}</td></tr>`)
+      .map(([name, size, dir]) => `<tr><td>${name}</td><td>${size}</td><td>${dir}</td></tr>`)
       .join("");
-    // `total` is the match count, not the page — that is what pages the table.
-    document.title = `${out.total} matches`;
+    // A page of rows is not a match count. Ask for one when you need to page:
+    // SELECT count(*) FROM files WHERE path ILIKE … — a second, cheap statement.
   }
 
   // Params are the state, exactly as in any other view (`fused-render-authoring`).
@@ -242,7 +252,22 @@ Two gotchas, both hit while verifying this:
 
 ## C. Raw HTTP reference
 
-`GET`s are unguarded. **`POST`s require `X-Fused: 1`** (`_require_fused`, `fused_render/server/common.py`) — not authentication, a cross-origin-preflight tripwire — and the `fused.index.*` bridge sends it for you. Errors are `{"error": "<message>"}` with a 4xx/5xx; `/api/index/ask` can also answer the AI relay's nested `{"error": {"type", "message"}}`.
+**This is the only way to reach anything the bridge does not wrap** — starting or cancelling a scan, editing roots/ignore, the repos list, the live scan readout — so it is a reference, not an appendix. From a page, `fetch` it directly:
+
+```js
+// Start a scan over every configured root. X-Fused is NOT optional on a POST.
+const res = await fetch("/api/index/scan", {
+  method: "POST",
+  headers: { "Content-Type": "application/json", "X-Fused": "1" },
+  body: JSON.stringify({}),           // {root, full} to narrow it
+});
+const { run_id } = await res.json();
+// Then poll the readout. GETs need no header:
+const st = await (await fetch("/api/index/status?run_id=" + run_id)).json();
+// st.error is DATA — the last run's failure sentence, to render, not to throw on.
+```
+
+`GET`s are unguarded. **`POST`s require `X-Fused: 1`** (`_require_fused`, `fused_render/server/common.py`) — not authentication, a cross-origin-preflight tripwire — and the bridge sends it for you on `query`, which is the only POST it makes. Errors are `{"error": "<message>"}` with a 4xx/5xx; `/api/index/ask` can also answer the AI relay's nested `{"error": {"type", "message"}}`.
 
 | Route | Method | Params (defaults) | Answers |
 |---|---|---|---|
@@ -290,14 +315,16 @@ Read `fused_render/server/routers/git_repos.py` in full before copying the patte
 - **`MountGuard`** screens the parent too, as the layer that holds when an older build wrote rows a newer guard would have pruned. Also **Python-only**.
 - **The per-root applied-ignore signature** — what separates "zero rows because the rule never ran" (`reason: "outdated"`, a rebuild is coming) from "zero rows because this machine genuinely has no repos" (`{indexed: true, repos: []}`, a real answer). It is exposed on **no endpoint**, and the test is on the RAW row count, before screening, because screening can legitimately take real rows to zero.
 
-That is precisely why `fused.index.repos()` wraps the endpoint instead of apps rewriting the query: an app-side `SELECT` gets the repo list roughly right and gets both kinds of zero, and both screening layers, wrong. **Use `fused.index.repos()`.** When you need a *different* kind, the query is yours but the screening lesson is not optional — and a new kind that needs `junk_path`/`MountGuard` belongs in a server route, not in a page.
+That is precisely why the repo list is a ROUTE and not a `fileIndex.query()` you write: an app-side `SELECT` gets the list roughly right and gets both kinds of zero, and both screening layers, wrong. **`GET /api/git-repos`** (unguarded, section C) already answers `{repos, indexed, scanning, stale, reason}` — the whole readiness triple, `reason` included. Fetch that; do not re-derive it.
+
+When you need a *different* kind, the query is yours and `fileIndex.query()` is the tool — but the screening lesson is not optional, and a new kind that needs `junk_path`/`MountGuard` belongs in a server route beside `git_repos.py`, not in a page.
 
 ## E. Migrating an app that carries its own index engine
 
 If an app ships its own scanner, it is now duplicating `fused_render/index/` — which was **ported from exactly such an app** (the `Ported from OpenIndex` docstrings in `fused_render/index/{store,scan,fsevents,query}.py`). The migration is a deletion, not a rewrite:
 
 - **Delete the scan engine wholesale** — the walk, the parquet sink, compaction, FSEvents replay, run bookkeeping (~1300 lines in the original) and the reader module beside it (~190). All of it is in `fused_render/index/` now, behind `/api/index/*`.
-- **The app becomes pure HTML + JS**, talking to `fused.index.*`. What was a `sql` action is now `fused.index.query()` — strictly better, because the original had *no allowlist and no read-only flag* and the port deliberately dropped it for that reason.
+- **The app becomes pure HTML + JS**, talking to `fused.fileIndex.*`. What was a `sql` action is now `fused.fileIndex.query()` — strictly better, because the original had *no allowlist and no read-only flag* and the port deliberately dropped it for that reason. A scan button becomes a raw `POST /api/index/scan` with `X-Fused: 1` (section C).
 - **Anything genuinely bulk stays in Python**, using the direct reader in section B rather than a re-implemented store.
 
 One genuine gap, so nobody discovers it mid-migration: **relocating the index directory is not supported.** `IndexConfig.dir` is fixed to `home_dir()/index`, settable only via `FUSED_RENDER_HOME` at process start, with no runtime API — `POST /api/index/config` takes `roots` and `ignore`, not `location`. An app that let the user pick where the index lives loses that.
@@ -307,15 +334,17 @@ One genuine gap, so nobody discovers it mid-migration: **relocating the index di
 - Globbing `files/*.parquet` instead of following `partitions.json` → every number silently ~2x too big, and only on a machine that has scanned twice.
 - Rendering `rows: []` as "no results" without checking `ready.indexed` → the original silent lie.
 - Treating `covered: false` from `search()` as an error → it is a 200 and a normal state; fall back to a live walk or say "not indexed yet".
-- Reading `total` as "rows on this page" → it is the full match count, which is what pages the table.
+- Reading a page of `query()` rows as a match count → `LIMIT` cut them; ask `count(*)` in its own statement to page.
+- Interpolating a user's string into `sql` without doubling its `'` → a broken statement, or a rejected one. There are no bind parameters on `/api/index/query`; use the `lit()` helper above.
 - Taking `store_lock`, or writing anything into the index directory → readers follow the manifest; writers are the scan's business.
 - `import fused_render` from an app `.py` that has a `pyproject.toml` → `ModuleNotFoundError`; the project venv does not contain it. Copy the reader.
 - Forgetting `duckdb` in the app's own `pyproject.toml` → the declaration is the complete list; the bundled set is not unioned in (see `fused-render-authoring`).
-- `POST`ing `/api/index/*` by hand without `X-Fused: 1` → 403. Use `fused.index.*`.
-- Rendering a per-keystroke `lookup()`/`query()` with no generation guard → **index calls are not superseded like `runPython`'s** (D114 gives that only to `runPython`). The slower earlier query wins the race and the table shows a stale answer with no error anywhere. Guard your own renders, as `drawRows` above does.
-- Treating `status().error` as a failure → it is the last run's failure sentence, arriving on a 200 for you to render.
+- `POST`ing `/api/index/*` by hand without `X-Fused: 1` → 403. The bridge sends it on `query`; on scan/cancel/config you send it yourself (section C).
+- Looking for `fused.index.*`, or for `stats`/`lookup`/`status`/`scan`/`config`/`repos` on the bridge → the surface is `fused.fileIndex.search` and `fused.fileIndex.query`, and nothing else. Totals and path matches are `query()`; index management is raw HTTP.
+- Rendering a per-keystroke `search()`/`query()` with no generation guard → **index calls are not superseded like `runPython`'s** (D114 gives that only to `runPython`). The slower earlier query wins the race and the table shows a stale answer with no error anywhere. Guard your own renders, as `drawRows` above does.
+- Treating `/api/index/status`'s `error` as a failure → it is the last run's failure sentence, arriving on a 200 for you to render.
 - Calling `/api/index/ask` per keystroke → it spends AI credits per call. It is a button, not a debounce target.
-- Re-implementing the repos query in a page → wrong on both kinds of zero and on both screening layers; call `fused.index.repos()`.
+- Re-implementing the repos query in a page → wrong on both kinds of zero and on both screening layers; `GET /api/git-repos`.
 - Assuming `stale: false` means the index matches the filesystem → it means "as fresh as the index gets". Nothing can know the difference without re-walking, which is the cost this whole thing avoids.
 - Comparing a Python reader's counts against the UI's on a dev worktree → different stores (`FUSED_RENDER_BRANCH`). Pass the `location` the API reports.
 
