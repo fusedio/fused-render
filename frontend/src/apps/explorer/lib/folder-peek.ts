@@ -90,6 +90,35 @@ export function peekRankIsUnbeatable(rank: number): boolean {
   return STOP_RANKS.has(rank);
 }
 
+// One probed subfolder's best file: where it is, how good it is, and which
+// subfolder it came from (that subfolder becomes the card's front sheet).
+export type ProbePick = { path: string; rank: number; dir: string };
+
+// Fold a probed subfolder's find into the running pick, and say whether the
+// walk can stop.
+//
+// The stop test is on the pick that WON, never on the candidate just examined,
+// and the two are not the same question now that a stop rank is a set instead
+// of a threshold. Under the old `rank <= PAGE_RANK` rule they could not
+// diverge: any rank low enough to stop the walk was also low enough to beat
+// whatever was held. With `readme.md` ranked above a plain html but
+// deliberately absent from the stop set, an `about.html` in the second
+// subfolder is good enough to stop the walk yet not good enough to displace a
+// readme from the first — abandoning the search with the readme still held,
+// and an `index.html` in the third subfolder never looked at.
+//
+// Pure and here rather than inline in the effect that calls it, so this rule
+// is pinned by a test instead of by a React tree.
+export function foldProbePick(
+  best: ProbePick | null,
+  candidate: ProbePick,
+): { best: ProbePick; done: boolean } {
+  // Ties keep the incumbent: subfolders are walked in order, so the earlier one
+  // is the folder's own alphabetical answer.
+  const next = !best || candidate.rank < best.rank ? candidate : best;
+  return { best: next, done: peekRankIsUnbeatable(next.rank) };
+}
+
 // The file worth peeking at among a folder's teaser entries: best rank wins;
 // entries arrive alphabetically sorted, so ties keep the first.
 export function bestPeekFile(entries: FsEntry[]): FsEntry | null {

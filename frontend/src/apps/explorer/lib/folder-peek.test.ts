@@ -8,10 +8,12 @@ import type { FsEntry } from "@platform/lib/api";
 import {
   PREVIEW_IMAGE_NAME,
   bestPeekFile,
+  foldProbePick,
   isPreviewImage,
   peekRank,
   peekRankIsUnbeatable,
 } from "@apps/explorer/lib/folder-peek";
+import type { ProbePick } from "@apps/explorer/lib/folder-peek";
 
 function f(name: string, is_dir = false): FsEntry {
   return { name, is_dir, size: null, mtime: null };
@@ -87,6 +89,53 @@ test("the peeked child is the best-ranked file, never a directory", () => {
     "about.html",
   );
   expect(bestPeekFile([f("only-a-folder", true)])).toBe(null);
+});
+
+// The probed-subfolder walk, run over a sequence of finds the way the card's
+// effect does: fold each one in, stop when the fold says so.
+function walk(finds: string[]): { dir: string; visited: number } | null {
+  let best: ProbePick | null = null;
+  let visited = 0;
+  for (const [i, name] of finds.entries()) {
+    visited++;
+    const dir = `sub${i}`;
+    const folded = foldProbePick(best, { path: `/w/${dir}/${name}`, rank: peekRank(name), dir });
+    best = folded.best;
+    if (folded.done) break;
+  }
+  return best && { dir: best.dir, visited };
+}
+
+test("the probe stops on the pick that won, not on the candidate it just saw", () => {
+  // The regression this fold exists for. A `readme.md` does not stop the walk
+  // (it isn't evidence of an app), but it DOES outrank a plain html — so an
+  // `about.html` in the second subfolder is unbeatable-enough to break the loop
+  // while losing to the readme already held. Stopping on the candidate
+  // abandoned the search with the readme, never reaching sub2's index.html.
+  expect(walk(["README.md", "about.html", "index.html"])).toEqual({
+    dir: "sub2",
+    visited: 3,
+  });
+});
+
+test("the probe still stops the moment it holds something unbeatable", () => {
+  // The other half: the early exit is what keeps a folder-of-apps card to ONE
+  // listDir instead of three, which on an rclone/NFS target is the difference
+  // between a card and a stalled mount.
+  expect(walk(["index.html", "preview.png"])).toEqual({ dir: "sub0", visited: 1 });
+  expect(walk(["app.html", "index.html"])).toEqual({ dir: "sub0", visited: 1 });
+  expect(walk([PREVIEW_IMAGE_NAME, "index.html"])).toEqual({ dir: "sub0", visited: 1 });
+  // Nothing stoppable anywhere: the walk runs out, keeping the best it saw.
+  expect(walk(["notes.txt", "data.json", "notes.md"])).toEqual({ dir: "sub2", visited: 3 });
+  expect(walk([])).toBe(null);
+});
+
+test("a probe tie keeps the earlier subfolder", () => {
+  // Subfolders are walked in order, so the first is the folder's own
+  // alphabetical answer — a later equal find must not steal the front sheet.
+  const held: ProbePick = { path: "/w/sub0/notes.md", rank: peekRank("notes.md"), dir: "sub0" };
+  const tie: ProbePick = { path: "/w/sub1/other.md", rank: peekRank("other.md"), dir: "sub1" };
+  expect(foldProbePick(held, tie).best.dir).toBe("sub0");
 });
 
 test("a peeked preview.png is recognised from its full path", () => {

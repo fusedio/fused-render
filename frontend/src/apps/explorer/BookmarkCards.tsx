@@ -14,12 +14,8 @@ import { navigate, navigateUrl, urlForFsPath, EMBED_PREFIX, VIEW_PREFIX } from "
 import { listDir, rawUrl, statPath } from "@platform/lib/api";
 import type { FsEntry } from "@platform/lib/api";
 import { basename } from "@platform/lib/format";
-import {
-  bestPeekFile,
-  isPreviewImage,
-  peekRank,
-  peekRankIsUnbeatable,
-} from "@apps/explorer/lib/folder-peek";
+import { bestPeekFile, foldProbePick, isPreviewImage, peekRank } from "@apps/explorer/lib/folder-peek";
+import type { ProbePick } from "@apps/explorer/lib/folder-peek";
 import { iconForEntry } from "@platform/ui/FileIcons";
 import { armBookmark, isBookmarkMissing, splitBookmarkUrl } from "@platform/lib/bookmarks";
 import type { Bookmark } from "@platform/lib/bookmarks";
@@ -160,7 +156,7 @@ function FolderStack({ path }: { path: string }) {
         setSubPeek(null); // a direct file child wins — no probe needed
         return;
       }
-      let best: { path: string; rank: number; dir: string } | null = null;
+      let best: ProbePick | null = null;
       for (const d of teaser.filter((e) => e.is_dir).slice(0, APP_PROBE_LIMIT)) {
         const subPath = joinPath(path, d.name);
         let sub: FsEntry[];
@@ -172,14 +168,19 @@ function FolderStack({ path }: { path: string }) {
         if (!alive) return;
         const f = bestPeekFile(teaserEntries(sub));
         if (!f) continue;
-        const rank = peekRank(f.name);
-        if (!best || rank < best.rank)
-          best = { path: joinPath(subPath, f.name), rank, dir: d.name };
-        // Stop as soon as nothing later can beat this — an authored image, or
-        // a page, which is what "there is a fused app in here" looks like. One
-        // listDir instead of three per card, which on an rclone/NFS target is
-        // the difference between a card and a stalled mount listing.
-        if (peekRankIsUnbeatable(rank)) break;
+        // Stop as soon as nothing later can beat what we HOLD — an authored
+        // image, or a page, which is what "there is a fused app in here" looks
+        // like. One listDir instead of three per card, which on an rclone/NFS
+        // target is the difference between a card and a stalled mount listing.
+        // foldProbePick owns both halves of that decision; see it for why the
+        // stop test must be on the winner and not on this candidate.
+        const folded = foldProbePick(best, {
+          path: joinPath(subPath, f.name),
+          rank: peekRank(f.name),
+          dir: d.name,
+        });
+        best = folded.best;
+        if (folded.done) break;
       }
       setSubPeek(best ? { path: best.path, dir: best.dir } : null);
     })();
