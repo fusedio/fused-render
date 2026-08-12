@@ -16,24 +16,21 @@ import {
 } from "@platform/lib/sidebarstate";
 import { useSidebarState } from "@platform/lib/hooks";
 
-/** One icon on the collapsed rail. Two dialects, by what the icon stands for:
-    a SECTION of this sidebar (explorer: bookmarks/recents) — click expands
-    the frame and `onExpand` reveals the section; or a DESTINATION (shell: the
-    sub-app list) — `href` set, click navigates and the sidebar STAYS
-    collapsed, expanding only via the chevron. The frame stays ignorant of
-    what the icons mean — owners describe them here. */
+/** One icon on the collapsed rail, and it is always a DESTINATION: click
+    navigates there and the rail STAYS collapsed — only the chevron expands.
+    One dialect on purpose. The explorer's rail briefly spoke a second one
+    (section icons that expanded the frame and revealed Recents/Bookmarks),
+    so what a rail click did depended on the route; every owner's icons now
+    behave like the shell's. The frame stays ignorant of what the icons
+    mean — owners describe them here. */
 export interface SidebarRailItem {
   key: string;
   /** Tooltip + accessible name; the rail shows only the icon. */
   label: string;
   icon: React.ReactNode;
-  /** Destination dialect: navigate here on click, keeping the rail collapsed.
-      Highlights as active on exact pathname match, like NavItem. */
-  href?: string;
-  /** Section dialect: runs after the click expands the frame — the owner's
-      chance to make the promised section actually visible (e.g. un-collapse
-      Recents). Ignored when `href` is set. */
-  onExpand?: () => void;
+  /** Navigate here on click. Highlights as active on exact pathname match,
+      like NavItem. */
+  href: string;
   /** Hairline above this item — a group boundary, mirroring the expanded
       sidebar's headings. */
   dividerBefore?: boolean;
@@ -152,10 +149,8 @@ export function SidebarFrame({ title, version, homeHref = "/apps", rail, childre
     // a full-height bar whose only content was an arrow). The expand control
     // stays on top — the ONE reopen control, on every route, pinned to the
     // same 24px line the sidebar header and the app bars stand on. Below it,
-    // the owner's section icons (SidebarRailItem): the collapsed state keeps
-    // saying what the sidebar HAS, and clicking an icon is "expand, showing me
-    // that" — the frame expands, then the owner's onExpand makes the section
-    // visible.
+    // the owner's destination icons (SidebarRailItem): clicking one navigates
+    // and the rail stays collapsed — the chevron alone expands.
     //
     // Still the same #sidebar node, so the <=700px media hide applies.
     return (
@@ -177,35 +172,20 @@ export function SidebarFrame({ title, version, homeHref = "/apps", rail, childre
               <React.Fragment key={item.key}>
                 {item.pinBottom && <span className="sidebar-rail-flex" aria-hidden="true" />}
                 {item.dividerBefore && <span className="sidebar-rail-sep" aria-hidden="true" />}
-                {item.href ? (
-                  <a
-                    href={item.href}
-                    className={
-                      "sidebar-rail-btn" + (location.pathname === item.href ? " active" : "")
-                    }
-                    aria-label={item.label}
-                    title={item.label}
-                    onClick={(e) => {
-                      e.preventDefault();
-                      navigateUrl(item.href!);
-                    }}
-                  >
-                    {item.icon}
-                  </a>
-                ) : (
-                  <button
-                    type="button"
-                    className="sidebar-rail-btn"
-                    aria-label={`Expand sidebar to ${item.label}`}
-                    title={item.label}
-                    onClick={() => {
-                      setSidebarState((s) => ({ ...s, collapsed: false }));
-                      item.onExpand?.();
-                    }}
-                  >
-                    {item.icon}
-                  </button>
-                )}
+                <a
+                  href={item.href}
+                  className={
+                    "sidebar-rail-btn" + (location.pathname === item.href ? " active" : "")
+                  }
+                  aria-label={item.label}
+                  title={item.label}
+                  onClick={(e) => {
+                    e.preventDefault();
+                    navigateUrl(item.href);
+                  }}
+                >
+                  {item.icon}
+                </a>
               </React.Fragment>
             ))}
           </div>
