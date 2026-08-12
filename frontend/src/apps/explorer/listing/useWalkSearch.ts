@@ -1,13 +1,21 @@
 // The in-folder search: query state (URL-synced), the streamed recursive walk,
 // incremental fuzzy scoring, the render-side re-rank throttle, the
-// stale-while-revalidate hold across dir-watch refreshes, and the result cap.
+// stale-while-revalidate holds, and the result cap.
 //
 // A non-empty query swaps the listing for flat, rank-ordered results over a
 // recursive walk of the folder. The walk STREAMS (NDJSON batches,
 // breadth-first from the server): results paint from the first batch and
 // refine while deeper levels are still arriving, so feedback is instant even
-// on huge trees. The walk starts lazily on first focus (or a URL-seeded
-// query) and is cached until the dir watch fires.
+// on huge trees. The walk starts lazily on first focus (or a URL-seeded query).
+//
+// The corpus is then KEPT. Neither a dir-watch event nor a scan completing
+// re-fetches it: both are recorded and the results stay put, dimmed and
+// captioned "not refreshed", until a boundary where a repaint costs the user
+// nothing — the search ending, or a change this app itself made. That is the
+// deliberate trade this file makes, and it is worth restating because it is
+// the opposite of what a cache usually does: a corpus a few minutes old that
+// says so beats one that keeps being pulled out from under the reader. See
+// listing/revalidate.
 import { useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import { indexSearch, walkDirStream } from "@platform/lib/api";
 import type { WalkEntry } from "@platform/lib/api";
@@ -71,12 +79,12 @@ export function useWalkSearch(fsPath: string, refresh: number, urlSync = true) {
   // the input can have settled while the chunked scan for it is still running.
   const deferredStale = query.trim() !== q;
 
-  // The index being deleted or a scan completing invalidates the fetched
-  // corpus the same way a dir-watch bump does, and needs its own signal: the
-  // filesystem didn't change, so no watch refresh will ever re-key the fetch
-  // (lib/index-freshness). Composed into `gen` so it rides the SAME deferral —
-  // adopted at the boundaries while a search is on screen, immediately
-  // otherwise — rather than swapping results mid-read.
+  // The index being deleted or a scan completing dates the fetched corpus the
+  // same way a dir-watch bump does, and needs its own signal: the filesystem
+  // didn't change, so no watch refresh will ever re-key the fetch
+  // (lib/index-freshness). Composed into `gen` so it rides the SAME deferral,
+  // which matters more for this one than for the watch: scans complete often,
+  // and treating each as an invalidation is what made search blank mid-read.
   const [lifecycle, setLifecycle] = useState(indexLifecycleCount);
   useEffect(() => subscribeIndexLifecycle(() => setLifecycle(indexLifecycleCount())), []);
   // The generation this hook answers for: dir-watch refreshes plus index
@@ -93,7 +101,17 @@ export function useWalkSearch(fsPath: string, refresh: number, urlSync = true) {
   const appliedMutations = useRef(mutations);
   useEffect(() => subscribeFsMutations(() => setMutations(fsMutationCount())), []);
 
+  // The corpus retained across an invalidation, so a refetch never blanks the
+  // rows (listing/corpus-hold). Declared here because the reconcile below has
+  // to be able to throw it away.
+  const heldCorpus = useRef<HeldCorpus | null>(null);
+
   const reconcile = () => {
+    // A reconcile forced by THIS APP's own mutation must not leave the old
+    // corpus standing in for the refetch: it holds the pre-rename name, which
+    // is the one thing search must never offer back (lib/index-freshness).
+    // Every other reconcile is background churn, where holding is the point.
+    if (fsMutationCount() !== appliedMutations.current) heldCorpus.current = null;
     appliedMutations.current = fsMutationCount();
     setMutations(appliedMutations.current);
     setPinned(gen);
@@ -149,6 +167,12 @@ export function useWalkSearch(fsPath: string, refresh: number, urlSync = true) {
   // starts if the index has not produced within INDEX_RACE_MS, and exactly one
   // of them ends up owning the answer — see listing/source-race for why
   // interleaving them is not an option.
+  //
+  // Note what this effect does NOT do: run when there is already a corpus. It
+  // is driven by `walkReq`, which only moves when `validWalk` reads idle — and
+  // background churn no longer makes it read idle (listing/revalidate). So the
+  // race, and the second request it can cost, are confined to the case they
+  // are for: this folder has nothing to show yet.
   useEffect(() => {
     if (walkReq === null) return;
     const forRefresh = walkReq;
@@ -355,17 +379,23 @@ export function useWalkSearch(fsPath: string, refresh: number, urlSync = true) {
 
   const setQuery = (value: string) => {
     setQueryState(value);
-    // A query change is a boundary: the rows are being replaced anyway, so a
-    // generation deferred during the previous query lands here for free.
-    reconcile();
-    // Editing the query is also a user gesture: if the last walk attempt
-    // failed, give it another shot instead of leaving search dead forever.
+    // A query change is deliberately NOT a revalidation boundary any more.
+    //
+    // It used to be, on the reasoning that the rows are being replaced anyway
+    // so a deferred generation lands for free. It is not free: adopting the
+    // generation invalidates the corpus, which re-runs the fetch, which means
+    // every keystroke that arrives after any background churn pays a round
+    // trip before it can rank anything. Ranking the new query against the
+    // corpus already in hand — a generation old, dimmed, and captioned — is
+    // both instant and honest, and being a generation behind is a state this
+    // search can simply live in (listing/revalidate).
+    //
+    // Editing the query is still a user gesture, so it is still the retry for
+    // a failed walk: otherwise search stays dead until something else moves.
     // (An idle walk needs no handling here — the auto-request effect fires
     // as soon as the non-empty query state lands.)
     if (validWalk.status === "error") {
-      // `gen`, not `pinned`: the reconcile above is setting pinned to it,
-      // and that state has not landed yet inside this handler.
-      setWalkReq(gen);
+      setWalkReq(pinned);
       setRetryNonce((n) => n + 1);
     }
     if (!urlSync) return;
@@ -379,14 +409,15 @@ export function useWalkSearch(fsPath: string, refresh: number, urlSync = true) {
     }, URL_SYNC_MS);
   };
 
-  // The corpus to rank. The previous generation's entries stay scannable while
-  // the next one is fetched, so a keystroke landing mid-refetch ranks against a
-  // one-generation-stale corpus and paints at once instead of ranking against
-  // an empty array and blanking (listing/corpus-hold). The hold is captured
-  // from `validWalk` during render, exactly like the ranked-hit hold below —
-  // by the render where `pinned` moves and validWalk reads idle, this ref is
-  // already carrying the corpus from the render before it.
-  const heldCorpus = useRef<HeldCorpus | null>(null);
+  // The corpus to rank. Background churn no longer invalidates it at all — a
+  // keystroke ranks against whatever is in hand (see setQuery) — so the hold
+  // covers what is left: the search ending and being reopened, and a fetch
+  // that is genuinely re-running. The previous generation's entries stay
+  // scannable so those never blank the rows either (listing/corpus-hold). The
+  // hold is captured from `validWalk` during render, exactly like the
+  // ranked-hit hold below — by the render where `pinned` moves and validWalk
+  // reads idle, this ref is already carrying the corpus from the render before
+  // it, unless the reconcile above deliberately dropped it.
   heldCorpus.current = nextHeldCorpus(validWalk, heldCorpus.current);
   const corpus = scannableCorpus(searching, validWalk, heldCorpus.current);
 
@@ -406,10 +437,18 @@ export function useWalkSearch(fsPath: string, refresh: number, urlSync = true) {
   // spinner and the dimmed-rows treatment key off this, so it has to mean
   // "an answer is still coming", not merely "the deferred value lags".
   const scanPending = searching && pending;
-  // `corpus.stale` joins the two pre-existing reasons: rows ranked against the
-  // previous generation's corpus are exactly as provisional as rows the scan
-  // has not finished producing, and both must read as such.
-  const isStale = deferredStale || scanPending || corpus.stale;
+  // The corpus is a generation behind and is STAYING that way until a real
+  // boundary (listing/revalidate): the folder or the index moved and this
+  // search deliberately did not follow. That is a fine state to be in, but only
+  // if it is visible — "stale but honestly labelled" is the whole deal, and it
+  // is what separates this from the bug it replaced. The dimming says it here;
+  // the chip in Listing.tsx says it in words.
+  const generationBehind = searching && pinned !== gen;
+  // `corpus.stale` (rows from the hold, while a fetch actually runs) joins the
+  // two pre-existing reasons: rows ranked against a previous generation's
+  // corpus are exactly as provisional as rows the scan has not finished
+  // producing, and all of them must read as such.
+  const isStale = deferredStale || scanPending || corpus.stale || generationBehind;
 
   // --- Streaming re-rank throttle (B4) --------------------------------------
   // Every stream flush re-scores the newly arrived entries and merges them into
@@ -507,6 +546,10 @@ export function useWalkSearch(fsPath: string, refresh: number, urlSync = true) {
     q,
     searching,
     isStale,
+    // Specifically "these results are computed from an older generation of the
+    // tree", as opposed to the other two things isStale folds in (a deferred
+    // render, an unfinished scan), which are momentary. Drives the caveat chip.
+    behind: generationBehind || corpus.stale,
     scanPending,
     validWalk,
     prefetchWalk,

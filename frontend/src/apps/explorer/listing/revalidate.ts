@@ -9,17 +9,30 @@
 // the user is trying to read their results.
 //
 // So a watch bump during an active search is RECORDED, not applied. The search
-// keeps rendering the generation it already has, undimmed, and reconciles at a
-// boundary where a repaint costs the user nothing: the query changes, or the
-// search ends. Nothing is scored across generations — deferring means keeping
-// the old generation's completed results wholesale, never mixing new entries
-// into them.
+// keeps rendering the generation it already has and reconciles only where a
+// repaint costs the user nothing. Nothing is scored across generations —
+// deferring means keeping the old generation's completed results wholesale,
+// never mixing new entries into them.
 //
-// The exception is a change THIS APP made. A user who renames a file and does
-// not see the new name has been shown something false, and "don't bother
+// A QUERY CHANGE is no longer one of those places, and that is the whole of
+// this file's second version. Treating it as a boundary meant every keystroke
+// after any background churn adopted the pending generation, which invalidated
+// the corpus, which spent a round trip before the new query could rank
+// anything — a blank list on a keystroke, which is worse than any staleness it
+// avoided. The index bumps the same counter every time a scan completes
+// (lib/index-freshness), and scans complete often, so this was not a rare
+// path. Ranking a new query against the corpus in hand is instant; the caller
+// dims the rows and captions them, and being a generation behind is a state
+// this search can live in. What remains is: the search ending (nothing is on
+// screen to protect, and it is what re-arms the next search with fresh data)
+// and an in-app mutation.
+//
+// That mutation exception is not negotiable. A user who renames a file and
+// does not see the new name has been shown something false, and "don't bother
 // updating stale results" was never meant to cover that. In-app mutations are
 // already tracked for the index corpus (lib/index-freshness), so the same
-// signal reconciles the walk immediately.
+// signal reconciles the walk immediately — and the caller drops its held
+// corpus with it, since that corpus holds the pre-rename name.
 
 export interface RevalidateInput {
   /** Latest generation from the dir watch. */
@@ -37,9 +50,9 @@ export interface RevalidateInput {
 /**
  * Whether the pending watch generation should be adopted now.
  *
- * Boundaries the caller drives directly (a query change, a focus) do not go
- * through here — they reconcile unconditionally, because the results are being
- * replaced at that moment anyway.
+ * Every boundary goes through here. Nothing the caller does reconciles on its
+ * own any more — the one thing that used to (a query change) is precisely the
+ * churn described above.
  */
 export function shouldReconcile(input: RevalidateInput): boolean {
   // Nothing pending.

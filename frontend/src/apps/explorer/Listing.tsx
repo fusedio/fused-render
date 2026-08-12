@@ -199,6 +199,7 @@ export default function Listing({
     setQuery,
     searching,
     isStale,
+    behind,
     scanPending,
     validWalk,
     prefetchWalk,
@@ -1265,7 +1266,7 @@ export default function Listing({
   // facts are about the same search, and one line says both. Which message
   // appears is a claim about how far the results can be trusted, so it lives
   // in a pure, tested helper (listing/index-caveat).
-  const caveat = searching ? indexCaveat(indexScan) : null;
+  const caveat = searching ? indexCaveat(indexScan, behind) : null;
   if (caveat) {
     searchCount = withCaveat(searchCount, caveat);
     searchCountFull = caveat.title;

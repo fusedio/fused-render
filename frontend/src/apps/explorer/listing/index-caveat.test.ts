@@ -38,6 +38,20 @@ describe("indexCaveat", () => {
     expect(c.note).toContain("4,321");
     expect(c.title).toContain("searched live");
   });
+
+  it("says results are a generation behind when nothing is running", () => {
+    // The deal the search makes when it refuses to refetch mid-read
+    // (listing/revalidate): stale is fine, silently stale is not.
+    const c = indexCaveat(status({ scanning: false }), true)!;
+    expect(c.note).toBe("not refreshed");
+    expect(c.title).toContain("clear the search");
+    // ...and with no status at all, which is the pre-first-poll state.
+    expect(indexCaveat(null, true)!.note).toBe("not refreshed");
+  });
+
+  it("prefers the running-scan message, which already implies the same thing", () => {
+    expect(indexCaveat(status(), true)!.note).toBe("indexing…");
+  });
 });
 
 describe("withCaveat", () => {

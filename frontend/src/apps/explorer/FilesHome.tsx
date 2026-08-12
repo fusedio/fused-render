@@ -256,12 +256,32 @@ function FilesSearch({
   // Fetched ONCE per index generation, not per keystroke: the index answers
   // with the whole covered subtree, so re-asking on every letter would spend a
   // round trip to receive the same rows. Ranking is what runs per query.
-  const [corpus, setCorpus] = useState<CorpusState>({ status: "idle" });
   // A scan finishing or the index being deleted changes what the corpus IS,
   // and no other signal reports it (the filesystem did not change) — see
   // lib/index-freshness.
   const [lifecycle, setLifecycle] = useState(indexLifecycleCount);
   useEffect(() => subscribeIndexLifecycle(() => setLifecycle(indexLifecycleCount())), []);
+  // ...but it is RECORDED, not applied. Scans complete often, and refetching on
+  // each one swapped the rows out from under whoever was reading them — the
+  // exact churn this page is being fixed to stop. A corpus in hand therefore
+  // pins the fetch generation and keeps answering, captioned "indexing…" and
+  // dimmed; only having nothing to lose lets the fetch follow the index, which
+  // is precisely the case this signal was added for (the first scan finishing
+  // while the page sits on "still building"). The same posture the in-folder
+  // search takes for its dir-watch bumps (listing/revalidate).
+  const [fetchLifecycle, setFetchLifecycle] = useState(lifecycle);
+  const [corpus, setCorpus] = useState<CorpusState>({ status: "idle" });
+  useEffect(() => {
+    if (corpus.status !== "ok") setFetchLifecycle(lifecycle);
+  }, [lifecycle, corpus.status]);
+  // Which generation the corpus IN HAND actually reflects, which is not the
+  // same question as when the fetch is allowed to re-run: a refetch forced by
+  // something else (an in-app rename, a retry) still comes back with current
+  // data and has to clear this, or the caveat would stick forever. Stamped
+  // from the moment the request was ISSUED, so a scan that completes while it
+  // is in flight leaves the answer marked behind rather than falsely current.
+  const corpusLifecycle = useRef(lifecycle);
+  const corpusBehind = corpusLifecycle.current !== lifecycle;
   // An in-app rename/delete moves paths the fetched corpus already holds, so
   // search would find the old name and the click would 404. It is a REFETCH
   // trigger, not a gate: `indexMayAnswer(home)` used to disable instant search
@@ -288,10 +308,13 @@ function FilesSearch({
   useEffect(() => {
     if (!wanted) return;
     const ctl = new AbortController();
+    const issuedAt = indexLifecycleCount();
     setCorpus((prev) => (prev.status === "ok" ? prev : { status: "loading" }));
     indexSearch(home, { signal: ctl.signal }).then(
       (res) => {
-        if (!ctl.signal.aborted) setCorpus(corpusFrom(res));
+        if (ctl.signal.aborted) return;
+        corpusLifecycle.current = issuedAt;
+        setCorpus(corpusFrom(res));
       },
       (err: Error) => {
         if (ctl.signal.aborted || err.name === "AbortError") return;
@@ -299,7 +322,7 @@ function FilesSearch({
       },
     );
     return () => ctl.abort();
-  }, [home, wanted, lifecycle, mutations, retryNonce]);
+  }, [home, wanted, fetchLifecycle, mutations, retryNonce]);
 
   // A corpus once in hand keeps answering while the next one is fetched. The
   // rescan that republishes this fetch used to put the box back into `cold`
@@ -310,6 +333,10 @@ function FilesSearch({
   const heldCorpus = useRef<HeldHomeCorpus | null>(null);
   heldCorpus.current = nextHeldHomeCorpus(corpus, heldCorpus.current);
   const view = homeCorpusView(corpus, heldCorpus.current);
+  // Behind either because the fetch is deliberately pinned to an older index
+  // generation, or because the rows on screen are the held ones while a fetch
+  // the user's own action forced actually runs.
+  const behind = view.entries !== null && (corpusBehind || view.stale);
 
   // -- ranking ---------------------------------------------------------------
   // The same sliced, cancellable scan the in-folder search runs — literally the
@@ -447,7 +474,7 @@ function FilesSearch({
   // intentional: with rows on screen from a corpus a generation behind and
   // nothing saying why, the box just looks wrong. The rows themselves dim
   // while `view.stale`, the same treatment the listing gives held results.
-  const caveat = active && !showingAi ? indexCaveat(indexScan) : null;
+  const caveat = active && !showingAi ? indexCaveat(indexScan, behind) : null;
   const current = activeRow(highlight, hits.length, settled);
 
   const openRow = (row: number) => {
@@ -566,7 +593,7 @@ function FilesSearch({
             )}
           </p>
           <ul
-            className={"fh-results" + (view.stale ? " is-stale" : "")}
+            className={"fh-results" + (behind ? " is-stale" : "")}
             id="fh-result-list"
             role="listbox"
             aria-label="Search results"
