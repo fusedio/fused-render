@@ -126,11 +126,27 @@ export type ListingState =
 // re-fetch (fetching is driven by `walkReq` — see useWalkSearch). The
 // component remounts per folder (keyed on fsPath in App), so no path tagging
 // is needed.
+//
+// `key` names the CONTENT this corpus is: same key ⇒ same entries, whoever
+// asked and however many times. It is not the same claim as `forRefresh`,
+// which only says which generation the fetch was tagged with — a retry inside
+// one generation builds a brand-new array holding the same rows, and the index
+// and the live walk can each answer for one generation (listing/useWalkSearch
+// races them). Two things read it: the corpus hold (listing/corpus-hold) and
+// the incremental scorer's resume check (listing/useRankedScan), both of which
+// need "is this the same corpus?" and cannot get that from array identity.
 export type WalkState =
   | { status: "idle" }
-  | { status: "streaming"; entries: WalkEntry[]; count: number; forRefresh: number }
-  | { status: "ok"; entries: WalkEntry[]; truncated: boolean; total: number; forRefresh: number }
-  | { status: "error"; message: string; forRefresh: number };
+  | { status: "streaming"; entries: WalkEntry[]; count: number; key: string; forRefresh: number }
+  | {
+      status: "ok";
+      entries: WalkEntry[];
+      truncated: boolean;
+      total: number;
+      key: string;
+      forRefresh: number;
+    }
+  | { status: "error"; message: string; key: string; forRefresh: number };
 
 export const IDLE_WALK: WalkState = { status: "idle" };
 

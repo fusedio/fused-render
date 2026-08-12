@@ -12,6 +12,7 @@ import { useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import { indexSearch, walkDirStream } from "@platform/lib/api";
 import type { WalkEntry } from "@platform/lib/api";
 import { indexCorpusFrom } from "@apps/explorer/listing/index-corpus";
+import { nextHeldCorpus, scannableCorpus, type HeldCorpus } from "@apps/explorer/listing/corpus-hold";
 import {
   fsMutationCount,
   indexLifecycleCount,
@@ -151,6 +152,11 @@ export function useWalkSearch(fsPath: string, refresh: number, urlSync = true) {
     let pending: WalkEntry[] = [];
     let lastFlush = 0;
     let flushTimer: ReturnType<typeof setTimeout> | null = null;
+    // Corpus identities for the two sources (WalkState.key). Distinct per
+    // source as well as per generation: both may answer for one generation
+    // (they race below), and their entry lists are not the same rows.
+    const walkKey = `walk:${fsPath}:${forRefresh}`;
+    const indexKey = `index:${fsPath}:${forRefresh}`;
     const flush = () => {
       if (flushTimer !== null) {
         clearTimeout(flushTimer);
@@ -159,9 +165,15 @@ export function useWalkSearch(fsPath: string, refresh: number, urlSync = true) {
       for (const e of pending) entries.push(e); // no spread: a big chunk would blow the arg limit
       pending = [];
       lastFlush = Date.now();
-      setWalk({ status: "streaming", entries, count: entries.length, forRefresh });
+      setWalk({ status: "streaming", entries, count: entries.length, key: walkKey, forRefresh });
     };
-    setWalk({ status: "streaming", entries, count: 0, forRefresh });
+    // Published BEFORE either source has answered, so search reads as "in
+    // flight" from this instant. It is deliberately empty rather than
+    // preserving the old rows: what stands in meanwhile is the HELD corpus
+    // (listing/corpus-hold), which keeps that stand-in explicitly marked stale
+    // instead of letting an unsettled state quietly carry last generation's
+    // rows under a fresh tag.
+    setWalk({ status: "streaming", entries, count: 0, key: walkKey, forRefresh });
     const liveWalk = () =>
       walkDirStream(fsPath, {
         hidden: true,
@@ -178,12 +190,19 @@ export function useWalkSearch(fsPath: string, refresh: number, urlSync = true) {
           if (!alive) return;
           if (flushTimer !== null) clearTimeout(flushTimer);
           for (const e of pending) entries.push(e);
-          setWalk({ status: "ok", entries, truncated: end.truncated, total: end.total, forRefresh });
+          setWalk({
+            status: "ok",
+            entries,
+            truncated: end.truncated,
+            total: end.total,
+            key: walkKey,
+            forRefresh,
+          });
         },
         (err: Error) => {
           if (!alive || err.name === "AbortError") return;
           if (flushTimer !== null) clearTimeout(flushTimer);
-          setWalk({ status: "error", message: err.message, forRefresh });
+          setWalk({ status: "error", message: err.message, key: walkKey, forRefresh });
         }
       );
     // A folder this app has already marked dirty is decided before any
@@ -217,6 +236,7 @@ export function useWalkSearch(fsPath: string, refresh: number, urlSync = true) {
           entries,
           truncated: corpus.truncated,
           total: entries.length,
+          key: indexKey,
           forRefresh,
         });
       },
@@ -289,15 +309,20 @@ export function useWalkSearch(fsPath: string, refresh: number, urlSync = true) {
     }, URL_SYNC_MS);
   };
 
-  // The corpus to rank, once this generation's walk has entries to offer.
-  const corpus =
-    searching && (validWalk.status === "ok" || validWalk.status === "streaming")
-      ? validWalk.entries
-      : null;
+  // The corpus to rank. The previous generation's entries stay scannable while
+  // the next one is fetched, so a keystroke landing mid-refetch ranks against a
+  // one-generation-stale corpus and paints at once instead of ranking against
+  // an empty array and blanking (listing/corpus-hold). The hold is captured
+  // from `validWalk` during render, exactly like the ranked-hit hold below —
+  // by the render where `pinned` moves and validWalk reads idle, this ref is
+  // already carrying the corpus from the render before it.
+  const heldCorpus = useRef<HeldCorpus | null>(null);
+  heldCorpus.current = nextHeldCorpus(validWalk, heldCorpus.current);
+  const corpus = scannableCorpus(searching, validWalk, heldCorpus.current);
 
   // The scan itself — incremental, sliced and cancellable, shared with the
   // explorer home page's box (listing/useRankedScan carries the reasoning).
-  const { ranked, pending } = useRankedScan(corpus, q, SCAN_DEBOUNCE_MS);
+  const { ranked, pending } = useRankedScan(corpus.entries, q, SCAN_DEBOUNCE_MS);
 
   // What the rest of the hook consumes.
   // Relevance (the fuzzy rank) is the only order search results have. Column
@@ -311,7 +336,10 @@ export function useWalkSearch(fsPath: string, refresh: number, urlSync = true) {
   // spinner and the dimmed-rows treatment key off this, so it has to mean
   // "an answer is still coming", not merely "the deferred value lags".
   const scanPending = searching && pending;
-  const isStale = deferredStale || scanPending;
+  // `corpus.stale` joins the two pre-existing reasons: rows ranked against the
+  // previous generation's corpus are exactly as provisional as rows the scan
+  // has not finished producing, and both must read as such.
+  const isStale = deferredStale || scanPending || corpus.stale;
 
   // --- Streaming re-rank throttle (B4) --------------------------------------
   // Every stream flush re-scores the newly arrived entries and merges them into
