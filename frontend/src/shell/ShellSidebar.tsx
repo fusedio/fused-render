@@ -194,7 +194,7 @@ export default function ShellSidebar({ config }: { config: Config }) {
         <NavItem href="/explorer" id="explorer-link" label="Explorer" icon={EXPLORER_ICON} />
         <NavItem href="/apps" id="apps-link" label="Build App" icon={APPS_ICON} />
         {communityMountReady && (
-          <NavItem href="/community" id="community-link" label="Community" icon={COMMUNITY_ICON} />
+          <NavItem href="/community" id="community-link" label="Showcase" icon={COMMUNITY_ICON} />
         )}
       </div>
       {(sessionsMountReady || claudeConfigAvailable) && (
