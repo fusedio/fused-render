@@ -137,10 +137,24 @@ def report(job=None, **fields):
     if not job or not JOB_URL.startswith("http"):
         return None
     # Remembered before the send, so a heartbeat repeats what we MEANT to say
-    # even if this particular tick never landed.
+    # even if this particular tick never landed. Only a REAL tick writes this
+    # slot — see `_send`, which is what the heartbeat calls.
     with _last_report_lock:
         _last_report.clear()
         _last_report.update(job=job, fields=dict(fields))
+    return _send(job, fields)
+
+
+def _send(job, fields):
+    """POST one tick. The half of `report` that does NOT remember it.
+
+    Split out for the heartbeat, and this is not tidiness. A heartbeat that
+    called `report` would re-write `_last_report` with the payload it had just
+    read — so a real tick landing between the read and that write was clobbered
+    back to the older one, and every later beat repeated the stale numbers. The
+    bar went BACKWARDS while the model was making progress, which is a worse lie
+    than the stall this exists to prevent.
+    """
     body = json.dumps({"id": job, **fields}).encode()
     request = urllib.request.Request(
         JOB_URL, data=body,
@@ -192,7 +206,14 @@ def heartbeat():
             # is not ours to keep touching.
             if fields.get("state") in ("done", "error", "cancelled"):
                 continue
-            report(job=job, **fields)
+            # Re-checked as late as possible. The work can finish during the
+            # wait above, and the FIRST payload of a generation carries
+            # `state: "running"` — so a beat that slipped through here after the
+            # supervisor marked the row done would flip it back to running and
+            # clear its `finished_at`.
+            if stop.is_set():
+                return
+            _send(job, fields)
 
     thread = threading.Thread(target=beat, name="heartbeat", daemon=True)
     thread.start()
@@ -200,6 +221,12 @@ def heartbeat():
         yield
     finally:
         stop.set()
+        # JOINED, not just signalled. `stop.set()` cannot reach a beat already
+        # inside its POST, and that tick would land after the work finished —
+        # the same revival by a slower route. Bounded by the socket timeout it
+        # is waiting on, and free in the common case: a generation shorter than
+        # one interval leaves the thread parked in `wait`, which returns at once.
+        thread.join(timeout=JOB_TIMEOUT_S + 1.0)
 
 
 def report_or_cancel(job=None, **fields):

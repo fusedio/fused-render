@@ -169,6 +169,37 @@ def _eta(remaining):
     return " · ~%.1f min left" % (remaining / 60)
 
 
+def memory():
+    """What torch says it is holding, in bytes.
+
+    RSS is wrong here for the same reason it was wrong for MLX (AI-8a), by a
+    different mechanism: the weights live in a GPU allocator's pool, and on MPS
+    that pool is not counted in the process's resident set — so an 11.9B
+    pipeline reported **33 MB in memory**, which is the interpreter and nothing
+    else. `worker_base` takes the larger of this and RSS, so a CPU-only run
+    (where the tensors ARE in RSS and these probes read zero) still reports
+    honestly.
+
+    Both backends are asked because a machine has one or the other, and neither
+    import is safe to assume: `torch.mps` exists only on a torch built for it.
+    """
+    import torch
+
+    total = 0
+    mps = getattr(torch, "mps", None)
+    if mps is not None and hasattr(mps, "current_allocated_memory"):
+        try:
+            total += int(mps.current_allocated_memory())
+        except (RuntimeError, OSError):
+            pass
+    if torch.cuda.is_available():
+        try:
+            total += int(torch.cuda.memory_allocated())
+        except (RuntimeError, OSError):
+            pass
+    return total or None
+
+
 def generate(body):
     """Render one image. Returns `{path, seconds, seed, width, height, steps}`."""
     import torch
@@ -235,4 +266,5 @@ def generate(body):
 
 
 if __name__ == "__main__":
-    worker_base.serve(download=download, load=load, generate=generate, streaming=False)
+    worker_base.serve(download=download, load=load, generate=generate,
+                      streaming=False, memory=memory)

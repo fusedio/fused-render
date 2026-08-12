@@ -304,8 +304,9 @@ function RepoCard({
   busy: boolean;
   /** True while a weights-only fetch for this repo is in flight. */
   fetching: boolean;
-  /** False when no runner here serves this kind of model — the control is then
-   *  not offered at all, rather than offered and always failing. */
+  /** False when no runner here serves this kind of model. It gates LOADING
+   *  only: a button that always fails is worse than no button, but a model that
+   *  is already RESIDENT must always be releasable — see the render below. */
   canLoad: boolean;
   onToggle: () => void;
   onDeleteRepo: () => void;
@@ -432,7 +433,14 @@ function RepoCard({
               rather than disk. Only offered for a capability this machine can
               actually serve: on a Windows box the text runner is unavailable,
               and a button that always fails is worse than no button. */}
-          {!canLoad ? null : loaded ? (
+          {/* `loaded` FIRST, and `canLoad` only for the Load half. Residency is a
+              FACT the runtime reported; the task label is an INFERENCE from
+              model-card metadata, and the two can disagree — FLUX.2 klein's card
+              says "image to image", which no runner serves, while the model is
+              sitting in memory loaded as text-to-image. Gating both halves on
+              the inference stranded it: the card said Loaded and offered no way
+              to get the memory back. What is resident can always be unloaded. */}
+          {loaded ? (
             <button
               type="button"
               className="am-card-power am-card-power-on"
@@ -442,7 +450,7 @@ function RepoCard({
             >
               Unload
             </button>
-          ) : (
+          ) : canLoad ? (
             <button
               type="button"
               className="am-card-power"
@@ -452,7 +460,7 @@ function RepoCard({
             >
               {job ? "Loading…" : "Load"}
             </button>
-          )}
+          ) : null}
           {/* The local door: the model card view (SPEC §38), read from this
               folder's own files. A real <a href> so middle-click and copy-link
               work, with left-click intercepted for client-side navigation like

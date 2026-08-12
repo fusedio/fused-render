@@ -411,7 +411,7 @@ def test_no_runner_reimplements_the_contract():
             )
 
 
-def test_the_mlx_runner_supplies_its_own_memory_probe():
+def test_every_runner_that_needs_a_memory_probe_supplies_one():
     """The hook exists BECAUSE of MLX (AI-8a), so it has to be wired there.
 
     `serve(memory=)` was added after a card read "379 MB in memory" for a 6.1 GB
@@ -422,14 +422,21 @@ def test_the_mlx_runner_supplies_its_own_memory_probe():
     """
     from fused_render.ai import registry
 
-    mlx = registry.by_code("mlx-text")
-    assert mlx is not None
-    source = open(mlx.worker, encoding="utf-8").read()
-    assert "def memory(" in source, "mlx_text has no memory probe"
-    assert "memory=memory" in source, (
-        "mlx_text does not pass its probe to serve() — the branch in "
-        "worker_base is then dead and RSS is what /health reports"
-    )
+    for code, why in (
+        ("mlx-text",
+         "memory-mapped weights and lazy arrays: RSS right after a load is the "
+         "interpreter, which read as 379 MB for a 6.1 GB model"),
+        ("diffusers-image",
+         "the weights live in a GPU allocator's pool, which on MPS is not in "
+         "the process's resident set: an 11.9B pipeline read as 33 MB"),
+    ):
+        runner = registry.by_code(code)
+        assert runner is not None, code
+        source = open(runner.worker, encoding="utf-8").read()
+        assert "def memory(" in source, f"{code} has no memory probe — {why}"
+        assert "memory=memory" in source, (
+            f"{code} does not pass its probe to serve(), so /health reports RSS: {why}"
+        )
 
 
 # -- the total is scoped to what is actually fetched ----------------------------
@@ -534,7 +541,7 @@ def test_a_slow_generation_keeps_its_row_alive(base, monkeypatch):
     """
     sent = []
     monkeypatch.setattr(base, "HEARTBEAT_S", 0.02)
-    monkeypatch.setattr(base, "report", lambda job=None, **f: sent.append((job, f)))
+    monkeypatch.setattr(base, "_send", lambda job, fields: sent.append((job, fields)))
 
     # One real tick, then a long silence — exactly the shape of a slow step.
     base._last_report.update(job="sys:ai-image:abc",
@@ -549,12 +556,37 @@ def test_a_slow_generation_keeps_its_row_alive(base, monkeypatch):
     assert fields == {"done": 1, "total": 3, "detail": "step 1/3"}
 
 
+def test_the_heartbeat_sends_without_remembering(base):
+    """The beat must repeat a payload, never re-record it.
+
+    A heartbeat that called `report` re-wrote `_last_report` with the payload it
+    had just read, so a real tick landing between that read and that write was
+    overwritten by the older one and every later beat repeated stale numbers —
+    the bar going BACKWARDS while the model made progress, which is a worse lie
+    than the stall the heartbeat exists to prevent.
+
+    Asserted on the SOURCE rather than by driving it. The window is two adjacent
+    statements wide, so a timing test would pass with the bug in place far more
+    often than not — and a test that only sometimes fails is not a guard. What is
+    checkable is the invariant itself: `report` remembers and sends, `_send` only
+    sends, and the beat is a caller of the second.
+    """
+    import inspect
+
+    body = inspect.getsource(base.heartbeat)
+    assert "_send(" in body, "the heartbeat does not send through `_send`"
+    assert "report(" not in body.replace("_send(", ""), (
+        "the heartbeat calls `report`, which re-records what it repeats and "
+        "clobbers any real tick that landed while it was working"
+    )
+
+
 def test_the_heartbeat_stops_with_the_work(base, monkeypatch):
     """It must not keep touching a row after the generation returns — that would
     be the same lie in the other direction."""
     sent = []
     monkeypatch.setattr(base, "HEARTBEAT_S", 0.02)
-    monkeypatch.setattr(base, "report", lambda job=None, **f: sent.append((job, f)))
+    monkeypatch.setattr(base, "_send", lambda job, fields: sent.append((job, fields)))
     base._last_report.update(job="j", fields={"done": 1})
 
     with base.heartbeat():
@@ -565,12 +597,38 @@ def test_the_heartbeat_stops_with_the_work(base, monkeypatch):
     assert len(sent) == settled, "the heartbeat outlived the work it was for"
 
 
+def test_a_tick_in_flight_cannot_outlive_the_work(base, monkeypatch):
+    """`stop.set()` cannot reach a beat already inside its POST.
+
+    That tick lands after the work finished, and the FIRST payload of a
+    generation carries `state: "running"` — so it would flip a row the
+    supervisor had just marked done back to running. The context manager JOINS
+    the thread rather than only signalling it.
+    """
+    monkeypatch.setattr(base, "HEARTBEAT_S", 0.02)
+    landed = []
+
+    def slow_send(job, fields):
+        time.sleep(0.15)          # still posting when the work finishes
+        landed.append(time.monotonic())
+
+    monkeypatch.setattr(base, "_send", slow_send)
+    base._last_report.update(job="j", fields={"state": "running", "done": 0})
+
+    with base.heartbeat():
+        time.sleep(0.05)          # long enough for one beat to start its POST
+    left = time.monotonic()
+
+    assert landed, "the test never exercised an in-flight tick"
+    assert max(landed) <= left, "a tick landed after the work was over"
+
+
 def test_a_finished_row_is_never_re_reported(base, monkeypatch):
     """A terminal state is the end of the row's life. Repeating it would revive
     a record the manager had already retired."""
     sent = []
     monkeypatch.setattr(base, "HEARTBEAT_S", 0.02)
-    monkeypatch.setattr(base, "report", lambda job=None, **f: sent.append((job, f)))
+    monkeypatch.setattr(base, "_send", lambda job, fields: sent.append((job, fields)))
     base._last_report.update(job="j", fields={"state": "done", "detail": "Saved"})
 
     with base.heartbeat():

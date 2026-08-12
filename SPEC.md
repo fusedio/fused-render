@@ -5820,7 +5820,22 @@ an AI Models page that could say what was on disk but not what was *running*.
   never `report_or_cancel` (a `Cancelled` raised on a timer thread is raised at
   nobody — the ✕ is still honoured in the generating thread's own tick), and it
   never repeats a TERMINAL state, which would revive a row the manager had
-  already retired.
+  already retired. Two consequences of it being a THREAD, both found in review:
+  it sends through the half of `report` that does NOT re-record the payload (a
+  beat that re-recorded what it had just read clobbered any real tick landing in
+  between, so the bar went BACKWARDS while the model progressed — a worse lie
+  than the stall), and the context manager JOINS it rather than only signalling
+  it, because `stop` cannot reach a beat already inside its POST and that tick
+  would land after the work finished, flipping a row the supervisor had just
+  marked done back to running.
+- **AI-8b** **A runner whose weights live outside RSS supplies its own memory
+  probe.** AI-8a made the hook for MLX's memory-mapped, lazily-materialised
+  arrays; the image runner needs it for an unrelated reason and the number was
+  just as wrong — torch keeps the weights in a GPU allocator's pool, which on
+  MPS is not counted in the process's resident set, so an 11.9B pipeline
+  reported **33 MB in memory**. Both runners now answer for themselves, and the
+  test asks it of BOTH with the reason each one needs it, because "supplies a
+  probe" is a property of a runner rather than a fact about MLX.
 - **AI-6** **Availability is answered with a REASON.** MLX is Apple-Silicon-only,
   so `available()` returns "needs Apple Silicon — MLX runs on Metal only (this is
   linux/x86_64)", and resolution SKIPS an unavailable runner rather than picking
