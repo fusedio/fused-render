@@ -41,9 +41,12 @@
 //                          folder and probed, exactly as the sidebar's own
 //                          handler used to.
 //   data-fs-drop-announce  the target is OFF SCREEN, so the move has to say so
-//                          (a toast) — the sidebar's case.
-//   data-spring-target     a breadcrumb crumb: spring-loaded NAVIGATION, never
-//                          a drop target.
+//                          (a toast) — a sidebar bookmark, and a crumb.
+//   data-spring-target     a breadcrumb crumb: hovering it navigates there with
+//                          the drag still held. A crumb carries the drop
+//                          attributes above as WELL as this one — it is a real
+//                          target (hold to open, release to move into) and
+//                          declares itself a directory without a probe.
 //
 // EVERY DECISION belongs to drag-drop.ts (pure, tested) and marquee.ts's slop /
 // auto-scroll arithmetic (likewise). What is here is wiring, kept thin on
@@ -91,7 +94,9 @@ const GHOST_OFFSET = 14;
 // lands in a freshly mounted listing that has its own refresh and its own
 // re-anchor to do. So movers are registered per SCROLLER element and resolved
 // from the target at drop time, with the origin listing as the fallback for a
-// target outside any listing (a sidebar bookmark).
+// target outside any listing (a sidebar bookmark, or a crumb — the strip lives
+// in the top bar, so a crumb drop is performed by the listing the rows left,
+// which is the one that has to refresh and re-anchor).
 
 export interface MoveOpts {
   // The destination is not on screen, so the move announces itself.

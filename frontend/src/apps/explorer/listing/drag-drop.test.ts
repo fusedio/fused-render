@@ -246,6 +246,59 @@ describe("dropIsValid", () => {
   });
 });
 
+// A BREADCRUMB CRUMB, which is a drop target as well as a spring-load now
+// (Breadcrumb.tsx). Nothing about the rule changes for it — one DropTarget shape
+// for every target is the point — but the SHAPE a crumb hands in is unlike a
+// row's, so the answers are worth pinning:
+//
+//   • isDir is always true, asserted by the crumb rather than probed: a path
+//     segment you are standing inside cannot be a file, so "not-a-folder" (and
+//     with it the one refusal that owes the user a toast) is unreachable here;
+//   • a crumb is an ANCESTOR of the listed folder and a dragged row is inside
+//     it, so "self" and "descendant" are unreachable too — the drop that a
+//     crumb makes possible is the one a row cannot offer, moving entries UP;
+//   • "already-there" is reachable, and it is the one that makes the new
+//     per-crumb highlight informative instead of a strip that lights up
+//     everywhere: a crumb IS the current folder when the listing is at the root
+//     of its tree (the root crumb then carries `.last`, and it is the only crumb
+//     that is both current and interactive — the tail crumb of a deeper path is
+//     a static span with no target at all).
+describe("dropIsValid over a crumb", () => {
+  const crumb = (path: string) => ({ path, isDir: true });
+
+  test("dropping onto an ancestor crumb moves the entries up", () => {
+    // The whole gesture: files in /a/b/c, released on the /a crumb.
+    expect(dropIsValid([file("/a/b/c/x.md")], crumb("/a"))).toEqual({ ok: true, dir: "/a" });
+    expect(dropIsValid([file("/a/b/c/x.md")], crumb("/a/b"))).toEqual({ ok: true, dir: "/a/b" });
+  });
+
+  test("a folder moves up by its crumb too, and takes its own contents", () => {
+    // pruneDescendantPaths (fs-move) drops the descendants; the verdict here is
+    // only about the folder, and moving /a/b/c/sub to /a is an ordinary move.
+    expect(dropIsValid([file("/a/b/c/sub")], crumb("/a"))).toEqual({ ok: true, dir: "/a" });
+  });
+
+  test("the crumb for the folder you are IN refuses — nothing would move", () => {
+    // The root crumb while the listing IS the root: every dragged row's parent
+    // is that folder already.
+    expect(dropIsValid([file("/x.md"), file("/y.md")], crumb("/"))).toEqual({
+      ok: false,
+      reason: "already-there",
+    });
+  });
+
+  test("the root crumb takes a drop like any other ancestor", () => {
+    expect(dropIsValid([file("/a/b/c/x.md")], crumb("/"))).toEqual({ ok: true, dir: "/" });
+  });
+
+  test("a crumb's refusal is silent — it wore the reject highlight all hover", () => {
+    // Every reachable crumb refusal was painted before the release, and a crumb
+    // declares its kind ("1"), so no release on one can need words.
+    expect(refusalNeedsToast("already-there", true)).toBe(false);
+    expect(refusalNeedsToast("empty", true)).toBe(false);
+  });
+});
+
 // A refusal the target ALREADY declared needs no words: the row that says
 // data-fs-drop-dir="0" wore the no-drop cursor and the reject highlight for the
 // whole hover, so a release on it is a gesture the user already saw refused.

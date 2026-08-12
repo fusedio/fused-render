@@ -50,7 +50,13 @@ import {
 } from "@apps/explorer/listing/folder-chrome";
 import { publishTopbarSlot, retractTopbarSlot } from "@apps/explorer/topbar-slot";
 import { publishSearchSlot, retractSearchSlot } from "@apps/explorer/search-slot";
-import { registerSpring, SPRING_ATTR } from "@apps/explorer/listing/row-drag";
+import {
+  registerSpring,
+  DROP_ANNOUNCE_ATTR,
+  DROP_DIR_ATTR,
+  DROP_PATH_ATTR,
+  SPRING_ATTR,
+} from "@apps/explorer/listing/row-drag";
 
 // How long a file drag has to hover a crumb before the listing follows it.
 // Spring-loading is the standard file-manager answer to "the folder I want to
@@ -62,13 +68,31 @@ import { registerSpring, SPRING_ATTR } from "@apps/explorer/listing/row-drag";
 // shorter dwell navigates out from under a drag that was only crossing it.
 const SPRING_LOAD_MS = 700;
 
-// A crumb is spring-loaded NAVIGATION, never a drop target. Dropping ON a path
-// segment would be a second, invisible way to move files — one that gives no
-// listing to see the result in and no way to change your mind about which of
-// several ancestors you meant. So a crumb carries `data-spring-target` and NOT
-// the `data-fs-drop-path` a target declares itself with: the drag keeps its
-// refused cursor over the strip, the listing navigates underneath, and the drop
-// happens in the folder like any other.
+// A crumb is BOTH a spring-loaded navigation and a real drop target: hold and
+// the ancestor opens with the drag still in your hand, release and the entries
+// move into it.
+//
+// It used to be spring-load only — no `data-fs-drop-path` — on the argument that
+// dropping ON a path segment gives no listing to see the result in and no way to
+// choose between adjacent ancestors. The second half of that is answered by the
+// per-crumb highlight every other drop target already gets (row-drag paints
+// `drop-into` / `drop-reject` on whatever the pointer is over, from the same
+// dropIsValid verdict), and the first by `data-fs-drop-announce`: the
+// destination is off screen, so the move toasts, exactly as a drop onto a
+// sidebar bookmark does.
+//
+// What the old arrangement actually produced was WORSE than either reading: with
+// no drop host under the pointer, row-drag put `fs-drag-refused` on the body, so
+// the strip wore the NO-DROP cursor for the whole hover — while hovering there
+// was doing something useful — and a release did nothing at all. One hover, two
+// meanings, painted as a rejection. The refusals are truthful now instead of
+// universal: dropping on the crumb of the folder you are already in is
+// "already-there" (drag-drop's dropIsValid, which has the crumb cases tested).
+//
+// `data-fs-drop-dir` is "1" with no stat probe — a path segment the listing is
+// inside is a directory by construction — and the drop is performed by the
+// listing the rows LEFT, since a crumb sits outside any `.listing-scroll` and
+// row-drag's mover lookup falls back to the origin listing for exactly that.
 //
 // Enter and leave used to be the DOM's own `dragenter`/`dragleave`. The row
 // drag is pointer-driven now (listing/row-drag.ts), so they arrive as calls
@@ -131,8 +155,18 @@ function useSpringLoadedCrumbs() {
 
   // A crumb declares itself to the drag by attribute, so a crumb re-rendered
   // mid-drag (which the spring-load's own navigation guarantees) is still the
-  // same target to a hit test that reads the DOM.
-  const springProps = (target: string) => ({ [SPRING_ATTR]: target });
+  // same target to a hit test that reads the DOM. Both declarations at once, in
+  // one spread, so a crumb can never be one without the other (see the header:
+  // a spring target that is not a drop target is what painted the refused
+  // cursor over the whole strip).
+  const springProps = (target: string) => ({
+    [SPRING_ATTR]: target,
+    [DROP_PATH_ATTR]: target,
+    [DROP_DIR_ATTR]: "1",
+    // Empty string, not "1": the attribute's PRESENCE is the signal
+    // (row-drag reads hasAttribute), and "" keeps it out of the rendered value.
+    [DROP_ANNOUNCE_ATTR]: "",
+  });
 
   return { springProps, armedTarget };
 }

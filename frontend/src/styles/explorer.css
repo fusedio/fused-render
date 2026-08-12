@@ -220,8 +220,9 @@
 
 /* A crumb a file drag is dwelling on: the listing is about to follow it
    (Breadcrumb's spring loading). The pulse is the whole affordance — a dwell
-   with no feedback is indistinguishable from a stuck drag — and it deliberately
-   does NOT look like a drop target, because dropping on a crumb does nothing.
+   with no feedback is indistinguishable from a stuck drag — and it runs
+   ALONGSIDE the drop ring below, because a crumb means both things at once now:
+   hold and it opens, release and the files land there.
    Motion is dropped for reduced-motion; the accent tint still marks the crumb. */
 .path-crumb.spring-armed {
   color: var(--fg);
@@ -236,6 +237,22 @@
   to {
     box-shadow: inset 0 -2px 0 0 var(--accent);
   }
+}
+
+/* The crumb under a file drag, as a DROP target — the same ring and the same
+   quiet refusal the listing's rows and the sidebar's bookmarks wear, painted by
+   the same code from the same verdict (listing/row-drag.ts). Per-crumb, which is
+   what makes an ancestor strip of small adjacent targets legible: exactly one of
+   them is lit, and it is the one that would receive the drop.
+   The armed pulse above sets `animation`, this sets `box-shadow`, so the two
+   compose — except while the pulse is mid-flight, where its keyframes own the
+   ring for their 0.7s and this ring resumes when they end. */
+.path-crumb.drop-into {
+  box-shadow: inset 0 0 0 2px var(--accent);
+}
+
+.path-crumb.drop-reject {
+  background: rgba(var(--error-rgb), 0.1);
 }
 
 .path-crumb.last,
