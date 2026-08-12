@@ -89,26 +89,52 @@ export function setViewState(path: string, search: string): void {
 // An entry left with no params at all is DELETED rather than stored as "?" or
 // "": setViewState already treats an empty search as absence, so keeping one
 // would be an entry that says nothing and a map that only ever grows.
+//
+// TWO THINGS ARE LEFT BYTE-IDENTICAL, and both matter to the caller:
+//   • an entry that never carried the param keeps its exact stored string,
+//     rather than being round-tripped through URLSearchParams. That round trip
+//     normalizes the encoding (a space stored as `%20` comes back as `+`), and
+//     while every reader here parses with URLSearchParams and cannot tell the
+//     difference, a migration has no business making the STORED format depend
+//     on that for entries it was not asked about.
+//   • a map with nothing to strip comes back as THE SAME OBJECT. Identity is
+//     how the caller below knows nothing changed, so it is load-bearing rather
+//     than an optimisation.
 export function stripParam(map: Record<string, string>, name: string): Record<string, string> {
   const out: Record<string, string> = {};
+  let changed = false;
   for (const [path, search] of Object.entries(map)) {
     const s = new URLSearchParams(search);
+    if (!s.has(name)) {
+      out[path] = search;
+      continue;
+    }
+    changed = true;
     s.delete(name);
     const qs = s.toString();
     if (qs) out[path] = "?" + qs;
   }
-  return out;
+  return changed ? out : map;
 }
 
-// The one-time purge itself: strip these params from the whole store, once, at
-// the module init of whoever owned them. Cheap enough to run unconditionally on
-// every load (one read, one write of a map that holds a query string per folder
-// the user has visited), which is why there is no "have I already done this?"
-// flag — a flag is a second piece of state that can itself go stale, and this
-// migration is idempotent by construction.
+// The one-time purge itself: strip these params from the whole store, at the
+// module init of whoever owned them.
+//
+// There is no "have I already done this?" flag, and there should not be: a flag
+// is a second piece of state that can itself go stale, and this migration is
+// idempotent by construction — a store with nothing left to strip strips to
+// itself. What that costs is one READ per document load, over a map holding a
+// query string per folder the user has visited.
+//
+// The WRITE is the part that is conditional, on stripParam having actually
+// removed something (which it signals by returning a different object). That is
+// not the flag argued against above — it is a fact about this run, read from the
+// data rather than remembered beside it. Writing unconditionally would re-encode
+// every entry in the store on every single document load, for the one load in a
+// user's life that has anything to strip.
 export function purgeViewStateParams(...names: string[]): void {
   const map = load();
   let out = map;
   for (const name of names) out = stripParam(out, name);
-  save(out);
+  if (out !== map) save(out);
 }

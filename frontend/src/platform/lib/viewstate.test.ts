@@ -75,9 +75,31 @@ describe("stripParam", () => {
     ).toEqual({ "/b": "?sort=name", "/c": "?sort=size" });
   });
 
-  test("a map with nothing to strip comes back equal", () => {
+  test("a map with nothing to strip comes back AS THE SAME OBJECT", () => {
+    // Identity is the signal the caller uses to decide whether to write at all
+    // (purgeViewStateParams), so it is load-bearing and not an optimisation:
+    // the purge runs at module init on every document load, and a store with
+    // nothing left to strip — which is every load after the first — must not
+    // be rewritten.
     const map = { "/a": "?sort=name&order=asc" };
-    expect(stripParam(map, "panew")).toEqual(map);
+    expect(stripParam(map, "panew")).toBe(map);
+  });
+
+  test("an entry that does not carry the param keeps its exact string", () => {
+    // Not just an equal one: re-serializing through URLSearchParams normalizes
+    // the encoding (a space stored as %20 comes back as +). Every reader parses
+    // with URLSearchParams so both forms read the same, but a migration that
+    // rewrites the whole store on every load would quietly make the STORED
+    // format depend on that, for entries it has no business touching.
+    const map = { "/My%20Files": "?sort=name%20asc", "/b": "?panew=0.3" };
+    const out = stripParam(map, "panew");
+    expect(out["/My%20Files"]).toBe("?sort=name%20asc");
+    expect(out).not.toHaveProperty("/b");
+  });
+
+  test("a map where only some entries carry the param is a new object", () => {
+    const map = { "/a": "?sort=name", "/b": "?panew=0.3&sort=size" };
+    expect(stripParam(map, "panew")).not.toBe(map);
   });
 
   test("the input map is not mutated", () => {
