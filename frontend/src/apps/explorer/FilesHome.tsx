@@ -570,6 +570,18 @@ function FilesSearch({
 
       {ai.status === "failed" && <ErrorBanner>{ai.message}</ErrorBanner>}
 
+      {/* A refetch failed while rows are still in hand. The rows stay — they
+          are the best answer available on a page with no live walk — but the
+          failure is said out loud, because typing is the retry gesture
+          (`retryNonce`) and a retry that reports nothing leaves the user
+          pressing keys into silence. The no-rows case is not this banner: it
+          is the whole content of the result note below. */}
+      {active && !showingAi && view.entries !== null && view.message !== "" && (
+        <ErrorBanner>
+          Couldn't refresh the file index ({view.message}) — showing the last results.
+        </ErrorBanner>
+      )}
+
       {!active ? null : showingAi ? (
         <AiResults home={home} query={ai.query} result={ai.result} />
       ) : (

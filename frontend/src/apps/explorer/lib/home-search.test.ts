@@ -155,6 +155,24 @@ describe("the home corpus hold", () => {
     });
   });
 
+  it("keeps the rows AND reports a failed refetch", () => {
+    // Holding the rows is right — dropping a working search to show an error
+    // would be the worse trade on a page with no live walk to fall back on.
+    // Swallowing the failure is not: `retryNonce` retries on a keystroke, and
+    // a retry that reports nothing at all leaves the user pressing keys into
+    // silence. So: both.
+    const held = nextHeldHomeCorpus(okA, null);
+    const view = homeCorpusView({ status: "error", message: "boom" }, held);
+    expect(view.entries).toBe(A);
+    expect(view.stale).toBe(true);
+    expect(view.status).toBe("ok");
+    expect(view.message).toBe("boom");
+  });
+
+  it("has nothing to report once a refetch succeeds", () => {
+    expect(homeCorpusView(okA, nextHeldHomeCorpus(okA, null)).message).toBe("");
+  });
+
   it("keeps answering from the previous corpus while a refetch runs", () => {
     // The whole point: a rescan republishes the fetch, and `cold`/`loading`
     // mid-refetch must not take the rows away — only never having had a corpus
@@ -162,8 +180,10 @@ describe("the home corpus hold", () => {
     const held = nextHeldHomeCorpus(okA, null);
     for (const state of [
       { status: "loading" } as CorpusState,
+      // `cold` too: the index being gone does not make the paths in hand
+      // untrue, and a cold state re-fetches on the next lifecycle bump, so
+      // this recovers on its own the moment an index exists again.
       { status: "cold" } as CorpusState,
-      { status: "error", message: "boom" } as CorpusState,
     ]) {
       expect(homeCorpusView(state, held)).toEqual({
         entries: A, truncated: false, key: "k1", stale: true, status: "ok", message: "",

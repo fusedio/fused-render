@@ -94,7 +94,23 @@ export interface HomeCorpusView {
   /** These rows are a generation behind. The caller must SAY so. */
   stale: boolean;
   status: CorpusState["status"];
-  /** The failure to report, when `status` is "error" and only then. */
+  /**
+   * The last fetch's failure, or "".
+   *
+   * Reported whether or not rows are being held, which is the one place this
+   * view deliberately does NOT simplify to a single state. Held rows plus a
+   * failure is a real, nameable situation — "these still work, the refresh
+   * didn't" — and collapsing it either way is a bug: dropping the rows breaks
+   * a search that was working, and dropping the message makes `retryNonce`
+   * (which retries on a keystroke) a gesture with no feedback at all.
+   *
+   * listing/corpus-hold takes the opposite line for the in-folder search —
+   * an errored walk yields no rows, the error IS the answer — and the
+   * difference is not an inconsistency. There the walk is the fallback, so a
+   * failure means search genuinely has nothing and the user's move is to
+   * retry. Here the index is the only source there is, so the rows in hand are
+   * the best answer available and throwing them away buys nothing.
+   */
   message: string;
 }
 
@@ -121,6 +137,7 @@ export function homeCorpusView(
       status: "ok",
       message: "",
     };
+  const message = state.status === "error" ? state.message : "";
   if (held !== null)
     return {
       entries: held.entries,
@@ -128,7 +145,7 @@ export function homeCorpusView(
       key: held.key,
       stale: true,
       status: "ok",
-      message: "",
+      message,
     };
   return {
     entries: null,
@@ -136,7 +153,7 @@ export function homeCorpusView(
     key: "",
     stale: false,
     status: state.status,
-    message: state.status === "error" ? state.message : "",
+    message,
   };
 }
 
