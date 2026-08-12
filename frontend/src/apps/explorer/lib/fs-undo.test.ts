@@ -10,14 +10,15 @@ import { beforeEach, expect, test } from "bun:test";
 // the (therefore dynamic) import — the same trade fs-move.test.ts makes.
 type Req = { url: string; body: { src?: string; dst?: string } };
 const posts: Req[] = [];
-// Paths whose rename must fail, and with what — how a 404 (source gone) and a
-// 409 (something is in the way now) are driven.
+// Which rename must fail, and with what — how a 404 (source gone), a 409
+// (something is in the way now) and a 403 (a read-only destination, which fails
+// every pair) are driven. "*" fails all of them.
 let failFor: { src: string; status: number; error: string } | null = null;
 
 (globalThis as { fetch?: unknown }).fetch = ((url: string, init?: { body?: string }) => {
   const body = init?.body ? JSON.parse(init.body) : {};
   posts.push({ url, body });
-  if (failFor && body.src === failFor.src) {
+  if (failFor && (failFor.src === "*" || body.src === failFor.src)) {
     return Promise.resolve({
       ok: false,
       status: failFor.status,
@@ -135,7 +136,7 @@ test("applying an op renames each pair to the EXACT recorded path", async () => 
     ["/b/report copy.csv", "/a/report.csv"],
     ["/b/y.md", "/a/y.md"],
   ]);
-  expect(report.failed).toBeNull();
+  expect(report.failed).toEqual([]);
   expect(report.done.length).toBe(2);
 });
 
@@ -145,10 +146,12 @@ test("applying never asks for an overwrite — a taken name must 409", async () 
   expect((rename!.body as { overwrite?: boolean }).overwrite).toBe(false);
 });
 
-test("a failure stops the batch and reports what DID land", async () => {
-  // Half-undone is the honest outcome: the pairs that moved are named so the
-  // caller can offer them as the redo, and the rest are not attempted past an
-  // error nobody has seen yet.
+test("ONE PAIR'S FAILURE DOES NOT ABANDON THE REST OF THE BATCH", async () => {
+  // The property that keeps an undo from leaving a worse state than it found.
+  // Stopping at the 409 would restore pair 1, consume the entry, and leave pairs
+  // 3 and 4 still moved with nothing on either stack naming them — orphaned by
+  // the very gesture meant to put them back. Every pair is attempted, so each
+  // one ends up either restored (and on the opposite stack) or reported.
   failFor = { src: "/b/2", status: 409, error: "conflict" };
   const report = await applyFsOp({
     kind: "move",
@@ -156,11 +159,33 @@ test("a failure stops the batch and reports what DID land", async () => {
       { from: "/b/1", to: "/a/1" },
       { from: "/b/2", to: "/a/2" },
       { from: "/b/3", to: "/a/3" },
+      { from: "/b/4", to: "/a/4" },
     ],
   });
-  expect(report.done).toEqual([{ from: "/b/1", to: "/a/1" }]);
-  expect(report.failed?.pair).toEqual({ from: "/b/2", to: "/a/2" });
-  expect(renames().length).toBe(2); // the third was never attempted
+  expect(report.done).toEqual([
+    { from: "/b/1", to: "/a/1" },
+    { from: "/b/3", to: "/a/3" },
+    { from: "/b/4", to: "/a/4" },
+  ]);
+  expect(report.failed.map((f) => f.pair)).toEqual([{ from: "/b/2", to: "/a/2" }]);
+  // All four attempted — nothing was skipped past the error.
+  expect(renames().length).toBe(4);
+});
+
+test("every failure is reported, not just the first", async () => {
+  // A systemic refusal (a read-only destination) fails every pair. One entry per
+  // pair, so the caller can say how many rather than naming one and going quiet
+  // about the others.
+  failFor = { src: "*", status: 403, error: "readonly" };
+  const report = await applyFsOp({
+    kind: "move",
+    pairs: [
+      { from: "/b/1", to: "/a/1" },
+      { from: "/b/2", to: "/a/2" },
+    ],
+  });
+  expect(report.done).toEqual([]);
+  expect(report.failed.length).toBe(2);
 });
 
 test("a vanished source fails the same way — the entry is not retried forever", async () => {
@@ -170,5 +195,5 @@ test("a vanished source fails the same way — the entry is not retried forever"
     pairs: [{ from: "/b/gone.md", to: "/a/gone.md" }],
   });
   expect(report.done).toEqual([]);
-  expect((report.failed?.error as { status?: number }).status).toBe(404);
+  expect((report.failed[0].error as { status?: number }).status).toBe(404);
 });

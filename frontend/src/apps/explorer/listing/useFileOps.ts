@@ -278,35 +278,46 @@ export function useFileOps({
       .then((report) => {
         if (report.done.length) {
           // What landed is what the other direction can put back. The FAILED
-          // pair goes on neither stack: it was taken off before the attempt, and
-          // an entry that 404s or 409s would otherwise sit at the top failing
-          // for every later Undo.
+          // pairs go on neither stack: the entry was taken off before the
+          // attempt, and one that 404s or 409s would otherwise sit at the top
+          // failing for every later Undo. Nothing is left UNACCOUNTED FOR,
+          // though, because applyFsOp attempts every pair — see its own comment
+          // on why it does not stop at the first failure the way a move does.
           pushBack({ kind: op.kind, pairs: report.done });
           pendingSelectRef.current = report.done[report.done.length - 1].to;
           refetch();
-          // Announced, for the same reason a drop onto a sidebar bookmark is
-          // (moveEntriesInto's `announce`): the entries may well have gone back
-          // to a folder that isn't the one on screen, and a change you cannot
-          // see has to be told. A refetch alone would look like nothing
-          // happened.
-          const what = op.kind === "move" ? "move" : "rename";
-          pushToast({
-            msg: verb === "undo" ? `Undid the ${what}.` : `Redid the ${what}.`,
-            tone: "info",
-          });
         }
-        if (report.failed) {
-          // Named by the DESTINATION of the failed pair — the path that could
-          // not be restored is the one the user needs to hear about, and a 409
-          // means something else is sitting there now.
-          pushToast({
-            msg: friendlyFsError(report.failed.error, {
-              verb,
-              name: basename(report.failed.pair.to),
-            }),
-            tone: "error",
-          });
+        // ONE toast, always, and it tells the whole outcome.
+        //
+        // Announced at all for the same reason a drop onto a sidebar bookmark is
+        // (moveEntriesInto's `announce`): the entries may well have gone back to
+        // a folder that isn't the one on screen, so a refetch alone would look
+        // like nothing happened.
+        //
+        // A PARTIAL result must not read as an all-clear. "Undid the move" over
+        // a batch where two entries refused would be a false success about the
+        // two that are still where the move left them — and, the entry having
+        // been consumed, are no longer reachable from either stack. So a failure
+        // names the first refused destination and its reason (a 409 means
+        // something else is sitting there now) and counts the rest: one sentence
+        // rather than a toast per pair, because a read-only destination fails
+        // every entry with the same reason and twenty identical toasts would bury
+        // the one that mattered.
+        const what = op.kind === "move" ? "move" : "rename";
+        const did = verb === "undo" ? "Undid" : "Redid";
+        if (!report.failed.length) {
+          pushToast({ msg: `${did} the ${what}.`, tone: "info" });
+          return;
         }
+        const [first] = report.failed;
+        const rest = report.failed.length - 1;
+        pushToast({
+          msg:
+            (report.done.length ? `${did} part of the ${what}. ` : "") +
+            friendlyFsError(first.error, { verb, name: basename(first.pair.to) }) +
+            (rest ? ` (and ${rest} more)` : ""),
+          tone: "error",
+        });
       })
       .finally(() => {
         // FINALLY, for the reason spelled out on moveInFlight above: a latched

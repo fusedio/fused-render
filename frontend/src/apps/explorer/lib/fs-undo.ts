@@ -117,12 +117,13 @@ export function resetFsUndo(): void {
 }
 
 export interface FsOpReport {
-  // The pairs that landed, in the order they were written — the caller's redo
-  // entry, and what it re-anchors the selection onto.
+  // The pairs that landed, in the order they were written — the caller's entry
+  // for the opposite stack, and what it re-anchors the selection onto.
   done: FsPair[];
-  // The first failure. The batch stops there rather than pressing on past an
-  // error nobody has seen, exactly as moveEntriesInto does.
-  failed: { pair: FsPair; error: unknown } | null;
+  // EVERY pair that refused, not just the first. Each one is dropped from both
+  // stacks: it was taken off before the attempt, and a pair that 404s or 409s
+  // would sit at the top failing for every later Undo.
+  failed: { pair: FsPair; error: unknown }[];
 }
 
 // Perform an op: rename `from` to `to` for each pair, in order.
@@ -137,17 +138,35 @@ export interface FsOpReport {
 // overwrite off, and a name that has since been taken comes back as a 409 for
 // the caller to say out loud.
 //
+// IT DOES NOT STOP AT THE FIRST FAILURE, and that is a deliberate departure
+// from the batch loops elsewhere (moveEntriesInto, doPaste) that break. The
+// reason those break is that a fresh user operation half-applied leaves data
+// spread across two places, and stopping early both limits that and leaves the
+// whole gesture available to retry.
+//
+// Neither half of that holds for an inverse. An undo is already the repair, so
+// stopping in the middle of one leaves a MORE broken state than finishing it:
+// partly restored, with the untried remainder still moved and — because the
+// entry was consumed to attempt it — no longer named by anything on either
+// stack. It would be orphaned exactly where "half-moved past an error nobody
+// saw" is the hazard being guarded against. And retry-the-whole-thing is not
+// available: the entry is gone.
+//
+// Pressing on is also sound in a way it would not be for a move: each pair is an
+// independent rename of a distinct path, so one pair's 409 says nothing about the
+// next pair's chances. A systemic refusal (a read-only destination) costs one
+// request per pair, bounded by UNDO_CAP, and is reported once by the caller.
+//
 // Sequential, like every other batch here: these are renames of paths that may
 // be nested in each other, and order is the only thing keeping that sound.
 export async function applyFsOp(op: FsOp): Promise<FsOpReport> {
-  const report: FsOpReport = { done: [], failed: null };
+  const report: FsOpReport = { done: [], failed: [] };
   for (const pair of op.pairs) {
     try {
       await renameEntry(pair.from, pair.to);
       report.done.push(pair);
     } catch (error) {
-      report.failed = { pair, error };
-      break;
+      report.failed.push({ pair, error });
     }
   }
   return report;
