@@ -8,7 +8,7 @@
 // never reorders cards under interaction.
 import { useEffect, useMemo, useState } from "react";
 import { getApps } from "@platform/lib/api";
-import type { AppInfo } from "@platform/lib/api";
+import type { AppInfo, Config } from "@platform/lib/api";
 import { appCardMenu } from "@platform/lib/appCardMenu";
 import { requestCloneApp } from "@platform/cloud/cloneApp";
 import { useDeployEnabled } from "@platform/lib/prefs";
@@ -39,7 +39,7 @@ function sortApps(apps: AppInfo[], sort: SortKey): AppInfo[] {
   return sorted;
 }
 
-export default function Apps() {
+export default function Apps({ config }: { config: Config }) {
   const [apps, setApps] = useState<Loaded<AppInfo[]>>({ status: "loading" });
   const [query, setQuery] = useState("");
   const [tag, setTag] = useState<string | null>(null);
@@ -72,7 +72,9 @@ export default function Apps() {
   // The community tab lives alongside the workspace tags but is its own
   // surface (catalog cards, not workspace apps) — gated on the builtin
   // community mount so it never appears where the marketplace can't work.
-  const communityReady = useCommunityMountReady(false);
+  // Seeded from the boot config like the sidebar's entry — starting from
+  // `false` made the chip lag behind the sidebar by a poll tick (~2s).
+  const communityReady = useCommunityMountReady(config.community_mount_ready);
 
   const all = apps.status === "ok" ? apps.data : [];
   const tags = useMemo(() => {

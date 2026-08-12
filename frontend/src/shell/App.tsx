@@ -752,7 +752,7 @@ export default function App({ config }: { config: Config }) {
     // header. The shell sidebar renders beside it.
     main = (
       <div id="content" key={epoch}>
-        <Apps key={epoch} />
+        <Apps key={epoch} config={config} />
       </div>
     );
   } else if (isExplorerHome) {
