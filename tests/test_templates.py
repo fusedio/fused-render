@@ -309,7 +309,7 @@ def test_gated_directory_peers_follow_the_listing():
     # directory content, rather than a view of any folder.
     got, error = modes("/x/somedir", is_dir=True)
     assert error is None
-    assert got == ["_listing", "app", "claude", "git", "graph", "zarr_aoi", "model_card", "history"]
+    assert got == ["_listing", "claude", "git", "graph", "zarr_aoi", "model_card", "history"]
 
 
 def test_git_ships_a_condition_gate_and_an_icon():
@@ -361,9 +361,9 @@ def test_unmapped_file_empty_and_plain_dir_lists():
     # gated mode is dropped unless its condition.py says otherwise; see
     # tests/test_graph_condition.py, tests/test_model_templates.py and the
     # zarr_aoi tests below.
-    assert modes("/x/somedir", is_dir=True) == (["_listing", "app", "claude", "git", "graph", "zarr_aoi", "model_card", "history"], None)
-    assert modes("/x/my.data", is_dir=True) == (["_listing", "app", "claude", "git", "graph", "zarr_aoi", "model_card", "history"], None)
-    assert modes("/", is_dir=True) == (["_listing", "app", "claude", "git", "graph", "zarr_aoi", "model_card", "history"], None)
+    assert modes("/x/somedir", is_dir=True) == (["_listing", "claude", "git", "graph", "zarr_aoi", "model_card", "history"], None)
+    assert modes("/x/my.data", is_dir=True) == (["_listing", "claude", "git", "graph", "zarr_aoi", "model_card", "history"], None)
+    assert modes("/", is_dir=True) == (["_listing", "claude", "git", "graph", "zarr_aoi", "model_card", "history"], None)
 
 
 # --------------------------------------------- text sniff for unmapped files
@@ -802,7 +802,7 @@ def test_registry_drops_zarr_template_and_sentinel_keys():
     assert server._resolve_name("zarr")[0] is None
     # zarr_aoi is the .zarr/ default and a gated candidate on every directory
     assert registry[".zarr/"] == ["zarr_aoi", "_listing"]
-    assert registry["/"] == ["_listing", "app", "claude", "git", "graph", "zarr_aoi", "model_card", "history"]
+    assert registry["/"] == ["_listing", "claude", "git", "graph", "zarr_aoi", "model_card", "history"]
 
 
 def test_zarr_named_dir_gate_true_with_no_markers(tmp_path):
@@ -833,10 +833,10 @@ def test_plain_dir_with_store_marker_gates_true(tmp_path, marker):
     store = tmp_path / "data"
     store.mkdir()
     (store / marker).write_text("{}")
-    assert modes(str(store), is_dir=True) == (["_listing", "app", "claude", "git", "graph", "zarr_aoi", "model_card", "history"], None)
+    assert modes(str(store), is_dir=True) == (["_listing", "claude", "git", "graph", "zarr_aoi", "model_card", "history"], None)
     assert _zarr_condition_main()(str(store)) is True
     cond, err = conditions(str(store))
-    assert cond == {"app": False, "claude": True, "git": False, "history": False, "graph": False, "zarr_aoi": True, "model_card": False} and err is None
+    assert cond == {"claude": True, "git": False, "history": False, "graph": False, "zarr_aoi": True, "model_card": False} and err is None
 
 
 def test_v3_group_dir_offered(tmp_path):
@@ -845,10 +845,10 @@ def test_v3_group_dir_offered(tmp_path):
     store = tmp_path / "grp"
     store.mkdir()
     (store / "zarr.json").write_text('{"zarr_format": 3, "node_type": "group"}')
-    assert modes(str(store), is_dir=True) == (["_listing", "app", "claude", "git", "graph", "zarr_aoi", "model_card", "history"], None)
+    assert modes(str(store), is_dir=True) == (["_listing", "claude", "git", "graph", "zarr_aoi", "model_card", "history"], None)
     assert _zarr_condition_main()(str(store)) is True
     cond, err = conditions(str(store))
-    assert cond == {"app": False, "claude": True, "git": False, "history": False, "graph": False, "zarr_aoi": True, "model_card": False} and err is None
+    assert cond == {"claude": True, "git": False, "history": False, "graph": False, "zarr_aoi": True, "model_card": False} and err is None
 
 
 def test_bare_array_dir_not_offered(tmp_path):
@@ -861,7 +861,7 @@ def test_bare_array_dir_not_offered(tmp_path):
     (store / ".zarray").write_text("{}")
     assert _zarr_condition_main()(str(store)) is False
     cond, err = conditions(str(store))
-    assert cond == {"app": False, "claude": True, "git": False, "history": False, "graph": False, "zarr_aoi": False, "model_card": False} and err is None
+    assert cond == {"claude": True, "git": False, "history": False, "graph": False, "zarr_aoi": False, "model_card": False} and err is None
 
 
 def test_v3_bare_array_dir_not_offered(tmp_path):
@@ -873,7 +873,7 @@ def test_v3_bare_array_dir_not_offered(tmp_path):
     (store / "zarr.json").write_text('{"zarr_format": 3, "node_type": "array"}')
     assert _zarr_condition_main()(str(store)) is False
     cond, err = conditions(str(store))
-    assert cond == {"app": False, "claude": True, "git": False, "history": False, "graph": False, "zarr_aoi": False, "model_card": False} and err is None
+    assert cond == {"claude": True, "git": False, "history": False, "graph": False, "zarr_aoi": False, "model_card": False} and err is None
 
 
 def test_v3_zarr_json_without_node_type_not_offered(tmp_path):
@@ -896,20 +896,19 @@ def test_plain_dir_without_markers_gates_false(tmp_path):
     store = tmp_path / "plain"
     store.mkdir()
     (store / "readme.txt").write_text("hi")
-    assert modes(str(store), is_dir=True) == (["_listing", "app", "claude", "git", "graph", "zarr_aoi", "model_card", "history"], None)
+    assert modes(str(store), is_dir=True) == (["_listing", "claude", "git", "graph", "zarr_aoi", "model_card", "history"], None)
     assert _zarr_condition_main()(str(store)) is False
     cond, err = conditions(str(store))
-    assert cond == {"app": False, "claude": True, "git": False, "history": False, "graph": False, "zarr_aoi": False, "model_card": False} and err is None
+    assert cond == {"claude": True, "git": False, "history": False, "graph": False, "zarr_aoi": False, "model_card": False} and err is None
 
     entries, _ = server._templates_for(str(store), True)
     assert entries[0]["mode"] == "_listing" and "conditional" not in entries[0]
-    assert entries[1]["mode"] == "app" and entries[1].get("conditional") is True
-    assert entries[2]["mode"] == "claude" and entries[2].get("conditional") is True
-    assert entries[3]["mode"] == "git" and entries[3].get("conditional") is True
-    assert entries[4]["mode"] == "graph" and entries[4].get("conditional") is True
-    assert entries[5]["mode"] == "zarr_aoi" and entries[5].get("conditional") is True
-    assert entries[6]["mode"] == "model_card" and entries[6].get("conditional") is True
-    assert entries[7]["mode"] == "history" and entries[7].get("conditional") is True
+    assert entries[1]["mode"] == "claude" and entries[1].get("conditional") is True
+    assert entries[2]["mode"] == "git" and entries[2].get("conditional") is True
+    assert entries[3]["mode"] == "graph" and entries[3].get("conditional") is True
+    assert entries[4]["mode"] == "zarr_aoi" and entries[4].get("conditional") is True
+    assert entries[5]["mode"] == "model_card" and entries[5].get("conditional") is True
+    assert entries[6]["mode"] == "history" and entries[6].get("conditional") is True
     # `claude` used to sit at index 3 as the one UNCONDITIONAL entry after
     # `_listing` — the "no condition.py at all" case this list also covered. It is
     # deleted; `_listing` at index 0 still covers it.

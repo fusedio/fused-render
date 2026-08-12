@@ -544,6 +544,17 @@
   pointer-events: none;
 }
 
+/* The authored `preview.png`, filling the same box the scaled iframe does.
+   `cover` rather than `contain`: a thumbnail crops instead of letterboxing. */
+.fhb-shot {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  background: var(--bg-panel);
+}
+
 /* Keeps every pointer event on the card link, never inside the preview. */
 .fhb-shield {
   position: absolute;

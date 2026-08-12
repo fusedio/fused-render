@@ -80,10 +80,13 @@ test("entryOf prefers entry and falls back to entry_html", () => {
 
 // ------------------------------------------------------- where a click lands
 
-test("an app with a page entry opens its folder in the plain app view", () => {
+test("an app with a page entry opens its folder as a plain explorer listing", () => {
+  // No `_mode`: the folder arrives as its file listing and the app view is one
+  // A card once pinned `?_mode=app` to open the folder in an app view; that
+  // mode is gone entirely (D264), so the listing is not one option among two.
   expect(openTargetFor(app())).toEqual({
     path: "/w/local/demo",
-    opts: { isDir: true, mode: "app" },
+    opts: { isDir: true },
   });
 });
 
@@ -101,22 +104,23 @@ test("an app with no entry at all opens its folder", () => {
   });
 });
 
-test("a linked app takes the builder route like any other app", () => {
-  // /apps/linked/<name> is resolved by the SHELL through the registry
-  // (App.tsx + GET /api/apps/linked-path) rather than the fused_dir codec, so
-  // the card's URL and open experience stay identical to workspace apps.
+test("a linked app opens its folder like any other app", () => {
+  // A linked app's folder lives OUTSIDE the workspace, which used to mean the
+  // card needed the registry-resolved /apps/linked/<name> route. An explorer
+  // URL is an fs path, so the folder is addressable directly and the tag stops
+  // mattering to the open path at all.
   const linked = app({ tag: "linked", name: "notes", path: "/elsewhere/notes",
     entry: "/elsewhere/notes/index.html", entry_html: "/elsewhere/notes/index.html" });
-  expect(hrefFor(linked)).toBe("/apps/linked/notes?_mode=app");
+  expect(hrefFor(linked)).toBe("/explorer/view/elsewhere/notes");
 });
 
 // -------------------------------------------------------------- the new tab
 
 test("href points at the same target a left click opens", () => {
   // The whole point of building both from openTargetFor: a new tab and an
-  // in-app click cannot land in different places. A project open lands in the
-  // BUILDER namespace (/apps/<tag>/<name>); fallbacks stay explorer URLs.
-  expect(hrefFor(app())).toBe("/apps/local/demo?_mode=app");
+  // in-app click cannot land in different places. Every branch is an explorer
+  // URL now — the folder, or the single non-page file.
+  expect(hrefFor(app())).toBe("/explorer/view/w/local/demo");
   expect(hrefFor(app({ entry: "/w/local/demo/t.csv", entry_html: null }))).toBe(
     "/explorer/view/w/local/demo/t.csv",
   );
@@ -131,9 +135,10 @@ test("href encodes a path the URL codec would otherwise break on", () => {
   expect(hrefFor(app({ path: "/w/local/日本", entry_html: null, entry: null }))).toBe(
     "/explorer/view/w/local/%E6%97%A5%E6%9C%AC",
   );
-  // Builder-route segments encode too — tag/name are path segments.
-  expect(hrefFor(app({ tag: "my tag", name: "app#2" }))).toBe(
-    "/apps/my%20tag/app%232?_mode=app",
+  // The tag/name identity never reaches the URL any more — only the path does,
+  // so an app whose tag and name are hostile is encoded by the same one codec.
+  expect(hrefFor(app({ tag: "my tag", name: "app#2", path: "/w/my tag/app#2" }))).toBe(
+    "/explorer/view/w/my%20tag/app%232",
   );
 });
 
