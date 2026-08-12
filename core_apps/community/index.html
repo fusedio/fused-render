@@ -56,7 +56,7 @@
   button:disabled { opacity: 0.5; cursor: default; }
   select { background: var(--panel); border: 1px solid var(--line); color: var(--text);
     border-radius: 7px; padding: 5px 8px; font: inherit; cursor: pointer; }
-  .chips { display: flex; gap: 6px; flex-wrap: wrap; margin: 0 0 16px; }
+  .chips { display: flex; gap: 6px; flex-wrap: wrap; margin: 0 0 24px; }
   .chip { background: var(--chip); border: 1px solid transparent; border-radius: 999px;
     padding: 2px 11px; cursor: pointer; color: var(--muted); }
   .chip.on { border-color: var(--accent); color: var(--text); }
@@ -243,6 +243,7 @@ function resolveUrl(url, baseDir) {
 const state = () => ({
   q: fused.params.get("q") || "",
   tag: fused.params.get("tag") || "",
+  cat: fused.params.get("cat") || "",
   clonedOnly: fused.params.get("cloned") === "1",
   sort: fused.params.get("sort") || "",
   open: fused.params.get("app") || "",
@@ -281,23 +282,30 @@ function tagCounts() {
   return counts;
 }
 
+function catCounts() {
+  const counts = {};
+  for (const a of catalog?.apps || [])
+    if (a.category) counts[a.category] = (counts[a.category] || 0) + 1;
+  return counts;
+}
+
 function renderChips() {
-  const { tag } = state();
+  const { cat } = state();
   const apps = catalog?.apps || [];
-  const counts = tagCounts();
-  // Popular tags first: the long tail of 1-count tags hides behind "more".
-  const tags = Object.keys(counts)
+  const counts = catCounts();
+  // Popular categories first: any long tail hides behind "more".
+  const cats = Object.keys(counts)
     .sort((a, b) => counts[b] - counts[a] || a.localeCompare(b));
-  let shown = chipsExpanded ? tags : tags.slice(0, CHIP_LIMIT);
-  if (tag && !shown.includes(tag)) shown = [...shown, tag];   // active tag always visible
-  const hidden = tags.length - shown.length;
+  let shown = chipsExpanded ? cats : cats.slice(0, CHIP_LIMIT);
+  if (cat && !shown.includes(cat)) shown = [...shown, cat];   // active category always visible
+  const hidden = cats.length - shown.length;
   document.getElementById("hcount").textContent = apps.length ? String(apps.length) : "";
   chipsEl.innerHTML =
-    `<button class="chip${tag ? "" : " on"}" data-tag="">All<span class="n">${apps.length}</span></button>` +
-    shown.map(t =>
-      `<button class="chip${t === tag ? " on" : ""}" data-tag="${esc(t)}">${esc(t)}<span class="n">${counts[t]}</span></button>`).join("") +
+    `<button class="chip${cat ? "" : " on"}" data-cat="">All<span class="n">${apps.length}</span></button>` +
+    shown.map(c =>
+      `<button class="chip${c === cat ? " on" : ""}" data-cat="${esc(c)}">${esc(c)}<span class="n">${counts[c]}</span></button>`).join("") +
     (hidden > 0 ? `<button class="chip more" data-more>+${hidden} more</button>`
-      : tags.length > CHIP_LIMIT ? `<button class="chip more" data-more>less</button>` : "");
+      : cats.length > CHIP_LIMIT ? `<button class="chip more" data-more>less</button>` : "");
 }
 
 // Active tag shows as a removable token inside the search box.
@@ -353,7 +361,7 @@ function updatesStrip(apps) {
 }
 
 function renderGrid() {
-  const { q, tag, clonedOnly, sort } = state();
+  const { q, tag, cat, clonedOnly, sort } = state();
   if (qEl.value !== q) qEl.value = q;   // don't reset the cursor mid-typing
   const sortEl = document.getElementById("sort");
   if (sortEl.value !== sort) sortEl.value = sort;
@@ -361,22 +369,23 @@ function renderGrid() {
   if (!catalog) return;
   const all = catalog.apps || [];
   const needle = q.toLowerCase();
-  const filtering = !!(needle || tag || clonedOnly);
+  const filtering = !!(needle || tag || cat || clonedOnly);
   const apps = sortApps(all.filter(a => {
     if (clonedOnly && !a.installed) return false;
+    if (cat && a.category !== cat) return false;
     if (tag && !(a.tags || []).includes(tag)) return false;
     if (!needle) return true;
-    return [a.name, a.description, a.slug, a.author?.name, ...(a.tags || [])]
+    return [a.name, a.description, a.slug, a.author?.name, a.category, ...(a.tags || [])]
       .join(" ").toLowerCase().includes(needle);
   }), sort);
   if (!apps.length) {
-    content.innerHTML = `<div class="state">No apps match${q ? ` “${esc(q)}”` : ""}${tag ? ` in ${esc(tag)}` : ""}${clonedOnly ? " among your cloned apps" : ""}.
+    content.innerHTML = `<div class="state">No apps match${q ? ` “${esc(q)}”` : ""}${tag ? ` tagged ${esc(tag)}` : ""}${cat ? ` in ${esc(cat)}` : ""}${clonedOnly ? " among your cloned apps" : ""}.
       <div class="row"><button data-clear>Show all apps</button></div></div>`;
     content.querySelector("[data-clear]").addEventListener("click", clearFilters);
     return;
   }
   // Strip pins to the browse and cloned views; mid-search it would be noise.
-  let html = (needle || tag) ? "" : updatesStrip(all);
+  let html = (needle || tag || cat) ? "" : updatesStrip(all);
   if (clonedOnly)
     html += `<div class="section-title">Cloned apps <span class="n">${apps.length}</span></div>`;
   else if (apps.length !== all.length)
@@ -393,6 +402,7 @@ function renderGrid() {
 function clearFilters() {
   fused.params.set("q", "");
   fused.params.set("tag", "");
+  fused.params.set("cat", "");
   fused.params.set("cloned", "");
 }
 
@@ -668,10 +678,10 @@ document.getElementById("installed-toggle").addEventListener("click", () =>
 document.getElementById("refresh").addEventListener("click", refresh);
 chipsEl.addEventListener("click", (e) => {
   if (e.target.closest?.("[data-more]")) { chipsExpanded = !chipsExpanded; renderChips(); return; }
-  const chip = e.target.closest?.("[data-tag]");
+  const chip = e.target.closest?.("[data-cat]");
   if (!chip) return;
-  const t = chip.dataset.tag;
-  fused.params.set("tag", t && state().tag === t ? "" : t);
+  const c = chip.dataset.cat;
+  fused.params.set("cat", c && state().cat === c ? "" : c);
 });
 document.addEventListener("keydown", (e) => {
   // The search box is hidden on the detail page (browseChrome display:none) —
