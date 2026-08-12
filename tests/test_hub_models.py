@@ -343,3 +343,36 @@ def test_a_task_filter_is_passed_through(client, hub_cache, monkeypatch):
     monkeypatch.setattr(httpx, "get", fake)
     client.get("/api/ai-models/hub/search", params={"task": "text-generation"})
     assert "filter=text-generation" in fake.calls[0][0]
+
+
+def test_the_hub_token_does_not_survive_a_cross_host_redirect():
+    """A canary on httpx, because the token's containment depends on it.
+
+    `_fetch` sends the user's Hub token as an `Authorization` header AND follows
+    redirects. Those two are only safe together because httpx drops the header
+    when a redirect leaves the origin — a behaviour of the library, not of this
+    module, and `httpx` is an unpinned dependency here. If a resolver ever picks
+    a version without it, the user's credential rides a 302 to whatever host the
+    Hub (or an `HF_ENDPOINT` mirror) names, and nothing else in this repo would
+    notice. So the behaviour is asserted rather than assumed.
+
+    Driven through a mock transport with the same client settings `_fetch` uses.
+    """
+    seen = []
+
+    def handle(request):
+        seen.append(request)
+        if len(seen) == 1:
+            return httpx.Response(302, headers={"Location": "https://elsewhere.example/api/models"})
+        return httpx.Response(200, json=[])
+
+    with httpx.Client(transport=httpx.MockTransport(handle), follow_redirects=True) as client:
+        client.get("https://huggingface.co/api/models",
+                   headers={"Authorization": "Bearer hf_secret"})
+
+    assert len(seen) == 2, "the redirect was not followed; rewrite this canary"
+    assert seen[0].headers.get("Authorization") == "Bearer hf_secret"
+    assert "authorization" not in {k.lower() for k in seen[1].headers}, (
+        "httpx forwarded the Hub token to another host across a redirect — "
+        "pin httpx, or stop following redirects on the authenticated call"
+    )
