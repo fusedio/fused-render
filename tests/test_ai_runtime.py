@@ -527,13 +527,18 @@ def test_shutdown_stops_a_download_that_is_still_running(fake_runner, monkeypatc
     """
     monkeypatch.setenv("FAKE_DOWNLOAD_SECONDS", "30")
     supervisor.load("org/bigpull", registry.TEXT_GENERATION, weights_only=True)
+    # Wait for the PROCESS, not merely for the row. The stub is registered
+    # before its environment build (so shutdown can see it during that phase
+    # too), so its presence in the table no longer means there is anything
+    # spawned yet — which is what this test is about stopping.
     deadline = time.monotonic() + 10
     while time.monotonic() < deadline:
-        if supervisor._fetch_workers.get("org/bigpull", None) is not None:
+        pending = supervisor._fetch_workers.get("org/bigpull")
+        if pending is not None and pending.proc is not None:
             break
         time.sleep(0.02)
     stub = supervisor._fetch_workers.get("org/bigpull")
-    assert stub is not None and stub.proc is not None, "the fetch never registered"
+    assert stub is not None and stub.proc is not None, "the download never spawned"
 
     supervisor.unload_all()
 
