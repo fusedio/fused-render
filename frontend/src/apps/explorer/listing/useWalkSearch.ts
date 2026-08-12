@@ -378,7 +378,7 @@ export function useWalkSearch(fsPath: string, refresh: number, urlSync = true) {
 
   // The scan itself — incremental, sliced and cancellable, shared with the
   // explorer home page's box (listing/useRankedScan carries the reasoning).
-  const { ranked, pending } = useRankedScan(corpus.entries, q, SCAN_DEBOUNCE_MS);
+  const { ranked, pending } = useRankedScan(corpus.entries, q, SCAN_DEBOUNCE_MS, corpus.key);
 
   // What the rest of the hook consumes.
   // Relevance (the fuzzy rank) is the only order search results have. Column

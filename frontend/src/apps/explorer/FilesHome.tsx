@@ -32,15 +32,18 @@ import {
   INSTANT_DEBOUNCE_MS,
   activeRow,
   corpusFrom,
+  homeCorpusView,
   homeCountNote,
   homeHitsFrom,
   isAiRow,
+  nextHeldHomeCorpus,
   pathShortcut,
   rankingSettled,
   redirectsToSearch,
   stepHighlight,
   submitRow,
   type CorpusState,
+  type HeldHomeCorpus,
   type HomeHit,
 } from "@apps/explorer/lib/home-search";
 import { useRankedScan } from "@apps/explorer/listing/useRankedScan";
@@ -292,13 +295,22 @@ function FilesSearch({
     return () => ctl.abort();
   }, [home, wanted, lifecycle, mutations, retryNonce]);
 
+  // A corpus once in hand keeps answering while the next one is fetched. The
+  // rescan that republishes this fetch used to put the box back into `cold`
+  // for its duration — "The file index is still building", zero rows, for an
+  // index that was built. Only never having had a corpus may suppress rows;
+  // being a generation behind is a note, not a downgrade (lib/home-search,
+  // and lib/repos.ts for the same rule on the repo cards).
+  const heldCorpus = useRef<HeldHomeCorpus | null>(null);
+  heldCorpus.current = nextHeldHomeCorpus(corpus, heldCorpus.current);
+  const view = homeCorpusView(corpus, heldCorpus.current);
+
   // -- ranking ---------------------------------------------------------------
   // The same sliced, cancellable scan the in-folder search runs — literally the
   // same hook (listing/useRankedScan): a covered home root can be 200k entries,
   // and scoring that synchronously on a keystroke is the typing freeze
   // listing/scan-job exists to prevent.
-  const entries = corpus.status === "ok" ? corpus.entries : null;
-  const { ranked, pending } = useRankedScan(entries, q, INSTANT_DEBOUNCE_MS);
+  const { ranked, pending } = useRankedScan(view.entries, q, INSTANT_DEBOUNCE_MS, view.key);
   const hits = useMemo(() => homeHitsFrom(ranked, home), [ranked, home]);
   const scanning = active && pending;
 
@@ -422,7 +434,7 @@ function FilesSearch({
   // Whether the instant list is a finished answer. Gates the AI row's
   // pre-selection, so Enter during the corpus load or the scan debounce cannot
   // spend a model call on a query that was about to answer itself.
-  const settled = rankingSettled(corpus.status, scanning);
+  const settled = rankingSettled(view.status, scanning);
   const current = activeRow(highlight, hits.length, settled);
 
   const openRow = (row: number) => {
@@ -510,19 +522,24 @@ function FilesSearch({
       ) : (
         <div className="fh-panel">
           <p className="fh-result-note">
-            {corpus.status === "cold" ? (
+            {/* `view.status`, not `corpus.status`: a refetch (a rescan, an
+                in-app rename) puts the FETCH back into loading/cold while the
+                corpus we are still ranking sits in hand. Branching on the raw
+                fetch state meant a mid-rescan search claimed the index was
+                "still building" over the rows it was showing. */}
+            {view.status === "cold" ? (
               // Never "no matches" for an index that has not been built: that
               // would blame the user's files for the app's state.
               "The file index is still building — AI search can answer in the meantime."
-            ) : corpus.status === "error" ? (
-              `The file index could not be searched: ${corpus.message}`
-            ) : corpus.status !== "ok" || scanning ? (
+            ) : view.status === "error" ? (
+              `The file index could not be searched: ${view.message}`
+            ) : view.status !== "ok" || scanning ? (
               "Searching…"
             ) : ranked.length === 0 ? (
               `No file name matched “${q}” — AI search can look at dates, types and sizes.`
             ) : (
               <>
-                {homeCountNote(ranked.length, corpus.truncated)}
+                {homeCountNote(ranked.length, view.truncated)}
                 {" · "}
                 <kbd>↑</kbd>
                 <kbd>↓</kbd> to pick · <kbd>esc</kbd> to clear
