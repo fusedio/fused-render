@@ -3031,7 +3031,7 @@ const leftPop = document.getElementById("leftmodepop");     // its listbox
 // The shell's `modeTitle` (lib/mode-name.ts), reimplemented in four lines: a
 // template is a standalone document and cannot import the shell's TS. Worth the
 // duplication because the picker's labels must read the same as the explorer's
-// mode switcher does for the same file — "Rendered" for the `_render` sentinel,
+// mode switcher does for the same file — "Render" for the `_render` sentinel,
 // and a capitalized folder name otherwise, since a folder name is chosen for the
 // filesystem, not for a label. (`_listing` never appears in a FILE's entries and
 // the two chat modes are already filtered out, so they are not here.)
@@ -3043,7 +3043,7 @@ const leftPop = document.getElementById("leftmodepop");     // its listbox
 // not a display string. A label that disagreed with the mode switcher one strip
 // away would read as two different views.
 function paneModeLabel(mode) {
-  if (mode === "_render") return "Rendered";
+  if (mode === "_render") return "Render";
   // No `history` row: the mode key IS the word, so the capitalize below
   // already produces "History" — the same string the shell's humanizer gives
   // it. It earned an explicit row only while the key was spelled `versions`.

@@ -46,6 +46,9 @@ import { getViewState, setViewState } from "@platform/lib/viewstate";
 import { useFlip, FLIP_KEY_ATTR } from "@platform/lib/flip";
 import { useClipboard } from "@apps/explorer/lib/fs-clipboard";
 import ContextMenu from "@platform/ui/ContextMenu";
+import { SplitDownIcon, SplitRightIcon } from "@platform/ui/SplitIcons";
+import { EllipsisIcon } from "@apps/explorer/BarMenu";
+import { enterPanel } from "@apps/explorer/lib/split-actions";
 import { PromptDialog, ConfirmDialog } from "@apps/explorer/FsDialogs";
 import ListingPreviewPane from "@apps/explorer/ListingPreviewPane";
 import { resultCountLabel } from "@apps/explorer/listing/result-cap";
@@ -874,6 +877,68 @@ export default function Listing({
     setMenu({ x: e.clientX, y: e.clientY, items: backgroundMenu() });
   };
 
+  // The header `⋮` (right end of the MODIFIED column). Everything here is about
+  // THIS FOLDER, which is what the crumb bar's own `⋮` used to be for over a
+  // listing — that one is gone (Breadcrumb.tsx) and its two unique items moved
+  // in below the background menu's set, so there is one place to look instead
+  // of a path menu and a right-click each holding half the folder's actions.
+  //
+  // Discoverability is the whole point of the button: the same items were
+  // already a right-click on the background, which nobody finds, and which an
+  // empty folder gives you no obvious surface to try.
+  const openHeaderMenu = (e: React.MouseEvent<HTMLButtonElement>) => {
+    e.preventDefault();
+    e.stopPropagation(); // never sorts — the th around it is a sort control
+    const r = e.currentTarget.getBoundingClientRect();
+    setMenu({
+      // Right-ish alignment by hand: ContextMenu only clamps at the VIEWPORT
+      // edge, and with a preview pane open this button is nowhere near it, so
+      // an unbiased x would hang the popup off to the right of the column.
+      // 220 is the menu's own min-width (context-menu.css).
+      x: Math.max(4, r.right - 220),
+      y: r.bottom + 2,
+      items: [
+        ...backgroundMenu(),
+        "separator",
+        {
+          label: "Split right",
+          icon: <SplitRightIcon size={16} />,
+          onClick: () => enterPanel(fsPath, "row"),
+        },
+        {
+          label: "Split down",
+          icon: <SplitDownIcon size={16} />,
+          onClick: () => enterPanel(fsPath, "col"),
+        },
+      ],
+    });
+  };
+
+  // The folder's `⋮`, absolutely positioned against the LAST header cell's
+  // right edge (the th is sticky, so it is already the positioned ancestor) —
+  // NOT a fourth column: rows have three cells, and a column they don't render
+  // breaks their backgrounds. It overlays the header's own padding, which is
+  // why .col-mtime reserves room for it (explorer.css) rather than letting it
+  // land on the sort arrow.
+  // Both handlers stop propagation: the normal header's th sorts on click, and
+  // a press that re-sorts the listing under the menu about to open is not what
+  // the button says it does. One element, three homes — the mtime th, the
+  // search header's Path th, and (labels hidden) the empty folder's strip —
+  // because the actions act on the current folder in every one of them.
+  const headerMenuBtn = (
+    <button
+      type="button"
+      className="listing-head-menu"
+      aria-haspopup="menu"
+      aria-label="Folder actions"
+      title="Folder actions"
+      onPointerDown={(e) => e.stopPropagation()}
+      onClick={openHeaderMenu}
+    >
+      <EllipsisIcon />
+    </button>
+  );
+
   // --- table body -----------------------------------------------------------
 
   let body: React.ReactNode;
@@ -1383,9 +1448,10 @@ export default function Listing({
             onContextMenu={openBackgroundMenu}
           >
             <table className="listing-table">
-              {/* Header row hidden (not unmounted — the sticky header's box is
-                  part of the table's own layout) over an empty folder: see
-                  `emptyDir`. */}
+              {/* Over an empty folder the column LABELS hide (visibility, see
+                  .listing-head-empty) but the strip stays: the folder `⋮`
+                  lives on it, and an empty folder is where that menu matters
+                  most. */}
               <thead className={emptyDir ? "listing-head-empty" : undefined}>
                 <tr>
                   {searching ? (
@@ -1395,7 +1461,14 @@ export default function Listing({
                     // that by name or date presents it as an answer it isn't,
                     // and the search box already says the coverage is
                     // approximate (listing/index-caveat).
-                    <th className="col-name">Path</th>
+                    // The folder `⋮` stays through a search: its actions act on
+                    // the CURRENT folder either way, and search replacing the
+                    // one header that carried it would make the control come
+                    // and go with the query.
+                    <th className="col-name">
+                      Path
+                      {headerMenuBtn}
+                    </th>
                   ) : (
                     (Object.entries(SORT_KEYS) as [SortKey, string][]).map(
                       ([key, label]) => (
@@ -1407,7 +1480,11 @@ export default function Listing({
                           }
                           onClick={() => setSort(key)}
                         >
-                          {label}
+                          {/* Wrapped so the empty-folder state can hide the
+                              LABEL without unmounting the strip — the `⋮` on
+                              this row must survive it (explorer.css,
+                              .listing-head-empty). */}
+                          <span className="col-label">{label}</span>
                           {/* One glyph that ROTATES for desc (see .sort-arrow):
                           swapping ▲ for ▼ replaced the element, so the change
                           could only ever pop. */}
@@ -1420,6 +1497,7 @@ export default function Listing({
                               ▲
                             </span>
                           )}
+                          {key === "mtime" && headerMenuBtn}
                         </th>
                       ),
                     )

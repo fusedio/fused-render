@@ -233,9 +233,12 @@
   touch-action: none;
 }
 
+/* Accent on hover/drag — matches .listing-divider and the left sidebar's
+   resize handle (.sidebar-resize-handle, sidebar.css). */
 .preview-side-divider:hover,
 .preview-side-divider.dragging {
-  background: var(--border);
+  background: var(--accent);
+  opacity: 0.35;
 }
 
 /* An iframe is a separate document and would swallow the captured pointer
@@ -261,18 +264,18 @@
   position: relative;
 }
 
-/* The seam between the two columns, and where it STOPS — the listing pane's rule
-   (.listing-pane-slot::before), for the reason written out there: the two header
-   strips are the same height, background and bottom hairline precisely so they
-   read as ONE bar across the window, and a border-left running the full height
-   would cut that bar in two boxes. So the line starts where the CONTENT does.
-   The drag target is untouched — the divider is a separate full-height flex item,
-   transparent until hover. Only the painted line is short. */
+/* The seam between the two columns — full height, the listing pane's rule
+   (.listing-pane-slot::before), for the reason written out there: a seam that
+   stopped at the header left its top segment a different color from the run
+   below it (the file view's left column is content, not a matching bg-alt
+   strip), so the line reads broken. One continuous hairline instead.
+   The drag target is untouched — the divider is a separate full-height flex
+   item, transparent until hover. */
 .preview-side::before {
   content: "";
   position: absolute;
   left: 0;
-  top: var(--topbar-h);
+  top: 0;
   bottom: 0;
   width: 1px;
   background: var(--border);

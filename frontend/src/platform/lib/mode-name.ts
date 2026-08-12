@@ -7,7 +7,7 @@
 // Modes the shell renders with no template folder (SPEC PT-12/D81) — their
 // keys are internal sentinels and must never be shown as typed.
 const SENTINEL_NAMES: Record<string, string> = {
-  _render: "Rendered",
+  _render: "Render",
   _listing: "Listing",
 };
 
