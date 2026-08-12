@@ -111,13 +111,17 @@ function useCommunityCatalog(): Loaded {
     };
     (async () => {
       try {
-        if (!cachedCatalog) {
-          const catalog = await runCommunity<Catalog>({ action: "catalog" });
-          if (catalog.status === "ok") apply(catalog);
-          // no-cache (first run ever): fall through to the refresh below,
-          // which clones the catalog repo — that's the slow path the
-          // skeleton covers.
-        }
+        // Always re-join on mount, even when a catalog is already cached:
+        // `catalog` is a cheap local read (installs.json + index.json, no
+        // network), and install/update/uninstall performed elsewhere (the
+        // /community page) only shows up here through a fresh read of it.
+        // Without this, this tab kept the install flags from whenever it
+        // first mounted this session.
+        const catalog = await runCommunity<Catalog>({ action: "catalog" });
+        if (catalog.status === "ok") apply(catalog);
+        // no-cache (first run ever): fall through to the refresh below,
+        // which clones the catalog repo — that's the slow path the
+        // skeleton covers.
         if (!refreshedThisSession) {
           refreshedThisSession = true;
           apply(await runCommunity<Catalog>({ action: "refresh" }));
@@ -245,21 +249,25 @@ function CommunityCard({
           {openError && <span className="app-pcard-ago">{openError}</span>}
         </span>
       </span>
-      <span className="app-pcard-thumb" aria-hidden="true">
-        {cacheRoot && !imgFailed ? (
-          <img
-            className="app-pcard-shot"
-            src={rawUrl(`${cacheRoot}/${app.slug}/preview.png`)}
-            loading="lazy"
-            alt=""
-            onError={() => setImgFailed(true)}
-          />
-        ) : (
-          <span className="app-pcard-monogram" style={{ color: hueFor(title) }}>
-            {title.charAt(0).toUpperCase()}
-          </span>
-        )}
+      <span className="app-pcard-thumb">
+        <span aria-hidden="true">
+          {cacheRoot && !imgFailed ? (
+            <img
+              className="app-pcard-shot"
+              src={rawUrl(`${cacheRoot}/${app.slug}/preview.png`)}
+              loading="lazy"
+              alt=""
+              onError={() => setImgFailed(true)}
+            />
+          ) : (
+            <span className="app-pcard-monogram" style={{ color: hueFor(title) }}>
+              {title.charAt(0).toUpperCase()}
+            </span>
+          )}
+        </span>
         {cloning && (
+          // Not nested under the aria-hidden wrapper above — a screen reader
+          // needs to hear this role="status" announce while cloning runs.
           <span className="app-pcard-cloning" role="status">
             <span className="mode-icon-spinner" />
             Cloning from GitHub…

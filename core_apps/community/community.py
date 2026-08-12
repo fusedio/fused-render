@@ -32,6 +32,7 @@ friendly retry error rather than a hang. If the catalog outgrows that budget,
 the upgrade path is a detached worker reporting through fused.trackJob
 (SPEC "Long-running work"); not needed at current sizes.
 """
+import contextlib
 import errno
 import json
 import os
@@ -55,6 +56,7 @@ STATE_DIR = os.path.join(
 CACHE_REPO = os.path.join(STATE_DIR, "repo")
 INSTALLS_JSON = os.path.join(STATE_DIR, "installs.json")
 OPENED_JSON = os.path.join(STATE_DIR, "opened.json")
+LOCK_PATH = os.path.join(STATE_DIR, ".lock")
 
 # Mirrors shell/seed.fused_dir().
 WORKSPACE = os.path.abspath(
@@ -65,12 +67,55 @@ COMMUNITY_TAG_DIR = os.path.join(WORKSPACE, "local")
 SPARSE_BROWSE = ["/index.json", "/*/preview.png", "/*/metadata.json"]
 
 GIT_TIMEOUT = 45  # < the executor's 60 s kill; clone is the longest call
+LOCK_TIMEOUT = 50  # generous under the executor's 60 s hard kill
 IDENTITY = ["-c", "user.name=Fused", "-c", "user.email=apps@fused.io"]
 GITIGNORE = "*.html.json\n.claude-split.json\n.venv/\n"
 
 
 class ActionError(Exception):
     """A user-facing failure: message is shown verbatim in the page."""
+
+
+@contextlib.contextmanager
+def _cache_lock():
+    """Serialize every action that touches the on-disk cache repo (refresh,
+    detail, install, update) across concurrent runPython calls — the browse
+    page's background refresh, a detail fetch on card-open, and a write can
+    all be in flight at once against the same repo otherwise. An OS advisory
+    lock (not a Python-level one: each call may run in its own subprocess)
+    also makes `_remove_stale_locks` safe: once this is held, no other
+    action can be concurrently touching the repo, so any git *.lock file
+    found on entry is from a process that's already gone, not a live one."""
+    os.makedirs(STATE_DIR, exist_ok=True)
+    fd = os.open(LOCK_PATH, os.O_CREAT | os.O_RDWR)
+    try:
+        deadline = time.time() + LOCK_TIMEOUT
+        while True:
+            try:
+                if sys.platform == "win32":
+                    import msvcrt
+                    msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+                else:
+                    import fcntl
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except OSError:
+                if time.time() >= deadline:
+                    raise ActionError("the community catalog is busy with "
+                                      "another request — try again in a moment")
+                time.sleep(0.2)
+        try:
+            yield
+        finally:
+            if sys.platform == "win32":
+                import msvcrt
+                os.lseek(fd, 0, os.SEEK_SET)
+                msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(fd, fcntl.LOCK_UN)
+    finally:
+        os.close(fd)
 
 
 def _git(cwd, *args, timeout=GIT_TIMEOUT):
@@ -273,9 +318,16 @@ def _refresh():
             detail = (r.stderr or "").strip().splitlines()
             raise ActionError("could not fetch the community catalog: "
                               f"{detail[-1] if detail else 'clone failed'}")
-        _git_ok(CACHE_REPO, "sparse-checkout", "set", "--no-cone", *SPARSE_BROWSE,
-                what="sparse-checkout")
-        _git_ok(CACHE_REPO, "checkout", what="checkout")
+        try:
+            _git_ok(CACHE_REPO, "sparse-checkout", "set", "--no-cone", *SPARSE_BROWSE,
+                    what="sparse-checkout")
+            _git_ok(CACHE_REPO, "checkout", what="checkout")
+        except ActionError:
+            # Half-set-up clone: no index.json, and a later refresh would
+            # take the fetch/merge branch and never re-run this setup —
+            # drop it entirely so the next refresh re-clones from scratch.
+            shutil.rmtree(CACHE_REPO, ignore_errors=True)
+            raise
     else:
         _remove_stale_locks()
         _clean_cache()
@@ -465,9 +517,12 @@ def _update(slug, force):
         return {"status": "dirty"}
     if not clean:
         # Nothing is ever lost from history: land the user's current state
-        # first, then apply upstream on top.
-        _git(app_dir, "add", "-A")
-        _git(app_dir, "commit", "-q", "-m", "Local edits before community update")
+        # first, then apply upstream on top. Abort instead of silently
+        # dropping edits if the snapshot commit can't be made (lock
+        # contention, hooks, global gpgsign, ...).
+        _git_ok(app_dir, "add", "-A", what="git add")
+        _git_ok(app_dir, "commit", "-q", "-m",
+                "Local edits before community update", what="git commit")
     src = _materialize(slug)
     _clean_cache()   # never copy preview droppings out of the cache
     _replace_contents(app_dir, src)
@@ -516,15 +571,25 @@ def _uninstall(slug):
 
 
 def _detail(slug):
-    folder = _materialize(slug)
+    _require_slug(slug)
     entry = _catalog_entry(slug)
+    installs = _read_installs()
+    if entry is None and slug in installs["installs"]:
+        # Yanked upstream: gone from the cache repo's tree, so `_materialize`
+        # would always fail here. The install record is what still matters —
+        # skip the cache entirely so Open/Uninstall keep working.
+        return {
+            "slug": slug, "entry": None, "readme": "", "folder": None,
+            "preview_entry": None, "yanked": True,
+            **_install_state(slug, None, installs),
+        }
+    folder = _materialize(slug)
     readme = ""
     try:
         with open(os.path.join(folder, "readme.md"), encoding="utf-8") as f:
             readme = f.read()
     except OSError:
         pass
-    installs = _read_installs()
     return {
         "slug": slug,
         "entry": entry,
@@ -539,14 +604,21 @@ def main(action: str = "catalog", slug: str = "", force: bool = False):
     try:
         if action == "catalog":
             return _catalog_payload()
+        # Everything below touches the cache repo's git state — serialize so
+        # a background refresh, a detail fetch, and a write can never race
+        # on the same on-disk repo.
         if action == "refresh":
-            return _refresh()
+            with _cache_lock():
+                return _refresh()
         if action == "detail":
-            return _detail(slug)
+            with _cache_lock():
+                return _detail(slug)
         if action == "install":
-            return _install(slug)
+            with _cache_lock():
+                return _install(slug)
         if action == "update":
-            return _update(slug, force)
+            with _cache_lock():
+                return _update(slug, force)
         if action == "uninstall":
             return _uninstall(slug)
         if action == "touch":
