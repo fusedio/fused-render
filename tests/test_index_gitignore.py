@@ -69,19 +69,19 @@ def test_an_uncovered_response_is_untouched(tmp_path, monkeypatch):
 
 
 def _counting_queries(monkeypatch):
-    """Every rel `_ignored` actually asks git about, across all calls."""
+    """Every rel `_ignored` actually asks git about, one list per call."""
     asked = []
     real = index_gitignore._ignored
 
-    def counting(root, entries, only):
-        asked.append(sorted(only))
-        return real(root, entries, only)
+    def counting(root, entries, top, deciders, want):
+        asked.append(sorted(entries[i]["rel"] for i in want))
+        return real(root, entries, top, deciders, want)
 
     monkeypatch.setattr(index_gitignore, "_ignored", counting)
     return asked
 
 
-def test_a_repeated_search_of_one_generation_asks_git_nothing(tmp_path, monkeypatch):
+def test_a_repeated_search_asks_git_nothing(tmp_path, monkeypatch):
     _fresh_cache(monkeypatch)
     proj = tmp_path / "proj"
     proj.mkdir()
@@ -95,12 +95,15 @@ def test_a_repeated_search_of_one_generation_asks_git_nothing(tmp_path, monkeypa
     assert "proj/a.log" not in [e["rel"] for e in first["entries"]]
 
 
-def test_a_new_generation_only_asks_about_paths_it_has_not_seen(tmp_path, monkeypatch):
-    """The point of item 5: a completed scan must not cost a full re-sweep.
+def test_a_grown_corpus_only_asks_about_the_paths_it_has_not_decided(
+        tmp_path, monkeypatch):
+    """A completed scan must not cost a full re-sweep.
 
     A scan finishing moves `updated`, and the old cache threw everything away
     and re-ran check-ignore over the whole corpus — ~1s per 74k entries, on the
     very next keystroke, while the scan's workers were still competing for IO.
+    The generation is not part of the pool key at all now; what a new one
+    brings is new PATHS, and only those are asked about.
     """
     _fresh_cache(monkeypatch)
     proj = tmp_path / "proj"
@@ -116,10 +119,10 @@ def test_a_new_generation_only_asks_about_paths_it_has_not_seen(tmp_path, monkey
     assert [e["rel"] for e in out["entries"]] == ["proj/.gitignore", "proj/a.py", "proj/b.py"]
 
 
-def test_verdicts_are_thrown_away_once_they_are_too_old(tmp_path, monkeypatch):
-    """The bound on reuse: a path that BECAME gitignored must not be served
-    forever. After VERDICT_MAX_AGE_S the next generation change re-asks git
-    about everything."""
+def test_verdicts_survive_a_new_generation_until_they_are_too_old(
+        tmp_path, monkeypatch):
+    """Reuse across an index generation, and its bound: a path that BECAME
+    gitignored is served until the pool ages out, and not past that."""
     _fresh_cache(monkeypatch)
     proj = tmp_path / "proj"
     proj.mkdir()
@@ -169,6 +172,87 @@ def test_a_root_outside_the_index_root_gets_its_own_pool(tmp_path, monkeypatch):
     out = filter_corpus(_out(str(proj), [".gitignore", "a.log", "a.py"]),
                         index_root="/somewhere/else")
     assert [e["rel"] for e in out["entries"]] == [".gitignore", "a.py"]
+
+
+def test_a_scope_that_cannot_see_the_rules_pools_nothing(tmp_path, monkeypatch):
+    """A NEGATIVE verdict is only worth pooling when the request could actually
+    have found the rule that would have made it positive.
+
+    Searching inside a gitignored folder puts the deciding `.gitignore` ABOVE
+    the request's corpus, so the no-repo branch finds no marker and answers
+    "nothing ignored". Written into the pool as fact, that answer then
+    suppressed every later, wider request from ever asking — so the home search
+    started serving the build directory that `origin/main` filtered out, for
+    the rest of the server's life.
+    """
+    _fresh_cache(monkeypatch)
+    proj = tmp_path / "proj"
+    (proj / "dist").mkdir(parents=True)
+    (proj / ".gitignore").write_text("dist/\n", encoding="utf-8")
+    root = str(tmp_path)
+    # The in-folder search of proj/dist: no marker in sight, nothing filtered.
+    inner = filter_corpus(_out(str(proj / "dist"), ["x.js"]), index_root=root)
+    assert [e["rel"] for e in inner["entries"]] == ["x.js"]
+    # The home search still filters it, because the pool never accepted the
+    # inner request's blind answer.
+    out = filter_corpus(_out(root, [
+        "proj/.gitignore", "proj/dist/x.js", "proj/keep.py"]), index_root=root)
+    assert [e["rel"] for e in out["entries"]] == ["proj/.gitignore", "proj/keep.py"]
+
+
+def test_a_narrowed_payload_pools_nothing_it_could_not_decide(tmp_path, monkeypatch):
+    """Same hazard through the other door: a `q`- or `limit`-narrowed response
+    can omit the `.gitignore` that decides its own entries."""
+    _fresh_cache(monkeypatch)
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    (proj / ".gitignore").write_text("*.log\n", encoding="utf-8")
+    root = str(tmp_path)
+    filter_corpus(_out(root, ["proj/a.log"]), index_root=root)
+    out = filter_corpus(_out(root, ["proj/.gitignore", "proj/a.log", "proj/a.py"]),
+                        index_root=root)
+    assert [e["rel"] for e in out["entries"]] == ["proj/.gitignore", "proj/a.py"]
+
+
+def test_a_narrower_marker_does_not_answer_for_the_outer_one(tmp_path, monkeypatch):
+    """A request that sees only the INNER `.gitignore` decides its entries
+    under rules the outer one would have overridden, so its verdicts must not
+    be reused by a request that can see both."""
+    _fresh_cache(monkeypatch)
+    proj = tmp_path / "proj"
+    (proj / "sub").mkdir(parents=True)
+    (proj / ".gitignore").write_text("*.outer\n", encoding="utf-8")
+    (proj / "sub" / ".gitignore").write_text("*.inner\n", encoding="utf-8")
+    root = str(tmp_path)
+    # Only the inner marker is visible here, so x.outer reads clean.
+    inner = filter_corpus(_out(root, ["proj/sub/.gitignore", "proj/sub/x.outer"]),
+                          index_root=root)
+    assert "proj/sub/x.outer" in [e["rel"] for e in inner["entries"]]
+    out = filter_corpus(_out(root, [
+        "proj/.gitignore", "proj/sub/.gitignore", "proj/sub/x.outer",
+        "proj/sub/keep.py"]), index_root=root)
+    assert [e["rel"] for e in out["entries"]] == [
+        "proj/.gitignore", "proj/sub/.gitignore", "proj/sub/keep.py"]
+
+
+def test_the_pool_is_re_swept_once_it_is_too_old_whatever_the_generation(
+        tmp_path, monkeypatch):
+    """The staleness bound has to be a bound. Gated on a generation change as
+    well, it never fired at all on a settled index — and a rule REMOVED from a
+    .gitignore kept its paths invisible to search for the server's lifetime."""
+    _fresh_cache(monkeypatch)
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    (proj / ".gitignore").write_text("*.log\n", encoding="utf-8")
+    rels = ["proj/.gitignore", "proj/a.log"]
+    root = str(tmp_path)
+    assert len(filter_corpus(_out(root, rels), index_root=root)["entries"]) == 1
+    (proj / ".gitignore").write_text("nothing-here\n", encoding="utf-8")
+    # Same generation, so nothing else would ever re-ask.
+    assert len(filter_corpus(_out(root, rels), index_root=root)["entries"]) == 1
+    for pool in index_gitignore._cache.values():
+        pool.swept_at -= index_gitignore.VERDICT_MAX_AGE_S + 1
+    assert len(filter_corpus(_out(root, rels), index_root=root)["entries"]) == 2
 
 
 def test_a_narrowed_payload_cannot_masquerade_as_the_corpus(tmp_path, monkeypatch):
