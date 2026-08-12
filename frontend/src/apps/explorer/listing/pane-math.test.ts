@@ -1,9 +1,12 @@
-// The preview pane's width arithmetic: the clamps, the drag's px→fraction
-// step, and the `panew` parse (including its rejection of the legacy pixel
-// values written by the pre-fraction model). The hook around them is React +
-// `location` and belongs to a browser — which is why these live in their own
-// router-free module (see pane-math.ts), so this file runs with no DOM and in
-// any order.
+// The preview pane's width arithmetic: the split threshold, the undragged
+// breakpoints, the clamps, and the drag's px→fraction step. The hook around
+// them is React + `location` and belongs to a browser — which is why these live
+// in their own router-free module (see pane-math.ts), so this file runs with no
+// DOM and in any order.
+//
+// There is no parse here any more, because there is nothing stored to parse: a
+// dragged width lives in memory for the session (pane-store.ts) and no longer
+// goes to the per-folder viewstate.
 import { describe, expect, test } from "bun:test";
 import {
   PANE_DEFAULT_FRAC,
@@ -13,7 +16,6 @@ import {
   clampPaneWidth,
   defaultPaneFrac,
   dragPaneFrac,
-  parsePaneFrac,
   shouldShowPane,
 } from "./pane-math";
 
@@ -119,43 +121,6 @@ describe("dragPaneFrac", () => {
   });
 });
 
-describe("parsePaneFrac", () => {
-  test("reads a saved fraction", () => {
-    expect(parsePaneFrac("0.42")).toBe(0.42);
-    expect(parsePaneFrac("0.999")).toBe(0.999);
-  });
-
-  test("a whole-container fraction is not honoured", () => {
-    // The drag can no longer produce it, but an older build could — and it
-    // leaves the list nothing but its CSS floor on every window.
-    expect(parsePaneFrac("1")).toBeNull();
-  });
-
-  test("no saved value", () => {
-    expect(parsePaneFrac(null)).toBeNull();
-    expect(parsePaneFrac("")).toBeNull();
-    expect(parsePaneFrac("wide")).toBeNull();
-  });
-
-  test("LEGACY PIXEL widths are ignored, never translated", () => {
-    // Anything above 1 was written by the pre-fraction model against a
-    // container this window may not have. Treated as absent, so the folder
-    // opens at the default until it is dragged again.
-    expect(parsePaneFrac("420")).toBeNull();
-    expect(parsePaneFrac("1140")).toBeNull();
-    expect(parsePaneFrac("220")).toBeNull();
-  });
-
-  test("nonsense fractions are absent too", () => {
-    expect(parsePaneFrac("0")).toBeNull();
-    expect(parsePaneFrac("-0.3")).toBeNull();
-  });
-
-  test("the middle breakpoint is a half-and-half split", () => {
-    expect(PANE_DEFAULT_FRAC).toBe(0.5);
-  });
-});
-
 // The undragged split's three steps. Every case here is a width the DOM would
 // have to supply, which is exactly why the stepping is arithmetic and not a
 // media query: the pane follows its CONTAINER (an embed, another view's split),
@@ -167,6 +132,9 @@ describe("defaultPaneFrac", () => {
   });
 
   test("a normal window splits in half", () => {
+    // The middle step IS the default fraction — the one an unmeasured
+    // container falls back to, below.
+    expect(PANE_DEFAULT_FRAC).toBe(0.5);
     expect(defaultPaneFrac(PANE_MID_W)).toBe(0.5);
     expect(defaultPaneFrac(1280)).toBe(0.5);
     expect(defaultPaneFrac(PANE_WIDE_W - 1)).toBe(0.5);

@@ -1,6 +1,13 @@
-// The preview pane's width arithmetic, as pure functions: the pixel clamps,
-// the divider drag's px→fraction step, and the `panew` parse. The stateful
-// half — the hook, the URL writes, the viewstate — lives in pane.ts.
+// The preview pane's width arithmetic, as pure functions: the split threshold,
+// the undragged breakpoints, the pixel clamps, and the divider drag's
+// px→fraction step. The stateful half — the hook and the drag — lives in
+// pane.ts, and the width a drag produces in pane-store.ts.
+//
+// There is no parse of a stored width here, and there was: a dragged fraction
+// used to be serialised into the per-folder viewstate and read back, so it
+// needed validating on the way in (legacy pixel values, a whole-container 1).
+// Nothing is stored any more — the width is a module variable for the session —
+// so every value this module sees comes straight from its own clamps.
 //
 // It is a separate module for a testability reason, not a tidiness one:
 // pane.ts imports @platform/lib/router, which reads `location` at MODULE INIT
@@ -57,9 +64,9 @@ export function shouldShowPane(containerW: number): boolean {
 }
 
 // The fraction an UNDRAGGED pane takes in a container this wide (above), used
-// for rendering and never persisted — `panew` still records only a fraction the
-// user chose by dragging, so a folder never remembers a number the layout
-// picked for it, and one that has no saved width keeps following the window.
+// for rendering and never recorded — pane-store holds only a fraction the user
+// chose by dragging, so the session never remembers a number the layout picked
+// for it, and a pane with no chosen width keeps following the window.
 //
 // Floored at the pane's own PANE_MIN_W: at the narrow end 30% is under the
 // 220px floor CSS enforces anyway (0.3 × 700 = 210), and a flex-basis the
@@ -102,30 +109,11 @@ export function clampPaneWidth(containerW: number, width: number): number {
 //     is exactly 1.0, "the pane takes everything", which no wider window can
 //     honour: re-opening the folder on a normal screen left the list at its
 //     60px sliver, permanently, from one drag in a narrow pane. A number that
-//     is not a choice must not be persisted as one, and capping it just below
-//     1 would still persist a proportion nobody picked.
+//     is not a choice must not be recorded as one, and capping it just below
+//     1 would still keep a proportion nobody picked.
 // Above 280px the clamp is well-behaved and the fraction can never reach 1 on
 // its own: the ceiling is (W − LIST_MIN_W) / W, which is always < 1.
 export function dragPaneFrac(containerW: number, rawPx: number): number | null {
   if (!(containerW >= PANE_MIN_W + LIST_MIN_W)) return null;
   return clampPaneWidth(containerW, rawPx) / containerW;
-}
-
-// Parse the `panew` viewstate value. It holds a FRACTION of the split
-// container ("0.42"); null = nothing saved, so the caller uses
-// PANE_DEFAULT_FRAC and treats the width as unchosen.
-//
-// Anything at or above 1 is ignored as if absent, and the folder re-opens at
-// the default until it is dragged again. Two kinds of value land there and
-// neither should be honoured:
-//   • LEGACY PIXEL widths from the previous model — not translated, because
-//     the pixels were measured against a container this window may not have,
-//     which is the whole reason for the fraction;
-//   • exactly 1, "the pane takes the whole container" — which the drag can no
-//     longer produce (see dragPaneFrac) but an older build could, and which
-//     leaves the list nothing but its CSS floor on every window.
-export function parsePaneFrac(raw: string | null): number | null {
-  const f = parseFloat(raw || "");
-  if (!Number.isFinite(f) || f <= 0 || f >= 1) return null;
-  return f;
 }

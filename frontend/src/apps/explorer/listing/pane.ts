@@ -12,10 +12,15 @@
 // chrome-free embed, and inside another view's split, and only the container
 // knows which.
 //
-// What SURVIVES from the old model is the width, and only the width: `panew`
-// (viewstate, per folder) still records a dragged split, because a proportion
-// the user chose is a real preference — unlike an on/off the layout can infer.
-// Width stays viewstate-only and off the URL: one machine's split isn't
+// What SURVIVES from the old model is the width, and only the width: a dragged
+// split is a real preference, unlike an on/off the layout can infer. But it is
+// no longer remembered PER FOLDER, and no longer stored at all. It used to be a
+// `panew` key in the per-path viewstate map, which meant the divider jumped on
+// ordinary navigation — out of a folder you had dragged, into one you had not,
+// and the pane snapped between your width and the breakpoint default. There is
+// now one width for the session, in memory, in pane-store.ts (which is where
+// the reasoning about that lives, including why a REFRESH deliberately clears
+// it). Off the URL for the same reason as before: one machine's split isn't
 // something a shared link should impose.
 //
 // Width is a FRACTION of the split container, rendered as a percentage
@@ -28,34 +33,30 @@
 // CSS min-widths (.listing-pane-slot / .listing-main) and as the drag's clamp.
 // The arithmetic itself is pure and lives in listing/pane-math.ts.
 import { useLayoutEffect, useRef, useState } from "react";
-import { getViewState, setViewState } from "@platform/lib/viewstate";
-import {
-  defaultPaneFrac,
-  dragPaneFrac,
-  parsePaneFrac,
-  shouldShowPane,
-} from "@apps/explorer/listing/pane-math";
+import { purgeViewStateParams } from "@platform/lib/viewstate";
+import { getPaneFrac, setPaneFrac } from "@apps/explorer/listing/pane-store";
+import { defaultPaneFrac, dragPaneFrac, shouldShowPane } from "@apps/explorer/listing/pane-math";
 
-// Merge a DRAGGED width into this folder's saved state without touching a
-// saved sort (and vice versa — setSort merges the same way). Only a drag ever
-// gets here: a pane still following the window's breakpoints has made no
-// choice, and writing one would freeze it at the width it happened to open on.
+// THE ONE-TIME PURGE of the per-folder width, run at module init — which is the
+// first time anything in the app cares about a pane at all, and the only place
+// that ever wrote these keys.
 //
-// Three decimals is the whole of the precision a split is worth: it is a
-// tenth of a percent of the container, well under a pixel on any window, and
-// it keeps the saved string short and readable.
+// Both are gone for good:
+//   `panew`  the per-folder fraction, whose per-folder-ness was the bug (see
+//            the header and pane-store.ts). Left in storage it would do nothing
+//            except wait to be misread by a later reader.
+//   `pane`   the OFF choice from the model before that, which the old
+//            savePaneWidth deleted opportunistically on its way past — i.e.
+//            only for folders the user happened to drag again. This clears the
+//            rest.
+// Every user therefore starts on the adaptive default and keeps it until their
+// next drag; nothing here can be translated into the new model, because a width
+// chosen for one folder is not a statement about the session.
 //
-// The old `pane` key (the OFF choice) is deleted on the way past rather than
-// left alone: folders saved one under the previous model, and a key nothing
-// reads is a key that will be misread later. Only on a drag, now — nothing
-// reads it in the meantime, so there is no hurry to go looking for it.
-function savePaneWidth(fsPath: string, frac: number): void {
-  const s = new URLSearchParams(getViewState(fsPath));
-  s.delete("pane");
-  s.set("panew", String(Math.round(frac * 1000) / 1000));
-  const qs = s.toString();
-  setViewState(fsPath, qs ? "?" + qs : "");
-}
+// Sorts are NOT touched: `?sort`/`&order` stay per folder on purpose (two
+// sibling folders keep independent sorts), which is exactly why the purge names
+// its params instead of clearing the map.
+purgeViewStateParams("panew", "pane");
 
 // Does the element this ref points at have room for the split? The one place
 // the measurement happens, shared by the listing (its split container) and by
@@ -97,17 +98,21 @@ export function useSplitIsWide(ref: React.RefObject<HTMLElement>): boolean {
 // `enabled=false` (an embedded Listing — the preview pane's own `_listing`
 // mode) turns the whole feature off at the source: however wide that embedded
 // listing is, it never grows a pane of its own — no nesting.
-export function usePreviewPane(fsPath: string, enabled = true) {
-  // The fraction the USER chose — restored from `panew` or dragged this
-  // session. `null` is not a missing number but a real state, "no choice
-  // here": the pane then FOLLOWS THE WINDOW through defaultPaneFrac's
-  // breakpoints, and keeps following it as the window is resized. That is why
-  // the default is not seeded into state — held as a number it would freeze at
-  // whatever width the folder happened to open on, and (having become
-  // indistinguishable from a dragged one) would be persisted as a choice.
-  const [chosen, setChosen] = useState<number | null>(() =>
-    enabled ? parsePaneFrac(new URLSearchParams(getViewState(fsPath)).get("panew")) : null
-  );
+export function usePreviewPane(enabled = true) {
+  // The fraction the USER chose — dragged somewhere in this session, on this
+  // folder or another (pane-store). `null` is not a missing number but a real
+  // state, "no choice yet": the pane then FOLLOWS THE WINDOW through
+  // defaultPaneFrac's breakpoints, and keeps following it as the window is
+  // resized. That is why the default is not seeded into state — held as a
+  // number it would freeze at whatever width the listing happened to open on,
+  // and (having become indistinguishable from a dragged one) would be recorded
+  // as a choice.
+  //
+  // Seeded from the store rather than mirrored from it: the store is the source
+  // of truth ACROSS mounts (this hook remounts on every navigation and reads it
+  // again), while within a mount the React state is what re-renders. Nothing
+  // else writes the store, so the two cannot drift.
+  const [chosen, setChosen] = useState<number | null>(getPaneFrac);
   const splitRef = useRef<HTMLDivElement>(null);
   const width = useSplitWidth(splitRef);
   const on = enabled && shouldShowPane(width);
@@ -125,10 +130,10 @@ export function usePreviewPane(fsPath: string, enabled = true) {
     // from a width the breakpoints picked continues from where the divider
     // actually is rather than jumping.
     let dragged = frac;
-    // Did the drag produce a real fraction? That is what PERSISTENCE reads: in
-    // a container narrower than both floors dragPaneFrac returns null (see
-    // there), and recording the pre-drag fraction as though the user had chosen
-    // it would write a number nobody picked.
+    // Did the drag produce a real fraction? That is what the COMMIT below
+    // reads: in a container narrower than both floors dragPaneFrac returns null
+    // (see there), and recording the pre-drag fraction as though the user had
+    // chosen it would keep a number nobody picked.
     //
     // There used to be a second flag beside it, for the gesture that CLOSED the
     // pane by dragging the divider into the right edge. That gesture is gone
@@ -157,14 +162,23 @@ export function usePreviewPane(fsPath: string, enabled = true) {
       divider.removeEventListener("pointermove", onMove);
       divider.removeEventListener("pointerup", onUp);
       divider.removeEventListener("pointercancel", onUp);
-      // Only a drag that actually RESIZED writes anything. A bare click on the
+      // Only a drag that actually RESIZED records anything. A bare click on the
       // divider, or a drag in a container too narrow to express a split (see
       // dragPaneFrac), leaves the pane where it was — following the window if
-      // it was already following it, keeping its saved width if it had one —
-      // and a state nobody changed must not be rewritten: the write is a
-      // read-modify-write of the whole folder's viewstate, so a pointerdown
-      // that means nothing would still re-serialize it.
-      if (resized) savePaneWidth(fsPath, dragged);
+      // it was already following it, keeping the session's width if there is
+      // one. A pane that is still FOLLOWING the window must stay that way: any
+      // write here turns it into a chosen width, everywhere, for the rest of
+      // the session.
+      //
+      // Three decimals is the whole of the precision a split is worth: a tenth
+      // of a percent of the container, well under a pixel on any window.
+      if (!resized) return;
+      const settled = Math.round(dragged * 1000) / 1000;
+      setPaneFrac(settled);
+      // Render the rounded number too, so what is on screen now and what the
+      // next folder opens at are the same value rather than differing by the
+      // rounding.
+      setChosen(settled);
     };
     divider.addEventListener("pointermove", onMove);
     divider.addEventListener("pointerup", onUp);
