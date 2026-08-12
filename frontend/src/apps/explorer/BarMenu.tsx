@@ -12,7 +12,7 @@
 // glyph. An earlier pass put it in a filled accent chip to mark "this is the
 // active mode"; on screen that read as a coloured badge shouting for
 // attention in a row of quiet chrome. The accent survives where it costs
-// nothing — the checkmark on the dropdown's active row.
+// nothing — the wash on the dropdown's active row (.bar-menu-item.active).
 //
 // OverflowMenu is the `···` companion: low-frequency one-shot actions (reveal
 // in the file manager, copy path, open in a new tab) that used to be welded
@@ -111,25 +111,6 @@ function CaretIcon({ open }: { open: boolean }) {
       aria-hidden="true"
     >
       <polyline points={open ? "18 15 12 9 6 15" : "6 9 12 15 18 9"} />
-    </svg>
-  );
-}
-
-function CheckIcon() {
-  return (
-    <svg
-      className="bar-menu-check"
-      viewBox="0 0 24 24"
-      width="14"
-      height="14"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2.5"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <polyline points="20 6 9 17 4 12" />
     </svg>
   );
 }
@@ -237,7 +218,6 @@ export function ModeMenu({ entries, active, busy, onSelect }: ModeMenuProps) {
                 {e.pending ? <span className="mode-icon-spinner" /> : e.icon}
               </span>
               <span className="bar-menu-item-label">{modeTitle(e.mode)}</span>
-              {e.mode === activeEntry?.mode && <CheckIcon />}
             </button>
           ))}
         </div>

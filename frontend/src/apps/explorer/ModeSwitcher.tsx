@@ -23,12 +23,14 @@ export const KNOWN_SENTINEL_MODES = new Set(["_render", "_listing"]);
 export { modeTitle } from "@platform/lib/mode-name";
 
 // Shell-baked icon for the "_render" sentinel (PT-12) — sentinels have no
-// template folder, so there's no icon.svg to fetch. Component-local, matches
-// the old hardcoded Rendered|Source eye glyph.
+// template folder, so there's no icon.svg to fetch. Component-local; the same
+// play-in-a-rounded-box glyph as the folder pane's Preview side
+// (PREVIEW_SIDE_ICON, SideChrome.tsx), because the two are the same "look at
+// the rendered thing" idea and used to wear different icons (an eye here).
 const RENDER_SENTINEL_ICON = (
   <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7z" />
-    <circle cx="12" cy="12" r="3" />
+    <rect x="3" y="3" width="18" height="18" rx="3" />
+    <path d="M10 8.75 15.5 12 10 15.25Z" />
   </svg>
 );
 
