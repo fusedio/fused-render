@@ -297,6 +297,34 @@ if ($LASTEXITCODE -ne 0) {
 if (-not ($SessionsListing -match 'sessions/')) {
     throw "sessions.zip nested entries are not forward-slash separated (sessions/ missing)"
 }
+
+# Bundle community.zip the same way (the Community marketplace sub-app content;
+# mirrors build_dmg.sh). child_environment points FUSED_RENDER_COMMUNITY_ZIP here.
+$CommunitySrc = Join-Path $RepoRoot "core_apps\community"
+if (-not (Test-Path -LiteralPath $CommunitySrc -PathType Container)) {
+    throw "core_apps/community content is missing - it is part of the app"
+}
+$CommunityZip = Join-Path $StageDir "assets\community.zip"
+$CommunitySrcFull = (Resolve-Path -LiteralPath $CommunitySrc).Path
+$CommunityArchive = [System.IO.Compression.ZipFile]::Open(
+    $CommunityZip, [System.IO.Compression.ZipArchiveMode]::Create)
+try {
+    foreach ($file in Get-ChildItem -LiteralPath $CommunitySrcFull -Recurse -File) {
+        if ($file.FullName -match '__pycache__') { continue }
+        $rel = $file.FullName.Substring($CommunitySrcFull.Length + 1).Replace('\', '/')
+        [void][System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile(
+            $CommunityArchive, $file.FullName, $rel)
+    }
+} finally {
+    $CommunityArchive.Dispose()
+}
+$CommunityListing = & (Join-Path $PythonRoot "rclone.exe") lsf -R ":archive:$CommunityZip"
+if ($LASTEXITCODE -ne 0) {
+    throw "bundled rclone cannot read community.zip via :archive:"
+}
+if (-not ($CommunityListing -match 'index.html')) {
+    throw "community.zip is missing its index.html entry"
+}
 # --no-project: the script is stdlib-only (plus its sibling file_associations),
 # so a plain `uv run` would resolve+install the WHOLE project — minutes of work
 # whose only effect on this build is a new way to fail. It is how v0.3.13 lost

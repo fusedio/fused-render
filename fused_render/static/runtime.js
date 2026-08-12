@@ -52,6 +52,28 @@
  *     must not be able to break the work it describes. A no-op stub on a
  *     hosted page (there is no manager there), so a view that reports progress
  *     still exports.
+ *   fused.fileIndex.* -> the machine-wide file index, without hand-rolling fetch()
+ *     search({root, q, limit}) — one folder's indexed corpus, the per-keystroke
+ *     path. query({sql, limit}) — one read-only SQL statement over the `files`
+ *     and `dirs` views, which is how you get totals, per-extension breakdowns
+ *     and path matches too.
+ *     TWO methods on purpose. `query` already subsumes what wrapped
+ *     stats/lookup calls did, and readiness rides on every response, so a
+ *     `status` method was surface without capability. Scanning, editing
+ *     roots/ignore and the repos derivation stay raw fetch + `X-Fused: 1`
+ *     (section C of skills/fused-render-index) — managing the index is a shell
+ *     action, not a render path, and so are /api/index/delete (wipes the whole
+ *     store) and /api/index/ask (spends AI credits per call).
+ *     Both resolve with the endpoint's own payload PLUS a normalized
+ *     `ready: {indexed, scanning, stale, reason}`. That envelope is the point:
+ *     an index query answers zero rows both when nothing matches and when no
+ *     index was ever built, and rendering the second as the first is a silent
+ *     lie. A `ready` field is null only when that response genuinely cannot say
+ *     — `search` alone reports `scanning: null`, being the per-keystroke path
+ *     that must not double its request count. `reason` is "no-index",
+ *     "outdated", "not-covered" or null. Unlike runPython there is no supersede
+ *     channel: a per-keystroke caller must guard its own renders against an
+ *     earlier reply landing last. LOCAL ONLY — a hosted page has no index.
  *   fused.params.get(key) / getAll() / set(key, value) / onChange(cb) -> unsubscribe
  *   fused.env -> "local" — the runtime identity. This is the local fused-render app;
  *                the hosted/exported runtime (fused wheel) sets "hosted" instead, so a
@@ -2266,6 +2288,198 @@
     };
   }
 
+  // --------------------------------------------------------- fused.fileIndex
+  //
+  // The file index, readable from a page without hand-rolling fetch(). Named
+  // `fileIndex` and not `index` because "index" says nothing about what is in
+  // it, and not `files` because `readFile`/`writeFile`/`stat` above are the file
+  // I/O surface — this queries an INDEX OF files, and never touches one.
+  //
+  // Both methods resolve with the endpoint's own payload PLUS a normalized
+  // `ready` object, and that envelope is the reason this exists rather than a
+  // convenience wrapper. `/api/index/query` answers `{ok, columns, rows}`: a
+  // page that renders its zero rows as an answer cannot tell "nothing matches"
+  // from "no index has ever been built", and rendering the second as the first
+  // is a silent lie (routers/git_repos.py's docstring calls that "the original
+  // silent lie and the reason any of this exists"). So:
+  //
+  //   ready = { indexed, scanning, stale, reason }
+  //
+  // `indexed` — a compacted index exists at all. `scanning` — a scan is in
+  // flight; independent of indexed, because a rescan keeps serving the last
+  // completed generation. `stale` — the answer may be behind the filesystem
+  // (a scan running, or a slice built under superseded ignore rules). `reason`
+  // — why not ready: "no-index" (nothing built), "outdated" (the rule that
+  // would produce these rows never ran), "not-covered" (the index exists but
+  // has not visited this root), else null.
+  //
+  // A field is `null` when THIS response cannot say, never a guess. `search`
+  // answers `covered`/`fresh`/`age_s` itself, so it needs no second request —
+  // which matters, because it is the per-keystroke corpus path and doubling its
+  // request count to learn `scanning` is a bad trade; it is the one method that
+  // reports `scanning: null`. `query` piggybacks one cheap `/api/index/status`
+  // GET in parallel.
+  //
+  // fused-file-index:start
+  //   Self-contained on purpose: this block reaches only for `fetch` and
+  //   `callHeaders`, so tests/test_index_runtime.py can extract it between
+  //   these sentinels and run it under node against a stubbed server. Keep it
+  //   that way — a DOM or module reference here breaks those tests, which are
+  //   the only ones that check behaviour rather than spelling.
+  //
+  //   TWO methods, deliberately: `search` and `query`. `query` is read-only SQL
+  //   over the same `files`/`dirs` views that /api/index/stats and /lookup read,
+  //   so wrapping those was a second spelling of one capability; readiness rides
+  //   on every response, so `status` was not needed as a method either. Scanning,
+  //   config and the repos derivation stay raw-fetch-only (with `X-Fused: 1`) —
+  //   managing the index is a shell action, not something a render path does.
+  function fileIndexUrl(path, params) {
+    const qs = new URLSearchParams();
+    Object.keys(params || {}).forEach((key) => {
+      const value = params[key];
+      // An omitted option must mean "the server's default", not "the empty
+      // string": `root=` on /api/index/search is a 400, and an empty `limit=`
+      // fails the int parse rather than meaning the default.
+      if (value === undefined || value === null || value === "") return;
+      qs.set(key, String(value));
+    });
+    const search = qs.toString();
+    return search ? path + "?" + search : path;
+  }
+
+  // Three response shapes reach here, and the shell collapses the same three in
+  // frontend/src/platform/lib/index-query.ts (`outcomeFrom`): success, a flat
+  // {error: "message"}, and the AI relay's nested {error: {type, message}} —
+  // which read naively renders as "[object Object]".
+  //
+  // Rejection style follows runPython and fused.ai rather than inventing a
+  // second one in this file: an Error whose `.message` is the server's sentence
+  // verbatim (a duckdb "Binder Error: no such column: nope" is the answer the
+  // user needs) and whose `.type` is for programs.
+  function fileIndexError(status, data) {
+    const raw = data && data.error;
+    let message = "";
+    let type = "";
+    if (typeof raw === "string") {
+      message = raw;
+    } else if (raw && typeof raw === "object") {
+      if (typeof raw.message === "string") message = raw.message;
+      if (typeof raw.type === "string") type = raw.type;
+    }
+    const err = new Error(message || "HTTP " + status);
+    err.type = type || (status === 403 ? "forbidden" : "bad_request");
+    err.status = status;
+    return err;
+  }
+
+  // `errorIsData` is set by the ONE route whose success shape includes `error`;
+  // see fileIndexStatusGet. Stated per call site on purpose — sniffing the
+  // payload for a tell (`"running" in data`) would decide the question from
+  // whichever keys a response happened to carry.
+  function fileIndexJson(res, errorIsData) {
+    return res
+      .json()
+      .catch(() => null) // a 500 with an HTML body still has to reject readably
+      .then((data) => {
+        if (!res.ok) throw fileIndexError(res.status, data);
+        // A 2xx carrying `error` should not happen on the routes that mean it as
+        // a failure, but an error rendered as an empty result is the failure this
+        // API exists to prevent, so it is refused rather than returned.
+        if (data && data.error && !errorIsData) throw fileIndexError(res.status, data);
+        return data || {};
+      });
+  }
+
+  function fileIndexGet(path, params, errorIsData) {
+    return fetch(fileIndexUrl(path, params), { headers: callHeaders() })
+      .then((res) => fileIndexJson(res, errorIsData));
+  }
+
+  // The readiness probe. Not a public method — `query`'s envelope is what a page
+  // reads — but the one GET whose `error` is DATA: derive_state (index/runner.py)
+  // seeds it null and fills it from `run_end`, and _with_liveness writes the
+  // abandoned-worker sentence into it. Refusing a 2xx `error` here rejected the
+  // probe and so blinded the envelope of every call beside it until the dead run
+  // was pruned.
+  function fileIndexStatusGet(params) {
+    return fileIndexGet("/api/index/status", params, true);
+  }
+
+  // X-Fused on the POST. `_require_fused` (server/common.py) 403s a POST without
+  // it — not authentication, a cross-origin-preflight tripwire — and baking it in
+  // here keeps the convention in one place instead of teaching every app author
+  // to set it by hand (which the raw-fetch routes below still require).
+  function fileIndexPost(path, body) {
+    return fetch(path, {
+      method: "POST",
+      headers: callHeaders({ "Content-Type": "application/json", "X-Fused": "1" }),
+      body: JSON.stringify(body || {}),
+    }).then(fileIndexJson);
+  }
+
+  function fileIndexReady(indexed, scanning, stale, reason) {
+    const bit = (v) => (v === null || v === undefined ? null : !!v);
+    return { indexed: bit(indexed), scanning: bit(scanning), stale: bit(stale),
+             reason: reason || null };
+  }
+
+  // The envelope from a /api/index/status payload — the piggybacked source for
+  // `query`, whose own response cannot say.
+  //
+  // `stale` is `scanning` and nothing more here: /api/index/status exposes no
+  // applied-ignore signature, so an index whose slices were built under
+  // superseded rules reads as fresh through it. `search()` is the one method that
+  // can do better, and it does — it reports its own age.
+  function fileIndexReadyFromStatus(status) {
+    const indexed = !!(status && (status.indexed || status.has_index));
+    const scanning = !!(status && status.scanning);
+    return fileIndexReady(indexed, scanning, scanning, indexed ? null : "no-index");
+  }
+
+  // Run `call` and one status GET together, and hand back the payload with an
+  // envelope. The probe failing must neither fail the call it describes nor
+  // answer for it — an all-null envelope is exactly "this response cannot say".
+  function fileIndexWithStatus(call) {
+    return Promise.all([
+      call,
+      fileIndexStatusGet().then(fileIndexReadyFromStatus,
+                                () => fileIndexReady(null, null, null, null)),
+    ]).then(([data, ready]) => Object.assign({}, data, { ready: ready }));
+  }
+
+  function fileIndexSearch(opts) {
+    opts = opts || {};
+    return fileIndexGet("/api/index/search", {
+      root: opts.root, q: opts.q, limit: opts.limit,
+    }).then((data) => {
+      // `covered: false` deliberately collapses "no index", "not covered" and
+      // "a scan is running" into one false, because a search box treats all
+      // three the same way (query.search_under). The envelope un-collapses the
+      // one a caller actually has to distinguish: a never-built index answers
+      // `updated: null`, while a built index that has simply not visited this
+      // root answers with its last compaction time.
+      const covered = data.covered === true;
+      const built = covered || (data.updated !== null && data.updated !== undefined);
+      return Object.assign({}, data, {
+        ready: fileIndexReady(built, null, built ? data.fresh !== true : null,
+                              built ? (covered ? null : "not-covered") : "no-index"),
+      });
+    });
+  }
+
+  // The workhorse, and the reason `stats`/`lookup` are not here: totals, a
+  // per-extension breakdown and a path match are all SELECTs over `files`/`dirs`,
+  // and the guard (index/query.py) is the same one those routes read through.
+  function fileIndexQuery(opts) {
+    opts = opts || {};
+    const body = { sql: opts.sql };
+    if (opts.limit !== undefined) body.limit = opts.limit;
+    return fileIndexWithStatus(fileIndexPost("/api/index/query", body));
+  }
+
+  const fileIndex = { search: fileIndexSearch, query: fileIndexQuery };
+  // fused-file-index:end
+
   window.fused = {
     // Runtime identity: "local" here (the fused-render app). The hosted/exported
     // runtime sets "hosted", so a page can branch on where it runs (EXPORT.md).
@@ -2278,6 +2492,7 @@
     uploadFile,
     mkdir,
     ai,
+    fileIndex,
     trackJob,
     watchJob,
     autoReload,

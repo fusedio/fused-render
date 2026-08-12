@@ -53,10 +53,109 @@ export interface HomeHit {
 export type CorpusState =
   | { status: "idle" }
   | { status: "loading" }
-  | { status: "ok"; entries: WalkEntry[]; truncated: boolean }
+  // `key` names the corpus CONTENT (the index generation it came from), so a
+  // refetch that returns the same rows is recognisable as the same corpus even
+  // though it is a new array — see listing/useRankedScan's resume check. "" is
+  // "no stable identity", which never resumes.
+  | { status: "ok"; entries: WalkEntry[]; truncated: boolean; key: string }
   // The index has not covered the home root yet — no answer, not zero answers.
   | { status: "cold" }
   | { status: "error"; message: string };
+
+/** A corpus already in hand, retained across refetches. */
+export interface HeldHomeCorpus {
+  entries: WalkEntry[];
+  truncated: boolean;
+  key: string;
+}
+
+/**
+ * What the search box should actually rank and render.
+ *
+ * The rule is the one lib/repos.ts already applies to the repo cards, for the
+ * same reason: HAVING AN ANSWER and THE ANSWER BEING CURRENT are two different
+ * facts, and only the first may suppress rows. A rescan republishes the corpus
+ * fetch, and the home page's fetch effect used to answer `cold` while it was in
+ * flight — so mid-rescan the box said "The file index is still building" with
+ * zero rows, for an index that was built and searchable. `cold` is a claim
+ * about the index having never covered this root; it is not a state a REFETCH
+ * can put the page into.
+ *
+ * So a corpus once in hand keeps answering, marked `stale`, until a fresh one
+ * replaces it. `status` is what the copy branches on and reads "ok" whenever
+ * there are rows, so a stale corpus can never route to a message that denies
+ * having one.
+ */
+export interface HomeCorpusView {
+  /** The rows to rank, or null when no corpus has EVER been in hand. */
+  entries: WalkEntry[] | null;
+  truncated: boolean;
+  key: string;
+  /** These rows are a generation behind. The caller must SAY so. */
+  stale: boolean;
+  status: CorpusState["status"];
+  /**
+   * The last fetch's failure, or "".
+   *
+   * Reported whether or not rows are being held, which is the one place this
+   * view deliberately does NOT simplify to a single state. Held rows plus a
+   * failure is a real, nameable situation — "these still work, the refresh
+   * didn't" — and collapsing it either way is a bug: dropping the rows breaks
+   * a search that was working, and dropping the message makes `retryNonce`
+   * (which retries on a keystroke) a gesture with no feedback at all.
+   *
+   * listing/corpus-hold takes the opposite line for the in-folder search —
+   * an errored walk yields no rows, the error IS the answer — and the
+   * difference is not an inconsistency. There the walk is the fallback, so a
+   * failure means search genuinely has nothing and the user's move is to
+   * retry. Here the index is the only source there is, so the rows in hand are
+   * the best answer available and throwing them away buys nothing.
+   */
+  message: string;
+}
+
+/** What to retain after this render. Only a real corpus replaces the hold. */
+export function nextHeldHomeCorpus(
+  state: CorpusState,
+  held: HeldHomeCorpus | null,
+): HeldHomeCorpus | null {
+  if (state.status !== "ok") return held;
+  if (held !== null && held.entries === state.entries) return held;
+  return { entries: state.entries, truncated: state.truncated, key: state.key };
+}
+
+export function homeCorpusView(
+  state: CorpusState,
+  held: HeldHomeCorpus | null,
+): HomeCorpusView {
+  if (state.status === "ok")
+    return {
+      entries: state.entries,
+      truncated: state.truncated,
+      key: state.key,
+      stale: false,
+      status: "ok",
+      message: "",
+    };
+  const message = state.status === "error" ? state.message : "";
+  if (held !== null)
+    return {
+      entries: held.entries,
+      truncated: held.truncated,
+      key: held.key,
+      stale: true,
+      status: "ok",
+      message,
+    };
+  return {
+    entries: null,
+    truncated: false,
+    key: "",
+    stale: false,
+    status: state.status,
+    message,
+  };
+}
 
 /**
  * The filesystem path a query is really an address for, or null.
@@ -110,7 +209,12 @@ export function homeCountNote(total: number, corpusTruncated: boolean): string {
 export function corpusFrom(res: IndexSearchResult): CorpusState {
   const corpus = indexCorpusFrom(res);
   if (corpus === null) return { status: "cold" };
-  return { status: "ok", entries: corpus.entries, truncated: corpus.truncated };
+  // (root, generation) is the corpus's identity: the same pair always yields
+  // the same rows, so a refetch triggered by something other than the index
+  // moving (an in-app rename, a retry) is recognisable as the same corpus. A
+  // response with no `updated` gets no identity rather than a shared one.
+  const key = typeof res.updated === "number" ? `${res.root}|${res.updated}` : "";
+  return { status: "ok", entries: corpus.entries, truncated: corpus.truncated, key };
 }
 
 // -- typing anywhere is typing here ------------------------------------------

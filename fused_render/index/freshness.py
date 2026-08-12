@@ -40,10 +40,19 @@ QUIET_S = 30.0
 # Floor between scans of one root STARTED by this path. Read off `scans.json`
 # via runner.last_scan, which the startup scheduler and the manual buttons also
 # stamp — so a scan that just ran for any reason suppresses a trigger, and the
-# trigger needs no state file of its own. Much lower than the startup
-# debounce (routers/index.SCAN_DEBOUNCE_S, 15 min) on purpose: that one exists
-# to stop a reload loop, this one to stop a browsing session from queueing.
-MIN_INTERVAL_S = 120.0
+# trigger needs no state file of its own. Still below the startup debounce
+# (routers/index.SCAN_DEBOUNCE_S, 15 min): that one exists to stop a reload
+# loop, this one to stop a browsing session from queueing.
+#
+# Raised from two minutes, because a completed scan is not free to the client:
+# it invalidates every fetched corpus in the app (platform/lib/index-status ->
+# index-freshness), and the explorer's answer to that is now to keep serving
+# what it has and say it is a generation behind rather than to refetch. Being a
+# few minutes behind is a labelled, readable state; a scan finishing every two
+# minutes under a churny home directory is a permanent "indexing…" and a
+# permanent dimming, which reads as broken. Freshness still wins over an
+# out-of-band change eventually, just not eagerly.
+MIN_INTERVAL_S = 600.0
 
 
 def enclosing_root(roots, path: str):

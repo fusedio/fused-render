@@ -32,6 +32,24 @@ test("renaming an ANCESTOR invalidates the folder below it", () => {
   expect(indexMayAnswer("/home/me/proj/src")).toBe(false);
 });
 
+test("a rename several levels down still pins every folder above it to the walk", () => {
+  // The invariant the gate exists for, and the reason racing the index against
+  // the live walk (listing/source-race) does not weaken it: the index would
+  // WIN that race and answer instantly with the pre-rename name. A race fixes a
+  // slow answer, never a wrong one — so both directions of the check stay, and
+  // "narrow it to the mutated folder itself" is not available.
+  noteFsMutation("/home/me/proj/src/deep/nested/renamed.ts");
+  for (const folder of [
+    "/home/me",
+    "/home/me/proj",
+    "/home/me/proj/src",
+    "/home/me/proj/src/deep",
+    "/home/me/proj/src/deep/nested",
+  ]) {
+    expect(indexMayAnswer(folder)).toBe(false);
+  }
+});
+
 test("a sibling prefix is not a subtree", () => {
   // /home/me/proj-old must not be read as "inside /home/me/proj".
   noteFsMutation("/home/me/proj-old/a.txt");

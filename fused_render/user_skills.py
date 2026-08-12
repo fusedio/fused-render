@@ -33,12 +33,13 @@ import shutil
 
 logger = logging.getLogger(__name__)
 
-# All three canonical skills. Unlike the per-folder starter copies this
-# replaces, the user-level install is machine-wide, so there is no reason to
-# subset: usage guidance is as relevant as authoring.
+# Every canonical skill. Unlike the per-folder starter copies this replaces, the
+# user-level install is machine-wide, so there is no reason to subset: usage
+# guidance is as relevant as authoring.
 SKILLS = (
     "fused-render-authoring",
     "fused-render-custom-templates",
+    "fused-render-index",
     "fused-render-usage",
 )
 

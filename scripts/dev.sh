@@ -41,37 +41,29 @@ FRONTEND="$REPO_ROOT/frontend"
 # or a manual wipe. Respect an already-set value so the caller can override.
 export FUSED_RENDER_CORE_TEMPLATES="${FUSED_RENDER_CORE_TEMPLATES:-$REPO_ROOT/fused_render/templates}"
 
-# Stage the builtin-mount zips (learn.zip, sessions.zip) so a dev server gets
-# the Learn and Sessions sub-apps just like the packaged app. The packaged
-# builds create these at DMG/installer time (build_dmg.sh step 4e and its
-# Windows mirror); a dev checkout only has the loose content dirs, so without
-# this the builtin mounts never resolve a zip and the sidebar entries hide.
-# Rebuilt fresh on every run (content is tiny, zip takes <1s) into the
-# gitignored .dev-zips/ — same exclusions as the packaged zips. Respect an
-# already-set env var so a caller can point a mount at their own zip.
-#
-# NOTE: the mount serves the zip SNAPSHOT, not the live content dir — edits to
-# core_apps/learn/ or core_apps/sessions/ need a dev.sh restart (Ctrl-C,
-# re-run) to show up.
+# Stage the builtin-mount zips (learn.zip, sessions.zip, community.zip) so a
+# dev server gets the Learn/Sessions/Community sub-apps just like the packaged
+# app. The packaged builds create these at DMG/installer time (build_dmg.sh
+# step 4e and its Windows mirror); a dev checkout only has the loose content
+# dirs, so without this the builtin mounts never resolve a zip and the sidebar
+# entries hide. The staging itself lives in scripts/stage_builtin_zips.sh
+# (gitignored .dev-zips/ output, same exclusions as the packaged zips) because
+# TWO callers need it: this startup pass, and dev_server_run.sh before every
+# watchfiles server restart — which is what makes a core_apps/ edit land in a
+# fresh zip that the restarting server force-remounts (the mount serves a zip
+# SNAPSHOT, never the live dir; the core_apps poll loop below turns any edit
+# into such a restart). Respect an already-set env var so a caller can point a
+# mount at their own zip (stage_builtin_zips.sh skips those too).
 DEV_ZIPS="$REPO_ROOT/.dev-zips"
-mkdir -p "$DEV_ZIPS"
-stage_builtin_zip() { # $1 = content dir name (learn|sessions), $2 = env var name
-  local src="$REPO_ROOT/core_apps/$1" dest="$DEV_ZIPS/$1.zip"
-  if [[ -z "${!2:-}" && -d "$src" ]] && command -v zip >/dev/null 2>&1; then
-    rm -f "$dest"
-    # zip's * doesn't cross '/', hence the doubled patterns (same as
-    # build_dmg.sh). The *.json sidecar exclusions mirror .gitignore: the dev
-    # server writes `<file>.json` next to any opened file, and a sidecar baked
-    # into the zip would pin the shipped view to this machine's session.
-    (cd "$src" && zip -qr -X "$dest" . \
-      -x '.DS_Store' -x '*/.DS_Store' -x '__pycache__/*' -x '*/__pycache__/*' \
-      -x '*.html.json' -x '*/*.html.json' -x '*.md.json' -x '*/*.md.json' \
-      -x '*.py.json' -x '*/*.py.json' -x '*.txt.json' -x '*/*.txt.json')
-    export "$2=$dest"
+bash "$REPO_ROOT/scripts/stage_builtin_zips.sh"
+for pair in learn:FUSED_RENDER_LEARN_ZIP sessions:FUSED_RENDER_SESSIONS_ZIP \
+            community:FUSED_RENDER_COMMUNITY_ZIP; do
+  name="${pair%%:*}" var="${pair#*:}"
+  if [[ -z "${!var:-}" && -f "$DEV_ZIPS/$name.zip" ]]; then
+    export "$var=$DEV_ZIPS/$name.zip"
+    echo "==> staged builtin zip: $name.zip"
   fi
-}
-stage_builtin_zip learn FUSED_RENDER_LEARN_ZIP
-stage_builtin_zip sessions FUSED_RENDER_SESSIONS_ZIP
+done
 
 # Keep the rclone rcd daemon (and its mounts + warm VFS cache) alive across the
 # watchfiles server restarts that fire on every .py edit — without this the
@@ -245,6 +237,16 @@ command -v npm >/dev/null || { echo "npm not found — the dev loop needs Node 2
   exit 1
 }
 
+# Header-less scripts (no pyproject.toml — every core_apps/ helper, e.g.
+# community.py) run on "the app's own interpreter" under the fused engine, and
+# engine.py resolves that by probing candidates. In a dev checkout the probe
+# can reject everything (sys.executable nuances, PATH pythons without the
+# bundled set) and every builtin sub-app's runPython dies with "could not
+# resolve a usable Python interpreter". The dev venv IS the app interpreter
+# here — it carries [bundled] — so point the escape hatch at it. Respect an
+# already-set value.
+export FUSED_RENDER_APP_PYTHON="${FUSED_RENDER_APP_PYTHON:-$PY}"
+
 # Install deps when they're missing OR stale. `node_modules/.package-lock.json`
 # is npm's own record of the last install; if the real package-lock.json is
 # newer than it (a dependency bump, or a branch switch that changed the lock),
@@ -376,10 +378,43 @@ if [[ "$RELOAD" -eq 1 ]]; then
   # default `serve` only when argv[0] isn't already a subcommand, so a leading
   # `serve` (e.g. `dev.sh serve --port N`) must stay argv[0]. Prepending
   # --no-browser would shift it and trigger a duplicate-`serve` parse error.
-  CMD="$(printf '%q' "$PY") -m fused_render.cli"
+  # core_apps content watcher: watchfiles' python filter only reacts to *.py,
+  # but builtin sub-app edits are mostly .html/.md/.svg. Poll for ANY newer
+  # file under core_apps/ and poke a gitignored .py trigger inside the watched
+  # tree — watchfiles sees a .py change, restarts the server through
+  # dev_server_run.sh, which re-stages the zips first. Net effect: save a file
+  # under core_apps/, the server restarts on fresh zips, a browser refresh
+  # shows the edit. ~2s poll; core_apps is tiny.
+  CORE_TRIGGER="$REPO_ROOT/core_apps/.dev-reload-trigger.py"
+  touch "$CORE_TRIGGER"
+  (
+    # *.py excluded: watchfiles' python filter already restarts on those (and
+    # the restart re-stages zips via dev_server_run.sh) — poking the trigger
+    # too would queue a SECOND restart for the same edit. Also skip junk that
+    # staging never packages anyway (.DS_Store, editor swaps, *.html.json
+    # sidecars) so it can't force pointless restarts.
+    while sleep 2; do
+      if [[ -n "$(find "$REPO_ROOT/core_apps" -type f \
+                    ! -name "*.py" ! -name ".DS_Store" ! -name "*~" \
+                    ! -name "*.swp" ! -name "*.swx" ! -name "*.json.tmp" \
+                    ! -name "*.html.json" ! -name "*.md.json" ! -name "*.py.json" \
+                    ! -name "*.txt.json" ! -name "*.markdown.json" \
+                    ! -path "*/__pycache__/*" \
+                    -newer "$CORE_TRIGGER" -print -quit 2>/dev/null)" ]]; then
+        touch "$CORE_TRIGGER"
+      fi
+    done
+  ) &
+  CORE_WATCH_PID=$!
+  trap 'kill "$WATCH_PID" "$CORE_WATCH_PID" 2>/dev/null || true; [[ -n "$OPENER_PID" ]] && kill "$OPENER_PID" 2>/dev/null || true' EXIT INT TERM
+
+  # The restart target is dev_server_run.sh (re-stage builtin zips, then exec
+  # the server) so every restart mounts current core_apps content — not the
+  # snapshot from dev.sh launch time.
+  CMD="bash $(printf '%q' "$REPO_ROOT/scripts/dev_server_run.sh") $(printf '%q' "$PY")"
   for a in "$@"; do CMD+=" $(printf '%q' "$a")"; done
   CMD+=" --no-browser"
-  "$PY" -m watchfiles --filter python "$CMD" "$REPO_ROOT/fused_render"
+  "$PY" -m watchfiles --filter python "$CMD" "$REPO_ROOT/fused_render" "$REPO_ROOT/core_apps"
 else
   # Original single-launch behavior: the server opens its own browser tab.
   "$PY" -m fused_render.cli "$@"

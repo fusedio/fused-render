@@ -16,7 +16,7 @@ import { SidebarFrame, NavItem } from "@platform/ui/sidebar/SidebarFrame";
 import type { SidebarRailItem } from "@platform/ui/sidebar/SidebarFrame";
 import { LearnIcon } from "@platform/ui/FileIcons";
 import type { Config } from "@platform/lib/api";
-import { useUrlVersion, useLearnMountReady, useSessionsMountReady } from "@platform/lib/hooks";
+import { useUrlVersion, useLearnMountReady, useSessionsMountReady, useCommunityMountReady } from "@platform/lib/hooks";
 import { useAccountLoggedIn } from "@platform/lib/account";
 import { useDeployEnabled } from "@platform/lib/prefs";
 import { useClaudeConfigAvailable } from "@apps/claude_config/available";
@@ -39,6 +39,15 @@ const APPS_ICON = (
     <rect x="13" y="3" width="8" height="8" rx="2" />
     <rect x="3" y="13" width="8" height="8" rx="2" />
     <circle cx="17" cy="17" r="4" />
+  </svg>
+);
+
+// Community marketplace (a globe): apps shared by other users.
+const COMMUNITY_ICON = (
+  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <circle cx="12" cy="12" r="9" />
+    <path d="M3 12h18" />
+    <path d="M12 3c-2.5 2.6-3.8 5.7-3.8 9s1.3 6.4 3.8 9c2.5-2.6 3.8-5.7 3.8-9S14.5 5.6 12 3z" />
   </svg>
 );
 
@@ -120,6 +129,7 @@ export default function ShellSidebar({ config }: { config: Config }) {
   // for the full race notes — the boot snapshot is stale in both directions).
   const learnMountReady = useLearnMountReady(config.learn_mount_ready);
   const sessionsMountReady = useSessionsMountReady(config.sessions_mount_ready);
+  const communityMountReady = useCommunityMountReady(config.community_mount_ready);
   // Claude Config is native (no mount) — availability is just "does ~/.claude
   // exist on this machine", one cached probe (see useClaudeConfigAvailable).
   const claudeConfigAvailable = useClaudeConfigAvailable();
@@ -183,6 +193,9 @@ export default function ShellSidebar({ config }: { config: Config }) {
         <div className="sidebar-heading">Fused</div>
         <NavItem href="/explorer" id="explorer-link" label="Explorer" icon={EXPLORER_ICON} />
         <NavItem href="/apps" id="apps-link" label="Build App" icon={APPS_ICON} />
+        {communityMountReady && (
+          <NavItem href="/community" id="community-link" label="Showcase" icon={COMMUNITY_ICON} />
+        )}
       </div>
       {(sessionsMountReady || claudeConfigAvailable) && (
         <div className="sidebar-section sidebar-group">
