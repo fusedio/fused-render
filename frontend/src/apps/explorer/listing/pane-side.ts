@@ -29,6 +29,7 @@
 // a NON-DEFAULT content template for a previewed row inside the pane; the
 // expand button opens the row full-screen, where the content switcher lives.
 import type { TemplateEntry } from "@platform/lib/api";
+import { unavailableReason } from "@platform/lib/mode-visibility";
 
 export const PANE_SIDE_MODES = ["preview", "claude", "git"] as const;
 
@@ -94,10 +95,14 @@ export function paneSideParam(state: PaneSideState): string | null {
 // Which of the three a folder actually offers. `preview` ALWAYS — it is the
 // pane's identity, and even a row with no template at all has a preview state
 // (the metadata card). The other two exist only while the folder's own entry for
-// them does (dir-mode.ts), so a folder outside a repository has no Git pill and a
-// mount-backed folder — where both gates refuse — has only Preview, at which
-// point the shared ModeMenu hides itself ("one mode is not a choice", BarMenu)
-// and the header is a chevron over the pane, exactly as it was before the split.
+// them does (dir-mode.ts), so a folder outside a repository can be SHOWN no Git
+// and a mount-backed folder — where both gates refuse — can be shown neither
+// companion.
+//
+// What the switcher DRAWS is a different question and `paneSideMenu` below
+// answers it: an unofferable mode is listed as a disabled row rather than
+// dropped, so this list is what the pane may be ON, never what the header
+// contains.
 //
 // Order is by construction, not by sorting: this list IS the switcher's order.
 export interface PaneSideEntries {
@@ -106,6 +111,19 @@ export interface PaneSideEntries {
   // own default template, resolved from the row's stat by pane-modes.ts.
   claude: TemplateEntry | null;
   git: TemplateEntry | null;
+  // The dir-mode probe behind that null has not answered yet (Listing passes the
+  // flag alongside; the entry stays null because a placeholder has no template
+  // path to frame). Only the MENU reads these — an undecided mode is neither
+  // offered nor denied, so it is drawn as CT-12's spinner row rather than as a
+  // disabled one asserting a reason nobody has established.
+  claudePending?: boolean;
+  gitPending?: boolean;
+  // The folder's entry for a mode it will not SHOW: the binding as the stat
+  // reported it, gate verdict or not (lib/dir-mode's `bound`). Read for one thing
+  // only — see `paneSideIconEntry` — and never as an offer: a mode is on offer
+  // when `claude`/`git` above is non-null, and nowhere else.
+  claudeBound?: TemplateEntry | null;
+  gitBound?: TemplateEntry | null;
 }
 
 export function paneSideList(entries: PaneSideEntries): PaneSide[] {
@@ -113,6 +131,57 @@ export function paneSideList(entries: PaneSideEntries): PaneSide[] {
   if (entries.claude) list.push("claude");
   if (entries.git) list.push("git");
   return list;
+}
+
+// One row per mode, ALWAYS all three, which is the folder half of the rule the
+// file sidebar states at length (lib/preview-side, mode-visibility's
+// `unavailableReason`): a closed list of companions is one the user is entitled
+// to see all of, with the unavailable members disabled and saying why, rather
+// than a header that quietly shrank — and, at one row, hid its switcher
+// altogether, leaving a mount-backed folder's pane with a chevron and nothing
+// else.
+//
+// `preview` never carries a reason: it is the pane's identity and cannot be
+// unavailable. The other two are disabled when the folder has no entry for them,
+// or spinning while the probe is still out.
+export interface PaneSideMenuEntry {
+  mode: PaneSide;
+  // Gate/stat still in flight — disabled spinner, no claim made.
+  pending?: boolean;
+  // Not on offer here, and this is why — disabled, with the reason as its title.
+  disabledReason?: string;
+}
+
+export function paneSideMenu(entries: PaneSideEntries): PaneSideMenuEntry[] {
+  const companion = (mode: "claude" | "git"): PaneSideMenuEntry => {
+    if (entries[mode]) return { mode };
+    const pending = mode === "claude" ? entries.claudePending : entries.gitPending;
+    return pending ? { mode, pending: true } : { mode, disabledReason: unavailableReason(mode) };
+  };
+  return [{ mode: "preview" }, companion("claude"), companion("git")];
+}
+
+// WHICH TEMPLATE A ROW TAKES ITS ICON FROM — the offered entry, and failing that
+// the binding behind a disabled row. Null means the mode is bound nowhere and the
+// caller has to draw something of its own.
+//
+// A decision rather than a line inside the icon function because it is the same
+// rule the file sidebar's menu applies (lib/preview-side's `bound`) and the same
+// bug if it is got wrong: a disabled row is the mode with the click taken away,
+// so it keeps the mode's glyph. Falling back to a generic one made the Git row
+// look like a different mode outside a repository than inside it — and falling
+// back to the PREVIEW glyph, which this once did, put two identical icons in a
+// three-row menu.
+//
+// `preview` is not here: it is not a template at all (the row's own default view)
+// and its glyph is baked into the shell.
+export function paneSideIconEntry(
+  side: Exclude<PaneSide, "preview">,
+  entries: PaneSideEntries
+): TemplateEntry | null {
+  return side === "claude"
+    ? (entries.claude ?? entries.claudeBound ?? null)
+    : (entries.git ?? entries.gitBound ?? null);
 }
 
 // The mode the pane SHOWS for a requested one: the request while it is still on

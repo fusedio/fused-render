@@ -99,6 +99,10 @@ export interface SidebarEntry {
   icon: ReactNode;
   // Condition.py gate not yet resolved (CT-12) — listed, not selectable.
   pending?: boolean;
+  // This file cannot show the companion, and this is why (mode-visibility's
+  // canned reasons). Listed, disabled, tooltipped — never selectable, and never
+  // the `active` one.
+  disabledReason?: string;
 }
 
 export default function PreviewSidebar({
@@ -108,9 +112,11 @@ export default function PreviewSidebar({
   onSelect,
   onClose,
 }: {
-  // The visible sidebar modes for this file, registry order.
+  // The switcher's whole list: every companion, in SIDEBAR_MODES order, the ones
+  // this file cannot show disabled and carrying their reason.
   entries: SidebarEntry[];
-  // The one being shown (always present in `entries`).
+  // The one being shown — always one of the SELECTABLE entries, never a disabled
+  // placeholder (Preview resolves `_side` against the short list; lib/preview-side).
   active: string;
   // Its /render URL, or null while its gate is still resolving.
   src: string | null;
@@ -178,8 +184,6 @@ export default function PreviewSidebar({
     divider.addEventListener("pointercancel", onUp);
   };
 
-  const activeEntry = entries.find((e) => e.mode === active) ?? null;
-
   return (
     <>
       <div
@@ -199,22 +203,20 @@ export default function PreviewSidebar({
               while it is up, the only one — the title bar's opener is not
               rendered. The listing pane's header opens with the same button. */}
           <SideCloseButton what={modeTitle(active)} onClick={onClose} />
-          {/* The shared mode control, over this file's companions, at the strip's
-              far end (the tail's auto margin packs it there — .side-header-tail,
-              the same wrapper the listing pane's header uses). It hides itself at
-              one entry ("one mode is not a choice", BarMenu) — which would leave
-              this strip a lone chevron over an unlabelled document, so the
-              single-entry case renders the name flat instead of as a menu. Same
-              icon, same words, nothing to click. */}
+          {/* The shared mode control, over the companions, at the strip's far end
+              (the tail's auto margin packs it there — .side-header-tail, the same
+              wrapper the listing pane's header uses).
+
+              ALWAYS a menu now. This used to fall back to a flat, unclickable
+              label whenever `entries` was down to one, because BarMenu hides a
+              one-row menu and the strip would otherwise have been a lone chevron
+              over an unlabelled document. The list no longer shrinks: `entries`
+              is all three companions on every file, the unavailable ones disabled
+              and carrying the reason (lib/preview-side's `menu`), so there is
+              always a menu to draw and always more in it than the mode you are
+              looking at. */}
           <div className="side-header-tail">
-            {entries.length > 1 ? (
-              <ModeMenu entries={entries} active={active} onSelect={onSelect} />
-            ) : (
-              <span className="preview-side-name">
-                <span className="mode-menu-icon">{activeEntry?.icon}</span>
-                {modeTitle(active)}
-              </span>
-            )}
+            <ModeMenu entries={entries} active={active} onSelect={onSelect} />
           </div>
         </div>
         {src === null ? (

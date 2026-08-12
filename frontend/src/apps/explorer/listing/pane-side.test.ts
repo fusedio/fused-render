@@ -6,7 +6,9 @@ import {
   PANE_SIDE_OFF,
   activePaneSide,
   paneKey,
+  paneSideIconEntry,
   paneSideList,
+  paneSideMenu,
   paneSideParam,
   paneSideTarget,
   parsePaneSide,
@@ -89,8 +91,9 @@ describe("paneSideParam", () => {
 // identity, and a row with no template at all still has the metadata card.
 describe("paneSideList", () => {
   test("a folder with neither companion offers Preview alone", () => {
-    // A mount-backed folder: both gates refuse a mount, so the pill hides itself
-    // and the pane is what it was before the split.
+    // A mount-backed folder: both gates refuse a mount, so the pane can only ever
+    // BE Preview. The switcher still lists all three (paneSideMenu) — this list
+    // is what the pane may show, not what the header contains.
     expect(paneSideList(NONE)).toEqual(["preview"]);
   });
 
@@ -103,6 +106,107 @@ describe("paneSideList", () => {
       "preview",
       "claude",
     ]);
+  });
+});
+
+// WHAT THE SWITCHER DRAWS, which is all three whatever the folder offers — the
+// folder half of the file sidebar's rule. An unofferable mode is a disabled row
+// carrying its reason, so the header holds still as the user walks from a
+// repository into a folder outside one instead of shedding pills (and, at one
+// pill, hiding the control altogether).
+describe("paneSideMenu", () => {
+  // Copy the user reads, so it is written out here rather than re-derived from
+  // the constant it is testing.
+  const NO_REPO = "Not inside a git repository";
+  const NO_CLAUDE = "Claude is not available for this file";
+  const rows = (e: Parameters<typeof paneSideMenu>[0]) =>
+    paneSideMenu(e).map((r) => [r.mode, r.disabledReason ?? (r.pending ? "…" : null)]);
+
+  test("a folder in a repository offers all three, none explained", () => {
+    expect(rows(BOTH)).toEqual([
+      ["preview", null],
+      ["claude", null],
+      ["git", null],
+    ]);
+  });
+
+  test("a folder outside a repository keeps Git, disabled and explained", () => {
+    expect(rows({ claude: entry("claude"), git: null })).toEqual([
+      ["preview", null],
+      ["claude", null],
+      ["git", NO_REPO],
+    ]);
+  });
+
+  test("a mount-backed folder still gets a switcher", () => {
+    // Both gates refuse a mount. This used to be a one-pill menu, which hid
+    // itself, leaving the pane header a lone chevron.
+    expect(rows(NONE)).toEqual([
+      ["preview", null],
+      ["claude", NO_CLAUDE],
+      ["git", NO_REPO],
+    ]);
+  });
+
+  test("an undecided probe spins rather than claiming a reason", () => {
+    // "Not inside a git repository" before anyone has looked is a guess, and one
+    // that flips to a working Git pill a moment later.
+    expect(rows({ claude: null, git: null, claudePending: true, gitPending: true })).toEqual([
+      ["preview", null],
+      ["claude", "…"],
+      ["git", "…"],
+    ]);
+    // The two probes land independently: a settled denial beside an open probe
+    // is the usual frame, and each row says only what is known of IT.
+    expect(rows({ claude: null, git: null, gitPending: true })).toEqual([
+      ["preview", null],
+      ["claude", NO_CLAUDE],
+      ["git", "…"],
+    ]);
+  });
+
+  test("Preview is never explained away", () => {
+    // It is the pane's identity — it cannot be unavailable, so it never carries
+    // a reason and is always selectable.
+    for (const e of [NONE, BOTH, { claude: null, git: null, gitPending: true }])
+      expect(paneSideMenu(e)[0]).toEqual({ mode: "preview" });
+  });
+
+  test("the rows decide nothing", () => {
+    // What the pane may BE is still paneSideList's answer: a disabled row must
+    // not become a mode the pane can land on.
+    const outside = { claude: entry("claude"), git: null };
+    expect(paneSideMenu(outside).length).toBe(3);
+    expect(paneSideList(outside)).toEqual(["preview", "claude"]);
+    expect(activePaneSide(paneSideList(outside), "git")).toBe("preview");
+  });
+});
+
+// WHERE A ROW'S ICON COMES FROM. A disabled row is the mode with the click taken
+// away, so it wears the mode's own glyph — never a generic one, and never
+// Preview's (two identical icons in a three-row menu read as a duplicate entry).
+describe("paneSideIconEntry", () => {
+  const git = entry("git");
+
+  test("an offered mode uses its own entry", () => {
+    expect(paneSideIconEntry("git", BOTH)).toBe(BOTH.git);
+    expect(paneSideIconEntry("claude", BOTH)).toBe(BOTH.claude);
+  });
+
+  test("a disabled mode falls back to the binding the gate refused", () => {
+    // A folder outside a repository: nothing to frame, but `git` is bound and its
+    // icon exists — dir-mode keeps the entry through the denial for this.
+    expect(paneSideIconEntry("git", { claude: null, git: null, gitBound: git })).toBe(git);
+  });
+
+  test("a mode bound nowhere has no icon to offer", () => {
+    // The caller's last resort, and only here.
+    expect(paneSideIconEntry("git", NONE)).toBe(null);
+    expect(paneSideIconEntry("claude", NONE)).toBe(null);
+  });
+
+  test("the offered entry always outranks the binding", () => {
+    expect(paneSideIconEntry("git", { claude: null, git, gitBound: entry("stale") })).toBe(git);
   });
 });
 

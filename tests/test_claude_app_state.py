@@ -993,11 +993,20 @@ def test_the_reload_marker_fires_on_the_frames_own_load(html):
 def test_the_watcher_is_wired_to_the_load_event_not_to_a_timer(html):
     """The interval existed only because the old /embed framing hid the reload
     from the outer frame. Hooking the same `load` the annotation rewiring uses
-    keeps one place where a fresh document is noticed."""
+    keeps one place where a fresh document is noticed.
+
+    The hook is a NAMED function rather than an inline listener now, because the
+    chat-only sidebar has a second way into it: its target is the host's content
+    pane, which loaded before this document booted, so a `load` that already
+    fired is not something this page can wait for — annWatchTarget wires the
+    document that is already there and hears the ones that follow. Both entries
+    land in the same function, which is what keeps "a fresh document appeared"
+    in one place."""
     assert "APP_WATCH_INTERVAL" not in html
     assert "setInterval(watchApp" not in html
-    start = html.index('annFrame.addEventListener("load"')
-    assert "watchApp()" in html[start:start + 500], "the load hook does not watch"
+    assert 'frame.addEventListener("load", annWireTarget);' in html
+    start = html.index("function annWireTarget() {")
+    assert "watchApp()" in html[start:start + 900], "the load hook does not watch"
 
 
 def test_a_document_is_only_wrapped_once_but_a_new_one_is_wrapped_again(html):
@@ -1366,7 +1375,7 @@ def test_escape_is_bound_inside_the_framed_app_too(html):
     the keydown lands — and a keydown in the frame's document does not bubble to
     this one. Binding only the parent document is why Escape looked broken while
     annotating: the same reason mousedown/mousemove/click are all bound on `doc`."""
-    load = html.index("annFrame.addEventListener(\"load\"")
+    load = html.index("function annWireTarget() {")
     body = html[load:html.index("// ── send one message", load)]
     assert "doc.addEventListener(\"keydown\", onEscape" in body, body[-3000:]
     # and the parent keeps its own binding, for an Escape pressed in the chat pane

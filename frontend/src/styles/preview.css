@@ -291,11 +291,9 @@
    collapses toward, and the mode control is packed to the far end the way the crumb
    bar's own controls are. That far end is `.side-header-tail` (explorer.css), the
    ONE auto margin the two side-column headers share — so the right-hand end holds
-   whichever of the two things renders there (the ModeMenu, or the flat
-   .preview-side-name label a one-companion file gets) without either needing a rule
-   of its own, and the strip cannot be thrown off by what does or does not render at
-   its left end. The explicit `height` is what stands the bar up; same dependency,
-   same reason, as .pane-header. */
+   whatever renders there without needing a rule of its own, and the strip cannot be
+   thrown off by what does or does not render at its left end. The explicit `height`
+   is what stands the bar up; same dependency, same reason, as .pane-header. */
 .preview-side-header {
   flex: 0 0 auto;
   display: flex;
@@ -307,23 +305,6 @@
   box-sizing: border-box;
   border-bottom: 1px solid var(--border);
   background: var(--bg-alt);
-}
-
-/* The one-companion case: the same icon and words the menu would show, with
-   nothing to click (BarMenu's ModeMenu hides itself at one entry — "one mode is
-   not a choice" — which would leave this strip empty over an unlabelled
-   document). Deliberately NOT .bar-ctl-bordered: it is a label, and a plate
-   around it would invite the click it does not take. */
-.preview-side-name {
-  flex: 0 0 auto;
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 0 2px;
-  font-size: 12px;
-  line-height: 1;
-  color: var(--fg);
-  white-space: nowrap;
 }
 
 /* Fills what the header leaves. flex, not height:100%, so the header can't push
