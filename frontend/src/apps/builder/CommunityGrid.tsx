@@ -173,31 +173,15 @@ function basename(p: string): string {
 
 // -- open behavior ---------------------------------------------------------
 
-// The uncloned preview renders from the catalog cache through the embed
-// shell — same URL shape the /community page's Preview button builds. Not
-// router.urlForFsPath: that codec's prefix is fixed at module init to the
-// CURRENT page's mode (view, on /apps), and the preview must be embed.
-function embedUrlFor(fsPath: string): string {
-  const norm = /^[A-Za-z]:[\\/]/.test(fsPath) ? fsPath.replace(/\\/g, "/") : fsPath;
-  return (
-    "/explorer/embed/" +
-    norm
-      .replace(/^\/+/, "")
-      .split("/")
-      .filter((s) => s.length > 0)
-      .map(encodeURIComponent)
-      .join("/")
-  );
-}
-
 function hrefForCommunity(app: CommunityApp, cacheRoot: string | undefined): string {
   // A cloned app opens its workspace folder in the explorer — same rule as a
   // workspace card (appEntry.ts, D262: no app route, the listing is the
   // destination).
   if (app.installed && app.path) return urlForFsPath(app.path);
-  // Best-effort for middle-click/new-tab: the folder may not be materialized
-  // yet (the left-click path materializes it via `detail` first).
-  return embedUrlFor(`${cacheRoot ?? ""}/${app.slug}/index.html`);
+  // Uncloned: the preview page from the catalog cache, in the explorer's own
+  // view route. Best-effort for middle-click/new-tab — the folder may not be
+  // materialized yet (the left-click path materializes it via `detail` first).
+  return urlForFsPath(`${cacheRoot ?? ""}/${app.slug}/index.html`);
 }
 
 async function openCommunityApp(app: CommunityApp, cacheRoot: string | undefined): Promise<void> {
@@ -213,9 +197,7 @@ async function openCommunityApp(app: CommunityApp, cacheRoot: string | undefined
     slug: app.slug,
   });
   if (!detail.preview_entry) throw new Error("preview is not available for this app");
-  // Full page load, not navigateUrl: the embed shell is a separate boot mode
-  // (router IS_EMBED is fixed at module init), same as the /community page.
-  window.location.assign(embedUrlFor(detail.preview_entry));
+  navigate(detail.preview_entry);
 }
 
 // -- components -------------------------------------------------------------

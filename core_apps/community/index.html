@@ -278,7 +278,7 @@ async function renderDetail(slug) {
   if (d.status === "error") { showError(d.message); return; }
   const entry = d.entry || {};
   const preview = catalog?.cache_root ? fused.rawUrl(`${d.folder}/preview.png`) : null;
-  const previewHref = "/explorer/embed/" + encodeFsPath(d.preview_entry);
+  const previewHref = "/explorer/view/" + encodeFsPath(d.preview_entry);
   const buttons = [];
   if (!d.installed) buttons.push(`<button class="primary" data-act="install">Clone</button>`);
   if (d.installed) buttons.push(`<button class="primary" data-act="open">Open</button>`);
@@ -308,7 +308,7 @@ async function renderDetail(slug) {
 // Mirror of the shell's urlForFsPath (router.ts): normalize backslashes only
 // on drive-letter paths (POSIX filenames may legally contain "\"), strip the
 // leading slash, and join encoded segments — so a Windows path becomes
-// /explorer/embed/C%3A/Users/… instead of a one-segment mangled URL.
+// /explorer/view/C%3A/Users/… instead of a one-segment mangled URL.
 function encodeFsPath(p) {
   const rest = fsSlash(p).replace(/^\/+/, "");
   return rest.split("/").filter(Boolean).map(encodeURIComponent).join("/");
@@ -343,11 +343,9 @@ function confirmModal({ title, body, okLabel, okClass = "primary", extra = "" })
 async function act(action, slug, d) {
   if (action === "close") return closeDetail();
   if (action === "open") {
-    // Derive tag + name from the stored install path so installs made before
-    // the community→local destination change still open at the right route.
-    const parts = fsSlash(d.path).split("/");
-    window.top.location.href = "/apps/" + encodeURIComponent(parts[parts.length - 2]) +
-      "/" + encodeURIComponent(parts[parts.length - 1]);
+    // The cloned folder opens in the explorer's listing — the /apps/<tag>/<name>
+    // app route is retired (D262); a folder listing is the only destination.
+    window.top.location.href = "/explorer/view/" + encodeFsPath(d.path);
     return;
   }
   if (busy) return;

@@ -400,8 +400,7 @@ def _install(slug):
         "installed_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }
     _write_installs(installs)
-    return {"status": "installed", "path": dest,
-            "app_route": f"/apps/local/{os.path.basename(dest)}"}
+    return {"status": "installed", "path": dest}
 
 
 def _head_sha(app_dir):
